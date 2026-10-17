@@ -55,7 +55,7 @@ export function createWebHandler(app: Application): (request: Request) => Promis
     "Cache-Control": "no-store",
     "Content-Security-Policy": "default-src 'none'; style-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
     "X-Content-Type-Options": "nosniff",
-    "Referrer-Policy": "no-referrer",
+    "Referrer-Policy": "same-origin",
     ...(secure ? { "Strict-Transport-Security": "max-age=31536000" } : {}),
   };
   const respond = (body: BodyInit | null, status = 200, extra: Record<string, string> = {}) =>

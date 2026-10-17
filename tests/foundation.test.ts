@@ -65,6 +65,8 @@ test("fresh local setup, browser login, create, reload, logout and reopen retain
   expect(rendered.match(/data-group-id=/g)).toHaveLength(1);
   expect(group.headers.get("content-security-policy")).toContain("default-src 'none'");
   expect(group.headers.get("cache-control")).toBe("no-store");
+  // no-referrer makes navigation-form Origin opaque in Chromium, rejecting legitimate owner forms.
+  expect(group.headers.get("referrer-policy")).toBe("same-origin");
   f.store.close();
   const store = new TransactionStore(f.path); stores.push(store);
   const reopened = new Application(store, f.config);

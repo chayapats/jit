@@ -2,6 +2,7 @@ import { Application } from "./application";
 import { readConfig } from "./config";
 import { TransactionStore } from "./store";
 import { createWebHandler } from "./web";
+import { readHiddenPassword } from "./terminal-password";
 
 async function secret(): Promise<string> {
   if (!process.stdin.isTTY) {
@@ -10,29 +11,7 @@ async function secret(): Promise<string> {
     if (input.length > 258) throw new Error("Password input is too long");
     return input.replace(/\r?\n$/, "");
   }
-  process.stdout.write("Owner password (12–256 characters; input hidden): ");
-  process.stdin.setRawMode(true);
-  process.stdin.resume();
-  try {
-    return await new Promise<string>((resolve, reject) => {
-      let value = "";
-      const onData = (chunk: Buffer) => {
-        for (const char of chunk.toString()) {
-          if (char === "\u0003" || char === "\u0004") { finish(); reject(new Error("Setup cancelled")); return; }
-          if (char === "\r" || char === "\n") { finish(); resolve(value); return; }
-          if (char === "\u007f" || char === "\b") value = [...value].slice(0, -1).join("");
-          else value += char;
-          if (value.length > 256) { finish(); reject(new Error("Password input is too long")); return; }
-        }
-      };
-      const finish = () => { process.stdin.off("data", onData); };
-      process.stdin.on("data", onData);
-    });
-  } finally {
-    process.stdin.setRawMode(false);
-    process.stdin.pause();
-    process.stdout.write("\n");
-  }
+  return readHiddenPassword();
 }
 
 async function main(): Promise<void> {
