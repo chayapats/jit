@@ -1,0 +1,1961 @@
+{
+  "schema_version": 1,
+  "snapshot_date": "2026-10-18",
+  "scope": "Jit MVP implementation backlog; not implementation completion evidence",
+  "tickets": [
+    {
+      "key": "APP01",
+      "repo": "chayapats/jit",
+      "parent_url": "https://github.com/chayapats/jit/issues/1",
+      "requirements": [
+        "FR-01",
+        "FR-10",
+        "FR-15",
+        "FR-17",
+        "NFR-05",
+        "NFR-07",
+        "NFR-09",
+        "NFR-10",
+        "NFR-12"
+      ],
+      "blocked_by": [],
+      "requires_contracts": [],
+      "delivers_contracts": [
+        "jit.app.foundation/v1",
+        "app.transaction_store/v1",
+        "app.command_receipts/v1",
+        "app.owner_identity/v1",
+        "app.project_commands/v1",
+        "app.project_read_model/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[APP01] Owner เปิด Web ที่ยืนยันตัวตนและสร้าง project group ที่คงอยู่หลัง restart ได้",
+      "url": "https://github.com/chayapats/jit/issues/3",
+      "number": 3
+    },
+    {
+      "key": "ENG01",
+      "repo": "chayapats/schway",
+      "parent_url": "https://github.com/chayapats/schway/issues/393",
+      "requirements": [
+        "FR-02",
+        "FR-13",
+        "FR-15",
+        "NFR-02",
+        "NFR-03",
+        "NFR-10",
+        "NFR-12"
+      ],
+      "blocked_by": [],
+      "requires_contracts": [],
+      "delivers_contracts": [
+        "schway.host.base/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[ENG01] Host: embed one scripted durable turn through a supported public entry",
+      "url": "https://github.com/chayapats/schway/issues/395",
+      "number": 395
+    },
+    {
+      "key": "APP02",
+      "repo": "chayapats/jit",
+      "parent_url": "https://github.com/chayapats/jit/issues/1",
+      "requirements": [
+        "FR-01",
+        "FR-04",
+        "FR-10",
+        "FR-17",
+        "NFR-05",
+        "NFR-07",
+        "NFR-10",
+        "NFR-11"
+      ],
+      "blocked_by": [
+        "APP01"
+      ],
+      "requires_contracts": [
+        "app.owner_identity/v1",
+        "app.project_commands/v1",
+        "app.command_receipts/v1",
+        "app.transaction_store/v1"
+      ],
+      "delivers_contracts": [
+        "app.topic_commands/v1",
+        "app.conversation/v1",
+        "app.source_records/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[APP02] Owner คุยและกลับมาเปิด topic/history ของแต่ละ project ได้โดยบริบทไม่ปะปน",
+      "url": "https://github.com/chayapats/jit/issues/4",
+      "number": 4
+    },
+    {
+      "key": "ENG02",
+      "repo": "chayapats/schway",
+      "parent_url": "https://github.com/chayapats/schway/issues/393",
+      "requirements": [
+        "FR-02",
+        "FR-16",
+        "FR-17",
+        "NFR-01",
+        "NFR-02",
+        "NFR-10"
+      ],
+      "blocked_by": [
+        "ENG01"
+      ],
+      "requires_contracts": [
+        "schway.host.base/v1"
+      ],
+      "delivers_contracts": [
+        "schway.host.context-policy/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[ENG02] Host: keep repository instructions, skills and packages inert in strict review runs",
+      "url": "https://github.com/chayapats/schway/issues/396",
+      "number": 396
+    },
+    {
+      "key": "ENG04",
+      "repo": "chayapats/schway",
+      "parent_url": "https://github.com/chayapats/schway/issues/393",
+      "requirements": [
+        "FR-02",
+        "FR-04",
+        "FR-15",
+        "NFR-02",
+        "NFR-05",
+        "NFR-10",
+        "NFR-12"
+      ],
+      "blocked_by": [
+        "ENG01"
+      ],
+      "requires_contracts": [
+        "schway.host.base/v1"
+      ],
+      "delivers_contracts": [
+        "schway.host.durable-sessions/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[ENG04] Host: accept durable input under one native-session writer and reopen its ancestry",
+      "url": "https://github.com/chayapats/schway/issues/397",
+      "number": 397
+    },
+    {
+      "key": "ENG05",
+      "repo": "chayapats/schway",
+      "parent_url": "https://github.com/chayapats/schway/issues/393",
+      "requirements": [
+        "FR-13",
+        "FR-17",
+        "NFR-02",
+        "NFR-03",
+        "NFR-07",
+        "NFR-10"
+      ],
+      "blocked_by": [
+        "ENG01"
+      ],
+      "requires_contracts": [
+        "schway.host.base/v1"
+      ],
+      "delivers_contracts": [
+        "schway.host.auth-routes/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[ENG05] Host: use explicit Grok/Codex routes with opaque shared credential lifecycle",
+      "url": "https://github.com/chayapats/schway/issues/398",
+      "number": 398
+    },
+    {
+      "key": "FEAS01",
+      "repo": "chayapats/jit",
+      "parent_url": "https://github.com/chayapats/jit/issues/2",
+      "requirements": [
+        "FR-13",
+        "FR-15",
+        "NFR-04",
+        "NFR-06",
+        "NFR-07",
+        "NFR-09",
+        "NFR-10"
+      ],
+      "blocked_by": [
+        "APP01"
+      ],
+      "requires_contracts": [
+        "jit.app.foundation/v1"
+      ],
+      "delivers_contracts": [
+        "jit.host.evidence/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[FEAS01] Feasibility: emit sanitized host inventory and versioned evidence records",
+      "url": "https://github.com/chayapats/jit/issues/5",
+      "number": 5
+    },
+    {
+      "key": "JOB01",
+      "repo": "chayapats/jit",
+      "parent_url": "https://github.com/chayapats/jit/issues/1",
+      "requirements": [
+        "FR-07",
+        "FR-10",
+        "FR-14",
+        "FR-15",
+        "FR-18",
+        "NFR-05",
+        "NFR-06",
+        "NFR-10"
+      ],
+      "blocked_by": [
+        "APP01"
+      ],
+      "requires_contracts": [
+        "app.transaction_store/v1",
+        "app.command_receipts/v1",
+        "app.owner_identity/v1",
+        "app.project_commands/v1"
+      ],
+      "delivers_contracts": [
+        "jobs.queue_admission/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[JOB01] Admit durable interactive and background work with finite budgets",
+      "url": "https://github.com/chayapats/jit/issues/6",
+      "number": 6
+    },
+    {
+      "key": "ENG03",
+      "repo": "chayapats/schway",
+      "parent_url": "https://github.com/chayapats/schway/issues/393",
+      "requirements": [
+        "FR-08",
+        "FR-17",
+        "NFR-01",
+        "NFR-02",
+        "NFR-09",
+        "NFR-10"
+      ],
+      "blocked_by": [
+        "ENG02"
+      ],
+      "requires_contracts": [
+        "schway.host.base/v1",
+        "schway.host.context-policy/v1"
+      ],
+      "delivers_contracts": [
+        "schway.host.tool-policy/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[ENG03] Host: enforce the exact supplied tool registry and disable hosted lookups",
+      "url": "https://github.com/chayapats/schway/issues/399",
+      "number": 399
+    },
+    {
+      "key": "ENG06",
+      "repo": "chayapats/schway",
+      "parent_url": "https://github.com/chayapats/schway/issues/393",
+      "requirements": [
+        "FR-07",
+        "FR-14",
+        "FR-15",
+        "FR-18",
+        "NFR-02",
+        "NFR-05",
+        "NFR-06",
+        "NFR-10"
+      ],
+      "blocked_by": [
+        "ENG04"
+      ],
+      "requires_contracts": [
+        "schway.host.base/v1",
+        "schway.host.durable-sessions/v1"
+      ],
+      "delivers_contracts": [
+        "schway.host.run-control/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[ENG06] Host: bound, cancel and settle embedded runs with honest terminal outcomes",
+      "url": "https://github.com/chayapats/schway/issues/400",
+      "number": 400
+    },
+    {
+      "key": "FEAS03",
+      "repo": "chayapats/jit",
+      "parent_url": "https://github.com/chayapats/jit/issues/2",
+      "requirements": [
+        "FR-13",
+        "FR-15",
+        "NFR-04",
+        "NFR-06",
+        "NFR-07"
+      ],
+      "blocked_by": [
+        "FEAS01"
+      ],
+      "requires_contracts": [
+        "jit.host.evidence/v1"
+      ],
+      "delivers_contracts": [
+        "jit.pi.runtime-readiness/v1"
+      ],
+      "label": "ready-for-human",
+      "title": "[FEAS03] Feasibility: provision and verify the Pi ARM64 service context with the owner",
+      "url": "https://github.com/chayapats/jit/issues/7",
+      "number": 7
+    },
+    {
+      "key": "TEAM01",
+      "repo": "chayapats/jit",
+      "parent_url": "https://github.com/chayapats/jit/issues/1",
+      "requirements": [
+        "FR-02",
+        "FR-10",
+        "FR-13",
+        "FR-14",
+        "FR-17",
+        "NFR-01",
+        "NFR-02",
+        "NFR-03",
+        "NFR-07",
+        "NFR-10"
+      ],
+      "blocked_by": [
+        "APP02"
+      ],
+      "requires_contracts": [
+        "app.owner_identity/v1",
+        "app.project_commands/v1",
+        "app.conversation/v1",
+        "app.source_records/v1"
+      ],
+      "delivers_contracts": [
+        "app.role_configuration/v1",
+        "app.run_port/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[TEAM01] Owner ตั้ง specialist/model route และทดลอง role ผ่าน scripted host ได้โดยเห็นสถานะจริง",
+      "url": "https://github.com/chayapats/jit/issues/8",
+      "number": 8
+    },
+    {
+      "key": "ENG07",
+      "repo": "chayapats/schway",
+      "parent_url": "https://github.com/chayapats/schway/issues/393",
+      "requirements": [
+        "FR-16",
+        "FR-18",
+        "NFR-02",
+        "NFR-05",
+        "NFR-08",
+        "NFR-10",
+        "NFR-12"
+      ],
+      "blocked_by": [
+        "ENG06"
+      ],
+      "requires_contracts": [
+        "schway.host.base/v1",
+        "schway.host.durable-sessions/v1",
+        "schway.host.run-control/v1"
+      ],
+      "delivers_contracts": [
+        "schway.host.managed-session-data/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[ENG07] Host: retire and delete managed native sessions without stale writers",
+      "url": "https://github.com/chayapats/schway/issues/401",
+      "number": 401
+    },
+    {
+      "key": "JOB02",
+      "repo": "chayapats/jit",
+      "parent_url": "https://github.com/chayapats/jit/issues/1",
+      "requirements": [
+        "FR-07",
+        "FR-15",
+        "FR-16",
+        "FR-18",
+        "NFR-05",
+        "NFR-10",
+        "NFR-12"
+      ],
+      "blocked_by": [
+        "JOB01",
+        "TEAM01"
+      ],
+      "requires_contracts": [
+        "jobs.queue_admission/v1",
+        "app.transaction_store/v1",
+        "app.run_port/v1"
+      ],
+      "delivers_contracts": [
+        "jobs.attempt_fence/v1",
+        "jobs.session_reconcile/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[JOB02] Fence cancelled and interrupted attempts and reconcile native run references",
+      "url": "https://github.com/chayapats/jit/issues/9",
+      "number": 9
+    },
+    {
+      "key": "ENG08",
+      "repo": "chayapats/schway",
+      "parent_url": "https://github.com/chayapats/schway/issues/393",
+      "requirements": [
+        "FR-16",
+        "FR-18",
+        "NFR-02",
+        "NFR-05",
+        "NFR-08",
+        "NFR-10",
+        "NFR-12"
+      ],
+      "blocked_by": [
+        "ENG07"
+      ],
+      "requires_contracts": [
+        "schway.host.base/v1",
+        "schway.host.durable-sessions/v1",
+        "schway.host.run-control/v1",
+        "schway.host.managed-session-data/v1"
+      ],
+      "delivers_contracts": [
+        "schway.host.session-snapshot/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[ENG08] Host: snapshot and validate restore of quiesced managed native state",
+      "url": "https://github.com/chayapats/schway/issues/402",
+      "number": 402
+    },
+    {
+      "key": "PR01",
+      "repo": "chayapats/jit",
+      "parent_url": "https://github.com/chayapats/jit/issues/1",
+      "requirements": [
+        "FR-08",
+        "FR-10",
+        "FR-14",
+        "FR-15",
+        "FR-17",
+        "NFR-01",
+        "NFR-05",
+        "NFR-07",
+        "NFR-09",
+        "NFR-10"
+      ],
+      "blocked_by": [
+        "JOB02"
+      ],
+      "requires_contracts": [
+        "jobs.queue_admission/v1",
+        "jobs.attempt_fence/v1",
+        "app.project_commands/v1",
+        "app.transaction_store/v1"
+      ],
+      "delivers_contracts": [
+        "pr.immutable_snapshot/v1",
+        "pr.monitoring_authority/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[PR01] Monitor allowed repositories and capture revision-bound static review inputs",
+      "url": "https://github.com/chayapats/jit/issues/10",
+      "number": 10
+    },
+    {
+      "key": "TEAM02",
+      "repo": "chayapats/jit",
+      "parent_url": "https://github.com/chayapats/jit/issues/1",
+      "requirements": [
+        "FR-01",
+        "FR-02",
+        "FR-10",
+        "FR-13",
+        "FR-14",
+        "FR-15",
+        "FR-17",
+        "FR-18",
+        "NFR-01",
+        "NFR-02",
+        "NFR-05",
+        "NFR-07",
+        "NFR-10"
+      ],
+      "blocked_by": [
+        "JOB02"
+      ],
+      "requires_contracts": [
+        "app.run_port/v1",
+        "app.role_configuration/v1",
+        "app.conversation/v1",
+        "app.source_records/v1",
+        "jobs.queue_admission/v1",
+        "jobs.attempt_fence/v1"
+      ],
+      "delivers_contracts": [
+        "app.team_dispatch/v1",
+        "app.specialist_results/v1",
+        "app.run_records/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[TEAM02] ข้อความใน topic เรียกทีมที่เกี่ยวข้องมาวิเคราะห์แยกอย่างมีขอบเขตและหยุดได้",
+      "url": "https://github.com/chayapats/jit/issues/11",
+      "number": 11
+    },
+    {
+      "key": "TG01",
+      "repo": "chayapats/jit",
+      "parent_url": "https://github.com/chayapats/jit/issues/1",
+      "requirements": [
+        "FR-10",
+        "FR-11",
+        "FR-15",
+        "FR-17",
+        "NFR-05",
+        "NFR-07",
+        "NFR-10"
+      ],
+      "blocked_by": [
+        "JOB02"
+      ],
+      "requires_contracts": [
+        "app.owner_identity/v1",
+        "app.transaction_store/v1",
+        "app.command_receipts/v1",
+        "jobs.attempt_fence/v1"
+      ],
+      "delivers_contracts": [
+        "telegram.owner_binding/v1",
+        "telegram.durable_inbox/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[TG01] Bind the numeric Telegram owner and durably ingest authorized updates",
+      "url": "https://github.com/chayapats/jit/issues/12",
+      "number": 12
+    },
+    {
+      "key": "TG03",
+      "repo": "chayapats/jit",
+      "parent_url": "https://github.com/chayapats/jit/issues/1",
+      "requirements": [
+        "FR-07",
+        "FR-09",
+        "FR-11",
+        "FR-15",
+        "FR-18",
+        "NFR-05",
+        "NFR-07",
+        "NFR-10"
+      ],
+      "blocked_by": [
+        "JOB02"
+      ],
+      "requires_contracts": [
+        "app.transaction_store/v1",
+        "app.owner_identity/v1",
+        "jobs.attempt_fence/v1"
+      ],
+      "delivers_contracts": [
+        "delivery.outbox/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[TG03] Persist private delivery intents and show sent, failed and unknown outcomes",
+      "url": "https://github.com/chayapats/jit/issues/13",
+      "number": 13
+    },
+    {
+      "key": "ENG09",
+      "repo": "chayapats/schway",
+      "parent_url": "https://github.com/chayapats/schway/issues/393",
+      "requirements": [
+        "FR-02",
+        "FR-13",
+        "FR-14",
+        "FR-15",
+        "FR-16",
+        "FR-17",
+        "FR-18",
+        "NFR-02",
+        "NFR-03",
+        "NFR-05",
+        "NFR-08",
+        "NFR-10",
+        "NFR-12"
+      ],
+      "blocked_by": [
+        "ENG03",
+        "ENG05",
+        "ENG08"
+      ],
+      "requires_contracts": [
+        "schway.host.base/v1",
+        "schway.host.context-policy/v1",
+        "schway.host.tool-policy/v1",
+        "schway.host.durable-sessions/v1",
+        "schway.host.auth-routes/v1",
+        "schway.host.run-control/v1",
+        "schway.host.managed-session-data/v1",
+        "schway.host.session-snapshot/v1"
+      ],
+      "delivers_contracts": [
+        "schway.host.release/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[ENG09] Host: ship and verify a versioned consumer package for Jit",
+      "url": "https://github.com/chayapats/schway/issues/403",
+      "number": 403
+    },
+    {
+      "key": "TEAM03",
+      "repo": "chayapats/jit",
+      "parent_url": "https://github.com/chayapats/jit/issues/1",
+      "requirements": [
+        "FR-03",
+        "FR-04",
+        "FR-07",
+        "FR-10",
+        "FR-14",
+        "FR-15",
+        "FR-17",
+        "NFR-05",
+        "NFR-07",
+        "NFR-10"
+      ],
+      "blocked_by": [
+        "TEAM02"
+      ],
+      "requires_contracts": [
+        "app.specialist_results/v1",
+        "app.run_port/v1",
+        "app.source_records/v1",
+        "app.command_receipts/v1",
+        "jobs.attempt_fence/v1"
+      ],
+      "delivers_contracts": [
+        "app.coordinator_synthesis/v1",
+        "app.decision_commands/v1",
+        "app.decision_read_model/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[TEAM03] Coordinator สรุปข้อขัดแย้งและบันทึกเฉพาะ decision revision ที่ owner เลือก",
+      "url": "https://github.com/chayapats/jit/issues/14",
+      "number": 14
+    },
+    {
+      "key": "JBR01",
+      "repo": "chayapats/jit",
+      "parent_url": "https://github.com/chayapats/jit/issues/1",
+      "requirements": [
+        "FR-02",
+        "FR-03",
+        "FR-10",
+        "FR-13",
+        "FR-14",
+        "FR-15",
+        "FR-16",
+        "FR-17",
+        "FR-18",
+        "NFR-01",
+        "NFR-02",
+        "NFR-03",
+        "NFR-05",
+        "NFR-08",
+        "NFR-10",
+        "NFR-12"
+      ],
+      "blocked_by": [
+        "ENG09",
+        "TEAM01"
+      ],
+      "requires_contracts": [
+        "app.run_port/v1",
+        "jit.app.foundation/v1",
+        "schway.host.release/v1",
+        "schway.host.base/v1",
+        "schway.host.context-policy/v1",
+        "schway.host.tool-policy/v1",
+        "schway.host.durable-sessions/v1",
+        "schway.host.auth-routes/v1",
+        "schway.host.run-control/v1",
+        "schway.host.managed-session-data/v1",
+        "schway.host.session-snapshot/v1"
+      ],
+      "delivers_contracts": [
+        "jit.schway.bridge/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[JBR01] Bridge: run the configured specialist through Schway's supported host contract",
+      "url": "https://github.com/chayapats/jit/issues/15",
+      "number": 15
+    },
+    {
+      "key": "TASK01",
+      "repo": "chayapats/jit",
+      "parent_url": "https://github.com/chayapats/jit/issues/1",
+      "requirements": [
+        "FR-04",
+        "FR-06",
+        "FR-10",
+        "FR-11",
+        "FR-15",
+        "FR-17",
+        "NFR-01",
+        "NFR-05",
+        "NFR-07",
+        "NFR-10"
+      ],
+      "blocked_by": [
+        "TEAM03"
+      ],
+      "requires_contracts": [
+        "app.coordinator_synthesis/v1",
+        "app.source_records/v1",
+        "app.owner_identity/v1",
+        "app.command_receipts/v1",
+        "app.project_commands/v1"
+      ],
+      "delivers_contracts": [
+        "app.task_commands/v1",
+        "app.task_proposals/v1",
+        "app.task_read_model/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[TASK01] ข้อเสนองานกลายเป็น accepted task เฉพาะ owner รับรอง revision นั้นและไม่เริ่ม execution",
+      "url": "https://github.com/chayapats/jit/issues/16",
+      "number": 16
+    },
+    {
+      "key": "FEAS02",
+      "repo": "chayapats/jit",
+      "parent_url": "https://github.com/chayapats/jit/issues/2",
+      "requirements": [
+        "FR-13",
+        "FR-14",
+        "FR-15",
+        "FR-17",
+        "NFR-04",
+        "NFR-06",
+        "NFR-07",
+        "NFR-10"
+      ],
+      "blocked_by": [
+        "FEAS01",
+        "JBR01"
+      ],
+      "requires_contracts": [
+        "jit.host.evidence/v1",
+        "jit.schway.bridge/v1"
+      ],
+      "delivers_contracts": [
+        "jit.host.probe/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[FEAS02] Feasibility: run bounded selected-route service probes with sanitized results",
+      "url": "https://github.com/chayapats/jit/issues/17",
+      "number": 17
+    },
+    {
+      "key": "OPS01",
+      "repo": "chayapats/jit",
+      "parent_url": "https://github.com/chayapats/jit/issues/1",
+      "requirements": [
+        "FR-15",
+        "FR-16",
+        "FR-18",
+        "NFR-05",
+        "NFR-08",
+        "NFR-09",
+        "NFR-10",
+        "NFR-12"
+      ],
+      "blocked_by": [
+        "JBR01",
+        "JOB02"
+      ],
+      "requires_contracts": [
+        "app.transaction_store/v1",
+        "app.owner_identity/v1",
+        "jobs.session_reconcile/v1",
+        "schway.host.durable-sessions/v1",
+        "schway.host.session-snapshot/v1",
+        "jit.schway.bridge/v1"
+      ],
+      "delivers_contracts": [
+        "ops.backup_manifest/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[OPS01] Create consistent managed backups with versioned manifests and inventory",
+      "url": "https://github.com/chayapats/jit/issues/18",
+      "number": 18
+    },
+    {
+      "key": "PR02",
+      "repo": "chayapats/jit",
+      "parent_url": "https://github.com/chayapats/jit/issues/1",
+      "requirements": [
+        "FR-02",
+        "FR-03",
+        "FR-07",
+        "FR-08",
+        "FR-09",
+        "FR-15",
+        "FR-17",
+        "NFR-01",
+        "NFR-02",
+        "NFR-03",
+        "NFR-10"
+      ],
+      "blocked_by": [
+        "JBR01",
+        "PR01",
+        "TEAM03"
+      ],
+      "requires_contracts": [
+        "pr.immutable_snapshot/v1",
+        "pr.monitoring_authority/v1",
+        "jobs.attempt_fence/v1",
+        "app.team_dispatch/v1",
+        "app.run_port/v1",
+        "jit.schway.bridge/v1",
+        "app.coordinator_synthesis/v1"
+      ],
+      "delivers_contracts": [
+        "pr.private_report/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[PR02] Commit evidence-based static PR reports with coverage and currentness",
+      "url": "https://github.com/chayapats/jit/issues/19",
+      "number": 19
+    },
+    {
+      "key": "TASK02",
+      "repo": "chayapats/jit",
+      "parent_url": "https://github.com/chayapats/jit/issues/1",
+      "requirements": [
+        "FR-04",
+        "FR-07",
+        "FR-10",
+        "FR-18",
+        "NFR-05",
+        "NFR-10",
+        "NFR-11"
+      ],
+      "blocked_by": [
+        "TASK01"
+      ],
+      "requires_contracts": [
+        "app.task_commands/v1",
+        "app.task_read_model/v1",
+        "app.decision_read_model/v1",
+        "app.source_records/v1",
+        "app.command_receipts/v1"
+      ],
+      "delivers_contracts": [
+        "app.task_completion/v1",
+        "app.project_continuity/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[TASK02] Owner ตรวจงานค้างและปิดงานด้วยหลักฐานตาม completion policy ได้ข้ามวัน",
+      "url": "https://github.com/chayapats/jit/issues/20",
+      "number": 20
+    },
+    {
+      "key": "TG02",
+      "repo": "chayapats/jit",
+      "parent_url": "https://github.com/chayapats/jit/issues/1",
+      "requirements": [
+        "FR-01",
+        "FR-06",
+        "FR-07",
+        "FR-10",
+        "FR-11",
+        "FR-15",
+        "FR-17",
+        "NFR-07",
+        "NFR-10",
+        "NFR-11"
+      ],
+      "blocked_by": [
+        "TASK01",
+        "TG01",
+        "TG03"
+      ],
+      "requires_contracts": [
+        "telegram.owner_binding/v1",
+        "telegram.durable_inbox/v1",
+        "delivery.outbox/v1",
+        "app.project_commands/v1",
+        "app.task_commands/v1",
+        "app.team_dispatch/v1"
+      ],
+      "delivers_contracts": [
+        "telegram.project_commands/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[TG02] Run Telegram project commands and task acceptance through the shared app boundary",
+      "url": "https://github.com/chayapats/jit/issues/21",
+      "number": 21
+    },
+    {
+      "key": "FEAS04",
+      "repo": "chayapats/jit",
+      "parent_url": "https://github.com/chayapats/jit/issues/2",
+      "requirements": [
+        "FR-13",
+        "FR-15",
+        "NFR-04",
+        "NFR-07",
+        "NFR-10"
+      ],
+      "blocked_by": [
+        "FEAS02",
+        "FEAS03"
+      ],
+      "requires_contracts": [
+        "jit.host.probe/v1",
+        "jit.pi.runtime-readiness/v1"
+      ],
+      "delivers_contracts": [
+        "jit.pi.route-observations/v1"
+      ],
+      "label": "ready-for-human",
+      "title": "[FEAS04] Feasibility: observe Grok and Codex subscription access in the Pi service identity",
+      "url": "https://github.com/chayapats/jit/issues/22",
+      "number": 22
+    },
+    {
+      "key": "MEM01",
+      "repo": "chayapats/jit",
+      "parent_url": "https://github.com/chayapats/jit/issues/1",
+      "requirements": [
+        "FR-04",
+        "FR-05",
+        "FR-10",
+        "FR-14",
+        "FR-15",
+        "FR-17",
+        "NFR-05",
+        "NFR-07",
+        "NFR-10",
+        "NFR-11"
+      ],
+      "blocked_by": [
+        "TASK02"
+      ],
+      "requires_contracts": [
+        "app.source_records/v1",
+        "app.project_continuity/v1",
+        "app.run_port/v1",
+        "app.role_configuration/v1",
+        "jobs.queue_admission/v1",
+        "jobs.attempt_fence/v1"
+      ],
+      "delivers_contracts": [
+        "app.memory_claims/v1",
+        "app.memory_lineage/v1",
+        "app.memory_active_generation/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[MEM01] Jit เก็บ memory claims จาก committed sources พร้อมที่มาและแยก fact/inference",
+      "url": "https://github.com/chayapats/jit/issues/23",
+      "number": 23
+    },
+    {
+      "key": "PR03",
+      "repo": "chayapats/jit",
+      "parent_url": "https://github.com/chayapats/jit/issues/1",
+      "requirements": [
+        "FR-07",
+        "FR-08",
+        "FR-09",
+        "FR-10",
+        "FR-15",
+        "FR-18",
+        "NFR-05",
+        "NFR-07",
+        "NFR-10"
+      ],
+      "blocked_by": [
+        "PR02",
+        "TG03"
+      ],
+      "requires_contracts": [
+        "pr.private_report/v1",
+        "pr.monitoring_authority/v1",
+        "delivery.outbox/v1",
+        "jobs.attempt_fence/v1"
+      ],
+      "delivers_contracts": [
+        "pr.private_alerts/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[PR03] Notify the owner only about current actionable PR findings",
+      "url": "https://github.com/chayapats/jit/issues/24",
+      "number": 24
+    },
+    {
+      "key": "FEAS05",
+      "repo": "chayapats/jit",
+      "parent_url": "https://github.com/chayapats/jit/issues/2",
+      "requirements": [
+        "FR-13",
+        "FR-14",
+        "FR-15",
+        "NFR-04",
+        "NFR-06",
+        "NFR-10"
+      ],
+      "blocked_by": [
+        "FEAS04"
+      ],
+      "requires_contracts": [
+        "jit.host.evidence/v1",
+        "jit.host.probe/v1",
+        "jit.pi.runtime-readiness/v1",
+        "jit.pi.route-observations/v1"
+      ],
+      "delivers_contracts": [
+        "jit.pi.subscription-readiness/v1"
+      ],
+      "label": "ready-for-human",
+      "title": "[FEAS05] Feasibility: prove unattended boot, interrupted probes and route readiness on Pi",
+      "url": "https://github.com/chayapats/jit/issues/25",
+      "number": 25
+    },
+    {
+      "key": "MEM02",
+      "repo": "chayapats/jit",
+      "parent_url": "https://github.com/chayapats/jit/issues/1",
+      "requirements": [
+        "FR-02",
+        "FR-03",
+        "FR-04",
+        "FR-05",
+        "FR-10",
+        "FR-14",
+        "FR-17",
+        "FR-18",
+        "NFR-05",
+        "NFR-07",
+        "NFR-10",
+        "NFR-11"
+      ],
+      "blocked_by": [
+        "MEM01"
+      ],
+      "requires_contracts": [
+        "app.memory_claims/v1",
+        "app.memory_lineage/v1",
+        "app.memory_active_generation/v1",
+        "app.project_continuity/v1",
+        "app.team_dispatch/v1",
+        "app.run_records/v1"
+      ],
+      "delivers_contracts": [
+        "app.memory_context/v1",
+        "app.context_provenance/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[MEM02] ถามต่อข้ามวันได้ด้วย current project state และ cross-project memory ที่รักษาที่มา",
+      "url": "https://github.com/chayapats/jit/issues/26",
+      "number": 26
+    },
+    {
+      "key": "JOB03",
+      "repo": "chayapats/jit",
+      "parent_url": "https://github.com/chayapats/jit/issues/1",
+      "requirements": [
+        "FR-07",
+        "FR-10",
+        "FR-12",
+        "FR-14",
+        "FR-15",
+        "FR-17",
+        "NFR-05",
+        "NFR-06",
+        "NFR-10"
+      ],
+      "blocked_by": [
+        "MEM02",
+        "TG03"
+      ],
+      "requires_contracts": [
+        "jobs.queue_admission/v1",
+        "jobs.attempt_fence/v1",
+        "delivery.outbox/v1",
+        "app.project_commands/v1",
+        "app.memory_context/v1",
+        "app.team_dispatch/v1"
+      ],
+      "delivers_contracts": [
+        "jobs.configured_schedules/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[JOB03] Run owner-configured reminders and summaries with timezone and misfire controls",
+      "url": "https://github.com/chayapats/jit/issues/27",
+      "number": 27
+    },
+    {
+      "key": "MEM03",
+      "repo": "chayapats/jit",
+      "parent_url": "https://github.com/chayapats/jit/issues/1",
+      "requirements": [
+        "FR-05",
+        "FR-15",
+        "FR-16",
+        "FR-17",
+        "NFR-05",
+        "NFR-07",
+        "NFR-10",
+        "NFR-12"
+      ],
+      "blocked_by": [
+        "MEM02"
+      ],
+      "requires_contracts": [
+        "app.memory_lineage/v1",
+        "app.memory_context/v1",
+        "app.context_provenance/v1",
+        "app.run_port/v1",
+        "jobs.attempt_fence/v1",
+        "jobs.session_reconcile/v1",
+        "app.command_receipts/v1"
+      ],
+      "delivers_contracts": [
+        "app.memory_correction/v1",
+        "app.context_invalidation/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[MEM03] Owner แก้ memory ผิดแล้ว derivatives และ context ทุกโครงการใช้ revision ใหม่",
+      "url": "https://github.com/chayapats/jit/issues/28",
+      "number": 28
+    },
+    {
+      "key": "MEM04",
+      "repo": "chayapats/jit",
+      "parent_url": "https://github.com/chayapats/jit/issues/1",
+      "requirements": [
+        "FR-04",
+        "FR-05",
+        "FR-15",
+        "FR-16",
+        "FR-17",
+        "FR-18",
+        "NFR-05",
+        "NFR-07",
+        "NFR-10",
+        "NFR-12"
+      ],
+      "blocked_by": [
+        "MEM03"
+      ],
+      "requires_contracts": [
+        "app.memory_correction/v1",
+        "app.context_invalidation/v1",
+        "app.memory_lineage/v1",
+        "app.run_port/v1",
+        "jobs.attempt_fence/v1",
+        "jobs.session_reconcile/v1",
+        "app.command_receipts/v1"
+      ],
+      "delivers_contracts": [
+        "app.memory_suppression/v1",
+        "app.suppression_ledger/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[MEM04] คำสั่งลืมถอน derived memory และกันประวัติเก่าถูกสกัดหรือ replay กลับมาเอง",
+      "url": "https://github.com/chayapats/jit/issues/29",
+      "number": 29
+    },
+    {
+      "key": "MEM05",
+      "repo": "chayapats/jit",
+      "parent_url": "https://github.com/chayapats/jit/issues/1",
+      "requirements": [
+        "FR-05",
+        "FR-15",
+        "FR-16",
+        "FR-17",
+        "FR-18",
+        "NFR-05",
+        "NFR-07",
+        "NFR-08",
+        "NFR-09",
+        "NFR-10",
+        "NFR-12"
+      ],
+      "blocked_by": [
+        "MEM04",
+        "OPS01"
+      ],
+      "requires_contracts": [
+        "app.memory_suppression/v1",
+        "app.suppression_ledger/v1",
+        "app.memory_lineage/v1",
+        "app.source_records/v1",
+        "app.run_port/v1",
+        "jobs.attempt_fence/v1",
+        "jobs.session_reconcile/v1",
+        "ops.backup_manifest/v1",
+        "app.command_receipts/v1"
+      ],
+      "delivers_contracts": [
+        "app.data_lifecycle/v1",
+        "app.deletion_ledger/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[MEM05] Owner preview และลบ local data พร้อม derivatives/managed sessions โดยไม่คืนข้อมูลผ่าน late work",
+      "url": "https://github.com/chayapats/jit/issues/30",
+      "number": 30
+    },
+    {
+      "key": "OPS03",
+      "repo": "chayapats/jit",
+      "parent_url": "https://github.com/chayapats/jit/issues/1",
+      "requirements": [
+        "FR-04",
+        "FR-05",
+        "FR-16",
+        "FR-18",
+        "NFR-07",
+        "NFR-09",
+        "NFR-10",
+        "NFR-11",
+        "NFR-12"
+      ],
+      "blocked_by": [
+        "MEM05"
+      ],
+      "requires_contracts": [
+        "app.project_commands/v1",
+        "app.data_lifecycle/v1",
+        "ops.backup_manifest/v1",
+        "jobs.attempt_fence/v1"
+      ],
+      "delivers_contracts": [
+        "ops.project_export/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[OPS03] Export inspectable project data without secrets or resurrected deleted content",
+      "url": "https://github.com/chayapats/jit/issues/31",
+      "number": 31
+    },
+    {
+      "key": "OPS06",
+      "repo": "chayapats/jit",
+      "parent_url": "https://github.com/chayapats/jit/issues/1",
+      "requirements": [
+        "FR-04",
+        "FR-15",
+        "FR-16",
+        "FR-18",
+        "NFR-05",
+        "NFR-08",
+        "NFR-10",
+        "NFR-12"
+      ],
+      "blocked_by": [
+        "MEM05",
+        "TG03"
+      ],
+      "requires_contracts": [
+        "ops.backup_manifest/v1",
+        "jobs.attempt_fence/v1",
+        "jobs.session_reconcile/v1",
+        "delivery.outbox/v1",
+        "app.data_lifecycle/v1",
+        "app.deletion_ledger/v1",
+        "schway.host.session-snapshot/v1"
+      ],
+      "delivers_contracts": [
+        "ops.schema_migrations/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[OPS06] Upgrade an installation through staged schema migration with a recoverable prior version",
+      "url": "https://github.com/chayapats/jit/issues/32",
+      "number": 32
+    },
+    {
+      "key": "OPS02",
+      "repo": "chayapats/jit",
+      "parent_url": "https://github.com/chayapats/jit/issues/1",
+      "requirements": [
+        "FR-15",
+        "FR-16",
+        "FR-18",
+        "NFR-05",
+        "NFR-08",
+        "NFR-10",
+        "NFR-12"
+      ],
+      "blocked_by": [
+        "OPS06"
+      ],
+      "requires_contracts": [
+        "ops.backup_manifest/v1",
+        "jobs.session_reconcile/v1",
+        "jobs.attempt_fence/v1",
+        "delivery.outbox/v1",
+        "app.data_lifecycle/v1",
+        "app.deletion_ledger/v1",
+        "schway.host.managed-session-data/v1",
+        "schway.host.session-snapshot/v1",
+        "ops.schema_migrations/v1"
+      ],
+      "delivers_contracts": [
+        "ops.quarantined_restore/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[OPS02] Restore in quarantine until current lifecycle and job reconciliation pass",
+      "url": "https://github.com/chayapats/jit/issues/33",
+      "number": 33
+    },
+    {
+      "key": "OPS04",
+      "repo": "chayapats/jit",
+      "parent_url": "https://github.com/chayapats/jit/issues/1",
+      "requirements": [
+        "FR-10",
+        "FR-14",
+        "FR-15",
+        "FR-18",
+        "NFR-04",
+        "NFR-05",
+        "NFR-06",
+        "NFR-07",
+        "NFR-09",
+        "NFR-10"
+      ],
+      "blocked_by": [
+        "JOB03",
+        "OPS02",
+        "OPS03",
+        "PR03",
+        "TG02"
+      ],
+      "requires_contracts": [
+        "jobs.queue_admission/v1",
+        "jobs.configured_schedules/v1",
+        "pr.private_alerts/v1",
+        "telegram.project_commands/v1",
+        "ops.quarantined_restore/v1",
+        "ops.project_export/v1",
+        "app.team_dispatch/v1",
+        "app.memory_context/v1"
+      ],
+      "delivers_contracts": [
+        "ops.load_drill/v1",
+        "ops.release_evidence/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[OPS04] Provide bounded operating diagnostics and a repeatable full-application load drill",
+      "url": "https://github.com/chayapats/jit/issues/34",
+      "number": 34
+    },
+    {
+      "key": "OPS07",
+      "repo": "chayapats/jit",
+      "parent_url": "https://github.com/chayapats/jit/issues/1",
+      "requirements": [
+        "FR-10",
+        "FR-13",
+        "FR-14",
+        "FR-15",
+        "FR-17",
+        "FR-18",
+        "NFR-02",
+        "NFR-03",
+        "NFR-04",
+        "NFR-05",
+        "NFR-06",
+        "NFR-07",
+        "NFR-08",
+        "NFR-09",
+        "NFR-10",
+        "NFR-12"
+      ],
+      "blocked_by": [
+        "OPS04"
+      ],
+      "requires_contracts": [
+        "jit.app.foundation/v1",
+        "app.owner_identity/v1",
+        "app.transaction_store/v1",
+        "jobs.queue_admission/v1",
+        "jobs.attempt_fence/v1",
+        "jobs.session_reconcile/v1",
+        "delivery.outbox/v1",
+        "ops.schema_migrations/v1",
+        "ops.quarantined_restore/v1",
+        "ops.load_drill/v1",
+        "jit.schway.bridge/v1"
+      ],
+      "delivers_contracts": [
+        "ops.service_package/v1"
+      ],
+      "label": "ready-for-agent",
+      "title": "[OPS07] Package the full Jit Linux service for private unattended start, stop and supported upgrades",
+      "url": "https://github.com/chayapats/jit/issues/35",
+      "number": 35
+    },
+    {
+      "key": "OPS05",
+      "repo": "chayapats/jit",
+      "parent_url": "https://github.com/chayapats/jit/issues/1",
+      "requirements": [
+        "FR-10",
+        "FR-13",
+        "FR-14",
+        "FR-15",
+        "FR-16",
+        "FR-18",
+        "NFR-04",
+        "NFR-06",
+        "NFR-08",
+        "NFR-09",
+        "NFR-10",
+        "NFR-12"
+      ],
+      "blocked_by": [
+        "FEAS05",
+        "OPS07"
+      ],
+      "requires_contracts": [
+        "ops.load_drill/v1",
+        "ops.release_evidence/v1",
+        "jit.pi.subscription-readiness/v1",
+        "jit.schway.bridge/v1",
+        "ops.service_package/v1"
+      ],
+      "delivers_contracts": [
+        "ops.pi_operating_profile/v1",
+        "ops.pilot_handoff/v1"
+      ],
+      "label": "ready-for-human",
+      "title": "[OPS05] Validate the bounded full-app Pi profile and hand the pilot to the owner",
+      "url": "https://github.com/chayapats/jit/issues/36",
+      "number": 36
+    }
+  ],
+  "contract_providers": {
+    "schway.host.base/v1": "ENG01",
+    "schway.host.context-policy/v1": "ENG02",
+    "schway.host.tool-policy/v1": "ENG03",
+    "schway.host.durable-sessions/v1": "ENG04",
+    "schway.host.auth-routes/v1": "ENG05",
+    "schway.host.run-control/v1": "ENG06",
+    "schway.host.managed-session-data/v1": "ENG07",
+    "schway.host.session-snapshot/v1": "ENG08",
+    "schway.host.release/v1": "ENG09",
+    "jit.schway.bridge/v1": "JBR01",
+    "jit.host.evidence/v1": "FEAS01",
+    "jit.host.probe/v1": "FEAS02",
+    "jit.pi.runtime-readiness/v1": "FEAS03",
+    "jit.pi.route-observations/v1": "FEAS04",
+    "jit.pi.subscription-readiness/v1": "FEAS05",
+    "jit.app.foundation/v1": "APP01",
+    "app.transaction_store/v1": "APP01",
+    "app.command_receipts/v1": "APP01",
+    "app.owner_identity/v1": "APP01",
+    "app.project_commands/v1": "APP01",
+    "app.project_read_model/v1": "APP01",
+    "app.topic_commands/v1": "APP02",
+    "app.conversation/v1": "APP02",
+    "app.source_records/v1": "APP02",
+    "app.role_configuration/v1": "TEAM01",
+    "app.run_port/v1": "TEAM01",
+    "app.team_dispatch/v1": "TEAM02",
+    "app.specialist_results/v1": "TEAM02",
+    "app.run_records/v1": "TEAM02",
+    "app.coordinator_synthesis/v1": "TEAM03",
+    "app.decision_commands/v1": "TEAM03",
+    "app.decision_read_model/v1": "TEAM03",
+    "app.task_commands/v1": "TASK01",
+    "app.task_proposals/v1": "TASK01",
+    "app.task_read_model/v1": "TASK01",
+    "app.task_completion/v1": "TASK02",
+    "app.project_continuity/v1": "TASK02",
+    "app.memory_claims/v1": "MEM01",
+    "app.memory_lineage/v1": "MEM01",
+    "app.memory_active_generation/v1": "MEM01",
+    "app.memory_context/v1": "MEM02",
+    "app.context_provenance/v1": "MEM02",
+    "app.memory_correction/v1": "MEM03",
+    "app.context_invalidation/v1": "MEM03",
+    "app.memory_suppression/v1": "MEM04",
+    "app.suppression_ledger/v1": "MEM04",
+    "app.data_lifecycle/v1": "MEM05",
+    "app.deletion_ledger/v1": "MEM05",
+    "jobs.queue_admission/v1": "JOB01",
+    "jobs.attempt_fence/v1": "JOB02",
+    "jobs.session_reconcile/v1": "JOB02",
+    "delivery.outbox/v1": "TG03",
+    "telegram.owner_binding/v1": "TG01",
+    "telegram.durable_inbox/v1": "TG01",
+    "telegram.project_commands/v1": "TG02",
+    "pr.immutable_snapshot/v1": "PR01",
+    "pr.monitoring_authority/v1": "PR01",
+    "pr.private_report/v1": "PR02",
+    "pr.private_alerts/v1": "PR03",
+    "jobs.configured_schedules/v1": "JOB03",
+    "ops.backup_manifest/v1": "OPS01",
+    "ops.quarantined_restore/v1": "OPS02",
+    "ops.project_export/v1": "OPS03",
+    "ops.load_drill/v1": "OPS04",
+    "ops.release_evidence/v1": "OPS04",
+    "ops.pi_operating_profile/v1": "OPS05",
+    "ops.pilot_handoff/v1": "OPS05",
+    "ops.schema_migrations/v1": "OPS06",
+    "ops.service_package/v1": "OPS07"
+  },
+  "requirement_owners": {
+    "FR-01": [
+      "APP01",
+      "APP02",
+      "TEAM02",
+      "TG02"
+    ],
+    "FR-02": [
+      "ENG01",
+      "ENG02",
+      "ENG04",
+      "ENG09",
+      "JBR01",
+      "TEAM01",
+      "TEAM02",
+      "MEM02",
+      "PR02"
+    ],
+    "FR-03": [
+      "JBR01",
+      "TEAM03",
+      "MEM02",
+      "PR02"
+    ],
+    "FR-04": [
+      "ENG04",
+      "APP02",
+      "TEAM03",
+      "TASK01",
+      "TASK02",
+      "MEM01",
+      "MEM02",
+      "MEM04",
+      "OPS03",
+      "OPS06"
+    ],
+    "FR-05": [
+      "MEM01",
+      "MEM02",
+      "MEM03",
+      "MEM04",
+      "MEM05",
+      "OPS03"
+    ],
+    "FR-06": [
+      "TASK01",
+      "TG02"
+    ],
+    "FR-07": [
+      "ENG06",
+      "TEAM03",
+      "TASK02",
+      "JOB01",
+      "JOB02",
+      "TG03",
+      "TG02",
+      "PR02",
+      "PR03",
+      "JOB03"
+    ],
+    "FR-08": [
+      "ENG03",
+      "PR01",
+      "PR02",
+      "PR03"
+    ],
+    "FR-09": [
+      "TG03",
+      "PR02",
+      "PR03"
+    ],
+    "FR-10": [
+      "JBR01",
+      "APP01",
+      "APP02",
+      "TEAM01",
+      "TEAM02",
+      "TEAM03",
+      "TASK01",
+      "TASK02",
+      "MEM01",
+      "MEM02",
+      "JOB01",
+      "TG01",
+      "TG02",
+      "PR01",
+      "PR03",
+      "JOB03",
+      "OPS04",
+      "OPS05",
+      "OPS07"
+    ],
+    "FR-11": [
+      "TASK01",
+      "TG03",
+      "TG01",
+      "TG02"
+    ],
+    "FR-12": [
+      "JOB03"
+    ],
+    "FR-13": [
+      "ENG01",
+      "ENG05",
+      "ENG09",
+      "JBR01",
+      "FEAS01",
+      "FEAS02",
+      "FEAS03",
+      "FEAS04",
+      "FEAS05",
+      "TEAM01",
+      "TEAM02",
+      "OPS05",
+      "OPS07"
+    ],
+    "FR-14": [
+      "ENG06",
+      "ENG09",
+      "JBR01",
+      "FEAS02",
+      "FEAS05",
+      "TEAM01",
+      "TEAM02",
+      "TEAM03",
+      "MEM01",
+      "MEM02",
+      "JOB01",
+      "PR01",
+      "JOB03",
+      "OPS04",
+      "OPS05",
+      "OPS07"
+    ],
+    "FR-15": [
+      "ENG01",
+      "ENG04",
+      "ENG06",
+      "ENG09",
+      "JBR01",
+      "FEAS01",
+      "FEAS02",
+      "FEAS03",
+      "FEAS04",
+      "FEAS05",
+      "APP01",
+      "TEAM02",
+      "TEAM03",
+      "TASK01",
+      "MEM01",
+      "MEM03",
+      "MEM04",
+      "MEM05",
+      "JOB01",
+      "JOB02",
+      "TG03",
+      "TG01",
+      "TG02",
+      "PR01",
+      "PR02",
+      "PR03",
+      "JOB03",
+      "OPS01",
+      "OPS02",
+      "OPS04",
+      "OPS05",
+      "OPS06",
+      "OPS07"
+    ],
+    "FR-16": [
+      "ENG02",
+      "ENG07",
+      "ENG08",
+      "ENG09",
+      "JBR01",
+      "MEM03",
+      "MEM04",
+      "MEM05",
+      "JOB02",
+      "OPS01",
+      "OPS02",
+      "OPS03",
+      "OPS05",
+      "OPS06"
+    ],
+    "FR-17": [
+      "ENG02",
+      "ENG03",
+      "ENG05",
+      "ENG09",
+      "JBR01",
+      "FEAS02",
+      "APP01",
+      "APP02",
+      "TEAM01",
+      "TEAM02",
+      "TEAM03",
+      "TASK01",
+      "MEM01",
+      "MEM02",
+      "MEM03",
+      "MEM04",
+      "MEM05",
+      "TG01",
+      "TG02",
+      "PR01",
+      "PR02",
+      "JOB03",
+      "OPS07"
+    ],
+    "FR-18": [
+      "ENG06",
+      "ENG07",
+      "ENG08",
+      "ENG09",
+      "JBR01",
+      "TEAM02",
+      "TASK02",
+      "MEM02",
+      "MEM04",
+      "MEM05",
+      "JOB01",
+      "JOB02",
+      "TG03",
+      "PR03",
+      "OPS01",
+      "OPS02",
+      "OPS03",
+      "OPS04",
+      "OPS05",
+      "OPS06",
+      "OPS07"
+    ],
+    "NFR-01": [
+      "ENG02",
+      "ENG03",
+      "JBR01",
+      "TEAM01",
+      "TEAM02",
+      "TASK01",
+      "PR01",
+      "PR02"
+    ],
+    "NFR-02": [
+      "ENG01",
+      "ENG02",
+      "ENG03",
+      "ENG04",
+      "ENG05",
+      "ENG06",
+      "ENG07",
+      "ENG08",
+      "ENG09",
+      "JBR01",
+      "TEAM01",
+      "TEAM02",
+      "PR02",
+      "OPS07"
+    ],
+    "NFR-03": [
+      "ENG01",
+      "ENG05",
+      "ENG09",
+      "JBR01",
+      "TEAM01",
+      "PR02",
+      "OPS07"
+    ],
+    "NFR-04": [
+      "FEAS01",
+      "FEAS02",
+      "FEAS03",
+      "FEAS04",
+      "FEAS05",
+      "OPS04",
+      "OPS05",
+      "OPS07"
+    ],
+    "NFR-05": [
+      "ENG04",
+      "ENG06",
+      "ENG07",
+      "ENG08",
+      "ENG09",
+      "JBR01",
+      "APP01",
+      "APP02",
+      "TEAM02",
+      "TEAM03",
+      "TASK01",
+      "TASK02",
+      "MEM01",
+      "MEM02",
+      "MEM03",
+      "MEM04",
+      "MEM05",
+      "JOB01",
+      "JOB02",
+      "TG03",
+      "TG01",
+      "PR01",
+      "PR03",
+      "JOB03",
+      "OPS01",
+      "OPS02",
+      "OPS04",
+      "OPS06",
+      "OPS07"
+    ],
+    "NFR-06": [
+      "ENG06",
+      "FEAS01",
+      "FEAS02",
+      "FEAS03",
+      "FEAS05",
+      "JOB01",
+      "JOB03",
+      "OPS04",
+      "OPS05",
+      "OPS07"
+    ],
+    "NFR-07": [
+      "ENG05",
+      "FEAS01",
+      "FEAS02",
+      "FEAS03",
+      "FEAS04",
+      "APP01",
+      "APP02",
+      "TEAM01",
+      "TEAM02",
+      "TEAM03",
+      "TASK01",
+      "MEM01",
+      "MEM02",
+      "MEM03",
+      "MEM04",
+      "MEM05",
+      "TG03",
+      "TG01",
+      "TG02",
+      "PR01",
+      "PR03",
+      "OPS03",
+      "OPS04",
+      "OPS07"
+    ],
+    "NFR-08": [
+      "ENG07",
+      "ENG08",
+      "ENG09",
+      "JBR01",
+      "MEM05",
+      "OPS01",
+      "OPS02",
+      "OPS05",
+      "OPS06",
+      "OPS07"
+    ],
+    "NFR-09": [
+      "ENG03",
+      "FEAS01",
+      "APP01",
+      "MEM05",
+      "PR01",
+      "OPS01",
+      "OPS03",
+      "OPS04",
+      "OPS05",
+      "OPS07"
+    ],
+    "NFR-10": [
+      "ENG01",
+      "ENG02",
+      "ENG03",
+      "ENG04",
+      "ENG05",
+      "ENG06",
+      "ENG07",
+      "ENG08",
+      "ENG09",
+      "JBR01",
+      "FEAS01",
+      "FEAS02",
+      "FEAS04",
+      "FEAS05",
+      "APP01",
+      "APP02",
+      "TEAM01",
+      "TEAM02",
+      "TEAM03",
+      "TASK01",
+      "TASK02",
+      "MEM01",
+      "MEM02",
+      "MEM03",
+      "MEM04",
+      "MEM05",
+      "JOB01",
+      "JOB02",
+      "TG03",
+      "TG01",
+      "TG02",
+      "PR01",
+      "PR02",
+      "PR03",
+      "JOB03",
+      "OPS01",
+      "OPS02",
+      "OPS03",
+      "OPS04",
+      "OPS05",
+      "OPS06",
+      "OPS07"
+    ],
+    "NFR-11": [
+      "APP02",
+      "TASK02",
+      "MEM01",
+      "MEM02",
+      "TG02",
+      "OPS03"
+    ],
+    "NFR-12": [
+      "ENG01",
+      "ENG04",
+      "ENG07",
+      "ENG08",
+      "ENG09",
+      "JBR01",
+      "APP01",
+      "MEM03",
+      "MEM04",
+      "MEM05",
+      "JOB02",
+      "OPS01",
+      "OPS02",
+      "OPS03",
+      "OPS05",
+      "OPS06",
+      "OPS07"
+    ]
+  },
+  "native_links_verified": {
+    "sub_issues": 43,
+    "blocking_edges": 61
+  }
+}

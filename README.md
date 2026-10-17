@@ -2,12 +2,13 @@
 
 ผู้ช่วยส่วนตัวสำหรับโครงการซอฟต์แวร์ คุยกับทีมผู้เชี่ยวชาญ จำงานและการตัดสินใจข้ามวัน และตรวจ PR บนเครื่องที่คุณควบคุม โดยใช้ [Schway](https://github.com/chayapats/schway) เป็น execution engine
 
-**สถานะ:** อยู่ในขั้น specification ยังไม่มี application ที่ติดตั้งใช้งานได้ Repository นี้เก็บ product baseline และ design specs เพื่อแตก implementation tickets ต่อ
+**สถานะ:** จบ discovery และแตก implementation tickets ของ MVP แล้ว ยังไม่มี application ที่ติดตั้งใช้งานได้ Repository นี้เก็บ product baseline, design specs และ backlog สำหรับเริ่มพัฒนา
 
 ## เริ่มอ่าน
 
 - [Product documents](docs/product/README.md) — vision, PRD, architecture, trust, MVP, roadmap และ validation
 - [Feature specifications](docs/specs/README.md) — MVP หลักและ S01; เชื่อม S02 ที่เป็นเจ้าของโดย Schway
+- [MVP implementation backlog](docs/tickets/README.md) — tickets, blockers, contract versions และ FR/NFR traceability
 - [Domain glossary](CONTEXT.md) และ [architecture decisions](docs/product/04-architecture-decisions.md)
 - [Migration record](docs/migration.md) — ที่มาเอกสารและ mapping ของ ADR
 
