@@ -1,5 +1,7 @@
 # Spec — Jit MVP: project teams, continuity and private PR review
 
+Tracker: https://github.com/chayapats/jit/issues/1
+
 Owner: Jit. Status: ready for ticket breakdown; implementation depends on explicit host/API feasibility gates. [Product baseline](../product/README.md) และ [decision record](../product/decision-record.md) เป็นที่มาของ scope
 
 ## Problem Statement

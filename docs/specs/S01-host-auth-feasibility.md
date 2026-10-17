@@ -1,6 +1,8 @@
 # S01 — Pi/service/subscription feasibility
 
-Owner: Jit. Status: ready for ticket breakdown; live host/account evidence requires owner participation. Parent scope: [Jit MVP](00-mvp.md). Related engine contract: [Schway S02](https://github.com/chayapats/schway/issues/393)
+Tracker: https://github.com/chayapats/jit/issues/2
+
+Owner: Jit. Status: ready for ticket breakdown; live host/account evidence requires owner participation. Parent spec: https://github.com/chayapats/jit/issues/1. [Product scope](00-mvp.md). Related engine contract: [Schway S02](https://github.com/chayapats/schway/issues/393)
 
 ## Problem Statement
 

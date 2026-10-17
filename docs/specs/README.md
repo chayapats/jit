@@ -4,8 +4,8 @@
 
 | Spec | Owner | สถานะและขอบเขต |
 | --- | --- | --- |
-| [MVP](00-mvp.md) | Jit | พฤติกรรมทั้ง release, requirements, seams และ acceptance |
-| [S01](S01-host-auth-feasibility.md) | Jit | หลักฐาน Pi/service/subscription ที่ต้องได้ก่อนรับรอง runtime support |
+| [MVP](00-mvp.md) / [issue](https://github.com/chayapats/jit/issues/1) | Jit | พฤติกรรมทั้ง release, requirements, seams และ acceptance |
+| [S01](S01-host-auth-feasibility.md) / [issue](https://github.com/chayapats/jit/issues/2) | Jit | หลักฐาน Pi/service/subscription ที่ต้องได้ก่อนรับรอง runtime support |
 | [S02](https://github.com/chayapats/schway/issues/393) | Schway | public host contract และ strict context/tool policy; design spec อยู่ใน Schway |
 
 S03–S08 ใน [roadmap](../product/07-roadmap.md) เป็น spec candidates สำหรับ app state, team/Web, memory/tasks, PR, Telegram/schedules และ operations โดยแตกจาก MVP และอ้าง contract ของ S01/S02 ที่พิสูจน์แล้ว การยังไม่มีผล feasibility ไม่ขัดขวางการเขียน acceptance fixtures แต่ห้ามอ้างว่า dependency ผ่านแล้ว
