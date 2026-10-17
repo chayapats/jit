@@ -65,7 +65,7 @@ Each specialist run has distinct native context/session ownership. A group is an
 
 Persist project/thread identities, expected revisions, actor/authorization references, task decisions, memory lineage, jobs/attempt generations and outbox intent. SQLite is the proposed store; it remains an engineering decision to validate with crash/restore tests.
 
-Proposed → accepted requires owner command. Accepted does not start coding. Background PR/remainder work uses an explicitly enabled standing authorization. Completion policy is per work type and requires committed evidence.
+Proposed → accepted requires owner command. Accepted does not start coding. Background PR/reminder work uses an explicitly enabled standing authorization. Completion policy is per work type and requires committed evidence.
 
 Application state and native Schway session appends are separate commits. Reconcile interrupted cross-store work rather than claim atomicity. Duplicate ingress creates one logical mutation; cancelled/superseded attempts lose commit authority.
 
