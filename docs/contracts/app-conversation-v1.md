@@ -26,6 +26,8 @@ All routes require the APP01 owner session. POST requires exact configured Origi
 
 HTML, script, Markdown links and URLs remain escaped literal data; only fenced code receives code-block presentation. CSP prohibits scripts. Canonical messages have `status:"committed"`; provisional/team progress is not stored or rendered by this slice. GET history/source operations do not create receipts, runs or memory.
 
+The owner UI uses a neutral dark conversation layout: bounded project/topic navigation in a desktop sidebar, native expandable navigation on mobile, a central committed transcript, and a persistent bottom composer. Message provenance is available through native details/source links; exact source metadata remains inspectable on the source page. All controls use existing forms/links, including keyboard-accessible labels and a skip link. There are no placeholder model/attachment controls or browser scripts. `src/web-layout.ts` owns escaped presentation and `src/web-style.ts` supplies the local stylesheet; HTTP command/auth/CSRF contracts remain unchanged.
+
 ## Limits, availability and storage
 
 `JIT_MESSAGE_BYTES` defaults to 4096 UTF-8 bytes, maximum 65536; existing body limit applies independently (default 16384). Topic titles allow 200 UTF-16 units and 800 UTF-8 bytes. Text must be well-formed Unicode and nonblank; message whitespace is preserved, title edges trimmed. Existing bounded `JIT_PAGE_SIZE` governs topics/history; queries read at most page size + 1 identities. Nonnegative safe-integer `after` is an exclusive serialized sequence cursor; response includes `hasMore` and `nextAfter`. Timestamps do not determine ordering. Configured query/body limits also cover new routes.
