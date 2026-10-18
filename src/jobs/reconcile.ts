@@ -37,6 +37,10 @@ function mergeLifecycle(current: string, incoming: ManagedContextOutcome["state"
   if (current === "delete_failed") return "delete_failed";
   return incoming;
 }
+/** Native or attempt delete_failed must seed sticky deletion before retirement-only reconcile. */
+function deleteFailedEvidence(run: NativeRunInspection | undefined, attempt?: JobAttempt): boolean {
+  return run?.contextState === "delete_failed" || attempt?.contextState === "delete_failed";
+}
 
 /** Persists replay fencing before touching native lifecycle; failed acknowledgments block replacement and remain retryable. */
 export async function reconcileContext(store: TransactionStore, port: ApplicationRunPort, record: SessionReconciliation,
@@ -180,9 +184,17 @@ export async function reconcileSessions(store: TransactionStore, port: Applicati
     if (run) matched.add(run);
     store.transaction(tx => {
       const current = readAttempt(tx, attempt.id);
-      current.nativeState = run?.state ?? "missing";
-      // Recovered native finished/missing settles transport without granting app success.
-      if (current.transport === "dispatched" && (!run || run.state === "finished")) current.transport = "settled";
+      const live = ["prepared", "dispatched"].includes(current.state);
+      if (run) {
+        current.nativeState = run.state;
+        // Matched native finished settles recovered/live transport without granting app success.
+        if (current.transport === "dispatched" && run.state === "finished") current.transport = "settled";
+      } else if (!live) {
+        // Missing evidence settles only non-live recovered attempts; stale empty inspect must not
+        // settle a worker admitted after the inspection snapshot was taken.
+        current.nativeState = "missing";
+        if (current.transport === "dispatched") current.transport = "settled";
+      }
       saveAttempt(tx, current);
       const authority = tx.get<{ stop_json: string | null }>("SELECT stop_json FROM job_authority WHERE job_id = ?", attempt.jobId);
       if (authority?.stop_json) {
@@ -197,23 +209,27 @@ export async function reconcileSessions(store: TransactionStore, port: Applicati
     // An active worker is never retired by a concurrent inspection.
     if (["prepared", "dispatched"].includes(latest.state)) continue;
     const earlyBound = isEarlyBoundCommit(latest);
+    const deleteRequested = deleteFailedEvidence(run, latest);
+    const observedNative: SessionReconciliation["nativeState"] = run?.state
+      ?? (latest.nativeState === "uninspected" ? "missing" : latest.nativeState);
     const record: SessionReconciliation = { id: `attempt:${latest.id}`, kind: "attempt", context: ref.context,
-      nativeState: run?.state ?? "missing", appState: latest.state, lifecycle: "pending", deleteRequested: false,
+      nativeState: observedNative, appState: latest.state, lifecycle: "pending", deleteRequested,
       nextAction: latest.state === "committed" && !earlyBound ? "inspect_committed_evidence" : "inspect_interrupted_attempt" };
-    if (latest.state === "committed" && !earlyBound) {
+    if (latest.state === "committed" && !earlyBound && !deleteRequested) {
       // Keep terminal accepted app output intact even if native append/deletion evidence is missing.
       record.lifecycle = ["none", "pending"].includes(latest.contextState) ? "not_requested" : latest.contextState as SessionReconciliation["lifecycle"];
       if (!run) record.nextAction = "inspect_app_commit_native_missing";
       save(store, record);
     } else {
-      // Interrupted attempts and early yield/wait commits still require managed-context retirement.
+      // Interrupted attempts, early yield/wait commits, and sticky delete_failed still require lifecycle work.
       handled.add(key(record.context)); await reconcileContext(store, port, record, now, afterFence);
     }
   }
   for (const run of native.filter(n => !matched.has(n))) {
     handled.add(key(run.context));
     await reconcileContext(store, port, { id: `orphan:${run.adapter}:${run.runId}`, kind: "orphan", context: run.context,
-      nativeState: run.state, appState: "missing", lifecycle: "pending", deleteRequested: false, nextAction: "inspect_native_orphan" }, now, afterFence);
+      nativeState: run.state, appState: "missing", lifecycle: "pending",
+      deleteRequested: deleteFailedEvidence(run), nextAction: "inspect_native_orphan" }, now, afterFence);
   }
   // Pre-v5/native-free app references have no attempt to match. Preserve queued initial
   // contexts, but retire unowned or consumed contexts without fabricating attempt evidence.

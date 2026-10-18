@@ -348,6 +348,30 @@ test("native orphan references are retired independently and never manufacture a
   expect((await f.port.inspectRuns()).items[0]!.contextState).toBe("retired");
 });
 
+test("J: native orphan delete_failed survives reopen reconcileSessions", async () => {
+  const f = await fixture({ deleteFails: () => true });
+  const orphan = { id: rid(), generation: 1 }, runId = rid();
+  const native = new ScriptedNativeLedger(`${f.path}.scripted-native.sqlite`);
+  // Native-only deletion failure with no prior app reconciliation row.
+  native.put({ adapter: "scripted", runId, sessionId: runId, context: orphan, state: "finished", contextState: "delete_failed" });
+  native.context(orphan, "delete_failed");
+  const first = await f.queue.reconcile(f.port);
+  expect(first.find(r => r.kind === "orphan" && r.context.id === orphan.id)).toMatchObject({
+    lifecycle: "delete_failed", deleteRequested: true, nextAction: "retry_managed_delete",
+  });
+  expect((await f.port.inspectRuns()).items[0]).toMatchObject({ context: orphan, contextState: "delete_failed" });
+  const recovered = recover(f, { delete: () => true });
+  const records = await recovered.queue.reconcile(recovered.port);
+  expect(records.find(r => r.kind === "orphan" && r.context.id === orphan.id)).toMatchObject({
+    lifecycle: "delete_failed", deleteRequested: true, nextAction: "retry_managed_delete",
+  });
+  expect((await recovered.port.inspectRuns()).items.find(i => i.context.id === orphan.id)).toMatchObject({
+    contextState: "delete_failed",
+  });
+  expect(records.some(r => r.context.id === orphan.id && r.context.generation === orphan.generation
+    && r.lifecycle === "retired" && !r.deleteRequested)).toBe(false);
+});
+
 test("managed context fencing commits before the transport retirement request and survives a thrown native failure", async () => {
   let release!: () => void, entered!: () => void, requested = false;
   const gate = new Promise<void>(r => { release = r; }); releases.push(release); const started = new Promise<void>(r => { entered = r; });
@@ -697,6 +721,46 @@ test("concurrent reconciliation does not retire a newly admitted preview context
   expect(f.store.read(tx => tx.get<{ state: string }>("SELECT state FROM team_contexts WHERE id = ?", run.request.context.id))!.state).toBe("active");
   expect(f.app.preview(f.auth.actor, f.project.id, run.id).job.state).toBe("succeeded");
   expect(f.app.job(f.auth.actor, f.project.id, run.jobId).reason).not.toBe("context_retired");
+});
+
+test("K: concurrent empty inspect must not settle a mid-reconcile admitted attempt", async () => {
+  let releaseScript!: () => void, entered!: () => void;
+  const scriptGate = new Promise<void>(r => { releaseScript = r; }); releases.push(releaseScript);
+  const started = new Promise<void>(r => { entered = r; });
+  const f = await fixture({ script: async () => { entered(); await scriptGate; return fixtureOutcome("complete", "late"); } });
+  let releaseInspect!: () => void; const inspectGate = new Promise<void>(r => { releaseInspect = r; }); releases.push(releaseInspect);
+  let hitEmpty!: () => void; const emptyHit = new Promise<void>(r => { hitEmpty = r; });
+  const gated: ApplicationRunPort = {
+    invoke: (...args) => f.port.invoke(...args),
+    inspectRuns: async after => {
+      const page = await f.port.inspectRuns(after);
+      if (page.nextAfter === null && page.items.length === 0) {
+        hitEmpty();
+        await inspectGate; // return this empty snapshot only after a preview is admitted
+      }
+      return page;
+    },
+    retire: context => f.port.retire(context), delete: context => f.port.delete(context),
+  };
+  const role = f.app.execute(f.auth.actor, save(f, { route: grok })).role!;
+  const reconciliation = f.queue.reconcile(gated);
+  await emptyHit;
+  const run = f.app.execute(f.auth.actor, preview(f, role.id)).preview!;
+  f.queue.pump(); await started;
+  releaseInspect();
+  await reconciliation;
+  const live = f.app.job(f.auth.actor, f.project.id, run.jobId);
+  expect(live.attempts[0]).toMatchObject({ state: "dispatched", transport: "dispatched", nativeState: "running" });
+  const stop = f.app.execute(f.auth.actor, { kind: "job.stop", requestId: rid(), projectId: f.project.id,
+    expectedRevision: live.revision, payload: { jobId: run.jobId } });
+  expect(stop.stop).toMatchObject({ transport: "cancellation_requested", attemptIds: [live.attempts[0]!.id] });
+  await f.queue.reconcile(f.port);
+  const after = f.app.job(f.auth.actor, f.project.id, run.jobId);
+  expect(after.attempts[0]).toMatchObject({ transport: "dispatched", nativeState: "running" });
+  expect(after.stop?.transport).toBe("cancellation_requested");
+  expect(after.stop?.transport).not.toBe("observed_stopped");
+  expect(after.occupiesAdmission).toBe(true);
+  releaseScript(); await f.queue.idle();
 });
 
 test("max-sized TEAM01-accepted preview request is not rejected by attempt envelope overhead", async () => {
