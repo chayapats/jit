@@ -6,6 +6,8 @@ import { readHiddenPassword } from "./terminal-password";
 import { JobQueue } from "./jobs/queue";
 import { projectStateWork } from "./jobs/project-state";
 import { AppError } from "./errors";
+import { ScriptedRunPort } from "./team/scripted-port";
+import { scriptedPreviewWork } from "./team/preview";
 
 async function secret(): Promise<string> {
   if (!process.stdin.isTTY) {
@@ -23,7 +25,7 @@ async function main(): Promise<void> {
   if (!["serve", "setup", "reset-owner"].includes(command ?? "")) throw new Error("Use serve, setup or reset-owner");
   const store = new TransactionStore(config.databasePath);
   let queue: JobQueue | undefined;
-  try { if (command === "serve") queue = new JobQueue(store, config.jobs, [projectStateWork(store)]); }
+  try { if (command === "serve") queue = new JobQueue(store, config.jobs, [projectStateWork(store), scriptedPreviewWork(store, config, new ScriptedRunPort(store, config.team, config.jobs.outputBytes))]); }
   catch (error) { store.close(); throw error; }
   const app = new Application(store, config, queue ? { jobs: queue } : {});
   if (command !== "serve") {

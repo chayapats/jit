@@ -2,7 +2,7 @@ import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-const schemaVersion = 3;
+const schemaVersion = 4;
 
 /** Synchronous SQL operations scoped to an application transaction. */
 export interface AppTransaction {
@@ -34,7 +34,7 @@ export class TransactionStore {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
           if (current === schemaVersion) return;
-          if (current !== 0 && current !== 1 && current !== 2) throw new Error("Unsupported migration source");
+          if (![0, 1, 2, 3].includes(current)) throw new Error("Unsupported migration source");
           if (existing) {
             const snapshot = `${path}.pre-v${current}-${crypto.randomUUID()}.sqlite`;
             const fd = openSync(snapshot, "wx", 0o600);
@@ -115,7 +115,7 @@ export class TransactionStore {
             );
             PRAGMA user_version = 2;
           `);
-          this.#db.exec(`
+          if (current < 3) this.#db.exec(`
             CREATE TABLE job_scheduler (
               id INTEGER PRIMARY KEY CHECK (id = 1), token TEXT NOT NULL,
               pid INTEGER NOT NULL CHECK (pid > 0)
@@ -131,6 +131,16 @@ export class TransactionStore {
             CREATE UNIQUE INDEX job_queue_order ON jobs(queue_order);
             CREATE INDEX job_slots ON jobs(route_key) WHERE occupies = 1;
             PRAGMA user_version = 3;
+          `);
+          this.#db.exec(`
+            CREATE TABLE team_state (id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL, route_json TEXT);
+            INSERT INTO team_state VALUES (1, 0, NULL);
+            CREATE TABLE roles (sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, record_json TEXT NOT NULL);
+            CREATE TABLE project_team (project_id TEXT PRIMARY KEY REFERENCES projects(id), revision INTEGER NOT NULL, route_json TEXT, overrides_json TEXT NOT NULL);
+            CREATE TABLE team_contexts (id TEXT PRIMARY KEY, generation INTEGER NOT NULL CHECK (generation > 0), state TEXT NOT NULL CHECK (state IN ('active', 'retired', 'delete_failed', 'deleted')));
+            CREATE TABLE team_runs (sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL REFERENCES projects(id), job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id), context_id TEXT NOT NULL UNIQUE REFERENCES team_contexts(id), record_json TEXT NOT NULL);
+            CREATE INDEX team_run_project ON team_runs(project_id, sequence);
+            PRAGMA user_version = 4;
           `);
         }).immediate();
       }
