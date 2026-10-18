@@ -143,7 +143,8 @@ export class JobQueue {
     store.transaction(tx => {
       const owner = tx.get<{ pid: number }>("SELECT pid FROM job_scheduler WHERE id = 1");
       if (owner && (!positive(owner.pid, 2_147_483_647) || isAlive(owner.pid))) throw new AppError("scheduler_unavailable", 503);
-      for (const row of tx.all<{ record_json: string }>("SELECT record_json FROM jobs WHERE occupies = 1")) {
+      // Include admitted jobs that lost occupancy after a failed result commit so reopen can reconcile/resume.
+      for (const row of tx.all<{ record_json: string }>("SELECT record_json FROM jobs WHERE occupies = 1 OR state = 'admitted'")) {
         const job = JSON.parse(row.record_json) as Job;
         if (job.state === "admitted") { invalidateJob(tx, job.id, "interrupted", this.#time()); this.#transition(job, "waiting", "interrupted"); }
         const authority = tx.get<{ stop_json: string | null }>("SELECT stop_json FROM job_authority WHERE job_id = ?", job.id);
@@ -241,8 +242,16 @@ export class JobQueue {
             job.steps++; this.#transition(job, "admitted", "running"); this.#save(tx, job, true);
             tx.run("UPDATE job_authority SET generation = generation + 1, reason = NULL WHERE job_id = ?", job.id);
             const attemptGeneration = tx.get<{ generation: number }>("SELECT generation FROM job_authority WHERE job_id = ?", job.id)!.generation;
-            const preparation = entry!.definition.prepare?.(tx, structuredClone(job), attemptGeneration) ?? { native: null, data: null };
-            jobData(preparation, this.policy.inputBytes);
+            let preparation: { native: JobAttempt["native"]; data: JobAttempt["data"] };
+            try {
+              preparation = entry!.definition.prepare?.(tx, structuredClone(job), attemptGeneration) ?? { native: null, data: null };
+              // Attempt envelopes may carry TEAM context-sized request snapshots (up to 64KiB); do not reuse the smaller enqueue inputBytes ceiling.
+              jobData(preparation, 65_536);
+            } catch (error) {
+              // Fail this job only; a single oversized/invalid preparation must not disable the scheduler.
+              if (!(error instanceof AppError)) throw error;
+              this.#transition(job, "blocked", "configuration_changed"); this.#save(tx, job, false); continue;
+            }
             const attempt: JobAttempt = { ...preparation, id: crypto.randomUUID(), jobId: job.id, generation: attemptGeneration,
               scheduler: this.#token, leaseUntil: Math.min(job.deadlineAt, this.#time() + this.#leaseMs), snapshot: structuredClone(job), createdAt: this.#time(),
               state: "prepared", reason: null, nativeState: "uninspected", contextState: preparation.native ? "pending" : "none" };
@@ -356,7 +365,12 @@ export class JobQueue {
         const authority = tx.get<{ stop_json: string | null }>("SELECT stop_json FROM job_authority WHERE job_id = ?", job.id);
         if (authority?.stop_json) { const stop = JSON.parse(authority.stop_json); if (stop.transport !== "not_dispatched") stop.transport = "observed_stopped";
           tx.run("UPDATE job_authority SET stop_json = ? WHERE job_id = ?", JSON.stringify(stop), job.id); }
-        if (current.occupiesAdmission) this.#save(tx, current, false);
+        // Failed result commits leave admitted+dispatched; mark interrupted so reopen/resume can reconcile.
+        if (current.state === "admitted") {
+          invalidateJob(tx, current.id, "interrupted", this.#time());
+          this.#transition(current, "waiting", "interrupted");
+          this.#save(tx, current, false);
+        } else if (current.occupiesAdmission) this.#save(tx, current, false);
       }); } catch { this.#fault = true; }
       if (this.#closing && !this.#active.size) this.#release();
     });

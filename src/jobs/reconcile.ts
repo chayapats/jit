@@ -21,11 +21,26 @@ function save(store: TransactionStore, record: SessionReconciliation) {
   store.transaction(tx => tx.run("INSERT INTO job_reconciliation VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET record_json = excluded.record_json", record.id, JSON.stringify(record)));
 }
 const same = (a: ManagedContextReference, b: ManagedContextReference) => a.id === b.id && a.generation === b.generation;
+const peersFor = (store: TransactionStore, context: ManagedContextReference) =>
+  readReconciliations(store).filter(record => same(record.context, context));
+/** Deletion stays sticky across overlapping retire/delete calls for the same context generation. */
+const stickyDelete = (store: TransactionStore, context: ManagedContextReference, requested: boolean) =>
+  requested || peersFor(store, context).some(record => record.deleteRequested || record.lifecycle === "delete_failed");
+function nextActionFor(lifecycle: SessionReconciliation["lifecycle"], appState: SessionReconciliation["appState"]) {
+  return lifecycle === "retire_failed" ? "retry_managed_retire" : lifecycle === "delete_failed" ? "retry_managed_delete"
+    : appState === "committed" ? "inspect_committed_evidence" : "inspect_then_explicitly_resume_read_work";
+}
+/** Never let a weaker lifecycle erase delete_failed; deleted is the only success past that blocker. */
+function mergeLifecycle(current: string, incoming: ManagedContextOutcome["state"] | "pending"): JobAttempt["contextState"] | ManagedContextOutcome["state"] | "pending" {
+  if (current === "delete_failed" && incoming !== "deleted") return "delete_failed";
+  if (current === "deleted") return "deleted";
+  return incoming;
+}
 
 /** Persists replay fencing before touching native lifecycle; failed acknowledgments block replacement and remain retryable. */
 export async function reconcileContext(store: TransactionStore, port: ApplicationRunPort, record: SessionReconciliation,
   now: number, afterFence: () => void = () => {}): Promise<SessionReconciliation> {
-  record = { ...record, deleteRequested: record.deleteRequested || readReconciliations(store).some(r => same(r.context, record.context) && r.deleteRequested) };
+  record = { ...record, deleteRequested: stickyDelete(store, record.context, record.deleteRequested) };
   store.transaction(tx => {
     tx.run("UPDATE team_contexts SET state = 'retired' WHERE id = ? AND generation = ? AND state = 'active'", record.context.id, record.context.generation);
     for (const row of tx.all<{ record_json: string }>("SELECT record_json FROM job_attempts")) {
@@ -43,33 +58,76 @@ export async function reconcileContext(store: TransactionStore, port: Applicatio
             }
           }
         }
-        const current = readAttempt(tx, attempt.id); current.contextState = "pending"; saveAttempt(tx, current);
+        const current = readAttempt(tx, attempt.id);
+        // Keep an established delete_failed visible while overlapping retirements await acknowledgment.
+        if (current.contextState !== "delete_failed") { current.contextState = "pending"; saveAttempt(tx, current); }
       }
     }
     tx.run("INSERT INTO job_reconciliation VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET record_json = excluded.record_json", record.id, JSON.stringify({ ...record, lifecycle: "pending" }));
   });
   afterFence();
   let outcome: ManagedContextOutcome, retired = false;
+  const deleteRequested = () => stickyDelete(store, record.context, record.deleteRequested);
   try {
     outcome = await port.retire(record.context);
     if (outcome.state === "retired" || outcome.state === "deleted") {
       retired = same(outcome.context, record.context);
       if (!retired) throw new Error("invalid_lifecycle_ack");
-      if (record.deleteRequested && outcome.state !== "deleted") outcome = await port.delete(record.context);
+      // Re-read sticky deletion after the await; a concurrent delete request must not be ignored.
+      if (deleteRequested() && outcome.state !== "deleted") outcome = await port.delete(record.context);
     }
     if (!same(outcome.context, record.context) || !["retired", "deleted", "delete_failed", "retire_failed"].includes(outcome.state) ||
-        (record.deleteRequested && outcome.state === "retired")) throw new Error("invalid_lifecycle_ack");
-  } catch { outcome = retired && record.deleteRequested
+        (deleteRequested() && outcome.state === "retired")) throw new Error("invalid_lifecycle_ack");
+  } catch { outcome = retired && deleteRequested()
     ? { state: "delete_failed", context: record.context, nextAction: "retry_managed_delete" }
     : { state: "retire_failed", context: record.context, nextAction: "retry_managed_retire" }; }
-  const next = { ...record, lifecycle: outcome.state,
-    nextAction: outcome.state === "retire_failed" ? "retry_managed_retire" : outcome.state === "delete_failed" ? "retry_managed_delete" : record.appState === "committed" ? "inspect_committed_evidence" : "inspect_then_explicitly_resume_read_work" };
+  // A late retirement that races a delete failure must still attempt deletion or preserve the blocker.
+  if (deleteRequested() && outcome.state === "retired") {
+    try {
+      outcome = await port.delete(record.context);
+      if (!same(outcome.context, record.context) || !["deleted", "delete_failed"].includes(outcome.state)) throw new Error("invalid_lifecycle_ack");
+    } catch { outcome = { state: "delete_failed", context: record.context, nextAction: "retry_managed_delete" }; }
+  }
+  let next: SessionReconciliation = { ...record, deleteRequested: deleteRequested(), lifecycle: outcome.state,
+    nextAction: nextActionFor(outcome.state, record.appState) };
   store.transaction(tx => {
+    const peers = tx.all<{ record_json: string }>("SELECT record_json FROM job_reconciliation").map(row => JSON.parse(row.record_json) as SessionReconciliation)
+      .filter(peer => same(peer.context, record.context));
+    const requested = next.deleteRequested || peers.some(peer => peer.deleteRequested || peer.lifecycle === "delete_failed");
+    let lifecycle: SessionReconciliation["lifecycle"] = outcome.state;
+    if (peers.some(peer => peer.lifecycle === "delete_failed") && lifecycle !== "deleted") lifecycle = "delete_failed";
+    if (requested && lifecycle === "retired") lifecycle = "delete_failed";
+    next = { ...next, deleteRequested: requested, lifecycle, nextAction: nextActionFor(lifecycle, record.appState) };
     for (const row of tx.all<{ record_json: string }>("SELECT record_json FROM job_attempts")) {
       const attempt = JSON.parse(row.record_json) as JobAttempt;
-      if (attempt.native && same(attempt.native.context, record.context)) { attempt.contextState = outcome.state; saveAttempt(tx, attempt); }
+      if (!attempt.native || !same(attempt.native.context, record.context)) continue;
+      const current = readAttempt(tx, attempt.id);
+      const merged = mergeLifecycle(current.contextState, lifecycle as ManagedContextOutcome["state"]);
+      if (merged === "pending") continue;
+      current.contextState = merged as JobAttempt["contextState"];
+      saveAttempt(tx, current);
     }
     tx.run("INSERT INTO job_reconciliation VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET record_json = excluded.record_json", next.id, JSON.stringify(next));
+    for (const peer of peers.filter(peer => peer.id !== next.id)) {
+      const merged: SessionReconciliation = {
+        ...peer,
+        deleteRequested: peer.deleteRequested || next.deleteRequested,
+        lifecycle: peer.lifecycle,
+        nextAction: peer.nextAction,
+      };
+      if (next.lifecycle === "delete_failed" || peer.lifecycle === "delete_failed") {
+        merged.lifecycle = "delete_failed";
+        merged.deleteRequested = true;
+        merged.nextAction = "retry_managed_delete";
+      } else if (next.lifecycle === "deleted" || next.lifecycle === "retired" || next.lifecycle === "retire_failed") {
+        const lifecycle = mergeLifecycle(peer.lifecycle, next.lifecycle);
+        if (lifecycle !== "pending") {
+          merged.lifecycle = lifecycle as SessionReconciliation["lifecycle"];
+          merged.nextAction = nextActionFor(merged.lifecycle, peer.appState);
+        }
+      }
+      tx.run("INSERT INTO job_reconciliation VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET record_json = excluded.record_json", merged.id, JSON.stringify(merged));
+    }
   });
   return next;
 }
@@ -95,10 +153,16 @@ export async function reconcileSessions(store: TransactionStore, port: Applicati
     if (run) matched.add(run);
     store.transaction(tx => {
       const current = readAttempt(tx, attempt.id); current.nativeState = run?.state ?? "missing"; saveAttempt(tx, current);
-      if (run?.state === "finished") {
+      // Only the stopped attempt's native finish clarifies stop transport; earlier finished attempts must not.
+      const stopped = ["prepared", "dispatched"].includes(attempt.state)
+        || (["interrupted", "rejected"].includes(attempt.state) && attempt.reason === "cancelled");
+      if (run?.state === "finished" && stopped) {
         const authority = tx.get<{ stop_json: string | null }>("SELECT stop_json FROM job_authority WHERE job_id = ?", attempt.jobId);
-        if (authority?.stop_json) { const stop = JSON.parse(authority.stop_json); if (stop.transport !== "not_dispatched") stop.transport = "observed_stopped";
-          tx.run("UPDATE job_authority SET stop_json = ? WHERE job_id = ?", JSON.stringify(stop), attempt.jobId); }
+        if (authority?.stop_json) {
+          const stop = JSON.parse(authority.stop_json);
+          if (stop.transport !== "not_dispatched") stop.transport = "observed_stopped";
+          tx.run("UPDATE job_authority SET stop_json = ? WHERE job_id = ?", JSON.stringify(stop), attempt.jobId);
+        }
       }
     });
     // An active worker is never retired by a concurrent inspection.

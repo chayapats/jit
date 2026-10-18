@@ -457,7 +457,29 @@ test("producer/app-result transaction rollback leaves an inspectable unresolved 
     WHEN json_extract(NEW.record_json, '$.state') = 'committed' BEGIN SELECT RAISE(ABORT, 'fixture result failure'); END`));
   const original = f.app.execute(f.auth.actor, command(f)).job; f.queue.pump(); await f.queue.idle();
   expect(f.app.workspace(f.auth.actor).revision).toBe(1);
-  expect(job(f, original.id)).toMatchObject({ state: "admitted", evidence: null, attempts: [{ state: "dispatched" }] });
+  expect(job(f, original.id)).toMatchObject({ state: "waiting", reason: "interrupted", evidence: null, occupiesAdmission: false, attempts: [{ state: "interrupted" }] });
+});
+
+test("result-commit rollback orphans are recovered on reopen so eligible read resume still works", async () => {
+  const work = definition(context => {
+    const result = { state: "succeeded" as const, evidence: "rolled back then resumed" };
+    context.commit(result, tx => tx.run("UPDATE app_state SET revision = 99 WHERE id = 1"));
+    return result;
+  });
+  const f = await fixture({ definitions: [work] });
+  f.store.transaction(tx => tx.run(`CREATE TRIGGER reject_attempt_result BEFORE UPDATE OF record_json ON job_attempts
+    WHEN json_extract(NEW.record_json, '$.state') = 'committed' BEGIN SELECT RAISE(ABORT, 'fixture result failure'); END`));
+  const original = f.app.execute(f.auth.actor, command(f)).job; f.queue.pump(); await f.queue.idle();
+  expect(job(f, original.id)).toMatchObject({ state: "waiting", reason: "interrupted", remaining: { calls: 3, retries: 2 } });
+  f.queue.close(); await f.queue.idle();
+  f.store.transaction(tx => tx.run("DROP TRIGGER reject_attempt_result"));
+  const queue = new JobQueue(f.store, f.config.jobs, [work], { now: () => f.clock.now, timers: f.clock.timers, isAlive: () => false }); queues.push(queue);
+  const app = new Application(f.store, f.config, { jobs: queue, now: () => f.clock.now }), actor = app.authenticate(f.token).actor;
+  const waiting = app.job(actor, f.project.id, original.id);
+  expect(waiting).toMatchObject({ state: "waiting", reason: "interrupted", reconciliations: [] });
+  app.execute(actor, { kind: "job.resume", requestId: crypto.randomUUID(), projectId: f.project.id, expectedRevision: waiting.revision, payload: { jobId: original.id } });
+  queue.pump(); await queue.idle();
+  expect(app.job(actor, f.project.id, original.id)).toMatchObject({ state: "succeeded", evidence: "rolled back then resumed", attempts: [{ state: "interrupted" }, { state: "committed" }] });
 });
 
 test("takeover fences old callbacks; explicit read resume uses a new attempt and never refunds uncertain reservations", async () => {

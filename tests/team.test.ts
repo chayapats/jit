@@ -8,6 +8,7 @@ import { readConfig } from "../src/config";
 import type { ApplicationRunPort } from "../src/team/run-port";
 import { ScriptedNativeLedger } from "../src/jobs/scripted-ledger";
 import { JobQueue } from "../src/jobs/queue";
+import { commitOwnerSource } from "../src/sources";
 import { TransactionStore } from "../src/store";
 import { ScriptedRunPort, fixtureOutcome, validateRunRequest } from "../src/team/scripted-port";
 import { scriptedPreviewWork } from "../src/team/preview";
@@ -267,12 +268,14 @@ test("application run seam imports only app contracts and owns no provider SDK, 
   }
 });
 
-function recover(f: Fixture, failures: { retire?: () => boolean; delete?: () => boolean } = {}) {
+function recover(f: Fixture, failures: { retire?: () => boolean; delete?: () => boolean } = {},
+  options: { script?: ConstructorParameters<typeof ScriptedRunPort>[3]; wrap?: (port: ScriptedRunPort) => ApplicationRunPort } = {}) {
   const store = new TransactionStore(f.path); stores.push(store);
-  const port = new ScriptedRunPort(store, f.config.team, f.config.jobs.outputBytes, undefined, failures.delete, failures.retire);
+  const base = new ScriptedRunPort(store, f.config.team, f.config.jobs.outputBytes, options.script, failures.delete, failures.retire);
+  const port = (options.wrap ?? (p => p))(base);
   const queue = new JobQueue(store, f.config.jobs, [scriptedPreviewWork(store, f.config, port, () => epoch)], { now: () => epoch, isAlive: () => false }); queues.push(queue);
   const app = new Application(store, f.config, { jobs: queue, now: () => epoch }), actor = app.authenticate(f.token).actor;
-  return { store, port, queue, app, actor };
+  return { store, port, scripted: base, queue, app, actor };
 }
 
 for (const crash of ["before_dispatch", "after_native_append", "before_app_commit", "after_app_commit"] as const) test(`cross-store crash matrix: ${crash} preserves one app output or explicit interrupted state on reopen`, async () => {
@@ -317,7 +320,7 @@ test("retirement acknowledgment and delete-failure blockers survive reopen; only
     expectedRevision: recovered.app.job(recovered.actor, f.project.id, run.jobId).revision, payload: { jobId: run.jobId } });
   expect((await recovered.queue.reconcile(recovered.port))[0]!.lifecycle).toBe("retire_failed");
   expect(() => resume()).toThrow("job_context_reconciliation_required");
-  expect(recovered.port.requests).toHaveLength(0);
+  expect(recovered.scripted.requests).toHaveLength(0);
   retireFails = false;
   expect((await recovered.queue.retireContext(recovered.port, run.request.context, true)).lifecycle).toBe("delete_failed");
   await recovered.queue.reconcile(recovered.port);
@@ -432,4 +435,94 @@ test("unowned application context references reconcile without inventing attempt
   expect(f.app.job(f.auth.actor, f.project.id, pending.jobId).attempts).toHaveLength(0);
   expect(f.store.read(tx => tx.get<{ state: string }>("SELECT state FROM team_contexts WHERE id = ?", pending.request.context.id))!.state).toBe("active");
   f.queue.pump(); await f.queue.idle(); expect(f.app.preview(f.auth.actor, f.project.id, pending.id).job.state).toBe("succeeded");
+});
+
+test("finished native evidence from an earlier attempt cannot report observed_stopped for a later stopped attempt", async () => {
+  const f = await fixture();
+  const role = f.app.execute(f.auth.actor, save(f, { route: grok })).role!, run = f.app.execute(f.auth.actor, preview(f, role.id)).preview!;
+  f.queue.pump(); // Crash before dispatch so reopen owns a waiting job with one attempt.
+  const recovered = recover(f);
+  const jobId = run.jobId, first = recovered.app.job(recovered.actor, f.project.id, jobId).attempts[0]!;
+  const secondId = rid(), secondContext = { id: rid(), generation: 1 }, secondRun = rid();
+  const native = new ScriptedNativeLedger(`${f.path}.scripted-native.sqlite`);
+  // Disposable reviewer fixture: earlier attempt finished, later stopped attempt still running.
+  native.put({ adapter: "scripted", runId: first.native!.runId, sessionId: first.native!.sessionId, context: first.native!.context, state: "finished", contextState: "retired" });
+  native.put({ adapter: "scripted", runId: secondRun, sessionId: secondRun, context: secondContext, state: "running", contextState: "active" });
+  recovered.store.transaction(tx => {
+    const job = JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM jobs WHERE id = ?", jobId)!.record_json);
+    job.state = "blocked"; job.reason = "cancelled"; job.occupiesAdmission = true; job.revision++;
+    tx.run("UPDATE jobs SET state = ?, occupies = 1, record_json = ? WHERE id = ?", job.state, JSON.stringify(job), jobId);
+    const prior = JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM job_attempts WHERE id = ?", first.id)!.record_json);
+    prior.state = "interrupted"; prior.reason = "interrupted"; prior.nativeState = "finished"; prior.contextState = "retired";
+    tx.run("UPDATE job_attempts SET record_json = ? WHERE id = ?", JSON.stringify(prior), first.id);
+    const second = {
+      id: secondId, jobId, generation: 2, scheduler: "fixture", leaseUntil: epoch + 60_000, snapshot: job, createdAt: epoch,
+      native: { adapter: "scripted", runId: secondRun, sessionId: secondRun, context: secondContext }, data: null,
+      state: "interrupted", reason: "cancelled", nativeState: "running", contextState: "pending",
+    };
+    tx.run("INSERT INTO job_attempts (id, job_id, record_json) VALUES (?, ?, ?)", secondId, jobId, JSON.stringify(second));
+    tx.run("INSERT INTO team_contexts VALUES (?, 1, 'active')", secondContext.id);
+    tx.run("UPDATE job_authority SET generation = 3, reason = ?, stop_json = ? WHERE job_id = ?", "cancelled",
+      JSON.stringify({ requestedAt: epoch, fencedAt: epoch, transport: "unknown" }), jobId);
+  });
+  await recovered.queue.reconcile(recovered.port);
+  const stopped = recovered.app.job(recovered.actor, f.project.id, jobId);
+  expect(stopped.attempts).toHaveLength(2);
+  expect(stopped.attempts[0]).toMatchObject({ nativeState: "finished" });
+  expect(stopped.attempts[1]).toMatchObject({ reason: "cancelled", nativeState: "running" });
+  expect(stopped.stop?.transport).toBe("unknown");
+  expect(stopped.stop?.transport).not.toBe("observed_stopped");
+});
+
+test("overlapping retirement cannot erase a concurrent delete_failed blocker", async () => {
+  let releaseRetire!: () => void; const retireGate = new Promise<void>(r => { releaseRetire = r; }); releases.push(releaseRetire);
+  let retireCalls = 0;
+  const f = await fixture({ deleteFails: () => true });
+  const role = f.app.execute(f.auth.actor, save(f, { route: grok })).role!, run = f.app.execute(f.auth.actor, preview(f, role.id)).preview!;
+  f.queue.pump(); // Leave a prepared attempt so resume is otherwise eligible after retirement.
+  const recovered = recover(f, { delete: () => true });
+  const gated: ApplicationRunPort = {
+    invoke: (...args) => recovered.port.invoke(...args), inspectRuns: after => recovered.port.inspectRuns(after),
+    retire: async context => {
+      retireCalls++;
+      if (retireCalls === 1) await retireGate;
+      return recovered.port.retire(context);
+    },
+    delete: context => recovered.port.delete(context),
+  };
+  const early = recovered.queue.retireContext(gated, run.request.context, false);
+  await Promise.resolve();
+  const deletion = await recovered.queue.retireContext(gated, run.request.context, true);
+  expect(deletion).toMatchObject({ lifecycle: "delete_failed", deleteRequested: true });
+  releaseRetire();
+  const late = await early;
+  expect(late).toMatchObject({ lifecycle: "delete_failed", deleteRequested: true });
+  const job = recovered.app.job(recovered.actor, f.project.id, run.jobId);
+  expect(job).toMatchObject({ state: "waiting", reason: "interrupted" });
+  expect(job.attempts.some(a => a.contextState === "delete_failed")).toBe(true);
+  expect(job.reconciliations.some(r => r.lifecycle === "delete_failed" && r.deleteRequested)).toBe(true);
+  expect(job.reconciliations.some(r => r.lifecycle === "retired" && !r.deleteRequested)).toBe(false);
+  expect(() => recovered.app.execute(recovered.actor, { kind: "job.resume", requestId: rid(), projectId: f.project.id,
+    expectedRevision: job.revision, payload: { jobId: run.jobId } })).toThrow("job_context_reconciliation_required");
+});
+
+test("context-sized preview preparation admits without disabling the scheduler", async () => {
+  const f = await fixture(), role = f.app.execute(f.auth.actor, save(f, { route: grok })).role!;
+  const chunk = "x".repeat(3500);
+  const sources = f.store.transaction(tx => Array.from({ length: 5 }, () => commitOwnerSource(tx, {
+    projectId: f.project.id, descriptor: { kind: "message", topicId: f.topic.id, messageId: rid() }, text: chunk, committedAt: epoch,
+  })));
+  const cmd = { ...preview(f, role.id), payload: { ...preview(f, role.id).payload, sources } };
+  const run = f.app.execute(f.auth.actor, cmd).preview!;
+  const prepared = JSON.stringify(run.request);
+  expect(Buffer.byteLength(prepared)).toBeGreaterThan(f.config.jobs.inputBytes);
+  expect(Buffer.byteLength(prepared)).toBeLessThanOrEqual(f.config.team.contextBytes);
+  expect(() => f.queue.pump()).not.toThrow();
+  await f.queue.idle();
+  expect(f.app.jobs(f.auth.actor, f.project.id).admission.available).toBe(true);
+  expect(f.app.preview(f.auth.actor, f.project.id, run.id).job.state).toBe("succeeded");
+  const next = f.app.execute(f.auth.actor, preview(f, role.id)).preview!;
+  expect(next.jobId).not.toBe(run.jobId);
+  f.app.execute(f.auth.actor, { kind: "job.stop", requestId: rid(), projectId: f.project.id,
+    expectedRevision: f.app.job(f.auth.actor, f.project.id, next.jobId).revision, payload: { jobId: next.jobId } });
 });
