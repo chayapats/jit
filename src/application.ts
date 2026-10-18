@@ -5,6 +5,9 @@ import { TransactionStore, type AppTransaction } from "./store";
 import { conversationIdentity, mutateConversation, readMessages, readTopic, readTopics, requireCursor,
   type ConversationCommand, type CreateTopicCommand, type SendMessageCommand, type TopicReceipt, type MessageReceipt } from "./conversation";
 import { lookupSource, requireId, requireReference, type SourceReference, type SourceLookup } from "./sources";
+import type { SessionReconciliation } from "./jobs/reconcile";
+import type { JobStopOutcome } from "./jobs/types";
+import { readAttempts } from "./jobs/attempts";
 import { JobQueue, jobCommandIdentity, projectJob, readJob, readJobs } from "./jobs/queue";
 import type { EnqueueJobCommand, ResumeJobCommand, JobCommand, JobReceipt } from "./jobs/types";
 import { mutateTeamConfiguration, readTeam, teamIdentity } from "./team/configuration";
@@ -192,7 +195,7 @@ export class Application {
   execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | TeamCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | TeamReceipt;
   execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | TeamCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | TeamReceipt {
     if (command?.kind === "project.create") return this.#createProject(actor, command);
-    if (command?.kind === "job.enqueue" || command?.kind === "job.resume") return this.#jobCommand(actor, command);
+    if (command?.kind === "job.enqueue" || command?.kind === "job.resume" || command?.kind === "job.stop") return this.#jobCommand(actor, command);
     if (command?.kind === "role.save" || command?.kind === "route.save" || command?.kind === "role.preview") return this.#teamCommand(actor, command);
     const payloadHash = digest(conversationIdentity(command as ConversationCommand, this.config.messageBytes));
     return this.store.transaction(tx => {
@@ -262,12 +265,19 @@ export class Application {
   /** Reads committed evidence and current wall time left without changing job state or receipts. */
   job(actor: OwnerActor, projectId: string, jobId: string) {
     requireId(projectId); requireId(jobId);
-    return this.store.read(tx => { this.#requireOwner(tx, actor); this.#project(tx, projectId); return projectJob(readJob(tx, projectId, jobId), this.#now()); });
+    return this.store.read(tx => { this.#requireOwner(tx, actor); this.#project(tx, projectId);
+      const authority = tx.get<{ stop_json: string | null }>("SELECT stop_json FROM job_authority WHERE job_id = ?", jobId);
+      const attempts = readAttempts(tx, jobId), contexts = new Set(attempts.flatMap(a => a.native ? [`${a.native.context.id}:${a.native.context.generation}`] : []));
+      for (const context of tx.all<{ id: string; generation: number }>("SELECT c.id, c.generation FROM team_contexts c JOIN team_runs r ON r.context_id = c.id WHERE r.project_id = ? AND r.job_id = ?", projectId, jobId)) contexts.add(`${context.id}:${context.generation}`);
+      const reconciliations = tx.all<{ record_json: string }>("SELECT record_json FROM job_reconciliation").map(row => JSON.parse(row.record_json) as SessionReconciliation)
+        .filter(record => contexts.has(`${record.context.id}:${record.context.generation}`));
+      return { ...projectJob(readJob(tx, projectId, jobId), this.#now()), attempts, reconciliations,
+        stop: authority?.stop_json ? JSON.parse(authority.stop_json) as JobStopOutcome : null }; });
   }
 
   #jobCommand(actor: OwnerActor, command: JobCommand): JobReceipt {
     const payloadHash = jobCommandIdentity(command, this.config.jobs.inputBytes);
-    return this.store.transaction(tx => {
+    const result = this.store.transaction(tx => {
       this.#requireOwner(tx, actor); this.#project(tx, command.projectId);
       if (!this.#jobs) throw new AppError("scheduler_unavailable", 503);
       this.#jobs.assertOwner(tx);
@@ -280,6 +290,8 @@ export class Application {
       tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);
       this.#beforeCommit?.("receipt"); return result;
     });
+    this.#jobs?.cancelFenced();
+    return result;
   }
 
   #createProject(actor: OwnerActor, command: CreateProjectCommand): ProjectReceipt {

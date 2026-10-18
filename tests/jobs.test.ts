@@ -27,14 +27,14 @@ class Clock {
 }
 const limits: JobLimits = { roles: 4, calls: 4, rounds: 4, hops: 4, contextTokens: 10, outputTokens: 10, retries: 2, wallMs: 1000 };
 function definition(run: WorkDefinition["run"] = () => ({ state: "succeeded", evidence: "หลักฐาน 🧪" })): WorkDefinition {
-  return { id: "fixture.work", title: "งานตรวจสอบ", revision: 1, route: { provider: "fixture", model: "scripted", authRoute: "subscription-a" },
+  return { replay: "read", id: "fixture.work", title: "งานตรวจสอบ", revision: 1, route: { provider: "fixture", model: "scripted", authRoute: "subscription-a" },
     cost: { roles: 1, calls: 1, rounds: 1, hops: 1 }, validate: (input, scope) => !!input && typeof input === "object" && !Object.keys(input).length && scope.projectRevision === scope.inputRevision, run };
 }
-async function fixture(options: { definitions?: WorkDefinition[]; env?: Record<string, string>; beforeCommit?: ApplicationOptions["beforeCommit"] } = {}) {
+async function fixture(options: { definitions?: WorkDefinition[]; env?: Record<string, string>; leaseMs?: number; beforeCommit?: ApplicationOptions["beforeCommit"] } = {}) {
   const root = mkdtempSync(join(tmpdir(), "jit-job01-")); roots.push(root);
   const path = join(root, "app.sqlite"), config = readConfig({ JIT_DATABASE: path, ...options.env }), store = new TransactionStore(path); stores.push(store);
   const clock = new Clock(), definitions = options.definitions ?? [definition()];
-  const queue = new JobQueue(store, config.jobs, definitions, { now: () => clock.now, timers: clock.timers }); queues.push(queue);
+  const queue = new JobQueue(store, config.jobs, definitions, { now: () => clock.now, timers: clock.timers, ...(options.leaseMs ? { leaseMs: options.leaseMs } : {}) }); queues.push(queue);
   const app = new Application(store, config, { jobs: queue, now: () => clock.now, ...(options.beforeCommit ? { beforeCommit: options.beforeCommit } : {}) });
   await app.setupOwner(password); const token = await app.login(password), auth = app.authenticate(token);
   const project = app.execute(auth.actor, { kind: "project.create", requestId: crypto.randomUUID(), projectId: null, expectedRevision: 0, payload: { name: "โครงการ 🧪" } }).project;
@@ -376,5 +376,301 @@ test("frozen published v2 schema migrates with conversation, source identity and
   const id = app.execute(actor, cmd).job.id; queue.pump(); await queue.idle(); expect(app.job(actor, projectId, id).state).toBe("succeeded");
   const snapshot = new Database(join(root, readdirSync(root).find(name => name.includes(".pre-v2-"))!), { readonly: true });
   expect(snapshot.query("PRAGMA user_version").get()).toEqual({ user_version: 2 }); expect(snapshot.query("SELECT count(*) AS n FROM messages").get()).toEqual({ n: 1 }); snapshot.close();
-  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 4 });
+  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 5 });
+});
+
+test("attempt snapshot and generation/lease commit before dispatch; non-model commit is atomic with producer mutations", async () => {
+  let captured: import("../src/jobs/types").WorkContext | undefined;
+  const f = await fixture({ definitions: [definition(context => {
+    captured = context;
+    const outcome = { state: "succeeded" as const, evidence: "transactional evidence" };
+    expect(context.commit(outcome, tx => tx.run("UPDATE app_state SET revision = 21 WHERE id = 1"))).toBe(true);
+    expect(context.commit(outcome, tx => tx.run("UPDATE app_state SET revision = 99 WHERE id = 1"))).toBe(false);
+    return outcome;
+  })] });
+  const original = f.app.execute(f.auth.actor, command(f)).job;
+  f.queue.pump();
+  const prepared = job(f, original.id).attempts[0]!;
+  expect(captured).toBeUndefined(); expect(prepared.state).toBe("prepared");
+  expect(prepared.snapshot).toMatchObject({ input: original.input, authorization: original.authorization, configuration: original.configuration, remaining: { calls: 3 } });
+  expect(prepared.generation).toBeGreaterThan(0); expect(prepared.leaseUntil).toBe(f.clock.now + limits.wallMs);
+  await f.queue.idle();
+  expect(job(f, original.id)).toMatchObject({ state: "succeeded", attempts: [{ state: "committed" }] });
+  expect(f.app.workspace(f.auth.actor).revision).toBe(21);
+  expect(job(f, original.id).attempts[0]!.snapshot).toEqual(prepared.snapshot);
+});
+
+test("owner stop persists fencing before abort, replays its receipt and reports actual settlement separately", async () => {
+  let release!: () => void, entered!: () => void, aborted = false, changed = false;
+  const gate = new Promise<void>(r => { release = r; }); releases.push(release);
+  const started = new Promise<void>(r => { entered = r; });
+  const f = await fixture({ definitions: [definition(async context => {
+    context.signal.addEventListener("abort", () => {
+      expect(job(f, context.job.id).stop).toMatchObject({ fencedAt: epoch, transport: "cancellation_requested" }); aborted = true;
+    });
+    entered(); await gate;
+    context.commit({ state: "succeeded", evidence: "late" }, () => { changed = true; });
+    return { state: "succeeded", evidence: "late" };
+  })] });
+  const original = f.app.execute(f.auth.actor, command(f)).job; f.queue.pump(); await started;
+  const current = job(f, original.id), stop = { kind: "job.stop" as const, requestId: crypto.randomUUID(), projectId: f.project.id, expectedRevision: current.revision, payload: { jobId: original.id } };
+  expect(() => f.app.execute({ ...f.auth.actor }, stop)).toThrow("authentication_required");
+  const response = await f.web(request(f, `/api/projects/${f.project.id}/jobs/${original.id}/stop`, { requestId: stop.requestId, expectedRevision: stop.expectedRevision }));
+  expect(response.status).toBe(200); const receipt = await response.json(); expect(aborted).toBe(true);
+  expect(receipt.stop).toMatchObject({ requestedAt: epoch, fencedAt: epoch, transport: "cancellation_requested", attemptIds: [job(f, original.id).attempts[0]!.id] });
+  expect(f.app.execute(f.auth.actor, stop)).toEqual(receipt);
+  expect(job(f, original.id)).toMatchObject({ state: "blocked", reason: "cancelled", occupiesAdmission: true });
+  release(); await f.queue.idle(); expect(changed).toBe(false);
+  expect(job(f, original.id)).toMatchObject({ evidence: null, occupiesAdmission: false, stop: { transport: "observed_stopped" } });
+  expect(f.app.execute(f.auth.actor, stop)).toEqual(receipt);
+  const queued = f.app.execute(f.auth.actor, command(f)).job;
+  const result = f.app.execute(f.auth.actor, { ...stop, requestId: crypto.randomUUID(), expectedRevision: queued.revision, payload: { jobId: queued.id } });
+  expect(result.stop?.transport).toBe("not_dispatched");
+});
+
+for (const cause of ["revoked", "superseded", "source_retired", "context_retired", "owner", "input", "lease"] as const) test(`late non-model producer after ${cause} cannot publish evidence or enter the mutation callback`, async () => {
+  let release!: () => void, entered!: () => void, mutated = false;
+  const gate = new Promise<void>(r => { release = r; }); releases.push(release); const started = new Promise<void>(r => { entered = r; });
+  const f = await fixture({ definitions: [definition(async context => {
+    entered(); await gate; context.commit({ state: "succeeded", evidence: "late" }, () => { mutated = true; });
+    return { state: "succeeded", evidence: "late" };
+  })] });
+  const original = f.app.execute(f.auth.actor, command(f)).job; f.queue.pump(); await started;
+  if (["revoked", "superseded", "source_retired", "context_retired"].includes(cause)) {
+    f.store.transaction(tx => f.queue.invalidate(tx, f.project.id, original.id, cause as "revoked")); f.queue.cancelFenced();
+  } else if (cause === "owner") await f.app.setupOwner(password, true);
+  else if (cause === "input") f.store.transaction(tx => tx.run("UPDATE projects SET revision = revision + 1 WHERE id = ?", f.project.id));
+  else f.clock.advance(limits.wallMs);
+  release(); await f.queue.idle();
+  expect(mutated).toBe(false);
+  const current = f.store.read(tx => JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM jobs WHERE id = ?", original.id)!.record_json) as Job);
+  expect(current.state).not.toBe("succeeded"); expect(current.evidence).toBeNull();
+});
+
+test("producer/app-result transaction rollback leaves an inspectable unresolved attempt and no partial state", async () => {
+  const f = await fixture({ definitions: [definition(context => {
+    const result = { state: "succeeded" as const, evidence: "must roll back" };
+    expect(context.commit(result, tx => tx.run("UPDATE app_state SET revision = 99 WHERE id = 1"))).toBe(false);
+    return result;
+  })] });
+  f.store.transaction(tx => tx.run(`CREATE TRIGGER reject_attempt_result BEFORE UPDATE OF record_json ON job_attempts
+    WHEN json_extract(NEW.record_json, '$.state') = 'committed' BEGIN SELECT RAISE(ABORT, 'fixture result failure'); END`));
+  const original = f.app.execute(f.auth.actor, command(f)).job; f.queue.pump(); await f.queue.idle();
+  expect(f.app.workspace(f.auth.actor).revision).toBe(1);
+  expect(job(f, original.id)).toMatchObject({ state: "waiting", reason: "interrupted", evidence: null, occupiesAdmission: false, attempts: [{ state: "interrupted" }] });
+});
+
+test("result-commit rollback orphans are recovered on reopen so eligible read resume still works", async () => {
+  const work = definition(context => {
+    const result = { state: "succeeded" as const, evidence: "rolled back then resumed" };
+    context.commit(result, tx => tx.run("UPDATE app_state SET revision = 99 WHERE id = 1"));
+    return result;
+  });
+  const f = await fixture({ definitions: [work] });
+  f.store.transaction(tx => tx.run(`CREATE TRIGGER reject_attempt_result BEFORE UPDATE OF record_json ON job_attempts
+    WHEN json_extract(NEW.record_json, '$.state') = 'committed' BEGIN SELECT RAISE(ABORT, 'fixture result failure'); END`));
+  const original = f.app.execute(f.auth.actor, command(f)).job; f.queue.pump(); await f.queue.idle();
+  expect(job(f, original.id)).toMatchObject({ state: "waiting", reason: "interrupted", remaining: { calls: 3, retries: 2 } });
+  f.queue.close(); await f.queue.idle();
+  f.store.transaction(tx => tx.run("DROP TRIGGER reject_attempt_result"));
+  const queue = new JobQueue(f.store, f.config.jobs, [work], { now: () => f.clock.now, timers: f.clock.timers, isAlive: () => false }); queues.push(queue);
+  const app = new Application(f.store, f.config, { jobs: queue, now: () => f.clock.now }), actor = app.authenticate(f.token).actor;
+  const waiting = app.job(actor, f.project.id, original.id);
+  expect(waiting).toMatchObject({ state: "waiting", reason: "interrupted", reconciliations: [] });
+  app.execute(actor, { kind: "job.resume", requestId: crypto.randomUUID(), projectId: f.project.id, expectedRevision: waiting.revision, payload: { jobId: original.id } });
+  queue.pump(); await queue.idle();
+  expect(app.job(actor, f.project.id, original.id)).toMatchObject({ state: "succeeded", evidence: "rolled back then resumed", attempts: [{ state: "interrupted" }, { state: "committed" }] });
+});
+
+test("takeover fences old callbacks; explicit read resume uses a new attempt and never refunds uncertain reservations", async () => {
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(r => { release = r; }); releases.push(release); const started = new Promise<void>(r => { entered = r; });
+  const work = definition(async ({ job }) => { if (job.steps === 1) { entered(); await gate; } return { state: "succeeded", evidence: `attempt ${job.steps}` }; });
+  const f = await fixture({ definitions: [work] }), original = f.app.execute(f.auth.actor, command(f)).job; f.queue.pump(); await started;
+  const replacement = new JobQueue(f.store, f.config.jobs, [work], { now: () => f.clock.now, timers: f.clock.timers, isAlive: () => false }); queues.push(replacement);
+  const app = new Application(f.store, f.config, { jobs: replacement, now: () => f.clock.now }), actor = app.authenticate(f.token).actor;
+  const waiting = app.job(actor, f.project.id, original.id);
+  expect(waiting).toMatchObject({ reason: "interrupted", attempts: [{ state: "interrupted" }], remaining: { calls: 3, retries: 2 } });
+  app.execute(actor, { kind: "job.resume", requestId: crypto.randomUUID(), projectId: f.project.id, expectedRevision: waiting.revision, payload: { jobId: original.id } });
+  replacement.pump(); await replacement.idle(); release(); await f.queue.idle();
+  const current = app.job(actor, f.project.id, original.id);
+  expect(current).toMatchObject({ state: "succeeded", evidence: "attempt 2", remaining: { calls: 2, retries: 1 }, attempts: [{ state: "interrupted" }, { state: "committed" }] });
+  expect(current.attempts[0]!.id).not.toBe(current.attempts[1]!.id); expect(current.attempts[1]!.generation).toBeGreaterThan(current.attempts[0]!.generation);
+});
+
+for (const replay of ["mutation", "send", undefined] as const) test(`interrupted ${replay ?? "unspecified"} work cannot be blindly replayed`, async () => {
+  const work = definition(); if (replay === undefined) delete work.replay; else work.replay = replay;
+  const f = await fixture({ definitions: [work] }), original = f.app.execute(f.auth.actor, command(f)).job;
+  f.queue.pump(); // Kill seam before the dispatch microtask.
+  const replacement = new JobQueue(f.store, f.config.jobs, [work], { now: () => f.clock.now, timers: f.clock.timers, isAlive: () => false }); queues.push(replacement);
+  const app = new Application(f.store, f.config, { jobs: replacement, now: () => f.clock.now }), actor = app.authenticate(f.token).actor;
+  const waiting = app.job(actor, f.project.id, original.id);
+  expect(() => app.execute(actor, { kind: "job.resume", requestId: crypto.randomUUID(), projectId: f.project.id, expectedRevision: waiting.revision, payload: { jobId: original.id } })).toThrow("job_requires_manual_reconciliation");
+  expect(app.job(actor, f.project.id, original.id).steps).toBe(1);
+});
+
+test("lease expiry fences a live worker before the job wall deadline even when it ignores cancellation", async () => {
+  let release!: () => void, entered!: () => void, committed = true;
+  const gate = new Promise<void>(r => { release = r; }); releases.push(release); const started = new Promise<void>(r => { entered = r; });
+  const f = await fixture({ leaseMs: 50, definitions: [definition(async context => {
+    entered(); await gate; committed = context.commit({ state: "succeeded", evidence: "expired lease" });
+    return { state: "succeeded", evidence: "expired lease" };
+  })] });
+  const original = f.app.execute(f.auth.actor, command(f)).job; f.queue.pump(); await started; f.clock.advance(50);
+  expect(job(f, original.id)).toMatchObject({ reason: "lease_expired", occupiesAdmission: true, remaining: { wallMs: 950 } });
+  release(); await f.queue.idle(); expect(committed).toBe(false); expect(job(f, original.id).evidence).toBeNull();
+});
+
+test("repeated interrupted read resumes exhaust retries without dispatching an extra attempt", async () => {
+  const work = definition(), f = await fixture({ definitions: [work] }), original = f.app.execute(f.auth.actor, command(f)).job;
+  let queue = f.queue, app = f.app, actor = f.auth.actor;
+  for (let index = 0; index < 3; index++) {
+    queue.pump(); // Simulated process death before dispatch.
+    queue = new JobQueue(f.store, f.config.jobs, [work], { now: () => f.clock.now, timers: f.clock.timers, isAlive: () => false }); queues.push(queue);
+    app = new Application(f.store, f.config, { jobs: queue, now: () => f.clock.now }); actor = app.authenticate(f.token).actor;
+    const waiting = app.job(actor, f.project.id, original.id);
+    app.execute(actor, { kind: "job.resume", requestId: crypto.randomUUID(), projectId: f.project.id, expectedRevision: waiting.revision, payload: { jobId: original.id } });
+  }
+  const result = app.job(actor, f.project.id, original.id);
+  expect(result).toMatchObject({ state: "blocked", reason: "budget_exhausted", steps: 3, remaining: { calls: 1, retries: 0 } });
+  expect(result.attempts).toHaveLength(3); queue.pump(); expect(app.job(actor, f.project.id, original.id).steps).toBe(3);
+});
+
+test("failed stop receipt rolls back its fence and never requests transport cancellation", async () => {
+  let release!: () => void, entered!: () => void, fail = false, aborted = false;
+  const gate = new Promise<void>(r => { release = r; }); releases.push(release); const started = new Promise<void>(r => { entered = r; });
+  const f = await fixture({ beforeCommit: stage => { if (fail && stage === "receipt") throw new Error("stop receipt rollback"); }, definitions: [definition(async ({ signal }) => {
+    signal.addEventListener("abort", () => { aborted = true; }); entered(); await gate; return { state: "succeeded", evidence: "authorized result" };
+  })] });
+  const original = f.app.execute(f.auth.actor, command(f)).job; f.queue.pump(); await started;
+  fail = true;
+  expect(() => f.app.execute(f.auth.actor, { kind: "job.stop", requestId: crypto.randomUUID(), projectId: f.project.id, expectedRevision: job(f, original.id).revision, payload: { jobId: original.id } })).toThrow("stop receipt rollback");
+  expect(aborted).toBe(false); expect(job(f, original.id)).toMatchObject({ state: "admitted", stop: null, attempts: [{ state: "dispatched" }] });
+  release(); await f.queue.idle(); expect(job(f, original.id).state).toBe("succeeded");
+});
+
+for (const field of ["input", "authorization", "configuration"] as const) test(`in-place ${field} replacement cannot authorize an old attempt snapshot`, async () => {
+  let release!: () => void, entered!: () => void, accepted = true;
+  const gate = new Promise<void>(r => { release = r; }); releases.push(release); const started = new Promise<void>(r => { entered = r; });
+  const work = definition(async context => { entered(); await gate; accepted = context.commit({ state: "succeeded", evidence: "old snapshot" }); return { state: "succeeded", evidence: "old snapshot" }; });
+  work.validate = () => true; // This adapter accepts multiple input values; freshness still belongs to the shared gate.
+  const f = await fixture({ definitions: [work] }), original = f.app.execute(f.auth.actor, command(f)).job; f.queue.pump(); await started;
+  f.store.transaction(tx => {
+    const current = JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM jobs WHERE id = ?", original.id)!.record_json) as Job;
+    if (field === "input") current.input = { replacement: true };
+    if (field === "authorization") current.authorization.requestId = crypto.randomUUID();
+    if (field === "configuration") current.configuration.revision++;
+    tx.run("UPDATE jobs SET record_json = ? WHERE id = ?", JSON.stringify(current), current.id);
+  });
+  release(); await f.queue.idle(); expect(accepted).toBe(false); expect(job(f, original.id).evidence).toBeNull();
+});
+
+test("early yield commit retains occupancy and cannot dispatch another job or lose stop tracking", async () => {
+  let releaseFirst!: () => void, releasePeer!: () => void, enteredFirst!: () => void, firstAborted = false;
+  const firstGate = new Promise<void>(r => { releaseFirst = r; }); releases.push(releaseFirst);
+  const peerGate = new Promise<void>(r => { releasePeer = r; }); releases.push(releasePeer);
+  const firstStarted = new Promise<void>(r => { enteredFirst = r; });
+  let workers = 0, peerWorkers = 0;
+  const work = definition(async context => {
+    workers++;
+    expect(context.commit({ state: "yield", checkpoint: { step: 1 } })).toBe(true);
+    enteredFirst();
+    context.signal.addEventListener("abort", () => { firstAborted = true; });
+    // Stall after durable yield so occupancy must outlive the commit.
+    await firstGate;
+    return { state: "failed", reason: "worker_failed" };
+  });
+  const peer = { ...definition(async () => { peerWorkers++; await peerGate; return { state: "succeeded", evidence: "peer" }; }), id: "fixture.peer",
+    route: { provider: "fixture", model: "peer", authRoute: "subscription-b" } };
+  const f = await fixture({ env: { JIT_JOB_CONCURRENCY: "1" }, definitions: [work, peer] });
+  const original = f.app.execute(f.auth.actor, command(f)).job;
+  const other = f.app.execute(f.auth.actor, command(f, { type: peer.id })).job;
+  f.queue.pump(); await firstStarted;
+  expect(workers).toBe(1);
+  expect(job(f, original.id)).toMatchObject({ state: "queued", reason: "yielded", occupiesAdmission: true, attempts: [{ state: "committed", transport: "dispatched" }] });
+  f.queue.pump(); // Must not admit the peer while the yielded worker is unsettled.
+  expect(peerWorkers).toBe(0);
+  expect(job(f, other.id).state).toBe("queued");
+  const stop = f.app.execute(f.auth.actor, { kind: "job.stop", requestId: crypto.randomUUID(), projectId: f.project.id,
+    expectedRevision: job(f, original.id).revision, payload: { jobId: original.id } });
+  expect(stop.stop).toMatchObject({ transport: "cancellation_requested", attemptIds: [job(f, original.id).attempts[0]!.id] });
+  expect(firstAborted).toBe(true);
+  releaseFirst(); await f.queue.idle();
+  expect(job(f, original.id)).toMatchObject({ reason: "cancelled", evidence: null, occupiesAdmission: false, stop: { transport: "observed_stopped" } });
+  expect(job(f, original.id).attempts[0]).toMatchObject({ transport: "settled" });
+  f.queue.pump(); releasePeer(); await f.queue.idle();
+  expect(peerWorkers).toBe(1);
+  expect(job(f, other.id).state).toBe("succeeded");
+});
+
+test("restart after unsettled early yield interrupts queued work and blocks mutation replay", async () => {
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(r => { release = r; }); releases.push(release);
+  const started = new Promise<void>(r => { entered = r; });
+  const work = definition(async context => {
+    context.commit({ state: "yield", checkpoint: { step: 1 } });
+    entered(); await gate;
+    return { state: "failed", reason: "worker_failed" };
+  });
+  work.replay = "mutation";
+  const f = await fixture({ definitions: [work] }), original = f.app.execute(f.auth.actor, command(f)).job;
+  f.queue.pump(); await started;
+  expect(job(f, original.id)).toMatchObject({ state: "queued", reason: "yielded", occupiesAdmission: true });
+  const recovered = new JobQueue(f.store, f.config.jobs, [work], { now: () => f.clock.now, timers: f.clock.timers, isAlive: () => false }); queues.push(recovered);
+  const app = new Application(f.store, f.config, { jobs: recovered, now: () => f.clock.now }), actor = app.authenticate(f.token).actor;
+  const waiting = app.job(actor, f.project.id, original.id);
+  // Yield already committed the attempt; takeover still marks the job interrupted and applies replay rules.
+  expect(waiting).toMatchObject({ state: "waiting", reason: "interrupted", attempts: [{ state: "committed", reason: "yielded" }] });
+  expect(() => app.execute(actor, { kind: "job.resume", requestId: crypto.randomUUID(), projectId: f.project.id,
+    expectedRevision: waiting.revision, payload: { jobId: original.id } })).toThrow("job_requires_manual_reconciliation");
+  recovered.pump();
+  expect(app.job(actor, f.project.id, original.id)).toMatchObject({ state: "waiting", reason: "interrupted" });
+  expect(app.job(actor, f.project.id, original.id).attempts).toHaveLength(1);
+  release(); await f.queue.idle();
+});
+
+test("stop after restart of an interrupted recovered attempt requests cancellation, not not_dispatched", async () => {
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(r => { release = r; }); releases.push(release);
+  const started = new Promise<void>(r => { entered = r; });
+  const work = definition(async () => { entered(); await gate; return { state: "succeeded", evidence: "late" }; });
+  const f = await fixture({ definitions: [work] }), original = f.app.execute(f.auth.actor, command(f)).job;
+  f.queue.pump(); await started;
+  const recovered = new JobQueue(f.store, f.config.jobs, [work], { now: () => f.clock.now, timers: f.clock.timers, isAlive: () => false }); queues.push(recovered);
+  const app = new Application(f.store, f.config, { jobs: recovered, now: () => f.clock.now }), actor = app.authenticate(f.token).actor;
+  const waiting = app.job(actor, f.project.id, original.id);
+  expect(waiting).toMatchObject({ state: "waiting", reason: "interrupted", attempts: [{ state: "interrupted", nativeState: "missing" }] });
+  const stop = app.execute(actor, { kind: "job.stop", requestId: crypto.randomUUID(), projectId: f.project.id,
+    expectedRevision: waiting.revision, payload: { jobId: original.id } });
+  expect(stop.stop?.transport).toBe("cancellation_requested");
+  expect(stop.stop?.transport).not.toBe("not_dispatched");
+  release(); await f.queue.idle();
+});
+
+test("I: in-process finalizer keeps cancellation_requested until every watched attempt settles", async () => {
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(r => { release = r; }); releases.push(release);
+  const started = new Promise<void>(r => { entered = r; });
+  const work = definition(async () => { entered(); await gate; return { state: "succeeded", evidence: "newer" }; });
+  const f = await fixture({ definitions: [work] }), original = f.app.execute(f.auth.actor, command(f)).job;
+  f.queue.pump(); await started;
+  const liveId = job(f, original.id).attempts[0]!.id, olderId = crypto.randomUUID();
+  f.store.transaction(tx => {
+    const live = JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM job_attempts WHERE id = ?", liveId)!.record_json);
+    const older = {
+      ...live, id: olderId, generation: live.generation, state: "interrupted", reason: "interrupted",
+      transport: "dispatched", native: null, nativeState: "missing", contextState: "none",
+    };
+    tx.run("INSERT INTO job_attempts (id, job_id, record_json) VALUES (?, ?, ?)", olderId, original.id, JSON.stringify(older));
+  });
+  const stop = f.app.execute(f.auth.actor, { kind: "job.stop", requestId: crypto.randomUUID(), projectId: f.project.id,
+    expectedRevision: job(f, original.id).revision, payload: { jobId: original.id } });
+  expect(new Set(stop.stop?.attemptIds)).toEqual(new Set([olderId, liveId]));
+  expect(stop.stop?.transport).toBe("cancellation_requested");
+  release(); await f.queue.idle();
+  const afterOne = job(f, original.id);
+  expect(afterOne.attempts.find(a => a.id === liveId)).toMatchObject({ transport: "settled" });
+  expect(afterOne.attempts.find(a => a.id === olderId)).toMatchObject({ transport: "dispatched" });
+  expect(afterOne.stop).toMatchObject({ transport: "cancellation_requested", attemptIds: expect.arrayContaining([olderId, liveId]) });
+  expect(afterOne.stop?.transport).not.toBe("observed_stopped");
 });

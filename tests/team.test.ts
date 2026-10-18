@@ -5,7 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Application, type ApplicationOptions } from "../src/application";
 import { readConfig } from "../src/config";
+import type { ApplicationRunPort } from "../src/team/run-port";
+import { ScriptedNativeLedger } from "../src/jobs/scripted-ledger";
 import { JobQueue } from "../src/jobs/queue";
+import { commitOwnerSource } from "../src/sources";
 import { TransactionStore } from "../src/store";
 import { ScriptedRunPort, fixtureOutcome, validateRunRequest } from "../src/team/scripted-port";
 import { scriptedPreviewWork } from "../src/team/preview";
@@ -18,12 +21,12 @@ const password = "fixture-team-owner-password", epoch = 1800000000000;
 const grok: RoleRoute = { provider: "grok", model: "fixture-grok-exact", authRoute: "owner-grok" };
 const codex: RoleRoute = { provider: "codex", model: "fixture-codex-exact", authRoute: "owner-codex" };
 const rid = () => crypto.randomUUID();
-async function fixture(options: { script?: ConstructorParameters<typeof ScriptedRunPort>[3]; deleteFails?: () => boolean; beforeCommit?: ApplicationOptions["beforeCommit"]; env?: Record<string, string> } = {}) {
+async function fixture(options: { script?: ConstructorParameters<typeof ScriptedRunPort>[3]; deleteFails?: () => boolean; retireFails?: () => boolean; wrap?: (port: ScriptedRunPort) => ApplicationRunPort; beforeCommit?: ApplicationOptions["beforeCommit"]; env?: Record<string, string> } = {}) {
   const root = mkdtempSync(join(tmpdir(), "jit-team01-")); roots.push(root);
   const path = join(root, "state.sqlite"), config = readConfig({ JIT_DATABASE: path, ...options.env }), store = new TransactionStore(path); stores.push(store);
   let now = epoch;
-  const port = new ScriptedRunPort(store, config.team, config.jobs.outputBytes, options.script, options.deleteFails);
-  const queue = new JobQueue(store, config.jobs, [scriptedPreviewWork(store, config, port, () => now)], { now: () => now }); queues.push(queue);
+  const port = new ScriptedRunPort(store, config.team, config.jobs.outputBytes, options.script, options.deleteFails, options.retireFails);
+  const queue = new JobQueue(store, config.jobs, [scriptedPreviewWork(store, config, options.wrap?.(port) ?? port, () => now)], { now: () => now }); queues.push(queue);
   const app = new Application(store, config, { now: () => now, jobs: queue, ...(options.beforeCommit ? { beforeCommit: options.beforeCommit } : {}) });
   await app.setupOwner(password); const token = await app.login(password), auth = app.authenticate(token);
   const project = app.execute(auth.actor, { kind: "project.create", projectId: null, requestId: rid(), expectedRevision: 0, payload: { name: "โครงการทีม 🧪" } }).project;
@@ -200,7 +203,7 @@ test("frozen published v3 migrates without changing owner/project/job/receipt an
   const jobId = rid(), oldRecord = JSON.stringify({ id: jobId, marker: "retained fixture job" });
   db.query("INSERT INTO jobs (id, project_id, queue_order, priority, state, occupies, route_key, record_json) VALUES (?, ?, 1, 0, 'succeeded', 0, 'fixture', ?)").run(jobId, projectId, oldRecord); db.close();
   const store = new TransactionStore(path); stores.push(store);
-  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 4 });
+  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 5 });
   expect(store.read(tx => tx.get("SELECT generation, password_hash FROM owner"))).toEqual({ generation: 7, password_hash: hash });
   expect(store.read(tx => tx.get("SELECT id FROM project_groups WHERE project_id = ?", projectId))).toEqual({ id: groupId });
   expect(store.read(tx => tx.get("SELECT record_json FROM jobs WHERE id = ?", jobId))).toEqual({ record_json: oldRecord });
@@ -263,4 +266,565 @@ test("application run seam imports only app contracts and owns no provider SDK, 
     expect(imports.every(specifier => specifier.startsWith(".") || specifier === "node:crypto")).toBe(true);
     expect(text).not.toMatch(/Bun\.(spawn|file)|fetch\(|process\.env|schway\/src|@opentui|@anthropic|@openai/);
   }
+});
+
+function recover(f: Fixture, failures: { retire?: () => boolean; delete?: () => boolean } = {},
+  options: { script?: ConstructorParameters<typeof ScriptedRunPort>[3]; wrap?: (port: ScriptedRunPort) => ApplicationRunPort } = {}) {
+  const store = new TransactionStore(f.path); stores.push(store);
+  const base = new ScriptedRunPort(store, f.config.team, f.config.jobs.outputBytes, options.script, failures.delete, failures.retire);
+  const port = (options.wrap ?? (p => p))(base);
+  const queue = new JobQueue(store, f.config.jobs, [scriptedPreviewWork(store, f.config, port, () => epoch)], { now: () => epoch, isAlive: () => false }); queues.push(queue);
+  const app = new Application(store, f.config, { jobs: queue, now: () => epoch }), actor = app.authenticate(f.token).actor;
+  return { store, port, scripted: base, queue, app, actor };
+}
+
+for (const crash of ["before_dispatch", "after_native_append", "before_app_commit", "after_app_commit"] as const) test(`cross-store crash matrix: ${crash} preserves one app output or explicit interrupted state on reopen`, async () => {
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(r => { release = r; }); releases.push(release); const started = new Promise<void>(r => { entered = r; });
+  const f = await fixture({
+    script: async () => {
+      if (crash === "after_native_append") { entered(); await gate; }
+      return fixtureOutcome("complete", "native output");
+    },
+    wrap: port => ({
+      invoke: async (...args) => { const outcome = await port.invoke(...args); if (crash === "before_app_commit") { entered(); await gate; } return outcome; },
+      inspectRuns: after => port.inspectRuns(after), retire: context => port.retire(context), delete: context => port.delete(context),
+    }),
+  });
+  const role = f.app.execute(f.auth.actor, save(f, { route: grok })).role!, run = f.app.execute(f.auth.actor, preview(f, role.id)).preview!;
+  f.queue.pump();
+  const prepared = f.app.job(f.auth.actor, f.project.id, run.jobId).attempts[0]!;
+  expect(prepared.native).toMatchObject({ adapter: "scripted", runId: run.id, sessionId: run.id, context: run.request.context });
+  expect((prepared.data as unknown as ApplicationRunRequest).fence.generation).toBe(prepared.generation);
+  if (crash === "after_native_append" || crash === "before_app_commit") await started;
+  if (crash === "after_app_commit") await f.queue.idle();
+  const recovered = recover(f), records = await recovered.queue.reconcile(recovered.port);
+  const observation = records.find(r => r.kind === "attempt")!;
+  expect(observation.nativeState).toBe(crash === "before_dispatch" ? "missing" : crash === "after_native_append" ? "running" : "finished");
+  expect(observation.appState).toBe(crash === "after_app_commit" ? "committed" : "interrupted");
+  release(); await f.queue.idle();
+  const state = recovered.app.preview(recovered.actor, f.project.id, run.id), messages = recovered.app.conversation(recovered.actor, f.project.id, f.topic.id).items;
+  expect(messages).toHaveLength(crash === "after_app_commit" ? 1 : 0);
+  expect(state.job.state).toBe(crash === "after_app_commit" ? "succeeded" : "waiting");
+  if (crash !== "after_app_commit") expect(state.run.outcome).toBeNull();
+  await recovered.queue.reconcile(recovered.port);
+  expect(recovered.app.conversation(recovered.actor, f.project.id, f.topic.id).items).toHaveLength(messages.length);
+});
+
+test("retirement acknowledgment and delete-failure blockers survive reopen; only a fresh context may run after explicit read resume", async () => {
+  let retireFails = true, deleteFails = true;
+  const f = await fixture(), role = f.app.execute(f.auth.actor, save(f, { route: grok })).role!, run = f.app.execute(f.auth.actor, preview(f, role.id)).preview!;
+  f.queue.pump(); // Crash before dispatch; remaining context/output budgets are untouched.
+  const recovered = recover(f, { retire: () => retireFails, delete: () => deleteFails });
+  const resume = () => recovered.app.execute(recovered.actor, { kind: "job.resume", requestId: rid(), projectId: f.project.id,
+    expectedRevision: recovered.app.job(recovered.actor, f.project.id, run.jobId).revision, payload: { jobId: run.jobId } });
+  expect((await recovered.queue.reconcile(recovered.port))[0]!.lifecycle).toBe("retire_failed");
+  expect(() => resume()).toThrow("job_context_reconciliation_required");
+  expect(recovered.scripted.requests).toHaveLength(0);
+  retireFails = false;
+  expect((await recovered.queue.retireContext(recovered.port, run.request.context, true)).lifecycle).toBe("delete_failed");
+  await recovered.queue.reconcile(recovered.port);
+  expect(() => resume()).toThrow("job_context_reconciliation_required");
+  const reopened = new TransactionStore(f.path); stores.push(reopened);
+  expect(reopened.read(tx => tx.all<{ record_json: string }>("SELECT record_json FROM job_reconciliation")).some(r => JSON.parse(r.record_json).lifecycle === "delete_failed")).toBe(true);
+  deleteFails = false;
+  await recovered.queue.reconcile(recovered.port);
+  resume(); recovered.queue.pump(); await recovered.queue.idle(); await f.queue.idle();
+  const result = recovered.app.job(recovered.actor, f.project.id, run.jobId);
+  expect(result).toMatchObject({ state: "succeeded", remaining: { retries: 2 }, attempts: [{ state: "interrupted", contextState: "deleted" }, { state: "committed" }] });
+  expect(result.attempts[1]!.native!.context.id).not.toBe(result.attempts[0]!.native!.context.id);
+  expect(result.attempts[1]!.native!.runId).not.toBe(result.attempts[0]!.native!.runId);
+  expect(await recovered.port.invoke(run.request, new AbortController().signal, () => {})).toEqual(fixtureOutcome("context_retired"));
+  expect(recovered.app.conversation(recovered.actor, f.project.id, f.topic.id).items).toHaveLength(1);
+});
+
+test("native orphan references are retired independently and never manufacture app jobs, output or obligations", async () => {
+  const f = await fixture(), orphan = { id: rid(), generation: 1 }, native = new ScriptedNativeLedger(`${f.path}.scripted-native.sqlite`);
+  native.put({ adapter: "scripted", runId: rid(), sessionId: rid(), context: orphan, state: "finished", contextState: "active" });
+  const records = await f.queue.reconcile(f.port);
+  expect(records).toMatchObject([{ kind: "orphan", appState: "missing", nativeState: "finished", lifecycle: "retired", context: orphan }]);
+  expect(f.app.jobs(f.auth.actor, f.project.id).items).toHaveLength(0);
+  expect(f.app.conversation(f.auth.actor, f.project.id, f.topic.id).items).toHaveLength(0);
+  expect((await f.port.inspectRuns()).items[0]!.contextState).toBe("retired");
+});
+
+test("J: native orphan delete_failed survives reopen reconcileSessions", async () => {
+  const f = await fixture({ deleteFails: () => true });
+  const orphan = { id: rid(), generation: 1 }, runId = rid();
+  const native = new ScriptedNativeLedger(`${f.path}.scripted-native.sqlite`);
+  // Native-only deletion failure with no prior app reconciliation row.
+  native.put({ adapter: "scripted", runId, sessionId: runId, context: orphan, state: "finished", contextState: "delete_failed" });
+  native.context(orphan, "delete_failed");
+  const first = await f.queue.reconcile(f.port);
+  expect(first.find(r => r.kind === "orphan" && r.context.id === orphan.id)).toMatchObject({
+    lifecycle: "delete_failed", deleteRequested: true, nextAction: "retry_managed_delete",
+  });
+  expect((await f.port.inspectRuns()).items[0]).toMatchObject({ context: orphan, contextState: "delete_failed" });
+  const recovered = recover(f, { delete: () => true });
+  const records = await recovered.queue.reconcile(recovered.port);
+  expect(records.find(r => r.kind === "orphan" && r.context.id === orphan.id)).toMatchObject({
+    lifecycle: "delete_failed", deleteRequested: true, nextAction: "retry_managed_delete",
+  });
+  expect((await recovered.port.inspectRuns()).items.find(i => i.context.id === orphan.id)).toMatchObject({
+    contextState: "delete_failed",
+  });
+  expect(records.some(r => r.context.id === orphan.id && r.context.generation === orphan.generation
+    && r.lifecycle === "retired" && !r.deleteRequested)).toBe(false);
+});
+
+test("managed context fencing commits before the transport retirement request and survives a thrown native failure", async () => {
+  let release!: () => void, entered!: () => void, requested = false;
+  const gate = new Promise<void>(r => { release = r; }); releases.push(release); const started = new Promise<void>(r => { entered = r; });
+  const f = await fixture({ script: async () => { entered(); await gate; return fixtureOutcome("complete", "late"); } });
+  const role = f.app.execute(f.auth.actor, save(f, { route: grok })).role!, run = f.app.execute(f.auth.actor, preview(f, role.id)).preview!;
+  f.queue.pump(); await started;
+  const failed: ApplicationRunPort = { invoke: (...args) => f.port.invoke(...args), inspectRuns: after => f.port.inspectRuns(after), delete: context => f.port.delete(context),
+    retire: async context => {
+      expect(f.app.job(f.auth.actor, f.project.id, run.jobId).attempts[0]!.state).toBe("interrupted");
+      expect(f.store.read(tx => tx.get<{ state: string }>("SELECT state FROM team_contexts WHERE id = ?", context.id))!.state).toBe("retired");
+      requested = true; throw new Error("PRIVATE_NATIVE_RETIRE_DIAGNOSTIC");
+    } };
+  const result = await f.queue.retireContext(failed, run.request.context);
+  expect(requested).toBe(true); expect(result.lifecycle).toBe("retire_failed"); expect(JSON.stringify(result)).not.toContain("PRIVATE_NATIVE");
+  release(); await f.queue.idle();
+  expect(f.app.conversation(f.auth.actor, f.project.id, f.topic.id).items).toHaveLength(0);
+  expect(f.app.preview(f.auth.actor, f.project.id, run.id).run.outcome).toBeNull();
+});
+
+test("a frozen TEAM01 v4 artifact migrates without inventing historical attempt/native evidence", async () => {
+  const root = mkdtempSync(join(tmpdir(), "jit-job02-v4-")); roots.push(root); const path = join(root, "v4.sqlite"), db = new Database(path);
+  db.exec(readFileSync(join(import.meta.dir, "fixtures/foundation-v3.sql"), "utf8"));
+  // Frozen TEAM01 DDL from 7ba1e693af9ff1987d41e3e114a5262af452c39a, not current migration code.
+  db.exec(`CREATE TABLE team_state (id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL, route_json TEXT);
+    INSERT INTO team_state VALUES (1, 0, NULL);
+    CREATE TABLE roles (sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, record_json TEXT NOT NULL);
+    CREATE TABLE project_team (project_id TEXT PRIMARY KEY REFERENCES projects(id), revision INTEGER NOT NULL, route_json TEXT, overrides_json TEXT NOT NULL);
+    CREATE TABLE team_contexts (id TEXT PRIMARY KEY, generation INTEGER NOT NULL CHECK (generation > 0), state TEXT NOT NULL CHECK (state IN ('active', 'retired', 'delete_failed', 'deleted')));
+    CREATE TABLE team_runs (sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL REFERENCES projects(id), job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id), context_id TEXT NOT NULL UNIQUE REFERENCES team_contexts(id), record_json TEXT NOT NULL);
+    CREATE INDEX team_run_project ON team_runs(project_id, sequence); PRAGMA user_version = 4;`);
+  const projectId = rid(), jobId = rid(), contextId = rid(), runId = rid();
+  db.query("INSERT INTO projects VALUES (?, 'frozen', 1, ?)").run(projectId, epoch);
+  const record = JSON.stringify({ id: jobId, retained: "opaque historical evidence" });
+  db.query("INSERT INTO jobs (id, project_id, queue_order, priority, state, occupies, route_key, record_json) VALUES (?, ?, 1, 0, 'succeeded', 0, 'fixture', ?)").run(jobId, projectId, record);
+  db.query("INSERT INTO team_contexts VALUES (?, 1, 'delete_failed')").run(contextId);
+  db.query("INSERT INTO team_runs (id, project_id, job_id, context_id, record_json) VALUES (?, ?, ?, ?, ?)").run(runId, projectId, jobId, contextId, '{"retained":"preview"}'); db.close();
+  const store = new TransactionStore(path); stores.push(store);
+  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 5 });
+  expect(store.read(tx => tx.get("SELECT record_json FROM jobs WHERE id = ?", jobId))).toEqual({ record_json: record });
+  expect(store.read(tx => tx.get("SELECT state FROM team_contexts WHERE id = ?", contextId))).toEqual({ state: "delete_failed" });
+  expect(store.read(tx => tx.get("SELECT generation, reason, stop_json FROM job_authority WHERE job_id = ?", jobId))).toEqual({ generation: 1, reason: null, stop_json: null });
+  expect(store.read(tx => tx.all("SELECT * FROM job_attempts"))).toEqual([]);
+  const snapshot = new Database(join(root, readdirSync(root).find(name => name.includes(".pre-v4-"))!), { readonly: true });
+  expect(snapshot.query("PRAGMA user_version").get()).toEqual({ user_version: 4 }); snapshot.close();
+});
+
+test("stop after restart retains unknown transport until separate native finish evidence is observed", async () => {
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(r => { release = r; }); releases.push(release); const started = new Promise<void>(r => { entered = r; });
+  const f = await fixture({ script: async () => { entered(); await gate; return fixtureOutcome("complete", "late"); } });
+  const role = f.app.execute(f.auth.actor, save(f, { route: grok })).role!, run = f.app.execute(f.auth.actor, preview(f, role.id)).preview!;
+  f.queue.pump(); await started;
+  f.app.execute(f.auth.actor, { kind: "job.stop", requestId: rid(), projectId: f.project.id, expectedRevision: f.app.job(f.auth.actor, f.project.id, run.jobId).revision, payload: { jobId: run.jobId } });
+  const recovered = recover(f); await recovered.queue.reconcile(recovered.port);
+  expect(recovered.app.job(recovered.actor, f.project.id, run.jobId).stop?.transport).toBe("unknown");
+  release(); await f.queue.idle(); await recovered.queue.reconcile(recovered.port);
+  expect(recovered.app.job(recovered.actor, f.project.id, run.jobId)).toMatchObject({ reason: "cancelled", evidence: null, stop: { transport: "observed_stopped" } });
+  expect(recovered.app.conversation(recovered.actor, f.project.id, f.topic.id).items).toHaveLength(0);
+});
+
+test("thrown delete after acknowledged retirement remains a durable delete blocker; wrong retirement references cannot unblock replacement", async () => {
+  const f = await fixture(), role = f.app.execute(f.auth.actor, save(f, { route: grok })).role!, run = f.app.execute(f.auth.actor, preview(f, role.id)).preview!;
+  const failed: ApplicationRunPort = { invoke: (...args) => f.port.invoke(...args), inspectRuns: after => f.port.inspectRuns(after), retire: context => f.port.retire(context),
+    delete: async () => { throw new Error("PRIVATE_NATIVE_DELETE_DIAGNOSTIC"); } };
+  const deletion = await f.queue.retireContext(failed, run.request.context, true);
+  expect(deletion).toMatchObject({ lifecycle: "delete_failed", deleteRequested: true, nextAction: "retry_managed_delete" });
+  expect(JSON.stringify(deletion)).not.toContain("PRIVATE_NATIVE");
+  const wrong: ApplicationRunPort = { ...failed, retire: async () => ({ state: "retired", context: { id: rid(), generation: 1 } }) };
+  const retirement = await f.queue.retireContext(wrong, run.request.context);
+  expect(retirement).toMatchObject({ lifecycle: "retire_failed", deleteRequested: true, nextAction: "retry_managed_retire" });
+  expect(f.app.job(f.auth.actor, f.project.id, run.jobId).reconciliations).toMatchObject([{ lifecycle: "retire_failed" }]);
+  f.queue.pump(); await f.queue.idle(); expect(f.port.requests).toHaveLength(0);
+});
+
+test("unowned application context references reconcile without inventing attempts; queued initial context stays usable", async () => {
+  const f = await fixture(), orphan = { id: rid(), generation: 1 }, failedDelete = { id: rid(), generation: 1 };
+  f.store.transaction(tx => {
+    tx.run("INSERT INTO team_contexts VALUES (?, 1, 'active')", orphan.id);
+    tx.run("INSERT INTO team_contexts VALUES (?, 1, 'delete_failed')", failedDelete.id);
+  });
+  const role = f.app.execute(f.auth.actor, save(f, { route: grok })).role!, pending = f.app.execute(f.auth.actor, preview(f, role.id)).preview!;
+  const records = await f.queue.reconcile(f.port);
+  expect(records.find(r => r.context.id === orphan.id)).toMatchObject({ kind: "context", nativeState: "missing", appState: "missing", lifecycle: "retired" });
+  expect(records.find(r => r.context.id === failedDelete.id)).toMatchObject({ lifecycle: "deleted", deleteRequested: true });
+  expect(f.app.job(f.auth.actor, f.project.id, pending.jobId).attempts).toHaveLength(0);
+  expect(f.store.read(tx => tx.get<{ state: string }>("SELECT state FROM team_contexts WHERE id = ?", pending.request.context.id))!.state).toBe("active");
+  f.queue.pump(); await f.queue.idle(); expect(f.app.preview(f.auth.actor, f.project.id, pending.id).job.state).toBe("succeeded");
+});
+
+test("finished native evidence from an earlier attempt cannot report observed_stopped for a later stopped attempt", async () => {
+  const f = await fixture();
+  const role = f.app.execute(f.auth.actor, save(f, { route: grok })).role!, run = f.app.execute(f.auth.actor, preview(f, role.id)).preview!;
+  f.queue.pump(); // Crash before dispatch so reopen owns a waiting job with one attempt.
+  const recovered = recover(f);
+  const jobId = run.jobId, first = recovered.app.job(recovered.actor, f.project.id, jobId).attempts[0]!;
+  const secondId = rid(), secondContext = { id: rid(), generation: 1 }, secondRun = rid();
+  const native = new ScriptedNativeLedger(`${f.path}.scripted-native.sqlite`);
+  // Disposable reviewer fixture: earlier attempt finished, later stopped attempt still running.
+  native.put({ adapter: "scripted", runId: first.native!.runId, sessionId: first.native!.sessionId, context: first.native!.context, state: "finished", contextState: "retired" });
+  native.put({ adapter: "scripted", runId: secondRun, sessionId: secondRun, context: secondContext, state: "running", contextState: "active" });
+  recovered.store.transaction(tx => {
+    const job = JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM jobs WHERE id = ?", jobId)!.record_json);
+    job.state = "blocked"; job.reason = "cancelled"; job.occupiesAdmission = true; job.revision++;
+    tx.run("UPDATE jobs SET state = ?, occupies = 1, record_json = ? WHERE id = ?", job.state, JSON.stringify(job), jobId);
+    const prior = JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM job_attempts WHERE id = ?", first.id)!.record_json);
+    prior.state = "interrupted"; prior.reason = "interrupted"; prior.nativeState = "finished"; prior.contextState = "retired";
+    tx.run("UPDATE job_attempts SET record_json = ? WHERE id = ?", JSON.stringify(prior), first.id);
+    const second = {
+      id: secondId, jobId, generation: 2, scheduler: "fixture", leaseUntil: epoch + 60_000, snapshot: job, createdAt: epoch,
+      native: { adapter: "scripted", runId: secondRun, sessionId: secondRun, context: secondContext }, data: null,
+      state: "interrupted", reason: "cancelled", nativeState: "running", contextState: "pending",
+    };
+    tx.run("INSERT INTO job_attempts (id, job_id, record_json) VALUES (?, ?, ?)", secondId, jobId, JSON.stringify(second));
+    tx.run("INSERT INTO team_contexts VALUES (?, 1, 'active')", secondContext.id);
+    tx.run("UPDATE job_authority SET generation = 3, reason = ?, stop_json = ? WHERE job_id = ?", "cancelled",
+      JSON.stringify({ requestedAt: epoch, fencedAt: epoch, transport: "unknown" }), jobId);
+  });
+  await recovered.queue.reconcile(recovered.port);
+  const stopped = recovered.app.job(recovered.actor, f.project.id, jobId);
+  expect(stopped.attempts).toHaveLength(2);
+  expect(stopped.attempts[0]).toMatchObject({ nativeState: "finished" });
+  expect(stopped.attempts[1]).toMatchObject({ reason: "cancelled", nativeState: "running" });
+  expect(stopped.stop?.transport).toBe("unknown");
+  expect(stopped.stop?.transport).not.toBe("observed_stopped");
+});
+
+test("overlapping retirement cannot erase a concurrent delete_failed blocker", async () => {
+  let releaseRetire!: () => void; const retireGate = new Promise<void>(r => { releaseRetire = r; }); releases.push(releaseRetire);
+  let retireCalls = 0;
+  const f = await fixture({ deleteFails: () => true });
+  const role = f.app.execute(f.auth.actor, save(f, { route: grok })).role!, run = f.app.execute(f.auth.actor, preview(f, role.id)).preview!;
+  f.queue.pump(); // Leave a prepared attempt so resume is otherwise eligible after retirement.
+  const recovered = recover(f, { delete: () => true });
+  const gated: ApplicationRunPort = {
+    invoke: (...args) => recovered.port.invoke(...args), inspectRuns: after => recovered.port.inspectRuns(after),
+    retire: async context => {
+      retireCalls++;
+      if (retireCalls === 1) await retireGate;
+      return recovered.port.retire(context);
+    },
+    delete: context => recovered.port.delete(context),
+  };
+  const early = recovered.queue.retireContext(gated, run.request.context, false);
+  await Promise.resolve();
+  const deletion = await recovered.queue.retireContext(gated, run.request.context, true);
+  expect(deletion).toMatchObject({ lifecycle: "delete_failed", deleteRequested: true });
+  releaseRetire();
+  const late = await early;
+  expect(late).toMatchObject({ lifecycle: "delete_failed", deleteRequested: true });
+  const job = recovered.app.job(recovered.actor, f.project.id, run.jobId);
+  expect(job).toMatchObject({ state: "waiting", reason: "interrupted" });
+  expect(job.attempts.some(a => a.contextState === "delete_failed")).toBe(true);
+  expect(job.reconciliations.some(r => r.lifecycle === "delete_failed" && r.deleteRequested)).toBe(true);
+  expect(job.reconciliations.some(r => r.lifecycle === "retired" && !r.deleteRequested)).toBe(false);
+  expect(() => recovered.app.execute(recovered.actor, { kind: "job.resume", requestId: rid(), projectId: f.project.id,
+    expectedRevision: job.revision, payload: { jobId: run.jobId } })).toThrow("job_context_reconciliation_required");
+});
+
+test("context-sized preview preparation admits without disabling the scheduler", async () => {
+  const f = await fixture(), role = f.app.execute(f.auth.actor, save(f, { route: grok })).role!;
+  const chunk = "x".repeat(3500);
+  const sources = f.store.transaction(tx => Array.from({ length: 5 }, () => commitOwnerSource(tx, {
+    projectId: f.project.id, descriptor: { kind: "message", topicId: f.topic.id, messageId: rid() }, text: chunk, committedAt: epoch,
+  })));
+  const cmd = { ...preview(f, role.id), payload: { ...preview(f, role.id).payload, sources } };
+  const run = f.app.execute(f.auth.actor, cmd).preview!;
+  const prepared = JSON.stringify(run.request);
+  expect(Buffer.byteLength(prepared)).toBeGreaterThan(f.config.jobs.inputBytes);
+  expect(Buffer.byteLength(prepared)).toBeLessThanOrEqual(f.config.team.contextBytes);
+  expect(() => f.queue.pump()).not.toThrow();
+  await f.queue.idle();
+  expect(f.app.jobs(f.auth.actor, f.project.id).admission.available).toBe(true);
+  expect(f.app.preview(f.auth.actor, f.project.id, run.id).job.state).toBe("succeeded");
+  const next = f.app.execute(f.auth.actor, preview(f, role.id)).preview!;
+  expect(next.jobId).not.toBe(run.jobId);
+  f.app.execute(f.auth.actor, { kind: "job.stop", requestId: rid(), projectId: f.project.id,
+    expectedRevision: f.app.job(f.auth.actor, f.project.id, next.jobId).revision, payload: { jobId: next.jobId } });
+});
+
+test("successful deleted acknowledgment clears peer delete_failed blockers", async () => {
+  let deleteFails = true;
+  const f = await fixture({ deleteFails: () => deleteFails });
+  const role = f.app.execute(f.auth.actor, save(f, { route: grok })).role!, run = f.app.execute(f.auth.actor, preview(f, role.id)).preview!;
+  f.queue.pump();
+  const recovered = recover(f, { delete: () => deleteFails });
+  expect((await recovered.queue.retireContext(recovered.port, run.request.context, true)).lifecycle).toBe("delete_failed");
+  expect(recovered.app.job(recovered.actor, f.project.id, run.jobId).reconciliations.some(r => r.lifecycle === "delete_failed")).toBe(true);
+  deleteFails = false;
+  const cleared = await recovered.queue.retireContext(recovered.port, run.request.context, true);
+  expect(cleared).toMatchObject({ lifecycle: "deleted", deleteRequested: true });
+  const job = recovered.app.job(recovered.actor, f.project.id, run.jobId);
+  expect(job.reconciliations.every(r => r.lifecycle === "deleted")).toBe(true);
+  expect(job.reconciliations.some(r => r.lifecycle === "delete_failed")).toBe(false);
+  expect(job.attempts.every(a => a.contextState === "deleted")).toBe(true);
+  recovered.app.execute(recovered.actor, { kind: "job.resume", requestId: rid(), projectId: f.project.id,
+    expectedRevision: job.revision, payload: { jobId: run.jobId } });
+  recovered.queue.pump(); await recovered.queue.idle(); await f.queue.idle();
+  expect(recovered.app.job(recovered.actor, f.project.id, run.jobId).state).toBe("succeeded");
+});
+
+test("recovered stop observes finished native via persisted attempt identity", async () => {
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(r => { release = r; }); releases.push(release);
+  const started = new Promise<void>(r => { entered = r; });
+  const f = await fixture({ script: async () => { entered(); await gate; return fixtureOutcome("complete", "late"); } });
+  const role = f.app.execute(f.auth.actor, save(f, { route: grok })).role!, run = f.app.execute(f.auth.actor, preview(f, role.id)).preview!;
+  f.queue.pump(); await started;
+  const recovered = recover(f);
+  const waiting = recovered.app.job(recovered.actor, f.project.id, run.jobId);
+  expect(waiting).toMatchObject({ state: "waiting", reason: "interrupted", attempts: [{ state: "interrupted" }] });
+  const stop = recovered.app.execute(recovered.actor, { kind: "job.stop", requestId: rid(), projectId: f.project.id,
+    expectedRevision: waiting.revision, payload: { jobId: run.jobId } });
+  expect(stop.stop).toMatchObject({ transport: "cancellation_requested", attemptIds: [waiting.attempts[0]!.id] });
+  release(); await f.queue.idle();
+  await recovered.queue.reconcile(recovered.port);
+  expect(recovered.app.job(recovered.actor, f.project.id, run.jobId).stop).toMatchObject({ transport: "observed_stopped", attemptIds: [waiting.attempts[0]!.id] });
+});
+
+test("G: recovered native finished settles transport so authorized read resume can proceed", async () => {
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(r => { release = r; }); releases.push(release);
+  const started = new Promise<void>(r => { entered = r; });
+  const f = await fixture({ script: async () => { entered(); await gate; return fixtureOutcome("complete", "late"); } });
+  const role = f.app.execute(f.auth.actor, save(f, { route: grok })).role!, run = f.app.execute(f.auth.actor, preview(f, role.id)).preview!;
+  f.queue.pump(); await started;
+  const recovered = recover(f);
+  const resume = () => recovered.app.execute(recovered.actor, { kind: "job.resume", requestId: rid(), projectId: f.project.id,
+    expectedRevision: recovered.app.job(recovered.actor, f.project.id, run.jobId).revision, payload: { jobId: run.jobId } });
+  expect(() => resume()).toThrow("job_not_resumable");
+  release(); await f.queue.idle();
+  await recovered.queue.reconcile(recovered.port);
+  const waiting = recovered.app.job(recovered.actor, f.project.id, run.jobId);
+  expect(waiting).toMatchObject({
+    state: "waiting", reason: "interrupted", evidence: null,
+    attempts: [{ transport: "settled", nativeState: "finished", contextState: expect.stringMatching(/^(retired|deleted)$/) }],
+  });
+  expect(waiting.occupiesAdmission).toBe(false);
+  // Native finished must not become app success; resume is newly authorized and no longer blocked on transport.
+  expect(waiting.state).not.toBe("succeeded");
+  const resumed = resume();
+  expect(resumed.job).toMatchObject({ state: "queued", reason: "queued" });
+});
+
+test("H: interrupted early yield commit retires managed context on reconcile", async () => {
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(r => { release = r; }); releases.push(release);
+  const started = new Promise<void>(r => { entered = r; });
+  let retireCalls = 0;
+  const f = await fixture({ script: async () => { entered(); await gate; return fixtureOutcome("complete", "late"); } });
+  const role = f.app.execute(f.auth.actor, save(f, { route: grok })).role!, run = f.app.execute(f.auth.actor, preview(f, role.id)).preview!;
+  f.queue.pump(); await started;
+  const recovered = recover(f, {}, {
+    wrap: port => ({
+      invoke: (...args) => port.invoke(...args), inspectRuns: after => port.inspectRuns(after),
+      retire: async context => { retireCalls++; return port.retire(context); },
+      delete: context => port.delete(context),
+    }),
+  });
+  recovered.store.transaction(tx => {
+    const attempt = JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM job_attempts WHERE job_id = ?", run.jobId)!.record_json);
+    attempt.state = "committed"; attempt.reason = "yielded"; attempt.transport = "dispatched";
+    attempt.contextState = "pending"; attempt.nativeState = "running";
+    tx.run("UPDATE job_attempts SET record_json = ? WHERE id = ?", JSON.stringify(attempt), attempt.id);
+    const job = JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM jobs WHERE id = ?", run.jobId)!.record_json);
+    job.state = "waiting"; job.reason = "interrupted"; job.occupiesAdmission = true; job.revision++;
+    tx.run("UPDATE jobs SET state = ?, occupies = 1, record_json = ? WHERE id = ?", job.state, JSON.stringify(job), run.jobId);
+  });
+  const records = await recovered.queue.reconcile(recovered.port);
+  expect(retireCalls).toBeGreaterThan(0);
+  const observation = records.find(r => r.kind === "attempt")!;
+  expect(observation).toMatchObject({
+    appState: "committed", lifecycle: expect.stringMatching(/^(retired|deleted)$/),
+  });
+  expect(observation.lifecycle).not.toBe("not_requested");
+  expect(observation.nextAction).not.toBe("inspect_committed_evidence");
+  expect(recovered.app.job(recovered.actor, f.project.id, run.jobId).attempts[0]).toMatchObject({
+    state: "committed", reason: "yielded", contextState: expect.stringMatching(/^(retired|deleted)$/),
+  });
+  release(); await f.queue.idle();
+});
+
+test("I: observed_stopped requires every watched attempt transport to settle", async () => {
+  const f = await fixture();
+  const role = f.app.execute(f.auth.actor, save(f, { route: grok })).role!, run = f.app.execute(f.auth.actor, preview(f, role.id)).preview!;
+  f.queue.pump();
+  const recovered = recover(f);
+  const jobId = run.jobId, first = recovered.app.job(recovered.actor, f.project.id, jobId).attempts[0]!;
+  const secondId = rid(), secondContext = { id: rid(), generation: 1 }, secondRun = rid();
+  const native = new ScriptedNativeLedger(`${f.path}.scripted-native.sqlite`);
+  native.put({ adapter: "scripted", runId: first.native!.runId, sessionId: first.native!.sessionId, context: first.native!.context, state: "running", contextState: "active" });
+  native.put({ adapter: "scripted", runId: secondRun, sessionId: secondRun, context: secondContext, state: "finished", contextState: "active" });
+  recovered.store.transaction(tx => {
+    const job = JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM jobs WHERE id = ?", jobId)!.record_json);
+    job.state = "blocked"; job.reason = "cancelled"; job.occupiesAdmission = true; job.revision++;
+    tx.run("UPDATE jobs SET state = ?, occupies = 1, record_json = ? WHERE id = ?", job.state, JSON.stringify(job), jobId);
+    const prior = JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM job_attempts WHERE id = ?", first.id)!.record_json);
+    prior.state = "interrupted"; prior.reason = "interrupted"; prior.nativeState = "running"; prior.contextState = "pending"; prior.transport = "dispatched";
+    tx.run("UPDATE job_attempts SET record_json = ? WHERE id = ?", JSON.stringify(prior), first.id);
+    const second = {
+      id: secondId, jobId, generation: 2, scheduler: "fixture", leaseUntil: epoch + 60_000, snapshot: job, createdAt: epoch,
+      native: { adapter: "scripted", runId: secondRun, sessionId: secondRun, context: secondContext }, data: null,
+      state: "interrupted", reason: "cancelled", nativeState: "finished", contextState: "pending", transport: "dispatched",
+    };
+    tx.run("INSERT INTO job_attempts (id, job_id, record_json) VALUES (?, ?, ?)", secondId, jobId, JSON.stringify(second));
+    tx.run("INSERT INTO team_contexts VALUES (?, 1, 'active')", secondContext.id);
+    tx.run("UPDATE job_authority SET generation = 3, reason = ?, stop_json = ? WHERE job_id = ?", "cancelled",
+      JSON.stringify({ requestedAt: epoch, fencedAt: epoch, transport: "cancellation_requested", attemptIds: [first.id, secondId] }), jobId);
+  });
+  await recovered.queue.reconcile(recovered.port);
+  const afterOne = recovered.app.job(recovered.actor, f.project.id, jobId);
+  expect(afterOne.attempts.find(a => a.id === first.id)).toMatchObject({ transport: "dispatched", nativeState: "running" });
+  expect(afterOne.attempts.find(a => a.id === secondId)).toMatchObject({ transport: "settled", nativeState: "finished" });
+  expect(afterOne.stop).toMatchObject({ transport: "cancellation_requested", attemptIds: [first.id, secondId] });
+  expect(afterOne.stop?.transport).not.toBe("observed_stopped");
+  native.put({ adapter: "scripted", runId: first.native!.runId, sessionId: first.native!.sessionId, context: first.native!.context, state: "finished", contextState: "retired" });
+  await recovered.queue.reconcile(recovered.port);
+  const afterBoth = recovered.app.job(recovered.actor, f.project.id, jobId);
+  expect(afterBoth.attempts.every(a => a.transport === "settled")).toBe(true);
+  expect(afterBoth.stop).toMatchObject({ transport: "observed_stopped", attemptIds: [first.id, secondId] });
+});
+
+test("concurrent reconciliation does not retire a newly admitted preview context", async () => {
+  const f = await fixture();
+  const orphan = { id: rid(), generation: 1 };
+  const native = new ScriptedNativeLedger(`${f.path}.scripted-native.sqlite`);
+  native.put({ adapter: "scripted", runId: rid(), sessionId: rid(), context: orphan, state: "finished", contextState: "active" });
+  let releaseRetire!: () => void; const retireGate = new Promise<void>(r => { releaseRetire = r; }); releases.push(releaseRetire);
+  let retireCalls = 0;
+  const gated: ApplicationRunPort = {
+    invoke: (...args) => f.port.invoke(...args), inspectRuns: after => f.port.inspectRuns(after),
+    retire: async context => {
+      retireCalls++;
+      if (context.id === orphan.id && context.generation === orphan.generation) await retireGate;
+      return f.port.retire(context);
+    },
+    delete: context => f.port.delete(context),
+  };
+  const role = f.app.execute(f.auth.actor, save(f, { route: grok })).role!;
+  const reconciliation = f.queue.reconcile(gated);
+  await Promise.resolve();
+  const run = f.app.execute(f.auth.actor, preview(f, role.id)).preview!;
+  f.queue.pump();
+  releaseRetire();
+  await reconciliation;
+  await f.queue.idle();
+  expect(retireCalls).toBeGreaterThan(0);
+  expect(f.store.read(tx => tx.get<{ state: string }>("SELECT state FROM team_contexts WHERE id = ?", run.request.context.id))!.state).toBe("active");
+  expect(f.app.preview(f.auth.actor, f.project.id, run.id).job.state).toBe("succeeded");
+  expect(f.app.job(f.auth.actor, f.project.id, run.jobId).reason).not.toBe("context_retired");
+});
+
+test("K: concurrent empty inspect must not settle a mid-reconcile admitted attempt", async () => {
+  let releaseScript!: () => void, entered!: () => void;
+  const scriptGate = new Promise<void>(r => { releaseScript = r; }); releases.push(releaseScript);
+  const started = new Promise<void>(r => { entered = r; });
+  const f = await fixture({ script: async () => { entered(); await scriptGate; return fixtureOutcome("complete", "late"); } });
+  let releaseInspect!: () => void; const inspectGate = new Promise<void>(r => { releaseInspect = r; }); releases.push(releaseInspect);
+  let hitEmpty!: () => void; const emptyHit = new Promise<void>(r => { hitEmpty = r; });
+  const gated: ApplicationRunPort = {
+    invoke: (...args) => f.port.invoke(...args),
+    inspectRuns: async after => {
+      const page = await f.port.inspectRuns(after);
+      if (page.nextAfter === null && page.items.length === 0) {
+        hitEmpty();
+        await inspectGate; // return this empty snapshot only after a preview is admitted
+      }
+      return page;
+    },
+    retire: context => f.port.retire(context), delete: context => f.port.delete(context),
+  };
+  const role = f.app.execute(f.auth.actor, save(f, { route: grok })).role!;
+  const reconciliation = f.queue.reconcile(gated);
+  await emptyHit;
+  const run = f.app.execute(f.auth.actor, preview(f, role.id)).preview!;
+  f.queue.pump(); await started;
+  releaseInspect();
+  await reconciliation;
+  const live = f.app.job(f.auth.actor, f.project.id, run.jobId);
+  expect(live.attempts[0]).toMatchObject({ state: "dispatched", transport: "dispatched", nativeState: "running" });
+  const stop = f.app.execute(f.auth.actor, { kind: "job.stop", requestId: rid(), projectId: f.project.id,
+    expectedRevision: live.revision, payload: { jobId: run.jobId } });
+  expect(stop.stop).toMatchObject({ transport: "cancellation_requested", attemptIds: [live.attempts[0]!.id] });
+  await f.queue.reconcile(f.port);
+  const after = f.app.job(f.auth.actor, f.project.id, run.jobId);
+  expect(after.attempts[0]).toMatchObject({ transport: "dispatched", nativeState: "running" });
+  expect(after.stop?.transport).toBe("cancellation_requested");
+  expect(after.stop?.transport).not.toBe("observed_stopped");
+  expect(after.occupiesAdmission).toBe(true);
+  releaseScript(); await f.queue.idle();
+});
+
+test("K2: owner stop during stale empty inspect must not report observed_stopped", async () => {
+  let releaseScript!: () => void, entered!: () => void;
+  const scriptGate = new Promise<void>(r => { releaseScript = r; }); releases.push(releaseScript);
+  const started = new Promise<void>(r => { entered = r; });
+  const f = await fixture({ script: async () => { entered(); await scriptGate; return fixtureOutcome("complete", "late"); } });
+  let releaseInspect!: () => void; const inspectGate = new Promise<void>(r => { releaseInspect = r; }); releases.push(releaseInspect);
+  let hitEmpty!: () => void; const emptyHit = new Promise<void>(r => { hitEmpty = r; });
+  const gated: ApplicationRunPort = {
+    invoke: (...args) => f.port.invoke(...args),
+    inspectRuns: async after => {
+      const page = await f.port.inspectRuns(after);
+      if (page.nextAfter === null && page.items.length === 0) {
+        hitEmpty();
+        await inspectGate; // hold the empty snapshot across admit, start, and owner stop
+      }
+      return page;
+    },
+    retire: context => f.port.retire(context), delete: context => f.port.delete(context),
+  };
+  const role = f.app.execute(f.auth.actor, save(f, { route: grok })).role!;
+  const reconciliation = f.queue.reconcile(gated);
+  await emptyHit;
+  const run = f.app.execute(f.auth.actor, preview(f, role.id)).preview!;
+  f.queue.pump(); await started;
+  const live = f.app.job(f.auth.actor, f.project.id, run.jobId);
+  expect(live.attempts[0]).toMatchObject({ state: "dispatched", transport: "dispatched" });
+  const stop = f.app.execute(f.auth.actor, { kind: "job.stop", requestId: rid(), projectId: f.project.id,
+    expectedRevision: live.revision, payload: { jobId: run.jobId } });
+  expect(stop.stop).toMatchObject({ transport: "cancellation_requested", attemptIds: [live.attempts[0]!.id] });
+  expect(f.app.job(f.auth.actor, f.project.id, run.jobId)).toMatchObject({
+    occupiesAdmission: true, attempts: [{ state: "interrupted", transport: "dispatched" }],
+  });
+  releaseInspect();
+  await reconciliation;
+  const afterStale = f.app.job(f.auth.actor, f.project.id, run.jobId);
+  expect(afterStale.attempts[0]).toMatchObject({ state: "interrupted", transport: "dispatched" });
+  expect(afterStale.stop).toMatchObject({ transport: "cancellation_requested" });
+  expect(afterStale.stop?.transport).not.toBe("observed_stopped");
+  expect(afterStale.occupiesAdmission).toBe(true);
+  // Fresh inspect can see the still-running native worker; false settlement must not persist.
+  await f.queue.reconcile(f.port);
+  const afterFresh = f.app.job(f.auth.actor, f.project.id, run.jobId);
+  expect(afterFresh.attempts[0]).toMatchObject({ transport: "dispatched", nativeState: "running" });
+  expect(afterFresh.stop).toMatchObject({ transport: "cancellation_requested" });
+  expect(afterFresh.stop?.transport).not.toBe("observed_stopped");
+  releaseScript(); await f.queue.idle();
+});
+
+test("max-sized TEAM01-accepted preview request is not rejected by attempt envelope overhead", async () => {
+  const f = await fixture({ env: { JIT_PREVIEW_CONTEXT_BYTES: "65536", JIT_JOB_INPUT_BYTES: "16384" } });
+  const role = f.app.execute(f.auth.actor, save(f, { route: grok })).role!;
+  // Build a request body that fills the TEAM context ceiling; wrapper native refs must not cause admission rejection.
+  const filler = "y".repeat(60_000);
+  const source = f.store.transaction(tx => commitOwnerSource(tx, {
+    projectId: f.project.id, descriptor: { kind: "message", topicId: f.topic.id, messageId: rid() }, text: filler, committedAt: epoch,
+  }));
+  const cmd = { ...preview(f, role.id), payload: { ...preview(f, role.id).payload, sources: [source] } };
+  const run = f.app.execute(f.auth.actor, cmd).preview!;
+  expect(Buffer.byteLength(JSON.stringify(run.request))).toBeGreaterThan(f.config.jobs.inputBytes);
+  expect(Buffer.byteLength(JSON.stringify(run.request))).toBeLessThanOrEqual(f.config.team.contextBytes);
+  expect(() => f.queue.pump()).not.toThrow();
+  await f.queue.idle();
+  expect(f.app.jobs(f.auth.actor, f.project.id).admission.available).toBe(true);
+  expect(f.app.preview(f.auth.actor, f.project.id, run.id).job.state).toBe("succeeded");
 });

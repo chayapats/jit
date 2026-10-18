@@ -1,3 +1,4 @@
+import type { JobAttempt, AttemptPreparation } from "./attempts";
 import type { AppTransaction } from "../store";
 
 /** JSON data accepted as a bounded work input or checkpoint, never executable authority. */
@@ -20,7 +21,7 @@ export interface JobRoute { provider: string; model: string | null; authRoute: s
 export type JobState = "queued" | "admitted" | "waiting" | "succeeded" | "blocked" | "partial" | "failed";
 /** Safe finite reason codes instead of raw adapter/store diagnostics. */
 export type JobReason = "queued" | "running" | "complete" | "yielded" | "quota" | "needs_login" | "route_unavailable"
-  | "budget_exhausted" | "deadline" | "worker_failed" | "interrupted" | "configuration_changed" | "authorization_changed" | "input_changed";
+  | "cancelled" | "revoked" | "superseded" | "source_retired" | "context_retired" | "lease_expired" | "budget_exhausted" | "deadline" | "worker_failed" | "interrupted" | "configuration_changed" | "authorization_changed" | "input_changed";
 /** Committed owner-visible work, its immutable scope/configuration, and remaining reservation budgets. */
 export interface Job {
   id: string; projectId: string; revision: number; type: string; purpose: string;
@@ -43,9 +44,19 @@ export interface ResumeJobCommand {
   kind: "job.resume"; requestId: string; projectId: string; expectedRevision: number; payload: { jobId: string };
 }
 /** Job mutations share global owner command receipts with project and conversation commands. */
-export type JobCommand = EnqueueJobCommand | ResumeJobCommand;
+export interface StopJobCommand {
+  kind: "job.stop"; requestId: string; projectId: string; expectedRevision: number; payload: { jobId: string };
+}
+/** Stop acknowledgment records authority separately from observed transport termination. */
+export interface JobStopOutcome {
+  requestedAt: number; fencedAt: number;
+  transport: "not_dispatched" | "cancellation_requested" | "observed_stopped" | "unknown";
+  /** Attempts whose transport must settle before stop can become observed_stopped. */
+  attemptIds: string[];
+}
+export type JobCommand = EnqueueJobCommand | ResumeJobCommand | StopJobCommand;
 /** A receipt acknowledges the job snapshot only after its transaction commits. */
-export interface JobReceipt { job: Job }
+export interface JobReceipt { job: Job; stop?: JobStopOutcome }
 /** A trusted adapter's bounded step outcome; waiting never implies a replacement route. */
 export type WorkOutcome = { state: "succeeded"; evidence: string }
   | { state: "yield"; checkpoint: JobData }
@@ -53,13 +64,21 @@ export type WorkOutcome = { state: "succeeded"; evidence: string }
   | { state: "failed"; reason: "worker_failed"; evidence?: string };
 /** A trusted work step receives cancellation and an atomic reservation port, not owner command authority. */
 export interface WorkContext {
-  job: Readonly<Job>; signal: AbortSignal;
+  job: Readonly<Job>; attempt: Readonly<JobAttempt>; signal: AbortSignal;
+  /** Atomically gates service-owned output/tasks/memory/outbox changes and the app result; native finish is insufficient. */
+  commit(outcome: WorkOutcome, mutate?: (tx: AppTransaction) => void): boolean;
   /** Reserves finite usage before spending it; rejection grants no call or retry authority. */
   reserve(usage: JobUsage): void;
 }
 /** Process-owned work registration; user/model data cannot register code or change its exact route. */
 export interface WorkDefinition {
   id: string; title: string; revision: number; route: JobRoute; cost: JobUsage;
+  /** Only explicitly read-only interrupted work may be resumed; unspecified/mutation/send require manual resolution. */
+  replay?: "read" | "mutation" | "send";
+  /** Captures native identities and immutable adapter input inside admission, before any dispatch. */
+  prepare?(tx: AppTransaction, job: Job, generation: number): AttemptPreparation;
+  /** Rechecks source/context freshness inside each reservation and result transaction. */
+  isCurrent?(tx: AppTransaction, job: Job, attempt: JobAttempt): boolean;
   /** Validates immutable input scope without changing state or contacting a provider. */
   validate(input: JobData, scope: { projectId: string; projectRevision: number; inputRevision: number }): boolean;
   /** Performs one reserved step, honors cancellation and returns bounded evidence without route fallback. */
