@@ -15,6 +15,8 @@ export interface JobAttempt extends AttemptPreparation {
   reason: JobReason | null;
   nativeState: "uninspected" | "missing" | "running" | "finished";
   contextState: "none" | "pending" | "retired" | "deleted" | "retire_failed" | "delete_failed";
+  /** Transport engagement is independent of attempt commit/yield; settled only when the worker finalizes. */
+  transport: "none" | "dispatched" | "settled";
 }
 /** Lists one job's inspectable attempts in insertion order, without reviving execution. */
 export function readAttempts(tx: AppTransaction, jobId: string): JobAttempt[] {
@@ -30,21 +32,34 @@ export function readAttempt(tx: AppTransaction, attemptId: string): JobAttempt {
 export function saveAttempt(tx: AppTransaction, attempt: JobAttempt): void {
   tx.run("UPDATE job_attempts SET record_json = ? WHERE id = ?", JSON.stringify(attempt), attempt.id);
 }
+/** Attempts whose in-flight or recovered transport has not settled yet. */
+export function unsettledTransportAttempts(tx: AppTransaction, jobId: string): JobAttempt[] {
+  return readAttempts(tx, jobId).filter(attempt => {
+    if (attempt.transport === "dispatched") return true;
+    if (attempt.transport === "settled" || attempt.transport === "none") return false;
+    // Pre-transport-field rows: leaving prepared implies dispatch that never settled in-process.
+    return attempt.nativeState !== "uninspected" && ["dispatched", "interrupted", "rejected", "committed"].includes(attempt.state);
+  });
+}
 /** Invalidates authority synchronously; cancellation is requested only after this transaction commits. */
 export function invalidateJob(tx: AppTransaction, jobId: string, reason: JobReason, now: number, stop = false): JobStopOutcome | null {
   const prior = tx.get<{ stop_json: string | null }>("SELECT stop_json FROM job_authority WHERE job_id = ?", jobId);
   const attempts = readAttempts(tx, jobId);
   const active = attempts.filter(a => ["prepared", "dispatched"].includes(a.state));
-  // Dispatched work (including non-model) and recovered interrupted attempts that left prepared need cancel uncertainty.
-  const needsCancel = attempts.some(a => a.state === "dispatched"
-    || (a.state === "interrupted" && a.nativeState !== "uninspected"));
+  const unsettled = unsettledTransportAttempts(tx, jobId);
+  const needsCancel = unsettled.length > 0 || active.some(a => a.state === "dispatched");
   const outcome: JobStopOutcome | null = stop ? prior?.stop_json ? JSON.parse(prior.stop_json) : {
-    requestedAt: now, fencedAt: now, transport: needsCancel || active.some(a => a.state === "dispatched") ? "cancellation_requested" : "not_dispatched",
+    requestedAt: now, fencedAt: now,
+    transport: needsCancel ? "cancellation_requested" : "not_dispatched",
+    attemptIds: [...new Set([...unsettled, ...active.filter(a => a.state === "dispatched")].map(a => a.id))],
   } : null;
   tx.run("UPDATE job_authority SET generation = generation + 1, reason = ?, stop_json = coalesce(?, stop_json) WHERE job_id = ?", reason, outcome ? JSON.stringify(outcome) : null, jobId);
   for (const attempt of active) {
     // Preserve that dispatch happened so a later owner stop after restart cannot claim not_dispatched.
-    if (attempt.state === "dispatched" && attempt.nativeState === "uninspected") attempt.nativeState = "missing";
+    if (attempt.state === "dispatched") {
+      if (attempt.nativeState === "uninspected") attempt.nativeState = attempt.native ? "running" : "missing";
+      if (attempt.transport === "none") attempt.transport = "dispatched";
+    }
     attempt.state = "interrupted"; attempt.reason = reason; saveAttempt(tx, attempt);
   }
   return outcome;

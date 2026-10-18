@@ -1,7 +1,7 @@
 import { reconcileContext, reconcileSessions } from "./reconcile";
 import type { ApplicationRunPort } from "../team/run-port";
 import type { ManagedContextReference } from "../team/types";
-import { attemptAuthority, invalidateJob, readAttempt, readAttempts, saveAttempt, type JobAttempt } from "./attempts";
+import { attemptAuthority, invalidateJob, readAttempt, readAttempts, saveAttempt, unsettledTransportAttempts, type JobAttempt } from "./attempts";
 import { createHash } from "node:crypto";
 import { AppError } from "../errors";
 import { TransactionStore, type AppTransaction } from "../store";
@@ -143,10 +143,24 @@ export class JobQueue {
     store.transaction(tx => {
       const owner = tx.get<{ pid: number }>("SELECT pid FROM job_scheduler WHERE id = 1");
       if (owner && (!positive(owner.pid, 2_147_483_647) || isAlive(owner.pid))) throw new AppError("scheduler_unavailable", 503);
-      // Include admitted jobs that lost occupancy after a failed result commit so reopen can reconcile/resume.
+      const recoverIds = new Set<string>();
       for (const row of tx.all<{ record_json: string }>("SELECT record_json FROM jobs WHERE occupies = 1 OR state = 'admitted'")) {
+        recoverIds.add(JSON.parse(row.record_json).id);
+      }
+      // Unsettled early yield/wait may have cleared occupancy incorrectly; still recover by transport evidence.
+      for (const row of tx.all<{ job_id: string; record_json: string }>("SELECT job_id, record_json FROM job_attempts")) {
+        const attempt = JSON.parse(row.record_json) as JobAttempt;
+        if (attempt.transport === "dispatched") recoverIds.add(row.job_id);
+      }
+      for (const id of recoverIds) {
+        const row = tx.get<{ record_json: string }>("SELECT record_json FROM jobs WHERE id = ?", id);
+        if (!row) continue;
         const job = JSON.parse(row.record_json) as Job;
-        if (job.state === "admitted") { invalidateJob(tx, job.id, "interrupted", this.#time()); this.#transition(job, "waiting", "interrupted"); }
+        // Preserve settlement uncertainty for admitted work and for queued/waiting jobs with unsettled workers.
+        if (job.state === "admitted" || (["queued", "waiting"].includes(job.state) && (job.occupiesAdmission || unsettledTransportAttempts(tx, job.id).length))) {
+          invalidateJob(tx, job.id, "interrupted", this.#time());
+          this.#transition(job, "waiting", "interrupted");
+        }
         const authority = tx.get<{ stop_json: string | null }>("SELECT stop_json FROM job_authority WHERE job_id = ?", job.id);
         if (authority?.stop_json) { const stop = JSON.parse(authority.stop_json); if (stop.transport === "cancellation_requested") { stop.transport = "unknown";
           tx.run("UPDATE job_authority SET stop_json = ? WHERE job_id = ?", JSON.stringify(stop), job.id); } }
@@ -182,7 +196,10 @@ export class JobQueue {
     if (command.kind === "job.resume") {
       const job = readJob(tx, command.projectId, command.payload.jobId);
       if (job.revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
-      if (job.state !== "waiting" || this.#active.has(job.id)) throw new AppError("job_not_resumable", 409);
+      // Native transports must settle before resume; local-only dispatched workers die with the process.
+      if (job.state !== "waiting" || this.#active.has(job.id) || unsettledTransportAttempts(tx, job.id).some(a => a.native)) {
+        throw new AppError("job_not_resumable", 409);
+      }
       const entry = this.#definitions.get(job.type);
       if (!entry || entry.fingerprint !== job.configuration.fingerprint || job.configuration.policyRevision !== this.policy.revision) throw new AppError("job_configuration_changed", 409);
       if (job.remaining.retries < 1 || now >= job.deadlineAt) {
@@ -234,7 +251,12 @@ export class JobQueue {
               : this.#time() >= job.deadlineAt ? "deadline" : null;
             try { validateJobLimits(job.limits, this.policy.maximum); } catch { reason = "configuration_changed"; }
             if (!reason) { try { if (!entry!.definition.validate(job.input, { projectId: job.projectId, projectRevision: project?.revision ?? -1, inputRevision: job.inputRevision })) reason = "input_changed"; } catch { reason = "input_changed"; } }
-            if (reason) { this.#transition(job, reason === "deadline" ? "failed" : "blocked", reason); this.#save(tx, job, false); continue; }
+            // Occupancy must outlive yield/freshness until the in-process worker settles.
+            if (reason) {
+              this.#transition(job, reason === "deadline" ? "failed" : "blocked", reason);
+              this.#save(tx, job, this.#active.has(job.id));
+              continue;
+            }
             // An unsettled in-process worker (including early yield commit) still owns this job.
             if (job.state === "waiting" || occupied >= this.policy.concurrency || this.#active.has(job.id)) continue;
             const routeSlots = tx.get<{ count: number }>("SELECT count(*) AS count FROM jobs WHERE occupies = 1 AND route_key = ?", routeKey(job.route))!.count;
@@ -256,7 +278,7 @@ export class JobQueue {
             }
             const attempt: JobAttempt = { ...preparation, id: crypto.randomUUID(), jobId: job.id, generation: attemptGeneration,
               scheduler: this.#token, leaseUntil: Math.min(job.deadlineAt, this.#time() + this.#leaseMs), snapshot: structuredClone(job), createdAt: this.#time(),
-              state: "prepared", reason: null, nativeState: "uninspected", contextState: preparation.native ? "pending" : "none" };
+              state: "prepared", reason: null, nativeState: "uninspected", contextState: preparation.native ? "pending" : "none", transport: "none" };
             tx.run("INSERT INTO job_attempts (id, job_id, record_json) VALUES (?, ?, ?)", attempt.id, job.id, JSON.stringify(attempt));
             return { job, attempt, definition: entry!.definition };
           }
@@ -347,7 +369,10 @@ export class JobQueue {
       this.store.transaction(tx => {
         this.assertOwner(tx); const current = readAttempt(tx, attempt.id);
         if (abort.signal.aborted || this.#current(tx, job, current)) throw new AppError("job_interrupted");
-        current.state = "dispatched"; saveAttempt(tx, current);
+        current.state = "dispatched";
+        current.transport = "dispatched";
+        if (current.nativeState === "uninspected") current.nativeState = current.native ? "running" : "missing";
+        saveAttempt(tx, current);
       });
       return definition.run({ job: structuredClone(job), attempt: structuredClone(attempt), signal: abort.signal,
         commit: (outcome, mutate) => this.#finish(job, attempt, outcome, mutate),
@@ -369,11 +394,16 @@ export class JobQueue {
         if (!this.#owns(tx)) return;
         const current = readJob(tx, job.projectId, job.id);
         const live = readAttempt(tx, attempt.id);
+        live.transport = "settled";
+        saveAttempt(tx, live);
         const authority = tx.get<{ stop_json: string | null }>("SELECT stop_json FROM job_authority WHERE job_id = ?", job.id);
-        if (authority?.stop_json && ["dispatched", "interrupted", "rejected", "committed"].includes(live.state)) {
+        if (authority?.stop_json) {
           const stop = JSON.parse(authority.stop_json);
-          if (stop.transport !== "not_dispatched") stop.transport = "observed_stopped";
-          tx.run("UPDATE job_authority SET stop_json = ? WHERE job_id = ?", JSON.stringify(stop), job.id);
+          const watched = Array.isArray(stop.attemptIds) ? stop.attemptIds.includes(attempt.id) : stop.transport !== "not_dispatched";
+          if (watched && stop.transport !== "not_dispatched") {
+            stop.transport = "observed_stopped";
+            tx.run("UPDATE job_authority SET stop_json = ? WHERE job_id = ?", JSON.stringify(stop), job.id);
+          }
         }
         // Failed result commits leave admitted+dispatched; mark interrupted so reopen/resume can reconcile.
         if (current.state === "admitted" && current.steps === attempt.snapshot.steps) {
@@ -407,14 +437,16 @@ export class JobQueue {
         if (outcome?.state === "succeeded" && typeof outcome.evidence === "string" && outcome.evidence.length && Buffer.byteLength(outcome.evidence) <= this.policy.outputBytes) {
           mutate?.(tx); job.evidence = outcome.evidence; this.#transition(job, "succeeded", "complete"); accepted = true;
         } else if (outcome?.state === "yield") {
-          job.checkpoint = JSON.parse(jobData(outcome.checkpoint, this.policy.inputBytes)); this.#transition(job, "queued", "yielded");
+          job.checkpoint = JSON.parse(jobData(outcome.checkpoint, this.policy.inputBytes)); this.#transition(job, "queued", "yielded"); accepted = true;
         } else if (outcome?.state === "waiting" && ["quota", "needs_login", "route_unavailable"].includes(outcome.reason)) {
           if (outcome.checkpoint !== undefined) job.checkpoint = JSON.parse(jobData(outcome.checkpoint, this.policy.inputBytes));
           this.#transition(job, job.remaining.retries ? "waiting" : "blocked", job.remaining.retries ? outcome.reason : "budget_exhausted");
+          accepted = true;
         } else if (outcome?.state === "failed" && typeof outcome.evidence === "string" && outcome.evidence.length && Buffer.byteLength(outcome.evidence) <= this.policy.outputBytes) {
           job.evidence = outcome.evidence; this.#transition(job, "partial", "worker_failed");
         } else this.#transition(job, "failed", "worker_failed");
         attempt.state = "committed"; attempt.reason = job.reason; saveAttempt(tx, attempt);
+        // Keep occupancy until the worker finalizer settles, including early yield/wait commits.
         this.#save(tx, job, true, job.state === "queued"); return accepted;
       });
     } catch { this.#fault = true; return false; }

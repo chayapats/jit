@@ -417,7 +417,7 @@ test("owner stop persists fencing before abort, replays its receipt and reports 
   expect(() => f.app.execute({ ...f.auth.actor }, stop)).toThrow("authentication_required");
   const response = await f.web(request(f, `/api/projects/${f.project.id}/jobs/${original.id}/stop`, { requestId: stop.requestId, expectedRevision: stop.expectedRevision }));
   expect(response.status).toBe(200); const receipt = await response.json(); expect(aborted).toBe(true);
-  expect(receipt.stop).toEqual({ requestedAt: epoch, fencedAt: epoch, transport: "cancellation_requested" });
+  expect(receipt.stop).toMatchObject({ requestedAt: epoch, fencedAt: epoch, transport: "cancellation_requested", attemptIds: [job(f, original.id).attempts[0]!.id] });
   expect(f.app.execute(f.auth.actor, stop)).toEqual(receipt);
   expect(job(f, original.id)).toMatchObject({ state: "blocked", reason: "cancelled", occupiesAdmission: true });
   release(); await f.queue.idle(); expect(changed).toBe(false);
@@ -565,44 +565,68 @@ for (const field of ["input", "authorization", "configuration"] as const) test(`
   release(); await f.queue.idle(); expect(accepted).toBe(false); expect(job(f, original.id).evidence).toBeNull();
 });
 
-test("early yield commit cannot dispatch a second worker or lose stop tracking for the unsettled one", async () => {
-  let releaseFirst!: () => void, releaseSecond!: () => void, enteredSecond!: () => void, secondAborted = false;
+test("early yield commit retains occupancy and cannot dispatch another job or lose stop tracking", async () => {
+  let releaseFirst!: () => void, releasePeer!: () => void, enteredFirst!: () => void, firstAborted = false;
   const firstGate = new Promise<void>(r => { releaseFirst = r; }); releases.push(releaseFirst);
-  const secondGate = new Promise<void>(r => { releaseSecond = r; }); releases.push(releaseSecond);
-  const secondStarted = new Promise<void>(r => { enteredSecond = r; });
-  let workers = 0;
-  const f = await fixture({ env: { JIT_JOB_CONCURRENCY: "2" }, definitions: [definition(async context => {
-    const n = ++workers;
-    if (n === 1) {
-      expect(context.commit({ state: "yield", checkpoint: { step: 1 } })).toBe(true);
-      f.queue.pump(); // Must not admit another worker while this one is still unsettled.
-      expect(job(f, context.job.id).attempts).toHaveLength(1);
-      await firstGate;
-      return { state: "succeeded", evidence: "late first" };
-    }
-    context.signal.addEventListener("abort", () => { secondAborted = true; });
-    enteredSecond(); await secondGate;
-    return { state: "succeeded", evidence: "second" };
-  })] });
+  const peerGate = new Promise<void>(r => { releasePeer = r; }); releases.push(releasePeer);
+  const firstStarted = new Promise<void>(r => { enteredFirst = r; });
+  let workers = 0, peerWorkers = 0;
+  const work = definition(async context => {
+    workers++;
+    expect(context.commit({ state: "yield", checkpoint: { step: 1 } })).toBe(true);
+    enteredFirst();
+    context.signal.addEventListener("abort", () => { firstAborted = true; });
+    // Stall after durable yield so occupancy must outlive the commit.
+    await firstGate;
+    return { state: "failed", reason: "worker_failed" };
+  });
+  const peer = { ...definition(async () => { peerWorkers++; await peerGate; return { state: "succeeded", evidence: "peer" }; }), id: "fixture.peer",
+    route: { provider: "fixture", model: "peer", authRoute: "subscription-b" } };
+  const f = await fixture({ env: { JIT_JOB_CONCURRENCY: "1" }, definitions: [work, peer] });
   const original = f.app.execute(f.auth.actor, command(f)).job;
-  f.queue.pump();
-  await Promise.resolve(); await Promise.resolve();
+  const other = f.app.execute(f.auth.actor, command(f, { type: peer.id })).job;
+  f.queue.pump(); await firstStarted;
   expect(workers).toBe(1);
-  expect(job(f, original.id)).toMatchObject({ state: "queued", reason: "yielded", attempts: [{ state: "committed" }] });
-  // idle must wait for the unsettled first worker; it must not resolve while a second illicit worker runs.
-  const idle = f.queue.idle();
-  releaseFirst();
-  await idle;
-  expect(workers).toBe(1);
-  f.queue.pump(); await secondStarted;
-  expect(workers).toBe(2);
+  expect(job(f, original.id)).toMatchObject({ state: "queued", reason: "yielded", occupiesAdmission: true, attempts: [{ state: "committed", transport: "dispatched" }] });
+  f.queue.pump(); // Must not admit the peer while the yielded worker is unsettled.
+  expect(peerWorkers).toBe(0);
+  expect(job(f, other.id).state).toBe("queued");
   const stop = f.app.execute(f.auth.actor, { kind: "job.stop", requestId: crypto.randomUUID(), projectId: f.project.id,
     expectedRevision: job(f, original.id).revision, payload: { jobId: original.id } });
-  expect(stop.stop?.transport).toBe("cancellation_requested");
-  expect(secondAborted).toBe(true);
-  releaseSecond(); await f.queue.idle();
-  expect(job(f, original.id)).toMatchObject({ reason: "cancelled", evidence: null, stop: { transport: "observed_stopped" } });
-  expect(job(f, original.id).attempts.map(a => a.state)).toEqual(["committed", "rejected"]);
+  expect(stop.stop).toMatchObject({ transport: "cancellation_requested", attemptIds: [job(f, original.id).attempts[0]!.id] });
+  expect(firstAborted).toBe(true);
+  releaseFirst(); await f.queue.idle();
+  expect(job(f, original.id)).toMatchObject({ reason: "cancelled", evidence: null, occupiesAdmission: false, stop: { transport: "observed_stopped" } });
+  expect(job(f, original.id).attempts[0]).toMatchObject({ transport: "settled" });
+  f.queue.pump(); releasePeer(); await f.queue.idle();
+  expect(peerWorkers).toBe(1);
+  expect(job(f, other.id).state).toBe("succeeded");
+});
+
+test("restart after unsettled early yield interrupts queued work and blocks mutation replay", async () => {
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(r => { release = r; }); releases.push(release);
+  const started = new Promise<void>(r => { entered = r; });
+  const work = definition(async context => {
+    context.commit({ state: "yield", checkpoint: { step: 1 } });
+    entered(); await gate;
+    return { state: "failed", reason: "worker_failed" };
+  });
+  work.replay = "mutation";
+  const f = await fixture({ definitions: [work] }), original = f.app.execute(f.auth.actor, command(f)).job;
+  f.queue.pump(); await started;
+  expect(job(f, original.id)).toMatchObject({ state: "queued", reason: "yielded", occupiesAdmission: true });
+  const recovered = new JobQueue(f.store, f.config.jobs, [work], { now: () => f.clock.now, timers: f.clock.timers, isAlive: () => false }); queues.push(recovered);
+  const app = new Application(f.store, f.config, { jobs: recovered, now: () => f.clock.now }), actor = app.authenticate(f.token).actor;
+  const waiting = app.job(actor, f.project.id, original.id);
+  // Yield already committed the attempt; takeover still marks the job interrupted and applies replay rules.
+  expect(waiting).toMatchObject({ state: "waiting", reason: "interrupted", attempts: [{ state: "committed", reason: "yielded" }] });
+  expect(() => app.execute(actor, { kind: "job.resume", requestId: crypto.randomUUID(), projectId: f.project.id,
+    expectedRevision: waiting.revision, payload: { jobId: original.id } })).toThrow("job_requires_manual_reconciliation");
+  recovered.pump();
+  expect(app.job(actor, f.project.id, original.id)).toMatchObject({ state: "waiting", reason: "interrupted" });
+  expect(app.job(actor, f.project.id, original.id).attempts).toHaveLength(1);
+  release(); await f.queue.idle();
 });
 
 test("stop after restart of an interrupted recovered attempt requests cancellation, not not_dispatched", async () => {

@@ -48,7 +48,12 @@ export interface StopJobCommand {
   kind: "job.stop"; requestId: string; projectId: string; expectedRevision: number; payload: { jobId: string };
 }
 /** Stop acknowledgment records authority separately from observed transport termination. */
-export interface JobStopOutcome { requestedAt: number; fencedAt: number; transport: "not_dispatched" | "cancellation_requested" | "observed_stopped" | "unknown" }
+export interface JobStopOutcome {
+  requestedAt: number; fencedAt: number;
+  transport: "not_dispatched" | "cancellation_requested" | "observed_stopped" | "unknown";
+  /** Attempts whose transport must settle before stop can become observed_stopped. */
+  attemptIds: string[];
+}
 export type JobCommand = EnqueueJobCommand | ResumeJobCommand | StopJobCommand;
 /** A receipt acknowledges the job snapshot only after its transaction commits. */
 export interface JobReceipt { job: Job; stop?: JobStopOutcome }

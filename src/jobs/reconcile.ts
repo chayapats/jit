@@ -42,7 +42,21 @@ function mergeLifecycle(current: string, incoming: ManagedContextOutcome["state"
 export async function reconcileContext(store: TransactionStore, port: ApplicationRunPort, record: SessionReconciliation,
   now: number, afterFence: () => void = () => {}): Promise<SessionReconciliation> {
   record = { ...record, deleteRequested: stickyDelete(store, record.context, record.deleteRequested) };
+  let skipped = false;
   store.transaction(tx => {
+    // Recheck ownership only for automatic unowned cleanup; explicit retireContext must still fence.
+    if (record.kind === "context" && record.nextAction === "inspect_unowned_app_context") {
+      const owned = tx.all<{ record_json: string }>("SELECT record_json FROM job_attempts").some(row => {
+        const attempt = JSON.parse(row.record_json) as JobAttempt;
+        return !!attempt.native && same(attempt.native.context, record.context);
+      }) || !!tx.get<{ state: string }>(
+        `SELECT j.state AS state FROM team_contexts c
+         LEFT JOIN team_runs r ON r.context_id = c.id
+         LEFT JOIN jobs j ON j.id = r.job_id
+         WHERE c.id = ? AND c.generation = ? AND j.state IN ('queued', 'admitted', 'waiting')`,
+        record.context.id, record.context.generation);
+      if (owned) { skipped = true; return; }
+    }
     tx.run("UPDATE team_contexts SET state = 'retired' WHERE id = ? AND generation = ? AND state = 'active'", record.context.id, record.context.generation);
     for (const row of tx.all<{ record_json: string }>("SELECT record_json FROM job_attempts")) {
       const attempt = JSON.parse(row.record_json) as JobAttempt;
@@ -66,6 +80,7 @@ export async function reconcileContext(store: TransactionStore, port: Applicatio
     }
     tx.run("INSERT INTO job_reconciliation VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET record_json = excluded.record_json", record.id, JSON.stringify({ ...record, lifecycle: "pending" }));
   });
+  if (skipped) return { ...record, lifecycle: "not_requested", nextAction: "inspect_owned_context" };
   afterFence();
   let outcome: ManagedContextOutcome, retired = false;
   const deleteRequested = () => stickyDelete(store, record.context, record.deleteRequested);
@@ -163,14 +178,13 @@ export async function reconcileSessions(store: TransactionStore, port: Applicati
     if (run) matched.add(run);
     store.transaction(tx => {
       const current = readAttempt(tx, attempt.id); current.nativeState = run?.state ?? "missing"; saveAttempt(tx, current);
-      // Only the stopped attempt's native finish clarifies stop transport; earlier finished attempts must not.
-      const stopped = ["prepared", "dispatched"].includes(attempt.state)
-        || (["interrupted", "rejected"].includes(attempt.state) && attempt.reason === "cancelled");
-      if (run?.state === "finished" && stopped) {
-        const authority = tx.get<{ stop_json: string | null }>("SELECT stop_json FROM job_authority WHERE job_id = ?", attempt.jobId);
-        if (authority?.stop_json) {
-          const stop = JSON.parse(authority.stop_json);
-          if (stop.transport !== "not_dispatched") stop.transport = "observed_stopped";
+      // Finish observation uses the persisted stopped attempt identity, not the retained interrupt reason.
+      const authority = tx.get<{ stop_json: string | null }>("SELECT stop_json FROM job_authority WHERE job_id = ?", attempt.jobId);
+      if (run?.state === "finished" && authority?.stop_json) {
+        const stop = JSON.parse(authority.stop_json);
+        const watched = Array.isArray(stop.attemptIds) && stop.attemptIds.includes(attempt.id);
+        if (watched && stop.transport !== "not_dispatched") {
+          stop.transport = "observed_stopped";
           tx.run("UPDATE job_authority SET stop_json = ? WHERE job_id = ?", JSON.stringify(stop), attempt.jobId);
         }
       }
@@ -194,12 +208,14 @@ export async function reconcileSessions(store: TransactionStore, port: Applicati
   }
   // Pre-v5/native-free app references have no attempt to match. Preserve queued initial
   // contexts, but retire unowned or consumed contexts without fabricating attempt evidence.
-  const knownContexts = new Set(attempts.flatMap(a => a.native ? [`${a.native.context.id}:${a.native.context.generation}`] : []));
-  for (const run of native) knownContexts.add(`${run.context.id}:${run.context.generation}`);
+  // Re-read after awaits so a preview admitted during orphan retirement is not misclassified.
   const appContexts = store.read(tx => tx.all<{ id: string; generation: number; state: string; job_state: string | null }>(
     "SELECT c.id, c.generation, c.state, j.state AS job_state FROM team_contexts c LEFT JOIN team_runs r ON r.context_id = c.id LEFT JOIN jobs j ON j.id = r.job_id"));
+  const liveAttempts = store.read(tx => tx.all<{ record_json: string }>("SELECT record_json FROM job_attempts").map(r => JSON.parse(r.record_json) as JobAttempt));
+  const knownContexts = new Set(liveAttempts.flatMap(a => a.native ? [`${a.native.context.id}:${a.native.context.generation}`] : []));
+  for (const run of native) knownContexts.add(`${run.context.id}:${run.context.generation}`);
   for (const context of appContexts) {
-    if (knownContexts.has(`${context.id}:${context.generation}`) || context.job_state === "queued" || context.state === "deleted") continue;
+    if (knownContexts.has(`${context.id}:${context.generation}`) || ["queued", "admitted", "waiting"].includes(context.job_state ?? "") || context.state === "deleted") continue;
     handled.add(key(context));
     await reconcileContext(store, port, { id: `context:${context.id}:${context.generation}`, kind: "context",
       context: { id: context.id, generation: context.generation }, nativeState: "missing", appState: "missing",

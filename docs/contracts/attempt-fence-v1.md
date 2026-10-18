@@ -44,7 +44,9 @@ interface StopJobCommand {
 interface JobStopOutcome {
   requestedAt: number; fencedAt: number;
   transport: "not_dispatched" | "cancellation_requested" | "observed_stopped" | "unknown";
+  attemptIds: string[];
 }
+// JobAttempt.transport: "none" | "dispatched" | "settled" — independent of commit/yield.
 // JobReceipt adds stop?: JobStopOutcome.
 // Application.execute(actor, StopJobCommand): JobReceipt via the JobCommand overload.
 ```
@@ -53,7 +55,7 @@ These internal transaction functions require trusted service callers. `saveAttem
 
 ## Persistence and commit
 
-Admission atomically spends declared usage, advances generation and inserts a prepared attempt with immutable job/input/configuration/authorization snapshot, lease and preallocated native run/session/context references. Non-model work records `native: null`. `prepare` must be synchronous, bounded and free of native dispatch; it is a trusted registration callback, never owner/model-supplied code. The scripted preview stores its exact run request in attempt data. Attempt `data` is validated up to 64KiB (TEAM context ceiling) separately from the small native-reference envelope, so a TEAM01-accepted max-sized request is not rejected by wrapper overhead; a single invalid preparation blocks only that job without disabling scheduler availability. Early `commit({state:"yield"|"waiting"|...})` must not admit another worker for the same job while the prior in-process worker remains unsettled; finalizers are scoped to their attempt identity. A separate dispatch transaction checks the fence before invoking the adapter.
+Admission atomically spends declared usage, advances generation and inserts a prepared attempt with immutable job/input/configuration/authorization snapshot, lease and preallocated native run/session/context references. Non-model work records `native: null`. `prepare` must be synchronous, bounded and free of native dispatch; it is a trusted registration callback, never owner/model-supplied code. The scripted preview stores its exact run request in attempt data. Attempt `data` is validated up to 64KiB (TEAM context ceiling) separately from the small native-reference envelope, so a TEAM01-accepted max-sized request is not rejected by wrapper overhead; a single invalid preparation blocks only that job without disabling scheduler availability. Early `commit({state:"yield"|"waiting"|...})` must not admit another worker for the same job while the prior in-process worker remains unsettled; occupancy and `transport:"dispatched"` outlive yield/wait commits until the worker finalizer sets `transport:"settled"`. Finalizers are scoped to their attempt identity. Scheduler takeover marks occupied queued/waiting unsettled work as interrupted so mutation replay restrictions apply. A separate dispatch transaction checks the fence before invoking the adapter.
 
 `commit` runs the trusted producer callback only for a valid succeeded outcome and live authority. Callback state (such as attributed sources/messages, future tasks/memory/outbox), job evidence/state and attempt result commit together or all roll back. Repeated callbacks return false without invoking the producer again. The ordinary returned WorkOutcome uses the same gate. A committed attempt records a bounded step outcome, including waiting/yield/failure; it does not necessarily mean job success, accepted task or external delivery. A rolled-back result commit leaves the job waiting/interrupted (and startup also recovers any leftover admitted jobs) so eligible read resume remains possible after reopen.
 
