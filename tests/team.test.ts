@@ -526,3 +526,42 @@ test("context-sized preview preparation admits without disabling the scheduler",
   f.app.execute(f.auth.actor, { kind: "job.stop", requestId: rid(), projectId: f.project.id,
     expectedRevision: f.app.job(f.auth.actor, f.project.id, next.jobId).revision, payload: { jobId: next.jobId } });
 });
+
+test("successful deleted acknowledgment clears peer delete_failed blockers", async () => {
+  let deleteFails = true;
+  const f = await fixture({ deleteFails: () => deleteFails });
+  const role = f.app.execute(f.auth.actor, save(f, { route: grok })).role!, run = f.app.execute(f.auth.actor, preview(f, role.id)).preview!;
+  f.queue.pump();
+  const recovered = recover(f, { delete: () => deleteFails });
+  expect((await recovered.queue.retireContext(recovered.port, run.request.context, true)).lifecycle).toBe("delete_failed");
+  expect(recovered.app.job(recovered.actor, f.project.id, run.jobId).reconciliations.some(r => r.lifecycle === "delete_failed")).toBe(true);
+  deleteFails = false;
+  const cleared = await recovered.queue.retireContext(recovered.port, run.request.context, true);
+  expect(cleared).toMatchObject({ lifecycle: "deleted", deleteRequested: true });
+  const job = recovered.app.job(recovered.actor, f.project.id, run.jobId);
+  expect(job.reconciliations.every(r => r.lifecycle === "deleted")).toBe(true);
+  expect(job.reconciliations.some(r => r.lifecycle === "delete_failed")).toBe(false);
+  expect(job.attempts.every(a => a.contextState === "deleted")).toBe(true);
+  recovered.app.execute(recovered.actor, { kind: "job.resume", requestId: rid(), projectId: f.project.id,
+    expectedRevision: job.revision, payload: { jobId: run.jobId } });
+  recovered.queue.pump(); await recovered.queue.idle(); await f.queue.idle();
+  expect(recovered.app.job(recovered.actor, f.project.id, run.jobId).state).toBe("succeeded");
+});
+
+test("max-sized TEAM01-accepted preview request is not rejected by attempt envelope overhead", async () => {
+  const f = await fixture({ env: { JIT_PREVIEW_CONTEXT_BYTES: "65536", JIT_JOB_INPUT_BYTES: "16384" } });
+  const role = f.app.execute(f.auth.actor, save(f, { route: grok })).role!;
+  // Build a request body that fills the TEAM context ceiling; wrapper native refs must not cause admission rejection.
+  const filler = "y".repeat(60_000);
+  const source = f.store.transaction(tx => commitOwnerSource(tx, {
+    projectId: f.project.id, descriptor: { kind: "message", topicId: f.topic.id, messageId: rid() }, text: filler, committedAt: epoch,
+  }));
+  const cmd = { ...preview(f, role.id), payload: { ...preview(f, role.id).payload, sources: [source] } };
+  const run = f.app.execute(f.auth.actor, cmd).preview!;
+  expect(Buffer.byteLength(JSON.stringify(run.request))).toBeGreaterThan(f.config.jobs.inputBytes);
+  expect(Buffer.byteLength(JSON.stringify(run.request))).toBeLessThanOrEqual(f.config.team.contextBytes);
+  expect(() => f.queue.pump()).not.toThrow();
+  await f.queue.idle();
+  expect(f.app.jobs(f.auth.actor, f.project.id).admission.available).toBe(true);
+  expect(f.app.preview(f.auth.actor, f.project.id, run.id).job.state).toBe("succeeded");
+});

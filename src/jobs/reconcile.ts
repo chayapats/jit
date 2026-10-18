@@ -23,17 +23,18 @@ function save(store: TransactionStore, record: SessionReconciliation) {
 const same = (a: ManagedContextReference, b: ManagedContextReference) => a.id === b.id && a.generation === b.generation;
 const peersFor = (store: TransactionStore, context: ManagedContextReference) =>
   readReconciliations(store).filter(record => same(record.context, context));
-/** Deletion stays sticky across overlapping retire/delete calls for the same context generation. */
+/** Deletion stays sticky across overlapping retire/delete calls until a successful deleted acknowledgment. */
 const stickyDelete = (store: TransactionStore, context: ManagedContextReference, requested: boolean) =>
-  requested || peersFor(store, context).some(record => record.deleteRequested || record.lifecycle === "delete_failed");
+  requested || peersFor(store, context).some(record =>
+    record.lifecycle !== "deleted" && (record.deleteRequested || record.lifecycle === "delete_failed"));
 function nextActionFor(lifecycle: SessionReconciliation["lifecycle"], appState: SessionReconciliation["appState"]) {
   return lifecycle === "retire_failed" ? "retry_managed_retire" : lifecycle === "delete_failed" ? "retry_managed_delete"
     : appState === "committed" ? "inspect_committed_evidence" : "inspect_then_explicitly_resume_read_work";
 }
-/** Never let a weaker lifecycle erase delete_failed; deleted is the only success past that blocker. */
+/** Never let a weaker lifecycle erase delete_failed; a successful deleted ack clears that blocker. */
 function mergeLifecycle(current: string, incoming: ManagedContextOutcome["state"] | "pending"): JobAttempt["contextState"] | ManagedContextOutcome["state"] | "pending" {
-  if (current === "delete_failed" && incoming !== "deleted") return "delete_failed";
-  if (current === "deleted") return "deleted";
+  if (incoming === "deleted" || current === "deleted") return "deleted";
+  if (current === "delete_failed") return "delete_failed";
   return incoming;
 }
 
@@ -93,16 +94,21 @@ export async function reconcileContext(store: TransactionStore, port: Applicatio
   store.transaction(tx => {
     const peers = tx.all<{ record_json: string }>("SELECT record_json FROM job_reconciliation").map(row => JSON.parse(row.record_json) as SessionReconciliation)
       .filter(peer => same(peer.context, record.context));
-    const requested = next.deleteRequested || peers.some(peer => peer.deleteRequested || peer.lifecycle === "delete_failed");
     let lifecycle: SessionReconciliation["lifecycle"] = outcome.state;
-    if (peers.some(peer => peer.lifecycle === "delete_failed") && lifecycle !== "deleted") lifecycle = "delete_failed";
-    if (requested && lifecycle === "retired") lifecycle = "delete_failed";
-    next = { ...next, deleteRequested: requested, lifecycle, nextAction: nextActionFor(lifecycle, record.appState) };
+    if (lifecycle !== "deleted") {
+      if (peers.some(peer => peer.lifecycle === "delete_failed")) lifecycle = "delete_failed";
+      const requested = next.deleteRequested || peers.some(peer => peer.deleteRequested || peer.lifecycle === "delete_failed");
+      if (requested && lifecycle === "retired") lifecycle = "delete_failed";
+      next = { ...next, deleteRequested: requested, lifecycle, nextAction: nextActionFor(lifecycle, record.appState) };
+    } else {
+      // Successful deletion clears peer delete_failed blockers for this context generation.
+      next = { ...next, deleteRequested: true, lifecycle: "deleted", nextAction: nextActionFor("deleted", record.appState) };
+    }
     for (const row of tx.all<{ record_json: string }>("SELECT record_json FROM job_attempts")) {
       const attempt = JSON.parse(row.record_json) as JobAttempt;
       if (!attempt.native || !same(attempt.native.context, record.context)) continue;
       const current = readAttempt(tx, attempt.id);
-      const merged = mergeLifecycle(current.contextState, lifecycle as ManagedContextOutcome["state"]);
+      const merged = mergeLifecycle(current.contextState, next.lifecycle as ManagedContextOutcome["state"]);
       if (merged === "pending") continue;
       current.contextState = merged as JobAttempt["contextState"];
       saveAttempt(tx, current);
@@ -115,11 +121,15 @@ export async function reconcileContext(store: TransactionStore, port: Applicatio
         lifecycle: peer.lifecycle,
         nextAction: peer.nextAction,
       };
-      if (next.lifecycle === "delete_failed" || peer.lifecycle === "delete_failed") {
+      if (next.lifecycle === "deleted") {
+        merged.lifecycle = "deleted";
+        merged.deleteRequested = true;
+        merged.nextAction = nextActionFor("deleted", peer.appState);
+      } else if (next.lifecycle === "delete_failed" || peer.lifecycle === "delete_failed") {
         merged.lifecycle = "delete_failed";
         merged.deleteRequested = true;
         merged.nextAction = "retry_managed_delete";
-      } else if (next.lifecycle === "deleted" || next.lifecycle === "retired" || next.lifecycle === "retire_failed") {
+      } else if (next.lifecycle === "retired" || next.lifecycle === "retire_failed") {
         const lifecycle = mergeLifecycle(peer.lifecycle, next.lifecycle);
         if (lifecycle !== "pending") {
           merged.lifecycle = lifecycle as SessionReconciliation["lifecycle"];

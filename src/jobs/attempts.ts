@@ -33,12 +33,20 @@ export function saveAttempt(tx: AppTransaction, attempt: JobAttempt): void {
 /** Invalidates authority synchronously; cancellation is requested only after this transaction commits. */
 export function invalidateJob(tx: AppTransaction, jobId: string, reason: JobReason, now: number, stop = false): JobStopOutcome | null {
   const prior = tx.get<{ stop_json: string | null }>("SELECT stop_json FROM job_authority WHERE job_id = ?", jobId);
-  const active = readAttempts(tx, jobId).filter(a => ["prepared", "dispatched"].includes(a.state));
+  const attempts = readAttempts(tx, jobId);
+  const active = attempts.filter(a => ["prepared", "dispatched"].includes(a.state));
+  // Dispatched work (including non-model) and recovered interrupted attempts that left prepared need cancel uncertainty.
+  const needsCancel = attempts.some(a => a.state === "dispatched"
+    || (a.state === "interrupted" && a.nativeState !== "uninspected"));
   const outcome: JobStopOutcome | null = stop ? prior?.stop_json ? JSON.parse(prior.stop_json) : {
-    requestedAt: now, fencedAt: now, transport: active.some(a => a.state === "dispatched") ? "cancellation_requested" : "not_dispatched",
+    requestedAt: now, fencedAt: now, transport: needsCancel || active.some(a => a.state === "dispatched") ? "cancellation_requested" : "not_dispatched",
   } : null;
   tx.run("UPDATE job_authority SET generation = generation + 1, reason = ?, stop_json = coalesce(?, stop_json) WHERE job_id = ?", reason, outcome ? JSON.stringify(outcome) : null, jobId);
-  for (const attempt of active) { attempt.state = "interrupted"; attempt.reason = reason; saveAttempt(tx, attempt); }
+  for (const attempt of active) {
+    // Preserve that dispatch happened so a later owner stop after restart cannot claim not_dispatched.
+    if (attempt.state === "dispatched" && attempt.nativeState === "uninspected") attempt.nativeState = "missing";
+    attempt.state = "interrupted"; attempt.reason = reason; saveAttempt(tx, attempt);
+  }
   return outcome;
 }
 /** Shared non-model-worker gate; callers additionally compare current work/input policy in the same transaction. */

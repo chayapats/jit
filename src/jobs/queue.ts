@@ -111,7 +111,7 @@ export class JobQueue {
   #definitions = new Map<string, { definition: WorkDefinition; fingerprint: string }>();
   #token = crypto.randomUUID(); #pid: number; #now: () => number;
   #timers: NonNullable<SchedulerOptions["timers"]>;
-  #active = new Map<string, { abort: AbortController; timer: unknown; promise: Promise<unknown> }>();
+  #active = new Map<string, { attemptId: string; abort: AbortController; timer: unknown; promise: Promise<unknown> }>();
   #closing = false; #fault = false; #leaseMs: number;
 
   constructor(readonly store: TransactionStore, policy: JobPolicy, definitions: WorkDefinition[], options: SchedulerOptions = {}) {
@@ -235,7 +235,8 @@ export class JobQueue {
             try { validateJobLimits(job.limits, this.policy.maximum); } catch { reason = "configuration_changed"; }
             if (!reason) { try { if (!entry!.definition.validate(job.input, { projectId: job.projectId, projectRevision: project?.revision ?? -1, inputRevision: job.inputRevision })) reason = "input_changed"; } catch { reason = "input_changed"; } }
             if (reason) { this.#transition(job, reason === "deadline" ? "failed" : "blocked", reason); this.#save(tx, job, false); continue; }
-            if (job.state === "waiting" || occupied >= this.policy.concurrency) continue;
+            // An unsettled in-process worker (including early yield commit) still owns this job.
+            if (job.state === "waiting" || occupied >= this.policy.concurrency || this.#active.has(job.id)) continue;
             const routeSlots = tx.get<{ count: number }>("SELECT count(*) AS count FROM jobs WHERE occupies = 1 AND route_key = ?", routeKey(job.route))!.count;
             if (routeSlots >= this.policy.routeConcurrency) continue;
             if (!this.#spend(job, entry!.definition.cost)) { this.#save(tx, job, false); continue; }
@@ -245,8 +246,9 @@ export class JobQueue {
             let preparation: { native: JobAttempt["native"]; data: JobAttempt["data"] };
             try {
               preparation = entry!.definition.prepare?.(tx, structuredClone(job), attemptGeneration) ?? { native: null, data: null };
-              // Attempt envelopes may carry TEAM context-sized request snapshots (up to 64KiB); do not reuse the smaller enqueue inputBytes ceiling.
-              jobData(preparation, 65_536);
+              // TEAM accepts request bodies up to 64KiB; the attempt envelope adds small native refs beyond that.
+              jobData(preparation.data, 65_536);
+              jobData({ native: preparation.native }, 4096);
             } catch (error) {
               // Fail this job only; a single oversized/invalid preparation must not disable the scheduler.
               if (!(error instanceof AppError)) throw error;
@@ -358,23 +360,31 @@ export class JobQueue {
           if (!ok) { abort.abort(); throw new AppError("job_budget_exhausted"); }
         } });
     }).then(outcome => this.#finish(job, attempt, outcome), () => this.#finish(job, attempt, { state: "failed", reason: "worker_failed" })).finally(() => {
-      this.#timers.clear(timer); this.#active.delete(job.id);
+      this.#timers.clear(timer);
+      // Only the worker that still owns this job may clear tracking or release admission.
+      const tracked = this.#active.get(job.id);
+      if (!tracked || tracked.attemptId !== attempt.id) return;
+      this.#active.delete(job.id);
       try { this.store.transaction(tx => {
         if (!this.#owns(tx)) return;
         const current = readJob(tx, job.projectId, job.id);
+        const live = readAttempt(tx, attempt.id);
         const authority = tx.get<{ stop_json: string | null }>("SELECT stop_json FROM job_authority WHERE job_id = ?", job.id);
-        if (authority?.stop_json) { const stop = JSON.parse(authority.stop_json); if (stop.transport !== "not_dispatched") stop.transport = "observed_stopped";
-          tx.run("UPDATE job_authority SET stop_json = ? WHERE job_id = ?", JSON.stringify(stop), job.id); }
+        if (authority?.stop_json && ["dispatched", "interrupted", "rejected", "committed"].includes(live.state)) {
+          const stop = JSON.parse(authority.stop_json);
+          if (stop.transport !== "not_dispatched") stop.transport = "observed_stopped";
+          tx.run("UPDATE job_authority SET stop_json = ? WHERE job_id = ?", JSON.stringify(stop), job.id);
+        }
         // Failed result commits leave admitted+dispatched; mark interrupted so reopen/resume can reconcile.
-        if (current.state === "admitted") {
+        if (current.state === "admitted" && current.steps === attempt.snapshot.steps) {
           invalidateJob(tx, current.id, "interrupted", this.#time());
           this.#transition(current, "waiting", "interrupted");
           this.#save(tx, current, false);
-        } else if (current.occupiesAdmission) this.#save(tx, current, false);
+        } else if (current.occupiesAdmission && current.steps === attempt.snapshot.steps) this.#save(tx, current, false);
       }); } catch { this.#fault = true; }
       if (this.#closing && !this.#active.size) this.#release();
     });
-    this.#active.set(job.id, { abort, timer, promise });
+    this.#active.set(job.id, { attemptId: attempt.id, abort, timer, promise });
   }
 
   #finish(original: Job, reference: JobAttempt, outcome: WorkOutcome, mutate?: (tx: AppTransaction) => void): boolean {

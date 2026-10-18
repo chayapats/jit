@@ -564,3 +564,61 @@ for (const field of ["input", "authorization", "configuration"] as const) test(`
   });
   release(); await f.queue.idle(); expect(accepted).toBe(false); expect(job(f, original.id).evidence).toBeNull();
 });
+
+test("early yield commit cannot dispatch a second worker or lose stop tracking for the unsettled one", async () => {
+  let releaseFirst!: () => void, releaseSecond!: () => void, enteredSecond!: () => void, secondAborted = false;
+  const firstGate = new Promise<void>(r => { releaseFirst = r; }); releases.push(releaseFirst);
+  const secondGate = new Promise<void>(r => { releaseSecond = r; }); releases.push(releaseSecond);
+  const secondStarted = new Promise<void>(r => { enteredSecond = r; });
+  let workers = 0;
+  const f = await fixture({ env: { JIT_JOB_CONCURRENCY: "2" }, definitions: [definition(async context => {
+    const n = ++workers;
+    if (n === 1) {
+      expect(context.commit({ state: "yield", checkpoint: { step: 1 } })).toBe(true);
+      f.queue.pump(); // Must not admit another worker while this one is still unsettled.
+      expect(job(f, context.job.id).attempts).toHaveLength(1);
+      await firstGate;
+      return { state: "succeeded", evidence: "late first" };
+    }
+    context.signal.addEventListener("abort", () => { secondAborted = true; });
+    enteredSecond(); await secondGate;
+    return { state: "succeeded", evidence: "second" };
+  })] });
+  const original = f.app.execute(f.auth.actor, command(f)).job;
+  f.queue.pump();
+  await Promise.resolve(); await Promise.resolve();
+  expect(workers).toBe(1);
+  expect(job(f, original.id)).toMatchObject({ state: "queued", reason: "yielded", attempts: [{ state: "committed" }] });
+  // idle must wait for the unsettled first worker; it must not resolve while a second illicit worker runs.
+  const idle = f.queue.idle();
+  releaseFirst();
+  await idle;
+  expect(workers).toBe(1);
+  f.queue.pump(); await secondStarted;
+  expect(workers).toBe(2);
+  const stop = f.app.execute(f.auth.actor, { kind: "job.stop", requestId: crypto.randomUUID(), projectId: f.project.id,
+    expectedRevision: job(f, original.id).revision, payload: { jobId: original.id } });
+  expect(stop.stop?.transport).toBe("cancellation_requested");
+  expect(secondAborted).toBe(true);
+  releaseSecond(); await f.queue.idle();
+  expect(job(f, original.id)).toMatchObject({ reason: "cancelled", evidence: null, stop: { transport: "observed_stopped" } });
+  expect(job(f, original.id).attempts.map(a => a.state)).toEqual(["committed", "rejected"]);
+});
+
+test("stop after restart of an interrupted recovered attempt requests cancellation, not not_dispatched", async () => {
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(r => { release = r; }); releases.push(release);
+  const started = new Promise<void>(r => { entered = r; });
+  const work = definition(async () => { entered(); await gate; return { state: "succeeded", evidence: "late" }; });
+  const f = await fixture({ definitions: [work] }), original = f.app.execute(f.auth.actor, command(f)).job;
+  f.queue.pump(); await started;
+  const recovered = new JobQueue(f.store, f.config.jobs, [work], { now: () => f.clock.now, timers: f.clock.timers, isAlive: () => false }); queues.push(recovered);
+  const app = new Application(f.store, f.config, { jobs: recovered, now: () => f.clock.now }), actor = app.authenticate(f.token).actor;
+  const waiting = app.job(actor, f.project.id, original.id);
+  expect(waiting).toMatchObject({ state: "waiting", reason: "interrupted", attempts: [{ state: "interrupted", nativeState: "missing" }] });
+  const stop = app.execute(actor, { kind: "job.stop", requestId: crypto.randomUUID(), projectId: f.project.id,
+    expectedRevision: waiting.revision, payload: { jobId: original.id } });
+  expect(stop.stop?.transport).toBe("cancellation_requested");
+  expect(stop.stop?.transport).not.toBe("not_dispatched");
+  release(); await f.queue.idle();
+});
