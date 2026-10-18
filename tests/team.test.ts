@@ -223,6 +223,19 @@ test("failed preview acknowledgment rolls back context/job/run together; insuffi
   expect(f.app.conversation(f.auth.actor, f.project.id, f.topic.id).items).toHaveLength(0);
 });
 
+test("managed deletion normalizes thrown adapter diagnostics, keeps replay fenced and permits a successful idempotent retry", async () => {
+  let throws = true, calls = 0;
+  const f = await fixture({ deleteFails: () => { calls++; if (throws) throw new Error("PRIVATE_DELETE_DIAGNOSTIC_fixture"); return false; } });
+  const role = f.app.execute(f.auth.actor, save(f, { route: grok })).role!, run = f.app.execute(f.auth.actor, preview(f, role.id)).preview!, context = run.request.context;
+  const result = await f.port.delete(context);
+  expect(result).toEqual({ state: "delete_failed", context, nextAction: "retry_managed_delete" });
+  expect(JSON.stringify(result)).not.toContain("PRIVATE_DELETE_DIAGNOSTIC");
+  expect(f.store.read(tx => tx.get<{ state: string }>("SELECT state FROM team_contexts WHERE id = ?", context.id))!.state).toBe("delete_failed");
+  expect(await f.port.invoke(run.request, new AbortController().signal, () => {})).toEqual(fixtureOutcome("context_retired")); expect(f.port.requests).toHaveLength(0);
+  throws = false; expect(await f.port.delete(context)).toEqual({ state: "deleted", context });
+  expect(await f.port.delete(context)).toEqual({ state: "deleted", context }); expect(calls).toBe(2);
+});
+
 test("malformed usage/session/oversized results and pre-aborted calls never become successful fixture evidence", async () => {
   const variants = [
     { ...fixtureOutcome("complete", "output"), usage: { ...fixtureOutcome("complete").usage, calls: -1 } },

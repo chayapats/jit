@@ -107,7 +107,8 @@ export class ScriptedRunPort implements ApplicationRunPort {
   async delete(context: ManagedContextReference): Promise<ManagedContextOutcome> {
     await this.retire(context);
     if (this.store.read(tx => tx.get<{ state: string }>("SELECT state FROM team_contexts WHERE id = ? AND generation = ?", context.id, context.generation)?.state === "deleted")) return { state: "deleted", context: { ...context } };
-    const failed = this.deleteFails();
+    let failed = true;
+    try { failed = this.deleteFails() !== false; } catch { /* Native/adapter diagnostics never cross the managed lifecycle port. */ }
     this.store.transaction(tx => { tx.run("UPDATE team_contexts SET state = ? WHERE id = ? AND generation = ?", failed ? "delete_failed" : "deleted", context.id, context.generation); });
     return failed ? { state: "delete_failed", context: { ...context }, nextAction: "retry_managed_delete" } : { state: "deleted", context: { ...context } };
   }
