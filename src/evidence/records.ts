@@ -5,7 +5,7 @@ import { validateEvidence } from "./contract";
 
 /** Reads bounded regular JSON files without following a final symlink or returning filesystem diagnostics. */
 export async function readBoundedJson(path: string, maximum: number): Promise<unknown> {
-  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const stats = await file.stat(); if (!stats.isFile() || stats.size > maximum) throw new Error("invalid_local_record");
     const buffer = Buffer.alloc(maximum + 1); const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);

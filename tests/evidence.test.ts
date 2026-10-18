@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, rmSync, symlinkSync } from "node:fs";
+import { cpSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runEvidenceCommand } from "../src/evidence-cli";
@@ -140,4 +140,39 @@ test("standalone CLI inventory then export works in an explicit disposable local
   const exported = await run(["export", "--id", summary.evidenceId]); expect(exported.exit).toBe(0);
   expect(JSON.parse(exported.stdout)).toEqual(exportSummary(await readEvidence(root, summary.evidenceId)));
   expect(exported.stdout).not.toMatch(/fixture-host|codex-subscription|gpt-6\.1-sol|workingDirectory.*jit-evidence-fixture/);
+});
+
+test("FIFO configuration and evidence files reject without blocking the standalone command", async () => {
+  const { root } = setup(), cli = join(import.meta.dir, "../src/evidence-cli.ts");
+  const check = async (args: string[]) => {
+    const child = Bun.spawn([process.execPath, cli, ...args], { cwd: root, env: {}, stdout: "pipe", stderr: "pipe", timeout: 1000, killSignal: 9 });
+    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    expect(exit).toBe(2); expect(stderr).toBe(""); expect(JSON.parse(stdout)).toMatchObject({ error: "evidence-unavailable", nextAction: "check-local-configuration-and-inventory" });
+  };
+  rmSync(join(root, ".local/config.json"));
+  expect(Bun.spawnSync(["mkfifo", "-m", "600", join(root, ".local/config.json")]).exitCode).toBe(0);
+  await check(["inventory", "--config", ".local/config.json"]);
+  mkdirSync(join(root, ".local/host-evidence"), { mode: 0o700 });
+  expect(Bun.spawnSync(["mkfifo", "-m", "600", join(root, ".local/host-evidence", `${id}.json`)]).exitCode).toBe(0);
+  await check(["export", "--id", id]);
+});
+
+test("dependency versions resolve from an encoded space/Thai checkout path", async () => {
+  const { root } = setup(), checkout = join(root, "Jit MVP #ภาษาไทย"), repo = join(import.meta.dir, "..");
+  mkdirSync(join(checkout, "src"), { recursive: true });
+  cpSync(join(repo, "src/evidence"), join(checkout, "src/evidence"), { recursive: true });
+  cpSync(join(repo, "src/evidence-cli.ts"), join(checkout, "src/evidence-cli.ts")); cpSync(join(repo, "package.json"), join(checkout, "package.json"));
+  symlinkSync(join(repo, "node_modules"), join(checkout, "node_modules"));
+  const child = Bun.spawn([process.execPath, join(checkout, "src/evidence-cli.ts"), "inventory", "--config", ".local/config.json"], { cwd: root, env: {}, stdout: "pipe", stderr: "pipe", timeout: 2000, killSignal: 9 });
+  const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  expect(exit).toBe(0); expect(stderr).toBe("");
+  expect(JSON.parse(stdout).inventory.dependencies).toEqual([
+    { name: "typescript", declared: "7.0.2", installed: "7.0.2", compatibility: "unverified" },
+    { name: "@types/bun", declared: "1.4.3", installed: "1.4.3", compatibility: "unverified" },
+  ]);
+  rmSync(join(checkout, "node_modules")); mkdirSync(join(checkout, "node_modules/typescript"), { recursive: true });
+  expect(Bun.spawnSync(["mkfifo", "-m", "600", join(checkout, "node_modules/typescript/package.json")]).exitCode).toBe(0);
+  const fifo = Bun.spawn([process.execPath, join(checkout, "src/evidence-cli.ts"), "inventory", "--config", ".local/config.json"], { cwd: root, env: {}, stdout: "pipe", stderr: "pipe", timeout: 2000, killSignal: 9 });
+  const [fifoOut, fifoErr, fifoExit] = await Promise.all([new Response(fifo.stdout).text(), new Response(fifo.stderr).text(), fifo.exited]);
+  expect(fifoExit).toBe(0); expect(fifoErr).toBe(""); expect(JSON.parse(fifoOut).inventory.dependencies.every((d: { installed: unknown }) => d.installed === null)).toBe(true);
 });

@@ -2,6 +2,8 @@ import { arch, platform, release } from "node:os";
 import { constants } from "node:fs";
 import { access, lstat, open, stat, unlink } from "node:fs/promises";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { readBoundedJson } from "./records";
 import manifest from "../../package.json";
 import { routeEvidence, safeAlias, safeKernel, safeVersion, validateEvidence, type HostEvidence, type Inventory } from "./contract";
 
@@ -87,9 +89,8 @@ export async function inventory(config: InventoryConfig, ports: InventoryPorts):
 
 async function readablePackage(path: string): Promise<string | null> {
   try {
-    const fd = await open(path, "r");
-    try { if ((await fd.stat()).size > 8192) return null; const parsed = JSON.parse(await fd.readFile("utf8")); return safeVersion(parsed.version); }
-    finally { await fd.close(); }
+    const parsed = await readBoundedJson(path, 8192) as { version?: unknown } | null;
+    return safeVersion(parsed?.version);
   } catch { return null; }
 }
 /** Current-host inventory has no shell, network, login, installation or reboot path. */
@@ -130,7 +131,7 @@ export function localPorts(): InventoryPorts {
       const result: Inventory["dependencies"] = [];
       for (const name of ["typescript", "@types/bun"] as const) {
         signal.throwIfAborted();
-        result.push({ name, declared: manifest.devDependencies[name], installed: await readablePackage(new URL(`../../node_modules/${name}/package.json`, import.meta.url).pathname), compatibility: "unverified" });
+        result.push({ name, declared: manifest.devDependencies[name], installed: await readablePackage(fileURLToPath(new URL(`../../node_modules/${name}/package.json`, import.meta.url))), compatibility: "unverified" });
       }
       return result;
     },
