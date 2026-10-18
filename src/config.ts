@@ -9,6 +9,7 @@ export interface AppConfig {
   bodyBytes: number;
   queryBytes: number;
   pageSize: number;
+  messageBytes: number;
   sessionSeconds: number;
   loginAttempts: number;
   loginWindowSeconds: number;
@@ -37,6 +38,7 @@ export function readConfig(env: Record<string, string | undefined> = process.env
     bodyBytes: positive("JIT_BODY_BYTES", 16384, 1048576),
     queryBytes: positive("JIT_QUERY_BYTES", 2048, 16384),
     pageSize: positive("JIT_PAGE_SIZE", 50, 200),
+    messageBytes: positive("JIT_MESSAGE_BYTES", 4096, 65536),
     sessionSeconds: positive("JIT_SESSION_SECONDS", 28800, 86400),
     loginAttempts: positive("JIT_LOGIN_ATTEMPTS", 8, 100),
     loginWindowSeconds: positive("JIT_LOGIN_WINDOW_SECONDS", 900, 86400),

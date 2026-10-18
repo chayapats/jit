@@ -2,6 +2,9 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { AppError } from "./errors";
 import type { AppConfig } from "./config";
 import { TransactionStore, type AppTransaction } from "./store";
+import { conversationIdentity, mutateConversation, readMessages, readTopic, readTopics, requireCursor,
+  type ConversationCommand, type CreateTopicCommand, type SendMessageCommand, type TopicReceipt, type MessageReceipt } from "./conversation";
+import { lookupSource, requireId, requireReference, type SourceReference, type SourceLookup } from "./sources";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const validToken = (value: string) => /^[a-f0-9]{64}$/.test(value);
@@ -37,7 +40,7 @@ export interface Workspace { revision: number; projects: Project[]; hasMore: boo
 /** Injectable clock and transaction fault seam for deterministic persistence checks. */
 export interface ApplicationOptions {
   now?: () => number;
-  beforeCommit?: (stage: "project" | "receipt") => void;
+  beforeCommit?: (stage: "project" | "topic" | "message" | "receipt") => void;
 }
 
 /** Owns identity validation and revisioned app commands independently of Web or model transports. */
@@ -137,15 +140,67 @@ export class Application {
   project(actor: OwnerActor, projectId: string): Project {
     return this.store.read(tx => {
       this.#requireOwner(tx, actor);
-      const project = tx.get<Project>(`SELECT p.id, p.name, p.revision, g.id AS groupId, p.created_at AS createdAt
-        FROM projects p JOIN project_groups g ON g.project_id = p.id WHERE p.id = ?`, projectId);
-      if (!project) throw new AppError("project_not_found", 404);
-      return project;
+      return this.#project(tx, projectId);
     });
   }
 
-  /** Creates a project, its group, receipt and bounded audit record in one revision-checked commit. */
-  execute(actor: OwnerActor, command: CreateProjectCommand): ProjectReceipt {
+  /** Reads a bounded topic list and the project revision used by topic creation without starting work. */
+  topics(actor: OwnerActor, projectId: string, after = 0) {
+    requireId(projectId); requireCursor(after);
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor);
+      return { project: this.#project(tx, projectId), ...readTopics(tx, projectId, after, this.config.pageSize) };
+    });
+  }
+
+  /** Reads one scoped topic and bounded committed history without creating commands, runs or memory. */
+  conversation(actor: OwnerActor, projectId: string, topicId: string, after = 0) {
+    requireId(projectId); requireId(topicId); requireCursor(after);
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor);
+      const project = this.#project(tx, projectId), topic = readTopic(tx, projectId, topicId);
+      return { project, topic, ...readMessages(tx, projectId, topicId, after, this.config.pageSize) };
+    });
+  }
+
+  /** Resolves an exact source reference under an explicit authorized project and never fetches missing content. */
+  source(actor: OwnerActor, projectId: string, reference: SourceReference): SourceLookup {
+    requireId(projectId); requireReference(reference);
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor); this.#project(tx, projectId);
+      return lookupSource(tx, projectId, reference);
+    });
+  }
+
+  /** Commits a validated owner command, state, source records, receipt and audit as one transaction. */
+  execute(actor: OwnerActor, command: CreateProjectCommand): ProjectReceipt;
+  execute(actor: OwnerActor, command: CreateTopicCommand): TopicReceipt;
+  execute(actor: OwnerActor, command: SendMessageCommand): MessageReceipt;
+  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand): ProjectReceipt | TopicReceipt | MessageReceipt;
+  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand): ProjectReceipt | TopicReceipt | MessageReceipt {
+    if (command?.kind === "project.create") return this.#createProject(actor, command);
+    const payloadHash = digest(conversationIdentity(command as ConversationCommand, this.config.messageBytes));
+    return this.store.transaction(tx => {
+      this.#requireOwner(tx, actor);
+      const receipt = tx.get<{ payload_hash: string; result_json: string }>(
+        "SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
+      if (receipt) {
+        if (receipt.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409);
+        return JSON.parse(receipt.result_json) as TopicReceipt | MessageReceipt;
+      }
+      this.#project(tx, command.projectId!);
+      const now = this.#now();
+      const result = mutateConversation(tx, command as ConversationCommand, now);
+      this.#beforeCommit?.(command.kind === "topic.create" ? "topic" : "message");
+      tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
+      tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)",
+        command.kind, command.requestId, command.projectId, now);
+      this.#beforeCommit?.("receipt");
+      return result;
+    });
+  }
+
+  #createProject(actor: OwnerActor, command: CreateProjectCommand): ProjectReceipt {
     if (!command || command.kind !== "project.create" || command.projectId !== null ||
         typeof command.requestId !== "string" || !/^[a-zA-Z0-9_-]{8,128}$/.test(command.requestId) ||
         !Number.isSafeInteger(command.expectedRevision) || command.expectedRevision < 0 ||
@@ -181,6 +236,13 @@ export class Application {
     const row = tx.get<{ token_hash: string }>(`SELECT s.token_hash FROM sessions s JOIN owner o ON o.id = s.owner_id
       WHERE s.token_hash = ? AND s.expires_at > ? AND s.generation = o.generation`, key, this.#now());
     if (!row) throw new AppError("authentication_required", 401);
+  }
+
+  #project(tx: AppTransaction, projectId: string): Project {
+    const project = tx.get<Project>(`SELECT p.id, p.name, p.revision, g.id AS groupId, p.created_at AS createdAt
+      FROM projects p JOIN project_groups g ON g.project_id = p.id WHERE p.id = ?`, projectId);
+    if (!project) throw new AppError("project_not_found", 404);
+    return project;
   }
 
   #requireOwner(tx: AppTransaction, actor: OwnerActor): string {
