@@ -71,6 +71,7 @@ test("authenticated Web topics/messages reopen with stable sources and separate 
   expect(html).toContain('<pre><code>console.log(&quot;สวัสดี&quot;);</code></pre>');
   expect(html).toContain("&lt;script&gt;"); expect(html).not.toContain("<script>"); expect(html).not.toContain('href="javascript:');
   expect(html).not.toContain("ข้อความอีกโครงการ"); expect(html).toContain("บันทึกแล้ว");
+  expect(html).toContain(`id="message-${receipt.message.id}"`);
   expect(html).toContain(sourcePath(a.id, receipt.message.source, false));
   expect(page.headers.get("content-security-policy")).toContain("default-src 'none'");
   const before = f.store.read(tx => tx.get<{ count: number }>("SELECT count(*) AS count FROM command_receipts")!.count);
@@ -86,6 +87,23 @@ test("authenticated Web topics/messages reopen with stable sources and separate 
   expect(reopened.conversation(actor, b.id, bt.id).items[0]!.text).toBe("ข้อความอีกโครงการ");
   expect(reopened.source(actor, a.id, receipt.message.source)).toMatchObject({ state: "available", text, projectId: a.id,
     attribution: { kind: "owner", ownerId: "owner" }, descriptor: { kind: "message", topicId: at.id, messageId: receipt.message.id } });
+});
+
+test("Web message submit and replay redirect to the committed message in its bounded history page", async () => {
+  const f = await fixture({ JIT_PAGE_SIZE: "2" }), p = project(f);
+  const t = f.app.execute(f.auth.actor, topicCommand(p.id)).topic;
+  for (let n = 1; n <= 3; n++) f.app.execute(f.auth.actor, messageCommand(p.id, t.id, n));
+  const body = { requestId: crypto.randomUUID(), expectedRevision: 4, text: "ข้อความล่าสุด 🧪" };
+  const path = `/projects/${p.id}/topics/${t.id}`;
+  const submitted = await f.web(request(f, `${path}/messages`, body));
+  const last = f.app.conversation(f.auth.actor, p.id, t.id, 2).items.at(-1)!;
+  const location = `${path}?after=2#message-${last.id}`;
+  expect(submitted.status).toBe(303);
+  expect(submitted.headers.get("location")).toBe(location);
+  expect((await f.web(request(f, `${path}/messages`, body))).headers.get("location")).toBe(location);
+  const html = await (await f.web(request(f, location))).text();
+  expect(html).toContain(`id="message-${last.id}"`);
+  expect(f.app.conversation(f.auth.actor, p.id, t.id, 2).items).toHaveLength(2);
 });
 
 test("concurrent topic and message retries deduplicate globally while stale and mismatched scopes leave no changes", async () => {

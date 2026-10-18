@@ -151,7 +151,7 @@ export function createWebHandler(app: Application): (request: Request) => Promis
           const command: SendMessageCommand = { kind: "message.send", projectId: messageRoute![2]!, requestId: body.requestId as string,
             expectedRevision: revision as number, payload: { topicId: messageRoute![3]!, text: body.text as string } };
           const receipt = app.execute(auth.actor, command);
-          return api ? json(receipt) : respond(null, 303, { "Location": `/projects/${receipt.message.projectId}/topics/${receipt.message.topicId}?after=${Math.max(0, receipt.message.sequence - config.pageSize)}` });
+          return api ? json(receipt) : respond(null, 303, { "Location": `/projects/${receipt.message.projectId}/topics/${receipt.message.topicId}?after=${Math.max(0, receipt.message.sequence - config.pageSize)}#message-${receipt.message.id}` });
         }
         if (Object.keys(body).some(key => !["csrf", "requestId", "name", "expectedRevision"].includes(key))) throw new AppError("invalid_body");
         const revision = typeof body.expectedRevision === "string" && /^\d{1,15}$/.test(body.expectedRevision)
