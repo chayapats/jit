@@ -1,6 +1,7 @@
 import type { Application, Project, Workspace } from "./application";
 import type { Topic } from "./conversation";
 import type { Attribution, SourceLookup, SourceReference } from "./sources";
+import type { Job, JobPolicy } from "./jobs/types";
 
 /** Escapes literal untrusted content before it enters HTML text or attributes. */
 export const escape = (value: unknown) => String(value).replace(/[&<>"']/g, char =>
@@ -15,6 +16,7 @@ const paths = {
   menu: '<path d="M4 7h16M4 12h16M4 17h16"/>', check: '<path d="m5 12 4 4L19 6"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v1"/>',
   user: '<circle cx="12" cy="8" r="3"/><path d="M5 21v-2a7 7 0 0 1 14 0v2"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
 };
 const icon = (name: keyof typeof paths) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name]}</svg>`;
 const brand = () => `<a class="brand" href="/" aria-label="Jit · โครงการทั้งหมด">${icon("brand")}<span>Jit</span></a>`;
@@ -36,7 +38,7 @@ function navigation(n: Navigation): string {
   const selected = n.project, topics = n.topic ? [n.topic, ...(n.topics ?? []).filter(t => t.id !== n.topic!.id)] : n.topics ?? [];
   return `<nav aria-label="โครงการและหัวข้อ"><a class="nav-main" href="/">${icon("folder")}<span>โครงการทั้งหมด</span></a>
     <a class="nav-main" href="${selected ? `/projects/${selected.id}#new-topic` : "/#new-project"}">${icon("plus")}<span>${selected ? "หัวข้อใหม่" : "โครงการใหม่"}</span></a>
-    ${selected ? `<p class="nav-heading">หัวข้อในโครงการ</p><p class="nav-project">${escape(selected.name)}</p>
+    ${selected ? `<a class="nav-main" href="/projects/${selected.id}/jobs">${icon("clock")}<span>งานของโครงการ</span></a><p class="nav-heading">หัวข้อในโครงการ</p><p class="nav-project">${escape(selected.name)}</p>
       <ul>${topics.slice(0, 12).map(t => `<li><a class="nav-link" href="/projects/${selected.id}/topics/${t.id}"${t.id === n.topic?.id ? ' aria-current="page"' : ""}>${icon("chat")}<span>${escape(t.title ?? "หัวข้อไม่พร้อมใช้งาน")}</span></a></li>`).join("")}</ul>
       <a class="nav-subtle" href="/projects/${selected.id}">ดูหัวข้อทั้งหมด</a>` : ""}
     <p class="nav-heading">โครงการของคุณ</p><ul>${n.workspace.projects.slice(0, 8).map(p => `<li><a class="nav-link" href="/projects/${p.id}"${p.id === selected?.id && !n.topic ? ' aria-current="page"' : ""}>${icon("folder")}<span>${escape(p.name)}</span></a></li>`).join("")}</ul>
@@ -93,6 +95,27 @@ export function conversationPage(state: ReturnType<Application["conversation"]>,
 export function sourcePage(source: SourceLookup, project: Project, workspace: Workspace, csrf: string): string {
   return shell("ที่มาข้อมูล", { workspace, csrf, project }, `<div class="content source-content"><h1>ต้นฉบับที่อ้างอิง</h1>${source.state === "available" ? `<p class="source-byline">${escape(attributionLabel(source.attribution))} · ${time(source.committedAt)} · บันทึกแล้ว</p>${literalContent(source.text)}` : `<p class="error">ต้นฉบับไม่พร้อมใช้งาน (${escape(source.reason)})</p>${source.descriptor ? `<pre>${escape(JSON.stringify(source.descriptor, null, 2))}</pre>` : ""}`}
     <details class="source-details"><summary>รายละเอียดแหล่งข้อมูล</summary><dl><dt>โครงการ</dt><dd>${escape(project.name)} · ${escape(source.projectId)}</dd><dt>Source ID</dt><dd>${escape(source.reference.sourceId)}</dd><dt>Revision / generation</dt><dd>${source.reference.revision} / ${source.reference.generation}</dd></dl></details></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
+}
+/** Presents explicit job starts, committed states, unchanged routes and finite remaining budgets. */
+export function jobsPage(state: ReturnType<Application["jobs"]>, workspace: Workspace, csrf: string, after: number, policy: JobPolicy, showStart = true): string {
+  const { project } = state, base = `/projects/${project.id}/jobs`;
+  const labels: Record<Job["state"], string> = { queued: "รอคิว", admitted: "กำลังทำ", waiting: "รอให้ทำต่อ", succeeded: "เสร็จแล้ว", blocked: "ติดข้อจำกัด", partial: "เสร็จบางส่วน", failed: "ยังไม่สำเร็จ" };
+  const reasons: Record<Job["reason"], string> = { queued: "รอพื้นที่ว่างในคิว", running: "กำลังทำงานที่อนุญาต", complete: "มีหลักฐานบันทึกแล้ว", yielded: "พักที่จุดปลอดภัยแล้วกลับเข้าคิว",
+    quota: "route ที่เลือกยังติด quota", needs_login: "route ที่เลือกต้องเข้าสู่ระบบ", route_unavailable: "route ที่เลือกยังไม่พร้อม", budget_exhausted: "ใช้งบของงานครบแล้ว", deadline: "ครบเวลาของงานแล้ว",
+    worker_failed: "ยังยืนยันผลสำเร็จไม่ได้", interrupted: "งานถูกขัดจังหวะ ต้องตรวจหลักฐานก่อนทำต่อ", configuration_changed: "การตั้งค่างานเปลี่ยนแล้ว", authorization_changed: "สิทธิ์ที่ใช้อ้างอิงเปลี่ยนแล้ว", input_changed: "ข้อมูลต้นทางเปลี่ยนแล้ว" };
+  const route = (job: { route: Job["route"] }) => job.route.provider === "jit-service" && job.route.model === null && job.route.authRoute === "internal" ? "บริการภายใน Jit · ไม่เรียกโมเดล"
+    : `${job.route.provider} / ${job.route.model ?? "ไม่มีโมเดล"} · ${job.route.authRoute}`;
+  const limits = (value: Job["limits"]) => `<dl class="job-limits"><dt>บทบาท / calls / rounds / hops</dt><dd>${value.roles} / ${value.calls} / ${value.rounds} / ${value.hops}</dd><dt>Context / output tokens</dt><dd>${value.contextTokens} / ${value.outputTokens}</dd><dt>Retries / เวลา</dt><dd>${value.retries} / ${Math.ceil(value.wallMs / 1000)} วินาที</dd></dl>`;
+  return shell("งานของโครงการ", { project, workspace, csrf }, `<div class="content jobs-content"><section class="jobs-heading"><h2>งานของ ${escape(project.name)}</h2><p>ดูคิว ข้อจำกัด และหลักฐานของงานที่คุณสั่งให้เริ่ม</p></section>
+    ${!state.admission.available ? '<p class="error" role="status">คิวหยุดรับงานใหม่ ตรวจว่ามีบริการซ้ำหรือปัญหาการบันทึก แล้วเปิดบริการใหม่ งานเดิมยังดูได้</p>' : ""}
+    <section id="new-job" aria-label="เริ่มงาน"${showStart ? "" : " hidden"}>${state.admission.available && state.choices.length ? state.choices.map(choice => `<form class="job-create" method="post" action="${base}">${hiddenCommand(csrf, project.revision)}
+      <input type="hidden" name="type" value="${escape(choice.id)}"><input type="hidden" name="configurationRevision" value="${choice.revision}"><input type="hidden" name="policyRevision" value="${choice.policyRevision}"><input type="hidden" name="inputRevision" value="${project.revision}"><input type="hidden" name="input" value="{}"><input type="hidden" name="limits" value="${escape(JSON.stringify(policy.maximum))}">
+      <label for="purpose-${escape(choice.id)}">${escape(choice.title)}</label><input id="purpose-${escape(choice.id)}" name="purpose" maxlength="300" required value="${escape(choice.title)}"><p>${escape(route(choice))}</p>
+      <div class="job-create-actions"><select name="priority" aria-label="ลำดับความสำคัญ"><option value="interactive">งานตรงหน้า</option><option value="background">เบื้องหลัง</option></select><button class="primary">เริ่ม${escape(choice.title)}</button></div><details><summary>ขอบเขตที่อนุญาตให้งานใช้</summary>${limits(policy.maximum)}</details></form>`).join("") : '<p class="empty-list">ดูงานที่บันทึกไว้ได้ ขณะนี้คิวยังไม่พร้อมรับงานใหม่</p>'}</section>
+    <section aria-label="คิวงาน">${state.items.length ? state.items.map(job => `<article class="job-card" id="job-${job.id}"><header><h3><a href="${base}/${job.id}">${escape(job.purpose)}</a></h3><span class="job-status">${labels[job.state]}</span></header><p>${reasons[job.reason]}</p><p class="job-route">${escape(route(job))}</p>
+      ${job.occupiesAdmission && job.state !== "admitted" ? '<p>ร้องขอให้หยุดแล้ว ยังรอระบบยืนยันการหยุดและคืนที่ในคิว</p>' : job.state === "waiting" ? `<p>ตรวจเหตุผลและผลที่อาจเกิดขึ้นแล้ว จึงอนุญาตให้ทำต่อด้วย route เดิม</p><form method="post" action="${base}/${job.id}/resume">${hiddenCommand(csrf, job.revision)}<button class="primary">อนุญาตให้ทำต่อ</button></form>` : job.state === "blocked" || job.state === "failed" || job.state === "partial" ? '<p>ตรวจหลักฐานและข้อจำกัดก่อนเริ่มงานใหม่</p>' : ""}
+      ${job.evidence ? `<div class="job-evidence">${literalContent(job.evidence)}</div>` : ""}<details><summary>รายละเอียดและงบที่เหลือ</summary>${limits(job.remaining)}<dl class="job-limits"><dt>Job ID</dt><dd>${escape(job.id)}</dd><dt>Input / configuration revision</dt><dd>${job.inputRevision} / ${job.configuration.revision}</dd><dt>อัปเดต</dt><dd>${time(job.updatedAt)}</dd></dl></details></article>`).join("") : '<p class="empty-list">ยังไม่มีงานในโครงการนี้</p>'}</section>
+    <nav class="pagination" aria-label="หน้าคิวงาน">${after ? `<a href="${base}">หน้าแรก</a>` : ""}${state.hasMore ? `<a href="${base}?after=${state.nextAfter}">งานถัดไป</a>` : ""}</nav></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
 }
 /** Renders local owner sign-in without scripts, external assets or credentials in markup. */
 export function loginPage(): string {
