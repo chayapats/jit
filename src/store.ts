@@ -2,7 +2,7 @@ import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-const schemaVersion = 2;
+const schemaVersion = 3;
 
 /** Synchronous SQL operations scoped to an application transaction. */
 export interface AppTransaction {
@@ -34,7 +34,7 @@ export class TransactionStore {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
           if (current === schemaVersion) return;
-          if (current !== 0 && current !== 1) throw new Error("Unsupported migration source");
+          if (current !== 0 && current !== 1 && current !== 2) throw new Error("Unsupported migration source");
           if (existing) {
             const snapshot = `${path}.pre-v${current}-${crypto.randomUUID()}.sqlite`;
             const fd = openSync(snapshot, "wx", 0o600);
@@ -76,7 +76,7 @@ export class TransactionStore {
             );
             PRAGMA user_version = 1;
           `);
-          this.#db.exec(`
+          if (current < 2) this.#db.exec(`
             CREATE UNIQUE INDEX project_group_identity ON project_groups(project_id, id);
             CREATE TABLE sources (
               id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
@@ -114,6 +114,23 @@ export class TransactionStore {
               FOREIGN KEY (source_id, source_revision, source_generation) REFERENCES source_versions(source_id, revision, generation)
             );
             PRAGMA user_version = 2;
+          `);
+          this.#db.exec(`
+            CREATE TABLE job_scheduler (
+              id INTEGER PRIMARY KEY CHECK (id = 1), token TEXT NOT NULL,
+              pid INTEGER NOT NULL CHECK (pid > 0)
+            );
+            CREATE TABLE jobs (
+              sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL REFERENCES projects(id),
+              queue_order INTEGER NOT NULL, priority INTEGER NOT NULL CHECK (priority IN (0, 1)),
+              state TEXT NOT NULL, occupies INTEGER NOT NULL CHECK (occupies IN (0, 1)),
+              route_key TEXT NOT NULL, record_json TEXT NOT NULL
+            );
+            CREATE INDEX job_admission ON jobs(state, priority DESC, queue_order);
+            CREATE INDEX job_project ON jobs(project_id, sequence);
+            CREATE UNIQUE INDEX job_queue_order ON jobs(queue_order);
+            CREATE INDEX job_slots ON jobs(route_key) WHERE occupies = 1;
+            PRAGMA user_version = 3;
           `);
         }).immediate();
       }

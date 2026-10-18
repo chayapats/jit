@@ -5,6 +5,8 @@ import { TransactionStore, type AppTransaction } from "./store";
 import { conversationIdentity, mutateConversation, readMessages, readTopic, readTopics, requireCursor,
   type ConversationCommand, type CreateTopicCommand, type SendMessageCommand, type TopicReceipt, type MessageReceipt } from "./conversation";
 import { lookupSource, requireId, requireReference, type SourceReference, type SourceLookup } from "./sources";
+import { JobQueue, jobCommandIdentity, readJob, readJobs } from "./jobs/queue";
+import type { EnqueueJobCommand, ResumeJobCommand, JobCommand, JobReceipt } from "./jobs/types";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const validToken = (value: string) => /^[a-f0-9]{64}$/.test(value);
@@ -40,7 +42,8 @@ export interface Workspace { revision: number; projects: Project[]; hasMore: boo
 /** Injectable clock and transaction fault seam for deterministic persistence checks. */
 export interface ApplicationOptions {
   now?: () => number;
-  beforeCommit?: (stage: "project" | "topic" | "message" | "receipt") => void;
+  beforeCommit?: (stage: "project" | "topic" | "message" | "job" | "receipt") => void;
+  jobs?: JobQueue;
 }
 
 /** Owns identity validation and revisioned app commands independently of Web or model transports. */
@@ -48,10 +51,13 @@ export class Application {
   #actors = new WeakMap<OwnerActor, string>();
   #now: () => number;
   #beforeCommit: ApplicationOptions["beforeCommit"];
+  #jobs: JobQueue | undefined;
 
   constructor(readonly store: TransactionStore, readonly config: AppConfig, options: ApplicationOptions = {}) {
     this.#now = options.now ?? Date.now;
     this.#beforeCommit = options.beforeCommit;
+    if (options.jobs && options.jobs.store !== store) throw new AppError("invalid_job_store");
+    this.#jobs = options.jobs;
   }
 
   /** Provisions exactly one owner through trusted local setup; no HTTP route exposes this method. */
@@ -173,12 +179,16 @@ export class Application {
   }
 
   /** Commits a validated owner command, state, source records, receipt and audit as one transaction. */
+  execute(actor: OwnerActor, command: EnqueueJobCommand): JobReceipt;
+  execute(actor: OwnerActor, command: ResumeJobCommand): JobReceipt;
+  execute(actor: OwnerActor, command: JobCommand): JobReceipt;
   execute(actor: OwnerActor, command: CreateProjectCommand): ProjectReceipt;
   execute(actor: OwnerActor, command: CreateTopicCommand): TopicReceipt;
   execute(actor: OwnerActor, command: SendMessageCommand): MessageReceipt;
-  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand): ProjectReceipt | TopicReceipt | MessageReceipt;
-  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand): ProjectReceipt | TopicReceipt | MessageReceipt {
+  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt;
+  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt {
     if (command?.kind === "project.create") return this.#createProject(actor, command);
+    if (command?.kind === "job.enqueue" || command?.kind === "job.resume") return this.#jobCommand(actor, command);
     const payloadHash = digest(conversationIdentity(command as ConversationCommand, this.config.messageBytes));
     return this.store.transaction(tx => {
       this.#requireOwner(tx, actor);
@@ -197,6 +207,40 @@ export class Application {
         command.kind, command.requestId, command.projectId, now);
       this.#beforeCommit?.("receipt");
       return result;
+    });
+  }
+
+  /** Returns a bounded committed queue projection without starting work or requiring a provider. */
+  jobs(actor: OwnerActor, projectId: string, after = 0) {
+    requireId(projectId);
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor); const project = this.#project(tx, projectId);
+      const available = this.#jobs?.available(tx) ?? false;
+      return { project, ...readJobs(tx, projectId, after, this.config.pageSize), choices: this.#jobs?.choices() ?? [],
+        admission: { available, nextAction: available ? "inspect_or_authorize_work" : "resolve_scheduler_ownership_or_restart" } };
+    });
+  }
+
+  /** Reads one project-scoped job and its committed budgets/evidence without admission side effects. */
+  job(actor: OwnerActor, projectId: string, jobId: string) {
+    requireId(projectId); requireId(jobId);
+    return this.store.read(tx => { this.#requireOwner(tx, actor); this.#project(tx, projectId); return readJob(tx, projectId, jobId); });
+  }
+
+  #jobCommand(actor: OwnerActor, command: JobCommand): JobReceipt {
+    const payloadHash = jobCommandIdentity(command, this.config.jobs.inputBytes);
+    return this.store.transaction(tx => {
+      this.#requireOwner(tx, actor); this.#project(tx, command.projectId);
+      if (!this.#jobs) throw new AppError("scheduler_unavailable", 503);
+      this.#jobs.assertOwner(tx);
+      const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
+      if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as JobReceipt; }
+      const now = this.#now(), generation = tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'")!.generation;
+      const result = this.#jobs.execute(tx, command, generation, now);
+      this.#beforeCommit?.("job");
+      tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
+      tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);
+      this.#beforeCommit?.("receipt"); return result;
     });
   }
 

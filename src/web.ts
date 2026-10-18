@@ -1,7 +1,8 @@
 import { Application, type CreateProjectCommand } from "./application";
 import { AppError } from "./errors";
 import type { CreateTopicCommand, SendMessageCommand } from "./conversation";
-import { workspacePage, projectPage, conversationPage, sourcePage, loginPage, errorPage } from "./web-layout";
+import { workspacePage, projectPage, conversationPage, sourcePage, jobsPage, loginPage, errorPage } from "./web-layout";
+import type { EnqueueJobCommand, ResumeJobCommand } from "./jobs/types";
 import { styleSheet } from "./web-style";
 
 const messages: Record<string, string> = {
@@ -15,6 +16,10 @@ const messages: Record<string, string> = {
   storage_unavailable: "ยังบันทึกข้อมูลไม่สำเร็จ กรุณาลองใหม่ภายหลัง",
   topic_not_found: "ไม่พบหัวข้อในโครงการที่เลือก", project_not_found: "ไม่พบโครงการที่เลือก",
   text_too_large_or_invalid: "ข้อความยาวเกินกำหนดหรือมีอักขระที่ไม่รองรับ", empty_text: "กรุณาใส่ข้อความก่อนบันทึก",
+  scheduler_unavailable: "คิวยังไม่พร้อมรับงานใหม่ ดูงานเดิมได้แล้วลองใหม่ภายหลัง",
+  job_queue_full: "คิวงานเต็มแล้ว รอให้งานเดิมเสร็จก่อนเริ่มงานใหม่",
+  job_not_found: "ไม่พบงานในโครงการที่เลือก", invalid_job_input: "ข้อมูลสำหรับงานนี้เปลี่ยนแล้ว เปิดหน้าโครงการใหม่ก่อนลองอีกครั้ง",
+  job_configuration_changed: "การตั้งค่างานเปลี่ยนแล้ว กรุณาตรวจแล้วเริ่มงานใหม่", job_budget_exhausted: "งบหรือเวลาของงานครบแล้ว กรุณาตรวจแล้วเริ่มงานใหม่",
 };
 
 /** Creates a server-rendered owner workspace; all mutations use the shared application boundary. */
@@ -97,11 +102,22 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       const topicRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})$/.exec(url.pathname);
       const messageRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})\/messages$/.exec(url.pathname);
       const sourceRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/sources\/([a-f0-9-]{36})$/.exec(url.pathname);
+      const jobsRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/jobs$/.exec(url.pathname);
+      const jobRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/jobs\/([a-f0-9-]{36})$/.exec(url.pathname);
+      const resumeRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/jobs\/([a-f0-9-]{36})\/resume$/.exec(url.pathname);
       const after = () => {
         const raw = url.searchParams.get("after") ?? "0";
         if (!/^\d{1,16}$/.test(raw)) throw new AppError("invalid_cursor");
         return Number(raw);
       };
+      if (request.method === "GET" && jobsRoute) {
+        const state = app.jobs(auth.actor, jobsRoute[2]!, after());
+        return api ? json(state) : respond(jobsPage(state, app.workspace(auth.actor), auth.csrf, after(), config.jobs));
+      }
+      if (request.method === "GET" && jobRoute) {
+        const job = app.job(auth.actor, jobRoute[2]!, jobRoute[3]!);
+        return api ? json(job) : respond(jobsPage({ ...app.jobs(auth.actor, job.projectId), items: [job], hasMore: false, nextAfter: 0 }, app.workspace(auth.actor), auth.csrf, 0, config.jobs, false));
+      }
       if (request.method === "GET" && sourceRoute) {
         const positive = (key: string) => {
           const values = url.searchParams.getAll(key);
@@ -130,12 +146,25 @@ export function createWebHandler(app: Application): (request: Request) => Promis
         const state = app.workspace(auth.actor, offset);
         return api ? json(state) : respond(workspacePage(state, auth.csrf, offset, config.pageSize));
       }
-      if (request.method === "POST" && (["/projects", "/api/projects", "/logout"].includes(url.pathname) || topicCollection || messageRoute)) {
+      if (request.method === "POST" && (["/projects", "/api/projects", "/logout"].includes(url.pathname) || topicCollection || messageRoute || jobsRoute || resumeRoute)) {
         const body = await payload(request);
         app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
         if (url.pathname === "/logout") {
           app.logout(auth.actor);
           return respond(null, 303, { "Location": "/login", "Set-Cookie": cookie("", 0) });
+        }
+        if (jobsRoute || resumeRoute) {
+          const keys = resumeRoute ? ["csrf", "requestId", "expectedRevision"] : ["csrf", "requestId", "expectedRevision", "type", "configurationRevision", "policyRevision", "purpose", "inputRevision", "input", "priority", "limits"];
+          if (Object.keys(body).some(key => !keys.includes(key))) throw new AppError("invalid_body");
+          const number = (value: unknown) => typeof value === "string" && /^\d{1,15}$/.test(value) ? Number(value) : value;
+          const form = request.headers.get("content-type")?.split(";")[0]?.trim() === "application/x-www-form-urlencoded";
+          const data = (value: unknown) => { if (!form) return value; try { return JSON.parse(value as string); } catch { throw new AppError("invalid_body"); } };
+          const command = resumeRoute ? { kind: "job.resume", requestId: body.requestId, projectId: resumeRoute[2], expectedRevision: number(body.expectedRevision), payload: { jobId: resumeRoute[3] } } as ResumeJobCommand
+            : { kind: "job.enqueue", requestId: body.requestId, projectId: jobsRoute![2], expectedRevision: number(body.expectedRevision), payload: {
+              type: body.type, configurationRevision: number(body.configurationRevision), policyRevision: number(body.policyRevision), purpose: body.purpose, inputRevision: number(body.inputRevision), input: data(body.input), priority: body.priority, limits: data(body.limits),
+            } } as EnqueueJobCommand;
+          const receipt = app.execute(auth.actor, command);
+          return api ? json(receipt) : respond(null, 303, { Location: `/projects/${receipt.job.projectId}/jobs/${receipt.job.id}#job-${receipt.job.id}` });
         }
         if (topicCollection || messageRoute) {
           const allowed = ["csrf", "requestId", "expectedRevision", topicCollection ? "title" : "text"];

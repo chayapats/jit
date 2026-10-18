@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import type { JobPolicy } from "./jobs/types";
 
 /** Finite local-development limits; operators must measure them before a pilot. */
 export interface AppConfig {
@@ -13,6 +14,7 @@ export interface AppConfig {
   sessionSeconds: number;
   loginAttempts: number;
   loginWindowSeconds: number;
+  jobs: JobPolicy;
 }
 
 /** Reads only Jit's declared settings and rejects malformed or unbounded values. */
@@ -30,6 +32,8 @@ export function readConfig(env: Record<string, string | undefined> = process.env
   if (origin.protocol === "http:" && !["localhost", "127.0.0.1", "[::1]"].includes(origin.hostname)) {
     throw new Error("JIT_ORIGIN requires HTTPS outside loopback development");
   }
+  const jobConcurrency = positive("JIT_JOB_CONCURRENCY", 2, 32), jobRouteConcurrency = positive("JIT_JOB_ROUTE_CONCURRENCY", 1, 32);
+  if (jobRouteConcurrency > jobConcurrency) throw new Error("Invalid JIT_JOB_ROUTE_CONCURRENCY");
   return {
     databasePath: resolve(env.JIT_DATABASE ?? ".local/jit.sqlite"),
     origin: origin.origin,
@@ -42,5 +46,20 @@ export function readConfig(env: Record<string, string | undefined> = process.env
     sessionSeconds: positive("JIT_SESSION_SECONDS", 28800, 86400),
     loginAttempts: positive("JIT_LOGIN_ATTEMPTS", 8, 100),
     loginWindowSeconds: positive("JIT_LOGIN_WINDOW_SECONDS", 900, 86400),
+    jobs: {
+      revision: positive("JIT_JOB_CONFIG_REVISION", 1, 1_000_000),
+      queueLimit: positive("JIT_JOB_QUEUE_LIMIT", 32, 10_000),
+      concurrency: jobConcurrency,
+      routeConcurrency: jobRouteConcurrency,
+      inputBytes: positive("JIT_JOB_INPUT_BYTES", 16_384, 65_536),
+      outputBytes: positive("JIT_JOB_OUTPUT_BYTES", 4096, 65_536),
+      maximum: {
+        roles: positive("JIT_JOB_ROLES", 16, 10_000), calls: positive("JIT_JOB_CALLS", 64, 10_000),
+        rounds: positive("JIT_JOB_ROUNDS", 64, 10_000), hops: positive("JIT_JOB_HOPS", 16, 10_000),
+        contextTokens: positive("JIT_JOB_CONTEXT_TOKENS", 64_000, 1_000_000_000),
+        outputTokens: positive("JIT_JOB_OUTPUT_TOKENS", 16_000, 1_000_000_000),
+        retries: positive("JIT_JOB_RETRIES", 3, 100), wallMs: positive("JIT_JOB_WALL_MS", 60_000, 3_600_000),
+      },
+    },
   };
 }

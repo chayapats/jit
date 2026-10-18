@@ -1,0 +1,334 @@
+import { afterEach, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { Database } from "bun:sqlite";
+import { tmpdir } from "node:os";
+import { Application, type ApplicationOptions } from "../src/application";
+import { readConfig } from "../src/config";
+import { TransactionStore, type AppTransaction } from "../src/store";
+import { createWebHandler } from "../src/web";
+import { JobQueue } from "../src/jobs/queue";
+import { projectStateWork } from "../src/jobs/project-state";
+import type { EnqueueJobCommand, Job, JobLimits, WorkDefinition, WorkOutcome } from "../src/jobs/types";
+
+const password = "fixture-job-owner-password", epoch = 1_800_000_000_000;
+const roots: string[] = [], stores: TransactionStore[] = [], queues: JobQueue[] = [], releases: (() => void)[] = [];
+afterEach(async () => {
+  for (const release of releases.splice(0)) release();
+  for (const queue of queues.splice(0)) { queue.close(); await queue.idle(); }
+  for (const store of stores.splice(0)) store.close();
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+class Clock {
+  now = epoch; #id = 0; #timers = new Map<number, { at: number; callback: () => void }>();
+  timers = { set: (callback: () => void, ms: number) => { const id = ++this.#id; this.#timers.set(id, { at: this.now + ms, callback }); return id; }, clear: (id: unknown) => { this.#timers.delete(id as number); } };
+  advance(ms: number) { this.now += ms; for (const [id, timer] of [...this.#timers]) if (timer.at <= this.now) { this.#timers.delete(id); timer.callback(); } }
+}
+const limits: JobLimits = { roles: 4, calls: 4, rounds: 4, hops: 4, contextTokens: 10, outputTokens: 10, retries: 2, wallMs: 1000 };
+function definition(run: WorkDefinition["run"] = () => ({ state: "succeeded", evidence: "หลักฐาน 🧪" })): WorkDefinition {
+  return { id: "fixture.work", title: "งานตรวจสอบ", revision: 1, route: { provider: "fixture", model: "scripted", authRoute: "subscription-a" },
+    cost: { roles: 1, calls: 1, rounds: 1, hops: 1 }, validate: (input, scope) => !!input && typeof input === "object" && !Object.keys(input).length && scope.projectRevision === scope.inputRevision, run };
+}
+async function fixture(options: { definitions?: WorkDefinition[]; env?: Record<string, string>; beforeCommit?: ApplicationOptions["beforeCommit"] } = {}) {
+  const root = mkdtempSync(join(tmpdir(), "jit-job01-")); roots.push(root);
+  const path = join(root, "app.sqlite"), config = readConfig({ JIT_DATABASE: path, ...options.env }), store = new TransactionStore(path); stores.push(store);
+  const clock = new Clock(), definitions = options.definitions ?? [definition()];
+  const queue = new JobQueue(store, config.jobs, definitions, { now: () => clock.now, timers: clock.timers }); queues.push(queue);
+  const app = new Application(store, config, { jobs: queue, now: () => clock.now, ...(options.beforeCommit ? { beforeCommit: options.beforeCommit } : {}) });
+  await app.setupOwner(password); const token = await app.login(password), auth = app.authenticate(token);
+  const project = app.execute(auth.actor, { kind: "project.create", requestId: crypto.randomUUID(), projectId: null, expectedRevision: 0, payload: { name: "โครงการ 🧪" } }).project;
+  return { root, path, config, store, clock, queue, app, project, token, auth, definitions, web: createWebHandler(app) };
+}
+type Fixture = Awaited<ReturnType<typeof fixture>>;
+function command(f: Fixture, payload: Partial<EnqueueJobCommand["payload"]> = {}): EnqueueJobCommand {
+  return { kind: "job.enqueue", requestId: crypto.randomUUID(), projectId: f.project.id, expectedRevision: 1,
+    payload: { type: f.definitions[0]!.id, configurationRevision: 1, policyRevision: 1, purpose: "ตรวจงาน / review 🧪", inputRevision: 1, input: {}, priority: "background", limits: structuredClone(limits), ...payload } };
+}
+const job = (f: Fixture, id: string) => f.app.job(f.auth.actor, f.project.id, id);
+function request(f: Fixture, path: string, body?: Record<string, unknown>) {
+  return new Request(`http://localhost:3000${path}`, { method: body ? "POST" : "GET", headers: { cookie: `jit_session=${f.token}`,
+    ...(body ? { origin: "http://localhost:3000", "content-type": "application/json", "x-csrf-token": f.auth.csrf } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+}
+async function child(f: Fixture, cmd: EnqueueJobCommand, mode: string) {
+  const process = Bun.spawn([globalThis.process.execPath, "--no-env-file", join(import.meta.dir, "fixtures/job-worker.ts")], {
+    stdin: new Blob([JSON.stringify({ path: f.path, token: f.token, now: f.clock.now, command: cmd, mode })]), stdout: "pipe", stderr: "pipe",
+  });
+  const timer = setTimeout(() => process.kill("SIGKILL"), 5000);
+  try { const [stdout, stderr, code] = await Promise.all([new Response(process.stdout).text(), new Response(process.stderr).text(), process.exited]); expect(stderr).toBe(""); return { stdout, code }; }
+  finally { clearTimeout(timer); if (process.exitCode === null) process.kill("SIGKILL"); await process.exited; }
+}
+
+test("owner enqueue, receipt, fake worker and Web job view commit one scoped result without read side effects", async () => {
+  const f = await fixture(), cmd = command(f), receipt = f.app.execute(f.auth.actor, cmd);
+  expect(receipt.job).toMatchObject({ projectId: f.project.id, state: "queued", authorization: { ownerId: "owner", generation: 1, requestId: cmd.requestId }, configuration: { revision: 1, policyRevision: 1 }, remaining: limits });
+  expect(f.app.execute(f.auth.actor, cmd)).toEqual(receipt);
+  expect(() => f.app.execute(f.auth.actor, { ...cmd, payload: { ...cmd.payload, purpose: "different" } })).toThrow("request_id_conflict");
+  const path = `/projects/${f.project.id}/jobs`, before = f.store.read(tx => tx.get<{ count: number }>("SELECT count(*) AS count FROM command_receipts")!.count);
+  expect((await f.web(request(f, path))).status).toBe(200);
+  expect(job(f, receipt.job.id).state).toBe("queued");
+  expect(f.store.read(tx => tx.get<{ count: number }>("SELECT count(*) AS count FROM command_receipts")!.count)).toBe(before);
+  f.queue.pump(); expect(job(f, receipt.job.id).state).toBe("admitted"); await f.queue.idle();
+  expect(job(f, receipt.job.id)).toMatchObject({ state: "succeeded", evidence: "หลักฐาน 🧪", remaining: { calls: 3, rounds: 3 } });
+  const html = await (await f.web(request(f, `${path}/${receipt.job.id}`))).text(); expect(html).toContain("เสร็จแล้ว"); expect(html).toContain("หลักฐาน 🧪");
+  expect(f.app.execute(f.auth.actor, cmd)).toEqual(receipt);
+});
+
+test("interactive admission overtakes queued background work and yielding is fair among peers", async () => {
+  const order: string[] = []; const f = await fixture({ env: { JIT_JOB_CONCURRENCY: "1" }, definitions: [definition(({ job }) => {
+    order.push(job.purpose); return job.steps === 1 ? { state: "yield", checkpoint: { step: 1 } } : { state: "succeeded", evidence: job.purpose };
+  })] });
+  const background = f.app.execute(f.auth.actor, command(f, { purpose: "background" })).job;
+  const a = f.app.execute(f.auth.actor, command(f, { priority: "interactive", purpose: "interactive-a" })).job;
+  const b = f.app.execute(f.auth.actor, command(f, { priority: "interactive", purpose: "interactive-b" })).job;
+  for (let n = 0; n < 6; n++) { f.queue.pump(); await f.queue.idle(); }
+  expect(order).toEqual(["interactive-a", "interactive-b", "interactive-a", "interactive-b", "background", "background"]);
+  for (const id of [a.id, b.id, background.id]) expect(job(f, id).state).toBe("succeeded");
+});
+
+test("an existing call keeps its slot; models sharing one auth route share its concurrency ceiling", async () => {
+  let release!: () => void; const gate = new Promise<WorkOutcome>(resolve => { release = () => resolve({ state: "succeeded", evidence: "done" }); }); releases.push(() => release());
+  const one = definition(() => gate), two = { ...definition(), id: "fixture.other", route: { authRoute: "subscription-a", model: "other-model", provider: "fixture" } };
+  const third = { ...definition(), id: "fixture.third", route: { provider: "fixture", model: "scripted", authRoute: "subscription-b" } };
+  const f = await fixture({ definitions: [one, two, third] });
+  const a = f.app.execute(f.auth.actor, command(f)).job; f.queue.pump(); await Promise.resolve();
+  const b = f.app.execute(f.auth.actor, command(f, { type: two.id, priority: "interactive" })).job;
+  const c = f.app.execute(f.auth.actor, command(f, { type: third.id })).job;
+  f.queue.pump(); expect(job(f, a.id).state).toBe("admitted"); expect(job(f, b.id).state).toBe("queued"); expect(job(f, c.id).state).toBe("admitted");
+  release(); await f.queue.idle(); f.queue.pump(); await f.queue.idle(); expect(job(f, b.id).state).toBe("succeeded");
+});
+
+test("quota/login/unavailable waits keep exact route and require deduplicated explicit resume within remaining budgets", async () => {
+  for (const reason of ["quota", "needs_login", "route_unavailable"] as const) {
+    const f = await fixture({ definitions: [definition(({ job }) => job.steps === 1 ? { state: "waiting", reason } : { state: "succeeded", evidence: "same route" })] });
+    const original = f.app.execute(f.auth.actor, command(f)).job; f.queue.pump(); await f.queue.idle();
+    const waiting = job(f, original.id); expect(waiting).toMatchObject({ state: "waiting", reason, route: original.route, remaining: { calls: 3, retries: 2 } });
+    f.queue.pump(); await f.queue.idle(); expect(job(f, original.id)).toEqual(waiting);
+    const resume = { kind: "job.resume" as const, requestId: crypto.randomUUID(), projectId: f.project.id, expectedRevision: waiting.revision, payload: { jobId: waiting.id } };
+    const receipt = f.app.execute(f.auth.actor, resume); expect(f.app.execute(f.auth.actor, resume)).toEqual(receipt);
+    expect(receipt.job).toMatchObject({ route: original.route, deadlineAt: original.deadlineAt, remaining: { calls: 3, retries: 1 } });
+    f.queue.pump(); await f.queue.idle(); expect(job(f, waiting.id)).toMatchObject({ state: "succeeded", route: original.route, remaining: { calls: 2, retries: 1 } });
+  }
+});
+
+test("finite queue overload and every budget boundary reject or terminate visibly before extra work", async () => {
+  const f = await fixture({ env: { JIT_JOB_QUEUE_LIMIT: "1" }, definitions: [definition(() => ({ state: "yield", checkpoint: {} }))] });
+  for (const key of Object.keys(limits) as (keyof JobLimits)[]) {
+    for (const value of [0, -1, Infinity, 1.5]) expect(() => f.app.execute(f.auth.actor, command(f, { limits: { ...limits, [key]: value } }))).toThrow();
+  }
+  expect(() => f.app.execute(f.auth.actor, command(f, { limits: Object.create(limits) }))).toThrow();
+  expect(() => f.app.execute(f.auth.actor, command(f, { input: new Date() as never }))).toThrow("invalid_job_data");
+  expect(() => f.app.execute(f.auth.actor, command(f, { input: "x".repeat(f.config.jobs.inputBytes + 1) }))).toThrow("invalid_job_data");
+  const cmd = command(f, { limits: { ...limits, calls: 1, rounds: 1, hops: 1 } }), first = f.app.execute(f.auth.actor, cmd).job;
+  expect(() => f.app.execute(f.auth.actor, command(f))).toThrow("job_queue_full"); expect(f.app.execute(f.auth.actor, cmd).job.id).toBe(first.id);
+  f.queue.pump(); await f.queue.idle(); f.queue.pump(); await f.queue.idle();
+  expect(job(f, first.id)).toMatchObject({ state: "blocked", reason: "budget_exhausted", steps: 1, remaining: { calls: 0 } });
+  expect(f.app.execute(f.auth.actor, command(f)).job.state).toBe("queued");
+});
+
+test("usage reservations persist before external work and cannot exceed context/output/retry budgets", async () => {
+  let observed: Job | undefined;
+  const f = await fixture({ definitions: [definition(context => {
+    context.reserve({ contextTokens: 10, outputTokens: 10, retries: 1 }); observed = job(f, context.job.id);
+    context.reserve({ outputTokens: 1 }); return { state: "succeeded", evidence: "must not publish" };
+  })] });
+  const receipt = f.app.execute(f.auth.actor, command(f)); f.queue.pump(); await f.queue.idle();
+  expect(observed?.remaining).toMatchObject({ contextTokens: 0, outputTokens: 0, retries: 1 });
+  expect(job(f, receipt.job.id)).toMatchObject({ state: "blocked", reason: "budget_exhausted", evidence: null, remaining: { outputTokens: 0 } });
+});
+
+test("prototype values cannot create or restore usage budgets", async () => {
+  const f = await fixture({ definitions: [definition(context => {
+    context.reserve(Object.assign(Object.create({ calls: -100 }), { roles: 1 }));
+    return { state: "succeeded", evidence: "must not publish" };
+  })] });
+  const id = f.app.execute(f.auth.actor, command(f)).job.id; f.queue.pump(); await f.queue.idle();
+  expect(job(f, id)).toMatchObject({ state: "failed", reason: "worker_failed", remaining: { calls: 3, roles: 3 }, evidence: null });
+});
+
+test("stalled calls time out visibly but hold capacity until actual settlement, including queued deadlines", async () => {
+  let release!: () => void, signal: AbortSignal | undefined;
+  const gate = new Promise<WorkOutcome>(resolve => { release = () => resolve({ state: "succeeded", evidence: "too late" }); }); releases.push(() => release());
+  const f = await fixture({ env: { JIT_JOB_CONCURRENCY: "1" }, definitions: [definition(context => { signal = context.signal; return gate; })] });
+  const first = f.app.execute(f.auth.actor, command(f)).job; f.queue.pump(); await Promise.resolve();
+  const queued = f.app.execute(f.auth.actor, command(f)).job; f.clock.advance(1001); f.queue.pump();
+  expect(signal?.aborted).toBe(true); expect(job(f, first.id)).toMatchObject({ state: "failed", reason: "deadline", evidence: null, occupiesAdmission: true, nextAction: "wait_for_adapter_to_stop" });
+  expect(job(f, queued.id)).toMatchObject({ state: "failed", reason: "deadline", steps: 0 });
+  expect(f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM jobs WHERE occupies = 1")!.n)).toBe(1);
+  release(); await f.queue.idle(); expect(job(f, first.id)).toMatchObject({ evidence: null, occupiesAdmission: false, nextAction: "inspect_reason_and_authorize_new_work" });
+  expect(f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM jobs WHERE occupies = 1")!.n)).toBe(0);
+});
+
+test("waiting deadlines and exhausted retries become terminal instead of silently extending the budget", async () => {
+  const f = await fixture({ definitions: [definition(() => ({ state: "waiting", reason: "quota" }))] });
+  const a = f.app.execute(f.auth.actor, command(f, { limits: { ...limits, retries: 1 } })).job; f.queue.pump(); await f.queue.idle();
+  const waiting = job(f, a.id);
+  f.app.execute(f.auth.actor, { kind: "job.resume", requestId: crypto.randomUUID(), projectId: f.project.id, expectedRevision: waiting.revision, payload: { jobId: a.id } });
+  f.queue.pump(); await f.queue.idle(); expect(job(f, a.id)).toMatchObject({ state: "blocked", reason: "budget_exhausted", remaining: { retries: 0 } });
+  const b = f.app.execute(f.auth.actor, command(f)).job; f.queue.pump(); await f.queue.idle(); f.clock.advance(1001); f.queue.pump();
+  expect(job(f, b.id)).toMatchObject({ state: "failed", reason: "deadline" });
+});
+
+test("new configuration, source revisions and owner reset cannot silently authorize queued work", async () => {
+  let calls = 0; const f = await fixture({ definitions: [definition(() => { calls++; return { state: "succeeded", evidence: "done" }; })] });
+  const a = f.app.execute(f.auth.actor, command(f)).job;
+  f.store.transaction(tx => tx.run("UPDATE projects SET revision = revision + 1 WHERE id = ?", f.project.id));
+  f.queue.pump(); expect(job(f, a.id)).toMatchObject({ state: "blocked", reason: "input_changed" }); expect(calls).toBe(0);
+  f.store.transaction(tx => tx.run("UPDATE projects SET revision = 1 WHERE id = ?", f.project.id));
+  const b = f.app.execute(f.auth.actor, command(f)).job; f.queue.close();
+  const queue = new JobQueue(f.store, { ...f.config.jobs, revision: 2 }, f.definitions, { now: () => f.clock.now, timers: f.clock.timers }); queues.push(queue); queue.pump();
+  expect(job(f, b.id)).toMatchObject({ state: "blocked", reason: "configuration_changed" }); expect(calls).toBe(0); queue.close();
+  const q = new JobQueue(f.store, f.config.jobs, f.definitions, { now: () => f.clock.now, timers: f.clock.timers }); queues.push(q);
+  const app = new Application(f.store, f.config, { jobs: q, now: () => f.clock.now }), actor = app.authenticate(f.token).actor;
+  const c = app.execute(actor, command(f)).job; await app.setupOwner(password, true); q.pump();
+  const auth = app.authenticate(await app.login(password)); expect(app.job(auth.actor, f.project.id, c.id)).toMatchObject({ state: "blocked", reason: "authorization_changed" });
+  expect(() => app.execute(actor, command(f))).toThrow("authentication_required"); expect(calls).toBe(0);
+});
+
+test("a second scheduler in this or another process cannot acknowledge work", async () => {
+  const f = await fixture({ definitions: [] });
+  expect(() => new JobQueue(f.store, f.config.jobs, [])).toThrow("scheduler_unavailable");
+  const cmd = command({ ...f, definitions: [projectStateWork(f.store)] });
+  const result = await child(f, cmd, "enqueue"); expect(result.code).toBe(2); expect(JSON.parse(result.stdout)).toEqual({ error: "scheduler_unavailable" });
+  expect(f.app.jobs(f.auth.actor, f.project.id).items).toHaveLength(0);
+});
+
+for (const mode of ["queued-crash", "admitted-crash"] as const) test(`fresh process recovers ${mode} without losing budgets or guessing completion`, async () => {
+  const f = await fixture({ definitions: [] }); f.queue.close();
+  const cmd = command({ ...f, definitions: [projectStateWork(f.store)] });
+  const result = await child(f, cmd, mode); expect(result.code).not.toBe(0); const id = JSON.parse(result.stdout).job.id;
+  const queue = new JobQueue(f.store, f.config.jobs, [projectStateWork(f.store)], { now: () => f.clock.now, timers: f.clock.timers }); queues.push(queue);
+  const app = new Application(f.store, f.config, { jobs: queue, now: () => f.clock.now }), actor = app.authenticate(f.token).actor;
+  expect(app.job(actor, f.project.id, id)).toMatchObject({ state: mode === "queued-crash" ? "queued" : "waiting", reason: mode === "queued-crash" ? "queued" : "interrupted", remaining: { calls: mode === "queued-crash" ? 4 : 3 } });
+  if (mode === "queued-crash") { queue.pump(); await queue.idle(); expect(app.job(actor, f.project.id, id).state).toBe("succeeded"); }
+  else { queue.pump(); await queue.idle(); expect(app.job(actor, f.project.id, id).state).toBe("waiting"); }
+});
+
+for (const stage of ["job", "receipt"]) test(`SIGKILL after ${stage} writes cannot leave a half-acknowledged job`, async () => {
+  const f = await fixture({ definitions: [] }); f.queue.close(); const cmd = command({ ...f, definitions: [projectStateWork(f.store)] });
+  const before = f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM command_receipts")!.n);
+  await child(f, cmd, `crash-${stage}`);
+  expect(f.app.jobs(f.auth.actor, f.project.id).items).toHaveLength(0);
+  expect(f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM command_receipts")!.n)).toBe(before);
+  const queue = new JobQueue(f.store, f.config.jobs, [projectStateWork(f.store)], { now: () => f.clock.now, timers: f.clock.timers }); queues.push(queue);
+  const app = new Application(f.store, f.config, { jobs: queue, now: () => f.clock.now }); expect(app.execute(app.authenticate(f.token).actor, cmd).job.state).toBe("queued");
+});
+
+test("SQLite COMMIT failure rolls back job, receipt and audit without acknowledging the request", async () => {
+  let armed = false, store!: TransactionStore;
+  const f = await fixture({ beforeCommit: stage => { if (armed && stage === "receipt") store.read(tx => {
+    tx.run("PRAGMA defer_foreign_keys = ON"); tx.run("INSERT INTO project_groups VALUES ('invalid-job-group', 'missing-project')");
+  }); } }); store = f.store; armed = true;
+  const cmd = command(f), before = f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM command_receipts")!.n);
+  const response = await f.web(request(f, `/api/projects/${f.project.id}/jobs`, { requestId: cmd.requestId, expectedRevision: cmd.expectedRevision, ...cmd.payload }));
+  expect(response.status).toBe(503); expect(await response.json()).toEqual({ error: "storage_unavailable" });
+  expect(f.app.jobs(f.auth.actor, f.project.id).items).toHaveLength(0);
+  expect(f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM command_receipts")!.n)).toBe(before);
+  expect(f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM audit WHERE command_kind = 'job.enqueue'")!.n)).toBe(0);
+  armed = false; expect(f.app.execute(f.auth.actor, cmd).job.state).toBe("queued");
+});
+
+test("admission cannot invoke a worker until its usage reservation commits", async () => {
+  let calls = 0;
+  const f = await fixture({ definitions: [definition(() => { calls++; return { state: "succeeded", evidence: "done" }; })] });
+  const id = f.app.execute(f.auth.actor, command(f)).job.id;
+  const transaction = f.store.transaction.bind(f.store);
+  f.store.transaction = <T>(mutate: (tx: AppTransaction) => T) => transaction(tx => {
+    const result = mutate(tx); tx.run("PRAGMA defer_foreign_keys = ON"); tx.run("INSERT INTO project_groups VALUES ('invalid-reservation-group', 'missing-project')"); return result;
+  });
+  try { expect(() => f.queue.pump()).toThrow(); }
+  finally { f.store.transaction = transaction; }
+  await f.queue.idle(); expect(calls).toBe(0);
+  expect(job(f, id)).toMatchObject({ state: "queued", remaining: limits, steps: 0 });
+  expect(f.app.jobs(f.auth.actor, f.project.id).admission.available).toBe(false);
+  expect(() => f.app.execute(f.auth.actor, command(f))).toThrow("scheduler_unavailable");
+});
+
+test("Web uses owner/Origin/CSRF and project scope, safely renders output, and bounds cursor queries", async () => {
+  const text = '<script>globalThis.pwned=1</script>\n```ts\nconst ไทย = "🧪";\n```\njavascript:alert(1)';
+  const f = await fixture({ env: { JIT_PAGE_SIZE: "1" }, definitions: [definition(() => ({ state: "succeeded", evidence: text }))] });
+  const cmd = command(f), path = `/api/projects/${f.project.id}/jobs`, body = { requestId: cmd.requestId, expectedRevision: 1, ...cmd.payload };
+  expect((await f.web(new Request(`http://localhost:3000${path}`))).status).toBe(401);
+  const crossOrigin = request(f, path, body); crossOrigin.headers.set("origin", "https://other.example.test"); expect((await f.web(crossOrigin)).status).toBe(403);
+  const noCsrf = request(f, path, body); noCsrf.headers.delete("x-csrf-token"); expect((await f.web(noCsrf)).status).toBe(403);
+  expect(() => f.app.execute({ ...f.auth.actor }, cmd)).toThrow("authentication_required");
+  expect((await f.web(request(f, path, { ...body, actor: "owner" }))).status).toBe(400);
+  const response = await f.web(request(f, path, body)), receipt = await response.json(); expect(response.status).toBe(200);
+  expect(await (await f.web(request(f, path, body))).json()).toEqual(receipt);
+  f.app.execute(f.auth.actor, command(f));
+  const firstPage = await (await f.web(request(f, path))).json(); expect(firstPage.items).toHaveLength(1); expect(firstPage.hasMore).toBe(true);
+  expect((await (await f.web(request(f, `${path}?after=${firstPage.nextAfter}`))).json()).items).toHaveLength(1);
+  expect((await f.web(request(f, `${path}?after=${Number.MAX_SAFE_INTEGER + 1}`))).status).toBe(400);
+  const other = f.app.execute(f.auth.actor, { kind: "project.create", requestId: crypto.randomUUID(), projectId: null, expectedRevision: 1, payload: { name: "same name" } }).project;
+  expect((await f.web(request(f, `/api/projects/${other.id}/jobs/${receipt.job.id}`))).status).toBe(404);
+  f.queue.pump(); await f.queue.idle();
+  const html = await (await f.web(request(f, `/projects/${f.project.id}/jobs/${receipt.job.id}`))).text();
+  expect(html).toContain("&lt;script&gt;"); expect(html).not.toContain("<script>"); expect(html).not.toContain('href="javascript:'); expect(html).toContain("const ไทย");
+  const formCommand = command(f), form = new URLSearchParams({ csrf: f.auth.csrf, requestId: formCommand.requestId, expectedRevision: "1", ...Object.fromEntries(Object.entries(formCommand.payload).map(([key, value]) => [key, typeof value === "object" ? JSON.stringify(value) : String(value)])) });
+  const submitted = await f.web(new Request(`http://localhost:3000/projects/${f.project.id}/jobs`, { method: "POST", headers: { cookie: `jit_session=${f.token}`, origin: "http://localhost:3000", "content-type": "application/x-www-form-urlencoded" }, body: form }));
+  expect(submitted.status).toBe(303); expect(submitted.headers.get("location")).toMatch(/\/jobs\/[a-f0-9-]{36}#job-/);
+});
+
+test("shutdown retains admission ownership until an unsettled adapter stops and cannot publish its late success", async () => {
+  let release!: () => void;
+  const gate = new Promise<WorkOutcome>(resolve => { release = () => resolve({ state: "succeeded", evidence: "late result" }); }); releases.push(() => release());
+  const f = await fixture({ definitions: [definition(() => gate)] }), id = f.app.execute(f.auth.actor, command(f)).job.id;
+  f.queue.pump(); await Promise.resolve(); f.queue.close();
+  expect(() => new JobQueue(f.store, f.config.jobs, f.definitions)).toThrow("scheduler_unavailable");
+  expect(() => f.app.execute(f.auth.actor, command(f))).toThrow("scheduler_unavailable");
+  release(); await f.queue.idle(); expect(job(f, id)).toMatchObject({ state: "waiting", reason: "interrupted", evidence: null });
+  const next = new JobQueue(f.store, f.config.jobs, f.definitions); queues.push(next);
+  expect(f.app.jobs(f.auth.actor, f.project.id).items).toHaveLength(1);
+});
+
+test("deadline before invocation, invalid adapter outcomes and raw thrown diagnostics never create a success", async () => {
+  let calls = 0;
+  const f = await fixture({ definitions: [definition(() => { calls++; throw new Error("credential-secret-sentinel"); })] });
+  const a = f.app.execute(f.auth.actor, command(f)).job; f.queue.pump(); f.clock.advance(1001); await f.queue.idle();
+  expect(calls).toBe(0); expect(job(f, a.id)).toMatchObject({ state: "failed", reason: "deadline", evidence: null });
+  const b = f.app.execute(f.auth.actor, command(f)).job; f.queue.pump(); await f.queue.idle();
+  expect(calls).toBe(1); expect(JSON.stringify(job(f, b.id))).not.toContain("credential-secret-sentinel"); expect(job(f, b.id).state).toBe("failed");
+  f.queue.close();
+  const invalid = new JobQueue(f.store, f.config.jobs, [definition(() => ({ state: "yield", checkpoint: { bad: Infinity } }))], { now: () => f.clock.now, timers: f.clock.timers }); queues.push(invalid);
+  const app = new Application(f.store, f.config, { jobs: invalid, now: () => f.clock.now }), actor = app.authenticate(f.token).actor;
+  const c = app.execute(actor, command(f)).job; invalid.pump(); await invalid.idle();
+  expect(app.job(actor, f.project.id, c.id)).toMatchObject({ state: "failed", reason: "worker_failed" });
+  expect(app.execute(actor, command(f)).job.state).toBe("queued");
+});
+
+test("invalid scheduler configuration fails before claiming ownership or acknowledging work", async () => {
+  const f = await fixture(); f.queue.close();
+  for (const policy of [{ ...f.config.jobs, concurrency: 0 }, { ...f.config.jobs, routeConcurrency: 3 }, { ...f.config.jobs, maximum: { ...limits, calls: Infinity } }]) {
+    expect(() => new JobQueue(f.store, policy, f.definitions)).toThrow();
+    expect(f.store.read(tx => tx.get("SELECT * FROM job_scheduler"))).toBeNull();
+  }
+  const wrongRevision = command(f, { policyRevision: 2 }); const queue = new JobQueue(f.store, f.config.jobs, f.definitions); queues.push(queue);
+  const app = new Application(f.store, f.config, { jobs: queue, now: () => f.clock.now });
+  expect(() => app.execute(app.authenticate(f.token).actor, wrongRevision)).toThrow("invalid_job_command");
+});
+
+test("frozen published v2 schema migrates with conversation, source identity and owner state intact", async () => {
+  const root = mkdtempSync(join(tmpdir(), "jit-job01-v2-")); roots.push(root); const path = join(root, "app.sqlite"), old = new Database(path);
+  old.exec(await Bun.file(join(import.meta.dir, "fixtures/foundation-v2.sql")).text());
+  const projectId = crypto.randomUUID(), groupId = crypto.randomUUID(), topicId = crypto.randomUUID(), messageId = crypto.randomUUID(), topicSource = crypto.randomUUID(), messageSource = crypto.randomUUID();
+  const token = crypto.getRandomValues(new Uint8Array(32)).toHex(), digest = (value: string) => createHash("sha256").update(value).digest("hex"), attribution = JSON.stringify({ kind: "owner", ownerId: "owner" });
+  old.query("INSERT INTO owner VALUES ('owner', ?, 1)").run(await Bun.password.hash(password, { algorithm: "argon2id" }));
+  old.query("INSERT INTO sessions VALUES (?, 'owner', 1, ?)").run(digest(token), epoch + 60000);
+  old.query("INSERT INTO projects VALUES (?, 'ก่อนคิวงาน 🧪', 2, ?)").run(projectId, epoch); old.query("INSERT INTO project_groups VALUES (?, ?)").run(groupId, projectId);
+  for (const [id, kind, text, descriptor] of [[topicSource, "topic", "หัวข้อเดิม", { kind: "topic", topicId }], [messageSource, "message", "ข้อความเดิม 🧪", { kind: "message", topicId, messageId }]] as const) {
+    old.query("INSERT INTO sources VALUES (?, ?, ?, 1, 1, 'available')").run(id, projectId, kind);
+    old.query("INSERT INTO source_versions VALUES (?, 1, 1, ?, ?, ?, ?)").run(id, JSON.stringify(descriptor), attribution, text, epoch);
+  }
+  old.query("INSERT INTO topics VALUES (?, ?, ?, 2, 1, 1, ?, ?, ?, 1, 1)").run(topicId, projectId, groupId, epoch, attribution, topicSource);
+  old.query("INSERT INTO messages VALUES (?, ?, ?, 1, ?, ?, ?, 1, 1)").run(messageId, projectId, topicId, epoch, attribution, messageSource); old.close();
+  const store = new TransactionStore(path); stores.push(store); const config = readConfig({ JIT_DATABASE: path });
+  const queue = new JobQueue(store, config.jobs, [projectStateWork(store)], { now: () => epoch }); queues.push(queue);
+  const app = new Application(store, config, { jobs: queue, now: () => epoch }), actor = app.authenticate(token).actor;
+  expect(app.conversation(actor, projectId, topicId).items[0]).toMatchObject({ id: messageId, text: "ข้อความเดิม 🧪", source: { sourceId: messageSource, revision: 1, generation: 1 } });
+  expect(app.source(actor, projectId, { sourceId: messageSource, revision: 1, generation: 1 })).toMatchObject({ state: "available", text: "ข้อความเดิม 🧪" });
+  const cmd: EnqueueJobCommand = { kind: "job.enqueue", requestId: crypto.randomUUID(), projectId, expectedRevision: 2, payload: { type: "project.status", configurationRevision: 1, policyRevision: 1, purpose: "ตรวจโครงการเดิม", inputRevision: 2, input: {}, priority: "interactive", limits } };
+  const id = app.execute(actor, cmd).job.id; queue.pump(); await queue.idle(); expect(app.job(actor, projectId, id).state).toBe("succeeded");
+  const snapshot = new Database(join(root, readdirSync(root).find(name => name.includes(".pre-v2-"))!), { readonly: true });
+  expect(snapshot.query("PRAGMA user_version").get()).toEqual({ user_version: 2 }); expect(snapshot.query("SELECT count(*) AS n FROM messages").get()).toEqual({ n: 1 }); snapshot.close();
+  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 3 });
+});
