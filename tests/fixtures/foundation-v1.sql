@@ -34,4 +34,3 @@
               UNIQUE (actor_id, request_id)
             );
             PRAGMA user_version = 1;
-          
