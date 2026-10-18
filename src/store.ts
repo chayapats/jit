@@ -2,7 +2,7 @@ import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-const schemaVersion = 1;
+const schemaVersion = 2;
 
 /** Synchronous SQL operations scoped to an application transaction. */
 export interface AppTransaction {
@@ -34,13 +34,13 @@ export class TransactionStore {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
           if (current === schemaVersion) return;
-          if (current !== 0) throw new Error("Unsupported migration source");
+          if (current !== 0 && current !== 1) throw new Error("Unsupported migration source");
           if (existing) {
-            const snapshot = `${path}.pre-v0-${crypto.randomUUID()}.sqlite`;
+            const snapshot = `${path}.pre-v${current}-${crypto.randomUUID()}.sqlite`;
             const fd = openSync(snapshot, "wx", 0o600);
             try { writeFileSync(fd, this.#db.serialize()); fsyncSync(fd); } finally { closeSync(fd); }
           }
-          this.#db.exec(`
+          if (current === 0) this.#db.exec(`
             CREATE TABLE owner (
               id TEXT PRIMARY KEY CHECK (id = 'owner'), password_hash TEXT NOT NULL,
               generation INTEGER NOT NULL CHECK (generation > 0)
@@ -75,6 +75,45 @@ export class TransactionStore {
               UNIQUE (actor_id, request_id)
             );
             PRAGMA user_version = 1;
+          `);
+          this.#db.exec(`
+            CREATE UNIQUE INDEX project_group_identity ON project_groups(project_id, id);
+            CREATE TABLE sources (
+              id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
+              kind TEXT NOT NULL CHECK (kind IN ('topic', 'message', 'output', 'external')),
+              current_revision INTEGER NOT NULL CHECK (current_revision > 0),
+              generation INTEGER NOT NULL CHECK (generation > 0),
+              availability TEXT NOT NULL CHECK (availability IN ('available', 'unavailable')),
+              UNIQUE (project_id, id)
+            );
+            CREATE TABLE source_versions (
+              source_id TEXT NOT NULL REFERENCES sources(id), revision INTEGER NOT NULL CHECK (revision > 0),
+              generation INTEGER NOT NULL CHECK (generation > 0), descriptor_json TEXT NOT NULL,
+              attribution_json TEXT NOT NULL, content_text TEXT, committed_at INTEGER NOT NULL,
+              PRIMARY KEY (source_id, revision, generation)
+            );
+            CREATE TABLE topics (
+              id TEXT PRIMARY KEY, project_id TEXT NOT NULL, group_id TEXT NOT NULL,
+              revision INTEGER NOT NULL CHECK (revision > 0), sequence INTEGER NOT NULL CHECK (sequence > 0),
+              message_sequence INTEGER NOT NULL CHECK (message_sequence >= 0), created_at INTEGER NOT NULL,
+              attribution_json TEXT NOT NULL, source_id TEXT NOT NULL UNIQUE,
+              source_revision INTEGER NOT NULL, source_generation INTEGER NOT NULL,
+              UNIQUE (project_id, id), UNIQUE (project_id, sequence),
+              FOREIGN KEY (project_id, group_id) REFERENCES project_groups(project_id, id),
+              FOREIGN KEY (project_id, source_id) REFERENCES sources(project_id, id),
+              FOREIGN KEY (source_id, source_revision, source_generation) REFERENCES source_versions(source_id, revision, generation)
+            );
+            CREATE TABLE messages (
+              id TEXT PRIMARY KEY, project_id TEXT NOT NULL, topic_id TEXT NOT NULL,
+              sequence INTEGER NOT NULL CHECK (sequence > 0), committed_at INTEGER NOT NULL,
+              attribution_json TEXT NOT NULL, source_id TEXT NOT NULL UNIQUE,
+              source_revision INTEGER NOT NULL, source_generation INTEGER NOT NULL,
+              UNIQUE (project_id, topic_id, sequence),
+              FOREIGN KEY (project_id, topic_id) REFERENCES topics(project_id, id),
+              FOREIGN KEY (project_id, source_id) REFERENCES sources(project_id, id),
+              FOREIGN KEY (source_id, source_revision, source_generation) REFERENCES source_versions(source_id, revision, generation)
+            );
+            PRAGMA user_version = 2;
           `);
         }).immediate();
       }

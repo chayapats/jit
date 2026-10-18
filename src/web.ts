@@ -1,37 +1,8 @@
-import { Application, type CreateProjectCommand, type Workspace } from "./application";
+import { Application, type CreateProjectCommand } from "./application";
 import { AppError } from "./errors";
-
-const escape = (value: unknown) => String(value).replace(/[&<>"']/g, char =>
-  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
-
-const css = `:root{color-scheme:light dark;font-family:system-ui,sans-serif}body{margin:0;background:#111820;color:#eef3f6}
-main{max-width:860px;margin:5vh auto;padding:24px}header{display:flex;justify-content:space-between;align-items:center;gap:20px}
-h1{font-size:2rem;margin:8px 0}p{color:#b4c2ce;line-height:1.6}a{color:#9bd9c7}label{display:block;margin:18px 0 8px}
-input,button{font:inherit;padding:12px;border-radius:8px;border:1px solid #516576}input{width:min(90%,430px);background:#17222c;color:inherit}
-button{cursor:pointer;background:#99dbc6;color:#11271f;font-weight:600}form{margin:20px 0}ul{padding:0;list-style:none}
-li{border:1px solid #354b5d;border-radius:12px;padding:20px;margin:14px 0}small{color:#a6b9c9;overflow-wrap:anywhere}
-.row{display:flex;gap:12px;align-items:end;flex-wrap:wrap}.row>div{flex:1;min-width:200px}.quiet{background:transparent;color:#dce9ef}
-.error{border-left:3px solid #e4ad81;padding:12px}footer{margin-top:36px;font-size:.85rem;color:#a6b9c9}`;
-
-function page(title: string, body: string): string {
-  return `<!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-    <title>${escape(title)} · Jit</title><link rel="stylesheet" href="/assets/app.css"></head><body><main>${body}
-    <footer>Jit · พื้นที่โครงการส่วนตัว</footer></main></body></html>`;
-}
-
-function workspacePage(state: Workspace, csrf: string, offset: number, pageSize: number): string {
-  return page("โครงการ", `<header><div><small>JIT / WORKSPACE</small><h1>โครงการของคุณ</h1></div>
-    <form method="post" action="/logout"><input type="hidden" name="csrf" value="${csrf}"><button class="quiet">ออกจากระบบ</button></form></header>
-    <p>เริ่มพื้นที่สนทนาสำหรับแต่ละโครงการ แล้วกลับมาดูต่อได้ภายหลัง</p>
-    <form method="post" action="/projects"><input type="hidden" name="csrf" value="${csrf}">
-      <input type="hidden" name="requestId" value="${crypto.randomUUID()}">
-      <input type="hidden" name="expectedRevision" value="${state.revision}">
-      <div class="row"><div><label for="name">ชื่อโครงการ</label><input id="name" name="name" maxlength="200" required autocomplete="off"></div>
-      <button>สร้างโครงการ</button></div></form>
-    ${state.projects.length ? `<ul>${state.projects.map(p => `<li><h2><a href="/projects/${escape(p.id)}">${escape(p.name)}</a></h2><p>เปิดกลุ่มโครงการ</p></li>`).join("")}</ul>` : "<p>ยังไม่มีโครงการ สร้างโครงการแรกได้ด้านบน</p>"}
-    <nav>${offset > 0 ? `<a href="/?offset=${Math.max(0, offset - pageSize)}">ก่อนหน้า</a> ` : ""}
-    ${state.hasMore ? `<a href="/?offset=${offset + pageSize}">ถัดไป</a>` : ""}</nav>`);
-}
+import type { CreateTopicCommand, SendMessageCommand } from "./conversation";
+import { workspacePage, projectPage, conversationPage, sourcePage, loginPage, errorPage } from "./web-layout";
+import { styleSheet } from "./web-style";
 
 const messages: Record<string, string> = {
   authentication_required: "กรุณาเข้าสู่ระบบ", login_failed: "เข้าสู่ระบบไม่สำเร็จ กรุณาตรวจรหัสผ่าน",
@@ -42,6 +13,8 @@ const messages: Record<string, string> = {
   csrf_rejected: "ยืนยันคำสั่งไม่สำเร็จ กรุณาเปิดหน้าโครงการใหม่",
   origin_rejected: "ไม่อนุญาตคำสั่งจากที่อยู่นี้", request_too_large: "คำสั่งมีขนาดใหญ่เกินกำหนด",
   storage_unavailable: "ยังบันทึกข้อมูลไม่สำเร็จ กรุณาลองใหม่ภายหลัง",
+  topic_not_found: "ไม่พบหัวข้อในโครงการที่เลือก", project_not_found: "ไม่พบโครงการที่เลือก",
+  text_too_large_or_invalid: "ข้อความยาวเกินกำหนดหรือมีอักขระที่ไม่รองรับ", empty_text: "กรุณาใส่ข้อความก่อนบันทึก",
 };
 
 /** Creates a server-rendered owner workspace; all mutations use the shared application boundary. */
@@ -106,11 +79,9 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       if (request.method !== "GET" && request.method !== "POST") throw new AppError("method_not_allowed", 405);
       if (request.method === "POST" && (request.headers.get("origin") !== config.origin ||
           request.headers.get("sec-fetch-site") === "cross-site")) throw new AppError("origin_rejected", 403);
-      if (request.method === "GET" && url.pathname === "/assets/app.css") return respond(css, 200, { "Content-Type": "text/css" });
+      if (request.method === "GET" && url.pathname === "/assets/app.css") return respond(styleSheet, 200, { "Content-Type": "text/css" });
       if (request.method === "GET" && url.pathname === "/login") {
-        return respond(page("เข้าสู่ระบบ", `<small>JIT / OWNER</small><h1>กลับมาทำงานต่อ</h1><p>เข้าสู่พื้นที่โครงการของคุณ</p>
-          <form method="post" action="/login"><label for="password">รหัสผ่าน owner</label>
-          <input id="password" name="password" type="password" maxlength="256" required autocomplete="current-password"><p><button>เข้าสู่ระบบ</button></p></form>`));
+        return respond(loginPage());
       }
       if (request.method === "POST" && url.pathname === "/login") {
         const body = await payload(request);
@@ -122,11 +93,35 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       const token = matches.length === 1 ? matches[0]!.slice(cookieName.length + 1) : "";
       const auth = app.authenticate(token);
       const projectRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})$/.exec(url.pathname);
+      const topicCollection = /^\/(api\/)?projects\/([a-f0-9-]{36})\/topics$/.exec(url.pathname);
+      const topicRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})$/.exec(url.pathname);
+      const messageRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})\/messages$/.exec(url.pathname);
+      const sourceRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/sources\/([a-f0-9-]{36})$/.exec(url.pathname);
+      const after = () => {
+        const raw = url.searchParams.get("after") ?? "0";
+        if (!/^\d{1,16}$/.test(raw)) throw new AppError("invalid_cursor");
+        return Number(raw);
+      };
+      if (request.method === "GET" && sourceRoute) {
+        const positive = (key: string) => {
+          const values = url.searchParams.getAll(key);
+          if (values.length !== 1 || !/^[1-9]\d{0,15}$/.test(values[0]!)) throw new AppError("invalid_source_reference");
+          return Number(values[0]);
+        };
+        const source = app.source(auth.actor, sourceRoute[2]!, { sourceId: sourceRoute[3]!, revision: positive("revision"), generation: positive("generation") });
+        return api ? json(source) : respond(sourcePage(source, app.project(auth.actor, source.projectId), app.workspace(auth.actor), auth.csrf));
+      }
+      if (request.method === "GET" && topicRoute) {
+        const state = app.conversation(auth.actor, topicRoute[2]!, topicRoute[3]!, after());
+        return api ? json(state) : respond(conversationPage(state, app.workspace(auth.actor), app.topics(auth.actor, state.project.id).items, auth.csrf, after(), config.messageBytes));
+      }
+      if (request.method === "GET" && topicCollection) {
+        const state = app.topics(auth.actor, topicCollection[2]!, after());
+        return api ? json(state) : respond(projectPage(state, app.workspace(auth.actor), auth.csrf, after()));
+      }
       if (request.method === "GET" && projectRoute) {
         const project = app.project(auth.actor, projectRoute[2]!);
-        return api ? json(project) : respond(page(project.name, `<a href="/">← โครงการทั้งหมด</a>
-          <h1>${escape(project.name)}</h1><section data-group-id="${escape(project.groupId)}"><h2>กลุ่มโครงการ</h2>
-          <p>พื้นที่โครงการนี้บันทึกแล้ว การสนทนาและทีมผู้เชี่ยวชาญจะพร้อมในขั้นถัดไป</p></section>`));
+        return api ? json(project) : respond(projectPage(app.topics(auth.actor, project.id, after()), app.workspace(auth.actor), auth.csrf, after()));
       }
       if (request.method === "GET" && ["/", "/api/projects"].includes(url.pathname)) {
         const raw = url.searchParams.get("offset") ?? "0";
@@ -135,12 +130,28 @@ export function createWebHandler(app: Application): (request: Request) => Promis
         const state = app.workspace(auth.actor, offset);
         return api ? json(state) : respond(workspacePage(state, auth.csrf, offset, config.pageSize));
       }
-      if (request.method === "POST" && ["/projects", "/api/projects", "/logout"].includes(url.pathname)) {
+      if (request.method === "POST" && (["/projects", "/api/projects", "/logout"].includes(url.pathname) || topicCollection || messageRoute)) {
         const body = await payload(request);
         app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
         if (url.pathname === "/logout") {
           app.logout(auth.actor);
           return respond(null, 303, { "Location": "/login", "Set-Cookie": cookie("", 0) });
+        }
+        if (topicCollection || messageRoute) {
+          const allowed = ["csrf", "requestId", "expectedRevision", topicCollection ? "title" : "text"];
+          if (Object.keys(body).some(key => !allowed.includes(key))) throw new AppError("invalid_body");
+          const revision = typeof body.expectedRevision === "string" && /^\d{1,15}$/.test(body.expectedRevision)
+            ? Number(body.expectedRevision) : body.expectedRevision;
+          if (topicCollection) {
+            const command: CreateTopicCommand = { kind: "topic.create", projectId: topicCollection[2]!, requestId: body.requestId as string,
+              expectedRevision: revision as number, payload: { title: body.title as string } };
+            const receipt = app.execute(auth.actor, command);
+            return api ? json(receipt) : respond(null, 303, { "Location": `/projects/${receipt.topic.projectId}/topics/${receipt.topic.id}` });
+          }
+          const command: SendMessageCommand = { kind: "message.send", projectId: messageRoute![2]!, requestId: body.requestId as string,
+            expectedRevision: revision as number, payload: { topicId: messageRoute![3]!, text: body.text as string } };
+          const receipt = app.execute(auth.actor, command);
+          return api ? json(receipt) : respond(null, 303, { "Location": `/projects/${receipt.message.projectId}/topics/${receipt.message.topicId}?after=${Math.max(0, receipt.message.sequence - config.pageSize)}#message-${receipt.message.id}` });
         }
         if (Object.keys(body).some(key => !["csrf", "requestId", "name", "expectedRevision"].includes(key))) throw new AppError("invalid_body");
         const revision = typeof body.expectedRevision === "string" && /^\d{1,15}$/.test(body.expectedRevision)
@@ -155,7 +166,7 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       const rejection = error instanceof AppError ? error : new AppError("storage_unavailable", 503);
       if (!api && rejection.code === "authentication_required") return respond(null, 303, { "Location": "/login" });
       const text = messages[rejection.code] ?? "คำสั่งไม่ถูกต้อง กรุณาลองใหม่";
-      return api ? json({ error: rejection.code }, rejection.status) : respond(page("ตรวจสอบคำสั่ง", `<h1>ตรวจสอบคำสั่ง</h1><p class="error">${text}</p><a href="/">เปิดหน้าโครงการ</a> · <a href="/login">เข้าสู่ระบบ</a>`), rejection.status);
+      return api ? json({ error: rejection.code }, rejection.status) : respond(errorPage(text), rejection.status);
     }
   };
 }
