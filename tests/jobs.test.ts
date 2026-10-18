@@ -674,3 +674,62 @@ test("I: in-process finalizer keeps cancellation_requested until every watched a
   expect(afterOne.stop).toMatchObject({ transport: "cancellation_requested", attemptIds: expect.arrayContaining([olderId, liveId]) });
   expect(afterOne.stop?.transport).not.toBe("observed_stopped");
 });
+
+test("pr.snapshot read work captures through the commit fence and respects revoke invalidation", async () => {
+  const { ensurePrSchema, mutateMonitor, pollMonitorCatchUp, readCandidates, fixturePull, FakeGitHubFixture,
+    TrustedGitHubConnector, prSnapshotWork, fencePrCandidateJobs, TRIGGER_POLICY_VERSION } = await import("../src/pr");
+  const root = mkdtempSync(join(tmpdir(), "jit-job-pr-")); roots.push(root);
+  const path = join(root, "app.sqlite"), config = readConfig({ JIT_DATABASE: path }), store = new TransactionStore(path); stores.push(store);
+  const clock = new Clock(), github = new FakeGitHubFixture();
+  const work = prSnapshotWork({ store, cacheRoot: join(root, "cache"), fixtureFor: () => github });
+  const queue = new JobQueue(store, config.jobs, [work], { now: () => clock.now, timers: clock.timers }); queues.push(queue);
+  const app = new Application(store, config, { jobs: queue, now: () => clock.now });
+  await app.setupOwner(password); const token = await app.login(password), auth = app.authenticate(token);
+  const project = app.execute(auth.actor, { kind: "project.create", requestId: crypto.randomUUID(), projectId: null, expectedRevision: 0, payload: { name: "pr" } }).project;
+  const sha = (n: number) => n.toString(16).padStart(40, "0");
+  const base = sha(1), head = sha(2);
+  github.pulls = [fixturePull({ number: 1, base: { sha: base, ref: "main" }, head: { sha: head, ref: "f" } })];
+  github.files.set(github.key(1, base, head), [{ filename: "a.ts", status: "modified", patch: "@@\n+a" }]);
+  github.checks.set(head, []);
+  const monitor = store.transaction(tx => {
+    ensurePrSchema(tx);
+    return mutateMonitor(tx, {
+      kind: "pr.monitor.enable", requestId: crypto.randomUUID(), projectId: project.id, expectedRevision: 1,
+      payload: { repository: { host: "github.com", owner: "acme", name: "app" }, apiBase: "https://api.github.com",
+        allowed: { issues: false, specs: false, ci: true }, acceptPolicyVersion: TRIGGER_POLICY_VERSION },
+    }, clock.now).monitor;
+  });
+  const conn = new TrustedGitHubConnector(github, monitor, join(root, "cache"));
+  store.transaction(tx => pollMonitorCatchUp(tx, project.id, monitor.id, conn, clock.now));
+  const candidate = store.read(tx => readCandidates(tx, project.id, monitor.id)[0]!);
+  const receipt = app.execute(auth.actor, {
+    kind: "job.enqueue", requestId: crypto.randomUUID(), projectId: project.id, expectedRevision: store.read(tx => tx.get<{ revision: number }>("SELECT revision FROM projects WHERE id = ?", project.id)!.revision),
+    payload: { type: "pr.snapshot", configurationRevision: 1, policyRevision: 1, purpose: "snap", inputRevision: 1,
+      input: { monitorId: monitor.id, candidateId: candidate.id }, priority: "background", limits: structuredClone(limits) },
+  });
+  queue.pump(); await queue.idle();
+  expect(app.job(auth.actor, project.id, receipt.job.id)).toMatchObject({ state: "succeeded" });
+  expect(app.job(auth.actor, project.id, receipt.job.id).evidence).toContain("coverage:complete");
+
+  const second = app.execute(auth.actor, {
+    kind: "job.enqueue", requestId: crypto.randomUUID(), projectId: project.id,
+    expectedRevision: store.read(tx => tx.get<{ revision: number }>("SELECT revision FROM projects WHERE id = ?", project.id)!.revision),
+    payload: { type: "pr.snapshot", configurationRevision: 1, policyRevision: 1, purpose: "late", inputRevision: 1,
+      input: { monitorId: monitor.id, candidateId: candidate.id }, priority: "background", limits: structuredClone(limits) },
+  }).job;
+  const projectRev = store.read(tx => tx.get<{ revision: number }>("SELECT revision FROM projects WHERE id = ?", project.id)!.revision);
+  store.transaction(tx => {
+    const live = readCandidates(tx, project.id, monitor.id)[0]!;
+    live.jobId = second.id;
+    tx.run("UPDATE pr_candidates SET record_json = ? WHERE id = ?", JSON.stringify(live), live.id);
+    mutateMonitor(tx, {
+      kind: "pr.monitor.revoke", requestId: crypto.randomUUID(), projectId: project.id,
+      expectedRevision: projectRev, payload: { monitorId: monitor.id },
+    }, clock.now, (m) => {
+      for (const row of readCandidates(tx, project.id, m.id)) fencePrCandidateJobs(tx, queue, project.id, row, "revoked");
+    });
+  });
+  queue.cancelFenced();
+  queue.pump(); await queue.idle();
+  expect(app.job(auth.actor, project.id, second.id).state).not.toBe("succeeded");
+});
