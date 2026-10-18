@@ -184,16 +184,19 @@ export async function reconcileSessions(store: TransactionStore, port: Applicati
     if (run) matched.add(run);
     store.transaction(tx => {
       const current = readAttempt(tx, attempt.id);
-      const live = ["prepared", "dispatched"].includes(current.state);
+      const authorityLive = ["prepared", "dispatched"].includes(current.state);
+      // Occupancy outlives commit-authority revocation: owner stop interrupts the attempt while the
+      // worker may still run. Missing-evidence settlement must not use interrupted as "dead".
+      const occupying = !!tx.get<{ occupies: number }>("SELECT occupies FROM jobs WHERE id = ?", current.jobId)?.occupies;
       if (run) {
         current.nativeState = run.state;
         // Matched native finished settles recovered/live transport without granting app success.
         if (current.transport === "dispatched" && run.state === "finished") current.transport = "settled";
-      } else if (!live) {
-        // Missing evidence settles only non-live recovered attempts; stale empty inspect must not
-        // settle a worker admitted after the inspection snapshot was taken.
+      } else if (current.transport === "dispatched" && !authorityLive && !occupying) {
+        // Truly recovered dead-worker case (scheduler reopen cleared occupancy). Stale empty inspect
+        // during an occupying stop/admit must leave transport dispatched.
         current.nativeState = "missing";
-        if (current.transport === "dispatched") current.transport = "settled";
+        current.transport = "settled";
       }
       saveAttempt(tx, current);
       const authority = tx.get<{ stop_json: string | null }>("SELECT stop_json FROM job_authority WHERE job_id = ?", attempt.jobId);

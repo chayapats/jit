@@ -763,6 +763,54 @@ test("K: concurrent empty inspect must not settle a mid-reconcile admitted attem
   releaseScript(); await f.queue.idle();
 });
 
+test("K2: owner stop during stale empty inspect must not report observed_stopped", async () => {
+  let releaseScript!: () => void, entered!: () => void;
+  const scriptGate = new Promise<void>(r => { releaseScript = r; }); releases.push(releaseScript);
+  const started = new Promise<void>(r => { entered = r; });
+  const f = await fixture({ script: async () => { entered(); await scriptGate; return fixtureOutcome("complete", "late"); } });
+  let releaseInspect!: () => void; const inspectGate = new Promise<void>(r => { releaseInspect = r; }); releases.push(releaseInspect);
+  let hitEmpty!: () => void; const emptyHit = new Promise<void>(r => { hitEmpty = r; });
+  const gated: ApplicationRunPort = {
+    invoke: (...args) => f.port.invoke(...args),
+    inspectRuns: async after => {
+      const page = await f.port.inspectRuns(after);
+      if (page.nextAfter === null && page.items.length === 0) {
+        hitEmpty();
+        await inspectGate; // hold the empty snapshot across admit, start, and owner stop
+      }
+      return page;
+    },
+    retire: context => f.port.retire(context), delete: context => f.port.delete(context),
+  };
+  const role = f.app.execute(f.auth.actor, save(f, { route: grok })).role!;
+  const reconciliation = f.queue.reconcile(gated);
+  await emptyHit;
+  const run = f.app.execute(f.auth.actor, preview(f, role.id)).preview!;
+  f.queue.pump(); await started;
+  const live = f.app.job(f.auth.actor, f.project.id, run.jobId);
+  expect(live.attempts[0]).toMatchObject({ state: "dispatched", transport: "dispatched" });
+  const stop = f.app.execute(f.auth.actor, { kind: "job.stop", requestId: rid(), projectId: f.project.id,
+    expectedRevision: live.revision, payload: { jobId: run.jobId } });
+  expect(stop.stop).toMatchObject({ transport: "cancellation_requested", attemptIds: [live.attempts[0]!.id] });
+  expect(f.app.job(f.auth.actor, f.project.id, run.jobId)).toMatchObject({
+    occupiesAdmission: true, attempts: [{ state: "interrupted", transport: "dispatched" }],
+  });
+  releaseInspect();
+  await reconciliation;
+  const afterStale = f.app.job(f.auth.actor, f.project.id, run.jobId);
+  expect(afterStale.attempts[0]).toMatchObject({ state: "interrupted", transport: "dispatched" });
+  expect(afterStale.stop).toMatchObject({ transport: "cancellation_requested" });
+  expect(afterStale.stop?.transport).not.toBe("observed_stopped");
+  expect(afterStale.occupiesAdmission).toBe(true);
+  // Fresh inspect can see the still-running native worker; false settlement must not persist.
+  await f.queue.reconcile(f.port);
+  const afterFresh = f.app.job(f.auth.actor, f.project.id, run.jobId);
+  expect(afterFresh.attempts[0]).toMatchObject({ transport: "dispatched", nativeState: "running" });
+  expect(afterFresh.stop).toMatchObject({ transport: "cancellation_requested" });
+  expect(afterFresh.stop?.transport).not.toBe("observed_stopped");
+  releaseScript(); await f.queue.idle();
+});
+
 test("max-sized TEAM01-accepted preview request is not rejected by attempt envelope overhead", async () => {
   const f = await fixture({ env: { JIT_PREVIEW_CONTEXT_BYTES: "65536", JIT_JOB_INPUT_BYTES: "16384" } });
   const role = f.app.execute(f.auth.actor, save(f, { route: grok })).role!;
