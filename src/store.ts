@@ -2,7 +2,7 @@ import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-const schemaVersion = 4;
+const schemaVersion = 5;
 
 /** Synchronous SQL operations scoped to an application transaction. */
 export interface AppTransaction {
@@ -34,7 +34,7 @@ export class TransactionStore {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
           if (current === schemaVersion) return;
-          if (![0, 1, 2, 3].includes(current)) throw new Error("Unsupported migration source");
+          if (![0, 1, 2, 3, 4].includes(current)) throw new Error("Unsupported migration source");
           if (existing) {
             const snapshot = `${path}.pre-v${current}-${crypto.randomUUID()}.sqlite`;
             const fd = openSync(snapshot, "wx", 0o600);
@@ -132,7 +132,7 @@ export class TransactionStore {
             CREATE INDEX job_slots ON jobs(route_key) WHERE occupies = 1;
             PRAGMA user_version = 3;
           `);
-          this.#db.exec(`
+          if (current < 4) this.#db.exec(`
             CREATE TABLE team_state (id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL, route_json TEXT);
             INSERT INTO team_state VALUES (1, 0, NULL);
             CREATE TABLE roles (sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, record_json TEXT NOT NULL);
@@ -141,6 +141,14 @@ export class TransactionStore {
             CREATE TABLE team_runs (sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL REFERENCES projects(id), job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id), context_id TEXT NOT NULL UNIQUE REFERENCES team_contexts(id), record_json TEXT NOT NULL);
             CREATE INDEX team_run_project ON team_runs(project_id, sequence);
             PRAGMA user_version = 4;
+          `);
+          this.#db.exec(`
+            CREATE TABLE job_authority (job_id TEXT PRIMARY KEY REFERENCES jobs(id), generation INTEGER NOT NULL, reason TEXT, stop_json TEXT);
+            INSERT INTO job_authority SELECT id, 1, NULL, NULL FROM jobs;
+            CREATE TABLE job_attempts (sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, job_id TEXT NOT NULL REFERENCES jobs(id), record_json TEXT NOT NULL);
+            CREATE INDEX job_attempt_job ON job_attempts(job_id, sequence);
+            CREATE TABLE job_reconciliation (id TEXT PRIMARY KEY, record_json TEXT NOT NULL);
+            PRAGMA user_version = 5;
           `);
         }).immediate();
       }

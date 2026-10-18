@@ -1,7 +1,7 @@
 import { AppError } from "../errors";
 import { readTopic } from "../conversation";
-import { JobQueue, jobData, readJob, validateJobLimits } from "../jobs/queue";
-import type { Job, WorkDefinition } from "../jobs/types";
+import { JobQueue, jobData, validateJobLimits } from "../jobs/queue";
+import type { WorkDefinition } from "../jobs/types";
 import { commitOutputSource, lookupSource, requireId } from "../sources";
 import type { AppTransaction, TransactionStore } from "../store";
 import type { AppConfig } from "../config";
@@ -57,34 +57,42 @@ export function scriptedPreviewWork(store: TransactionStore, config: AppConfig, 
     const current = lookupSource(tx, source.projectId, source.reference);
     return current.state === "available" && current.current.revision === source.reference.revision && current.text === source.text;
   });
-  const fence = (tx: AppTransaction, job: Job, request: ApplicationRunRequest, signal: AbortSignal) => {
-    const current = readJob(tx, job.projectId, job.id);
-    return !signal.aborted && now() < job.deadlineAt && current.state === "admitted" && current.steps === job.steps &&
-      request.fence.jobId === job.id && request.fence.ownerGeneration === job.authorization.generation &&
-      tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'")?.generation === job.authorization.generation &&
-      tx.get<{ state: string }>("SELECT state FROM team_contexts WHERE id = ? AND generation = ?", request.context.id, request.context.generation)?.state === "active" && sourceCurrent(tx, request);
-  };
-  return { id: workId, title: "ตัวอย่าง role จำลอง", revision: 1, route: { provider: "jit-fixture", model: "scripted", authRoute: "internal" },
+  return { id: workId, title: "ตัวอย่าง role จำลอง", revision: 1, replay: "read", route: { provider: "jit-fixture", model: "scripted", authRoute: "internal" },
+    prepare: (tx, job, generation) => {
+      if (!valid(job.input)) throw new AppError("invalid_job_input");
+      const run = readPreview(tx, job.projectId, job.input.runId), request = structuredClone(run.request);
+      if (job.steps > 1) {
+        request.runId = crypto.randomUUID(); request.context = { id: crypto.randomUUID(), generation: 1 };
+        tx.run("INSERT INTO team_contexts VALUES (?, 1, 'active')", request.context.id);
+      }
+      request.fence = { jobId: job.id, generation, ownerGeneration: job.authorization.generation };
+
+      return { native: { adapter: "scripted", runId: request.runId, sessionId: request.runId, context: request.context }, data: JSON.parse(jobData(request, config.team.contextBytes)) };
+    },
+    isCurrent: (tx, job, attempt) => {
+      const request = attempt.data as unknown as ApplicationRunRequest;
+      return request.fence.jobId === job.id && request.fence.generation === attempt.generation &&
+        request.fence.ownerGeneration === job.authorization.generation &&
+        tx.get<{ state: string }>("SELECT state FROM team_contexts WHERE id = ? AND generation = ?", request.context.id, request.context.generation)?.state === "active" && sourceCurrent(tx, request);
+    },
     cost: { roles: 1, calls: 1, rounds: 1, hops: 1 },
     validate: (input, scope) => valid(input) && scope.inputRevision === scope.projectRevision,
-    run: async ({ job, signal, reserve }) => {
+    run: async ({ job, attempt, signal, reserve, commit }) => {
       if (!valid(job.input)) return { state: "failed", reason: "worker_failed" };
       const runId = job.input.runId;
       const run = store.read(tx => readPreview(tx, job.projectId, runId));
       if (run.jobId !== job.id || run.outcome) return { state: "failed", reason: "worker_failed" };
-      const request = structuredClone(run.request); request.fence.generation = job.steps;
-      const scheduler = store.read(tx => tx.get<{ token: string }>("SELECT token FROM job_scheduler WHERE id = 1")?.token);
-      if (!store.read(tx => fence(tx, job, request, signal))) return { state: "failed", reason: "worker_failed" };
+      const request = structuredClone(attempt.data) as unknown as ApplicationRunRequest;
       // The scripted fixture reserves its bounded text estimate and full allowed output before invoking; no real token accounting is claimed.
       reserve({ contextTokens: Math.ceil(Buffer.byteLength(jobData(request, config.team.contextBytes)) / 4), outputTokens: job.limits.outputTokens });
       let outcome;
       try { outcome = normalizeFixtureResult(await port.invoke(request, signal, () => {}), request, Math.min(config.jobs.outputBytes, job.limits.outputTokens * 4, 65000)); }
       catch { outcome = fixtureOutcome("invalid_result"); }
-      const committed = store.transaction(tx => {
-        if (tx.get<{ token: string }>("SELECT token FROM job_scheduler WHERE id = 1")?.token !== scheduler || !fence(tx, job, request, signal)) return false;
+      const result = { state: "succeeded" as const, evidence: `ตัวอย่างจำลอง (fixture): ${outcome.state} / ${outcome.reason} · run ${run.id}\nไม่ได้ตรวจ live subscription route` };
+      const committed = commit(result, tx => {
         const current = readPreview(tx, job.projectId, run.id);
-        if (current.outcome) return false;
-        current.request.fence.generation = request.fence.generation;
+        if (current.outcome) throw new AppError("preview_already_committed");
+        current.request = request;
         current.outcome = outcome;
         if (outcome.state === "complete" && outcome.output) {
           const text = `ตัวอย่างจำลอง (fixture) · ${run.roleName}\n${outcome.output}`;
@@ -94,9 +102,8 @@ export function scriptedPreviewWork(store: TransactionStore, config: AppConfig, 
           tx.run("INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", crypto.randomUUID(), run.projectId, run.topicId, topic.message_sequence + 1, now(), JSON.stringify(attribution), current.source.sourceId, current.source.revision, current.source.generation);
           tx.run("UPDATE topics SET message_sequence = message_sequence + 1, revision = revision + 1 WHERE project_id = ? AND id = ?", run.projectId, run.topicId);
         }
-        tx.run("UPDATE team_runs SET record_json = ? WHERE id = ?", JSON.stringify(current), current.id); return true;
+        tx.run("UPDATE team_runs SET record_json = ? WHERE id = ?", JSON.stringify(current), current.id);
       });
-      return committed ? { state: "succeeded", evidence: `ตัวอย่างจำลอง (fixture): ${outcome.state} / ${outcome.reason} · run ${run.id}\nไม่ได้ตรวจ live subscription route` }
-        : { state: "failed", reason: "worker_failed" };
+      return committed ? result : { state: "failed", reason: "worker_failed" };
     } };
 }

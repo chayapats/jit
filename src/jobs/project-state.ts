@@ -4,7 +4,7 @@ import type { WorkDefinition } from "./types";
 /** Registers a bounded service-owned project inspection with no model, tool loop or external request. */
 export function projectStateWork(store: TransactionStore): WorkDefinition {
   return {
-    id: "project.status", title: "ตรวจสถานะโครงการ", revision: 1,
+    replay: "read", id: "project.status", title: "ตรวจสถานะโครงการ", revision: 1,
     route: { provider: "jit-service", model: null, authRoute: "internal" },
     cost: { roles: 1, calls: 1, rounds: 1, hops: 1 },
     validate: (input, scope) => !!input && typeof input === "object" && !Array.isArray(input) && !Object.keys(input).length && scope.inputRevision === scope.projectRevision,

@@ -1,3 +1,4 @@
+import { ScriptedNativeLedger } from "../jobs/scripted-ledger";
 import { AppError } from "../errors";
 import { jobData, validateJobLimits } from "../jobs/queue";
 import { requireId, requireReference, requireText } from "../sources";
@@ -60,11 +61,13 @@ export function normalizeFixtureResult(value: unknown, request: ApplicationRunRe
 /** Deterministic in-process fixture; it contains no network, SDK, discovery or model protocol loop. */
 export class ScriptedRunPort implements ApplicationRunPort {
   readonly #requests: ApplicationRunRequest[] = [];
+  readonly #native: ScriptedNativeLedger;
   constructor(readonly store: TransactionStore, readonly policy: TeamPolicy, readonly outputBytes: number,
     private readonly script: (request: ApplicationRunRequest, signal: AbortSignal) => unknown | Promise<unknown> = request => ({
       ...fixtureOutcome("complete", `ตัวอย่างจำลอง · ${request.purpose}\nบทบาท: ${request.instructions.responsibility}\nผลนี้เป็น fixture ไม่ได้เรียก Grok หรือ Codex`),
       usage: { ...emptyUsage(), calls: 1, rounds: 1, hops: 1 }, session: { adapter: "scripted", id: request.runId, context: request.context },
-    }), private readonly deleteFails: () => boolean = () => false) {
+    }), private readonly deleteFails: () => boolean = () => false, private readonly retireFails: () => boolean = () => false) {
+    this.#native = new ScriptedNativeLedger(`${store.path}.scripted-native.sqlite`);
     const maximum = { roleLimit: 100, responsibilityBytes: 8192, sourceLimit: 32, contextBytes: 65536 };
     if (Object.keys(policy).sort().join(",") !== Object.keys(maximum).sort().join(",") ||
         Object.entries(maximum).some(([key, max]) => !Number.isSafeInteger(policy[key as keyof TeamPolicy]) || policy[key as keyof TeamPolicy] < 1 || policy[key as keyof TeamPolicy] > max) ||
@@ -79,37 +82,54 @@ export class ScriptedRunPort implements ApplicationRunPort {
   async invoke(request: ApplicationRunRequest, signal: AbortSignal, observe: (event: ApplicationRunEvent) => void): Promise<ApplicationRunOutcome> {
     validateRunRequest(request, this.policy);
     const snapshot = structuredClone(request);
-    const active = () => this.store.read(tx => tx.get<{ state: string }>("SELECT state FROM team_contexts WHERE id = ? AND generation = ?", snapshot.context.id, snapshot.context.generation)?.state === "active");
+    const active = () => [null, "active"].includes(this.#native.contextState(snapshot.context)) && this.store.read(tx => tx.get<{ state: string }>("SELECT state FROM team_contexts WHERE id = ? AND generation = ?", snapshot.context.id, snapshot.context.generation)?.state === "active");
     if (!active()) return fixtureOutcome("context_retired");
     if (signal.aborted) return fixtureOutcome("cancelled");
     this.#requests.push(structuredClone(snapshot)); if (this.#requests.length > 32) this.#requests.shift();
+    const native = { adapter: "scripted", runId: snapshot.runId, sessionId: snapshot.runId, context: snapshot.context, state: "running" as const, contextState: "active" as const };
+    this.#native.put(native);
     observe({ kind: "started", runId: snapshot.runId, context: { ...snapshot.context } });
     let result: ApplicationRunOutcome;
     try { result = normalizeFixtureResult(await this.script(structuredClone(snapshot), signal), snapshot, this.outputBytes); }
     catch { result = fixtureOutcome("invalid_result"); }
     if (!active()) result = fixtureOutcome("context_retired");
     else if (signal.aborted) result = fixtureOutcome("cancelled");
+    this.#native.put({ ...native, state: "finished", contextState: active() ? "active" : "retired" });
     observe({ kind: "finished", runId: snapshot.runId, outcome: structuredClone(result) }); return result;
+  }
+
+  /** Reads only durable fixture native evidence; it cannot manufacture an app result after a crash. */
+  async inspectRuns(after = 0) {
+    if (!Number.isSafeInteger(after) || after < 0) throw new AppError("invalid_cursor");
+    return this.#native.page(after);
   }
 
   /** Fences this exact generation durably; an unknown reference cannot create a live context. */
   async retire(context: ManagedContextReference): Promise<ManagedContextOutcome> {
     requireId(context.id);
     if (!Number.isSafeInteger(context.generation) || context.generation < 1) throw new AppError("invalid_context_reference");
+    if (this.#native.contextState(context) === "deleted" || this.store.read(tx => tx.get<{ state: string }>("SELECT state FROM team_contexts WHERE id = ? AND generation = ?", context.id, context.generation)?.state === "deleted")) return { state: "deleted", context: { ...context } };
+    let failed = true;
+    try { failed = this.retireFails() !== false; } catch { /* Keep adapter diagnostics private. */ }
+    // The application fence is durable even when the transport cannot acknowledge retirement.
     this.store.transaction(tx => {
-      if (!tx.get("SELECT id FROM team_contexts WHERE id = ? AND generation = ?", context.id, context.generation)) throw new AppError("context_not_found", 404);
+      if (!tx.get("SELECT id FROM team_contexts WHERE id = ? AND generation = ?", context.id, context.generation) && !this.#native.hasContext(context)) throw new AppError("context_not_found", 404);
       tx.run("UPDATE team_contexts SET state = 'retired' WHERE id = ? AND generation = ? AND state = 'active'", context.id, context.generation);
     });
+    if (failed) return { state: "retire_failed", context: { ...context }, nextAction: "retry_managed_retire" };
+    this.#native.context(context, "retired");
     return { state: "retired", context: { ...context } };
   }
 
   /** Deletion always retires first; a visible failure keeps replay fenced and permits an explicit retry. */
   async delete(context: ManagedContextReference): Promise<ManagedContextOutcome> {
-    await this.retire(context);
+    const retired = await this.retire(context);
+    if (retired.state === "retire_failed" || retired.state === "deleted") return retired;
     if (this.store.read(tx => tx.get<{ state: string }>("SELECT state FROM team_contexts WHERE id = ? AND generation = ?", context.id, context.generation)?.state === "deleted")) return { state: "deleted", context: { ...context } };
     let failed = true;
     try { failed = this.deleteFails() !== false; } catch { /* Native/adapter diagnostics never cross the managed lifecycle port. */ }
     this.store.transaction(tx => { tx.run("UPDATE team_contexts SET state = ? WHERE id = ? AND generation = ?", failed ? "delete_failed" : "deleted", context.id, context.generation); });
+    this.#native.context(context, failed ? "delete_failed" : "deleted");
     return failed ? { state: "delete_failed", context: { ...context }, nextAction: "retry_managed_delete" } : { state: "deleted", context: { ...context } };
   }
 }

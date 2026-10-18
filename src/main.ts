@@ -25,8 +25,12 @@ async function main(): Promise<void> {
   if (!["serve", "setup", "reset-owner"].includes(command ?? "")) throw new Error("Use serve, setup or reset-owner");
   const store = new TransactionStore(config.databasePath);
   let queue: JobQueue | undefined;
-  try { if (command === "serve") queue = new JobQueue(store, config.jobs, [projectStateWork(store), scriptedPreviewWork(store, config, new ScriptedRunPort(store, config.team, config.jobs.outputBytes))]); }
-  catch (error) { store.close(); throw error; }
+  try { if (command === "serve") {
+    const port = new ScriptedRunPort(store, config.team, config.jobs.outputBytes);
+    queue = new JobQueue(store, config.jobs, [projectStateWork(store), scriptedPreviewWork(store, config, port)]);
+    await queue.reconcile(port);
+  } }
+  catch (error) { queue?.close(); store.close(); throw error; }
   const app = new Application(store, config, queue ? { jobs: queue } : {});
   if (command !== "serve") {
     try { await app.setupOwner(await secret(), command === "reset-owner"); console.log("Owner credentials saved; existing browser sessions revoked."); }
