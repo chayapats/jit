@@ -1,7 +1,7 @@
 import { reconcileContext, reconcileSessions } from "./reconcile";
 import type { ApplicationRunPort } from "../team/run-port";
 import type { ManagedContextReference } from "../team/types";
-import { attemptAuthority, invalidateJob, readAttempt, readAttempts, saveAttempt, unsettledTransportAttempts, type JobAttempt } from "./attempts";
+import { attemptAuthority, invalidateJob, readAttempt, readAttempts, saveAttempt, stopFullyObserved, unsettledTransportAttempts, type JobAttempt } from "./attempts";
 import { createHash } from "node:crypto";
 import { AppError } from "../errors";
 import { TransactionStore, type AppTransaction } from "../store";
@@ -399,8 +399,8 @@ export class JobQueue {
         const authority = tx.get<{ stop_json: string | null }>("SELECT stop_json FROM job_authority WHERE job_id = ?", job.id);
         if (authority?.stop_json) {
           const stop = JSON.parse(authority.stop_json);
-          const watched = Array.isArray(stop.attemptIds) ? stop.attemptIds.includes(attempt.id) : stop.transport !== "not_dispatched";
-          if (watched && stop.transport !== "not_dispatched") {
+          // observed_stopped only when every watched attempt has settled, not the first finalizer alone.
+          if (stop.transport !== "not_dispatched" && stopFullyObserved(tx, stop)) {
             stop.transport = "observed_stopped";
             tx.run("UPDATE job_authority SET stop_json = ? WHERE job_id = ?", JSON.stringify(stop), job.id);
           }

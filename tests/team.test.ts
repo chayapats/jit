@@ -566,6 +566,109 @@ test("recovered stop observes finished native via persisted attempt identity", a
   expect(recovered.app.job(recovered.actor, f.project.id, run.jobId).stop).toMatchObject({ transport: "observed_stopped", attemptIds: [waiting.attempts[0]!.id] });
 });
 
+test("G: recovered native finished settles transport so authorized read resume can proceed", async () => {
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(r => { release = r; }); releases.push(release);
+  const started = new Promise<void>(r => { entered = r; });
+  const f = await fixture({ script: async () => { entered(); await gate; return fixtureOutcome("complete", "late"); } });
+  const role = f.app.execute(f.auth.actor, save(f, { route: grok })).role!, run = f.app.execute(f.auth.actor, preview(f, role.id)).preview!;
+  f.queue.pump(); await started;
+  const recovered = recover(f);
+  const resume = () => recovered.app.execute(recovered.actor, { kind: "job.resume", requestId: rid(), projectId: f.project.id,
+    expectedRevision: recovered.app.job(recovered.actor, f.project.id, run.jobId).revision, payload: { jobId: run.jobId } });
+  expect(() => resume()).toThrow("job_not_resumable");
+  release(); await f.queue.idle();
+  await recovered.queue.reconcile(recovered.port);
+  const waiting = recovered.app.job(recovered.actor, f.project.id, run.jobId);
+  expect(waiting).toMatchObject({
+    state: "waiting", reason: "interrupted", evidence: null,
+    attempts: [{ transport: "settled", nativeState: "finished", contextState: expect.stringMatching(/^(retired|deleted)$/) }],
+  });
+  expect(waiting.occupiesAdmission).toBe(false);
+  // Native finished must not become app success; resume is newly authorized and no longer blocked on transport.
+  expect(waiting.state).not.toBe("succeeded");
+  const resumed = resume();
+  expect(resumed.job).toMatchObject({ state: "queued", reason: "queued" });
+});
+
+test("H: interrupted early yield commit retires managed context on reconcile", async () => {
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(r => { release = r; }); releases.push(release);
+  const started = new Promise<void>(r => { entered = r; });
+  let retireCalls = 0;
+  const f = await fixture({ script: async () => { entered(); await gate; return fixtureOutcome("complete", "late"); } });
+  const role = f.app.execute(f.auth.actor, save(f, { route: grok })).role!, run = f.app.execute(f.auth.actor, preview(f, role.id)).preview!;
+  f.queue.pump(); await started;
+  const recovered = recover(f, {}, {
+    wrap: port => ({
+      invoke: (...args) => port.invoke(...args), inspectRuns: after => port.inspectRuns(after),
+      retire: async context => { retireCalls++; return port.retire(context); },
+      delete: context => port.delete(context),
+    }),
+  });
+  recovered.store.transaction(tx => {
+    const attempt = JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM job_attempts WHERE job_id = ?", run.jobId)!.record_json);
+    attempt.state = "committed"; attempt.reason = "yielded"; attempt.transport = "dispatched";
+    attempt.contextState = "pending"; attempt.nativeState = "running";
+    tx.run("UPDATE job_attempts SET record_json = ? WHERE id = ?", JSON.stringify(attempt), attempt.id);
+    const job = JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM jobs WHERE id = ?", run.jobId)!.record_json);
+    job.state = "waiting"; job.reason = "interrupted"; job.occupiesAdmission = true; job.revision++;
+    tx.run("UPDATE jobs SET state = ?, occupies = 1, record_json = ? WHERE id = ?", job.state, JSON.stringify(job), run.jobId);
+  });
+  const records = await recovered.queue.reconcile(recovered.port);
+  expect(retireCalls).toBeGreaterThan(0);
+  const observation = records.find(r => r.kind === "attempt")!;
+  expect(observation).toMatchObject({
+    appState: "committed", lifecycle: expect.stringMatching(/^(retired|deleted)$/),
+  });
+  expect(observation.lifecycle).not.toBe("not_requested");
+  expect(observation.nextAction).not.toBe("inspect_committed_evidence");
+  expect(recovered.app.job(recovered.actor, f.project.id, run.jobId).attempts[0]).toMatchObject({
+    state: "committed", reason: "yielded", contextState: expect.stringMatching(/^(retired|deleted)$/),
+  });
+  release(); await f.queue.idle();
+});
+
+test("I: observed_stopped requires every watched attempt transport to settle", async () => {
+  const f = await fixture();
+  const role = f.app.execute(f.auth.actor, save(f, { route: grok })).role!, run = f.app.execute(f.auth.actor, preview(f, role.id)).preview!;
+  f.queue.pump();
+  const recovered = recover(f);
+  const jobId = run.jobId, first = recovered.app.job(recovered.actor, f.project.id, jobId).attempts[0]!;
+  const secondId = rid(), secondContext = { id: rid(), generation: 1 }, secondRun = rid();
+  const native = new ScriptedNativeLedger(`${f.path}.scripted-native.sqlite`);
+  native.put({ adapter: "scripted", runId: first.native!.runId, sessionId: first.native!.sessionId, context: first.native!.context, state: "running", contextState: "active" });
+  native.put({ adapter: "scripted", runId: secondRun, sessionId: secondRun, context: secondContext, state: "finished", contextState: "active" });
+  recovered.store.transaction(tx => {
+    const job = JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM jobs WHERE id = ?", jobId)!.record_json);
+    job.state = "blocked"; job.reason = "cancelled"; job.occupiesAdmission = true; job.revision++;
+    tx.run("UPDATE jobs SET state = ?, occupies = 1, record_json = ? WHERE id = ?", job.state, JSON.stringify(job), jobId);
+    const prior = JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM job_attempts WHERE id = ?", first.id)!.record_json);
+    prior.state = "interrupted"; prior.reason = "interrupted"; prior.nativeState = "running"; prior.contextState = "pending"; prior.transport = "dispatched";
+    tx.run("UPDATE job_attempts SET record_json = ? WHERE id = ?", JSON.stringify(prior), first.id);
+    const second = {
+      id: secondId, jobId, generation: 2, scheduler: "fixture", leaseUntil: epoch + 60_000, snapshot: job, createdAt: epoch,
+      native: { adapter: "scripted", runId: secondRun, sessionId: secondRun, context: secondContext }, data: null,
+      state: "interrupted", reason: "cancelled", nativeState: "finished", contextState: "pending", transport: "dispatched",
+    };
+    tx.run("INSERT INTO job_attempts (id, job_id, record_json) VALUES (?, ?, ?)", secondId, jobId, JSON.stringify(second));
+    tx.run("INSERT INTO team_contexts VALUES (?, 1, 'active')", secondContext.id);
+    tx.run("UPDATE job_authority SET generation = 3, reason = ?, stop_json = ? WHERE job_id = ?", "cancelled",
+      JSON.stringify({ requestedAt: epoch, fencedAt: epoch, transport: "cancellation_requested", attemptIds: [first.id, secondId] }), jobId);
+  });
+  await recovered.queue.reconcile(recovered.port);
+  const afterOne = recovered.app.job(recovered.actor, f.project.id, jobId);
+  expect(afterOne.attempts.find(a => a.id === first.id)).toMatchObject({ transport: "dispatched", nativeState: "running" });
+  expect(afterOne.attempts.find(a => a.id === secondId)).toMatchObject({ transport: "settled", nativeState: "finished" });
+  expect(afterOne.stop).toMatchObject({ transport: "cancellation_requested", attemptIds: [first.id, secondId] });
+  expect(afterOne.stop?.transport).not.toBe("observed_stopped");
+  native.put({ adapter: "scripted", runId: first.native!.runId, sessionId: first.native!.sessionId, context: first.native!.context, state: "finished", contextState: "retired" });
+  await recovered.queue.reconcile(recovered.port);
+  const afterBoth = recovered.app.job(recovered.actor, f.project.id, jobId);
+  expect(afterBoth.attempts.every(a => a.transport === "settled")).toBe(true);
+  expect(afterBoth.stop).toMatchObject({ transport: "observed_stopped", attemptIds: [first.id, secondId] });
+});
+
 test("concurrent reconciliation does not retire a newly admitted preview context", async () => {
   const f = await fixture();
   const orphan = { id: rid(), generation: 1 };

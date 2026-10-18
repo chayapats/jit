@@ -646,3 +646,31 @@ test("stop after restart of an interrupted recovered attempt requests cancellati
   expect(stop.stop?.transport).not.toBe("not_dispatched");
   release(); await f.queue.idle();
 });
+
+test("I: in-process finalizer keeps cancellation_requested until every watched attempt settles", async () => {
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(r => { release = r; }); releases.push(release);
+  const started = new Promise<void>(r => { entered = r; });
+  const work = definition(async () => { entered(); await gate; return { state: "succeeded", evidence: "newer" }; });
+  const f = await fixture({ definitions: [work] }), original = f.app.execute(f.auth.actor, command(f)).job;
+  f.queue.pump(); await started;
+  const liveId = job(f, original.id).attempts[0]!.id, olderId = crypto.randomUUID();
+  f.store.transaction(tx => {
+    const live = JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM job_attempts WHERE id = ?", liveId)!.record_json);
+    const older = {
+      ...live, id: olderId, generation: live.generation, state: "interrupted", reason: "interrupted",
+      transport: "dispatched", native: null, nativeState: "missing", contextState: "none",
+    };
+    tx.run("INSERT INTO job_attempts (id, job_id, record_json) VALUES (?, ?, ?)", olderId, original.id, JSON.stringify(older));
+  });
+  const stop = f.app.execute(f.auth.actor, { kind: "job.stop", requestId: crypto.randomUUID(), projectId: f.project.id,
+    expectedRevision: job(f, original.id).revision, payload: { jobId: original.id } });
+  expect(new Set(stop.stop?.attemptIds)).toEqual(new Set([olderId, liveId]));
+  expect(stop.stop?.transport).toBe("cancellation_requested");
+  release(); await f.queue.idle();
+  const afterOne = job(f, original.id);
+  expect(afterOne.attempts.find(a => a.id === liveId)).toMatchObject({ transport: "settled" });
+  expect(afterOne.attempts.find(a => a.id === olderId)).toMatchObject({ transport: "dispatched" });
+  expect(afterOne.stop).toMatchObject({ transport: "cancellation_requested", attemptIds: expect.arrayContaining([olderId, liveId]) });
+  expect(afterOne.stop?.transport).not.toBe("observed_stopped");
+});

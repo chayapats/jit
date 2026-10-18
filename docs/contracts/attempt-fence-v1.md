@@ -44,9 +44,10 @@ interface StopJobCommand {
 interface JobStopOutcome {
   requestedAt: number; fencedAt: number;
   transport: "not_dispatched" | "cancellation_requested" | "observed_stopped" | "unknown";
-  attemptIds: string[];
+  attemptIds: string[]; // observed_stopped only after every listed attempt has transport settled
 }
 // JobAttempt.transport: "none" | "dispatched" | "settled" — independent of commit/yield.
+// Early yield/wait commits keep transport dispatched until worker finalizer or reconcile settles them.
 // JobReceipt adds stop?: JobStopOutcome.
 // Application.execute(actor, StopJobCommand): JobReceipt via the JobCommand overload.
 ```

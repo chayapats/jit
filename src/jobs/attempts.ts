@@ -41,6 +41,18 @@ export function unsettledTransportAttempts(tx: AppTransaction, jobId: string): J
     return attempt.nativeState !== "uninspected" && ["dispatched", "interrupted", "rejected", "committed"].includes(attempt.state);
   });
 }
+/** True only when every watched stop attempt has settled transport evidence. */
+export function stopFullyObserved(tx: AppTransaction, stop: JobStopOutcome): boolean {
+  if (!Array.isArray(stop.attemptIds) || stop.attemptIds.length === 0) return false;
+  return stop.attemptIds.every(id => {
+    try { return readAttempt(tx, id).transport === "settled"; }
+    catch { return false; }
+  });
+}
+/** Early yield/wait commits are not terminal app output; their managed contexts still need retirement. */
+export function isEarlyBoundCommit(attempt: JobAttempt): boolean {
+  return attempt.state === "committed" && ["yielded", "quota", "needs_login", "route_unavailable"].includes(attempt.reason ?? "");
+}
 /** Invalidates authority synchronously; cancellation is requested only after this transaction commits. */
 export function invalidateJob(tx: AppTransaction, jobId: string, reason: JobReason, now: number, stop = false): JobStopOutcome | null {
   const prior = tx.get<{ stop_json: string | null }>("SELECT stop_json FROM job_authority WHERE job_id = ?", jobId);

@@ -2,7 +2,7 @@ import type { TransactionStore } from "../store";
 import type { ApplicationRunPort, ManagedContextOutcome, NativeRunInspection } from "../team/run-port";
 import type { ManagedContextReference } from "../team/types";
 import type { Job } from "./types";
-import { invalidateJob, readAttempt, saveAttempt, type JobAttempt } from "./attempts";
+import { invalidateJob, isEarlyBoundCommit, readAttempt, saveAttempt, stopFullyObserved, type JobAttempt } from "./attempts";
 
 /** Persisted cross-store observation; native completion never upgrades application state. */
 export interface SessionReconciliation {
@@ -27,9 +27,9 @@ const peersFor = (store: TransactionStore, context: ManagedContextReference) =>
 const stickyDelete = (store: TransactionStore, context: ManagedContextReference, requested: boolean) =>
   requested || peersFor(store, context).some(record =>
     record.lifecycle !== "deleted" && (record.deleteRequested || record.lifecycle === "delete_failed"));
-function nextActionFor(lifecycle: SessionReconciliation["lifecycle"], appState: SessionReconciliation["appState"]) {
+function nextActionFor(lifecycle: SessionReconciliation["lifecycle"], appState: SessionReconciliation["appState"], earlyBound = false) {
   return lifecycle === "retire_failed" ? "retry_managed_retire" : lifecycle === "delete_failed" ? "retry_managed_delete"
-    : appState === "committed" ? "inspect_committed_evidence" : "inspect_then_explicitly_resume_read_work";
+    : appState === "committed" && !earlyBound ? "inspect_committed_evidence" : "inspect_then_explicitly_resume_read_work";
 }
 /** Never let a weaker lifecycle erase delete_failed; a successful deleted ack clears that blocker. */
 function mergeLifecycle(current: string, incoming: ManagedContextOutcome["state"] | "pending"): JobAttempt["contextState"] | ManagedContextOutcome["state"] | "pending" {
@@ -104,8 +104,10 @@ export async function reconcileContext(store: TransactionStore, port: Applicatio
       if (!same(outcome.context, record.context) || !["deleted", "delete_failed"].includes(outcome.state)) throw new Error("invalid_lifecycle_ack");
     } catch { outcome = { state: "delete_failed", context: record.context, nextAction: "retry_managed_delete" }; }
   }
+  // Early yield/wait commits are retired like interrupted attempts; do not label them terminal evidence.
+  const earlyBound = record.appState === "committed" && record.nextAction === "inspect_interrupted_attempt";
   let next: SessionReconciliation = { ...record, deleteRequested: deleteRequested(), lifecycle: outcome.state,
-    nextAction: nextActionFor(outcome.state, record.appState) };
+    nextAction: nextActionFor(outcome.state, record.appState, earlyBound) };
   store.transaction(tx => {
     const peers = tx.all<{ record_json: string }>("SELECT record_json FROM job_reconciliation").map(row => JSON.parse(row.record_json) as SessionReconciliation)
       .filter(peer => same(peer.context, record.context));
@@ -114,10 +116,10 @@ export async function reconcileContext(store: TransactionStore, port: Applicatio
       if (peers.some(peer => peer.lifecycle === "delete_failed")) lifecycle = "delete_failed";
       const requested = next.deleteRequested || peers.some(peer => peer.deleteRequested || peer.lifecycle === "delete_failed");
       if (requested && lifecycle === "retired") lifecycle = "delete_failed";
-      next = { ...next, deleteRequested: requested, lifecycle, nextAction: nextActionFor(lifecycle, record.appState) };
+      next = { ...next, deleteRequested: requested, lifecycle, nextAction: nextActionFor(lifecycle, record.appState, earlyBound) };
     } else {
       // Successful deletion clears peer delete_failed blockers for this context generation.
-      next = { ...next, deleteRequested: true, lifecycle: "deleted", nextAction: nextActionFor("deleted", record.appState) };
+      next = { ...next, deleteRequested: true, lifecycle: "deleted", nextAction: nextActionFor("deleted", record.appState, earlyBound) };
     }
     for (const row of tx.all<{ record_json: string }>("SELECT record_json FROM job_attempts")) {
       const attempt = JSON.parse(row.record_json) as JobAttempt;
@@ -177,29 +179,36 @@ export async function reconcileSessions(store: TransactionStore, port: Applicati
     const run = native.find(n => n.adapter === ref.adapter && n.runId === ref.runId && n.sessionId === ref.sessionId && same(n.context, ref.context));
     if (run) matched.add(run);
     store.transaction(tx => {
-      const current = readAttempt(tx, attempt.id); current.nativeState = run?.state ?? "missing"; saveAttempt(tx, current);
-      // Finish observation uses the persisted stopped attempt identity, not the retained interrupt reason.
+      const current = readAttempt(tx, attempt.id);
+      current.nativeState = run?.state ?? "missing";
+      // Recovered native finished/missing settles transport without granting app success.
+      if (current.transport === "dispatched" && (!run || run.state === "finished")) current.transport = "settled";
+      saveAttempt(tx, current);
       const authority = tx.get<{ stop_json: string | null }>("SELECT stop_json FROM job_authority WHERE job_id = ?", attempt.jobId);
-      if (run?.state === "finished" && authority?.stop_json) {
+      if (authority?.stop_json) {
         const stop = JSON.parse(authority.stop_json);
-        const watched = Array.isArray(stop.attemptIds) && stop.attemptIds.includes(attempt.id);
-        if (watched && stop.transport !== "not_dispatched") {
+        if (stop.transport !== "not_dispatched" && stopFullyObserved(tx, stop)) {
           stop.transport = "observed_stopped";
           tx.run("UPDATE job_authority SET stop_json = ? WHERE job_id = ?", JSON.stringify(stop), attempt.jobId);
         }
       }
     });
+    const latest = store.read(tx => readAttempt(tx, attempt.id));
     // An active worker is never retired by a concurrent inspection.
-    if (["prepared", "dispatched"].includes(attempt.state)) continue;
-    const record: SessionReconciliation = { id: `attempt:${attempt.id}`, kind: "attempt", context: ref.context,
-      nativeState: run?.state ?? "missing", appState: attempt.state, lifecycle: "pending", deleteRequested: false,
-      nextAction: attempt.state === "committed" ? "inspect_committed_evidence" : "inspect_interrupted_attempt" };
-    if (attempt.state === "committed") {
-      // Keep accepted app output intact even if native append/deletion evidence is missing.
-      record.lifecycle = ["none", "pending"].includes(attempt.contextState) ? "not_requested" : attempt.contextState as SessionReconciliation["lifecycle"];
+    if (["prepared", "dispatched"].includes(latest.state)) continue;
+    const earlyBound = isEarlyBoundCommit(latest);
+    const record: SessionReconciliation = { id: `attempt:${latest.id}`, kind: "attempt", context: ref.context,
+      nativeState: run?.state ?? "missing", appState: latest.state, lifecycle: "pending", deleteRequested: false,
+      nextAction: latest.state === "committed" && !earlyBound ? "inspect_committed_evidence" : "inspect_interrupted_attempt" };
+    if (latest.state === "committed" && !earlyBound) {
+      // Keep terminal accepted app output intact even if native append/deletion evidence is missing.
+      record.lifecycle = ["none", "pending"].includes(latest.contextState) ? "not_requested" : latest.contextState as SessionReconciliation["lifecycle"];
       if (!run) record.nextAction = "inspect_app_commit_native_missing";
       save(store, record);
-    } else { handled.add(key(record.context)); await reconcileContext(store, port, record, now, afterFence); }
+    } else {
+      // Interrupted attempts and early yield/wait commits still require managed-context retirement.
+      handled.add(key(record.context)); await reconcileContext(store, port, record, now, afterFence);
+    }
   }
   for (const run of native.filter(n => !matched.has(n))) {
     handled.add(key(run.context));
