@@ -7,6 +7,9 @@ import { conversationIdentity, mutateConversation, readMessages, readTopic, read
 import { lookupSource, requireId, requireReference, type SourceReference, type SourceLookup } from "./sources";
 import { JobQueue, jobCommandIdentity, projectJob, readJob, readJobs } from "./jobs/queue";
 import type { EnqueueJobCommand, ResumeJobCommand, JobCommand, JobReceipt } from "./jobs/types";
+import { mutateTeamConfiguration, readTeam, teamIdentity } from "./team/configuration";
+import { preparePreview, readPreview } from "./team/preview";
+import type { TeamCommand, TeamReceipt } from "./team/types";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const validToken = (value: string) => /^[a-f0-9]{64}$/.test(value);
@@ -42,7 +45,7 @@ export interface Workspace { revision: number; projects: Project[]; hasMore: boo
 /** Injectable clock and transaction fault seam for deterministic persistence checks. */
 export interface ApplicationOptions {
   now?: () => number;
-  beforeCommit?: (stage: "project" | "topic" | "message" | "job" | "receipt") => void;
+  beforeCommit?: (stage: "project" | "topic" | "message" | "job" | "team" | "receipt") => void;
   jobs?: JobQueue;
 }
 
@@ -185,10 +188,12 @@ export class Application {
   execute(actor: OwnerActor, command: CreateProjectCommand): ProjectReceipt;
   execute(actor: OwnerActor, command: CreateTopicCommand): TopicReceipt;
   execute(actor: OwnerActor, command: SendMessageCommand): MessageReceipt;
-  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt;
-  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt {
+  execute(actor: OwnerActor, command: TeamCommand): TeamReceipt;
+  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | TeamCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | TeamReceipt;
+  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | TeamCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | TeamReceipt {
     if (command?.kind === "project.create") return this.#createProject(actor, command);
     if (command?.kind === "job.enqueue" || command?.kind === "job.resume") return this.#jobCommand(actor, command);
+    if (command?.kind === "role.save" || command?.kind === "route.save" || command?.kind === "role.preview") return this.#teamCommand(actor, command);
     const payloadHash = digest(conversationIdentity(command as ConversationCommand, this.config.messageBytes));
     return this.store.transaction(tx => {
       this.#requireOwner(tx, actor);
@@ -210,6 +215,38 @@ export class Application {
     });
   }
 
+  /** Reads bounded role settings and honest effective-route status without requiring an execution adapter. */
+  team(actor: OwnerActor, projectId: string | null = null) {
+    if (projectId !== null) requireId(projectId);
+    return this.store.read(tx => { this.#requireOwner(tx, actor); const project = projectId ? this.#project(tx, projectId) : null;
+      return { ...readTeam(tx, projectId, this.config.team), project, topics: projectId ? readTopics(tx, projectId, 0, this.config.pageSize).items : [],
+        previewAvailable: this.#jobs?.available(tx) ?? false }; });
+  }
+
+  /** Projects the retained run, immutable inputs, committed attribution and independent job state after reload. */
+  preview(actor: OwnerActor, projectId: string, runId: string) {
+    requireId(projectId); requireId(runId);
+    return this.store.read(tx => { this.#requireOwner(tx, actor); const project = this.#project(tx, projectId), run = readPreview(tx, projectId, runId);
+      return { project, run, job: projectJob(readJob(tx, projectId, run.jobId), this.#now()) }; });
+  }
+
+  #teamCommand(actor: OwnerActor, command: TeamCommand): TeamReceipt {
+    const payloadHash = teamIdentity(command, this.config.team);
+    return this.store.transaction(tx => {
+      this.#requireOwner(tx, actor);
+      if (command.projectId) this.#project(tx, command.projectId);
+      const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
+      if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as TeamReceipt; }
+      const now = this.#now(), generation = tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'")!.generation;
+      const result = command.kind === "role.preview" ? preparePreview(tx, command, this.config, this.#jobs, generation, now)
+        : mutateTeamConfiguration(tx, command, this.config.team, now);
+      this.#beforeCommit?.("team");
+      tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
+      tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId ?? "owner", now);
+      this.#beforeCommit?.("receipt"); return result;
+    });
+  }
+
   /** Returns a bounded committed queue projection without starting work or requiring a provider. */
   jobs(actor: OwnerActor, projectId: string, after = 0) {
     requireId(projectId);
@@ -217,7 +254,7 @@ export class Application {
       this.#requireOwner(tx, actor); const project = this.#project(tx, projectId);
       const available = this.#jobs?.available(tx) ?? false;
       const page = readJobs(tx, projectId, after, this.config.pageSize), now = this.#now();
-      return { project, ...page, items: page.items.map(job => projectJob(job, now)), choices: this.#jobs?.choices() ?? [],
+      return { project, ...page, items: page.items.map(job => projectJob(job, now)), choices: (this.#jobs?.choices() ?? []).filter(choice => choice.id !== "role.scripted-preview"),
         admission: { available, nextAction: available ? "inspect_or_authorize_work" : "resolve_scheduler_ownership_or_restart" } };
     });
   }

@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import type { JobPolicy } from "./jobs/types";
+import type { TeamPolicy } from "./team/types";
 
 /** Finite local-development limits; operators must measure them before a pilot. */
 export interface AppConfig {
@@ -15,6 +16,7 @@ export interface AppConfig {
   loginAttempts: number;
   loginWindowSeconds: number;
   jobs: JobPolicy;
+  team: TeamPolicy;
 }
 
 /** Reads only Jit's declared settings and rejects malformed or unbounded values. */
@@ -46,6 +48,10 @@ export function readConfig(env: Record<string, string | undefined> = process.env
     sessionSeconds: positive("JIT_SESSION_SECONDS", 28800, 86400),
     loginAttempts: positive("JIT_LOGIN_ATTEMPTS", 8, 100),
     loginWindowSeconds: positive("JIT_LOGIN_WINDOW_SECONDS", 900, 86400),
+    team: {
+      roleLimit: positive("JIT_ROLE_LIMIT", 24, 100), responsibilityBytes: positive("JIT_ROLE_BYTES", 2048, 8192),
+      sourceLimit: positive("JIT_PREVIEW_SOURCES", 8, 32), contextBytes: positive("JIT_PREVIEW_CONTEXT_BYTES", 32768, 65536),
+    },
     jobs: {
       revision: positive("JIT_JOB_CONFIG_REVISION", 1, 1_000_000),
       queueLimit: positive("JIT_JOB_QUEUE_LIMIT", 32, 10_000),
