@@ -1,7 +1,7 @@
 import { Application, type CreateProjectCommand } from "./application";
 import { AppError } from "./errors";
 import type { CreateTopicCommand, SendMessageCommand } from "./conversation";
-import { workspacePage, projectPage, conversationPage, sourcePage, jobsPage, teamPage, previewPage, loginPage, errorPage } from "./web-layout";
+import { workspacePage, projectPage, conversationPage, sourcePage, jobsPage, teamPage, previewPage, discussionPage, loginPage, errorPage } from "./web-layout";
 import type { EnqueueJobCommand, ResumeJobCommand, StopJobCommand } from "./jobs/types";
 import type { TeamCommand } from "./team/types";
 import { styleSheet } from "./web-style";
@@ -24,6 +24,10 @@ const messages: Record<string, string> = {
   role_not_found: "ไม่พบบทบาทที่เลือก", role_preview_blocked: "เปิดใช้บทบาทและกำหนด route ก่อนเริ่มตัวอย่างจำลอง",
   invalid_role_route: "ตรวจ model ID และชื่ออ้างอิงการเชื่อมต่อ อย่าใส่ข้อมูลลับ", role_limit: "จำนวนบทบาทครบขีดจำกัดของบริการแล้ว",
   preview_source_unavailable: "แหล่งข้อมูลเปลี่ยนหรือไม่พร้อมใช้งาน กรุณาเลือกใหม่", preview_not_found: "ไม่พบตัวอย่างในโครงการนี้",
+  discussion_not_found: "ไม่พบการหารือในโครงการนี้", unknown_role: "ไม่พบบทบาทที่ระบุ", role_dispatch_blocked: "เปิดใช้บทบาท specialist และกำหนด route ก่อนเรียกทีม",
+  dispatch_source_unavailable: "แหล่งข้อมูลเปลี่ยนหรือไม่พร้อมใช้งาน กรุณาเลือกใหม่", invalid_router_output: "ผลเลือกทีมไม่ถูกต้อง จึงยังไม่เริ่มวิเคราะห์",
+  role_already_participating: "บทบาทนี้อยู่ในการหารือแล้ว", role_budget_exhausted: "จำนวนบทบาทครบขีดจำกัดของการหารือนี้แล้ว",
+  participation_not_found: "ไม่พบบทบาทนี้ในการหารือ", run_not_found: "ไม่พบผลการวิเคราะห์ที่เลือก",
 };
 
 /** Creates a server-rendered owner workspace; all mutations use the shared application boundary. */
@@ -110,8 +114,10 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       const jobRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/jobs\/([a-f0-9-]{36})$/.exec(url.pathname);
       const resumeRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/jobs\/([a-f0-9-]{36})\/(resume|stop)$/.exec(url.pathname);
       const teamRoute = /^\/(?:api\/)?(?:projects\/([a-f0-9-]{36})\/)?team$/.exec(url.pathname);
-      const teamAction = /^\/(?:api\/)?(?:projects\/([a-f0-9-]{36})\/)?team\/(roles|routes|previews)$/.exec(url.pathname);
+      const teamAction = /^\/(?:api\/)?(?:projects\/([a-f0-9-]{36})\/)?team\/(roles|routes|previews|discussions)$/.exec(url.pathname);
       const previewRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/team\/previews\/([a-f0-9-]{36})$/.exec(url.pathname);
+      const discussionRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/team\/discussions\/([a-f0-9-]{36})$/.exec(url.pathname);
+      const discussionControl = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/team\/discussions\/([a-f0-9-]{36})\/controls$/.exec(url.pathname);
       const after = () => {
         const raw = url.searchParams.get("after") ?? "0";
         if (!/^\d{1,16}$/.test(raw)) throw new AppError("invalid_cursor");
@@ -125,23 +131,41 @@ export function createWebHandler(app: Application): (request: Request) => Promis
         const state = app.preview(auth.actor, previewRoute[1]!, previewRoute[2]!);
         return api ? json(state) : respond(previewPage(state, app.workspace(auth.actor), auth.csrf));
       }
+      if (request.method === "GET" && discussionRoute) {
+        const state = app.discussion(auth.actor, discussionRoute[1]!, discussionRoute[2]!);
+        return api ? json(state) : respond(discussionPage(state, app.workspace(auth.actor), auth.csrf));
+      }
+      if (request.method === "POST" && discussionControl) {
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        const allowed = ["csrf", "requestId", "expectedRevision", "action", "roleId"];
+        if (Object.keys(body).some(key => !allowed.includes(key))) throw new AppError("invalid_body");
+        const number = (value: unknown) => typeof value === "string" && /^\d{1,15}$/.test(value) ? Number(value) : value;
+        const command = { kind: "team.control", requestId: body.requestId, projectId: discussionControl[1], expectedRevision: number(body.expectedRevision),
+          payload: { discussionId: discussionControl[2], action: body.action, roleId: body.roleId } } as TeamCommand;
+        const receipt = app.execute(auth.actor, command);
+        return api ? json(receipt) : respond(null, 303, { Location: `/projects/${discussionControl[1]}/team/discussions/${discussionControl[2]}` });
+      }
       if (request.method === "POST" && teamAction) {
         const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
         const projectId = teamAction[1] ?? null, action = teamAction[2]!, form = request.headers.get("content-type")?.split(";")[0]?.trim() === "application/x-www-form-urlencoded";
-        if ((action === "roles" && projectId !== null) || (action === "previews" && projectId === null)) throw new AppError("not_found", 404);
+        if ((action === "roles" && projectId !== null) || ((action === "previews" || action === "discussions") && projectId === null)) throw new AppError("not_found", 404);
         const number = (value: unknown) => typeof value === "string" && /^\d{1,15}$/.test(value) ? Number(value) : value;
         const data = (value: unknown) => { if (!form) return value; try { return JSON.parse(value as string); } catch { throw new AppError("invalid_body"); } };
-        const allowed = ["csrf", "requestId", "expectedRevision", "roleId", ...(action === "previews" ? ["topicId", "purpose", "sources", "limits"] : [...(form ? ["provider", "model", "authRoute"] : ["route"]), ...(action === "roles" ? ["name", "kind", "responsibility", "enabled"] : [])])];
+        const allowed = action === "discussions" ? ["csrf", "requestId", "expectedRevision", "topicId", "purpose", "sources", "include", "exclude", "limits"]
+          : ["csrf", "requestId", "expectedRevision", "roleId", ...(action === "previews" ? ["topicId", "purpose", "sources", "limits"] : [...(form ? ["provider", "model", "authRoute"] : ["route"]), ...(action === "roles" ? ["name", "kind", "responsibility", "enabled"] : [])])];
         if (Object.keys(body).some(key => !allowed.includes(key))) throw new AppError("invalid_body");
         const roleId = form && body.roleId === "" ? null : body.roleId;
         const route = form ? body.provider === "" ? null : { provider: body.provider, model: body.model, authRoute: body.authRoute } : body.route;
         const enabled = form ? body.enabled === "true" ? true : body.enabled === "false" ? false : undefined : body.enabled;
-        const command = { kind: action === "roles" ? "role.save" : action === "routes" ? "route.save" : "role.preview",
+        const command = { kind: action === "roles" ? "role.save" : action === "routes" ? "route.save" : action === "discussions" ? "team.dispatch" : "role.preview",
           requestId: body.requestId, expectedRevision: number(body.expectedRevision), projectId,
-          payload: action === "previews" ? { roleId, topicId: body.topicId, purpose: body.purpose, sources: data(body.sources), limits: data(body.limits) }
+          payload: action === "discussions" ? { topicId: body.topicId, purpose: body.purpose, sources: data(body.sources), include: data(body.include ?? (form ? "[]" : [])), exclude: data(body.exclude ?? (form ? "[]" : [])), limits: data(body.limits) }
+            : action === "previews" ? { roleId, topicId: body.topicId, purpose: body.purpose, sources: data(body.sources), limits: data(body.limits) }
             : action === "roles" ? { roleId, name: body.name, kind: body.kind, responsibility: body.responsibility, enabled, route } : { roleId, route } } as TeamCommand;
         const receipt = app.execute(auth.actor, command);
-        return api ? json(receipt) : respond(null, 303, { Location: receipt.preview ? `/projects/${projectId}/team/previews/${receipt.preview.id}` : projectId ? `/projects/${projectId}/team` : "/team" });
+        const location = receipt.discussion ? `/projects/${projectId}/team/discussions/${receipt.discussion.id}`
+          : receipt.preview ? `/projects/${projectId}/team/previews/${receipt.preview.id}` : projectId ? `/projects/${projectId}/team` : "/team";
+        return api ? json(receipt) : respond(null, 303, { Location: location });
       }
       if (request.method === "GET" && jobsRoute) {
         const state = app.jobs(auth.actor, jobsRoute[2]!, after());
@@ -162,7 +186,12 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       }
       if (request.method === "GET" && topicRoute) {
         const state = app.conversation(auth.actor, topicRoute[2]!, topicRoute[3]!, after());
-        return api ? json(state) : respond(conversationPage(state, app.workspace(auth.actor), app.topics(auth.actor, state.project.id).items, auth.csrf, after(), config.messageBytes));
+        if (api) return json(state);
+        const team = app.team(auth.actor, state.project.id);
+        const discussions = app.discussions(auth.actor, state.project.id, state.topic.id);
+        return respond(conversationPage(state, app.workspace(auth.actor), app.topics(auth.actor, state.project.id).items, auth.csrf, after(), config.messageBytes, {
+          team, discussions, limits: config.jobs.maximum, dispatchAvailable: team.previewAvailable,
+        }));
       }
       if (request.method === "GET" && topicCollection) {
         const state = app.topics(auth.actor, topicCollection[2]!, after());

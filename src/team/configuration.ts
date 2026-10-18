@@ -37,6 +37,19 @@ export function teamIdentity(command: TeamCommand, policy: TeamPolicy): string {
     if (command.projectId === null || !exact(p, ["roleId", "topicId", "purpose", "sources", "limits"])) throw new AppError("invalid_team_command");
     requireId(p.roleId); requireId(p.topicId); requireText(p.purpose, 1200);
     if (p.purpose.length > 300 || !Array.isArray(p.sources) || p.sources.length > policy.sourceLimit) throw new AppError("invalid_team_command");
+  } else if (command.kind === "team.dispatch") {
+    const p = command.payload;
+    if (command.projectId === null || !exact(p, ["topicId", "purpose", "sources", "include", "exclude", "limits"])) throw new AppError("invalid_team_command");
+    requireId(p.topicId); requireText(p.purpose, 1200);
+    if (p.purpose.length > 300 || !Array.isArray(p.sources) || p.sources.length > policy.sourceLimit ||
+        !Array.isArray(p.include) || !Array.isArray(p.exclude) || p.include.length > policy.roleLimit || p.exclude.length > policy.roleLimit) {
+      throw new AppError("invalid_team_command");
+    }
+  } else if (command.kind === "team.control") {
+    const p = command.payload;
+    if (command.projectId === null || !exact(p, ["discussionId", "action", "roleId"])) throw new AppError("invalid_team_command");
+    requireId(p.discussionId); requireId(p.roleId);
+    if (!["include", "exclude", "skip", "stop"].includes(p.action)) throw new AppError("invalid_team_command");
   } else throw new AppError("invalid_team_command");
   return createHash("sha256").update(encoded).digest("hex");
 }
@@ -64,7 +77,7 @@ export function readTeam(tx: AppTransaction, projectId: string | null, policy: T
 }
 
 /** Applies owner-validated settings atomically; the caller persists the shared command receipt and audit. */
-export function mutateTeamConfiguration(tx: AppTransaction, command: Exclude<TeamCommand, { kind: "role.preview" }>, policy: TeamPolicy, now: number): TeamReceipt {
+export function mutateTeamConfiguration(tx: AppTransaction, command: Extract<TeamCommand, { kind: "role.save" | "route.save" }>, policy: TeamPolicy, now: number): TeamReceipt {
   const state = readTeam(tx, command.projectId, policy), revision = command.projectId ? state.projectRevision : state.ownerRevision;
   if (command.expectedRevision !== revision) throw new AppError("stale_revision", 409);
   if (command.kind === "role.save") {

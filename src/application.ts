@@ -11,6 +11,7 @@ import { readAttempts } from "./jobs/attempts";
 import { JobQueue, jobCommandIdentity, projectJob, readJob, readJobs } from "./jobs/queue";
 import type { EnqueueJobCommand, ResumeJobCommand, JobCommand, JobReceipt } from "./jobs/types";
 import { mutateTeamConfiguration, readTeam, teamIdentity } from "./team/configuration";
+import { listDiscussions, prepareControl, prepareDispatch, projectDiscussion, readDiscussion } from "./team/dispatch";
 import { preparePreview, readPreview } from "./team/preview";
 import type { TeamCommand, TeamReceipt } from "./team/types";
 
@@ -196,7 +197,8 @@ export class Application {
   execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | TeamCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | TeamReceipt {
     if (command?.kind === "project.create") return this.#createProject(actor, command);
     if (command?.kind === "job.enqueue" || command?.kind === "job.resume" || command?.kind === "job.stop") return this.#jobCommand(actor, command);
-    if (command?.kind === "role.save" || command?.kind === "route.save" || command?.kind === "role.preview") return this.#teamCommand(actor, command);
+    if (command?.kind === "role.save" || command?.kind === "route.save" || command?.kind === "role.preview" ||
+        command?.kind === "team.dispatch" || command?.kind === "team.control") return this.#teamCommand(actor, command);
     const payloadHash = digest(conversationIdentity(command as ConversationCommand, this.config.messageBytes));
     return this.store.transaction(tx => {
       this.#requireOwner(tx, actor);
@@ -233,21 +235,43 @@ export class Application {
       return { project, run, job: projectJob(readJob(tx, projectId, run.jobId), this.#now()) }; });
   }
 
+  /** Lists bounded discussions for one topic without admitting or reconnecting analysis work. */
+  discussions(actor: OwnerActor, projectId: string, topicId: string) {
+    requireId(projectId); requireId(topicId);
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor); this.#project(tx, projectId); readTopic(tx, projectId, topicId);
+      return listDiscussions(tx, projectId, topicId, this.config.pageSize).map(item => projectDiscussion(tx, item));
+    });
+  }
+
+  /** Projects one discussion's participations, provisional progress and coverage gap from persisted state only. */
+  discussion(actor: OwnerActor, projectId: string, discussionId: string) {
+    requireId(projectId); requireId(discussionId);
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor); const project = this.#project(tx, projectId);
+      return { project, discussion: projectDiscussion(tx, readDiscussion(tx, projectId, discussionId)) };
+    });
+  }
+
   #teamCommand(actor: OwnerActor, command: TeamCommand): TeamReceipt {
     const payloadHash = teamIdentity(command, this.config.team);
-    return this.store.transaction(tx => {
+    const result = this.store.transaction(tx => {
       this.#requireOwner(tx, actor);
       if (command.projectId) this.#project(tx, command.projectId);
       const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
       if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as TeamReceipt; }
       const now = this.#now(), generation = tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'")!.generation;
       const result = command.kind === "role.preview" ? preparePreview(tx, command, this.config, this.#jobs, generation, now)
+        : command.kind === "team.dispatch" ? prepareDispatch(tx, command, this.config, this.#jobs, generation, now)
+        : command.kind === "team.control" ? prepareControl(tx, command, this.config, this.#jobs, generation, now)
         : mutateTeamConfiguration(tx, command, this.config.team, now);
       this.#beforeCommit?.("team");
       tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
       tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId ?? "owner", now);
       this.#beforeCommit?.("receipt"); return result;
     });
+    this.#jobs?.cancelFenced();
+    return result;
   }
 
   /** Returns a bounded committed queue projection without starting work or requiring a provider. */
@@ -257,7 +281,8 @@ export class Application {
       this.#requireOwner(tx, actor); const project = this.#project(tx, projectId);
       const available = this.#jobs?.available(tx) ?? false;
       const page = readJobs(tx, projectId, after, this.config.pageSize), now = this.#now();
-      return { project, ...page, items: page.items.map(job => projectJob(job, now)), choices: (this.#jobs?.choices() ?? []).filter(choice => choice.id !== "role.scripted-preview"),
+      return { project, ...page, items: page.items.map(job => projectJob(job, now)),
+        choices: (this.#jobs?.choices() ?? []).filter(choice => !["role.scripted-preview", "team.discussion", "team.specialist-analysis"].includes(choice.id)),
         admission: { available, nextAction: available ? "inspect_or_authorize_work" : "resolve_scheduler_ownership_or_restart" } };
     });
   }

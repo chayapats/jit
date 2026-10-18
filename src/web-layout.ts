@@ -2,7 +2,7 @@ import type { Application, Project, Workspace } from "./application";
 import type { Topic } from "./conversation";
 import type { Attribution, SourceLookup, SourceReference } from "./sources";
 import type { Job, JobPolicy } from "./jobs/types";
-import type { RoleRoute } from "./team/types";
+import type { Discussion, RoleRoute } from "./team/types";
 
 /** Escapes literal untrusted content before it enters HTML text or attributes. */
 export const escape = (value: unknown) => String(value).replace(/[&<>"']/g, char =>
@@ -84,9 +84,19 @@ export function projectPage(state: ReturnType<Application["topics"]>, workspace:
     <nav class="pagination" aria-label="หน้าหัวข้อ">${after > 0 ? `<a href="/projects/${p.id}">หน้าแรก</a>` : ""}${state.hasMore ? `<a href="/projects/${p.id}?after=${state.nextAfter}">หัวข้อถัดไป</a>` : ""}</nav></div>`, { breadcrumb: { title: "โครงการทั้งหมด", href: "/" } });
 }
 /** Presents committed attributed messages separately from a persistent, revision-bound composer. */
-export function conversationPage(state: ReturnType<Application["conversation"]>, workspace: Workspace, topics: Topic[], csrf: string, after: number, messageBytes: number): string {
+export function conversationPage(state: ReturnType<Application["conversation"]>, workspace: Workspace, topics: Topic[], csrf: string, after: number, messageBytes: number, dispatch?: {
+  team: ReturnType<Application["team"]>; discussions: Discussion[]; limits: JobPolicy["maximum"]; dispatchAvailable: boolean;
+}): string {
   const { project, topic } = state, title = topic.title ?? "หัวข้อไม่พร้อมใช้งาน", base = `/projects/${project.id}/topics/${topic.id}`;
-  return shell(title, { workspace, csrf, project, topics, topic }, `<div class="content chat-content"><section aria-label="ประวัติข้อความ">${state.items.length ? state.items.map(m => `<article id="message-${m.id}" class="message${m.attribution.kind === "owner" ? " message--owner" : ""}" data-message-id="${m.id}"><div class="message-body">${m.text === null ? '<p class="literal">ต้นฉบับไม่พร้อมใช้งาน</p>' : literalContent(m.text)}</div>
+  const roles = dispatch?.team.roles.filter(role => role.kind === "specialist" && role.enabled && role.effective.route) ?? [];
+  const dispatchPanel = dispatch ? `<details class="team-card" id="team-dispatch"><summary>เรียกทีมวิเคราะห์ในหัวข้อนี้</summary>
+    ${dispatch.dispatchAvailable && roles.length ? `<form class="team-form" method="post" action="/projects/${project.id}/team/discussions">${hiddenCommand(csrf, project.revision)}
+      <input type="hidden" name="topicId" value="${topic.id}"><input type="hidden" name="sources" value="${escape(JSON.stringify(topic.availability === "available" ? [topic.source] : []))}">
+      <input type="hidden" name="include" value="[]"><input type="hidden" name="exclude" value="[]"><input type="hidden" name="limits" value="${escape(JSON.stringify(dispatch.limits))}">
+      <label>สิ่งที่อยากให้ทีมวิเคราะห์<input name="purpose" required maxlength="300" value="${escape(title)}"></label>
+      <p>Router จะเลือกเฉพาะ specialist ที่เปิดใช้และมี route · ไม่สรุปแทนคุณ</p><button class="primary">เริ่มวิเคราะห์แยก</button></form>` : '<p>ตั้งค่า specialist ที่เปิดใช้และมี route ก่อน หรือรอให้คิวพร้อม</p>'}
+    ${dispatch.discussions.length ? `<ul>${dispatch.discussions.map(item => `<li><a href="/projects/${project.id}/team/discussions/${item.id}">${escape(item.purpose)}</a> · ${item.participations.filter(p => p.state === "completed").length}/${item.participations.length} เสร็จ · ช่องว่าง ${item.coverageGap.length}</li>`).join("")}</ul>` : ""}</details>` : "";
+  return shell(title, { workspace, csrf, project, topics, topic }, `<div class="content chat-content">${dispatchPanel}<section aria-label="ประวัติข้อความ">${state.items.length ? state.items.map(m => `<article id="message-${m.id}" class="message${m.attribution.kind === "owner" ? " message--owner" : ""}" data-message-id="${m.id}"><div class="message-body">${m.text === null ? '<p class="literal">ต้นฉบับไม่พร้อมใช้งาน</p>' : literalContent(m.text)}</div>
       <div class="message-meta"><span>${escape(attributionLabel(m.attribution))}</span><span class="committed">${icon("check")}บันทึกแล้ว</span><details><summary aria-label="รายละเอียดและที่มาของข้อความ">${icon("info")}รายละเอียด</summary><div class="message-detail">${time(m.committedAt)}<br>${sourceLink(project.id, m.source, "ที่มาของข้อความ")}</div></details></div></article>`).join("") : `<div class="empty-chat"><div>${icon("chat")}<h2>เริ่มบทสนทนานี้</h2><p>เก็บไอเดีย คำถาม และเรื่องที่อยากกลับมาต่อยอด</p></div></div>`}</section>
       <nav class="pagination" aria-label="หน้าประวัติข้อความ">${after > 0 ? `<a href="${base}">หน้าแรก</a>` : ""}${state.hasMore ? `<a href="${base}?after=${state.nextAfter}">ข้อความถัดไป</a>` : ""}</nav></div>`, {
     breadcrumb: { title: project.name, href: `/projects/${project.id}` }, action: `<a class="header-action" href="/projects/${project.id}#new-topic" aria-label="หัวข้อใหม่">${icon("plus")}หัวข้อใหม่</a>`,
@@ -141,6 +151,21 @@ export function teamPage(state: ReturnType<Application["team"]>, workspace: Work
     <section aria-label="บทบาท">${state.roles.length ? state.roles.map(role => `<article class="team-card" id="role-${role.id}"><header><h3>${escape(role.name)}</h3><span class="job-status">${role.enabled ? role.kind === "coordinator" ? "Coordinator" : "Specialist" : "ปิดใช้"}</span></header><p class="literal">${escape(role.responsibility)}</p><p class="team-effective">${role.effective.route ? escape(`${role.effective.route.provider} / ${role.effective.route.model} · ${role.effective.route.authRoute}`) : "ยังไม่มี route"}<br><small>ที่มา: ${names[role.effective.layer]} · ${role.effective.status === "unverified" ? "กำหนดแล้ว · ยังไม่ตรวจสอบการเชื่อมต่อจริง" : "ยังเริ่มไม่ได้"}</small></p>
       ${project ? `<details><summary>ปรับ route เฉพาะบทบาทนี้</summary><form class="team-form" method="post" action="${base}/routes">${hiddenCommand(csrf, state.projectRevision)}<input type="hidden" name="roleId" value="${role.id}">${routeFields(state.overrides[role.id] ?? null, "Project override")}<button class="primary">บันทึก override</button></form></details>
       ${role.enabled && role.effective.route && state.topics.length && state.previewAvailable ? `<form class="team-form team-preview" method="post" action="${base}/previews">${hiddenCommand(csrf, project.revision)}<input type="hidden" name="roleId" value="${role.id}"><input type="hidden" name="limits" value="${escape(JSON.stringify(limits))}"><label>ส่งตัวอย่างไปยังหัวข้อ<select name="topicId">${state.topics.map(topic => `<option value="${topic.id}">${escape(topic.title ?? "หัวข้อไม่พร้อมใช้งาน")}</option>`).join("")}</select></label><label>สิ่งที่อยากทดลอง<input name="purpose" required maxlength="300" value="ทดลองความรับผิดชอบของ ${escape(role.name)}"></label><label>ข้อมูลประกอบ<select name="sources"><option value="[]">ไม่แนบข้อมูลต้นทาง</option>${state.topics.filter(topic => topic.availability === "available").map(topic => `<option value="${escape(JSON.stringify([topic.source]))}">ชื่อหัวข้อ: ${escape(topic.title)}</option>`).join("")}</select></label><details><summary>งบของตัวอย่างนี้</summary><p>${limits.calls} calls · ${limits.rounds} rounds · ${limits.hops} hops · context ${limits.contextTokens} / output ${limits.outputTokens} tokens · ${Math.ceil(limits.wallMs / 1000)} วินาที</p><p>เครื่องมือ: ไม่มี · ไม่เปิด shell, file/network fetch หรือการค้นหาเพิ่มเติม</p></details><button class="primary">เริ่มตัวอย่างจำลอง</button></form>` : `<p>${!role.enabled ? "เปิดใช้บทบาทก่อนทดลอง" : !role.effective.route ? "กำหนด route ที่แน่นอนก่อนทดลอง" : !state.topics.length ? "สร้างหัวข้อในโครงการก่อนทดลอง" : "คิวยังไม่พร้อมรับตัวอย่างใหม่"}</p>`}` : `<details><summary>แก้ไขบทบาท</summary>${roleForm(role)}</details>`}</article>`).join("") : '<p class="empty-list">ยังไม่มีบทบาท เริ่มจากบทบาทที่คุณต้องการ</p>'}</section><details class="team-card"><summary>ลำดับการเลือก route</summary><p>Override ของบทบาทในโครงการ → ค่าเริ่มต้นของโครงการ → ค่าประจำบทบาท → ค่าเริ่มต้นของ owner แต่ละลำดับใช้ provider/model/ชื่ออ้างอิงทั้งชุด ไม่มีการเปลี่ยน route อัตโนมัติ</p></details></div>`, project ? { breadcrumb: { title: project.name, href: `/projects/${project.id}` } } : {});
+}
+
+/** Renders one logical discussion with owner role controls and provisional-vs-committed analysis state. */
+export function discussionPage(state: ReturnType<Application["discussion"]>, workspace: Workspace, csrf: string): string {
+  const { project, discussion: d } = state;
+  const labels: Record<string, string> = { queued: "รอคิว", running: "กำลังวิเคราะห์", completed: "บันทึกแล้ว", blocked: "ติดข้อจำกัด", stopped: "หยุดแล้ว", skipped: "ข้าม", excluded: "ตัดออก" };
+  const controls = (roleId: string, revision: number) => ["include", "exclude", "skip", "stop"].map(action =>
+    `<form method="post" action="/projects/${project.id}/team/discussions/${d.id}/controls">${hiddenCommand(csrf, revision)}<input type="hidden" name="roleId" value="${roleId}"><input type="hidden" name="action" value="${action}"><button>${action}</button></form>`).join("");
+  return shell("การหารือของทีม", { workspace, csrf, project }, `<div class="content team-content"><section class="hero"><p class="eyebrow">FIXTURE · วิเคราะห์แยก · ยังไม่สรุปแทนคุณ</p><h2>${escape(d.purpose)}</h2><p>${escape(d.router.evidence)} · ช่องว่าง ${d.coverageGap.length}</p></section>
+    ${d.participations.map(item => `<article class="team-card" id="role-${item.roleId}"><header><h3>${escape(item.roleName)}</h3><span class="job-status">${labels[item.state] ?? item.state}</span></header>
+      <p>${item.route ? escape(`${item.route.provider} / ${item.route.model} · ${item.route.authRoute}`) : "ไม่มี route"} · ${escape(item.reason ?? "")}</p>
+      ${item.progress ? `<p role="status">ความคืบหน้าชั่วคราว: ${escape(item.progress.text)}</p>` : ""}
+      ${item.output ? sourceLink(project.id, item.output, "ผลที่บันทึกแล้ว") : "<p>ยังไม่มีผลที่ยืนยันแล้ว</p>"}
+      <p><a href="/projects/${project.id}/jobs/${item.jobId}">ดูงาน</a></p><div class="team-form">${controls(item.roleId, d.revision)}</div></article>`).join("")}
+    <p><a href="/projects/${project.id}/topics/${d.topicId}">กลับหัวข้อ</a></p></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
 }
 
 /** Renders retained fixture evidence and its captured configuration without implying successful live inference. */
