@@ -10,6 +10,7 @@
     "start": "bun src/main.ts serve",
     "setup": "bun src/main.ts setup",
     "owner:reset": "bun src/main.ts reset-owner",
+    "host:evidence": "bun src/evidence-cli.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
