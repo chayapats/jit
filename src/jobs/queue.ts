@@ -13,7 +13,7 @@ const positive = (value: unknown, max = 1_000_000_000): value is number => Numbe
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const routeKey = (route: Job["route"]) => jobData({ provider: route.provider, authRoute: route.authRoute }, 1024);
 
-/** Canonicalizes bounded JSON data while rejecting cycles, non-finite numbers and executable values. */
+/** Canonicalizes bounded plain JSON data; arrays must be dense, ordinary and at most 256 entries. */
 export function jobData(value: unknown, bytes: number): string {
   const seen = new Set<object>();
   let estimated = 0;
@@ -25,14 +25,27 @@ export function jobData(value: unknown, bytes: number): string {
     if (item === null || typeof item === "boolean" || typeof item === "string") return item;
     if (typeof item === "number" && Number.isFinite(item)) return item;
     if (!item || typeof item !== "object" || seen.has(item)) throw new AppError("invalid_job_data");
-    const keys = Object.keys(item);
-    if (keys.length > 256) throw new AppError("invalid_job_data");
-    for (const key of keys) consume(key.length);
-    if ((!Array.isArray(item) && !exact(item, keys)) || Object.getOwnPropertySymbols(item).length ||
-        Object.values(Object.getOwnPropertyDescriptors(item)).some(descriptor => !("value" in descriptor))) throw new AppError("invalid_job_data");
+    const array = Array.isArray(item);
+    if (array && (Object.getPrototypeOf(item) !== Array.prototype || item.length > 256)) throw new AppError("invalid_job_data");
+    const keys = Reflect.ownKeys(item);
+    if (keys.length > (array ? 257 : 256) || keys.some(key => typeof key !== "string") ||
+        (!array && !exact(item, keys as string[])) || (array && keys.length !== item.length + 1)) throw new AppError("invalid_job_data");
+    const descriptors = Object.getOwnPropertyDescriptors(item);
+    for (const key of keys as string[]) {
+      if (array && key === "length") continue;
+      consume(key.length);
+      if (!descriptors[key]!.enumerable || !("value" in descriptors[key]!)) throw new AppError("invalid_job_data");
+    }
     seen.add(item);
-    const result: JobData = Array.isArray(item) ? item.map(x => visit(x, depth + 1))
-      : Object.fromEntries(keys.sort().map(key => [key, visit((item as Record<string, unknown>)[key], depth + 1)]));
+    let result: JobData;
+    if (array) {
+      const values: JobData[] = [];
+      for (let index = 0; index < item.length; index++) {
+        if (!Object.hasOwn(descriptors, String(index))) throw new AppError("invalid_job_data");
+        values.push(visit(descriptors[String(index)]!.value, depth + 1));
+      }
+      result = values;
+    } else result = Object.fromEntries((keys as string[]).sort().map(key => [key, visit(descriptors[key]!.value, depth + 1)]));
     seen.delete(item); return result;
   }
   const text = JSON.stringify(visit(value, 0));
@@ -72,6 +85,13 @@ export function readJob(tx: AppTransaction, projectId: string, jobId: string): J
   const row = tx.get<{ record_json: string }>("SELECT record_json FROM jobs WHERE project_id = ? AND id = ?", projectId, jobId);
   if (!row) throw new AppError("job_not_found", 404);
   return JSON.parse(row.record_json) as Job;
+}
+
+/** Projects a live wall budget at read time without mutating committed state or replay receipts. */
+export function projectJob(job: Job, now: number): Job {
+  if (!Number.isSafeInteger(now) || now < 0) throw new AppError("invalid_job_clock");
+  if (!["queued", "admitted", "waiting"].includes(job.state)) return job;
+  return { ...job, remaining: { ...job.remaining, wallMs: Math.max(0, Math.min(job.remaining.wallMs, job.deadlineAt - now)) } };
 }
 
 /** Injectable process/clock/timer ports keep scheduler ownership and deadlines deterministic in tests. */

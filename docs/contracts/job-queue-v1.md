@@ -19,7 +19,9 @@ Owner: Jit #6. `jobs.queue_admission/v1` is implemented on this issue branch; do
 
 Policy and defaults come from declared `JIT_JOB_*` settings in `readConfig`: revision 1, pending queue 32, global concurrency 2, per-auth-route concurrency 1, input 16384 bytes, evidence 4096 bytes, maximum roles/hops 16, calls/rounds 64, context/output tokens 64000/16000, retries 3 and wall-clock 60000 ms. These are finite development settings requiring measurement before pilot, not account capacity claims. Invalid values fail startup before admission. Hard validation ceilings also apply to trusted direct callers. No route/provider/model/auth/billing fallback exists.
 
-The Web project menu links to `/projects/<project>/jobs`. A named start form discloses its selected route and finite profile. Job details show state, reason, next action, input/configuration revisions, remaining budgets and committed evidence. Waiting jobs offer an explicit continuation action. Native forms/links preserve the owner session, exact Origin, CSRF and request deduplication. Evidence is escaped untrusted text; scripts/URLs cannot execute.
+The Web project menu links to `/projects/<project>/jobs`. A named start form discloses its selected route and finite profile. Job details show state, reason, next action, input/configuration revisions, remaining budgets and committed evidence. Read projections compute queued/admitted/waiting wall time left from the current clock, capped by the last committed remaining value; terminal budgets stay frozen. Reads never change job revisions, state or replay receipts. Waiting jobs offer an explicit continuation action. Native forms/links preserve the owner session, exact Origin, CSRF and request deduplication. Evidence is escaped untrusted text; scripts/URLs cannot execute.
+
+Inputs and checkpoints are bounded plain JSON: dense ordinary arrays and plain objects have at most 256 entries, nesting at most 12, no accessors/symbols/extra array properties or executable values, and a final UTF-8 byte ceiling. Array length is checked before traversal or serialization; input-owned methods are never invoked.
 
 | HTTP | Payload/result |
 | --- | --- |

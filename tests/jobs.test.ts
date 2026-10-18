@@ -8,7 +8,7 @@ import { Application, type ApplicationOptions } from "../src/application";
 import { readConfig } from "../src/config";
 import { TransactionStore, type AppTransaction } from "../src/store";
 import { createWebHandler } from "../src/web";
-import { JobQueue } from "../src/jobs/queue";
+import { JobQueue, jobData } from "../src/jobs/queue";
 import { projectStateWork } from "../src/jobs/project-state";
 import type { EnqueueJobCommand, Job, JobLimits, WorkDefinition, WorkOutcome } from "../src/jobs/types";
 
@@ -109,6 +109,52 @@ test("quota/login/unavailable waits keep exact route and require deduplicated ex
     expect(receipt.job).toMatchObject({ route: original.route, deadlineAt: original.deadlineAt, remaining: { calls: 3, retries: 1 } });
     f.queue.pump(); await f.queue.idle(); expect(job(f, waiting.id)).toMatchObject({ state: "succeeded", route: original.route, remaining: { calls: 2, retries: 1 } });
   }
+});
+
+test("queued, waiting and active reads project wall time without mutating state or replay receipts", async () => {
+  for (const state of ["queued", "waiting", "admitted"] as const) {
+    let release!: () => void;
+    const gate = new Promise<WorkOutcome>(resolve => { release = () => resolve({ state: "succeeded", evidence: "done" }); }); releases.push(() => release());
+    const f = await fixture({ definitions: [definition(() => state === "admitted" ? gate : { state: "waiting", reason: "quota" })] });
+    const cmd = command(f), receipt = f.app.execute(f.auth.actor, cmd);
+    if (state !== "queued") { f.queue.pump(); if (state === "waiting") await f.queue.idle(); }
+    const persisted = () => f.store.read(tx => tx.get<{ record_json: string }>("SELECT record_json FROM jobs WHERE id = ?", receipt.job.id)!.record_json);
+    const before = persisted(), original = job(f, receipt.job.id);
+    f.clock.advance(200);
+    expect(job(f, receipt.job.id)).toMatchObject({ state, revision: original.revision, updatedAt: original.updatedAt, remaining: { wallMs: 800 } });
+    expect(f.app.jobs(f.auth.actor, f.project.id).items[0]!.remaining.wallMs).toBe(800);
+    expect(persisted()).toBe(before);
+    expect(f.app.execute(f.auth.actor, cmd)).toEqual(receipt);
+    f.clock.now = epoch - 100;
+    expect(job(f, receipt.job.id).remaining.wallMs).toBe(1000);
+    f.clock.now = epoch + 200;
+    release(); await f.queue.idle();
+    if (state === "admitted") {
+      const completed = job(f, receipt.job.id); f.clock.advance(200);
+      expect(job(f, receipt.job.id)).toEqual(completed);
+    } else {
+      f.clock.advance(1000);
+      expect(job(f, receipt.job.id).remaining.wallMs).toBe(0);
+      expect(persisted()).toBe(before);
+    }
+  }
+});
+
+test("bounded JSON rejects sparse, oversized or modified arrays without invoking their methods", async () => {
+  let calls = 0;
+  const ownMethod = Object.assign([], { map() { calls++; return ["replacement"]; } });
+  const inherited = Object.setPrototypeOf([], { map() { calls++; return []; } });
+  const accessor = Object.defineProperty([0], "0", { enumerable: true, get() { calls++; return 1; } });
+  const hidden = Object.defineProperty([], "hidden", { value: () => { calls++; } });
+  for (const value of [new Array(1_000_000), new Array(2 ** 32 - 1), [, 1], Array(257).fill(0), ownMethod, inherited, accessor, hidden]) {
+    expect(() => jobData(value, 64)).toThrow("invalid_job_data");
+  }
+  expect(calls).toBe(0);
+  expect(jobData([{ z: 1, a: [true, null] }], 64)).toBe('[{"a":[true,null],"z":1}]');
+  const f = await fixture({ definitions: [definition(() => ({ state: "yield", checkpoint: ownMethod }))] });
+  const id = f.app.execute(f.auth.actor, command(f)).job.id; f.queue.pump(); await f.queue.idle();
+  expect(job(f, id)).toMatchObject({ state: "failed", reason: "worker_failed", checkpoint: null });
+  expect(calls).toBe(0);
 });
 
 test("finite queue overload and every budget boundary reject or terminate visibly before extra work", async () => {

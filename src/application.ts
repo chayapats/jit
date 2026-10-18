@@ -5,7 +5,7 @@ import { TransactionStore, type AppTransaction } from "./store";
 import { conversationIdentity, mutateConversation, readMessages, readTopic, readTopics, requireCursor,
   type ConversationCommand, type CreateTopicCommand, type SendMessageCommand, type TopicReceipt, type MessageReceipt } from "./conversation";
 import { lookupSource, requireId, requireReference, type SourceReference, type SourceLookup } from "./sources";
-import { JobQueue, jobCommandIdentity, readJob, readJobs } from "./jobs/queue";
+import { JobQueue, jobCommandIdentity, projectJob, readJob, readJobs } from "./jobs/queue";
 import type { EnqueueJobCommand, ResumeJobCommand, JobCommand, JobReceipt } from "./jobs/types";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -216,15 +216,16 @@ export class Application {
     return this.store.read(tx => {
       this.#requireOwner(tx, actor); const project = this.#project(tx, projectId);
       const available = this.#jobs?.available(tx) ?? false;
-      return { project, ...readJobs(tx, projectId, after, this.config.pageSize), choices: this.#jobs?.choices() ?? [],
+      const page = readJobs(tx, projectId, after, this.config.pageSize), now = this.#now();
+      return { project, ...page, items: page.items.map(job => projectJob(job, now)), choices: this.#jobs?.choices() ?? [],
         admission: { available, nextAction: available ? "inspect_or_authorize_work" : "resolve_scheduler_ownership_or_restart" } };
     });
   }
 
-  /** Reads one project-scoped job and its committed budgets/evidence without admission side effects. */
+  /** Reads committed evidence and current wall time left without changing job state or receipts. */
   job(actor: OwnerActor, projectId: string, jobId: string) {
     requireId(projectId); requireId(jobId);
-    return this.store.read(tx => { this.#requireOwner(tx, actor); this.#project(tx, projectId); return readJob(tx, projectId, jobId); });
+    return this.store.read(tx => { this.#requireOwner(tx, actor); this.#project(tx, projectId); return projectJob(readJob(tx, projectId, jobId), this.#now()); });
   }
 
   #jobCommand(actor: OwnerActor, command: JobCommand): JobReceipt {
