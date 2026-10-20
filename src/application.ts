@@ -23,13 +23,14 @@ import type {
   CommitDeliveryCommand, DeliveryCommand, DeliveryIntent, DeliveryPage, DeliveryReceipt, DeliveryReport,
   DeliveryResendReceipt, DeliveryRetireReceipt, ResendDeliveryCommand, RetireDeliveryCommand,
 } from "./delivery";
+import { applyTask, isTaskCommand, readTaskList, readTaskModel, taskIdentity, type TaskChannel, type TaskCommand, type TaskList, type TaskReadModel, type TaskReceipt } from "./tasks";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const validToken = (value: string) => /^[a-f0-9]{64}$/.test(value);
 const randomToken = () => crypto.getRandomValues(new Uint8Array(32)).toHex();
 
 /** A server-issued owner identity; structural copies and model-provided objects carry no authority. */
-export interface OwnerActor { readonly ownerId: "owner"; readonly channel: "web" }
+export interface OwnerActor { readonly ownerId: "owner"; readonly channel: TaskChannel }
 
 /** A revision-bound command shared by authenticated ingress adapters. */
 export interface CreateProjectCommand {
@@ -58,7 +59,7 @@ export interface Workspace { revision: number; projects: Project[]; hasMore: boo
 /** Injectable clock and transaction fault seam for deterministic persistence checks. */
 export interface ApplicationOptions {
   now?: () => number;
-  beforeCommit?: (stage: "project" | "topic" | "message" | "job" | "team" | "decision" | "delivery" | "receipt") => void;
+  beforeCommit?: (stage: "project" | "topic" | "message" | "job" | "team" | "decision" | "delivery" | "task" | "receipt") => void;
   jobs?: JobQueue;
 }
 
@@ -122,6 +123,21 @@ export class Application {
         this.#now() + this.config.sessionSeconds * 1000);
     });
     return token;
+  }
+
+  /**
+   * Issues an owner actor for a trusted adapter that already checked its own identity and holds a live session.
+   * `telegram` only labels task receipts. It does not read Telegram updates or bypass revision and dedup rules.
+   * Forged `{ ownerId, channel }` objects are not registered and cannot execute commands.
+   */
+  issueAdapterActor(sessionToken: string, channel: TaskChannel): OwnerActor {
+    if (channel !== "web" && channel !== "telegram") throw new AppError("invalid_channel");
+    if (!validToken(sessionToken)) throw new AppError("authentication_required", 401);
+    const key = digest(sessionToken);
+    this.store.read(tx => this.#session(tx, key));
+    const actor: OwnerActor = Object.freeze({ ownerId: "owner", channel });
+    this.#actors.set(actor, key);
+    return actor;
   }
 
   /** Resolves a live server session into an opaque actor and a separate anti-CSRF token. */
@@ -203,11 +219,13 @@ export class Application {
   execute(actor: OwnerActor, command: SendMessageCommand): MessageReceipt;
   execute(actor: OwnerActor, command: TeamCommand): TeamReceipt;
   execute(actor: OwnerActor, command: DecisionCommand): DecisionReceipt;
+  execute(actor: OwnerActor, command: TaskCommand): TaskReceipt;
   execute(actor: OwnerActor, command: CommitDeliveryCommand): DeliveryReceipt;
   execute(actor: OwnerActor, command: ResendDeliveryCommand): DeliveryResendReceipt;
   execute(actor: OwnerActor, command: RetireDeliveryCommand): DeliveryRetireReceipt;
-  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | TeamCommand | DecisionCommand | DeliveryCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt;
-  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | TeamCommand | DecisionCommand | DeliveryCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt {
+  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | TeamCommand | DecisionCommand | DeliveryCommand | TaskCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | TaskReceipt;
+  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | TeamCommand | DecisionCommand | DeliveryCommand | TaskCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | TaskReceipt {
+    if (isTaskCommand(command)) return this.#taskCommand(actor, command);
     if (command?.kind === "delivery.commit" || command?.kind === "delivery.resend" || command?.kind === "delivery.retire") return this.#deliveryCommand(actor, command);
     if (command?.kind === "project.create") return this.#createProject(actor, command);
     if (command?.kind === "job.enqueue" || command?.kind === "job.resume" || command?.kind === "job.stop") return this.#jobCommand(actor, command);
@@ -282,6 +300,49 @@ export class Application {
     });
   }
 
+  /**
+   * app.task_read_model/v1
+   * Lists proposals, accepted obligations, and closed tasks separately. This read does not accept or start work.
+   */
+  tasks(actor: OwnerActor, projectId: string): { project: Project; topics: ReturnType<typeof readTopics>["items"] } & TaskList {
+    requireId(projectId);
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor, ["web", "telegram"]);
+      return { project: this.#project(tx, projectId), ...readTaskList(tx, projectId, this.config.pageSize), topics: readTopics(tx, projectId, 0, this.config.pageSize).items };
+    });
+  }
+
+  /**
+   * app.task_read_model/v1
+   * Reads one task, its proposal history, and whether the cited source is still available.
+   */
+  task(actor: OwnerActor, projectId: string, taskId: string): { project: Project; topic: ReturnType<Application["conversation"]>["topic"] } & TaskReadModel {
+    requireId(projectId); requireId(taskId);
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor, ["web", "telegram"]);
+      const model = readTaskModel(tx, projectId, taskId);
+      return { project: this.#project(tx, projectId), topic: readTopic(tx, projectId, model.task.topicId), ...model };
+    });
+  }
+
+  /** app.task_commands/v1 — commits proposal, edit, dismissal, acceptance, or cancellation. Start is refused and writes nothing. */
+  #taskCommand(actor: OwnerActor, command: TaskCommand): TaskReceipt {
+    const payloadHash = taskIdentity(command, this.config.messageBytes);
+    return this.store.transaction(tx => {
+      this.#requireOwner(tx, actor, ["web", "telegram"]);
+      this.#project(tx, command.projectId);
+      const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
+      if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as TaskReceipt; }
+      const now = this.#now();
+      const result = applyTask(tx, command, actor.channel, now, this.config.messageBytes);
+      this.#beforeCommit?.("task");
+      tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
+      tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);
+      this.#beforeCommit?.("receipt");
+      return result;
+    });
+  }
+
   /** app.decision_commands/v1 — commits synthesis admission, acceptance or supersession with the shared owner receipt. */
   #decisionCommand(actor: OwnerActor, command: DecisionCommand): DecisionReceipt {
     const payloadHash = decisionIdentity(command, this.config.team.contextBytes);
@@ -292,8 +353,8 @@ export class Application {
       if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as DecisionReceipt; }
       const now = this.#now(), generation = tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'")!.generation;
       const result = command.kind === "decision.synthesize" ? prepareSynthesis(tx, command, this.config, this.#jobs, generation, now)
-        : command.kind === "decision.accept" ? acceptDecision(tx, command, actor.channel, now)
-        : supersedeDecision(tx, command, actor.channel, now);
+        : command.kind === "decision.accept" ? acceptDecision(tx, command, "web", now)
+        : supersedeDecision(tx, command, "web", now);
       this.#beforeCommit?.("decision");
       tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
       tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);
@@ -469,10 +530,11 @@ export class Application {
     return project;
   }
 
-  #requireOwner(tx: AppTransaction, actor: OwnerActor): string {
+  #requireOwner(tx: AppTransaction, actor: OwnerActor, channels: readonly TaskChannel[] = ["web"]): string {
     const key = actor && this.#actors.get(actor);
     if (!key) throw new AppError("authentication_required", 401);
     this.#session(tx, key);
+    if (!channels.includes(actor.channel)) throw new AppError("channel_not_authorized", 403);
     return key;
   }
 }

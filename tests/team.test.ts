@@ -242,7 +242,7 @@ test("frozen published v3 migrates without changing owner/project/job/receipt an
   const jobId = rid(), oldRecord = JSON.stringify({ id: jobId, marker: "retained fixture job" });
   db.query("INSERT INTO jobs (id, project_id, queue_order, priority, state, occupies, route_key, record_json) VALUES (?, ?, 1, 0, 'succeeded', 0, 'fixture', ?)").run(jobId, projectId, oldRecord); db.close();
   const store = new TransactionStore(path); stores.push(store);
-  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 8 });
+  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 9 });
   expect(store.read(tx => tx.get("SELECT generation, password_hash FROM owner"))).toEqual({ generation: 7, password_hash: hash });
   expect(store.read(tx => tx.get("SELECT id FROM project_groups WHERE project_id = ?", projectId))).toEqual({ id: groupId });
   expect(store.read(tx => tx.get("SELECT record_json FROM jobs WHERE id = ?", jobId))).toEqual({ record_json: oldRecord });
@@ -448,7 +448,7 @@ test("a frozen TEAM01 v4 artifact migrates without inventing historical attempt/
   db.query("INSERT INTO team_contexts VALUES (?, 1, 'delete_failed')").run(contextId);
   db.query("INSERT INTO team_runs (id, project_id, job_id, context_id, record_json) VALUES (?, ?, ?, ?, ?)").run(runId, projectId, jobId, contextId, '{"retained":"preview"}'); db.close();
   const store = new TransactionStore(path); stores.push(store);
-  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 8 });
+  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 9 });
   expect(store.read(tx => tx.get("SELECT record_json FROM jobs WHERE id = ?", jobId))).toEqual({ record_json: record });
   expect(store.read(tx => tx.get("SELECT state FROM team_contexts WHERE id = ?", contextId))).toEqual({ state: "delete_failed" });
   expect(store.read(tx => tx.get("SELECT generation, reason, stop_json FROM job_authority WHERE job_id = ?", jobId))).toEqual({ generation: 1, reason: null, stop_json: null });
@@ -1061,7 +1061,7 @@ test("TEAM03 coordinator shows disagreement and the gap; only the owner revision
   expect(posted.status).toBe(303);
   expect(rows(f, "jobs")).toBe(jobsBefore);
   expect(f.port.requests).toHaveLength(callsBefore);
-  expect(f.store.read(tx => tx.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tasks'"))).toBeNull();
+  expect(f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM tasks"))).toEqual({ n: 0 });
   const recorded = f.app.decision(f.auth.actor, f.project.id, f.topic.id).currentDecision!;
   expect(recorded.decision).toMatchObject({ actorId: "owner", channel: "web", projectId: f.project.id, topicId: f.topic.id, proposalId: proposal.id, proposalRevision: 1, optionId: "tech_path", conclusion: "เลือกทางเทคโนโลยี", rationale: "เจ้าของเลือกเองหลังเห็นความเห็นต่าง", supersededBy: null, createdAt: epoch });
   expect(recorded.decision.sourceLinks.length).toBeGreaterThanOrEqual(3);
@@ -1238,10 +1238,11 @@ test("schema v6 with telegram tables migrates to v8 without recreating them", ()
     PRAGMA user_version = 6;`);
   db.close();
   const store = new TransactionStore(path); stores.push(store);
-  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 8 });
+  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 9 });
   expect(store.read(tx => tx.get("SELECT state FROM telegram_binding WHERE id = 1"))).toEqual({ state: "unbound" });
   expect(store.read(tx => tx.get<{ name: string }>("SELECT name FROM sqlite_master WHERE name = 'coordinator_syntheses'"))!.name).toBe("coordinator_syntheses");
   expect(store.read(tx => tx.get<{ name: string }>("SELECT name FROM sqlite_master WHERE name = 'owner_decisions'"))!.name).toBe("owner_decisions");
+  expect(store.read(tx => tx.get<{ name: string }>("SELECT name FROM sqlite_master WHERE name = 'tasks'"))!.name).toBe("tasks");
   const snapshot = new Database(join(root, readdirSync(root).find(name => name.includes(".pre-v6-"))!), { readonly: true });
   expect(snapshot.query("PRAGMA user_version").get()).toEqual({ user_version: 6 });
   expect(snapshot.query("SELECT state FROM telegram_binding WHERE id = 1").get()).toEqual({ state: "unbound" });

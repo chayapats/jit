@@ -79,7 +79,7 @@ test("authenticated Web topics/messages reopen with stable sources and separate 
     expect((await f.web(request(f, path))).status).toBe(200);
   }
   expect(f.store.read(tx => tx.get<{ count: number }>("SELECT count(*) AS count FROM command_receipts")!.count)).toBe(before);
-  expect(() => f.app.execute(f.auth.actor, { kind: "task.accept", projectId: a.id, requestId: crypto.randomUUID(), expectedRevision: 0, payload: {} } as never)).toThrow("invalid_conversation_command");
+  expect(() => f.app.execute(f.auth.actor, { kind: "task.accept", projectId: a.id, requestId: crypto.randomUUID(), expectedRevision: 0, payload: {} } as never)).toThrow("invalid_task_command");
   f.store.close();
   const store = new TransactionStore(f.path); stores.push(store);
   const reopened = new Application(store, f.config, { now: () => now }), actor = reopened.authenticate(f.token).actor;

@@ -2,7 +2,7 @@ import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-const schemaVersion = 8;
+const schemaVersion = 9;
 
 /** Synchronous SQL operations scoped to an application transaction. */
 export interface AppTransaction {
@@ -34,7 +34,7 @@ export class TransactionStore {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
           if (current === schemaVersion) return;
-          if (![0, 1, 2, 3, 4, 5, 6, 7].includes(current)) throw new Error("Unsupported migration source");
+          if (![0, 1, 2, 3, 4, 5, 6, 7, 8].includes(current)) throw new Error("Unsupported migration source");
           if (existing) {
             const snapshot = `${path}.pre-v${current}-${crypto.randomUUID()}.sqlite`;
             const fd = openSync(snapshot, "wx", 0o600);
@@ -261,6 +261,57 @@ export class TransactionStore {
             CREATE INDEX owner_decision_topic ON owner_decisions(project_id, topic_id, created_at);
             CREATE UNIQUE INDEX owner_decision_live ON owner_decisions(project_id, topic_id) WHERE superseded_by IS NULL;
             PRAGMA user_version = 8;
+          `);
+          if (current < 9) this.#db.exec(`
+            CREATE TABLE tasks (
+              id TEXT PRIMARY KEY,
+              project_id TEXT NOT NULL REFERENCES projects(id),
+              topic_id TEXT NOT NULL,
+              state TEXT NOT NULL CHECK (state IN ('proposed', 'accepted', 'dismissed', 'cancelled')),
+              proposal_revision INTEGER NOT NULL CHECK (proposal_revision > 0),
+              current_proposal_id TEXT NOT NULL,
+              title TEXT NOT NULL,
+              summary TEXT NOT NULL,
+              source_id TEXT NOT NULL REFERENCES sources(id),
+              source_revision INTEGER NOT NULL CHECK (source_revision > 0),
+              source_generation INTEGER NOT NULL CHECK (source_generation > 0),
+              origin TEXT NOT NULL CHECK (origin IN ('owner', 'validated_output')),
+              acceptance_json TEXT,
+              closed_reason TEXT,
+              created_at INTEGER NOT NULL,
+              updated_at INTEGER NOT NULL,
+              FOREIGN KEY (project_id, topic_id) REFERENCES topics(project_id, id)
+            );
+            CREATE INDEX task_project ON tasks(project_id, updated_at, id);
+            CREATE TABLE task_proposals (
+              id TEXT PRIMARY KEY,
+              task_id TEXT NOT NULL REFERENCES tasks(id),
+              project_id TEXT NOT NULL,
+              revision INTEGER NOT NULL CHECK (revision > 0),
+              title TEXT NOT NULL,
+              summary TEXT NOT NULL,
+              source_id TEXT NOT NULL REFERENCES sources(id),
+              source_revision INTEGER NOT NULL CHECK (source_revision > 0),
+              source_generation INTEGER NOT NULL CHECK (source_generation > 0),
+              origin TEXT NOT NULL CHECK (origin IN ('owner', 'validated_output')),
+              created_at INTEGER NOT NULL,
+              UNIQUE (task_id, revision)
+            );
+            CREATE INDEX task_proposal_project ON task_proposals(project_id, task_id);
+            CREATE TABLE task_events (
+              sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+              task_id TEXT NOT NULL REFERENCES tasks(id),
+              project_id TEXT NOT NULL,
+              kind TEXT NOT NULL CHECK (kind IN ('proposed', 'edited', 'dismissed', 'accepted', 'cancelled')),
+              actor_id TEXT NOT NULL CHECK (actor_id = 'owner'),
+              channel TEXT NOT NULL CHECK (channel IN ('web', 'telegram')),
+              proposal_id TEXT,
+              proposal_revision INTEGER,
+              reason TEXT,
+              created_at INTEGER NOT NULL
+            );
+            CREATE INDEX task_event_task ON task_events(task_id, sequence);
+            PRAGMA user_version = 9;
           `);
         }).immediate();
       }
