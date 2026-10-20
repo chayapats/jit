@@ -63,7 +63,7 @@ export class ScriptedRunPort implements ApplicationRunPort {
   readonly #requests: ApplicationRunRequest[] = [];
   readonly #native: ScriptedNativeLedger;
   constructor(readonly store: TransactionStore, readonly policy: TeamPolicy, readonly outputBytes: number,
-    private readonly script: (request: ApplicationRunRequest, signal: AbortSignal) => unknown | Promise<unknown> = request => ({
+    private readonly script: (request: ApplicationRunRequest, signal: AbortSignal, observe: (event: ApplicationRunEvent) => void) => unknown | Promise<unknown> = request => ({
       ...fixtureOutcome("complete", `ตัวอย่างจำลอง · ${request.purpose}\nบทบาท: ${request.instructions.responsibility}\nผลนี้เป็น fixture ไม่ได้เรียก Grok หรือ Codex`),
       usage: { ...emptyUsage(), calls: 1, rounds: 1, hops: 1 }, session: { adapter: "scripted", id: request.runId, context: request.context },
     }), private readonly deleteFails: () => boolean = () => false, private readonly retireFails: () => boolean = () => false) {
@@ -89,8 +89,9 @@ export class ScriptedRunPort implements ApplicationRunPort {
     const native = { adapter: "scripted", runId: snapshot.runId, sessionId: snapshot.runId, context: snapshot.context, state: "running" as const, contextState: "active" as const };
     this.#native.put(native);
     observe({ kind: "started", runId: snapshot.runId, context: { ...snapshot.context } });
+    observe({ kind: "progress", runId: snapshot.runId, text: "provisional fixture progress" });
     let result: ApplicationRunOutcome;
-    try { result = normalizeFixtureResult(await this.script(structuredClone(snapshot), signal), snapshot, this.outputBytes); }
+    try { result = normalizeFixtureResult(await this.script(structuredClone(snapshot), signal, observe), snapshot, this.outputBytes); }
     catch { result = fixtureOutcome("invalid_result"); }
     if (!active()) result = fixtureOutcome("context_retired");
     else if (signal.aborted) result = fixtureOutcome("cancelled");

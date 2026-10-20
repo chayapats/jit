@@ -24,7 +24,7 @@ export interface RunSourceManifest {
   sources: readonly { projectId: string; reference: SourceReference; text: string }[];
   claims: readonly { projectId: string; claimId: string; revision: number; generation: number; text: string }[];
 }
-/** Service-owned read tools that later consumers may select explicitly; preview selects none. */
+/** Service-owned read tools that later consumers may select explicitly; preview and dispatch select none. */
 export type ApplicationReadTool = "project.read" | "source.read" | "memory.read";
 /** The immutable scope/configuration and finite authority supplied to one application run invocation. */
 export interface ApplicationRunRequest {
@@ -58,6 +58,39 @@ export type ApplicationRunEvent = { kind: "started"; runId: string; context: Man
   | { kind: "progress"; runId: string; text: string }
   | { kind: "finished"; runId: string; outcome: ApplicationRunOutcome };
 
+/** Owner-visible participation state for one role inside a logical discussion. */
+export type ParticipationState = "queued" | "running" | "completed" | "blocked" | "stopped" | "skipped" | "excluded";
+/** Router stop reasons are finite and never invent new billing/provider authority. */
+export type RouterStopReason = "complete" | "max_rounds" | "budget_exhausted";
+/** One role's attributed analysis slot under a discussion; peer output is never trusted instruction. */
+export interface DiscussionParticipation {
+  roleId: string; roleName: string; runId: string; jobId: string; purpose: string;
+  state: ParticipationState; route: RoleRoute | null; output: SourceReference | null;
+  reason: string | null; nextAction: string | null;
+  progress: { text: string; provisional: true } | null;
+}
+/** Bounded scripted router evidence retained with the discussion; unknown roles never become jobs. */
+export interface DiscussionRouter {
+  rounds: number; selected: string[]; silent: string[]; stopReason: RouterStopReason; evidence: string;
+}
+/** One owner-authorized logical discussion over a frozen source snapshot. */
+export interface Discussion {
+  kind: "discussion";
+  id: string; projectId: string; topicId: string; purpose: string; jobId: string;
+  revision: number; createdAt: number; updatedAt: number;
+  manifest: RunSourceManifest; limits: JobLimits;
+  router: DiscussionRouter; participations: DiscussionParticipation[];
+  coverageGap: string[];
+}
+/** Independent specialist analysis run bound to one discussion and one managed context. */
+export interface SpecialistRun {
+  kind: "specialist";
+  id: string; discussionId: string; projectId: string; topicId: string; roleId: string; roleName: string; jobId: string;
+  request: ApplicationRunRequest; mode: "fixture"; createdAt: number;
+  outcome: ApplicationRunOutcome | null; source: SourceReference | null;
+  progress: { text: string; provisional: true } | null;
+}
+
 /** Owner mutations use shared durable receipts; saving configuration never starts a run. */
 export type TeamCommand = {
   kind: "role.save"; requestId: string; projectId: null; expectedRevision: number;
@@ -68,6 +101,12 @@ export type TeamCommand = {
 } | {
   kind: "role.preview"; requestId: string; projectId: string; expectedRevision: number;
   payload: { roleId: string; topicId: string; purpose: string; sources: SourceReference[]; limits: JobLimits };
+} | {
+  kind: "team.dispatch"; requestId: string; projectId: string; expectedRevision: number;
+  payload: { topicId: string; purpose: string; sources: SourceReference[]; include: string[]; exclude: string[]; limits: JobLimits };
+} | {
+  kind: "team.control"; requestId: string; projectId: string; expectedRevision: number;
+  payload: { discussionId: string; action: "include" | "exclude" | "skip" | "stop"; roleId: string };
 };
 /** A durable fixture run records immutable configuration separately from current effective settings. */
 export interface RolePreview {
@@ -76,4 +115,4 @@ export interface RolePreview {
   outcome: ApplicationRunOutcome | null; source: SourceReference | null;
 }
 /** Owner-visible command result is acknowledged only together with its audit and receipt. */
-export interface TeamReceipt { revision: number; role?: Role; preview?: RolePreview }
+export interface TeamReceipt { revision: number; role?: Role; preview?: RolePreview; discussion?: Discussion }

@@ -6,6 +6,7 @@ import { readHiddenPassword } from "./terminal-password";
 import { JobQueue } from "./jobs/queue";
 import { projectStateWork } from "./jobs/project-state";
 import { AppError } from "./errors";
+import { discussionPlanWork, specialistAnalysisWork } from "./team/dispatch";
 import { ScriptedRunPort } from "./team/scripted-port";
 import { scriptedPreviewWork } from "./team/preview";
 
@@ -27,7 +28,9 @@ async function main(): Promise<void> {
   let queue: JobQueue | undefined;
   try { if (command === "serve") {
     const port = new ScriptedRunPort(store, config.team, config.jobs.outputBytes);
-    queue = new JobQueue(store, config.jobs, [projectStateWork(store), scriptedPreviewWork(store, config, port)]);
+    queue = new JobQueue(store, config.jobs, [
+      projectStateWork(store), scriptedPreviewWork(store, config, port), discussionPlanWork(), specialistAnalysisWork(store, config, port),
+    ]);
     await queue.reconcile(port);
   } }
   catch (error) { queue?.close(); store.close(); throw error; }
