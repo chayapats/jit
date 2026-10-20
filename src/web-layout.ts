@@ -40,7 +40,7 @@ function navigation(n: Navigation): string {
   return `<nav aria-label="โครงการและหัวข้อ"><a class="nav-main" href="/">${icon("folder")}<span>โครงการทั้งหมด</span></a>
     <a class="nav-main" href="${selected ? `/projects/${selected.id}/team` : "/team"}">${icon("user")}<span>ทีมและโมเดล</span></a>
     <a class="nav-main" href="${selected ? `/projects/${selected.id}#new-topic` : "/#new-project"}">${icon("plus")}<span>${selected ? "หัวข้อใหม่" : "โครงการใหม่"}</span></a>
-    ${selected ? `<a class="nav-main" href="/projects/${selected.id}/jobs">${icon("clock")}<span>งานของโครงการ</span></a><p class="nav-heading">หัวข้อในโครงการ</p><p class="nav-project">${escape(selected.name)}</p>
+    ${selected ? `<a class="nav-main" href="/projects/${selected.id}/jobs">${icon("clock")}<span>งานของโครงการ</span></a><a class="nav-main" href="/projects/${selected.id}/delivery">${icon("info")}<span>การแจ้งเตือน</span></a><p class="nav-heading">หัวข้อในโครงการ</p><p class="nav-project">${escape(selected.name)}</p>
       <ul>${topics.slice(0, 12).map(t => `<li><a class="nav-link" href="/projects/${selected.id}/topics/${t.id}"${t.id === n.topic?.id ? ' aria-current="page"' : ""}>${icon("chat")}<span>${escape(t.title ?? "หัวข้อไม่พร้อมใช้งาน")}</span></a></li>`).join("")}</ul>
       <a class="nav-subtle" href="/projects/${selected.id}">ดูหัวข้อทั้งหมด</a>` : ""}
     <p class="nav-heading">โครงการของคุณ</p><ul>${n.workspace.projects.slice(0, 8).map(p => `<li><a class="nav-link" href="/projects/${p.id}"${p.id === selected?.id && !n.topic ? ' aria-current="page"' : ""}>${icon("folder")}<span>${escape(p.name)}</span></a></li>`).join("")}</ul>
@@ -137,6 +137,46 @@ export function jobsPage(state: ReturnType<Application["jobs"]>, workspace: Work
       ${job.evidence ? `<div class="job-evidence">${literalContent(job.evidence)}</div>` : ""}<details><summary>รายละเอียดและงบที่เหลือ</summary>${limits(job.remaining)}<dl class="job-limits"><dt>Job ID</dt><dd>${escape(job.id)}</dd><dt>Input / configuration revision</dt><dd>${job.inputRevision} / ${job.configuration.revision}</dd><dt>อัปเดต</dt><dd>${time(job.updatedAt)}</dd></dl></details></article>`).join("") : '<p class="empty-list">ยังไม่มีงานในโครงการนี้</p>'}</section>
     <nav class="pagination" aria-label="หน้าคิวงาน">${after ? `<a href="${base}">หน้าแรก</a>` : ""}${state.hasMore ? `<a href="${base}?after=${state.nextAfter}">งานถัดไป</a>` : ""}</nav></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
 }
+const deliveryLabels: Record<string, string> = {
+  waiting: "รอช่องทางที่ผูกไว้", queued: "บันทึกคำขอแล้ว ยังไม่ได้ส่ง", claimed: "กำลังส่ง ยังไม่ทราบผล",
+  sent: "Telegram ตอบรับแล้ว", failed: "ส่งไม่สำเร็จ", unknown: "ไม่ทราบว่าถึงหรือยัง", cancelled: "ยกเลิกก่อนส่ง",
+};
+const deliveryNext: Record<string, string> = {
+  wait_for_channel_binding: "รอจนกว่าจะผูกช่องทางส่วนตัว", wait_for_delivery: "รอให้ระบบส่งคำขอที่บันทึกไว้",
+  inspect_sent_message: "ตรวจเลขอ้างอิงข้อความที่ Telegram ตอบรับ", inspect_failure: "ตรวจสาเหตุที่ส่งไม่สำเร็จ",
+  inspect_unknown_then_explicit_resend: "ตรวจสถานะที่ไม่ทราบผล แล้วค่อยสั่งส่งใหม่หากต้องการ",
+  safe_retry_limit_reached: "ลองซ้ำอัตโนมัติครบจำนวนที่อนุญาตแล้ว", inspect_cancelled_intent: "คำขอนี้ถูกยกเลิกก่อนส่ง",
+  authorization_changed: "สิทธิ์เจ้าของเปลี่ยนแล้ว", binding_revoked: "การผูกช่องทางถูกถอน", source_superseded: "รายงานถูกแทนที่",
+  source_deleted: "ต้นทางถูกลบ", telegram_rejected: "ปลายทางปฏิเสธถาวร", telegram_unavailable: "ปลายทางไม่พร้อมชั่วคราว",
+  unknown_transport: "ไม่ทราบผลหลังเริ่มส่ง", not_bound: "ยังไม่ได้ผูกช่องทาง",
+};
+
+/** Lists logical notification intents. Rendering this page does not send. */
+export function deliveryPage(state: ReturnType<Application["deliveries"]>, workspace: Workspace, csrf: string, after: number): string {
+  const { project } = state;
+  const base = `/projects/${project.id}/delivery`;
+  return shell("การแจ้งเตือน", { project, workspace, csrf }, `<div class="content"><section class="hero"><p class="eyebrow">คำขอส่งส่วนตัว</p><h2>สถานะการส่งของ ${escape(project.name)}</h2><p>การบันทึกคำขอหรือการเริ่มส่งไม่ถือว่ารายงานถูกส่งแล้ว ระบบไม่รับประกันว่าปลายทางจะได้รับครั้งเดียว</p></section>
+    <form class="create-form" method="post" action="${base}">${hiddenCommand(csrf, project.revision)}<label>ประเภท<select name="kind"><option value="report">รายงาน</option><option value="reminder">เตือนความจำ</option></select></label><label>ข้อความ<input name="text" required maxlength="4096"></label><label>รหัสไม่ซ้ำ<input name="dedupeKey" required minlength="8" maxlength="160" placeholder="report:example:1"></label><button class="primary">บันทึกคำขอส่ง</button></form>
+    ${state.items.length ? `<ul>${state.items.map(item => `<li class="topic-row"><div class="topic-row-main"><h3><a href="${base}/${item.id}">${escape(deliveryLabels[item.status] ?? item.status)}</a></h3><p>${escape(item.payload.kind === "reminder" ? "เตือนความจำ" : "รายงาน")} · ${escape(deliveryNext[item.nextAction] ?? item.nextAction)}</p><p class="literal">${escape(item.payload.text)}</p></div></li>`).join("")}</ul>` : '<p class="empty-list">ยังไม่มีคำขอส่ง</p>'}
+    <nav class="pagination" aria-label="หน้าการแจ้งเตือน">${after ? `<a href="${base}">หน้าแรก</a>` : ""}${state.hasMore ? `<a href="${base}?after=${state.nextAfter}">ถัดไป</a>` : ""}</nav></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
+}
+
+/** Shows provenance, outcome and the next action for one intent. A resend warns that duplicates are possible. */
+export function deliveryDetailPage(state: ReturnType<Application["delivery"]>, workspace: Workspace, csrf: string): string {
+  const { project, intent, report } = state;
+  const source = `/projects/${project.id}/sources/${report.sourceId}?revision=${report.sourceRevision}&generation=${report.sourceGeneration}`;
+  const uncertain = intent.status === "failed" || intent.status === "unknown";
+  return shell("รายละเอียดการส่ง", { project, workspace, csrf }, `<div class="content"><section class="hero"><p class="eyebrow">local dedupe เท่านั้น</p><h2>${escape(deliveryLabels[intent.status] ?? intent.status)}</h2><p>${escape(deliveryNext[intent.nextAction] ?? intent.nextAction)}</p><p>การบันทึกคำขอหรือการเริ่มส่งไม่ถือว่ารายงานถูกส่งแล้ว ระบบไม่รับประกันว่าปลายทางจะได้รับครั้งเดียว</p></section>
+    <article class="team-card"><p class="literal">${escape(intent.payload.text)}</p><p>สถานะคำขอ: ${escape(intent.status)} · ผลจากปลายทาง: ${escape(intent.remote)} · การรับประกัน: ${escape(intent.guarantee)}</p>
+    ${intent.failureReason ? `<p>สาเหตุ: ${escape(deliveryNext[intent.failureReason] ?? intent.failureReason)}</p>` : ""}
+    ${intent.stale ? `<p>ผลนี้เกิดระหว่างรายงานหรือช่องทางเปลี่ยนไป (${escape(intent.staleReason ?? "")}) ระบบไม่ได้กันข้อความที่ปลายทางรับไว้แล้ว</p>` : ""}
+    ${intent.messageRef ? `<p>อ้างอิงข้อความ ${intent.messageRef.chatId} / ${intent.messageRef.messageId}</p>` : ""}
+    ${uncertain ? "<p>รายงานต้นทางยังเปิดอ่านได้ แม้การส่งจะไม่สำเร็จหรือยังไม่ทราบผล</p>" : ""}
+    <p><a href="${source}">เปิดรายงานที่บันทึกไว้</a></p>
+    ${["failed", "unknown", "sent"].includes(intent.status) ? `<form method="post" action="/projects/${project.id}/delivery/${intent.id}/resend">${hiddenCommand(csrf, intent.revision)}<p>การส่งอีกครั้งอาจทำให้ข้อความซ้ำ</p><button class="primary">ส่งอีกครั้ง</button></form>` : ""}
+    </article><details class="team-card"><summary>ที่มาของข้อความ</summary><dl><dt>รายงาน</dt><dd>${escape(report.id)} · รุ่น ${report.revision}/${report.generation} · ${escape(report.availability)}</dd><dt>สิทธิ์ / รุ่นข้อมูล</dt><dd>${intent.provenance.authorityGeneration} / ${intent.provenance.inputGeneration}</dd><dt>รหัสไม่ซ้ำ</dt><dd>${escape(intent.dedupeKey)}</dd><dt>ความพยายาม</dt><dd>${state.attempts.length}</dd></dl></details></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}/delivery` } });
+}
+
 /** Renders bounded owner configuration and explicitly authorized fixture previews. */
 export function teamPage(state: ReturnType<Application["team"]>, workspace: Workspace, csrf: string, limits: JobPolicy["maximum"], preset?: string): string {
   const project = state.project ?? undefined, base = project ? `/projects/${project.id}/team` : "/team";
