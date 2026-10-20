@@ -1,10 +1,11 @@
 import { Application, type CreateProjectCommand } from "./application";
 import { AppError } from "./errors";
 import type { CreateTopicCommand, SendMessageCommand } from "./conversation";
-import { workspacePage, projectPage, conversationPage, sourcePage, jobsPage, teamPage, previewPage, discussionPage, deliveryPage, deliveryDetailPage, loginPage, errorPage } from "./web-layout";
+import { workspacePage, projectPage, conversationPage, sourcePage, jobsPage, teamPage, previewPage, discussionPage, deliveryPage, deliveryDetailPage, tasksPage, taskPage, loginPage, errorPage } from "./web-layout";
 import type { CommitDeliveryCommand, ResendDeliveryCommand } from "./delivery";
 import type { EnqueueJobCommand, JobLimits, ResumeJobCommand, StopJobCommand } from "./jobs/types";
 import type { DecisionCommand, TeamCommand } from "./team/types";
+import type { TaskCommand } from "./tasks";
 import { styleSheet } from "./web-style";
 
 const messages: Record<string, string> = {
@@ -44,6 +45,17 @@ const messages: Record<string, string> = {
   invalid_delivery_payload: "ข้อความมีข้อมูลที่ไม่ควรส่ง",
   delivery_worker_unavailable: "ตัวส่งยังไม่พร้อม",
   authorization_changed: "สิทธิ์ที่ใช้บันทึกคำขอเปลี่ยนแล้ว",
+  invalid_task_command: "คำสั่งงานไม่ถูกต้อง กรุณาเปิดหน้าใหม่",
+  task_not_found: "ไม่พบงานในโครงการที่เลือก",
+  task_not_proposed: "งานนี้ไม่ได้อยู่ในสถานะข้อเสนอแล้ว",
+  task_not_accepted: "ยกเลิกได้เฉพาะงานที่รับรองแล้ว",
+  task_already_accepted: "งานนี้รับรองไปแล้ว",
+  task_already_closed: "งานนี้ปิดแล้ว และจะไม่ถูกเปิดใหม่จากข้อความของโมเดล",
+  source_not_validated: "ใช้ได้เฉพาะผล specialist หรือผู้ประสานงานที่บันทึกแล้วในหัวข้อนี้",
+  project_mismatch: "แหล่งข้อมูลไม่ได้อยู่ในโครงการนี้",
+  coding_execution_unsupported: "การรับรองงานยังไม่เริ่มแก้โค้ดหรือรันคำสั่ง การเริ่มลงมือยังไม่รองรับในรุ่นนี้",
+  channel_not_authorized: "ช่องทางนี้ยังใช้คำสั่งนี้ไม่ได้",
+  title_too_long: "ชื่อยาวเกินกำหนด",
 };
 
 /** Creates a server-rendered owner workspace; all mutations use the shared application boundary. */
@@ -139,6 +151,8 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       const discussionControl = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/team\/discussions\/([a-f0-9-]{36})\/controls$/.exec(url.pathname);
       const synthesisRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/team\/discussions\/([a-f0-9-]{36})\/synthesis$/.exec(url.pathname);
       const decisionRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})\/decisions$/.exec(url.pathname);
+      const tasksRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/tasks$/.exec(url.pathname);
+      const taskRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/tasks\/([a-f0-9-]{36})$/.exec(url.pathname);
       const after = () => {
         const raw = url.searchParams.get("after") ?? "0";
         if (!/^\d{1,16}$/.test(raw)) throw new AppError("invalid_cursor");
@@ -155,6 +169,48 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       if (request.method === "GET" && discussionRoute) {
         const state = app.discussion(auth.actor, discussionRoute[1]!, discussionRoute[2]!);
         return api ? json(state) : respond(discussionPage(state, app.workspace(auth.actor), auth.csrf, config.jobs.maximum));
+      }
+      if (request.method === "GET" && tasksRoute) {
+        const state = app.tasks(auth.actor, tasksRoute[2]!);
+        return api ? json(state) : respond(tasksPage(state, app.workspace(auth.actor), auth.csrf, url.searchParams.get("topic")));
+      }
+      if (request.method === "GET" && taskRoute) {
+        const state = app.task(auth.actor, taskRoute[2]!, taskRoute[3]!);
+        return api ? json(state) : respond(taskPage(state, app.workspace(auth.actor), auth.csrf, config.messageBytes));
+      }
+      if (request.method === "POST" && (tasksRoute || taskRoute)) {
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        const number = (value: unknown) => typeof value === "string" && /^\d{1,15}$/.test(value) ? Number(value) : value;
+        const cited = () => {
+          if (body.source === undefined || body.source === "") return undefined;
+          const value = typeof body.source === "string" ? (() => { try { return JSON.parse(body.source) as unknown; } catch { throw new AppError("invalid_body"); } })() : body.source;
+          if (!value || typeof value !== "object" || Array.isArray(value)) throw new AppError("invalid_body");
+          return value as { sourceId: string; revision: number; generation: number };
+        };
+        const projectId = (tasksRoute ?? taskRoute)![2]!;
+        let command: TaskCommand;
+        if (tasksRoute) {
+          const allowed = ["csrf", "requestId", "expectedRevision", "topicId", "title", "summary", "source"];
+          if (Object.keys(body).some(key => !allowed.includes(key))) throw new AppError("invalid_body");
+          const source = cited();
+          command = { kind: "task.propose", requestId: body.requestId as string, projectId, expectedRevision: number(body.expectedRevision) as number,
+            payload: { topicId: body.topicId as string, title: body.title as string, summary: body.summary as string, ...(source ? { source } : {}) } };
+        } else {
+          const allowed = ["csrf", "requestId", "expectedRevision", "mode", "proposalId", "title", "summary", "source", "reason"];
+          if (Object.keys(body).some(key => !allowed.includes(key)) || typeof body.mode !== "string") throw new AppError("invalid_body");
+          const taskId = taskRoute![3]!, expectedRevision = number(body.expectedRevision) as number, requestId = body.requestId as string;
+          const base = { requestId, projectId, expectedRevision };
+          if (body.mode === "edit") {
+            const source = cited();
+            command = { ...base, kind: "task.edit", payload: { taskId, title: body.title as string, summary: body.summary as string, ...(source ? { source } : {}) } };
+          } else if (body.mode === "dismiss") command = { ...base, kind: "task.dismiss", payload: { taskId, proposalId: body.proposalId as string, reason: body.reason as string } };
+          else if (body.mode === "accept") command = { ...base, kind: "task.accept", payload: { taskId, proposalId: body.proposalId as string } };
+          else if (body.mode === "cancel") command = { ...base, kind: "task.cancel", payload: { taskId, reason: body.reason as string } };
+          else if (body.mode === "start") command = { ...base, kind: "task.start", payload: { taskId } };
+          else throw new AppError("invalid_body");
+        }
+        const receipt = app.execute(auth.actor, command);
+        return api ? json(receipt) : respond(null, 303, { Location: `/projects/${projectId}/tasks/${receipt.task.id}` });
       }
       if (request.method === "GET" && decisionRoute) {
         const state = app.decision(auth.actor, decisionRoute[1]!, decisionRoute[2]!);
@@ -330,7 +386,10 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       const rejection = error instanceof AppError ? error : new AppError("storage_unavailable", 503);
       if (!api && rejection.code === "authentication_required") return respond(null, 303, { "Location": "/login" });
       const text = messages[rejection.code] ?? "คำสั่งไม่ถูกต้อง กรุณาลองใหม่";
-      return api ? json({ error: rejection.code }, rejection.status) : respond(errorPage(text), rejection.status);
+      const detail = rejection.detail;
+      const recovery = detail && typeof detail.projectId === "string" && /^[a-f0-9-]{36}$/.test(detail.projectId) && typeof detail.path === "string" && detail.path.startsWith(`/projects/${detail.projectId}/`)
+        ? { href: detail.path, label: typeof detail.taskId === "string" ? "เปิดข้อเสนอล่าสุด" : "เปิดรายการล่าสุด" } : undefined;
+      return api ? json({ error: rejection.code, ...(detail ? { detail } : {}) }, rejection.status) : respond(errorPage(text, recovery), rejection.status);
     }
   };
 }
