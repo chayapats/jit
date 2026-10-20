@@ -116,3 +116,64 @@ export interface RolePreview {
 }
 /** Owner-visible command result is acknowledged only together with its audit and receipt. */
 export interface TeamReceipt { revision: number; role?: Role; preview?: RolePreview; discussion?: Discussion }
+
+/** A role that produced no citable result; the coordinator must show this gap and must not call it consensus. */
+export interface SynthesisGap { roleId: string; roleName: string; reason: string }
+/** One allowed specialist result revision. Model text cannot add roles or routes here. */
+export interface SynthesisCitation { roleId: string; roleName: string; route: RoleRoute | null; reference: SourceReference }
+/** One option inside a coordinator recommendation. It is not an owner decision. */
+export interface SynthesisOption { id: string; label: string; rationale: string; citations: SynthesisCitation[] }
+/** The committed recommendation. `recommendationOnly` stays true; consensus is false when specialists disagree or a gap remains. */
+export interface SynthesisArtifact {
+  disagreement: boolean; consensus: boolean; recommendationOnly: true;
+  options: SynthesisOption[]; missing: SynthesisGap[]; question: string;
+}
+/** One immutable proposal revision produced by a citation-checked synthesis. */
+export interface DecisionProposal {
+  id: string; projectId: string; topicId: string; discussionId: string; revision: number; synthesisId: string;
+  artifact: SynthesisArtifact; source: SourceReference; createdAt: number;
+}
+/** Product state of one coordinator synthesis run. Complete is distinct from an owner decision. */
+export type SynthesisState = "queued" | "running" | "complete" | "incomplete" | "failed" | "cancelled";
+/** The latest coordinator run for a discussion. Fixture output is not itself the proposal. */
+export interface CoordinatorSynthesis {
+  id: string; projectId: string; topicId: string; discussionId: string; jobId: string; baseRevision: number;
+  state: SynthesisState; reason: string | null; createdAt: number; updatedAt: number;
+}
+/** An owner-selected conclusion. It cites the proposal revision the owner saw and is separate from the recommendation. */
+export interface OwnerDecision {
+  id: string; projectId: string; topicId: string; proposalId: string; proposalRevision: number; revision: number;
+  actorId: "owner"; channel: "web"; optionId: string | null; conclusion: string; rationale: string;
+  sourceLinks: SourceReference[]; supersededBy: string | null; createdAt: number;
+}
+/** A source link resolved against the registry. Unavailable content is not replaced. */
+export interface ResolvedEvidence {
+  reference: SourceReference; roleId: string | null; roleName: string | null; route: RoleRoute | null;
+  state: "available" | "unavailable"; reason: string | null; text: string | null;
+}
+/** One retained owner decision together with the proposal and evidence it resolved. */
+export interface DecisionHistoryEntry { decision: OwnerDecision; proposal: DecisionProposal; evidence: ResolvedEvidence[] }
+/**
+ * app.decision_read_model/v1
+ * Topic-scoped projection of the current proposal, synthesis status, owner history and evidence availability.
+ */
+export interface DecisionReadModel {
+  synthesis: CoordinatorSynthesis | null; proposal: DecisionProposal | null; proposalEvidence: ResolvedEvidence[];
+  decisions: DecisionHistoryEntry[]; currentDecision: DecisionHistoryEntry | null;
+}
+/**
+ * app.decision_commands/v1
+ * Owner commands for synthesis admission, acceptance and supersession. Model text is not a member of this union.
+ */
+export type DecisionCommand = {
+  kind: "decision.synthesize"; requestId: string; projectId: string; expectedRevision: number;
+  payload: { discussionId: string; limits: JobLimits };
+} | {
+  kind: "decision.accept"; requestId: string; projectId: string; expectedRevision: number;
+  payload: { proposalId: string; optionId: string | null; conclusion: string; rationale: string };
+} | {
+  kind: "decision.supersede"; requestId: string; projectId: string; expectedRevision: number;
+  payload: { decisionId: string; proposalId: string; optionId: string | null; conclusion: string; rationale: string };
+};
+/** Receipt returned only after the decision transaction commits. A replay returns the original value. */
+export interface DecisionReceipt { revision: number; synthesis?: CoordinatorSynthesis; proposal?: DecisionProposal; decision?: OwnerDecision }

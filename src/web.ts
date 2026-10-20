@@ -2,8 +2,8 @@ import { Application, type CreateProjectCommand } from "./application";
 import { AppError } from "./errors";
 import type { CreateTopicCommand, SendMessageCommand } from "./conversation";
 import { workspacePage, projectPage, conversationPage, sourcePage, jobsPage, teamPage, previewPage, discussionPage, loginPage, errorPage } from "./web-layout";
-import type { EnqueueJobCommand, ResumeJobCommand, StopJobCommand } from "./jobs/types";
-import type { TeamCommand } from "./team/types";
+import type { EnqueueJobCommand, JobLimits, ResumeJobCommand, StopJobCommand } from "./jobs/types";
+import type { DecisionCommand, TeamCommand } from "./team/types";
 import { styleSheet } from "./web-style";
 
 const messages: Record<string, string> = {
@@ -28,6 +28,13 @@ const messages: Record<string, string> = {
   dispatch_source_unavailable: "แหล่งข้อมูลเปลี่ยนหรือไม่พร้อมใช้งาน กรุณาเลือกใหม่", invalid_router_output: "ผลเลือกทีมไม่ถูกต้อง จึงยังไม่เริ่มวิเคราะห์",
   role_already_participating: "บทบาทนี้อยู่ในการหารือแล้ว", role_budget_exhausted: "จำนวนบทบาทครบขีดจำกัดของการหารือนี้แล้ว",
   participation_not_found: "ไม่พบบทบาทนี้ในการหารือ", run_not_found: "ไม่พบผลการวิเคราะห์ที่เลือก",
+  invalid_decision_command: "คำสั่งตัดสินไม่ถูกต้อง กรุณาเปิดหน้าใหม่",
+  decision_already_recorded: "มีการตัดสินของหัวข้อนี้แล้ว ใช้การแทนที่ถ้าต้องการเปลี่ยน",
+  decision_not_found: "ไม่พบการตัดสินที่เลือก", proposal_not_found: "ไม่พบข้อเสนอที่เลือก",
+  synthesis_not_found: "ไม่พบสรุปของผู้ประสานงาน", synthesis_not_ready: "ยังไม่มีผลที่อ้างอิงได้พอสำหรับสรุป",
+  synthesis_in_progress: "กำลังสรุปอยู่แล้ว รอให้รอบนี้จบก่อน",
+  coordinator_unavailable: "เปิดใช้ผู้ประสานงานและกำหนด route ก่อนสรุป",
+  option_not_found: "ไม่พบทางเลือกในข้อเสนอนี้",
 };
 
 /** Creates a server-rendered owner workspace; all mutations use the shared application boundary. */
@@ -118,6 +125,8 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       const previewRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/team\/previews\/([a-f0-9-]{36})$/.exec(url.pathname);
       const discussionRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/team\/discussions\/([a-f0-9-]{36})$/.exec(url.pathname);
       const discussionControl = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/team\/discussions\/([a-f0-9-]{36})\/controls$/.exec(url.pathname);
+      const synthesisRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/team\/discussions\/([a-f0-9-]{36})\/synthesis$/.exec(url.pathname);
+      const decisionRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})\/decisions$/.exec(url.pathname);
       const after = () => {
         const raw = url.searchParams.get("after") ?? "0";
         if (!/^\d{1,16}$/.test(raw)) throw new AppError("invalid_cursor");
@@ -133,7 +142,11 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       }
       if (request.method === "GET" && discussionRoute) {
         const state = app.discussion(auth.actor, discussionRoute[1]!, discussionRoute[2]!);
-        return api ? json(state) : respond(discussionPage(state, app.workspace(auth.actor), auth.csrf));
+        return api ? json(state) : respond(discussionPage(state, app.workspace(auth.actor), auth.csrf, config.jobs.maximum));
+      }
+      if (request.method === "GET" && decisionRoute) {
+        const state = app.decision(auth.actor, decisionRoute[1]!, decisionRoute[2]!);
+        return api ? json(state) : respond(null, 303, { Location: `/projects/${decisionRoute[1]}/topics/${decisionRoute[2]}#owner-decision` });
       }
       if (request.method === "POST" && discussionControl) {
         const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
@@ -144,6 +157,30 @@ export function createWebHandler(app: Application): (request: Request) => Promis
           payload: { discussionId: discussionControl[2], action: body.action, roleId: body.roleId } } as TeamCommand;
         const receipt = app.execute(auth.actor, command);
         return api ? json(receipt) : respond(null, 303, { Location: `/projects/${discussionControl[1]}/team/discussions/${discussionControl[2]}` });
+      }
+      if (request.method === "POST" && (synthesisRoute || decisionRoute)) {
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        const number = (value: unknown) => typeof value === "string" && /^\d{1,15}$/.test(value) ? Number(value) : value;
+        const form = request.headers.get("content-type")?.split(";")[0]?.trim() === "application/x-www-form-urlencoded";
+        const data = (value: unknown) => { if (!form) return value; try { return JSON.parse(value as string); } catch { throw new AppError("invalid_body"); } };
+        if (synthesisRoute) {
+          const allowed = ["csrf", "requestId", "expectedRevision", "limits"];
+          if (Object.keys(body).some(key => !allowed.includes(key))) throw new AppError("invalid_body");
+          const command: DecisionCommand = { kind: "decision.synthesize", requestId: body.requestId as string, projectId: synthesisRoute[1]!,
+            expectedRevision: number(body.expectedRevision) as number, payload: { discussionId: synthesisRoute[2]!, limits: data(body.limits) as JobLimits } };
+          const receipt = app.execute(auth.actor, command);
+          return api ? json(receipt) : respond(null, 303, { Location: `/projects/${synthesisRoute[1]}/team/discussions/${synthesisRoute[2]}#owner-decision` });
+        }
+        const allowed = ["csrf", "requestId", "expectedRevision", "proposalId", "mode", "optionId", "conclusion", "rationale", ...(body.mode === "supersede" ? ["decisionId"] : [])];
+        if (Object.keys(body).some(key => !allowed.includes(key)) || (body.mode !== "accept" && body.mode !== "supersede") || !("optionId" in body)) throw new AppError("invalid_body");
+        const optionId = body.optionId === "" || body.optionId === "own" || body.optionId === null ? null : body.optionId;
+        const command: DecisionCommand = body.mode === "supersede"
+          ? { kind: "decision.supersede", requestId: body.requestId as string, projectId: decisionRoute![1]!, expectedRevision: number(body.expectedRevision) as number,
+            payload: { decisionId: body.decisionId as string, proposalId: body.proposalId as string, optionId: optionId as string | null, conclusion: body.conclusion as string, rationale: body.rationale as string } }
+          : { kind: "decision.accept", requestId: body.requestId as string, projectId: decisionRoute![1]!, expectedRevision: number(body.expectedRevision) as number,
+            payload: { proposalId: body.proposalId as string, optionId: optionId as string | null, conclusion: body.conclusion as string, rationale: body.rationale as string } };
+        const receipt = app.execute(auth.actor, command);
+        return api ? json(receipt) : respond(null, 303, { Location: `/projects/${decisionRoute![1]}/topics/${decisionRoute![2]}#owner-decision` });
       }
       if (request.method === "POST" && teamAction) {
         const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
@@ -191,6 +228,7 @@ export function createWebHandler(app: Application): (request: Request) => Promis
         const discussions = app.discussions(auth.actor, state.project.id, state.topic.id);
         return respond(conversationPage(state, app.workspace(auth.actor), app.topics(auth.actor, state.project.id).items, auth.csrf, after(), config.messageBytes, {
           team, discussions, limits: config.jobs.maximum, dispatchAvailable: team.previewAvailable,
+          decision: app.decision(auth.actor, state.project.id, state.topic.id),
         }));
       }
       if (request.method === "GET" && topicCollection) {

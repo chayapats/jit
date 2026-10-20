@@ -2,7 +2,7 @@ import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-const schemaVersion = 6;
+const schemaVersion = 7;
 
 /** Synchronous SQL operations scoped to an application transaction. */
 export interface AppTransaction {
@@ -34,7 +34,7 @@ export class TransactionStore {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
           if (current === schemaVersion) return;
-          if (![0, 1, 2, 3, 4, 5].includes(current)) throw new Error("Unsupported migration source");
+          if (![0, 1, 2, 3, 4, 5, 6].includes(current)) throw new Error("Unsupported migration source");
           if (existing) {
             const snapshot = `${path}.pre-v${current}-${crypto.randomUUID()}.sqlite`;
             const fd = openSync(snapshot, "wx", 0o600);
@@ -150,7 +150,7 @@ export class TransactionStore {
             CREATE TABLE job_reconciliation (id TEXT PRIMARY KEY, record_json TEXT NOT NULL);
             PRAGMA user_version = 5;
           `);
-          this.#db.exec(`
+          if (current < 6) this.#db.exec(`
             CREATE TABLE telegram_binding (
               id INTEGER PRIMARY KEY CHECK (id = 1),
               revision INTEGER NOT NULL CHECK (revision > 0),
@@ -186,6 +186,61 @@ export class TransactionStore {
             CREATE INDEX telegram_inbox_status ON telegram_inbox(status, sequence);
             CREATE INDEX telegram_inbox_class ON telegram_inbox(classification, sequence);
             PRAGMA user_version = 6;
+          `);
+          if (current < 7) this.#db.exec(`
+            CREATE TABLE coordinator_syntheses (
+              id TEXT PRIMARY KEY,
+              project_id TEXT NOT NULL REFERENCES projects(id),
+              topic_id TEXT NOT NULL,
+              discussion_id TEXT NOT NULL,
+              job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id),
+              context_id TEXT NOT NULL UNIQUE REFERENCES team_contexts(id),
+              base_revision INTEGER NOT NULL CHECK (base_revision >= 0),
+              state TEXT NOT NULL CHECK (state IN ('queued', 'running', 'complete', 'incomplete', 'failed', 'cancelled')),
+              reason TEXT,
+              record_json TEXT NOT NULL,
+              created_at INTEGER NOT NULL,
+              updated_at INTEGER NOT NULL,
+              FOREIGN KEY (project_id, topic_id) REFERENCES topics(project_id, id)
+            );
+            CREATE INDEX coordinator_synthesis_discussion ON coordinator_syntheses(discussion_id, created_at);
+            CREATE TABLE decision_proposals (
+              id TEXT PRIMARY KEY,
+              project_id TEXT NOT NULL REFERENCES projects(id),
+              topic_id TEXT NOT NULL,
+              discussion_id TEXT NOT NULL,
+              revision INTEGER NOT NULL CHECK (revision > 0),
+              synthesis_id TEXT NOT NULL REFERENCES coordinator_syntheses(id),
+              record_json TEXT NOT NULL,
+              source_id TEXT NOT NULL REFERENCES sources(id),
+              source_revision INTEGER NOT NULL CHECK (source_revision > 0),
+              source_generation INTEGER NOT NULL CHECK (source_generation > 0),
+              created_at INTEGER NOT NULL,
+              UNIQUE (discussion_id, revision),
+              FOREIGN KEY (project_id, topic_id) REFERENCES topics(project_id, id)
+            );
+            CREATE INDEX decision_proposal_topic ON decision_proposals(project_id, topic_id, created_at);
+            CREATE TABLE owner_decisions (
+              id TEXT PRIMARY KEY,
+              project_id TEXT NOT NULL REFERENCES projects(id),
+              topic_id TEXT NOT NULL,
+              proposal_id TEXT NOT NULL REFERENCES decision_proposals(id),
+              proposal_revision INTEGER NOT NULL CHECK (proposal_revision > 0),
+              revision INTEGER NOT NULL CHECK (revision > 0),
+              actor_id TEXT NOT NULL CHECK (actor_id = 'owner'),
+              channel TEXT NOT NULL CHECK (channel = 'web'),
+              option_id TEXT,
+              conclusion TEXT NOT NULL,
+              rationale TEXT NOT NULL,
+              source_links_json TEXT NOT NULL,
+              superseded_by TEXT,
+              created_at INTEGER NOT NULL,
+              UNIQUE (project_id, topic_id, revision),
+              FOREIGN KEY (project_id, topic_id) REFERENCES topics(project_id, id)
+            );
+            CREATE INDEX owner_decision_topic ON owner_decisions(project_id, topic_id, created_at);
+            CREATE UNIQUE INDEX owner_decision_live ON owner_decisions(project_id, topic_id) WHERE superseded_by IS NULL;
+            PRAGMA user_version = 7;
           `);
         }).immediate();
       }

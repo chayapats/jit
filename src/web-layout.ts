@@ -1,8 +1,8 @@
 import type { Application, Project, Workspace } from "./application";
 import type { Topic } from "./conversation";
 import type { Attribution, SourceLookup, SourceReference } from "./sources";
-import type { Job, JobPolicy } from "./jobs/types";
-import type { Discussion, RoleRoute } from "./team/types";
+import type { Job, JobLimits, JobPolicy } from "./jobs/types";
+import type { DecisionReadModel, Discussion, RoleRoute } from "./team/types";
 
 /** Escapes literal untrusted content before it enters HTML text or attributes. */
 export const escape = (value: unknown) => String(value).replace(/[&<>"']/g, char =>
@@ -85,7 +85,7 @@ export function projectPage(state: ReturnType<Application["topics"]>, workspace:
 }
 /** Presents committed attributed messages separately from a persistent, revision-bound composer. */
 export function conversationPage(state: ReturnType<Application["conversation"]>, workspace: Workspace, topics: Topic[], csrf: string, after: number, messageBytes: number, dispatch?: {
-  team: ReturnType<Application["team"]>; discussions: Discussion[]; limits: JobPolicy["maximum"]; dispatchAvailable: boolean;
+  team: ReturnType<Application["team"]>; discussions: Discussion[]; limits: JobPolicy["maximum"]; dispatchAvailable: boolean; decision?: DecisionReadModel;
 }): string {
   const { project, topic } = state, title = topic.title ?? "หัวข้อไม่พร้อมใช้งาน", base = `/projects/${project.id}/topics/${topic.id}`;
   const roles = dispatch?.team.roles.filter(role => role.kind === "specialist" && role.enabled && role.effective.route) ?? [];
@@ -96,7 +96,8 @@ export function conversationPage(state: ReturnType<Application["conversation"]>,
       <label>สิ่งที่อยากให้ทีมวิเคราะห์<input name="purpose" required maxlength="300" value="${escape(title)}"></label>
       <p>Router จะเลือกเฉพาะ specialist ที่เปิดใช้และมี route · ไม่สรุปแทนคุณ</p><button class="primary">เริ่มวิเคราะห์แยก</button></form>` : '<p>ตั้งค่า specialist ที่เปิดใช้และมี route ก่อน หรือรอให้คิวพร้อม</p>'}
     ${dispatch.discussions.length ? `<ul>${dispatch.discussions.map(item => `<li><a href="/projects/${project.id}/team/discussions/${item.id}">${escape(item.purpose)}</a> · ${item.participations.filter(p => p.state === "completed").length}/${item.participations.length} เสร็จ · ช่องว่าง ${item.coverageGap.length}</li>`).join("")}</ul>` : ""}</details>` : "";
-  return shell(title, { workspace, csrf, project, topics, topic }, `<div class="content chat-content">${dispatchPanel}<section aria-label="ประวัติข้อความ">${state.items.length ? state.items.map(m => `<article id="message-${m.id}" class="message${m.attribution.kind === "owner" ? " message--owner" : ""}" data-message-id="${m.id}"><div class="message-body">${m.text === null ? '<p class="literal">ต้นฉบับไม่พร้อมใช้งาน</p>' : literalContent(m.text)}</div>
+  const decision = dispatch?.decision ? decisionPanel({ projectId: project.id, topicId: topic.id, csrf, model: dispatch.decision }) : "";
+  return shell(title, { workspace, csrf, project, topics, topic }, `<div class="content chat-content">${dispatchPanel}${decision}<section aria-label="ประวัติข้อความ">${state.items.length ? state.items.map(m => `<article id="message-${m.id}" class="message${m.attribution.kind === "owner" ? " message--owner" : ""}" data-message-id="${m.id}"><div class="message-body">${m.text === null ? '<p class="literal">ต้นฉบับไม่พร้อมใช้งาน</p>' : literalContent(m.text)}</div>
       <div class="message-meta"><span>${escape(attributionLabel(m.attribution))}</span><span class="committed">${icon("check")}บันทึกแล้ว</span><details><summary aria-label="รายละเอียดและที่มาของข้อความ">${icon("info")}รายละเอียด</summary><div class="message-detail">${time(m.committedAt)}<br>${sourceLink(project.id, m.source, "ที่มาของข้อความ")}</div></details></div></article>`).join("") : `<div class="empty-chat"><div>${icon("chat")}<h2>เริ่มบทสนทนานี้</h2><p>เก็บไอเดีย คำถาม และเรื่องที่อยากกลับมาต่อยอด</p></div></div>`}</section>
       <nav class="pagination" aria-label="หน้าประวัติข้อความ">${after > 0 ? `<a href="${base}">หน้าแรก</a>` : ""}${state.hasMore ? `<a href="${base}?after=${state.nextAfter}">ข้อความถัดไป</a>` : ""}</nav></div>`, {
     breadcrumb: { title: project.name, href: `/projects/${project.id}` }, action: `<a class="header-action" href="/projects/${project.id}#new-topic" aria-label="หัวข้อใหม่">${icon("plus")}หัวข้อใหม่</a>`,
@@ -153,8 +154,42 @@ export function teamPage(state: ReturnType<Application["team"]>, workspace: Work
       ${role.enabled && role.effective.route && state.topics.length && state.previewAvailable ? `<form class="team-form team-preview" method="post" action="${base}/previews">${hiddenCommand(csrf, project.revision)}<input type="hidden" name="roleId" value="${role.id}"><input type="hidden" name="limits" value="${escape(JSON.stringify(limits))}"><label>ส่งตัวอย่างไปยังหัวข้อ<select name="topicId">${state.topics.map(topic => `<option value="${topic.id}">${escape(topic.title ?? "หัวข้อไม่พร้อมใช้งาน")}</option>`).join("")}</select></label><label>สิ่งที่อยากทดลอง<input name="purpose" required maxlength="300" value="ทดลองความรับผิดชอบของ ${escape(role.name)}"></label><label>ข้อมูลประกอบ<select name="sources"><option value="[]">ไม่แนบข้อมูลต้นทาง</option>${state.topics.filter(topic => topic.availability === "available").map(topic => `<option value="${escape(JSON.stringify([topic.source]))}">ชื่อหัวข้อ: ${escape(topic.title)}</option>`).join("")}</select></label><details><summary>งบของตัวอย่างนี้</summary><p>${limits.calls} calls · ${limits.rounds} rounds · ${limits.hops} hops · context ${limits.contextTokens} / output ${limits.outputTokens} tokens · ${Math.ceil(limits.wallMs / 1000)} วินาที</p><p>เครื่องมือ: ไม่มี · ไม่เปิด shell, file/network fetch หรือการค้นหาเพิ่มเติม</p></details><button class="primary">เริ่มตัวอย่างจำลอง</button></form>` : `<p>${!role.enabled ? "เปิดใช้บทบาทก่อนทดลอง" : !role.effective.route ? "กำหนด route ที่แน่นอนก่อนทดลอง" : !state.topics.length ? "สร้างหัวข้อในโครงการก่อนทดลอง" : "คิวยังไม่พร้อมรับตัวอย่างใหม่"}</p>`}` : `<details><summary>แก้ไขบทบาท</summary>${roleForm(role)}</details>`}</article>`).join("") : '<p class="empty-list">ยังไม่มีบทบาท เริ่มจากบทบาทที่คุณต้องการ</p>'}</section><details class="team-card"><summary>ลำดับการเลือก route</summary><p>Override ของบทบาทในโครงการ → ค่าเริ่มต้นของโครงการ → ค่าประจำบทบาท → ค่าเริ่มต้นของ owner แต่ละลำดับใช้ provider/model/ชื่ออ้างอิงทั้งชุด ไม่มีการเปลี่ยน route อัตโนมัติ</p></details></div>`, project ? { breadcrumb: { title: project.name, href: `/projects/${project.id}` } } : {});
 }
 
-/** Renders one logical discussion with owner role controls and provisional-vs-committed analysis state. */
-export function discussionPage(state: ReturnType<Application["discussion"]>, workspace: Workspace, csrf: string): string {
+function decisionPanel(input: { projectId: string; topicId: string; csrf: string; model: DecisionReadModel; discussion?: { id: string; revision: number; limits: JobLimits; canSynthesize: boolean } }): string {
+  const { model, projectId, topicId, csrf } = input;
+  const proposal = model.proposal;
+  const running = model.synthesis?.state === "queued" || model.synthesis?.state === "running";
+  const failed = model.synthesis && ["failed", "incomplete", "cancelled"].includes(model.synthesis.state)
+    ? model.synthesis : null;
+  const evidence = (items: DecisionReadModel["proposalEvidence"]) => items.map(item => item.state === "available"
+    ? `<p>${escape(item.roleName ?? "แหล่งข้อมูล")}${item.route ? ` · ${escape(`${item.route.provider} / ${item.route.model} · ${item.route.authRoute}`)}` : ""} ${sourceLink(projectId, item.reference, "หลักฐาน")}</p>`
+    : `<p class="error">ต้นฉบับไม่พร้อมใช้งาน${item.roleName ? ` · ${escape(item.roleName)}` : ""} (${escape(item.reason ?? "unavailable")})</p>`).join("");
+  const history = model.decisions.map(entry => `<li>${entry.decision.supersededBy ? "ถูกแทนที่แล้ว" : "ปัจจุบัน"} · ${escape(entry.decision.conclusion)} · ${escape(entry.decision.rationale)} · proposal r${entry.decision.proposalRevision} · ${time(entry.decision.createdAt)}</li>`).join("");
+  const choose = proposal && !running ? `<form class="team-form" method="post" action="/projects/${projectId}/topics/${topicId}/decisions">${hiddenCommand(csrf, proposal.revision)}
+      <input type="hidden" name="proposalId" value="${proposal.id}"><input type="hidden" name="mode" value="${model.currentDecision ? "supersede" : "accept"}">
+      ${model.currentDecision ? `<input type="hidden" name="decisionId" value="${model.currentDecision.decision.id}">` : ""}
+      <label>ทางเลือก<select name="optionId">${proposal.artifact.options.map(option => `<option value="${escape(option.id)}">${escape(option.label)}</option>`).join("")}<option value="own">เขียนข้อสรุปเอง</option></select></label>
+      <label>ข้อสรุปของคุณ<textarea name="conclusion" required maxlength="2000"></textarea></label>
+      <label>เหตุผล<textarea name="rationale" required maxlength="2000"></textarea></label>
+      <button class="primary">${model.currentDecision ? "แทนที่การตัดสินเดิม" : "บันทึกการตัดสิน"}</button>
+      <small>การบันทึกนี้เป็นการตัดสินของคุณ คนละรายการกับข้อเสนอของผู้ประสานงาน</small></form>` : "";
+  const synthesize = input.discussion && !running ? `<form method="post" action="/projects/${projectId}/team/discussions/${input.discussion.id}/synthesis">${hiddenCommand(csrf, input.discussion.revision)}
+      <input type="hidden" name="limits" value="${escape(JSON.stringify(input.discussion.limits))}"><button>${proposal ? "ให้ผู้ประสานงานสรุปใหม่" : "ให้ผู้ประสานงานสรุป"}</button></form>` : "";
+  if (!proposal && !model.synthesis && !model.decisions.length && !input.discussion) return "";
+  return `<section class="team-card" id="owner-decision"><h2>สรุปสำหรับคุณตัดสิน</h2>
+    ${running ? "<p role=\"status\">ผู้ประสานงานกำลังสรุปจากผลที่บันทึกแล้ว ยังไม่มีการตัดสิน</p>" : ""}
+    ${failed ? `<p class="error">สรุปยังไม่เป็นการตัดสิน (${escape(failed.reason ?? failed.state)})</p>` : ""}
+    ${proposal ? `<p>${proposal.artifact.disagreement || proposal.artifact.missing.length ? "ยังไม่มีความเห็นตรงกัน" : "ผู้ประสานงานเห็นว่าตัวเลือกสอดคล้องกัน แต่ยังไม่ใช่การตัดสินของคุณ"}</p>
+      <p>คำถาม: ${escape(proposal.artifact.question)}</p>
+      ${proposal.artifact.missing.length ? `<ul>${proposal.artifact.missing.map(gap => `<li>ข้อมูลที่ขาด: ${escape(gap.roleName)} (${escape(gap.reason)})</li>`).join("")}</ul>` : ""}
+      <ul>${proposal.artifact.options.map(option => `<li><strong>${escape(option.label)}</strong> — ${escape(option.rationale)} ${option.citations.map(citation => sourceLink(projectId, citation.reference, citation.roleName)).join(" ")}</li>`).join("")}</ul>
+      ${evidence(model.proposalEvidence)}<p>proposal r${proposal.revision}</p>` : "<p>ยังไม่มีข้อเสนอที่ตรวจการอ้างอิงแล้ว</p>"}
+    ${model.currentDecision ? `<p>คุณบันทึกการตัดสินแล้ว: ${escape(model.currentDecision.decision.conclusion)}</p><p>${escape(model.currentDecision.decision.rationale)}</p>${evidence(model.currentDecision.evidence)}` : "<p>ยังไม่มีการตัดสินของคุณ</p>"}
+    ${history ? `<details><summary>ประวัติการตัดสิน</summary><ul>${history}</ul></details>` : ""}
+    ${choose}${input.discussion?.canSynthesize ? synthesize : ""}</section>`;
+}
+
+/** Renders one logical discussion with owner role controls, coordinator synthesis and the owner decision form. */
+export function discussionPage(state: ReturnType<Application["discussion"]>, workspace: Workspace, csrf: string, limits: JobLimits): string {
   const { project, discussion: d } = state;
   const labels: Record<string, string> = { queued: "รอคิว", running: "กำลังวิเคราะห์", completed: "บันทึกแล้ว", blocked: "ติดข้อจำกัด", stopped: "หยุดแล้ว", skipped: "ข้าม", excluded: "ตัดออก" };
   const controls = (roleId: string, revision: number) => ["include", "exclude", "skip", "stop"].map(action =>
@@ -165,6 +200,7 @@ export function discussionPage(state: ReturnType<Application["discussion"]>, wor
       ${item.progress ? `<p role="status">ความคืบหน้าชั่วคราว: ${escape(item.progress.text)}</p>` : ""}
       ${item.output ? sourceLink(project.id, item.output, "ผลที่บันทึกแล้ว") : "<p>ยังไม่มีผลที่ยืนยันแล้ว</p>"}
       <p><a href="/projects/${project.id}/jobs/${item.jobId}">ดูงาน</a></p><div class="team-form">${controls(item.roleId, d.revision)}</div></article>`).join("")}
+    ${decisionPanel({ projectId: project.id, topicId: d.topicId, csrf, model: state.decision, discussion: { id: d.id, revision: d.revision, limits, canSynthesize: d.participations.some(item => item.state === "completed") } })}
     <p><a href="/projects/${project.id}/topics/${d.topicId}">กลับหัวข้อ</a></p></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
 }
 
