@@ -14,6 +14,14 @@ import { mutateTeamConfiguration, readTeam, teamIdentity } from "./team/configur
 import { listDiscussions, prepareControl, prepareDispatch, projectDiscussion, readDiscussion } from "./team/dispatch";
 import { preparePreview, readPreview } from "./team/preview";
 import type { TeamCommand, TeamReceipt } from "./team/types";
+import {
+  commitDeliveryIntent, deliveryCommandIdentity, listDeliveryAttempts, listDeliveryIntents, readDeliveryIntent,
+  readDeliveryReport, resendDeliveryIntent, retireDeliveryReport,
+} from "./delivery";
+import type {
+  CommitDeliveryCommand, DeliveryCommand, DeliveryIntent, DeliveryPage, DeliveryReceipt, DeliveryReport,
+  DeliveryResendReceipt, DeliveryRetireReceipt, ResendDeliveryCommand, RetireDeliveryCommand,
+} from "./delivery";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const validToken = (value: string) => /^[a-f0-9]{64}$/.test(value);
@@ -49,7 +57,7 @@ export interface Workspace { revision: number; projects: Project[]; hasMore: boo
 /** Injectable clock and transaction fault seam for deterministic persistence checks. */
 export interface ApplicationOptions {
   now?: () => number;
-  beforeCommit?: (stage: "project" | "topic" | "message" | "job" | "team" | "receipt") => void;
+  beforeCommit?: (stage: "project" | "topic" | "message" | "job" | "team" | "delivery" | "receipt") => void;
   jobs?: JobQueue;
 }
 
@@ -193,8 +201,12 @@ export class Application {
   execute(actor: OwnerActor, command: CreateTopicCommand): TopicReceipt;
   execute(actor: OwnerActor, command: SendMessageCommand): MessageReceipt;
   execute(actor: OwnerActor, command: TeamCommand): TeamReceipt;
-  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | TeamCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | TeamReceipt;
-  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | TeamCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | TeamReceipt {
+  execute(actor: OwnerActor, command: CommitDeliveryCommand): DeliveryReceipt;
+  execute(actor: OwnerActor, command: ResendDeliveryCommand): DeliveryResendReceipt;
+  execute(actor: OwnerActor, command: RetireDeliveryCommand): DeliveryRetireReceipt;
+  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | TeamCommand | DeliveryCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | TeamReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt;
+  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | TeamCommand | DeliveryCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | TeamReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt {
+    if (command?.kind === "delivery.commit" || command?.kind === "delivery.resend" || command?.kind === "delivery.retire") return this.#deliveryCommand(actor, command);
     if (command?.kind === "project.create") return this.#createProject(actor, command);
     if (command?.kind === "job.enqueue" || command?.kind === "job.resume" || command?.kind === "job.stop") return this.#jobCommand(actor, command);
     if (command?.kind === "role.save" || command?.kind === "route.save" || command?.kind === "role.preview" ||
@@ -274,6 +286,36 @@ export class Application {
     return result;
   }
 
+  /**
+   * Lists private delivery intents for one project. The read does not claim, send, or mark a report delivered.
+   * `delivery.outbox/v1` inspection.
+   */
+  deliveries(actor: OwnerActor, projectId: string, after = 0): { project: Project } & DeliveryPage {
+    requireId(projectId);
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor);
+      return { project: this.#project(tx, projectId), ...listDeliveryIntents(tx, projectId, after, this.config.pageSize) };
+    });
+  }
+
+  /**
+   * Shows one intent's provenance, status, safe failure reason, attempts and whether the source can still be read.
+   * `delivery.outbox/v1` inspection. This does not send.
+   */
+  delivery(actor: OwnerActor, projectId: string, intentId: string): {
+    project: Project; intent: DeliveryIntent; report: DeliveryReport; attempts: ReturnType<typeof listDeliveryAttempts>; sourceAvailable: boolean;
+  } {
+    requireId(projectId); requireId(intentId);
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor);
+      const project = this.#project(tx, projectId);
+      const intent = readDeliveryIntent(tx, projectId, intentId);
+      const report = readDeliveryReport(tx, projectId, intent.provenance.reportId);
+      const source = tx.get<{ availability: string }>("SELECT availability FROM sources WHERE id = ? AND project_id = ?", report.sourceId, projectId);
+      return { project, intent, report, attempts: listDeliveryAttempts(tx, intent.id), sourceAvailable: source?.availability === "available" };
+    });
+  }
+
   /** Returns a bounded committed queue projection without starting work or requiring a provider. */
   jobs(actor: OwnerActor, projectId: string, after = 0) {
     requireId(projectId);
@@ -298,6 +340,30 @@ export class Application {
         .filter(record => contexts.has(`${record.context.id}:${record.context.generation}`));
       return { ...projectJob(readJob(tx, projectId, jobId), this.#now()), attempts, reconciliations,
         stop: authority?.stop_json ? JSON.parse(authority.stop_json) as JobStopOutcome : null }; });
+  }
+
+  #deliveryCommand(actor: OwnerActor, command: DeliveryCommand): DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt {
+    const payloadHash = deliveryCommandIdentity(command, this.config.messageBytes);
+    return this.store.transaction(tx => {
+      this.#requireOwner(tx, actor);
+      this.#project(tx, command.projectId);
+      const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
+      if (prior) {
+        if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409);
+        return JSON.parse(prior.result_json) as DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt;
+      }
+      const now = this.#now();
+      const result = command.kind === "delivery.commit"
+        ? commitDeliveryIntent(tx, { projectId: command.projectId, kind: command.payload.kind, text: command.payload.text, dedupeKey: command.payload.dedupeKey, maxBytes: this.config.messageBytes, expectedProjectRevision: command.expectedRevision }, now)
+        : command.kind === "delivery.resend"
+          ? resendDeliveryIntent(tx, command.projectId, command.payload.intentId, command.expectedRevision, now)
+          : retireDeliveryReport(tx, command.projectId, command.payload.reportId, command.payload.action, command.expectedRevision, now);
+      this.#beforeCommit?.("delivery");
+      tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
+      tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);
+      this.#beforeCommit?.("receipt");
+      return result;
+    });
   }
 
   #jobCommand(actor: OwnerActor, command: JobCommand): JobReceipt {

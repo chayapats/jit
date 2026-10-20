@@ -2,7 +2,7 @@ import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-const schemaVersion = 6;
+const schemaVersion = 7;
 
 /** Synchronous SQL operations scoped to an application transaction. */
 export interface AppTransaction {
@@ -34,7 +34,7 @@ export class TransactionStore {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
           if (current === schemaVersion) return;
-          if (![0, 1, 2, 3, 4, 5].includes(current)) throw new Error("Unsupported migration source");
+          if (![0, 1, 2, 3, 4, 5, 6].includes(current)) throw new Error("Unsupported migration source");
           if (existing) {
             const snapshot = `${path}.pre-v${current}-${crypto.randomUUID()}.sqlite`;
             const fd = openSync(snapshot, "wx", 0o600);
@@ -150,7 +150,7 @@ export class TransactionStore {
             CREATE TABLE job_reconciliation (id TEXT PRIMARY KEY, record_json TEXT NOT NULL);
             PRAGMA user_version = 5;
           `);
-          this.#db.exec(`
+          if (current < 6) this.#db.exec(`
             CREATE TABLE telegram_binding (
               id INTEGER PRIMARY KEY CHECK (id = 1),
               revision INTEGER NOT NULL CHECK (revision > 0),
@@ -186,6 +186,26 @@ export class TransactionStore {
             CREATE INDEX telegram_inbox_status ON telegram_inbox(status, sequence);
             CREATE INDEX telegram_inbox_class ON telegram_inbox(classification, sequence);
             PRAGMA user_version = 6;
+          `);
+          if (current < 7) this.#db.exec(`
+            CREATE TABLE delivery_reports (
+              id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), record_json TEXT NOT NULL
+            );
+            CREATE INDEX delivery_report_project ON delivery_reports(project_id);
+            CREATE TABLE delivery_intents (
+              sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, dedupe_key TEXT NOT NULL UNIQUE,
+              project_id TEXT NOT NULL REFERENCES projects(id), record_json TEXT NOT NULL
+            );
+            CREATE INDEX delivery_intent_project ON delivery_intents(project_id, sequence);
+            CREATE TABLE delivery_attempts (
+              sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+              intent_id TEXT NOT NULL REFERENCES delivery_intents(id), record_json TEXT NOT NULL
+            );
+            CREATE INDEX delivery_attempt_intent ON delivery_attempts(intent_id, sequence);
+            CREATE TABLE delivery_worker (
+              id INTEGER PRIMARY KEY CHECK (id = 1), token TEXT NOT NULL, pid INTEGER NOT NULL CHECK (pid > 0)
+            );
+            PRAGMA user_version = 7;
           `);
         }).immediate();
       }

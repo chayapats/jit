@@ -76,12 +76,48 @@ export function invalidateJob(tx: AppTransaction, jobId: string, reason: JobReas
   }
   return outcome;
 }
+/** Inputs for the shared lease and generation fence used by job and delivery attempts. */
+export interface AttemptFence {
+  state: string;
+  activeStates: readonly string[];
+  scheduler: string;
+  currentScheduler: string | null;
+  generation: number;
+  authorityGeneration: number | null;
+  ownerGeneration: number;
+  currentOwnerGeneration: number | null;
+  now: number;
+  leaseUntil: number;
+  deadlineAt: number;
+}
+
+/**
+ * `jobs.attempt_fence/v1` lease gate shared with `delivery.outbox/v1`.
+ * A denial means this worker must not start a new effect. It does not prove an in-flight external send was prevented.
+ */
+export function fenceDenied(input: AttemptFence): JobReason | null {
+  if (!input.activeStates.includes(input.state)) return "interrupted";
+  if (input.currentScheduler !== input.scheduler) return "interrupted";
+  if (input.authorityGeneration !== input.generation) return "authorization_changed";
+  if (input.currentOwnerGeneration !== input.ownerGeneration) return "authorization_changed";
+  if (input.now >= input.leaseUntil) return input.now >= input.deadlineAt ? "deadline" : "lease_expired";
+  return null;
+}
+
 /** Shared non-model-worker gate; callers additionally compare current work/input policy in the same transaction. */
 export function attemptAuthority(tx: AppTransaction, attempt: JobAttempt, now: number): JobReason | null {
   if (!["prepared", "dispatched"].includes(attempt.state)) return attempt.reason ?? "interrupted";
-  if (tx.get<{ token: string }>("SELECT token FROM job_scheduler WHERE id = 1")?.token !== attempt.scheduler) return "interrupted";
-  if (tx.get<{ generation: number }>("SELECT generation FROM job_authority WHERE job_id = ?", attempt.jobId)?.generation !== attempt.generation) return "authorization_changed";
-  if (tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'")?.generation !== attempt.snapshot.authorization.generation) return "authorization_changed";
-  if (now >= attempt.leaseUntil) return now >= attempt.snapshot.deadlineAt ? "deadline" : "lease_expired";
-  return null;
+  return fenceDenied({
+    state: attempt.state,
+    activeStates: ["prepared", "dispatched"],
+    scheduler: attempt.scheduler,
+    currentScheduler: tx.get<{ token: string }>("SELECT token FROM job_scheduler WHERE id = 1")?.token ?? null,
+    generation: attempt.generation,
+    authorityGeneration: tx.get<{ generation: number }>("SELECT generation FROM job_authority WHERE job_id = ?", attempt.jobId)?.generation ?? null,
+    ownerGeneration: attempt.snapshot.authorization.generation,
+    currentOwnerGeneration: tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'")?.generation ?? null,
+    now,
+    leaseUntil: attempt.leaseUntil,
+    deadlineAt: attempt.snapshot.deadlineAt,
+  });
 }
