@@ -1,6 +1,6 @@
 # Coordinator synthesis and owner decisions, v1
 
-Owner: Jit #14 (TEAM03). Contracts: `app.coordinator_synthesis/v1`, `app.decision_commands/v1`, `app.decision_read_model/v1`. Implementation: `src/team/decisions.ts`, `src/team/types.ts`, `Application`, topic and discussion HTML. Builds on committed `app.specialist_results/v1` outputs. Requires `app.run_port/v1`, `jobs.queue_admission/v1`, `jobs.attempt_fence/v1`, `app.command_receipts` and `app.source_records/v1`. Schema user_version 7.
+Owner: Jit #14 (TEAM03). Contracts: `app.coordinator_synthesis/v1`, `app.decision_commands/v1`, `app.decision_read_model/v1`. Implementation: `src/team/decisions.ts`, `src/team/types.ts`, `Application`, topic and discussion HTML. Builds on committed `app.specialist_results/v1` outputs. Requires `app.run_port/v1`, `jobs.queue_admission/v1`, `jobs.attempt_fence/v1`, `app.command_receipts` and `app.source_records/v1`. Schema user_version 8.
 
 The owner remains the decision maker. A coordinator artifact is a recommendation. It does not accept a task, enqueue execution, or change role configuration.
 
@@ -70,6 +70,6 @@ POST requires the owner session, `Origin` and CSRF. GET never accepts a decision
 
 ## Schema
 
-user_version 7 adds `coordinator_syntheses`, `decision_proposals` and `owner_decisions`. One live decision per topic is a partial unique index. Migration snapshots the previous file before DDL. The v6 telegram tables are created only when `current < 6`.
+user_version 8 adds `coordinator_syntheses`, `decision_proposals` and `owner_decisions`. Delivery tables remain user_version 7. One live decision per topic is a partial unique index. Migration snapshots the previous file before DDL. The v6 telegram tables are created only when `current < 6`.
 
-Deterministic evidence: `tests/team.test.ts` (TEAM03 cases) with the scripted port, a fake clock and no paid model calls. See [ADR 0014](../adr/0014-coordinator-synthesis-and-owner-decisions.md).
+Deterministic evidence: `tests/team.test.ts` (TEAM03 cases) with the scripted port, a fake clock and no paid model calls. See [ADR 0015](../adr/0015-coordinator-synthesis-and-owner-decisions.md).

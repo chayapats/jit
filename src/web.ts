@@ -1,7 +1,8 @@
 import { Application, type CreateProjectCommand } from "./application";
 import { AppError } from "./errors";
 import type { CreateTopicCommand, SendMessageCommand } from "./conversation";
-import { workspacePage, projectPage, conversationPage, sourcePage, jobsPage, teamPage, previewPage, discussionPage, loginPage, errorPage } from "./web-layout";
+import { workspacePage, projectPage, conversationPage, sourcePage, jobsPage, teamPage, previewPage, discussionPage, deliveryPage, deliveryDetailPage, loginPage, errorPage } from "./web-layout";
+import type { CommitDeliveryCommand, ResendDeliveryCommand } from "./delivery";
 import type { EnqueueJobCommand, JobLimits, ResumeJobCommand, StopJobCommand } from "./jobs/types";
 import type { DecisionCommand, TeamCommand } from "./team/types";
 import { styleSheet } from "./web-style";
@@ -35,6 +36,14 @@ const messages: Record<string, string> = {
   synthesis_in_progress: "กำลังสรุปอยู่แล้ว รอให้รอบนี้จบก่อน",
   coordinator_unavailable: "เปิดใช้ผู้ประสานงานและกำหนด route ก่อนสรุป",
   option_not_found: "ไม่พบทางเลือกในข้อเสนอนี้",
+  delivery_not_found: "ไม่พบรายการแจ้งเตือนในโครงการที่เลือก",
+  delivery_dedupe_conflict: "รายการนี้เคยบันทึกด้วยข้อความอื่นแล้ว",
+  delivery_not_resendable: "สถานะนี้ยังส่งซ้ำไม่ได้",
+  delivery_report_not_found: "ไม่พบรายงานของการแจ้งเตือนนี้",
+  delivery_report_not_current: "รายงานนี้ถูกแทนที่หรือลบแล้ว",
+  invalid_delivery_payload: "ข้อความมีข้อมูลที่ไม่ควรส่ง",
+  delivery_worker_unavailable: "ตัวส่งยังไม่พร้อม",
+  authorization_changed: "สิทธิ์ที่ใช้บันทึกคำขอเปลี่ยนแล้ว",
 };
 
 /** Creates a server-rendered owner workspace; all mutations use the shared application boundary. */
@@ -117,6 +126,9 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       const topicRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})$/.exec(url.pathname);
       const messageRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})\/messages$/.exec(url.pathname);
       const sourceRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/sources\/([a-f0-9-]{36})$/.exec(url.pathname);
+      const deliveryRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/delivery$/.exec(url.pathname);
+      const deliveryIntentRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/delivery\/([a-f0-9-]{36})$/.exec(url.pathname);
+      const deliveryResendRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/delivery\/([a-f0-9-]{36})\/resend$/.exec(url.pathname);
       const jobsRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/jobs$/.exec(url.pathname);
       const jobRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/jobs\/([a-f0-9-]{36})$/.exec(url.pathname);
       const resumeRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/jobs\/([a-f0-9-]{36})\/(resume|stop)$/.exec(url.pathname);
@@ -203,6 +215,29 @@ export function createWebHandler(app: Application): (request: Request) => Promis
         const location = receipt.discussion ? `/projects/${projectId}/team/discussions/${receipt.discussion.id}`
           : receipt.preview ? `/projects/${projectId}/team/previews/${receipt.preview.id}` : projectId ? `/projects/${projectId}/team` : "/team";
         return api ? json(receipt) : respond(null, 303, { Location: location });
+      }
+      if (request.method === "GET" && deliveryRoute) {
+        const state = app.deliveries(auth.actor, deliveryRoute[2]!, after());
+        return api ? json(state) : respond(deliveryPage(state, app.workspace(auth.actor), auth.csrf, after()));
+      }
+      if (request.method === "GET" && deliveryIntentRoute) {
+        const state = app.delivery(auth.actor, deliveryIntentRoute[2]!, deliveryIntentRoute[3]!);
+        return api ? json(state) : respond(deliveryDetailPage(state, app.workspace(auth.actor), auth.csrf));
+      }
+      if (request.method === "POST" && (deliveryRoute || deliveryResendRoute)) {
+        const body = await payload(request);
+        app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        const number = (value: unknown) => typeof value === "string" && /^\d{1,15}$/.test(value) ? Number(value) : value;
+        if (deliveryResendRoute) {
+          if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision"].includes(key))) throw new AppError("invalid_body");
+          const command: ResendDeliveryCommand = { kind: "delivery.resend", requestId: body.requestId as string, projectId: deliveryResendRoute[2]!, expectedRevision: number(body.expectedRevision) as number, payload: { intentId: deliveryResendRoute[3]! } };
+          const receipt = app.execute(auth.actor, command);
+          return api ? json(receipt) : respond(null, 303, { Location: `/projects/${deliveryResendRoute[2]}/delivery/${deliveryResendRoute[3]}` });
+        }
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "kind", "text", "dedupeKey"].includes(key))) throw new AppError("invalid_body");
+        const command: CommitDeliveryCommand = { kind: "delivery.commit", requestId: body.requestId as string, projectId: deliveryRoute![2]!, expectedRevision: number(body.expectedRevision) as number, payload: { kind: body.kind as "report", text: body.text as string, dedupeKey: body.dedupeKey as string } };
+        const receipt = app.execute(auth.actor, command);
+        return api ? json(receipt) : respond(null, 303, { Location: `/projects/${receipt.intent.projectId}/delivery/${receipt.intent.id}` });
       }
       if (request.method === "GET" && jobsRoute) {
         const state = app.jobs(auth.actor, jobsRoute[2]!, after());

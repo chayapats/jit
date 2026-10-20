@@ -75,7 +75,7 @@ test("invalid/oversized local config and records reject with fixed next actions;
   for (const invalid of [{ ...evidence, rawBody: "TOKEN_SENTINEL" }, { ...evidence, installationLabel: "ssh://user@192.0.2.44" }, { ...evidence, inventory: { ...evidence.inventory, environment: { TOKEN: "TOKEN_SENTINEL" } } }, { ...evidence, routes: Array(900).fill(evidence.routes[0]) }]) {
     expect(() => validateEvidence(invalid)).toThrow(); await expect(writeEvidence(root, invalid)).rejects.toThrow();
   }
-  expect(readdirSync(join(root, ".local"))).toEqual(["config.json", "state"]);
+  expect(readdirSync(join(root, ".local")).sort()).toEqual(["config.json", "state"]);
   await writeEvidence(root, evidence); await expect(writeEvidence(root, evidence)).rejects.toThrow(); expect(await readEvidence(root, id)).toEqual(evidence);
   writeFileSync(join(root, ".local/host-evidence", `${id}.json`), JSON.stringify({ ...evidence, token: "TOKEN_SENTINEL" }));
   const out = await runEvidenceCommand(["export", "--id", id], root, ports()); expect(out.exitCode).toBe(2); expect(JSON.stringify(out)).not.toContain("TOKEN_SENTINEL");
