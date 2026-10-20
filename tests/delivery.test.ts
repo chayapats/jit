@@ -23,7 +23,7 @@ afterEach(() => {
 
 function rid(): string { return crypto.randomUUID(); }
 
-async function fixture(options: { beforeCommit?: (stage: "project" | "topic" | "message" | "job" | "team" | "delivery" | "receipt") => void; crash?: (phase: DeliveryCrashPhase) => void } = {}) {
+async function fixture(options: { beforeCommit?: (stage: "project" | "topic" | "message" | "job" | "team" | "decision" | "delivery" | "receipt") => void; crash?: (phase: DeliveryCrashPhase) => void } = {}) {
   const root = mkdtempSync(join(tmpdir(), "jit-tg03-")); roots.push(root);
   const path = join(root, "app.sqlite");
   const config = readConfig({ JIT_DATABASE: path, JIT_TELEGRAM_BOT_TOKEN_PATH: join(root, "missing-bot.token") });
@@ -370,7 +370,7 @@ test("owner inspection shows provenance and does not send; resend warns about du
   })).toThrow("authentication_required");
 });
 
-test("schema v6 migrates to v7 with a private snapshot and leaves the previous project row", async () => {
+test("schema v6 migrates to v8 with a private snapshot and leaves the previous project row", async () => {
   const root = mkdtempSync(join(tmpdir(), "jit-tg03-mig-")); roots.push(root);
   const path = join(root, "old.sqlite");
   const projectId = "11111111-1111-4111-8111-111111111111";
@@ -380,7 +380,7 @@ test("schema v6 migrates to v7 with a private snapshot and leaves the previous p
     PRAGMA user_version = 6;`);
   old.close();
   const store = new TransactionStore(path); stores.push(store);
-  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 7 });
+  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 8 });
   expect(store.read(tx => tx.get("SELECT name FROM projects WHERE id = ?", projectId))).toEqual({ name: "kept" });
   expect(store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM delivery_intents")!.n)).toBe(0);
   const snapshot = new Database(join(root, readdirSync(root).find(name => name.includes(".pre-v6-"))!), { readonly: true });

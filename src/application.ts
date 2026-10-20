@@ -12,8 +12,9 @@ import { JobQueue, jobCommandIdentity, projectJob, readJob, readJobs } from "./j
 import type { EnqueueJobCommand, ResumeJobCommand, JobCommand, JobReceipt } from "./jobs/types";
 import { mutateTeamConfiguration, readTeam, teamIdentity } from "./team/configuration";
 import { listDiscussions, prepareControl, prepareDispatch, projectDiscussion, readDiscussion } from "./team/dispatch";
+import { acceptDecision, decisionIdentity, prepareSynthesis, readDecisionModel, supersedeDecision, coordinatorSynthesisWorkId } from "./team/decisions";
 import { preparePreview, readPreview } from "./team/preview";
-import type { TeamCommand, TeamReceipt } from "./team/types";
+import type { DecisionCommand, DecisionReadModel, DecisionReceipt, TeamCommand, TeamReceipt } from "./team/types";
 import {
   commitDeliveryIntent, deliveryCommandIdentity, listDeliveryAttempts, listDeliveryIntents, readDeliveryIntent,
   readDeliveryReport, resendDeliveryIntent, retireDeliveryReport,
@@ -57,7 +58,7 @@ export interface Workspace { revision: number; projects: Project[]; hasMore: boo
 /** Injectable clock and transaction fault seam for deterministic persistence checks. */
 export interface ApplicationOptions {
   now?: () => number;
-  beforeCommit?: (stage: "project" | "topic" | "message" | "job" | "team" | "delivery" | "receipt") => void;
+  beforeCommit?: (stage: "project" | "topic" | "message" | "job" | "team" | "decision" | "delivery" | "receipt") => void;
   jobs?: JobQueue;
 }
 
@@ -201,16 +202,18 @@ export class Application {
   execute(actor: OwnerActor, command: CreateTopicCommand): TopicReceipt;
   execute(actor: OwnerActor, command: SendMessageCommand): MessageReceipt;
   execute(actor: OwnerActor, command: TeamCommand): TeamReceipt;
+  execute(actor: OwnerActor, command: DecisionCommand): DecisionReceipt;
   execute(actor: OwnerActor, command: CommitDeliveryCommand): DeliveryReceipt;
   execute(actor: OwnerActor, command: ResendDeliveryCommand): DeliveryResendReceipt;
   execute(actor: OwnerActor, command: RetireDeliveryCommand): DeliveryRetireReceipt;
-  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | TeamCommand | DeliveryCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | TeamReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt;
-  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | TeamCommand | DeliveryCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | TeamReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt {
+  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | TeamCommand | DecisionCommand | DeliveryCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt;
+  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | TeamCommand | DecisionCommand | DeliveryCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt {
     if (command?.kind === "delivery.commit" || command?.kind === "delivery.resend" || command?.kind === "delivery.retire") return this.#deliveryCommand(actor, command);
     if (command?.kind === "project.create") return this.#createProject(actor, command);
     if (command?.kind === "job.enqueue" || command?.kind === "job.resume" || command?.kind === "job.stop") return this.#jobCommand(actor, command);
     if (command?.kind === "role.save" || command?.kind === "route.save" || command?.kind === "role.preview" ||
         command?.kind === "team.dispatch" || command?.kind === "team.control") return this.#teamCommand(actor, command);
+    if (command?.kind === "decision.synthesize" || command?.kind === "decision.accept" || command?.kind === "decision.supersede") return this.#decisionCommand(actor, command);
     const payloadHash = digest(conversationIdentity(command as ConversationCommand, this.config.messageBytes));
     return this.store.transaction(tx => {
       this.#requireOwner(tx, actor);
@@ -261,8 +264,44 @@ export class Application {
     requireId(projectId); requireId(discussionId);
     return this.store.read(tx => {
       this.#requireOwner(tx, actor); const project = this.#project(tx, projectId);
-      return { project, discussion: projectDiscussion(tx, readDiscussion(tx, projectId, discussionId)) };
+      const discussion = projectDiscussion(tx, readDiscussion(tx, projectId, discussionId));
+      return { project, discussion, decision: readDecisionModel(tx, projectId, discussion.topicId, discussion.id) };
     });
+  }
+
+  /**
+   * app.decision_read_model/v1
+   * Reads the topic proposal, evidence and owner decision history without admitting work or accepting a decision.
+   */
+  decision(actor: OwnerActor, projectId: string, topicId: string): { project: Project; topic: ReturnType<Application["conversation"]>["topic"] } & DecisionReadModel {
+    requireId(projectId); requireId(topicId);
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor);
+      const project = this.#project(tx, projectId), topic = readTopic(tx, projectId, topicId);
+      return { project, topic, ...readDecisionModel(tx, projectId, topicId) };
+    });
+  }
+
+  /** app.decision_commands/v1 — commits synthesis admission, acceptance or supersession with the shared owner receipt. */
+  #decisionCommand(actor: OwnerActor, command: DecisionCommand): DecisionReceipt {
+    const payloadHash = decisionIdentity(command, this.config.team.contextBytes);
+    const result = this.store.transaction(tx => {
+      this.#requireOwner(tx, actor);
+      this.#project(tx, command.projectId);
+      const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
+      if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as DecisionReceipt; }
+      const now = this.#now(), generation = tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'")!.generation;
+      const result = command.kind === "decision.synthesize" ? prepareSynthesis(tx, command, this.config, this.#jobs, generation, now)
+        : command.kind === "decision.accept" ? acceptDecision(tx, command, actor.channel, now)
+        : supersedeDecision(tx, command, actor.channel, now);
+      this.#beforeCommit?.("decision");
+      tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
+      tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);
+      this.#beforeCommit?.("receipt");
+      return result;
+    });
+    this.#jobs?.cancelFenced();
+    return result;
   }
 
   #teamCommand(actor: OwnerActor, command: TeamCommand): TeamReceipt {
@@ -324,7 +363,7 @@ export class Application {
       const available = this.#jobs?.available(tx) ?? false;
       const page = readJobs(tx, projectId, after, this.config.pageSize), now = this.#now();
       return { project, ...page, items: page.items.map(job => projectJob(job, now)),
-        choices: (this.#jobs?.choices() ?? []).filter(choice => !["role.scripted-preview", "team.discussion", "team.specialist-analysis"].includes(choice.id)),
+        choices: (this.#jobs?.choices() ?? []).filter(choice => !["role.scripted-preview", "team.discussion", "team.specialist-analysis", coordinatorSynthesisWorkId].includes(choice.id)),
         admission: { available, nextAction: available ? "inspect_or_authorize_work" : "resolve_scheduler_ownership_or_restart" } };
     });
   }
