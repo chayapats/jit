@@ -2,6 +2,18 @@ import { resolve } from "node:path";
 import type { JobPolicy } from "./jobs/types";
 import type { TeamPolicy } from "./team/types";
 
+/** Finite Telegram companion limits; bot credentials stay outside this projection. */
+export interface TelegramPolicy {
+  /** Path to the bot token file inside the trusted secret boundary; never logged or exported. */
+  botTokenPath: string;
+  challengeSeconds: number;
+  retentionHours: number;
+  pollBackoffMs: number;
+  maxPollBackoffMs: number;
+  processAttempts: number;
+  inboxBytes: number;
+}
+
 /** Finite local-development limits; operators must measure them before a pilot. */
 export interface AppConfig {
   databasePath: string;
@@ -17,6 +29,7 @@ export interface AppConfig {
   loginWindowSeconds: number;
   jobs: JobPolicy;
   team: TeamPolicy;
+  telegram: TelegramPolicy;
 }
 
 /** Reads only Jit's declared settings and rejects malformed or unbounded values. */
@@ -36,6 +49,9 @@ export function readConfig(env: Record<string, string | undefined> = process.env
   }
   const jobConcurrency = positive("JIT_JOB_CONCURRENCY", 2, 32), jobRouteConcurrency = positive("JIT_JOB_ROUTE_CONCURRENCY", 1, 32);
   if (jobRouteConcurrency > jobConcurrency) throw new Error("Invalid JIT_JOB_ROUTE_CONCURRENCY");
+  const pollBackoffMs = positive("JIT_TELEGRAM_POLL_BACKOFF_MS", 1_000, 60_000);
+  const maxPollBackoffMs = positive("JIT_TELEGRAM_MAX_POLL_BACKOFF_MS", 30_000, 300_000);
+  if (maxPollBackoffMs < pollBackoffMs) throw new Error("Invalid JIT_TELEGRAM_MAX_POLL_BACKOFF_MS");
   return {
     databasePath: resolve(env.JIT_DATABASE ?? ".local/jit.sqlite"),
     origin: origin.origin,
@@ -66,6 +82,15 @@ export function readConfig(env: Record<string, string | undefined> = process.env
         outputTokens: positive("JIT_JOB_OUTPUT_TOKENS", 16_000, 1_000_000_000),
         retries: positive("JIT_JOB_RETRIES", 3, 100), wallMs: positive("JIT_JOB_WALL_MS", 60_000, 3_600_000),
       },
+    },
+    telegram: {
+      botTokenPath: resolve(env.JIT_TELEGRAM_BOT_TOKEN_PATH ?? ".local/telegram-bot.token"),
+      challengeSeconds: positive("JIT_TELEGRAM_CHALLENGE_SECONDS", 900, 86_400),
+      retentionHours: positive("JIT_TELEGRAM_RETENTION_HOURS", 24, 24),
+      pollBackoffMs,
+      maxPollBackoffMs,
+      processAttempts: positive("JIT_TELEGRAM_PROCESS_ATTEMPTS", 3, 20),
+      inboxBytes: positive("JIT_TELEGRAM_INBOX_BYTES", 16_384, 65_536),
     },
   };
 }

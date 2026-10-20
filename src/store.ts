@@ -2,7 +2,7 @@ import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-const schemaVersion = 5;
+const schemaVersion = 6;
 
 /** Synchronous SQL operations scoped to an application transaction. */
 export interface AppTransaction {
@@ -34,7 +34,7 @@ export class TransactionStore {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
           if (current === schemaVersion) return;
-          if (![0, 1, 2, 3, 4].includes(current)) throw new Error("Unsupported migration source");
+          if (![0, 1, 2, 3, 4, 5].includes(current)) throw new Error("Unsupported migration source");
           if (existing) {
             const snapshot = `${path}.pre-v${current}-${crypto.randomUUID()}.sqlite`;
             const fd = openSync(snapshot, "wx", 0o600);
@@ -142,13 +142,50 @@ export class TransactionStore {
             CREATE INDEX team_run_project ON team_runs(project_id, sequence);
             PRAGMA user_version = 4;
           `);
-          this.#db.exec(`
+          if (current < 5) this.#db.exec(`
             CREATE TABLE job_authority (job_id TEXT PRIMARY KEY REFERENCES jobs(id), generation INTEGER NOT NULL, reason TEXT, stop_json TEXT);
             INSERT INTO job_authority SELECT id, 1, NULL, NULL FROM jobs;
             CREATE TABLE job_attempts (sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, job_id TEXT NOT NULL REFERENCES jobs(id), record_json TEXT NOT NULL);
             CREATE INDEX job_attempt_job ON job_attempts(job_id, sequence);
             CREATE TABLE job_reconciliation (id TEXT PRIMARY KEY, record_json TEXT NOT NULL);
             PRAGMA user_version = 5;
+          `);
+          this.#db.exec(`
+            CREATE TABLE telegram_binding (
+              id INTEGER PRIMARY KEY CHECK (id = 1),
+              revision INTEGER NOT NULL CHECK (revision > 0),
+              state TEXT NOT NULL CHECK (state IN ('unbound', 'pending', 'bound')),
+              telegram_user_id INTEGER, telegram_chat_id INTEGER,
+              username_hint TEXT, challenge_nonce TEXT, challenge_expires_at INTEGER,
+              bound_at INTEGER, proof_json TEXT NOT NULL
+            );
+            INSERT INTO telegram_binding VALUES (1, 1, 'unbound', NULL, NULL, NULL, NULL, NULL, NULL, '{}');
+            CREATE TABLE telegram_poll (
+              id INTEGER PRIMARY KEY CHECK (id = 1),
+              next_offset INTEGER NOT NULL CHECK (next_offset >= 0),
+              last_poll_at INTEGER, last_update_id INTEGER,
+              gap_state TEXT NOT NULL CHECK (gap_state IN ('none', 'possible_missing_inputs')),
+              gap_noticed_at INTEGER, gap_reason TEXT
+            );
+            INSERT INTO telegram_poll VALUES (1, 0, NULL, NULL, 'none', NULL, NULL);
+            CREATE TABLE telegram_inbox (
+              sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+              update_id INTEGER NOT NULL UNIQUE,
+              telegram_user_id INTEGER, telegram_chat_id INTEGER,
+              message_id INTEGER, callback_id TEXT,
+              content_kind TEXT NOT NULL,
+              classification TEXT NOT NULL,
+              binding_revision INTEGER NOT NULL,
+              text_content TEXT, raw_json TEXT NOT NULL,
+              status TEXT NOT NULL CHECK (status IN ('persisted', 'processing', 'processed', 'failed')),
+              failure_reason TEXT,
+              process_attempts INTEGER NOT NULL CHECK (process_attempts >= 0),
+              committed_at INTEGER NOT NULL,
+              processed_at INTEGER
+            );
+            CREATE INDEX telegram_inbox_status ON telegram_inbox(status, sequence);
+            CREATE INDEX telegram_inbox_class ON telegram_inbox(classification, sequence);
+            PRAGMA user_version = 6;
           `);
         }).immediate();
       }
