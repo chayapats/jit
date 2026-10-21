@@ -4,6 +4,8 @@ import type { AppConfig } from "../config";
 import { TransactionStore, type AppTransaction } from "../store";
 import { bindingIdentity, mutateBinding, readBinding, readPoll } from "./binding";
 import { advanceOffset, inboxCounts, noticeRetentionGap, persistUpdates, processPersisted, readEvents } from "./inbox";
+import type { TelegramProjectCommands } from "./project-commands";
+import type { TelegramUpdate } from "./types";
 import { botCredentialConfigured } from "./secrets";
 import type {
   TelegramBindingCommand, TelegramBindingReceipt, TelegramEventPage, TelegramInboxEvent,
@@ -150,6 +152,21 @@ export class TelegramChannel {
   /** Processes persisted authorized/failed events with a bounded attempt budget. */
   process(onAuthorized?: (event: TelegramInboxEvent) => void): TelegramInboxEvent[] {
     return this.store.transaction(tx => processPersisted(tx, this.config.telegram, this.#now(), onAuthorized));
+  }
+
+  /**
+   * Runs telegram.project_commands/v1 for authorized inbox rows, then commits outbox replies.
+   * Inbound content stays untrusted until this boundary maps it to Application.execute.
+   */
+  processProjectCommands(commands: TelegramProjectCommands): TelegramInboxEvent[] {
+    return this.process(event => {
+      if (event.classification !== "authorized") return;
+      const raw = this.store.read(tx => tx.get<{ raw_json: string }>("SELECT raw_json FROM telegram_inbox WHERE sequence = ?", event.sequence));
+      if (!raw) return;
+      const update = JSON.parse(raw.raw_json) as TelegramUpdate;
+      const outcome = commands.handle(event, update);
+      commands.commitReply(outcome, event);
+    });
   }
 
   /** Escape-safe HTML fragment for a future Web status page; no secrets or raw tokens. */

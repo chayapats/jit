@@ -5,14 +5,24 @@ import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { Application } from "../src/application";
 import { readConfig } from "../src/config";
+import { DeliveryWorker, ScriptedTelegramSender } from "../src/delivery";
+import { JobQueue } from "../src/jobs/queue";
 import { TransactionStore } from "../src/store";
-import { TelegramChannel, type TelegramUpdate, type TelegramUpdateTransport } from "../src/telegram";
+import { discussionPlanWork, specialistAnalysisWork } from "../src/team/dispatch";
+import { ScriptedRunPort } from "../src/team/scripted-port";
+import { scriptedPreviewWork } from "../src/team/preview";
+import { coordinatorSynthesisWork } from "../src/team/decisions";
+import {
+  TelegramChannel, TelegramProjectCommands, decodeCallbackData, type TelegramUpdate, type TelegramUpdateTransport,
+} from "../src/telegram";
 
 const password = "fixture-telegram-owner-password";
 const epoch = 1_700_000_000_000;
 const roots: string[] = [];
 const stores: TransactionStore[] = [];
-afterEach(() => {
+const queues: JobQueue[] = [];
+afterEach(async () => {
+  for (const queue of queues.splice(0)) { queue.close(); await queue.idle(); }
   for (const store of stores.splice(0)) store.close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -319,4 +329,212 @@ test("config rejects unbounded telegram limits; token file contents never appear
   const status = f.telegram.status(f.actor);
   expect(JSON.stringify(status)).not.toContain("FIXTURE-BOT-TOKEN");
   expect(f.telegram.renderStatusHtml(f.actor)).not.toContain("123456:");
+});
+
+const rid = () => crypto.randomUUID();
+
+async function tg02Fixture() {
+  const f = await fixture();
+  const port = new ScriptedRunPort(f.store, f.config.team, f.config.jobs.outputBytes);
+  const queue = new JobQueue(f.store, f.config.jobs, [
+    scriptedPreviewWork(f.store, f.config, port), discussionPlanWork(), specialistAnalysisWork(f.store, f.config, port),
+    coordinatorSynthesisWork(f.store, f.config, port),
+  ], { now: () => f.clock.now });
+  queues.push(queue);
+  const app = new Application(f.store, f.config, { now: () => f.clock.now, jobs: queue });
+  const bind = f.telegram.execute(f.actor, {
+    kind: "telegram.bind", requestId: "tg-tg02-bind", expectedRevision: 1,
+    payload: { telegramUserId: 99, telegramChatId: 99 },
+  });
+  f.telegram.execute(f.actor, {
+    kind: "telegram.confirm", requestId: "tg-tg02-confirm", expectedRevision: 2,
+    payload: { telegramUserId: 99, telegramChatId: 99, challengeNonce: bind.binding.challengeNonce! },
+  });
+  const auth = app.authenticate(f.session);
+  const project = app.execute(auth.actor, { kind: "project.create", projectId: null, requestId: rid(), expectedRevision: 0, payload: { name: "โครงการ Telegram 🧪" } }).project;
+  const topic = app.execute(auth.actor, { kind: "topic.create", projectId: project.id, requestId: rid(), expectedRevision: project.revision, payload: { title: "หัวข้อ TG02" } }).topic;
+  app.execute(auth.actor, {
+    kind: "role.save", projectId: null, requestId: rid(), expectedRevision: app.team(auth.actor).ownerRevision,
+    payload: {
+      roleId: null, name: "ผู้ประสาน", kind: "coordinator", responsibility: "สรุปงาน", enabled: true,
+      route: { provider: "grok", model: "fixture-grok-exact", authRoute: "owner-grok" },
+    },
+  });
+  const commands = new TelegramProjectCommands(f.store, { app, sessionToken: f.session, config: f.config, now: () => f.clock.now, jobs: queue });
+  const sender = new ScriptedTelegramSender();
+  const worker = new DeliveryWorker(f.store, { sender, now: () => f.clock.now });
+  return { ...f, app, queue, auth, project, topic, commands, sender, worker, userId: 99, chatId: 99 };
+}
+
+function bindContext(f: Awaited<ReturnType<typeof tg02Fixture>>) {
+  f.telegram.ingest([message(500, f.userId, f.chatId, `/bind ${f.project.id} ${f.topic.id}`)]);
+  f.telegram.processProjectCommands(f.commands);
+  f.project = f.app.project(f.auth.actor, f.project.id);
+}
+
+test("TG02: bind uses immutable project/topic IDs; same task title in two projects stays separate", async () => {
+  const f = await tg02Fixture();
+  const other = f.app.execute(f.auth.actor, { kind: "project.create", projectId: null, requestId: rid(), expectedRevision: 1, payload: { name: "โครงการ Telegram 🧪" } }).project;
+  const otherTopic = f.app.execute(f.auth.actor, { kind: "topic.create", projectId: other.id, requestId: rid(), expectedRevision: other.revision, payload: { title: "หัวข้อสอง" } }).topic;
+  const title = "ชื่องานเดียวกัน";
+  const first = f.app.execute(f.auth.actor, {
+    kind: "task.propose", requestId: rid(), projectId: f.project.id, expectedRevision: f.topic.revision,
+    payload: { topicId: f.topic.id, title, summary: "ในโครงการแรก" },
+  }).task;
+  const second = f.app.execute(f.auth.actor, {
+    kind: "task.propose", requestId: rid(), projectId: other.id, expectedRevision: otherTopic.revision,
+    payload: { topicId: otherTopic.id, title, summary: "ในโครงการสอง" },
+  }).task;
+  bindContext(f);
+  f.telegram.ingest([message(501, f.userId, f.chatId, "/tasks")]);
+  f.telegram.processProjectCommands(f.commands);
+  expect(f.app.tasks(f.auth.actor, f.project.id).proposed.map(t => t.id)).toEqual([first.id]);
+  expect(f.app.tasks(f.auth.actor, other.id).proposed.map(t => t.id)).toEqual([second.id]);
+  f.telegram.ingest([message(502, f.userId, f.chatId, `/bind ${other.id} ${otherTopic.id}`)]);
+  f.telegram.processProjectCommands(f.commands);
+  f.telegram.ingest([message(503, f.userId, f.chatId, "/tasks")]);
+  f.telegram.processProjectCommands(f.commands);
+  const intents = f.store.read(tx => tx.all<{ record_json: string }>("SELECT record_json FROM delivery_intents"));
+  expect(intents.some(i => i.record_json.includes(first.id))).toBe(true);
+  expect(intents.some(i => i.record_json.includes(second.id))).toBe(true);
+});
+
+test("TG02: callback accept commits task via telegram actor and outbox reply; Web read model matches", async () => {
+  const f = await tg02Fixture();
+  const proposed = f.app.execute(f.auth.actor, {
+    kind: "task.propose", requestId: rid(), projectId: f.project.id, expectedRevision: f.topic.revision,
+    payload: { topicId: f.topic.id, title: "งานรับจาก Telegram", summary: "สรุปข้อเสนอ" },
+  });
+  bindContext(f);
+  f.telegram.ingest([message(600, f.userId, f.chatId, "/tasks")]);
+  f.telegram.processProjectCommands(f.commands);
+  const reply = f.store.read(tx => tx.get<{ record_json: string }>("SELECT record_json FROM delivery_intents ORDER BY sequence DESC LIMIT 1"))!;
+  const cbMatch = reply.record_json.match(/tg\/1\/[a-f0-9]{8}/);
+  expect(cbMatch).toBeTruthy();
+  const cbData = cbMatch![0]!;
+  f.telegram.ingest([{ update_id: 601, callback_query: {
+    id: "cb-accept-1", from: { id: f.userId, is_bot: false }, data: cbData,
+    message: { message_id: 6010, chat: { id: f.chatId, type: "private" } },
+  } }]);
+  f.telegram.processProjectCommands(f.commands);
+  const model = f.app.task(f.auth.actor, f.project.id, proposed.task.id);
+  expect(model.task.state).toBe("accepted");
+  expect(model.task.acceptance?.channel).toBe("telegram");
+  f.worker.pump();
+  expect(f.sender.external.at(-1)?.text).toContain(proposed.task.id);
+});
+
+test("TG02: duplicate callback replays one acceptance; stale proposal revision refreshes callback", async () => {
+  const f = await tg02Fixture();
+  const proposed = f.app.execute(f.auth.actor, {
+    kind: "task.propose", requestId: rid(), projectId: f.project.id, expectedRevision: f.topic.revision,
+    payload: { topicId: f.topic.id, title: "งาน revision", summary: "v1" },
+  });
+  bindContext(f);
+  f.telegram.ingest([message(700, f.userId, f.chatId, "/tasks")]);
+  f.telegram.processProjectCommands(f.commands);
+  const listing = f.store.read(tx => tx.get<{ record_json: string }>("SELECT record_json FROM delivery_intents ORDER BY sequence DESC LIMIT 1"))!;
+  const cbData = listing.record_json.match(/tg\/1\/[a-f0-9]{8}/)![0]!;
+  const cb = (updateId: number) => ({ update_id: updateId, callback_query: {
+    id: `cb-${updateId}`, from: { id: f.userId }, data: cbData,
+    message: { message_id: 7000 + updateId, chat: { id: f.chatId, type: "private" } },
+  } });
+  f.telegram.ingest([cb(701)]);
+  f.telegram.processProjectCommands(f.commands);
+  f.telegram.ingest([cb(702)]);
+  f.telegram.processProjectCommands(f.commands);
+  expect(f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM task_events WHERE kind = 'accepted'")!.n)).toBe(1);
+
+  const proposed2 = f.app.execute(f.auth.actor, {
+    kind: "task.propose", requestId: rid(), projectId: f.project.id, expectedRevision: f.topic.revision,
+    payload: { topicId: f.topic.id, title: "งาน revision 2", summary: "fresh proposal" },
+  });
+  f.telegram.ingest([message(703, f.userId, f.chatId, "/tasks")]);
+  f.telegram.processProjectCommands(f.commands);
+  const listing2 = f.store.read(tx => tx.get<{ record_json: string }>("SELECT record_json FROM delivery_intents ORDER BY sequence DESC LIMIT 1"))!;
+  const staleCb = listing2.record_json.match(/tg\/1\/[a-f0-9]{8}/)![0]!;
+  f.app.execute(f.auth.actor, {
+    kind: "task.edit", requestId: rid(), projectId: f.project.id, expectedRevision: proposed2.task.revision,
+    payload: { taskId: proposed2.task.id, title: "งาน revision 2", summary: "v2 edited" },
+  });
+  f.telegram.ingest([{ update_id: 704, callback_query: {
+    id: "cb-stale", from: { id: f.userId }, data: staleCb,
+    message: { message_id: 7040, chat: { id: f.chatId, type: "private" } },
+  } }]);
+  f.telegram.processProjectCommands(f.commands);
+  const staleReply = f.store.read(tx => tx.get<{ record_json: string }>("SELECT record_json FROM delivery_intents ORDER BY sequence DESC LIMIT 1"))!;
+  expect(staleReply.record_json).toContain("Proposal");
+  expect(decodeCallbackData(staleCb)).toHaveLength(8);
+  expect(proposed.task.id).not.toBe(proposed2.task.id);
+});
+
+test("TG02: edited accepted message conflicts; Thai follow-up uses team dispatch and outbox survives outage", async () => {
+  const f = await tg02Fixture();
+  const proposed = f.app.execute(f.auth.actor, {
+    kind: "task.propose", requestId: rid(), projectId: f.project.id, expectedRevision: f.topic.revision,
+    payload: { topicId: f.topic.id, title: "งานแก้ไม่ได้", summary: "accept แล้ว" },
+  });
+  bindContext(f);
+  f.telegram.ingest([message(800, f.userId, f.chatId, "/tasks")]);
+  f.telegram.processProjectCommands(f.commands);
+  const cbData = f.store.read(tx => tx.get<{ record_json: string }>("SELECT record_json FROM delivery_intents ORDER BY sequence DESC LIMIT 1"))!.record_json.match(/tg\/1\/[a-f0-9]{8}/)![0]!;
+  f.telegram.ingest([{ update_id: 801, callback_query: {
+    id: "cb-edit-test", from: { id: f.userId }, data: cbData,
+    message: { message_id: 8010, chat: { id: f.chatId, type: "private" } },
+  } }]);
+  f.telegram.processProjectCommands(f.commands);
+  f.telegram.ingest([{ update_id: 802, edited_message: {
+    message_id: 8010, text: "forge accept", from: { id: f.userId, is_bot: false }, chat: { id: f.chatId, type: "private" },
+  } }]);
+  f.telegram.processProjectCommands(f.commands);
+  const conflict = f.store.read(tx => tx.get<{ record_json: string }>("SELECT record_json FROM delivery_intents ORDER BY sequence DESC LIMIT 1"))!;
+  expect(conflict.record_json).toContain("accept");
+  expect(f.app.task(f.auth.actor, f.project.id, proposed.task.id).task.state).toBe("accepted");
+
+  f.telegram.ingest([message(803, f.userId, f.chatId, "/follow ช่วยสรุปภาษาไทยและ Unicode 🧪 <safe>")]);
+  f.telegram.processProjectCommands(f.commands);
+  expect(f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM team_runs")!.n)).toBeGreaterThan(0);
+
+  f.worker.close();
+  const offline = new ScriptedTelegramSender();
+  offline.scripts = ["safe_failure"];
+  const offlineWorker = new DeliveryWorker(f.store, { sender: offline, now: () => f.clock.now });
+  offlineWorker.pump();
+  offlineWorker.close();
+  const lastIntent = f.store.read(tx => tx.get<{ record_json: string }>("SELECT record_json FROM delivery_intents ORDER BY sequence DESC LIMIT 1"))!.record_json;
+  expect(lastIntent).toMatch(/"(waiting|failed)"/);
+  expect(lastIntent).toContain("telegram_unavailable");
+  expect(f.app.task(f.auth.actor, f.project.id, proposed.task.id).task.state).toBe("accepted");
+});
+
+test("TG02: restart preserves accepted task and inbox processing remains idempotent", async () => {
+  const f = await tg02Fixture();
+  const proposed = f.app.execute(f.auth.actor, {
+    kind: "task.propose", requestId: rid(), projectId: f.project.id, expectedRevision: f.topic.revision,
+    payload: { topicId: f.topic.id, title: "restart", summary: "persist" },
+  });
+  bindContext(f);
+  f.telegram.ingest([message(900, f.userId, f.chatId, "/tasks")]);
+  f.telegram.processProjectCommands(f.commands);
+  const cbData = f.store.read(tx => tx.get<{ record_json: string }>("SELECT record_json FROM delivery_intents ORDER BY sequence DESC LIMIT 1"))!.record_json.match(/tg\/1\/[a-f0-9]{8}/)![0]!;
+  f.telegram.ingest([{ update_id: 901, callback_query: {
+    id: "cb-restart", from: { id: f.userId }, data: cbData,
+    message: { message_id: 9010, chat: { id: f.chatId, type: "private" } },
+  } }]);
+  f.telegram.processProjectCommands(f.commands);
+  const path = f.path;
+  f.worker.close();
+  f.queue.close();
+  await f.queue.idle();
+  queues.splice(queues.indexOf(f.queue), 1);
+  stores.splice(stores.indexOf(f.store), 1);
+  f.store.close();
+  const store = new TransactionStore(path); stores.push(store);
+  const reopenedApp = new Application(store, f.config, { now: () => f.clock.now });
+  const telegram = new TelegramChannel(store, f.config, { now: () => f.clock.now });
+  const commands = new TelegramProjectCommands(store, { app: reopenedApp, sessionToken: f.session, config: f.config, now: () => f.clock.now });
+  expect(reopenedApp.task(reopenedApp.authenticate(f.session).actor, f.project.id, proposed.task.id).task.state).toBe("accepted");
+  telegram.ingest([message(902, f.userId, f.chatId, "/projects")]);
+  telegram.processProjectCommands(commands);
+  expect(store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM delivery_intents")!.n)).toBeGreaterThan(0);
 });
