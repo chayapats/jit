@@ -230,20 +230,35 @@ function decisionPanel(input: { projectId: string; topicId: string; topicRevisio
     ${choose}${proposal && input.topicRevision ? `<form class="team-form" method="post" action="/projects/${projectId}/tasks">${hiddenCommand(csrf, input.topicRevision)}<input type="hidden" name="topicId" value="${topicId}"><input type="hidden" name="source" value="${escape(JSON.stringify(proposal.source))}"><label>ชื่องานจากผลที่ตรวจแล้ว<input name="title" required maxlength="200" value="${escape(proposal.artifact.question.slice(0, 200))}"></label><label>สรุป<textarea name="summary" required maxlength="2000">${escape(proposal.artifact.question)}</textarea></label><button>เสนอเป็นงานจากผลที่ตรวจแล้ว</button><small>นี่คือข้อเสนอจากผลที่อ้างอิงได้ ยังไม่ใช่งานที่รับรอง และไม่เริ่มแก้โค้ด</small></form>` : ""}${input.discussion?.canSynthesize ? synthesize : ""}</section>`;
 }
 
-const taskLabels: Record<string, string> = { proposed: "ข้อเสนอ", accepted: "รับรองแล้ว", dismissed: "ยกเลิกข้อเสนอ", cancelled: "ยกเลิกหลังรับรอง" };
+const taskLabels: Record<string, string> = {
+  proposed: "ข้อเสนอ", accepted: "รับรองแล้ว · รอยืนยันผล", ready_for_review: "พร้อมให้ตรวจปิดงาน",
+  completed: "ปิดเรียบร้อยแล้ว", dismissed: "ยกเลิกข้อเสนอ", cancelled: "ยกเลิกหลังรับรอง", superseded: "ถูกแทนที่แล้ว",
+};
+const policyLabels: Record<string, string> = {
+  owner_confirmed: "คุณยืนยันผลเอง (ค่าเริ่มต้น)",
+  evidence_satisfied: "ปิดได้เมื่อมีหลักฐานครบตามนโยบาย",
+};
+function taskStatusText(task: { state: string; pendingReason?: { detail: string } | null; completionPolicy: { kind: string } }): string {
+  const base = taskLabels[task.state] ?? task.state;
+  const policy = `นโยบาย: ${policyLabels[task.completionPolicy.kind] ?? task.completionPolicy.kind}`;
+  const pending = task.pendingReason ? ` · ค้าง: ${task.pendingReason.detail}` : "";
+  return `${base} · ${policy}${pending}`;
+}
 
 /** Renders proposals, accepted obligations, and closed tasks as separate lists. */
 export function tasksPage(state: ReturnType<Application["tasks"]>, workspace: Workspace, csrf: string, topicId: string | null): string {
   const { project } = state;
   const selected = state.topics.find(topic => topic.id === topicId) ?? state.topics[0];
-  const card = (task: (typeof state.proposed)[number]) => `<article class="team-card" id="task-${task.id}"><header><h3><a href="/projects/${project.id}/tasks/${task.id}">${escape(task.title)}</a></h3><span class="job-status" data-state="${task.state}">${taskLabels[task.state]}</span></header><p>${escape(task.summary)}</p><p>proposal r${task.revision} · ${task.origin === "owner" ? "คุณเสนอ" : "อ้างผลที่ตรวจแล้ว"}</p>${sourceLink(project.id, task.source, "ที่มา")}</article>`;
+  const card = (task: (typeof state.proposed)[number]) => `<article class="team-card" id="task-${task.id}"><header><h3><a href="/projects/${project.id}/tasks/${task.id}">${escape(task.title)}</a></h3><span class="job-status" data-state="${task.state}">${escape(taskStatusText(task))}</span></header><p>${escape(task.summary)}</p><p>proposal r${task.revision} · ${task.origin === "owner" ? "คุณเสนอ" : "อ้างผลที่ตรวจแล้ว"}</p>${sourceLink(project.id, task.source, "ที่มา")}</article>`;
   const group = (title: string, items: typeof state.proposed, empty: string) => `<section><h2 class="section-heading">${title}</h2>${items.length ? items.map(card).join("") : `<p class="empty-list">${empty}</p>`}</section>`;
   const form = selected ? `<form class="team-form" method="post" action="/projects/${project.id}/tasks">${hiddenCommand(csrf, selected.revision)}<input type="hidden" name="topicId" value="${selected.id}"><label>หัวข้อ<p>${escape(selected.title ?? "หัวข้อไม่พร้อมใช้งาน")}</p></label><label>ชื่องาน<input name="title" required maxlength="200"></label><label>สรุป<textarea name="summary" required></textarea></label><button class="primary">บันทึกเป็นข้อเสนอ</button></form>` : "<p>สร้างหัวข้อก่อนเสนองาน</p>";
   return shell("ข้อผูกพัน", { workspace, csrf, project, topics: state.topics, section: "tasks" }, `<div class="content team-content"><section class="hero"><p class="eyebrow">ข้อเสนอแยกจากงานที่รับรอง</p><h2>ข้อผูกพันของ ${escape(project.name)}</h2><p>การรับรองเป็นข้อผูกพันของคุณ การรับรองยังไม่เริ่มแก้โค้ดหรือรันคำสั่ง</p></section>
     <details class="team-card" id="new-task"${state.proposed.length ? "" : " open"}><summary>เสนองานจากหัวข้อ</summary>${form}</details>
     ${group("ข้อเสนอที่ยังไม่รับรอง", state.proposed, "ยังไม่มีข้อเสนอ")}
     ${group("ข้อผูกพันที่รับรองแล้ว", state.accepted, "ยังไม่มีงานที่รับรอง")}
-    ${group("รายการที่ปิดแล้ว", state.closed, "ยังไม่มีรายการที่ปิด")}</div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
+    ${group("พร้อมให้ตรวจปิดงาน", state.readyForReview, "ยังไม่มีงานที่รอตรวจปิด")}
+    ${group("ปิดเรียบร้อยแล้ว", state.completed, "ยังไม่มีงานที่ปิดแล้ว")}
+    ${group("รายการที่ไม่ active", state.inactive, "ยังไม่มีรายการที่ยกเลิกหรือถูกแทนที่")}</div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
 }
 
 /** Renders one task, its proposal history, and owner actions that do not start execution. */
@@ -256,13 +271,19 @@ export function taskPage(state: ReturnType<Application["task"]>, workspace: Work
   const revise = task.state === "proposed" ? `<form class="team-form" method="post" action="${base}">${hiddenCommand(csrf, task.revision)}<input type="hidden" name="mode" value="edit"><label>ชื่องาน<input name="title" required maxlength="200" value="${escape(task.title)}"></label><label>สรุป<textarea name="summary" required maxlength="${messageBytes}">${escape(task.summary)}</textarea></label><button>แก้ข้อเสนอเป็น revision ใหม่</button></form>
     <form method="post" action="${base}">${hiddenCommand(csrf, task.revision)}<input type="hidden" name="mode" value="dismiss"><input type="hidden" name="proposalId" value="${state.proposals.at(-1)?.id ?? ""}"><label>เหตุผลที่ยกเลิกข้อเสนอ<input name="reason" required maxlength="500"></label><button class="danger">ยกเลิกข้อเสนอ</button></form>
     <form method="post" action="${base}">${hiddenCommand(csrf, task.revision)}<input type="hidden" name="mode" value="accept"><input type="hidden" name="proposalId" value="${state.proposals.at(-1)?.id ?? ""}"><button class="primary">รับรอง revision นี้</button><small>ผู้รับรองคือคุณ การรับรองไม่เริ่มแก้โค้ด</small></form>` : "";
-  const cancel = task.state === "accepted" ? `<form method="post" action="${base}">${hiddenCommand(csrf, task.revision)}<input type="hidden" name="mode" value="cancel"><label>เหตุผลที่ยกเลิก<input name="reason" required maxlength="500"></label><button class="danger">ยกเลิกงานที่รับรองแล้ว</button></form>` : "";
-  return shell(task.title, { workspace, csrf, project, topic, section: "tasks" }, `<div class="content team-content"><section class="hero"><p class="eyebrow">${taskLabels[task.state]} · proposal r${task.revision}</p><h2>${escape(task.title)}</h2><p>${escape(task.summary)}</p></section>
+  const cancel = task.state === "accepted" || task.state === "ready_for_review" ? `<form method="post" action="${base}">${hiddenCommand(csrf, task.revision)}<input type="hidden" name="mode" value="cancel"><label>เหตุผลที่ยกเลิก<input name="reason" required maxlength="500"></label><button class="danger">ยกเลิกงานที่รับรองแล้ว</button></form>` : "";
+  const complete = task.state === "accepted" || task.state === "ready_for_review" ? `<form method="post" action="${base}">${hiddenCommand(csrf, task.revision)}<input type="hidden" name="mode" value="complete"><label>บันทึกการปิดงาน (ไม่ใช่ข้อความ done ของโมเดล)<input name="note" maxlength="500" placeholder="สรุปผลที่คุณยืนยัน"></label><button class="primary">ยืนยันปิดงาน</button><small>${escape(taskStatusText(task))}</small></form>` : "";
+  const reopen = task.state === "completed" ? `<form method="post" action="${base}">${hiddenCommand(csrf, task.revision)}<input type="hidden" name="mode" value="reopen"><label>เหตุผลที่เปิดใหม่<input name="reason" required maxlength="500"></label><button>เปิดงานใหม่หลังตรวจ</button></form>` : "";
+  const policyForm = task.state === "accepted" || task.state === "ready_for_review" ? `<form method="post" action="${base}">${hiddenCommand(csrf, task.revision)}<input type="hidden" name="mode" value="set_policy"><label>นโยบายปิดงาน<select name="policyKind"><option value="owner_confirmed"${task.completionPolicy.kind === "owner_confirmed" ? " selected" : ""}>คุณยืนยันผลเอง</option><option value="evidence_satisfied"${task.completionPolicy.kind === "evidence_satisfied" ? " selected" : ""}>ต้องมีหลักฐานครบ</option></select></label><button>บันทึกนโยบาย</button></form>` : "";
+  const evidence = state.evidenceArtifacts.length ? `<ul>${state.evidenceArtifacts.map(item => `<li>r${item.revision} · ${escape(item.workType)} · ${escape(item.outcome)}${item.deliveryState ? ` · ${escape(item.deliveryState)}` : ""} · ${sourceLink(project.id, item.source, "หลักฐาน")}</li>`).join("")}</ul>` : "<p>ยังไม่มีหลักฐานจากงานวิเคราะห์/ตรวจ/แจ้งเตือน</p>";
+  return shell(task.title, { workspace, csrf, project, topic, section: "tasks" }, `<div class="content team-content"><section class="hero"><p class="eyebrow">${escape(taskStatusText(task))} · proposal r${task.revision}</p><h2>${escape(task.title)}</h2><p>${escape(task.summary)}</p></section>
     <article class="team-card"><p>หัวข้อ: <a href="/projects/${project.id}/topics/${topic.id}">${escape(topic.title ?? "หัวข้อไม่พร้อมใช้งาน")}</a></p>${unavailable}
     ${task.acceptance ? `<p>รับรองโดย owner ผ่าน ${escape(task.acceptance.channel)} · proposal r${task.acceptance.proposalRevision} · ${time(task.acceptance.acceptedAt)}</p>` : "<p>ยังไม่มีการรับรอง</p>"}
+    ${task.completion ? `<p>ปิดโดย owner · ${time(task.completion.completedAt)} · ${task.completion.note ? escape(task.completion.note) : "ไม่มีบันทึกเพิ่ม"}</p>` : ""}
     ${task.closedReason ? `<p>เหตุผลที่ปิด: ${escape(task.closedReason)}</p>` : ""}
-    <p>การรับรองไม่เปิด shell, การแก้ไฟล์, การทดสอบ หรือการ build</p></article>
-    ${revise}${cancel}
+    <p>การรับรองไม่เปิด shell, การแก้ไฟล์, การทดสอบ หรือการ build · ข้อความ done ของโมเดลไม่ปิดงาน</p></article>
+    ${policyForm}<details open><summary>หลักฐานที่อ้างได้</summary>${evidence}</details>
+    ${revise}${complete}${cancel}${reopen}
     <form method="post" action="${base}">${hiddenCommand(csrf, task.revision)}<input type="hidden" name="mode" value="start"><button>เริ่มแก้โค้ด</button></form>
     <details><summary>ประวัติข้อเสนอ</summary><ul>${history}</ul></details>
     <details><summary>ประวัติคำสั่ง</summary><ul>${events}</ul></details>

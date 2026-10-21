@@ -14,7 +14,7 @@ import { mutateMonitor } from "../src/pr/authority";
 import { TRIGGER_POLICY_VERSION } from "../src/pr/types";
 import { commitOutputSource, type SourceReference } from "../src/sources";
 import { TransactionStore } from "../src/store";
-import type { TaskCommand } from "../src/tasks";
+import { registerTaskEvidenceArtifact, type TaskCommand } from "../src/tasks";
 import { createWebHandler } from "../src/web";
 
 const roots: string[] = [], stores: TransactionStore[] = [], queues: JobQueue[] = [];
@@ -218,9 +218,9 @@ test("dismiss and cancel keep their reasons, and a later proposal is a new task"
   const html = await (await f.web(request(f, `/projects/${f.project.id}/tasks/${again.task.id}`))).text();
   expect(html).toContain("ต้นฉบับไม่พร้อมใช้งาน");
   expect(html).toContain("ยกเลิกหลังตรวจ");
-  const closed = f.app.tasks(f.auth.actor, f.project.id).closed.map(task => task.id);
-  expect(closed).toContain(proposed.task.id);
-  expect(closed).toContain(again.task.id);
+  const inactive = f.app.tasks(f.auth.actor, f.project.id).inactive.map(task => task.id);
+  expect(inactive).toContain(proposed.task.id);
+  expect(inactive).toContain(again.task.id);
 });
 
 test("schema v8 migrates to v9, keeps the previous project, and snapshots the old file", () => {
@@ -233,7 +233,7 @@ test("schema v8 migrates to v9, keeps the previous project, and snapshots the ol
     PRAGMA user_version = 8;`);
   old.close();
   const store = new TransactionStore(path); stores.push(store);
-  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 9 });
+  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 10 });
   expect(store.read(tx => tx.get("SELECT name, revision FROM projects WHERE id = ?", projectId))).toEqual({ name: "kept-task", revision: 4 });
   expect(store.read(tx => tx.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tasks'"))).toEqual({ name: "tasks" });
   const snapshotName = readdirSync(root).find(name => name.includes(".pre-v8-"))!;
@@ -281,4 +281,78 @@ test("a validated participant or decision source can be proposed; owner chat and
   const posted = await f.web(request(f, `/api/projects/${f.project.id}/tasks`, { requestId: rid(), expectedRevision: topic.revision, topicId: f.topic.id, title: "จากฟอร์ม", summary: "บันทึกข้อเสนอ", source: "{not-json" }));
   expect(posted.status).toBe(400);
   expect(await posted.json()).toEqual({ error: "invalid_body" });
+});
+
+test("owner-confirmed completion, restart, and continuity keep inactive obligations out of active work", async () => {
+  const f = await fixture();
+  const proposed = f.app.execute(f.auth.actor, propose(f, f.topic, { title: "งานที่จะปิด" }));
+  const open = f.app.execute(f.auth.actor, { kind: "task.accept", requestId: rid(), projectId: f.project.id, expectedRevision: proposed.task.revision,
+    payload: { taskId: proposed.task.id, proposalId: proposed.proposal.id } });
+  const cancelled = f.app.execute(f.auth.actor, propose(f, f.topic, { title: "จะยกเลิก" }));
+  const cancelledAccepted = f.app.execute(f.auth.actor, { kind: "task.accept", requestId: rid(), projectId: f.project.id, expectedRevision: cancelled.task.revision,
+    payload: { taskId: cancelled.task.id, proposalId: cancelled.proposal.id } });
+  f.app.execute(f.auth.actor, { kind: "task.cancel", requestId: rid(), projectId: f.project.id, expectedRevision: cancelledAccepted.task.revision,
+    payload: { taskId: cancelled.task.id, reason: "ไม่ทำแล้ว" } });
+  const completed = f.app.execute(f.auth.actor, { kind: "task.complete", requestId: rid(), projectId: f.project.id, expectedRevision: open.task.revision,
+    payload: { taskId: open.task.id, note: "ตรวจแล้วเรียบร้อย" } });
+  expect(completed.task.state).toBe("completed");
+  expect(completed.task.completion?.note).toBe("ตรวจแล้วเรียบร้อย");
+  const reopenedStore = new TransactionStore(f.path); stores.push(reopenedStore);
+  const reopened = new Application(reopenedStore, f.config, { now: () => epoch + 1 }), actor = reopened.authenticate(f.token).actor;
+  const continuity = reopened.continuity(actor, f.project.id);
+  expect(continuity.activeObligations.map(task => task.id)).not.toContain(cancelled.task.id);
+  expect(continuity.obligations.inactive.map(task => task.id)).toContain(cancelled.task.id);
+  expect(continuity.obligations.completed.map(task => task.id)).toContain(open.task.id);
+  expect(continuity.activeObligations.map(task => task.id)).not.toContain(open.task.id);
+  const list = await (await f.web(request(f, `/api/projects/${f.project.id}/continuity`))).json() as typeof continuity;
+  expect(list.activeObligations.map(task => task.id)).toEqual(continuity.activeObligations.map(task => task.id));
+});
+
+test("partial, failed, unknown, and stale evidence do not close a user task; owner confirmation still can", async () => {
+  const f = await fixture();
+  const proposed = f.app.execute(f.auth.actor, propose(f, f.topic, { title: "ปิดด้วยหลักฐาน" }));
+  const accepted = f.app.execute(f.auth.actor, { kind: "task.accept", requestId: rid(), projectId: f.project.id, expectedRevision: proposed.task.revision,
+    payload: { taskId: proposed.task.id, proposalId: proposed.proposal.id } });
+  const taskId = accepted.task.id;
+  const evidenceSource = f.store.transaction(tx => commitOutputSource(tx, { projectId: f.project.id, participantId: "review", runId: "run-review", text: "รายงาน fixture", committedAt: epoch }));
+  f.store.transaction(tx => registerTaskEvidenceArtifact(tx, { taskId, projectId: f.project.id, workType: "review", outcome: "partial", source: evidenceSource, now: epoch }));
+  expect(rejection(() => f.app.execute(f.auth.actor, { kind: "task.complete", requestId: rid(), projectId: f.project.id, expectedRevision: accepted.task.revision,
+    payload: { taskId, evidence: [evidenceSource] } })).code).toBe("completion_evidence_partial");
+  f.store.transaction(tx => registerTaskEvidenceArtifact(tx, { taskId, projectId: f.project.id, workType: "review", outcome: "failed", source: evidenceSource, now: epoch + 1 }));
+  expect(f.app.task(f.auth.actor, f.project.id, taskId).task.state).toBe("accepted");
+  const done = f.app.execute(f.auth.actor, { kind: "task.complete", requestId: rid(), projectId: f.project.id, expectedRevision: accepted.task.revision,
+    payload: { taskId, note: "ปิดด้วยคำยืนยันของเจ้าของ" } });
+  expect(done.task.state).toBe("completed");
+});
+
+test("two competing completion commands and duplicate owner confirmation share one receipt", async () => {
+  const f = await fixture();
+  const proposed = f.app.execute(f.auth.actor, propose(f, f.topic, { title: "แข่งปิด" }));
+  const accepted = f.app.execute(f.auth.actor, { kind: "task.accept", requestId: rid(), projectId: f.project.id, expectedRevision: proposed.task.revision,
+    payload: { taskId: proposed.task.id, proposalId: proposed.proposal.id } });
+  const complete = { kind: "task.complete" as const, requestId: rid(), projectId: f.project.id, expectedRevision: accepted.task.revision, payload: { taskId: accepted.task.id, note: "ปิดครั้งเดียว" } };
+  const first = f.app.execute(f.auth.actor, complete);
+  expect(f.app.execute(f.auth.actor, complete)).toEqual(first);
+  expect(rejection(() => f.app.execute(f.auth.actor, { ...complete, requestId: rid() })).code).toBe("task_already_completed");
+  const reopened = f.app.execute(f.auth.actor, { kind: "task.reopen", requestId: rid(), projectId: f.project.id, expectedRevision: first.task.revision,
+    payload: { taskId: accepted.task.id, reason: "ต้องตรวจอีกครั้ง" } });
+  expect(reopened.task.state).toBe("accepted");
+  const workers = ["web", "telegram"].map(channel => new Worker(new URL("./task-race-worker.ts", import.meta.url), { workerData: { path: f.path, token: f.token, channel, command: {
+    kind: "task.complete", requestId: rid(), projectId: f.project.id, expectedRevision: reopened.task.revision, payload: { taskId: accepted.task.id, note: "ชนะครั้งเดียว" },
+  } } }));
+  const messages: { ready?: boolean; ok?: boolean; message?: string }[] = [];
+  await new Promise<void>((resolve, reject) => {
+    let ready = 0;
+    for (const worker of workers) {
+      worker.on("message", message => {
+        if (message.ready) { if (++ready === workers.length) for (const item of workers) item.postMessage("go"); return; }
+        messages.push(message);
+        if (messages.length === workers.length) resolve();
+      });
+      worker.on("error", reject);
+    }
+  });
+  for (const worker of workers) worker.terminate();
+  expect(messages.filter(item => item.ok)).toHaveLength(1);
+  expect(messages.find(item => !item.ok)!.message).toMatch(/task_already_completed|stale_revision/);
 });

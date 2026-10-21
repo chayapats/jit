@@ -23,7 +23,10 @@ import type {
   CommitDeliveryCommand, DeliveryCommand, DeliveryIntent, DeliveryPage, DeliveryReceipt, DeliveryReport,
   DeliveryResendReceipt, DeliveryRetireReceipt, ResendDeliveryCommand, RetireDeliveryCommand,
 } from "./delivery";
-import { applyTask, isTaskCommand, readTaskList, readTaskModel, taskIdentity, type TaskChannel, type TaskCommand, type TaskList, type TaskReadModel, type TaskReceipt } from "./tasks";
+import {
+  applyTask, isTaskCommand, readProjectContinuity, readTaskCompletionPolicy, readTaskList, readTaskModel, taskIdentity,
+  type ProjectContinuity, type TaskChannel, type TaskCommand, type TaskList, type TaskReadModel, type TaskReceipt,
+} from "./tasks";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const validToken = (value: string) => /^[a-f0-9]{64}$/.test(value);
@@ -322,6 +325,27 @@ export class Application {
       this.#requireOwner(tx, actor, ["web", "telegram"]);
       const model = readTaskModel(tx, projectId, taskId);
       return { project: this.#project(tx, projectId), topic: readTopic(tx, projectId, model.task.topicId), ...model };
+    });
+  }
+
+  /**
+   * app.project_continuity/v1
+   * Reads committed obligations and owner decisions without provider inference or live model calls.
+   */
+  continuity(actor: OwnerActor, projectId: string): { project: Project } & ProjectContinuity {
+    requireId(projectId);
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor, ["web", "telegram"]);
+      return { project: this.#project(tx, projectId), ...readProjectContinuity(tx, projectId, this.config.pageSize, this.#now()) };
+    });
+  }
+
+  /** app.task_completion/v1 — exposes the effective completion policy before owner close commands. */
+  taskCompletionPolicy(actor: OwnerActor, projectId: string, taskId: string): { project: Project; policy: ReturnType<typeof readTaskCompletionPolicy> } {
+    requireId(projectId); requireId(taskId);
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor, ["web", "telegram"]);
+      return { project: this.#project(tx, projectId), policy: readTaskCompletionPolicy(tx, projectId, taskId) };
     });
   }
 
