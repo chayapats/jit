@@ -269,9 +269,47 @@ test("MEM03 valid-JSON wrong-shape pending rows mark preview incomplete", async 
   await f.rt.queue.idle();
   const before = f.rt.app.correctionImpact(actor(f), p.id, ref(stale));
   expect(before.truncated.pendingJobs).toBe(false);
-  f.rt.store.transaction(tx => tx.run("UPDATE team_runs SET record_json = ? WHERE id = ?", "{}", discussion.id));
-  const after = f.rt.app.correctionImpact(actor(f), p.id, ref(stale));
-  expect(after.truncated.pendingJobs).toBe(true);
+  for (const shape of ["{}", '{"kind":"discussion","manifest":{"claims":[{}]}}', '{"kind":"discussion","manifest":{"claims":["x"]}}']) {
+    f.rt.store.transaction(tx => tx.run("UPDATE team_runs SET record_json = ? WHERE id = ?", shape, discussion.id));
+    const impact = f.rt.app.correctionImpact(actor(f), p.id, ref(stale));
+    expect(impact.truncated.pendingJobs).toBe(true);
+  }
+});
+
+test("MEM03 spoofed discussion kind on a specialist run is fenced by job type", async () => {
+  const f = await fixture();
+  const p = project(f, "Jit MVP", "ฐานข้อมูลสำหรับ MVP");
+  const stale = await remember(f, p, say(f, p, "ใช้ PostgreSQL สำหรับทุกโครงการ"));
+  const discussion = f.rt.app.execute(actor(f), dispatch(f, p, "ใช้ PostgreSQL สำหรับทุกโครงการจริงหรือ")).discussion!;
+  await f.rt.queue.idle();
+  const runId = discussion.participations[0]!.runId;
+  f.rt.store.transaction(tx => {
+    const row = tx.get<{ record_json: string }>("SELECT record_json FROM team_runs WHERE id = ?", runId)!;
+    const parsed = JSON.parse(row.record_json) as { kind?: string };
+    parsed.kind = "discussion";
+    tx.run("UPDATE team_runs SET record_json = ? WHERE id = ?", JSON.stringify(parsed), runId);
+  });
+  const evidence = say(f, p, "เปลี่ยนมาใช้ SQLite สำหรับ MVP");
+  f.rt.app.execute(actor(f), correctCommand(f, p, stale, "ใช้ SQLite สำหรับ MVP", "เปลี่ยนมาใช้ SQLite สำหรับ MVP", evidence));
+  expect(jobState(f, discussion.participations[0]!.jobId)).toMatchObject({ state: "blocked", reason: "source_retired" });
+  expect(jobState(f, discussion.jobId)).toMatchObject({ state: "blocked", reason: "source_retired" });
+});
+
+test("MEM03 valid context-less pending specialist is not fenced as corrupt", async () => {
+  const f = await fixture();
+  const p = project(f, "Jit MVP", "ฐานข้อมูลสำหรับ MVP");
+  const stale = await remember(f, p, say(f, p, "ใช้ PostgreSQL สำหรับทุกโครงการ"));
+  const jobId = rid(), runId = rid(), contextId = rid();
+  f.rt.store.transaction(tx => {
+    tx.run("INSERT INTO jobs (id, project_id, queue_order, priority, state, occupies, route_key, record_json) VALUES (?, ?, 0, 0, 'queued', 0, 'fixture', ?)",
+      jobId, p.id, JSON.stringify({ id: jobId, projectId: p.id, state: "queued", reason: null }));
+    tx.run("INSERT INTO team_contexts VALUES (?, 1, 'active')", contextId);
+    tx.run("INSERT INTO team_runs (id, project_id, job_id, context_id, record_json) VALUES (?, ?, ?, ?, ?)",
+      runId, p.id, jobId, contextId, JSON.stringify({ kind: "specialist", request: { manifest: { sources: [], claims: [] } } }));
+  });
+  const evidence = say(f, p, "เปลี่ยนมาใช้ SQLite สำหรับ MVP");
+  f.rt.app.execute(actor(f), correctCommand(f, p, stale, "ใช้ SQLite สำหรับ MVP", "เปลี่ยนมาใช้ SQLite สำหรับ MVP", evidence));
+  expect(jobState(f, jobId)).toMatchObject({ state: "queued" });
 });
 
 test("MEM03 malformed specialist and coordinator rows are fenced, not skipped or fatal", async () => {

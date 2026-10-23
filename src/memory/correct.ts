@@ -1,9 +1,9 @@
 import { AppError } from "../errors";
-import { invalidatePendingJob, jobData } from "../jobs/queue";
+import { invalidatePendingJob, jobData, jobTypeOf } from "../jobs/queue";
 import { requireId, requireReference, requireText } from "../sources";
 import type { AppTransaction } from "../store";
 import type { Discussion } from "../team/types";
-import { discussionWorkId } from "../team/dispatch";
+import { discussionWorkId } from "../team/types";
 import { contextCurrent, fenceStaleContexts } from "./context";
 import { fenceUnavailableExtractions } from "./extract";
 import { eligibleMemorySource, lookupActiveClaim, requireClaimReference } from "./read";
@@ -50,6 +50,13 @@ function pendingReferencing(tx: AppTransaction, originProjectId: string, affecte
   const pending = "state IN ('queued', 'admitted', 'waiting')";
   /** Strict per-table shape check: a pending row that cannot prove a valid
    * dependency/manifest structure counts as incomplete, never as a clean non-match. */
+  const validRef = (ref: unknown): ref is ClaimReference =>
+    !!ref && typeof ref === "object" && typeof (ref as ClaimReference).claimId === "string" &&
+    Number.isSafeInteger((ref as ClaimReference).revision) && (ref as ClaimReference).revision > 0 &&
+    Number.isSafeInteger((ref as ClaimReference).generation) && (ref as ClaimReference).generation > 0;
+  const validEntry = (entry: unknown): entry is { projectId: string; claimId: string; revision: number; generation: number; text: string } =>
+    validRef(entry) && typeof (entry as { projectId?: unknown }).projectId === "string" &&
+    typeof (entry as { text?: unknown }).text === "string";
   const classify = (table: "memory_extractions" | "team_runs" | "coordinator_syntheses", json: string): "cite" | "clear" | "invalid" => {
     type Shape = {
       kind?: unknown; dependencies?: unknown;
@@ -63,12 +70,13 @@ function pendingReferencing(tx: AppTransaction, originProjectId: string, affecte
     if (parsed === null || typeof parsed !== "object") return "invalid";
     if (table === "memory_extractions") {
       if (!Array.isArray(parsed.dependencies)) return "invalid";
-      return (parsed.dependencies as { claimId?: unknown }[]).some(ref => typeof ref?.claimId === "string" && affected.has(ref.claimId)) ? "cite" : "clear";
+      if (!parsed.dependencies.every(validRef)) return "invalid";
+      return parsed.dependencies.some(ref => affected.has(ref.claimId)) ? "cite" : "clear";
     }
     const manifest = table === "team_runs" && parsed.kind === "discussion" ? parsed.manifest : parsed.request?.manifest;
     if (!manifest || !Array.isArray(manifest.claims)) return "invalid";
-    const entries = manifest.claims as { projectId?: unknown; claimId?: unknown }[];
-    return entries.some(entry => entry && entry.projectId === originProjectId && typeof entry.claimId === "string" && affected.has(entry.claimId)) ? "cite" : "clear";
+    if (!manifest.claims.every(validEntry)) return "invalid";
+    return manifest.claims.some(entry => entry.projectId === originProjectId && affected.has(entry.claimId)) ? "cite" : "clear";
   };
   // One globally ordered candidate stream: truncation is decided by rows EXAMINED, not matches.
   const stream = tx.all<{ projectId: string; jobId: string; json: string; source: number }>(
@@ -209,8 +217,9 @@ function fenceStaleDiscussions(tx: AppTransaction, now: number): void {
     `SELECT r.project_id AS projectId, r.job_id AS jobId, r.record_json AS json, j.record_json AS jobJson
      FROM team_runs r JOIN jobs j ON j.id = r.job_id WHERE ${pending}`);
   for (const row of rows) {
-    // The authoritative job type decides: stored run JSON is untrusted input, never identity.
-    if (!isDiscussionJob(row.jobJson)) continue;
+    // The authoritative job type decides: a run whose stored kind claims "discussion"
+    // but whose job is not a discussion is fenced as what it actually is, never skipped.
+    if (jobTypeOf(row.jobJson) !== discussionWorkId) continue;
     let discussion: Discussion | null = null;
     try { discussion = JSON.parse(row.json) as Discussion; } catch { /* Failed closed below. */ }
     const manifestValid = !!discussion && discussion.kind === "discussion" &&
@@ -221,8 +230,7 @@ function fenceStaleDiscussions(tx: AppTransaction, now: number): void {
         stale = contextCurrent(tx, row.projectId, discussion.manifest) !== null;
       } catch { /* A manifest that cannot be evaluated cannot prove safety. */ }
     }
-    if (!stale) continue;
-    invalidatePendingJob(tx, row.projectId, row.jobId, "source_retired", now);
+    if (stale) invalidatePendingJob(tx, row.projectId, row.jobId, "source_retired", now);
     const participations = manifestValid && Array.isArray(discussion?.participations) ? discussion.participations : [];
     for (const participation of participations) {
       try {
@@ -230,10 +238,4 @@ function fenceStaleDiscussions(tx: AppTransaction, now: number): void {
       } catch { /* Parent fence already revokes authority; a broken participation id stays fenced with it. */ }
     }
   }
-}
-
-function isDiscussionJob(jobJson: string): boolean {
-  try {
-    return (JSON.parse(jobJson) as { type?: string }).type === discussionWorkId;
-  } catch { return false; }
 }

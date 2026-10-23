@@ -16,9 +16,7 @@ import type {
   DecisionProposal, DecisionReadModel, DecisionReceipt, OwnerDecision, ResolvedEvidence, SynthesisArtifact,
   SynthesisCitation, SynthesisGap, SynthesisState,
 } from "./types";
-
-/** app.coordinator_synthesis/v1 — registered interactive work id. Hidden from the generic job picker. */
-export const coordinatorSynthesisWorkId = "team.coordinator-synthesis";
+import { coordinatorSynthesisWorkId } from "./types";
 /** Trusted operator line that identifies a coordinator invocation. It is not an owner decision. */
 export const coordinatorSynthesisMarker = "This is an explicitly authorized scripted coordinator synthesis, not live inference.";
 

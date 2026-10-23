@@ -91,6 +91,14 @@ export function readJob(tx: AppTransaction, projectId: string, jobId: string): J
   return JSON.parse(row.record_json) as Job;
 }
 
+/** Best-effort authoritative job type from a stored job record; null when unreadable. */
+export function jobTypeOf(recordJson: string): string | null {
+  try {
+    const type = (JSON.parse(recordJson) as { type?: unknown }).type;
+    return typeof type === "string" ? type : null;
+  } catch { return null; }
+}
+
 /** Fences pending work and projects its blocked state inside a trusted lifecycle transaction, even without a local scheduler. */
 export function invalidatePendingJob(tx: AppTransaction, projectId: string, jobId: string,
   reason: "revoked" | "superseded" | "source_retired" | "context_retired", now: number): void {

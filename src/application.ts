@@ -12,9 +12,10 @@ import { JobQueue, jobCommandIdentity, projectJob, readJob, readJobs } from "./j
 import type { EnqueueJobCommand, ResumeJobCommand, JobCommand, JobReceipt } from "./jobs/types";
 import { mutateTeamConfiguration, readTeam, teamIdentity } from "./team/configuration";
 import { listDiscussions, prepareControl, prepareDispatch, projectDiscussion, readDiscussion } from "./team/dispatch";
-import { acceptDecision, decisionIdentity, prepareSynthesis, readDecisionModel, supersedeDecision, coordinatorSynthesisWorkId } from "./team/decisions";
+import { acceptDecision, decisionIdentity, prepareSynthesis, readDecisionModel, supersedeDecision } from "./team/decisions";
 import { preparePreview, readPreview } from "./team/preview";
 import type { DecisionCommand, DecisionReadModel, DecisionReceipt, TeamCommand, TeamReceipt } from "./team/types";
+import { coordinatorSynthesisWorkId } from "./team/types";
 import {
   commitDeliveryIntent, deliveryCommandIdentity, listDeliveryAttempts, listDeliveryIntents, readDeliveryIntent,
   readDeliveryReport, resendDeliveryIntent, retireDeliveryReport,
