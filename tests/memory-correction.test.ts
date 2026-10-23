@@ -261,6 +261,44 @@ for (const shape of ['{"kind":"discussion"}', '{"kind":"specialist"}', '{}', '{"
   expect(jobState(f, discussion.jobId)).toMatchObject({ state: "blocked", reason: "source_retired" });
 });
 
+test("MEM03 valid-JSON wrong-shape pending rows mark preview incomplete", async () => {
+  const f = await fixture();
+  const p = project(f, "Jit MVP", "ฐานข้อมูลสำหรับ MVP");
+  const stale = await remember(f, p, say(f, p, "ใช้ PostgreSQL สำหรับทุกโครงการ"));
+  const discussion = f.rt.app.execute(actor(f), dispatch(f, p, "ใช้ PostgreSQL สำหรับทุกโครงการจริงหรือ")).discussion!;
+  await f.rt.queue.idle();
+  const before = f.rt.app.correctionImpact(actor(f), p.id, ref(stale));
+  expect(before.truncated.pendingJobs).toBe(false);
+  f.rt.store.transaction(tx => tx.run("UPDATE team_runs SET record_json = ? WHERE id = ?", "{}", discussion.id));
+  const after = f.rt.app.correctionImpact(actor(f), p.id, ref(stale));
+  expect(after.truncated.pendingJobs).toBe(true);
+});
+
+test("MEM03 malformed specialist and coordinator rows are fenced, not skipped or fatal", async () => {
+  const f = await fixture();
+  const p = project(f, "Jit MVP", "ฐานข้อมูลสำหรับ MVP");
+  const stale = await remember(f, p, say(f, p, "ใช้ PostgreSQL สำหรับทุกโครงการ"));
+  const discussion = f.rt.app.execute(actor(f), dispatch(f, p, "ใช้ PostgreSQL สำหรับทุกโครงการจริงหรือ")).discussion!;
+  await f.rt.queue.idle();
+  const runId = discussion.participations[0]!.runId;
+  f.rt.store.transaction(tx => tx.run("UPDATE team_runs SET record_json = ? WHERE id = ?", "{}", runId));
+  const evidence = say(f, p, "เปลี่ยนมาใช้ SQLite สำหรับ MVP");
+  f.rt.app.execute(actor(f), correctCommand(f, p, stale, "ใช้ SQLite สำหรับ MVP", "เปลี่ยนมาใช้ SQLite สำหรับ MVP", evidence));
+  expect(jobState(f, discussion.jobId)).toMatchObject({ state: "blocked", reason: "source_retired" });
+  expect(jobState(f, discussion.participations[0]!.jobId)).toMatchObject({ state: "blocked" });
+
+  const q = project(f, "Jit MVP 2", "หัวข้อที่สอง");
+  const stale2 = await remember(f, q, say(f, q, "ใช้ PostgreSQL สำหรับทุกโครงการ"));
+  const second = f.rt.app.execute(actor(f), dispatch(f, q, "เตรียมข้อเสนอให้เจ้าของตัดสิน")).discussion!;
+  await drain(f);
+  f.rt.app.execute(actor(f), { kind: "decision.synthesize", requestId: rid(), projectId: q.id, expectedRevision: second.revision, payload: { discussionId: second.id, limits: { ...f.config.jobs.maximum } } });
+  const synthesis = f.rt.store.read(tx => tx.get<{ job_id: string }>("SELECT job_id FROM coordinator_syntheses WHERE project_id = ?", q.id)!);
+  f.rt.store.transaction(tx => tx.run("UPDATE coordinator_syntheses SET record_json = ? WHERE job_id = ?", '{"kind":"synthesis"}', synthesis.job_id));
+  const evidence2 = say(f, q, "เปลี่ยนมาใช้ SQLite สำหรับ MVP");
+  f.rt.app.execute(actor(f), correctCommand(f, q, stale2, "ใช้ SQLite สำหรับ MVP", "เปลี่ยนมาใช้ SQLite สำหรับ MVP", evidence2));
+  expect(jobState(f, synthesis.job_id)).toMatchObject({ state: "blocked", reason: "source_retired" });
+});
+
 test("MEM03 invalid pending JSON marks preview incomplete and still fences on correct", async () => {
   const f = await fixture();
   const p = project(f, "Jit MVP", "ฐานข้อมูลสำหรับ MVP");

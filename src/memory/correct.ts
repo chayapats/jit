@@ -48,27 +48,40 @@ function pendingReferencing(tx: AppTransaction, originProjectId: string, affecte
   const found = new Map<string, { id: string; projectId: string }>();
   let unreadable = 0;
   const pending = "state IN ('queued', 'admitted', 'waiting')";
-  const cites = (json: string): boolean => {
+  /** Strict per-table shape check: a pending row that cannot prove a valid
+   * dependency/manifest structure counts as incomplete, never as a clean non-match. */
+  const classify = (table: "memory_extractions" | "team_runs" | "coordinator_syntheses", json: string): "cite" | "clear" | "invalid" => {
+    type Shape = {
+      kind?: unknown; dependencies?: unknown;
+      request?: { manifest?: { claims?: unknown } };
+      manifest?: { claims?: unknown };
+    };
+    let parsed: Shape | null = null;
     try {
-      const parsed = JSON.parse(json) as {
-        kind?: string; dependencies?: ClaimReference[];
-        request?: { manifest?: { claims?: { projectId: string; claimId: string }[] } };
-        manifest?: { claims?: { projectId: string; claimId: string }[] };
-      };
-      if (parsed.dependencies?.some(ref => affected.has(ref.claimId))) return true;
-      const manifest = parsed.request?.manifest ?? (parsed.kind === "discussion" ? parsed.manifest : undefined);
-      return !!manifest?.claims?.some(entry => entry.projectId === originProjectId && affected.has(entry.claimId));
-    } catch { unreadable++; return false; /* Unreadable rows count as incomplete, never as clean. */ }
+      parsed = JSON.parse(json) as Shape;
+    } catch { return "invalid"; }
+    if (parsed === null || typeof parsed !== "object") return "invalid";
+    if (table === "memory_extractions") {
+      if (!Array.isArray(parsed.dependencies)) return "invalid";
+      return (parsed.dependencies as { claimId?: unknown }[]).some(ref => typeof ref?.claimId === "string" && affected.has(ref.claimId)) ? "cite" : "clear";
+    }
+    const manifest = table === "team_runs" && parsed.kind === "discussion" ? parsed.manifest : parsed.request?.manifest;
+    if (!manifest || !Array.isArray(manifest.claims)) return "invalid";
+    const entries = manifest.claims as { projectId?: unknown; claimId?: unknown }[];
+    return entries.some(entry => entry && entry.projectId === originProjectId && typeof entry.claimId === "string" && affected.has(entry.claimId)) ? "cite" : "clear";
   };
   // One globally ordered candidate stream: truncation is decided by rows EXAMINED, not matches.
-  const stream = tx.all<{ projectId: string; jobId: string; json: string }>(
-    `SELECT projectId, jobId, json FROM (
+  const stream = tx.all<{ projectId: string; jobId: string; json: string; source: number }>(
+    `SELECT projectId, jobId, json, source FROM (
        SELECT project_id AS projectId, job_id AS jobId, record_json AS json, 0 AS source, rowid AS ordering FROM memory_extractions WHERE job_id IN (SELECT id FROM jobs WHERE ${pending})
        UNION ALL SELECT project_id AS projectId, job_id AS jobId, record_json AS json, 1 AS source, rowid AS ordering FROM team_runs WHERE job_id IN (SELECT id FROM jobs WHERE ${pending})
        UNION ALL SELECT project_id AS projectId, job_id AS jobId, record_json AS json, 2 AS source, rowid AS ordering FROM coordinator_syntheses WHERE job_id IN (SELECT id FROM jobs WHERE ${pending})
      ) ORDER BY source, ordering LIMIT ${impactPreviewBounds.pendingJobs + 1}`);
+  const tableOf = ["memory_extractions", "team_runs", "coordinator_syntheses"] as const;
   for (const row of stream) {
-    if (cites(row.json) && found.size < impactPreviewBounds.pendingJobs) found.set(row.jobId, { id: row.jobId, projectId: row.projectId });
+    const verdict = classify(tableOf[row.source]!, row.json);
+    if (verdict === "invalid") { unreadable++; continue; }
+    if (verdict === "cite" && found.size < impactPreviewBounds.pendingJobs) found.set(row.jobId, { id: row.jobId, projectId: row.projectId });
   }
   const truncated = stream.length > impactPreviewBounds.pendingJobs || unreadable > 0;
   return { jobs: [...found.values()], truncated };
