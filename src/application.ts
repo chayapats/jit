@@ -28,6 +28,10 @@ import {
   type ProjectContinuity, type TaskChannel, type TaskCommand, type TaskList, type TaskReadModel, type TaskReceipt,
 } from "./tasks";
 
+import { memoryIdentity, prepareExtraction } from "./memory/extract";
+import { lookupActiveClaim, readMemory } from "./memory/read";
+import type { ClaimReference, ExtractMemoryCommand, MemoryExtraction, MemoryReceipt } from "./memory/types";
+
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const validToken = (value: string) => /^[a-f0-9]{64}$/.test(value);
 const randomToken = () => crypto.getRandomValues(new Uint8Array(32)).toHex();
@@ -62,7 +66,7 @@ export interface Workspace { revision: number; projects: Project[]; hasMore: boo
 /** Injectable clock and transaction fault seam for deterministic persistence checks. */
 export interface ApplicationOptions {
   now?: () => number;
-  beforeCommit?: (stage: "project" | "topic" | "message" | "job" | "team" | "decision" | "delivery" | "task" | "receipt") => void;
+  beforeCommit?: (stage: "project" | "topic" | "message" | "job" | "team" | "decision" | "delivery" | "task" | "memory" | "receipt") => void;
   jobs?: JobQueue;
 }
 
@@ -214,6 +218,7 @@ export class Application {
   }
 
   /** Commits a validated owner command, state, source records, receipt and audit as one transaction. */
+  execute(actor: OwnerActor, command: ExtractMemoryCommand): MemoryReceipt;
   execute(actor: OwnerActor, command: EnqueueJobCommand): JobReceipt;
   execute(actor: OwnerActor, command: ResumeJobCommand): JobReceipt;
   execute(actor: OwnerActor, command: JobCommand): JobReceipt;
@@ -226,8 +231,9 @@ export class Application {
   execute(actor: OwnerActor, command: CommitDeliveryCommand): DeliveryReceipt;
   execute(actor: OwnerActor, command: ResendDeliveryCommand): DeliveryResendReceipt;
   execute(actor: OwnerActor, command: RetireDeliveryCommand): DeliveryRetireReceipt;
-  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | TeamCommand | DecisionCommand | DeliveryCommand | TaskCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | TaskReceipt;
-  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | TeamCommand | DecisionCommand | DeliveryCommand | TaskCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | TaskReceipt {
+  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | TeamCommand | DecisionCommand | DeliveryCommand | TaskCommand | ExtractMemoryCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | TaskReceipt | MemoryReceipt;
+  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | TeamCommand | DecisionCommand | DeliveryCommand | TaskCommand | ExtractMemoryCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | TaskReceipt | MemoryReceipt {
+    if (command?.kind === "memory.extract") return this.#memoryCommand(actor, command);
     if (isTaskCommand(command)) return this.#taskCommand(actor, command);
     if (command?.kind === "delivery.commit" || command?.kind === "delivery.resend" || command?.kind === "delivery.retire") return this.#deliveryCommand(actor, command);
     if (command?.kind === "project.create") return this.#createProject(actor, command);
@@ -253,6 +259,50 @@ export class Application {
         command.kind, command.requestId, command.projectId, now);
       this.#beforeCommit?.("receipt");
       return result;
+    });
+  }
+
+  /** app.memory_claims/v1: bounded, offline inspector; unavailable generations never return claim payloads. */
+  memory(actor: OwnerActor, projectId: string, after = 0, sourceAfter = 0, extractionAfter = 0, query = "") {
+    requireId(projectId); requireCursor(after); requireCursor(sourceAfter); requireCursor(extractionAfter);
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor); const project = this.#project(tx, projectId), limit = this.config.pageSize;
+      const rows = tx.all<{ cursor: number; sourceId: string; revision: number; generation: number }>(
+        "SELECT rowid AS cursor, id AS sourceId, current_revision AS revision, generation FROM sources WHERE project_id = ? AND rowid > ? AND availability = 'available' AND kind != 'external' ORDER BY rowid LIMIT ?", projectId, sourceAfter, limit + 1);
+      const extractionRows = tx.all<{ sequence: number; record_json: string }>("SELECT sequence, record_json FROM memory_extractions WHERE project_id = ? AND sequence > ? ORDER BY sequence LIMIT ?", projectId, extractionAfter, limit + 1);
+      return { project, ...readMemory(tx, projectId, after, limit, query), query,
+        sources: rows.slice(0, limit).map(row => ({ cursor: row.cursor, source: lookupSource(tx, projectId, { sourceId: row.sourceId, revision: row.revision, generation: row.generation }) })),
+        sourcesNextAfter: rows.length > limit ? rows[limit - 1]!.cursor : null,
+        extractions: extractionRows.slice(0, limit).map(row => {
+          const e = JSON.parse(row.record_json) as MemoryExtraction;
+          const job = projectJob(readJob(tx, projectId, e.jobId), this.#now());
+          // Raw captured source/claim text belongs to the private attempt, never this lifecycle-aware read model.
+          return { id: e.id, jobId: e.jobId, source: lookupSource(tx, projectId, e.source), state: e.state === "queued" ? job.state : e.state, reason: e.state === "queued" ? job.reason : e.reason, claimIds: e.claimIds,
+            rejected: e.rejected, mode: e.mode, extractor: e.extractor, policy: e.policy, route: e.request.route, configuration: e.request.configuration,
+            job };
+        }), extractionsNextAfter: extractionRows.length > limit ? extractionRows[limit - 1]!.sequence : null,
+        team: readTeam(tx, projectId, this.config.team), topics: readTopics(tx, projectId, 0, limit).items,
+        extractionAvailable: this.#jobs?.available(tx) ?? false };
+    });
+  }
+
+  /** app.memory_active_generation/v1: resolves one exact claim and its bounded transitive lineage under owner/project scope. */
+  memoryClaim(actor: OwnerActor, projectId: string, reference: ClaimReference) {
+    return this.store.read(tx => { this.#requireOwner(tx, actor); this.#project(tx, projectId); return lookupActiveClaim(tx, projectId, reference); });
+  }
+
+  #memoryCommand(actor: OwnerActor, command: ExtractMemoryCommand): MemoryReceipt {
+    const payloadHash = digest(memoryIdentity(command, this.config));
+    return this.store.transaction(tx => {
+      this.#requireOwner(tx, actor); this.#project(tx, command.projectId);
+      const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
+      if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as MemoryReceipt; }
+      const now = this.#now(), generation = tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'")!.generation;
+      const result = prepareExtraction(tx, command, this.config, this.#jobs, generation, now);
+      this.#beforeCommit?.("memory");
+      tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
+      tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);
+      this.#beforeCommit?.("receipt"); return result;
     });
   }
 

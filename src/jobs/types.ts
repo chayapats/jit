@@ -59,6 +59,7 @@ export type JobCommand = EnqueueJobCommand | ResumeJobCommand | StopJobCommand;
 export interface JobReceipt { job: Job; stop?: JobStopOutcome }
 /** A trusted adapter's bounded step outcome; waiting never implies a replacement route. */
 export type WorkOutcome = { state: "succeeded"; evidence: string }
+  | { state: "partial"; evidence: string }
   | { state: "yield"; checkpoint: JobData }
   | { state: "waiting"; reason: "quota" | "needs_login" | "route_unavailable"; checkpoint?: JobData }
   | { state: "failed"; reason: "worker_failed"; evidence?: string };

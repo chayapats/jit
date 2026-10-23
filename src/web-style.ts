@@ -524,6 +524,13 @@ details.team-card[open] > summary { margin-bottom: 8px; }
   .composer textarea { min-height: 28px; max-height: clamp(28px, 20dvh, 96px); }
   .composer-note { display: none; }
 }
+.memory-content { overflow-wrap: anywhere; }
+.memory-content section { margin-block: 24px; }
+.memory-content .team-card { margin-block: 14px; }
+.memory-content .team-card h2 { font-size: 16px; }
+.memory-content .team-form { margin-block: 16px; }
+.memory-content .team-form label, .memory-content .team-form select { min-width: 0; max-width: 100%; }
+.memory-content blockquote { margin: 12px 0; border-left: 2px solid var(--line-strong); padding-left: 14px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; }
   button:active, .primary:active { transform: none; }

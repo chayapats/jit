@@ -436,6 +436,8 @@ export class JobQueue {
         let accepted = false;
         if (outcome?.state === "succeeded" && typeof outcome.evidence === "string" && outcome.evidence.length && Buffer.byteLength(outcome.evidence) <= this.policy.outputBytes) {
           mutate?.(tx); job.evidence = outcome.evidence; this.#transition(job, "succeeded", "complete"); accepted = true;
+        } else if (outcome?.state === "partial" && typeof outcome.evidence === "string" && outcome.evidence.length && Buffer.byteLength(outcome.evidence) <= this.policy.outputBytes) {
+          mutate?.(tx); job.evidence = outcome.evidence; this.#transition(job, "partial", "worker_failed"); accepted = true;
         } else if (outcome?.state === "yield") {
           job.checkpoint = JSON.parse(jobData(outcome.checkpoint, this.policy.inputBytes)); this.#transition(job, "queued", "yielded"); accepted = true;
         } else if (outcome?.state === "waiting" && ["quota", "needs_login", "route_unavailable"].includes(outcome.reason)) {

@@ -1,7 +1,8 @@
 import { Application, type CreateProjectCommand } from "./application";
 import { AppError } from "./errors";
 import type { CreateTopicCommand, SendMessageCommand } from "./conversation";
-import { workspacePage, projectPage, conversationPage, sourcePage, jobsPage, teamPage, previewPage, discussionPage, deliveryPage, deliveryDetailPage, tasksPage, taskPage, loginPage, errorPage } from "./web-layout";
+import { workspacePage, projectPage, conversationPage, sourcePage, jobsPage, teamPage, previewPage, discussionPage, deliveryPage, deliveryDetailPage, tasksPage, taskPage, memoryPage, memoryClaimPage, loginPage, errorPage } from "./web-layout";
+import type { ExtractMemoryCommand } from "./memory/types";
 import type { CommitDeliveryCommand, ResendDeliveryCommand } from "./delivery";
 import type { EnqueueJobCommand, JobLimits, ResumeJobCommand, StopJobCommand } from "./jobs/types";
 import type { DecisionCommand, TeamCommand } from "./team/types";
@@ -65,6 +66,10 @@ const messages: Record<string, string> = {
   coding_execution_unsupported: "การรับรองงานยังไม่เริ่มแก้โค้ดหรือรันคำสั่ง การเริ่มลงมือยังไม่รองรับในรุ่นนี้",
   channel_not_authorized: "ช่องทางนี้ยังใช้คำสั่งนี้ไม่ได้",
   title_too_long: "ชื่อยาวเกินกำหนด",
+  memory_source_unavailable: "แหล่งข้อมูลเปลี่ยนหรือไม่พร้อมใช้งาน เลือก revision ปัจจุบันก่อนสกัด memory",
+  memory_role_unavailable: "เปิดใช้บทบาทและกำหนด route ก่อนสกัด memory",
+  memory_dependency_unavailable: "Memory ที่อ้างอิงเปลี่ยนหรือไม่พร้อมใช้งาน กรุณาเลือกใหม่",
+  invalid_memory_command: "ข้อมูลคำขอสกัด memory ไม่ถูกต้อง กรุณาเปิดหน้าใหม่",
 };
 
 /** Creates a server-rendered owner workspace; all mutations use the shared application boundary. */
@@ -163,11 +168,35 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       const tasksRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/tasks$/.exec(url.pathname);
       const taskRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/tasks\/([a-f0-9-]{36})$/.exec(url.pathname);
       const continuityRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/continuity$/.exec(url.pathname);
+      const memoryRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/memory$/.exec(url.pathname);
+      const claimRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/memory\/claims\/([a-f0-9-]{36})$/.exec(url.pathname);
       const after = () => {
         const raw = url.searchParams.get("after") ?? "0";
         if (!/^\d{1,16}$/.test(raw)) throw new AppError("invalid_cursor");
         return Number(raw);
       };
+      if (request.method === "GET" && claimRoute) {
+        const revision = Number(url.searchParams.get("revision")), generation = Number(url.searchParams.get("generation"));
+        const state = app.memoryClaim(auth.actor, claimRoute[1]!, { claimId: claimRoute[2]!, revision, generation });
+        return api ? json(state) : respond(memoryClaimPage(state, app.project(auth.actor, claimRoute[1]!), app.workspace(auth.actor), auth.csrf));
+      }
+      if (request.method === "GET" && memoryRoute) {
+        const sourceAfter = Number(url.searchParams.get("sourceAfter") ?? 0), extractionAfter = Number(url.searchParams.get("extractionAfter") ?? 0);
+        const state = app.memory(auth.actor, memoryRoute[1]!, after(), sourceAfter, extractionAfter, url.searchParams.get("q") ?? "");
+        return api ? json(state) : respond(memoryPage(state, app.workspace(auth.actor), auth.csrf, config.jobs.maximum, { after: after(), sourceAfter, extractionAfter }));
+      }
+      if (request.method === "POST" && memoryRoute) {
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "topicId", "roleId", "source", "dependencies", "limits"].includes(key))) throw new AppError("invalid_body");
+        const form = request.headers.get("content-type")?.split(";")[0]?.trim() === "application/x-www-form-urlencoded";
+        const data = (value: unknown) => { if (!form) return value; try { return JSON.parse(value as string); } catch { throw new AppError("invalid_body"); } };
+        const command: ExtractMemoryCommand = { kind: "memory.extract", projectId: memoryRoute[1]!, requestId: body.requestId as string,
+          expectedRevision: form ? Number(body.expectedRevision) : body.expectedRevision as number,
+          payload: { topicId: body.topicId as string, roleId: body.roleId as string, source: data(body.source) as ExtractMemoryCommand["payload"]["source"],
+            dependencies: data(body.dependencies) as ExtractMemoryCommand["payload"]["dependencies"], limits: data(body.limits) as JobLimits } };
+        const result = app.execute(auth.actor, command);
+        return api ? json(result) : respond(null, 303, { Location: `/projects/${command.projectId}/memory#extraction-${result.extraction.id}` });
+      }
       if (request.method === "GET" && teamRoute) {
         const state = app.team(auth.actor, teamRoute[1] ?? null);
         return api ? json(state) : respond(teamPage(state, app.workspace(auth.actor), auth.csrf, config.jobs.maximum, url.searchParams.get("preset") ?? undefined));
