@@ -149,7 +149,7 @@ test("preview shows bounded collateral, confirm fences purges and lifecycle deni
   expect(preview.preview.affected.pendingJobs.map(j => j.id)).toContain(discussion.discussion!.jobId);
   expect(preview.preview.affected.nativeSessions.length).toBeGreaterThan(0);
   expect(preview.preview.affected.obligations.map(o => o.id)).toContain(proposed.task.id);
-  expect(preview.preview.truncated).toEqual({ sources: false, claims: false, contexts: false, pendingJobs: false, backups: false });
+  expect(preview.preview.truncated).toEqual({ sources: false, claims: false, contexts: false, pendingJobs: false, backups: false, exports: false });
   expect(preview.preview.wholeSession.required).toBe(false);
   expect(preview.preview.expiresAt).toBeGreaterThan(f.clock.now);
   const confirmed = asConfirmed(f.rt.app.execute(actor(f), confirmCommand(f, a, preview.preview.id)));

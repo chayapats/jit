@@ -3,7 +3,7 @@ import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, statS
 import { dirname } from "node:path";
 import { commitDecisionMemorySource, retireDecisionMemorySource } from "./memory/decision-sources";
 
-const schemaVersion = 17;
+const schemaVersion = 18;
 
 /** Synchronous SQL operations scoped to an application transaction. */
 export interface AppTransaction {
@@ -37,7 +37,7 @@ export class TransactionStore {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
           if (current === schemaVersion) return;
-          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16].includes(current)) throw new Error("Unsupported migration source");
+          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17].includes(current)) throw new Error("Unsupported migration source");
           if (existing) {
             const snapshot = `${path}.pre-v${current}-${crypto.randomUUID()}.sqlite`;
             const fd = openSync(snapshot, "wx", 0o600);
@@ -537,6 +537,14 @@ export class TransactionStore {
             CREATE INDEX IF NOT EXISTS deletion_operation_preview ON deletion_operations(preview_id);
             CREATE INDEX IF NOT EXISTS deletion_operation_project ON deletion_operations(project_id);
             PRAGMA user_version = 17;
+          `);
+          if (current < 18) this.#db.exec(`
+            CREATE TABLE IF NOT EXISTS export_artifacts (
+              id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
+              created_at INTEGER NOT NULL, record_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS export_artifact_project ON export_artifacts(project_id, created_at);
+            PRAGMA user_version = 18;
           `);
           // A populated rebuilt graph must retain every reference; empty legacy fixture stores have no task graph to check.
           if (this.#tx.get("SELECT 1 FROM tasks LIMIT 1") && this.#tx.all("PRAGMA foreign_key_check").length) throw new Error("Migration foreign key check failed");

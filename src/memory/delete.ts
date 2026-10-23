@@ -55,9 +55,10 @@ export interface DeletionPreview {
     pendingJobs: { id: string; projectId: string }[];
     nativeSessions: { id: string; generation: number; appState: string }[];
     backups: { id: string; createdAt: number; state: string }[];
+    exports: { id: string; projectId: string; createdAt: number }[];
     obligations: { kind: "task" | "decision"; id: string; title: string }[];
   };
-  truncated: { sources: boolean; claims: boolean; contexts: boolean; pendingJobs: boolean; backups: boolean };
+  truncated: { sources: boolean; claims: boolean; contexts: boolean; pendingJobs: boolean; backups: boolean; exports: boolean };
   wholeSession: { required: boolean; reason: string | null; sessionScope: string[] };
   note: string;
 }
@@ -282,6 +283,25 @@ function retainedBackups(tx: AppTransaction, lineage: SourceReference): { items:
   } catch { return { items: [], truncated: false }; }
 }
 
+/** Managed export artifacts whose coverage includes the doomed lineage; deletion never edits them. */
+function retainedExports(tx: AppTransaction, lineage: SourceReference, claimIds: Set<string>): { items: DeletionPreview["affected"]["exports"]; truncated: boolean } {
+  try {
+    const rows = tx.all<{ record_json: string }>("SELECT record_json FROM export_artifacts ORDER BY created_at, id LIMIT 100");
+    const items: DeletionPreview["affected"]["exports"] = [];
+    for (const row of rows) {
+      try {
+        const manifest = JSON.parse(row.record_json) as { id: string; projectId: string; createdAt: number;
+          coverage?: { sources?: { sourceId: string; revision: number; generation: number }[]; claims?: { claimId: string }[] } };
+        const hit = manifest.coverage?.sources?.some(s => s.sourceId === lineage.sourceId && s.revision === lineage.revision && s.generation === lineage.generation)
+          ?? false;
+        const claimHit = manifest.coverage?.claims?.some(c => claimIds.has(c.claimId)) ?? false;
+        if (hit || claimHit) items.push({ id: manifest.id, projectId: manifest.projectId, createdAt: manifest.createdAt });
+      } catch { /* Corrupt artifacts stay visible to export validation, not silently skipped here. */ }
+    }
+    return { items: items.slice(0, deletePreviewBounds.backups), truncated: items.length > deletePreviewBounds.backups };
+  } catch { return { items: [], truncated: false }; }
+}
+
 const deleteNote = "การลบถอน source ต้นฉบับ เนื้อความ derived ที่อ้างมัน บริบทที่บันทึกไว้และ native session ที่เกี่ยวข้องออกจาก local serving ทั้งหมด " +
   "งานที่รับรอง มติ และการตั้งค่าไม่ถูกเปลี่ยนโดยปริยาย สำรองข้อมูลเดิมยังเก็บข้อมูลที่ถูกลบตาม retention ของมัน ส่วน Telegram/provider copies ไม่ได้ถูกลบโดยคำสั่งนี้";
 
@@ -316,6 +336,7 @@ export function prepareDeletionPreview(tx: AppTransaction, command: DeletePrevie
   const { items: pendingJobs, truncated: pendingTruncated } = pendingCiting(tx, claimIds, lineage);
   const nativeSessions = nativeSessionsFor(tx, claimIds);
   const { items: backups, truncated: backupsTruncated } = retainedBackups(tx, lineage);
+  const { items: exports, truncated: exportsTruncated } = retainedExports(tx, lineage, claimIds);
   const descriptor = tx.get<{ descriptor: string }>("SELECT descriptor_json AS descriptor FROM source_versions WHERE source_id = ? AND revision = ? AND generation = ?",
     lineage.sourceId, lineage.revision, lineage.generation);
   let descriptorKind = "message";
@@ -338,14 +359,50 @@ export function prepareDeletionPreview(tx: AppTransaction, command: DeletePrevie
       pendingJobs,
       nativeSessions,
       backups,
+      exports,
       obligations: overlapObligations(tx, scope.projectId, sourceText(tx, scope.projectId, lineage), lineage),
     },
-    truncated: { sources: false, claims: claimsTruncated, contexts: contextsTruncated, pendingJobs: pendingTruncated, backups: backupsTruncated },
+    truncated: { sources: false, claims: claimsTruncated, contexts: contextsTruncated, pendingJobs: pendingTruncated, backups: backupsTruncated, exports: exportsTruncated },
     wholeSession, note: deleteNote,
   };
   tx.run("INSERT INTO deletion_previews (id, project_id, expires_at, record_json) VALUES (?, ?, ?, ?)",
     preview.id, command.projectId, preview.expiresAt, JSON.stringify(preview));
   return preview;
+}
+
+/** Replaces quoted copies of just-purged payloads in committed model outputs and delivery
+ *  reports (kind `output` lineage). Owner message/topic sources are never rewritten here. */
+function scrubOutputSources(tx: AppTransaction, needles: string[]): void {
+  const terms = [...new Set(needles.filter(n => n.length > 0))].slice(0, 500);
+  if (!terms.length) return;
+  for (const row of tx.all<{ sourceId: string; revision: number; generation: number; text: string }>(
+    `SELECT v.source_id AS sourceId, v.revision, v.generation, v.content_text AS text
+     FROM source_versions v JOIN sources s ON s.id = v.source_id
+     WHERE s.kind = 'output' AND v.content_text IS NOT NULL LIMIT 5000`)) {
+    let next = row.text;
+    for (const term of terms) {
+      if (next.includes(term)) next = next.split(term).join(redactedText);
+    }
+    if (next !== row.text) {
+      tx.run("UPDATE source_versions SET content_text = ? WHERE source_id = ? AND revision = ? AND generation = ?",
+        next, row.sourceId, row.revision, row.generation);
+    }
+  }
+}
+
+/** Replaces quoted copies of just-purged payloads in committed model outputs; owner-authored tasks/decisions/deliveries are never rewritten. */
+function scrubFreeTextOccurrences(tx: AppTransaction, needles: string[]): void {
+  const terms = [...new Set(needles.filter(n => n.length > 0))].slice(0, 500);
+  if (!terms.length) return;
+  for (const table of ["team_runs", "coordinator_syntheses", "jobs"] as const) {
+    for (const row of tx.all<{ rowid: number; json: string }>(`SELECT rowid, record_json AS json FROM ${table} LIMIT 5000`)) {
+      let next = row.json;
+      for (const term of terms) {
+        if (next.includes(term)) next = next.split(term).join(redactedText);
+      }
+      if (next !== row.json) tx.run(`UPDATE ${table} SET record_json = ? WHERE rowid = ?`, next, row.rowid);
+    }
+  }
 }
 
 function fenceAffectedJobs(tx: AppTransaction, projectId: string, jobs: { id: string; projectId: string }[], claimIds: Set<string>, now: number): void {
@@ -455,6 +512,14 @@ export function confirmDeletion(tx: AppTransaction, command: DeleteConfirmComman
   for (const project of new Set([preview.scope.projectId, ...claimEntries.map(entry => entry.projectId)])) {
     fenceUnavailableExtractions(tx, project, now);
   }
+  // Collect doomed payload texts before purging so quoted copies in committed model
+  // outputs can be scrubbed precisely; short needles are skipped to avoid over-redaction.
+  const needles = new Set<string>();
+  const needle = (value: unknown) => {
+    if (typeof value === "string" && Array.from(value).length >= 8) needles.add(value);
+  };
+  needle(tx.get<{ text: string | null }>("SELECT content_text AS text FROM source_versions WHERE source_id = ? AND revision = ? AND generation = ?",
+    lineage.sourceId, lineage.revision, lineage.generation)?.text ?? null);
   // Purge app-owned payloads; identity rows stay so references resolve as unavailable.
   tx.run("UPDATE source_versions SET content_text = NULL WHERE source_id = ? AND revision = ? AND generation = ?",
     lineage.sourceId, lineage.revision, lineage.generation);
@@ -466,14 +531,20 @@ export function confirmDeletion(tx: AppTransaction, command: DeleteConfirmComman
         entry.claim.claimId, entry.projectId)?.record_json;
       if (stored) {
         const claim = JSON.parse(stored) as MemoryClaim;
-        if (claim.status !== "deleted") tx.run("UPDATE memory_claims SET record_json = ? WHERE id = ? AND project_id = ?",
-          JSON.stringify({ ...claim, status: "deleted" }), entry.claim.claimId, entry.projectId);
+        needle(claim.text); needle(claim.quote);
+        if (claim.status !== "deleted" || claim.text !== redactedText) {
+          tx.run("UPDATE memory_claims SET record_json = ? WHERE id = ? AND project_id = ?",
+            JSON.stringify({ ...claim, status: "deleted", text: redactedText, quote: redactedText }),
+            entry.claim.claimId, entry.projectId);
+        }
       }
     } catch { /* Identity tombstones below still deny every lifecycle consumer. */ }
   }
   const sourceKeys = new Set([sourceKey(lineage)]);
   scrubStoredManifests(tx, sourceKeys, claimIds);
   scrubConversationReceipts(tx, lineage, claimIds);
+  scrubFreeTextOccurrences(tx, [...needles].slice(0, 500));
+  scrubOutputSources(tx, [...needles].slice(0, 500));
   for (const entry of claimEntries) tx.run("DELETE FROM memory_derived_sources WHERE source_id = ?", entry.claim.source.sourceId);
   tx.run("DELETE FROM memory_derived_sources WHERE source_id = ?", lineage.sourceId);
   const operationId = crypto.randomUUID();

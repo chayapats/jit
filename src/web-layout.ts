@@ -631,3 +631,30 @@ export function deletionDetailPage(state: { project: Project; preview: import(".
   return shell("ผลการลบ", { project, workspace, csrf, section: "memory" }, `<div class="content">${previewCard}${operationCard || (!preview ? '<p class="empty-list">ไม่พบบันทึกนี้</p>' : "")}
     <p><a href="/projects/${project.id}/memory/deletions">กลับไปรายการลบ</a></p></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
 }
+
+/** ops.project_export/v1: inspectable portable project data with lifecycle boundaries. */
+export function exportsPage(state: { project: Project; manifests: import("./ops/export").ExportManifest[]; preview: import("./ops/export").ExportPreview }, workspace: Workspace, csrf: string): string {
+  const { project, manifests, preview } = state;
+  const items = manifests.map(m => `<article class="team-card" id="export-${m.id}"><header><h3><a href="/projects/${project.id}/exports/${m.id}">${escape(m.id)}</a></h3><span class="job-status" data-state="${m.state}">${escape(m.state)}</span></header>
+    <p>${time(m.createdAt)} · ประวัติ ${m.scope.includeHistory ? "รวมข้อความดิบ" : "เฉพาะ metadata"} · claims ${m.counts.claims} · งาน ${m.counts.jobs} · exclusions ${m.exclusions.length}</p>
+    <p><small>hash ${escape(m.artifact.hash.slice(0, 16))}… · ${m.artifact.bytes} bytes · tombstones ${m.lifecycle.tombstonesApplied}</small></p></article>`).join("");
+  return shell("ส่งออกข้อมูล", { project, workspace, csrf, section: "memory" }, `<div class="content"><section class="hero"><p class="eyebrow">ops.project_export/v1</p><h2>ส่งออก ${escape(project.name)}</h2><p>ไฟล์ JSON ที่ตรวจซ้ำได้ ไม่มีความลับ ไม่ปลุกข้อมูลที่ลบ/ลืม ประวัติข้อความดิบรวมเฉพาะเมื่อติ๊กเลือก</p></section>
+    <details class="team-card" open><summary>ดูตัวอย่างก่อนส่งออก</summary><p>topics ${preview.counts.topics} · messages ${preview.counts.messages} · tasks ${preview.counts.tasks} · decisions ${preview.counts.decisions} · claims ${preview.counts.claims} · exclusions ${preview.manifest.exclusions.length} · missing ${preview.manifest.missingRefs.length}</p>
+    <p><small>${escape(preview.manifest.lifecycle.note)}</small></p>
+    <form class="team-form" method="post" action="/projects/${project.id}/exports">${hiddenCommand(csrf, project.revision)}
+      <label><input type="checkbox" name="includeHistory" value="on"> รวมประวัติข้อความดิบ (รวมข้อความที่ถูก forget แต่ยังไม่ถูกลบ)</label>
+      <label>บันทึกช่วยจำ<input name="note" maxlength="500" value="manual export"></label>
+      <button class="primary">สร้างไฟล์ส่งออก</button></form></details>
+    <section aria-label="ไฟล์ส่งออก">${items || '<p class="empty-list">ยังไม่มีไฟล์ส่งออก</p>'}</section></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
+}
+
+/** One export manifest: versions, coverage, exclusions, residuals and artifact reference. */
+export function exportDetailPage(state: { project: Project; manifest: import("./ops/export").ExportManifest }, workspace: Workspace, csrf: string): string {
+  const { project, manifest: m } = state;
+  return shell(`ส่งออก ${m.id.slice(0, 8)}`, { project, workspace, csrf, section: "memory" }, `<div class="content"><section class="hero"><p class="eyebrow">${escape(m.contract)} · ${escape(m.state)}</p><h2>ไฟล์ส่งออก ${escape(m.id)}</h2><p>${time(m.createdAt)} · scope ประวัติ ${m.scope.includeHistory ? "รวมข้อความดิบ" : "เฉพาะ metadata"}</p></section>
+    <article class="team-card"><h3>ขอบเขตและความครบถ้วน</h3><p>topics ${m.counts.topics} · messages ${m.counts.messages} · tasks ${m.counts.tasks} · decisions ${m.counts.decisions} · claims ${m.counts.claims} · jobs ${m.counts.jobs} · deliveries ${m.counts.deliveries}</p>
+    <p>exclusions ${m.exclusions.length} · missing ${m.missingRefs.length} · การลบที่ค้าง ${m.pendingDeletions.length} · tombstones ${m.lifecycle.tombstonesApplied}</p>
+    <p>สำรองที่ยังเก็บข้อมูลนี้: ${m.residuals.backups.length ? escape(m.residuals.backups.join(", ")) : "ไม่มี"} · ภายนอก: ${escape(m.residuals.external.join(", "))}</p>
+    <p><small>hash ${escape(m.artifact.hash)} · ${m.artifact.bytes} bytes · ${escape(m.artifact.path)}</small></p></article>
+    <p><a href="/projects/${project.id}/exports">กลับไปรายการส่งออก</a></p></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
+}

@@ -1,7 +1,7 @@
 import { Application, type CreateProjectCommand } from "./application";
 import { AppError } from "./errors";
 import type { CreateTopicCommand, SendMessageCommand } from "./conversation";
-import { workspacePage, projectPage, conversationPage, sourcePage, jobsPage, teamPage, previewPage, discussionPage, deliveryPage, deliveryDetailPage, prReportsPage, prReportPage, tasksPage, taskPage, memoryPage, memoryClaimPage, memoryContextPage, schedulesPage, scheduleDetailPage, backupsPage, backupDetailPage, deletionsPage, deletionDetailPage, loginPage, errorPage } from "./web-layout";
+import { workspacePage, projectPage, conversationPage, sourcePage, jobsPage, teamPage, previewPage, discussionPage, deliveryPage, deliveryDetailPage, prReportsPage, prReportPage, tasksPage, taskPage, memoryPage, memoryClaimPage, memoryContextPage, schedulesPage, scheduleDetailPage, backupsPage, backupDetailPage, deletionsPage, deletionDetailPage, exportsPage, exportDetailPage, loginPage, errorPage } from "./web-layout";
 import type { ExtractMemoryCommand } from "./memory/types";
 import type { CorrectMemoryCommand } from "./memory/types";
 import type { ForgetMemoryCommand } from "./memory/types";
@@ -101,6 +101,10 @@ const messages: Record<string, string> = {
   memory_source_deleted: "ต้นฉบับนี้ถูกลบไปแล้ว ใช้ต้นฉบับข้อความใหม่แทน",
   deletion_not_found: "ไม่พบบันทึกการลบในโครงการที่เลือก",
   invalid_memory_delete: "ข้อมูลคำขอลบ memory ไม่ถูกต้อง กรุณาเปิดหน้าใหม่",
+  export_not_found: "ไม่พบไฟล์ส่งออกในโครงการที่เลือก",
+  export_corrupt: "ไฟล์ส่งออกนี้ตรวจสอบไม่ผ่าน",
+  export_storage_unavailable: "พื้นที่ส่งออกไม่พร้อมใช้งาน",
+  invalid_export_command: "ข้อมูลคำขอส่งออกไม่ถูกต้อง กรุณาเปิดหน้าใหม่",
   memory_source_suppressed: "ต้นฉบับนี้ถูกแยกออกจาก memory อัตโนมัติแล้ว สกัดใหม่ไม่ได้ ใช้ต้นฉบับข้อความใหม่แทน",
   backup_not_found: "ไม่พบสำรองข้อมูลที่เลือก",
   backup_corrupt: "สำรองข้อมูลนี้ตรวจสอบไม่ผ่าน",
@@ -215,6 +219,8 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       const contextRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/memory\/contexts\/([a-f0-9-]{36})$/.exec(url.pathname);
       const deletionsRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/memory\/deletions$/.exec(url.pathname);
       const deletionRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/memory\/deletions\/([a-f0-9-]{36})$/.exec(url.pathname);
+      const exportsRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/exports$/.exec(url.pathname);
+      const exportRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/exports\/([a-f0-9-]{36})$/.exec(url.pathname);
       const backupsRoute = /^\/(api\/)?backups$/.exec(url.pathname);
       const backupRoute = /^\/(api\/)?backups\/([a-f0-9-]{36})$/.exec(url.pathname);
       const after = () => {
@@ -280,6 +286,15 @@ export function createWebHandler(app: Application): (request: Request) => Promis
         if (!preview && !operation) throw new AppError("deletion_not_found", 404);
         return api ? json({ project, preview, operation }) : respond(deletionDetailPage({ project, preview, operation }, app.workspace(auth.actor), auth.csrf));
       }
+      if (request.method === "GET" && exportsRoute) {
+        const state = app.exports(auth.actor, exportsRoute[2]!);
+        const { preview } = app.exportPreview(auth.actor, exportsRoute[2]!, url.searchParams.get("history") === "1");
+        return api ? json({ ...state, preview }) : respond(exportsPage({ ...state, preview }, app.workspace(auth.actor), auth.csrf));
+      }
+      if (request.method === "GET" && exportRoute) {
+        const state = app.export(auth.actor, exportRoute[2]!, exportRoute[3]!);
+        return api ? json(state) : respond(exportDetailPage(state, app.workspace(auth.actor), auth.csrf));
+      }
       if (request.method === "GET" && backupsRoute) {
         const state = app.backups(auth.actor);
         const revision = app.workspace(auth.actor).revision;
@@ -338,6 +353,19 @@ export function createWebHandler(app: Application): (request: Request) => Promis
           return api ? json(result) : respond(null, 303, { Location: `/projects/${projectId}/memory/deletions/${id}` });
         }
         throw new AppError("invalid_body");
+      }
+      if (request.method === "POST" && exportsRoute) {
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "includeHistory", "note"].includes(key))) throw new AppError("invalid_body");
+        const form = request.headers.get("content-type")?.split(";")[0]?.trim() === "application/x-www-form-urlencoded";
+        const data = (value: unknown) => { if (!form) return value; try { return JSON.parse(value as string); } catch { throw new AppError("invalid_body"); } };
+        const projectId = exportsRoute[2]!;
+        const number = (value: unknown) => typeof value === "string" && /^\d{1,15}$/.test(value) ? Number(value) : value;
+        const command = { kind: "export.create" as const, requestId: body.requestId as string, projectId,
+          expectedRevision: number(body.expectedRevision) as number,
+          payload: { includeHistory: form ? body.includeHistory === "on" : data(body.includeHistory) === true, note: (body.note as string) ?? "manual export" } };
+        const result = app.execute(auth.actor, command) as { manifest: { id: string } };
+        return api ? json(result) : respond(null, 303, { Location: `/projects/${projectId}/exports/${result.manifest.id}` });
       }
       if (request.method === "GET" && teamRoute) {
         const state = app.team(auth.actor, teamRoute[1] ?? null);

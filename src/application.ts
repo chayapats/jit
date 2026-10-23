@@ -88,6 +88,10 @@ import {
   backupIdentity, enforceRetention, listBackups, ownBackupDir, prepareBackupManifest, readBackupManifest, resolveNativeSnapshot,
   writeArtifact, type BackupCommand, type BackupManifest, type BackupNativePort, type BackupReceipt,
 } from "./ops/backup";
+import {
+  createExport, exportIdentity, exportPreview, listExportArtifacts, ownExportDir, readExportManifest,
+  type ExportCommand, type ExportManifest, type ExportPreview, type ExportReceipt,
+} from "./ops/export";
 
 /** Injectable clock and transaction fault seam for deterministic persistence checks. */
 export interface ApplicationOptions {
@@ -95,6 +99,7 @@ export interface ApplicationOptions {
   beforeCommit?(stage: "project" | "topic" | "message" | "job" | "team" | "decision" | "delivery" | "task" | "memory" | "receipt" | "schedule" | "backup" | "ops"): void;
   jobs?: JobQueue;
   backupDir?: string;
+  exportDir?: string;
   nativeSnapshot?: BackupNativePort;
 }
 
@@ -105,6 +110,7 @@ export class Application {
   #beforeCommit: ApplicationOptions["beforeCommit"];
   #jobs: JobQueue | undefined;
   #backupDir: string;
+  #exportDir: string;
   #nativeSnapshot: BackupNativePort | undefined;
 
   constructor(readonly store: TransactionStore, readonly config: AppConfig, options: ApplicationOptions = {}) {
@@ -113,6 +119,7 @@ export class Application {
     if (options.jobs && options.jobs.store !== store) throw new AppError("invalid_job_store");
     this.#jobs = options.jobs;
     this.#backupDir = ownBackupDir(store.path, options.backupDir);
+    this.#exportDir = ownExportDir(store.path, options.exportDir);
     this.#nativeSnapshot = options.nativeSnapshot;
   }
 
@@ -278,8 +285,10 @@ export class Application {
   execute(actor: OwnerActor, command: PrReportCommand): PrReportReceipt;
   execute(actor: OwnerActor, command: BackupCommand): BackupReceipt;
   execute(actor: OwnerActor, command: DeleteCommand): DeletionReceipt | DeletionConfirmReceipt | DeletionOperation;
-  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation;
-  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation {
+  execute(actor: OwnerActor, command: ExportCommand): ExportReceipt;
+  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt;
+  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt {
+    if (command?.kind === "export.create") return this.#exportCommand(actor, command);
     if (command?.kind === "backup.create" || command?.kind === "backup.prune") return this.#backupCommand(actor, command);
     if (command?.kind === "memory.delete.preview" || command?.kind === "memory.delete.confirm" || command?.kind === "memory.delete.retry") return this.#deleteCommand(actor, command);
     if (command?.kind === "memory.extract") return this.#memoryCommand(actor, command);
@@ -410,6 +419,58 @@ export class Application {
     return this.store.read(tx => {
       this.#requireOwner(tx, actor);
       return { tombstones: readDeletionLedger(tx) };
+    });
+  }
+
+  /** ops.project_export/v1: what an export would publish, without creating any artifact. */
+  exportPreview(actor: OwnerActor, projectId: string, includeHistory: boolean): { project: Project; preview: ExportPreview } {
+    requireId(projectId);
+    if (typeof includeHistory !== "boolean") throw new AppError("invalid_export_command");
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor);
+      const project = this.#project(tx, projectId);
+      return { project, preview: exportPreview(tx, projectId, { includeHistory }, project.revision) };
+    });
+  }
+
+  /** ops.project_export/v1: bounded durable export artifacts for one project. */
+  exports(actor: OwnerActor, projectId: string): { project: Project; manifests: ExportManifest[] } {
+    requireId(projectId);
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor);
+      return { project: this.#project(tx, projectId), manifests: listExportArtifacts(tx, projectId) };
+    });
+  }
+
+  /** ops.project_export/v1: reads one export manifest without parsing the artifact or activating workers. */
+  export(actor: OwnerActor, projectId: string, id: string): { project: Project; manifest: ExportManifest } {
+    requireId(projectId); requireId(id);
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor);
+      return { project: this.#project(tx, projectId), manifest: readExportManifest(tx, projectId, id) };
+    });
+  }
+
+  #exportCommand(actor: OwnerActor, command: ExportCommand): ExportReceipt {
+    const payloadHash = digest(exportIdentity(command));
+    return this.store.transaction(tx => {
+      this.#requireOwner(tx, actor); const project = this.#project(tx, command.projectId);
+      const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
+      if (prior) {
+        if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409);
+        return JSON.parse(prior.result_json) as ExportReceipt;
+      }
+      const now = this.#now();
+      if (project.revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
+      const manifest = createExport(tx, { id: crypto.randomUUID(), now, projectId: command.projectId,
+        projectRevision: project.revision, scope: { includeHistory: command.payload.includeHistory },
+        exportDir: this.#exportDir, note: command.payload.note });
+      this.#beforeCommit?.("ops");
+      const result: ExportReceipt = { manifest, duplicate: false };
+      tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
+      tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);
+      this.#beforeCommit?.("receipt");
+      return result;
     });
   }
 
