@@ -341,8 +341,35 @@ function memoryClaimContent(item: import("./memory/types").ClaimLookup, projectI
 }
 
 /** Renders exact claim lineage without any model calls or inferred owner authority. */
-export function memoryClaimPage(state: import("./memory/types").ClaimLookup, project: Project, workspace: Workspace, csrf: string): string {
-  return shell("ที่มาของ memory", { workspace, csrf, project, section: "memory" }, `<div class="content memory-content"><p><a href="/projects/${project.id}/memory">กลับไป memory ของโครงการ</a></p>${memoryClaimContent(state, project.id)}</div>`);
+export interface ClaimCorrectionView {
+  correction: import("./memory/types").MemoryCorrection | null;
+  impact: import("./memory/types").CorrectionImpact | null;
+  sources: { reference: import("./sources").SourceReference; label: string }[];
+  revision: number;
+}
+export function memoryClaimPage(state: import("./memory/types").ClaimLookup, extra: ClaimCorrectionView, project: Project, workspace: Workspace, csrf: string): string {
+  return shell("ที่มาของ memory", { workspace, csrf, project, section: "memory" }, `<div class="content memory-content"><p><a href="/projects/${project.id}/memory">กลับไป memory ของโครงการ</a></p>${memoryClaimContent(state, project.id)}${correctionPanel(state, extra, project.id, csrf)}</div>`);
+}
+
+function correctionPanel(item: import("./memory/types").ClaimLookup, extra: ClaimCorrectionView, projectId: string, csrf: string): string {
+  if (extra.correction) {
+    const c = extra.correction;
+    return `<section class="team-card" id="memory-correction"><h2>Memory นี้ถูกแก้แล้ว</h2><p>แทนที่ด้วย <a href="${claimUrl(projectId, c.replacement)}">claim ${escape(c.replacement.claimId)}</a> · revision ${c.replacement.revision} · generation ${c.replacement.generation}</p><p>เหตุผล: ${escape(c.reason)}</p><p>คำตอบและบริบทครั้งถัดไปใช้ข้อความที่แก้แล้ว ข้อความเดิมไม่ถูกใช้อ้างอิงอีก งาน มติ บทบาท และสิทธิ์ที่รับรองแล้วยังคงเดิม</p></section>`;
+  }
+  if (item.state !== "available" || !extra.impact) return "";
+  const impact = extra.impact, capped = (n: number, cut: boolean) => cut ? `อย่างน้อย ${n} (แสดงไม่ครบ)` : `${n}`;
+  const summary = `<p>ผลกระทบของการแก้: memory ที่พึ่งข้อนี้ ${capped(impact.dependents.length, impact.truncated.dependents)} รายการ · บริบทของ run ที่ใช้ข้อนี้ ${capped(impact.contexts.length, impact.truncated.contexts)} รายการ · งานที่ค้างและจะถูก fence ${capped(impact.pendingJobs.length, impact.truncated.pendingJobs)} รายการ</p>`;
+  const options = extra.sources.length ? extra.sources.map(({ reference, label }) => `<option value="${escape(JSON.stringify(reference))}">${escape(label)}</option>`).join("")
+    : `<option value="">ไม่มีต้นฉบับที่พร้อมใช้สำหรับแก้</option>`;
+  return `<section class="team-card" id="memory-correct"><h2>แก้ memory ข้อนี้</h2>${summary}
+    <p>การแก้ไม่เปลี่ยนงาน มติ บทบาท หรือสิทธิ์ที่รับรองแล้ว ถ้าต้องการเปลี่ยนสิ่งเหล่านั้นให้ใช้คำสั่งของงาน/มตินั้นโดยตรง งานที่ค้างซึ่งใช้ข้อความเดิมจะถูก fence และบริบทเดิมไม่ถูกใช้อ้างอิงอีก</p>
+    ${extra.sources.length ? `<form class="team-form" method="post" action="/projects/${escape(projectId)}/memory/claims/${escape(item.claim.claimId)}">${hiddenCommand(csrf, extra.revision)}
+      <input type="hidden" name="revision" value="${item.claim.revision}"><input type="hidden" name="generation" value="${item.claim.generation}">
+      <label>ข้อความที่แก้แล้ว<textarea name="text" required maxlength="2048">${escape(item.claim.text)}</textarea></label>
+      <label>ข้อความหลักฐานที่ยกมา (ต้องอยู่ในต้นฉบับที่เลือก)<textarea name="quote" required maxlength="2048">${escape(item.claim.quote)}</textarea></label>
+      <label>ต้นฉบับที่รองรับการแก้<select name="source">${options}</select></label>
+      <label>เหตุผลที่แก้<input name="reason" required maxlength="500" placeholder="เช่น เจ้าของแจ้งข้อมูลใหม่"></label>
+      <button class="primary">ยืนยันการแก้</button></form>` : "<p>ยังไม่มีต้นฉบับที่พร้อมใช้สำหรับรองรับการแก้</p>"}</section>`;
 }
 
 const contextLayers: Record<import("./memory/types").ContextProvenanceEntry["layer"], string> = {

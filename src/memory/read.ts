@@ -19,7 +19,7 @@ function resolve(tx: AppTransaction, projectId: string, reference: ClaimReferenc
     ...(claim ? { provenance: { projectId: claim.projectId, source: claim.source, dependencies: claim.dependencies, conflicts: claim.conflicts, decision: claim.decision } } : {}) });
   if (--budget.remaining < 0 || depth > 8 || seen.has(reference.claimId)) return unavailable("lineage_limit");
   if (!claim) return unavailable("claim_unavailable");
-  if (claim.status !== "active") return unavailable("claim_inactive");
+  if (claim.status !== "active") return unavailable(claim.status === "corrected" ? "claim_corrected" : "claim_inactive");
   const source = lookupSource(tx, projectId, claim.source);
   if (source.state !== "available" || source.current.revision !== claim.source.revision) return unavailable("source_unavailable");
   const next = new Set(seen).add(reference.claimId);

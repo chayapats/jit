@@ -1,6 +1,11 @@
 import type { JobLimits } from "../jobs/types";
 import type { SourceReference } from "../sources";
 
+/** Registered work types; the authoritative jobs record carries the type, never the run JSON. */
+export const discussionWorkId = "team.discussion";
+export const specialistWorkId = "team.specialist-analysis";
+export const coordinatorSynthesisWorkId = "team.coordinator-synthesis";
+
 /** An atomic selected subscription route; the auth reference names configured access and never contains credentials. */
 export interface RoleRoute { provider: "grok" | "codex"; model: string; authRoute: string }
 /** One owner-configured responsibility, independent of a model, session or execution permission. */

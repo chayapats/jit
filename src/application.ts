@@ -12,9 +12,10 @@ import { JobQueue, jobCommandIdentity, projectJob, readJob, readJobs } from "./j
 import type { EnqueueJobCommand, ResumeJobCommand, JobCommand, JobReceipt } from "./jobs/types";
 import { mutateTeamConfiguration, readTeam, teamIdentity } from "./team/configuration";
 import { listDiscussions, prepareControl, prepareDispatch, projectDiscussion, readDiscussion } from "./team/dispatch";
-import { acceptDecision, decisionIdentity, prepareSynthesis, readDecisionModel, supersedeDecision, coordinatorSynthesisWorkId } from "./team/decisions";
+import { acceptDecision, decisionIdentity, prepareSynthesis, readDecisionModel, supersedeDecision } from "./team/decisions";
 import { preparePreview, readPreview } from "./team/preview";
 import type { DecisionCommand, DecisionReadModel, DecisionReceipt, TeamCommand, TeamReceipt } from "./team/types";
+import { coordinatorSynthesisWorkId } from "./team/types";
 import {
   commitDeliveryIntent, deliveryCommandIdentity, listDeliveryAttempts, listDeliveryIntents, readDeliveryIntent,
   readDeliveryReport, resendDeliveryIntent, retireDeliveryReport,
@@ -29,8 +30,9 @@ import {
 } from "./tasks";
 
 import { fenceUnavailableExtractions, memoryIdentity, prepareExtraction } from "./memory/extract";
+import { correctionIdentity, correctionImpact, prepareCorrection, readCorrection } from "./memory/correct";
 import { lookupActiveClaim, readMemory } from "./memory/read";
-import type { ClaimReference, ExtractMemoryCommand, MemoryContextView, MemoryExtraction, MemoryReceipt } from "./memory/types";
+import type { ClaimReference, CorrectMemoryCommand, CorrectionImpact, CorrectionReceipt, ExtractMemoryCommand, MemoryContextView, MemoryExtraction, MemoryReceipt } from "./memory/types";
 import { fenceStaleContexts, readMemoryContext, readOwnedMemoryContext } from "./memory/context";
 import { commitDecisionMemorySource, memorySourceDecision, retireDecisionMemorySource } from "./memory/decision-sources";
 
@@ -230,12 +232,14 @@ export class Application {
   execute(actor: OwnerActor, command: TeamCommand): TeamReceipt;
   execute(actor: OwnerActor, command: DecisionCommand): DecisionReceipt;
   execute(actor: OwnerActor, command: TaskCommand): TaskReceipt;
+  execute(actor: OwnerActor, command: CorrectMemoryCommand): CorrectionReceipt;
   execute(actor: OwnerActor, command: CommitDeliveryCommand): DeliveryReceipt;
   execute(actor: OwnerActor, command: ResendDeliveryCommand): DeliveryResendReceipt;
   execute(actor: OwnerActor, command: RetireDeliveryCommand): DeliveryRetireReceipt;
-  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | TeamCommand | DecisionCommand | DeliveryCommand | TaskCommand | ExtractMemoryCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | TaskReceipt | MemoryReceipt;
-  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | TeamCommand | DecisionCommand | DeliveryCommand | TaskCommand | ExtractMemoryCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | TaskReceipt | MemoryReceipt {
+  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | TeamCommand | DecisionCommand | DeliveryCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt;
+  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | TeamCommand | DecisionCommand | DeliveryCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt {
     if (command?.kind === "memory.extract") return this.#memoryCommand(actor, command);
+    if (command?.kind === "memory.correct") return this.#correctCommand(actor, command);
     if (isTaskCommand(command)) return this.#taskCommand(actor, command);
     if (command?.kind === "delivery.commit" || command?.kind === "delivery.resend" || command?.kind === "delivery.retire") return this.#deliveryCommand(actor, command);
     if (command?.kind === "project.create") return this.#createProject(actor, command);
@@ -291,6 +295,37 @@ export class Application {
   /** app.memory_active_generation/v1: resolves one exact claim and its bounded transitive lineage under owner/project scope. */
   memoryClaim(actor: OwnerActor, projectId: string, reference: ClaimReference) {
     return this.store.read(tx => { this.#requireOwner(tx, actor); this.#project(tx, projectId); return lookupActiveClaim(tx, projectId, reference); });
+  }
+
+  /** app.memory_correction/v1: the durable correction for one claim, or null when never corrected. */
+  memoryCorrection(actor: OwnerActor, projectId: string, claimId: string) {
+    requireId(projectId); requireId(claimId);
+    return this.store.read(tx => { this.#requireOwner(tx, actor); this.#project(tx, projectId); return readCorrection(tx, projectId, claimId); });
+  }
+
+  /** app.memory_correction/v1: what one correction would fence or retire, shown before the owner confirms. */
+  correctionImpact(actor: OwnerActor, projectId: string, reference: ClaimReference): CorrectionImpact {
+    requireId(projectId);
+    return this.store.read(tx => { this.#requireOwner(tx, actor); this.#project(tx, projectId); return correctionImpact(tx, projectId, reference); });
+  }
+
+  #correctCommand(actor: OwnerActor, command: CorrectMemoryCommand): CorrectionReceipt {
+    const payloadHash = digest(correctionIdentity(command, this.config.team.contextBytes));
+    const committed = this.store.transaction(tx => {
+      this.#requireOwner(tx, actor); const project = this.#project(tx, command.projectId);
+      const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
+      if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); return { receipt: JSON.parse(prior.result_json) as CorrectionReceipt, fenced: false }; }
+      const now = this.#now(), generation = tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'")!.generation;
+      const result = prepareCorrection(tx, command, this.config.team.contextBytes, generation, project.revision, now);
+      this.#beforeCommit?.("memory");
+      tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
+      tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);
+      this.#beforeCommit?.("receipt"); return { receipt: result, fenced: true };
+    });
+    // Abort adapters of already-running fenced attempts after commit; durable authority
+    // alone already prevents their late results from publishing stale memory.
+    if (committed.fenced) this.#jobs?.cancelFenced();
+    return committed.receipt;
   }
 
   #memoryCommand(actor: OwnerActor, command: ExtractMemoryCommand): MemoryReceipt {
