@@ -1,9 +1,9 @@
 import { Database, type SQLQueryBindings } from "bun:sqlite";
-import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { commitDecisionMemorySource, retireDecisionMemorySource } from "./memory/decision-sources";
 
-const schemaVersion = 18;
+const schemaVersion = 19;
 
 /** Synchronous SQL operations scoped to an application transaction. */
 export interface AppTransaction {
@@ -37,7 +37,7 @@ export class TransactionStore {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
           if (current === schemaVersion) return;
-          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17].includes(current)) throw new Error("Unsupported migration source");
+          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18].includes(current)) throw new Error("Unsupported migration source");
           if (existing) {
             const snapshot = `${path}.pre-v${current}-${crypto.randomUUID()}.sqlite`;
             const fd = openSync(snapshot, "wx", 0o600);
@@ -546,6 +546,14 @@ export class TransactionStore {
             CREATE INDEX IF NOT EXISTS export_artifact_project ON export_artifacts(project_id, created_at);
             PRAGMA user_version = 18;
           `);
+          if (current < 19) this.#db.exec(`
+            CREATE TABLE IF NOT EXISTS upgrade_journal (
+              id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, state TEXT NOT NULL,
+              record_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS upgrade_journal_state ON upgrade_journal(state, created_at);
+            PRAGMA user_version = 19;
+          `);
           // A populated rebuilt graph must retain every reference; empty legacy fixture stores have no task graph to check.
           if (this.#tx.get("SELECT 1 FROM tasks LIMIT 1") && this.#tx.all("PRAGMA foreign_key_check").length) throw new Error("Migration foreign key check failed");
         }).immediate();
@@ -581,6 +589,40 @@ export class TransactionStore {
   snapshotBytes(): Uint8Array {
     try { this.#db.exec("PRAGMA wal_checkpoint(TRUNCATE);"); } catch { /* Checkpoint best-effort; serialize stays consistent. */ }
     return this.#db.serialize();
+  }
+
+  /**
+   * Activates a staged image by replacing this database file with validated bytes and
+   * reopening the same store handle. Callers record journal intent first; a crash between
+   * intent and completion leaves an explicit non-terminal journal entry to resume from.
+   */
+  swapFrom(sourcePath: string): void {
+    const bytes = readFileSync(sourcePath);
+    try { this.#db.exec("PRAGMA wal_checkpoint(TRUNCATE);"); } catch { /* Best-effort checkpoint before close. */ }
+    this.#db.close();
+    writeFileSync(this.path, bytes);
+    chmodSync(this.path, 0o600);
+    for (const suffix of ["-wal", "-shm"]) {
+      try { rmSync(`${this.path}${suffix}`); } catch { /* Stale WAL siblings are recreated on open. */ }
+    }
+    const reopened = new Database(this.path, { create: true, strict: true });
+    try {
+      reopened.exec("PRAGMA busy_timeout = 2000; PRAGMA foreign_keys = ON;");
+      reopened.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;");
+      chmodSync(this.path, 0o600);
+      // Scheduler and delivery-worker claims belong to the pre-swap boot; a stale claim
+      // must never authorize work after activation. The service reboots and reconciles.
+      try { reopened.exec("DELETE FROM job_scheduler; DELETE FROM delivery_worker;"); } catch { /* Ancient images predate these tables. */ }
+    } catch (error) {
+      reopened.close();
+      throw error;
+    }
+    this.#db = reopened;
+    this.#tx = {
+      get: <T>(sql: string, ...args: SQLQueryBindings[]): T | null => this.#db.query(sql).get(...args) as T | null,
+      all: <T>(sql: string, ...args: SQLQueryBindings[]): T[] => this.#db.query(sql).all(...args) as T[],
+      run: (sql: string, ...args: SQLQueryBindings[]): void => { this.#db.query(sql).run(...args); },
+    };
   }
 
   /** Closes this connection; committed commands remain available after reopening. */

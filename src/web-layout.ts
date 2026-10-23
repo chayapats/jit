@@ -658,3 +658,27 @@ export function exportDetailPage(state: { project: Project; manifest: import("./
     <p><small>hash ${escape(m.artifact.hash)} · ${m.artifact.bytes} bytes · ${escape(m.artifact.path)}</small></p></article>
     <p><a href="/projects/${project.id}/exports">กลับไปรายการส่งออก</a></p></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
 }
+
+/** ops.schema_migrations/v1: inspectable staged upgrades with recoverable prior versions. */
+export function upgradesPage(state: { journals: import("./ops/upgrade").UpgradeJournal[] }, workspace: Workspace, csrf: string, revision: number): string {
+  const items = state.journals.map(j => `<article class="team-card" id="upgrade-${j.id}"><header><h3><a href="/upgrades/${j.id}">${escape(j.id)}</a></h3><span class="job-status" data-state="${j.state}">${escape(j.state)}</span></header>
+    <p>schema ${j.fromSchema} → ${j.targetSchema} · snapshot ${j.snapshotBackupId ? escape(j.snapshotBackupId) : "ไม่มี"} · ${escape(j.nextAction)}</p>
+    ${j.reason ? `<p>เหตุผล: ${escape(j.reason)}</p>` : ""}</article>`).join("");
+  return shell("อัปเกรด", { workspace, csrf, section: "home" }, `<div class="content"><section class="hero"><p class="eyebrow">ops.schema_migrations/v1</p><h2>อัปเกรดแบบ staged</h2><p>ตรวจ preflight, snapshot กู้คืน, migrate ลง staged, validate invariants แล้วค่อย activate ข้อมูลเดิมกู้คืนได้จาก snapshot เสมอ ไม่ parse รูปแบบ private ของ engine</p></section>
+    <form class="create-form" method="post" action="/upgrades">${hiddenCommand(csrf, revision)}<input type="hidden" name="targetSchema" value="19"><input type="hidden" name="note" value="manual upgrade"><button class="primary">เตรียมอัปเกรด${icon("plus")}</button></form>
+    <section aria-label="อัปเกรด">${items || '<p class="empty-list">ยังไม่มีอัปเกรด</p>'}</section></div>`);
+}
+
+/** One upgrade journal: preflight, staged steps, validation report and recovery choice. */
+export function upgradeDetailPage(state: { journal: import("./ops/upgrade").UpgradeJournal }, workspace: Workspace, csrf: string, revision: number): string {
+  const j = state.journal;
+  const checks = j.validation ? j.validation.checks.map(c => `<li>${escape(c.name)}: ${c.pass ? "ผ่าน" : "ไม่ผ่าน"} <small>${escape(c.detail)}</small></li>`).join("") : "<li>ยังไม่ตรวจสอบ</li>";
+  const action = (name: string, label: string) => `<form class="team-form" method="post" action="/upgrades/${j.id}">${hiddenCommand(csrf, revision)}<input type="hidden" name="action" value="${name}"><button>${label}</button></form>`;
+  return shell(`อัปเกรด ${j.id.slice(0, 8)}`, { workspace, csrf, section: "home" }, `<div class="content"><section class="hero"><p class="eyebrow">${escape(j.contract)} · ${escape(j.state)}</p><h2>อัปเกรด schema ${j.fromSchema} → ${j.targetSchema}</h2><p>${escape(j.nextAction)}${j.reason ? ` · ${escape(j.reason)}` : ""}</p></section>
+    <article class="team-card"><h3>preflight</h3><p>engine ${escape(j.preflight.engine ?? "ไม่พร้อม")} · compatible ${j.preflight.compatible ? "ใช่" : "ไม่"} · ขั้นตอน ${escape(j.preflight.plannedSteps.join(", "))}</p>
+    <h3>steps</h3><ul>${j.steps.map(s => `<li>${escape(s.name)}: ${s.ok ? "ผ่าน" : "ล้มเหลว"} <small>${escape(s.detail)}</small></li>`).join("")}</ul>
+    <h3>validation</h3><ul>${checks}</ul>
+    <p>snapshot ${j.snapshotBackupId ? escape(j.snapshotBackupId) : "ไม่มี"} · staged ${j.stagedPath ? escape(j.stagedPath) : "ไม่มี"} · tombstones ${j.validation ? j.validation.checks.find(c => c.name === "ledger_preservation")?.detail ?? "" : "ยังไม่ตรวจ"}</p>
+    <div>${j.state === "prepared" ? action("migrate", "migrate ลง staged") : ""}${j.state === "staged" ? action("validate", "ตรวจสอบ staged") : ""}${j.state === "ready" ? `${action("activate", "activate staged")} ${action("rollback", "rollback จาก snapshot")}` : ""}${j.state === "failed" || j.state === "complete" ? action("rollback", "rollback จาก snapshot") : ""}</div></article>
+    <p><a href="/upgrades">กลับไปรายการอัปเกรด</a></p></div>`, { breadcrumb: { title: "อัปเกรด", href: "/upgrades" } });
+}
