@@ -27,7 +27,14 @@ async function secret(): Promise<string> {
 async function main(): Promise<void> {
   const config = readConfig();
   const command = process.argv[2];
-  if (!["serve", "setup", "reset-owner"].includes(command ?? "")) throw new Error("Use serve, setup or reset-owner");
+  if (command === "probe") {
+    const { runProbeCommand } = await import("./probe-cli");
+    const result = await runProbeCommand(process.argv.slice(3), process.cwd());
+    console.log(JSON.stringify(result.output));
+    process.exitCode = result.exitCode === 0 ? 0 : 1;
+    return;
+  }
+  if (!["serve", "setup", "reset-owner"].includes(command ?? "")) throw new Error("Use serve, setup, reset-owner or probe");
   const store = new TransactionStore(config.databasePath);
   let queue: JobQueue | undefined;
   try { if (command === "serve") {
