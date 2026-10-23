@@ -5,7 +5,7 @@ export type {
 } from "./types";
 export { ScriptedTelegramSender, type DeliverySender, type DeliverySendInput, type DeliverySendResult, type SenderScript } from "./sender";
 export {
-  DeliveryWorker, commitDeliveryIntent, deliveryCommandIdentity, listDeliveryAttempts, listDeliveryIntents,
+  DeliveryWorker, cancelScheduleIntents, commitDeliveryIntent, deliveryCommandIdentity, listDeliveryAttempts, listDeliveryIntents,
   readDeliveryIntent, readDeliveryReport, recordDeliveryResult, resendDeliveryIntent, retireDeliveryReport,
   type DeliveryCrashPhase, type DeliveryWorkerOptions,
 } from "./outbox";

@@ -1,5 +1,6 @@
 import type { Application, Project, Workspace } from "./application";
 import type { Topic } from "./conversation";
+import type { JobSchedule, ScheduleOccurrence } from "./jobs/schedules";
 import type { Attribution, SourceLookup, SourceReference } from "./sources";
 import type { Job, JobLimits, JobPolicy } from "./jobs/types";
 import type { DecisionReadModel, Discussion, RoleRoute } from "./team/types";
@@ -431,7 +432,7 @@ function contextPanel(state: import("./memory/types").MemoryContextView, title: 
 /** app.context_provenance/v1: what one run was allowed to use, with current lifecycle status and clickable evidence. */
 export function memoryContextPage(state: ReturnType<Application["memoryContext"]>, workspace: Workspace, csrf: string): string {
   const { project, ...view } = state;
-  return shell("บริบทที่ run ใช้", { workspace, csrf, project, section: "memory" }, `<div class="content memory-content">${contextPanel(view, view.record.owner.kind === "synthesis" ? "บริบทของผู้ประสานงาน" : "บริบทของการหารือ")}
+  return shell("บริบทที่ run ใช้", { workspace, csrf, project, section: "memory" }, `<div class="content memory-content">${contextPanel(view, view.record.owner.kind === "synthesis" ? "บริบทของผู้ประสานงาน" : view.record.owner.kind === "schedule" ? "บริบทของสรุปตามกำหนดการ" : "บริบทของการหารือ")}
     <p><a href="/projects/${project.id}/memory">กลับไป memory ของโครงการ</a></p></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
 }
 
@@ -456,4 +457,76 @@ export function memoryPage(state: ReturnType<Application["memory"]>, workspace: 
       <nav class="pagination">${cursor.sourceAfter ? `<a href="${escape(href({ sourceAfter: 0 }))}">ต้นฉบับหน้าแรก</a>` : ""}${state.sourcesNextAfter !== null ? `<a href="${escape(href({ sourceAfter: state.sourcesNextAfter }))}">ต้นฉบับถัดไป</a>` : ""}</nav></section>
     <section><h2>ผลการสกัดและสิ่งที่ยังไม่ครบ</h2>${state.extractions.map(e => `<article class="team-card" id="extraction-${e.id}"><p>${escape(e.state)} · ${escape(e.reason)} · fixture · ${escape(e.extractor)} · policy ${e.policy}</p><p>คิว: ${escape(e.job.state)} · ${escape(e.job.reason)} · ${escape(e.job.nextAction)} · <a href="/projects/${p.id}/jobs/${e.jobId}">ตรวจและหยุดงาน</a></p><p>${e.claimIds.length} claims · ปฏิเสธ ${e.rejected} ข้อ</p><p>Route ที่ตั้งไว้: ${escape(e.route.provider)} / ${escape(e.route.model)} (ยังไม่ยืนยัน live access)</p><p>${sourceLink(p.id, e.source.reference, `ต้นฉบับ ${e.source.state}`)}</p></article>`).join("") || '<p>ยังไม่มีคำขอสกัด</p>'}
     <nav class="pagination">${cursor.extractionAfter ? `<a href="${escape(href({ extractionAfter: 0 }))}">ผลสกัดหน้าแรก</a>` : ""}${state.extractionsNextAfter !== null ? `<a href="${escape(href({ extractionAfter: state.extractionsNextAfter }))}">ผลสกัดถัดไป</a>` : ""}</nav></section></div>`);
+}
+
+const scheduleKindLabels: Record<JobSchedule["kind"], string> = { reminder: "เตือนความจำ", summary: "สรุปตามกำหนด" };
+const scheduleStateLabels: Record<JobSchedule["state"], string> = { active: "กำลังทำงาน", paused: "หยุดชั่วคราว", revoked: "ยกเลิกแล้ว" };
+function recurrenceLabel(schedule: JobSchedule): string {
+  const rec = schedule.recurrence;
+  if (rec.kind === "once") return `ครั้งเดียว ${new Date(rec.at).toISOString()}`;
+  if (rec.kind === "interval") return rec.everyMs % 3600000 === 0 ? `ทุก ${rec.everyMs / 3600000} ชั่วโมง` : `ทุก ${rec.everyMs / 60000} นาที`;
+  return `ทุกวัน ${escape(rec.time)} (${escape(schedule.timezone)})`;
+}
+function wallClock(instant: number, timezone: string): string {
+  try {
+    return escape(new Intl.DateTimeFormat("th-TH", { timeZone: timezone, month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(instant)));
+  } catch { return "เขตเวลาใช้ไม่ได้"; }
+}
+function nextRunLine(schedule: JobSchedule): string {
+  if (schedule.nextRun === null) return `<p>ครั้งถัดไป: ${escape(schedule.nextRunNote ?? "ยังไม่กำหนด")}</p>`;
+  return `<p>ครั้งถัดไป: ${time(schedule.nextRun)} · เวลาท้องถิ่น ${wallClock(schedule.nextRun, schedule.timezone)}</p>${schedule.nextRunNote ? `<p>${escape(schedule.nextRunNote)}</p>` : ""}`;
+}
+function lastResultLine(projectId: string, schedule: JobSchedule): string {
+  const last = schedule.lastResult;
+  if (!last) return "<p>ผลล่าสุด: ยังไม่มีรอบที่ทำเสร็จ</p>";
+  return `<p>ผลล่าสุด: ${time(last.completedAt)} · <a href="/projects/${projectId}/jobs/${last.jobId}">งานที่ทำรอบนี้</a> (${escape(last.state)} · ${escape(last.reason)})</p>
+    ${last.deliveryIntentId ? `<p><a href="/projects/${projectId}/delivery">ดูคำขอส่งของรอบนี้</a></p>` : ""}
+    ${last.outputSource ? `<p><a href="/projects/${projectId}/sources/${last.outputSource.sourceId}?revision=${last.outputSource.revision}&generation=${last.outputSource.generation}">เปิดสรุปที่บันทึกไว้</a></p>` : ""}`;
+}
+
+/** Lists configured reminder/summary schedules with next run and last result, plus the owner create form. */
+export function schedulesPage(state: ReturnType<Application["schedules"]>, workspace: Workspace, csrf: string, topics: Topic[], limits: JobLimits): string {
+  const { project } = state, base = `/projects/${project.id}/schedules`;
+  const card = (schedule: JobSchedule) => `<article class="team-card" id="schedule-${schedule.id}"><header><h3><a href="${base}/${schedule.id}">${escape(schedule.purpose)}</a></h3><span class="job-status" data-state="${schedule.state}">${scheduleStateLabels[schedule.state]}</span></header>
+    <p>${escape(scheduleKindLabels[schedule.kind])} · ${recurrenceLabel(schedule)} · รอบคงเหลือ ${schedule.occurrencesRemaining}</p>
+    ${nextRunLine(schedule)}${lastResultLine(project.id, schedule)}
+    <p><small>contract ${escape(schedule.contract)} · revision ${schedule.revision}</small></p>
+    ${schedule.state === "active" ? `<form method="post" action="${base}/${schedule.id}/pause">${hiddenCommand(csrf, schedule.revision)}<button>หยุดชั่วคราว</button></form>` : ""}
+    ${schedule.state === "paused" ? `<form method="post" action="${base}/${schedule.id}/resume">${hiddenCommand(csrf, schedule.revision)}<button class="primary">ทำต่อโดยไม่ย้อนรอยที่พลาด</button></form>` : ""}
+    ${schedule.state !== "revoked" ? `<form method="post" action="${base}/${schedule.id}/revoke">${hiddenCommand(csrf, schedule.revision)}<button class="danger">ยกเลิกกำหนดการ</button></form>` : ""}
+    ${schedule.state !== "revoked" ? `<details><summary>แก้ไข (revision ใหม่ ไม่ย้อนรอยที่พลาด)</summary><form class="team-form" method="post" action="${base}/${schedule.id}/edit">${hiddenCommand(csrf, schedule.revision)}
+      <label>วัตถุประสงค์<input name="purpose" required maxlength="300" value="${escape(schedule.purpose)}"></label>
+      <label>เขตเวลา<input name="timezone" required maxlength="128" value="${escape(schedule.timezone)}"><small>ชื่อ IANA เท่านั้น เช่น Asia/Bangkok ไม่ใช้เวลาของเครื่อง</small></label>
+      <label>รอบ (JSON)<input name="recurrence" required value="${escape(JSON.stringify(schedule.recurrence))}"><small>{"kind":"daily","time":"08:00"} · {"kind":"interval","everyMs":3600000} · {"kind":"once","at":1735689600000}</small></label>
+      <label>สถานะ<select name="enabled"><option value="true"${schedule.state === "active" ? " selected" : ""}>ทำงาน</option><option value="false"${schedule.state !== "active" ? " selected" : ""}>หยุดชั่วคราว</option></select></label>
+      <label>Route ของสรุป (JSON หรือ null)<input name="route" required value="${escape(JSON.stringify(schedule.route))}"><small>เตือนความจำใช้ null · สรุปต้องกำหนด {"provider":"grok","model":"...","authRoute":"..."}</small></label>
+      <label>งบคงเหลือ<input name="occurrenceBudget" required value="${schedule.occurrencesRemaining}"></label>
+      <label>ข้อความ<textarea name="text" required rows="3" maxlength="2048">${escape(schedule.payload.text)}</textarea></label>
+      <input type="hidden" name="limits" value="${escape(JSON.stringify(schedule.limits))}"><button class="primary">บันทึก revision ใหม่</button></form></details>` : ""}</article>`;
+  return shell("กำหนดการของโครงการ", { project, workspace, csrf, section: "jobs" }, `<div class="content"><section class="hero"><p class="eyebrow">jobs.configured_schedules/v1</p><h2>เตือนและสรุปตามกำหนดของ ${escape(project.name)}</h2><p>รอบที่พลาดจะรวมเป็นครั้งเดียว ไม่ย้อนส่งแยก การหยุด/แก้/ยกเลิกคำนวณครั้งถัดไปใหม่โดยไม่รื้อรอบที่พลาด งานที่ค้างและการส่งที่ยังไม่ออกจะถูกกันสิทธิ์ก่อน</p></section>
+    <details class="team-card" id="new-schedule"${state.items.length ? "" : " open"}><summary>สร้างกำหนดการใหม่</summary><form class="team-form" method="post" action="${base}">${hiddenCommand(csrf, project.revision)}
+      <label>หัวข้อ<select name="topicId">${topics.map(topic => `<option value="${topic.id}">${escape(topic.title ?? "หัวข้อไม่พร้อมใช้งาน")}</option>`).join("")}</select></label>
+      <label>ประเภท<select name="kind"><option value="reminder">เตือนความจำ</option><option value="summary">สรุปตามกำหนด</option></select></label>
+      <label>วัตถุประสงค์<input name="purpose" required maxlength="300" placeholder="เช่น เตือนทบทวนงานค้างทุกเช้า"></label>
+      <label>เขตเวลา<input name="timezone" required maxlength="128" value="Asia/Bangkok"><small>ชื่อ IANA เท่านั้น ไม่ใช้เวลาของเครื่อง</small></label>
+      <label>รอบ (JSON)<input name="recurrence" required value="${escape(JSON.stringify({ kind: "daily", time: "08:00" }))}"><small>{"kind":"daily","time":"08:00"} · {"kind":"interval","everyMs":3600000} · {"kind":"once","at":1735689600000}</small></label>
+      <label>สถานะ<select name="enabled"><option value="true">ทำงาน</option><option value="false">หยุดชั่วคราว</option></select></label>
+      <label>Route ของสรุป (JSON หรือ null)<input name="route" required value="null"><small>เตือนความจำใช้ null · สรุปต้องกำหนด {"provider":"grok","model":"...","authRoute":"..."}</small></label>
+      <label>จำนวนครั้งทั้งหมด<input name="occurrenceBudget" required value="30"></label>
+      <input type="hidden" name="misfire" value="coalesce"><input type="hidden" name="limits" value="${escape(JSON.stringify(limits))}">
+      <label>ข้อความ<textarea name="text" required rows="3" maxlength="2048" placeholder="ข้อความเตือน หรือบันทึกกำกับสำหรับสรุป"></textarea></label>
+      <button class="primary">สร้างกำหนดการ</button></form></details>
+    <section aria-label="กำหนดการ">${state.items.length ? state.items.map(card).join("") : '<p class="empty-list">ยังไม่มีกำหนดการในโครงการนี้</p>'}</section></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
+}
+
+/** Shows one schedule, its recent occurrences and the fenced or committed job behind each. */
+export function scheduleDetailPage(state: ReturnType<Application["schedule"]>, workspace: Workspace, csrf: string): string {
+  const { project, schedule, occurrences } = state, base = `/projects/${project.id}/schedules`;
+  const occurrence = (item: ScheduleOccurrence & { jobState: string }) => `<article class="team-card"><p>รอบ ${time(item.scheduledInstant)} · <a href="/projects/${project.id}/jobs/${item.jobId}">งาน</a> (${escape(item.jobState)}) · revision ${item.revision} · ${escape(item.resolution)}</p>
+    ${item.missed ? `<p>รวมรอบที่พลาด ${item.missed.count} ครั้ง ${time(item.missed.from)}..${time(item.missed.to)} เป็นครั้งเดียว</p>` : ""}
+    ${item.requestedWall ? `<p>เวลาท้องถิ่นที่ขอ ${escape(item.requestedWall)}</p>` : ""}</article>`;
+  return shell(schedule.purpose, { project, workspace, csrf, section: "jobs" }, `<div class="content"><section class="hero"><p class="eyebrow">${escape(scheduleKindLabels[schedule.kind])} · ${escape(scheduleStateLabels[schedule.state])}</p><h2>${escape(schedule.purpose)}</h2><p>${recurrenceLabel(schedule)} · รอบคงเหลือ ${schedule.occurrencesRemaining} · revision ${schedule.revision} · contract ${escape(schedule.contract)}</p></section>
+    ${nextRunLine(schedule)}${lastResultLine(project.id, schedule)}
+    <section aria-label="รอบที่ผ่านมา"><h2>รอบที่ผ่านมา</h2>${occurrences.length ? occurrences.map(occurrence).join("") : '<p class="empty-list">ยังไม่มีรอบที่ถึงกำหนด</p>'}</section>
+    <p><a href="${base}">กลับไปกำหนดการทั้งหมด</a></p></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
 }

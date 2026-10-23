@@ -117,7 +117,7 @@ export interface ContextConflict { claim: ClaimReference & { projectId: string }
 /** app.context_provenance/v1 immutable run source manifest that later lifecycle work can fence or retire. */
 export interface MemoryContextRecord {
   id: string; contract: "app.memory_context/v1"; projectId: string; topicId: string;
-  owner: { kind: "discussion" | "synthesis"; id: string };
+  owner: { kind: "discussion" | "synthesis" | "schedule"; id: string };
   policy: {
     version: 1; constraints: number; claims: number; crossProject: number; window: number;
     bytes: number; constraintBytes: number; derivedDepth: number;

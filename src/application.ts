@@ -36,6 +36,10 @@ import { lookupActiveClaim, readMemory, suppressedSource } from "./memory/read";
 import type { ClaimReference, CorrectMemoryCommand, CorrectionImpact, CorrectionReceipt, ExtractMemoryCommand, ForgetMemoryCommand, MemoryContextView, MemoryExtraction, MemoryReceipt, SuppressionImpact, SuppressionLedger, SuppressionReceipt } from "./memory/types";
 import { fenceStaleContexts, readMemoryContext, readOwnedMemoryContext } from "./memory/context";
 import { commitDecisionMemorySource, memorySourceDecision, retireDecisionMemorySource } from "./memory/decision-sources";
+import {
+  executeScheduleCommand, listOccurrences, listSchedules, readSchedule, reminderWorkId, scheduleIdentity, summaryWorkId,
+  type JobSchedule, type ScheduleCommand, type ScheduleOccurrence, type ScheduleReceipt,
+} from "./jobs/schedules";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const validToken = (value: string) => /^[a-f0-9]{64}$/.test(value);
@@ -71,7 +75,7 @@ export interface Workspace { revision: number; projects: Project[]; hasMore: boo
 /** Injectable clock and transaction fault seam for deterministic persistence checks. */
 export interface ApplicationOptions {
   now?: () => number;
-  beforeCommit?: (stage: "project" | "topic" | "message" | "job" | "team" | "decision" | "delivery" | "task" | "memory" | "receipt") => void;
+  beforeCommit?: (stage: "project" | "topic" | "message" | "job" | "team" | "decision" | "delivery" | "task" | "memory" | "receipt" | "schedule") => void;
   jobs?: JobQueue;
 }
 
@@ -236,6 +240,7 @@ export class Application {
   execute(actor: OwnerActor, command: EnqueueJobCommand): JobReceipt;
   execute(actor: OwnerActor, command: ResumeJobCommand): JobReceipt;
   execute(actor: OwnerActor, command: JobCommand): JobReceipt;
+  execute(actor: OwnerActor, command: ScheduleCommand): ScheduleReceipt;
   execute(actor: OwnerActor, command: CreateProjectCommand): ProjectReceipt;
   execute(actor: OwnerActor, command: CreateTopicCommand): TopicReceipt;
   execute(actor: OwnerActor, command: SendMessageCommand): MessageReceipt;
@@ -247,11 +252,13 @@ export class Application {
   execute(actor: OwnerActor, command: CommitDeliveryCommand): DeliveryReceipt;
   execute(actor: OwnerActor, command: ResendDeliveryCommand): DeliveryResendReceipt;
   execute(actor: OwnerActor, command: RetireDeliveryCommand): DeliveryRetireReceipt;
-  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | TeamCommand | DecisionCommand | DeliveryCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt;
-  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | TeamCommand | DecisionCommand | DeliveryCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt {
+  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt;
+  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt {
     if (command?.kind === "memory.extract") return this.#memoryCommand(actor, command);
     if (command?.kind === "memory.correct") return this.#correctCommand(actor, command);
     if (command?.kind === "memory.forget") return this.#forgetCommand(actor, command);
+    if (command?.kind === "schedule.create" || command?.kind === "schedule.pause" || command?.kind === "schedule.resume" ||
+      command?.kind === "schedule.edit" || command?.kind === "schedule.revoke") return this.#scheduleCommand(actor, command as ScheduleCommand);
     if (isTaskCommand(command)) return this.#taskCommand(actor, command);
     if (command?.kind === "delivery.commit" || command?.kind === "delivery.resend" || command?.kind === "delivery.retire") return this.#deliveryCommand(actor, command);
     if (command?.kind === "project.create") return this.#createProject(actor, command);
@@ -390,6 +397,58 @@ export class Application {
       tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
       tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);
       this.#beforeCommit?.("receipt"); return result;
+    });
+  }
+
+  #scheduleCommand(actor: OwnerActor, command: ScheduleCommand): ScheduleReceipt {
+    const payloadHash = digest(scheduleIdentity(command, this.config.jobs.inputBytes));
+    const result = this.store.transaction(tx => {
+      this.#requireOwner(tx, actor); this.#project(tx, command.projectId);
+      if (!this.#jobs) throw new AppError("scheduler_unavailable", 503);
+      this.#jobs.assertOwner(tx);
+      const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
+      if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as ScheduleReceipt; }
+      const now = this.#now(), generation = tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'")!.generation;
+      const result = executeScheduleCommand(tx, command, this.config, this.#jobs, generation, now);
+      this.#beforeCommit?.("schedule");
+      tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
+      tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);
+      this.#beforeCommit?.("receipt"); return result;
+    });
+    this.#jobs?.cancelFenced();
+    return result;
+  }
+
+  /**
+   * Lists one project's configured schedules with next run and last result.
+   * Reading never admits work, ticks occurrences or sends anything.
+   */
+  schedules(actor: OwnerActor, projectId: string): { project: Project; items: JobSchedule[] } {
+    requireId(projectId);
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor);
+      return { project: this.#project(tx, projectId), items: listSchedules(tx, projectId) };
+    });
+  }
+
+  /**
+   * Reads one schedule with its latest occurrences and the linked jobs' states.
+   * This projects committed state; occurrence jobs keep their own lifecycle.
+   */
+  schedule(actor: OwnerActor, projectId: string, scheduleId: string): {
+    project: Project; schedule: JobSchedule; occurrences: (ScheduleOccurrence & { jobState: string })[];
+  } {
+    requireId(projectId); requireId(scheduleId);
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor);
+      const project = this.#project(tx, projectId), schedule = readSchedule(tx, projectId, scheduleId);
+      const now = this.#now();
+      const occurrences = listOccurrences(tx, scheduleId, 20).map(occurrence => {
+        let jobState = "missing";
+        try { jobState = projectJob(readJob(tx, projectId, occurrence.jobId), now).state; } catch { /* A missing job row stays inspectable. */ }
+        return { ...occurrence, jobState };
+      });
+      return { project, schedule, occurrences };
     });
   }
 
@@ -605,7 +664,7 @@ export class Application {
       const available = this.#jobs?.available(tx) ?? false;
       const page = readJobs(tx, projectId, after, this.config.pageSize), now = this.#now();
       return { project, ...page, items: page.items.map(job => projectJob(job, now)),
-        choices: (this.#jobs?.choices() ?? []).filter(choice => !["role.scripted-preview", "team.discussion", "team.specialist-analysis", coordinatorSynthesisWorkId].includes(choice.id)),
+        choices: (this.#jobs?.choices() ?? []).filter(choice => ![reminderWorkId, summaryWorkId, "role.scripted-preview", "team.discussion", "team.specialist-analysis", coordinatorSynthesisWorkId].includes(choice.id)),
         admission: { available, nextAction: available ? "inspect_or_authorize_work" : "resolve_scheduler_ownership_or_restart" } };
     });
   }

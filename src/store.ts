@@ -3,7 +3,7 @@ import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, statS
 import { dirname } from "node:path";
 import { commitDecisionMemorySource, retireDecisionMemorySource } from "./memory/decision-sources";
 
-const schemaVersion = 14;
+const schemaVersion = 15;
 
 /** Synchronous SQL operations scoped to an application transaction. */
 export interface AppTransaction {
@@ -37,7 +37,7 @@ export class TransactionStore {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
           if (current === schemaVersion) return;
-          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13].includes(current)) throw new Error("Unsupported migration source");
+          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14].includes(current)) throw new Error("Unsupported migration source");
           if (existing) {
             const snapshot = `${path}.pre-v${current}-${crypto.randomUUID()}.sqlite`;
             const fd = openSync(snapshot, "wx", 0o600);
@@ -479,6 +479,33 @@ export class TransactionStore {
             );
             CREATE INDEX memory_suppressed_source_lookup ON memory_suppressed_sources(source_id, revision, generation);
             PRAGMA user_version = 14;
+          `);
+          if (current < 15) this.#db.exec(`
+            CREATE TABLE job_schedules (
+              sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+              project_id TEXT NOT NULL REFERENCES projects(id), record_json TEXT NOT NULL
+            );
+            CREATE INDEX job_schedule_project ON job_schedules(project_id, sequence);
+            CREATE TABLE job_schedule_occurrences (
+              sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+              schedule_id TEXT NOT NULL REFERENCES job_schedules(id), revision INTEGER NOT NULL CHECK(revision > 0),
+              scheduled_instant INTEGER NOT NULL, job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id),
+              record_json TEXT NOT NULL,
+              UNIQUE(schedule_id, revision, scheduled_instant)
+            );
+            CREATE INDEX job_schedule_occurrence_schedule ON job_schedule_occurrences(schedule_id, scheduled_instant);
+            CREATE TABLE memory_contexts_v15 (
+              sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+              project_id TEXT NOT NULL REFERENCES projects(id), topic_id TEXT NOT NULL,
+              owner_kind TEXT NOT NULL CHECK(owner_kind IN ('discussion', 'synthesis', 'schedule')), owner_id TEXT NOT NULL,
+              record_json TEXT NOT NULL,
+              UNIQUE(owner_kind, owner_id),
+              FOREIGN KEY (project_id, topic_id) REFERENCES topics(project_id, id)
+            );
+            INSERT INTO memory_contexts_v15 SELECT sequence, id, project_id, topic_id, owner_kind, owner_id, record_json FROM memory_contexts;
+            DROP TABLE memory_contexts;
+            ALTER TABLE memory_contexts_v15 RENAME TO memory_contexts;
+            PRAGMA user_version = 15;
           `);
           // A populated rebuilt graph must retain every reference; empty legacy fixture stores have no task graph to check.
           if (this.#tx.get("SELECT 1 FROM tasks LIMIT 1") && this.#tx.all("PRAGMA foreign_key_check").length) throw new Error("Migration foreign key check failed");
