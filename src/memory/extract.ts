@@ -9,7 +9,7 @@ import { readTeam } from "../team/configuration";
 import type { ApplicationRunPort } from "../team/run-port";
 import { fixtureOutcome, normalizeFixtureResult, validateRunRequest } from "../team/scripted-port";
 import type { ApplicationRunRequest } from "../team/types";
-import { canExtendMemoryLineage, eligibleMemorySource, lookupActiveClaim, readExtraction, requireClaimReference, suppressedSource } from "./read";
+import { canExtendMemoryLineage, deletedSource, eligibleMemorySource, lookupActiveClaim, readExtraction, requireClaimReference, suppressedSource } from "./read";
 import { memorySourceDecision } from "./decision-sources";
 import type { ClaimReference, ExtractMemoryCommand, MemoryClaim, MemoryExtraction, MemoryReceipt } from "./types";
 
@@ -58,6 +58,7 @@ export function memoryIdentity(command: ExtractMemoryCommand, config: AppConfig)
 export function prepareExtraction(tx: AppTransaction, command: ExtractMemoryCommand, config: AppConfig, queue: JobQueue | undefined, generation: number, now: number): MemoryReceipt {
   const p = command.payload;
   // A forgotten source lineage never replays, even when an earlier extraction row exists for it.
+  if (deletedSource(tx, p.source)) throw new AppError("memory_source_deleted", 409);
   if (suppressedSource(tx, p.source)) throw new AppError("memory_source_suppressed", 409);
   const prior = tx.get<{ id: string }>("SELECT id FROM memory_extractions WHERE project_id = ? AND source_id = ? AND source_revision = ? AND source_generation = ? AND extractor = 'claims/v1' AND policy = 1", command.projectId, p.source.sourceId, p.source.revision, p.source.generation);
   if (prior) return receipt(readExtraction(tx, command.projectId, prior.id), true);

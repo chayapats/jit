@@ -571,3 +571,137 @@ export function scheduleDetailPage(state: ReturnType<Application["schedule"]>, w
     <section aria-label="รอบที่ผ่านมา"><h2>รอบที่ผ่านมา</h2>${occurrences.length ? occurrences.map(occurrence).join("") : '<p class="empty-list">ยังไม่มีรอบที่ถึงกำหนด</p>'}</section>
     <p><a href="${base}">กลับไปกำหนดการทั้งหมด</a></p></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
 }
+
+/** ops.backup_manifest/v1: bounded inventory outside ordinary project data; never auto-activates workers. */
+export function backupsPage(state: ReturnType<Application["backups"]>, workspace: Workspace, csrf: string, revision: number): string {
+  const items = state.manifests.map(m => `<article class="team-card" id="backup-${m.id}"><header><h3><a href="/backups/${m.id}">${escape(m.id)}</a></h3><span class="job-status" data-state="${m.state}">${escape(m.state)}</span></header>
+    <p>schema ${m.appSchema} · app revision ${m.appRevision} · ${time(m.createdAt)} · ${m.content.projects} โครงการ · ${m.content.sources} แหล่งข้อมูล</p>
+    <p>native ${escape(m.native.state)}${m.native.reason ? ` · ${escape(m.native.reason)}` : ""} · lifecycle ${m.lifecycle.available ? `checkpoint ${escape(m.lifecycle.checkpoint ?? "")}` : escape(m.lifecycle.reason ?? "unavailable")}</p>
+    <p><small>hash ${escape(m.content.hash.slice(0, 16))}… · ${m.content.bytes} bytes · contract ${escape(m.contract)}</small></p>
+    ${m.state === "incomplete" ? `<p><small>ยังไม่พร้อมกู้คืน: ต้องมี lifecycle checkpoint และ native snapshot ที่ valid ก่อน (ดู OPS02)</small></p>` : ""}</article>`).join("");
+  return shell("สำรองข้อมูล", { workspace, csrf, section: "home" }, `<div class="content"><section class="hero"><p class="eyebrow">ops.backup_manifest/v1</p><h2>สำรองข้อมูลที่ตรวจสอบได้</h2><p>snapshot แบบ consistent ของ application state พร้อม native session แบบ quiesced เท่านั้น ไม่คัดลอก WAL ที่กำลังเปลี่ยน ไม่ parse รูปแบบ private ของ Schway สำรองที่ incomplete จะไม่ถูกใช้กู้คืนจนกว่าจะมี checkpoint ครบ</p></section>
+    <form class="create-form" method="post" action="/backups">${hiddenCommand(csrf, revision)}<input type="hidden" name="note" value="manual backup"><button class="primary">สร้างสำรองข้อมูล${icon("plus")}</button></form>
+    <section aria-label="สำรองข้อมูล">${items || '<p class="empty-list">ยังไม่มีสำรองข้อมูล</p>'}</section></div>`);
+}
+
+/** One backup manifest: versions, hashes, completeness and retention without secret values. */
+export function backupDetailPage(state: ReturnType<Application["backup"]>, workspace: Workspace, csrf: string): string {
+  const m = state.manifest;
+  return shell(`สำรอง ${m.id.slice(0, 8)}`, { workspace, csrf, section: "home" }, `<div class="content"><section class="hero"><p class="eyebrow">${escape(m.contract)} · ${escape(m.state)}</p><h2>สำรองข้อมูล ${escape(m.id)}</h2><p>${time(m.createdAt)} · schema ${m.appSchema} · app revision ${m.appRevision}</p></section>
+    <article class="team-card"><h3>ความครบถ้วน</h3><p>native ${escape(m.native.state)}${m.native.reason ? ` (${escape(m.native.reason)})` : ""} · lifecycle ${m.lifecycle.available ? "พร้อม" : escape(m.lifecycle.reason ?? "ไม่พร้อม")}</p>
+    <p>projects ${m.content.projects} · sources ${m.content.sources} · ${m.content.bytes} bytes · hash ${escape(m.content.hash)}</p>
+    <p>retention สูงสุด ${m.retention.maxBackups} ชุด / ${m.retention.maxBytes} bytes${m.retention.pruned.length ? ` · ตัดออก ${m.retention.pruned.length} ชุด` : ""}</p>
+    ${m.reason ? `<p>เหตุผล: ${escape(m.reason)}</p>` : ""}<p><small>artifact ${escape(m.artifact.path)} · กู้คืนต้องผ่าน OPS02 quarantine เท่านั้น ไม่เริ่ม worker อัตโนมัติ</small></p></article>
+    <p><a href="/backups">กลับไปรายการสำรอง</a></p></div>`, { breadcrumb: { title: "สำรองข้อมูล", href: "/backups" } });
+}
+
+/** app.data_lifecycle/v1: bounded deletion previews and per-scope operations; never shows deleted payload. */
+export function deletionsPage(state: { project: Project; operations: import("./memory/delete").DeletionOperation[] }, workspace: Workspace, csrf: string, sources: { reference: import("./sources").SourceReference; label: string }[]): string {
+  const { project, operations } = state;
+  const items = operations.map(op => `<article class="team-card" id="deletion-${op.id}"><header><h3><a href="/projects/${project.id}/memory/deletions/${op.id}">${escape(op.id)}</a></h3><span class="job-status" data-state="${op.state}">${escape(op.state)}</span></header>
+    <p>scope ${escape(op.scope.source.sourceId)} r${op.scope.source.revision} g${op.scope.source.generation} · tombstones ${op.tombstones.length} · attempts ${op.attempts}/${op.maxAttempts}</p>
+    <p>สำรองที่ยังเก็บข้อมูลนี้ ${op.backupsRetained.length ? escape(op.backupsRetained.join(", ")) : "ไม่มี"} · ${escape(op.nextAction)}</p>
+    ${op.reason ? `<p>เหตุผล: ${escape(op.reason)}</p>` : ""}</article>`).join("");
+  return shell("ลบข้อมูล", { project, workspace, csrf, section: "memory" }, `<div class="content"><section class="hero"><p class="eyebrow">app.data_lifecycle/v1</p><h2>ลบ source ต้นฉบับ ${escape(project.name)}</h2><p>ดูผลกระทบแบบผูก revision ก่อนยืนยัน งานที่รับรองและมติไม่ถูกเปลี่ยนโดยปริยาย สำรองเดิมและสำเนา Telegram/provider ไม่ได้ถูกลบโดยคำสั่งนี้</p></section>
+    <details class="team-card" open><summary>ขอดูผลกระทบของ source</summary><form class="team-form" method="post" action="/projects/${project.id}/memory/deletions">${hiddenCommand(csrf, project.revision)}
+      <input type="hidden" name="mode" value="preview"><label>source<select name="source">${sources.map(s => `<option value="${escape(JSON.stringify(s.reference))}">${escape(s.label)}</option>`).join("")}</select></label>
+      <button class="primary">ดูผลกระทบ</button></form></details>
+    <section aria-label="การลบ">${items || '<p class="empty-list">ยังไม่มีการลบในโครงการนี้</p>'}</section></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
+}
+
+/** One deletion preview or operation: collateral, truncation flags and honest pending state. */
+export function deletionDetailPage(state: { project: Project; preview: import("./memory/delete").DeletionPreview | null; operation: import("./memory/delete").DeletionOperation | null }, workspace: Workspace, csrf: string): string {
+  const { project, preview, operation } = state;
+  const previewCard = preview ? `<article class="team-card"><h3>ผลกระทบของ ${escape(preview.scope.source.sourceId)} r${preview.scope.source.revision} g${preview.scope.source.generation}</h3>
+    <p>หมดอายุ ${time(preview.expiresAt)} · claims ${preview.affected.claims.length}${preview.truncated.claims ? "+" : ""} · contexts ${preview.affected.contexts.length}${preview.truncated.contexts ? "+" : ""} · งานที่ต้อง fence ${preview.affected.pendingJobs.length}${preview.truncated.pendingJobs ? "+" : ""}</p>
+    <p>native sessions ${preview.affected.nativeSessions.length} · สำรองที่ยังเก็บข้อมูลนี้ ${preview.affected.backups.length}${preview.truncated.backups ? "+" : ""} · ข้อผูกพันที่คาบเกี่ยว ${preview.affected.obligations.length}</p>
+    ${preview.wholeSession.required ? `<p>ต้องลบทั้ง session (${escape(preview.wholeSession.reason ?? "")}) ให้ติ๊กยืนยันทั้ง session ก่อน</p>` : ""}
+    <p><small>${escape(preview.note)}</small></p>
+    <form class="team-form" method="post" action="/projects/${project.id}/memory/deletions">${hiddenCommand(csrf, project.revision)}
+      <input type="hidden" name="mode" value="confirm"><input type="hidden" name="previewId" value="${preview.id}">
+      <label><input type="checkbox" name="acknowledged" value="on"> ยืนยันขอบเขต (ไม่ยกเลิกงาน ไม่ถอนมติ)</label>
+      ${preview.wholeSession.required ? `<label><input type="checkbox" name="acknowledgedWholeSession" value="on"> ยืนยันขอบเขตทั้ง session</label>` : ""}
+      <button class="danger">ยืนยันการลบ</button></form></article>` : "";
+  const operationCard = operation ? `<article class="team-card"><h3>การลบ ${escape(operation.id)}</h3><p>สถานะ ${escape(operation.state)} · attempts ${operation.attempts}/${operation.maxAttempts} · tombstones ${operation.tombstones.length}</p>
+    <p>${escape(operation.nextAction)}${operation.reason ? ` · ${escape(operation.reason)}` : ""}</p>
+    <p>สำรองที่ยังเก็บข้อมูลนี้: ${operation.backupsRetained.length ? escape(operation.backupsRetained.join(", ")) : "ไม่มี"}</p>
+    <p>สำเนาที่ไม่ได้ลบ: ${escape(operation.residuals.join(", "))}</p>
+    ${operation.state !== "complete" ? `<form class="team-form" method="post" action="/projects/${project.id}/memory/deletions">${hiddenCommand(csrf, project.revision)}
+      <input type="hidden" name="mode" value="retry"><input type="hidden" name="operationId" value="${operation.id}"><button>ลองจัดการ native sessions อีกครั้ง</button></form>` : ""}</article>` : "";
+  return shell("ผลการลบ", { project, workspace, csrf, section: "memory" }, `<div class="content">${previewCard}${operationCard || (!preview ? '<p class="empty-list">ไม่พบบันทึกนี้</p>' : "")}
+    <p><a href="/projects/${project.id}/memory/deletions">กลับไปรายการลบ</a></p></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
+}
+
+/** ops.project_export/v1: inspectable portable project data with lifecycle boundaries. */
+export function exportsPage(state: { project: Project; manifests: import("./ops/export").ExportManifest[]; preview: import("./ops/export").ExportPreview }, workspace: Workspace, csrf: string): string {
+  const { project, manifests, preview } = state;
+  const items = manifests.map(m => `<article class="team-card" id="export-${m.id}"><header><h3><a href="/projects/${project.id}/exports/${m.id}">${escape(m.id)}</a></h3><span class="job-status" data-state="${m.state}">${escape(m.state)}</span></header>
+    <p>${time(m.createdAt)} · ประวัติ ${m.scope.includeHistory ? "รวมข้อความดิบ" : "เฉพาะ metadata"} · claims ${m.counts.claims} · งาน ${m.counts.jobs} · exclusions ${m.exclusions.length}</p>
+    <p><small>hash ${escape(m.artifact.hash.slice(0, 16))}… · ${m.artifact.bytes} bytes · tombstones ${m.lifecycle.tombstonesApplied}</small></p></article>`).join("");
+  return shell("ส่งออกข้อมูล", { project, workspace, csrf, section: "memory" }, `<div class="content"><section class="hero"><p class="eyebrow">ops.project_export/v1</p><h2>ส่งออก ${escape(project.name)}</h2><p>ไฟล์ JSON ที่ตรวจซ้ำได้ ไม่มีความลับ ไม่ปลุกข้อมูลที่ลบ/ลืม ประวัติข้อความดิบรวมเฉพาะเมื่อติ๊กเลือก</p></section>
+    <details class="team-card" open><summary>ดูตัวอย่างก่อนส่งออก</summary><p>topics ${preview.counts.topics} · messages ${preview.counts.messages} · tasks ${preview.counts.tasks} · decisions ${preview.counts.decisions} · claims ${preview.counts.claims} · exclusions ${preview.manifest.exclusions.length} · missing ${preview.manifest.missingRefs.length}</p>
+    <p><small>${escape(preview.manifest.lifecycle.note)}</small></p>
+    <form class="team-form" method="post" action="/projects/${project.id}/exports">${hiddenCommand(csrf, project.revision)}
+      <label><input type="checkbox" name="includeHistory" value="on"> รวมประวัติข้อความดิบ (รวมข้อความที่ถูก forget แต่ยังไม่ถูกลบ)</label>
+      <label>บันทึกช่วยจำ<input name="note" maxlength="500" value="manual export"></label>
+      <button class="primary">สร้างไฟล์ส่งออก</button></form></details>
+    <section aria-label="ไฟล์ส่งออก">${items || '<p class="empty-list">ยังไม่มีไฟล์ส่งออก</p>'}</section></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
+}
+
+/** One export manifest: versions, coverage, exclusions, residuals and artifact reference. */
+export function exportDetailPage(state: { project: Project; manifest: import("./ops/export").ExportManifest }, workspace: Workspace, csrf: string): string {
+  const { project, manifest: m } = state;
+  return shell(`ส่งออก ${m.id.slice(0, 8)}`, { project, workspace, csrf, section: "memory" }, `<div class="content"><section class="hero"><p class="eyebrow">${escape(m.contract)} · ${escape(m.state)}</p><h2>ไฟล์ส่งออก ${escape(m.id)}</h2><p>${time(m.createdAt)} · scope ประวัติ ${m.scope.includeHistory ? "รวมข้อความดิบ" : "เฉพาะ metadata"}</p></section>
+    <article class="team-card"><h3>ขอบเขตและความครบถ้วน</h3><p>topics ${m.counts.topics} · messages ${m.counts.messages} · tasks ${m.counts.tasks} · decisions ${m.counts.decisions} · claims ${m.counts.claims} · jobs ${m.counts.jobs} · deliveries ${m.counts.deliveries}</p>
+    <p>exclusions ${m.exclusions.length} · missing ${m.missingRefs.length} · การลบที่ค้าง ${m.pendingDeletions.length} · tombstones ${m.lifecycle.tombstonesApplied}</p>
+    <p>สำรองที่ยังเก็บข้อมูลนี้: ${m.residuals.backups.length ? escape(m.residuals.backups.join(", ")) : "ไม่มี"} · ภายนอก: ${escape(m.residuals.external.join(", "))}</p>
+    <p><small>hash ${escape(m.artifact.hash)} · ${m.artifact.bytes} bytes · ${escape(m.artifact.path)}</small></p></article>
+    <p><a href="/projects/${project.id}/exports">กลับไปรายการส่งออก</a></p></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
+}
+
+/** ops.schema_migrations/v1: inspectable staged upgrades with recoverable prior versions. */
+export function upgradesPage(state: { journals: import("./ops/upgrade").UpgradeJournal[] }, workspace: Workspace, csrf: string, revision: number): string {
+  const items = state.journals.map(j => `<article class="team-card" id="upgrade-${j.id}"><header><h3><a href="/upgrades/${j.id}">${escape(j.id)}</a></h3><span class="job-status" data-state="${j.state}">${escape(j.state)}</span></header>
+    <p>schema ${j.fromSchema} → ${j.targetSchema} · snapshot ${j.snapshotBackupId ? escape(j.snapshotBackupId) : "ไม่มี"} · ${escape(j.nextAction)}</p>
+    ${j.reason ? `<p>เหตุผล: ${escape(j.reason)}</p>` : ""}</article>`).join("");
+  return shell("อัปเกรด", { workspace, csrf, section: "home" }, `<div class="content"><section class="hero"><p class="eyebrow">ops.schema_migrations/v1</p><h2>อัปเกรดแบบ staged</h2><p>ตรวจ preflight, snapshot กู้คืน, migrate ลง staged, validate invariants แล้วค่อย activate ข้อมูลเดิมกู้คืนได้จาก snapshot เสมอ ไม่ parse รูปแบบ private ของ engine</p></section>
+    <form class="create-form" method="post" action="/upgrades">${hiddenCommand(csrf, revision)}<input type="hidden" name="targetSchema" value="20"><input type="hidden" name="note" value="manual upgrade"><button class="primary">เตรียมอัปเกรด${icon("plus")}</button></form>
+    <section aria-label="อัปเกรด">${items || '<p class="empty-list">ยังไม่มีอัปเกรด</p>'}</section></div>`);
+}
+
+/** One upgrade journal: preflight, staged steps, validation report and recovery choice. */
+export function upgradeDetailPage(state: { journal: import("./ops/upgrade").UpgradeJournal }, workspace: Workspace, csrf: string, revision: number): string {
+  const j = state.journal;
+  const checks = j.validation ? j.validation.checks.map(c => `<li>${escape(c.name)}: ${c.pass ? "ผ่าน" : "ไม่ผ่าน"} <small>${escape(c.detail)}</small></li>`).join("") : "<li>ยังไม่ตรวจสอบ</li>";
+  const action = (name: string, label: string) => `<form class="team-form" method="post" action="/upgrades/${j.id}">${hiddenCommand(csrf, revision)}<input type="hidden" name="action" value="${name}"><button>${label}</button></form>`;
+  return shell(`อัปเกรด ${j.id.slice(0, 8)}`, { workspace, csrf, section: "home" }, `<div class="content"><section class="hero"><p class="eyebrow">${escape(j.contract)} · ${escape(j.state)}</p><h2>อัปเกรด schema ${j.fromSchema} → ${j.targetSchema}</h2><p>${escape(j.nextAction)}${j.reason ? ` · ${escape(j.reason)}` : ""}</p></section>
+    <article class="team-card"><h3>preflight</h3><p>engine ${escape(j.preflight.engine ?? "ไม่พร้อม")} · compatible ${j.preflight.compatible ? "ใช่" : "ไม่"} · ขั้นตอน ${escape(j.preflight.plannedSteps.join(", "))}</p>
+    <h3>steps</h3><ul>${j.steps.map(s => `<li>${escape(s.name)}: ${s.ok ? "ผ่าน" : "ล้มเหลว"} <small>${escape(s.detail)}</small></li>`).join("")}</ul>
+    <h3>validation</h3><ul>${checks}</ul>
+    <p>snapshot ${j.snapshotBackupId ? escape(j.snapshotBackupId) : "ไม่มี"} · staged ${j.stagedPath ? escape(j.stagedPath) : "ไม่มี"} · tombstones ${j.validation ? j.validation.checks.find(c => c.name === "ledger_preservation")?.detail ?? "" : "ยังไม่ตรวจ"}</p>
+    <div>${j.state === "prepared" ? action("migrate", "migrate ลง staged") : ""}${j.state === "staged" ? action("validate", "ตรวจสอบ staged") : ""}${j.state === "ready" ? `${action("activate", "activate staged")} ${action("rollback", "rollback จาก snapshot")}` : ""}${j.state === "failed" || j.state === "complete" ? action("rollback", "rollback จาก snapshot") : ""}</div></article>
+    <p><a href="/upgrades">กลับไปรายการอัปเกรด</a></p></div>`, { breadcrumb: { title: "อัปเกรด", href: "/upgrades" } });
+}
+
+/** ops.quarantined_restore/v1: quarantined restores with external ledger reconciliation. */
+export function restoresPage(state: { quarantines: import("./ops/restore").RestoreQuarantine[]; backups: import("./ops/backup").BackupManifest[] }, workspace: Workspace, csrf: string, revision: number): string {
+  const items = state.quarantines.map(q => `<article class="team-card" id="restore-${q.id}"><header><h3><a href="/restores/${q.id}">${escape(q.id)}</a></h3><span class="job-status" data-state="${q.state}">${escape(q.state)}</span></header>
+    <p>backup ${escape(q.backupId)} · schema ${q.fromSchema} → ${q.stagedSchema ?? "?"} · ledger ${q.ledger ? `${q.ledger.count} จาก ${escape(q.ledger.source ?? "")}` : "ยังไม่ใช้"} · ${escape(q.nextAction)}</p>
+    ${q.reason ? `<p>เหตุผล: ${escape(q.reason)}</p>` : ""}</article>`).join("");
+  const options = state.backups.map(m => `<option value="${m.id}">${escape(m.id)} · schema ${m.appSchema} · ${escape(m.state)}</option>`).join("");
+  return shell("กู้คืน", { workspace, csrf, section: "home" }, `<div class="content"><section class="hero"><p class="eyebrow">ops.quarantined_restore/v1</p><h2>กู้คืนแบบ quarantine</h2><p>ตรวจ manifest, แยกข้อมูลใน quarantine, ใช้ ledger ภายนอกล่าสุด, ตรวจสอบแล้วค่อย activate ไม่มี worker เริ่มเองก่อน reconcile</p></section>
+    <form class="team-form" method="post" action="/restores">${hiddenCommand(csrf, revision)}<label>สำรองข้อมูล<select name="backupId">${options}</select></label><input type="hidden" name="note" value="manual restore"><button class="primary">เตรียม quarantine</button></form>
+    <section aria-label="quarantine">${items || '<p class="empty-list">ยังไม่มี quarantine</p>'}</section></div>`);
+}
+
+/** One quarantine: validation report, ledger coverage, pending items and activation decision. */
+export function restoreDetailPage(state: { quarantine: import("./ops/restore").RestoreQuarantine }, workspace: Workspace, csrf: string, revision: number): string {
+  const q = state.quarantine;
+  const checks = q.validation ? q.validation.checks.map(c => `<li>${escape(c.name)}: ${c.pass ? "ผ่าน" : "ไม่ผ่าน"} <small>${escape(c.detail)}</small></li>`).join("") : "<li>ยังไม่ตรวจสอบ</li>";
+  const action = (name: string, label: string, extra = "") => `<form class="team-form" method="post" action="/restores/${q.id}">${hiddenCommand(csrf, revision)}<input type="hidden" name="action" value="${name}">${extra}<button>${label}</button></form>`;
+  return shell(`กู้คืน ${q.id.slice(0, 8)}`, { workspace, csrf, section: "home" }, `<div class="content"><section class="hero"><p class="eyebrow">${escape(q.contract)} · ${escape(q.state)}</p><h2>quarantine ${escape(q.id)}</h2><p>backup ${escape(q.backupId)} · ${escape(q.nextAction)}${q.reason ? ` · ${escape(q.reason)}` : ""}</p></section>
+    <article class="team-card"><h3>validation</h3><ul>${checks}</ul>
+    <p>ledger ${q.ledger ? `${q.ledger.count} tombstones จาก ${escape(q.ledger.source ?? "")} (asOf ${q.ledger.asOf})` : "ยังไม่ใช้"} · pending native ${q.validation ? q.validation.pendingNative.length : "?"} · pending jobs ${q.validation ? q.validation.pendingJobs.length : "?"} · unknown outbox ${q.validation ? q.validation.unknownOutbox : "?"}</p>
+    <div>${q.state === "quarantining" ? action("migrate", "migrate quarantine") : ""}${["quarantining", "migrated", "ledger_applied", "blocked"].includes(q.state) ? action("apply_ledger", "ใช้ ledger ภายนอก", '<label>ledger (JSON)<input name="tombstones" value="[]"></label><label>ที่มา<input name="source" value="owner-attested"></label><label>asOf<input name="asOf" value="0"></label>') : ""}${q.state === "ledger_applied" || q.state === "blocked" ? action("validate", "ตรวจสอบ quarantine") : ""}${q.state === "validated" ? `${action("activate", "activate", "")} ${action("discard", "ทิ้ง quarantine")}` : ""}${["quarantining", "migrated", "ledger_applied", "blocked"].includes(q.state) ? action("discard", "ทิ้ง quarantine") : ""}</div></article>
+    <p><a href="/restores">กลับไปรายการกู้คืน</a></p></div>`, { breadcrumb: { title: "กู้คืน", href: "/restores" } });
+}

@@ -10,7 +10,7 @@ export interface MemoryDecisionReference { kind: "owner_decision"; id: string; r
 export interface MemoryClaim extends ClaimReference {
   projectId: string; extractionId: string; kind: "explicit_fact" | "inference"; text: string;
   source: SourceReference; quote: string; dependencies: ClaimReference[]; conflicts: ClaimReference[];
-  status: "active" | "corrected" | "forgotten"; createdAt: number;
+  status: "active" | "corrected" | "forgotten" | "deleted"; createdAt: number;
   decision: MemoryDecisionReference | null;
   /** Set once by app.memory_correction/v1; points at the owner-approved replacement claim. */
   correctionId?: string; replacement?: ClaimReference;

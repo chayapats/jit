@@ -1,9 +1,9 @@
 import { Database, type SQLQueryBindings } from "bun:sqlite";
-import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { commitDecisionMemorySource, retireDecisionMemorySource } from "./memory/decision-sources";
 
-const schemaVersion = 15;
+const schemaVersion = 20;
 
 /** Synchronous SQL operations scoped to an application transaction. */
 export interface AppTransaction {
@@ -37,7 +37,7 @@ export class TransactionStore {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
           if (current === schemaVersion) return;
-          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14].includes(current)) throw new Error("Unsupported migration source");
+          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19].includes(current)) throw new Error("Unsupported migration source");
           if (existing) {
             const snapshot = `${path}.pre-v${current}-${crypto.randomUUID()}.sqlite`;
             const fd = openSync(snapshot, "wx", 0o600);
@@ -507,6 +507,61 @@ export class TransactionStore {
             ALTER TABLE memory_contexts_v15 RENAME TO memory_contexts;
             PRAGMA user_version = 15;
           `);
+          if (current < 16) this.#db.exec(`
+            CREATE TABLE IF NOT EXISTS ops_backups (
+              id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, record_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS ops_backup_created ON ops_backups(created_at);
+            PRAGMA user_version = 16;
+          `);
+          if (current < 17) this.#db.exec(`
+            CREATE TABLE IF NOT EXISTS deletion_previews (
+              id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
+              expires_at INTEGER NOT NULL, record_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS deletion_preview_project ON deletion_previews(project_id, expires_at);
+            CREATE TABLE IF NOT EXISTS deletion_ledger (
+              id TEXT PRIMARY KEY, operation_id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id),
+              kind TEXT NOT NULL CHECK (kind IN ('source', 'claim')),
+              source_id TEXT, claim_id TEXT,
+              revision INTEGER NOT NULL CHECK (revision > 0), generation INTEGER NOT NULL CHECK (generation > 0),
+              deleted_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS deletion_ledger_lookup ON deletion_ledger(kind, source_id, claim_id);
+            CREATE INDEX IF NOT EXISTS deletion_ledger_operation ON deletion_ledger(operation_id);
+            CREATE TABLE IF NOT EXISTS deletion_operations (
+              id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
+              preview_id TEXT NOT NULL, state TEXT NOT NULL CHECK (state IN ('pending', 'complete', 'failed', 'blocked')),
+              attempts INTEGER NOT NULL CHECK (attempts >= 0), record_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS deletion_operation_preview ON deletion_operations(preview_id);
+            CREATE INDEX IF NOT EXISTS deletion_operation_project ON deletion_operations(project_id);
+            PRAGMA user_version = 17;
+          `);
+          if (current < 18) this.#db.exec(`
+            CREATE TABLE IF NOT EXISTS export_artifacts (
+              id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
+              created_at INTEGER NOT NULL, record_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS export_artifact_project ON export_artifacts(project_id, created_at);
+            PRAGMA user_version = 18;
+          `);
+          if (current < 19) this.#db.exec(`
+            CREATE TABLE IF NOT EXISTS upgrade_journal (
+              id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, state TEXT NOT NULL,
+              record_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS upgrade_journal_state ON upgrade_journal(state, created_at);
+            PRAGMA user_version = 19;
+          `);
+          if (current < 20) this.#db.exec(`
+            CREATE TABLE IF NOT EXISTS restore_quarantines (
+              id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, state TEXT NOT NULL,
+              record_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS restore_quarantine_state ON restore_quarantines(state, created_at);
+            PRAGMA user_version = 20;
+          `);
           // A populated rebuilt graph must retain every reference; empty legacy fixture stores have no task graph to check.
           if (this.#tx.get("SELECT 1 FROM tasks LIMIT 1") && this.#tx.all("PRAGMA foreign_key_check").length) throw new Error("Migration foreign key check failed");
         }).immediate();
@@ -536,6 +591,46 @@ export class TransactionStore {
       if (result instanceof Promise) throw new Error("Application transactions must be synchronous");
       return result;
     }).immediate();
+  }
+
+  /** Consistent app snapshot bytes after a WAL checkpoint; never copies a live WAL blindly. */
+  snapshotBytes(): Uint8Array {
+    try { this.#db.exec("PRAGMA wal_checkpoint(TRUNCATE);"); } catch { /* Checkpoint best-effort; serialize stays consistent. */ }
+    return this.#db.serialize();
+  }
+
+  /**
+   * Activates a staged image by replacing this database file with validated bytes and
+   * reopening the same store handle. Callers record journal intent first; a crash between
+   * intent and completion leaves an explicit non-terminal journal entry to resume from.
+   */
+  swapFrom(sourcePath: string): void {
+    const bytes = readFileSync(sourcePath);
+    try { this.#db.exec("PRAGMA wal_checkpoint(TRUNCATE);"); } catch { /* Best-effort checkpoint before close. */ }
+    this.#db.close();
+    writeFileSync(this.path, bytes);
+    chmodSync(this.path, 0o600);
+    for (const suffix of ["-wal", "-shm"]) {
+      try { rmSync(`${this.path}${suffix}`); } catch { /* Stale WAL siblings are recreated on open. */ }
+    }
+    const reopened = new Database(this.path, { create: true, strict: true });
+    try {
+      reopened.exec("PRAGMA busy_timeout = 2000; PRAGMA foreign_keys = ON;");
+      reopened.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;");
+      chmodSync(this.path, 0o600);
+      // Scheduler and delivery-worker claims belong to the pre-swap boot; a stale claim
+      // must never authorize work after activation. The service reboots and reconciles.
+      try { reopened.exec("DELETE FROM job_scheduler; DELETE FROM delivery_worker;"); } catch { /* Ancient images predate these tables. */ }
+    } catch (error) {
+      reopened.close();
+      throw error;
+    }
+    this.#db = reopened;
+    this.#tx = {
+      get: <T>(sql: string, ...args: SQLQueryBindings[]): T | null => this.#db.query(sql).get(...args) as T | null,
+      all: <T>(sql: string, ...args: SQLQueryBindings[]): T[] => this.#db.query(sql).all(...args) as T[],
+      run: (sql: string, ...args: SQLQueryBindings[]): void => { this.#db.query(sql).run(...args); },
+    };
   }
 
   /** Closes this connection; committed commands remain available after reopening. */

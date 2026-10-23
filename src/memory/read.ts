@@ -19,9 +19,11 @@ function resolve(tx: AppTransaction, projectId: string, reference: ClaimReferenc
     ...(claim ? { provenance: { projectId: claim.projectId, source: claim.source, dependencies: claim.dependencies, conflicts: claim.conflicts, decision: claim.decision } } : {}) });
   if (--budget.remaining < 0 || depth > 8 || seen.has(reference.claimId)) return unavailable("lineage_limit");
   if (!claim) return unavailable("claim_unavailable");
+  if (claim.status === "deleted" || deletedClaim(tx, claim.claimId)) return unavailable("claim_deleted");
   if (claim.status === "forgotten" || suppressedClaim(tx, claim.claimId)) return unavailable("claim_forgotten");
   if (claim.status === "corrected") return unavailable("claim_corrected");
   if (claim.status !== "active") return unavailable("claim_inactive");
+  if (deletedSource(tx, claim.source)) return unavailable("source_deleted");
   if (suppressedSource(tx, claim.source)) return unavailable("source_suppressed");
   const source = lookupSource(tx, projectId, claim.source);
   if (source.state !== "available" || source.current.revision !== claim.source.revision) return unavailable("source_unavailable");
@@ -67,6 +69,7 @@ export function eligibleMemorySource(tx: AppTransaction, projectId: string, refe
   requireReference(reference);
   const source = lookupSource(tx, projectId, reference);
   if (source.state !== "available" || source.current.revision !== reference.revision || source.descriptor.kind === "external") throw new AppError("memory_source_unavailable", 409);
+  if (deletedSource(tx, reference)) throw new AppError("memory_source_deleted", 409);
   if (suppressedSource(tx, reference)) throw new AppError("memory_source_suppressed", 409);
   if (memoryDerivation(tx, projectId, reference.sourceId) > 0) throw new AppError("memory_source_derived", 409);
   return source;
@@ -83,6 +86,23 @@ export function suppressedSource(tx: AppTransaction, reference: import("../sourc
 export function suppressedClaim(tx: AppTransaction, claimId: string): boolean {
   requireId(claimId);
   return !!tx.get("SELECT 1 FROM memory_suppressed_claims WHERE claim_id = ?", claimId);
+}
+
+/** Whether this exact source lineage was deleted; payload is never stored in the ledger. */
+export function deletedSource(tx: AppTransaction, reference: import("../sources").SourceReference): boolean {
+  requireReference(reference);
+  try {
+    return !!tx.get("SELECT 1 FROM deletion_ledger WHERE kind = 'source' AND source_id = ? AND revision = ? AND generation = ?",
+      reference.sourceId, reference.revision, reference.generation);
+  } catch { return false; }
+}
+
+/** Whether this claim identity was deleted; payload stays out of the ledger. */
+export function deletedClaim(tx: AppTransaction, claimId: string): boolean {
+  requireId(claimId);
+  try {
+    return !!tx.get("SELECT 1 FROM deletion_ledger WHERE kind = 'claim' AND claim_id = ?", claimId);
+  } catch { return false; }
 }
 
 /** app.context_provenance/v1 loop depth: 0 for owner/raw sources, >0 for outputs produced with memory in context. */

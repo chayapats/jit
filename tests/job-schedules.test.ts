@@ -390,7 +390,7 @@ test("Web form creates, pauses and resumes a schedule; API reports Thai errors",
   expect(await bad.json()).toEqual({ error: "invalid_schedule_timezone" });
 });
 
-test("schema v12 store migrates to v15 with new schedule tables and a private snapshot", async () => {
+test("schema v12 store migrates to v20 with new schedule tables and a private snapshot", async () => {
   const f = await fixture();
   const contextId = crypto.randomUUID(), ownerId = crypto.randomUUID();
   f.store.read(tx => tx.run("INSERT INTO memory_contexts (id, project_id, topic_id, owner_kind, owner_id, record_json) VALUES (?, ?, ?, 'discussion', ?, ?)",
@@ -402,7 +402,7 @@ test("schema v12 store migrates to v15 with new schedule tables and a private sn
   db.close();
   const before = new Set(readdirSync(f.root));
   const store = new TransactionStore(f.path); stores.push(store);
-  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 15 });
+  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 20 });
   expect(readdirSync(f.root).filter(name => !before.has(name) && name.includes(".pre-v12-"))).toHaveLength(1);
   // The v12-era memory context row survives the owner_kind widening rebuild.
   expect(store.read(tx => tx.get<{ record_json: string }>("SELECT record_json FROM memory_contexts WHERE id = ?", contextId)!.record_json))
