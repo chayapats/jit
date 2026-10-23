@@ -87,7 +87,7 @@ function parseClaims(tx: AppTransaction, extraction: MemoryExtraction, request: 
   const source = eligibleMemorySource(tx, extraction.projectId, extraction.source);
   const claims: MemoryClaim[] = []; let rejected = 0, lineageRejected = 0;
   const dependencies = request.manifest.claims.map(ref => ({ claimId: ref.claimId, revision: ref.revision, generation: ref.generation }));
-  const texts = new Set<string>();
+  const assertions = new Set<string>();
   for (const item of value.claims) {
     try {
       if (!exact(item, ["kind", "text", "quote", "source", "dependencies", "conflicts"]) || !["explicit_fact", "inference"].includes(item.kind)) throw new Error();
@@ -101,9 +101,9 @@ function parseClaims(tx: AppTransaction, extraction: MemoryExtraction, request: 
       }
       if (item.kind === "explicit_fact" && (source.attribution.kind !== "owner" || item.text !== item.quote || request.manifest.claims.length || item.dependencies.length || item.conflicts.length)) throw new Error();
       if (!canExtendMemoryLineage(tx, extraction.projectId, [...dependencies, ...item.conflicts])) throw new AppError("memory_lineage_limit");
-      const key = item.kind + ":" + item.text;
-      if (texts.has(key)) continue;
-      texts.add(key);
+      const key = jobData({ kind: item.kind, text: item.text, quote: item.quote, source: extraction.source, dependencies, conflicts: item.conflicts }, 65000);
+      if (assertions.has(key)) continue;
+      assertions.add(key);
       claims.push({ claimId: crypto.randomUUID(), revision: 1, generation: 1, projectId: extraction.projectId, extractionId: extraction.id,
         kind: item.kind, text: item.text, quote: item.quote, source: { ...extraction.source },
         // Every admitted claim can influence extraction, even when the model omits it from declared lineage.

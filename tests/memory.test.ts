@@ -290,3 +290,20 @@ test("prospective lineage counts the new root at the 64-visit boundary", async (
   const beyond = await create([top.ref, chain, roots[0]!]);
   expect(beyond.e.state).toBe("partial"); expect(beyond.e.reason).toBe("lineage_limit"); expect(beyond.e.claimIds).toHaveLength(0);
 });
+
+test("identical inference text retains distinct conflict evidence and only exact duplicate assertions collapse", async () => {
+  const f = await fixture(request => {
+    if (request.manifest.claims.length !== 2) return output([proposed(request)]);
+    const refs = request.manifest.claims.map(c => ({ claimId: c.claimId, revision: c.revision, generation: c.generation }));
+    const first = proposed(request, { kind: "inference", text: "Conflicting constraints need owner review", conflicts: [refs[0]] });
+    return output([first, proposed(request, { kind: "inference", text: first.text, conflicts: [refs[1]] }), first]);
+  });
+  await extract(f); await extract(f, command(f, message(f, "another conflicting statement")));
+  const parents = active(f).map(ref);
+  await extract(f, command(f, message(f, "consider both constraints"), parents));
+  const state = f.app.memory(f.auth.actor, f.project.id, 2, 0, 2);
+  const claims = state.items.flatMap(item => item.state === "available" ? [item.claim] : []);
+  expect(claims).toHaveLength(2); expect(claims.map(c => c.conflicts)).toEqual([[parents[0]!], [parents[1]!]]);
+  expect(claims.map(c => c.dependencies)).toEqual([parents, parents]);
+  expect(state.extractions[0]).toMatchObject({ state: "complete", rejected: 0 });
+});
