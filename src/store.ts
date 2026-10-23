@@ -3,7 +3,8 @@ import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readF
 import { dirname } from "node:path";
 import { commitDecisionMemorySource, retireDecisionMemorySource } from "./memory/decision-sources";
 
-const schemaVersion = 20;
+/** Current application schema revision. Service packaging pins and checks this value. */
+export const schemaVersion = 20;
 
 /** Synchronous SQL operations scoped to an application transaction. */
 export interface AppTransaction {

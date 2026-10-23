@@ -3,8 +3,7 @@ import type { JobPolicy } from "./jobs/types";
 import type { TeamPolicy } from "./team/types";
 
 /** Finite Telegram companion limits; bot credentials stay outside this projection. */
-export interface TelegramPolicy {
-  /** Path to the bot token file inside the trusted secret boundary; never logged or exported. */
+export interface TelegramPolicy {  /** Path to the bot token file inside the trusted secret boundary; never logged or exported. */
   botTokenPath: string;
   challengeSeconds: number;
   retentionHours: number;
@@ -12,6 +11,23 @@ export interface TelegramPolicy {
   maxPollBackoffMs: number;
   processAttempts: number;
   inboxBytes: number;
+}
+
+/** Finite operating limits; drill invocation ceilings and local evidence retention. */
+export interface OpsPolicy {
+  /** Managed-state growth ceiling that turns drill disk pressure into a blocked result. */
+  diskWatermarkBytes: number;
+  /** Local ops-evidence retention ceiling in days; pruning follows the ops runbook. */
+  retentionDays: number;
+  /** Default wall-clock budget for one fixture drill invocation. */
+  drillDeadlineMs: number;
+}
+
+/** Private deployment profile: wildcard/public binds are rejected by default. */
+function validatedHostname(value: string | undefined): string {
+  const hostname = value ?? "127.0.0.1";
+  if (!hostname.length || hostname === "0.0.0.0" || hostname === "::") throw new Error("Invalid JIT_HOST");
+  return hostname;
 }
 
 /** Finite local-development limits; operators must measure them before a pilot. */
@@ -30,6 +46,7 @@ export interface AppConfig {
   jobs: JobPolicy;
   team: TeamPolicy;
   telegram: TelegramPolicy;
+  ops: OpsPolicy;
 }
 
 /** Reads only Jit's declared settings and rejects malformed or unbounded values. */
@@ -55,7 +72,7 @@ export function readConfig(env: Record<string, string | undefined> = process.env
   return {
     databasePath: resolve(env.JIT_DATABASE ?? ".local/jit.sqlite"),
     origin: origin.origin,
-    hostname: env.JIT_HOST ?? "127.0.0.1",
+    hostname: validatedHostname(env.JIT_HOST),
     port: positive("JIT_PORT", 3000, 65535),
     bodyBytes: positive("JIT_BODY_BYTES", 16384, 1048576),
     queryBytes: positive("JIT_QUERY_BYTES", 2048, 16384),
@@ -91,6 +108,11 @@ export function readConfig(env: Record<string, string | undefined> = process.env
       maxPollBackoffMs,
       processAttempts: positive("JIT_TELEGRAM_PROCESS_ATTEMPTS", 3, 20),
       inboxBytes: positive("JIT_TELEGRAM_INBOX_BYTES", 16_384, 65_536),
+    },
+    ops: {
+      diskWatermarkBytes: positive("JIT_OPS_DISK_WATERMARK_BYTES", 104_857_600, 10_737_418_240),
+      retentionDays: positive("JIT_OPS_RETENTION_DAYS", 30, 3650),
+      drillDeadlineMs: positive("JIT_OPS_DRILL_DEADLINE_MS", 120_000, 600_000),
     },
   };
 }
