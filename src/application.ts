@@ -23,7 +23,10 @@ import type {
   CommitDeliveryCommand, DeliveryCommand, DeliveryIntent, DeliveryPage, DeliveryReceipt, DeliveryReport,
   DeliveryResendReceipt, DeliveryRetireReceipt, ResendDeliveryCommand, RetireDeliveryCommand,
 } from "./delivery";
-import { applyTask, isTaskCommand, readTaskList, readTaskModel, taskIdentity, type TaskChannel, type TaskCommand, type TaskList, type TaskReadModel, type TaskReceipt } from "./tasks";
+import {
+  applyTask, isTaskCommand, readProjectContinuity, readTaskCompletionPolicy, readTaskList, readTaskModel, taskIdentity,
+  type ProjectContinuity, type TaskChannel, type TaskCommand, type TaskList, type TaskReadModel, type TaskReceipt,
+} from "./tasks";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const validToken = (value: string) => /^[a-f0-9]{64}$/.test(value);
@@ -127,7 +130,7 @@ export class Application {
 
   /**
    * Issues an owner actor for a trusted adapter that already checked its own identity and holds a live session.
-   * `telegram` only labels task receipts. It does not read Telegram updates or bypass revision and dedup rules.
+   * `telegram` labels the supported task, follow-up and reply boundary. It does not verify inbound identity or bypass revision and dedup rules.
    * Forged `{ ownerId, channel }` objects are not registered and cannot execute commands.
    */
   issueAdapterActor(sessionToken: string, channel: TaskChannel): OwnerActor {
@@ -165,7 +168,7 @@ export class Application {
   workspace(actor: OwnerActor, offset = 0): Workspace {
     if (!Number.isSafeInteger(offset) || offset < 0 || offset > 1000000) throw new AppError("invalid_offset");
     return this.store.read(tx => {
-      this.#requireOwner(tx, actor);
+      this.#requireOwner(tx, actor, ["web", "telegram"]);
       const rows = tx.all<Project>(`SELECT p.id, p.name, p.revision, g.id AS groupId, p.created_at AS createdAt
         FROM projects p JOIN project_groups g ON g.project_id = p.id ORDER BY p.created_at, p.id LIMIT ? OFFSET ?`,
       this.config.pageSize + 1, offset);
@@ -177,7 +180,7 @@ export class Application {
   /** Resolves a project by stable identity under the authenticated owner, never by its name. */
   project(actor: OwnerActor, projectId: string): Project {
     return this.store.read(tx => {
-      this.#requireOwner(tx, actor);
+      this.#requireOwner(tx, actor, ["web", "telegram"]);
       return this.#project(tx, projectId);
     });
   }
@@ -186,7 +189,7 @@ export class Application {
   topics(actor: OwnerActor, projectId: string, after = 0) {
     requireId(projectId); requireCursor(after);
     return this.store.read(tx => {
-      this.#requireOwner(tx, actor);
+      this.#requireOwner(tx, actor, ["web", "telegram"]);
       return { project: this.#project(tx, projectId), ...readTopics(tx, projectId, after, this.config.pageSize) };
     });
   }
@@ -195,7 +198,7 @@ export class Application {
   conversation(actor: OwnerActor, projectId: string, topicId: string, after = 0) {
     requireId(projectId); requireId(topicId); requireCursor(after);
     return this.store.read(tx => {
-      this.#requireOwner(tx, actor);
+      this.#requireOwner(tx, actor, ["web", "telegram"]);
       const project = this.#project(tx, projectId), topic = readTopic(tx, projectId, topicId);
       return { project, topic, ...readMessages(tx, projectId, topicId, after, this.config.pageSize) };
     });
@@ -325,6 +328,27 @@ export class Application {
     });
   }
 
+  /**
+   * app.project_continuity/v1
+   * Reads committed obligations and owner decisions without provider inference or live model calls.
+   */
+  continuity(actor: OwnerActor, projectId: string): { project: Project } & ProjectContinuity {
+    requireId(projectId);
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor, ["web", "telegram"]);
+      return { project: this.#project(tx, projectId), ...readProjectContinuity(tx, projectId, this.config.pageSize, this.#now()) };
+    });
+  }
+
+  /** app.task_completion/v1 — exposes the effective completion policy before owner close commands. */
+  taskCompletionPolicy(actor: OwnerActor, projectId: string, taskId: string): { project: Project; policy: ReturnType<typeof readTaskCompletionPolicy> } {
+    requireId(projectId); requireId(taskId);
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor, ["web", "telegram"]);
+      return { project: this.#project(tx, projectId), policy: readTaskCompletionPolicy(tx, projectId, taskId) };
+    });
+  }
+
   /** app.task_commands/v1 — commits proposal, edit, dismissal, acceptance, or cancellation. Start is refused and writes nothing. */
   #taskCommand(actor: OwnerActor, command: TaskCommand): TaskReceipt {
     const payloadHash = taskIdentity(command, this.config.messageBytes);
@@ -368,7 +392,7 @@ export class Application {
   #teamCommand(actor: OwnerActor, command: TeamCommand): TeamReceipt {
     const payloadHash = teamIdentity(command, this.config.team);
     const result = this.store.transaction(tx => {
-      this.#requireOwner(tx, actor);
+      this.#requireOwner(tx, actor, command.kind === "team.dispatch" ? ["web", "telegram"] : ["web"]);
       if (command.projectId) this.#project(tx, command.projectId);
       const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
       if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as TeamReceipt; }
@@ -445,7 +469,7 @@ export class Application {
   #deliveryCommand(actor: OwnerActor, command: DeliveryCommand): DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt {
     const payloadHash = deliveryCommandIdentity(command, this.config.messageBytes);
     return this.store.transaction(tx => {
-      this.#requireOwner(tx, actor);
+      this.#requireOwner(tx, actor, command.kind === "delivery.commit" ? ["web", "telegram"] : ["web"]);
       this.#project(tx, command.projectId);
       const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
       if (prior) {
