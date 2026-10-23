@@ -1,7 +1,7 @@
 import { Application, type CreateProjectCommand } from "./application";
 import { AppError } from "./errors";
 import type { CreateTopicCommand, SendMessageCommand } from "./conversation";
-import { workspacePage, projectPage, conversationPage, sourcePage, jobsPage, teamPage, previewPage, discussionPage, deliveryPage, deliveryDetailPage, tasksPage, taskPage, memoryPage, memoryClaimPage, memoryContextPage, schedulesPage, scheduleDetailPage, loginPage, errorPage } from "./web-layout";
+import { workspacePage, projectPage, conversationPage, sourcePage, jobsPage, teamPage, previewPage, discussionPage, deliveryPage, deliveryDetailPage, prReportsPage, prReportPage, tasksPage, taskPage, memoryPage, memoryClaimPage, memoryContextPage, schedulesPage, scheduleDetailPage, loginPage, errorPage } from "./web-layout";
 import type { ExtractMemoryCommand } from "./memory/types";
 import type { CorrectMemoryCommand } from "./memory/types";
 import type { ForgetMemoryCommand } from "./memory/types";
@@ -47,6 +47,12 @@ const messages: Record<string, string> = {
   delivery_report_not_found: "ไม่พบรายงานของการแจ้งเตือนนี้",
   delivery_report_not_current: "รายงานนี้ถูกแทนที่หรือลบแล้ว",
   invalid_delivery_payload: "ข้อความมีข้อมูลที่ไม่ควรส่ง",
+  pr_report_not_found: "ไม่พบรายงานตรวจ PR ในโครงการที่เลือก",
+  invalid_pr_report_command: "คำสั่งรายงาน PR ไม่ถูกต้อง กรุณาเปิดหน้าใหม่",
+  pr_candidate_not_current: "PR เปลี่ยนรุ่นแล้ว เปิดรายงานล่าสุดก่อนทำต่อ",
+  pr_monitor_not_active: "การตรวจ PR หยุดอยู่ เปิดการตรวจก่อนทำต่อ",
+  pr_snapshot_not_found: "ยังไม่มีภาพ snapshot สำหรับ PR นี้",
+  invalid_alert_policy: "นโยบายแจ้งเตือนไม่ถูกต้อง",
   delivery_worker_unavailable: "ตัวส่งยังไม่พร้อม",
   authorization_changed: "สิทธิ์ที่ใช้บันทึกคำขอเปลี่ยนแล้ว",
   invalid_task_command: "คำสั่งงานไม่ถูกต้อง กรุณาเปิดหน้าใหม่",
@@ -173,6 +179,8 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       const deliveryRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/delivery$/.exec(url.pathname);
       const deliveryIntentRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/delivery\/([a-f0-9-]{36})$/.exec(url.pathname);
       const deliveryResendRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/delivery\/([a-f0-9-]{36})\/resend$/.exec(url.pathname);
+      const prReportsRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/pr\/reports$/.exec(url.pathname);
+      const prReportRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/pr\/reports\/([a-f0-9-]{36})$/.exec(url.pathname);
       const jobsRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/jobs$/.exec(url.pathname);
       const jobRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/jobs\/([a-f0-9-]{36})$/.exec(url.pathname);
       const resumeRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/jobs\/([a-f0-9-]{36})\/(resume|stop)$/.exec(url.pathname);
@@ -388,6 +396,22 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       if (request.method === "GET" && deliveryIntentRoute) {
         const state = app.delivery(auth.actor, deliveryIntentRoute[2]!, deliveryIntentRoute[3]!);
         return api ? json(state) : respond(deliveryDetailPage(state, app.workspace(auth.actor), auth.csrf));
+      }
+      if (request.method === "GET" && prReportsRoute) {
+        const state = app.prReports(auth.actor, prReportsRoute[2]!);
+        return api ? json(state) : respond(prReportsPage(state, app.workspace(auth.actor), auth.csrf));
+      }
+      if (request.method === "GET" && prReportRoute) {
+        const state = app.prReport(auth.actor, prReportRoute[2]!, prReportRoute[3]!);
+        return api ? json(state) : respond(prReportPage(state, app.workspace(auth.actor), auth.csrf));
+      }
+      if (request.method === "POST" && prReportRoute) {
+        const body = await payload(request);
+        app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "reason"].includes(key))) throw new AppError("invalid_body");
+        const command = { kind: "pr.report.dismiss" as const, requestId: body.requestId as string, projectId: prReportRoute[2]!, expectedRevision: Number(body.expectedRevision), payload: { reportId: prReportRoute[3]!, reason: body.reason as string } };
+        const receipt = app.execute(auth.actor, command);
+        return api ? json(receipt) : respond(null, 303, { Location: `/projects/${prReportRoute[2]}/pr/reports/${prReportRoute[3]}` });
       }
       if (request.method === "GET" && schedulesRoute) {
         const state = app.schedules(auth.actor, schedulesRoute[2]!);

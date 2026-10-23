@@ -10,6 +10,9 @@ import { coordinatorSynthesisWork } from "./team/decisions";
 import { discussionPlanWork, specialistAnalysisWork } from "./team/dispatch";
 import { ScriptedRunPort } from "./team/scripted-port";
 import { scriptedPreviewWork } from "./team/preview";
+import { prReviewWork } from "./pr/review";
+import { prSnapshotWork } from "./pr/work";
+import { FakeGitHubFixture } from "./pr/github";
 import { memoryExtractionWork, scriptedMemoryResult } from "./memory/extract";
 import { scheduleReminderWork, scheduleSummaryWork, tickSchedules } from "./jobs/schedules";
 import { lookupSource } from "./sources";
@@ -46,6 +49,8 @@ async function main(): Promise<void> {
     queue = new JobQueue(store, config.jobs, [
       projectStateWork(store), scriptedPreviewWork(store, config, port), discussionPlanWork(), specialistAnalysisWork(store, config, port), coordinatorSynthesisWork(store, config, port),
       memoryExtractionWork(store, config, memoryPort), scheduleReminderWork(store, config), scheduleSummaryWork(store, config, port),
+      prSnapshotWork({ store, cacheRoot: ".local/pr-cache", fixtureFor: () => new FakeGitHubFixture() }),
+      prReviewWork({ store, port }),
     ]);
     await queue.reconcile(port);
   } }

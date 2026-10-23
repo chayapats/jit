@@ -4,6 +4,7 @@ import type { AppTransaction } from "../store";
  * Ensures PR01 tables exist inside an application transaction.
  * Formal `user_version` migration remains reserved for store ownership; tests and
  * trusted callers invoke this before monitor/candidate mutations.
+ * PR02 adds `pr_reports` + `pr_report_annotations` under the same pattern.
  */
 export function ensurePrSchema(tx: AppTransaction): void {
   tx.run(`CREATE TABLE IF NOT EXISTS pr_monitors (
@@ -36,4 +37,22 @@ export function ensurePrSchema(tx: AppTransaction): void {
     candidate_id TEXT NOT NULL UNIQUE REFERENCES pr_candidates(id),
     record_json TEXT NOT NULL
   )`);
+  tx.run(`CREATE TABLE IF NOT EXISTS pr_reports (
+    id TEXT PRIMARY KEY,
+    candidate_id TEXT NOT NULL UNIQUE REFERENCES pr_candidates(id),
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    monitor_id TEXT NOT NULL REFERENCES pr_monitors(id),
+    status TEXT NOT NULL CHECK (status IN ('running', 'complete_clean', 'complete_findings', 'partial', 'incomplete', 'failed')),
+    record_json TEXT NOT NULL
+  )`);
+  tx.run(`CREATE INDEX IF NOT EXISTS pr_report_monitor ON pr_reports(project_id, monitor_id)`);
+  tx.run(`CREATE INDEX IF NOT EXISTS pr_report_candidate ON pr_reports(candidate_id)`);
+  tx.run(`CREATE TABLE IF NOT EXISTS pr_report_annotations (
+    id TEXT PRIMARY KEY,
+    report_id TEXT NOT NULL REFERENCES pr_reports(id),
+    revision INTEGER NOT NULL CHECK (revision > 0),
+    record_json TEXT NOT NULL,
+    UNIQUE (report_id, revision)
+  )`);
+  tx.run(`CREATE INDEX IF NOT EXISTS pr_report_annotation_report ON pr_report_annotations(report_id, revision)`);
 }

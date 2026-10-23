@@ -181,6 +181,47 @@ export function deliveryDetailPage(state: ReturnType<Application["delivery"]>, w
     </article><details class="team-card"><summary>ที่มาของข้อความ</summary><dl><dt>รายงาน</dt><dd>${escape(report.id)} · รุ่น ${report.revision}/${report.generation} · ${escape(report.availability)}</dd><dt>สิทธิ์ / รุ่นข้อมูล</dt><dd>${intent.provenance.authorityGeneration} / ${intent.provenance.inputGeneration}</dd><dt>รหัสไม่ซ้ำ</dt><dd>${escape(intent.dedupeKey)}</dd><dt>ความพยายาม</dt><dd>${state.attempts.length}</dd></dl></details></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}/delivery` } });
 }
 
+const prStatusLabels: Record<string, string> = {
+  running: "กำลังตรวจ",
+  complete_clean: "ตรวจแล้ว ไม่พบประเด็นที่ต้องแจ้ง",
+  complete_findings: "ตรวจแล้ว พบประเด็นที่มีหลักฐาน",
+  partial: "ตรวจบางส่วน หลักฐานถูกตัดทอน",
+  incomplete: "ยังตรวจไม่ครบ ขาดการวิเคราะห์ที่กำหนด",
+  failed: "ตรวจไม่สำเร็จ",
+};
+
+const prDeliveryLabels: Record<string, string> = {
+  waiting: "รอช่องทาง", queued: "รอส่ง", claimed: "กำลังส่ง", sent: "ปลายทางตอบรับแล้ว",
+  failed: "ส่งไม่สำเร็จ", unknown: "ไม่ทราบผล", cancelled: "ยกเลิกก่อนส่ง",
+};
+
+/** Lists private static review reports; reading never admits work or sends. */
+export function prReportsPage(state: ReturnType<Application["prReports"]>, workspace: Workspace, csrf: string): string {
+  const { project } = state;
+  void csrf;
+  return shell("รายงานตรวจ PR", { project, workspace, csrf, section: "delivery" }, `<div class="content"><section class="hero"><p class="eyebrow">ตรวจแบบ static ส่วนตัว</p><h2>รายงานของ ${escape(project.name)}</h2><p>รายงานผูกกับ base/head/policy รุ่นที่ตรวจเท่านั้น รุ่นใหม่ทำให้รายงานเดิมเป็น stale และจะไม่ถูกอ้างว่าเป็นผลล่าสุด</p></section>
+    ${state.items.length ? `<ul>${state.items.map(item => `<li class="topic-row"><div class="topic-row-main"><h3><a href="/projects/${project.id}/pr/reports/${item.id}">${escape(`PR #${item.pullNumber} · ${item.baseSha.slice(0, 8)}...${item.headSha.slice(0, 8)}`)}</a></h3><p>${escape(item.stale ? `stale (${item.staleReason ?? ""})` : prStatusLabels[item.status] ?? item.status)} · findings ${item.findings.filter(f => f.status === "actionable").length}/${item.findings.length}</p><p class="literal">coverage ${escape(item.coverageOverall)} · enum ${item.enumerationComplete ? "ครบ" : "ไม่ครบ"} · roles ${escape(item.analyzedRoles.join(","))}</p></div></li>`).join("")}</ul>` : '<p class="empty-list">ยังไม่มีรายงานตรวจ PR</p>'}
+    </div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
+}
+
+/** Shows one private report with findings, alert evaluation and linked delivery. */
+export function prReportPage(state: ReturnType<Application["prReport"]>, workspace: Workspace, csrf: string): string {
+  const { project, report, annotations, evaluation, alerts } = state;
+  const observed = report.stale ? `stale (${report.staleReason ?? ""})` : prStatusLabels[report.status] ?? report.status;
+  return shell("รายละเอียดรายงาน PR", { project, workspace, csrf, section: "delivery" }, `<div class="content"><section class="hero"><p class="eyebrow">รายงานส่วนตัว · ไม่คอมเมนต์ GitHub</p><h2>${escape(`PR #${report.pullNumber} · ${report.baseSha.slice(0, 8)}...${report.headSha.slice(0, 8)}`)}</h2><p>${escape(observed)} · coverage ${escape(report.coverageOverall)} · ${report.enumerationComplete ? "enumeration ครบ" : "enumeration ไม่ครบ"}</p><p>base ${escape(report.baseSha)} · head ${escape(report.headSha)} · policy v${report.policyVersion} · review v${report.reviewPolicyVersion} · revision ${report.revision}</p></section>
+    <article class="team-card"><h3>ประเด็น (${report.findings.length})</h3>${report.findings.length ? `<ul>${report.findings.map(f => `<li><strong>${escape(f.title)}</strong> [${escape(f.category)}/${escape(f.severity)}/${escape(f.status)}]<br><span class="literal">${escape(f.location.path)}${f.location.line ? `:${f.location.line}` : ""} · ${escape(f.evidenceType)}${f.evidenceRef ? ` ${escape(f.evidenceRef)}` : ""}</span><br><span>${escape(f.condition)}</span><br><span>${escape(f.impact)}</span>${f.validationErrors.length ? `<br><small>ตรวจ: ${escape(f.validationErrors.join(", "))}</small>` : ""}</li>`).join("")}</ul>` : '<p class="empty-list">ไม่พบประเด็น</p>'}
+    <p>วิเคราะห์: ${escape(report.analyzedRoles.join(", ") || "-")} · ต้องการ: ${escape(report.requiredRoles.join(", "))} · ข้าม: ${escape(report.skippedScope.join(", ") || "-")}</p>
+    ${report.disagreements.length ? `<p>ข้อขัดแย้ง: ${escape(report.disagreements.join(" · "))}</p>` : ""}</article>
+    <article class="team-card"><h3>การแจ้ง (qualifying ${evaluation.qualifying.length} · held ${evaluation.held.length})</h3>
+    ${evaluation.qualifying.length ? `<ul>${evaluation.qualifying.map(f => `<li>${escape(f.id)} · ${escape(f.title)}</li>`).join("")}</ul>` : "<p>ไม่มีประเด็นที่เข้าเกณฑ์แจ้ง</p>"}
+    ${evaluation.held.length ? `<details><summary>เหตุที่ค้างไว้ (${evaluation.held.length})</summary><ul>${evaluation.held.map(h => `<li>${escape(h.finding.id)}: ${escape(h.reason)}</li>`).join("")}</ul></details>` : ""}
+    ${alerts.length ? `<ul>${alerts.map(a => `<li><a href="/projects/${project.id}/delivery/${a.id}">${escape(prDeliveryLabels[a.status] ?? a.status)} · ${escape(a.remote)}</a> · ${escape(a.dedupeKey)}</li>`).join("")}</ul><p>unknown ไม่ถือว่าส่งแล้ว รายงานต้นทางยังเปิดอ่านได้</p>` : "<p>ยังไม่มีคำขอส่งสำหรับรายงานนี้</p>"}</article>
+    <article class="team-card"><h3>บันทึกของเจ้าของ (${annotations.length})</h3>
+    ${annotations.length ? `<ul>${annotations.map(a => `<li>r${a.revision} · ${escape(a.kind)} · ${escape(a.text)}</li>`).join("")}</ul>` : "<p>ยังไม่มีบันทึกเพิ่มเติม</p>"}
+    <form method="post" action="/projects/${project.id}/pr/reports/${report.id}">${hiddenCommand(csrf, report.revision)}<label>เหตุผลที่ไม่แจ้ง/ปิดประเด็น<input name="reason" required maxlength="2000"></label><button class="primary">บันทึกว่าไม่ต้องแจ้ง</button><small>บันทึกเป็น annotation รุ่นใหม่ ไม่เขียนทับหลักฐานเดิม</small></form></article>
+    </div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}/pr/reports` } });
+}
+
 /** Renders bounded owner configuration and explicitly authorized fixture previews. */
 export function teamPage(state: ReturnType<Application["team"]>, workspace: Workspace, csrf: string, limits: JobPolicy["maximum"], preset?: string): string {
   const project = state.project ?? undefined, base = project ? `/projects/${project.id}/team` : "/team";
