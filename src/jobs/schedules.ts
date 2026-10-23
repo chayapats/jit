@@ -10,7 +10,7 @@ import type { JobLimits, WorkDefinition, WorkOutcome } from "./types";
 import { assembleMemoryContext, contextByteRoom, contextCurrent, memoryContextOperator, outputDerivation } from "../memory/context";
 import { requireRoleRoute } from "../team/configuration";
 import type { ApplicationRunPort } from "../team/run-port";
-import { fixtureOutcome, normalizeFixtureResult, validateRunRequest } from "../team/scripted-port";
+import { fixtureOutcome, normalizePortResult, validateRunRequest } from "../team/scripted-port";
 import type { ApplicationRunRequest, RoleRoute } from "../team/types";
 
 /** Behavior contract delivered by this module. Occurrence identity, timezone policy and
@@ -581,7 +581,7 @@ export function scheduleSummaryWork(store: TransactionStore, config: AppConfig, 
       };
       validateRunRequest(request, config.team);
       tx.run("INSERT INTO team_contexts VALUES (?, 1, 'active')", request.context.id);
-      return { native: { adapter: "scripted", runId: request.runId, sessionId: request.runId, context: request.context },
+      return { native: { adapter: port.adapter, runId: request.runId, sessionId: request.runId, context: request.context },
         data: JSON.parse(jobData(request, config.team.contextBytes)) };
     },
     isCurrent: (tx, job, attempt) => {
@@ -606,7 +606,7 @@ export function scheduleSummaryWork(store: TransactionStore, config: AppConfig, 
       const request = structuredClone(attempt.data) as unknown as ApplicationRunRequest;
       reserve({ contextTokens: Math.ceil(Buffer.byteLength(jobData(request, config.team.contextBytes)) / 4), outputTokens: job.limits.outputTokens });
       let outcome;
-      try { outcome = normalizeFixtureResult(await port.invoke(request, signal, () => {}), request, Math.min(config.jobs.outputBytes, job.limits.outputTokens * 4, 65000)); }
+      try { outcome = normalizePortResult(await port.invoke(request, signal, () => {}), request, Math.min(config.jobs.outputBytes, job.limits.outputTokens * 4, 65000)); }
       catch { outcome = fixtureOutcome("invalid_result"); }
       if (outcome.reason === "quota" || outcome.reason === "needs_login" || outcome.reason === "route_unavailable") {
         return { state: "waiting", reason: outcome.reason };

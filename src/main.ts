@@ -14,6 +14,7 @@ import { AppError } from "./errors";
 import { coordinatorSynthesisWork } from "./team/decisions";
 import { discussionPlanWork, specialistAnalysisWork } from "./team/dispatch";
 import { ScriptedRunPort } from "./team/scripted-port";
+import { SchwayRunPort, verifySchwayBridge } from "./team/schway-port";
 import { scriptedPreviewWork } from "./team/preview";
 import { prReviewWork } from "./pr/review";
 import { prSnapshotWork } from "./pr/work";
@@ -74,7 +75,18 @@ async function main(): Promise<void> {
   const store = new TransactionStore(config.databasePath);
   let queue: JobQueue | undefined;
   try { if (command === "serve") {
-    const port = new ScriptedRunPort(store, config.team, config.jobs.outputBytes);
+    if (config.runPort === "schway") {
+      const gate = await verifySchwayBridge(store);
+      if (!gate.ok) {
+        console.error(`Schway bridge unavailable: ${gate.detail} (next: ${gate.nextAction})`);
+        process.exitCode = 1;
+        return;
+      }
+      console.log(`Schway bridge ready: ${gate.detail}`);
+    }
+    const port = config.runPort === "schway"
+      ? new SchwayRunPort(store, config.team, config.jobs.outputBytes)
+      : new ScriptedRunPort(store, config.team, config.jobs.outputBytes);
     const memoryPort = new ScriptedRunPort(store, config.team, config.jobs.outputBytes, request => {
       const source = store.read(tx => lookupSource(tx, request.projectId, request.manifest.sources[0]!.reference));
       return scriptedMemoryResult(request, source.state === "available" && source.attribution.kind === "owner", config.jobs.outputBytes);

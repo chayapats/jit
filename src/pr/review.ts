@@ -2,7 +2,7 @@ import { AppError } from "../errors";
 import { jobData } from "../jobs/queue";
 import type { JobLimits, WorkDefinition } from "../jobs/types";
 import type { AppTransaction } from "../store";
-import { normalizeFixtureResult } from "../team/scripted-port";
+import { normalizePortResult } from "../team/scripted-port";
 import type { ApplicationRunPort } from "../team/run-port";
 import type { ApplicationRunRequest } from "../team/types";
 import { readMonitor } from "./authority";
@@ -164,7 +164,7 @@ export function prReviewWork(options: PrReviewWorkOptions): WorkDefinition {
         try { reserve({ calls: 1, rounds: 1, hops: 1 }); } catch { return { state: "failed", reason: "worker_failed" }; }
         let outcome;
         try {
-          outcome = normalizeFixtureResult(await options.port.invoke(request, signal, () => {}), request, Math.min(outputBytes, job.limits.outputTokens * 4, 65000));
+          outcome = normalizePortResult(await options.port.invoke(request, signal, () => {}), request, Math.min(outputBytes, job.limits.outputTokens * 4, 65000));
         } catch { outcome = { state: "error" as const, reason: "invalid_result" as const, mode: "fixture" as const, output: null, usage: { calls: 0, rounds: 0, hops: 0, contextTokens: 0, outputTokens: 0, retries: 0, wallMs: 0 }, session: null }; }
         if (outcome.reason === "quota" || outcome.reason === "needs_login" || outcome.reason === "route_unavailable") {
           return { state: "waiting", reason: outcome.reason };
@@ -211,7 +211,7 @@ export function prReviewWork(options: PrReviewWorkOptions): WorkDefinition {
       try { reserve({ calls: 1, rounds: 1, hops: 1 }); } catch { return { state: "failed", reason: "worker_failed" }; }
       let synthesisOutcome;
       try {
-        synthesisOutcome = normalizeFixtureResult(await options.port.invoke(synthesisRequest, signal, () => {}), synthesisRequest, Math.min(outputBytes, job.limits.outputTokens * 4, 65000));
+        synthesisOutcome = normalizePortResult(await options.port.invoke(synthesisRequest, signal, () => {}), synthesisRequest, Math.min(outputBytes, job.limits.outputTokens * 4, 65000));
       } catch { synthesisOutcome = { state: "error" as const, reason: "invalid_result" as const, mode: "fixture" as const, output: null, usage: { calls: 0, rounds: 0, hops: 0, contextTokens: 0, outputTokens: 0, retries: 0, wallMs: 0 }, session: null }; }
       if (synthesisOutcome.reason === "quota" || synthesisOutcome.reason === "needs_login" || synthesisOutcome.reason === "route_unavailable") {
         return { state: "waiting", reason: synthesisOutcome.reason };

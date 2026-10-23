@@ -19,5 +19,8 @@
   "devDependencies": {
     "@types/bun": "1.4.3",
     "typescript": "7.0.2"
+  },
+  "dependencies": {
+    "schway": "file:vendor/schway-1.0.0-rc.2-6fe3808.tgz"
   }
 }

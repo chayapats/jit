@@ -69,10 +69,20 @@ function validateContextLayout(request: ApplicationRunRequest, policy: TeamPolic
 
 /** Validates result coherence and ceilings, replacing invalid/raw adapter data with a safe error. */
 export function normalizeFixtureResult(value: unknown, request: ApplicationRunRequest, outputBytes: number): ApplicationRunOutcome {
+  const outcome = normalizePortResult(value, request, outputBytes);
+  return outcome.mode === "fixture" ? outcome : fixtureOutcome("invalid_result");
+}
+
+/**
+ * Validates one port outcome (fixture or production) against the request and
+ * ceilings. Fixture scripts stay fixture-strict through normalizeFixtureResult;
+ * work executors accept either mode so the concrete bridge can commit.
+ */
+export function normalizePortResult(value: unknown, request: ApplicationRunRequest, outputBytes: number): ApplicationRunOutcome {
   try {
     const result = JSON.parse(jobData(value, outputBytes + 2048)) as ApplicationRunOutcome;
     const expected = fixtureOutcome(result.reason);
-    if (!reasons.includes(result.reason) || result.mode !== "fixture" || result.state !== expected.state ||
+    if (!reasons.includes(result.reason) || (result.mode !== "fixture" && result.mode !== "production") || result.state !== expected.state ||
         (result.reason === "complete" ? typeof result.output !== "string" || !result.output.trim() : result.output !== null) ||
         (typeof result.output === "string" && Buffer.byteLength(result.output) > outputBytes) || !result.usage ||
         Object.keys(result.usage).sort().join(",") !== "calls,contextTokens,hops,outputTokens,retries,rounds,wallMs") return fixtureOutcome("invalid_result");
@@ -80,10 +90,11 @@ export function normalizeFixtureResult(value: unknown, request: ApplicationRunRe
     for (const [key, value] of Object.entries(result.usage)) {
       if (!Number.isSafeInteger(value) || value < 0 || value > request.limits[key as keyof typeof result.usage]) return fixtureOutcome("invalid_result");
     }
-    if (result.session !== null && (result.session.adapter !== "scripted" || result.session.id !== request.runId ||
+    const adapter = result.mode === "production" ? "schway" : "scripted";
+    if (result.session !== null && (result.session.adapter !== adapter || result.session.id !== request.runId ||
         result.session.context.id !== request.context.id || result.session.context.generation !== request.context.generation)) return fixtureOutcome("invalid_result");
     // Return only declared fields, never raw SDK objects or extra model-authored fields.
-    return { ...expected, output: result.output, usage: result.usage, session: result.session === null ? null : { adapter: "scripted", id: request.runId, context: { ...request.context } } };
+    return { ...expected, mode: result.mode, output: result.output, usage: result.usage, session: result.session === null ? null : { adapter, id: request.runId, context: { ...request.context } } };
   } catch { return fixtureOutcome("invalid_result"); }
 }
 
@@ -95,6 +106,7 @@ export function withContextAnswer(prefix: string, request: ApplicationRunRequest
 
 /** Deterministic in-process fixture; it contains no network, SDK, discovery or model protocol loop. */
 export class ScriptedRunPort implements ApplicationRunPort {
+  readonly adapter = "scripted" as const;
   readonly #requests: ApplicationRunRequest[] = [];
   readonly #native: ScriptedNativeLedger;
   constructor(readonly store: TransactionStore, readonly policy: TeamPolicy, readonly outputBytes: number,

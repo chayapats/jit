@@ -242,7 +242,7 @@ test("frozen published v3 migrates without changing owner/project/job/receipt an
   const jobId = rid(), oldRecord = JSON.stringify({ id: jobId, marker: "retained fixture job" });
   db.query("INSERT INTO jobs (id, project_id, queue_order, priority, state, occupies, route_key, record_json) VALUES (?, ?, 1, 0, 'succeeded', 0, 'fixture', ?)").run(jobId, projectId, oldRecord); db.close();
   const store = new TransactionStore(path); stores.push(store);
-  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 20 });
+  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 21 });
   expect(store.read(tx => tx.get("SELECT generation, password_hash FROM owner"))).toEqual({ generation: 7, password_hash: hash });
   expect(store.read(tx => tx.get("SELECT id FROM project_groups WHERE project_id = ?", projectId))).toEqual({ id: groupId });
   expect(store.read(tx => tx.get("SELECT record_json FROM jobs WHERE id = ?", jobId))).toEqual({ record_json: oldRecord });
@@ -299,12 +299,14 @@ test("malformed usage/session/oversized results and pre-aborted calls never beco
 });
 
 test("application run seam imports only app contracts and owns no provider SDK, native session bytes or discovery", () => {
-  for (const name of readdirSync(join(import.meta.dir, "../src/team")).filter(name => name.endsWith(".ts"))) {
+  for (const name of readdirSync(join(import.meta.dir, "../src/team")).filter(name => name.endsWith(".ts") && name !== "schway-port.ts")) {
     const text = readFileSync(join(import.meta.dir, "../src/team", name), "utf8");
     const imports = [...text.matchAll(/from\s+["']([^"']+)["']/g)].map(match => match[1]!);
     expect(imports.every(specifier => specifier.startsWith(".") || specifier === "node:crypto")).toBe(true);
     expect(text).not.toMatch(/Bun\.(spawn|file)|fetch\(|process\.env|schway\/src|@opentui|@anthropic|@openai/);
   }
+  // The concrete bridge is the single exception: its pinned public surface is
+  // covered by the dedicated seam test in schway-bridge.test.ts.
 });
 
 function recover(f: Fixture, failures: { retire?: () => boolean; delete?: () => boolean } = {},
@@ -326,6 +328,7 @@ for (const crash of ["before_dispatch", "after_native_append", "before_app_commi
       return fixtureOutcome("complete", "native output");
     },
     wrap: port => ({
+      adapter: port.adapter,
       invoke: async (...args) => { const outcome = await port.invoke(...args); if (crash === "before_app_commit") { entered(); await gate; } return outcome; },
       inspectRuns: after => port.inspectRuns(after), retire: context => port.retire(context), delete: context => port.delete(context),
     }),
@@ -417,7 +420,7 @@ test("managed context fencing commits before the transport retirement request an
   const f = await fixture({ script: async () => { entered(); await gate; return fixtureOutcome("complete", "late"); } });
   const role = f.app.execute(f.auth.actor, save(f, { route: grok })).role!, run = f.app.execute(f.auth.actor, preview(f, role.id)).preview!;
   f.queue.pump(); await started;
-  const failed: ApplicationRunPort = { invoke: (...args) => f.port.invoke(...args), inspectRuns: after => f.port.inspectRuns(after), delete: context => f.port.delete(context),
+  const failed: ApplicationRunPort = { adapter: 'scripted' as const, invoke: (...args) => f.port.invoke(...args), inspectRuns: after => f.port.inspectRuns(after), delete: context => f.port.delete(context),
     retire: async context => {
       expect(f.app.job(f.auth.actor, f.project.id, run.jobId).attempts[0]!.state).toBe("interrupted");
       expect(f.store.read(tx => tx.get<{ state: string }>("SELECT state FROM team_contexts WHERE id = ?", context.id))!.state).toBe("retired");
@@ -448,7 +451,7 @@ test("a frozen TEAM01 v4 artifact migrates without inventing historical attempt/
   db.query("INSERT INTO team_contexts VALUES (?, 1, 'delete_failed')").run(contextId);
   db.query("INSERT INTO team_runs (id, project_id, job_id, context_id, record_json) VALUES (?, ?, ?, ?, ?)").run(runId, projectId, jobId, contextId, '{"retained":"preview"}'); db.close();
   const store = new TransactionStore(path); stores.push(store);
-  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 20 });
+  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 21 });
   expect(store.read(tx => tx.get("SELECT record_json FROM jobs WHERE id = ?", jobId))).toEqual({ record_json: record });
   expect(store.read(tx => tx.get("SELECT state FROM team_contexts WHERE id = ?", contextId))).toEqual({ state: "delete_failed" });
   expect(store.read(tx => tx.get("SELECT generation, reason, stop_json FROM job_authority WHERE job_id = ?", jobId))).toEqual({ generation: 1, reason: null, stop_json: null });
@@ -473,7 +476,7 @@ test("stop after restart retains unknown transport until separate native finish 
 
 test("thrown delete after acknowledged retirement remains a durable delete blocker; wrong retirement references cannot unblock replacement", async () => {
   const f = await fixture(), role = f.app.execute(f.auth.actor, save(f, { route: grok })).role!, run = f.app.execute(f.auth.actor, preview(f, role.id)).preview!;
-  const failed: ApplicationRunPort = { invoke: (...args) => f.port.invoke(...args), inspectRuns: after => f.port.inspectRuns(after), retire: context => f.port.retire(context),
+  const failed: ApplicationRunPort = { adapter: 'scripted' as const, invoke: (...args) => f.port.invoke(...args), inspectRuns: after => f.port.inspectRuns(after), retire: context => f.port.retire(context),
     delete: async () => { throw new Error("PRIVATE_NATIVE_DELETE_DIAGNOSTIC"); } };
   const deletion = await f.queue.retireContext(failed, run.request.context, true);
   expect(deletion).toMatchObject({ lifecycle: "delete_failed", deleteRequested: true, nextAction: "retry_managed_delete" });
@@ -544,7 +547,7 @@ test("overlapping retirement cannot erase a concurrent delete_failed blocker", a
   const role = f.app.execute(f.auth.actor, save(f, { route: grok })).role!, run = f.app.execute(f.auth.actor, preview(f, role.id)).preview!;
   f.queue.pump(); // Leave a prepared attempt so resume is otherwise eligible after retirement.
   const recovered = recover(f, { delete: () => true });
-  const gated: ApplicationRunPort = {
+  const gated: ApplicationRunPort = { adapter: 'scripted' as const,
     invoke: (...args) => recovered.port.invoke(...args), inspectRuns: after => recovered.port.inspectRuns(after),
     retire: async context => {
       retireCalls++;
@@ -664,6 +667,7 @@ test("H: interrupted early yield commit retires managed context on reconcile", a
   f.queue.pump(); await started;
   const recovered = recover(f, {}, {
     wrap: port => ({
+      adapter: port.adapter,
       invoke: (...args) => port.invoke(...args), inspectRuns: after => port.inspectRuns(after),
       retire: async context => { retireCalls++; return port.retire(context); },
       delete: context => port.delete(context),
@@ -739,7 +743,7 @@ test("concurrent reconciliation does not retire a newly admitted preview context
   native.put({ adapter: "scripted", runId: rid(), sessionId: rid(), context: orphan, state: "finished", contextState: "active" });
   let releaseRetire!: () => void; const retireGate = new Promise<void>(r => { releaseRetire = r; }); releases.push(releaseRetire);
   let retireCalls = 0;
-  const gated: ApplicationRunPort = {
+  const gated: ApplicationRunPort = { adapter: 'scripted' as const,
     invoke: (...args) => f.port.invoke(...args), inspectRuns: after => f.port.inspectRuns(after),
     retire: async context => {
       retireCalls++;
@@ -769,7 +773,7 @@ test("K: concurrent empty inspect must not settle a mid-reconcile admitted attem
   const f = await fixture({ script: async () => { entered(); await scriptGate; return fixtureOutcome("complete", "late"); } });
   let releaseInspect!: () => void; const inspectGate = new Promise<void>(r => { releaseInspect = r; }); releases.push(releaseInspect);
   let hitEmpty!: () => void; const emptyHit = new Promise<void>(r => { hitEmpty = r; });
-  const gated: ApplicationRunPort = {
+  const gated: ApplicationRunPort = { adapter: 'scripted' as const,
     invoke: (...args) => f.port.invoke(...args),
     inspectRuns: async after => {
       const page = await f.port.inspectRuns(after);
@@ -809,7 +813,7 @@ test("K2: owner stop during stale empty inspect must not report observed_stopped
   const f = await fixture({ script: async () => { entered(); await scriptGate; return fixtureOutcome("complete", "late"); } });
   let releaseInspect!: () => void; const inspectGate = new Promise<void>(r => { releaseInspect = r; }); releases.push(releaseInspect);
   let hitEmpty!: () => void; const emptyHit = new Promise<void>(r => { hitEmpty = r; });
-  const gated: ApplicationRunPort = {
+  const gated: ApplicationRunPort = { adapter: 'scripted' as const,
     invoke: (...args) => f.port.invoke(...args),
     inspectRuns: async after => {
       const page = await f.port.inspectRuns(after);
@@ -1238,7 +1242,7 @@ test("schema v6 with telegram tables migrates to v8 without recreating them", ()
     PRAGMA user_version = 6;`);
   db.close();
   const store = new TransactionStore(path); stores.push(store);
-  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 20 });
+  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 21 });
   expect(store.read(tx => tx.get("SELECT state FROM telegram_binding WHERE id = 1"))).toEqual({ state: "unbound" });
   expect(store.read(tx => tx.get<{ name: string }>("SELECT name FROM sqlite_master WHERE name = 'coordinator_syntheses'"))!.name).toBe("coordinator_syntheses");
   expect(store.read(tx => tx.get<{ name: string }>("SELECT name FROM sqlite_master WHERE name = 'owner_decisions'"))!.name).toBe("owner_decisions");

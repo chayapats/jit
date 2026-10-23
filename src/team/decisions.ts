@@ -9,7 +9,7 @@ import { TransactionStore, type AppTransaction } from "../store";
 import { readTeam } from "./configuration";
 import { projectDiscussion, readDiscussion } from "./dispatch";
 import type { ApplicationRunPort } from "./run-port";
-import { fixtureOutcome, normalizeFixtureResult, validateRunRequest } from "./scripted-port";
+import { fixtureOutcome, normalizePortResult, validateRunRequest } from "./scripted-port";
 import { assembleMemoryContext, contextByteRoom, contextCurrent, markMemoryDerived, memoryContextOperator } from "../memory/context";
 import type {
   ApplicationRunOutcome, ApplicationRunRequest, CoordinatorSynthesis, DecisionCommand, DecisionHistoryEntry,
@@ -490,7 +490,7 @@ export function coordinatorSynthesisWork(
       loaded.public.updatedAt = now();
       saveStored(tx, loaded);
       return {
-        native: { adapter: "scripted", runId: request.runId, sessionId: request.runId, context: request.context },
+        native: { adapter: port.adapter, runId: request.runId, sessionId: request.runId, context: request.context },
         data: JSON.parse(jobData(request, config.team.contextBytes)),
       };
     },
@@ -510,7 +510,7 @@ export function coordinatorSynthesisWork(
       reserve({ calls: 1, outputTokens: 1 });
       let outcome: ApplicationRunOutcome;
       try {
-        outcome = normalizeFixtureResult(await port.invoke(request, signal, () => {}), request, Math.min(config.jobs.outputBytes, job.limits.outputTokens * 4, 65000));
+        outcome = normalizePortResult(await port.invoke(request, signal, () => {}), request, Math.min(config.jobs.outputBytes, job.limits.outputTokens * 4, 65000));
       } catch { outcome = fixtureOutcome("invalid_result"); }
       if (outcome.reason === "quota" || outcome.reason === "needs_login" || outcome.reason === "route_unavailable") return { state: "waiting", reason: outcome.reason };
       const parsed = outcome.state === "complete" && outcome.output
@@ -520,7 +520,7 @@ export function coordinatorSynthesisWork(
         : outcome.reason === "cancelled" ? { state: "cancelled", reason: "cancelled" }
         : outcome.state === "incomplete" ? { state: "incomplete", reason: outcome.reason }
         : { state: "failed", reason: outcome.reason };
-      const evidence = `ตรวจ fixture สรุปแล้ว · ${normalized.state}${normalized.reason ? ` / ${normalized.reason}` : ""} · ไม่ได้บันทึกการตัดสินของเจ้าของ · run ${opened.public.id}`;
+      const evidence = `${outcome.mode === "production" ? "ตรวจผ่าน Schway สรุปแล้ว" : "ตรวจ fixture สรุปแล้ว"} · ${normalized.state}${normalized.reason ? ` / ${normalized.reason}` : ""} · ไม่ได้บันทึกการตัดสินของเจ้าของ · run ${opened.public.id}`;
       const committed = commit({ state: "succeeded", evidence }, tx => {
         const current = readStored(tx, job.projectId, opened.public.id);
         if (current.public.state === "complete" || current.public.state === "cancelled") return;

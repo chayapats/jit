@@ -8,7 +8,7 @@ import type { AppTransaction, TransactionStore } from "../store";
 import type { AppConfig } from "../config";
 import { readTeam } from "./configuration";
 import { planDiscussionRoles } from "./router";
-import { fixtureOutcome, normalizeFixtureResult, validateRunRequest } from "./scripted-port";
+import { fixtureOutcome, normalizePortResult, validateRunRequest } from "./scripted-port";
 import type { ApplicationRunPort } from "./run-port";
 import type {
   ApplicationRunRequest, Discussion, DiscussionParticipation, RunSourceManifest, SpecialistRun, TeamCommand, TeamReceipt,
@@ -325,7 +325,7 @@ export function specialistAnalysisWork(
         tx.run("INSERT INTO team_contexts VALUES (?, 1, 'active')", request.context.id);
       }
       request.fence = { jobId: job.id, generation, ownerGeneration: job.authorization.generation };
-      return { native: { adapter: "scripted", runId: request.runId, sessionId: request.runId, context: request.context },
+      return { native: { adapter: port.adapter, runId: request.runId, sessionId: request.runId, context: request.context },
         data: JSON.parse(jobData(request, config.team.contextBytes)) };
     },
     isCurrent: (tx, job, attempt) => {
@@ -346,7 +346,7 @@ export function specialistAnalysisWork(
       reserve({ contextTokens: Math.ceil(Buffer.byteLength(jobData(request, config.team.contextBytes)) / 4), outputTokens: job.limits.outputTokens });
       let outcome;
       try {
-        outcome = normalizeFixtureResult(await port.invoke(request, signal, event => {
+        outcome = normalizePortResult(await port.invoke(request, signal, event => {
           if (event.kind !== "progress") return;
           store.transaction(tx => {
             const current = readSpecialist(tx, job.projectId, run.id);
@@ -365,13 +365,14 @@ export function specialistAnalysisWork(
         });
         return { state: "waiting", reason: outcome.reason };
       }
-      const result = { state: "succeeded" as const, evidence: `วิเคราะห์จำลอง (fixture): ${outcome.state} / ${outcome.reason} · run ${run.id}\nไม่ได้ตรวจ live subscription route` };
+      const evidenceKind = outcome.mode === "production" ? "วิเคราะห์ผ่าน Schway (production)" : "วิเคราะห์จำลอง (fixture)";
+      const result = { state: "succeeded" as const, evidence: `${evidenceKind}: ${outcome.state} / ${outcome.reason} · run ${run.id}\n${outcome.mode === "production" ? "ใช้ route ที่เลือกผ่าน schway/host" : "ไม่ได้ตรวจ live subscription route"}` };
       const committed = commit(result, tx => {
         const current = readSpecialist(tx, job.projectId, run.id);
         if (current.outcome) throw new AppError("run_already_committed");
-        current.request = request; current.outcome = outcome; current.progress = null;
+        current.request = request; current.outcome = outcome; current.mode = outcome.mode; current.progress = null;
         if (outcome.state === "complete" && outcome.output) {
-          const text = `วิเคราะห์จำลอง (fixture) · ${run.roleName}\n${outcome.output}`;
+          const text = `${outcome.mode === "production" ? "วิเคราะห์ผ่าน Schway" : "วิเคราะห์จำลอง (fixture)"} · ${run.roleName}\n${outcome.output}`;
           current.source = commitOutputSource(tx, { projectId: run.projectId, participantId: run.roleId, runId: run.id, text, committedAt: now() });
           markMemoryDerived(tx, run.projectId, current.source, request.manifest);
           const topic = tx.get<{ message_sequence: number }>("SELECT message_sequence FROM topics WHERE project_id = ? AND id = ?", run.projectId, run.topicId)!;

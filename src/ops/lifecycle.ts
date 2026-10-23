@@ -8,12 +8,14 @@ import { projectStateWork } from "../jobs/project-state";
 import { scheduleReminderWork, scheduleSummaryWork } from "../jobs/schedules";
 import { lookupSource } from "../sources";
 import { TransactionStore, schemaVersion } from "../store";
+import type { ApplicationRunPort } from "../team/run-port";
+import { ScriptedRunPort } from "../team/scripted-port";
+import { SchwayRunPort } from "../team/schway-port";
 import { coordinatorSynthesisWork } from "../team/decisions";
 import { discussionPlanWork, specialistAnalysisWork } from "../team/dispatch";
 import { scriptedMemoryResult } from "../memory/extract";
 import { memoryExtractionWork } from "../memory/extract";
 import { scriptedPreviewWork } from "../team/preview";
-import { ScriptedRunPort } from "../team/scripted-port";
 import { validateArtifact, type BuildManifest } from "../../ops/package/bun-build";
 import { parseServiceConfig, type ServiceConfig } from "../../ops/package/service-config";
 
@@ -129,7 +131,9 @@ export function preflightService(input: PreflightInput): PreflightResult {
  * a separate human-involved command, never part of service boot.
  */
 export function createFullAppQueue(store: TransactionStore, config: AppConfig, now: () => number = Date.now): JobQueue {
-  const port = new ScriptedRunPort(store, config.team, config.jobs.outputBytes);
+  const port: ApplicationRunPort = config.runPort === "schway"
+    ? new SchwayRunPort(store, config.team, config.jobs.outputBytes)
+    : new ScriptedRunPort(store, config.team, config.jobs.outputBytes);
   const memoryPort = new ScriptedRunPort(store, config.team, config.jobs.outputBytes, request => {
     const source = store.read(tx => lookupSource(tx, request.projectId, request.manifest.sources[0]!.reference));
     return scriptedMemoryResult(request, source.state === "available" && source.attribution.kind === "owner", config.jobs.outputBytes);

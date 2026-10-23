@@ -12,6 +12,8 @@ export interface NativeRunInspection {
 }
 /** Application-owned integration contract; the adapter owns native execution/session lifecycle, never app authority. */
 export interface ApplicationRunPort {
+  /** Stable adapter identity for attempt ledgers and reconciliation matching. */
+  readonly adapter: "scripted" | "schway";
   /** Performs one bounded invocation on the exact supplied route; cancellation never authorizes fallback or late commits. */
   invoke(request: ApplicationRunRequest, signal: AbortSignal, observe: (event: ApplicationRunEvent) => void): Promise<ApplicationRunOutcome>;
   /** Paginates adapter-owned run/session references after restart, including native orphans. */
