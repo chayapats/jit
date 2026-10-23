@@ -376,7 +376,7 @@ test("frozen published v2 schema migrates with conversation, source identity and
   const id = app.execute(actor, cmd).job.id; queue.pump(); await queue.idle(); expect(app.job(actor, projectId, id).state).toBe("succeeded");
   const snapshot = new Database(join(root, readdirSync(root).find(name => name.includes(".pre-v2-"))!), { readonly: true });
   expect(snapshot.query("PRAGMA user_version").get()).toEqual({ user_version: 2 }); expect(snapshot.query("SELECT count(*) AS n FROM messages").get()).toEqual({ n: 1 }); snapshot.close();
-  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 12 });
+  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 13 });
 });
 
 test("attempt snapshot and generation/lease commit before dispatch; non-model commit is atomic with producer mutations", async () => {

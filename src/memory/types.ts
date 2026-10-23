@@ -10,13 +10,37 @@ export interface MemoryDecisionReference { kind: "owner_decision"; id: string; r
 export interface MemoryClaim extends ClaimReference {
   projectId: string; extractionId: string; kind: "explicit_fact" | "inference"; text: string;
   source: SourceReference; quote: string; dependencies: ClaimReference[]; conflicts: ClaimReference[];
-  status: "active"; createdAt: number;
+  status: "active" | "corrected"; createdAt: number;
   decision: MemoryDecisionReference | null;
+  /** Set once by app.memory_correction/v1; points at the owner-approved replacement claim. */
+  correctionId?: string; replacement?: ClaimReference;
 }
 /** Unavailable derived material carries identity and reason, never withdrawn payload. */
 export type ClaimLookup = { state: "available"; claim: MemoryClaim; source: SourceLookup }
   | { state: "unavailable"; reference: ClaimReference; reason: string;
       provenance?: Pick<MemoryClaim, "projectId" | "source" | "dependencies" | "conflicts" | "decision"> };
+/** One explicit owner authorization to correct one exact claim revision with an approved replacement. */
+export interface CorrectMemoryCommand {
+  kind: "memory.correct"; requestId: string; projectId: string; expectedRevision: number;
+  payload: { claim: ClaimReference; text: string; quote: string; source: SourceReference; reason: string };
+}
+/** Durable owner-approved correction; the replacement is an ordinary claim whose lineage is this record. */
+export interface MemoryCorrection {
+  id: string; projectId: string; claimId: string; fromRevision: number; fromGeneration: number;
+  replacement: ClaimReference; correction: SourceReference; quote: string; reason: string;
+  ownerRevision: number; projectRevision: number; createdAt: number;
+}
+/** Inspector preview: what one correction would fence or retire before the owner confirms. */
+export interface CorrectionImpact {
+  claim: ClaimLookup;
+  correction: MemoryCorrection | null;
+  dependents: { projectId: string; reference: ClaimReference; text: string | null }[];
+  contexts: { id: string; projectId: string; ownerKind: string; ownerId: string }[];
+  pendingJobs: { id: string; projectId: string }[];
+  note: string;
+}
+/** Owner-approved correction result; the replacement is readable through the ordinary claim query. */
+export interface CorrectionReceipt { correction: MemoryCorrection; replacement: ClaimReference }
 /** One explicit owner authorization to extract one committed source under the fixed extractor/policy v1. */
 export interface ExtractMemoryCommand {
   kind: "memory.extract"; requestId: string; projectId: string; expectedRevision: number;

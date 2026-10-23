@@ -3,6 +3,7 @@ import { AppError } from "./errors";
 import type { CreateTopicCommand, SendMessageCommand } from "./conversation";
 import { workspacePage, projectPage, conversationPage, sourcePage, jobsPage, teamPage, previewPage, discussionPage, deliveryPage, deliveryDetailPage, tasksPage, taskPage, memoryPage, memoryClaimPage, memoryContextPage, loginPage, errorPage } from "./web-layout";
 import type { ExtractMemoryCommand } from "./memory/types";
+import type { CorrectMemoryCommand } from "./memory/types";
 import type { CommitDeliveryCommand, ResendDeliveryCommand } from "./delivery";
 import type { EnqueueJobCommand, JobLimits, ResumeJobCommand, StopJobCommand } from "./jobs/types";
 import type { DecisionCommand, TeamCommand } from "./team/types";
@@ -73,6 +74,9 @@ const messages: Record<string, string> = {
   memory_role_unavailable: "เปิดใช้บทบาทและกำหนด route ก่อนสกัด memory",
   memory_dependency_unavailable: "Memory ที่อ้างอิงเปลี่ยนหรือไม่พร้อมใช้งาน กรุณาเลือกใหม่",
   invalid_memory_command: "ข้อมูลคำขอสกัด memory ไม่ถูกต้อง กรุณาเปิดหน้าใหม่",
+  memory_correction_unavailable: "Memory ข้อนี้แก้ไม่ได้แล้ว หรือต้นฉบับที่เลือกไม่รองรับการแก้ กรุณาเปิดหน้าใหม่",
+  memory_already_corrected: "Memory ข้อนี้ถูกแก้ไปแล้ว เปิดข้อความที่แก้แทน",
+  invalid_memory_correction: "ข้อมูลคำขอแก้ memory ไม่ถูกต้อง กรุณาเปิดหน้าใหม่",
 };
 
 /** Creates a server-rendered owner workspace; all mutations use the shared application boundary. */
@@ -182,7 +186,28 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       if (request.method === "GET" && claimRoute) {
         const revision = Number(url.searchParams.get("revision")), generation = Number(url.searchParams.get("generation"));
         const state = app.memoryClaim(auth.actor, claimRoute[1]!, { claimId: claimRoute[2]!, revision, generation });
-        return api ? json(state) : respond(memoryClaimPage(state, app.project(auth.actor, claimRoute[1]!), app.workspace(auth.actor), auth.csrf));
+        const project = app.project(auth.actor, claimRoute[1]!);
+        const correction = app.memoryCorrection(auth.actor, claimRoute[1]!, claimRoute[2]!);
+        const impact = state.state === "available"
+          ? app.correctionImpact(auth.actor, claimRoute[1]!, { claimId: state.claim.claimId, revision: state.claim.revision, generation: state.claim.generation })
+          : null;
+        const inspector = app.memory(auth.actor, claimRoute[1]!);
+        const extra = { correction, impact, revision: project.revision,
+          sources: inspector.sources.flatMap(({ source }) => source.state === "available"
+            ? [{ reference: source.reference, label: `${source.descriptor.kind} · ${Array.from(source.text).slice(0, 80).join("")}` }] : []) };
+        return api ? json({ ...state, correction, impact }) : respond(memoryClaimPage(state, extra, project, app.workspace(auth.actor), auth.csrf));
+      }
+      if (request.method === "POST" && claimRoute) {
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "revision", "generation", "text", "quote", "source", "reason"].includes(key))) throw new AppError("invalid_body");
+        const form = request.headers.get("content-type")?.split(";")[0]?.trim() === "application/x-www-form-urlencoded";
+        const data = (value: unknown) => { if (!form) return value; try { return JSON.parse(value as string); } catch { throw new AppError("invalid_body"); } };
+        const command: CorrectMemoryCommand = { kind: "memory.correct", projectId: claimRoute[1]!, requestId: body.requestId as string,
+          expectedRevision: form ? Number(body.expectedRevision) : body.expectedRevision as number,
+          payload: { claim: { claimId: claimRoute[2]!, revision: form ? Number(body.revision) : body.revision as number, generation: form ? Number(body.generation) : body.generation as number },
+            text: body.text as string, quote: body.quote as string, source: data(body.source) as CorrectMemoryCommand["payload"]["source"], reason: body.reason as string } };
+        const result = app.execute(auth.actor, command);
+        return api ? json(result) : respond(null, 303, { Location: `/projects/${claimRoute[1]!}/memory/claims/${result.replacement.claimId}?revision=${result.replacement.revision}&generation=${result.replacement.generation}` });
       }
       if (request.method === "GET" && contextRoute) {
         const state = app.memoryContext(auth.actor, contextRoute[1]!, contextRoute[2]!);
