@@ -6,6 +6,7 @@ import { Application } from "../src/application";
 import { readConfig } from "../src/config";
 import { JobQueue } from "../src/jobs/queue";
 import { memoryExtractionMarker, memoryExtractionWork, scriptedMemoryResult } from "../src/memory/extract";
+import { capped, impactPreviewBounds } from "../src/memory/correct";
 import type { ClaimReference, CorrectMemoryCommand, MemoryClaim } from "../src/memory/types";
 import type { SourceReference } from "../src/sources";
 import { TransactionStore } from "../src/store";
@@ -196,6 +197,72 @@ test("MEM03 stale, duplicate, conflicting and unusable-evidence corrections fail
   expect(done.replacement.claimId).not.toBe(stale.claimId);
   expect(() => f.rt.app.execute(actor(f), { ...base, payload: { ...base.payload, text: "ข้อความอื่น" } })).toThrow("request_id_conflict");
   expect(() => f.rt.app.execute(actor(f), { ...base, requestId: rid(), expectedRevision: f.rt.app.project(actor(f), p.id).revision })).toThrow("memory_already_corrected");
+});
+
+test("MEM03 cross-project pending discussion is fenced and reported in impact", async () => {
+  const f = await fixture();
+  const first = project(f, "โครงการแรก", "ใช้ PostgreSQL สำหรับทุกโครงการ");
+  const second = project(f, "โครงการที่สอง", "หัวข้อข้ามโครงการ");
+  const stale = await remember(f, first, say(f, first, "ใช้ PostgreSQL สำหรับทุกโครงการ"));
+  const discussion = f.rt.app.execute(actor(f), dispatch(f, second, "ใช้ PostgreSQL สำหรับทุกโครงการ ตามโครงการแรก", [second.topic.source])).discussion!;
+  await f.rt.queue.idle();
+  const impact = f.rt.app.correctionImpact(actor(f), first.id, ref(stale));
+  expect(impact.pendingJobs.map(job => job.id)).toContain(discussion.jobId);
+  expect(impact.pendingJobs.find(job => job.id === discussion.jobId)).toMatchObject({ projectId: second.id });
+  expect(impact.contexts.map(entry => entry.id)).toContain(impact.contexts[0]!.id);
+  expect(impact.truncated).toEqual({ dependents: false, contexts: false, pendingJobs: false });
+
+  const evidence = say(f, first, "โครงการแรกเปลี่ยนมาใช้ SQLite สำหรับ MVP");
+  f.rt.app.execute(actor(f), correctCommand(f, first, stale, "โครงการแรกใช้ SQLite", "โครงการแรกเปลี่ยนมาใช้ SQLite สำหรับ MVP", evidence));
+  expect(jobState(f, discussion.jobId)).toMatchObject({ state: "blocked", reason: "source_retired" });
+  await drain(f);
+  expect(f.rt.app.discussion(actor(f), second.id, discussion.id).context!.current).toBe(false);
+});
+
+test("MEM03 admitted extraction adapter is aborted by correction and its late result publishes nothing", async () => {
+  const f = await fixture();
+  const p = project(f, "Jit MVP", "ฐานข้อมูลสำหรับ MVP");
+  const stale = await remember(f, p, say(f, p, "ใช้ PostgreSQL สำหรับทุกโครงการ"));
+  let release!: () => void, entered!: () => void, aborted = false;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  f.hooks.extract = (request, signal) => {
+    signal.addEventListener("abort", () => { aborted = true; });
+    entered();
+    return gate.then(() => scriptedMemoryResult(request, true));
+  };
+  const queued = f.rt.app.execute(actor(f), extractCommand(f, p, say(f, p, "another statement"), [ref(stale)]));
+  f.rt.queue.pump(); await started;
+  const evidence = say(f, p, "เปลี่ยนมาใช้ SQLite สำหรับ MVP");
+  f.rt.app.execute(actor(f), correctCommand(f, p, stale, "ใช้ SQLite สำหรับ MVP", "เปลี่ยนมาใช้ SQLite สำหรับ MVP", evidence));
+  expect(aborted).toBe(true);
+  release(); await f.rt.queue.idle();
+  const extraction = f.rt.store.read(tx => tx.get<{ record_json: string }>("SELECT record_json FROM memory_extractions WHERE id = ?", queued.extraction.id)!);
+  expect(JSON.parse(extraction.record_json).state).not.toBe("complete");
+  expect(claims(f, p).map(claim => claim.text)).toEqual(["ใช้ SQLite สำหรับ MVP"]);
+  expect(f.rt.app.memoryClaim(actor(f), p.id, ref(stale))).toMatchObject({ state: "unavailable", reason: "claim_corrected" });
+});
+
+test("MEM03 preview caps are honest: capped helper truncates and flags large impact lists", async () => {
+  expect(capped([1, 2, 3], 3)).toEqual({ items: [1, 2, 3], truncated: false });
+  expect(capped([1, 2, 3, 4], 3)).toEqual({ items: [1, 2, 3], truncated: true });
+  const f = await fixture();
+  const p = project(f, "Jit MVP", "ฐานข้อมูลสำหรับ MVP");
+  const stale = await remember(f, p, say(f, p, "ใช้ PostgreSQL สำหรับทุกโครงการ"));
+  const extractionId = f.rt.store.read(tx => tx.get<{ id: string }>("SELECT id FROM memory_extractions LIMIT 1")!.id);
+  f.rt.store.transaction(tx => {
+    for (let i = 0; i < impactPreviewBounds.dependents + 1; i++) {
+      const id = rid();
+      tx.run("INSERT INTO memory_claims (id, project_id, extraction_id, revision, generation, record_json) VALUES (?, ?, ?, 1, 1, ?)",
+        id, p.id, extractionId, JSON.stringify({ claimId: id, revision: 1, generation: 1, projectId: p.id, extractionId,
+          kind: "inference", text: `dependent ${i}`, quote: "q", source: stale.source, dependencies: [ref(stale)], conflicts: [],
+          status: "active", createdAt: epoch, decision: null }));
+    }
+  });
+  const impact = f.rt.app.correctionImpact(actor(f), p.id, ref(stale));
+  expect(impact.dependents).toHaveLength(impactPreviewBounds.dependents);
+  expect(impact.truncated.dependents).toBe(true);
+  expect(impact.truncated.contexts).toBe(false);
 });
 
 test("MEM03 correction keeps task, decision, role and standing authorization revisions untouched", async () => {

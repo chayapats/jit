@@ -310,17 +310,21 @@ export class Application {
 
   #correctCommand(actor: OwnerActor, command: CorrectMemoryCommand): CorrectionReceipt {
     const payloadHash = digest(correctionIdentity(command, this.config.team.contextBytes));
-    return this.store.transaction(tx => {
+    const committed = this.store.transaction(tx => {
       this.#requireOwner(tx, actor); const project = this.#project(tx, command.projectId);
       const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
-      if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as CorrectionReceipt; }
+      if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); return { receipt: JSON.parse(prior.result_json) as CorrectionReceipt, fenced: false }; }
       const now = this.#now(), generation = tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'")!.generation;
       const result = prepareCorrection(tx, command, this.config.team.contextBytes, generation, project.revision, now);
       this.#beforeCommit?.("memory");
       tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
       tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);
-      this.#beforeCommit?.("receipt"); return result;
+      this.#beforeCommit?.("receipt"); return { receipt: result, fenced: true };
     });
+    // Abort adapters of already-running fenced attempts after commit; durable authority
+    // alone already prevents their late results from publishing stale memory.
+    if (committed.fenced) this.#jobs?.cancelFenced();
+    return committed.receipt;
   }
 
   #memoryCommand(actor: OwnerActor, command: ExtractMemoryCommand): MemoryReceipt {

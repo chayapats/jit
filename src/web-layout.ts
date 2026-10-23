@@ -357,8 +357,8 @@ function correctionPanel(item: import("./memory/types").ClaimLookup, extra: Clai
     return `<section class="team-card" id="memory-correction"><h2>Memory นี้ถูกแก้แล้ว</h2><p>แทนที่ด้วย <a href="${claimUrl(projectId, c.replacement)}">claim ${escape(c.replacement.claimId)}</a> · revision ${c.replacement.revision} · generation ${c.replacement.generation}</p><p>เหตุผล: ${escape(c.reason)}</p><p>คำตอบและบริบทครั้งถัดไปใช้ข้อความที่แก้แล้ว ข้อความเดิมไม่ถูกใช้อ้างอิงอีก งาน มติ บทบาท และสิทธิ์ที่รับรองแล้วยังคงเดิม</p></section>`;
   }
   if (item.state !== "available" || !extra.impact) return "";
-  const impact = extra.impact;
-  const summary = `<p>ผลกระทบของการแก้: memory ที่พึ่งข้อนี้ ${impact.dependents.length} รายการ · บริบทของ run ที่ใช้ข้อนี้ ${impact.contexts.length} รายการ · งานที่ค้างและจะถูก fence ${impact.pendingJobs.length} รายการ</p>`;
+  const impact = extra.impact, capped = (n: number, cut: boolean) => cut ? `อย่างน้อย ${n} (แสดงไม่ครบ)` : `${n}`;
+  const summary = `<p>ผลกระทบของการแก้: memory ที่พึ่งข้อนี้ ${capped(impact.dependents.length, impact.truncated.dependents)} รายการ · บริบทของ run ที่ใช้ข้อนี้ ${capped(impact.contexts.length, impact.truncated.contexts)} รายการ · งานที่ค้างและจะถูก fence ${capped(impact.pendingJobs.length, impact.truncated.pendingJobs)} รายการ</p>`;
   const options = extra.sources.length ? extra.sources.map(({ reference, label }) => `<option value="${escape(JSON.stringify(reference))}">${escape(label)}</option>`).join("")
     : `<option value="">ไม่มีต้นฉบับที่พร้อมใช้สำหรับแก้</option>`;
   return `<section class="team-card" id="memory-correct"><h2>แก้ memory ข้อนี้</h2>${summary}

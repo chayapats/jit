@@ -37,6 +37,8 @@ export interface CorrectionImpact {
   dependents: { projectId: string; reference: ClaimReference; text: string | null }[];
   contexts: { id: string; projectId: string; ownerKind: string; ownerId: string }[];
   pendingJobs: { id: string; projectId: string }[];
+  /** True per category when the preview list was capped; counts below are then lower bounds. */
+  truncated: { dependents: boolean; contexts: boolean; pendingJobs: boolean };
   note: string;
 }
 /** Owner-approved correction result; the replacement is readable through the ordinary claim query. */

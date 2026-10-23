@@ -35,32 +35,42 @@ export function readCorrection(tx: AppTransaction, projectId: string, claimId: s
   return row ? JSON.parse(row.record_json) as MemoryCorrection : null;
 }
 
-function pendingReferencing(tx: AppTransaction, projectId: string, claimId: string): { id: string; projectId: string }[] {
+/** Preview caps: lists longer than these are truncated and flagged, never silently complete. */
+export const impactPreviewBounds = Object.freeze({ dependents: 2000, contexts: 100, pendingJobs: 500 });
+
+/** Caps a preview list; `truncated` tells the owner the shown items are a lower bound. */
+export function capped<T>(rows: T[], limit: number): { items: T[]; truncated: boolean } {
+  return rows.length > limit ? { items: rows.slice(0, limit), truncated: true } : { items: rows, truncated: false };
+}
+
+function pendingReferencing(tx: AppTransaction, originProjectId: string, affected: ReadonlySet<string>): { jobs: { id: string; projectId: string }[]; truncated: boolean } {
   const found = new Map<string, { id: string; projectId: string }>();
   const pending = "state IN ('queued', 'admitted', 'waiting')";
-  for (const row of tx.all<{ projectId: string; jobId: string; json: string }>(
-    `SELECT project_id AS projectId, job_id AS jobId, record_json AS json FROM memory_extractions WHERE job_id IN (SELECT id FROM jobs WHERE ${pending}) LIMIT 500`)) {
+  const cites = (json: string): boolean => {
     try {
-      const extraction = JSON.parse(row.json) as { dependencies?: ClaimReference[] };
-      if (extraction.dependencies?.some(ref => ref.claimId === claimId)) found.set(row.jobId, { id: row.jobId, projectId: row.projectId });
-    } catch { /* Corrupt rows fail closed elsewhere; impact stays silent here. */ }
-  }
-  for (const row of tx.all<{ projectId: string; jobId: string; json: string }>(
-    `SELECT project_id AS projectId, job_id AS jobId, record_json AS json FROM team_runs WHERE job_id IN (SELECT id FROM jobs WHERE ${pending}) LIMIT 500`)) {
-    try {
-      const parsed = JSON.parse(row.json) as { kind?: string; request?: { manifest?: { claims?: { claimId: string }[] } }; manifest?: { claims?: { claimId: string }[] } };
-      const referenced = parsed.request?.manifest?.claims ?? (parsed.kind === "discussion" ? parsed.manifest?.claims : undefined);
-      if (referenced?.some(claim => claim.claimId === claimId)) found.set(row.jobId, { id: row.jobId, projectId: row.projectId });
-    } catch { /* See above. */ }
-  }
-  for (const row of tx.all<{ projectId: string; jobId: string; json: string }>(
-    `SELECT project_id AS projectId, job_id AS jobId, record_json AS json FROM coordinator_syntheses WHERE job_id IN (SELECT id FROM jobs WHERE ${pending}) LIMIT 500`)) {
-    try {
-      const request = (JSON.parse(row.json) as { request?: { manifest?: { claims?: { claimId: string }[] } } }).request;
-      if (request?.manifest?.claims?.some(claim => claim.claimId === claimId)) found.set(row.jobId, { id: row.jobId, projectId: row.projectId });
-    } catch { /* See above. */ }
-  }
-  return [...found.values()].filter(job => job.projectId === projectId);
+      const parsed = JSON.parse(json) as {
+        kind?: string; dependencies?: ClaimReference[];
+        request?: { manifest?: { claims?: { projectId: string; claimId: string }[] } };
+        manifest?: { claims?: { projectId: string; claimId: string }[] };
+      };
+      if (parsed.dependencies?.some(ref => affected.has(ref.claimId))) return true;
+      const manifest = parsed.request?.manifest ?? (parsed.kind === "discussion" ? parsed.manifest : undefined);
+      return !!manifest?.claims?.some(entry => entry.projectId === originProjectId && affected.has(entry.claimId));
+    } catch { return false; /* Corrupt rows fail closed elsewhere; impact stays silent here. */ }
+  };
+  const collect = (table: string): void => {
+    if (found.size > impactPreviewBounds.pendingJobs) return;
+    for (const row of tx.all<{ projectId: string; jobId: string; json: string }>(
+      `SELECT project_id AS projectId, job_id AS jobId, record_json AS json FROM ${table} WHERE job_id IN (SELECT id FROM jobs WHERE ${pending})`)) {
+      if (cites(row.json)) found.set(row.jobId, { id: row.jobId, projectId: row.projectId });
+      if (found.size > impactPreviewBounds.pendingJobs) break;
+    }
+  };
+  collect("memory_extractions"); collect("team_runs"); collect("coordinator_syntheses");
+  const jobs = [...found.values()];
+  return jobs.length > impactPreviewBounds.pendingJobs
+    ? { jobs: jobs.slice(0, impactPreviewBounds.pendingJobs), truncated: true }
+    : { jobs, truncated: false };
 }
 
 /**
@@ -72,7 +82,9 @@ export function correctionImpact(tx: AppTransaction, projectId: string, referenc
   const claim = lookupActiveClaim(tx, projectId, reference);
   const correction = readCorrection(tx, projectId, reference.claimId);
   const dependents: CorrectionImpact["dependents"] = [];
-  for (const row of tx.all<{ record_json: string }>("SELECT record_json FROM memory_claims WHERE project_id = ? LIMIT 2000", projectId)) {
+  let dependentsTruncated = false;
+  for (const row of tx.all<{ record_json: string }>("SELECT record_json FROM memory_claims WHERE project_id = ?", projectId)) {
+    if (dependents.length > impactPreviewBounds.dependents) { dependentsTruncated = true; break; }
     try {
       const candidate = JSON.parse(row.record_json) as MemoryClaim;
       if (candidate.claimId === reference.claimId) continue;
@@ -83,12 +95,16 @@ export function correctionImpact(tx: AppTransaction, projectId: string, referenc
       }
     } catch { /* Skip unreadable rows; availability stays authoritative in lookupActiveClaim. */ }
   }
-  const contexts = tx.all<{ id: string; projectId: string; ownerKind: string; ownerId: string }>(
+  const dependentIds = new Set([reference.claimId, ...dependents.map(item => item.reference.claimId)]);
+  const listed = capped(dependents, impactPreviewBounds.dependents);
+  const contextRows = tx.all<{ id: string; projectId: string; ownerKind: string; ownerId: string }>(
     `SELECT c.id, c.project_id AS projectId, c.owner_kind AS ownerKind, c.owner_id AS ownerId FROM memory_contexts c
-     JOIN memory_context_entries e ON e.context_id = c.id WHERE e.kind = 'claim' AND e.entry_id = ? AND e.origin_project_id = ? LIMIT 100`,
+     JOIN memory_context_entries e ON e.context_id = c.id WHERE e.kind = 'claim' AND e.entry_id = ? AND e.origin_project_id = ?`,
     reference.claimId, projectId);
-  return { claim, correction, dependents, contexts,
-    pendingJobs: claim.state === "available" ? pendingReferencing(tx, projectId, reference.claimId) : [],
+  const listedContexts = capped(contextRows, impactPreviewBounds.contexts);
+  const pending = claim.state === "available" ? pendingReferencing(tx, projectId, dependentIds) : { jobs: [], truncated: false };
+  return { claim, correction, dependents: listed.items, contexts: listedContexts.items, pendingJobs: pending.jobs,
+    truncated: { dependents: dependentsTruncated || listed.truncated, contexts: listedContexts.truncated, pendingJobs: pending.truncated },
     note: "การแก้ไม่เปลี่ยนงาน มติ บทบาท หรือสิทธิ์ที่รับรองแล้ว งานที่ค้างอยู่จะถูก fence และบริบทเดิมไม่ถูกใช้อ้างอิงอีก" };
 }
 
@@ -137,21 +153,27 @@ export function prepareCorrection(tx: AppTransaction, command: CorrectMemoryComm
 
 /**
  * Discussions store their assembled manifest at the top level (not under `.request`),
- * so the shared stale-context fence cannot see them. A discussion whose manifest still
- * cites the corrected claim is fenced here with its specialist participations; the next
+ * so the shared stale-context fence cannot see them. Affected discussions are driven from
+ * the indexed memory_context_entries (no row cap, any owning project): a discussion whose
+ * recorded context cited the corrected claim — directly or through a now-unavailable
+ * dependent — is fenced with its specialist participations under its own project. The next
  * run must assemble a fresh context from active memory before any result can commit.
  */
 function fenceCorrectedDiscussions(tx: AppTransaction, projectId: string, claimId: string, now: number): void {
-  for (const row of tx.all<{ projectId: string; json: string }>(
-    "SELECT project_id AS projectId, record_json AS json FROM team_runs LIMIT 2000")) {
-    if (row.projectId !== projectId) continue;
+  const pending = "j.state IN ('queued', 'admitted', 'waiting')";
+  const rows = tx.all<{ projectId: string; jobId: string; json: string }>(
+    `SELECT r.project_id AS projectId, r.job_id AS jobId, r.record_json AS json FROM memory_context_entries e
+     JOIN memory_contexts c ON c.id = e.context_id
+     JOIN team_runs r ON r.id = c.owner_id
+     JOIN jobs j ON j.id = r.job_id
+     WHERE c.owner_kind = 'discussion' AND ${pending} AND e.kind = 'claim' AND e.entry_id = ? AND e.origin_project_id = ?`,
+    claimId, projectId);
+  for (const row of rows) {
     let discussion: Discussion;
     try {
       discussion = JSON.parse(row.json) as Discussion;
       if (discussion.kind !== "discussion" || !discussion.manifest) continue;
     } catch { continue; }
-    const cites = discussion.manifest.claims.some(claim => claim.claimId === claimId);
-    if (!cites) continue;
     const stale = (entry: { projectId: string; claimId: string; revision: number; generation: number }) =>
       lookupActiveClaim(tx, entry.projectId, { claimId: entry.claimId, revision: entry.revision, generation: entry.generation }).state !== "available";
     if (!discussion.manifest.claims.some(entry => stale(entry))) continue;
