@@ -28,7 +28,7 @@ import {
   type ProjectContinuity, type TaskChannel, type TaskCommand, type TaskList, type TaskReadModel, type TaskReceipt,
 } from "./tasks";
 
-import { memoryIdentity, prepareExtraction } from "./memory/extract";
+import { fenceUnavailableExtractions, memoryIdentity, prepareExtraction } from "./memory/extract";
 import { lookupActiveClaim, readMemory } from "./memory/read";
 import type { ClaimReference, ExtractMemoryCommand, MemoryExtraction, MemoryReceipt } from "./memory/types";
 import { commitDecisionMemorySource, memorySourceDecision, retireDecisionMemorySource } from "./memory/decision-sources";
@@ -431,7 +431,10 @@ export class Application {
         : command.kind === "decision.accept" ? acceptDecision(tx, command, "web", now)
         : supersedeDecision(tx, command, "web", now);
       if (result.decision) commitDecisionMemorySource(tx, result.decision);
-      if (command.kind === "decision.supersede") retireDecisionMemorySource(tx, command.projectId, command.payload.decisionId);
+      if (command.kind === "decision.supersede") {
+        retireDecisionMemorySource(tx, command.projectId, command.payload.decisionId);
+        fenceUnavailableExtractions(tx, command.projectId, now);
+      }
       this.#beforeCommit?.("decision");
       tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
       tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);

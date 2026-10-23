@@ -1,7 +1,7 @@
 import { AppError } from "../errors";
 import type { AppConfig } from "../config";
 import { readTopic } from "../conversation";
-import { jobData, JobQueue, validateJobLimits } from "../jobs/queue";
+import { invalidatePendingJob, jobData, JobQueue, validateJobLimits } from "../jobs/queue";
 import type { WorkDefinition, WorkOutcome } from "../jobs/types";
 import { requireId, requireReference, requireText } from "../sources";
 import type { AppTransaction, TransactionStore } from "../store";
@@ -22,6 +22,20 @@ const receipt = (extraction: MemoryExtraction, duplicate: boolean): MemoryReceip
   const { request: _request, ...visible } = extraction;
   return { extraction: visible, duplicate };
 };
+
+/** Fences direct and transitive pending extraction authority after source retirement in the same app transaction. */
+export function fenceUnavailableExtractions(tx: AppTransaction, projectId: string, now: number): void {
+  const pending = tx.all<{ record_json: string }>("SELECT e.record_json FROM memory_extractions e JOIN jobs j ON j.id = e.job_id WHERE e.project_id = ? AND j.state IN ('queued', 'admitted', 'waiting')", projectId);
+  for (const row of pending) {
+    const extraction = JSON.parse(row.record_json) as MemoryExtraction;
+    let current = false;
+    try {
+      eligibleMemorySource(tx, projectId, extraction.source);
+      current = extraction.dependencies.every(ref => lookupActiveClaim(tx, projectId, ref).state === "available");
+    } catch { /* The retired exact source is no longer eligible. */ }
+    if (!current) invalidatePendingJob(tx, projectId, extraction.jobId, "source_retired", now);
+  }
+}
 
 /** Validates the complete owner command before global receipt deduplication. */
 export function memoryIdentity(command: ExtractMemoryCommand, config: AppConfig): string {

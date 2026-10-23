@@ -1297,3 +1297,46 @@ test("MEM01 extracts exact owner decisions and supersession fences their derived
   expect(current.source.state).toBe("available");
   expect(app.continuity(actor, f.project.id).decisions[0]!.model.currentDecision!.decision.id).toBe(replaced.id);
 });
+
+for (const transitive of [false, true]) test(`MEM01 supersession atomically fences and cancels ${transitive ? "transitive" : "direct"} extraction after commit only`, async () => {
+  const { memoryExtractionWork, scriptedMemoryResult } = await import("../src/memory/extract");
+  const ids = { tech: "", design: "", marketing: "" };
+  const f = await fixture({ script: request => request.instructions.operator.includes(coordinatorSynthesisMarker)
+    ? fixtureOutcome("complete", JSON.stringify(synthesisJson(request))) : specialistText(ids, request) });
+  const { discussion, roles } = await discussAll(f, ids); synthesize(f, discussion.id, discussion.revision); await drain(f);
+  const proposal = f.app.decision(f.auth.actor, f.project.id, f.topic.id).proposal!;
+  const accepted = f.app.execute(f.auth.actor, { kind: "decision.accept", requestId: rid(), projectId: f.project.id, expectedRevision: proposal.revision,
+    payload: { proposalId: proposal.id, optionId: null, conclusion: "SQLite chosen", rationale: "owner confirmed the current constraint" } }).decision!;
+  const evidence = f.app.memory(f.auth.actor, f.project.id).sources.find(item => item.decision?.id === accepted.id)!.source;
+  f.queue.close(); await f.queue.idle();
+  let entered!: () => void, release!: () => void, signal!: AbortSignal, stall = !transitive;
+  const started = new Promise<void>(resolve => { entered = resolve; }), gate = new Promise<void>(resolve => { release = resolve; }); releases.push(() => release());
+  const port = new ScriptedRunPort(f.store, f.config.team, f.config.jobs.outputBytes, async (request, currentSignal) => {
+    if (stall) { signal = currentSignal; entered(); await gate; }
+    return scriptedMemoryResult(request, true);
+  });
+  const queue = new JobQueue(f.store, f.config.jobs, [memoryExtractionWork(f.store, f.config, port, () => epoch)], { now: () => epoch }); queues.push(queue);
+  let failDecision = false;
+  const app = new Application(f.store, f.config, { jobs: queue, now: () => epoch, beforeCommit: stage => { if (failDecision && stage === "decision") throw new Error("decision rollback"); } }), actor = app.authenticate(f.token).actor;
+  const extract = (source: SourceReference, dependencies: import("../src/memory/types").ClaimReference[] = []) => app.execute(actor, { kind: "memory.extract", requestId: rid(), projectId: f.project.id,
+    expectedRevision: app.project(actor, f.project.id).revision, payload: { topicId: f.topic.id, roleId: roles.tech.id, source, dependencies, limits: f.config.jobs.maximum } }).extraction;
+  let pending;
+  if (transitive) {
+    extract(evidence.reference); queue.pump(); await queue.idle();
+    const parent = app.memory(actor, f.project.id).items[0]!; if (parent.state !== "available") throw new Error("missing parent");
+    stall = true; pending = extract(f.topic.source, [{ claimId: parent.claim.claimId, revision: 1, generation: 1 }]);
+  } else pending = extract(evidence.reference);
+  queue.pump(); await started;
+  const generation = () => f.store.read(tx => tx.get<{ generation: number }>("SELECT generation FROM job_authority WHERE job_id = ?", pending.jobId)!.generation);
+  const before = generation();
+  const supersede = { kind: "decision.supersede" as const, requestId: rid(), projectId: f.project.id, expectedRevision: proposal.revision,
+    payload: { decisionId: accepted.id, proposalId: proposal.id, optionId: null, conclusion: "PostgreSQL now selected", rationale: "new owner-confirmed requirements" } };
+  failDecision = true; expect(() => app.execute(actor, supersede)).toThrow("decision rollback");
+  expect(generation()).toBe(before); expect(signal.aborted).toBe(false); expect(app.source(actor, f.project.id, evidence.reference).state).toBe("available");
+  failDecision = false; app.execute(actor, supersede);
+  expect(generation()).toBe(before + 1); expect(signal.aborted).toBe(true);
+  expect(app.job(actor, f.project.id, pending.jobId)).toMatchObject({ state: "blocked", reason: "source_retired", occupiesAdmission: true });
+  release(); await queue.idle();
+  expect(app.job(actor, f.project.id, pending.jobId)).toMatchObject({ state: "blocked", reason: "source_retired", occupiesAdmission: false });
+  expect(f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM memory_claims")!.n)).toBe(transitive ? 1 : 0);
+});
