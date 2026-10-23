@@ -83,8 +83,13 @@ export interface SchwayPortOptions {
   /** Fixture credential store for route-bound runs; never set in production. */
   authStore?: HostCredentialStore;
   now?: () => number;
-  /** Test-only interleaving hook, awaited after native session creation before the fence recheck. */
-  testHooks?: { afterCreateSession?: (session: HostSession) => Promise<void> };
+  /** Test-only interleaving hooks around native creation. */
+  testHooks?: {
+    /** Awaited right after the host opens, before the pre-creation fence recheck. */
+    afterOpenHost?: (host: HostRuntime) => Promise<void>;
+    /** Awaited right after the native session exists, before the fence recheck. */
+    afterCreateSession?: (session: HostSession) => Promise<void>;
+  };
 }
 
 /** Non-secret effective dispatch configuration, exposed for inspection. */
@@ -408,6 +413,7 @@ export class SchwayRunPort implements ApplicationRunPort {
     };
     try {
       host = await this.openHost(effective, false);
+      await this.options.testHooks?.afterOpenHost?.(host);
       // Recheck before reserving: retirement may have fenced the context
       // while the host was constructed, and no intent row exists yet to stop
       // it from reporting success. The check-to-reservation section below

@@ -779,3 +779,104 @@ test("unknown tool calls cannot escape the single-turn budget", async () => {
   // The bounded multi-turn result validates instead of being discarded.
   expect(normalizePortResult(outcome, run, config.jobs.outputBytes)).toMatchObject({ reason: "max_rounds", mode: "production" });
 });
+
+test("production coordinator commits mode-labeled synthesis without fixture claims", async () => {
+  const root = mkdtempSync(join(tmpdir(), "jit-schway-coord-")); roots.push(root);
+  const path = join(root, "state.sqlite"), config = readConfig({ JIT_DATABASE: path });
+  const store = new TransactionStore(path); stores.push(store);
+  let citedRef: { sourceId: string; revision: number; generation: number } | null = null;
+  const teamPort = new SchwayRunPort(store, config.team, config.jobs.outputBytes, {
+    model: {
+      provider: "scripted", id: "mode-aware",
+      async *stream(request: ModelRequest) {
+        const purpose = request.context.find(section => section.name === "purpose")?.content ?? "";
+        if (purpose.startsWith("สรุปความเห็นต่าง:") && citedRef) {
+          yield {
+            type: "message_complete",
+            message: {
+              type: "assistant", id: rid(),
+              content: [{
+                type: "text",
+                text: JSON.stringify({
+                  question: "เลือกทางใด?",
+                  disagreement: false,
+                  consensus: true,
+                  options: [{ id: "o1", label: "ทางเลือกเดียว", rationale: "อ้างอิงครบ", citations: [citedRef] }],
+                }),
+              }],
+            },
+          };
+        } else {
+          yield { type: "message_complete", message: { type: "assistant", id: rid(), content: [{ type: "text", text: "วิเคราะห์บทบาท" }] } };
+        }
+      },
+    },
+  });
+  const now = () => 1800000000000;
+  const queue = new JobQueue(store, config.jobs, [
+    scriptedPreviewWork(store, config, new ScriptedRunPort(store, config.team, config.jobs.outputBytes)),
+    discussionPlanWork(), specialistAnalysisWork(store, config, teamPort), coordinatorSynthesisWork(store, config, teamPort),
+  ], { now }); queues.push(queue);
+  const app = new Application(store, config, { jobs: queue, now });
+  const password = "coord-owner-pass";
+  await app.setupOwner(password);
+  const auth = app.authenticate(await app.login(password));
+  const project = app.execute(auth.actor, { kind: "project.create", projectId: null, requestId: rid(), expectedRevision: 0, payload: { name: "ประสาน" } }).project;
+  const topic = app.execute(auth.actor, { kind: "topic.create", projectId: project.id, requestId: rid(), expectedRevision: project.revision, payload: { title: "หัวข้อประสาน" } }).topic;
+  const specialist = app.execute(auth.actor, { kind: "role.save", projectId: null, requestId: rid(), expectedRevision: 0,
+    payload: { roleId: null, name: "ช่าง", kind: "specialist", responsibility: "วิเคราะห์โครงสร้างซอฟต์แวร์", enabled: true, route: grok } }).role!;
+  const coordinator = app.execute(auth.actor, { kind: "role.save", projectId: null, requestId: rid(), expectedRevision: 1,
+    payload: { roleId: null, name: "ประสาน", kind: "coordinator", responsibility: "สังเคราะห์ข้อขัดแย้ง", enabled: true, route: grok } }).role!;
+  const started = app.execute(auth.actor, { kind: "team.dispatch", projectId: project.id, requestId: rid(),
+    expectedRevision: app.project(auth.actor, project.id).revision,
+    payload: { topicId: topic.id, purpose: "วิเคราะห์เพื่อประสาน", sources: [topic.source], include: [specialist.id], exclude: [], limits: { ...config.jobs.maximum } } });
+  queue.pump(); await queue.idle();
+  const discussionId = started.discussion!.id;
+  const specialistOutput = app.discussion(auth.actor, project.id, discussionId).discussion.participations[0]!.output!;
+  citedRef = { sourceId: specialistOutput.sourceId, revision: specialistOutput.revision, generation: specialistOutput.generation };
+  const synthesis = app.execute(auth.actor, { kind: "decision.synthesize", projectId: project.id, requestId: rid(),
+    expectedRevision: app.discussion(auth.actor, project.id, discussionId).discussion.revision,
+    payload: { discussionId, limits: { ...config.jobs.maximum } } });
+  void synthesis;
+  queue.pump(); await queue.idle();
+  // Both runs went through the concrete bridge with mode-neutral prompts.
+  const coordinatorRequest = teamPort.requests.find(item => item.roleId === coordinator.id)!;
+  expect(coordinatorRequest).toBeDefined();
+  expect(JSON.stringify(coordinatorRequest.instructions)).not.toMatch(/scripted|not live inference/i);
+  const specialistRequest = teamPort.requests.find(item => item.roleId === specialist.id)!;
+  expect(JSON.stringify(specialistRequest.instructions)).not.toMatch(/scripted|not live inference/i);
+  // The committed synthesis source carries the production label, never the fixture one.
+  const proposal = app.decision(auth.actor, project.id, topic.id).proposal!;
+  const committed = store.read(tx => tx.get<{ content_text: string }>(
+    "SELECT content_text FROM source_versions WHERE source_id = ? AND revision = ? AND generation = ?",
+    proposal.source.sourceId, proposal.source.revision, proposal.source.generation,
+  ))!.content_text!;
+  expect(committed).toContain("สรุปผู้ประสานงาน (production)");
+  expect(committed).not.toContain("(fixture)");
+});
+
+test("fencing during host construction creates no session and claims nothing live", async () => {
+  const { config, store } = setup();
+  let submitted = false;
+  const port = new SchwayRunPort(store, config.team, config.jobs.outputBytes, {
+    model: {
+      provider: "scripted", id: "pre-create-race",
+      async *stream() { submitted = true; yield { type: "message_complete", message: { type: "assistant", id: rid(), content: [{ type: "text", text: "must never run" }] } }; },
+    },
+    testHooks: {
+      afterOpenHost: async () => {
+        // Owner retirement wins before any intent row exists.
+        await port.retire({ id: run.context.id, generation: 1 });
+      },
+    },
+  });
+  const run = request(config); activate(store, run.context);
+  const outcome = await port.invoke(run, new AbortController().signal, () => {});
+  expect(outcome).toMatchObject({ state: "blocked", reason: "context_retired" });
+  expect(submitted).toBe(false);
+  // No native session was created and no correlation row was reserved.
+  expect(store.read(tx => tx.all("SELECT run_id FROM schway_native_refs"))).toEqual([]);
+  expect(await port.inspectRuns()).toEqual({ items: [], nextAfter: null });
+  // The earlier retirement stands; a later delete converges without orphans.
+  expect(await port.delete(run.context)).toMatchObject({ state: "deleted" });
+});
