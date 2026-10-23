@@ -508,8 +508,10 @@ export function coordinatorSynthesisWork(
       const opened = store.read(tx => readStored(tx, job.projectId, input.synthesisId));
       if (opened.public.jobId !== job.id || opened.public.discussionId !== input.discussionId) return { state: "failed", reason: "worker_failed" };
       const request = structuredClone(attempt.data) as unknown as ApplicationRunRequest;
-      reserve({ calls: 1, outputTokens: 1 });
+      reserve({ outputTokens: 1 });
       if (port.adapter === "schway") {
+        // Admission already spent the definition's single call; pre-reserve
+        // only the worst-case additional retry calls/rounds before dispatch.
         const extra = schwayMaxAttempts(request) - 1;
         if (extra > 0) reserve({ calls: extra, rounds: extra });
       }

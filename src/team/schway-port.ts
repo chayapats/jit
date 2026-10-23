@@ -183,9 +183,9 @@ export function mapAuthStatus(status: HostAuthStatusCode): RunReason {
 }
 
 /** Service-owned host directories beside the application store; created mode 0700, never under a developer home. */
-export function schwayHostDirs(storePath: string): { workspaceRoot: string; homeDirectory: string; sessionDirectory: string } {
+export function schwayHostDirs(storePath: string): { base: string; workspaceRoot: string; homeDirectory: string; sessionDirectory: string } {
   const base = join(dirname(storePath), ".jit-host");
-  return { workspaceRoot: join(base, "workspace"), homeDirectory: join(base, "home"), sessionDirectory: join(base, "sessions") };
+  return { base, workspaceRoot: join(base, "workspace"), homeDirectory: join(base, "home"), sessionDirectory: join(base, "sessions") };
 }
 
 /** Mode-aware failure for adapter exceptions: production failures never wear fixture evidence. */
@@ -211,6 +211,9 @@ function ensureServiceDir(path: string): void {
 /** Synchronous startup gate: service directories plus the pinned release contract, before any admission. */
 export function assertSchwayGate(storePath: string): void {
   const dirs = schwayHostDirs(storePath);
+  // The parent itself is validated first: a symlinked base would otherwise
+  // redirect every child outside the service-owned directory.
+  ensureServiceDir(dirs.base);
   ensureServiceDir(dirs.workspaceRoot);
   ensureServiceDir(dirs.homeDirectory);
   ensureServiceDir(dirs.sessionDirectory);
@@ -309,12 +312,18 @@ export class SchwayRunPort implements ApplicationRunPort {
     return host;
   }
 
-  private recordRef(request: ApplicationRunRequest, ref: HostSessionReference, state: "running" | "finished"): void {
+  /**
+   * Records the durable native correlation. A null reference reserves the
+   * intent before the native session exists; rows with empty session ids
+   * mean creation never completed and are skipped by addressable lifecycle
+   * calls while still fencing reconciliation.
+   */
+  private recordRef(request: ApplicationRunRequest, ref: HostSessionReference | null, state: "running" | "finished"): void {
     const now = (this.options.now ?? Date.now)();
     this.store.transaction(tx => {
       tx.run(
         "INSERT INTO schway_native_refs (run_id, context_id, generation, session_id, branch_id, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(run_id) DO UPDATE SET state = excluded.state, session_id = excluded.session_id, branch_id = excluded.branch_id, updated_at = excluded.updated_at",
-        request.runId, request.context.id, request.context.generation, ref.id, ref.branchId, state, now, now,
+        request.runId, request.context.id, request.context.generation, ref?.id ?? "", ref?.branchId ?? "", state, now, now,
       );
     });
   }
@@ -410,6 +419,9 @@ export class SchwayRunPort implements ApplicationRunPort {
     };
     try {
       host = await this.openHost(effective, false);
+      // Reserve the intent first: a crash between native creation and the
+      // id update below still leaves a fenced, discoverable row.
+      this.recordRef(snapshot, null, "running");
       session = await host.createSession();
       this.recordRef(snapshot, session.reference, "running");
       await this.options.testHooks?.afterCreateSession?.(session);
@@ -489,7 +501,7 @@ export class SchwayRunPort implements ApplicationRunPort {
       return true;
     });
     if (!known) return { state: "deleted", context: { ...context } };
-    const refs = this.refsFor(context);
+    const refs = this.refsFor(context).filter(row => row.session_id !== "");
     if (refs.length === 0) return { state: "retired", context: { ...context } };
     let host: HostRuntime | null = null;
     try {
@@ -521,7 +533,16 @@ export class SchwayRunPort implements ApplicationRunPort {
     const retired = await this.retire(context);
     if (retired.state === "retire_failed" || retired.state === "deleted") return retired;
     const refs = this.refsFor(context);
-    if (refs.length === 0) {
+    const targets = refs.filter(row => row.session_id !== "");
+    if (refs.length > 0 && targets.length === 0) {
+      // Creation never completed: nothing addressable exists, but removal is
+      // unverifiable, so the operation stays explicitly retryable.
+      this.store.transaction(tx => {
+        tx.run("UPDATE team_contexts SET state = 'delete_failed' WHERE id = ? AND generation = ?", context.id, context.generation);
+      });
+      return { state: "delete_failed", context: { ...context }, nextAction: "retry_managed_delete" };
+    }
+    if (targets.length === 0) {
       this.store.transaction(tx => {
         tx.run("UPDATE team_contexts SET state = 'deleted' WHERE id = ? AND generation = ?", context.id, context.generation);
       });
@@ -531,7 +552,7 @@ export class SchwayRunPort implements ApplicationRunPort {
     try {
       host = await this.openHost(describeLifecycleRun(context), true);
       let failed = false;
-      for (const ref of refs) {
+      for (const ref of targets) {
         try {
           const deletion = await host.deleteSession({ id: ref.session_id, branchId: ref.branch_id });
           if (deletion.status === "partial" || deletion.status === "blocked") failed = true;
@@ -564,15 +585,15 @@ export class SchwayRunPort implements ApplicationRunPort {
   async snapshot(context: ManagedContextReference): Promise<SchwaySnapshotResult> {
     requireId(context.id);
     if (!Number.isSafeInteger(context.generation) || context.generation < 1) throw new AppError("invalid_context_reference");
-    const refs = this.refsFor(context);
-    if (refs.length === 0) {
+    const targets = this.refsFor(context).filter(row => row.session_id !== "");
+    if (targets.length === 0) {
       return { supported: false, contract: SCHWAY_SNAPSHOT_CONTRACT, nextAction: SCHWAY_SNAPSHOT_NEXT_ACTION };
     }
     let host: HostRuntime | null = null;
     try {
       host = await this.openHost(describeLifecycleRun(context), true);
       try {
-        const snapshot = await host.snapshotSessions(refs.map(ref => ({ id: ref.session_id, branchId: ref.branch_id })));
+        const snapshot = await host.snapshotSessions(targets.map(ref => ({ id: ref.session_id, branchId: ref.branch_id })));
         return { supported: true, contract: SCHWAY_SNAPSHOT_CONTRACT, snapshot };
       } catch (error) {
         if (error instanceof HostError && (error.code === "busy" || error.code === "conflict")) {

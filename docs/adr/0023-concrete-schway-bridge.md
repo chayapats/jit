@@ -39,7 +39,10 @@ reconciliation matches by run and context exactly as it does for scripted runs.
 
 Rejected alternatives: one session per managed context would serialize
 concurrent specialist runs behind one lease and complicate fencing; deriving
-session ids deterministically is unsupported by the host contract.
+session ids deterministically is unsupported by the host contract. The
+remaining crash window (native creation before the correlation update) is
+covered by a pending intent row plus an upstream proposal for atomic
+create-with-correlation or session enumeration (chayapats/schway#414).
 
 ## Credential aliases and budget authority
 

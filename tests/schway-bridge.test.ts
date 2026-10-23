@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Application } from "../src/application";
@@ -359,7 +359,7 @@ test("team dispatch commits production specialist evidence while preview stays f
     scriptedPreviewWork(store, config, fixturePort), discussionPlanWork(), specialistAnalysisWork(store, config, teamPort), coordinatorSynthesisWork(store, config, teamPort),
   ], { now }); queues.push(queue);
   const app = new Application(store, config, { jobs: queue, now });
-  const password = "fixture-swap-owner";
+  const password = "fixture-swap-owner-pass";
   await app.setupOwner(password);
   const auth = app.authenticate(await app.login(password));
   const project = app.execute(auth.actor, { kind: "project.create", projectId: null, requestId: rid(), expectedRevision: 0, payload: { name: "โครงการสะพาน" } }).project;
@@ -462,4 +462,131 @@ test("usage reports bounded retry accounting for multi-attempt runs", async () =
   const outcome = await port.invoke(run, new AbortController().signal, () => {});
   expect(outcome.usage).toMatchObject({ calls: 1, rounds: 1, retries: 0 });
   expect(schwayMaxAttempts(run)).toBe(4);
+});
+
+test("production usage with bounded retry overrun validates without fixture coercion", () => {
+  const { config } = setup();
+  const run = request(config, { limits: { ...config.jobs.maximum, retries: 3, outputTokens: 16 } });
+  const base = {
+    state: "complete", reason: "complete", mode: "production", output: "done",
+    usage: { calls: 4, rounds: 4, hops: 0, contextTokens: 40, outputTokens: 18, retries: 3, wallMs: 120 },
+    session: { adapter: "schway", id: run.runId, context: run.context },
+  } as const;
+  const normalized = normalizePortResult(structuredClone(base), run, config.jobs.outputBytes);
+  expect(normalized).toMatchObject({ state: "complete", mode: "production", reason: "complete", output: "done" });
+  expect(normalized.usage).toMatchObject({ calls: 4, retries: 3, outputTokens: 18 });
+  // Inconsistent retry counts and over-admission calls fail, still in production mode.
+  expect(normalizePortResult({ ...structuredClone(base), usage: { ...base.usage, retries: 0 } }, run, config.jobs.outputBytes))
+    .toMatchObject({ state: "error", mode: "production", reason: "invalid_result" });
+  expect(normalizePortResult({ ...structuredClone(base), usage: { ...base.usage, calls: 11 } }, run, config.jobs.outputBytes))
+    .toMatchObject({ state: "error", mode: "production", reason: "invalid_result" });
+  // Fixture inputs stay strictly bounded by the request limits.
+  expect(normalizePortResult({ ...structuredClone(base), mode: "fixture", session: { adapter: "scripted", id: run.runId, context: run.context } }, run, config.jobs.outputBytes))
+    .toMatchObject({ state: "error", mode: "fixture", reason: "invalid_result" });
+});
+
+test("stopping a running participation clears retained progress", async () => {
+  const root = mkdtempSync(join(tmpdir(), "jit-schway-stop-")); roots.push(root);
+  const path = join(root, "state.sqlite"), config = readConfig({ JIT_DATABASE: path });
+  const store = new TransactionStore(path); stores.push(store);
+  let release!: () => void;
+  const gate = new Promise<void>(r => { release = r; });
+  let entered = false;
+  const teamPort = new SchwayRunPort(store, config.team, config.jobs.outputBytes, {
+    model: {
+      provider: "scripted", id: "stop-race",
+      async *stream() {
+        entered = true;
+        await gate;
+        yield { type: "message_complete", message: { type: "assistant", id: rid(), content: [{ type: "text", text: "late analysis" }] } };
+      },
+    },
+  });
+  const now = () => 1800000000000;
+  const queue = new JobQueue(store, config.jobs, [
+    scriptedPreviewWork(store, config, new ScriptedRunPort(store, config.team, config.jobs.outputBytes)),
+    discussionPlanWork(), specialistAnalysisWork(store, config, teamPort), coordinatorSynthesisWork(store, config, teamPort),
+  ], { now }); queues.push(queue);
+  const app = new Application(store, config, { jobs: queue, now });
+  const password = "stop-owner-pass";
+  await app.setupOwner(password);
+  const auth = app.authenticate(await app.login(password));
+  const project = app.execute(auth.actor, { kind: "project.create", projectId: null, requestId: rid(), expectedRevision: 0, payload: { name: "หยุด" } }).project;
+  const topic = app.execute(auth.actor, { kind: "topic.create", projectId: project.id, requestId: rid(), expectedRevision: project.revision, payload: { title: "หยุดกลางคัน" } }).topic;
+  const role = app.execute(auth.actor, { kind: "role.save", projectId: null, requestId: rid(), expectedRevision: 0,
+    payload: { roleId: null, name: "ช่าง", kind: "specialist", responsibility: "วิเคราะห์โครงสร้างซอฟต์แวร์", enabled: true, route: grok } }).role!;
+  const started = app.execute(auth.actor, { kind: "team.dispatch", projectId: project.id, requestId: rid(),
+    expectedRevision: app.project(auth.actor, project.id).revision,
+    payload: { topicId: topic.id, purpose: "ทดสอบหยุด", sources: [topic.source], include: [role.id], exclude: [], limits: { ...config.jobs.maximum } } });
+  const discussionId = started.discussion!.id;
+  queue.pump();
+  while (!entered) await new Promise(r => setTimeout(r, 5));
+  await new Promise(r => setTimeout(r, 20));
+  const discussion = app.discussion(auth.actor, project.id, discussionId).discussion;
+  const participation = discussion.participations[0]!;
+  app.execute(auth.actor, { kind: "team.control", projectId: project.id, requestId: rid(), expectedRevision: discussion.revision,
+    payload: { discussionId, action: "stop", roleId: participation.roleId } });
+  release();
+  await queue.idle();
+  const final = app.discussion(auth.actor, project.id, discussionId).discussion.participations[0]!;
+  expect(final.state).toBe("stopped");
+  expect(final.progress).toBeNull();
+});
+
+test("startup gate rejects a symlinked host directory", async () => {
+  const { config, store } = setup();
+  const base = join(dirname(store.path), ".jit-host");
+  const target = mkdtempSync(join(tmpdir(), "jit-host-target-")); roots.push(target);
+  rmSync(base, { force: true, recursive: true });
+  symlinkSync(target, base, "dir");
+  try {
+    expect(() => createFullAppQueue(store, { ...config, runPort: "schway" })).toThrow("unsafe_host_directory");
+    await expect(verifySchwayBridge(store)).resolves.toMatchObject({ ok: false, nextAction: SCHWAY_NEXT_ACTION });
+  } finally {
+    rmSync(base, { force: true });
+  }
+});
+
+test("coordinator reserves exactly the worst-case retry budget", async () => {
+  const root = mkdtempSync(join(tmpdir(), "jit-schway-budget-")); roots.push(root);
+  const path = join(root, "state.sqlite"), config = readConfig({ JIT_DATABASE: path });
+  const store = new TransactionStore(path); stores.push(store);
+  let invoked = 0;
+  const teamPort = new SchwayRunPort(store, config.team, config.jobs.outputBytes, {
+    model: {
+      provider: "scripted", id: "budget",
+      async *stream() { invoked++; yield { type: "message_complete", message: { type: "assistant", id: rid(), content: [{ type: "text", text: "not synthesis json" }] } }; },
+    },
+  });
+  const now = () => 1800000000000;
+  // Exact budget: admission 1 call + 3 retry calls for maxAttempts 4.
+  const tight = { ...config.jobs.maximum, calls: 4, rounds: 4, retries: 3 };
+  const queue = new JobQueue(store, config.jobs, [
+    scriptedPreviewWork(store, config, new ScriptedRunPort(store, config.team, config.jobs.outputBytes)),
+    discussionPlanWork(), specialistAnalysisWork(store, config, teamPort), coordinatorSynthesisWork(store, config, teamPort),
+  ], { now }); queues.push(queue);
+  const app = new Application(store, config, { jobs: queue, now });
+  const password = "budget-owner-pass";
+  await app.setupOwner(password);
+  const auth = app.authenticate(await app.login(password));
+  const project = app.execute(auth.actor, { kind: "project.create", projectId: null, requestId: rid(), expectedRevision: 0, payload: { name: "งบ" } }).project;
+  const topic = app.execute(auth.actor, { kind: "topic.create", projectId: project.id, requestId: rid(), expectedRevision: project.revision, payload: { title: "งบพอดี" } }).topic;
+  const role = app.execute(auth.actor, { kind: "role.save", projectId: null, requestId: rid(), expectedRevision: 0,
+    payload: { roleId: null, name: "ช่าง", kind: "specialist", responsibility: "วิเคราะห์โครงสร้างซอฟต์แวร์", enabled: true, route: grok } }).role!;
+  const coordinator = app.execute(auth.actor, { kind: "role.save", projectId: null, requestId: rid(), expectedRevision: 1,
+    payload: { roleId: null, name: "ประสาน", kind: "coordinator", responsibility: "สังเคราะห์ข้อขัดแย้ง", enabled: true, route: grok } }).role!;
+  void coordinator;
+  app.execute(auth.actor, { kind: "team.dispatch", projectId: project.id, requestId: rid(),
+    expectedRevision: app.project(auth.actor, project.id).revision,
+    payload: { topicId: topic.id, purpose: "ทดสอบงบ", sources: [topic.source], include: [role.id], exclude: [], limits: tight } });
+  queue.pump(); await queue.idle();
+  expect(invoked).toBe(1);
+  const completed = app.discussions(auth.actor, project.id, topic.id).at(-1)!;
+  const synth = app.execute(auth.actor, { kind: "decision.synthesize", projectId: project.id, requestId: rid(),
+    expectedRevision: completed.revision, payload: { discussionId: completed.id, limits: tight } });
+  void synth;
+  queue.pump(); await queue.idle();
+  // Exact worst case: specialist (1) + coordinator (1) invocations fit;
+  // the old maxAttempts+1 accounting would have starved the coordinator.
+  expect(invoked).toBe(2);
 });

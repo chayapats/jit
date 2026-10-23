@@ -75,7 +75,16 @@ and fixture-free protocol transport.
 - One native Schway session backs one application run. The durable
   `schway_native_refs` table (schema 21) correlates each run with its opaque
   native session id/branch; the session id never leaves the store and native
-  bytes are never parsed or rewritten.
+  bytes are never parsed or rewritten. The intent row is reserved before
+  native creation, so a crash in that window still leaves a fenced,
+  discoverable row (unaddressable lifecycle stays explicitly retryable);
+  full atomicity awaits the Schway correlation/enumeration contract
+  (chayapats/schway#414). Attempt ledgers record `adapter: "schway"` so
+  JOB02 reconciliation matches durable native refs across restart;
+  interrupted rows stay `running` for explicit reconcile. Only fenced-active,
+  live-signal progress is stored provisionally and it is cleared at commit;
+  revoked participations clear retained progress and project null;
+  transient progress never becomes committed evidence.
 - Strict context mapping: fixed trusted system prompt plus responsibility,
   purpose and operator sections; manifest sources/claims become untrusted
   source documents with bounded ids. Exact empty tool registry, hosted lookup
@@ -84,8 +93,7 @@ and fixture-free protocol transport.
 - Route runs use `submitWithRoute` on the exact selected Grok/Codex
   route/model with the shared route-scoped credential lifecycle. Jit supplies
   no credential client, renewal loop, billing fallback or model retry of its
-  own. Jit supplies no credential client, renewal loop, billing fallback or
-  model retry of its own. The owner credential alias (`authRoute`) is
+  own. The owner credential alias (`authRoute`) is
   preserved end to end in the effective configuration, request history and
   committed evidence; the pinned host resolves one subscription identity per
   provider, so two aliases on one provider share that identity without any

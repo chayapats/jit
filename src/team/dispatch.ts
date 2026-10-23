@@ -102,7 +102,9 @@ export function projectDiscussion(tx: AppTransaction, discussion: Discussion): D
     return {
       ...item, state, reason, nextAction,
       route: run.request.route, output: run.source,
-      progress: outcome ? null : run.progress,
+      // Only a live running attempt projects provisional progress; every
+      // other state shows committed evidence or nothing, never stale deltas.
+      progress: state === "running" && !outcome ? run.progress : null,
     } satisfies DiscussionParticipation;
   });
   const projected = {
@@ -259,6 +261,11 @@ export function prepareControl(
     existing.reason = p.action === "stop" ? "cancelled" : p.action;
     existing.nextAction = "inspect_fenced_result";
     existing.progress = null;
+    // Revoked authority must not keep projecting transient model text: clear
+    // the retained run progress in the same transaction as the participation.
+    const stopped = readSpecialist(tx, command.projectId, existing.runId);
+    stopped.progress = null;
+    saveSpecialist(tx, stopped);
     if (["queued", "admitted", "waiting"].includes(readJob(tx, command.projectId, existing.jobId).state)) {
       const job = readJob(tx, command.projectId, existing.jobId);
       queue.execute(tx, {
