@@ -303,6 +303,7 @@ export function discussionPage(state: ReturnType<Application["discussion"]>, wor
       ${item.progress ? `<p role="status">ความคืบหน้าชั่วคราว: ${escape(item.progress.text)}</p>` : ""}
       ${item.output ? sourceLink(project.id, item.output, "ผลที่บันทึกแล้ว") : "<p>ยังไม่มีผลที่ยืนยันแล้ว</p>"}
       <p><a href="/projects/${project.id}/jobs/${item.jobId}">ดูงาน</a></p><div class="team-form">${controls(item.roleId, d.revision)}</div></article>`).join("")}
+    ${state.context ? contextPanel(state.context, "บริบทที่ทีมใช้") : ""}${state.synthesisContext ? contextPanel(state.synthesisContext, "บริบทของผู้ประสานงาน") : ""}
     ${decisionPanel({ projectId: project.id, topicId: d.topicId, csrf, model: state.decision, discussion: { id: d.id, revision: d.revision, limits, canSynthesize: d.participations.some(item => item.state === "completed") } })}
     <p><a href="/projects/${project.id}/topics/${d.topicId}">กลับหัวข้อ</a></p></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
 }
@@ -342,6 +343,47 @@ function memoryClaimContent(item: import("./memory/types").ClaimLookup, projectI
 /** Renders exact claim lineage without any model calls or inferred owner authority. */
 export function memoryClaimPage(state: import("./memory/types").ClaimLookup, project: Project, workspace: Workspace, csrf: string): string {
   return shell("ที่มาของ memory", { workspace, csrf, project, section: "memory" }, `<div class="content memory-content"><p><a href="/projects/${project.id}/memory">กลับไป memory ของโครงการ</a></p>${memoryClaimContent(state, project.id)}</div>`);
+}
+
+const contextLayers: Record<import("./memory/types").ContextProvenanceEntry["layer"], string> = {
+  project_constraint: "ข้อผูกพันและมติปัจจุบัน (สถานะโครงการ ไม่ใช่ memory)", explicit_preference: "สิ่งที่คุณระบุไว้ในโครงการนี้",
+  source_evidence: "ต้นฉบับที่เลือกให้ run นี้", inference: "ข้ออนุมาน (ไม่ใช่ข้อกำหนด)",
+};
+function contextEntry(entry: import("./memory/types").MemoryContextView["entries"][number]): string {
+  const p = entry.projectId, version = `revision ${entry.revision}${entry.generation === null ? "" : ` · generation ${entry.generation}`}`;
+  const href = entry.kind === "task" ? `/projects/${p}/tasks/${entry.id}`
+    : entry.kind === "decision" ? `/projects/${p}/topics/${entry.topicId}#owner-decision`
+    : entry.kind === "claim" ? claimUrl(p, { claimId: entry.id, revision: entry.revision, generation: entry.generation! })
+    : `/projects/${p}/sources/${entry.id}?revision=${entry.revision}&generation=${entry.generation}`;
+  const label = entry.kind === "task" ? `งาน ${entry.status}` : entry.kind === "decision" ? "มติของคุณ"
+    : entry.kind === "claim" ? (entry.claimKind === "explicit_fact" ? "Fact: owner กล่าวไว้" : "Inference") : "ต้นฉบับ";
+  return `<li data-context-entry="${escape(entry.kind)}" data-current="${entry.current}"><a href="${escape(href)}">${escape(label)} · ${escape(entry.id)}</a> · ${version}${entry.scope === "cross_project" ? ` · จากโครงการอื่น ${escape(p)} (ไม่ใช่ความชอบของโครงการนี้)` : ""}
+    ${entry.current ? "" : ` · <strong>ไม่เป็นปัจจุบันแล้ว: ${escape(entry.reason ?? "unavailable")}</strong>`}${entry.text ? `<p class="literal">${escape(entry.text)}</p>` : ""}
+    ${entry.source && entry.kind !== "source" ? sourceLink(p, entry.source, `หลักฐาน revision ${entry.source.revision} · generation ${entry.source.generation}`) : ""}</li>`;
+}
+function contextPanel(state: import("./memory/types").MemoryContextView, title: string): string {
+  const r = state.record, o = r.omitted;
+  const groups = (Object.keys(contextLayers) as (keyof typeof contextLayers)[]).map(layer => {
+    const items = state.entries.filter(entry => entry.layer === layer);
+    return items.length ? `<h4>${contextLayers[layer]}</h4><ul>${items.map(contextEntry).join("")}</ul>` : "";
+  }).join("");
+  const notes = [
+    o.constraints || o.claims || o.budget ? `บริบทไม่ครบ: ละงาน/มติ ${o.constraints} และ memory ${o.claims} รายการตามงบ` : "",
+    o.loopGuard ? "ไม่ดึง memory เพิ่ม เพราะอินพุตมาจากคำตอบที่ใช้ memory แล้ว (loop guard)" : "",
+    o.unavailable ? `memory ที่ถูกถอนหรือไม่พร้อมใช้ ${o.unavailable} รายการไม่ถูกนำมาใช้` : "",
+    state.entries.some(entry => entry.layer !== "source_evidence") ? "" : "ไม่มีสถานะโครงการหรือ memory ที่อ้างอิงได้สำหรับ run นี้",
+  ].filter(Boolean).map(text => `<p role="note">${escape(text)}</p>`).join("");
+  const conflicts = r.conflicts.length ? `<h4>ข้อขัดแย้งที่ต้องให้คุณตัดสิน</h4><ul>${r.conflicts.map(item => `<li><a href="${claimUrl(item.claim.projectId, item.claim)}">${escape(item.claim.claimId)}</a> ↔ <a href="${claimUrl(item.claim.projectId, item.with)}">${escape(item.with.claimId)}</a>${item.included ? "" : " · อีกฝั่งไม่อยู่ในบริบทนี้"}</li>`).join("")}</ul>` : "";
+  return `<section class="team-card" id="context-${r.id}" aria-label="${escape(title)}"><h3>${escape(title)}</h3>
+    <p>app.memory_context/v1 · policy ${r.policy.version} · ${state.current ? "ทุกรายการยังเป็นปัจจุบัน" : "<strong>บางรายการเปลี่ยนแล้ว ผลที่ใช้บริบทนี้ไม่ถูกนับเป็นปัจจุบัน</strong>"} · ${r.complete ? "ครบตามงบ" : "ไม่ครบ"}</p>
+    ${notes}${groups}${conflicts}<p><a href="/projects/${r.projectId}/memory/contexts/${r.id}">ดู context ที่ run ใช้</a> · ${time(r.snapshot.assembledAt)}</p></section>`;
+}
+
+/** app.context_provenance/v1: what one run was allowed to use, with current lifecycle status and clickable evidence. */
+export function memoryContextPage(state: ReturnType<Application["memoryContext"]>, workspace: Workspace, csrf: string): string {
+  const { project, ...view } = state;
+  return shell("บริบทที่ run ใช้", { workspace, csrf, project, section: "memory" }, `<div class="content memory-content">${contextPanel(view, view.record.owner.kind === "synthesis" ? "บริบทของผู้ประสานงาน" : "บริบทของการหารือ")}
+    <p><a href="/projects/${project.id}/memory">กลับไป memory ของโครงการ</a></p></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
 }
 
 /** Renders bounded source selection, fixture extraction status and active-generation claim inspection. */

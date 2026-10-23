@@ -64,5 +64,11 @@ export function eligibleMemorySource(tx: AppTransaction, projectId: string, refe
   requireReference(reference);
   const source = lookupSource(tx, projectId, reference);
   if (source.state !== "available" || source.current.revision !== reference.revision || source.descriptor.kind === "external") throw new AppError("memory_source_unavailable", 409);
+  if (memoryDerivation(tx, projectId, reference.sourceId) > 0) throw new AppError("memory_source_derived", 409);
   return source;
+}
+
+/** app.context_provenance/v1 loop depth: 0 for owner/raw sources, >0 for outputs produced with memory in context. */
+export function memoryDerivation(tx: AppTransaction, projectId: string, sourceId: string): number {
+  return tx.get<{ depth: number }>("SELECT depth FROM memory_derived_sources WHERE project_id = ? AND source_id = ?", projectId, sourceId)?.depth ?? 0;
 }

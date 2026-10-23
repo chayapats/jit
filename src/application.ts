@@ -30,7 +30,8 @@ import {
 
 import { fenceUnavailableExtractions, memoryIdentity, prepareExtraction } from "./memory/extract";
 import { lookupActiveClaim, readMemory } from "./memory/read";
-import type { ClaimReference, ExtractMemoryCommand, MemoryExtraction, MemoryReceipt } from "./memory/types";
+import type { ClaimReference, ExtractMemoryCommand, MemoryContextView, MemoryExtraction, MemoryReceipt } from "./memory/types";
+import { fenceStaleContexts, readMemoryContext, readOwnedMemoryContext } from "./memory/context";
 import { commitDecisionMemorySource, memorySourceDecision, retireDecisionMemorySource } from "./memory/decision-sources";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -269,7 +270,7 @@ export class Application {
     return this.store.read(tx => {
       this.#requireOwner(tx, actor); const project = this.#project(tx, projectId), limit = this.config.pageSize;
       const rows = tx.all<{ cursor: number; sourceId: string; revision: number; generation: number }>(
-        "SELECT rowid AS cursor, id AS sourceId, current_revision AS revision, generation FROM sources WHERE project_id = ? AND rowid > ? AND availability = 'available' AND kind != 'external' ORDER BY rowid LIMIT ?", projectId, sourceAfter, limit + 1);
+        "SELECT rowid AS cursor, id AS sourceId, current_revision AS revision, generation FROM sources WHERE project_id = ? AND rowid > ? AND availability = 'available' AND kind != 'external' AND id NOT IN (SELECT source_id FROM memory_derived_sources WHERE project_id = ?) ORDER BY rowid LIMIT ?", projectId, sourceAfter, projectId, limit + 1);
       const extractionRows = tx.all<{ sequence: number; record_json: string }>("SELECT sequence, record_json FROM memory_extractions WHERE project_id = ? AND sequence > ? ORDER BY sequence LIMIT ?", projectId, extractionAfter, limit + 1);
       return { project, ...readMemory(tx, projectId, after, limit, query), query,
         sources: rows.slice(0, limit).map(row => ({ cursor: row.cursor, source: lookupSource(tx, projectId, { sourceId: row.sourceId, revision: row.revision, generation: row.generation }), decision: memorySourceDecision(tx, projectId, { sourceId: row.sourceId, revision: row.revision, generation: row.generation }) })),
@@ -337,7 +338,18 @@ export class Application {
     return this.store.read(tx => {
       this.#requireOwner(tx, actor); const project = this.#project(tx, projectId);
       const discussion = projectDiscussion(tx, readDiscussion(tx, projectId, discussionId));
-      return { project, discussion, decision: readDecisionModel(tx, projectId, discussion.topicId, discussion.id) };
+      const decision = readDecisionModel(tx, projectId, discussion.topicId, discussion.id);
+      return { project, discussion, decision, context: readOwnedMemoryContext(tx, projectId, "discussion", discussion.id),
+        synthesisContext: decision.synthesis ? readOwnedMemoryContext(tx, projectId, "synthesis", decision.synthesis.id) : null };
+    });
+  }
+
+  /** app.context_provenance/v1: what one run was allowed to use, with current lifecycle status per entry. */
+  memoryContext(actor: OwnerActor, projectId: string, contextId: string): { project: Project } & MemoryContextView {
+    requireId(projectId); requireId(contextId);
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor);
+      return { project: this.#project(tx, projectId), ...readMemoryContext(tx, projectId, contextId) };
     });
   }
 
@@ -403,19 +415,22 @@ export class Application {
   /** app.task_commands/v1 — commits proposal, edit, dismissal, acceptance, or cancellation. Start is refused and writes nothing. */
   #taskCommand(actor: OwnerActor, command: TaskCommand): TaskReceipt {
     const payloadHash = taskIdentity(command, this.config.messageBytes);
-    return this.store.transaction(tx => {
+    const result = this.store.transaction(tx => {
       this.#requireOwner(tx, actor, ["web", "telegram"]);
       this.#project(tx, command.projectId);
       const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
       if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as TaskReceipt; }
       const now = this.#now();
       const result = applyTask(tx, command, actor.channel, now, this.config.messageBytes);
+      fenceStaleContexts(tx, now);
       this.#beforeCommit?.("task");
       tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
       tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);
       this.#beforeCommit?.("receipt");
       return result;
     });
+    this.#jobs?.cancelFenced();
+    return result;
   }
 
   /** app.decision_commands/v1 — commits synthesis admission, acceptance or supersession with the shared owner receipt. */
@@ -434,6 +449,7 @@ export class Application {
       if (command.kind === "decision.supersede") {
         retireDecisionMemorySource(tx, command.projectId, command.payload.decisionId);
         fenceUnavailableExtractions(tx, command.projectId, now);
+        fenceStaleContexts(tx, now);
       }
       this.#beforeCommit?.("decision");
       tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);

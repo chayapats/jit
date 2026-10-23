@@ -1,7 +1,7 @@
 import { Application, type CreateProjectCommand } from "./application";
 import { AppError } from "./errors";
 import type { CreateTopicCommand, SendMessageCommand } from "./conversation";
-import { workspacePage, projectPage, conversationPage, sourcePage, jobsPage, teamPage, previewPage, discussionPage, deliveryPage, deliveryDetailPage, tasksPage, taskPage, memoryPage, memoryClaimPage, loginPage, errorPage } from "./web-layout";
+import { workspacePage, projectPage, conversationPage, sourcePage, jobsPage, teamPage, previewPage, discussionPage, deliveryPage, deliveryDetailPage, tasksPage, taskPage, memoryPage, memoryClaimPage, memoryContextPage, loginPage, errorPage } from "./web-layout";
 import type { ExtractMemoryCommand } from "./memory/types";
 import type { CommitDeliveryCommand, ResendDeliveryCommand } from "./delivery";
 import type { EnqueueJobCommand, JobLimits, ResumeJobCommand, StopJobCommand } from "./jobs/types";
@@ -67,6 +67,9 @@ const messages: Record<string, string> = {
   channel_not_authorized: "ช่องทางนี้ยังใช้คำสั่งนี้ไม่ได้",
   title_too_long: "ชื่อยาวเกินกำหนด",
   memory_source_unavailable: "แหล่งข้อมูลเปลี่ยนหรือไม่พร้อมใช้งาน เลือก revision ปัจจุบันก่อนสกัด memory",
+  memory_source_derived: "ต้นฉบับนี้เป็นคำตอบที่ใช้ memory แล้ว จึงไม่สกัดกลับเป็น memory เพื่อกันการวนซ้ำ",
+  memory_context_not_found: "ไม่พบบริบทของ run นี้ในโครงการที่เลือก",
+  memory_context_stale: "งาน มติ หรือ memory ที่การหารือนี้ใช้เปลี่ยนแล้ว เริ่มการหารือใหม่เพื่อใช้สถานะปัจจุบัน",
   memory_role_unavailable: "เปิดใช้บทบาทและกำหนด route ก่อนสกัด memory",
   memory_dependency_unavailable: "Memory ที่อ้างอิงเปลี่ยนหรือไม่พร้อมใช้งาน กรุณาเลือกใหม่",
   invalid_memory_command: "ข้อมูลคำขอสกัด memory ไม่ถูกต้อง กรุณาเปิดหน้าใหม่",
@@ -170,6 +173,7 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       const continuityRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/continuity$/.exec(url.pathname);
       const memoryRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/memory$/.exec(url.pathname);
       const claimRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/memory\/claims\/([a-f0-9-]{36})$/.exec(url.pathname);
+      const contextRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/memory\/contexts\/([a-f0-9-]{36})$/.exec(url.pathname);
       const after = () => {
         const raw = url.searchParams.get("after") ?? "0";
         if (!/^\d{1,16}$/.test(raw)) throw new AppError("invalid_cursor");
@@ -179,6 +183,10 @@ export function createWebHandler(app: Application): (request: Request) => Promis
         const revision = Number(url.searchParams.get("revision")), generation = Number(url.searchParams.get("generation"));
         const state = app.memoryClaim(auth.actor, claimRoute[1]!, { claimId: claimRoute[2]!, revision, generation });
         return api ? json(state) : respond(memoryClaimPage(state, app.project(auth.actor, claimRoute[1]!), app.workspace(auth.actor), auth.csrf));
+      }
+      if (request.method === "GET" && contextRoute) {
+        const state = app.memoryContext(auth.actor, contextRoute[1]!, contextRoute[2]!);
+        return api ? json(state) : respond(memoryContextPage(state, app.workspace(auth.actor), auth.csrf));
       }
       if (request.method === "GET" && memoryRoute) {
         const sourceAfter = Number(url.searchParams.get("sourceAfter") ?? 0), extractionAfter = Number(url.searchParams.get("extractionAfter") ?? 0);

@@ -25,7 +25,7 @@ Extraction results are not sources or canonical conversation messages, so they c
 
 GET `/[api/]projects/:id/memory` inspects; POST on the same path uses Origin/session/CSRF and the shared owner command boundary. GET `/[api/]projects/:id/memory/claims/:claimId?revision=...&generation=...` opens exact lineage. The inspector shows source availability, origin, status, partial/rejected counts and queue next action; rendered text is escaped. Receipts exclude captured run requests. Private request snapshots remain retained attempt evidence and later lifecycle work must retire/redact all relevant retained projections.
 
-Production inference is deferred to JBR01. The local service registers a scripted fixture extractor through `ApplicationRunPort`, never a live provider or a private Schway API. It echoes a bounded source excerpt with correct attribution and marks truncation incomplete. No login, subscription, quality, complete learning, cross-project retrieval or deletion-support claim is made.
+Production inference is deferred to JBR01. The local service registers a scripted fixture extractor through `ApplicationRunPort`, never a live provider or a private Schway API. It echoes a bounded source excerpt with correct attribution and marks truncation incomplete. No login, subscription, quality, complete learning, cross-project retrieval or deletion-support claim is made. MEM02 adds bounded project/cross-project context assembly on top of `lookupActiveClaim` ([memory-context-v1](memory-context-v1.md)).
 
 ## Deterministic evidence
 
