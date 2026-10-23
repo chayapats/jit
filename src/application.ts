@@ -97,6 +97,11 @@ import {
   upgradeIdentity, validateUpgrade, ownUpgradeDirFor,
   type UpgradeCommand, type UpgradeJournal, type UpgradeReceipt,
 } from "./ops/upgrade";
+import {
+  activateRestore, applyLedger, discardRestore, listQuarantines, migrateQuarantine, prepareRestore, readQuarantine,
+  restoreIdentity, validateQuarantine, restoreEvidence, ownRestoreDirFor,
+  type ExternalTombstone, type RestoreCommand, type RestoreQuarantine, type RestoreReceipt,
+} from "./ops/restore";
 
 /** Injectable clock and transaction fault seam for deterministic persistence checks. */
 export interface ApplicationOptions {
@@ -106,6 +111,7 @@ export interface ApplicationOptions {
   backupDir?: string;
   exportDir?: string;
   upgradeDir?: string;
+  restoreDir?: string;
   nativeSnapshot?: BackupNativePort;
 }
 
@@ -117,6 +123,7 @@ export class Application {
   #jobs: JobQueue | undefined;
   #backupDir: string;
   #exportDir: string;
+  #restoreDir: string;
   #upgradeDir: string;
   #nativeSnapshot: BackupNativePort | undefined;
 
@@ -127,6 +134,7 @@ export class Application {
     this.#jobs = options.jobs;
     this.#backupDir = ownBackupDir(store.path, options.backupDir);
     this.#exportDir = ownExportDir(store.path, options.exportDir);
+    this.#restoreDir = ownRestoreDirFor(store.path, options.restoreDir);
     this.#upgradeDir = ownUpgradeDirFor(store.path, options.upgradeDir);
     this.#nativeSnapshot = options.nativeSnapshot;
   }
@@ -295,9 +303,11 @@ export class Application {
   execute(actor: OwnerActor, command: DeleteCommand): DeletionReceipt | DeletionConfirmReceipt | DeletionOperation;
   execute(actor: OwnerActor, command: ExportCommand): ExportReceipt;
   execute(actor: OwnerActor, command: UpgradeCommand): UpgradeReceipt;
-  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | UpgradeReceipt;
-  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | UpgradeReceipt {
+  execute(actor: OwnerActor, command: RestoreCommand): RestoreReceipt;
+  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | UpgradeReceipt | RestoreReceipt;
+  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | UpgradeReceipt | RestoreReceipt {
     if (command?.kind === "export.create") return this.#exportCommand(actor, command);
+    if (command?.kind.startsWith("restore.")) return this.#restoreCommand(actor, command as RestoreCommand);
     if (command?.kind.startsWith("upgrade.")) return this.#upgradeCommand(actor, command as UpgradeCommand);
     if (command?.kind === "backup.create" || command?.kind === "backup.prune") return this.#backupCommand(actor, command);
     if (command?.kind === "memory.delete.preview" || command?.kind === "memory.delete.confirm" || command?.kind === "memory.delete.retry") return this.#deleteCommand(actor, command);
@@ -582,6 +592,109 @@ export class Application {
     }
     this.#beforeCommit?.("ops");
     const result: UpgradeReceipt = { journal: journal!, duplicate: false };
+    this.store.transaction(tx => {
+      this.#requireOwner(tx, actor);
+      tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
+      tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, 'owner', ?)", command.kind, command.requestId, now);
+    });
+    this.#beforeCommit?.("receipt");
+    this.#jobs?.cancelFenced();
+    return result;
+  }
+
+  /** ops.quarantined_restore/v1: reads one quarantine with its validation report. */
+  restore(actor: OwnerActor, id: string): { quarantine: RestoreQuarantine } {
+    requireId(id);
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor);
+      return { quarantine: restoreEvidence(readQuarantine(tx, id)) };
+    });
+  }
+
+  /** ops.quarantined_restore/v1: bounded quarantine list for the installation. */
+  restores(actor: OwnerActor): { quarantines: RestoreQuarantine[] } {
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor);
+      return { quarantines: listQuarantines(tx).map(restoreEvidence) };
+    });
+  }
+
+  #restoreCommand(actor: OwnerActor, command: RestoreCommand): RestoreReceipt {
+    const payloadHash = digest(restoreIdentity(command));
+    if (command.kind === "restore.prepare") {
+      const id = crypto.randomUUID();
+      try {
+        return this.store.transaction(tx => {
+          this.#requireOwner(tx, actor);
+          const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
+          if (prior) {
+            if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409);
+            return JSON.parse(prior.result_json) as RestoreReceipt;
+          }
+          const now = this.#now();
+          const revision = tx.get<{ revision: number }>("SELECT revision FROM app_state WHERE id = 1")!.revision;
+          if (revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
+          const quarantine = prepareRestore(tx, { id, now, liveRevision: revision, backupId: command.payload.backupId, restoreDir: this.#restoreDir });
+          this.#beforeCommit?.("ops");
+          const result: RestoreReceipt = { quarantine, duplicate: false };
+          tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
+          tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, 'owner', ?)", command.kind, command.requestId, now);
+          this.#beforeCommit?.("receipt");
+          return result;
+        });
+      } catch (error) {
+        // Prepare rolls back wholly; quarantine files are orphaned and re-prepare is clean.
+        throw error;
+      }
+    }
+    // Later steps run outside a single outer transaction: each step is idempotent, and
+    // quarantine files plus journal rows make a crash resumable at the same boundary.
+    const checked = this.store.transaction(tx => {
+      this.#requireOwner(tx, actor);
+      const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
+      if (prior) {
+        if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409);
+        return { receipt: JSON.parse(prior.result_json) as RestoreReceipt, quarantine: null as RestoreQuarantine | null };
+      }
+      const revision = tx.get<{ revision: number }>("SELECT revision FROM app_state WHERE id = 1")!.revision;
+      if (revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
+      return { receipt: null as RestoreReceipt | null, quarantine: readQuarantine(tx, command.payload.quarantineId) };
+    });
+    if (checked.receipt) return checked.receipt;
+    const now = this.#now();
+    let quarantine: RestoreQuarantine;
+    if (command.kind === "restore.migrate") {
+      this.store.transaction(tx => {
+        quarantine = migrateQuarantine(tx, readQuarantine(tx, command.payload.quarantineId), now);
+      });
+      quarantine = this.restore(actor, command.payload.quarantineId).quarantine;
+    } else if (command.kind === "restore.apply_ledger") {
+      const payload = command.payload as { quarantineId: string; tombstones: ExternalTombstone[]; source: string; asOf: number; acknowledgedEmpty?: boolean };
+      this.store.transaction(tx => {
+        quarantine = applyLedger(tx, readQuarantine(tx, command.payload.quarantineId),
+          { tombstones: payload.tombstones, source: payload.source, asOf: payload.asOf,
+            acknowledgedEmpty: payload.acknowledgedEmpty ?? false, now, liveNow: now });
+      });
+      quarantine = this.restore(actor, command.payload.quarantineId).quarantine;
+    } else if (command.kind === "restore.validate") {
+      const current = checked.quarantine!;
+      const backupCreatedAt = this.store.read(tx => {
+        const row = tx.get<{ record_json: string }>("SELECT record_json FROM ops_backups WHERE id = ?", current.backupId);
+        if (!row) throw new AppError("backup_not_found", 404);
+        return (JSON.parse(row.record_json) as { createdAt: number }).createdAt;
+      });
+      quarantine = validateQuarantine(this.store, current, now, backupCreatedAt);
+    } else if (command.kind === "restore.activate") {
+      const revision = this.store.read(tx => tx.get<{ revision: number }>("SELECT revision FROM app_state WHERE id = 1")!.revision);
+      quarantine = activateRestore(this.store, checked.quarantine!, now, revision);
+    } else {
+      this.store.transaction(tx => {
+        quarantine = discardRestore(tx, readQuarantine(tx, command.payload.quarantineId), now);
+      });
+      quarantine = this.restore(actor, command.payload.quarantineId).quarantine;
+    }
+    this.#beforeCommit?.("ops");
+    const result: RestoreReceipt = { quarantine: quarantine!, duplicate: false };
     this.store.transaction(tx => {
       this.#requireOwner(tx, actor);
       tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
@@ -1094,7 +1207,7 @@ export class Application {
         this.#beforeCommit?.("backup");
         const result: BackupReceipt = {
           manifest: {
-            contract: "ops.backup_manifest/v1", id: "prune", createdAt: now, appSchema: 16, jitVersion: "jit-mvp-fixture",
+            contract: "ops.backup_manifest/v1", id: "prune", createdAt: now, appSchema: tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version, jitVersion: "jit-mvp-fixture",
             appRevision: revision, projects: [], sourceGenerations: [],
             lifecycle: { available: true, checkpoint: null, reason: null },
             native: { state: "valid", refs: [], bytes: 0, engine: null, reason: null },
@@ -1116,7 +1229,8 @@ export class Application {
       const pruned = enforceRetention(tx, this.#backupDir, snapshot.length);
       const artifactPath = writeArtifact(this.#backupDir, id, snapshot);
       this.#beforeCommit?.("backup");
-      const manifest = prepareBackupManifest(tx, { id, now, appRevision: revision, snapshotBytes: snapshot, snapshotHash: hash, native, artifactPath, pruned });
+      const appSchema = tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
+      const manifest = prepareBackupManifest(tx, { id, now, appRevision: revision, appSchema, snapshotBytes: snapshot, snapshotHash: hash, native, artifactPath, pruned });
       tx.run("INSERT INTO ops_backups VALUES (?, ?, ?)", manifest.id, manifest.createdAt, JSON.stringify(manifest));
       const result: BackupReceipt = { manifest, duplicate: false };
       tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);

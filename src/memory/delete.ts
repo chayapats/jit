@@ -18,8 +18,8 @@ export const deletePreviewBounds = Object.freeze({
 });
 /** Preview expiry and native-delete retry ceilings keep delete work bounded and idempotent. */
 export const deletePolicy = Object.freeze({ previewMs: 15 * 60 * 1000, maxAttempts: 5 });
-const redactedText = "(memory ไม่พร้อมใช้งาน)";
-
+/** Replaces withdrawn claim payload with its unavailability marker; identity/lineage stay queryable. */
+export const redactedText = "(memory ไม่พร้อมใช้งาน)";
 /** One explicit owner-authorized local scope: an exact committed source lineage. */
 export interface DeleteScope { kind: "source"; projectId: string; source: SourceReference }
 
@@ -372,7 +372,7 @@ export function prepareDeletionPreview(tx: AppTransaction, command: DeletePrevie
 
 /** Replaces quoted copies of just-purged payloads in committed model outputs and delivery
  *  reports (kind `output` lineage). Owner message/topic sources are never rewritten here. */
-function scrubOutputSources(tx: AppTransaction, needles: string[]): void {
+export function scrubOutputSources(tx: AppTransaction, needles: string[]): void {
   const terms = [...new Set(needles.filter(n => n.length > 0))].slice(0, 500);
   if (!terms.length) return;
   for (const row of tx.all<{ sourceId: string; revision: number; generation: number; text: string }>(
@@ -391,7 +391,7 @@ function scrubOutputSources(tx: AppTransaction, needles: string[]): void {
 }
 
 /** Replaces quoted copies of just-purged payloads in committed model outputs; owner-authored tasks/decisions/deliveries are never rewritten. */
-function scrubFreeTextOccurrences(tx: AppTransaction, needles: string[]): void {
+export function scrubFreeTextOccurrences(tx: AppTransaction, needles: string[]): void {
   const terms = [...new Set(needles.filter(n => n.length > 0))].slice(0, 500);
   if (!terms.length) return;
   for (const table of ["team_runs", "coordinator_syntheses", "jobs"] as const) {

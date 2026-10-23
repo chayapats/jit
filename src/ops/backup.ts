@@ -6,7 +6,7 @@ import { requireId } from "../sources";
 import type { AppTransaction } from "../store";
 
 export const backupContract = "ops.backup_manifest/v1" as const;
-export const backupSchemaVersion = 16;
+export const backupSchemaVersion = 20;
 export const backupRetention = Object.freeze({ maxBackups: 10, maxBytes: 64 * 1024 * 1024 });
 
 export interface BackupNativeSnapshot {
@@ -150,7 +150,7 @@ export function listBackups(tx: AppTransaction, limit = 50): BackupManifest[] {
  * before commit leaves at most an orphan file that inventory never lists.
  */
 export function prepareBackupManifest(tx: AppTransaction, input: {
-  id: string; now: number; appRevision: number; snapshotBytes: Uint8Array; snapshotHash: string;
+  id: string; now: number; appRevision: number; appSchema: number; snapshotBytes: Uint8Array; snapshotHash: string;
   native: BackupManifest["native"]; artifactPath: string; pruned: string[];
 }): BackupManifest {
   const projects = collectProjects(tx);
@@ -170,7 +170,7 @@ export function prepareBackupManifest(tx: AppTransaction, input: {
     contract: backupContract,
     id: input.id,
     createdAt: input.now,
-    appSchema: backupSchemaVersion,
+    appSchema: input.appSchema,
     jitVersion: "jit-mvp-fixture",
     appRevision: input.appRevision,
     projects,

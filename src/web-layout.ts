@@ -665,7 +665,7 @@ export function upgradesPage(state: { journals: import("./ops/upgrade").UpgradeJ
     <p>schema ${j.fromSchema} → ${j.targetSchema} · snapshot ${j.snapshotBackupId ? escape(j.snapshotBackupId) : "ไม่มี"} · ${escape(j.nextAction)}</p>
     ${j.reason ? `<p>เหตุผล: ${escape(j.reason)}</p>` : ""}</article>`).join("");
   return shell("อัปเกรด", { workspace, csrf, section: "home" }, `<div class="content"><section class="hero"><p class="eyebrow">ops.schema_migrations/v1</p><h2>อัปเกรดแบบ staged</h2><p>ตรวจ preflight, snapshot กู้คืน, migrate ลง staged, validate invariants แล้วค่อย activate ข้อมูลเดิมกู้คืนได้จาก snapshot เสมอ ไม่ parse รูปแบบ private ของ engine</p></section>
-    <form class="create-form" method="post" action="/upgrades">${hiddenCommand(csrf, revision)}<input type="hidden" name="targetSchema" value="19"><input type="hidden" name="note" value="manual upgrade"><button class="primary">เตรียมอัปเกรด${icon("plus")}</button></form>
+    <form class="create-form" method="post" action="/upgrades">${hiddenCommand(csrf, revision)}<input type="hidden" name="targetSchema" value="20"><input type="hidden" name="note" value="manual upgrade"><button class="primary">เตรียมอัปเกรด${icon("plus")}</button></form>
     <section aria-label="อัปเกรด">${items || '<p class="empty-list">ยังไม่มีอัปเกรด</p>'}</section></div>`);
 }
 
@@ -681,4 +681,27 @@ export function upgradeDetailPage(state: { journal: import("./ops/upgrade").Upgr
     <p>snapshot ${j.snapshotBackupId ? escape(j.snapshotBackupId) : "ไม่มี"} · staged ${j.stagedPath ? escape(j.stagedPath) : "ไม่มี"} · tombstones ${j.validation ? j.validation.checks.find(c => c.name === "ledger_preservation")?.detail ?? "" : "ยังไม่ตรวจ"}</p>
     <div>${j.state === "prepared" ? action("migrate", "migrate ลง staged") : ""}${j.state === "staged" ? action("validate", "ตรวจสอบ staged") : ""}${j.state === "ready" ? `${action("activate", "activate staged")} ${action("rollback", "rollback จาก snapshot")}` : ""}${j.state === "failed" || j.state === "complete" ? action("rollback", "rollback จาก snapshot") : ""}</div></article>
     <p><a href="/upgrades">กลับไปรายการอัปเกรด</a></p></div>`, { breadcrumb: { title: "อัปเกรด", href: "/upgrades" } });
+}
+
+/** ops.quarantined_restore/v1: quarantined restores with external ledger reconciliation. */
+export function restoresPage(state: { quarantines: import("./ops/restore").RestoreQuarantine[]; backups: import("./ops/backup").BackupManifest[] }, workspace: Workspace, csrf: string, revision: number): string {
+  const items = state.quarantines.map(q => `<article class="team-card" id="restore-${q.id}"><header><h3><a href="/restores/${q.id}">${escape(q.id)}</a></h3><span class="job-status" data-state="${q.state}">${escape(q.state)}</span></header>
+    <p>backup ${escape(q.backupId)} · schema ${q.fromSchema} → ${q.stagedSchema ?? "?"} · ledger ${q.ledger ? `${q.ledger.count} จาก ${escape(q.ledger.source ?? "")}` : "ยังไม่ใช้"} · ${escape(q.nextAction)}</p>
+    ${q.reason ? `<p>เหตุผล: ${escape(q.reason)}</p>` : ""}</article>`).join("");
+  const options = state.backups.map(m => `<option value="${m.id}">${escape(m.id)} · schema ${m.appSchema} · ${escape(m.state)}</option>`).join("");
+  return shell("กู้คืน", { workspace, csrf, section: "home" }, `<div class="content"><section class="hero"><p class="eyebrow">ops.quarantined_restore/v1</p><h2>กู้คืนแบบ quarantine</h2><p>ตรวจ manifest, แยกข้อมูลใน quarantine, ใช้ ledger ภายนอกล่าสุด, ตรวจสอบแล้วค่อย activate ไม่มี worker เริ่มเองก่อน reconcile</p></section>
+    <form class="team-form" method="post" action="/restores">${hiddenCommand(csrf, revision)}<label>สำรองข้อมูล<select name="backupId">${options}</select></label><input type="hidden" name="note" value="manual restore"><button class="primary">เตรียม quarantine</button></form>
+    <section aria-label="quarantine">${items || '<p class="empty-list">ยังไม่มี quarantine</p>'}</section></div>`);
+}
+
+/** One quarantine: validation report, ledger coverage, pending items and activation decision. */
+export function restoreDetailPage(state: { quarantine: import("./ops/restore").RestoreQuarantine }, workspace: Workspace, csrf: string, revision: number): string {
+  const q = state.quarantine;
+  const checks = q.validation ? q.validation.checks.map(c => `<li>${escape(c.name)}: ${c.pass ? "ผ่าน" : "ไม่ผ่าน"} <small>${escape(c.detail)}</small></li>`).join("") : "<li>ยังไม่ตรวจสอบ</li>";
+  const action = (name: string, label: string, extra = "") => `<form class="team-form" method="post" action="/restores/${q.id}">${hiddenCommand(csrf, revision)}<input type="hidden" name="action" value="${name}">${extra}<button>${label}</button></form>`;
+  return shell(`กู้คืน ${q.id.slice(0, 8)}`, { workspace, csrf, section: "home" }, `<div class="content"><section class="hero"><p class="eyebrow">${escape(q.contract)} · ${escape(q.state)}</p><h2>quarantine ${escape(q.id)}</h2><p>backup ${escape(q.backupId)} · ${escape(q.nextAction)}${q.reason ? ` · ${escape(q.reason)}` : ""}</p></section>
+    <article class="team-card"><h3>validation</h3><ul>${checks}</ul>
+    <p>ledger ${q.ledger ? `${q.ledger.count} tombstones จาก ${escape(q.ledger.source ?? "")} (asOf ${q.ledger.asOf})` : "ยังไม่ใช้"} · pending native ${q.validation ? q.validation.pendingNative.length : "?"} · pending jobs ${q.validation ? q.validation.pendingJobs.length : "?"} · unknown outbox ${q.validation ? q.validation.unknownOutbox : "?"}</p>
+    <div>${q.state === "quarantining" ? action("migrate", "migrate quarantine") : ""}${["quarantining", "migrated", "ledger_applied", "blocked"].includes(q.state) ? action("apply_ledger", "ใช้ ledger ภายนอก", '<label>ledger (JSON)<input name="tombstones" value="[]"></label><label>ที่มา<input name="source" value="owner-attested"></label><label>asOf<input name="asOf" value="0"></label>') : ""}${q.state === "ledger_applied" || q.state === "blocked" ? action("validate", "ตรวจสอบ quarantine") : ""}${q.state === "validated" ? `${action("activate", "activate", "")} ${action("discard", "ทิ้ง quarantine")}` : ""}${["quarantining", "migrated", "ledger_applied", "blocked"].includes(q.state) ? action("discard", "ทิ้ง quarantine") : ""}</div></article>
+    <p><a href="/restores">กลับไปรายการกู้คืน</a></p></div>`, { breadcrumb: { title: "กู้คืน", href: "/restores" } });
 }

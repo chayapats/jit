@@ -3,7 +3,7 @@ import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readF
 import { dirname } from "node:path";
 import { commitDecisionMemorySource, retireDecisionMemorySource } from "./memory/decision-sources";
 
-const schemaVersion = 19;
+const schemaVersion = 20;
 
 /** Synchronous SQL operations scoped to an application transaction. */
 export interface AppTransaction {
@@ -37,7 +37,7 @@ export class TransactionStore {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
           if (current === schemaVersion) return;
-          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18].includes(current)) throw new Error("Unsupported migration source");
+          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19].includes(current)) throw new Error("Unsupported migration source");
           if (existing) {
             const snapshot = `${path}.pre-v${current}-${crypto.randomUUID()}.sqlite`;
             const fd = openSync(snapshot, "wx", 0o600);
@@ -553,6 +553,14 @@ export class TransactionStore {
             );
             CREATE INDEX IF NOT EXISTS upgrade_journal_state ON upgrade_journal(state, created_at);
             PRAGMA user_version = 19;
+          `);
+          if (current < 20) this.#db.exec(`
+            CREATE TABLE IF NOT EXISTS restore_quarantines (
+              id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, state TEXT NOT NULL,
+              record_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS restore_quarantine_state ON restore_quarantines(state, created_at);
+            PRAGMA user_version = 20;
           `);
           // A populated rebuilt graph must retain every reference; empty legacy fixture stores have no task graph to check.
           if (this.#tx.get("SELECT 1 FROM tasks LIMIT 1") && this.#tx.all("PRAGMA foreign_key_check").length) throw new Error("Migration foreign key check failed");

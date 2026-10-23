@@ -449,7 +449,7 @@ test("MEM02 loop guard: memory-derived answers cannot be re-extracted, follow-on
   expect(f.rt.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM memory_extractions")!.n)).toBe(extractions);
 });
 
-test("MEM02 schema v11 store migrates to v19 with a private snapshot and keeps MEM01 claims readable", async () => {
+test("MEM02 schema v11 store migrates to v20 with a private snapshot and keeps MEM01 claims readable", async () => {
   const f = await fixture();
   const p = project(f, "Migrate", "ฐานข้อมูล");
   const claim = await remember(f, p, say(f, p, "ฐานข้อมูลคือ SQLite"));
@@ -459,7 +459,7 @@ test("MEM02 schema v11 store migrates to v19 with a private snapshot and keeps M
   db.exec("DROP TABLE memory_suppressed_sources; DROP TABLE memory_suppressed_claims; DROP TABLE memory_suppressions; DROP TABLE memory_corrections; DROP TABLE memory_derived_sources; DROP TABLE memory_context_entries; DROP TABLE memory_contexts; DROP TABLE job_schedule_occurrences; DROP TABLE job_schedules; PRAGMA user_version = 11;");
   db.close();
   f.rt = boot(f.config, f.hooks, f.clock);
-  expect(f.rt.store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 19 });
+  expect(f.rt.store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 20 });
   expect(readdirSync(f.root).filter(name => name.includes(".pre-v11-"))).toHaveLength(1);
   expect(f.rt.app.memoryClaim(actor(f), p.id, ref(claim)).state).toBe("available");
   const answered = await ask(f, p, "ฐานข้อมูลคืออะไร");

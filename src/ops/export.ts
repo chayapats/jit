@@ -11,7 +11,7 @@ import type { ClaimReference } from "../memory/types";
 import type { SourceReference } from "../sources";
 
 export const exportContract = "ops.project_export/v1" as const;
-export const exportSchemaVersion = 18;
+export const exportSchemaVersion = 20;
 export const exportRetention = Object.freeze({ maxExports: 20, maxBytes: 32 * 1024 * 1024 });
 
 export interface ExportScope { includeHistory: boolean }
@@ -271,9 +271,10 @@ function residualBackups(tx: AppTransaction, projectId: string): string[] {
 export function exportPreview(tx: AppTransaction, projectId: string, scope: ExportScope, projectRevision: number): ExportPreview {
   const assembled = assembleExport(tx, projectId, scope);
   const tombstones = readDeletionLedger(tx).filter(t => t.projectId === projectId);
+  const appSchema = tx.get<{ user_version: number }>("PRAGMA user_version")?.user_version ?? exportSchemaVersion;
   return {
     manifest: {
-      contract: exportContract, id: null, projectId, createdAt: 0, appSchema: exportSchemaVersion,
+      contract: exportContract, id: null, projectId, createdAt: 0, appSchema,
       scope: { ...scope }, projectRevision, coverage: assembled.coverage, counts: assembled.counts,
       exclusions: assembled.exclusions, missingRefs: assembled.missingRefs,
       pendingDeletions: pendingDeletionIds(tx, projectId),
@@ -340,7 +341,7 @@ export function createExport(tx: AppTransaction, input: {
   }
   const manifest: ExportManifest = {
     contract: exportContract, id: input.id, projectId: input.projectId, createdAt: input.now,
-    appSchema: exportSchemaVersion, scope: { ...input.scope }, projectRevision: input.projectRevision,
+    appSchema: tx.get<{ user_version: number }>("PRAGMA user_version")?.user_version ?? exportSchemaVersion, scope: { ...input.scope }, projectRevision: input.projectRevision,
     coverage: assembled.coverage, counts: assembled.counts,
     exclusions: assembled.exclusions, missingRefs: assembled.missingRefs,
     pendingDeletions: pendingDeletionIds(tx, input.projectId),

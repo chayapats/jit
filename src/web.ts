@@ -1,7 +1,7 @@
 import { Application, type CreateProjectCommand } from "./application";
 import { AppError } from "./errors";
 import type { CreateTopicCommand, SendMessageCommand } from "./conversation";
-import { workspacePage, projectPage, conversationPage, sourcePage, jobsPage, teamPage, previewPage, discussionPage, deliveryPage, deliveryDetailPage, prReportsPage, prReportPage, tasksPage, taskPage, memoryPage, memoryClaimPage, memoryContextPage, schedulesPage, scheduleDetailPage, backupsPage, backupDetailPage, deletionsPage, deletionDetailPage, exportsPage, exportDetailPage, upgradesPage, upgradeDetailPage, loginPage, errorPage } from "./web-layout";
+import { workspacePage, projectPage, conversationPage, sourcePage, jobsPage, teamPage, previewPage, discussionPage, deliveryPage, deliveryDetailPage, prReportsPage, prReportPage, tasksPage, taskPage, memoryPage, memoryClaimPage, memoryContextPage, schedulesPage, scheduleDetailPage, backupsPage, backupDetailPage, deletionsPage, deletionDetailPage, exportsPage, exportDetailPage, upgradesPage, upgradeDetailPage, restoresPage, restoreDetailPage, loginPage, errorPage } from "./web-layout";
 import type { ExtractMemoryCommand } from "./memory/types";
 import type { CorrectMemoryCommand } from "./memory/types";
 import type { ForgetMemoryCommand } from "./memory/types";
@@ -114,6 +114,18 @@ const messages: Record<string, string> = {
   upgrade_stale_live: "ข้อมูลเปลี่ยนหลังตรวจสอบ ให้ migrate/validate ใหม่",
   engine_unavailable: "engine ยังไม่พร้อมสำหรับขั้นตอนนี้",
   invalid_upgrade_command: "ข้อมูลคำขออัปเกรดไม่ถูกต้อง กรุณาเปิดหน้าใหม่",
+  restore_not_found: "ไม่พบบันทึกกู้คืนที่เลือก",
+  restore_corrupt: "บันทึกกู้คืนนี้ตรวจสอบไม่ผ่าน",
+  restore_storage_unavailable: "พื้นที่กู้คืนไม่พร้อมใช้งาน",
+  restore_in_progress: "มี quarantine ที่ยังไม่จบอยู่ ดำเนินการต่อหรือทิ้งก่อน",
+  restore_bad_state: "สถานะ quarantine ไม่ตรงกับขั้นตอนนี้",
+  restore_stale_live: "ข้อมูลปัจจุบันเปลี่ยนหลังเตรียม quarantine ให้เตรียมใหม่",
+  backup_artifact_missing: "ไฟล์สำรองข้อมูลหายไป กู้คืนไม่ได้",
+  backup_integrity_failed: "สำรองข้อมูลนี้ตรวจสอบ hash ไม่ผ่าน",
+  backup_unrestorable: "สำรองข้อมูลนี้ย้ายมาเวอร์ชันปัจจุบันไม่ได้",
+  newer_backup_unsupported: "สำรองข้อมูลจากเวอร์ชันใหม่กว่าไม่รองรับ",
+  ledger_unverifiable: "ledger ภายนอกรับรองไม่ได้ ให้ระบุ ledger ล่าสุดที่เชื่อถือได้",
+  invalid_restore_command: "ข้อมูลคำขอกู้คืนไม่ถูกต้อง กรุณาเปิดหน้าใหม่",
   memory_source_suppressed: "ต้นฉบับนี้ถูกแยกออกจาก memory อัตโนมัติแล้ว สกัดใหม่ไม่ได้ ใช้ต้นฉบับข้อความใหม่แทน",
   backup_not_found: "ไม่พบสำรองข้อมูลที่เลือก",
   backup_corrupt: "สำรองข้อมูลนี้ตรวจสอบไม่ผ่าน",
@@ -232,6 +244,8 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       const exportRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/exports\/([a-f0-9-]{36})$/.exec(url.pathname);
       const upgradesRoute = /^\/(api\/)?upgrades$/.exec(url.pathname);
       const upgradeRoute = /^\/(api\/)?upgrades\/([a-f0-9-]{36})$/.exec(url.pathname);
+      const restoresRoute = /^\/(api\/)?restores$/.exec(url.pathname);
+      const restoreRoute = /^\/(api\/)?restores\/([a-f0-9-]{36})$/.exec(url.pathname);
       const backupsRoute = /^\/(api\/)?backups$/.exec(url.pathname);
       const backupRoute = /^\/(api\/)?backups\/([a-f0-9-]{36})$/.exec(url.pathname);
       const after = () => {
@@ -314,6 +328,16 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       if (request.method === "GET" && upgradeRoute) {
         const state = app.upgrade(auth.actor, upgradeRoute[2]!);
         return api ? json(state) : respond(upgradeDetailPage(state, app.workspace(auth.actor), auth.csrf, app.workspace(auth.actor).revision));
+      }
+      if (request.method === "GET" && restoresRoute) {
+        const state = app.restores(auth.actor);
+        const revision = app.workspace(auth.actor).revision;
+        const backups = app.backups(auth.actor);
+        return api ? json({ ...state, backups }) : respond(restoresPage({ ...state, backups: backups.manifests }, app.workspace(auth.actor), auth.csrf, revision));
+      }
+      if (request.method === "GET" && restoreRoute) {
+        const state = app.restore(auth.actor, restoreRoute[2]!);
+        return api ? json(state) : respond(restoreDetailPage(state, app.workspace(auth.actor), auth.csrf, app.workspace(auth.actor).revision));
       }
       if (request.method === "GET" && backupsRoute) {
         const state = app.backups(auth.actor);
@@ -406,6 +430,34 @@ export function createWebHandler(app: Application): (request: Request) => Promis
           expectedRevision: number(body.expectedRevision) as number, payload: { upgradeId: upgradeRoute![2]! } };
         const result = app.execute(auth.actor, command) as { journal: { id: string } };
         return api ? json(result) : respond(null, 303, { Location: `/upgrades/${result.journal.id}` });
+      }
+      if (request.method === "POST" && (restoresRoute || restoreRoute)) {
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        const revision = app.workspace(auth.actor).revision;
+        void revision;
+        const number = (value: unknown) => typeof value === "string" && /^\d{1,15}$/.test(value) ? Number(value) : value;
+        const form = request.headers.get("content-type")?.split(";")[0]?.trim() === "application/x-www-form-urlencoded";
+        const data = (value: unknown) => { if (!form) return value; try { return JSON.parse(value as string); } catch { throw new AppError("invalid_body"); } };
+        if (restoresRoute) {
+          if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "backupId", "note"].includes(key))) throw new AppError("invalid_body");
+          const command = { kind: "restore.prepare" as const, requestId: body.requestId as string, projectId: null,
+            expectedRevision: number(body.expectedRevision) as number,
+            payload: { backupId: body.backupId as string, note: (body.note as string) ?? "manual restore" } };
+          const result = app.execute(auth.actor, command) as { quarantine: { id: string } };
+          return api ? json(result) : respond(null, 303, { Location: `/restores/${result.quarantine.id}` });
+        }
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "action", "tombstones", "source", "asOf", "acknowledgedEmpty"].includes(key))) throw new AppError("invalid_body");
+        const action = body.action as "migrate" | "apply_ledger" | "validate" | "activate" | "discard";
+        if (!["migrate", "apply_ledger", "validate", "activate", "discard"].includes(action)) throw new AppError("invalid_body");
+        const ledgerPayload = action === "apply_ledger"
+          ? { quarantineId: restoreRoute![2]!, tombstones: data(body.tombstones) as import("./ops/restore").ExternalTombstone[],
+            source: body.source as string, asOf: number(body.asOf) as number,
+            ...(form ? (body.acknowledgedEmpty === "on" ? { acknowledgedEmpty: true as const } : {}) : { acknowledgedEmpty: data(body.acknowledgedEmpty) === true }) }
+          : { quarantineId: restoreRoute![2]! };
+        const command = { kind: `restore.${action}` as const, requestId: body.requestId as string, projectId: null,
+          expectedRevision: number(body.expectedRevision) as number, payload: ledgerPayload };
+        const result = app.execute(auth.actor, command) as { quarantine: { id: string } };
+        return api ? json(result) : respond(null, 303, { Location: `/restores/${result.quarantine.id}` });
       }
       if (request.method === "GET" && teamRoute) {
         const state = app.team(auth.actor, teamRoute[1] ?? null);
@@ -620,7 +672,7 @@ export function createWebHandler(app: Application): (request: Request) => Promis
         const state = app.workspace(auth.actor, offset);
         return api ? json(state) : respond(workspacePage(state, auth.csrf, offset, config.pageSize));
       }
-      if (request.method === "POST" && (["/projects", "/api/projects", "/logout"].includes(url.pathname) || backupsRoute || upgradesRoute || upgradeRoute || topicCollection || messageRoute || jobsRoute || resumeRoute || schedulesRoute || scheduleAction)) {
+      if (request.method === "POST" && (["/projects", "/api/projects", "/logout"].includes(url.pathname) || backupsRoute || upgradesRoute || upgradeRoute || restoresRoute || restoreRoute || topicCollection || messageRoute || jobsRoute || resumeRoute || schedulesRoute || scheduleAction)) {
         const body = await payload(request);
         app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
         if (backupsRoute) {
