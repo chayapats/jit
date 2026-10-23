@@ -107,8 +107,8 @@ export function conversationPage(state: ReturnType<Application["conversation"]>,
   });
 }
 /** Shows exact committed source content with scope/version metadata available for inspection. */
-export function sourcePage(source: SourceLookup, project: Project, workspace: Workspace, csrf: string): string {
-  return shell("ที่มาข้อมูล", { workspace, csrf, project }, `<div class="content source-content"><h1>ต้นฉบับที่อ้างอิง</h1>${source.state === "available" ? `<p class="source-byline">${escape(attributionLabel(source.attribution))} · ${time(source.committedAt)} · บันทึกแล้ว</p>${literalContent(source.text)}` : `<p class="error">ต้นฉบับไม่พร้อมใช้งาน (${escape(source.reason)})</p>${source.descriptor ? `<pre>${escape(JSON.stringify(source.descriptor, null, 2))}</pre>` : ""}`}
+export function sourcePage(source: SourceLookup, suppressed: boolean, project: Project, workspace: Workspace, csrf: string): string {
+  return shell("ที่มาข้อมูล", { workspace, csrf, project }, `<div class="content source-content"><h1>ต้นฉบับที่อ้างอิง</h1>${suppressed ? '<p role="note"><strong>ต้นฉบับนี้ถูกแยกออกจาก memory อัตโนมัติแล้ว</strong> ยังเปิดอ่านเองได้ แต่ไม่ถูกสกัดหรืออ้างอิงอัตโนมัติอีก การลืมไม่ใช่การลบ สำเนาภายนอกอาจยังมีข้อมูลนี้อยู่</p>' : ""}${source.state === "available" ? `<p class="source-byline">${escape(attributionLabel(source.attribution))} · ${time(source.committedAt)} · บันทึกแล้ว</p>${literalContent(source.text)}` : `<p class="error">ต้นฉบับไม่พร้อมใช้งาน (${escape(source.reason)})</p>${source.descriptor ? `<pre>${escape(JSON.stringify(source.descriptor, null, 2))}</pre>` : ""}`}
     <details class="source-details"><summary>รายละเอียดแหล่งข้อมูล</summary><dl><dt>โครงการ</dt><dd>${escape(project.name)} · ${escape(source.projectId)}</dd><dt>Source ID</dt><dd>${escape(source.reference.sourceId)}</dd><dt>Revision / generation</dt><dd>${source.reference.revision} / ${source.reference.generation}</dd></dl></details></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
 }
 /** Presents explicit job starts, committed states, unchanged routes and finite remaining budgets. */
@@ -344,11 +344,33 @@ function memoryClaimContent(item: import("./memory/types").ClaimLookup, projectI
 export interface ClaimCorrectionView {
   correction: import("./memory/types").MemoryCorrection | null;
   impact: import("./memory/types").CorrectionImpact | null;
+  suppression: import("./memory/types").MemorySuppression | null;
+  forgetImpact: import("./memory/types").SuppressionImpact | null;
+  ledger: import("./memory/types").SuppressionLedger | null;
   sources: { reference: import("./sources").SourceReference; label: string }[];
   revision: number;
 }
 export function memoryClaimPage(state: import("./memory/types").ClaimLookup, extra: ClaimCorrectionView, project: Project, workspace: Workspace, csrf: string): string {
-  return shell("ที่มาของ memory", { workspace, csrf, project, section: "memory" }, `<div class="content memory-content"><p><a href="/projects/${project.id}/memory">กลับไป memory ของโครงการ</a></p>${memoryClaimContent(state, project.id)}${correctionPanel(state, extra, project.id, csrf)}</div>`);
+  return shell("ที่มาของ memory", { workspace, csrf, project, section: "memory" }, `<div class="content memory-content"><p><a href="/projects/${project.id}/memory">กลับไป memory ของโครงการ</a></p>${memoryClaimContent(state, project.id)}${correctionPanel(state, extra, project.id, csrf)}${suppressionPanel(state, extra, project.id, csrf)}</div>`);
+}
+
+function suppressionPanel(item: import("./memory/types").ClaimLookup, extra: ClaimCorrectionView, projectId: string, csrf: string): string {
+  if (extra.suppression) {
+    const s = extra.suppression, ledger = extra.ledger;
+    const retire = ledger ? `<p>การ retire บริบท: <strong>${ledger.retire.state === "complete" ? "ครบแล้ว" : "ยังไม่ครบ"}</strong> · บริบทที่ติดตาม ${ledger.retire.contexts.length} รายการ${ledger.retire.contexts.filter(c => c.lifecycle !== "retired" && c.lifecycle !== "deleted").map(c => ` · ${escape(c.id)} (${escape(c.lifecycle)})`).join("")}</p><p>${escape(ledger.note)}</p>` : "";
+    return `<section class="team-card" id="memory-suppression"><h2>Memory นี้ถูกลืมแล้ว</h2><p>ถอน memory ${s.withdrawn.length} รายการ · ผูกต้นฉบับเดิม ${s.sources.length} ชุด · เหตุผล: ${escape(s.reason)}</p>${retire}<p>คำตอบและบริบทครั้งถัดไปไม่ใช้ข้อความที่ลืมแล้ว ต้นฉบับยังเปิดดูเองได้แต่ถูกแยกออกจาก memory อัตโนมัติ การลืมไม่ใช่การลบ งาน มติ บทบาท สิทธิ์ และสำเนาภายนอกยังคงเดิม</p></section>`;
+  }
+  if (item.state !== "available" || !extra.forgetImpact) return "";
+  const impact = extra.forgetImpact;
+  const overlap = impact.overlaps.length ? `<p><strong>ข้อความนี้คาบเกี่ยวกับ${impact.overlaps.map(o => o.kind === "task" ? "งาน" : "มติ").join("และ")}ที่ยัง active ${impact.overlaps.length} รายการ</strong> การลืมจะไม่ยกเลิกหรือถอนสิ่งเหล่านั้น ติ๊กยืนยันขอบเขตด้านล่างก่อนยืนยัน</p>` : "";
+  const summary = `<p>ผลกระทบของการลืม: memory ที่พึ่งข้อนี้ ${impact.dependents.length} รายการ · memory จากต้นฉบับเดียวกันที่จะถูกลืมด้วย ${impact.siblings.length} รายการ · บริบทของ run ที่ใช้ข้อความเหล่านี้ ${impact.contexts.length} รายการ · งานที่ค้างและจะถูก fence ${impact.pendingJobs.length} รายการ</p>`;
+  return `<section class="team-card" id="memory-forget"><h2>ลืม memory ข้อนี้</h2>${summary}${overlap}
+    <p>การลืมถอน memory ที่เลือกกับข้ออนุมานที่พึ่งมันเท่านั้น ไม่ยกเลิกงาน ไม่ถอนมติ ไม่เปลี่ยนบทบาทหรือสิทธิ์ ต้นฉบับยังเปิดดูเองได้ การลืมไม่ใช่การลบ สำเนาใน backup หรือภายนอกอาจยังมีข้อมูลนี้อยู่</p>
+    <form class="team-form" method="post" action="/projects/${escape(projectId)}/memory/claims/${escape(item.claim.claimId)}">${hiddenCommand(csrf, extra.revision)}
+      <input type="hidden" name="mode" value="forget"><input type="hidden" name="revision" value="${item.claim.revision}"><input type="hidden" name="generation" value="${item.claim.generation}">
+      <label>เหตุผลที่ลืม<input name="reason" required maxlength="500" placeholder="เช่น เจ้าของขอให้ลืมเรื่องนี้"></label>
+      <label><input type="checkbox" name="acknowledged" value="on" required> ยืนยันว่าเข้าใจขอบเขต: ไม่ยกเลิกงาน ไม่ถอนมติ ไม่ลบต้นฉบับ</label>
+      <button class="primary">ยืนยันการลืม</button></form></section>`;
 }
 
 function correctionPanel(item: import("./memory/types").ClaimLookup, extra: ClaimCorrectionView, projectId: string, csrf: string): string {
@@ -417,7 +439,9 @@ export function memoryContextPage(state: ReturnType<Application["memoryContext"]
 export function memoryPage(state: ReturnType<Application["memory"]>, workspace: Workspace, csrf: string, limits: JobLimits, cursor: { after: number; sourceAfter: number; extractionAfter: number }): string {
   const p = state.project, roles = state.team.roles.filter(role => role.enabled && role.effective.route);
   const href = (patch: Partial<typeof cursor>) => `/projects/${p.id}/memory?${new URLSearchParams({ q: state.query, ...Object.fromEntries(Object.entries({ ...cursor, ...patch }).map(([k, v]) => [k, String(v)])) })}`;
-  const available = state.extractionAvailable && roles.length && state.topics.length && state.sources.some(item => item.source.state === "available");
+  const usable = state.sources.filter(item => item.source.state === "available" && !item.suppressed);
+  const excluded = state.sources.filter(item => item.suppressed && item.source.state === "available");
+  const available = state.extractionAvailable && roles.length && state.topics.length && usable.length > 0;
   return shell("Memory ของโครงการ", { workspace, csrf, project: p, topics: state.topics, section: "memory" }, `<div class="content memory-content"><section class="hero"><h2>ความจำที่ตรวจที่มาได้</h2><p>Fact ยืนยันเพียงว่า owner กล่าวข้อความนั้น ข้ออนุมานยังไม่ใช่ preference หรือ decision ที่รับรองแล้ว ข้อความที่ขัดกันคงอยู่พร้อมกัน งานและมติปัจจุบันดูได้ที่ <a href="/projects/${p.id}/tasks">ข้อผูกพัน</a> และหัวข้อของโครงการ</p><p>การสกัดในรุ่นนี้เป็นตัวอย่างจำลอง (fixture) ยังไม่ได้เรียก provider จริง</p></section>
     <form class="team-form" method="get"><label>ค้นหา memory <input name="q" value="${escape(state.query)}" maxlength="200" placeholder="คำภาษาไทยหรือ English"></label><button>ค้นหา</button></form>
     <section><h2>Memory ที่บันทึกแล้ว</h2>${state.items.length ? state.items.map(item => memoryClaimContent(item, p.id)).join("") : '<p class="empty-list">ยังไม่มี memory ที่ตรงกับคำค้นในหน้านี้</p>'}
@@ -426,8 +450,9 @@ export function memoryPage(state: ReturnType<Application["memory"]>, workspace: 
     ${available ? `<form class="team-form" method="post" action="/projects/${p.id}/memory">${hiddenCommand(csrf, p.revision)}<input type="hidden" name="limits" value="${escape(JSON.stringify(limits))}">
       <label>บทบาท <select name="roleId">${roles.map(role => `<option value="${role.id}">${escape(role.name)} · ${escape(role.effective.route!.model)}</option>`).join("")}</select></label>
       <label>หัวข้อที่เกี่ยวข้อง <select name="topicId">${state.topics.map(topic => `<option value="${topic.id}">${escape(topic.title)}</option>`).join("")}</select></label>
-      <label>ต้นฉบับ <select name="source">${state.sources.map(({ source, decision }) => source.state === "available" ? `<option value="${escape(JSON.stringify(source.reference))}">${escape(decision ? "มติ owner" : source.descriptor.kind)} · ${escape(Array.from(source.text).slice(0, 80).join(""))}</option>` : "").join("")}</select></label>
+      <label>ต้นฉบับ <select name="source">${usable.map(({ source, decision }) => source.state === "available" ? `<option value="${escape(JSON.stringify(source.reference))}">${escape(decision ? "มติ owner" : source.descriptor.kind)} · ${escape(Array.from(source.text).slice(0, 80).join(""))}</option>` : "").join("")}</select></label>
       <label>อ้างอิง memory เดิม <select name="dependencies"><option value="[]">ไม่อ้างอิง</option>${state.items.map(item => item.state === "available" ? `<option value="${escape(JSON.stringify([{ claimId: item.claim.claimId, revision: item.claim.revision, generation: item.claim.generation }]))}">${escape(Array.from(item.claim.text).slice(0, 80).join(""))}</option>` : "").join("")}</select></label><button class="primary">สกัดตัวอย่างจำลอง</button></form>` : '<p>เปิดใช้บทบาทที่มี route สร้างหัวข้อ และตรวจว่าคิวพร้อมก่อนเริ่มสกัด</p>'}
+      ${excluded.length ? `<p role="note">ต้นฉบับ ${excluded.length} ชุดถูกแยกออกจาก memory อัตโนมัติแล้ว (ถูกลืม) ยังเปิดอ่านเองได้: ${excluded.map(({ source }) => sourceLink(p.id, source.reference, `ต้นฉบับที่แยกออกแล้ว`)).join(" ")}</p>` : ""}
       <nav class="pagination">${cursor.sourceAfter ? `<a href="${escape(href({ sourceAfter: 0 }))}">ต้นฉบับหน้าแรก</a>` : ""}${state.sourcesNextAfter !== null ? `<a href="${escape(href({ sourceAfter: state.sourcesNextAfter }))}">ต้นฉบับถัดไป</a>` : ""}</nav></section>
     <section><h2>ผลการสกัดและสิ่งที่ยังไม่ครบ</h2>${state.extractions.map(e => `<article class="team-card" id="extraction-${e.id}"><p>${escape(e.state)} · ${escape(e.reason)} · fixture · ${escape(e.extractor)} · policy ${e.policy}</p><p>คิว: ${escape(e.job.state)} · ${escape(e.job.reason)} · ${escape(e.job.nextAction)} · <a href="/projects/${p.id}/jobs/${e.jobId}">ตรวจและหยุดงาน</a></p><p>${e.claimIds.length} claims · ปฏิเสธ ${e.rejected} ข้อ</p><p>Route ที่ตั้งไว้: ${escape(e.route.provider)} / ${escape(e.route.model)} (ยังไม่ยืนยัน live access)</p><p>${sourceLink(p.id, e.source.reference, `ต้นฉบับ ${e.source.state}`)}</p></article>`).join("") || '<p>ยังไม่มีคำขอสกัด</p>'}
     <nav class="pagination">${cursor.extractionAfter ? `<a href="${escape(href({ extractionAfter: 0 }))}">ผลสกัดหน้าแรก</a>` : ""}${state.extractionsNextAfter !== null ? `<a href="${escape(href({ extractionAfter: state.extractionsNextAfter }))}">ผลสกัดถัดไป</a>` : ""}</nav></section></div>`);

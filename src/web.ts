@@ -4,6 +4,7 @@ import type { CreateTopicCommand, SendMessageCommand } from "./conversation";
 import { workspacePage, projectPage, conversationPage, sourcePage, jobsPage, teamPage, previewPage, discussionPage, deliveryPage, deliveryDetailPage, tasksPage, taskPage, memoryPage, memoryClaimPage, memoryContextPage, loginPage, errorPage } from "./web-layout";
 import type { ExtractMemoryCommand } from "./memory/types";
 import type { CorrectMemoryCommand } from "./memory/types";
+import type { ForgetMemoryCommand } from "./memory/types";
 import type { CommitDeliveryCommand, ResendDeliveryCommand } from "./delivery";
 import type { EnqueueJobCommand, JobLimits, ResumeJobCommand, StopJobCommand } from "./jobs/types";
 import type { DecisionCommand, TeamCommand } from "./team/types";
@@ -77,6 +78,11 @@ const messages: Record<string, string> = {
   memory_correction_unavailable: "Memory ข้อนี้แก้ไม่ได้แล้ว หรือต้นฉบับที่เลือกไม่รองรับการแก้ กรุณาเปิดหน้าใหม่",
   memory_already_corrected: "Memory ข้อนี้ถูกแก้ไปแล้ว เปิดข้อความที่แก้แทน",
   invalid_memory_correction: "ข้อมูลคำขอแก้ memory ไม่ถูกต้อง กรุณาเปิดหน้าใหม่",
+  memory_forget_unavailable: "Memory ข้อนี้ลืมไม่ได้แล้ว (ถูกแก้หรือลืมไปแล้ว หรือต้นฉบับไม่พร้อมใช้) กรุณาเปิดหน้าใหม่",
+  memory_already_forgotten: "Memory ข้อนี้ถูกลืมไปแล้ว ดูบันทึกการลืมด้านล่าง",
+  invalid_memory_forget: "ข้อมูลคำขอลืม memory ไม่ถูกต้อง กรุณาเปิดหน้าใหม่",
+  memory_forget_ambiguous: "การลืมไม่ยกเลิกงานและไม่ถอนมติ ถ้าข้อความคาบเกี่ยวกับงานหรือมติ ให้ติ๊กยืนยันขอบเขตก่อนยืนยันการลืม",
+  memory_source_suppressed: "ต้นฉบับนี้ถูกแยกออกจาก memory อัตโนมัติแล้ว สกัดใหม่ไม่ได้ ใช้ต้นฉบับข้อความใหม่แทน",
 };
 
 /** Creates a server-rendered owner workspace; all mutations use the shared application boundary. */
@@ -191,17 +197,32 @@ export function createWebHandler(app: Application): (request: Request) => Promis
         const impact = state.state === "available"
           ? app.correctionImpact(auth.actor, claimRoute[1]!, { claimId: state.claim.claimId, revision: state.claim.revision, generation: state.claim.generation })
           : null;
+        const suppression = app.memorySuppression(auth.actor, claimRoute[1]!, claimRoute[2]!);
+        const ledger = app.suppressionLedger(auth.actor, claimRoute[1]!, claimRoute[2]!);
+        const forgetImpact = state.state === "available" && !suppression
+          ? app.suppressionImpact(auth.actor, claimRoute[1]!, { claimId: state.claim.claimId, revision: state.claim.revision, generation: state.claim.generation })
+          : null;
         const inspector = app.memory(auth.actor, claimRoute[1]!);
-        const extra = { correction, impact, revision: project.revision,
+        const extra = { correction, impact, suppression, forgetImpact, ledger, revision: project.revision,
           sources: inspector.sources.flatMap(({ source }) => source.state === "available"
             ? [{ reference: source.reference, label: `${source.descriptor.kind} · ${Array.from(source.text).slice(0, 80).join("")}` }] : []) };
-        return api ? json({ ...state, correction, impact }) : respond(memoryClaimPage(state, extra, project, app.workspace(auth.actor), auth.csrf));
+        return api ? json({ ...state, correction, impact, suppression, forgetImpact, ledger }) : respond(memoryClaimPage(state, extra, project, app.workspace(auth.actor), auth.csrf));
       }
       if (request.method === "POST" && claimRoute) {
         const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
-        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "revision", "generation", "text", "quote", "source", "reason"].includes(key))) throw new AppError("invalid_body");
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "mode", "revision", "generation", "text", "quote", "source", "reason", "acknowledged"].includes(key))) throw new AppError("invalid_body");
         const form = request.headers.get("content-type")?.split(";")[0]?.trim() === "application/x-www-form-urlencoded";
         const data = (value: unknown) => { if (!form) return value; try { return JSON.parse(value as string); } catch { throw new AppError("invalid_body"); } };
+        if (body.mode === "forget" || data(body.mode) === "forget") {
+          const acknowledged = form ? body.acknowledged === "on" : data(body.acknowledged) === true;
+          const command: ForgetMemoryCommand = { kind: "memory.forget", projectId: claimRoute[1]!, requestId: body.requestId as string,
+            expectedRevision: form ? Number(body.expectedRevision) : body.expectedRevision as number,
+            payload: { claim: { claimId: claimRoute[2]!, revision: form ? Number(body.revision) : body.revision as number, generation: form ? Number(body.generation) : body.generation as number },
+              reason: body.reason as string, acknowledged } };
+          const result = app.execute(auth.actor, command);
+          const target = result.suppression;
+          return api ? json(result) : respond(null, 303, { Location: `/projects/${claimRoute[1]!}/memory/claims/${target.claimId}?revision=${target.fromRevision}&generation=${target.fromGeneration}` });
+        }
         const command: CorrectMemoryCommand = { kind: "memory.correct", projectId: claimRoute[1]!, requestId: body.requestId as string,
           expectedRevision: form ? Number(body.expectedRevision) : body.expectedRevision as number,
           payload: { claim: { claimId: claimRoute[2]!, revision: form ? Number(body.revision) : body.revision as number, generation: form ? Number(body.generation) : body.generation as number },
@@ -390,7 +411,8 @@ export function createWebHandler(app: Application): (request: Request) => Promis
           return Number(values[0]);
         };
         const source = app.source(auth.actor, sourceRoute[2]!, { sourceId: sourceRoute[3]!, revision: positive("revision"), generation: positive("generation") });
-        return api ? json(source) : respond(sourcePage(source, app.project(auth.actor, source.projectId), app.workspace(auth.actor), auth.csrf));
+        const suppressed = app.sourceSuppressed(auth.actor, sourceRoute[2]!, { sourceId: sourceRoute[3]!, revision: positive("revision"), generation: positive("generation") });
+        return api ? json({ ...source, suppressed }) : respond(sourcePage(source, suppressed, app.project(auth.actor, source.projectId), app.workspace(auth.actor), auth.csrf));
       }
       if (request.method === "GET" && topicRoute) {
         const state = app.conversation(auth.actor, topicRoute[2]!, topicRoute[3]!, after());
