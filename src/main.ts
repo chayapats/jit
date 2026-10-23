@@ -33,7 +33,7 @@ async function main(): Promise<void> {
     const port = new ScriptedRunPort(store, config.team, config.jobs.outputBytes);
     const memoryPort = new ScriptedRunPort(store, config.team, config.jobs.outputBytes, request => {
       const source = store.read(tx => lookupSource(tx, request.projectId, request.manifest.sources[0]!.reference));
-      return scriptedMemoryResult(request, source.state === "available" && source.attribution.kind === "owner");
+      return scriptedMemoryResult(request, source.state === "available" && source.attribution.kind === "owner", config.jobs.outputBytes);
     });
     queue = new JobQueue(store, config.jobs, [
       projectStateWork(store), scriptedPreviewWork(store, config, port), discussionPlanWork(), specialistAnalysisWork(store, config, port), coordinatorSynthesisWork(store, config, port),

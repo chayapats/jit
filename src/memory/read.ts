@@ -9,27 +9,37 @@ export function requireClaimReference(ref: ClaimReference): void {
   if (Object.keys(ref).sort().join(",") !== "claimId,generation,revision" ||
       ![ref.revision, ref.generation].every(n => Number.isSafeInteger(n) && n > 0)) throw new AppError("invalid_claim_reference");
 }
+function unique(refs: ClaimReference[]): ClaimReference[] {
+  return [...new Map(refs.map(ref => [`${ref.claimId}:${ref.revision}:${ref.generation}`, ref])).values()];
+}
+function resolve(tx: AppTransaction, projectId: string, reference: ClaimReference, seen: Set<string>, depth: number, budget: { remaining: number }): ClaimLookup {
+  const row = tx.get<{ record_json: string }>("SELECT record_json FROM memory_claims WHERE project_id = ? AND id = ? AND revision = ? AND generation = ?", projectId, reference.claimId, reference.revision, reference.generation);
+  const claim = row ? JSON.parse(row.record_json) as MemoryClaim : null;
+  const unavailable = (reason: string): ClaimLookup => ({ state: "unavailable", reference, reason,
+    ...(claim ? { provenance: { projectId: claim.projectId, source: claim.source, dependencies: claim.dependencies, conflicts: claim.conflicts, decision: claim.decision } } : {}) });
+  if (--budget.remaining < 0 || depth > 8 || seen.has(reference.claimId)) return unavailable("lineage_limit");
+  if (!claim) return unavailable("claim_unavailable");
+  if (claim.status !== "active") return unavailable("claim_inactive");
+  const source = lookupSource(tx, projectId, claim.source);
+  if (source.state !== "available" || source.current.revision !== claim.source.revision) return unavailable("source_unavailable");
+  const next = new Set(seen).add(reference.claimId);
+  for (const dependency of unique([...claim.dependencies, ...claim.conflicts])) {
+    if (resolve(tx, projectId, dependency, next, depth + 1, budget).state !== "available") return unavailable("dependency_unavailable");
+  }
+  return { state: "available", claim, source };
+}
 
 /** app.memory_active_generation/v1: all consumers resolve lineage here; no raw transcript/index read grants active memory. */
 export function lookupActiveClaim(tx: AppTransaction, projectId: string, ref: ClaimReference): ClaimLookup {
   requireId(projectId); requireClaimReference(ref);
-  let remaining = 64;
-  const visit = (reference: ClaimReference, seen: Set<string>, depth: number): ClaimLookup => {
-    const unavailable = (reason: string): ClaimLookup => ({ state: "unavailable", reference, reason });
-    if (--remaining < 0 || depth > 8 || seen.has(reference.claimId)) return unavailable("lineage_limit");
-    const row = tx.get<{ record_json: string }>("SELECT record_json FROM memory_claims WHERE project_id = ? AND id = ? AND revision = ? AND generation = ?", projectId, reference.claimId, reference.revision, reference.generation);
-    if (!row) return unavailable("claim_unavailable");
-    const claim = JSON.parse(row.record_json) as MemoryClaim;
-    if (claim.status !== "active") return unavailable("claim_inactive");
-    const source = lookupSource(tx, projectId, claim.source);
-    if (source.state !== "available" || source.current.revision !== claim.source.revision) return unavailable("source_unavailable");
-    const next = new Set(seen).add(reference.claimId);
-    for (const dependency of [...claim.dependencies, ...claim.conflicts]) {
-      if (visit(dependency, next, depth + 1).state !== "available") return unavailable("dependency_unavailable");
-    }
-    return { state: "available", claim, source };
-  };
-  return visit(ref, new Set(), 0);
+  return resolve(tx, projectId, ref, new Set(), 0, { remaining: 64 });
+}
+
+/** Checks prospective children with the new root's depth/node cost, before a claim can be published as readable. */
+export function canExtendMemoryLineage(tx: AppTransaction, projectId: string, references: ClaimReference[]): boolean {
+  requireId(projectId); references.forEach(requireClaimReference);
+  const budget = { remaining: 63 };
+  return unique(references).every(ref => resolve(tx, projectId, ref, new Set(), 1, budget).state === "available");
 }
 
 /** Bounded offline memory inspection with current availability; every returned payload passed the active-generation query. */

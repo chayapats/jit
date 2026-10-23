@@ -30,3 +30,11 @@ Production inference is deferred to JBR01. The local service registers a scripte
 ## Deterministic evidence
 
 `tests/memory.test.ts` covers command → bounded queue → independent run → cited claims → Web/offline reopen; global/logical dedupe and rollback; owner fact versus inferred legacy preference and hostile participant output; invalid citation/generation/lineage; conflicts and transitive unavailable ancestors; cancellation/owner reset/context retirement/deadline/source changes; malformed/partial/quota/oversized output; authorization, pagination and Thai/English search. Full suite and typecheck are required without live accounts. Migration preserves existing tasks/decisions/sources and snapshots the prior store under the normal APP01 guard.
+
+## Decision evidence and reviewed boundaries
+
+`memory_decision_sources` maps exact owner decision ID/revision/topic to an immutable owner-attributed source. Acceptance/supersession registers the selected conclusion and rationale atomically with the existing decision command; it does not start extraction. Schema11 migration backfills prior decisions, marking superseded decision sources unavailable. Supersession fences the old source generation and therefore any in-flight or retained dependent memory. Claims retain the decision reference and link to authoritative history; they do not replace continuity.
+
+Publication checks the prospective graph including the new root against depth8/64 visit limits; boundary overflow is a partial `lineage_limit` outcome with no unreadable claim committed. Unavailable lookups retain optional non-content provenance (`projectId`, exact source, decision identity, dependency/conflict references) so the Web inspector can navigate the unavailable chain. Fixture truncation accounts for the complete serialized response and normalized outcome envelope, including duplicated text/quotes and escaping, under the effective output byte/token limits.
+
+Regression evidence includes long ASCII/Thai/escape-heavy sources, depth and exact 64-visit boundaries, unavailable source/ancestor links without payload, rollback of both complete/partial producers, and owner decision acceptance/supersession plus v10 decision-evidence migration.

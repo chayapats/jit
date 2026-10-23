@@ -4,15 +4,19 @@ import type { ApplicationRunRequest } from "../team/types";
 
 /** Exact immutable derived-memory identity; it never identifies a task or owner decision. */
 export interface ClaimReference { claimId: string; revision: number; generation: number }
+/** An exact owner decision record; current authority remains in the decision/continuity query. */
+export interface MemoryDecisionReference { kind: "owner_decision"; id: string; revision: number; topicId: string }
 /** A retained assertion with evidence; explicit_fact means only that the owner stated the quoted text. */
 export interface MemoryClaim extends ClaimReference {
   projectId: string; extractionId: string; kind: "explicit_fact" | "inference"; text: string;
   source: SourceReference; quote: string; dependencies: ClaimReference[]; conflicts: ClaimReference[];
   status: "active"; createdAt: number;
+  decision: MemoryDecisionReference | null;
 }
 /** Unavailable derived material carries identity and reason, never withdrawn payload. */
 export type ClaimLookup = { state: "available"; claim: MemoryClaim; source: SourceLookup }
-  | { state: "unavailable"; reference: ClaimReference; reason: string };
+  | { state: "unavailable"; reference: ClaimReference; reason: string;
+      provenance?: Pick<MemoryClaim, "projectId" | "source" | "dependencies" | "conflicts" | "decision"> };
 /** One explicit owner authorization to extract one committed source under the fixed extractor/policy v1. */
 export interface ExtractMemoryCommand {
   kind: "memory.extract"; requestId: string; projectId: string; expectedRevision: number;

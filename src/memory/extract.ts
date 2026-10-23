@@ -9,7 +9,8 @@ import { readTeam } from "../team/configuration";
 import type { ApplicationRunPort } from "../team/run-port";
 import { fixtureOutcome, normalizeFixtureResult, validateRunRequest } from "../team/scripted-port";
 import type { ApplicationRunRequest } from "../team/types";
-import { eligibleMemorySource, lookupActiveClaim, readExtraction, requireClaimReference } from "./read";
+import { canExtendMemoryLineage, eligibleMemorySource, lookupActiveClaim, readExtraction, requireClaimReference } from "./read";
+import { memorySourceDecision } from "./decision-sources";
 import type { ClaimReference, ExtractMemoryCommand, MemoryClaim, MemoryExtraction, MemoryReceipt } from "./types";
 
 export const memoryWorkId = "memory.extract";
@@ -84,7 +85,8 @@ function parseClaims(tx: AppTransaction, extraction: MemoryExtraction, request: 
   const value = JSON.parse(output);
   if (!exact(value, ["version", "complete", "claims"]) || value.version !== 1 || typeof value.complete !== "boolean" || !Array.isArray(value.claims) || value.claims.length > claimLimit) throw new AppError("invalid_memory_result");
   const source = eligibleMemorySource(tx, extraction.projectId, extraction.source);
-  const claims: MemoryClaim[] = []; let rejected = 0;
+  const claims: MemoryClaim[] = []; let rejected = 0, lineageRejected = 0;
+  const dependencies = request.manifest.claims.map(ref => ({ claimId: ref.claimId, revision: ref.revision, generation: ref.generation }));
   const texts = new Set<string>();
   for (const item of value.claims) {
     try {
@@ -98,26 +100,39 @@ function parseClaims(tx: AppTransaction, extraction: MemoryExtraction, request: 
             lookupActiveClaim(tx, extraction.projectId, ref).state !== "available") throw new Error();
       }
       if (item.kind === "explicit_fact" && (source.attribution.kind !== "owner" || item.text !== item.quote || request.manifest.claims.length || item.dependencies.length || item.conflicts.length)) throw new Error();
+      if (!canExtendMemoryLineage(tx, extraction.projectId, [...dependencies, ...item.conflicts])) throw new AppError("memory_lineage_limit");
       const key = item.kind + ":" + item.text;
       if (texts.has(key)) continue;
       texts.add(key);
       claims.push({ claimId: crypto.randomUUID(), revision: 1, generation: 1, projectId: extraction.projectId, extractionId: extraction.id,
         kind: item.kind, text: item.text, quote: item.quote, source: { ...extraction.source },
         // Every admitted claim can influence extraction, even when the model omits it from declared lineage.
-        dependencies: request.manifest.claims.map(ref => ({ claimId: ref.claimId, revision: ref.revision, generation: ref.generation })),
+        dependencies: structuredClone(dependencies), decision: memorySourceDecision(tx, extraction.projectId, extraction.source),
         conflicts: structuredClone(item.conflicts), status: "active", createdAt: now });
-    } catch { rejected++; }
+    } catch (error) { rejected++; if (error instanceof AppError && error.code === "memory_lineage_limit") lineageRejected++; }
   }
-  return { claims, rejected, complete: value.complete && rejected === 0 };
+  return { claims, rejected, lineageRejected, complete: value.complete && rejected === 0 };
 }
 
 /** Fixture script for local service use: quote one bounded owner statement or preserve participant text as inference. No paid inference. */
-export function scriptedMemoryResult(request: ApplicationRunRequest, ownerSource: boolean) {
+export function scriptedMemoryResult(request: ApplicationRunRequest, ownerSource: boolean, outputBytes = 4096) {
   const source = request.manifest.sources[0]!;
+  const maximum = Math.min(outputBytes, request.limits.outputTokens * 4, 65000);
+  const encode = (text: string, complete: boolean) => JSON.stringify({ version: 1, complete,
+    claims: text ? [{ kind: ownerSource && !request.manifest.claims.length ? "explicit_fact" : "inference", text, quote: text, source: source.reference, dependencies: [], conflicts: [] }] : [] });
+  const fits = (text: string) => {
+    const encoded = encode(text, false);
+    if (Buffer.byteLength(encoded) > maximum) return false;
+    try { jobData(fixtureOutcome("complete", encoded), maximum + 2048); return true; } catch { return false; }
+  };
   let text = "";
-  for (const ch of source.text) { if (Buffer.byteLength(text + ch) > 2048) break; text += ch; }
-  return fixtureOutcome("complete", JSON.stringify({ version: 1, complete: Buffer.byteLength(source.text) <= 2048,
-    claims: [{ kind: ownerSource && !request.manifest.claims.length ? "explicit_fact" : "inference", text, quote: text, source: source.reference, dependencies: [], conflicts: [] }] }));
+  for (const ch of source.text) {
+    const next = text + ch;
+    if (Buffer.byteLength(next) > 2048 || !fits(next)) break;
+    text = next;
+  }
+  const output = encode(text, text === source.text);
+  return Buffer.byteLength(output) <= maximum ? fixtureOutcome("complete", output) : fixtureOutcome("invalid_result");
 }
 
 /** Registers strict app.run_port extraction on the fixture admission route; captured production routes stay unverified. */
@@ -171,7 +186,7 @@ export function memoryExtractionWork(store: TransactionStore, config: AppConfig,
         for (const claim of checked?.claims ?? []) tx.run("INSERT INTO memory_claims (id, project_id, extraction_id, revision, generation, record_json) VALUES (?, ?, ?, 1, 1, ?)", claim.claimId, claim.projectId, claim.extractionId, JSON.stringify(claim));
         current.request = request; current.claimIds = checked?.claims.map(claim => claim.claimId) ?? [];
         current.rejected = checked?.rejected ?? 0; current.state = checked?.complete ? "complete" : checked || waiting ? "partial" : "failed";
-        current.reason = checked ? checked.complete ? "complete" : "incomplete_or_invalid_claims" : outcome.reason === "complete" ? "invalid_memory_result" : outcome.reason;
+        current.reason = checked ? checked.complete ? "complete" : checked.lineageRejected ? "lineage_limit" : "incomplete_or_invalid_claims" : outcome.reason === "complete" ? "invalid_memory_result" : outcome.reason;
         tx.run("UPDATE memory_extractions SET record_json = ? WHERE id = ?", JSON.stringify(current), current.id);
       });
       return committed ? result : { state: "failed", reason: "worker_failed" };

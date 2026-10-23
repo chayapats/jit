@@ -221,3 +221,72 @@ test("populated v10 migration snapshots authoritative state before adding memory
   expect(snapshot.query("PRAGMA user_version").get()).toEqual({ user_version: 10 });
   expect(snapshot.query("SELECT state FROM tasks WHERE id = ?").get(proposal.task.id)).toEqual({ state: "accepted" }); snapshot.close();
 });
+
+test("fixture bounds its serialized JSON for long, Unicode and escape-heavy sources", async () => {
+  for (const text of ["x".repeat(3000), '"\\\n'.repeat(1000), "ความจำ🧠".repeat(150)]) {
+    const f = await fixture(); const source = message(f, text);
+    await extract(f, command(f, source)); const claim = active(f)[0]!;
+    expect(claim).toBeDefined(); expect(text.startsWith(claim.quote)).toBe(true);
+    expect(Buffer.byteLength(claim.text)).toBeLessThanOrEqual(2048);
+    const e = f.app.memory(f.auth.actor, f.project.id).extractions[0]!;
+    expect(e.state).toBe("partial"); expect(e.reason).toBe("incomplete_or_invalid_claims");
+    expect(Buffer.byteLength(scriptedMemoryResult(f.port.requests[0]!, true, f.config.jobs.outputBytes).output!)).toBeLessThanOrEqual(f.config.jobs.outputBytes);
+  }
+});
+
+test("prospective depth limit rejects publication before a completed claim could become unreadable", async () => {
+  const f = await fixture(request => output([proposed(request, request.manifest.claims.length ? { kind: "inference", text: "next derived assertion" } : {})]));
+  let dependencies: ClaimReference[] = [];
+  for (let i = 0; i < 10; i++) {
+    await extract(f, command(f, message(f, `source ${i}`), dependencies));
+    const e = f.app.memory(f.auth.actor, f.project.id, 0, 0, i).extractions[0]!;
+    if (i === 9) { expect(e.state).toBe("partial"); expect(e.reason).toBe("lineage_limit"); expect(e.claimIds).toHaveLength(0); expect(e.job.state).toBe("partial"); }
+    else { expect(e.state).toBe("complete"); const reference = { claimId: e.claimIds[0]!, revision: 1, generation: 1 }; expect(f.app.memoryClaim(f.auth.actor, f.project.id, reference).state).toBe("available"); dependencies = [reference]; }
+  }
+});
+
+test("unavailable claims retain non-content provenance and navigable source/ancestor references", async () => {
+  const f = await fixture(request => output([proposed(request, request.manifest.claims.length ? { kind: "inference", text: "withdrawn-derived-payload" } : {})]));
+  await extract(f); const parent = active(f)[0]!;
+  const source = message(f, "another original statement"); await extract(f, command(f, source, [ref(parent)])); const child = active(f)[1]!;
+  f.store.transaction(tx => tx.run("UPDATE sources SET generation = generation + 1 WHERE id = ?", parent.source.sourceId));
+  const state = f.app.memoryClaim(f.auth.actor, f.project.id, ref(child));
+  expect(state.state).toBe("unavailable"); if (state.state !== "unavailable") return;
+  expect(state.provenance?.dependencies).toEqual([ref(parent)]); expect(state.provenance?.source).toEqual(child.source);
+  const html = await (await createWebHandler(f.app)(request(f, `/projects/${f.project.id}/memory/claims/${child.claimId}?revision=1&generation=1`))).text();
+  expect(html).toContain(`/sources/${child.source.sourceId}?revision=1&amp;generation=1`.replace("&amp;", "&"));
+  expect(html).toContain(`/memory/claims/${parent.claimId}?revision=1&generation=1`);
+  expect(html).not.toContain("withdrawn-derived-payload");
+});
+
+for (const partial of [false, true]) test(`producer rollback keeps claims/extraction/job atomic for ${partial ? "partial" : "complete"} output`, async () => {
+  const f = await fixture(request => output([proposed(request)], !partial));
+  const transaction = f.store.transaction.bind(f.store);
+  f.store.transaction = mutate => transaction(tx => mutate({ ...tx, run: (sql, ...bindings) => { tx.run(sql, ...bindings); if (sql.startsWith("INSERT INTO memory_claims")) throw new Error("fixture producer failure"); } }));
+  const e = await extract(f);
+  expect(f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM memory_claims")!.n)).toBe(0);
+  const job = f.app.job(f.auth.actor, f.project.id, e.extraction.jobId); expect(job.state).toBe("waiting"); expect(job.reason).toBe("interrupted");
+  expect(f.app.memory(f.auth.actor, f.project.id).extractions[0]!.claimIds).toHaveLength(0);
+  f.store.transaction = transaction;
+});
+
+test("prospective lineage counts the new root at the 64-visit boundary", async () => {
+  const f = await fixture(request => output([proposed(request, request.manifest.claims.length ? { kind: "inference", text: "bounded graph" } : {})]));
+  let count = 0;
+  const create = async (dependencies: ClaimReference[]) => {
+    await extract(f, command(f, message(f, `graph source ${count}`), dependencies));
+    const e = f.app.memory(f.auth.actor, f.project.id, 0, 0, count++).extractions[0]!;
+    return { e, ref: { claimId: e.claimIds[0]!, revision: 1, generation: 1 } };
+  };
+  const roots: ClaimReference[] = [];
+  for (let i = 0; i < 7; i++) roots.push((await create([])).ref);
+  const middle: ClaimReference[] = [];
+  for (let i = 0; i < 7; i++) middle.push((await create(roots.slice(0, i === 6 ? 6 : 7))).ref);
+  const top = await create(middle); // 1 + 6*8 + 7 = 56 visited nodes
+  let chain = (await create([])).ref;
+  for (let i = 1; i < 7; i++) chain = (await create([chain])).ref;
+  const boundary = await create([top.ref, chain]); // new root + 56 + 7 = 64
+  expect(boundary.e.state).toBe("complete"); expect(f.app.memoryClaim(f.auth.actor, f.project.id, boundary.ref).state).toBe("available");
+  const beyond = await create([top.ref, chain, roots[0]!]);
+  expect(beyond.e.state).toBe("partial"); expect(beyond.e.reason).toBe("lineage_limit"); expect(beyond.e.claimIds).toHaveLength(0);
+});

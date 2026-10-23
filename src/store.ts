@@ -1,6 +1,7 @@
 import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { commitDecisionMemorySource, retireDecisionMemorySource } from "./memory/decision-sources";
 
 const schemaVersion = 11;
 
@@ -394,6 +395,12 @@ export class TransactionStore {
           `);
           }
           if (current < 11) this.#db.exec(`
+            CREATE TABLE memory_decision_sources (
+              decision_id TEXT PRIMARY KEY REFERENCES owner_decisions(id), project_id TEXT NOT NULL REFERENCES projects(id),
+              topic_id TEXT NOT NULL, decision_revision INTEGER NOT NULL, source_id TEXT NOT NULL UNIQUE REFERENCES sources(id),
+              source_revision INTEGER NOT NULL, source_generation INTEGER NOT NULL,
+              FOREIGN KEY (project_id, topic_id) REFERENCES topics(project_id, id)
+            );
             CREATE TABLE memory_extractions (
               sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
               project_id TEXT NOT NULL REFERENCES projects(id), job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id),
@@ -412,6 +419,13 @@ export class TransactionStore {
             CREATE INDEX memory_claim_project ON memory_claims(project_id, sequence);
             PRAGMA user_version = 11;
           `);
+          if (current < 11) {
+            for (const decision of this.#tx.all<{ id: string; projectId: string; topicId: string; revision: number; conclusion: string; rationale: string; createdAt: number; supersededBy: string | null }>(
+              "SELECT id, project_id AS projectId, topic_id AS topicId, revision, conclusion, rationale, created_at AS createdAt, superseded_by AS supersededBy FROM owner_decisions")) {
+              commitDecisionMemorySource(this.#tx, decision);
+              if (decision.supersededBy) retireDecisionMemorySource(this.#tx, decision.projectId, decision.id);
+            }
+          }
           // A populated rebuilt graph must retain every reference; empty legacy fixture stores have no task graph to check.
           if (this.#tx.get("SELECT 1 FROM tasks LIMIT 1") && this.#tx.all("PRAGMA foreign_key_check").length) throw new Error("Migration foreign key check failed");
         }).immediate();

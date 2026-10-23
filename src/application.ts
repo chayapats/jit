@@ -31,6 +31,7 @@ import {
 import { memoryIdentity, prepareExtraction } from "./memory/extract";
 import { lookupActiveClaim, readMemory } from "./memory/read";
 import type { ClaimReference, ExtractMemoryCommand, MemoryExtraction, MemoryReceipt } from "./memory/types";
+import { commitDecisionMemorySource, memorySourceDecision, retireDecisionMemorySource } from "./memory/decision-sources";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const validToken = (value: string) => /^[a-f0-9]{64}$/.test(value);
@@ -271,7 +272,7 @@ export class Application {
         "SELECT rowid AS cursor, id AS sourceId, current_revision AS revision, generation FROM sources WHERE project_id = ? AND rowid > ? AND availability = 'available' AND kind != 'external' ORDER BY rowid LIMIT ?", projectId, sourceAfter, limit + 1);
       const extractionRows = tx.all<{ sequence: number; record_json: string }>("SELECT sequence, record_json FROM memory_extractions WHERE project_id = ? AND sequence > ? ORDER BY sequence LIMIT ?", projectId, extractionAfter, limit + 1);
       return { project, ...readMemory(tx, projectId, after, limit, query), query,
-        sources: rows.slice(0, limit).map(row => ({ cursor: row.cursor, source: lookupSource(tx, projectId, { sourceId: row.sourceId, revision: row.revision, generation: row.generation }) })),
+        sources: rows.slice(0, limit).map(row => ({ cursor: row.cursor, source: lookupSource(tx, projectId, { sourceId: row.sourceId, revision: row.revision, generation: row.generation }), decision: memorySourceDecision(tx, projectId, { sourceId: row.sourceId, revision: row.revision, generation: row.generation }) })),
         sourcesNextAfter: rows.length > limit ? rows[limit - 1]!.cursor : null,
         extractions: extractionRows.slice(0, limit).map(row => {
           const e = JSON.parse(row.record_json) as MemoryExtraction;
@@ -429,6 +430,8 @@ export class Application {
       const result = command.kind === "decision.synthesize" ? prepareSynthesis(tx, command, this.config, this.#jobs, generation, now)
         : command.kind === "decision.accept" ? acceptDecision(tx, command, "web", now)
         : supersedeDecision(tx, command, "web", now);
+      if (result.decision) commitDecisionMemorySource(tx, result.decision);
+      if (command.kind === "decision.supersede") retireDecisionMemorySource(tx, command.projectId, command.payload.decisionId);
       this.#beforeCommit?.("decision");
       tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
       tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);

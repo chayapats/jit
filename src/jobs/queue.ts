@@ -418,6 +418,8 @@ export class JobQueue {
   }
 
   #finish(original: Job, reference: JobAttempt, outcome: WorkOutcome, mutate?: (tx: AppTransaction) => void): boolean {
+    // An uncertain/rolled-back result commit must be reconciled, never replaced by the worker's returned failure.
+    if (this.#fault) return false;
     try {
       if (outcome?.state === "yield") jobData(outcome.checkpoint, this.policy.inputBytes);
       if (outcome?.state === "waiting" && outcome.checkpoint !== undefined) jobData(outcome.checkpoint, this.policy.inputBytes);
