@@ -712,11 +712,36 @@ test("a throwing model fails fast without retry", async () => {
   const run = request(config, { limits: { ...config.jobs.maximum, retries: 3 } });
   activate(store, run.context);
   const outcome = await port.invoke(run, new AbortController().signal, () => {});
-  // Model failures are not transport retries: no attempt completes, production error, no commit.
+  // Model failures are not transport retries: the single failed attempt is measured, production error, no commit.
   expect(calls).toBe(1);
   expect(outcome).toMatchObject({ state: "error", reason: "invalid_result", mode: "production", output: null });
-  expect(outcome.usage).toMatchObject({ calls: 0, rounds: 0, retries: 0, tokensUnknown: false });
+  expect(outcome.usage).toMatchObject({ calls: 1, rounds: 1, retries: 0, tokensUnknown: true });
   expect(schwayMaxAttempts(run)).toBe(4);
+});
+
+test("a transient transport failure retries the single turn and preserves measured usage", async () => {
+  const { config, store } = setup();
+  let calls = 0;
+  const port = new SchwayRunPort(store, config.team, config.jobs.outputBytes, {
+    model: {
+      provider: "scripted", id: "flaky-transport",
+      async *stream() {
+        calls++;
+        if (calls < 3) throw Object.assign(new Error("socket hang up"), { code: "ECONNRESET" });
+        yield { type: "usage", usage: { inputTokens: 10, outputTokens: 5 } };
+        yield { type: "message_complete", message: { type: "assistant", id: rid(), content: [{ type: "text", text: "recovered after retry" }] } };
+      },
+    },
+  });
+  const run = request(config, { limits: { ...config.jobs.maximum, retries: 3 } });
+  activate(store, run.context);
+  const outcome = await port.invoke(run, new AbortController().signal, () => {});
+  expect(calls).toBe(3);
+  expect(outcome).toMatchObject({ state: "complete", reason: "complete", mode: "production", output: "recovered after retry" });
+  // Three real attempts: reservation, mapping and validation agree, with
+  // measured tokens from the successful attempt and unknown remainder flagged.
+  expect(outcome.usage).toMatchObject({ calls: 3, rounds: 3, retries: 2, contextTokens: 10, outputTokens: 5, tokensUnknown: true });
+  expect(normalizePortResult(outcome, run, config.jobs.outputBytes)).toMatchObject({ state: "complete", mode: "production" });
 });
 
 test("unknown tool calls cannot escape the single-turn budget", async () => {

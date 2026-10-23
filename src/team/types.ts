@@ -75,8 +75,12 @@ export type RunReason = "complete" | "unknown_model" | "route_unavailable" | "qu
 /** Usage reports are finite nonnegative measurements, distinct from permission to spend any resource. */
 export interface ApplicationRunUsage {
   calls: number; rounds: number; hops: number; contextTokens: number; outputTokens: number; retries: number; wallMs: number;
-  /** True when any provider token counter was unreported; totals are then partial, never measured zero. */
-  tokensUnknown: boolean;
+  /**
+   * True when any provider token counter was unreported; totals are then
+   * partial, never measured zero. Absent on pre-bridge records, which predate
+   * production runs and therefore carry exact fixture accounting (read as false).
+   */
+  tokensUnknown?: boolean;
 }
 /** Opaque adapter-owned session identity, never a native file path or provider wire object. */
 export interface ApplicationSessionReference { adapter: string; id: string; context: ManagedContextReference }

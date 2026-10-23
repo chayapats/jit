@@ -122,8 +122,10 @@ and fixture-free protocol transport.
 - Worst-case retry admissions are pre-reserved (`calls`/`rounds` for
   `maxAttempts = retries + 1`); single-output token accounting stays as
   committed with measured overrun in usage evidence (see ADR 0023). Usage
-  records whether any token counter was unreported (`tokensUnknown`) instead
-  of persisting unknown consumption as measured zero. Outcome validation is
+  records whether any token counter was unreported (`tokensUnknown`, absent
+  only on pre-bridge fixture records which carry exact accounting) instead of
+  persisting unknown consumption as measured zero, including on
+  non-completed runs that consumed attempts. Outcome validation is
   mode- and reason-aware: fixture usage stays bounded by the request limits
   with exact token accounting, production completions require the worst-case
   admission shape (`rounds === calls`, `retries === calls - 1`, zero hops on

@@ -345,19 +345,20 @@ export class SchwayRunPort implements ApplicationRunPort {
   }
 
   private mapSubmitResult(result: HostRunResult, request: ApplicationRunRequest): ApplicationRunOutcome {
+    const usage = mapHostUsage(result.usage, result.usage.totalMs);
     if (result.outcome === "completed") {
       const output = extractOutputText(this.lastMessage(result), this.outputBytes);
-      if (output === null) return classifyBridgeReason("invalid_result");
+      if (output === null) return { ...classifyBridgeReason("invalid_result"), usage };
       return {
         state: "complete", reason: "complete", mode: "production", output,
-        usage: mapHostUsage(result.usage, result.usage.totalMs),
+        usage,
         session: { adapter: "schway", id: request.runId, context: { ...request.context } },
       };
     }
-    if (result.outcome === "cancelled") return classifyBridgeReason("cancelled");
-    if (result.outcome === "max_turns") return classifyBridgeReason("max_rounds");
-    if (result.outcome === "limit_exceeded") return classifyBridgeReason("budget_exhausted");
-    return classifyBridgeReason("invalid_result");
+    if (result.outcome === "cancelled") return { ...classifyBridgeReason("cancelled"), usage };
+    if (result.outcome === "max_turns") return { ...classifyBridgeReason("max_rounds"), usage };
+    if (result.outcome === "limit_exceeded") return { ...classifyBridgeReason("budget_exhausted"), usage };
+    return { ...classifyBridgeReason("invalid_result"), usage };
   }
 
   private lastMessage(result: HostRunResult): AssistantMessage {
@@ -366,19 +367,20 @@ export class SchwayRunPort implements ApplicationRunPort {
   }
 
   private mapRouteResult(result: HostAuthRunResult, request: ApplicationRunRequest): ApplicationRunOutcome {
+    const usage = mapHostUsage(result.usage, result.usage.totalMs);
     if (result.outcome === "completed") {
       const output = extractOutputText(result.message, this.outputBytes);
-      if (output === null) return classifyBridgeReason("invalid_result");
+      if (output === null) return { ...classifyBridgeReason("invalid_result"), usage };
       return {
         state: "complete", reason: "complete", mode: "production", output,
-        usage: mapHostUsage(result.usage, result.usage.totalMs),
+        usage,
         session: { adapter: "schway", id: request.runId, context: { ...request.context } },
       };
     }
-    if (result.outcome === "cancelled") return classifyBridgeReason("cancelled");
-    if (result.outcome === "max_turns") return classifyBridgeReason("max_rounds");
-    if (result.outcome === "limit_exceeded") return classifyBridgeReason("budget_exhausted");
-    return classifyBridgeReason(mapAuthStatus(result.auth.status));
+    if (result.outcome === "cancelled") return { ...classifyBridgeReason("cancelled"), usage };
+    if (result.outcome === "max_turns") return { ...classifyBridgeReason("max_rounds"), usage };
+    if (result.outcome === "limit_exceeded") return { ...classifyBridgeReason("budget_exhausted"), usage };
+    return { ...classifyBridgeReason(mapAuthStatus(result.auth.status)), usage };
   }
 
   /**
