@@ -86,12 +86,14 @@ and fixture-free protocol transport.
   revoked participations clear retained progress and project null;
   transient progress never becomes committed evidence.
 - Strict context mapping: fixed trusted system prompt plus responsibility,
-  purpose and operator sections; manifest sources/claims become untrusted
+  purpose and operator sections (mode-neutral wording: nothing tells the
+  model it is scripted or live); manifest sources/claims become untrusted
   source documents with bounded ids. Exact empty tool registry, hosted lookup
   off. Finite limits map from the request budgets (context/input windows,
   deadline, attempts); the bridge executes bounded single-turn runs
   (`maxTurns: 1`), so anything needing more turns surfaces as `max_turns`
-  instead of silently spending unreserved calls.
+  instead of silently spending unreserved calls. Committed coordinator
+  summaries label the actual evidence mode.
 - Route runs use `submitWithRoute` on the exact selected Grok/Codex
   route/model with the shared route-scoped credential lifecycle. Jit supplies
   no credential client, renewal loop, billing fallback or model retry of its
@@ -111,14 +113,18 @@ and fixture-free protocol transport.
   Production adapter exceptions normalize to a production `invalid_result`
   that never claims fixture evidence or an unchecked live route.
 - Cancellation/deadline and Jit's attempt/deletion generations prevent late
-  publication: fencing rechecks before and after the native settle, and late
-  results become `context_retired`/`cancelled` instead of success. A fence
-  that closes between session creation and dispatch retires the orphan
-  natively instead of running it. Attempt ledgers record `adapter: "schway"`
-  so JOB02 reconciliation matches durable native refs across restart;
-  interrupted rows stay `running` for explicit reconcile. Only fenced-active,
-  live-signal progress is stored provisionally and it is cleared at commit;
-  transient progress never becomes committed evidence.
+  publication: fencing rechecks before admission, after host construction
+  (before any intent is reserved, with no await in between), after native
+  creation, and after the native settle; late results become
+  `context_retired`/`cancelled` instead of success. A fence that closes
+  between session creation and dispatch retires the orphan natively instead
+  of running it; only a verified native retirement closes the row, otherwise
+  the running intent stays visible for explicit reconciliation. Attempt
+  ledgers record `adapter: "schway"` so JOB02 reconciliation matches durable
+  native refs across restart; interrupted rows stay `running` for explicit
+  reconcile. Only fenced-active, live-signal progress is stored provisionally
+  and it is cleared at commit; revoked participations clear retained progress
+  and project null; transient progress never becomes committed evidence.
 - Worst-case retry admissions are pre-reserved (`calls`/`rounds` for
   `maxAttempts = retries + 1`); single-output token accounting stays as
   committed with measured overrun in usage evidence (see ADR 0023). Usage

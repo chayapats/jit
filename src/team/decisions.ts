@@ -19,7 +19,7 @@ import type {
 } from "./types";
 import { coordinatorSynthesisWorkId } from "./types";
 /** Trusted operator line that identifies a coordinator invocation. It is not an owner decision. */
-export const coordinatorSynthesisMarker = "This is an explicitly authorized scripted coordinator synthesis, not live inference.";
+export const coordinatorSynthesisMarker = "Synthesize only the cited specialist results under the exact route and finite budgets; a synthesis is a recommendation, never an owner decision.";
 
 interface StoredSynthesis { request: ApplicationRunRequest; allowed: SynthesisCitation[]; gaps: SynthesisGap[]; outcome: ApplicationRunOutcome | null }
 interface LoadedSynthesis { public: CoordinatorSynthesis; record: StoredSynthesis }
@@ -263,9 +263,9 @@ export function readDecisionModel(tx: AppTransaction, projectId: string, topicId
   };
 }
 
-function renderSummary(artifact: SynthesisArtifact): string {
+function renderSummary(artifact: SynthesisArtifact, mode: "fixture" | "production"): string {
   const lines = [
-    "สรุปผู้ประสานงาน (fixture)",
+    `สรุปผู้ประสานงาน (${mode})`,
     "ข้อเสนอนี้ไม่ใช่การตัดสินของเจ้าของ",
     artifact.disagreement || artifact.missing.length ? "ยังไม่มีความเห็นตรงกัน" : "ผู้ประสานงานเห็นว่าตัวเลือกสอดคล้องกัน แต่ยังไม่ใช่การตัดสินของเจ้าของ",
     `คำถาม: ${artifact.question}`,
@@ -550,7 +550,7 @@ export function coordinatorSynthesisWork(
         }
         const artifact = normalized.artifact;
         const source = commitOutputSource(tx, {
-          projectId: current.public.projectId, participantId: request.roleId, runId: request.runId, text: renderSummary(artifact), committedAt: now(),
+          projectId: current.public.projectId, participantId: request.roleId, runId: request.runId, text: renderSummary(artifact, outcome.mode), committedAt: now(),
         });
         markMemoryDerived(tx, current.public.projectId, source, request.manifest);
         const proposal: DecisionProposal = {

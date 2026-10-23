@@ -190,16 +190,17 @@ test("empty successful output never becomes committed evidence", async () => {
 
 test("route runs map auth failures without changing the selected route", async () => {
   const { config, store } = setup();
-  const cases: { label: string; store: HostCredentialStore; fetch?: HostAuthFetch; reason: string }[] = [
+  const cases: { label: string; store: HostCredentialStore; fetch?: HostAuthFetch; reason: string; usage?: { calls: number; rounds: number; retries: number; tokensUnknown: boolean } }[] = [
     { label: "missing login", store: memStore(null), reason: "needs_login" },
     { label: "unreadable store", store: memStore(validTokens, "get"), reason: "route_unavailable" },
     { label: "invalid store", store: memStore("garbage"), reason: "route_unavailable" },
     { label: "unreachable route", store: memStore(validTokens), fetch: throwingFetch, reason: "route_unavailable" },
-    { label: "quota", store: memStore(validTokens), fetch: statusFetch(429), reason: "quota" },
+    // A 429 retries once against the fixture transport, then maps to quota with measured attempts preserved.
+    { label: "quota", store: memStore(validTokens), fetch: statusFetch(429), reason: "quota", usage: { calls: 2, rounds: 2, retries: 1, tokensUnknown: true } },
     // A 401 rejects the session and the failed fixture refresh drops the login.
     { label: "rejected", store: memStore(validTokens), fetch: statusFetch(401), reason: "needs_login" },
   ];
-  for (const { label, store: credentialStore, fetch, reason } of cases) {
+  for (const { label, store: credentialStore, fetch, reason, usage: expectedUsage } of cases) {
     const options: { authStore: HostCredentialStore; authFetch?: HostAuthFetch } = { authStore: credentialStore };
     if (fetch) options.authFetch = fetch;
     const port = new SchwayRunPort(store, config.team, config.jobs.outputBytes, options);
@@ -212,6 +213,12 @@ test("route runs map auth failures without changing the selected route", async (
     expect(port.requests.at(-1)!.route, label).toEqual(grok);
     expect(JSON.stringify(outcome), label).not.toContain("fixture-access");
     expect(observed, label).toBe(true);
+    if (expectedUsage) {
+      expect(outcome.usage, label).toMatchObject(expectedUsage);
+      // The measured route usage survives normalization instead of being zeroed.
+      expect(normalizePortResult(outcome, run, config.jobs.outputBytes), label)
+        .toMatchObject({ state: "blocked", reason, mode: "production" });
+    }
   }
 });
 

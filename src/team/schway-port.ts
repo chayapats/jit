@@ -408,6 +408,15 @@ export class SchwayRunPort implements ApplicationRunPort {
     };
     try {
       host = await this.openHost(effective, false);
+      // Recheck before reserving: retirement may have fenced the context
+      // while the host was constructed, and no intent row exists yet to stop
+      // it from reporting success. The check-to-reservation section below
+      // contains no await, so no fence can interleave once it passes.
+      if (fenced() || signal.aborted) {
+        try { await host.close(); } catch { /* Best effort before returning. */ }
+        if (fenced()) return finish(fixtureOutcome("context_retired"));
+        return finish(fixtureOutcome("cancelled"));
+      }
       // Reserve the intent first: a crash between native creation and the
       // id update below still leaves a fenced, discoverable row.
       this.recordRef(snapshot, null, "running");
@@ -417,14 +426,18 @@ export class SchwayRunPort implements ApplicationRunPort {
       if (fenced() || signal.aborted) {
         // Creation lost a race with retirement, deletion or cancellation:
         // retire the orphan natively so it can never run, snapshot or resurrect.
-        this.recordRef(snapshot, session.reference, "finished");
         try { session.cancel(); } catch { /* Idle or already settled. */ }
         try { await session.close(); } catch { /* Best effort before retirement. */ }
+        let cleaned = false;
         try {
           const cleanup = await this.openHost(effective, true);
-          try { await cleanup.retireSession(session.reference); } catch { /* Tombstone best effort; the app fence already holds. */ }
+          try { await cleanup.retireSession(session.reference); cleaned = true; }
+          catch { /* Tombstone best effort; the app fence already holds. */ }
           await cleanup.close().catch(() => {});
         } catch { /* The app fence already holds; native retry stays explicit. */ }
+        // Only a verified native retirement closes the row; otherwise the
+        // running intent stays visible for explicit reconciliation.
+        if (cleaned) this.recordRef(snapshot, session.reference, "finished");
         if (fenced()) return finish(fixtureOutcome("context_retired"));
         return finish(fixtureOutcome("cancelled"));
       }
