@@ -38,6 +38,11 @@ import {
 
 import { fenceUnavailableExtractions, memoryIdentity, prepareExtraction } from "./memory/extract";
 import { correctionIdentity, correctionImpact, prepareCorrection, readCorrection } from "./memory/correct";
+import {
+  confirmDeletion, deleteCommandIdentity, listDeletionOperations, prepareDeletionPreview, readDeletionLedger,
+  readDeletionOperation, readDeletionPreview, retryDeletion, type DeleteCommand, type DeletionConfirmReceipt,
+  type DeletionOperation, type DeletionPreview, type DeletionReceipt,
+} from "./memory/delete";
 import { forgetIdentity, prepareSuppression, readSuppression, suppressionImpact, suppressionLedger } from "./memory/suppress";
 import { lookupActiveClaim, readMemory, suppressedSource } from "./memory/read";
 import type { ClaimReference, CorrectMemoryCommand, CorrectionImpact, CorrectionReceipt, ExtractMemoryCommand, ForgetMemoryCommand, MemoryContextView, MemoryExtraction, MemoryReceipt, SuppressionImpact, SuppressionLedger, SuppressionReceipt } from "./memory/types";
@@ -272,9 +277,11 @@ export class Application {
   execute(actor: OwnerActor, command: RetireDeliveryCommand): DeliveryRetireReceipt;
   execute(actor: OwnerActor, command: PrReportCommand): PrReportReceipt;
   execute(actor: OwnerActor, command: BackupCommand): BackupReceipt;
-  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt;
-  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt {
+  execute(actor: OwnerActor, command: DeleteCommand): DeletionReceipt | DeletionConfirmReceipt | DeletionOperation;
+  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation;
+  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation {
     if (command?.kind === "backup.create" || command?.kind === "backup.prune") return this.#backupCommand(actor, command);
+    if (command?.kind === "memory.delete.preview" || command?.kind === "memory.delete.confirm" || command?.kind === "memory.delete.retry") return this.#deleteCommand(actor, command);
     if (command?.kind === "memory.extract") return this.#memoryCommand(actor, command);
     if (command?.kind === "memory.correct") return this.#correctCommand(actor, command);
     if (command?.kind === "memory.forget") return this.#forgetCommand(actor, command);
@@ -369,6 +376,65 @@ export class Application {
   suppressionLedger(actor: OwnerActor, projectId: string, claimId: string): SuppressionLedger | null {
     requireId(projectId); requireId(claimId);
     return this.store.read(tx => { this.#requireOwner(tx, actor); this.#project(tx, projectId); return suppressionLedger(tx, projectId, claimId); });
+  }
+
+  /** app.data_lifecycle/v1: reads one revision-bound deletion preview, or null when unknown/expired. */
+  deletionPreview(actor: OwnerActor, projectId: string, previewId: string): { project: Project; preview: DeletionPreview | null } {
+    requireId(projectId); requireId(previewId);
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor);
+      return { project: this.#project(tx, projectId), preview: readDeletionPreview(tx, projectId, previewId) };
+    });
+  }
+
+  /** app.data_lifecycle/v1: reads one deletion operation with its per-scope state. */
+  deletionOperation(actor: OwnerActor, projectId: string, operationId: string): { project: Project; operation: DeletionOperation | null } {
+    requireId(projectId); requireId(operationId);
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor);
+      return { project: this.#project(tx, projectId), operation: readDeletionOperation(tx, projectId, operationId) };
+    });
+  }
+
+  /** app.data_lifecycle/v1: bounded per-scope deletion operations for one project. */
+  deletionOperations(actor: OwnerActor, projectId: string): { project: Project; operations: DeletionOperation[] } {
+    requireId(projectId);
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor);
+      return { project: this.#project(tx, projectId), operations: listDeletionOperations(tx, projectId) };
+    });
+  }
+
+  /** app.deletion_ledger/v1: identity-only tombstones (no payloads) for exporters, backup and restore. */
+  deletionLedger(actor: OwnerActor): { tombstones: ReturnType<typeof readDeletionLedger> } {
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor);
+      return { tombstones: readDeletionLedger(tx) };
+    });
+  }
+
+  #deleteCommand(actor: OwnerActor, command: DeleteCommand): DeletionReceipt | DeletionConfirmReceipt | DeletionOperation {
+    const payloadHash = digest(deleteCommandIdentity(command, this.config.team.contextBytes));
+    const result = this.store.transaction(tx => {
+      this.#requireOwner(tx, actor); const project = this.#project(tx, command.projectId);
+      const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
+      if (prior) {
+        if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409);
+        return JSON.parse(prior.result_json) as DeletionReceipt | DeletionConfirmReceipt | DeletionOperation;
+      }
+      const now = this.#now();
+      const result = command.kind === "memory.delete.preview"
+        ? { preview: prepareDeletionPreview(tx, command, project.revision, now), duplicate: false } satisfies DeletionReceipt
+        : command.kind === "memory.delete.confirm"
+          ? confirmDeletion(tx, command, project.revision, now)
+          : retryDeletion(tx, command, now);
+      this.#beforeCommit?.("memory");
+      tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
+      tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);
+      this.#beforeCommit?.("receipt"); return result;
+    });
+    this.#jobs?.cancelFenced();
+    return result;
   }
 
   #forgetCommand(actor: OwnerActor, command: ForgetMemoryCommand): SuppressionReceipt {

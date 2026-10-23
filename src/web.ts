@@ -1,7 +1,7 @@
 import { Application, type CreateProjectCommand } from "./application";
 import { AppError } from "./errors";
 import type { CreateTopicCommand, SendMessageCommand } from "./conversation";
-import { workspacePage, projectPage, conversationPage, sourcePage, jobsPage, teamPage, previewPage, discussionPage, deliveryPage, deliveryDetailPage, prReportsPage, prReportPage, tasksPage, taskPage, memoryPage, memoryClaimPage, memoryContextPage, schedulesPage, scheduleDetailPage, backupsPage, backupDetailPage, loginPage, errorPage } from "./web-layout";
+import { workspacePage, projectPage, conversationPage, sourcePage, jobsPage, teamPage, previewPage, discussionPage, deliveryPage, deliveryDetailPage, prReportsPage, prReportPage, tasksPage, taskPage, memoryPage, memoryClaimPage, memoryContextPage, schedulesPage, scheduleDetailPage, backupsPage, backupDetailPage, deletionsPage, deletionDetailPage, loginPage, errorPage } from "./web-layout";
 import type { ExtractMemoryCommand } from "./memory/types";
 import type { CorrectMemoryCommand } from "./memory/types";
 import type { ForgetMemoryCommand } from "./memory/types";
@@ -93,6 +93,14 @@ const messages: Record<string, string> = {
   memory_already_forgotten: "Memory ข้อนี้ถูกลืมไปแล้ว ดูบันทึกการลืมด้านล่าง",
   invalid_memory_forget: "ข้อมูลคำขอลืม memory ไม่ถูกต้อง กรุณาเปิดหน้าใหม่",
   memory_forget_ambiguous: "การลืมไม่ยกเลิกงานและไม่ถอนมติ ถ้าข้อความคาบเกี่ยวกับงานหรือมติ ให้ติ๊กยืนยันขอบเขตก่อนยืนยันการลืม",
+  memory_delete_unavailable: "ต้นฉบับนี้ลบไม่ได้แล้ว หรือถูกเปลี่ยนไปแล้ว กรุณาเปิดหน้าใหม่",
+  memory_delete_stale_scope: "ขอบเขตที่เลือกเปลี่ยนไปแล้ว ขอดูผลกระทบใหม่ก่อนยืนยัน",
+  memory_delete_stale_preview: "ภาพผลกระทบนี้หมดอายุหรือไม่ตรงกับสถานะปัจจุบัน ขอดูใหม่ก่อนยืนยัน",
+  memory_delete_ambiguous: "การลบไม่ยกเลิกงานและไม่ถอนมติ ถ้ามีขอบเขตคาบเกี่ยวหรือทั้ง session ให้ติ๊กยืนยันก่อน",
+  memory_already_deleted: "ขอบเขตนี้ถูกลบไปแล้ว ดูบันทึกการลบด้านล่าง",
+  memory_source_deleted: "ต้นฉบับนี้ถูกลบไปแล้ว ใช้ต้นฉบับข้อความใหม่แทน",
+  deletion_not_found: "ไม่พบบันทึกการลบในโครงการที่เลือก",
+  invalid_memory_delete: "ข้อมูลคำขอลบ memory ไม่ถูกต้อง กรุณาเปิดหน้าใหม่",
   memory_source_suppressed: "ต้นฉบับนี้ถูกแยกออกจาก memory อัตโนมัติแล้ว สกัดใหม่ไม่ได้ ใช้ต้นฉบับข้อความใหม่แทน",
   backup_not_found: "ไม่พบสำรองข้อมูลที่เลือก",
   backup_corrupt: "สำรองข้อมูลนี้ตรวจสอบไม่ผ่าน",
@@ -205,6 +213,8 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       const memoryRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/memory$/.exec(url.pathname);
       const claimRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/memory\/claims\/([a-f0-9-]{36})$/.exec(url.pathname);
       const contextRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/memory\/contexts\/([a-f0-9-]{36})$/.exec(url.pathname);
+      const deletionsRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/memory\/deletions$/.exec(url.pathname);
+      const deletionRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/memory\/deletions\/([a-f0-9-]{36})$/.exec(url.pathname);
       const backupsRoute = /^\/(api\/)?backups$/.exec(url.pathname);
       const backupRoute = /^\/(api\/)?backups\/([a-f0-9-]{36})$/.exec(url.pathname);
       const after = () => {
@@ -257,6 +267,19 @@ export function createWebHandler(app: Application): (request: Request) => Promis
         const state = app.memoryContext(auth.actor, contextRoute[1]!, contextRoute[2]!);
         return api ? json(state) : respond(memoryContextPage(state, app.workspace(auth.actor), auth.csrf));
       }
+      if (request.method === "GET" && deletionsRoute) {
+        const { project, operations } = app.deletionOperations(auth.actor, deletionsRoute[2]!);
+        const inspector = app.memory(auth.actor, deletionsRoute[2]!);
+        const sources = inspector.sources.flatMap(({ source }) => source.state === "available"
+          ? [{ reference: source.reference, label: `${source.descriptor.kind} · ${Array.from(source.text).slice(0, 80).join("")}` }] : []);
+        return api ? json({ project, operations }) : respond(deletionsPage({ project, operations }, app.workspace(auth.actor), auth.csrf, sources));
+      }
+      if (request.method === "GET" && deletionRoute) {
+        const { project, preview } = app.deletionPreview(auth.actor, deletionRoute[2]!, deletionRoute[3]!);
+        const { operation } = app.deletionOperation(auth.actor, deletionRoute[2]!, deletionRoute[3]!);
+        if (!preview && !operation) throw new AppError("deletion_not_found", 404);
+        return api ? json({ project, preview, operation }) : respond(deletionDetailPage({ project, preview, operation }, app.workspace(auth.actor), auth.csrf));
+      }
       if (request.method === "GET" && backupsRoute) {
         const state = app.backups(auth.actor);
         const revision = app.workspace(auth.actor).revision;
@@ -282,6 +305,39 @@ export function createWebHandler(app: Application): (request: Request) => Promis
             dependencies: data(body.dependencies) as ExtractMemoryCommand["payload"]["dependencies"], limits: data(body.limits) as JobLimits } };
         const result = app.execute(auth.actor, command);
         return api ? json(result) : respond(null, 303, { Location: `/projects/${command.projectId}/memory#extraction-${result.extraction.id}` });
+      }
+      if (request.method === "POST" && deletionsRoute) {
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        const form = request.headers.get("content-type")?.split(";")[0]?.trim() === "application/x-www-form-urlencoded";
+        const data = (value: unknown) => { if (!form) return value; try { return JSON.parse(value as string); } catch { throw new AppError("invalid_body"); } };
+        const projectId = deletionsRoute[2]!;
+        const number = (value: unknown) => typeof value === "string" && /^\d{1,15}$/.test(value) ? Number(value) : value;
+        if (body.mode === "preview" || data(body.mode) === "preview") {
+          if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "mode", "source"].includes(key))) throw new AppError("invalid_body");
+          const command = { kind: "memory.delete.preview" as const, requestId: body.requestId as string, projectId,
+            expectedRevision: number(body.expectedRevision) as number,
+            payload: { scope: { kind: "source" as const, projectId, source: data(body.source) as import("./sources").SourceReference } } };
+          const result = app.execute(auth.actor, command) as { preview: { id: string } };
+          return api ? json(result) : respond(null, 303, { Location: `/projects/${projectId}/memory/deletions/${result.preview.id}` });
+        }
+        if (body.mode === "confirm" || data(body.mode) === "confirm") {
+          if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "mode", "previewId", "acknowledged", "acknowledgedWholeSession"].includes(key))) throw new AppError("invalid_body");
+          const command = { kind: "memory.delete.confirm" as const, requestId: body.requestId as string, projectId,
+            expectedRevision: number(body.expectedRevision) as number,
+            payload: { previewId: body.previewId as string, acknowledged: form ? body.acknowledged === "on" : data(body.acknowledged) === true,
+              acknowledgedWholeSession: form ? body.acknowledgedWholeSession === "on" : data(body.acknowledgedWholeSession) === true } };
+          const result = app.execute(auth.actor, command) as { operation: { id: string } };
+          return api ? json(result) : respond(null, 303, { Location: `/projects/${projectId}/memory/deletions/${result.operation.id}` });
+        }
+        if (body.mode === "retry" || data(body.mode) === "retry") {
+          if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "mode", "operationId"].includes(key))) throw new AppError("invalid_body");
+          const command = { kind: "memory.delete.retry" as const, requestId: body.requestId as string, projectId,
+            expectedRevision: number(body.expectedRevision) as number, payload: { operationId: body.operationId as string } };
+          const result = app.execute(auth.actor, command) as { operation: { id: string } } | { id: string };
+          const id = "operation" in result ? result.operation.id : result.id;
+          return api ? json(result) : respond(null, 303, { Location: `/projects/${projectId}/memory/deletions/${id}` });
+        }
+        throw new AppError("invalid_body");
       }
       if (request.method === "GET" && teamRoute) {
         const state = app.team(auth.actor, teamRoute[1] ?? null);
