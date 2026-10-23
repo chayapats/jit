@@ -1,6 +1,7 @@
 import { ScriptedNativeLedger } from "../jobs/scripted-ledger";
 import { AppError } from "../errors";
 import { jobData, validateJobLimits } from "../jobs/queue";
+import type { JobLimits } from "../jobs/types";
 import { requireId, requireReference, requireText } from "../sources";
 import type { TransactionStore } from "../store";
 import type { ApplicationRunPort, ManagedContextOutcome } from "./run-port";
@@ -9,7 +10,7 @@ import { requireRoleRoute } from "./configuration";
 import { renderContextAnswer } from "../memory/context-answer";
 
 const reasons: RunReason[] = ["complete", "unknown_model", "route_unavailable", "quota", "needs_login", "cancelled", "max_rounds", "budget_exhausted", "invalid_result", "context_retired"];
-const emptyUsage = () => ({ calls: 0, rounds: 0, hops: 0, contextTokens: 0, outputTokens: 0, retries: 0, wallMs: 0 });
+const emptyUsage = () => ({ calls: 0, rounds: 0, hops: 0, contextTokens: 0, outputTokens: 0, retries: 0, wallMs: 0, tokensUnknown: false });
 /** Constructs finite, safe fixture outcomes without raw provider errors or live-readiness claims. */
 export function fixtureOutcome(reason: RunReason, output: string | null = null): ApplicationRunOutcome {
   return { state: reason === "complete" ? "complete" : ["max_rounds", "budget_exhausted", "cancelled"].includes(reason) ? "incomplete" : reason === "invalid_result" ? "error" : "blocked",
@@ -88,7 +89,7 @@ export function normalizePortResult(value: unknown, request: ApplicationRunReque
   const invalidFor = (recognized: ApplicationRunOutcome["mode"]): ApplicationRunOutcome =>
     recognized === "production"
       ? { state: "error", reason: "invalid_result", mode: "production", output: null,
-          usage: { calls: 0, rounds: 0, hops: 0, contextTokens: 0, outputTokens: 0, retries: 0, wallMs: 0 }, session: null }
+          usage: { calls: 0, rounds: 0, hops: 0, contextTokens: 0, outputTokens: 0, retries: 0, wallMs: 0, tokensUnknown: false }, session: null }
       : fixtureOutcome("invalid_result");
   try {
     const result = JSON.parse(jobData(value, outputBytes + 2048)) as ApplicationRunOutcome;
@@ -98,7 +99,8 @@ export function normalizePortResult(value: unknown, request: ApplicationRunReque
     if (!reasons.includes(result.reason) || result.state !== expected.state ||
         (result.reason === "complete" ? typeof result.output !== "string" || !result.output.trim() : result.output !== null) ||
         (typeof result.output === "string" && Buffer.byteLength(result.output) > outputBytes) || !result.usage ||
-        Object.keys(result.usage).sort().join(",") !== "calls,contextTokens,hops,outputTokens,retries,rounds,wallMs") return invalidFor(mode);
+        Object.keys(result.usage).sort().join(",") !== "calls,contextTokens,hops,outputTokens,retries,rounds,tokensUnknown,wallMs" ||
+        typeof result.usage.tokensUnknown !== "boolean") return invalidFor(mode);
     if (result.output !== null) requireText(result.output, outputBytes);
     if (!validUsage(result, request)) return invalidFor(mode);
     const adapter = mode === "production" ? "schway" : "scripted";
@@ -121,7 +123,8 @@ function validUsage(result: ApplicationRunOutcome, request: ApplicationRunReques
     .every(value => Number.isSafeInteger(value) && value >= 0);
   if (!integers) return false;
   if (result.mode === "fixture") {
-    return Object.entries(usage).every(([key, value]) => value <= request.limits[key as keyof typeof usage]);
+    if (usage.tokensUnknown !== false) return false;
+    return Object.entries(usage).every(([key, value]) => key === "tokensUnknown" || (value as number) <= request.limits[key as keyof JobLimits]);
   }
   const maxCalls = Math.min(Math.max(1, Math.ceil(request.limits.retries + 1)), 10);
   const attempted = usage.calls >= 1 && usage.calls <= maxCalls &&

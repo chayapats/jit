@@ -88,8 +88,10 @@ and fixture-free protocol transport.
 - Strict context mapping: fixed trusted system prompt plus responsibility,
   purpose and operator sections; manifest sources/claims become untrusted
   source documents with bounded ids. Exact empty tool registry, hosted lookup
-  off. Finite limits map from the request budgets (turns, concurrency 1,
-  context/input windows, deadline, attempts).
+  off. Finite limits map from the request budgets (context/input windows,
+  deadline, attempts); the bridge executes bounded single-turn runs
+  (`maxTurns: 1`), so anything needing more turns surfaces as `max_turns`
+  instead of silently spending unreserved calls.
 - Route runs use `submitWithRoute` on the exact selected Grok/Codex
   route/model with the shared route-scoped credential lifecycle. Jit supplies
   no credential client, renewal loop, billing fallback or model retry of its
@@ -119,13 +121,15 @@ and fixture-free protocol transport.
   transient progress never becomes committed evidence.
 - Worst-case retry admissions are pre-reserved (`calls`/`rounds` for
   `maxAttempts = retries + 1`); single-output token accounting stays as
-  committed with measured overrun in usage evidence (see ADR 0023). Outcome
-  validation is mode- and reason-aware: fixture usage stays bounded by the
-  request limits, production completions require the worst-case admission
-  shape (`rounds === calls`, `retries === calls - 1`, zero hops on the empty
-  registry) with measured token overrun, and pre-model blocked/error outcomes
-  accept coherent zero-attempt usage. Malformed production results normalize
-  to production `invalid_result`, never fixture evidence.
+  committed with measured overrun in usage evidence (see ADR 0023). Usage
+  records whether any token counter was unreported (`tokensUnknown`) instead
+  of persisting unknown consumption as measured zero. Outcome validation is
+  mode- and reason-aware: fixture usage stays bounded by the request limits
+  with exact token accounting, production completions require the worst-case
+  admission shape (`rounds === calls`, `retries === calls - 1`, zero hops on
+  the empty registry) with measured overrun, and pre-model blocked/error
+  outcomes accept coherent zero-attempt usage. Malformed production results
+  normalize to production `invalid_result`, never fixture evidence.
 - `retire` fences the application generation first, then retires owned native
   sessions through `retireSession` (idempotent; only live-holder conflicts
   retry). A pending intent with no addressable session never reports success:

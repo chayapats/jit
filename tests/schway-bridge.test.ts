@@ -111,6 +111,8 @@ test("effective run maps strict context, exact tools and the selected route with
   expect(effective.inputText).toBe(run.purpose);
   expect(effective.auth).toEqual({ route: "grok", model: grok.model, authRoute: grok.authRoute });
   expect(effective.limits.maxConcurrentTools).toBe(1);
+  expect(effective.limits.maxTurns).toBe(1);
+  expect(schwayMaxAttempts(run)).toBe(4);
   expect(JSON.stringify(effective)).not.toContain(SECRET);
 });
 
@@ -469,7 +471,7 @@ test("production usage with bounded retry overrun validates without fixture coer
   const run = request(config, { limits: { ...config.jobs.maximum, retries: 3, outputTokens: 16 } });
   const base = {
     state: "complete", reason: "complete", mode: "production", output: "done",
-    usage: { calls: 4, rounds: 4, hops: 0, contextTokens: 40, outputTokens: 18, retries: 3, wallMs: 120 },
+    usage: { calls: 4, rounds: 4, hops: 0, contextTokens: 40, outputTokens: 18, retries: 3, wallMs: 120, tokensUnknown: true },
     session: { adapter: "schway", id: run.runId, context: run.context },
   } as const;
   const normalized = normalizePortResult(structuredClone(base), run, config.jobs.outputBytes);
@@ -600,7 +602,7 @@ test("host retry accounting maps multi-attempt usage exactly", () => {
     ],
     complete: true, totalMs: 120,
   } as HostRunUsage, 500);
-  expect(usage).toEqual({ calls: 3, rounds: 3, hops: 0, contextTokens: 13, outputTokens: 12, retries: 2, wallMs: 500 });
+  expect(usage).toEqual({ calls: 3, rounds: 3, hops: 0, contextTokens: 13, outputTokens: 12, retries: 2, wallMs: 500, tokensUnknown: true });
   expect(mapHostUsage({ attempts: [], complete: false, totalMs: 0 } as HostRunUsage, 0)).toMatchObject({ calls: 0, retries: 0 });
 });
 
@@ -609,7 +611,7 @@ test("production validation accepts coherent zero-attempt failures and stays pro
   const run = request(config);
   const blocked = {
     state: "blocked", reason: "needs_login", mode: "production", output: null,
-    usage: { calls: 0, rounds: 0, hops: 0, contextTokens: 0, outputTokens: 0, retries: 0, wallMs: 9 },
+    usage: { calls: 0, rounds: 0, hops: 0, contextTokens: 0, outputTokens: 0, retries: 0, wallMs: 9, tokensUnknown: false },
     session: null,
   } as const;
   expect(normalizePortResult(blocked, run, config.jobs.outputBytes))
@@ -617,7 +619,7 @@ test("production validation accepts coherent zero-attempt failures and stays pro
   // A lone surrogate is malformed live output: production error, never fixture evidence.
   const malformed = {
     state: "complete", reason: "complete", mode: "production", output: "ok\ud800",
-    usage: { calls: 1, rounds: 1, hops: 0, contextTokens: 1, outputTokens: 1, retries: 0, wallMs: 1 },
+    usage: { calls: 1, rounds: 1, hops: 0, contextTokens: 1, outputTokens: 1, retries: 0, wallMs: 1, tokensUnknown: false },
     session: { adapter: "schway", id: run.runId, context: run.context },
   } as const;
   expect(normalizePortResult(malformed, run, config.jobs.outputBytes))
@@ -625,7 +627,7 @@ test("production validation accepts coherent zero-attempt failures and stays pro
   // Rounds must equal calls and hops must stay zero on the empty tool registry.
   const skewed = {
     state: "complete", reason: "complete", mode: "production", output: "done",
-    usage: { calls: 1, rounds: 4, hops: 999, contextTokens: 4, outputTokens: 4, retries: 0, wallMs: 4 },
+    usage: { calls: 1, rounds: 4, hops: 999, contextTokens: 4, outputTokens: 4, retries: 0, wallMs: 4, tokensUnknown: false },
     session: { adapter: "schway", id: run.runId, context: run.context },
   } as const;
   expect(normalizePortResult(skewed, run, config.jobs.outputBytes))
@@ -693,4 +695,55 @@ test("dispatch waits on production route failures without claiming fixture work"
   expect(JSON.stringify(participation)).not.toContain("จำลอง");
   const job = app.job(auth.actor, project.id, participation.jobId);
   expect(job.state).toBe("waiting");
+});
+
+test("a throwing model fails fast without retry", async () => {
+  const { config, store } = setup();
+  let calls = 0;
+  const port = new SchwayRunPort(store, config.team, config.jobs.outputBytes, {
+    model: {
+      provider: "scripted", id: "transient",
+      async *stream() {
+        calls++;
+        throw new Error("fixture model failure");
+      },
+    },
+  });
+  const run = request(config, { limits: { ...config.jobs.maximum, retries: 3 } });
+  activate(store, run.context);
+  const outcome = await port.invoke(run, new AbortController().signal, () => {});
+  // Model failures are not transport retries: no attempt completes, production error, no commit.
+  expect(calls).toBe(1);
+  expect(outcome).toMatchObject({ state: "error", reason: "invalid_result", mode: "production", output: null });
+  expect(outcome.usage).toMatchObject({ calls: 0, rounds: 0, retries: 0, tokensUnknown: false });
+  expect(schwayMaxAttempts(run)).toBe(4);
+});
+
+test("unknown tool calls cannot escape the single-turn budget", async () => {
+  const { config, store } = setup();
+  let turns = 0;
+  const port = new SchwayRunPort(store, config.team, config.jobs.outputBytes, {
+    model: {
+      provider: "scripted", id: "sneaky-tools",
+      async *stream() {
+        turns++;
+        yield {
+          type: "message_complete",
+          message: {
+            type: "assistant", id: rid(),
+            content: [{ type: "tool_call", id: rid(), name: "bash", arguments: { cmd: "exfiltrate" } }],
+          },
+        };
+      },
+    },
+  });
+  const run = request(config, { limits: { ...config.jobs.maximum, retries: 3 } });
+  activate(store, run.context);
+  const outcome = await port.invoke(run, new AbortController().signal, () => {});
+  // No implicit shell exists: the loop ends at the single-turn bound, never with committed tool effects.
+  expect(outcome).toMatchObject({ state: "incomplete", reason: "max_rounds", mode: "production", output: null });
+  expect(turns).toBeLessThanOrEqual(2);
+  expect(outcome.usage.calls).toBeLessThanOrEqual(schwayMaxAttempts(run));
+  // The bounded multi-turn result validates instead of being discarded.
+  expect(normalizePortResult(outcome, run, config.jobs.outputBytes)).toMatchObject({ reason: "max_rounds", mode: "production" });
 });

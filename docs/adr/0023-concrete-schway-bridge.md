@@ -57,10 +57,22 @@ than hidden behind a silent fallback.
 Retry accounting maps `maxAttempts = retries + 1`: worst-case additional
 calls/rounds are reserved before dispatch, single-output token accounting
 stays as committed, and measured overrun across bounded internal retries is
-reported in usage. Fully pre-reserving repeated outputs would make every
-normal job exceed its remaining budget; the call-count dimension (admission
-and billing events) is fully pre-reserved instead. Proposed upstream:
-chayapats/schway#413 (per-alias credential binding).
+reported in usage. The bridge executes bounded single-turn runs (`maxTurns:
+1`), so multi-turn tool loops surface as `max_turns` instead of spending
+unreserved calls. Usage records unreported token counters explicitly
+(`tokensUnknown`) instead of persisting unknown consumption as zero. Fully
+pre-reserving repeated outputs would make every normal job exceed its
+remaining budget; the call-count dimension (admission and billing events) is
+fully pre-reserved instead. Proposed upstream: chayapats/schway#413
+(per-alias credential binding), chayapats/schway#414 (atomic
+correlation/enumeration).
+
+Accepted residual limitations (pending upstream contracts): a crash between
+native creation and the correlation update can leave an orphan native session
+that is discoverable only as an unaddressable intent; lifecycle calls on it
+stay explicitly retryable and never report false success. Unknown token
+counters are labeled, not zeroed. A single subscription identity serves all
+aliases of one provider route until #413 lands.
 
 Production adapter exceptions normalize to a production error that never
 claims fixture evidence. Fixture-authorized work (role preview, schedule and

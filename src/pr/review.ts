@@ -165,7 +165,7 @@ export function prReviewWork(options: PrReviewWorkOptions): WorkDefinition {
         let outcome;
         try {
           outcome = normalizeFixtureResult(await options.port.invoke(request, signal, () => {}), request, Math.min(outputBytes, job.limits.outputTokens * 4, 65000));
-        } catch { outcome = { state: "error" as const, reason: "invalid_result" as const, mode: "fixture" as const, output: null, usage: { calls: 0, rounds: 0, hops: 0, contextTokens: 0, outputTokens: 0, retries: 0, wallMs: 0 }, session: null }; }
+        } catch { outcome = { state: "error" as const, reason: "invalid_result" as const, mode: "fixture" as const, output: null, usage: { calls: 0, rounds: 0, hops: 0, contextTokens: 0, outputTokens: 0, retries: 0, wallMs: 0, tokensUnknown: false }, session: null }; }
         if (outcome.reason === "quota" || outcome.reason === "needs_login" || outcome.reason === "route_unavailable") {
           return { state: "waiting", reason: outcome.reason };
         }
@@ -212,7 +212,7 @@ export function prReviewWork(options: PrReviewWorkOptions): WorkDefinition {
       let synthesisOutcome;
       try {
         synthesisOutcome = normalizeFixtureResult(await options.port.invoke(synthesisRequest, signal, () => {}), synthesisRequest, Math.min(outputBytes, job.limits.outputTokens * 4, 65000));
-      } catch { synthesisOutcome = { state: "error" as const, reason: "invalid_result" as const, mode: "fixture" as const, output: null, usage: { calls: 0, rounds: 0, hops: 0, contextTokens: 0, outputTokens: 0, retries: 0, wallMs: 0 }, session: null }; }
+      } catch { synthesisOutcome = { state: "error" as const, reason: "invalid_result" as const, mode: "fixture" as const, output: null, usage: { calls: 0, rounds: 0, hops: 0, contextTokens: 0, outputTokens: 0, retries: 0, wallMs: 0, tokensUnknown: false }, session: null }; }
       if (synthesisOutcome.reason === "quota" || synthesisOutcome.reason === "needs_login" || synthesisOutcome.reason === "route_unavailable") {
         return { state: "waiting", reason: synthesisOutcome.reason };
       }

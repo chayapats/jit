@@ -101,7 +101,7 @@ async function fixture(script?: (request: any, signal: AbortSignal, observe: (e:
   const fixtures = new Map<string, FakeGitHubFixture>();
   const port = new ScriptedRunPort(store, config.team, config.jobs.outputBytes, script ?? (() => ({
     ...fixtureOutcome("complete", goodFindingsJson()),
-    usage: { calls: 1, rounds: 1, hops: 1, contextTokens: 10, outputTokens: 100, retries: 0, wallMs: 10 },
+    usage: { calls: 1, rounds: 1, hops: 1, contextTokens: 10, outputTokens: 100, retries: 0, wallMs: 10, tokensUnknown: false },
     session: null,
   })));
   const review = prReviewWork({ store, port, now: () => clock.now });
@@ -277,7 +277,7 @@ test("payload hygiene: no secrets or PR destinations", async () => {
   });
   const f = await fixture(() => ({
     ...fixtureOutcome("complete", evil),
-    usage: { calls: 1, rounds: 1, hops: 1, contextTokens: 10, outputTokens: 100, retries: 0, wallMs: 10 }, session: null,
+    usage: { calls: 1, rounds: 1, hops: 1, contextTokens: 10, outputTokens: 100, retries: 0, wallMs: 10, tokensUnknown: false }, session: null,
   }));
   const { report } = await prepareReport(f);
   // validateFinding flags secret-like content as suspected, so evaluation holds it
@@ -353,7 +353,7 @@ test("partial report still alerts with warning; web shows partial scope", async 
   });
   const f = await fixture(() => ({
     ...fixtureOutcome("complete", partialJson),
-    usage: { calls: 1, rounds: 1, hops: 1, contextTokens: 10, outputTokens: 100, retries: 0, wallMs: 10 }, session: null,
+    usage: { calls: 1, rounds: 1, hops: 1, contextTokens: 10, outputTokens: 100, retries: 0, wallMs: 10, tokensUnknown: false }, session: null,
   }));
   bindTelegram(f);
   const monitor = enable(f);

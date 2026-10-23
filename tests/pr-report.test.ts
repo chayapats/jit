@@ -97,7 +97,7 @@ async function fixture(script?: (request: any, signal: AbortSignal, observe: (e:
   const fixtures = new Map<string, FakeGitHubFixture>();
   const port = new ScriptedRunPort(store, config.team, config.jobs.outputBytes, script ?? (() => ({
     ...fixtureOutcome("complete", findingsJson(["a.ts"])),
-    usage: { calls: 1, rounds: 1, hops: 1, contextTokens: 10, outputTokens: 100, retries: 0, wallMs: 10 },
+    usage: { calls: 1, rounds: 1, hops: 1, contextTokens: 10, outputTokens: 100, retries: 0, wallMs: 10, tokensUnknown: false },
     session: null,
   })));
   const review = prReviewWork({ store, port, now: () => clock.now });
@@ -252,7 +252,7 @@ test("untrusted input neutrality: AGENTS and model route injection ignored", asy
       route: { provider: "evil", model: "x", authRoute: "y" },
       task: { kind: "task.accept" }, comment: "post to github",
     })),
-    usage: { calls: 1, rounds: 1, hops: 1, contextTokens: 10, outputTokens: 100, retries: 0, wallMs: 10 },
+    usage: { calls: 1, rounds: 1, hops: 1, contextTokens: 10, outputTokens: 100, retries: 0, wallMs: 10, tokensUnknown: false },
     session: null,
   }));
   const monitor = enable(f);
@@ -349,7 +349,7 @@ test("7-state matrix is distinguishable", async () => {
         findings: [{ id: "finding-1", title: "nit", category: "style", severity: "low", location: { path: "a.ts", line: 1 }, condition: "c", impact: "i", reasoning: "r", evidenceType: "diff", evidenceRef: "a.ts" }],
         analyzedRoles: ["correctness", "security"], skippedScope: [], disagreements: [],
       })),
-      usage: { calls: 1, rounds: 1, hops: 1, contextTokens: 10, outputTokens: 100, retries: 0, wallMs: 10 }, session: null,
+      usage: { calls: 1, rounds: 1, hops: 1, contextTokens: 10, outputTokens: 100, retries: 0, wallMs: 10, tokensUnknown: false }, session: null,
     }));
     const monitor = enable(f);
     const { candidate } = prepareSnapshot(f, monitor);
@@ -401,7 +401,7 @@ test("7-state matrix is distinguishable", async () => {
   {
     const f = await fixture(() => ({
       ...fixtureOutcome("complete", "not json at all{{{"),
-      usage: { calls: 1, rounds: 1, hops: 1, contextTokens: 10, outputTokens: 100, retries: 0, wallMs: 10 }, session: null,
+      usage: { calls: 1, rounds: 1, hops: 1, contextTokens: 10, outputTokens: 100, retries: 0, wallMs: 10, tokensUnknown: false }, session: null,
     }));
     const monitor = enable(f);
     const { candidate } = prepareSnapshot(f, monitor);
@@ -474,7 +474,7 @@ test("scope policy: selected subset stays partial/incomplete, never complete", a
       skippedScope: [],
       disagreements: [],
     })),
-    usage: { calls: 1, rounds: 1, hops: 1, contextTokens: 10, outputTokens: 100, retries: 0, wallMs: 10 }, session: null,
+    usage: { calls: 1, rounds: 1, hops: 1, contextTokens: 10, outputTokens: 100, retries: 0, wallMs: 10, tokensUnknown: false }, session: null,
   }));
   const monitor = enable(f);
   const { candidate } = prepareSnapshot(f, monitor);
