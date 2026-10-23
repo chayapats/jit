@@ -159,14 +159,19 @@ export class TelegramChannel {
    * Inbound content stays untrusted until this boundary maps it to Application.execute.
    */
   processProjectCommands(commands: TelegramProjectCommands): TelegramInboxEvent[] {
-    return this.process(event => {
+    const events = this.process(event => {
       if (event.classification !== "authorized") return;
-      const raw = this.store.read(tx => tx.get<{ raw_json: string }>("SELECT raw_json FROM telegram_inbox WHERE sequence = ?", event.sequence));
-      if (!raw) return;
-      const update = JSON.parse(raw.raw_json) as TelegramUpdate;
-      const outcome = commands.handle(event, update);
-      commands.commitReply(outcome, event);
+      // One savepoint rolls back both the command and its reply if either cannot commit.
+      this.store.transaction(tx => {
+        const raw = tx.get<{ raw_json: string }>("SELECT raw_json FROM telegram_inbox WHERE sequence = ?", event.sequence);
+        if (!raw) throw new AppError("telegram_event_missing");
+        const outcome = commands.handle(event, JSON.parse(raw.raw_json) as TelegramUpdate);
+        commands.commitReply(outcome, event);
+      });
     });
+    // Native/model/transport work starts only after inbox + command + reply commit.
+    commands.pump();
+    return events;
   }
 
   /** Escape-safe HTML fragment for a future Web status page; no secrets or raw tokens. */

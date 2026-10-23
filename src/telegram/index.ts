@@ -10,3 +10,5 @@ export type {
   TelegramEventPage, TelegramInboxEvent, TelegramPollStatus, TelegramStatus,
   TelegramUpdate, TelegramUpdateTransport, TelegramMessage, TelegramCallbackQuery,
 } from "./types";
+
+export { TelegramControlOutbox, type TelegramControlReply } from "./control-outbox";

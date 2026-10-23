@@ -5,6 +5,12 @@ import type { AppTransaction } from "../store";
  * Formal `user_version` migration remains reserved for store ownership.
  */
 export function ensureTelegramProjectSchema(tx: AppTransaction): void {
+  tx.run(`CREATE TABLE IF NOT EXISTS telegram_control_replies (
+    sequence INTEGER PRIMARY KEY REFERENCES telegram_inbox(sequence), text TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('queued', 'sending', 'sent', 'failed', 'unknown', 'cancelled')),
+    binding_revision INTEGER NOT NULL, owner_generation INTEGER NOT NULL, chat_id INTEGER NOT NULL,
+    attempts INTEGER NOT NULL, deadline INTEGER NOT NULL, message_id INTEGER, reason TEXT
+  )`);
   tx.run(`CREATE TABLE IF NOT EXISTS telegram_project_context (
     telegram_chat_id INTEGER PRIMARY KEY,
     revision INTEGER NOT NULL CHECK (revision > 0),

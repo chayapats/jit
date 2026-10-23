@@ -23,12 +23,13 @@ function project(row: ContextRow): TelegramProjectContext {
   };
 }
 
+/** Reads the exact current chat context; names are never selectors. */
 export function readProjectContext(tx: AppTransaction, telegramChatId: number): TelegramProjectContext | null {
-  ensureTelegramProjectSchema(tx);
   const row = tx.get<ContextRow>("SELECT * FROM telegram_project_context WHERE telegram_chat_id = ?", telegramChatId);
   return row ? project(row) : null;
 }
 
+/** Changes one context using its expected revision, rejecting ambiguous replacement. */
 export function mutateProjectContext(
   tx: AppTransaction,
   telegramChatId: number,
@@ -43,7 +44,8 @@ export function mutateProjectContext(
   if (!topic) throw new AppError("topic_not_found", 404, { projectId, topicId });
   const current = tx.get<ContextRow>("SELECT * FROM telegram_project_context WHERE telegram_chat_id = ?", telegramChatId);
   if (current) {
-    if (expectedRevision != null && current.revision !== expectedRevision) {
+    if (expectedRevision === null && current.project_id === projectId && current.topic_id === topicId && current.binding_revision === bindingRevision) return project(current);
+    if (expectedRevision === null || current.revision !== expectedRevision) {
       throw new AppError("stale_revision", 409, { revision: current.revision, path: `/telegram/context/${telegramChatId}` });
     }
     const revision = current.revision + 1;
