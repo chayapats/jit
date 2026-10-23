@@ -11,6 +11,7 @@ import { discussionPlanWork, specialistAnalysisWork } from "./team/dispatch";
 import { ScriptedRunPort } from "./team/scripted-port";
 import { scriptedPreviewWork } from "./team/preview";
 import { memoryExtractionWork, scriptedMemoryResult } from "./memory/extract";
+import { scheduleReminderWork, scheduleSummaryWork, tickSchedules } from "./jobs/schedules";
 import { lookupSource } from "./sources";
 
 async function secret(): Promise<string> {
@@ -37,7 +38,7 @@ async function main(): Promise<void> {
     });
     queue = new JobQueue(store, config.jobs, [
       projectStateWork(store), scriptedPreviewWork(store, config, port), discussionPlanWork(), specialistAnalysisWork(store, config, port), coordinatorSynthesisWork(store, config, port),
-      memoryExtractionWork(store, config, memoryPort),
+      memoryExtractionWork(store, config, memoryPort), scheduleReminderWork(store, config), scheduleSummaryWork(store, config, port),
     ]);
     await queue.reconcile(port);
   } }
@@ -52,7 +53,7 @@ async function main(): Promise<void> {
   try { server = Bun.serve({ hostname: config.hostname, port: config.port, maxRequestBodySize: config.bodyBytes,
     idleTimeout: 15, fetch: createWebHandler(app), error: () => new Response("Request failed", { status: 503 }) }); }
   catch (error) { queue?.close(); store.close(); throw error; }
-  const timer = setInterval(() => { try { queue!.pump(); } catch { /* Queue refuses acknowledgments after a storage/ownership failure. */ } }, 100);
+  const timer = setInterval(() => { try { queue!.pump(); tickSchedules(store, queue!, config, Date.now()); } catch { /* Queue refuses acknowledgments after a storage/ownership failure. */ } }, 100);
   timer.unref();
   console.log("Jit workspace started. No external services connected.");
   const stop = async () => { clearInterval(timer); queue?.close(); await server.stop(); store.close(); process.exit(0); };

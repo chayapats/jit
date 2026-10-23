@@ -1,13 +1,14 @@
 import { Application, type CreateProjectCommand } from "./application";
 import { AppError } from "./errors";
 import type { CreateTopicCommand, SendMessageCommand } from "./conversation";
-import { workspacePage, projectPage, conversationPage, sourcePage, jobsPage, teamPage, previewPage, discussionPage, deliveryPage, deliveryDetailPage, tasksPage, taskPage, memoryPage, memoryClaimPage, memoryContextPage, loginPage, errorPage } from "./web-layout";
+import { workspacePage, projectPage, conversationPage, sourcePage, jobsPage, teamPage, previewPage, discussionPage, deliveryPage, deliveryDetailPage, tasksPage, taskPage, memoryPage, memoryClaimPage, memoryContextPage, schedulesPage, scheduleDetailPage, loginPage, errorPage } from "./web-layout";
 import type { ExtractMemoryCommand } from "./memory/types";
 import type { CorrectMemoryCommand } from "./memory/types";
 import type { ForgetMemoryCommand } from "./memory/types";
 import type { CommitDeliveryCommand, ResendDeliveryCommand } from "./delivery";
 import type { EnqueueJobCommand, JobLimits, ResumeJobCommand, StopJobCommand } from "./jobs/types";
-import type { DecisionCommand, TeamCommand } from "./team/types";
+import type { ScheduleCommand, ScheduleRecurrence } from "./jobs/schedules";
+import type { DecisionCommand, TeamCommand, RoleRoute } from "./team/types";
 import type { TaskCommand } from "./tasks";
 import { styleSheet } from "./web-style";
 
@@ -72,6 +73,10 @@ const messages: Record<string, string> = {
   memory_source_derived: "ต้นฉบับนี้เป็นคำตอบที่ใช้ memory แล้ว จึงไม่สกัดกลับเป็น memory เพื่อกันการวนซ้ำ",
   memory_context_not_found: "ไม่พบบริบทของ run นี้ในโครงการที่เลือก",
   memory_context_stale: "งาน มติ หรือ memory ที่การหารือนี้ใช้เปลี่ยนแล้ว เริ่มการหารือใหม่เพื่อใช้สถานะปัจจุบัน",
+  invalid_schedule_command: "คำสั่งกำหนดการไม่ถูกต้อง กรุณาเปิดหน้าใหม่",
+  invalid_schedule_timezone: "เขตเวลาไม่ถูกต้อง กรุณาใช้ชื่อเขตเวลา IANA เช่น Asia/Bangkok",
+  schedule_not_found: "ไม่พบกำหนดการในโครงการที่เลือก",
+  schedule_not_active: "กำหนดการนี้หยุดชั่วคราวหรือถูกยกเลิกแล้ว ตรวจสถานะก่อนสั่งอีกครั้ง",
   memory_role_unavailable: "เปิดใช้บทบาทและกำหนด route ก่อนสกัด memory",
   memory_dependency_unavailable: "Memory ที่อ้างอิงเปลี่ยนหรือไม่พร้อมใช้งาน กรุณาเลือกใหม่",
   invalid_memory_command: "ข้อมูลคำขอสกัด memory ไม่ถูกต้อง กรุณาเปิดหน้าใหม่",
@@ -171,6 +176,9 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       const jobsRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/jobs$/.exec(url.pathname);
       const jobRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/jobs\/([a-f0-9-]{36})$/.exec(url.pathname);
       const resumeRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/jobs\/([a-f0-9-]{36})\/(resume|stop)$/.exec(url.pathname);
+      const schedulesRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/schedules$/.exec(url.pathname);
+      const scheduleRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/schedules\/([a-f0-9-]{36})$/.exec(url.pathname);
+      const scheduleAction = /^\/(api\/)?projects\/([a-f0-9-]{36})\/schedules\/([a-f0-9-]{36})\/(pause|resume|revoke|edit)$/.exec(url.pathname);
       const teamRoute = /^\/(?:api\/)?(?:projects\/([a-f0-9-]{36})\/)?team$/.exec(url.pathname);
       const teamAction = /^\/(?:api\/)?(?:projects\/([a-f0-9-]{36})\/)?team\/(roles|routes|previews|discussions)$/.exec(url.pathname);
       const previewRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/team\/previews\/([a-f0-9-]{36})$/.exec(url.pathname);
@@ -381,6 +389,15 @@ export function createWebHandler(app: Application): (request: Request) => Promis
         const state = app.delivery(auth.actor, deliveryIntentRoute[2]!, deliveryIntentRoute[3]!);
         return api ? json(state) : respond(deliveryDetailPage(state, app.workspace(auth.actor), auth.csrf));
       }
+      if (request.method === "GET" && schedulesRoute) {
+        const state = app.schedules(auth.actor, schedulesRoute[2]!);
+        return api ? json(state) : respond(schedulesPage(state, app.workspace(auth.actor), auth.csrf,
+          app.topics(auth.actor, state.project.id).items, config.jobs.maximum));
+      }
+      if (request.method === "GET" && scheduleRoute) {
+        const state = app.schedule(auth.actor, scheduleRoute[2]!, scheduleRoute[3]!);
+        return api ? json(state) : respond(scheduleDetailPage(state, app.workspace(auth.actor), auth.csrf));
+      }
       if (request.method === "POST" && (deliveryRoute || deliveryResendRoute)) {
         const body = await payload(request);
         app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
@@ -439,9 +456,43 @@ export function createWebHandler(app: Application): (request: Request) => Promis
         const state = app.workspace(auth.actor, offset);
         return api ? json(state) : respond(workspacePage(state, auth.csrf, offset, config.pageSize));
       }
-      if (request.method === "POST" && (["/projects", "/api/projects", "/logout"].includes(url.pathname) || topicCollection || messageRoute || jobsRoute || resumeRoute)) {
+      if (request.method === "POST" && (["/projects", "/api/projects", "/logout"].includes(url.pathname) || topicCollection || messageRoute || jobsRoute || resumeRoute || schedulesRoute || scheduleAction)) {
         const body = await payload(request);
         app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        if (schedulesRoute || scheduleAction) {
+          const number = (value: unknown) => typeof value === "string" && /^\d{1,15}$/.test(value) ? Number(value) : value;
+          const form = request.headers.get("content-type")?.split(";")[0]?.trim() === "application/x-www-form-urlencoded";
+          const data = (value: unknown) => { if (!form) return value; try { return JSON.parse(value as string); } catch { throw new AppError("invalid_body"); } };
+          const projectId = (schedulesRoute ?? scheduleAction)![2]!;
+          const enabled = (value: unknown) => value === "true" ? true : value === "false" ? false : value;
+          let command: ScheduleCommand;
+          if (schedulesRoute) {
+            const allowed = ["csrf", "requestId", "expectedRevision", "topicId", "kind", "purpose", "timezone", "recurrence", "enabled", "route", "limits", "occurrenceBudget", "misfire", "text"];
+            if (Object.keys(body).some(key => !allowed.includes(key))) throw new AppError("invalid_body");
+            command = { kind: "schedule.create", requestId: body.requestId as string, projectId, expectedRevision: number(body.expectedRevision) as number,
+              payload: { topicId: body.topicId as string, kind: body.kind as "reminder" | "summary", purpose: body.purpose as string,
+                timezone: body.timezone as string, recurrence: data(body.recurrence) as ScheduleRecurrence,
+                enabled: enabled(body.enabled) as boolean, route: data(body.route) as RoleRoute | null, limits: data(body.limits) as JobLimits,
+                occurrenceBudget: number(body.occurrenceBudget) as number, misfire: body.misfire as "coalesce", text: body.text as string } } as ScheduleCommand;
+          } else {
+            const action = scheduleAction![4]!, scheduleId = scheduleAction![3]!;
+            const expectedRevision = number(body.expectedRevision) as number, requestId = body.requestId as string;
+            if (action === "pause" || action === "resume" || action === "revoke") {
+              if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision"].includes(key))) throw new AppError("invalid_body");
+              command = { kind: `schedule.${action}`, requestId, projectId, expectedRevision, payload: { scheduleId } } as ScheduleCommand;
+            } else {
+              const allowed = ["csrf", "requestId", "expectedRevision", "purpose", "timezone", "recurrence", "enabled", "route", "limits", "occurrenceBudget", "text"];
+              if (Object.keys(body).some(key => !allowed.includes(key))) throw new AppError("invalid_body");
+              command = { kind: "schedule.edit", requestId, projectId, expectedRevision,
+                payload: { scheduleId, purpose: body.purpose as string, timezone: body.timezone as string,
+                  recurrence: data(body.recurrence) as ScheduleRecurrence, enabled: enabled(body.enabled) as boolean,
+                  route: data(body.route) as RoleRoute | null, limits: data(body.limits) as JobLimits,
+                  occurrenceBudget: number(body.occurrenceBudget) as number, text: body.text as string } } as ScheduleCommand;
+            }
+          }
+          const receipt = app.execute(auth.actor, command);
+          return api ? json(receipt) : respond(null, 303, { Location: `/projects/${projectId}/schedules/${receipt.schedule.id}` });
+        }
         if (url.pathname === "/logout") {
           app.logout(auth.actor);
           return respond(null, 303, { "Location": "/login", "Set-Cookie": cookie("", 0) });

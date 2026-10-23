@@ -171,6 +171,23 @@ function cancelUnsent(tx: AppTransaction, intent: DeliveryIntent, reason: string
 }
 
 /**
+ * Cancels every unsent intent committed by one configured schedule.
+ * Intents already accepted remotely or with an in-flight sender stay recorded; revocation
+ * never claims an external send was withdrawn. Used by `jobs.configured_schedules/v1`
+ * revoke/edit fencing inside the same owner transaction that fences schedule attempts.
+ */
+export function cancelScheduleIntents(tx: AppTransaction, scheduleId: string, reason: string, now: number): string[] {
+  if (typeof scheduleId !== "string" || !/^[a-f0-9-]{36}$/.test(scheduleId)) throw new AppError("invalid_schedule_command");
+  if (!Number.isSafeInteger(now) || now < 0) throw new AppError("invalid_commit_time");
+  const cancelled: string[] = [];
+  for (const row of tx.all<{ record_json: string }>("SELECT record_json FROM delivery_intents WHERE dedupe_key LIKE 'schedule/' || ? || '/%' ORDER BY sequence", scheduleId)) {
+    const intent = intentOf(row);
+    if (cancelUnsent(tx, intent, reason, now)) cancelled.push(intent.id);
+  }
+  return cancelled;
+}
+
+/**
  * Marks a report superseded or deleted and cancels intents that have not invoked the sender.
  * A send already accepted remotely stays recorded. This does not claim the remote message was withdrawn.
  */
