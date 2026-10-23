@@ -60,20 +60,18 @@ function pendingReferencing(tx: AppTransaction, originProjectId: string, affecte
       return !!manifest?.claims?.some(entry => entry.projectId === originProjectId && affected.has(entry.claimId));
     } catch { unreadable++; return false; /* Unreadable rows count as incomplete, never as clean. */ }
   };
-  // Remaining-budget LIMITs bound every SQL input: the pending total never exceeds the cap.
-  const tables = ["memory_extractions", "team_runs", "coordinator_syntheses"];
-  for (const table of tables) {
-    const remaining = impactPreviewBounds.pendingJobs + 1 - found.size;
-    if (remaining <= 0) break;
-    for (const row of tx.all<{ projectId: string; jobId: string; json: string }>(
-      `SELECT project_id AS projectId, job_id AS jobId, record_json AS json FROM ${table} WHERE job_id IN (SELECT id FROM jobs WHERE ${pending}) LIMIT ${remaining}`)) {
-      if (cites(row.json)) found.set(row.jobId, { id: row.jobId, projectId: row.projectId });
-    }
+  // One globally ordered candidate stream: truncation is decided by rows EXAMINED, not matches.
+  const stream = tx.all<{ projectId: string; jobId: string; json: string }>(
+    `SELECT projectId, jobId, json FROM (
+       SELECT project_id AS projectId, job_id AS jobId, record_json AS json, 0 AS source, rowid AS ordering FROM memory_extractions WHERE job_id IN (SELECT id FROM jobs WHERE ${pending})
+       UNION ALL SELECT project_id AS projectId, job_id AS jobId, record_json AS json, 1 AS source, rowid AS ordering FROM team_runs WHERE job_id IN (SELECT id FROM jobs WHERE ${pending})
+       UNION ALL SELECT project_id AS projectId, job_id AS jobId, record_json AS json, 2 AS source, rowid AS ordering FROM coordinator_syntheses WHERE job_id IN (SELECT id FROM jobs WHERE ${pending})
+     ) ORDER BY source, ordering LIMIT ${impactPreviewBounds.pendingJobs + 1}`);
+  for (const row of stream) {
+    if (cites(row.json) && found.size < impactPreviewBounds.pendingJobs) found.set(row.jobId, { id: row.jobId, projectId: row.projectId });
   }
-  const jobs = [...found.values()];
-  return jobs.length > impactPreviewBounds.pendingJobs || unreadable > 0
-    ? { jobs: jobs.slice(0, impactPreviewBounds.pendingJobs), truncated: true }
-    : { jobs, truncated: false };
+  const truncated = stream.length > impactPreviewBounds.pendingJobs || unreadable > 0;
+  return { jobs: [...found.values()], truncated };
 }
 
 /**
@@ -128,7 +126,8 @@ export function correctionImpact(tx: AppTransaction, projectId: string, referenc
   const contextRows = affected.size ? tx.all<{ id: string; projectId: string; ownerKind: string; ownerId: string }>(
     `SELECT c.id, c.project_id AS projectId, c.owner_kind AS ownerKind, c.owner_id AS ownerId FROM memory_contexts c
      JOIN memory_context_entries e ON e.context_id = c.id
-     WHERE e.kind = 'claim' AND e.origin_project_id = ? AND e.entry_id IN (${placeholders}) ORDER BY c.sequence LIMIT ?`,
+     WHERE e.kind = 'claim' AND e.origin_project_id = ? AND e.entry_id IN (${placeholders})
+     GROUP BY c.id ORDER BY MAX(c.sequence) LIMIT ?`,
     projectId, ...affected, impactPreviewBounds.contexts + 1) : [];
   const listedContexts = capped(contextRows, impactPreviewBounds.contexts);
   const pending = claim.state === "available" ? pendingReferencing(tx, projectId, affected) : { jobs: [], truncated: false };
@@ -197,14 +196,21 @@ function fenceStaleDiscussions(tx: AppTransaction, now: number): void {
     `SELECT r.project_id AS projectId, r.job_id AS jobId, r.record_json AS json, j.record_json AS jobJson
      FROM team_runs r JOIN jobs j ON j.id = r.job_id WHERE ${pending}`);
   for (const row of rows) {
+    // The authoritative job type decides: stored run JSON is untrusted input, never identity.
+    if (!isDiscussionJob(row.jobJson)) continue;
     let discussion: Discussion | null = null;
     try { discussion = JSON.parse(row.json) as Discussion; } catch { /* Failed closed below. */ }
-    if (discussion && discussion.kind !== "discussion") continue;
-    if (!discussion && !isDiscussionJob(row.jobJson)) continue;
-    const stale = !discussion?.manifest || contextCurrent(tx, row.projectId, discussion.manifest) !== null;
+    const manifestValid = !!discussion && discussion.kind === "discussion" &&
+      !!discussion.manifest && Array.isArray(discussion.manifest.claims);
+    let stale = true;
+    if (manifestValid && discussion) {
+      try {
+        stale = contextCurrent(tx, row.projectId, discussion.manifest) !== null;
+      } catch { /* A manifest that cannot be evaluated cannot prove safety. */ }
+    }
     if (!stale) continue;
     invalidatePendingJob(tx, row.projectId, row.jobId, "source_retired", now);
-    const participations = Array.isArray(discussion?.participations) ? discussion.participations : [];
+    const participations = manifestValid && Array.isArray(discussion?.participations) ? discussion.participations : [];
     for (const participation of participations) {
       try {
         if (participation && typeof participation.jobId === "string") invalidatePendingJob(tx, row.projectId, participation.jobId, "source_retired", now);

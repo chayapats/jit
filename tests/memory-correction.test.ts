@@ -48,9 +48,9 @@ function synthesisJson(request: ApplicationRunRequest) {
   ] };
 }
 
-async function fixture() {
+async function fixture(env: Record<string, string> = {}) {
   const root = mkdtempSync(join(tmpdir(), "jit-mem03-")); roots.push(root);
-  const config = readConfig({ JIT_DATABASE: join(root, "state.sqlite") }), clock = { now: epoch };
+  const config = readConfig({ JIT_DATABASE: join(root, "state.sqlite"), ...env }), clock = { now: epoch };
   const defaults = {
     extract: ((request: ApplicationRunRequest) => scriptedMemoryResult(request, true)) as Script,
     specialist: ((request: ApplicationRunRequest) => fixtureOutcome("complete", withContextAnswer("ตอบจำลอง", request, config.jobs.outputBytes))) as Script,
@@ -248,13 +248,13 @@ test("MEM03 transitive-only discussion is fenced and reported through the affect
   expect(f.rt.app.discussion(actor(f), p.id, discussion.id).context!.current).toBe(false);
 });
 
-test("MEM03 corrupt pending discussion JSON fails closed: commit succeeds and parent is fenced", async () => {
+for (const shape of ['{"kind":"discussion"}', '{"kind":"specialist"}', '{}', '{"kind":"discussion","manifest":{}}', '{"kind":"discussion","manifest":{"claims":{}}}']) test(`MEM03 corrupt pending discussion fails closed for shape ${shape}`, async () => {
   const f = await fixture();
   const p = project(f, "Jit MVP", "ฐานข้อมูลสำหรับ MVP");
   const stale = await remember(f, p, say(f, p, "ใช้ PostgreSQL สำหรับทุกโครงการ"));
   const discussion = f.rt.app.execute(actor(f), dispatch(f, p, "ใช้ PostgreSQL สำหรับทุกโครงการจริงหรือ")).discussion!;
   await f.rt.queue.idle();
-  f.rt.store.transaction(tx => tx.run("UPDATE team_runs SET record_json = ? WHERE id = ?", '{"kind":"discussion"}', discussion.id));
+  f.rt.store.transaction(tx => tx.run("UPDATE team_runs SET record_json = ? WHERE id = ?", shape, discussion.id));
   const evidence = say(f, p, "เปลี่ยนมาใช้ SQLite สำหรับ MVP");
   const done = f.rt.app.execute(actor(f), correctCommand(f, p, stale, "ใช้ SQLite สำหรับ MVP", "เปลี่ยนมาใช้ SQLite สำหรับ MVP", evidence));
   expect(done.replacement.revision).toBe(1);
@@ -297,6 +297,40 @@ test("MEM03 admitted extraction adapter is aborted by correction and its late re
   expect(JSON.parse(extraction.record_json).state).not.toBe("complete");
   expect(claims(f, p).map(claim => claim.text)).toEqual(["ใช้ SQLite สำหรับ MVP"]);
   expect(f.rt.app.memoryClaim(actor(f), p.id, ref(stale))).toMatchObject({ state: "unavailable", reason: "claim_corrected" });
+});
+
+test("MEM03 pending preview window is decided by rows examined, not matches", async () => {
+  const f = await fixture({ JIT_JOB_QUEUE_LIMIT: "600" });
+  const p = project(f, "Jit MVP", "ฐานข้อมูลสำหรับ MVP");
+  const stale = await remember(f, p, say(f, p, "ใช้ PostgreSQL สำหรับทุกโครงการ"));
+  const total = impactPreviewBounds.pendingJobs + 2;
+  for (let i = 0; i < total; i++) {
+    const source = say(f, p, `ประกอบการสกัด ${i}`);
+    f.rt.app.execute(actor(f), extractCommand(f, p, source, i === total - 1 ? [ref(stale)] : []));
+  }
+  const impact = f.rt.app.correctionImpact(actor(f), p.id, ref(stale));
+  // The only citing job sits past the window: honestly empty AND truncated.
+  expect(impact.pendingJobs).toHaveLength(0);
+  expect(impact.truncated.pendingJobs).toBe(true);
+});
+
+test("MEM03 recorded contexts are deduplicated when one context cites root and dependent", async () => {
+  const f = await fixture();
+  const p = project(f, "Jit MVP", "ฐานข้อมูลสำหรับ MVP");
+  const rootOutput: Script = request => fixtureOutcome("complete", JSON.stringify({ version: 1, complete: true,
+    claims: [{ kind: "inference" as const, text: "DB หลักคือ PostgreSQL ทุกโครงการ", quote: request.manifest.sources[0]!.text, source: request.manifest.sources[0]!.reference, dependencies: [], conflicts: [] }] }));
+  const root = await remember(f, p, say(f, p, "ใช้ PostgreSQL สำหรับทุกโครงการ"), { output: rootOutput });
+  const midOutput: Script = request => fixtureOutcome("complete", JSON.stringify({ version: 1, complete: true,
+    claims: [{ kind: "inference" as const, text: "ดังนั้นทุกโครงการต้องตั้งค่า PostgreSQL", quote: request.manifest.sources[0]!.text, source: request.manifest.sources[0]!.reference, dependencies: [], conflicts: [] }] }));
+  const mid = await remember(f, p, say(f, p, "ต้องทบทวนแผน PostgreSQL เดิมก่อนตัดสินใจ"), { dependencies: [ref(root)], output: midOutput });
+  const discussion = f.rt.app.execute(actor(f), dispatch(f, p, "PostgreSQL ตั้งค่าโครงการอย่างไร")).discussion!;
+  await f.rt.queue.idle();
+  const manifestIds = discussion.manifest.claims.map(claim => claim.claimId);
+  expect(manifestIds).toContain(root.claimId);
+  expect(manifestIds).toContain(mid.claimId);
+  const impact = f.rt.app.correctionImpact(actor(f), p.id, ref(root));
+  expect(impact.contexts.length).toBeGreaterThan(0);
+  expect(new Set(impact.contexts.map(entry => entry.id)).size).toBe(impact.contexts.length);
 });
 
 test("MEM03 preview caps are honest: capped helper truncates and flags large impact lists", async () => {
