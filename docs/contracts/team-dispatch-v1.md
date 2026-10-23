@@ -15,6 +15,7 @@ type TeamCommand =
 
 interface Discussion { kind: "discussion"; id; projectId; topicId; purpose; jobId;
   revision; createdAt; updatedAt; manifest; limits; router; participations; coverageGap }
+// MEM02: manifest also carries assembled claims and manifest.context (app.memory_context/v1)
 
 Application.execute(actor, TeamCommand): TeamReceipt; // discussion?: Discussion
 Application.discussions(actor, projectId, topicId): Discussion[];

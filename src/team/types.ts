@@ -23,6 +23,32 @@ export interface ManagedContextReference { id: string; generation: number }
 export interface RunSourceManifest {
   sources: readonly { projectId: string; reference: SourceReference; text: string }[];
   claims: readonly { projectId: string; claimId: string; revision: number; generation: number; text: string }[];
+  /** app.memory_context/v1 layer labels; absent for runs that never assembled memory context. */
+  context?: MemoryContextLayout;
+}
+/** Current authoritative project state copied from app.project_continuity/v1 at assembly; never derived memory. */
+export interface ContextConstraint {
+  kind: "task" | "decision"; id: string; revision: number; topicId: string;
+  /** Task lifecycle state, or `current` for the live owner decision of a topic. */
+  state: "proposed" | "accepted" | "ready_for_review" | "current";
+  text: string; truncated: boolean; source: SourceReference;
+}
+/** Trust layer of one manifest claim; cross_project claims are always inferences for the requesting project. */
+export interface ContextClaimLayer {
+  layer: "explicit_preference" | "inference"; scope: "project" | "cross_project";
+  kind: "explicit_fact" | "inference"; source: SourceReference;
+  conflicts: readonly { claimId: string; revision: number; generation: number }[];
+}
+/**
+ * app.memory_context/v1 policy 1 layout. `manifest.sources` are source evidence, `claims[i]` labels
+ * `manifest.claims[i]`, and the persisted app.context_provenance/v1 record `recordId` holds exact revisions.
+ */
+export interface MemoryContextLayout {
+  version: 1; recordId: string; policy: 1;
+  constraints: readonly ContextConstraint[];
+  claims: readonly ContextClaimLayer[];
+  omitted: { constraints: number; claims: number; unavailable: number; budget: boolean; loopGuard: boolean };
+  derivation: { inputDepth: number };
 }
 /** Service-owned read tools that later consumers may select explicitly; preview and dispatch select none. */
 export type ApplicationReadTool = "project.read" | "source.read" | "memory.read";

@@ -11,8 +11,11 @@ import { planDiscussionRoles } from "./router";
 import { fixtureOutcome, normalizeFixtureResult, validateRunRequest } from "./scripted-port";
 import type { ApplicationRunPort } from "./run-port";
 import type {
-  ApplicationRunRequest, Discussion, DiscussionParticipation, SpecialistRun, TeamCommand, TeamReceipt,
+  ApplicationRunRequest, Discussion, DiscussionParticipation, RunSourceManifest, SpecialistRun, TeamCommand, TeamReceipt,
 } from "./types";
+import {
+  assembleMemoryContext, contextByteRoom, contextCurrent, markMemoryDerived, memoryContextOperator, redactManifest,
+} from "../memory/context";
 
 export const discussionWorkId = "team.discussion";
 export const specialistWorkId = "team.specialist-analysis";
@@ -103,7 +106,10 @@ export function projectDiscussion(tx: AppTransaction, discussion: Discussion): D
       progress: outcome ? null : run.progress,
     } satisfies DiscussionParticipation;
   });
-  const projected = { ...discussion, participations, coverageGap: coverageGap({ ...discussion, participations }) };
+  const projected = {
+    ...discussion, manifest: redactManifest(tx, discussion.manifest), participations,
+    coverageGap: coverageGap({ ...discussion, participations }),
+  };
   return projected;
 }
 
@@ -118,7 +124,7 @@ function freezeSources(tx: AppTransaction, projectId: string, sources: { sourceI
 
 function buildRequest(
   tx: AppTransaction, config: AppConfig, projectId: string, topicId: string, roleId: string, purpose: string,
-  sources: ApplicationRunRequest["manifest"]["sources"], limits: ApplicationRunRequest["limits"], generation: number,
+  manifest: RunSourceManifest, limits: ApplicationRunRequest["limits"], generation: number,
 ): { request: ApplicationRunRequest; roleName: string; contextId: string } {
   const state = readTeam(tx, projectId, config.team);
   const role = state.roles.find(item => item.id === roleId);
@@ -130,8 +136,8 @@ function buildRequest(
     route: structuredClone(role.effective.route),
     configuration: { ownerRevision: state.ownerRevision, projectRevision: state.projectRevision, roleRevision: role.revision },
     context, fence: { jobId: "00000000-0000-0000-0000-000000000000", generation: 1, ownerGeneration: generation },
-    instructions: { operator, responsibility: role.responsibility },
-    manifest: { sources: structuredClone(sources), claims: [] },
+    instructions: { operator: manifest.context ? [...operator, memoryContextOperator] : operator, responsibility: role.responsibility },
+    manifest: structuredClone(manifest),
     tools: [], policy: { genericExecution: false, arbitraryFetch: false, hostedLookup: false, repositoryDiscovery: false },
     limits: structuredClone(limits),
   };
@@ -143,9 +149,9 @@ function buildRequest(
 function enqueueSpecialist(
   tx: AppTransaction, queue: JobQueue, config: AppConfig, command: { requestId: string; projectId: string; expectedRevision: number },
   discussionId: string, topicId: string, roleId: string, purpose: string,
-  sources: ApplicationRunRequest["manifest"]["sources"], limits: ApplicationRunRequest["limits"], generation: number, now: number,
+  manifest: RunSourceManifest, limits: ApplicationRunRequest["limits"], generation: number, now: number,
 ): DiscussionParticipation {
-  const built = buildRequest(tx, config, command.projectId, topicId, roleId, purpose, sources, limits, generation);
+  const built = buildRequest(tx, config, command.projectId, topicId, roleId, purpose, manifest, limits, generation);
   const { job } = queue.execute(tx, {
     kind: "job.enqueue", requestId: command.requestId, projectId: command.projectId, expectedRevision: command.expectedRevision,
     payload: {
@@ -188,6 +194,14 @@ export function prepareDispatch(
     })),
   });
   const discussionId = crypto.randomUUID();
+  const responsibility = state.roles.filter(role => plan.selected.includes(role.id))
+    .map(role => role.responsibility).sort((a, b) => Buffer.byteLength(JSON.stringify(b)) - Buffer.byteLength(JSON.stringify(a)))[0] ?? "";
+  const { manifest } = assembleMemoryContext(tx, {
+    projectId: command.projectId, topicId: p.topicId, purpose: p.purpose, owner: { kind: "discussion", id: discussionId },
+    evidence: sources, claimSlots: config.team.sourceLimit - sources.length,
+    bytes: contextByteRoom(config.team, { sources, purpose: p.purpose, responsibility, operator }),
+    ownerGeneration: generation, now,
+  });
   const contextId = crypto.randomUUID();
   tx.run("INSERT INTO team_contexts VALUES (?, 1, 'active')", contextId);
   const { job: discussionJob } = queue.execute(tx, {
@@ -198,13 +212,13 @@ export function prepareDispatch(
     },
   }, generation, now);
   const participations = plan.selected.map(roleId => enqueueSpecialist(
-    tx, queue, config, command, discussionId, p.topicId, roleId, p.purpose, sources, p.limits, generation, now));
+    tx, queue, config, command, discussionId, p.topicId, roleId, p.purpose, manifest, p.limits, generation, now));
   const discussion: Discussion = {
     kind: "discussion", id: discussionId, projectId: command.projectId, topicId: p.topicId, purpose: p.purpose,
     jobId: discussionJob.id, revision: 1, createdAt: now, updatedAt: now,
-    manifest: { sources, claims: [] }, limits: structuredClone(p.limits), router: plan, participations, coverageGap: coverageGap({
+    manifest, limits: structuredClone(p.limits), router: plan, participations, coverageGap: coverageGap({
       kind: "discussion", id: discussionId, projectId: command.projectId, topicId: p.topicId, purpose: p.purpose,
-      jobId: discussionJob.id, revision: 1, createdAt: now, updatedAt: now, manifest: { sources, claims: [] },
+      jobId: discussionJob.id, revision: 1, createdAt: now, updatedAt: now, manifest,
       limits: p.limits, router: plan, participations, coverageGap: [],
     }),
   };
@@ -230,10 +244,11 @@ export function prepareControl(
     if (discussion.participations.filter(item => !["excluded", "skipped"].includes(item.state)).length >= discussion.limits.roles) {
       throw new AppError("role_budget_exhausted", 409);
     }
+    if (contextCurrent(tx, command.projectId, discussion.manifest)) throw new AppError("memory_context_stale", 409);
     const project = tx.get<{ revision: number }>("SELECT revision FROM projects WHERE id = ?", command.projectId)!;
     const participation = enqueueSpecialist(
       tx, queue, config, { requestId: command.requestId, projectId: command.projectId, expectedRevision: project.revision },
-      discussion.id, discussion.topicId, p.roleId, discussion.purpose, discussion.manifest.sources, discussion.limits, generation, now);
+      discussion.id, discussion.topicId, p.roleId, discussion.purpose, discussion.manifest, discussion.limits, generation, now);
     if (existing) {
       discussion.participations = discussion.participations.map(item => item.roleId === p.roleId ? participation : item);
     } else discussion.participations.push(participation);
@@ -320,7 +335,7 @@ export function specialistAnalysisWork(
       return request.fence.jobId === job.id && request.fence.generation === attempt.generation &&
         request.fence.ownerGeneration === job.authorization.generation &&
         tx.get<{ state: string }>("SELECT state FROM team_contexts WHERE id = ? AND generation = ?", request.context.id, request.context.generation)?.state === "active" &&
-        sourceCurrent(tx, request);
+        sourceCurrent(tx, request) && contextCurrent(tx, request.projectId, request.manifest) === null;
     },
     cost: { roles: 1, calls: 1, rounds: 1, hops: 1 },
     validate: (input, scope) => valid(input) && scope.inputRevision === scope.projectRevision,
@@ -360,6 +375,7 @@ export function specialistAnalysisWork(
         if (outcome.state === "complete" && outcome.output) {
           const text = `วิเคราะห์จำลอง (fixture) · ${run.roleName}\n${outcome.output}`;
           current.source = commitOutputSource(tx, { projectId: run.projectId, participantId: run.roleId, runId: run.id, text, committedAt: now() });
+          markMemoryDerived(tx, run.projectId, current.source, request.manifest);
           const topic = tx.get<{ message_sequence: number }>("SELECT message_sequence FROM topics WHERE project_id = ? AND id = ?", run.projectId, run.topicId)!;
           const attribution = { kind: "participant", participantId: run.roleId, runId: run.id };
           tx.run("INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", crypto.randomUUID(), run.projectId, run.topicId, topic.message_sequence + 1, now(),

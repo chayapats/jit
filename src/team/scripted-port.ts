@@ -6,6 +6,7 @@ import type { TransactionStore } from "../store";
 import type { ApplicationRunPort, ManagedContextOutcome } from "./run-port";
 import type { ApplicationRunEvent, ApplicationRunOutcome, ApplicationRunRequest, ManagedContextReference, RunReason, TeamPolicy } from "./types";
 import { requireRoleRoute } from "./configuration";
+import { renderContextAnswer } from "../memory/context-answer";
 
 const reasons: RunReason[] = ["complete", "unknown_model", "route_unavailable", "quota", "needs_login", "cancelled", "max_rounds", "budget_exhausted", "invalid_result", "context_retired"];
 const emptyUsage = () => ({ calls: 0, rounds: 0, hops: 0, contextTokens: 0, outputTokens: 0, retries: 0, wallMs: 0 });
@@ -35,7 +36,35 @@ export function validateRunRequest(request: ApplicationRunRequest, policy: TeamP
     requireId(claim.projectId); requireId(claim.claimId); requireText(claim.text, policy.contextBytes);
     if (![claim.revision, claim.generation].every(value => Number.isSafeInteger(value) && value > 0)) throw new AppError("invalid_run_request");
   }
+  if (request.manifest.context !== undefined) validateContextLayout(request, policy);
   validateJobLimits(request.limits, { roles: 10000, calls: 10000, rounds: 10000, hops: 10000, contextTokens: 1e9, outputTokens: 1e9, retries: 100, wallMs: 3600000 });
+}
+
+const count = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 0;
+/** app.memory_context/v1 layout shape: labels only; it can never add tools, routes or authority to a request. */
+function validateContextLayout(request: ApplicationRunRequest, policy: TeamPolicy): void {
+  const context = request.manifest.context!;
+  if (!context || typeof context !== "object" || context.version !== 1 || context.policy !== 1 ||
+      !Array.isArray(context.constraints) || context.constraints.length > 32 || !Array.isArray(context.claims) ||
+      context.claims.length !== request.manifest.claims.length || !context.omitted || !context.derivation ||
+      ![context.omitted.constraints, context.omitted.claims, context.omitted.unavailable, context.derivation.inputDepth].every(count) ||
+      ![context.omitted.budget, context.omitted.loopGuard].every(value => typeof value === "boolean")) throw new AppError("invalid_run_request");
+  requireId(context.recordId);
+  for (const item of context.constraints) {
+    if (!["task", "decision"].includes(item.kind) || !["proposed", "accepted", "ready_for_review", "current"].includes(item.state) ||
+        typeof item.truncated !== "boolean" || !Number.isSafeInteger(item.revision) || item.revision < 1) throw new AppError("invalid_run_request");
+    requireId(item.id); requireId(item.topicId); requireReference(item.source); requireText(item.text, policy.contextBytes);
+  }
+  for (const item of context.claims) {
+    if (!["explicit_preference", "inference"].includes(item.layer) || !["project", "cross_project"].includes(item.scope) ||
+        !["explicit_fact", "inference"].includes(item.kind) || !Array.isArray(item.conflicts) || item.conflicts.length > 7 ||
+        (item.scope === "cross_project" && item.layer !== "inference")) throw new AppError("invalid_run_request");
+    requireReference(item.source);
+    for (const ref of item.conflicts) {
+      requireId(ref.claimId);
+      if (![ref.revision, ref.generation].every(value => Number.isSafeInteger(value) && value > 0)) throw new AppError("invalid_run_request");
+    }
+  }
 }
 
 /** Validates result coherence and ceilings, replacing invalid/raw adapter data with a safe error. */
@@ -58,13 +87,19 @@ export function normalizeFixtureResult(value: unknown, request: ApplicationRunRe
   } catch { return fixtureOutcome("invalid_result"); }
 }
 
+/** Appends the deterministic app.memory_context/v1 fixture answer within the run's output ceiling. */
+export function withContextAnswer(prefix: string, request: ApplicationRunRequest, outputBytes: number): string {
+  const room = Math.min(outputBytes, request.limits.outputTokens * 4, 65000) - Buffer.byteLength(prefix) - 1;
+  return request.manifest.context && room >= 256 ? `${prefix}\n${renderContextAnswer(request, room)}` : prefix;
+}
+
 /** Deterministic in-process fixture; it contains no network, SDK, discovery or model protocol loop. */
 export class ScriptedRunPort implements ApplicationRunPort {
   readonly #requests: ApplicationRunRequest[] = [];
   readonly #native: ScriptedNativeLedger;
   constructor(readonly store: TransactionStore, readonly policy: TeamPolicy, readonly outputBytes: number,
     private readonly script: (request: ApplicationRunRequest, signal: AbortSignal, observe: (event: ApplicationRunEvent) => void) => unknown | Promise<unknown> = request => ({
-      ...fixtureOutcome("complete", `ตัวอย่างจำลอง · ${request.purpose}\nบทบาท: ${request.instructions.responsibility}\nผลนี้เป็น fixture ไม่ได้เรียก Grok หรือ Codex`),
+      ...fixtureOutcome("complete", withContextAnswer(`ตัวอย่างจำลอง · ${request.purpose}\nบทบาท: ${request.instructions.responsibility}\nผลนี้เป็น fixture ไม่ได้เรียก Grok หรือ Codex`, request, outputBytes)),
       usage: { ...emptyUsage(), calls: 1, rounds: 1, hops: 1 }, session: { adapter: "scripted", id: request.runId, context: request.context },
     }), private readonly deleteFails: () => boolean = () => false, private readonly retireFails: () => boolean = () => false) {
     this.#native = new ScriptedNativeLedger(`${store.path}.scripted-native.sqlite`);
