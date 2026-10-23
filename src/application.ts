@@ -20,6 +20,13 @@ import {
   commitDeliveryIntent, deliveryCommandIdentity, listDeliveryAttempts, listDeliveryIntents, readDeliveryIntent,
   readDeliveryReport, resendDeliveryIntent, retireDeliveryReport,
 } from "./delivery";
+import { annotateReport, listReports, prReportIdentity, readAnnotations, readReport } from "./pr/report";
+import { admitReportAlerts, evaluateReport } from "./pr/alerts";
+import type {
+  DismissReportCommand,
+  PrReportCommand,
+  PrReportReceipt,
+} from "./pr/types";
 import type {
   CommitDeliveryCommand, DeliveryCommand, DeliveryIntent, DeliveryPage, DeliveryReceipt, DeliveryReport,
   DeliveryResendReceipt, DeliveryRetireReceipt, ResendDeliveryCommand, RetireDeliveryCommand,
@@ -252,11 +259,13 @@ export class Application {
   execute(actor: OwnerActor, command: CommitDeliveryCommand): DeliveryReceipt;
   execute(actor: OwnerActor, command: ResendDeliveryCommand): DeliveryResendReceipt;
   execute(actor: OwnerActor, command: RetireDeliveryCommand): DeliveryRetireReceipt;
-  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt;
-  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt {
+  execute(actor: OwnerActor, command: PrReportCommand): PrReportReceipt;
+  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt;
+  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt {
     if (command?.kind === "memory.extract") return this.#memoryCommand(actor, command);
     if (command?.kind === "memory.correct") return this.#correctCommand(actor, command);
     if (command?.kind === "memory.forget") return this.#forgetCommand(actor, command);
+    if (command?.kind === "pr.report.dismiss") return this.#prReportCommand(actor, command as DismissReportCommand);
     if (command?.kind === "schedule.create" || command?.kind === "schedule.pause" || command?.kind === "schedule.resume" ||
       command?.kind === "schedule.edit" || command?.kind === "schedule.revoke") return this.#scheduleCommand(actor, command as ScheduleCommand);
     if (isTaskCommand(command)) return this.#taskCommand(actor, command);
@@ -653,6 +662,75 @@ export class Application {
       const report = readDeliveryReport(tx, projectId, intent.provenance.reportId);
       const source = tx.get<{ availability: string }>("SELECT availability FROM sources WHERE id = ? AND project_id = ?", report.sourceId, projectId);
       return { project, intent, report, attempts: listDeliveryAttempts(tx, intent.id), sourceAvailable: source?.availability === "available" };
+    });
+  }
+
+  /**
+   * Lists private PR review reports for one project.
+   * `pr.private_report/v1` inspection; reading never admits work or sends.
+   */
+  prReports(actor: OwnerActor, projectId: string, monitorId?: string) {
+    requireId(projectId);
+    if (monitorId !== undefined) requireId(monitorId);
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor);
+      const project = this.#project(tx, projectId);
+      return { project, items: listReports(tx, projectId, monitorId) };
+    });
+  }
+
+  /**
+   * Shows one private report with annotations, alert evaluation and linked delivery.
+   * `pr.private_report/v1` + `pr.private_alerts/v1` inspection; unknown delivery never reads as delivered.
+   */
+  prReport(actor: OwnerActor, projectId: string, reportId: string) {
+    requireId(projectId); requireId(reportId);
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor);
+      const project = this.#project(tx, projectId);
+      const report = readReport(tx, projectId, reportId);
+      const annotations = readAnnotations(tx, reportId);
+      const evaluation = evaluateReport(report);
+      const alerts = tx.all<{ record_json: string }>(
+        "SELECT record_json FROM delivery_intents WHERE project_id = ? AND dedupe_key LIKE ? ORDER BY sequence",
+        projectId, `pr-alert/${reportId}/%`,
+      ).map(row => JSON.parse(row.record_json) as DeliveryIntent);
+      return { project, report, annotations, evaluation, alerts };
+    });
+  }
+
+  /**
+   * Admits at most one logical private alert per qualifying finding after rechecking
+   * current base/head/policy, report validity and enabled monitoring.
+   * `pr.private_alerts/v1` admission; replay dedupes to the existing intent.
+   */
+  admitPrAlerts(actor: OwnerActor, projectId: string, reportId: string) {
+    requireId(projectId); requireId(reportId);
+    return this.store.transaction(tx => {
+      this.#requireOwner(tx, actor);
+      this.#project(tx, projectId);
+      return admitReportAlerts(tx, { projectId, reportId, maxBytes: this.config.messageBytes }, this.#now());
+    });
+  }
+
+  /** Commits a revisioned dismissal/feedback annotation without rewriting finding history. */
+  #prReportCommand(actor: OwnerActor, command: DismissReportCommand): PrReportReceipt {
+    const payloadHash = digest(prReportIdentity(command));
+    return this.store.transaction(tx => {
+      this.#requireOwner(tx, actor);
+      this.#project(tx, command.projectId);
+      const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
+      if (prior) {
+        if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409);
+        return JSON.parse(prior.result_json) as PrReportReceipt;
+      }
+      const now = this.#now();
+      const result = annotateReport(tx, command, now, "dismiss");
+      this.#beforeCommit?.("delivery");
+      tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
+      tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);
+      this.#beforeCommit?.("receipt");
+      return result;
     });
   }
 

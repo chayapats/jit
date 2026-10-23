@@ -86,6 +86,135 @@ export type CandidateStatus =
   | "superseded"
   | "cancelled";
 
+/** Review scope policy version; enabling a review accepts this exact revision. */
+export const REVIEW_POLICY_VERSION = 1 as const;
+
+/** Visible defaults for private static review: every required role plus complete enumeration. */
+export const DEFAULT_REVIEW_POLICY = Object.freeze({
+  version: REVIEW_POLICY_VERSION,
+  requiredRoles: ["correctness", "security"] as const,
+  requireCompleteEnumeration: true as const,
+} as const);
+
+/** Finding category; only evidence-backed correctness/security/behavior qualify for alerts. */
+export type PrFindingCategory = "correctness" | "security" | "behavior" | "style" | "uncertain";
+
+/** Declared evidence kind backing one finding; `none` can never be actionable. */
+export type PrEvidenceType = "diff" | "issue" | "spec" | "ci" | "none";
+
+/** Validated finding state; missing/invalid citations stay suspected instead of actionable. */
+export type PrFindingStatus = "actionable" | "suspected";
+
+/** Precise location for one finding; line is null when the whole file is implicated. */
+export interface PrFindingLocation {
+  path: string;
+  line: number | null;
+}
+
+/** One validated static finding pinned to exact snapshot evidence. */
+export interface PrFinding {
+  id: string;
+  title: string;
+  category: PrFindingCategory;
+  severity: "info" | "low" | "medium" | "high" | "critical";
+  location: PrFindingLocation;
+  condition: string;
+  impact: string;
+  reasoning: string;
+  evidenceType: PrEvidenceType;
+  evidenceRef: string | null;
+  status: PrFindingStatus;
+  validationErrors: string[];
+}
+
+/** Persisted review outcome; `stale` is a computed overlay, never a stored status. */
+export type PrReportStatus =
+  | "running"
+  | "complete_clean"
+  | "complete_findings"
+  | "partial"
+  | "incomplete"
+  | "failed";
+
+/** Observable report state including computed overlays; absence means not-reviewed. */
+export type PrReportObserved = PrReportStatus | "stale";
+
+/** A durable private review report pinned to one repository/PR/base/head/policy tuple. */
+export interface PrivateReport {
+  id: string;
+  projectId: string;
+  monitorId: string;
+  candidateId: string;
+  repository: RepositoryIdentity;
+  pullNumber: number;
+  baseSha: string;
+  headSha: string;
+  policyVersion: number;
+  reviewPolicyVersion: number;
+  status: PrReportStatus;
+  stale: boolean;
+  staleReason: string | null;
+  findings: PrFinding[];
+  analyzedRoles: string[];
+  requiredRoles: string[];
+  skippedScope: string[];
+  coverageOverall: CoverageManifest["overall"];
+  enumerationComplete: boolean;
+  specialistRuns: Array<{ role: string; state: string; reason: string | null }>;
+  synthesis: { state: string; reason: string | null };
+  disagreements: string[];
+  snapshotId: string;
+  jobId: string | null;
+  attemptId: string | null;
+  authorityGeneration: number;
+  revision: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** A revisioned owner annotation on a report; history rows are never rewritten. */
+export interface ReportAnnotation {
+  id: string;
+  reportId: string;
+  projectId: string;
+  revision: number;
+  kind: "dismiss" | "feedback";
+  text: string;
+  createdAt: number;
+}
+
+/** Job input identifying one durable candidate for private review. */
+export interface PrReviewInput {
+  monitorId: string;
+  candidateId: string;
+}
+
+/** Owner revisioned dismissal/feedback on a private report. */
+export interface DismissReportCommand {
+  kind: "pr.report.dismiss";
+  requestId: string;
+  projectId: string;
+  expectedRevision: number;
+  payload: { reportId: string; reason: string };
+}
+
+export type PrReportCommand = DismissReportCommand;
+
+/** Receipt for a revisioned report annotation; findings history is unchanged. */
+export interface PrReportReceipt {
+  report: PrivateReport;
+  annotation: ReportAnnotation;
+  projectRevision: number;
+}
+
+/** Versioned private alert policy; severity never substitutes for evidence. */
+export interface AlertPolicy {
+  version: number;
+  allowedCategories: PrFindingCategory[];
+  requireEvidence: boolean;
+  requireActionable: boolean;
+}
+
 /** A durable review candidate keyed by repository/PR/base/head/policy. */
 export interface ReviewCandidate {
   id: string;
