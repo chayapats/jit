@@ -84,39 +84,52 @@ export function normalizeFixtureResult(value: unknown, request: ApplicationRunRe
  * preserved as measured evidence instead of rejected.
  */
 export function normalizePortResult(value: unknown, request: ApplicationRunRequest, outputBytes: number): ApplicationRunOutcome {
-  const invalidFor = (mode: ApplicationRunOutcome["mode"]): ApplicationRunOutcome =>
-    mode === "production"
+  let mode: ApplicationRunOutcome["mode"] | null = null;
+  const invalidFor = (recognized: ApplicationRunOutcome["mode"]): ApplicationRunOutcome =>
+    recognized === "production"
       ? { state: "error", reason: "invalid_result", mode: "production", output: null,
           usage: { calls: 0, rounds: 0, hops: 0, contextTokens: 0, outputTokens: 0, retries: 0, wallMs: 0 }, session: null }
       : fixtureOutcome("invalid_result");
   try {
     const result = JSON.parse(jobData(value, outputBytes + 2048)) as ApplicationRunOutcome;
+    if (result.mode !== "fixture" && result.mode !== "production") return fixtureOutcome("invalid_result");
+    mode = result.mode;
     const expected = fixtureOutcome(result.reason);
-    if (!reasons.includes(result.reason) || (result.mode !== "fixture" && result.mode !== "production") || result.state !== expected.state ||
+    if (!reasons.includes(result.reason) || result.state !== expected.state ||
         (result.reason === "complete" ? typeof result.output !== "string" || !result.output.trim() : result.output !== null) ||
         (typeof result.output === "string" && Buffer.byteLength(result.output) > outputBytes) || !result.usage ||
-        Object.keys(result.usage).sort().join(",") !== "calls,contextTokens,hops,outputTokens,retries,rounds,wallMs") return invalidFor(result.mode);
+        Object.keys(result.usage).sort().join(",") !== "calls,contextTokens,hops,outputTokens,retries,rounds,wallMs") return invalidFor(mode);
     if (result.output !== null) requireText(result.output, outputBytes);
-    if (result.mode === "fixture") {
-      for (const [key, value] of Object.entries(result.usage)) {
-        if (!Number.isSafeInteger(value) || value < 0 || value > request.limits[key as keyof typeof result.usage]) return invalidFor("fixture");
-      }
-    } else {
-      // Production usage is host-measured across bounded retries: call/round
-      // counts stay within the worst-case admission, token overrun is kept.
-      const maxCalls = Math.min(Math.max(1, Math.ceil(request.limits.retries + 1)), 10);
-      const usage = result.usage;
-      const sane = [usage.calls, usage.rounds, usage.hops, usage.retries, usage.contextTokens, usage.outputTokens, usage.wallMs]
-        .every(value => Number.isSafeInteger(value) && value >= 0);
-      if (!sane || usage.calls < 1 || usage.calls > maxCalls || usage.rounds < 1 || usage.rounds > maxCalls ||
-          usage.retries !== usage.calls - 1) return invalidFor("production");
-    }
-    const adapter = result.mode === "production" ? "schway" : "scripted";
+    if (!validUsage(result, request)) return invalidFor(mode);
+    const adapter = mode === "production" ? "schway" : "scripted";
     if (result.session !== null && (result.session.adapter !== adapter || result.session.id !== request.runId ||
-        result.session.context.id !== request.context.id || result.session.context.generation !== request.context.generation)) return invalidFor(result.mode);
+        result.session.context.id !== request.context.id || result.session.context.generation !== request.context.generation)) return invalidFor(mode);
     // Return only declared fields, never raw SDK objects or extra model-authored fields.
-    return { ...expected, mode: result.mode, output: result.output, usage: result.usage, session: result.session === null ? null : { adapter, id: request.runId, context: { ...request.context } } };
-  } catch { return fixtureOutcome("invalid_result"); }
+    return { ...expected, mode, output: result.output, usage: result.usage, session: result.session === null ? null : { adapter, id: request.runId, context: { ...request.context } } };
+  } catch { return invalidFor(mode ?? "fixture"); }
+}
+
+/**
+ * Usage validation by mode and reason. Fixture usage stays authoritatively
+ * bounded by the request limits. Production usage is host-measured: completed
+ * runs carry the worst-case admission shape with measured token overrun, while
+ * pre-model blocked/error outcomes carry coherent zero-attempt usage.
+ */
+function validUsage(result: ApplicationRunOutcome, request: ApplicationRunRequest): boolean {
+  const usage = result.usage;
+  const integers = [usage.calls, usage.rounds, usage.hops, usage.retries, usage.contextTokens, usage.outputTokens, usage.wallMs]
+    .every(value => Number.isSafeInteger(value) && value >= 0);
+  if (!integers) return false;
+  if (result.mode === "fixture") {
+    return Object.entries(usage).every(([key, value]) => value <= request.limits[key as keyof typeof usage]);
+  }
+  const maxCalls = Math.min(Math.max(1, Math.ceil(request.limits.retries + 1)), 10);
+  const attempted = usage.calls >= 1 && usage.calls <= maxCalls &&
+    usage.rounds === usage.calls && usage.retries === usage.calls - 1 && usage.hops === 0;
+  if (result.reason === "complete") return attempted;
+  const zeroAttempt = usage.calls === 0 && usage.rounds === 0 && usage.retries === 0 &&
+    usage.hops === 0 && usage.contextTokens === 0 && usage.outputTokens === 0;
+  return zeroAttempt || attempted;
 }
 
 /** Appends the deterministic app.memory_context/v1 fixture answer within the run's output ceiling. */

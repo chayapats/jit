@@ -341,29 +341,13 @@ export class SchwayRunPort implements ApplicationRunPort {
     return state === "active" || state === "retired" || state === "deleted" || state === "delete_failed" ? state : "deleted";
   }
 
-  private mapUsage(usage: HostRunUsage, wallMs: number): ApplicationRunOutcome["usage"] {
-    let contextTokens = 0, outputTokens = 0;
-    const attempts: readonly HostRunAttemptUsage[] = usage.attempts;
-    for (const attempt of attempts) {
-      contextTokens += attempt.usage.inputTokens ?? 0;
-      outputTokens += attempt.usage.outputTokens ?? 0;
-    }
-    // One attempt is the first call; the rest are bounded retries. Rounds count
-    // admission attempts; a host attempt may contain several model turns.
-    return {
-      calls: attempts.length, rounds: attempts.length, hops: 0,
-      contextTokens, outputTokens, retries: Math.max(0, attempts.length - 1),
-      wallMs: Math.min(Math.max(0, wallMs), Number.MAX_SAFE_INTEGER),
-    };
-  }
-
   private mapSubmitResult(result: HostRunResult, request: ApplicationRunRequest): ApplicationRunOutcome {
     if (result.outcome === "completed") {
       const output = extractOutputText(this.lastMessage(result), this.outputBytes);
       if (output === null) return classifyBridgeReason("invalid_result");
       return {
         state: "complete", reason: "complete", mode: "production", output,
-        usage: this.mapUsage(result.usage, result.usage.totalMs),
+        usage: mapHostUsage(result.usage, result.usage.totalMs),
         session: { adapter: "schway", id: request.runId, context: { ...request.context } },
       };
     }
@@ -384,7 +368,7 @@ export class SchwayRunPort implements ApplicationRunPort {
       if (output === null) return classifyBridgeReason("invalid_result");
       return {
         state: "complete", reason: "complete", mode: "production", output,
-        usage: this.mapUsage(result.usage, result.usage.totalMs),
+        usage: mapHostUsage(result.usage, result.usage.totalMs),
         session: { adapter: "schway", id: request.runId, context: { ...request.context } },
       };
     }
@@ -501,13 +485,21 @@ export class SchwayRunPort implements ApplicationRunPort {
       return true;
     });
     if (!known) return { state: "deleted", context: { ...context } };
-    const refs = this.refsFor(context).filter(row => row.session_id !== "");
-    if (refs.length === 0) return { state: "retired", context: { ...context } };
+    const refs = this.refsFor(context);
+    const targets = refs.filter(row => row.session_id !== "");
+    if (targets.length === 0) {
+      // Nothing addressable exists. With no intent rows the fence alone
+      // retires the generation; with a pending intent a native session may
+      // exist but is unaddressable until the correlation contract lands, so
+      // retirement stays explicitly retryable instead of falsely complete.
+      if (refs.length === 0) return { state: "retired", context: { ...context } };
+      return { state: "retire_failed", context: { ...context }, nextAction: "retry_managed_retire" };
+    }
     let host: HostRuntime | null = null;
     try {
       host = await this.openHost(describeLifecycleRun(context), true);
       let failed = false;
-      for (const ref of refs) {
+      for (const ref of targets) {
         try {
           await host.retireSession({ id: ref.session_id, branchId: ref.branch_id });
         } catch (error) {
@@ -613,6 +605,26 @@ export class SchwayRunPort implements ApplicationRunPort {
       try { await host?.close(); } catch { /* Best effort after the read. */ }
     }
   }
+}
+
+/**
+ * Maps trusted host run usage onto application usage. One host attempt is one
+ * call and one round; retries are additional attempts beyond the first. Token
+ * overrun across bounded retries is preserved as measured evidence, never
+ * silently zeroed, while the attempt shape stays exactly enumerable.
+ */
+export function mapHostUsage(usage: HostRunUsage, wallMs: number): ApplicationRunOutcome["usage"] {
+  let contextTokens = 0, outputTokens = 0;
+  const attempts: readonly HostRunAttemptUsage[] = usage.attempts;
+  for (const attempt of attempts) {
+    contextTokens += attempt.usage.inputTokens ?? 0;
+    outputTokens += attempt.usage.outputTokens ?? 0;
+  }
+  return {
+    calls: attempts.length, rounds: attempts.length, hops: 0,
+    contextTokens, outputTokens, retries: Math.max(0, attempts.length - 1),
+    wallMs: Math.min(Math.max(0, wallMs), Number.MAX_SAFE_INTEGER),
+  };
 }
 
 function describeLifecycleRun(context: ManagedContextReference): EffectiveSchwayRun {

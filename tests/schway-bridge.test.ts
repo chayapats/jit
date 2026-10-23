@@ -15,10 +15,10 @@ import { ScriptedRunPort, fixtureOutcome, normalizePortResult } from "../src/tea
 import {
   SCHWAY_NEXT_ACTION, SCHWAY_PINNED_REVISION, SCHWAY_PINNED_TARBALL_SHA256, SCHWAY_PINNED_VERSION,
   SCHWAY_RELEASE_CONTRACT, SCHWAY_SNAPSHOT_CONTRACT, SchwayRunPort, classifyBridgeReason, describeEffectiveRun,
-  mapAuthStatus, schwayMaxAttempts, verifySchwayBridge,
+  mapAuthStatus, mapHostUsage, schwayMaxAttempts, verifySchwayBridge,
 } from "../src/team/schway-port";
 import type { ApplicationRunEvent, ApplicationRunRequest, RoleRoute } from "../src/team/types";
-import type { HostAuthFetch, HostCredentialStore, Model, ModelRequest } from "schway/host";
+import type { HostAuthFetch, HostCredentialStore, HostRunUsage, Model, ModelRequest } from "schway/host";
 
 const roots: string[] = [], stores: TransactionStore[] = [], queues: JobQueue[] = [];
 afterEach(async () => {
@@ -589,4 +589,108 @@ test("coordinator reserves exactly the worst-case retry budget", async () => {
   // Exact worst case: specialist (1) + coordinator (1) invocations fit;
   // the old maxAttempts+1 accounting would have starved the coordinator.
   expect(invoked).toBe(2);
+});
+
+test("host retry accounting maps multi-attempt usage exactly", () => {
+  const usage = mapHostUsage({
+    attempts: [
+      { complete: true, phase: "turn", usage: { inputTokens: 10, outputTokens: 5 } },
+      { complete: true, phase: "turn", usage: { inputTokens: null, outputTokens: 7 } },
+      { complete: true, phase: "compaction", usage: { inputTokens: 3, outputTokens: null } },
+    ],
+    complete: true, totalMs: 120,
+  } as HostRunUsage, 500);
+  expect(usage).toEqual({ calls: 3, rounds: 3, hops: 0, contextTokens: 13, outputTokens: 12, retries: 2, wallMs: 500 });
+  expect(mapHostUsage({ attempts: [], complete: false, totalMs: 0 } as HostRunUsage, 0)).toMatchObject({ calls: 0, retries: 0 });
+});
+
+test("production validation accepts coherent zero-attempt failures and stays production on malformed output", () => {
+  const { config } = setup();
+  const run = request(config);
+  const blocked = {
+    state: "blocked", reason: "needs_login", mode: "production", output: null,
+    usage: { calls: 0, rounds: 0, hops: 0, contextTokens: 0, outputTokens: 0, retries: 0, wallMs: 9 },
+    session: null,
+  } as const;
+  expect(normalizePortResult(blocked, run, config.jobs.outputBytes))
+    .toMatchObject({ state: "blocked", mode: "production", reason: "needs_login" });
+  // A lone surrogate is malformed live output: production error, never fixture evidence.
+  const malformed = {
+    state: "complete", reason: "complete", mode: "production", output: "ok\ud800",
+    usage: { calls: 1, rounds: 1, hops: 0, contextTokens: 1, outputTokens: 1, retries: 0, wallMs: 1 },
+    session: { adapter: "schway", id: run.runId, context: run.context },
+  } as const;
+  expect(normalizePortResult(malformed, run, config.jobs.outputBytes))
+    .toMatchObject({ state: "error", mode: "production", reason: "invalid_result" });
+  // Rounds must equal calls and hops must stay zero on the empty tool registry.
+  const skewed = {
+    state: "complete", reason: "complete", mode: "production", output: "done",
+    usage: { calls: 1, rounds: 4, hops: 999, contextTokens: 4, outputTokens: 4, retries: 0, wallMs: 4 },
+    session: { adapter: "schway", id: run.runId, context: run.context },
+  } as const;
+  expect(normalizePortResult(skewed, run, config.jobs.outputBytes))
+    .toMatchObject({ state: "error", mode: "production", reason: "invalid_result" });
+});
+
+test("an unaddressable pending intent never reports retired or deleted", async () => {
+  const { config, store } = setup();
+  const port = new SchwayRunPort(store, config.team, config.jobs.outputBytes, { model: scripted("ok") });
+  const run = request(config); activate(store, run.context);
+  // Simulate a crash between intent reservation and session-id update.
+  store.transaction(tx => {
+    tx.run("INSERT INTO schway_native_refs (run_id, context_id, generation, session_id, branch_id, state, created_at, updated_at) VALUES (?, ?, ?, '', '', 'running', 1, 1)",
+      run.runId, run.context.id, run.context.generation);
+  });
+  // A real native session exists but is unaddressable through the intent.
+  const lifecycle = await port.openLifecycleHost();
+  const native = await lifecycle.createSession();
+  try {
+    await expect(port.retire(run.context)).resolves.toMatchObject({ state: "retire_failed" });
+    await expect(port.delete(run.context)).resolves.toMatchObject({ state: "retire_failed" });
+    const page = await port.inspectRuns();
+    expect(page.items).toHaveLength(1);
+    expect(page.items[0]).toMatchObject({ state: "running", contextState: "retired" });
+  } finally {
+    try { native.cancel(); } catch { /* Already settled. */ }
+    try { await native.close(); } catch { /* Best effort. */ }
+  }
+  // Once the correlation exists, lifecycle converges honestly.
+  store.transaction(tx => {
+    tx.run("UPDATE schway_native_refs SET session_id = ?, branch_id = ? WHERE run_id = ?", native.reference.id, native.reference.branchId, run.runId);
+  });
+  await expect(port.delete(run.context)).resolves.toMatchObject({ state: "deleted" });
+  await lifecycle.close();
+});
+
+test("dispatch waits on production route failures without claiming fixture work", async () => {
+  const root = mkdtempSync(join(tmpdir(), "jit-schway-wait-")); roots.push(root);
+  const path = join(root, "state.sqlite"), config = readConfig({ JIT_DATABASE: path });
+  const store = new TransactionStore(path); stores.push(store);
+  const teamPort = new SchwayRunPort(store, config.team, config.jobs.outputBytes, { authStore: memStore(null) });
+  const now = () => 1800000000000;
+  const queue = new JobQueue(store, config.jobs, [
+    scriptedPreviewWork(store, config, new ScriptedRunPort(store, config.team, config.jobs.outputBytes)),
+    discussionPlanWork(), specialistAnalysisWork(store, config, teamPort), coordinatorSynthesisWork(store, config, teamPort),
+  ], { now }); queues.push(queue);
+  const app = new Application(store, config, { jobs: queue, now });
+  const password = "waiting-owner-pass";
+  await app.setupOwner(password);
+  const auth = app.authenticate(await app.login(password));
+  const project = app.execute(auth.actor, { kind: "project.create", projectId: null, requestId: rid(), expectedRevision: 0, payload: { name: "รอ" } }).project;
+  const topic = app.execute(auth.actor, { kind: "topic.create", projectId: project.id, requestId: rid(), expectedRevision: project.revision, payload: { title: "รอคิว" } }).topic;
+  const role = app.execute(auth.actor, { kind: "role.save", projectId: null, requestId: rid(), expectedRevision: 0,
+    payload: { roleId: null, name: "ช่าง", kind: "specialist", responsibility: "วิเคราะห์โครงสร้างซอฟต์แวร์", enabled: true, route: grok } }).role!;
+  app.execute(auth.actor, { kind: "team.dispatch", projectId: project.id, requestId: rid(),
+    expectedRevision: app.project(auth.actor, project.id).revision,
+    payload: { topicId: topic.id, purpose: "ทดสอบรอ", sources: [topic.source], include: [role.id], exclude: [], limits: { ...config.jobs.maximum } } });
+  queue.pump(); await queue.idle();
+  const discussion = app.discussions(auth.actor, project.id, topic.id).at(-1)!;
+  const participation = app.discussion(auth.actor, project.id, discussion.id).discussion.participations[0]!;
+  expect(participation.state).toBe("blocked");
+  expect(participation.reason).toBe("needs_login");
+  expect(participation.route).toEqual(grok);
+  expect(JSON.stringify(participation)).not.toContain("ไม่ได้ตรวจ live subscription");
+  expect(JSON.stringify(participation)).not.toContain("จำลอง");
+  const job = app.job(auth.actor, project.id, participation.jobId);
+  expect(job.state).toBe("waiting");
 });

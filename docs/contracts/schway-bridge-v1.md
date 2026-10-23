@@ -119,11 +119,19 @@ and fixture-free protocol transport.
   transient progress never becomes committed evidence.
 - Worst-case retry admissions are pre-reserved (`calls`/`rounds` for
   `maxAttempts = retries + 1`); single-output token accounting stays as
-  committed with measured overrun in usage evidence (see ADR 0023).
+  committed with measured overrun in usage evidence (see ADR 0023). Outcome
+  validation is mode- and reason-aware: fixture usage stays bounded by the
+  request limits, production completions require the worst-case admission
+  shape (`rounds === calls`, `retries === calls - 1`, zero hops on the empty
+  registry) with measured token overrun, and pre-model blocked/error outcomes
+  accept coherent zero-attempt usage. Malformed production results normalize
+  to production `invalid_result`, never fixture evidence.
 - `retire` fences the application generation first, then retires owned native
   sessions through `retireSession` (idempotent; only live-holder conflicts
-  retry). `delete` retires first, then removes owned native artifacts through
-  `deleteSession`, converging to `deleted` only when the native call
+  retry). A pending intent with no addressable session never reports success:
+  unaddressable retirement stays `retire_failed` until the correlation
+  contract lands. `delete` retires first, then removes owned native artifacts
+  through `deleteSession`, converging to `deleted` only when the native call
   acknowledges; partial/blocked stays `delete_failed` with retry.
 - `snapshot` captures a quiesced per-context snapshot through
   `snapshotSessions`. Empty backing resolves to the explicit unsupported
@@ -140,15 +148,18 @@ and fixture-free protocol transport.
 
 ## Evidence
 
-`tests/schway-bridge.test.ts`: pinned gate, tarball SHA, effective-run
-mapping with alias preservation and host-grammar rejection, hostile-input
-neutrality, empty-output rejection, auth mapping over fixture
-stores/transports (needs_login/quota/route_unavailable, no fallback, no
+`tests/schway-bridge.test.ts`: pinned gate (including symlinked-base rejection),
+tarball SHA, effective-run mapping with alias preservation and host-grammar
+rejection, hostile-input neutrality, empty-output rejection, auth mapping over
+fixture stores/transports (needs_login/quota/route_unavailable, no fallback, no
 secret leakage), cancel/generation fencing across reopen, native
 retire/delete/snapshot through the real host, fence-race orphan retirement
 with no submit, startup gate blocking on unsafe host dirs, retry reservation
-accounting, cursor pagination, shared normalizer round-trip, seam import
-hygiene, and a full application scenario where dispatch commits production
-specialist evidence while preview stays fixture, reopens after restart, and
-keeps reads working while provider access is blocked.
+accounting with exact-budget coordinator coverage, stop-clears-progress,
+unaddressable-intent lifecycle (never retired/deleted), mode-aware
+normalization (zero-attempt production, malformed stays production, skewed
+usage rejected), multi-attempt usage mapping, cursor pagination, shared
+normalizer round-trip, and a full application scenario where dispatch commits
+production specialist evidence while preview stays fixture, reopens after
+restart, and keeps reads working while provider access is blocked.
 `bun test`, `bun run typecheck`. No live accounts, no network, no Pi.

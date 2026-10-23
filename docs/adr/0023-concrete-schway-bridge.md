@@ -41,7 +41,8 @@ Rejected alternatives: one session per managed context would serialize
 concurrent specialist runs behind one lease and complicate fencing; deriving
 session ids deterministically is unsupported by the host contract. The
 remaining crash window (native creation before the correlation update) is
-covered by a pending intent row plus an upstream proposal for atomic
+covered by a pending intent row that lifecycle calls treat as explicitly
+unresolved — never acknowledged — plus an upstream proposal for atomic
 create-with-correlation or session enumeration (chayapats/schway#414).
 
 ## Credential aliases and budget authority
