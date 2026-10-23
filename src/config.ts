@@ -23,6 +23,13 @@ export interface OpsPolicy {
   drillDeadlineMs: number;
 }
 
+/** Private deployment profile: wildcard/public binds are rejected by default. */
+function validatedHostname(value: string | undefined): string {
+  const hostname = value ?? "127.0.0.1";
+  if (!hostname.length || hostname === "0.0.0.0" || hostname === "::") throw new Error("Invalid JIT_HOST");
+  return hostname;
+}
+
 /** Finite local-development limits; operators must measure them before a pilot. */
 export interface AppConfig {
   databasePath: string;
@@ -65,7 +72,7 @@ export function readConfig(env: Record<string, string | undefined> = process.env
   return {
     databasePath: resolve(env.JIT_DATABASE ?? ".local/jit.sqlite"),
     origin: origin.origin,
-    hostname: env.JIT_HOST ?? "127.0.0.1",
+    hostname: validatedHostname(env.JIT_HOST),
     port: positive("JIT_PORT", 3000, 65535),
     bodyBytes: positive("JIT_BODY_BYTES", 16384, 1048576),
     queryBytes: positive("JIT_QUERY_BYTES", 2048, 16384),

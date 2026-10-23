@@ -1,0 +1,28 @@
+[Unit]
+Description=Jit personal application
+Documentation=https://github.com/chayapats/jit
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec={{RESTART_WINDOW}}
+StartLimitBurst={{RESTART_BURST}}
+
+[Service]
+Type=simple
+User={{SERVICE_USER}}
+Group={{SERVICE_USER}}
+WorkingDirectory={{WORKING_DIR}}
+ExecStart={{BUN_PATH}} {{APP_DIR}}/src/main.ts serve
+Environment=JIT_HOST={{BIND_HOST}}
+Environment=JIT_PORT={{PORT}}
+Restart=on-failure
+RestartSec=10
+MemoryMax={{MEMORY_MAX}}
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths={{STATE_DIR}}
+UMask=0077
+
+[Install]
+WantedBy=default.target

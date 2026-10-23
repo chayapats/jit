@@ -3,6 +3,10 @@ import { readConfig } from "./config";
 import { TransactionStore } from "./store";
 import { createWebHandler } from "./web";
 import { gatherDiagnostics, inspectDiagnostics } from "./ops/diagnostics";
+import { preflightService } from "./ops/lifecycle";
+import { readLocalDrillConfig } from "./ops/records";
+import { gatherServiceStatus } from "./ops/status";
+import { parseServiceConfig } from "../ops/package/service-config";
 import { readHiddenPassword } from "./terminal-password";
 import { JobQueue } from "./jobs/queue";
 import { projectStateWork } from "./jobs/project-state";
@@ -38,10 +42,33 @@ async function main(): Promise<void> {
     process.exitCode = result.exitCode === 0 ? 0 : 1;
     return;
   }
-  if (!["serve", "setup", "reset-owner", "probe", "diagnose"].includes(command ?? "")) throw new Error("Use serve, setup, reset-owner, probe or diagnose");
+  if (!["serve", "setup", "reset-owner", "probe", "diagnose", "preflight", "status"].includes(command ?? "")) {
+    throw new Error("Use serve, setup, reset-owner, probe, diagnose, preflight or status");
+  }
   if (command === "diagnose") {
     // Read-only operator inspection: no scheduler claim, no queue pump, no timers, no server.
     console.log(JSON.stringify(inspectDiagnostics(gatherDiagnostics(process.cwd(), config))));
+    return;
+  }
+  if (command === "preflight" || command === "status") {
+    // Operator lifecycle commands. Preflight gates activation; status stays
+    // read-only. Neither starts background work or claims the scheduler.
+    const extra = process.argv.slice(3);
+    let requiredEngine = "jit.schway.bridge/v1";
+    if (extra.length === 2 && extra[0] === "--contract") requiredEngine = extra[1]!;
+    else if (extra.length !== 0) throw new Error("Use preflight [--contract <engine-contract>] or status");
+    let service;
+    try { service = parseServiceConfig(await readLocalDrillConfig(process.cwd(), ".local/service-config.json")); }
+    catch { throw new Error("Service is not configured. Create .local/service-config.json (see docs/runbooks/ops-service.md)."); }
+    if (command === "status") {
+      console.log(JSON.stringify(gatherServiceStatus(config, service)));
+      return;
+    }
+    const store = new TransactionStore(config.databasePath);
+    try {
+      const result = preflightService({ store, config, service, requiredEngine });
+      console.log(JSON.stringify(result));
+    } finally { store.close(); }
     return;
   }
   const store = new TransactionStore(config.databasePath);

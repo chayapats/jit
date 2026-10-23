@@ -1,0 +1,308 @@
+import { afterEach, expect, test } from "bun:test";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Application } from "../src/application";
+import { readConfig } from "../src/config";
+import { JobQueue } from "../src/jobs/queue";
+import { TransactionStore, schemaVersion } from "../src/store";
+import { artifactPiStatus, buildPackage, readManifest, validateArtifact } from "../ops/package/bun-build";
+import { assertNoSecretValues, parseServiceConfig, planServiceConfig, renderServiceUnit } from "../ops/package/service-config";
+import type { ServiceConfig } from "../ops/package/service-config";
+import { preflightService, readQuarantine, startFullApp, stopDrain, upgradeStaged } from "../src/ops/lifecycle";
+import { gatherServiceStatus, serviceStatus } from "../src/ops/status";
+
+const roots: string[] = [];
+afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+const repoRoot = join(import.meta.dir, "..");
+
+function setup() {
+  const root = mkdtempSync(join(tmpdir(), "jit-ops-service-fixture-"));
+  roots.push(root);
+  const release = join(root, "release"), work = join(root, "work"), state = join(root, "state"), backup = join(root, "backup");
+  for (const dir of [release, work, state, backup]) mkdirSync(dir, { mode: 0o700 });
+  const ledger = join(state, "ledger.json");
+  writeFileSync(ledger, JSON.stringify({ ledger: "jit.deletion.ledger/v1", revision: 1 }) + "\n", { mode: 0o600 });
+  const credential = join(root, "bot.token");
+  writeFileSync(credential, "fixture-credential-value", { mode: 0o600 });
+  const service: ServiceConfig = { serviceUser: "jit-service", executablePath: release, workingDirectory: work, stateDirectory: state,
+    ledgerPath: ledger, backupDirectory: backup,
+    routes: [{ route: "codex-subscription", model: null, configured: false }],
+    secretRefs: [{ name: "bot-token", store: "credential-file", key: credential }],
+    network: { bindHost: "127.0.0.1", port: 3443, vpnInterface: null },
+    resources: { memoryMaxBytes: 536870912, maxRestarts: 3, restartWindowSeconds: 300, logBytes: 1048576, retentionDays: 30 } };
+  const config = readConfig({ JIT_DATABASE: join(state, "app.sqlite") });
+  return { root, release, work, state, backup, ledger, credential, service, config };
+}
+
+test("versioned artifact pins runtime, lock, schema and engine without dev-cwd dependence", () => {
+  const { root, config } = setup();
+  void config;
+  const first = join(root, "artifact-a"), second = join(root, "artifact-b");
+  const built = buildPackage({ srcDir: repoRoot, outDir: first, engineContract: "jit.schway.bridge/v1", engineRevision: null });
+  expect(built.appVersion).toBe(JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")).version);
+  expect(built.bunVersion).toBe(Bun.version);
+  expect(built.schemaVersion).toBe(schemaVersion);
+  expect(built.engineContract).toBe("jit.schway.bridge/v1");
+  expect(built.engineRevision).toBe("unverified");
+  expect(built.arch).toBe(process.arch);
+  expect(built.piValidation.status).toBe("pending");
+  expect(validateArtifact(first).ok).toBe(true);
+  expect(readManifest(first)).toEqual(built);
+  const cwd = process.cwd();
+  process.chdir(tmpdir());
+  try { buildPackage({ srcDir: repoRoot, outDir: second, engineContract: "jit.schway.bridge/v1", engineRevision: null }); }
+  finally { process.chdir(cwd); }
+  const again = readManifest(second);
+  expect({ ...again, artifactId: "", builtAt: "" }).toEqual({ ...built, artifactId: "", builtAt: "" });
+  expect(artifactPiStatus({ arch: "x64", piValidation: { status: "pending", detail: "x" } })).toBe("not-run");
+  expect(artifactPiStatus({ arch: "arm64", piValidation: { status: "pending", detail: "x" } })).toBe("pending");
+  expect(artifactPiStatus(built)).toBe(process.arch === "arm64" ? "pending" : "not-run");
+});
+
+test("artifact negatives reject missing pins, occupied output and unapproved engine claims", () => {
+  const { root } = setup();
+  expect(() => buildPackage({ srcDir: root, outDir: join(root, "out"), engineContract: "jit.schway.bridge/v1", engineRevision: null })).toThrow();
+  mkdirSync(join(root, "out"));
+  expect(() => buildPackage({ srcDir: repoRoot, outDir: join(root, "out"), engineContract: "jit.schway.bridge/v1", engineRevision: null })).toThrow();
+  expect(() => buildPackage({ srcDir: repoRoot, outDir: join(root, "fresh"), engineContract: "evil route!", engineRevision: null })).toThrow();
+  expect(() => buildPackage({ srcDir: repoRoot, outDir: join(root, "fresh"), engineContract: "jit.schway.bridge/v1", engineRevision: "not-a-version!!" })).toThrow();
+  const built = buildPackage({ srcDir: repoRoot, outDir: join(root, "good"), engineContract: "jit.schway.bridge/v1", engineRevision: null });
+  writeFileSync(join(root, "good/manifest.json"), JSON.stringify({ ...built, schemaVersion: 999 }));
+  expect(validateArtifact(join(root, "good")).ok).toBe(false);
+  expect(() => readManifest(join(root, "good"))).toThrow();
+});
+
+test("service configuration validates the trusted shape and rejects wildcards, root and secret values", () => {
+  const { service } = setup();
+  expect(parseServiceConfig(service)).toEqual(service);
+  const bad = [
+    { ...service, serviceUser: "root" }, { ...service, serviceUser: "JIT Service" },
+    { ...service, network: { ...service.network, bindHost: "0.0.0.0" } },
+    { ...service, network: { ...service.network, bindHost: "::" } },
+    { ...service, network: { ...service.network, bindHost: "vpn.example.test" } },
+    { ...service, stateDirectory: "relative/path" },
+    { ...service, stateDirectory: service.executablePath },
+    { ...service, stateDirectory: `${service.executablePath}/state` },
+    { ...service, routes: [...service.routes, ...service.routes] },
+    { ...service, secretRefs: [{ name: "bot-token", store: "credential-file", key: "k", value: "TOKEN_SENTINEL" }] },
+    { ...service, secretRefs: [{ name: "bot-token!", store: "credential-file", key: "k" }] },
+    { ...service, extra: 1 },
+    { ...service, resources: { ...service.resources, maxRestarts: 21 } },
+  ];
+  for (const raw of bad) expect(() => parseServiceConfig(raw)).toThrow("invalid_service_config");
+  expect(() => parseServiceConfig({ ...service, resources: { ...service.resources, maxRestarts: Infinity } })).toThrow();
+});
+
+test("plan mode diffs only allowlisted non-secret fields with opaque secret references", () => {
+  const { service } = setup();
+  const next = { ...service, network: { ...service.network, port: 3444 },
+    secretRefs: [...service.secretRefs, { name: "second-token", store: "service-keyring" as const, key: "jit/secondary" }] };
+  const changes = planServiceConfig(service, next);
+  expect(changes.map(c => c.field).sort()).toEqual(["network", "secretRefs"]);
+  const secrets = changes.find(c => c.field === "secretRefs");
+  expect(secrets?.after).toEqual({ count: 2, names: ["bot-token", "second-token"] });
+  expect(JSON.stringify(changes)).not.toMatch(/TOKEN_SENTINEL|fixture-credential-value|Authorization/);
+  expect(planServiceConfig(service, service)).toEqual([]);
+  expect(() => planServiceConfig(service, { ...next, network: { ...next.network, bindHost: "0.0.0.0" } })).toThrow();
+});
+
+test("rendered unit pins the service identity with bounded restart, memory cap and no secrets", async () => {
+  const { service } = setup();
+  const unit = await renderServiceUnit(parseServiceConfig(service), { bunPath: process.execPath, appDir: "/opt/jit/release" });
+  expect(unit).toMatch(/User=jit-service/);
+  expect(unit).toMatch(/NoNewPrivileges=true/);
+  expect(unit).toMatch(/MemoryMax=512M/);
+  expect(unit).toMatch(/Restart=on-failure/);
+  expect(unit).toMatch(/StartLimitBurst=3/);
+  expect(unit).toMatch(/Environment=JIT_HOST=127\.0\.0\.1/);
+  expect(unit).not.toMatch(/0\.0\.0\.0|TOKEN_SENTINEL|fixture-credential-value/);
+  assertNoSecretValues(unit);
+  assertNoSecretValues(JSON.stringify(parseServiceConfig(service)));
+  expect(() => assertNoSecretValues("bot_token = 123456:ABCDEF-sentinel-value")).toThrow("invalid_service_rendering");
+  expect(() => assertNoSecretValues("Authorization: Bearer TOKEN_SENTINEL")).toThrow("invalid_service_rendering");
+  await expect(renderServiceUnit({ ...parseServiceConfig(service), network: { bindHost: "0.0.0.0", port: 3443, vpnInterface: null } } as never,
+    { bunPath: process.execPath, appDir: "/opt/jit/release" })).rejects.toThrow();
+});
+
+test("full app boots with the composed workers, persists owner state and restarts with one scheduler", async () => {
+  const { service, config } = setup();
+  const first = startFullApp({ config, service });
+  expect(first.ok).toBe(true);
+  if (!first.ok) throw new Error("unreachable");
+  const ids = first.handle.queue.choices().map(c => c.id).sort();
+  expect(ids).toEqual(["project.status", "role.scripted-preview", "schedule.reminder", "schedule.summary",
+    "team.discussion", "team.specialist-analysis", "team.coordinator-synthesis", "memory.extract"].sort());
+  expect(ids.some(id => id.includes("probe"))).toBe(false);
+  const app = first.handle.app;
+  await app.setupOwner("service-owner-password");
+  const actor = app.authenticate(await app.login("service-owner-password")).actor;
+  const project = app.execute(actor, { kind: "project.create", requestId: "service-boot-01", projectId: null,
+    expectedRevision: 0, payload: { name: "Service project" } }).project;
+  const second = startFullApp({ config, service });
+  expect(second.ok).toBe(false);
+  if (second.ok) throw new Error("unreachable");
+  expect(second.gates.find(g => g.gate === "scheduler")?.state).toBe("blocked");
+  const drained = await stopDrain(first.handle, { timeoutMs: 5000 });
+  expect(drained.outcome).toBe("stopped");
+  first.handle.store.close();
+  const third = startFullApp({ config, service });
+  expect(third.ok).toBe(true);
+  if (!third.ok) throw new Error("unreachable");
+  const thirdActor = third.handle.app.authenticate(await third.handle.app.login("service-owner-password")).actor;
+  expect(third.handle.app.project(thirdActor, project.id).id).toBe(project.id);
+  const done = await stopDrain(third.handle, { timeoutMs: 5000 });
+  expect(done.outcome).toBe("stopped");
+  third.handle.store.close();
+});
+
+test("crash and stop-timeout fence unsettled work without claiming success", async () => {
+  const { service, config } = setup();
+  const store = new TransactionStore(config.databasePath);
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let entered = false;
+  const queue = new JobQueue(store, config.jobs, [{
+    id: "test.hang", title: "Hanging fixture", revision: 1, replay: "read",
+    route: { provider: "fixture", model: "scripted", authRoute: "internal" },
+    cost: { roles: 1, calls: 1, rounds: 1, hops: 1 },
+    validate: () => true,
+    run: async () => { entered = true; await gate; return { state: "succeeded", evidence: "must not publish" }; },
+  }]);
+  const app = new Application(store, config, { jobs: queue });
+  await app.setupOwner("hang-owner-password");
+  const actor = app.authenticate(await app.login("hang-owner-password")).actor;
+  const project = app.execute(actor, { kind: "project.create", requestId: "hang-project-01", projectId: null,
+    expectedRevision: 0, payload: { name: "Hang project" } }).project;
+  const receipt = app.execute(actor, { kind: "job.enqueue", requestId: "hang-job-00000001", projectId: project.id,
+    expectedRevision: project.revision, payload: { type: "test.hang", configurationRevision: 1, policyRevision: config.jobs.revision,
+      purpose: "Hanging fixture", inputRevision: project.revision, input: {}, priority: "background",
+      limits: { roles: 4, calls: 4, rounds: 4, hops: 4, contextTokens: 100, outputTokens: 100, retries: 2, wallMs: 60000 } } });
+  queue.pump();
+  for (let n = 0; n < 200 && !entered; n++) await Bun.sleep(1);
+  expect(entered).toBe(true);
+  const drained = await stopDrain({ queue, store }, { timeoutMs: 50 });
+  expect(drained.outcome).toBe("unknown");
+  expect(drained.nextAction).toBe("terminate-supervised-process-and-reconcile");
+  release();
+  await queue.idle();
+  queue.close();
+  store.close();
+  const reopened = new TransactionStore(config.databasePath);
+  const next = new JobQueue(reopened, config.jobs, []);
+  const reopenedApp = new Application(reopened, config, { jobs: next });
+  const actor2 = reopenedApp.authenticate(await reopenedApp.login("hang-owner-password")).actor;
+  const current = reopenedApp.job(actor2, project.id, receipt.job.id);
+  expect(current.evidence).toBeNull();
+  expect(["waiting", "blocked"]).toContain(current.state);
+  expect(JSON.stringify(current)).not.toContain("must not publish");
+  next.close();
+  reopened.close();
+});
+
+test("quarantine boot refuses activation while read-only status stays available", () => {
+  const { service, config } = setup();
+  const quarantined = { ...service, ledgerPath: join(service.stateDirectory, "missing-ledger.json") };
+  expect(readQuarantine(quarantined).quarantined).toBe(true);
+  const refused = startFullApp({ config, service: quarantined });
+  expect(refused.ok).toBe(false);
+  if (refused.ok) throw new Error("unreachable");
+  expect(refused.gates).toMatchObject([{ gate: "quarantine", state: "blocked" }]);
+  const store = new TransactionStore(config.databasePath);
+  try {
+    const preflight = preflightService({ store, config, service: quarantined, requiredEngine: "jit.schway.bridge/v1" });
+    expect(preflight.ok).toBe(false);
+    expect(preflight.gates.find(g => g.gate === "quarantine")?.state).toBe("blocked");
+    expect(gatherServiceStatus(config, quarantined)).toMatchObject({ service: "blocked", quarantined: true });
+  } finally { store.close(); }
+  expect(serviceStatus({ now: 1800000000000, scheduler: "owned", worker: "free", quarantined: false,
+    evidenceReady: false, blockedGates: [] })).toMatchObject({ service: "running", nextAction: "none" });
+  expect(serviceStatus({ now: 1800000000000, scheduler: "owned", worker: "free", quarantined: false,
+    evidenceReady: true, blockedGates: [] }).service).toBe("observed-ready");
+  expect(serviceStatus({ now: 1800000000000, scheduler: "owned", worker: "owned", quarantined: false,
+    evidenceReady: true, blockedGates: [] })).toMatchObject({ service: "blocked" });
+  expect(() => serviceStatus({ now: 1800000000000, scheduler: "owned", worker: "free", quarantined: false,
+    evidenceReady: false, blockedGates: ["Authorization: Bearer x"] })).toThrow();
+});
+
+test("staged upgrade rolls back on failed health with the ledger preserved byte-for-byte", async () => {
+  const { root, service, config, ledger } = setup();
+  const active = join(root, "active");
+  mkdirSync(active, { mode: 0o700 });
+  const seed = new TransactionStore(join(active, "app.sqlite"));
+  seed.close();
+  writeFileSync(join(active, "artifact.json"), JSON.stringify({ artifactId: "previous-artifact" }) + "\n");
+  const artifact = join(root, "artifact");
+  const manifest = buildPackage(
+    { srcDir: repoRoot, outDir: artifact, engineContract: "jit.schway.bridge/v1", engineRevision: null });
+  const before = readFileSync(ledger);
+  const store = new TransactionStore(config.databasePath);
+  try {
+    const rolled = await upgradeStaged({ store, activeDir: active, artifactDir: artifact, backupRoot: service.backupDirectory,
+      ledgerPath: ledger, requiredEngine: "jit.schway.bridge/v1", health: () => false });
+    expect(rolled.outcome).toBe("rolled-back");
+    expect(rolled.backupId).toMatch(/^[a-f0-9-]{36}$/);
+    expect(readFileSync(ledger)).toEqual(before);
+    expect(JSON.parse(readFileSync(join(active, "artifact.json"), "utf8")).artifactId).toBe("previous-artifact");
+    const backupDb = join(service.backupDirectory, rolled.backupId!, "app.sqlite");
+    expect(statSync(backupDb).mode & 0o777).toBe(0o600);
+    const upgraded = await upgradeStaged({ store, activeDir: active, artifactDir: artifact, backupRoot: service.backupDirectory,
+      ledgerPath: ledger, requiredEngine: "jit.schway.bridge/v1", health: async () => true });
+    expect(upgraded.outcome).toBe("upgraded");
+    expect(JSON.parse(readFileSync(join(active, "artifact.json"), "utf8")).artifactId).toBe(manifest.artifactId);
+    expect(readFileSync(ledger)).toEqual(before);
+  } finally { store.close(); }
+});
+
+test("incompatible staged artifacts block before touching active state", async () => {
+  const { root, service, config, ledger } = setup();
+  const active = join(root, "active");
+  mkdirSync(active, { mode: 0o700 });
+  new TransactionStore(join(active, "app.sqlite")).close();
+  const artifact = join(root, "artifact");
+  buildPackage(
+    { srcDir: repoRoot, outDir: artifact, engineContract: "jit.schway.bridge/v1", engineRevision: null });
+  const manifest = JSON.parse(readFileSync(join(artifact, "manifest.json"), "utf8"));
+  writeFileSync(join(artifact, "manifest.json"), JSON.stringify({ ...manifest, lockHash: "0".repeat(64) }));
+  const store = new TransactionStore(config.databasePath);
+  try {
+    const blocked = await upgradeStaged({ store, activeDir: active, artifactDir: artifact, backupRoot: service.backupDirectory,
+      ledgerPath: ledger, requiredEngine: "jit.schway.bridge/v1", health: () => true });
+    expect(blocked.outcome).toBe("blocked");
+    expect(blocked.backupId).toBeNull();
+  } finally { store.close(); }
+});
+
+test("main preflight and status stay read-only without claiming the scheduler", async () => {
+  const { root, config, service } = setup();
+  void config;
+  mkdirSync(join(root, ".local"), { mode: 0o700 });
+  writeFileSync(join(root, ".local/service-config.json"), JSON.stringify(service));
+  const main = join(import.meta.dir, "../src/main.ts");
+  const run = async (args: string[]) => {
+    const child = Bun.spawn([process.execPath, main, ...args],
+      { cwd: root, env: { JIT_DATABASE: join(root, "state/app.sqlite") }, stdout: "pipe", stderr: "pipe" });
+    const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    return { stdout, stderr, exit };
+  };
+  const preflight = await run(["preflight"]);
+  expect(preflight.exit).toBe(0);
+  expect(preflight.stderr).toBe("");
+  const gates = JSON.parse(preflight.stdout).gates as Array<{ gate: string; state: string }>;
+  expect(gates.find(g => g.gate === "scheduler")?.state).toBe("ready");
+  expect(gates.find(g => g.gate === "quarantine")?.state).toBe("ready");
+  const status = await run(["status"]);
+  expect(status.exit).toBe(0);
+  expect(JSON.parse(status.stdout)).toMatchObject({ schema: "jit.ops.status/v1", service: "blocked", scheduler: "free" });
+  expect((await run(["preflight", "--bogus"])).exit).toBe(1);
+  const store = new TransactionStore(join(root, "state/app.sqlite"));
+  try { expect(store.read(tx => tx.get("SELECT * FROM job_scheduler"))).toBeNull(); }
+  finally { store.close(); }
+});
+
+test("operator config rejects wildcard binds by default", () => {
+  expect(() => readConfig({ JIT_HOST: "0.0.0.0" })).toThrow("Invalid JIT_HOST");
+  expect(() => readConfig({ JIT_HOST: "::" })).toThrow("Invalid JIT_HOST");
+  expect(readConfig({}).hostname).toBe("127.0.0.1");
+  expect(readConfig({ JIT_HOST: "10.20.30.40" }).hostname).toBe("10.20.30.40");
+});
