@@ -1,7 +1,7 @@
 import { Application, type CreateProjectCommand } from "./application";
 import { AppError } from "./errors";
 import type { CreateTopicCommand, SendMessageCommand } from "./conversation";
-import { workspacePage, projectPage, conversationPage, sourcePage, jobsPage, teamPage, previewPage, discussionPage, deliveryPage, deliveryDetailPage, prReportsPage, prReportPage, tasksPage, taskPage, memoryPage, memoryClaimPage, memoryContextPage, schedulesPage, scheduleDetailPage, loginPage, errorPage } from "./web-layout";
+import { workspacePage, projectPage, conversationPage, sourcePage, jobsPage, teamPage, previewPage, discussionPage, deliveryPage, deliveryDetailPage, prReportsPage, prReportPage, tasksPage, taskPage, memoryPage, memoryClaimPage, memoryContextPage, schedulesPage, scheduleDetailPage, backupsPage, backupDetailPage, loginPage, errorPage } from "./web-layout";
 import type { ExtractMemoryCommand } from "./memory/types";
 import type { CorrectMemoryCommand } from "./memory/types";
 import type { ForgetMemoryCommand } from "./memory/types";
@@ -94,6 +94,11 @@ const messages: Record<string, string> = {
   invalid_memory_forget: "ข้อมูลคำขอลืม memory ไม่ถูกต้อง กรุณาเปิดหน้าใหม่",
   memory_forget_ambiguous: "การลืมไม่ยกเลิกงานและไม่ถอนมติ ถ้าข้อความคาบเกี่ยวกับงานหรือมติ ให้ติ๊กยืนยันขอบเขตก่อนยืนยันการลืม",
   memory_source_suppressed: "ต้นฉบับนี้ถูกแยกออกจาก memory อัตโนมัติแล้ว สกัดใหม่ไม่ได้ ใช้ต้นฉบับข้อความใหม่แทน",
+  backup_not_found: "ไม่พบสำรองข้อมูลที่เลือก",
+  backup_corrupt: "สำรองข้อมูลนี้ตรวจสอบไม่ผ่าน",
+  backup_storage_unavailable: "พื้นที่สำรองข้อมูลไม่พร้อมใช้งาน",
+  native_snapshot_unavailable: "engine ยังไม่รองรับ native snapshot สำรองนี้จึงไม่สมบูรณ์",
+  invalid_backup_command: "คำขอสำรองข้อมูลไม่ถูกต้อง กรุณาเปิดหน้าใหม่",
 };
 
 /** Creates a server-rendered owner workspace; all mutations use the shared application boundary. */
@@ -200,6 +205,8 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       const memoryRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/memory$/.exec(url.pathname);
       const claimRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/memory\/claims\/([a-f0-9-]{36})$/.exec(url.pathname);
       const contextRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/memory\/contexts\/([a-f0-9-]{36})$/.exec(url.pathname);
+      const backupsRoute = /^\/(api\/)?backups$/.exec(url.pathname);
+      const backupRoute = /^\/(api\/)?backups\/([a-f0-9-]{36})$/.exec(url.pathname);
       const after = () => {
         const raw = url.searchParams.get("after") ?? "0";
         if (!/^\d{1,16}$/.test(raw)) throw new AppError("invalid_cursor");
@@ -249,6 +256,15 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       if (request.method === "GET" && contextRoute) {
         const state = app.memoryContext(auth.actor, contextRoute[1]!, contextRoute[2]!);
         return api ? json(state) : respond(memoryContextPage(state, app.workspace(auth.actor), auth.csrf));
+      }
+      if (request.method === "GET" && backupsRoute) {
+        const state = app.backups(auth.actor);
+        const revision = app.workspace(auth.actor).revision;
+        return api ? json(state) : respond(backupsPage(state, app.workspace(auth.actor), auth.csrf, revision));
+      }
+      if (request.method === "GET" && backupRoute) {
+        const state = app.backup(auth.actor, backupRoute[2]!);
+        return api ? json(state) : respond(backupDetailPage(state, app.workspace(auth.actor), auth.csrf));
       }
       if (request.method === "GET" && memoryRoute) {
         const sourceAfter = Number(url.searchParams.get("sourceAfter") ?? 0), extractionAfter = Number(url.searchParams.get("extractionAfter") ?? 0);
@@ -480,9 +496,17 @@ export function createWebHandler(app: Application): (request: Request) => Promis
         const state = app.workspace(auth.actor, offset);
         return api ? json(state) : respond(workspacePage(state, auth.csrf, offset, config.pageSize));
       }
-      if (request.method === "POST" && (["/projects", "/api/projects", "/logout"].includes(url.pathname) || topicCollection || messageRoute || jobsRoute || resumeRoute || schedulesRoute || scheduleAction)) {
+      if (request.method === "POST" && (["/projects", "/api/projects", "/logout"].includes(url.pathname) || backupsRoute || topicCollection || messageRoute || jobsRoute || resumeRoute || schedulesRoute || scheduleAction)) {
         const body = await payload(request);
         app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        if (backupsRoute) {
+          if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "note"].includes(key))) throw new AppError("invalid_body");
+          const revision = typeof body.expectedRevision === "string" && /^\d{1,15}$/.test(body.expectedRevision) ? Number(body.expectedRevision) : body.expectedRevision;
+          const command = { kind: "backup.create" as const, requestId: body.requestId as string, projectId: null,
+            expectedRevision: revision as number, payload: { note: (body.note as string) ?? "manual backup" } };
+          const receipt = app.execute(auth.actor, command);
+          return api ? json(receipt) : respond(null, 303, { Location: `/backups/${receipt.manifest.id}` });
+        }
         if (schedulesRoute || scheduleAction) {
           const number = (value: unknown) => typeof value === "string" && /^\d{1,15}$/.test(value) ? Number(value) : value;
           const form = request.headers.get("content-type")?.split(";")[0]?.trim() === "application/x-www-form-urlencoded";

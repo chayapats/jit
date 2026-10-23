@@ -3,7 +3,7 @@ import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, statS
 import { dirname } from "node:path";
 import { commitDecisionMemorySource, retireDecisionMemorySource } from "./memory/decision-sources";
 
-const schemaVersion = 15;
+const schemaVersion = 16;
 
 /** Synchronous SQL operations scoped to an application transaction. */
 export interface AppTransaction {
@@ -37,7 +37,7 @@ export class TransactionStore {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
           if (current === schemaVersion) return;
-          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14].includes(current)) throw new Error("Unsupported migration source");
+          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15].includes(current)) throw new Error("Unsupported migration source");
           if (existing) {
             const snapshot = `${path}.pre-v${current}-${crypto.randomUUID()}.sqlite`;
             const fd = openSync(snapshot, "wx", 0o600);
@@ -507,6 +507,13 @@ export class TransactionStore {
             ALTER TABLE memory_contexts_v15 RENAME TO memory_contexts;
             PRAGMA user_version = 15;
           `);
+          if (current < 16) this.#db.exec(`
+            CREATE TABLE IF NOT EXISTS ops_backups (
+              id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, record_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS ops_backup_created ON ops_backups(created_at);
+            PRAGMA user_version = 16;
+          `);
           // A populated rebuilt graph must retain every reference; empty legacy fixture stores have no task graph to check.
           if (this.#tx.get("SELECT 1 FROM tasks LIMIT 1") && this.#tx.all("PRAGMA foreign_key_check").length) throw new Error("Migration foreign key check failed");
         }).immediate();
@@ -536,6 +543,12 @@ export class TransactionStore {
       if (result instanceof Promise) throw new Error("Application transactions must be synchronous");
       return result;
     }).immediate();
+  }
+
+  /** Consistent app snapshot bytes after a WAL checkpoint; never copies a live WAL blindly. */
+  snapshotBytes(): Uint8Array {
+    try { this.#db.exec("PRAGMA wal_checkpoint(TRUNCATE);"); } catch { /* Checkpoint best-effort; serialize stays consistent. */ }
+    return this.#db.serialize();
   }
 
   /** Closes this connection; committed commands remain available after reopening. */

@@ -380,7 +380,7 @@ test("schema v6 migrates to v9 with a private snapshot and leaves the previous p
     PRAGMA user_version = 6;`);
   old.close();
   const store = new TransactionStore(path); stores.push(store);
-  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 15 });
+  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 16 });
   expect(store.read(tx => tx.get("SELECT name FROM projects WHERE id = ?", projectId))).toEqual({ name: "kept" });
   expect(store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM delivery_intents")!.n)).toBe(0);
   const snapshot = new Database(join(root, readdirSync(root).find(name => name.includes(".pre-v6-"))!), { readonly: true });

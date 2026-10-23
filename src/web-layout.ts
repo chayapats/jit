@@ -571,3 +571,26 @@ export function scheduleDetailPage(state: ReturnType<Application["schedule"]>, w
     <section aria-label="รอบที่ผ่านมา"><h2>รอบที่ผ่านมา</h2>${occurrences.length ? occurrences.map(occurrence).join("") : '<p class="empty-list">ยังไม่มีรอบที่ถึงกำหนด</p>'}</section>
     <p><a href="${base}">กลับไปกำหนดการทั้งหมด</a></p></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
 }
+
+/** ops.backup_manifest/v1: bounded inventory outside ordinary project data; never auto-activates workers. */
+export function backupsPage(state: ReturnType<Application["backups"]>, workspace: Workspace, csrf: string, revision: number): string {
+  const items = state.manifests.map(m => `<article class="team-card" id="backup-${m.id}"><header><h3><a href="/backups/${m.id}">${escape(m.id)}</a></h3><span class="job-status" data-state="${m.state}">${escape(m.state)}</span></header>
+    <p>schema ${m.appSchema} · app revision ${m.appRevision} · ${time(m.createdAt)} · ${m.content.projects} โครงการ · ${m.content.sources} แหล่งข้อมูล</p>
+    <p>native ${escape(m.native.state)}${m.native.reason ? ` · ${escape(m.native.reason)}` : ""} · lifecycle ${m.lifecycle.available ? `checkpoint ${escape(m.lifecycle.checkpoint ?? "")}` : escape(m.lifecycle.reason ?? "unavailable")}</p>
+    <p><small>hash ${escape(m.content.hash.slice(0, 16))}… · ${m.content.bytes} bytes · contract ${escape(m.contract)}</small></p>
+    ${m.state === "incomplete" ? `<p><small>ยังไม่พร้อมกู้คืน: ต้องมี lifecycle checkpoint และ native snapshot ที่ valid ก่อน (ดู OPS02)</small></p>` : ""}</article>`).join("");
+  return shell("สำรองข้อมูล", { workspace, csrf, section: "home" }, `<div class="content"><section class="hero"><p class="eyebrow">ops.backup_manifest/v1</p><h2>สำรองข้อมูลที่ตรวจสอบได้</h2><p>snapshot แบบ consistent ของ application state พร้อม native session แบบ quiesced เท่านั้น ไม่คัดลอก WAL ที่กำลังเปลี่ยน ไม่ parse รูปแบบ private ของ Schway สำรองที่ incomplete จะไม่ถูกใช้กู้คืนจนกว่าจะมี checkpoint ครบ</p></section>
+    <form class="create-form" method="post" action="/backups">${hiddenCommand(csrf, revision)}<input type="hidden" name="note" value="manual backup"><button class="primary">สร้างสำรองข้อมูล${icon("plus")}</button></form>
+    <section aria-label="สำรองข้อมูล">${items || '<p class="empty-list">ยังไม่มีสำรองข้อมูล</p>'}</section></div>`);
+}
+
+/** One backup manifest: versions, hashes, completeness and retention without secret values. */
+export function backupDetailPage(state: ReturnType<Application["backup"]>, workspace: Workspace, csrf: string): string {
+  const m = state.manifest;
+  return shell(`สำรอง ${m.id.slice(0, 8)}`, { workspace, csrf, section: "home" }, `<div class="content"><section class="hero"><p class="eyebrow">${escape(m.contract)} · ${escape(m.state)}</p><h2>สำรองข้อมูล ${escape(m.id)}</h2><p>${time(m.createdAt)} · schema ${m.appSchema} · app revision ${m.appRevision}</p></section>
+    <article class="team-card"><h3>ความครบถ้วน</h3><p>native ${escape(m.native.state)}${m.native.reason ? ` (${escape(m.native.reason)})` : ""} · lifecycle ${m.lifecycle.available ? "พร้อม" : escape(m.lifecycle.reason ?? "ไม่พร้อม")}</p>
+    <p>projects ${m.content.projects} · sources ${m.content.sources} · ${m.content.bytes} bytes · hash ${escape(m.content.hash)}</p>
+    <p>retention สูงสุด ${m.retention.maxBackups} ชุด / ${m.retention.maxBytes} bytes${m.retention.pruned.length ? ` · ตัดออก ${m.retention.pruned.length} ชุด` : ""}</p>
+    ${m.reason ? `<p>เหตุผล: ${escape(m.reason)}</p>` : ""}<p><small>artifact ${escape(m.artifact.path)} · กู้คืนต้องผ่าน OPS02 quarantine เท่านั้น ไม่เริ่ม worker อัตโนมัติ</small></p></article>
+    <p><a href="/backups">กลับไปรายการสำรอง</a></p></div>`, { breadcrumb: { title: "สำรองข้อมูล", href: "/backups" } });
+}

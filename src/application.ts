@@ -79,11 +79,18 @@ export interface ProjectReceipt { project: Project; workspaceRevision: number }
 /** Owner-scoped, paginated workspace state with the revision required by create commands. */
 export interface Workspace { revision: number; projects: Project[]; hasMore: boolean }
 
+import {
+  backupIdentity, enforceRetention, listBackups, ownBackupDir, prepareBackupManifest, readBackupManifest, resolveNativeSnapshot,
+  writeArtifact, type BackupCommand, type BackupManifest, type BackupNativePort, type BackupReceipt,
+} from "./ops/backup";
+
 /** Injectable clock and transaction fault seam for deterministic persistence checks. */
 export interface ApplicationOptions {
   now?: () => number;
-  beforeCommit?: (stage: "project" | "topic" | "message" | "job" | "team" | "decision" | "delivery" | "task" | "memory" | "receipt" | "schedule") => void;
+  beforeCommit?(stage: "project" | "topic" | "message" | "job" | "team" | "decision" | "delivery" | "task" | "memory" | "receipt" | "schedule" | "backup" | "ops"): void;
   jobs?: JobQueue;
+  backupDir?: string;
+  nativeSnapshot?: BackupNativePort;
 }
 
 /** Owns identity validation and revisioned app commands independently of Web or model transports. */
@@ -92,12 +99,16 @@ export class Application {
   #now: () => number;
   #beforeCommit: ApplicationOptions["beforeCommit"];
   #jobs: JobQueue | undefined;
+  #backupDir: string;
+  #nativeSnapshot: BackupNativePort | undefined;
 
   constructor(readonly store: TransactionStore, readonly config: AppConfig, options: ApplicationOptions = {}) {
     this.#now = options.now ?? Date.now;
     this.#beforeCommit = options.beforeCommit;
     if (options.jobs && options.jobs.store !== store) throw new AppError("invalid_job_store");
     this.#jobs = options.jobs;
+    this.#backupDir = ownBackupDir(store.path, options.backupDir);
+    this.#nativeSnapshot = options.nativeSnapshot;
   }
 
   /** Provisions exactly one owner through trusted local setup; no HTTP route exposes this method. */
@@ -260,8 +271,10 @@ export class Application {
   execute(actor: OwnerActor, command: ResendDeliveryCommand): DeliveryResendReceipt;
   execute(actor: OwnerActor, command: RetireDeliveryCommand): DeliveryRetireReceipt;
   execute(actor: OwnerActor, command: PrReportCommand): PrReportReceipt;
-  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt;
-  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt {
+  execute(actor: OwnerActor, command: BackupCommand): BackupReceipt;
+  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt;
+  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt {
+    if (command?.kind === "backup.create" || command?.kind === "backup.prune") return this.#backupCommand(actor, command);
     if (command?.kind === "memory.extract") return this.#memoryCommand(actor, command);
     if (command?.kind === "memory.correct") return this.#correctCommand(actor, command);
     if (command?.kind === "memory.forget") return this.#forgetCommand(actor, command);
@@ -801,6 +814,71 @@ export class Application {
     });
     this.#jobs?.cancelFenced();
     return result;
+  }
+
+  /** ops.backup_manifest/v1 reads: bounded inventory outside ordinary project data. */
+  backups(actor: OwnerActor): { manifests: BackupManifest[] } {
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor);
+      return { manifests: listBackups(tx) };
+    });
+  }
+
+  /** Reads one backup manifest without parsing backup bytes or activating workers. */
+  backup(actor: OwnerActor, id: string): { manifest: BackupManifest } {
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor);
+      return { manifest: readBackupManifest(tx, id) };
+    });
+  }
+
+  #backupCommand(actor: OwnerActor, command: BackupCommand): BackupReceipt {
+    const payloadHash = digest(backupIdentity(command));
+    return this.store.transaction(tx => {
+      this.#requireOwner(tx, actor);
+      const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
+      if (prior) {
+        if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409);
+        return JSON.parse(prior.result_json) as BackupReceipt;
+      }
+      const now = this.#now();
+      const revision = tx.get<{ revision: number }>("SELECT revision FROM app_state WHERE id = 1")!.revision;
+      if (revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
+      if (command.kind === "backup.prune") {
+        const pruned = enforceRetention(tx, this.#backupDir, 0, command.payload.keep);
+        this.#beforeCommit?.("backup");
+        const result: BackupReceipt = {
+          manifest: {
+            contract: "ops.backup_manifest/v1", id: "prune", createdAt: now, appSchema: 16, jitVersion: "jit-mvp-fixture",
+            appRevision: revision, projects: [], sourceGenerations: [],
+            lifecycle: { available: true, checkpoint: null, reason: null },
+            native: { state: "valid", refs: [], bytes: 0, engine: null, reason: null },
+            content: { bytes: 0, hash: "", projects: 0, sources: 0 },
+            retention: { maxBackups: 10, maxBytes: 64 * 1024 * 1024, pruned },
+            state: "valid", reason: null, artifact: { path: "", bytes: 0, hash: "" },
+          },
+          duplicate: false,
+        };
+        tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
+        tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, 'owner', ?)", command.kind, command.requestId, now);
+        this.#beforeCommit?.("receipt");
+        return result;
+      }
+      const id = crypto.randomUUID();
+      const snapshot = this.store.snapshotBytes();
+      const hash = createHash("sha256").update(snapshot).digest("hex");
+      const native = resolveNativeSnapshot(this.#nativeSnapshot);
+      const pruned = enforceRetention(tx, this.#backupDir, snapshot.length);
+      const artifactPath = writeArtifact(this.#backupDir, id, snapshot);
+      this.#beforeCommit?.("backup");
+      const manifest = prepareBackupManifest(tx, { id, now, appRevision: revision, snapshotBytes: snapshot, snapshotHash: hash, native, artifactPath, pruned });
+      tx.run("INSERT INTO ops_backups VALUES (?, ?, ?)", manifest.id, manifest.createdAt, JSON.stringify(manifest));
+      const result: BackupReceipt = { manifest, duplicate: false };
+      tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
+      tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, 'owner', ?)", command.kind, command.requestId, now);
+      this.#beforeCommit?.("receipt");
+      return result;
+    });
   }
 
   #createProject(actor: OwnerActor, command: CreateProjectCommand): ProjectReceipt {
