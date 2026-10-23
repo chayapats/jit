@@ -6,7 +6,7 @@ import { commitOutputSource, lookupSource, requireId } from "../sources";
 import type { AppTransaction, TransactionStore } from "../store";
 import type { AppConfig } from "../config";
 import { readTeam } from "./configuration";
-import { fixtureOutcome, normalizePortResult, validateRunRequest } from "./scripted-port";
+import { fixtureOutcome, normalizeFixtureResult, validateRunRequest } from "./scripted-port";
 import type { ApplicationRunPort } from "./run-port";
 import type { ApplicationRunRequest, RolePreview, TeamCommand, TeamReceipt } from "./types";
 
@@ -86,18 +86,16 @@ export function scriptedPreviewWork(store: TransactionStore, config: AppConfig, 
       // The scripted fixture reserves its bounded text estimate and full allowed output before invoking; no real token accounting is claimed.
       reserve({ contextTokens: Math.ceil(Buffer.byteLength(jobData(request, config.team.contextBytes)) / 4), outputTokens: job.limits.outputTokens });
       let outcome;
-      try { outcome = normalizePortResult(await port.invoke(request, signal, () => {}), request, Math.min(config.jobs.outputBytes, job.limits.outputTokens * 4, 65000)); }
+      try { outcome = normalizeFixtureResult(await port.invoke(request, signal, () => {}), request, Math.min(config.jobs.outputBytes, job.limits.outputTokens * 4, 65000)); }
       catch { outcome = fixtureOutcome("invalid_result"); }
-      const evidenceKind = outcome.mode === "production" ? "ตัวอย่าง Schway (production)" : "ตัวอย่างจำลอง (fixture)";
-      const result = { state: "succeeded" as const, evidence: `${evidenceKind}: ${outcome.state} / ${outcome.reason} · run ${run.id}\n${outcome.mode === "production" ? "ใช้ route ที่เลือกผ่าน schway/host" : "ไม่ได้ตรวจ live subscription route"}` };
+      const result = { state: "succeeded" as const, evidence: `ตัวอย่างจำลอง (fixture): ${outcome.state} / ${outcome.reason} · run ${run.id}\nไม่ได้ตรวจ live subscription route` };
       const committed = commit(result, tx => {
         const current = readPreview(tx, job.projectId, run.id);
         if (current.outcome) throw new AppError("preview_already_committed");
         current.request = request;
         current.outcome = outcome;
-        current.mode = outcome.mode;
         if (outcome.state === "complete" && outcome.output) {
-          const text = `${outcome.mode === "production" ? "ตัวอย่าง Schway" : "ตัวอย่างจำลอง (fixture)"} · ${run.roleName}\n${outcome.output}`;
+          const text = `ตัวอย่างจำลอง (fixture) · ${run.roleName}\n${outcome.output}`;
           current.source = commitOutputSource(tx, { projectId: run.projectId, participantId: run.roleId, runId: run.id, text, committedAt: now() });
           const topic = tx.get<{ message_sequence: number }>("SELECT message_sequence FROM topics WHERE project_id = ? AND id = ?", run.projectId, run.topicId)!;
           const attribution = { kind: "participant", participantId: run.roleId, runId: run.id };

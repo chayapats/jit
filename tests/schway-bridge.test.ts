@@ -1,11 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Application } from "../src/application";
 import { readConfig } from "../src/config";
 import { JobQueue } from "../src/jobs/queue";
+import { createFullAppQueue } from "../src/ops/lifecycle";
 import { TransactionStore } from "../src/store";
 import { coordinatorSynthesisWork } from "../src/team/decisions";
 import { discussionPlanWork, specialistAnalysisWork } from "../src/team/dispatch";
@@ -14,7 +15,7 @@ import { ScriptedRunPort, fixtureOutcome, normalizePortResult } from "../src/tea
 import {
   SCHWAY_NEXT_ACTION, SCHWAY_PINNED_REVISION, SCHWAY_PINNED_TARBALL_SHA256, SCHWAY_PINNED_VERSION,
   SCHWAY_RELEASE_CONTRACT, SCHWAY_SNAPSHOT_CONTRACT, SchwayRunPort, classifyBridgeReason, describeEffectiveRun,
-  mapAuthStatus, verifySchwayBridge,
+  mapAuthStatus, schwayMaxAttempts, verifySchwayBridge,
 } from "../src/team/schway-port";
 import type { ApplicationRunEvent, ApplicationRunRequest, RoleRoute } from "../src/team/types";
 import type { HostAuthFetch, HostCredentialStore, Model, ModelRequest } from "schway/host";
@@ -108,7 +109,7 @@ test("effective run maps strict context, exact tools and the selected route with
   expect(effective.sections.map(s => s.name)).toEqual(["responsibility", "purpose", "operator-1"]);
   expect(effective.sources).toHaveLength(1);
   expect(effective.inputText).toBe(run.purpose);
-  expect(effective.auth).toEqual({ route: "grok", model: grok.model });
+  expect(effective.auth).toEqual({ route: "grok", model: grok.model, authRoute: grok.authRoute });
   expect(effective.limits.maxConcurrentTools).toBe(1);
   expect(JSON.stringify(effective)).not.toContain(SECRET);
 });
@@ -342,19 +343,20 @@ test("bridge seam imports only the supported public host entry", () => {
   expect(text).not.toContain(SECRET);
 });
 
-test("public application scenario switches to the concrete adapter and commits attributed evidence", async () => {
+test("team dispatch commits production specialist evidence while preview stays fixture", async () => {
   const root = mkdtempSync(join(tmpdir(), "jit-schway-swap-")); roots.push(root);
   const path = join(root, "state.sqlite"), config = readConfig({ JIT_DATABASE: path, JIT_RUN_PORT: "schway" });
   expect(config.runPort).toBe("schway");
   const store = new TransactionStore(path); stores.push(store);
   const gate = await verifySchwayBridge(store);
   expect(gate.ok).toBe(true);
-  const port = new SchwayRunPort(store, config.team, config.jobs.outputBytes, {
+  const teamPort = new SchwayRunPort(store, config.team, config.jobs.outputBytes, {
     model: scripted("ผลวิเคราะห์ผ่าน Schway สำหรับโครงการนำร่อง"),
   });
+  const fixturePort = new ScriptedRunPort(store, config.team, config.jobs.outputBytes);
   const now = () => 1800000000000;
   const queue = new JobQueue(store, config.jobs, [
-    scriptedPreviewWork(store, config, port), discussionPlanWork(), specialistAnalysisWork(store, config, port), coordinatorSynthesisWork(store, config, port),
+    scriptedPreviewWork(store, config, fixturePort), discussionPlanWork(), specialistAnalysisWork(store, config, teamPort), coordinatorSynthesisWork(store, config, teamPort),
   ], { now }); queues.push(queue);
   const app = new Application(store, config, { jobs: queue, now });
   const password = "fixture-swap-owner";
@@ -364,24 +366,100 @@ test("public application scenario switches to the concrete adapter and commits a
   const topic = app.execute(auth.actor, { kind: "topic.create", projectId: project.id, requestId: rid(), expectedRevision: project.revision, payload: { title: "หัวข้อสะพาน" } }).topic;
   const role = app.execute(auth.actor, { kind: "role.save", projectId: null, requestId: rid(), expectedRevision: 0,
     payload: { roleId: null, name: "สะพาน", kind: "specialist", responsibility: "วิเคราะห์โครงสร้างซอฟต์แวร์", enabled: true, route: grok } }).role!;
+  // Role preview keeps its fixture authorization even in schway mode.
   const current = app.project(auth.actor, project.id);
   const run = app.execute(auth.actor, { kind: "role.preview", projectId: project.id, requestId: rid(), expectedRevision: current.revision,
     payload: { roleId: role.id, topicId: topic.id, purpose: "พิสูจน์การสลับอะแดปเตอร์", sources: [topic.source], limits: { ...config.jobs.maximum } } }).preview!;
   queue.pump(); await queue.idle();
-  const completed = app.preview(auth.actor, project.id, run.id).run;
-  expect(completed.outcome).toMatchObject({ state: "complete", mode: "production" });
-  expect(completed.mode).toBe("production");
-  expect(completed.source).not.toBeNull();
-  expect(port.requests[0]!.route).toEqual(grok);
-  expect(app.conversation(auth.actor, project.id, topic.id).items).toHaveLength(1);
+  expect(app.preview(auth.actor, project.id, run.id).run.outcome).toMatchObject({ state: "complete", mode: "fixture" });
+  expect(teamPort.requests).toHaveLength(0);
+  // Dispatching a discussion runs the specialist through the concrete bridge.
+  const revision = app.project(auth.actor, project.id).revision;
+  app.execute(auth.actor, { kind: "team.dispatch", projectId: project.id, requestId: rid(), expectedRevision: revision,
+    payload: { topicId: topic.id, purpose: "วิเคราะห์ผ่านสะพาน", sources: [topic.source], include: [role.id], exclude: [], limits: { ...config.jobs.maximum } } });
+  queue.pump(); await queue.idle();
+  expect(teamPort.requests).toHaveLength(1);
+  expect(teamPort.requests[0]!.route).toEqual(grok);
+  const discussion = app.discussions(auth.actor, project.id, topic.id).at(-1)!;
+  const participation = app.discussion(auth.actor, project.id, discussion.id).discussion.participations[0]!;
+  expect(participation.state).toBe("completed");
+  expect(participation.output).not.toBeNull();
+  expect(participation.route).toEqual(grok);
+  // Worst-case retry calls were reserved before dispatch.
+  const job = app.job(auth.actor, project.id, participation.jobId);
+  expect(job.remaining.calls).toBe(job.limits.calls - schwayMaxAttempts({ limits: job.limits }));
+  expect(job.remaining.rounds).toBe(job.limits.rounds - schwayMaxAttempts({ limits: job.limits }));
   // Persisted production evidence still reads after reopen while provider access is blocked.
   queue.close(); await queue.idle();
   const reopenedStore = new TransactionStore(path); stores.push(reopenedStore);
   const reopened = new Application(reopenedStore, readConfig({ JIT_DATABASE: path }));
   const actor = reopened.authenticate(await reopened.login(password)).actor;
-  expect(reopened.preview(actor, project.id, run.id).run.outcome).toMatchObject({ state: "complete", mode: "production" });
+  const reopenedDiscussion = reopened.discussion(actor, project.id, discussion.id).discussion;
+  expect(reopenedDiscussion.participations[0]!.state).toBe("completed");
   const blocked = new SchwayRunPort(reopenedStore, config.team, config.jobs.outputBytes, { authStore: memStore(null) });
-  const persisted = reopened.preview(actor, project.id, run.id).run.request;
-  expect(await blocked.invoke(persisted, new AbortController().signal, () => {})).toMatchObject({ state: "blocked", reason: "needs_login" });
-  expect(reopened.preview(actor, project.id, run.id).run.outcome).toMatchObject({ state: "complete", mode: "production" });
+  const specialistRequest = teamPort.requests[0]!;
+  expect(await blocked.invoke({ ...specialistRequest, runId: rid() }, new AbortController().signal, () => {}))
+    .toMatchObject({ state: "blocked", reason: "needs_login" });
+});
+
+test("concurrent delete during native creation retires the orphan instead of running it", async () => {
+  const { config, store } = setup();
+  let submitted = false;
+  let hookDeletion: { state: string } | null = null;
+  const port = new SchwayRunPort(store, config.team, config.jobs.outputBytes, {
+    model: {
+      provider: "scripted", id: "race",
+      async *stream() { submitted = true; yield { type: "message_complete", message: { type: "assistant", id: rid(), content: [{ type: "text", text: "must never run" }] } }; },
+    },
+    testHooks: {
+      afterCreateSession: async () => {
+        // Interleaved owner delete wins before the fence recheck, but the live
+        // holder blocks native acknowledgement, so it stays explicitly retried.
+        hookDeletion = await port.delete({ id: run.context.id, generation: 1 });
+      },
+    },
+  });
+  const run = request(config); activate(store, run.context);
+  const outcome = await port.invoke(run, new AbortController().signal, () => {});
+  expect(outcome).toMatchObject({ state: "blocked", reason: "context_retired" });
+  expect(submitted).toBe(false);
+  expect(hookDeletion).toMatchObject({ state: "retire_failed" });
+  expect(store.read(tx => tx.get<{ state: string }>("SELECT state FROM team_contexts WHERE id = ?", run.context.id))).toEqual({ state: "retired" });
+  // The orphan was retired natively, so an explicit retry converges to deleted.
+  expect(await port.delete(run.context)).toMatchObject({ state: "deleted" });
+});
+
+test("startup gate blocks admission when host directories are unavailable", async () => {
+  const { config, store } = setup();
+  expect(() => createFullAppQueue(store, config)).not.toThrow();
+  const blocker = join(dirname(store.path), ".jit-host");
+  rmSync(blocker, { force: true, recursive: true });
+  writeFileSync(blocker, "not a directory");
+  try {
+    expect(() => createFullAppQueue(store, { ...config, runPort: "schway" })).toThrow("unsafe_host_directory");
+  } finally {
+    rmSync(blocker, { force: true });
+  }
+  expect(await verifySchwayBridge(store).then(g => g.ok)).toBe(true);
+});
+
+test("model identifiers outside the pinned host grammar fail before any native session", async () => {
+  const { config, store } = setup();
+  const port = new SchwayRunPort(store, config.team, config.jobs.outputBytes, { model: scripted("ok") });
+  for (const [label, model] of [["slash", "org/grok-4"], ["colon", "grok:latest"], ["slash-at-limit", `a${"/".repeat(119)}`]] as const) {
+    const run = request(config, { route: { provider: "grok", model, authRoute: "owner-grok" } });
+    activate(store, run.context);
+    await expect(port.invoke(run, new AbortController().signal, () => {}), label).rejects.toThrow("invalid_run_request");
+  }
+  expect(port.requests).toHaveLength(0);
+});
+
+test("usage reports bounded retry accounting for multi-attempt runs", async () => {
+  const { config, store } = setup();
+  const port = new SchwayRunPort(store, config.team, config.jobs.outputBytes, { model: scripted("counted") });
+  const run = request(config, { limits: { ...config.jobs.maximum, retries: 3 } });
+  activate(store, run.context);
+  const outcome = await port.invoke(run, new AbortController().signal, () => {});
+  expect(outcome.usage).toMatchObject({ calls: 1, rounds: 1, retries: 0 });
+  expect(schwayMaxAttempts(run)).toBe(4);
 });

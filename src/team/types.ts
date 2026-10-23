@@ -142,7 +142,7 @@ export type TeamCommand = {
 /** A durable fixture run records immutable configuration separately from current effective settings. */
 export interface RolePreview {
   id: string; projectId: string; topicId: string; roleId: string; roleName: string; jobId: string;
-  request: ApplicationRunRequest; mode: "fixture" | "production"; createdAt: number;
+  request: ApplicationRunRequest; mode: "fixture"; createdAt: number;
   outcome: ApplicationRunOutcome | null; source: SourceReference | null;
 }
 /** Owner-visible command result is acknowledged only together with its audit and receipt. */

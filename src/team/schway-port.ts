@@ -83,6 +83,8 @@ export interface SchwayPortOptions {
   /** Fixture credential store for route-bound runs; never set in production. */
   authStore?: HostCredentialStore;
   now?: () => number;
+  /** Test-only interleaving hook, awaited after native session creation before the fence recheck. */
+  testHooks?: { afterCreateSession?: (session: HostSession) => Promise<void> };
 }
 
 /** Non-secret effective dispatch configuration, exposed for inspection. */
@@ -92,7 +94,8 @@ export interface EffectiveSchwayRun {
   sources: { id: string; revision: string; content: string }[];
   inputText: string;
   limits: { maxTurns: number; maxConcurrentTools: number; contextWindow: number; maxInputChars: number; deadlineMs: number; maxAttempts: number };
-  auth: { route: "grok" | "codex"; model: string };
+  /** Selected route, model and owner credential alias. The alias is preserved end to end; the pinned host resolves one subscription identity per provider. */
+  auth: { route: "grok" | "codex"; model: string; authRoute: string };
 }
 
 /** Trusted operator framing: sources stay untrusted evidence and cannot adopt it. */
@@ -101,17 +104,26 @@ export const SCHWAY_SYSTEM_PROMPT =
 
 const emptyUsage = () => ({ calls: 0, rounds: 0, hops: 0, contextTokens: 0, outputTokens: 0, retries: 0, wallMs: 0 });
 
+const MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
 function clampInt(value: number, minimum: number, maximum: number): number {
   if (!Number.isSafeInteger(value)) return minimum;
   return Math.min(maximum, Math.max(minimum, value));
 }
 
+/** Worst-case Schway admission attempts for one bounded request: first try plus finite retries. */
+export function schwayMaxAttempts(request: Pick<ApplicationRunRequest, "limits">): number {
+  return clampInt(request.limits.retries + 1, 1, 10);
+}
+
 /**
  * Maps a validated application request onto the exact Schway host call.
  * Throws `invalid_run_request` when the fixed snapshot exceeds host bounds;
- * evidence is never silently truncated.
+ * evidence is never silently truncated. Model identifiers outside the pinned
+ * host grammar fail here instead of as opaque bridge errors.
  */
 export function describeEffectiveRun(request: ApplicationRunRequest): EffectiveSchwayRun {
+  if (!MODEL_PATTERN.test(request.route.model)) throw new AppError("invalid_run_request");
   const sections = [
     { name: "responsibility", content: request.instructions.responsibility },
     { name: "purpose", content: request.purpose },
@@ -142,9 +154,9 @@ export function describeEffectiveRun(request: ApplicationRunRequest): EffectiveS
       contextWindow: clampInt(request.limits.contextTokens, 1, 2_000_000),
       maxInputChars: clampInt(totalBytes + 1024, 1024, 1_000_000),
       deadlineMs: clampInt(request.limits.wallMs, 1, 86_400_000),
-      maxAttempts: clampInt(request.limits.retries, 1, 10),
+      maxAttempts: schwayMaxAttempts(request),
     },
-    auth: { route: request.route.provider, model: request.route.model },
+    auth: { route: request.route.provider, model: request.route.model, authRoute: request.route.authRoute },
   };
 }
 
@@ -176,10 +188,33 @@ export function schwayHostDirs(storePath: string): { workspaceRoot: string; home
   return { workspaceRoot: join(base, "workspace"), homeDirectory: join(base, "home"), sessionDirectory: join(base, "sessions") };
 }
 
+/** Mode-aware failure for adapter exceptions: production failures never wear fixture evidence. */
+export function portFailureOutcome(port: Pick<ApplicationRunPort, "adapter">): ApplicationRunOutcome {
+  return port.adapter === "schway" ? classifyBridgeReason("invalid_result") : fixtureOutcome("invalid_result");
+}
+
 function ensureServiceDir(path: string): void {
-  mkdirSync(path, { recursive: true, mode: 0o700 });
-  const stats = lstatSync(path);
+  try {
+    mkdirSync(path, { recursive: true, mode: 0o700 });
+  } catch {
+    throw new AppError("unsafe_host_directory");
+  }
+  let stats;
+  try {
+    stats = lstatSync(path);
+  } catch {
+    throw new AppError("unsafe_host_directory");
+  }
   if (!stats.isDirectory() || stats.isSymbolicLink() || (stats.mode & 0o077) !== 0) throw new AppError("unsafe_host_directory");
+}
+
+/** Synchronous startup gate: service directories plus the pinned release contract, before any admission. */
+export function assertSchwayGate(storePath: string): void {
+  const dirs = schwayHostDirs(storePath);
+  ensureServiceDir(dirs.workspaceRoot);
+  ensureServiceDir(dirs.homeDirectory);
+  ensureServiceDir(dirs.sessionDirectory);
+  if (hostCapabilities().releaseContract !== SCHWAY_RELEASE_CONTRACT) throw new AppError("unsupported_schway_release");
 }
 
 /** Extracts bounded assistant text; thinking/tool content and empty output never become evidence. */
@@ -265,11 +300,7 @@ export class SchwayRunPort implements ApplicationRunPort {
   }
 
   private async openHost(effective: EffectiveSchwayRun, lifecycle: boolean): Promise<HostRuntime> {
-    const dirs = schwayHostDirs(this.store.path);
-    ensureServiceDir(dirs.workspaceRoot);
-    ensureServiceDir(dirs.homeDirectory);
-    ensureServiceDir(dirs.sessionDirectory);
-    if (hostCapabilities().releaseContract !== SCHWAY_RELEASE_CONTRACT) throw new AppError("unsupported_schway_release");
+    assertSchwayGate(this.store.path);
     const host = await createHost(this.hostOptions(effective, lifecycle));
     if (host.capabilities.releaseContract !== SCHWAY_RELEASE_CONTRACT) {
       await host.close().catch(() => {});
@@ -308,9 +339,12 @@ export class SchwayRunPort implements ApplicationRunPort {
       contextTokens += attempt.usage.inputTokens ?? 0;
       outputTokens += attempt.usage.outputTokens ?? 0;
     }
+    // One attempt is the first call; the rest are bounded retries. Rounds count
+    // admission attempts; a host attempt may contain several model turns.
     return {
       calls: attempts.length, rounds: attempts.length, hops: 0,
-      contextTokens, outputTokens, retries: 0, wallMs: Math.min(Math.max(0, wallMs), Number.MAX_SAFE_INTEGER),
+      contextTokens, outputTokens, retries: Math.max(0, attempts.length - 1),
+      wallMs: Math.min(Math.max(0, wallMs), Number.MAX_SAFE_INTEGER),
     };
   }
 
@@ -378,6 +412,21 @@ export class SchwayRunPort implements ApplicationRunPort {
       host = await this.openHost(effective, false);
       session = await host.createSession();
       this.recordRef(snapshot, session.reference, "running");
+      await this.options.testHooks?.afterCreateSession?.(session);
+      if (fenced() || signal.aborted) {
+        // Creation lost a race with retirement, deletion or cancellation:
+        // retire the orphan natively so it can never run, snapshot or resurrect.
+        this.recordRef(snapshot, session.reference, "finished");
+        try { session.cancel(); } catch { /* Idle or already settled. */ }
+        try { await session.close(); } catch { /* Best effort before retirement. */ }
+        try {
+          const cleanup = await this.openHost(effective, true);
+          try { await cleanup.retireSession(session.reference); } catch { /* Tombstone best effort; the app fence already holds. */ }
+          await cleanup.close().catch(() => {});
+        } catch { /* The app fence already holds; native retry stays explicit. */ }
+        if (fenced()) return finish(fixtureOutcome("context_retired"));
+        return finish(fixtureOutcome("cancelled"));
+      }
       const onProgress = (event: { transient: true; text?: string; name?: string; message?: string; stage?: string }) => {
         try {
           const text = event.text ?? event.message ?? event.name ?? event.stage ?? "progress";
@@ -552,20 +601,14 @@ function describeLifecycleRun(context: ManagedContextReference): EffectiveSchway
     sources: [],
     inputText: "lifecycle",
     limits: { maxTurns: 1, maxConcurrentTools: 1, contextWindow: 1024, maxInputChars: 1024, deadlineMs: 30_000, maxAttempts: 1 },
-    auth: { route: "grok", model: "lifecycle" },
+    auth: { route: "grok", model: "lifecycle", authRoute: "internal-lifecycle" },
   };
 }
 
 /** Startup gate: verifies service directories and the pinned release contract before admitting work. */
 export async function verifySchwayBridge(store: TransactionStore): Promise<{ ok: true; detail: string } | { ok: false; detail: string; nextAction: string }> {
   try {
-    const dirs = schwayHostDirs(store.path);
-    ensureServiceDir(dirs.workspaceRoot);
-    ensureServiceDir(dirs.homeDirectory);
-    ensureServiceDir(dirs.sessionDirectory);
-    if (hostCapabilities().releaseContract !== SCHWAY_RELEASE_CONTRACT) {
-      return { ok: false, detail: `unsupported host release contract`, nextAction: SCHWAY_NEXT_ACTION };
-    }
+    assertSchwayGate(store.path);
     const gate = new SchwayRunPort(store, {
       roleLimit: 24, responsibilityBytes: 2048, sourceLimit: 8, contextBytes: 32768,
     }, 4096);

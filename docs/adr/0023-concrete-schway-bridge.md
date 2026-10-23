@@ -41,6 +41,28 @@ Rejected alternatives: one session per managed context would serialize
 concurrent specialist runs behind one lease and complicate fencing; deriving
 session ids deterministically is unsupported by the host contract.
 
+## Credential aliases and budget authority
+
+The pinned host resolves one subscription identity per provider route, so Jit
+preserves the owner alias end to end (effective config, request history,
+committed evidence) but cannot execute two aliases on one provider as distinct
+billing identities. A Schway change for per-alias credential binding is
+proposed separately; until it exists the limitation is explicit here rather
+than hidden behind a silent fallback.
+
+Retry accounting maps `maxAttempts = retries + 1`: worst-case additional
+calls/rounds are reserved before dispatch, single-output token accounting
+stays as committed, and measured overrun across bounded internal retries is
+reported in usage. Fully pre-reserving repeated outputs would make every
+normal job exceed its remaining budget; the call-count dimension (admission
+and billing events) is fully pre-reserved instead. Proposed upstream:
+chayapats/schway#413 (per-alias credential binding).
+
+Production adapter exceptions normalize to a production error that never
+claims fixture evidence. Fixture-authorized work (role preview, schedule and
+PR summaries, memory extraction) stays scripted; only specialist and
+coordinator runs switch ports, matching their authorization boundary.
+
 ## Request-scoped host runtimes
 
 `createHost` binds one fixed context, tool registry, limits and auth

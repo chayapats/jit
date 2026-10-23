@@ -10,7 +10,7 @@ import type { JobLimits, WorkDefinition, WorkOutcome } from "./types";
 import { assembleMemoryContext, contextByteRoom, contextCurrent, memoryContextOperator, outputDerivation } from "../memory/context";
 import { requireRoleRoute } from "../team/configuration";
 import type { ApplicationRunPort } from "../team/run-port";
-import { fixtureOutcome, normalizePortResult, validateRunRequest } from "../team/scripted-port";
+import { fixtureOutcome, normalizeFixtureResult, validateRunRequest } from "../team/scripted-port";
 import type { ApplicationRunRequest, RoleRoute } from "../team/types";
 
 /** Behavior contract delivered by this module. Occurrence identity, timezone policy and
@@ -606,7 +606,7 @@ export function scheduleSummaryWork(store: TransactionStore, config: AppConfig, 
       const request = structuredClone(attempt.data) as unknown as ApplicationRunRequest;
       reserve({ contextTokens: Math.ceil(Buffer.byteLength(jobData(request, config.team.contextBytes)) / 4), outputTokens: job.limits.outputTokens });
       let outcome;
-      try { outcome = normalizePortResult(await port.invoke(request, signal, () => {}), request, Math.min(config.jobs.outputBytes, job.limits.outputTokens * 4, 65000)); }
+      try { outcome = normalizeFixtureResult(await port.invoke(request, signal, () => {}), request, Math.min(config.jobs.outputBytes, job.limits.outputTokens * 4, 65000)); }
       catch { outcome = fixtureOutcome("invalid_result"); }
       if (outcome.reason === "quota" || outcome.reason === "needs_login" || outcome.reason === "route_unavailable") {
         return { state: "waiting", reason: outcome.reason };

@@ -10,7 +10,7 @@ import { lookupSource } from "../sources";
 import { TransactionStore, schemaVersion } from "../store";
 import type { ApplicationRunPort } from "../team/run-port";
 import { ScriptedRunPort } from "../team/scripted-port";
-import { SchwayRunPort } from "../team/schway-port";
+import { SchwayRunPort, assertSchwayGate } from "../team/schway-port";
 import { coordinatorSynthesisWork } from "../team/decisions";
 import { discussionPlanWork, specialistAnalysisWork } from "../team/dispatch";
 import { scriptedMemoryResult } from "../memory/extract";
@@ -131,17 +131,23 @@ export function preflightService(input: PreflightInput): PreflightResult {
  * a separate human-involved command, never part of service boot.
  */
 export function createFullAppQueue(store: TransactionStore, config: AppConfig, now: () => number = Date.now): JobQueue {
-  const port: ApplicationRunPort = config.runPort === "schway"
+  if (config.runPort === "schway") assertSchwayGate(store.path);
+  const teamPort: ApplicationRunPort = config.runPort === "schway"
     ? new SchwayRunPort(store, config.team, config.jobs.outputBytes)
     : new ScriptedRunPort(store, config.team, config.jobs.outputBytes);
+  // Fixture-authorized work (role preview, schedule/PR summaries, memory)
+  // never routes through live inference; see JBR01 authorization boundary.
+  const fixturePort: ApplicationRunPort = config.runPort === "schway"
+    ? new ScriptedRunPort(store, config.team, config.jobs.outputBytes)
+    : teamPort;
   const memoryPort = new ScriptedRunPort(store, config.team, config.jobs.outputBytes, request => {
     const source = store.read(tx => lookupSource(tx, request.projectId, request.manifest.sources[0]!.reference));
     return scriptedMemoryResult(request, source.state === "available" && source.attribution.kind === "owner", config.jobs.outputBytes);
   });
   return new JobQueue(store, config.jobs, [
-    projectStateWork(store), scriptedPreviewWork(store, config, port), discussionPlanWork(),
-    specialistAnalysisWork(store, config, port), coordinatorSynthesisWork(store, config, port),
-    memoryExtractionWork(store, config, memoryPort), scheduleReminderWork(store, config), scheduleSummaryWork(store, config, port),
+    projectStateWork(store), scriptedPreviewWork(store, config, fixturePort), discussionPlanWork(),
+    specialistAnalysisWork(store, config, teamPort), coordinatorSynthesisWork(store, config, teamPort),
+    memoryExtractionWork(store, config, memoryPort), scheduleReminderWork(store, config), scheduleSummaryWork(store, config, fixturePort),
   ], { now });
 }
 

@@ -84,18 +84,34 @@ and fixture-free protocol transport.
 - Route runs use `submitWithRoute` on the exact selected Grok/Codex
   route/model with the shared route-scoped credential lifecycle. Jit supplies
   no credential client, renewal loop, billing fallback or model retry of its
-  own. Fixture model runs (tests) use `submit` with a scripted model and no
-  auth binding.
+  own. Jit supplies no credential client, renewal loop, billing fallback or
+  model retry of its own. The owner credential alias (`authRoute`) is
+  preserved end to end in the effective configuration, request history and
+  committed evidence; the pinned host resolves one subscription identity per
+  provider, so two aliases on one provider share that identity without any
+  silent provider, model, billing or credential switch. Per-alias credential
+  binding is proposed to Schway (see ADR 0023); until that contract exists
+  the limitation is explicit and auditable rather than hidden. Fixture model
+  runs (tests) use `submit` with a scripted model and no auth binding.
 - Auth outcomes map to waiting/failed states without changing provider, model
   or billing: `needs-login` → `needs_login`, `quota-exceeded` → `quota`,
   `model-unavailable` → `unknown_model`, store/rejected/integration failures →
   `route_unavailable`. Control outcomes map to `cancelled`/`max_rounds`/
   `budget_exceeded`; empty output never becomes committed evidence.
+  Production adapter exceptions normalize to a production `invalid_result`
+  that never claims fixture evidence or an unchecked live route.
 - Cancellation/deadline and Jit's attempt/deletion generations prevent late
-  publication: fencing rechecks after the native settle, and late results
-  become `context_retired`/`cancelled` instead of success. Attempt ledgers
-  record `adapter: "schway"` so JOB02 reconciliation matches durable native
-  refs across restart; interrupted rows stay `running` for explicit reconcile.
+  publication: fencing rechecks before and after the native settle, and late
+  results become `context_retired`/`cancelled` instead of success. A fence
+  that closes between session creation and dispatch retires the orphan
+  natively instead of running it. Attempt ledgers record `adapter: "schway"`
+  so JOB02 reconciliation matches durable native refs across restart;
+  interrupted rows stay `running` for explicit reconcile. Only fenced-active,
+  live-signal progress is stored provisionally and it is cleared at commit;
+  transient progress never becomes committed evidence.
+- Worst-case retry admissions are pre-reserved (`calls`/`rounds` for
+  `maxAttempts = retries + 1`); single-output token accounting stays as
+  committed with measured overrun in usage evidence (see ADR 0023).
 - `retire` fences the application generation first, then retires owned native
   sessions through `retireSession` (idempotent; only live-holder conflicts
   retry). `delete` retires first, then removes owned native artifacts through
@@ -106,17 +122,25 @@ and fixture-free protocol transport.
   diagnostic; backup integration stays a later slice.
 - `status()` reports the pinned release for inspection surfaces; it never
   probes credentials or infers readiness. Serve wiring (`JIT_RUN_PORT`,
-  default `scripted`) selects the concrete port; memory extraction stays
-  scripted.
+  default `scripted`) selects the concrete port for specialist/coordinator
+  runs only; role preview, schedule/PR summaries and memory extraction stay
+  scripted under their fixture authorizations. Queue construction asserts the
+  synchronous startup gate (service-owned `.jit-host` dirs plus pinned
+  release) before any admission owner exists; `serve` additionally runs the
+  full asynchronous gate before starting. Model identifiers outside the pinned
+  host grammar fail pre-native with a clear diagnostic.
 
 ## Evidence
 
 `tests/schway-bridge.test.ts`: pinned gate, tarball SHA, effective-run
-mapping, hostile-input neutrality, empty-output rejection, auth mapping over
-fixture stores/transports (needs_login/quota/route_unavailable, no fallback,
-no secret leakage), cancel/generation fencing across reopen, native
-retire/delete/snapshot through the real host, cursor pagination, shared
-normalizer round-trip, startup gate, seam import hygiene, and a full
-application preview scenario that commits production evidence, reopens after
-restart, and keeps reads working while provider access is blocked.
+mapping with alias preservation and host-grammar rejection, hostile-input
+neutrality, empty-output rejection, auth mapping over fixture
+stores/transports (needs_login/quota/route_unavailable, no fallback, no
+secret leakage), cancel/generation fencing across reopen, native
+retire/delete/snapshot through the real host, fence-race orphan retirement
+with no submit, startup gate blocking on unsafe host dirs, retry reservation
+accounting, cursor pagination, shared normalizer round-trip, seam import
+hygiene, and a full application scenario where dispatch commits production
+specialist evidence while preview stays fixture, reopens after restart, and
+keeps reads working while provider access is blocked.
 `bun test`, `bun run typecheck`. No live accounts, no network, no Pi.

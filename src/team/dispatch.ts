@@ -9,6 +9,7 @@ import type { AppConfig } from "../config";
 import { readTeam } from "./configuration";
 import { planDiscussionRoles } from "./router";
 import { fixtureOutcome, normalizePortResult, validateRunRequest } from "./scripted-port";
+import { portFailureOutcome, schwayMaxAttempts } from "./schway-port";
 import type { ApplicationRunPort } from "./run-port";
 import type {
   ApplicationRunRequest, Discussion, DiscussionParticipation, RunSourceManifest, SpecialistRun, TeamCommand, TeamReceipt,
@@ -344,18 +345,25 @@ export function specialistAnalysisWork(
       if (run.jobId !== job.id || run.outcome || run.discussionId !== input.discussionId) return { state: "failed", reason: "worker_failed" };
       const request = structuredClone(attempt.data) as unknown as ApplicationRunRequest;
       reserve({ contextTokens: Math.ceil(Buffer.byteLength(jobData(request, config.team.contextBytes)) / 4), outputTokens: job.limits.outputTokens });
+      if (port.adapter === "schway") {
+        // Worst-case retry calls pre-reserved before dispatch; single-output
+        // token accounting stays as committed, with measured overrun in usage.
+        const extra = schwayMaxAttempts(request) - 1;
+        if (extra > 0) reserve({ calls: extra, rounds: extra });
+      }
       let outcome;
       try {
         outcome = normalizePortResult(await port.invoke(request, signal, event => {
-          if (event.kind !== "progress") return;
+          if (event.kind !== "progress" || signal.aborted) return;
           store.transaction(tx => {
             const current = readSpecialist(tx, job.projectId, run.id);
             if (current.outcome) return;
+            if (tx.get<{ state: string }>("SELECT state FROM team_contexts WHERE id = ? AND generation = ?", request.context.id, request.context.generation)?.state !== "active") return;
             current.progress = { text: event.text.slice(0, 2000), provisional: true };
             saveSpecialist(tx, current);
           });
         }), request, Math.min(config.jobs.outputBytes, job.limits.outputTokens * 4, 65000));
-      } catch { outcome = fixtureOutcome("invalid_result"); }
+      } catch { outcome = portFailureOutcome(port); }
       if (outcome.reason === "quota" || outcome.reason === "needs_login" || outcome.reason === "route_unavailable") {
         store.transaction(tx => {
           const current = readSpecialist(tx, job.projectId, run.id);
@@ -366,7 +374,10 @@ export function specialistAnalysisWork(
         return { state: "waiting", reason: outcome.reason };
       }
       const evidenceKind = outcome.mode === "production" ? "วิเคราะห์ผ่าน Schway (production)" : "วิเคราะห์จำลอง (fixture)";
-      const result = { state: "succeeded" as const, evidence: `${evidenceKind}: ${outcome.state} / ${outcome.reason} · run ${run.id}\n${outcome.mode === "production" ? "ใช้ route ที่เลือกผ่าน schway/host" : "ไม่ได้ตรวจ live subscription route"}` };
+      const evidenceRoute = outcome.mode === "production"
+        ? (outcome.state === "complete" ? "ใช้ route ที่เลือกผ่าน schway/host" : "ตรวจผ่าน route ที่เลือกแต่ไม่สำเร็จ")
+        : "ไม่ได้ตรวจ live subscription route";
+      const result = { state: "succeeded" as const, evidence: `${evidenceKind}: ${outcome.state} / ${outcome.reason} · run ${run.id}\n${evidenceRoute}` };
       const committed = commit(result, tx => {
         const current = readSpecialist(tx, job.projectId, run.id);
         if (current.outcome) throw new AppError("run_already_committed");

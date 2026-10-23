@@ -10,6 +10,7 @@ import { readTeam } from "./configuration";
 import { projectDiscussion, readDiscussion } from "./dispatch";
 import type { ApplicationRunPort } from "./run-port";
 import { fixtureOutcome, normalizePortResult, validateRunRequest } from "./scripted-port";
+import { portFailureOutcome, schwayMaxAttempts } from "./schway-port";
 import { assembleMemoryContext, contextByteRoom, contextCurrent, markMemoryDerived, memoryContextOperator } from "../memory/context";
 import type {
   ApplicationRunOutcome, ApplicationRunRequest, CoordinatorSynthesis, DecisionCommand, DecisionHistoryEntry,
@@ -508,10 +509,14 @@ export function coordinatorSynthesisWork(
       if (opened.public.jobId !== job.id || opened.public.discussionId !== input.discussionId) return { state: "failed", reason: "worker_failed" };
       const request = structuredClone(attempt.data) as unknown as ApplicationRunRequest;
       reserve({ calls: 1, outputTokens: 1 });
+      if (port.adapter === "schway") {
+        const extra = schwayMaxAttempts(request) - 1;
+        if (extra > 0) reserve({ calls: extra, rounds: extra });
+      }
       let outcome: ApplicationRunOutcome;
       try {
         outcome = normalizePortResult(await port.invoke(request, signal, () => {}), request, Math.min(config.jobs.outputBytes, job.limits.outputTokens * 4, 65000));
-      } catch { outcome = fixtureOutcome("invalid_result"); }
+      } catch { outcome = portFailureOutcome(port); }
       if (outcome.reason === "quota" || outcome.reason === "needs_login" || outcome.reason === "route_unavailable") return { state: "waiting", reason: outcome.reason };
       const parsed = outcome.state === "complete" && outcome.output
         ? normalizeCoordinatorSynthesis(outcome.output, opened.record.allowed, opened.record.gaps) : null;
