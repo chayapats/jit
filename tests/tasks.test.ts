@@ -143,7 +143,7 @@ test("one acceptance wins a two-channel race, and start writes nothing", async (
     kind: "task.accept" as const, requestId: rid(), projectId: f.project.id, expectedRevision: proposed.task.revision,
     payload: { taskId: proposed.task.id, proposalId: proposed.proposal.id },
   } }));
-  const workers = commands.map(item => new Worker(new URL("./task-race-worker.ts", import.meta.url), { workerData: { path: f.path, token: f.token, channel: item.channel, command: item.command } }));
+  const workers = commands.map(item => new Worker(new URL("./task-race-worker.ts", import.meta.url), { workerData: { path: f.path, token: f.token, now: epoch, channel: item.channel, command: item.command } }));
   const messages: { ready?: boolean; ok?: boolean; message?: string; state?: string }[] = [];
   await new Promise<void>((resolve, reject) => {
     let ready = 0;
@@ -337,7 +337,7 @@ test("two competing completion commands and duplicate owner confirmation share o
   const reopened = f.app.execute(f.auth.actor, { kind: "task.reopen", requestId: rid(), projectId: f.project.id, expectedRevision: first.task.revision,
     payload: { taskId: accepted.task.id, reason: "ต้องตรวจอีกครั้ง" } });
   expect(reopened.task.state).toBe("accepted");
-  const workers = ["web", "telegram"].map(channel => new Worker(new URL("./task-race-worker.ts", import.meta.url), { workerData: { path: f.path, token: f.token, channel, command: {
+  const workers = ["web", "telegram"].map(channel => new Worker(new URL("./task-race-worker.ts", import.meta.url), { workerData: { path: f.path, token: f.token, now: epoch, channel, command: {
     kind: "task.complete", requestId: rid(), projectId: f.project.id, expectedRevision: reopened.task.revision, payload: { taskId: accepted.task.id, note: "ชนะครั้งเดียว" },
   } } }));
   const messages: { ready?: boolean; ok?: boolean; message?: string }[] = [];
