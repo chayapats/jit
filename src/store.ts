@@ -1,8 +1,9 @@
 import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { commitDecisionMemorySource, retireDecisionMemorySource } from "./memory/decision-sources";
 
-const schemaVersion = 10;
+const schemaVersion = 11;
 
 /** Synchronous SQL operations scoped to an application transaction. */
 export interface AppTransaction {
@@ -36,7 +37,7 @@ export class TransactionStore {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
           if (current === schemaVersion) return;
-          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9].includes(current)) throw new Error("Unsupported migration source");
+          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].includes(current)) throw new Error("Unsupported migration source");
           if (existing) {
             const snapshot = `${path}.pre-v${current}-${crypto.randomUUID()}.sqlite`;
             const fd = openSync(snapshot, "wx", 0o600);
@@ -392,6 +393,38 @@ export class TransactionStore {
             CREATE INDEX task_evidence_project ON task_evidence_artifacts(project_id, task_id, revision);
             PRAGMA user_version = 10;
           `);
+          }
+          if (current < 11) this.#db.exec(`
+            CREATE TABLE memory_decision_sources (
+              decision_id TEXT PRIMARY KEY REFERENCES owner_decisions(id), project_id TEXT NOT NULL REFERENCES projects(id),
+              topic_id TEXT NOT NULL, decision_revision INTEGER NOT NULL, source_id TEXT NOT NULL UNIQUE REFERENCES sources(id),
+              source_revision INTEGER NOT NULL, source_generation INTEGER NOT NULL,
+              FOREIGN KEY (project_id, topic_id) REFERENCES topics(project_id, id)
+            );
+            CREATE TABLE memory_extractions (
+              sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+              project_id TEXT NOT NULL REFERENCES projects(id), job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id),
+              source_id TEXT NOT NULL REFERENCES sources(id), source_revision INTEGER NOT NULL,
+              source_generation INTEGER NOT NULL, extractor TEXT NOT NULL, policy INTEGER NOT NULL,
+              record_json TEXT NOT NULL,
+              UNIQUE(project_id, source_id, source_revision, source_generation, extractor, policy)
+            );
+            CREATE INDEX memory_extraction_project ON memory_extractions(project_id, sequence);
+            CREATE TABLE memory_claims (
+              sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+              project_id TEXT NOT NULL REFERENCES projects(id), extraction_id TEXT NOT NULL REFERENCES memory_extractions(id),
+              revision INTEGER NOT NULL CHECK(revision > 0), generation INTEGER NOT NULL CHECK(generation > 0),
+              record_json TEXT NOT NULL
+            );
+            CREATE INDEX memory_claim_project ON memory_claims(project_id, sequence);
+            PRAGMA user_version = 11;
+          `);
+          if (current < 11) {
+            for (const decision of this.#tx.all<{ id: string; projectId: string; topicId: string; revision: number; conclusion: string; rationale: string; createdAt: number; supersededBy: string | null }>(
+              "SELECT id, project_id AS projectId, topic_id AS topicId, revision, conclusion, rationale, created_at AS createdAt, superseded_by AS supersededBy FROM owner_decisions")) {
+              commitDecisionMemorySource(this.#tx, decision);
+              if (decision.supersededBy) retireDecisionMemorySource(this.#tx, decision.projectId, decision.id);
+            }
           }
           // A populated rebuilt graph must retain every reference; empty legacy fixture stores have no task graph to check.
           if (this.#tx.get("SELECT 1 FROM tasks LIMIT 1") && this.#tx.all("PRAGMA foreign_key_check").length) throw new Error("Migration foreign key check failed");

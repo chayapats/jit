@@ -9,7 +9,7 @@ import { readConfig } from "../src/config";
 import type { ApplicationRunPort } from "../src/team/run-port";
 import { ScriptedNativeLedger } from "../src/jobs/scripted-ledger";
 import { JobQueue } from "../src/jobs/queue";
-import { commitOwnerSource } from "../src/sources";
+import { commitOwnerSource, type SourceReference } from "../src/sources";
 import { TransactionStore } from "../src/store";
 import { coordinatorSynthesisMarker, coordinatorSynthesisWork, normalizeCoordinatorSynthesis } from "../src/team/decisions";
 import { discussionPlanWork, specialistAnalysisWork } from "../src/team/dispatch";
@@ -242,7 +242,7 @@ test("frozen published v3 migrates without changing owner/project/job/receipt an
   const jobId = rid(), oldRecord = JSON.stringify({ id: jobId, marker: "retained fixture job" });
   db.query("INSERT INTO jobs (id, project_id, queue_order, priority, state, occupies, route_key, record_json) VALUES (?, ?, 1, 0, 'succeeded', 0, 'fixture', ?)").run(jobId, projectId, oldRecord); db.close();
   const store = new TransactionStore(path); stores.push(store);
-  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 10 });
+  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 11 });
   expect(store.read(tx => tx.get("SELECT generation, password_hash FROM owner"))).toEqual({ generation: 7, password_hash: hash });
   expect(store.read(tx => tx.get("SELECT id FROM project_groups WHERE project_id = ?", projectId))).toEqual({ id: groupId });
   expect(store.read(tx => tx.get("SELECT record_json FROM jobs WHERE id = ?", jobId))).toEqual({ record_json: oldRecord });
@@ -448,7 +448,7 @@ test("a frozen TEAM01 v4 artifact migrates without inventing historical attempt/
   db.query("INSERT INTO team_contexts VALUES (?, 1, 'delete_failed')").run(contextId);
   db.query("INSERT INTO team_runs (id, project_id, job_id, context_id, record_json) VALUES (?, ?, ?, ?, ?)").run(runId, projectId, jobId, contextId, '{"retained":"preview"}'); db.close();
   const store = new TransactionStore(path); stores.push(store);
-  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 10 });
+  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 11 });
   expect(store.read(tx => tx.get("SELECT record_json FROM jobs WHERE id = ?", jobId))).toEqual({ record_json: record });
   expect(store.read(tx => tx.get("SELECT state FROM team_contexts WHERE id = ?", contextId))).toEqual({ state: "delete_failed" });
   expect(store.read(tx => tx.get("SELECT generation, reason, stop_json FROM job_authority WHERE job_id = ?", jobId))).toEqual({ generation: 1, reason: null, stop_json: null });
@@ -1238,7 +1238,7 @@ test("schema v6 with telegram tables migrates to v8 without recreating them", ()
     PRAGMA user_version = 6;`);
   db.close();
   const store = new TransactionStore(path); stores.push(store);
-  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 10 });
+  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 11 });
   expect(store.read(tx => tx.get("SELECT state FROM telegram_binding WHERE id = 1"))).toEqual({ state: "unbound" });
   expect(store.read(tx => tx.get<{ name: string }>("SELECT name FROM sqlite_master WHERE name = 'coordinator_syntheses'"))!.name).toBe("coordinator_syntheses");
   expect(store.read(tx => tx.get<{ name: string }>("SELECT name FROM sqlite_master WHERE name = 'owner_decisions'"))!.name).toBe("owner_decisions");
@@ -1247,4 +1247,96 @@ test("schema v6 with telegram tables migrates to v8 without recreating them", ()
   expect(snapshot.query("PRAGMA user_version").get()).toEqual({ user_version: 6 });
   expect(snapshot.query("SELECT state FROM telegram_binding WHERE id = 1").get()).toEqual({ state: "unbound" });
   snapshot.close();
+});
+
+test("MEM01 extracts exact owner decisions and supersession fences their derived memory", async () => {
+  const { memoryExtractionWork, scriptedMemoryResult } = await import("../src/memory/extract");
+  const ids = { tech: "", design: "", marketing: "" };
+  const f = await fixture({ script: request => request.instructions.operator.includes(coordinatorSynthesisMarker)
+    ? fixtureOutcome("complete", JSON.stringify(synthesisJson(request))) : specialistText(ids, request) });
+  const { discussion, roles } = await discussAll(f, ids); synthesize(f, discussion.id, discussion.revision); await drain(f);
+  const proposal = f.app.decision(f.auth.actor, f.project.id, f.topic.id).proposal!;
+  const accepted = f.app.execute(f.auth.actor, { kind: "decision.accept", requestId: rid(), projectId: f.project.id, expectedRevision: proposal.revision,
+    payload: { proposalId: proposal.id, optionId: null, conclusion: "SQLite is the selected database", rationale: "เจ้าของเลือกใช้ SQLite สำหรับโครงการนี้" } }).decision!;
+  const evidence = f.app.memory(f.auth.actor, f.project.id).sources.find(item => item.decision?.id === accepted.id)!;
+  expect(evidence.source.state).toBe("available"); if (evidence.source.state !== "available") throw new Error("missing decision evidence");
+  expect(evidence.source.text).toBe(`${accepted.conclusion}\n${accepted.rationale}`);
+  expect(evidence.source.attribution.kind).toBe("owner");
+  const oldPath = join(f.root, "decision-v10.sqlite"), old = new Database(oldPath);
+  old.exec(readFileSync(new URL("./fixtures/foundation-v10.sql", import.meta.url), "utf8"));
+  const generatedIds = new Set(f.store.read(tx => tx.all<{ source_id: string }>("SELECT source_id FROM memory_decision_sources")).map(row => row.source_id));
+  const oldTables = old.query("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all() as { name: string }[];
+  for (const { name } of oldTables) {
+    const columns = old.query(`PRAGMA table_info(${name})`).all() as { name: string }[];
+    for (const row of f.store.read(tx => tx.all<Record<string, string | number | null>>(`SELECT ${columns.map(c => c.name).join(",")} FROM ${name}`))) {
+      if ((name === "sources" && generatedIds.has(row.id as string)) || (name === "source_versions" && generatedIds.has(row.source_id as string))) continue;
+      old.query(`INSERT INTO ${name} (${columns.map(c => c.name).join(",")}) VALUES (${columns.map(() => "?").join(",")})`).run(...columns.map(c => row[c.name]!));
+    }
+  }
+  old.close();
+  const migrated = new TransactionStore(oldPath); stores.push(migrated);
+  const reopened = new Application(migrated, { ...f.config, databasePath: oldPath }, { now: () => epoch });
+  const restoredEvidence = reopened.memory(reopened.authenticate(f.token).actor, f.project.id).sources.find(item => item.decision?.id === accepted.id)!;
+  expect(restoredEvidence.source.state).toBe("available");
+  if (restoredEvidence.source.state === "available") expect(restoredEvidence.source.text).toBe(`${accepted.conclusion}\n${accepted.rationale}`);
+  expect(migrated.read(tx => tx.all("PRAGMA foreign_key_check"))).toEqual([]);
+  f.queue.close(); await f.queue.idle();
+  const memoryPort = new ScriptedRunPort(f.store, f.config.team, f.config.jobs.outputBytes, request => scriptedMemoryResult(request, true));
+  const queue = new JobQueue(f.store, f.config.jobs, [memoryExtractionWork(f.store, f.config, memoryPort, () => epoch)], { now: () => epoch }); queues.push(queue);
+  const app = new Application(f.store, f.config, { jobs: queue, now: () => epoch }), actor = app.authenticate(f.token).actor;
+  const extract = (source: SourceReference) => app.execute(actor, { kind: "memory.extract", requestId: rid(), projectId: f.project.id,
+    expectedRevision: app.project(actor, f.project.id).revision, payload: { topicId: f.topic.id, roleId: roles.tech.id, source, dependencies: [], limits: f.config.jobs.maximum } });
+  extract(evidence.source.reference); queue.pump(); await queue.idle();
+  const item = app.memory(actor, f.project.id).items[0]!; expect(item.state).toBe("available"); if (item.state !== "available") throw new Error("missing claim");
+  expect(item.claim.decision).toMatchObject({ id: accepted.id, revision: accepted.revision });
+  const replaced = app.execute(actor, { kind: "decision.supersede", requestId: rid(), projectId: f.project.id, expectedRevision: proposal.revision,
+    payload: { decisionId: accepted.id, proposalId: proposal.id, optionId: null, conclusion: "PostgreSQL after requirements changed", rationale: "เจ้าของรับรองมติ revision ใหม่" } }).decision!;
+  expect(app.memoryClaim(actor, f.project.id, { claimId: item.claim.claimId, revision: 1, generation: 1 }).state).toBe("unavailable");
+  expect(() => extract(evidence.source.reference)).not.toThrow(); // logical dedupe retains the earlier result; it cannot start another run
+  const current = app.memory(actor, f.project.id).sources.find(item => item.decision?.id === replaced.id)!;
+  expect(current.source.state).toBe("available");
+  expect(app.continuity(actor, f.project.id).decisions[0]!.model.currentDecision!.decision.id).toBe(replaced.id);
+});
+
+for (const transitive of [false, true]) test(`MEM01 supersession atomically fences and cancels ${transitive ? "transitive" : "direct"} extraction after commit only`, async () => {
+  const { memoryExtractionWork, scriptedMemoryResult } = await import("../src/memory/extract");
+  const ids = { tech: "", design: "", marketing: "" };
+  const f = await fixture({ script: request => request.instructions.operator.includes(coordinatorSynthesisMarker)
+    ? fixtureOutcome("complete", JSON.stringify(synthesisJson(request))) : specialistText(ids, request) });
+  const { discussion, roles } = await discussAll(f, ids); synthesize(f, discussion.id, discussion.revision); await drain(f);
+  const proposal = f.app.decision(f.auth.actor, f.project.id, f.topic.id).proposal!;
+  const accepted = f.app.execute(f.auth.actor, { kind: "decision.accept", requestId: rid(), projectId: f.project.id, expectedRevision: proposal.revision,
+    payload: { proposalId: proposal.id, optionId: null, conclusion: "SQLite chosen", rationale: "owner confirmed the current constraint" } }).decision!;
+  const evidence = f.app.memory(f.auth.actor, f.project.id).sources.find(item => item.decision?.id === accepted.id)!.source;
+  f.queue.close(); await f.queue.idle();
+  let entered!: () => void, release!: () => void, signal!: AbortSignal, stall = !transitive;
+  const started = new Promise<void>(resolve => { entered = resolve; }), gate = new Promise<void>(resolve => { release = resolve; }); releases.push(() => release());
+  const port = new ScriptedRunPort(f.store, f.config.team, f.config.jobs.outputBytes, async (request, currentSignal) => {
+    if (stall) { signal = currentSignal; entered(); await gate; }
+    return scriptedMemoryResult(request, true);
+  });
+  const queue = new JobQueue(f.store, f.config.jobs, [memoryExtractionWork(f.store, f.config, port, () => epoch)], { now: () => epoch }); queues.push(queue);
+  let failDecision = false;
+  const app = new Application(f.store, f.config, { jobs: queue, now: () => epoch, beforeCommit: stage => { if (failDecision && stage === "decision") throw new Error("decision rollback"); } }), actor = app.authenticate(f.token).actor;
+  const extract = (source: SourceReference, dependencies: import("../src/memory/types").ClaimReference[] = []) => app.execute(actor, { kind: "memory.extract", requestId: rid(), projectId: f.project.id,
+    expectedRevision: app.project(actor, f.project.id).revision, payload: { topicId: f.topic.id, roleId: roles.tech.id, source, dependencies, limits: f.config.jobs.maximum } }).extraction;
+  let pending;
+  if (transitive) {
+    extract(evidence.reference); queue.pump(); await queue.idle();
+    const parent = app.memory(actor, f.project.id).items[0]!; if (parent.state !== "available") throw new Error("missing parent");
+    stall = true; pending = extract(f.topic.source, [{ claimId: parent.claim.claimId, revision: 1, generation: 1 }]);
+  } else pending = extract(evidence.reference);
+  queue.pump(); await started;
+  const generation = () => f.store.read(tx => tx.get<{ generation: number }>("SELECT generation FROM job_authority WHERE job_id = ?", pending.jobId)!.generation);
+  const before = generation();
+  const supersede = { kind: "decision.supersede" as const, requestId: rid(), projectId: f.project.id, expectedRevision: proposal.revision,
+    payload: { decisionId: accepted.id, proposalId: proposal.id, optionId: null, conclusion: "PostgreSQL now selected", rationale: "new owner-confirmed requirements" } };
+  failDecision = true; expect(() => app.execute(actor, supersede)).toThrow("decision rollback");
+  expect(generation()).toBe(before); expect(signal.aborted).toBe(false); expect(app.source(actor, f.project.id, evidence.reference).state).toBe("available");
+  failDecision = false; app.execute(actor, supersede);
+  expect(generation()).toBe(before + 1); expect(signal.aborted).toBe(true);
+  expect(app.job(actor, f.project.id, pending.jobId)).toMatchObject({ state: "blocked", reason: "source_retired", occupiesAdmission: true });
+  release(); await queue.idle();
+  expect(app.job(actor, f.project.id, pending.jobId)).toMatchObject({ state: "blocked", reason: "source_retired", occupiesAdmission: false });
+  expect(f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM memory_claims")!.n)).toBe(transitive ? 1 : 0);
 });

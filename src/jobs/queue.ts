@@ -91,6 +91,19 @@ export function readJob(tx: AppTransaction, projectId: string, jobId: string): J
   return JSON.parse(row.record_json) as Job;
 }
 
+/** Fences pending work and projects its blocked state inside a trusted lifecycle transaction, even without a local scheduler. */
+export function invalidatePendingJob(tx: AppTransaction, projectId: string, jobId: string,
+  reason: "revoked" | "superseded" | "source_retired" | "context_retired", now: number): void {
+  if (!Number.isSafeInteger(now) || now < 0) throw new AppError("invalid_job_clock");
+  const job = readJob(tx, projectId, jobId);
+  if (["succeeded", "partial", "failed", "blocked"].includes(job.state)) return;
+  invalidateJob(tx, jobId, reason, now);
+  job.state = "blocked"; job.reason = reason; job.revision++;
+  job.updatedAt = Math.max(job.updatedAt, now); job.remaining.wallMs = Math.max(0, job.deadlineAt - job.updatedAt);
+  job.nextAction = job.occupiesAdmission ? "wait_for_adapter_to_stop" : "inspect_reason_and_authorize_new_work";
+  tx.run("UPDATE jobs SET state = ?, record_json = ? WHERE id = ?", job.state, JSON.stringify(job), job.id);
+}
+
 /** Projects a live wall budget at read time without mutating committed state or replay receipts. */
 export function projectJob(job: Job, now: number): Job {
   if (!Number.isSafeInteger(now) || now < 0) throw new AppError("invalid_job_clock");
@@ -332,9 +345,7 @@ export class JobQueue {
 
   /** Trusted standing-authorization/source adapters invalidate all affected jobs in their own state transaction. */
   invalidate(tx: AppTransaction, projectId: string, jobId: string, reason: "revoked" | "superseded" | "source_retired" | "context_retired"): void {
-    const job = readJob(tx, projectId, jobId);
-    if (["succeeded", "partial", "failed", "blocked"].includes(job.state)) return;
-    invalidateJob(tx, jobId, reason, this.#time()); this.#transition(job, "blocked", reason); this.#save(tx, job, job.occupiesAdmission);
+    invalidatePendingJob(tx, projectId, jobId, reason, this.#time());
   }
 
   #current(tx: AppTransaction, original: Job, attempt: JobAttempt): JobReason | null {
@@ -418,6 +429,8 @@ export class JobQueue {
   }
 
   #finish(original: Job, reference: JobAttempt, outcome: WorkOutcome, mutate?: (tx: AppTransaction) => void): boolean {
+    // An uncertain/rolled-back result commit must be reconciled, never replaced by the worker's returned failure.
+    if (this.#fault) return false;
     try {
       if (outcome?.state === "yield") jobData(outcome.checkpoint, this.policy.inputBytes);
       if (outcome?.state === "waiting" && outcome.checkpoint !== undefined) jobData(outcome.checkpoint, this.policy.inputBytes);
@@ -436,6 +449,8 @@ export class JobQueue {
         let accepted = false;
         if (outcome?.state === "succeeded" && typeof outcome.evidence === "string" && outcome.evidence.length && Buffer.byteLength(outcome.evidence) <= this.policy.outputBytes) {
           mutate?.(tx); job.evidence = outcome.evidence; this.#transition(job, "succeeded", "complete"); accepted = true;
+        } else if (outcome?.state === "partial" && typeof outcome.evidence === "string" && outcome.evidence.length && Buffer.byteLength(outcome.evidence) <= this.policy.outputBytes) {
+          mutate?.(tx); job.evidence = outcome.evidence; this.#transition(job, "partial", "worker_failed"); accepted = true;
         } else if (outcome?.state === "yield") {
           job.checkpoint = JSON.parse(jobData(outcome.checkpoint, this.policy.inputBytes)); this.#transition(job, "queued", "yielded"); accepted = true;
         } else if (outcome?.state === "waiting" && ["quota", "needs_login", "route_unavailable"].includes(outcome.reason)) {

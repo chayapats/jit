@@ -34,14 +34,14 @@ function documentPage(title: string, content: string): string {
     <meta name="color-scheme" content="dark"><title>${escape(title)} · Jit</title><link rel="stylesheet" href="/assets/app.css"></head><body>
     <a class="skip" href="#main-content">ข้ามไปเนื้อหาหลัก</a>${content}</body></html>`;
 }
-interface Navigation { workspace: Workspace; csrf: string; project?: Project; topics?: Topic[]; topic?: Topic; section?: "home" | "project" | "topic" | "team" | "tasks" | "jobs" | "delivery" }
+interface Navigation { workspace: Workspace; csrf: string; project?: Project; topics?: Topic[]; topic?: Topic; section?: "home" | "project" | "topic" | "team" | "tasks" | "jobs" | "delivery" | "memory" }
 function navigation(n: Navigation): string {
   const selected = n.project, topics = n.topic ? [n.topic, ...(n.topics ?? []).filter(t => t.id !== n.topic!.id)] : n.topics ?? [];
   const here = (section: NonNullable<Navigation["section"]>) => n.section === section ? ' aria-current="page"' : "";
   return `<nav aria-label="โครงการและหัวข้อ"><a class="nav-main" href="/"${here("home")}>${icon("folder")}<span>โครงการทั้งหมด</span></a>
     <a class="nav-main" href="${selected ? `/projects/${selected.id}/team` : "/team"}"${here("team")}>${icon("user")}<span>ทีมและโมเดล</span></a>
     <a class="nav-main" href="${selected ? `/projects/${selected.id}#new-topic` : "/#new-project"}">${icon("plus")}<span>${selected ? "หัวข้อใหม่" : "โครงการใหม่"}</span></a>
-    ${selected ? `<a class="nav-main" href="/projects/${selected.id}/tasks"${here("tasks")}>${icon("check")}<span>ข้อผูกพัน</span></a><a class="nav-main" href="/projects/${selected.id}/jobs"${here("jobs")}>${icon("clock")}<span>งานของโครงการ</span></a><a class="nav-main" href="/projects/${selected.id}/delivery"${here("delivery")}>${icon("info")}<span>การแจ้งเตือน</span></a><p class="nav-heading">หัวข้อในโครงการ</p><p class="nav-project">${escape(selected.name)}</p>
+    ${selected ? `<a class="nav-main" href="/projects/${selected.id}/memory"${here("memory")}>${icon("info")}<span>Memory</span></a><a class="nav-main" href="/projects/${selected.id}/tasks"${here("tasks")}>${icon("check")}<span>ข้อผูกพัน</span></a><a class="nav-main" href="/projects/${selected.id}/jobs"${here("jobs")}>${icon("clock")}<span>งานของโครงการ</span></a><a class="nav-main" href="/projects/${selected.id}/delivery"${here("delivery")}>${icon("info")}<span>การแจ้งเตือน</span></a><p class="nav-heading">หัวข้อในโครงการ</p><p class="nav-project">${escape(selected.name)}</p>
       <ul>${topics.slice(0, 12).map(t => `<li><a class="nav-link" href="/projects/${selected.id}/topics/${t.id}"${t.id === n.topic?.id && n.section === "topic" ? ' aria-current="page"' : ""}>${icon("chat")}<span>${escape(t.title ?? "หัวข้อไม่พร้อมใช้งาน")}</span></a></li>`).join("")}</ul>
       <a class="nav-subtle" href="/projects/${selected.id}">ดูหัวข้อทั้งหมด</a>` : ""}
     <p class="nav-heading">โครงการของคุณ</p><ul>${n.workspace.projects.slice(0, 8).map(p => `<li><a class="nav-link" href="/projects/${p.id}"${p.id === selected?.id && n.section === "project" ? ' aria-current="page"' : ""}>${icon("folder")}<span>${escape(p.name)}</span></a></li>`).join("")}</ul>
@@ -323,4 +323,43 @@ export function loginPage(): string {
 export function errorPage(message: string, recovery?: { href: string; label: string }): string {
   const next = recovery ? `<a href="${escape(recovery.href)}">${escape(recovery.label)}</a>` : "";
   return documentPage("ตรวจสอบคำสั่ง", `<main class="auth" id="main-content"><div class="auth-card">${brand()}<h1>ตรวจสอบคำสั่ง</h1><p class="error" role="alert">${escape(message)}</p><div class="error-actions">${next}<a href="/">เปิดหน้าโครงการ</a><a href="/login">เข้าสู่ระบบ</a></div></div></main>`);
+}
+
+const claimUrl = (projectId: string, ref: import("./memory/types").ClaimReference) => `/projects/${projectId}/memory/claims/${ref.claimId}?revision=${ref.revision}&generation=${ref.generation}`;
+function memoryClaimContent(item: import("./memory/types").ClaimLookup, projectId: string): string {
+  const dependencies = (label: string, refs: import("./memory/types").ClaimReference[]) => refs.length ? `<p>${label}</p><ul>${refs.map(ref => `<li><a href="${claimUrl(projectId, ref)}">${escape(ref.claimId)} · revision ${ref.revision}</a></li>`).join("")}</ul>` : "";
+  const decision = (ref: import("./memory/types").MemoryDecisionReference | null) => ref ? `<p><a href="/projects/${projectId}/topics/${ref.topicId}#owner-decision">เปิดมติ owner · revision ${ref.revision}</a> · ${escape(ref.id)}</p>` : "";
+  if (item.state !== "available") {
+    const p = item.provenance;
+    return `<article class="team-card"><h2>Memory ไม่พร้อมใช้งาน</h2><p>${escape(item.reason)}</p><p>Claim ${escape(item.reference.claimId)} · revision ${item.reference.revision} · generation ${item.reference.generation}</p>${p ? `<p>${sourceLink(projectId, p.source, `ตรวจต้นฉบับ revision ${p.source.revision} · generation ${p.source.generation}`)}</p>${dependencies("ตรวจที่มาจาก memory", p.dependencies)}${dependencies("ตรวจข้อขัดแย้ง", p.conflicts)}${decision(p.decision)}` : ""}</article>`;
+  }
+  const c = item.claim;
+  return `<article class="team-card" id="claim-${c.claimId}"><h2>${c.kind === "explicit_fact" ? "Fact: owner กล่าวข้อความนี้" : "Inference: ข้ออนุมาน"}</h2><p>สถานะ: active · โครงการต้นทาง: ${escape(projectId)}</p>${literalContent(c.text)}
+    <p>${sourceLink(projectId, c.source, `เปิดต้นฉบับ revision ${c.source.revision} · generation ${c.source.generation}`)} · ${item.source.state === "available" ? escape(attributionLabel(item.source.attribution)) : "ต้นฉบับไม่พร้อมใช้งาน"}</p>
+    <details><summary>ข้อความหลักฐานและที่มา</summary><blockquote>${literalContent(c.quote)}</blockquote><p><a href="${claimUrl(projectId, c)}">Claim ${c.claimId}</a> · revision ${c.revision} · generation ${c.generation} · ${time(c.createdAt)}</p>${dependencies("ได้มาจาก memory", c.dependencies)}${dependencies("ขัดแย้งกับ memory (ยังคงทั้งสองข้อไว้)", c.conflicts)}${decision(c.decision)}</details></article>`;
+}
+
+/** Renders exact claim lineage without any model calls or inferred owner authority. */
+export function memoryClaimPage(state: import("./memory/types").ClaimLookup, project: Project, workspace: Workspace, csrf: string): string {
+  return shell("ที่มาของ memory", { workspace, csrf, project, section: "memory" }, `<div class="content memory-content"><p><a href="/projects/${project.id}/memory">กลับไป memory ของโครงการ</a></p>${memoryClaimContent(state, project.id)}</div>`);
+}
+
+/** Renders bounded source selection, fixture extraction status and active-generation claim inspection. */
+export function memoryPage(state: ReturnType<Application["memory"]>, workspace: Workspace, csrf: string, limits: JobLimits, cursor: { after: number; sourceAfter: number; extractionAfter: number }): string {
+  const p = state.project, roles = state.team.roles.filter(role => role.enabled && role.effective.route);
+  const href = (patch: Partial<typeof cursor>) => `/projects/${p.id}/memory?${new URLSearchParams({ q: state.query, ...Object.fromEntries(Object.entries({ ...cursor, ...patch }).map(([k, v]) => [k, String(v)])) })}`;
+  const available = state.extractionAvailable && roles.length && state.topics.length && state.sources.some(item => item.source.state === "available");
+  return shell("Memory ของโครงการ", { workspace, csrf, project: p, topics: state.topics, section: "memory" }, `<div class="content memory-content"><section class="hero"><h2>ความจำที่ตรวจที่มาได้</h2><p>Fact ยืนยันเพียงว่า owner กล่าวข้อความนั้น ข้ออนุมานยังไม่ใช่ preference หรือ decision ที่รับรองแล้ว ข้อความที่ขัดกันคงอยู่พร้อมกัน งานและมติปัจจุบันดูได้ที่ <a href="/projects/${p.id}/tasks">ข้อผูกพัน</a> และหัวข้อของโครงการ</p><p>การสกัดในรุ่นนี้เป็นตัวอย่างจำลอง (fixture) ยังไม่ได้เรียก provider จริง</p></section>
+    <form class="team-form" method="get"><label>ค้นหา memory <input name="q" value="${escape(state.query)}" maxlength="200" placeholder="คำภาษาไทยหรือ English"></label><button>ค้นหา</button></form>
+    <section><h2>Memory ที่บันทึกแล้ว</h2>${state.items.length ? state.items.map(item => memoryClaimContent(item, p.id)).join("") : '<p class="empty-list">ยังไม่มี memory ที่ตรงกับคำค้นในหน้านี้</p>'}
+    <nav class="pagination">${cursor.after ? `<a href="${escape(href({ after: 0 }))}">Memory หน้าแรก</a>` : ""}${state.nextAfter !== null ? `<a href="${escape(href({ after: state.nextAfter }))}">Memory ถัดไป</a>` : ""}</nav></section>
+    <section><h2>สกัดจากต้นฉบับที่บันทึกแล้ว</h2><p>หนึ่งคำขอต่อต้นฉบับ revision/generation เดียวกัน การ refresh ไม่เริ่มงานใหม่ ผลการสกัดไม่สร้างต้นฉบับใหม่ จึงไม่สกัดวนซ้ำเอง</p>
+    ${available ? `<form class="team-form" method="post" action="/projects/${p.id}/memory">${hiddenCommand(csrf, p.revision)}<input type="hidden" name="limits" value="${escape(JSON.stringify(limits))}">
+      <label>บทบาท <select name="roleId">${roles.map(role => `<option value="${role.id}">${escape(role.name)} · ${escape(role.effective.route!.model)}</option>`).join("")}</select></label>
+      <label>หัวข้อที่เกี่ยวข้อง <select name="topicId">${state.topics.map(topic => `<option value="${topic.id}">${escape(topic.title)}</option>`).join("")}</select></label>
+      <label>ต้นฉบับ <select name="source">${state.sources.map(({ source, decision }) => source.state === "available" ? `<option value="${escape(JSON.stringify(source.reference))}">${escape(decision ? "มติ owner" : source.descriptor.kind)} · ${escape(Array.from(source.text).slice(0, 80).join(""))}</option>` : "").join("")}</select></label>
+      <label>อ้างอิง memory เดิม <select name="dependencies"><option value="[]">ไม่อ้างอิง</option>${state.items.map(item => item.state === "available" ? `<option value="${escape(JSON.stringify([{ claimId: item.claim.claimId, revision: item.claim.revision, generation: item.claim.generation }]))}">${escape(Array.from(item.claim.text).slice(0, 80).join(""))}</option>` : "").join("")}</select></label><button class="primary">สกัดตัวอย่างจำลอง</button></form>` : '<p>เปิดใช้บทบาทที่มี route สร้างหัวข้อ และตรวจว่าคิวพร้อมก่อนเริ่มสกัด</p>'}
+      <nav class="pagination">${cursor.sourceAfter ? `<a href="${escape(href({ sourceAfter: 0 }))}">ต้นฉบับหน้าแรก</a>` : ""}${state.sourcesNextAfter !== null ? `<a href="${escape(href({ sourceAfter: state.sourcesNextAfter }))}">ต้นฉบับถัดไป</a>` : ""}</nav></section>
+    <section><h2>ผลการสกัดและสิ่งที่ยังไม่ครบ</h2>${state.extractions.map(e => `<article class="team-card" id="extraction-${e.id}"><p>${escape(e.state)} · ${escape(e.reason)} · fixture · ${escape(e.extractor)} · policy ${e.policy}</p><p>คิว: ${escape(e.job.state)} · ${escape(e.job.reason)} · ${escape(e.job.nextAction)} · <a href="/projects/${p.id}/jobs/${e.jobId}">ตรวจและหยุดงาน</a></p><p>${e.claimIds.length} claims · ปฏิเสธ ${e.rejected} ข้อ</p><p>Route ที่ตั้งไว้: ${escape(e.route.provider)} / ${escape(e.route.model)} (ยังไม่ยืนยัน live access)</p><p>${sourceLink(p.id, e.source.reference, `ต้นฉบับ ${e.source.state}`)}</p></article>`).join("") || '<p>ยังไม่มีคำขอสกัด</p>'}
+    <nav class="pagination">${cursor.extractionAfter ? `<a href="${escape(href({ extractionAfter: 0 }))}">ผลสกัดหน้าแรก</a>` : ""}${state.extractionsNextAfter !== null ? `<a href="${escape(href({ extractionAfter: state.extractionsNextAfter }))}">ผลสกัดถัดไป</a>` : ""}</nav></section></div>`);
 }

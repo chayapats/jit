@@ -10,6 +10,8 @@ import { coordinatorSynthesisWork } from "./team/decisions";
 import { discussionPlanWork, specialistAnalysisWork } from "./team/dispatch";
 import { ScriptedRunPort } from "./team/scripted-port";
 import { scriptedPreviewWork } from "./team/preview";
+import { memoryExtractionWork, scriptedMemoryResult } from "./memory/extract";
+import { lookupSource } from "./sources";
 
 async function secret(): Promise<string> {
   if (!process.stdin.isTTY) {
@@ -29,8 +31,13 @@ async function main(): Promise<void> {
   let queue: JobQueue | undefined;
   try { if (command === "serve") {
     const port = new ScriptedRunPort(store, config.team, config.jobs.outputBytes);
+    const memoryPort = new ScriptedRunPort(store, config.team, config.jobs.outputBytes, request => {
+      const source = store.read(tx => lookupSource(tx, request.projectId, request.manifest.sources[0]!.reference));
+      return scriptedMemoryResult(request, source.state === "available" && source.attribution.kind === "owner", config.jobs.outputBytes);
+    });
     queue = new JobQueue(store, config.jobs, [
       projectStateWork(store), scriptedPreviewWork(store, config, port), discussionPlanWork(), specialistAnalysisWork(store, config, port), coordinatorSynthesisWork(store, config, port),
+      memoryExtractionWork(store, config, memoryPort),
     ]);
     await queue.reconcile(port);
   } }

@@ -228,12 +228,13 @@ test("schema v8 migrates to v9, keeps the previous project, and snapshots the ol
   const path = join(root, "old.sqlite");
   const projectId = "22222222-2222-4222-8222-222222222222";
   const old = new Database(path);
-  old.exec(`CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, revision INTEGER NOT NULL, created_at INTEGER NOT NULL);
+  old.exec(readFileSync(new URL("./fixtures/foundation-v9.sql", import.meta.url), "utf8"));
+  old.exec(`DROP TABLE task_events; DROP TABLE task_proposals; DROP TABLE tasks;
     INSERT INTO projects VALUES ('${projectId}', 'kept-task', 4, 4);
     PRAGMA user_version = 8;`);
   old.close();
   const store = new TransactionStore(path); stores.push(store);
-  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 10 });
+  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 11 });
   expect(store.read(tx => tx.get("SELECT name, revision FROM projects WHERE id = ?", projectId))).toEqual({ name: "kept-task", revision: 4 });
   expect(store.read(tx => tx.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tasks'"))).toEqual({ name: "tasks" });
   const snapshotName = readdirSync(root).find(name => name.includes(".pre-v8-"))!;
