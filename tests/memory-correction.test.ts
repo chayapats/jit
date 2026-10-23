@@ -219,6 +219,62 @@ test("MEM03 cross-project pending discussion is fenced and reported in impact", 
   expect(f.rt.app.discussion(actor(f), second.id, discussion.id).context!.current).toBe(false);
 });
 
+test("MEM03 transitive-only discussion is fenced and reported through the affected closure", async () => {
+  const f = await fixture();
+  const p = project(f, "Jit MVP", "ฐานข้อมูลสำหรับ MVP");
+  const rootOutput: Script = request => fixtureOutcome("complete", JSON.stringify({ version: 1, complete: true,
+    claims: [{ kind: "inference" as const, text: "DB หลักคือ PostgreSQL ทุกโครงการ", quote: request.manifest.sources[0]!.text, source: request.manifest.sources[0]!.reference, dependencies: [], conflicts: [] }] }));
+  const root = await remember(f, p, say(f, p, "ใช้ PostgreSQL สำหรับทุกโครงการ"), { output: rootOutput });
+  const midOutput: Script = request => fixtureOutcome("complete", JSON.stringify({ version: 1, complete: true,
+    claims: [{ kind: "inference" as const, text: "ดังนั้นทุกโครงการต้องตั้งค่า PostgreSQL", quote: request.manifest.sources[0]!.text, source: request.manifest.sources[0]!.reference, dependencies: [], conflicts: [] }] }));
+  const mid = await remember(f, p, say(f, p, "ต้องทบทวนแผน PostgreSQL เดิมก่อนตัดสินใจ"), { dependencies: [ref(root)], output: midOutput });
+  const leafOutput: Script = request => fixtureOutcome("complete", JSON.stringify({ version: 1, complete: true,
+    claims: [{ kind: "inference" as const, text: "สรุปแผนฐานข้อมูลไตรมาสนี้", quote: request.manifest.sources[0]!.text, source: request.manifest.sources[0]!.reference, dependencies: [], conflicts: [] }] }));
+  const leaf = await remember(f, p, say(f, p, "สรุปแผนฐานข้อมูลไตรมาสนี้"), { dependencies: [ref(mid)], output: leafOutput });
+  const discussion = f.rt.app.execute(actor(f), dispatch(f, p, "สรุปแผนฐานข้อมูลไตรมาสนี้")).discussion!;
+  await f.rt.queue.idle();
+  const manifestIds = discussion.manifest.claims.map(claim => claim.claimId);
+  expect(manifestIds).toContain(leaf.claimId);
+  expect(manifestIds).not.toContain(root.claimId);
+
+  const impact = f.rt.app.correctionImpact(actor(f), p.id, ref(root));
+  expect(impact.pendingJobs.map(job => job.id)).toContain(discussion.jobId);
+  expect(impact.contexts.length).toBeGreaterThan(0);
+
+  const evidence = say(f, p, "เปลี่ยนมาใช้ SQLite สำหรับ MVP");
+  f.rt.app.execute(actor(f), correctCommand(f, p, root, "ใช้ SQLite สำหรับ MVP", "เปลี่ยนมาใช้ SQLite สำหรับ MVP", evidence));
+  expect(jobState(f, discussion.jobId)).toMatchObject({ state: "blocked", reason: "source_retired" });
+  await drain(f);
+  expect(f.rt.app.discussion(actor(f), p.id, discussion.id).context!.current).toBe(false);
+});
+
+test("MEM03 corrupt pending discussion JSON fails closed: commit succeeds and parent is fenced", async () => {
+  const f = await fixture();
+  const p = project(f, "Jit MVP", "ฐานข้อมูลสำหรับ MVP");
+  const stale = await remember(f, p, say(f, p, "ใช้ PostgreSQL สำหรับทุกโครงการ"));
+  const discussion = f.rt.app.execute(actor(f), dispatch(f, p, "ใช้ PostgreSQL สำหรับทุกโครงการจริงหรือ")).discussion!;
+  await f.rt.queue.idle();
+  f.rt.store.transaction(tx => tx.run("UPDATE team_runs SET record_json = ? WHERE id = ?", '{"kind":"discussion"}', discussion.id));
+  const evidence = say(f, p, "เปลี่ยนมาใช้ SQLite สำหรับ MVP");
+  const done = f.rt.app.execute(actor(f), correctCommand(f, p, stale, "ใช้ SQLite สำหรับ MVP", "เปลี่ยนมาใช้ SQLite สำหรับ MVP", evidence));
+  expect(done.replacement.revision).toBe(1);
+  expect(jobState(f, discussion.jobId)).toMatchObject({ state: "blocked", reason: "source_retired" });
+});
+
+test("MEM03 invalid pending JSON marks preview incomplete and still fences on correct", async () => {
+  const f = await fixture();
+  const p = project(f, "Jit MVP", "ฐานข้อมูลสำหรับ MVP");
+  const stale = await remember(f, p, say(f, p, "ใช้ PostgreSQL สำหรับทุกโครงการ"));
+  const discussion = f.rt.app.execute(actor(f), dispatch(f, p, "ใช้ PostgreSQL สำหรับทุกโครงการจริงหรือ")).discussion!;
+  await f.rt.queue.idle();
+  f.rt.store.transaction(tx => tx.run("UPDATE team_runs SET record_json = ? WHERE id = ?", "not-json{{{", discussion.id));
+  const impact = f.rt.app.correctionImpact(actor(f), p.id, ref(stale));
+  expect(impact.truncated.pendingJobs).toBe(true);
+  const evidence = say(f, p, "เปลี่ยนมาใช้ SQLite สำหรับ MVP");
+  f.rt.app.execute(actor(f), correctCommand(f, p, stale, "ใช้ SQLite สำหรับ MVP", "เปลี่ยนมาใช้ SQLite สำหรับ MVP", evidence));
+  expect(jobState(f, discussion.jobId)).toMatchObject({ state: "blocked", reason: "source_retired" });
+});
+
 test("MEM03 admitted extraction adapter is aborted by correction and its late result publishes nothing", async () => {
   const f = await fixture();
   const p = project(f, "Jit MVP", "ฐานข้อมูลสำหรับ MVP");
@@ -262,7 +318,9 @@ test("MEM03 preview caps are honest: capped helper truncates and flags large imp
   const impact = f.rt.app.correctionImpact(actor(f), p.id, ref(stale));
   expect(impact.dependents).toHaveLength(impactPreviewBounds.dependents);
   expect(impact.truncated.dependents).toBe(true);
-  expect(impact.truncated.contexts).toBe(false);
+  // A truncated dependent window makes downstream counts incomplete too (propagated).
+  expect(impact.truncated.contexts).toBe(true);
+  expect(impact.truncated.pendingJobs).toBe(true);
 });
 
 test("MEM03 correction keeps task, decision, role and standing authorization revisions untouched", async () => {

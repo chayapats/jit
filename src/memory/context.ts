@@ -290,7 +290,13 @@ export function fenceStaleContexts(tx: AppTransaction, now: number): void {
     ...tx.all<{ projectId: string; jobId: string; json: string }>(`SELECT s.project_id AS projectId, s.job_id AS jobId, s.record_json AS json FROM coordinator_syntheses s JOIN jobs j ON j.id = s.job_id WHERE ${pending}`),
   ];
   for (const row of rows) {
-    const request = (JSON.parse(row.json) as { request?: ApplicationRunRequest }).request;
+    let parsed: { kind?: string; request?: ApplicationRunRequest } | null = null;
+    try {
+      parsed = JSON.parse(row.json) as { kind?: string; request?: ApplicationRunRequest };
+    } catch { /* Unreadable runs fail closed below; they can never prove currentness. */ }
+    if (!parsed) { invalidatePendingJob(tx, row.projectId, row.jobId, "source_retired", now); continue; }
+    if (parsed.kind === "discussion") continue; // Top-level manifests are evaluated by fenceStaleDiscussions.
+    const request = parsed.request;
     if (!request?.manifest?.context) continue;
     const reason = contextCurrent(tx, row.projectId, request.manifest);
     if (reason) invalidatePendingJob(tx, row.projectId, row.jobId, reason, now);

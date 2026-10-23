@@ -3,7 +3,8 @@ import { invalidatePendingJob, jobData } from "../jobs/queue";
 import { requireId, requireReference, requireText } from "../sources";
 import type { AppTransaction } from "../store";
 import type { Discussion } from "../team/types";
-import { fenceStaleContexts } from "./context";
+import { discussionWorkId } from "../team/dispatch";
+import { contextCurrent, fenceStaleContexts } from "./context";
 import { fenceUnavailableExtractions } from "./extract";
 import { eligibleMemorySource, lookupActiveClaim, requireClaimReference } from "./read";
 import type {
@@ -45,6 +46,7 @@ export function capped<T>(rows: T[], limit: number): { items: T[]; truncated: bo
 
 function pendingReferencing(tx: AppTransaction, originProjectId: string, affected: ReadonlySet<string>): { jobs: { id: string; projectId: string }[]; truncated: boolean } {
   const found = new Map<string, { id: string; projectId: string }>();
+  let unreadable = 0;
   const pending = "state IN ('queued', 'admitted', 'waiting')";
   const cites = (json: string): boolean => {
     try {
@@ -56,21 +58,61 @@ function pendingReferencing(tx: AppTransaction, originProjectId: string, affecte
       if (parsed.dependencies?.some(ref => affected.has(ref.claimId))) return true;
       const manifest = parsed.request?.manifest ?? (parsed.kind === "discussion" ? parsed.manifest : undefined);
       return !!manifest?.claims?.some(entry => entry.projectId === originProjectId && affected.has(entry.claimId));
-    } catch { return false; /* Corrupt rows fail closed elsewhere; impact stays silent here. */ }
+    } catch { unreadable++; return false; /* Unreadable rows count as incomplete, never as clean. */ }
   };
-  const collect = (table: string): void => {
-    if (found.size > impactPreviewBounds.pendingJobs) return;
+  // Remaining-budget LIMITs bound every SQL input: the pending total never exceeds the cap.
+  const tables = ["memory_extractions", "team_runs", "coordinator_syntheses"];
+  for (const table of tables) {
+    const remaining = impactPreviewBounds.pendingJobs + 1 - found.size;
+    if (remaining <= 0) break;
     for (const row of tx.all<{ projectId: string; jobId: string; json: string }>(
-      `SELECT project_id AS projectId, job_id AS jobId, record_json AS json FROM ${table} WHERE job_id IN (SELECT id FROM jobs WHERE ${pending})`)) {
+      `SELECT project_id AS projectId, job_id AS jobId, record_json AS json FROM ${table} WHERE job_id IN (SELECT id FROM jobs WHERE ${pending}) LIMIT ${remaining}`)) {
       if (cites(row.json)) found.set(row.jobId, { id: row.jobId, projectId: row.projectId });
-      if (found.size > impactPreviewBounds.pendingJobs) break;
     }
-  };
-  collect("memory_extractions"); collect("team_runs"); collect("coordinator_syntheses");
+  }
   const jobs = [...found.values()];
-  return jobs.length > impactPreviewBounds.pendingJobs
+  return jobs.length > impactPreviewBounds.pendingJobs || unreadable > 0
     ? { jobs: jobs.slice(0, impactPreviewBounds.pendingJobs), truncated: true }
     : { jobs, truncated: false };
+}
+
+/**
+ * Bounded transitive closure over one project's claim lineage: every claim reachable from
+ * the corrected root through dependencies/conflicts, computed inside a fixed SQL window.
+ * The window is ordered by insertion sequence so truncation is deterministic; callers
+ * propagate `truncated` to every count derived from this set.
+ */
+function collectDependents(tx: AppTransaction, projectId: string, rootId: string): { dependents: CorrectionImpact["dependents"]; affected: Set<string>; truncated: boolean } {
+  const window = tx.all<{ record_json: string }>(
+    "SELECT record_json FROM memory_claims WHERE project_id = ? ORDER BY sequence LIMIT ?",
+    projectId, impactPreviewBounds.dependents + 1);
+  const truncated = window.length > impactPreviewBounds.dependents;
+  const parsed: MemoryClaim[] = [];
+  for (const row of window) {
+    try {
+      const candidate = JSON.parse(row.record_json) as MemoryClaim;
+      if (typeof candidate.claimId === "string") parsed.push(candidate);
+    } catch { /* Skip unreadable rows; availability stays authoritative in lookupActiveClaim. */ }
+  }
+  const affected = new Set([rootId]);
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const candidate of parsed) {
+      if (affected.has(candidate.claimId)) continue;
+      if ([...candidate.dependencies, ...candidate.conflicts].some(ref => affected.has(ref.claimId))) {
+        affected.add(candidate.claimId); grew = true;
+      }
+    }
+  }
+  const dependents: CorrectionImpact["dependents"] = [];
+  for (const candidate of parsed) {
+    if (candidate.claimId === rootId || !affected.has(candidate.claimId)) continue;
+    if (dependents.length >= impactPreviewBounds.dependents) break;
+    const live = lookupActiveClaim(tx, projectId, { claimId: candidate.claimId, revision: candidate.revision, generation: candidate.generation });
+    dependents.push({ projectId, reference: { claimId: candidate.claimId, revision: candidate.revision, generation: candidate.generation },
+      text: live.state === "available" ? live.claim.text : null });
+  }
+  return { dependents, affected, truncated };
 }
 
 /**
@@ -81,30 +123,18 @@ export function correctionImpact(tx: AppTransaction, projectId: string, referenc
   requireId(projectId); requireClaimReference(reference);
   const claim = lookupActiveClaim(tx, projectId, reference);
   const correction = readCorrection(tx, projectId, reference.claimId);
-  const dependents: CorrectionImpact["dependents"] = [];
-  let dependentsTruncated = false;
-  for (const row of tx.all<{ record_json: string }>("SELECT record_json FROM memory_claims WHERE project_id = ?", projectId)) {
-    if (dependents.length > impactPreviewBounds.dependents) { dependentsTruncated = true; break; }
-    try {
-      const candidate = JSON.parse(row.record_json) as MemoryClaim;
-      if (candidate.claimId === reference.claimId) continue;
-      if ([...candidate.dependencies, ...candidate.conflicts].some(ref => ref.claimId === reference.claimId)) {
-        const live = lookupActiveClaim(tx, projectId, { claimId: candidate.claimId, revision: candidate.revision, generation: candidate.generation });
-        dependents.push({ projectId, reference: { claimId: candidate.claimId, revision: candidate.revision, generation: candidate.generation },
-          text: live.state === "available" ? live.claim.text : null });
-      }
-    } catch { /* Skip unreadable rows; availability stays authoritative in lookupActiveClaim. */ }
-  }
-  const dependentIds = new Set([reference.claimId, ...dependents.map(item => item.reference.claimId)]);
-  const listed = capped(dependents, impactPreviewBounds.dependents);
-  const contextRows = tx.all<{ id: string; projectId: string; ownerKind: string; ownerId: string }>(
+  const { dependents, affected, truncated: dependentsTruncated } = collectDependents(tx, projectId, reference.claimId);
+  const placeholders = [...affected].map(() => "?").join(",");
+  const contextRows = affected.size ? tx.all<{ id: string; projectId: string; ownerKind: string; ownerId: string }>(
     `SELECT c.id, c.project_id AS projectId, c.owner_kind AS ownerKind, c.owner_id AS ownerId FROM memory_contexts c
-     JOIN memory_context_entries e ON e.context_id = c.id WHERE e.kind = 'claim' AND e.entry_id = ? AND e.origin_project_id = ?`,
-    reference.claimId, projectId);
+     JOIN memory_context_entries e ON e.context_id = c.id
+     WHERE e.kind = 'claim' AND e.origin_project_id = ? AND e.entry_id IN (${placeholders}) ORDER BY c.sequence LIMIT ?`,
+    projectId, ...affected, impactPreviewBounds.contexts + 1) : [];
   const listedContexts = capped(contextRows, impactPreviewBounds.contexts);
-  const pending = claim.state === "available" ? pendingReferencing(tx, projectId, dependentIds) : { jobs: [], truncated: false };
-  return { claim, correction, dependents: listed.items, contexts: listedContexts.items, pendingJobs: pending.jobs,
-    truncated: { dependents: dependentsTruncated || listed.truncated, contexts: listedContexts.truncated, pendingJobs: pending.truncated },
+  const pending = claim.state === "available" ? pendingReferencing(tx, projectId, affected) : { jobs: [], truncated: false };
+  const incomplete = dependentsTruncated;
+  return { claim, correction, dependents, contexts: listedContexts.items, pendingJobs: pending.jobs,
+    truncated: { dependents: dependentsTruncated, contexts: incomplete || listedContexts.truncated, pendingJobs: incomplete || pending.truncated },
     note: "การแก้ไม่เปลี่ยนงาน มติ บทบาท หรือสิทธิ์ที่รับรองแล้ว งานที่ค้างอยู่จะถูก fence และบริบทเดิมไม่ถูกใช้อ้างอิงอีก" };
 }
 
@@ -146,38 +176,45 @@ export function prepareCorrection(tx: AppTransaction, command: CorrectMemoryComm
   tx.run("INSERT INTO memory_corrections (id, project_id, claim_id, record_json) VALUES (?, ?, ?, ?)",
     correction.id, command.projectId, target.claimId, JSON.stringify(correction));
   fenceStaleContexts(tx, now);
-  fenceCorrectedDiscussions(tx, command.projectId, target.claimId, now);
+  fenceStaleDiscussions(tx, now);
   fenceUnavailableExtractions(tx, command.projectId, now);
   return { correction, replacement: { claimId: replacement.claimId, revision: 1, generation: 1 } };
 }
 
 /**
- * Discussions store their assembled manifest at the top level (not under `.request`),
- * so the shared stale-context fence cannot see them. Affected discussions are driven from
- * the indexed memory_context_entries (no row cap, any owning project): a discussion whose
- * recorded context cited the corrected claim — directly or through a now-unavailable
- * dependent — is fenced with its specialist participations under its own project. The next
- * run must assemble a fresh context from active memory before any result can commit.
+ * Every pending top-level discussion is evaluated with the shared context-current query,
+ * which recursively resolves each cited claim in its origin project. This fences discussions
+ * that selected only a transitively-invalidated dependent, discussions in other projects,
+ * and discussions whose stored JSON is corrupt (failed closed: an unreadable pending
+ * discussion can never prove it is safe to run, so its parent job loses commit authority).
+ * Specialist/synthesis rows are left to their own request-based fences; participation jobs
+ * are fenced here as belt-and-braces, tolerating unparseable entries because the parent
+ * fence already revokes the discussion's authority.
  */
-function fenceCorrectedDiscussions(tx: AppTransaction, projectId: string, claimId: string, now: number): void {
+function fenceStaleDiscussions(tx: AppTransaction, now: number): void {
   const pending = "j.state IN ('queued', 'admitted', 'waiting')";
-  const rows = tx.all<{ projectId: string; jobId: string; json: string }>(
-    `SELECT r.project_id AS projectId, r.job_id AS jobId, r.record_json AS json FROM memory_context_entries e
-     JOIN memory_contexts c ON c.id = e.context_id
-     JOIN team_runs r ON r.id = c.owner_id
-     JOIN jobs j ON j.id = r.job_id
-     WHERE c.owner_kind = 'discussion' AND ${pending} AND e.kind = 'claim' AND e.entry_id = ? AND e.origin_project_id = ?`,
-    claimId, projectId);
+  const rows = tx.all<{ projectId: string; jobId: string; json: string; jobJson: string }>(
+    `SELECT r.project_id AS projectId, r.job_id AS jobId, r.record_json AS json, j.record_json AS jobJson
+     FROM team_runs r JOIN jobs j ON j.id = r.job_id WHERE ${pending}`);
   for (const row of rows) {
-    let discussion: Discussion;
-    try {
-      discussion = JSON.parse(row.json) as Discussion;
-      if (discussion.kind !== "discussion" || !discussion.manifest) continue;
-    } catch { continue; }
-    const stale = (entry: { projectId: string; claimId: string; revision: number; generation: number }) =>
-      lookupActiveClaim(tx, entry.projectId, { claimId: entry.claimId, revision: entry.revision, generation: entry.generation }).state !== "available";
-    if (!discussion.manifest.claims.some(entry => stale(entry))) continue;
-    invalidatePendingJob(tx, row.projectId, discussion.jobId, "source_retired", now);
-    for (const participation of discussion.participations) invalidatePendingJob(tx, row.projectId, participation.jobId, "source_retired", now);
+    let discussion: Discussion | null = null;
+    try { discussion = JSON.parse(row.json) as Discussion; } catch { /* Failed closed below. */ }
+    if (discussion && discussion.kind !== "discussion") continue;
+    if (!discussion && !isDiscussionJob(row.jobJson)) continue;
+    const stale = !discussion?.manifest || contextCurrent(tx, row.projectId, discussion.manifest) !== null;
+    if (!stale) continue;
+    invalidatePendingJob(tx, row.projectId, row.jobId, "source_retired", now);
+    const participations = Array.isArray(discussion?.participations) ? discussion.participations : [];
+    for (const participation of participations) {
+      try {
+        if (participation && typeof participation.jobId === "string") invalidatePendingJob(tx, row.projectId, participation.jobId, "source_retired", now);
+      } catch { /* Parent fence already revokes authority; a broken participation id stays fenced with it. */ }
+    }
   }
+}
+
+function isDiscussionJob(jobJson: string): boolean {
+  try {
+    return (JSON.parse(jobJson) as { type?: string }).type === discussionWorkId;
+  } catch { return false; }
 }
