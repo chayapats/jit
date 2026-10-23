@@ -2,6 +2,7 @@ import { Application } from "./application";
 import { readConfig } from "./config";
 import { TransactionStore } from "./store";
 import { createWebHandler } from "./web";
+import { gatherDiagnostics, inspectDiagnostics } from "./ops/diagnostics";
 import { readHiddenPassword } from "./terminal-password";
 import { JobQueue } from "./jobs/queue";
 import { projectStateWork } from "./jobs/project-state";
@@ -37,7 +38,12 @@ async function main(): Promise<void> {
     process.exitCode = result.exitCode === 0 ? 0 : 1;
     return;
   }
-  if (!["serve", "setup", "reset-owner"].includes(command ?? "")) throw new Error("Use serve, setup, reset-owner or probe");
+  if (!["serve", "setup", "reset-owner", "probe", "diagnose"].includes(command ?? "")) throw new Error("Use serve, setup, reset-owner, probe or diagnose");
+  if (command === "diagnose") {
+    // Read-only operator inspection: no scheduler claim, no queue pump, no timers, no server.
+    console.log(JSON.stringify(inspectDiagnostics(gatherDiagnostics(process.cwd(), config))));
+    return;
+  }
   const store = new TransactionStore(config.databasePath);
   let queue: JobQueue | undefined;
   try { if (command === "serve") {
