@@ -228,7 +228,8 @@ test("schema v8 migrates to v9, keeps the previous project, and snapshots the ol
   const path = join(root, "old.sqlite");
   const projectId = "22222222-2222-4222-8222-222222222222";
   const old = new Database(path);
-  old.exec(`CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, revision INTEGER NOT NULL, created_at INTEGER NOT NULL);
+  old.exec(readFileSync(new URL("./fixtures/foundation-v9.sql", import.meta.url), "utf8"));
+  old.exec(`DROP TABLE task_events; DROP TABLE task_proposals; DROP TABLE tasks;
     INSERT INTO projects VALUES ('${projectId}', 'kept-task', 4, 4);
     PRAGMA user_version = 8;`);
   old.close();
