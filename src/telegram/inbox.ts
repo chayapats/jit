@@ -132,6 +132,14 @@ export function processPersisted(
     tx.run(`UPDATE telegram_inbox SET status = 'processing', process_attempts = ? WHERE sequence = ?`, attempts, row.sequence);
     try {
       const event = project({ ...row, status: "processing", process_attempts: attempts });
+      if (event.classification === "authorized") {
+        const binding = readBinding(tx);
+        const current = classifyUpdate(JSON.parse(row.raw_json) as TelegramUpdate, binding, now);
+        if (event.bindingRevision !== binding.revision || current.classification !== "authorized") {
+          event.classification = "stale_binding";
+          tx.run("UPDATE telegram_inbox SET classification = 'stale_binding' WHERE sequence = ?", row.sequence);
+        }
+      }
       if (event.classification === "authorized") onAuthorized?.(event);
       // Inbound text remains untrusted content until a later application command boundary.
       tx.run(`UPDATE telegram_inbox SET status = 'processed', processed_at = ?, failure_reason = NULL WHERE sequence = ?`,

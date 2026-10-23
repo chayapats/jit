@@ -51,6 +51,15 @@ const messages: Record<string, string> = {
   task_not_accepted: "ยกเลิกได้เฉพาะงานที่รับรองแล้ว",
   task_already_accepted: "งานนี้รับรองไปแล้ว",
   task_already_closed: "งานนี้ปิดแล้ว และจะไม่ถูกเปิดใหม่จากข้อความของโมเดล",
+  task_already_completed: "งานนี้ปิดเรียบร้อยแล้ว",
+  task_not_completed: "เปิดใหม่ได้เฉพาะงานที่ปิดเรียบร้อยแล้ว",
+  completion_evidence_required: "นโยบายนี้ต้องมีหลักฐานที่ครบก่อนปิดงาน",
+  completion_evidence_partial: "หลักฐานยังไม่ครบ จึงอ้างเป็นผลสำเร็จไม่ได้",
+  completion_evidence_failed: "หลักฐานจากงานที่ล้มเหลวอ้างเป็นผลสำเร็จไม่ได้",
+  completion_evidence_unknown: "สถานะหลักฐานยังไม่ชัดเจน จึงปิดงานไม่ได้",
+  completion_evidence_stale: "หลักฐานไม่ตรงกับ revision ปัจจุบัน",
+  completion_evidence_invalid: "หลักฐานนี้ยังไม่ผ่านเกณฑ์ปิดงาน",
+  completion_policy_unsupported: "นโยบายนี้ใช้ได้เมื่อมีหลักฐานที่ครบจริงเท่านั้น",
   source_not_validated: "ใช้ได้เฉพาะผล specialist หรือผู้ประสานงานที่บันทึกแล้วในหัวข้อนี้",
   project_mismatch: "แหล่งข้อมูลไม่ได้อยู่ในโครงการนี้",
   coding_execution_unsupported: "การรับรองงานยังไม่เริ่มแก้โค้ดหรือรันคำสั่ง การเริ่มลงมือยังไม่รองรับในรุ่นนี้",
@@ -153,6 +162,7 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       const decisionRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})\/decisions$/.exec(url.pathname);
       const tasksRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/tasks$/.exec(url.pathname);
       const taskRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/tasks\/([a-f0-9-]{36})$/.exec(url.pathname);
+      const continuityRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/continuity$/.exec(url.pathname);
       const after = () => {
         const raw = url.searchParams.get("after") ?? "0";
         if (!/^\d{1,16}$/.test(raw)) throw new AppError("invalid_cursor");
@@ -169,6 +179,10 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       if (request.method === "GET" && discussionRoute) {
         const state = app.discussion(auth.actor, discussionRoute[1]!, discussionRoute[2]!);
         return api ? json(state) : respond(discussionPage(state, app.workspace(auth.actor), auth.csrf, config.jobs.maximum));
+      }
+      if (request.method === "GET" && continuityRoute) {
+        const state = app.continuity(auth.actor, continuityRoute[2]!);
+        return json(state);
       }
       if (request.method === "GET" && tasksRoute) {
         const state = app.tasks(auth.actor, tasksRoute[2]!);
@@ -196,7 +210,7 @@ export function createWebHandler(app: Application): (request: Request) => Promis
           command = { kind: "task.propose", requestId: body.requestId as string, projectId, expectedRevision: number(body.expectedRevision) as number,
             payload: { topicId: body.topicId as string, title: body.title as string, summary: body.summary as string, ...(source ? { source } : {}) } };
         } else {
-          const allowed = ["csrf", "requestId", "expectedRevision", "mode", "proposalId", "title", "summary", "source", "reason"];
+          const allowed = ["csrf", "requestId", "expectedRevision", "mode", "proposalId", "title", "summary", "source", "reason", "note", "policyKind", "successorTaskId"];
           if (Object.keys(body).some(key => !allowed.includes(key)) || typeof body.mode !== "string") throw new AppError("invalid_body");
           const taskId = taskRoute![3]!, expectedRevision = number(body.expectedRevision) as number, requestId = body.requestId as string;
           const base = { requestId, projectId, expectedRevision };
@@ -206,6 +220,10 @@ export function createWebHandler(app: Application): (request: Request) => Promis
           } else if (body.mode === "dismiss") command = { ...base, kind: "task.dismiss", payload: { taskId, proposalId: body.proposalId as string, reason: body.reason as string } };
           else if (body.mode === "accept") command = { ...base, kind: "task.accept", payload: { taskId, proposalId: body.proposalId as string } };
           else if (body.mode === "cancel") command = { ...base, kind: "task.cancel", payload: { taskId, reason: body.reason as string } };
+          else if (body.mode === "complete") command = { ...base, kind: "task.complete", payload: { taskId, ...(body.note ? { note: body.note as string } : {}), ...(body.source ? { evidence: [cited()!] } : {}) } };
+          else if (body.mode === "reopen") command = { ...base, kind: "task.reopen", payload: { taskId, reason: body.reason as string } };
+          else if (body.mode === "set_policy") command = { ...base, kind: "task.set_policy", payload: { taskId, policyKind: body.policyKind as "owner_confirmed" | "evidence_satisfied" } };
+          else if (body.mode === "supersede") command = { ...base, kind: "task.supersede", payload: { taskId, reason: body.reason as string, ...(body.successorTaskId ? { successorTaskId: body.successorTaskId as string } : {}) } };
           else if (body.mode === "start") command = { ...base, kind: "task.start", payload: { taskId } };
           else throw new AppError("invalid_body");
         }

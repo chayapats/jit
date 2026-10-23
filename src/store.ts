@@ -2,7 +2,7 @@ import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-const schemaVersion = 9;
+const schemaVersion = 10;
 
 /** Synchronous SQL operations scoped to an application transaction. */
 export interface AppTransaction {
@@ -30,11 +30,13 @@ export class TransactionStore {
       if (version > schemaVersion) throw new Error("Database schema is newer than this application");
       this.#db.exec("PRAGMA busy_timeout = 2000; PRAGMA foreign_keys = ON;");
       if (version < schemaVersion) {
+        // SQLite table rebuilds must not delete referenced parents with enforcement enabled.
+        this.#db.exec("PRAGMA foreign_keys = OFF;");
         this.#db.transaction(() => {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
           if (current === schemaVersion) return;
-          if (![0, 1, 2, 3, 4, 5, 6, 7, 8].includes(current)) throw new Error("Unsupported migration source");
+          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9].includes(current)) throw new Error("Unsupported migration source");
           if (existing) {
             const snapshot = `${path}.pre-v${current}-${crypto.randomUUID()}.sqlite`;
             const fd = openSync(snapshot, "wx", 0o600);
@@ -313,7 +315,88 @@ export class TransactionStore {
             CREATE INDEX task_event_task ON task_events(task_id, sequence);
             PRAGMA user_version = 9;
           `);
+          if (current < 10) {
+            const defaultPolicy = '{"kind":"owner_confirmed","workType":"user_task"}';
+            this.#db.exec(`
+            CREATE TABLE tasks_v10 (
+              id TEXT PRIMARY KEY,
+              task_revision INTEGER NOT NULL CHECK (task_revision > 0),
+              project_id TEXT NOT NULL REFERENCES projects(id),
+              topic_id TEXT NOT NULL,
+              state TEXT NOT NULL CHECK (state IN ('proposed', 'accepted', 'ready_for_review', 'completed', 'dismissed', 'cancelled', 'superseded')),
+              proposal_revision INTEGER NOT NULL CHECK (proposal_revision > 0),
+              current_proposal_id TEXT NOT NULL,
+              title TEXT NOT NULL,
+              summary TEXT NOT NULL,
+              source_id TEXT NOT NULL,
+              source_revision INTEGER NOT NULL CHECK (source_revision > 0),
+              source_generation INTEGER NOT NULL CHECK (source_generation > 0),
+              origin TEXT NOT NULL CHECK (origin IN ('owner', 'validated_output')),
+              acceptance_json TEXT,
+              closed_reason TEXT,
+              completion_policy_json TEXT NOT NULL,
+              completion_json TEXT,
+              pending_reason_json TEXT,
+              superseded_by TEXT,
+              created_at INTEGER NOT NULL,
+              updated_at INTEGER NOT NULL,
+              FOREIGN KEY (project_id, topic_id) REFERENCES topics(project_id, id),
+              FOREIGN KEY (source_id) REFERENCES sources(id)
+            );
+            INSERT INTO tasks_v10 (
+              id, task_revision, project_id, topic_id, state, proposal_revision, current_proposal_id, title, summary,
+              source_id, source_revision, source_generation, origin, acceptance_json, closed_reason,
+              completion_policy_json, completion_json, pending_reason_json, superseded_by, created_at, updated_at
+            )
+            SELECT id, proposal_revision, project_id, topic_id, state, proposal_revision, current_proposal_id, title, summary,
+              source_id, source_revision, source_generation, origin, acceptance_json, closed_reason,
+              '${defaultPolicy}', NULL, NULL, NULL, created_at, updated_at
+            FROM tasks;
+            DROP TABLE tasks;
+            ALTER TABLE tasks_v10 RENAME TO tasks;
+            CREATE INDEX task_project ON tasks(project_id, updated_at, id);
+            CREATE TABLE task_events_v10 (
+              sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+              task_id TEXT NOT NULL REFERENCES tasks(id),
+              project_id TEXT NOT NULL,
+              kind TEXT NOT NULL CHECK (kind IN ('proposed', 'edited', 'dismissed', 'accepted', 'cancelled', 'completed', 'reopened', 'superseded', 'policy_changed', 'ready_for_review')),
+              actor_id TEXT NOT NULL CHECK (actor_id = 'owner'),
+              channel TEXT NOT NULL CHECK (channel IN ('web', 'telegram')),
+              proposal_id TEXT,
+              proposal_revision INTEGER,
+              reason TEXT,
+              created_at INTEGER NOT NULL
+            );
+            INSERT INTO task_events_v10 (sequence, task_id, project_id, kind, actor_id, channel, proposal_id, proposal_revision, reason, created_at)
+            SELECT sequence, task_id, project_id, kind, actor_id, channel, proposal_id, proposal_revision, reason, created_at FROM task_events;
+            DROP TABLE task_events;
+            ALTER TABLE task_events_v10 RENAME TO task_events;
+            CREATE INDEX task_event_task ON task_events(task_id, sequence);
+            CREATE TABLE task_evidence_artifacts (
+              id TEXT PRIMARY KEY,
+              proposal_id TEXT NOT NULL REFERENCES task_proposals(id),
+              task_id TEXT NOT NULL REFERENCES tasks(id),
+              project_id TEXT NOT NULL REFERENCES projects(id),
+              revision INTEGER NOT NULL CHECK (revision > 0),
+              work_type TEXT NOT NULL CHECK (work_type IN ('analysis', 'review', 'reminder')),
+              outcome TEXT NOT NULL CHECK (outcome IN ('complete', 'partial', 'failed', 'unknown')),
+              delivery_state TEXT CHECK (delivery_state IN ('sent', 'failed', 'unknown')),
+              source_id TEXT NOT NULL,
+              source_revision INTEGER NOT NULL CHECK (source_revision > 0),
+              source_generation INTEGER NOT NULL CHECK (source_generation > 0),
+              record_json TEXT NOT NULL,
+              created_at INTEGER NOT NULL,
+              UNIQUE (task_id, revision),
+              FOREIGN KEY (task_id) REFERENCES tasks(id)
+            );
+            CREATE INDEX task_evidence_project ON task_evidence_artifacts(project_id, task_id, revision);
+            PRAGMA user_version = 10;
+          `);
+          }
+          // A populated rebuilt graph must retain every reference; empty legacy fixture stores have no task graph to check.
+          if (this.#tx.get("SELECT 1 FROM tasks LIMIT 1") && this.#tx.all("PRAGMA foreign_key_check").length) throw new Error("Migration foreign key check failed");
         }).immediate();
+        this.#db.exec("PRAGMA foreign_keys = ON;");
       }
       this.#db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;");
       chmodSync(path, 0o600);

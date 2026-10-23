@@ -4,6 +4,8 @@ import type { AppConfig } from "../config";
 import { TransactionStore, type AppTransaction } from "../store";
 import { bindingIdentity, mutateBinding, readBinding, readPoll } from "./binding";
 import { advanceOffset, inboxCounts, noticeRetentionGap, persistUpdates, processPersisted, readEvents } from "./inbox";
+import type { TelegramProjectCommands } from "./project-commands";
+import type { TelegramUpdate } from "./types";
 import { botCredentialConfigured } from "./secrets";
 import type {
   TelegramBindingCommand, TelegramBindingReceipt, TelegramEventPage, TelegramInboxEvent,
@@ -150,6 +152,26 @@ export class TelegramChannel {
   /** Processes persisted authorized/failed events with a bounded attempt budget. */
   process(onAuthorized?: (event: TelegramInboxEvent) => void): TelegramInboxEvent[] {
     return this.store.transaction(tx => processPersisted(tx, this.config.telegram, this.#now(), onAuthorized));
+  }
+
+  /**
+   * Runs telegram.project_commands/v1 for authorized inbox rows, then commits outbox replies.
+   * Inbound content stays untrusted until this boundary maps it to Application.execute.
+   */
+  processProjectCommands(commands: TelegramProjectCommands): TelegramInboxEvent[] {
+    const events = this.process(event => {
+      if (event.classification !== "authorized") return;
+      // One savepoint rolls back both the command and its reply if either cannot commit.
+      this.store.transaction(tx => {
+        const raw = tx.get<{ raw_json: string }>("SELECT raw_json FROM telegram_inbox WHERE sequence = ?", event.sequence);
+        if (!raw) throw new AppError("telegram_event_missing");
+        const outcome = commands.handle(event, JSON.parse(raw.raw_json) as TelegramUpdate);
+        commands.commitReply(outcome, event);
+      });
+    });
+    // Native/model/transport work starts only after inbox + command + reply commit.
+    commands.pump();
+    return events;
   }
 
   /** Escape-safe HTML fragment for a future Web status page; no secrets or raw tokens. */
