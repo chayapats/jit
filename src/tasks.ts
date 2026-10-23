@@ -21,7 +21,7 @@ export type CompletionPolicyKind = "owner_confirmed" | "evidence_satisfied";
 export const REGISTERED_COMPLETION_POLICIES = ["owner_confirmed", "evidence_satisfied"] as const;
 
 /** Default MVP user-task completion remains owner-confirmed. Model output cannot change this. */
-export const DEFAULT_USER_TASK_POLICY: CompletionPolicy = { kind: "owner_confirmed", workType: "user_task" };
+export const DEFAULT_USER_TASK_POLICY: Readonly<CompletionPolicy> = Object.freeze({ kind: "owner_confirmed", workType: "user_task" });
 
 /** Work-type completion policy stored on an accepted obligation. */
 export interface CompletionPolicy { kind: CompletionPolicyKind; workType: "user_task" }
@@ -40,7 +40,7 @@ export interface TaskPendingReason {
 
 /** Immutable evidence artifact from analysis, review, or reminder work. */
 export interface TaskEvidenceArtifact {
-  id: string; taskId: string; projectId: string; revision: number; workType: TaskEvidenceWorkType;
+  id: string; taskId: string; projectId: string; proposalId: string; revision: number; workType: TaskEvidenceWorkType;
   outcome: TaskEvidenceOutcome; deliveryState: TaskDeliveryState | null; source: SourceReference; createdAt: number;
 }
 
@@ -95,7 +95,7 @@ export interface TaskAcceptance {
  * One project obligation. `proposed` is not an obligation. `accepted` still does not start execution.
  */
 export interface TaskRecord {
-  id: string; projectId: string; topicId: string; state: TaskState; revision: number;
+  id: string; projectId: string; topicId: string; state: TaskState; revision: number; proposalRevision: number;
   title: string; summary: string; source: SourceReference; origin: TaskOrigin;
   acceptance: TaskAcceptance | null; closedReason: string | null;
   completionPolicy: CompletionPolicy; completion: TaskCompletion | null; pendingReason: TaskPendingReason | null;
@@ -115,6 +115,9 @@ export interface TaskReadModel {
 export interface TaskList {
   proposed: TaskRecord[]; accepted: TaskRecord[]; readyForReview: TaskRecord[];
   completed: TaskRecord[]; inactive: TaskRecord[];
+  /** Compatibility projection of completed and inactive rows. */
+  closed: TaskRecord[];
+  hasMore: Record<"proposed" | "accepted" | "readyForReview" | "completed" | "inactive", boolean>;
 }
 /** Authoritative project continuity for memory, team, and Telegram adapters without inference. */
 export interface ProjectContinuity {
@@ -166,7 +169,7 @@ export function taskIdentity(command: TaskCommand, maximumBytes: number): string
     if (!exact(payload, ["taskId", "proposalId"])) throw new AppError("invalid_task_command");
     requireId(payload.taskId); requireId(payload.proposalId);
   } else if (command.kind === "task.cancel" || command.kind === "task.reopen" || command.kind === "task.supersede") {
-    if (!exact(payload, ["taskId", "reason"])) throw new AppError("invalid_task_command");
+    if (!exact(payload, ["taskId", "reason"]) && !(command.kind === "task.supersede" && exact(payload, ["taskId", "reason", "successorTaskId"]))) throw new AppError("invalid_task_command");
     requireId(payload.taskId); boundReason(payload.reason);
     if (command.kind === "task.supersede" && "successorTaskId" in payload) {
       if (!exact(payload, ["taskId", "reason", "successorTaskId"])) throw new AppError("invalid_task_command");
@@ -198,13 +201,23 @@ export function taskIdentity(command: TaskCommand, maximumBytes: number): string
  */
 export function readTaskList(tx: AppTransaction, projectId: string, limit: number): TaskList {
   requireId(projectId);
-  const rows = tx.all<TaskRow>(`SELECT ${taskColumns} FROM tasks WHERE project_id = ? ORDER BY updated_at, id`, projectId)
-    .map(projectTask);
-  const take = (state: TaskState) => rows.filter(task => task.state === state).slice(0, limit);
-  return {
-    proposed: take("proposed"), accepted: take("accepted"), readyForReview: take("ready_for_review"),
-    completed: take("completed"), inactive: rows.filter(task => inactiveStates.includes(task.state)).slice(0, limit),
+  const groups = {
+    proposed: ["proposed"], accepted: ["accepted"], readyForReview: ["ready_for_review"],
+    completed: ["completed"], inactive: inactiveStates,
   };
+  const lists = {} as Omit<TaskList, "closed" | "hasMore">;
+  const hasMore = {} as TaskList["hasMore"];
+  for (const key of Object.keys(groups) as Array<keyof typeof groups>) {
+    const states = groups[key];
+    const rows = tx.all<TaskRow>(`SELECT ${taskColumns} FROM tasks WHERE project_id = ? AND state IN (${states.map(() => "?").join(",")}) ORDER BY updated_at, id LIMIT ?`, projectId, ...states, limit + 1);
+    hasMore[key] = rows.length > limit;
+    lists[key] = rows.slice(0, limit).map(row => projectCurrentTask(tx, row));
+  }
+  // Current evidence may move an obligation between accepted and review without changing storage on GET.
+  const active = [...lists.accepted, ...lists.readyForReview];
+  lists.accepted = active.filter(task => task.state === "accepted");
+  lists.readyForReview = active.filter(task => task.state === "ready_for_review");
+  return { ...lists, closed: [...lists.completed, ...lists.inactive], hasMore };
 }
 
 /**
@@ -215,7 +228,7 @@ export function readProjectContinuity(tx: AppTransaction, projectId: string, lim
   requireId(projectId);
   const obligations = readTaskList(tx, projectId, limit);
   const activeObligations = [...obligations.proposed, ...obligations.accepted, ...obligations.readyForReview];
-  const topicIds = tx.all<{ topicId: string }>("SELECT DISTINCT topic_id AS topicId FROM tasks WHERE project_id = ?", projectId)
+  const topicIds = tx.all<{ topicId: string }>("SELECT id AS topicId FROM topics WHERE project_id = ? ORDER BY created_at, id", projectId)
     .map(row => row.topicId);
   const decisions = topicIds.map(topicId => ({ topicId, model: readDecisionModel(tx, projectId, topicId) }));
   return { projectId, obligations, activeObligations, decisions, queriedAt: now };
@@ -226,7 +239,7 @@ export function readProjectContinuity(tx: AppTransaction, projectId: string, lim
  * Reads one task, its proposal revisions, owner events, completion policy, and current source availability.
  */
 export function readTaskModel(tx: AppTransaction, projectId: string, taskId: string): TaskReadModel {
-  const task = projectTask(requireTask(tx, projectId, taskId));
+  const task = projectCurrentTask(tx, requireTask(tx, projectId, taskId));
   return {
     task, proposals: readProposals(tx, task.id), events: readEvents(tx, task.id),
     source: lookupSource(tx, projectId, task.source), evidenceArtifacts: readEvidenceArtifacts(tx, task.id),
@@ -249,17 +262,20 @@ export function registerTaskEvidenceArtifact(tx: AppTransaction, input: {
   const task = requireTask(tx, input.projectId, input.taskId);
   if (inactiveStates.includes(task.state) || task.state === "completed") throw new AppError("task_already_closed", 409);
   requireReference(input.source);
+  const source = lookupSource(tx, input.projectId, input.source);
+  if (source.state !== "available" || source.current.revision !== input.source.revision || source.attribution.kind !== "participant") throw new AppError("completion_evidence_stale", 409);
+  if (!Number.isSafeInteger(input.now) || input.now < 0) throw new AppError("invalid_commit_time");
   const revision = (tx.get<{ revision: number }>("SELECT coalesce(max(revision), 0) AS revision FROM task_evidence_artifacts WHERE task_id = ?", input.taskId)?.revision ?? 0) + 1;
   const artifact: TaskEvidenceArtifact = {
-    id: crypto.randomUUID(), taskId: input.taskId, projectId: input.projectId, revision,
+    id: crypto.randomUUID(), taskId: input.taskId, projectId: input.projectId, proposalId: task.currentProposalId, revision,
     workType: input.workType, outcome: input.outcome, deliveryState: input.deliveryState ?? null,
     source: { ...input.source }, createdAt: input.now,
   };
-  tx.run(`INSERT INTO task_evidence_artifacts (id, task_id, project_id, revision, work_type, outcome, delivery_state, source_id, source_revision, source_generation, record_json, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, artifact.id, artifact.taskId, artifact.projectId, artifact.revision,
+  tx.run(`INSERT INTO task_evidence_artifacts (id, task_id, project_id, proposal_id, revision, work_type, outcome, delivery_state, source_id, source_revision, source_generation, record_json, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, artifact.id, artifact.taskId, artifact.projectId, artifact.proposalId, artifact.revision,
     artifact.workType, artifact.outcome, artifact.deliveryState, artifact.source.sourceId, artifact.source.revision, artifact.source.generation,
     JSON.stringify({ workType: artifact.workType, outcome: artifact.outcome, deliveryState: artifact.deliveryState }), input.now);
-  refreshTaskEvidenceStatus(tx, task, input.now);
+  refreshTaskEvidenceStatus(tx, task);
   saveTask(tx, task);
   return artifact;
 }
@@ -273,7 +289,7 @@ export function applyTask(tx: AppTransaction, command: TaskCommand, channel: Tas
   if (channel !== "web" && channel !== "telegram") throw new AppError("channel_not_authorized", 403);
   if (command.kind === "task.propose") return propose(tx, command, channel, now, maximumBytes);
   const task = requireTask(tx, command.projectId, command.payload.taskId);
-  if (task.proposalRevision !== command.expectedRevision || (proposalId(command) !== null && proposalId(command) !== task.currentProposalId)) {
+  if (task.revision !== command.expectedRevision || (proposalId(command) !== null && proposalId(command) !== task.currentProposalId)) {
     throw new AppError("stale_revision", 409, latestDetail(task));
   }
   if (command.kind === "task.start") throw new AppError("coding_execution_unsupported", 409, latestDetail(task));
@@ -302,14 +318,14 @@ export function applyTask(tx: AppTransaction, command: TaskCommand, channel: Tas
   throw new AppError("task_not_proposed", 409);
 }
 
-const taskColumns = `id, project_id AS projectId, topic_id AS topicId, state, proposal_revision AS proposalRevision,
+const taskColumns = `id, task_revision AS revision, project_id AS projectId, topic_id AS topicId, state, proposal_revision AS proposalRevision,
   current_proposal_id AS currentProposalId, title, summary, source_id AS sourceId, source_revision AS sourceRevision,
   source_generation AS sourceGeneration, origin, acceptance_json AS acceptanceJson, closed_reason AS closedReason,
   completion_policy_json AS completionPolicyJson, completion_json AS completionJson, pending_reason_json AS pendingReasonJson,
   superseded_by AS supersededBy, created_at AS createdAt, updated_at AS updatedAt`;
 
 interface TaskRow {
-  id: string; projectId: string; topicId: string; state: TaskState; proposalRevision: number; currentProposalId: string;
+  id: string; revision: number; projectId: string; topicId: string; state: TaskState; proposalRevision: number; currentProposalId: string;
   title: string; summary: string; sourceId: string; sourceRevision: number; sourceGeneration: number; origin: TaskOrigin;
   acceptanceJson: string | null; closedReason: string | null; completionPolicyJson: string; completionJson: string | null;
   pendingReasonJson: string | null; supersededBy: string | null; createdAt: number; updatedAt: number;
@@ -342,7 +358,7 @@ function proposalId(command: TaskCommand): string | null {
 }
 function latestDetail(task: TaskRow): AppErrorDetail {
   return {
-    projectId: task.projectId, taskId: task.id, proposalId: task.currentProposalId, revision: task.proposalRevision,
+    projectId: task.projectId, taskId: task.id, proposalId: task.currentProposalId, revision: task.revision,
     path: `/projects/${task.projectId}/tasks/${task.id}`,
   };
 }
@@ -358,7 +374,7 @@ function requireTopic(tx: AppTransaction, projectId: string, topicId: string, ex
 }
 function projectTask(row: TaskRow): TaskRecord {
   return {
-    id: row.id, projectId: row.projectId, topicId: row.topicId, state: row.state, revision: row.proposalRevision,
+    id: row.id, projectId: row.projectId, topicId: row.topicId, state: row.state, revision: row.revision, proposalRevision: row.proposalRevision,
     title: row.title, summary: row.summary,
     source: { sourceId: row.sourceId, revision: row.sourceRevision, generation: row.sourceGeneration },
     origin: row.origin, acceptance: row.acceptanceJson ? JSON.parse(row.acceptanceJson) as TaskAcceptance : null,
@@ -384,12 +400,12 @@ function readEvents(tx: AppTransaction, taskId: string): TaskEvent[] {
 }
 function readEvidenceArtifacts(tx: AppTransaction, taskId: string): TaskEvidenceArtifact[] {
   return tx.all<{
-    id: string; taskId: string; projectId: string; revision: number; workType: TaskEvidenceWorkType; outcome: TaskEvidenceOutcome;
+    id: string; taskId: string; projectId: string; proposalId: string; revision: number; workType: TaskEvidenceWorkType; outcome: TaskEvidenceOutcome;
     deliveryState: TaskDeliveryState | null; sourceId: string; sourceRevision: number; sourceGeneration: number; createdAt: number;
-  }>(`SELECT id, task_id AS taskId, project_id AS projectId, revision, work_type AS workType, outcome,
+  }>(`SELECT id, task_id AS taskId, project_id AS projectId, proposal_id AS proposalId, revision, work_type AS workType, outcome,
       delivery_state AS deliveryState, source_id AS sourceId, source_revision AS sourceRevision, source_generation AS sourceGeneration, created_at AS createdAt
       FROM task_evidence_artifacts WHERE task_id = ? ORDER BY revision`, taskId).map(row => ({
-    id: row.id, taskId: row.taskId, projectId: row.projectId, revision: row.revision, workType: row.workType, outcome: row.outcome,
+    id: row.id, taskId: row.taskId, projectId: row.projectId, proposalId: row.proposalId, revision: row.revision, workType: row.workType, outcome: row.outcome,
     deliveryState: row.deliveryState, source: { sourceId: row.sourceId, revision: row.sourceRevision, generation: row.sourceGeneration }, createdAt: row.createdAt,
   }));
 }
@@ -428,46 +444,60 @@ function insertEvent(tx: AppTransaction, taskId: string, projectId: string, kind
   return event;
 }
 function saveTask(tx: AppTransaction, row: TaskRow): void {
-  tx.run(`UPDATE tasks SET state = ?, proposal_revision = ?, current_proposal_id = ?, title = ?, summary = ?, source_id = ?,
+  row.revision++;
+  tx.run(`UPDATE tasks SET task_revision = ?, state = ?, proposal_revision = ?, current_proposal_id = ?, title = ?, summary = ?, source_id = ?,
     source_revision = ?, source_generation = ?, origin = ?, acceptance_json = ?, closed_reason = ?, completion_policy_json = ?,
     completion_json = ?, pending_reason_json = ?, superseded_by = ?, updated_at = ? WHERE id = ? AND project_id = ?`,
-    row.state, row.proposalRevision, row.currentProposalId, row.title, row.summary, row.sourceId, row.sourceRevision, row.sourceGeneration,
+    row.revision, row.state, row.proposalRevision, row.currentProposalId, row.title, row.summary, row.sourceId, row.sourceRevision, row.sourceGeneration,
     row.origin, row.acceptanceJson, row.closedReason, row.completionPolicyJson, row.completionJson, row.pendingReasonJson, row.supersededBy,
     row.updatedAt, row.id, row.projectId);
 }
-function latestCompleteArtifact(tx: AppTransaction, taskId: string): TaskEvidenceArtifact | null {
-  return readEvidenceArtifacts(tx, taskId).filter(item => item.outcome === "complete").at(-1) ?? null;
+function artifactFailure(tx: AppTransaction, task: TaskRow, artifact: TaskEvidenceArtifact): string | null {
+  const source = lookupSource(tx, task.projectId, artifact.source);
+  if (artifact.proposalId !== task.currentProposalId || source.state !== "available" || source.current.revision !== artifact.source.revision) return "completion_evidence_stale";
+  if (artifact.outcome === "partial") return "completion_evidence_partial";
+  if (artifact.outcome === "failed" || artifact.deliveryState === "failed") return "completion_evidence_failed";
+  if (artifact.outcome === "unknown" || artifact.deliveryState === "unknown" || (artifact.workType === "reminder" && artifact.deliveryState !== "sent")) return "completion_evidence_unknown";
+  return null;
 }
-function validateCompletionEvidence(tx: AppTransaction, task: TaskRow, policy: CompletionPolicy, evidence: SourceReference[]): void {
-  const artifacts = readEvidenceArtifacts(tx, task.id);
-  if (policy.kind === "evidence_satisfied" && !latestCompleteArtifact(tx, task.id)) throw new AppError("completion_evidence_required", 409, latestDetail(task));
-  for (const reference of evidence) {
-    const located = lookupSource(tx, task.projectId, reference);
-    if (located.state !== "available") throw new AppError("completion_evidence_stale", 409, latestDetail(task));
-    const artifact = artifacts.find(item => item.source.sourceId === reference.sourceId && item.source.revision === reference.revision && item.source.generation === reference.generation);
-    if (!artifact) throw new AppError("completion_evidence_stale", 409, latestDetail(task));
-    if (artifact.outcome === "partial") throw new AppError("completion_evidence_partial", 409, latestDetail(task));
-    if (artifact.outcome === "failed") throw new AppError("completion_evidence_failed", 409, latestDetail(task));
-    if (artifact.deliveryState === "unknown" || artifact.outcome === "unknown") throw new AppError("completion_evidence_unknown", 409, latestDetail(task));
-    if (artifact.outcome !== "complete") throw new AppError("completion_evidence_invalid", 409, latestDetail(task));
-  }
+function currentCompleteArtifact(tx: AppTransaction, task: TaskRow): TaskEvidenceArtifact | null {
+  const latest = readEvidenceArtifacts(tx, task.id).at(-1);
+  return latest && !artifactFailure(tx, task, latest) ? latest : null;
 }
-function refreshTaskEvidenceStatus(tx: AppTransaction, task: TaskRow, now: number, channel: TaskChannel = "web"): void {
-  const policy = parsePolicy(task);
+function validateCompletionEvidence(tx: AppTransaction, task: TaskRow, policy: CompletionPolicy, evidence: SourceReference[]): SourceReference[] {
   const artifacts = readEvidenceArtifacts(tx, task.id);
-  const latest = artifacts.at(-1);
-  let pending: TaskPendingReason | null = null;
-  if (latest?.outcome === "partial") pending = { kind: "review_partial", detail: "ผลตรวจยังไม่ครบตามขอบเขต" };
-  else if (latest?.outcome === "failed") pending = { kind: "job_failed", detail: "งานพื้นหลังล้มเหลว ยังปิดข้อผูกพันไม่ได้" };
-  else if (latest?.deliveryState === "unknown" || latest?.outcome === "unknown") pending = { kind: "delivery_unknown", detail: "สถานะการส่งยังไม่ชัดเจน" };
-  else if (policy.kind === "evidence_satisfied" && !latestCompleteArtifact(tx, task.id)) pending = { kind: "awaiting_complete_evidence", detail: "รอหลักฐานที่ครบตามนโยบาย" };
-  else if (task.state === "accepted" || task.state === "ready_for_review") pending = pending ?? { kind: "awaiting_owner", detail: "รอคุณยืนยันผลตามนโยบาย" };
-  task.pendingReasonJson = pending ? JSON.stringify(pending) : null;
-  if (policy.kind === "evidence_satisfied" && latestCompleteArtifact(tx, task.id) && task.state === "accepted") {
-    task.state = "ready_for_review";
-    task.updatedAt = now;
-    insertEvent(tx, task.id, task.projectId, "ready_for_review", channel, readProposals(tx, task.id).at(-1) ?? null, null, now);
+  const selected = [...evidence];
+  if (policy.kind === "evidence_satisfied") {
+    const current = currentCompleteArtifact(tx, task);
+    if (!current) throw new AppError(artifacts.length ? artifactFailure(tx, task, artifacts.at(-1)!)! : "completion_evidence_required", 409, latestDetail(task));
+    if (!selected.length) selected.push(current.source);
   }
+  for (const reference of selected) {
+    const artifact = artifacts.findLast(item => item.source.sourceId === reference.sourceId && item.source.revision === reference.revision && item.source.generation === reference.generation);
+    const failure = artifact ? artifactFailure(tx, task, artifact) : "completion_evidence_stale";
+    if (failure) throw new AppError(failure, 409, latestDetail(task));
+  }
+  return selected;
+}
+function refreshTaskEvidenceStatus(tx: AppTransaction, task: TaskRow): void {
+  if (task.state !== "accepted" && task.state !== "ready_for_review") return;
+  const policy = parsePolicy(task), latest = readEvidenceArtifacts(tx, task.id).at(-1);
+  const failure = latest ? artifactFailure(tx, task, latest) : null;
+  const reasons: Record<string, TaskPendingReason> = {
+    completion_evidence_partial: { kind: "review_partial", detail: "ผลตรวจยังไม่ครบตามขอบเขต" },
+    completion_evidence_failed: { kind: "job_failed", detail: "งานพื้นหลังหรือการส่งล้มเหลว" },
+    completion_evidence_unknown: { kind: "delivery_unknown", detail: "สถานะการส่งหรือผลยังไม่ชัดเจน" },
+    completion_evidence_stale: { kind: "evidence_stale", detail: "หลักฐานไม่ตรงกับข้อเสนอหรือ source ปัจจุบัน" },
+  };
+  const pending = failure ? reasons[failure]! : policy.kind === "evidence_satisfied" && !latest
+    ? { kind: "awaiting_complete_evidence", detail: "รอหลักฐานที่ครบตามนโยบาย" }
+    : { kind: "awaiting_owner", detail: "รอคุณยืนยันผลตามนโยบาย" };
+  task.pendingReasonJson = JSON.stringify(pending);
+  task.state = policy.kind === "evidence_satisfied" && latest && !failure ? "ready_for_review" : "accepted";
+}
+function projectCurrentTask(tx: AppTransaction, row: TaskRow): TaskRecord {
+  refreshTaskEvidenceStatus(tx, row);
+  return projectTask(row);
 }
 function propose(tx: AppTransaction, command: Extract<TaskCommand, { kind: "task.propose" }>, channel: TaskChannel, now: number, maximumBytes: number): TaskReceipt {
   requireTopic(tx, command.projectId, command.payload.topicId, command.expectedRevision);
@@ -476,8 +506,8 @@ function propose(tx: AppTransaction, command: Extract<TaskCommand, { kind: "task
   const cited = cite(tx, command.projectId, command.payload.topicId, title, summary, command.payload.source, now);
   const id = crypto.randomUUID();
   const proposalId = crypto.randomUUID();
-  tx.run(`INSERT INTO tasks (id, project_id, topic_id, state, proposal_revision, current_proposal_id, title, summary, source_id, source_revision, source_generation, origin, acceptance_json, closed_reason, completion_policy_json, completion_json, pending_reason_json, superseded_by, created_at, updated_at)
-    VALUES (?, ?, ?, 'proposed', 1, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, NULL, NULL, ?, ?)`, id, command.projectId, command.payload.topicId, proposalId, title, summary,
+  tx.run(`INSERT INTO tasks (id, task_revision, project_id, topic_id, state, proposal_revision, current_proposal_id, title, summary, source_id, source_revision, source_generation, origin, acceptance_json, closed_reason, completion_policy_json, completion_json, pending_reason_json, superseded_by, created_at, updated_at)
+    VALUES (?, 1, ?, ?, 'proposed', 1, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, NULL, NULL, ?, ?)`, id, command.projectId, command.payload.topicId, proposalId, title, summary,
     cited.source.sourceId, cited.source.revision, cited.source.generation, cited.origin, JSON.stringify(DEFAULT_USER_TASK_POLICY), now, now);
   const proposal = insertProposal(tx, { id, projectId: command.projectId }, 1, title, summary, cited, now, proposalId);
   const event = insertEvent(tx, id, command.projectId, "proposed", channel, proposal, null, now);
@@ -491,6 +521,7 @@ function edit(tx: AppTransaction, task: TaskRow, command: Extract<TaskCommand, {
   task.proposalRevision = proposal.revision; task.currentProposalId = proposal.id; task.title = title; task.summary = summary;
   task.sourceId = cited.source.sourceId; task.sourceRevision = cited.source.revision; task.sourceGeneration = cited.source.generation;
   task.origin = cited.origin; task.updatedAt = now;
+  refreshTaskEvidenceStatus(tx, task);
   saveTask(tx, task);
   return { task: projectTask(task), proposal, event: insertEvent(tx, task.id, task.projectId, "edited", channel, proposal, null, now) };
 }
@@ -515,9 +546,9 @@ function closeTask(tx: AppTransaction, task: TaskRow, state: "dismissed" | "canc
 }
 function setPolicy(tx: AppTransaction, task: TaskRow, command: Extract<TaskCommand, { kind: "task.set_policy" }>, channel: TaskChannel, now: number): TaskReceipt {
   if (task.state !== "accepted" && task.state !== "ready_for_review") throw new AppError("task_not_accepted", 409);
-  if (command.payload.policyKind === "evidence_satisfied" && !latestCompleteArtifact(tx, task.id)) throw new AppError("completion_policy_unsupported", 409, latestDetail(task));
+  if (command.payload.policyKind === "evidence_satisfied" && !currentCompleteArtifact(tx, task)) throw new AppError("completion_policy_unsupported", 409, latestDetail(task));
   task.completionPolicyJson = JSON.stringify({ kind: command.payload.policyKind, workType: "user_task" } satisfies CompletionPolicy);
-  refreshTaskEvidenceStatus(tx, task, now);
+  refreshTaskEvidenceStatus(tx, task);
   task.updatedAt = now;
   saveTask(tx, task);
   const proposal = readProposals(tx, task.id).at(-1)!;
@@ -527,8 +558,7 @@ function completeTask(tx: AppTransaction, task: TaskRow, command: Extract<TaskCo
   if (task.state === "completed" || task.completionJson) throw new AppError("task_already_completed", 409);
   if (task.state !== "accepted" && task.state !== "ready_for_review") throw new AppError("task_not_accepted", 409);
   const policy = parsePolicy(task);
-  const evidence = command.payload.evidence ?? [];
-  validateCompletionEvidence(tx, task, policy, evidence);
+  const evidence = validateCompletionEvidence(tx, task, policy, command.payload.evidence ?? []);
   const proposal = readProposals(tx, task.id).at(-1)!;
   const completion: TaskCompletion = {
     actorId: "owner", channel, proposalId: proposal.id, proposalRevision: proposal.revision,
@@ -543,7 +573,7 @@ function reopenTask(tx: AppTransaction, task: TaskRow, command: Extract<TaskComm
   boundReason(command.payload.reason);
   const proposal = readProposals(tx, task.id).at(-1)!;
   task.state = "accepted"; task.completionJson = null; task.updatedAt = now;
-  refreshTaskEvidenceStatus(tx, task, now);
+  refreshTaskEvidenceStatus(tx, task);
   saveTask(tx, task);
   return { task: projectTask(task), proposal, event: insertEvent(tx, task.id, task.projectId, "reopened", channel, proposal, command.payload.reason, now) };
 }
@@ -551,6 +581,10 @@ function supersedeTask(tx: AppTransaction, task: TaskRow, command: Extract<TaskC
   if (task.state !== "accepted" && task.state !== "ready_for_review") throw new AppError("task_not_accepted", 409);
   boundReason(command.payload.reason);
   const proposal = readProposals(tx, task.id).at(-1)!;
+  if (command.payload.successorTaskId) {
+    const successor = requireTask(tx, task.projectId, command.payload.successorTaskId);
+    if (successor.id === task.id || !activeObligationStates.includes(successor.state)) throw new AppError("invalid_task_command");
+  }
   task.state = "superseded"; task.closedReason = command.payload.reason;
   task.supersededBy = command.payload.successorTaskId ?? null; task.pendingReasonJson = null; task.updatedAt = now;
   saveTask(tx, task);

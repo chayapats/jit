@@ -30,6 +30,8 @@ export class TransactionStore {
       if (version > schemaVersion) throw new Error("Database schema is newer than this application");
       this.#db.exec("PRAGMA busy_timeout = 2000; PRAGMA foreign_keys = ON;");
       if (version < schemaVersion) {
+        // SQLite table rebuilds must not delete referenced parents with enforcement enabled.
+        this.#db.exec("PRAGMA foreign_keys = OFF;");
         this.#db.transaction(() => {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
@@ -318,6 +320,7 @@ export class TransactionStore {
             this.#db.exec(`
             CREATE TABLE tasks_v10 (
               id TEXT PRIMARY KEY,
+              task_revision INTEGER NOT NULL CHECK (task_revision > 0),
               project_id TEXT NOT NULL REFERENCES projects(id),
               topic_id TEXT NOT NULL,
               state TEXT NOT NULL CHECK (state IN ('proposed', 'accepted', 'ready_for_review', 'completed', 'dismissed', 'cancelled', 'superseded')),
@@ -337,14 +340,15 @@ export class TransactionStore {
               superseded_by TEXT,
               created_at INTEGER NOT NULL,
               updated_at INTEGER NOT NULL,
-              FOREIGN KEY (project_id) REFERENCES projects(id)
+              FOREIGN KEY (project_id, topic_id) REFERENCES topics(project_id, id),
+              FOREIGN KEY (source_id) REFERENCES sources(id)
             );
             INSERT INTO tasks_v10 (
-              id, project_id, topic_id, state, proposal_revision, current_proposal_id, title, summary,
+              id, task_revision, project_id, topic_id, state, proposal_revision, current_proposal_id, title, summary,
               source_id, source_revision, source_generation, origin, acceptance_json, closed_reason,
               completion_policy_json, completion_json, pending_reason_json, superseded_by, created_at, updated_at
             )
-            SELECT id, project_id, topic_id, state, proposal_revision, current_proposal_id, title, summary,
+            SELECT id, proposal_revision, project_id, topic_id, state, proposal_revision, current_proposal_id, title, summary,
               source_id, source_revision, source_generation, origin, acceptance_json, closed_reason,
               '${defaultPolicy}', NULL, NULL, NULL, created_at, updated_at
             FROM tasks;
@@ -370,6 +374,7 @@ export class TransactionStore {
             CREATE INDEX task_event_task ON task_events(task_id, sequence);
             CREATE TABLE task_evidence_artifacts (
               id TEXT PRIMARY KEY,
+              proposal_id TEXT NOT NULL REFERENCES task_proposals(id),
               task_id TEXT NOT NULL REFERENCES tasks(id),
               project_id TEXT NOT NULL REFERENCES projects(id),
               revision INTEGER NOT NULL CHECK (revision > 0),
@@ -388,7 +393,10 @@ export class TransactionStore {
             PRAGMA user_version = 10;
           `);
           }
+          // A populated rebuilt graph must retain every reference; empty legacy fixture stores have no task graph to check.
+          if (this.#tx.get("SELECT 1 FROM tasks LIMIT 1") && this.#tx.all("PRAGMA foreign_key_check").length) throw new Error("Migration foreign key check failed");
         }).immediate();
+        this.#db.exec("PRAGMA foreign_keys = ON;");
       }
       this.#db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;");
       chmodSync(path, 0o600);

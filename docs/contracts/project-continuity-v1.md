@@ -24,7 +24,7 @@ Application.continuity(actor: OwnerActor, projectId: string): { project: Project
 
 ## Behavior
 
-The query reads current task lists and, for each topic that has task rows in the project, the decision read model. Decisions retain proposal revision, owner conclusion, rationale, and source links. Unavailable sources stay unavailable; the query does not delete or infer replacements.
+The query reads current task lists and, for every topic in the project, including topics without tasks, the decision read model. Decisions retain proposal revision, owner conclusion, rationale, and source links. Unavailable sources stay unavailable; the query does not delete or infer replacements.
 
 After process restart or while the execution host is unavailable, reopening the store and calling `continuity` returns the same committed obligations and decisions. Task history is not tied to native session or process lifetime.
 
