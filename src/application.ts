@@ -31,8 +31,9 @@ import {
 
 import { fenceUnavailableExtractions, memoryIdentity, prepareExtraction } from "./memory/extract";
 import { correctionIdentity, correctionImpact, prepareCorrection, readCorrection } from "./memory/correct";
-import { lookupActiveClaim, readMemory } from "./memory/read";
-import type { ClaimReference, CorrectMemoryCommand, CorrectionImpact, CorrectionReceipt, ExtractMemoryCommand, MemoryContextView, MemoryExtraction, MemoryReceipt } from "./memory/types";
+import { forgetIdentity, prepareSuppression, readSuppression, suppressionImpact, suppressionLedger } from "./memory/suppress";
+import { lookupActiveClaim, readMemory, suppressedSource } from "./memory/read";
+import type { ClaimReference, CorrectMemoryCommand, CorrectionImpact, CorrectionReceipt, ExtractMemoryCommand, ForgetMemoryCommand, MemoryContextView, MemoryExtraction, MemoryReceipt, SuppressionImpact, SuppressionLedger, SuppressionReceipt } from "./memory/types";
 import { fenceStaleContexts, readMemoryContext, readOwnedMemoryContext } from "./memory/context";
 import { commitDecisionMemorySource, memorySourceDecision, retireDecisionMemorySource } from "./memory/decision-sources";
 
@@ -221,6 +222,15 @@ export class Application {
     });
   }
 
+  /** Whether one exact source lineage is excluded from automatic memory by an owner forget. */
+  sourceSuppressed(actor: OwnerActor, projectId: string, reference: SourceReference): boolean {
+    requireId(projectId); requireReference(reference);
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor); this.#project(tx, projectId);
+      return suppressedSource(tx, reference);
+    });
+  }
+
   /** Commits a validated owner command, state, source records, receipt and audit as one transaction. */
   execute(actor: OwnerActor, command: ExtractMemoryCommand): MemoryReceipt;
   execute(actor: OwnerActor, command: EnqueueJobCommand): JobReceipt;
@@ -233,13 +243,15 @@ export class Application {
   execute(actor: OwnerActor, command: DecisionCommand): DecisionReceipt;
   execute(actor: OwnerActor, command: TaskCommand): TaskReceipt;
   execute(actor: OwnerActor, command: CorrectMemoryCommand): CorrectionReceipt;
+  execute(actor: OwnerActor, command: ForgetMemoryCommand): SuppressionReceipt;
   execute(actor: OwnerActor, command: CommitDeliveryCommand): DeliveryReceipt;
   execute(actor: OwnerActor, command: ResendDeliveryCommand): DeliveryResendReceipt;
   execute(actor: OwnerActor, command: RetireDeliveryCommand): DeliveryRetireReceipt;
-  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | TeamCommand | DecisionCommand | DeliveryCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt;
-  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | TeamCommand | DecisionCommand | DeliveryCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt {
+  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | TeamCommand | DecisionCommand | DeliveryCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt;
+  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | TeamCommand | DecisionCommand | DeliveryCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt {
     if (command?.kind === "memory.extract") return this.#memoryCommand(actor, command);
     if (command?.kind === "memory.correct") return this.#correctCommand(actor, command);
+    if (command?.kind === "memory.forget") return this.#forgetCommand(actor, command);
     if (isTaskCommand(command)) return this.#taskCommand(actor, command);
     if (command?.kind === "delivery.commit" || command?.kind === "delivery.resend" || command?.kind === "delivery.retire") return this.#deliveryCommand(actor, command);
     if (command?.kind === "project.create") return this.#createProject(actor, command);
@@ -277,7 +289,10 @@ export class Application {
         "SELECT rowid AS cursor, id AS sourceId, current_revision AS revision, generation FROM sources WHERE project_id = ? AND rowid > ? AND availability = 'available' AND kind != 'external' AND id NOT IN (SELECT source_id FROM memory_derived_sources WHERE project_id = ?) ORDER BY rowid LIMIT ?", projectId, sourceAfter, projectId, limit + 1);
       const extractionRows = tx.all<{ sequence: number; record_json: string }>("SELECT sequence, record_json FROM memory_extractions WHERE project_id = ? AND sequence > ? ORDER BY sequence LIMIT ?", projectId, extractionAfter, limit + 1);
       return { project, ...readMemory(tx, projectId, after, limit, query), query,
-        sources: rows.slice(0, limit).map(row => ({ cursor: row.cursor, source: lookupSource(tx, projectId, { sourceId: row.sourceId, revision: row.revision, generation: row.generation }), decision: memorySourceDecision(tx, projectId, { sourceId: row.sourceId, revision: row.revision, generation: row.generation }) })),
+        sources: rows.slice(0, limit).map(row => ({ cursor: row.cursor,
+          source: lookupSource(tx, projectId, { sourceId: row.sourceId, revision: row.revision, generation: row.generation }),
+          decision: memorySourceDecision(tx, projectId, { sourceId: row.sourceId, revision: row.revision, generation: row.generation }),
+          suppressed: suppressedSource(tx, { sourceId: row.sourceId, revision: row.revision, generation: row.generation }) })),
         sourcesNextAfter: rows.length > limit ? rows[limit - 1]!.cursor : null,
         extractions: extractionRows.slice(0, limit).map(row => {
           const e = JSON.parse(row.record_json) as MemoryExtraction;
@@ -307,6 +322,41 @@ export class Application {
   correctionImpact(actor: OwnerActor, projectId: string, reference: ClaimReference): CorrectionImpact {
     requireId(projectId);
     return this.store.read(tx => { this.#requireOwner(tx, actor); this.#project(tx, projectId); return correctionImpact(tx, projectId, reference); });
+  }
+
+  /** app.memory_suppression/v1: the durable forget for one claim, or null when never forgotten. */
+  memorySuppression(actor: OwnerActor, projectId: string, claimId: string) {
+    requireId(projectId); requireId(claimId);
+    return this.store.read(tx => { this.#requireOwner(tx, actor); this.#project(tx, projectId); return readSuppression(tx, projectId, claimId); });
+  }
+
+  /** app.memory_suppression/v1: what one forget would withdraw or retire, shown before the owner confirms. */
+  suppressionImpact(actor: OwnerActor, projectId: string, reference: ClaimReference): SuppressionImpact {
+    requireId(projectId);
+    return this.store.read(tx => { this.#requireOwner(tx, actor); this.#project(tx, projectId); return suppressionImpact(tx, projectId, reference); });
+  }
+
+  /** app.suppression_ledger/v1: the durable checkpoint with live retirement status, or null when never forgotten. */
+  suppressionLedger(actor: OwnerActor, projectId: string, claimId: string): SuppressionLedger | null {
+    requireId(projectId); requireId(claimId);
+    return this.store.read(tx => { this.#requireOwner(tx, actor); this.#project(tx, projectId); return suppressionLedger(tx, projectId, claimId); });
+  }
+
+  #forgetCommand(actor: OwnerActor, command: ForgetMemoryCommand): SuppressionReceipt {
+    const payloadHash = digest(forgetIdentity(command, this.config.team.contextBytes));
+    const result = this.store.transaction(tx => {
+      this.#requireOwner(tx, actor); const project = this.#project(tx, command.projectId);
+      const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
+      if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as SuppressionReceipt; }
+      const now = this.#now(), generation = tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'")!.generation;
+      const result = prepareSuppression(tx, command, this.config.team.contextBytes, generation, project.revision, now);
+      this.#beforeCommit?.("memory");
+      tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
+      tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);
+      this.#beforeCommit?.("receipt"); return result;
+    });
+    this.#jobs?.cancelFenced();
+    return result;
   }
 
   #correctCommand(actor: OwnerActor, command: CorrectMemoryCommand): CorrectionReceipt {

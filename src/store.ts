@@ -3,7 +3,7 @@ import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, statS
 import { dirname } from "node:path";
 import { commitDecisionMemorySource, retireDecisionMemorySource } from "./memory/decision-sources";
 
-const schemaVersion = 13;
+const schemaVersion = 14;
 
 /** Synchronous SQL operations scoped to an application transaction. */
 export interface AppTransaction {
@@ -37,7 +37,7 @@ export class TransactionStore {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
           if (current === schemaVersion) return;
-          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].includes(current)) throw new Error("Unsupported migration source");
+          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13].includes(current)) throw new Error("Unsupported migration source");
           if (existing) {
             const snapshot = `${path}.pre-v${current}-${crypto.randomUUID()}.sqlite`;
             const fd = openSync(snapshot, "wx", 0o600);
@@ -455,6 +455,30 @@ export class TransactionStore {
             );
             CREATE INDEX memory_correction_project ON memory_corrections(project_id, claim_id);
             PRAGMA user_version = 13;
+          `);
+          if (current < 14) this.#db.exec(`
+            CREATE TABLE memory_suppressions (
+              id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id),
+              claim_id TEXT NOT NULL REFERENCES memory_claims(id), record_json TEXT NOT NULL
+            );
+            CREATE INDEX memory_suppression_project ON memory_suppressions(project_id, claim_id);
+            CREATE TABLE memory_suppressed_claims (
+              suppression_id TEXT NOT NULL REFERENCES memory_suppressions(id),
+              project_id TEXT NOT NULL REFERENCES projects(id),
+              claim_id TEXT NOT NULL REFERENCES memory_claims(id),
+              PRIMARY KEY (suppression_id, claim_id)
+            );
+            CREATE INDEX memory_suppressed_claim_lookup ON memory_suppressed_claims(claim_id);
+            CREATE TABLE memory_suppressed_sources (
+              suppression_id TEXT NOT NULL REFERENCES memory_suppressions(id),
+              project_id TEXT NOT NULL REFERENCES projects(id),
+              source_id TEXT NOT NULL REFERENCES sources(id),
+              revision INTEGER NOT NULL CHECK (revision > 0),
+              generation INTEGER NOT NULL CHECK (generation > 0),
+              PRIMARY KEY (suppression_id, source_id, revision, generation)
+            );
+            CREATE INDEX memory_suppressed_source_lookup ON memory_suppressed_sources(source_id, revision, generation);
+            PRAGMA user_version = 14;
           `);
           // A populated rebuilt graph must retain every reference; empty legacy fixture stores have no task graph to check.
           if (this.#tx.get("SELECT 1 FROM tasks LIMIT 1") && this.#tx.all("PRAGMA foreign_key_check").length) throw new Error("Migration foreign key check failed");

@@ -10,7 +10,7 @@ export interface MemoryDecisionReference { kind: "owner_decision"; id: string; r
 export interface MemoryClaim extends ClaimReference {
   projectId: string; extractionId: string; kind: "explicit_fact" | "inference"; text: string;
   source: SourceReference; quote: string; dependencies: ClaimReference[]; conflicts: ClaimReference[];
-  status: "active" | "corrected"; createdAt: number;
+  status: "active" | "corrected" | "forgotten"; createdAt: number;
   decision: MemoryDecisionReference | null;
   /** Set once by app.memory_correction/v1; points at the owner-approved replacement claim. */
   correctionId?: string; replacement?: ClaimReference;
@@ -43,6 +43,46 @@ export interface CorrectionImpact {
 }
 /** Owner-approved correction result; the replacement is readable through the ordinary claim query. */
 export interface CorrectionReceipt { correction: MemoryCorrection; replacement: ClaimReference }
+/** One explicit owner authorization to forget one exact claim revision with acknowledged scope.
+ *  Forgetting never cancels tasks, never withdraws decisions and never deletes raw sources. */
+export interface ForgetMemoryCommand {
+  kind: "memory.forget"; requestId: string; projectId: string; expectedRevision: number;
+  payload: { claim: ClaimReference; reason: string; acknowledged: boolean };
+}
+/** One withdrawn claim identity bound to its suppression checkpoint; payload is never stored here. */
+export interface SuppressedClaimIdentity { projectId: string; claimId: string; revision: number; generation: number }
+/** One old source lineage bound to a suppression checkpoint; raw history stays manually readable. */
+export interface SuppressedSourceIdentity { projectId: string; source: SourceReference }
+/** One native context generation covered by a suppression checkpoint for run_port retirement. */
+export interface SuppressedContextIdentity { id: string; generation: number }
+/** Durable owner-approved forget; the receipt of app.memory_suppression/v1. */
+export interface MemorySuppression {
+  id: string; projectId: string; claimId: string; fromRevision: number; fromGeneration: number;
+  withdrawn: SuppressedClaimIdentity[]; sources: SuppressedSourceIdentity[]; contexts: SuppressedContextIdentity[];
+  overlaps: { kind: "task" | "decision"; id: string; title: string }[];
+  reason: string; acknowledged: boolean;
+  ownerRevision: number; projectRevision: number; createdAt: number;
+}
+/** Inspector preview: what one forget would withdraw or retire before the owner confirms. */
+export interface SuppressionImpact {
+  claim: ClaimLookup;
+  suppression: MemorySuppression | null;
+  dependents: { projectId: string; reference: ClaimReference; text: string | null }[];
+  /** Sibling claims from the same exact source that the conservative source granularity also withdraws. */
+  siblings: { projectId: string; reference: ClaimReference }[];
+  contexts: { id: string; generation: number; projectId: string; ownerKind: string; ownerId: string }[];
+  pendingJobs: { id: string; projectId: string }[];
+  overlaps: { kind: "task" | "decision"; id: string; title: string }[];
+  note: string;
+}
+/** app.suppression_ledger/v1: the durable checkpoint with live retirement status per covered context. */
+export interface SuppressionLedger {
+  suppression: MemorySuppression;
+  retire: { state: "complete" | "incomplete"; contexts: (SuppressedContextIdentity & { appState: string; lifecycle: string })[] };
+  note: string;
+}
+/** Owner-approved forget result; retirement completes later through the run_port reconcile lifecycle. */
+export interface SuppressionReceipt { suppression: MemorySuppression; withdrawn: SuppressedClaimIdentity[] }
 /** One explicit owner authorization to extract one committed source under the fixed extractor/policy v1. */
 export interface ExtractMemoryCommand {
   kind: "memory.extract"; requestId: string; projectId: string; expectedRevision: number;
