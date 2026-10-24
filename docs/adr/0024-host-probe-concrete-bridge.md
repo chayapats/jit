@@ -45,12 +45,10 @@ own opt-in and evidence, not to this command.
 
 Every credential-store mutation runs through the fence — dispatch check
 inside the lifecycle serialization, mutation racing the live signal outside
-every lock — so a hung backend fails closed instead of wedging the deadline;
-a late settlement of the unabortable backend after acknowledgement — including
-production, where the bridge uses a fenced store over the same OS keychain
-entries as Schway's internal native store (verified against the pinned
-artifact; a key-scheme change fails closed). The public native-store seam
-that would remove this coupling is tracked by schway#416.
+every lock — so a hung backend fails closed instead of wedging the deadline.
+Production uses the supported Schway guard seam (schway#416, landed in the
+pinned release): post-terminal writes are refused on Schway's own default
+native store, so no key-scheme mirroring or unwrapped path remains.
 
 ## Evidence stays installation-local and bounded
 

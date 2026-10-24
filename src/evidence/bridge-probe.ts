@@ -21,34 +21,16 @@ export const BRIDGE_PROBE_PROMPT = PROBE_PROMPT;
 export const BRIDGE_PROBE_MAX_TURNS = 1;
 export const BRIDGE_PROBE_MAX_ATTEMPTS = 1;
 
-/**
- * OS secure-store namespace mirrored from the pinned Schway native store
- * (`service: "schway"`, entry name = credential identity account). The
- * mapping is verified against the pinned artifact; a future pin that
- * changes it fails closed (missing/invalid login) instead of reading wrong
- * credentials. Tracked for a public seam by schway#416.
- */
-export const BRIDGE_NATIVE_SERVICE = "schway" as const;
-
-/** Minimal secure-store backend; defaults to the process OS credential store. */
-export interface BridgeSecretBackend {
-  get(entry: { service: string; name: string }): Promise<string | null>;
-  set(entry: { service: string; name: string; value: string }): Promise<void>;
-  delete(entry: { service: string; name: string }): Promise<boolean>;
-}
-
 /** Exact selected route/model for one probe identity; store/fetch are fixture seams (absent in production). */
 export interface BridgeProbeOptions {
   route: "grok" | "codex";
   model: string;
   /** Installation root owning `.local/host-probe-host/` service directories. */
   root: string;
-  /** Fixture credential store; absent selects the fenced native OS store below. */
+  /** Fixture credential store; absent selects Schway's default native store (production). */
   store?: HostCredentialStore;
   /** Fixture protocol transport; absent uses real native transport. Never used silently. */
   fetch?: HostAuthFetch;
-  /** Fixture secret backend; absent uses the OS credential store. Never used silently. */
-  nativeSecrets?: BridgeSecretBackend;
 }
 
 function serviceUid(): number | null {
@@ -111,33 +93,12 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
   const selection = { route: options.route, model: options.model } as const;
   const store = options.store;
   const providedFetch = options.fetch;
-  const secrets: BridgeSecretBackend = options.nativeSecrets ?? Bun.secrets;
   // Ports instances are single-flight: liveProbe never overlaps infer calls
   // on one instance. A second concurrent call throws instead of silently
   // swapping per-call send counts.
   let inflight = false;
 
-  /**
-   * Fenced native-compatible credential store. It reads and writes the same
-   * OS keychain entries as Schway's internal native store (same service and
-   * identity-account addressing, verified against the pinned artifact), so
-   * production runs use exactly the owner's configured logins. Every
-   * mutation runs through the orchestration fence: dispatched-started check
-   * inside the lifecycle serialization, mutation racing the live signal
-   * outside every lock, so a hung backend can never wedge the deadline.
-   * Reads stay unfenced and uncaught: an unreadable store must reject so
-   * readiness reports store-unavailable instead of masquerading as a
-   * missing login.
-   */
-  const fencedNativeStore = (fence?: { write<T>(work: () => Promise<T>): Promise<T> }): HostCredentialStore => ({
-    // No catch: an unreadable store must reject so readiness reports
-    // store-unavailable instead of masquerading as a missing login.
-    get: identity => secrets.get({ service: BRIDGE_NATIVE_SERVICE, name: identity.account }),
-    set: (identity, value) => (fence ? fence.write(() => secrets.set({ service: BRIDGE_NATIVE_SERVICE, name: identity.account, value })) : secrets.set({ service: BRIDGE_NATIVE_SERVICE, name: identity.account, value })),
-    delete: identity => (fence ? fence.write(() => secrets.delete({ service: BRIDGE_NATIVE_SERVICE, name: identity.account })) : secrets.delete({ service: BRIDGE_NATIVE_SERVICE, name: identity.account })),
-  });
-
-  const openHost = async (deadlineMs: number, fetch: HostAuthFetch, effectiveStore?: HostCredentialStore) => {
+  const openHost = async (deadlineMs: number, fetch: HostAuthFetch, effectiveStore?: HostCredentialStore, credentialWriteGuard?: (identity: HostCredentialReference) => Promise<void>) => {
     const dirs = probeHostDirs(options.root);
     ensureServiceDir(dirs.base);
     ensureServiceDir(dirs.workspaceRoot);
@@ -161,7 +122,7 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
         deadlineMs: Math.min(Math.max(1, deadlineMs), 86_400_000),
         maxAttempts: BRIDGE_PROBE_MAX_ATTEMPTS,
       },
-      auth: { ...selection, ...(effectiveStore ? { store: effectiveStore } : null), fetch },
+      auth: { ...selection, ...(effectiveStore ? { store: effectiveStore } : null), ...(credentialWriteGuard ? { credentialWriteGuard } : null), fetch },
     });
   };
 
@@ -171,7 +132,7 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
     readCredential: async (signal) => {
       if (signal?.aborted) throw new Error("aborted");
       const readiness = await Promise.race([
-        checkAuthReadiness({ ...selection, store: store ?? fencedNativeStore() }),
+        checkAuthReadiness({ ...selection, ...(store ? { store } : null) }),
         new Promise<never>((_, reject) => signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true })),
       ]);
       switch (readiness.status) {
@@ -193,20 +154,26 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
       }
       if (inflight) throw new Error("invalid_probe_input");
       inflight = true;
-      // Credential-store mutations are fenced: the dispatch check runs
-      // inside the lifecycle serialization and the mutation races the
-      // live signal outside every lock, so a hung backend fails closed
-      // instead of wedging the deadline. Reads stay unfenced.
-      // Without an explicit fixture store, production uses the native
-      // OS keychain entries directly (same as Schway's internal native
-      // store, verified against the pinned artifact).
-      const base = store ?? fencedNativeStore(input.fence);
+      // Credential-store mutations are fenced through Schway's supported
+      // guard seam (schway#416, landed in the pinned release): every write invokes the orchestration
+      // fence first, and a refusal throws before the backend is touched.
+      // With an explicit fixture store the fence wraps it locally; without
+      // one (production) Schway guards its own default native store, so no
+      // key-scheme mirroring is needed and no unwrapped path remains.
+      // Reads stay unfenced; only mutations are gated.
+      const base = store;
       const fence = input.fence;
-      const fencedStore: HostCredentialStore = fence ? {
+      const fencedStore: HostCredentialStore | undefined = base && fence ? {
         get: (identity: HostCredentialReference) => base.get(identity),
         set: (identity: HostCredentialReference, value: string) => fence.write(() => base.set(identity, value)),
         delete: (identity: HostCredentialReference) => fence.write(() => base.delete(identity)),
       } : base;
+      // The supported guard carries the same lifecycle fence to Schway's own
+      // store: the dispatch check runs inside the serialization and the
+      // mutation races the live signal outside every lock.
+      const credentialWriteGuard = fence && !base ? async (): Promise<void> => {
+        await fence.write(async () => {});
+      } : undefined;
       // Per-call transport: the shared before-send gate durably rechecks
       // `started` and bounds the send before anything is forwarded, so a
       // send after cancellation acknowledges — or beyond the pinned
@@ -243,7 +210,7 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
       let host: HostRuntime | null = null;
       let session: HostSession | null = null;
       try {
-        host = await openHost(input.deadlineMs, countingFetch, fencedStore);
+        host = await openHost(input.deadlineMs, countingFetch, fencedStore, credentialWriteGuard);
         session = await host.createSession();
         const options: HostRunOptions = { signal };
         const result = await session.submitWithRoute({ text: BRIDGE_PROBE_PROMPT }, options);

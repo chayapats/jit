@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HostAuthFetch, HostCredentialStore } from "schway/host";
-import { bridgeProbePorts, type BridgeSecretBackend } from "../src/evidence/bridge-probe";
+import { bridgeProbePorts } from "../src/evidence/bridge-probe";
 import { PROBE_PROMPT, cancelProbeAttempt, commitProbeOutcome, exportProbeSummary, liveProbe, readProbeAttempt, reconcileProbeAttempts, type ProbeEvent } from "../src/evidence/probe";
 import { runProbeCommand } from "../src/probe-cli";
 
@@ -63,31 +63,15 @@ function sseSuccess(text = "ready", inputTokens = 5, outputTokens = 3): string {
 const successFetch = (text = "ready"): HostAuthFetch => async () =>
   new Response(sseSuccess(text), { status: 200, headers: { "content-type": "text/event-stream" } });
 
-/** Hermetic in-memory secret backend: the deterministic suite never touches the real OS keychain. */
-function memSecrets(initial: Record<string, string> = {}) {
-  const backend = new Map<string, string>(Object.entries(initial));
-  return {
-    backend,
-    secrets: {
-      get: async ({ name }: { service: string; name: string }) => backend.get(name) ?? null,
-      set: async ({ name, value }: { service: string; name: string; value: string }) => { backend.set(name, value); },
-      delete: async ({ name }: { service: string; name: string }) => backend.delete(name),
-    },
-  };
-}
-
-function bridgePorts(overrides: { root?: string; route?: "grok" | "codex"; model?: string; store?: HostCredentialStore | null; fetch?: HostAuthFetch | undefined; id?: string; nativeSecrets?: BridgeSecretBackend } = {}) {
+function bridgePorts(overrides: { root?: string; route?: "grok" | "codex"; model?: string; store?: HostCredentialStore | null; fetch?: HostAuthFetch | undefined; id?: string } = {}) {
   const root = overrides.root ?? setup();
   const route = overrides.route ?? "grok";
   const model = overrides.model ?? (route === "codex" ? "codex-fixture" : "grok-4-fixture");
-  const options: { route: "grok" | "codex"; model: string; root: string; store?: HostCredentialStore; fetch?: HostAuthFetch; nativeSecrets?: BridgeSecretBackend } =
+  const options: { route: "grok" | "codex"; model: string; root: string; store?: HostCredentialStore; fetch?: HostAuthFetch } =
     { route, model, root };
   if (overrides.store === undefined) options.store = memStore(validTokens);
   else if (overrides.store !== null) options.store = overrides.store;
   if (overrides.fetch) options.fetch = overrides.fetch;
-  // Hermetic by default: the deterministic suite never touches the real OS
-  // credential store, even on the no-explicit-store production path.
-  options.nativeSecrets = overrides.nativeSecrets ?? memSecrets().secrets;
   const ports = bridgeProbePorts(options);
   return { root, route, model, ports: { ...ports, now: () => 1800000000000, id: () => overrides.id ?? ID } };
 }
@@ -735,53 +719,19 @@ test("concurrent probes on distinct records settle without lock errors", async (
   }
 });
 
-test("production construction without an explicit store stays fenced and honest", async () => {
+test("a refused late token write stays unconfirmed with zero credential writes", async () => {
   const root = setup();
-  // Exact production construction path: no store is passed, so the bridge
-  // uses its fenced native-compatible store instead of Schway's unwrappable
-  // internal default. The mem backend keeps the deterministic suite off the
-  // real OS credential store while exercising the identical key scheme and
-  // fence logic. The gate still serializes every send; the ledger stays
-  // exact either way.
-  const backend = new Map<string, string>();
-  const nativeSecrets = {
-    get: async ({ name }: { service: string; name: string }) => backend.get(name) ?? null,
-    set: async ({ name, value }: { service: string; name: string; value: string }) => { backend.set(name, value); },
-    delete: async ({ name }: { service: string; name: string }) => backend.delete(name),
-  };
-  const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, fetch: successFetch("prod-path"), nativeSecrets });
-  const { record, self } = await liveProbe("fixture-probe-host",
-    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 8000 },
-    { ...ports, now: () => 1800000000000, id: () => OTHER_ID }, root);
-  // Terminal either way: observed-ready with a login present, or an
-  // honest blocked state without one. Never left started.
-  expect(["observed-ready", "needs-login", "store-unavailable", "rejected", "failed"].includes(record.lifecycle)).toBe(true);
-  const renewal = record.observations.find(item => item.observation === "renewal")!;
-  expect(renewal.event).toBe("unobserved");
-  // Every recorded send completed (no crash or cancel in this run); an
-  // empty ledger means no transport happened at all.
-  expect(renewal.sends!.every(call => call.confirmed)).toBe(true);
-  expect(self.providerSends).toEqual({
-    inference: renewal.sends!.reduce((n, call) => n + call.inference, 0),
-    token: renewal.sends!.reduce((n, call) => n + call.token, 0),
-  });
-  // The persisted record re-reads cleanly through validation.
-  expect(await readProbeAttempt(root, OTHER_ID)).toEqual(record);
-});
-
-test("no native credential write happens after cancellation on the default store", async () => {
-  const root = setup();
+  // Explicit fenced store: the supported Schway guard (schway#416) refuses
+  // the write after cancellation acknowledged, exactly as it does for
+  // Schway's own default native store in production.
   const backend = new Map<string, string>();
   let tokenCalls = 0;
   let releaseBody!: (response: Response) => void;
   const bodyGate = new Promise<Response>(resolve => { releaseBody = resolve; });
-  const nativeSecrets = {
-    get: async ({ name }: { service: string; name: string }) => {
-      if (name.includes("grok")) return JSON.stringify({ accessToken: "old-access", refreshToken: "refresh-token", obtainedAt: 0, expiresAt: 1 });
-      return backend.get(name) ?? null;
-    },
-    set: async ({ name, value }: { service: string; name: string; value: string }) => { backend.set(name, value); },
-    delete: async ({ name }: { service: string; name: string }) => backend.delete(name),
+  const store: HostCredentialStore = {
+    get: async () => JSON.stringify({ accessToken: "old-access", refreshToken: "refresh-token", obtainedAt: 0, expiresAt: 1 }),
+    set: async (_identity, value) => { backend.set("grok", value); },
+    delete: async () => true,
   };
   const fetch: HostAuthFetch = async (input: any, init?: any) => {
     const url = String(typeof input === "string" ? input : input.url);
@@ -795,9 +745,7 @@ test("no native credential write happens after cancellation on the default store
       new Promise<never>((_, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true })),
     ]);
   };
-  // No explicit store: the production path with a hermetic secret backend.
-  // The token transport hangs until released; cancellation wins first.
-  const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, fetch, nativeSecrets });
+  const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, store, fetch });
   const pending = liveProbe("fixture-probe-host",
     { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 8000 },
     { ...ports, now: () => 1800000000000, id: () => OTHER_ID }, root);
@@ -825,17 +773,13 @@ test("cancellation acks promptly while a credential mutation hangs", async () =>
   const root = setup();
   const expired = JSON.stringify({ accessToken: "old-access", refreshToken: "refresh-token", obtainedAt: 0, expiresAt: 1 });
   const writeGate = new Promise<void>(() => {});
-  const backend = new Map<string, string>();
-  const secrets = {
-    // Expired Grok login in the native backend forces a proactive refresh;
-    // no explicit store is passed, so this exercises the production path.
-    get: async ({ name }: { service: string; name: string }) => name.includes("grok-subscription") ? expired : (backend.get(name) ?? null),
-    // Never-settling OS write: cancellation must ack without waiting for it.
-    set: async ({ name, value }: { service: string; name: string; value: string }) => {
-      await writeGate;
-      backend.set(name, value);
-    },
-    delete: async ({ name }: { service: string; name: string }) => backend.delete(name),
+  let writes = 0;
+  const store: HostCredentialStore = {
+    // Expired login forces a proactive refresh through the supported guard.
+    get: async () => expired,
+    // Never-settling backend write: cancellation must ack without waiting.
+    set: async () => { writes++; await writeGate; },
+    delete: async () => false,
   };
   const fetch: HostAuthFetch = async (input: any) => {
     const url = String(typeof input === "string" ? input : input.url);
@@ -844,7 +788,7 @@ test("cancellation acks promptly while a credential mutation hangs", async () =>
     }
     return new Response(sseSuccess("late", 1, 1), { status: 200, headers: { "content-type": "text/event-stream" } });
   };
-  const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, nativeSecrets: secrets, fetch });
+  const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, store, fetch });
   const pending = liveProbe("fixture-probe-host",
     { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 1000 },
     { ...ports, now: () => 1800000000000, id: () => OTHER_ID }, root);
@@ -868,7 +812,7 @@ test("cancellation acks promptly while a credential mutation hangs", async () =>
   const late = await pending;
   expect(late.record.lifecycle).toBe("cancelled");
   // The hung write never completed; nothing was recorded as a success.
-  expect(backend.size).toBe(0);
+  expect(writes).toBe(1);
 });
 
 test("a hanging credential mutation cannot wedge the probe past its deadline", async () => {
@@ -936,12 +880,14 @@ test("a crash between initiation and confirmation leaves explicitly unconfirmed 
   expect(updated[0]!.observations.find(item => item.observation === "renewal")!.sends).toEqual([{ inference: 0, token: 1, confirmed: false }]);
 });
 
-test("a throwing native store maps to store-unavailable, not a missing login", async () => {
+test("a throwing store maps to store-unavailable, not a missing login", async () => {
   const root = setup();
-  const boom = () => { throw new Error("locked keychain"); };
-  const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root,
-    nativeSecrets: { get: async () => { boom(); throw new Error("unreachable"); }, set: async () => {}, delete: async () => false },
-    fetch: successFetch("unused") });
+  const store: HostCredentialStore = {
+    get: async () => { throw new Error("locked keychain"); },
+    set: async () => {},
+    delete: async () => false,
+  };
+  const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, store, fetch: successFetch("unused") });
   expect(await ports.readCredential!(new AbortController().signal)).toBe("missing");
   const { record } = await liveProbe("fixture-probe-host",
     { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 8000 },
@@ -953,12 +899,12 @@ test("a throwing native store maps to store-unavailable, not a missing login", a
 test("a hanging credential write does not wedge the probe past its deadline", async () => {
   const root = setup();
   const expired = JSON.stringify({ accessToken: "old-access", refreshToken: "refresh-token", obtainedAt: 0, expiresAt: 1 });
-  const secrets = {
+  const store: HostCredentialStore = {
     get: async () => expired,
     set: () => new Promise<never>(() => {}),
     delete: async () => false,
   };
-  const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, nativeSecrets: secrets, fetch: successFetch("late") });
+  const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, store, fetch: successFetch("late") });
   const startedAt = Date.now();
   const { record } = await liveProbe("fixture-probe-host",
     { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 100 },

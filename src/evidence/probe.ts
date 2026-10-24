@@ -508,9 +508,10 @@ async function transitionTerminal(root: string, id: string,
  * the probe past its deadline or block cancellation: the mutation races
  * the caller's signal outside every lock and transaction. An abort fails
  * the write closed without waiting for the backend. The backend itself is
- * unabortable (Bun.secrets has no cancellation), so a late settlement may
- * still land in the OS keychain after acknowledgement — that residual is
- * Schway-owned (schway#416) and never claimed as fenced. Throws `fenced`
+ * unabortable, so a late settlement may land after acknowledgement — that
+ * residual is refused at Schway's supported guard seam (schway#416,
+ * landed), so no late token response becomes credential evidence.
+ * Throws `fenced`
  * when the record is already terminal or the signal is already aborted.
  */
 export async function fencedStoreWrite<T>(root: string, id: string, signal: AbortSignal | null, work: () => Promise<T>): Promise<T> {
@@ -1023,7 +1024,7 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
   // and the mutation races the live signal outside every lock, so a hung
   // backend can never wedge the probe or block cancellation. An abort
   // fails the write closed; a late settlement of an unabortable backend
-  // remains Schway-owned residual (schway#416).
+  // remains Schway-owned residual refused at the supported guard seam.
   const fence = { write: <T>(work: () => Promise<T>): Promise<T> => fencedStoreWrite(root, id, effective, work) };
   for (let turn = 0; turn < maxAttempts; turn++) {
     if (effective.aborted) break;
