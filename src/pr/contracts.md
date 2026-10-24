@@ -9,7 +9,7 @@ Standing owner authorization for read-only polling of one allowlisted repository
 | Entry | Behavior |
 | --- | --- |
 | `DEFAULT_TRIGGER_POLICY` / `TRIGGER_POLICY_VERSION` | Visible defaults: skip draft until ready, reconsider changed base/head, close cancels pending, reopen reevaluates. Enabling accepts this exact version. |
-| `DEFAULT_PR_LIMITS` | Finite poll interval, page size, max pages, payload/file/diff/evidence byte ceilings. |
+| `DEFAULT_PR_LIMITS` | Finite poll interval, page size, max pages, payload/file/diff/evidence byte ceilings (UTF-8 bytes; `maxPayloadBytes` is the cumulative snapshot content budget). |
 | `pr.monitor.enable` | Project-scoped command; records canonical repository identity, trusted `apiBase`, allowed issue/spec/CI reads, limits, and accepted policy version. Rejects duplicate active/paused monitors for the same repo. |
 | `pr.monitor.pause` / `resume` / `revoke` | Owner can pause, resume, or revoke. Revoke cancels non-terminal candidates and may fence jobs via `onRevoke` in the same transaction. |
 | `prMonitorIdentity` / `mutateMonitor` | Receipt identity and transactional mutate for `app.project_commands/v1` composition. |
@@ -23,7 +23,7 @@ Revision-bound static review inputs with an honest coverage manifest. No reposit
 | --- | --- |
 | `TrustedGitHubConnector` | Resolves only the monitor's configured endpoint and exact immutable SHAs. Rejects model URLs, auth headers, redirects, unconfigured hosts, mutable refs, and symlink-like / traversal paths. |
 | `FakeGitHubFixture` | Protocol fixture for new/draft/ready/update/rebase/base-only/closed/reopened, truncation, denial, rate limits, and partial pages. |
-| `collectSnapshotMaterials` / `persistSnapshot` / `captureSnapshot` | Bounded diff/files plus permitted issue/spec/CI evidence. Snapshots are untrusted data in service-owned cache destinations; AGENTS/skills/config are never autoloaded as authority. |
+| `collectSnapshotMaterials` / `persistSnapshot` / `captureSnapshot` | Bounded diff/files plus permitted issue/spec/CI evidence. Every connector-supplied string retained (PR title/body, file paths/statuses/patches, issue titles/bodies, spec paths/texts, CI names/conclusions/reasons) draws from one cumulative UTF-8 budget of `limits.maxPayloadBytes`; `maxDiffBytes` (cumulative patches), `maxEvidenceBytes` (body, each issue title+body, each spec) and the 500-byte titles are UTF-8 byte ceilings too. Text is cut only on code-point boundaries (`truncateUtf8`/`Utf8Budget`, `src/utf8.ts`); paths and names are dropped whole, never stored cut. Each cut is a `truncated` coverage entry (`max_payload_bytes`, `max_diff_bytes`, `max_evidence_bytes`, `max_title_bytes`; kind `pr` for title/body), and a budget-ended file listing leaves enumeration incomplete, so completeness never reads complete. Service metadata (SHAs, repository identity, coverage entries) is outside the content budget. Snapshots are untrusted data in service-owned cache destinations; AGENTS/skills/config are never autoloaded as authority. |
 | `CoverageManifest` | Records requested/read/unavailable/truncated sources with immutable refs, limits and reasons. `enumerationComplete` is independent of whether selected files were read. Missing denominator ⇒ partial/incomplete. |
 | `pr.snapshot` work | Fenced read work (`prSnapshotWork`) that commits snapshot persistence through `WorkContext.commit`. Revoke/supersede invalidate its active jobs in the same transaction (`fencePrCandidateWork`) before `cancelFenced`. |
 

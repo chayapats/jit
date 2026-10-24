@@ -6,6 +6,7 @@ import type { TrustedGitHubConnector } from "./github";
 import { ensurePrSchema } from "./schema";
 import type { CandidateStatus, PollCheckpoint, PrMonitor, ReviewCandidate } from "./types";
 import { fencePrCandidateWork } from "./fence";
+import { truncateUtf8 } from "../utf8";
 
 const SHA = /^[a-f0-9]{40}$/;
 
@@ -180,7 +181,7 @@ export function pollMonitorPage(
       monitorId: monitor.id,
       repository: { ...monitor.repository },
       pullNumber: pull.number,
-      title: pull.title.slice(0, 500),
+      title: truncateUtf8(pull.title, 500).text,
       draft: pull.draft,
       state: pull.state,
       baseSha: pull.base.sha,
