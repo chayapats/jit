@@ -107,3 +107,8 @@ Fields:
 ## Never exported
 
 Owner password hash, session tokens, CSRF secrets, model/provider credentials (route labels such as `authRoute` names are not credentials), auth headers, Telegram bot tokens and chat bindings, PR `apiBase` and private service addresses, raw process environments, native session data, snapshot file patches.
+
+## Declared residuals
+
+- **Legacy format-1 retention.** Format-1 artifacts (`legacy_file`) are still files on disk. Their retention unlinks the file inside the SQLite transaction, so a rollback after the unlink cannot restore it, and a failed unlink still lets the row deletion commit. No installation holds format-1 exports: the pilot has not started, and every export created from this change on is format 2 in SQLite. If one appears, migrate it into SQLite (hash-verified) before retention runs.
+- **Freed pages.** The live database does not enable `secure_delete`, so freed SQLite pages can hold pruned or deleted export bytes until SQLite reuses them. This applies to all application data, not only exports.
