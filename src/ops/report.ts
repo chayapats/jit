@@ -1,12 +1,11 @@
-import { deterministicChecklistIds, humanChecklistIds, safeEvidenceId, safeNote, safeOpsAlias, validateDrillRecord,
+import { deterministicChecklistIds, humanChecklistIds, safeEvidenceId, safeNote, safeOpsAlias, validateDrillRecord, validateProfileRecord, validateReleaseRecord,
   type ChecklistItem, type ChecklistState, type DeterministicChecklistId, type DrillAction,
   type HumanChecklistId, type LoadDrillRecord, type OpsProfile, type ReleaseChecklist } from "./contracts";
 
-/** Profile inputs are assembled by the caller from a validated drill record plus operator review. */
+/** Profile inputs: a validated drill record plus operator-reviewed sample limitations. */
 export interface ProfileInput {
   installationLabel: string;
   drill: LoadDrillRecord;
-  exhaustedLimits: string[];
   sampleLimitations: string[];
   nextAction: DrillAction;
 }
@@ -14,26 +13,26 @@ export interface ProfileInput {
 /**
  * Composes a sanitized operating profile. The function never declares SLOs or Pi
  * readiness: `piReadiness` is fixed to `not-claimed` and every sample bound stays visible.
+ * Exhausted limits come only from the drill's typed limit events, never from
+ * leg states; the result passes the exact profile validator before it is returned.
  */
 export function composeProfile(input: ProfileInput): OpsProfile {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("invalid_ops_profile");
-  if (Object.keys(input).some(k => !["installationLabel", "drill", "exhaustedLimits", "sampleLimitations", "nextAction"].includes(k))) {
+  if (Object.keys(input).some(k => !["installationLabel", "drill", "sampleLimitations", "nextAction"].includes(k))) {
     throw new Error("invalid_ops_profile");
   }
   const label = safeOpsAlias(input.installationLabel);
-  if (input.drill?.schema !== "jit.ops.drill/v1" || safeOpsAlias(input.drill.installationLabel) !== input.drill.installationLabel) {
-    throw new Error("invalid_ops_profile");
-  }
-  if (!Array.isArray(input.exhaustedLimits) || input.exhaustedLimits.length > 32 ||
-      input.exhaustedLimits.some(l => safeNote(l) !== l)) throw new Error("invalid_ops_profile");
+  try { validateDrillRecord(input.drill); } catch { throw new Error("invalid_ops_profile"); }
   if (!Array.isArray(input.sampleLimitations) || input.sampleLimitations.length > 32 ||
       input.sampleLimitations.some(l => safeNote(l) !== l)) throw new Error("invalid_ops_profile");
   const drill = input.drill;
-  return { schema: "jit.ops.profile/v1", id: crypto.randomUUID(), observedAt: new Date(Date.now()).toISOString(),
+  const profile: OpsProfile = { schema: "jit.ops.profile/v1", id: crypto.randomUUID(), observedAt: new Date(Date.now()).toISOString(),
     installationLabel: label, drillId: safeEvidenceId(drill.id), versions: structuredClone(drill.versions),
     config: { ...drill.config }, measurements: { ...drill.measurements },
-    exhaustedLimits: [...input.exhaustedLimits], sampleLimitations: [...input.sampleLimitations],
+    exhaustedLimits: [...drill.exhaustedLimits], sampleLimitations: [...input.sampleLimitations],
     piReadiness: "not-claimed", nextAction: input.nextAction };
+  try { validateProfileRecord(profile); } catch { throw new Error("invalid_ops_profile"); }
+  return profile;
 }
 
 /**
@@ -125,7 +124,9 @@ export function composeReleaseChecklist(input: ChecklistInput): ReleaseChecklist
   const states = [...deterministic, ...human].map(i => i.state);
   const outcome = states.includes("failed") ? "failed" : states.includes("blocked") || states.includes("not-run") ? "blocked" : "passed";
   const nextAction: DrillAction = states.includes("failed") ? "inspect-sanitized-drill" : "resolve-blocked-work";
-  return { schema: "jit.ops.release/v1", id: crypto.randomUUID(), observedAt: new Date(Date.now()).toISOString(),
+  const checklist: ReleaseChecklist = { schema: "jit.ops.release/v1", id: crypto.randomUUID(), observedAt: new Date(Date.now()).toISOString(),
     installationLabel: label, drillId: input.drill ? safeEvidenceId(input.drill.id) : null, deterministic, human,
     outcome, nextAction: outcome === "passed" ? "none" : nextAction };
+  try { validateReleaseRecord(checklist); } catch { throw new Error("invalid_release_checklist"); }
+  return checklist;
 }

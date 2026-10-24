@@ -33,8 +33,13 @@ const upgradeStates: readonly UpgradeState[] = ["preparing", "prepared", "staged
 export interface DiagnosticsInput {
   now: number;
   queue: { available: boolean; queued: number; admitted: number; waiting: number };
-  /** Raw route aliases are validated, then redacted in the output. */
+  /**
+   * Up to 8 active (queued/admitted/waiting) route groups, oldest active work
+   * first. Raw route aliases are validated, then redacted in the output.
+   */
   routes: { route: string; model: string | null; state: DiagnosticRouteState; attempts: number }[];
+  /** How much active work the route sample leaves out; counts are whole-table SQL aggregates, never row-bounded. */
+  coverage: { activeJobs: number; omittedRouteGroups: number; omittedActiveJobs: number; countsCapped: boolean };
   budgets: { exhausted: number; deadlineFailed: number };
   /** Jobs held on their exact route by an external condition, or fenced by an authority change. */
   waits: { quota: number; needsLogin: number; routeUnavailable: number; authorizationChanged: number };
@@ -43,11 +48,11 @@ export interface DiagnosticsInput {
   /** Run-port mode and whether its declared engine identity is usable. Never a live probe. */
   engine: { mode: "scripted" | "schway"; available: boolean };
   /**
-   * Distinct configured provider routes, and routes with live observed-ready
-   * evidence. Observation comes only from explicit host evidence; diagnose
-   * itself never probes, so its gather always supplies 0.
+   * Distinct configured provider routes. Diagnostics never claim observed
+   * readiness: that requires validated live RouteEvidence (host evidence, S01),
+   * which this projection does not accept.
    */
-  providers: { configuredRoutes: number; observedRoutes: number };
+  providers: { configuredRoutes: number };
   /** Live database `user_version` against the schema this build supports. */
   schema: { current: number; supported: number };
   /** Durable admission fence and the active upgrade journal state, if any. */
@@ -67,14 +72,15 @@ export interface Diagnostics {
   observedAt: string;
   queue: { available: boolean; queued: number; admitted: number; waiting: number };
   routes: { reference: string; model: "redacted" | "unselected"; state: DiagnosticRouteState; attempts: number }[];
+  coverage: { activeJobs: number; omittedRouteGroups: number; omittedActiveJobs: number; countsCapped: boolean };
   budgets: { exhausted: number; deadlineFailed: number };
   waits: { quota: number; needsLogin: number; routeUnavailable: number; authorizationChanged: number };
   disk: { stateBytes: number; watermarkBytes: number; pressure: boolean };
   connections: { telegram: "configured" | "unconfigured"; binding: "unbound" | "pending" | "bound"; pendingIntents: number; unknownDeliveries: number };
   /** `scripted` has no engine; `declared` means the pinned release contract matches, not that a run was observed. */
   engine: { mode: "scripted" | "schway"; state: "scripted" | "declared" | "unavailable"; observed: "not-observed" };
-  /** Readiness uses the host-evidence vocabulary: configured routes stay `configured-unverified` without live evidence. */
-  providers: { configuredRoutes: number; observedRoutes: number; readiness: "not-configured" | "configured-unverified" | "observed-ready" };
+  /** Host-evidence vocabulary; `observed-ready` is never produced here, only by live RouteEvidence records. */
+  providers: { configuredRoutes: number; readiness: "not-configured" | "configured-unverified"; observed: "not-observed" };
   schemaVersion: { current: number; supported: number; state: "current" | "upgrade-required" | "newer-unsupported" };
   upgrade: { fence: "none" | "upgrade" | "restore" | "unreadable"; activeState: UpgradeState | null };
   restore: { open: number; blocked: number; gate: "none" | "pending" | "unreadable";
@@ -85,12 +91,15 @@ export interface Diagnostics {
   nextActions: DiagnosticAction[];
 }
 
+/** Every count is clamped to this cap by the gather (`coverage.countsCapped`) and rejected above it here. */
+export const countCap = 1_000_000;
+
 const count = (v: unknown, max: number): number => {
   if (!Number.isSafeInteger(v) || (v as number) < 0 || (v as number) > max) throw new Error("invalid_diagnostics");
   return v as number;
 };
 
-const inputKeys = ["now", "queue", "routes", "budgets", "waits", "disk", "telegram", "engine", "providers", "schema", "upgrade", "restore", "artifacts"];
+const inputKeys = ["now", "queue", "routes", "coverage", "budgets", "waits", "disk", "telegram", "engine", "providers", "schema", "upgrade", "restore", "artifacts"];
 
 /**
  * Projects a redacted diagnostics snapshot. Pure and read-only: it performs no I/O,
@@ -107,7 +116,7 @@ export function inspectDiagnostics(input: DiagnosticsInput): Diagnostics {
   const q = input.queue;
   object(q);
   if (typeof q.available !== "boolean") fail();
-  const queue = { available: q.available, queued: count(q.queued, 10000), admitted: count(q.admitted, 32), waiting: count(q.waiting, 10000) };
+  const queue = { available: q.available, queued: count(q.queued, countCap), admitted: count(q.admitted, countCap), waiting: count(q.waiting, countCap) };
   if (!Array.isArray(input.routes) || input.routes.length > 8) fail();
   const routes = input.routes.map((r, index) => {
     if (!r || typeof r !== "object" || safeOpsAlias((r as { route: unknown }).route) !== (r as { route: string }).route ||
@@ -116,13 +125,19 @@ export function inspectDiagnostics(input: DiagnosticsInput): Diagnostics {
     const row = r as { route: string; model: string | null; state: DiagnosticRouteState; attempts: number };
     return { reference: redactRouteId(index), model: redactModel(row.model), state: row.state, attempts: count(row.attempts, 1000000) };
   });
+  const cv = input.coverage;
+  object(cv);
+  if (typeof cv.countsCapped !== "boolean") fail();
+  const coverage = { activeJobs: count(cv.activeJobs, countCap), omittedRouteGroups: count(cv.omittedRouteGroups, countCap),
+    omittedActiveJobs: count(cv.omittedActiveJobs, countCap), countsCapped: cv.countsCapped };
+  if (coverage.activeJobs !== queue.queued + queue.admitted + queue.waiting || coverage.omittedActiveJobs > coverage.activeJobs) fail();
   const b = input.budgets;
   object(b);
-  const budgets = { exhausted: count(b.exhausted, 10000), deadlineFailed: count(b.deadlineFailed, 10000) };
+  const budgets = { exhausted: count(b.exhausted, countCap), deadlineFailed: count(b.deadlineFailed, countCap) };
   const w = input.waits;
   object(w);
-  const waits = { quota: count(w.quota, 10000), needsLogin: count(w.needsLogin, 10000),
-    routeUnavailable: count(w.routeUnavailable, 10000), authorizationChanged: count(w.authorizationChanged, 10000) };
+  const waits = { quota: count(w.quota, countCap), needsLogin: count(w.needsLogin, countCap),
+    routeUnavailable: count(w.routeUnavailable, countCap), authorizationChanged: count(w.authorizationChanged, countCap) };
   const d = input.disk;
   object(d);
   const disk = { stateBytes: count(d.stateBytes, 1099511627776), watermarkBytes: count(d.watermarkBytes, 1099511627776), pressure: false };
@@ -131,7 +146,7 @@ export function inspectDiagnostics(input: DiagnosticsInput): Diagnostics {
   object(t);
   if (typeof t.configured !== "boolean" || !["unbound", "pending", "bound"].includes(t.binding)) fail();
   const connections = { telegram: (t.configured ? "configured" : "unconfigured") as "configured" | "unconfigured",
-    binding: t.binding, pendingIntents: count(t.pendingIntents, 10000), unknownDeliveries: count(t.unknownDeliveries, 10000) };
+    binding: t.binding, pendingIntents: count(t.pendingIntents, countCap), unknownDeliveries: count(t.unknownDeliveries, countCap) };
   const e = input.engine;
   object(e);
   if ((e.mode !== "scripted" && e.mode !== "schway") || typeof e.available !== "boolean") fail();
@@ -139,10 +154,10 @@ export function inspectDiagnostics(input: DiagnosticsInput): Diagnostics {
     observed: "not-observed" as const };
   const p = input.providers;
   object(p);
-  const configuredRoutes = count(p.configuredRoutes, 64), observedRoutes = count(p.observedRoutes, 64);
-  if (observedRoutes > configuredRoutes) fail();
-  const providers = { configuredRoutes, observedRoutes,
-    readiness: (configuredRoutes === 0 ? "not-configured" : observedRoutes > 0 ? "observed-ready" : "configured-unverified") as Diagnostics["providers"]["readiness"] };
+  if (Object.keys(p).join(",") !== "configuredRoutes") fail();
+  const configuredRoutes = count(p.configuredRoutes, 64);
+  const providers = { configuredRoutes, readiness: (configuredRoutes === 0 ? "not-configured" : "configured-unverified") as Diagnostics["providers"]["readiness"],
+    observed: "not-observed" as const };
   const s = input.schema;
   object(s);
   const schema = { current: count(s.current, 100000), supported: count(s.supported, 100000), state: "current" as Diagnostics["schemaVersion"]["state"] };
@@ -187,7 +202,7 @@ export function inspectDiagnostics(input: DiagnosticsInput): Diagnostics {
   // Actions are fixed vocabulary; nothing caller-supplied reaches the snapshot beyond validated counts and enums.
   for (const action of nextActions) safeNote(action);
   return { schema: "jit.ops.diagnostics/v1", observedAt: new Date(input.now).toISOString(),
-    queue, routes, budgets, waits, disk, connections, engine, providers, schemaVersion: schema, upgrade, restore, artifacts,
+    queue, routes, coverage, budgets, waits, disk, connections, engine, providers, schemaVersion: schema, upgrade, restore, artifacts,
     nextAction, nextActions };
 }
 
@@ -205,21 +220,6 @@ function managedStateBytes(path: string): number {
   };
   try { walk(path); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   return total;
-}
-
-interface StoredJob {
-  state: string;
-  reason: string;
-  route: { provider: unknown; model: unknown };
-}
-
-/** Best-effort decode of one stored job row; malformed rows count as blocked without details. */
-function decodeJob(recordJson: string): StoredJob | null {
-  try {
-    const job = JSON.parse(recordJson) as { state?: unknown; reason?: unknown; route?: { provider?: unknown; model?: unknown } };
-    if (typeof job.state !== "string" || typeof job.reason !== "string" || !job.route || typeof job.route !== "object") return null;
-    return { state: job.state, reason: job.reason, route: { provider: job.route.provider, model: job.route.model } };
-  } catch { return null; }
 }
 
 /**
@@ -291,38 +291,49 @@ function restoreState(databasePath: string): { open: number; blocked: number; ga
 export function gatherDiagnostics(root: string, config: AppConfig, now: number = Date.now()): DiagnosticsInput {
   const store = new TransactionStore(config.databasePath, { migrateExisting: false });
   try {
-    const jobs = store.read(tx => {
+    // Whole-table SQL aggregates over job state/reason: no row bound can hide newer active work behind history.
+    let capped = false;
+    const cap = (n: number): number => { if (n > countCap) { capped = true; return countCap; } return n; };
+    const tally = store.read(tx => {
       try {
-        return tx.all<{ record_json: string }>("SELECT record_json FROM jobs LIMIT 10001").map(r => r.record_json);
+        return tx.all<{ state: string; reason: string | null; n: number }>(
+          "SELECT state, json_extract(record_json, '$.reason') AS reason, count(*) AS n FROM jobs GROUP BY state, reason");
       } catch { return []; }
     });
-    const decoded = jobs.map(decodeJob);
-    const queued = decoded.filter(j => j?.state === "queued").length;
-    const admitted = decoded.filter(j => j?.state === "admitted").length;
-    const waiting = decoded.filter(j => j?.state === "waiting").length;
+    const total = (state: string, reason?: string): number =>
+      cap(tally.filter(t => t.state === state && (reason === undefined || t.reason === reason)).reduce((sum, t) => sum + t.n, 0));
+    const queued = total("queued"), admitted = total("admitted"), waiting = total("waiting");
     const available = store.read(tx => {
       try { return tx.get<{ token: string }>("SELECT token FROM job_scheduler WHERE id = 1") === null; }
       catch { return false; }
     });
-    const seen = new Map<string, { route: string; model: string | null; state: DiagnosticRouteState; attempts: number }>();
-    for (const job of decoded) {
-      if (!job || typeof job.route.provider !== "string" || (job.route.model !== null && typeof job.route.model !== "string")) continue;
-      if (!diagnosticRouteStates.includes(job.state as DiagnosticRouteState)) continue;
-      const key = `${job.route.provider} ${job.route.model ?? ""} ${job.state}`;
-      const row = seen.get(key) ?? { route: job.route.provider, model: job.route.model, state: job.state as DiagnosticRouteState, attempts: 0 };
-      row.attempts++;
-      seen.set(key, row);
-      if (seen.size >= 8) break;
+    // Active route sample: distinct (provider, model, state) groups over all active jobs, oldest active work first, at most 8.
+    const groups = store.read(tx => {
+      try {
+        return tx.all<{ provider: unknown; model: unknown; state: string; n: number }>(
+          `SELECT json_extract(record_json, '$.route.provider') AS provider, json_extract(record_json, '$.route.model') AS model, state, count(*) AS n
+           FROM jobs WHERE state IN ('queued', 'admitted', 'waiting') GROUP BY provider, model, state ORDER BY min(queue_order) LIMIT 4096`);
+      } catch { return []; }
+    });
+    const routes: DiagnosticsInput["routes"] = [];
+    let omittedGroups = 0, omittedJobs = 0;
+    for (const group of groups) {
+      let usable = routes.length < 8 && typeof group.provider === "string" && (group.model === null || typeof group.model === "string");
+      if (usable) {
+        try { safeOpsAlias(group.provider); if (group.model !== null) safeOpsAlias(group.model); } catch { usable = false; }
+      }
+      if (!usable) { omittedGroups++; omittedJobs += group.n; continue; }
+      routes.push({ route: group.provider as string, model: group.model as string | null, state: group.state as DiagnosticRouteState, attempts: cap(group.n) });
     }
-    const exhausted = decoded.filter(j => j?.state === "blocked" && j.reason === "budget_exhausted").length;
-    const deadlineFailed = decoded.filter(j => j?.state === "failed" && j.reason === "deadline").length;
-    const waitingFor = (reason: string): number => decoded.filter(j => j?.state === "waiting" && j.reason === reason).length;
-    const authorizationChanged = decoded.filter(j => j?.state === "blocked" && j.reason === "authorization_changed").length;
+    const exhausted = total("blocked", "budget_exhausted");
+    const deadlineFailed = total("failed", "deadline");
+    const waitingFor = (reason: string): number => total("waiting", reason);
+    const authorizationChanged = total("blocked", "authorization_changed");
     const delivery = store.read(tx => {
       try {
         const pending = tx.get<{ count: number }>("SELECT count(*) AS count FROM delivery_intents WHERE status IN ('pending', 'claimed', 'waiting')")!.count;
         const unknownCount = tx.get<{ count: number }>("SELECT count(*) AS count FROM delivery_attempts WHERE record_json LIKE '%\"outcome\":\"unknown\"%'")!.count;
-        return { pendingIntents: Math.min(pending, 10000), unknownDeliveries: Math.min(unknownCount, 10000) };
+        return { pendingIntents: cap(pending), unknownDeliveries: cap(unknownCount) };
       } catch { return { pendingIntents: 0, unknownDeliveries: 0 }; }
     });
     const binding = store.read(tx => {
@@ -343,15 +354,17 @@ export function gatherDiagnostics(root: string, config: AppConfig, now: number =
     } catch { /* Missing evidence storage is reported as zero artifacts, not a failure. */ }
     return { now,
       queue: { available, queued, admitted, waiting },
-      routes: [...seen.values()],
+      routes,
+      coverage: { activeJobs: queued + admitted + waiting, omittedRouteGroups: cap(omittedGroups), omittedActiveJobs: Math.min(cap(omittedJobs), queued + admitted + waiting),
+        countsCapped: capped },
       budgets: { exhausted, deadlineFailed },
       waits: { quota: waitingFor("quota"), needsLogin: waitingFor("needs_login"), routeUnavailable: waitingFor("route_unavailable"),
-        authorizationChanged: Math.min(authorizationChanged, 10000) },
+        authorizationChanged },
       disk: { stateBytes: managedStateBytes(join(root, ".local")), watermarkBytes: config.ops.diskWatermarkBytes },
       telegram: { configured: botCredentialConfigured(config.telegram.botTokenPath), binding,
         pendingIntents: delivery.pendingIntents, unknownDeliveries: delivery.unknownDeliveries },
       engine: { mode: config.runPort, available: engineAvailable(config) },
-      providers: { configuredRoutes: configuredRouteCount(store), observedRoutes: 0 },
+      providers: { configuredRoutes: configuredRouteCount(store) },
       schema: { current, supported: schemaVersion },
       upgrade: { fence: fence === null ? "none" : fence.upgradeId === "unknown" ? "unreadable"
         : (fence as { holder?: unknown }).holder === "restore" ? "restore" : "upgrade", activeState },

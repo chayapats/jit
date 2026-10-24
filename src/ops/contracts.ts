@@ -1,4 +1,6 @@
 import { safeAlias, safeVersion } from "../evidence/contract";
+import { containsCredential } from "../security/credentials";
+import { drillWorkloadBounds, opsBounds, withinBound } from "./limits";
 import type { TestedRevisions } from "./revisions";
 
 /** Versioned ops record kinds. None of these grant authority to login, bill, reboot or publish. */
@@ -38,17 +40,27 @@ export interface DrillLeg {
 
 /** Sanitized measurements. Sizes and durations only; no paths, tokens or process dumps. */
 export interface DrillMeasurements {
+  /** Process high-water resident set (getrusage `maxrss`, KiB × 1024) at the end of the drill; includes pre-drill usage. */
   peakRssBytes: number;
   stateBytesBefore: number;
   stateBytesAfter: number;
   stateGrowthBytes: number;
   diskPressure: boolean;
-  queueWaitMs: number;
+  /**
+   * Admission wait per drill job: wall time from the enqueue receipt to the
+   * first invocation of its work (monotonic clock). Max, nearest-rank p95 and
+   * sample count over the sampled jobs; 0/0/0 when nothing was admitted.
+   */
+  queueWaitMaxMs: number;
+  queueWaitP95Ms: number;
+  queueWaitSamples: number;
   stopAckMs: number | null;
   fetchCalls: number;
+  /** Final persisted outcomes of the drill's own delivery intents after the DeliveryWorker ran, and the attempts it recorded. */
   sentDeliveries: number;
   unknownDeliveries: number;
   failedDeliveries: number;
+  deliveryAttempts: number;
   /** Succeeded `pr.snapshot` plus `pr.review` jobs. */
   succeededJobs: number;
   waitingJobs: number;
@@ -71,6 +83,13 @@ export const drillActions = ["none", "inspect-sanitized-drill", "relieve-disk-pr
   "retry-bounded-drill", "resolve-blocked-work", "restore-engine", "integrate-pending-contract"] as const;
 export type DrillAction = typeof drillActions[number];
 
+/**
+ * Typed operating limits a drill can observe being reached. Only these become
+ * `exhaustedLimits`; a blocked or failed leg is never relabelled as a limit.
+ */
+export const exhaustedLimitKinds = ["drill-deadline", "disk-watermark", "job-budget", "job-deadline", "delivery-retry", "queue-limit"] as const;
+export type ExhaustedLimit = typeof exhaustedLimitKinds[number];
+
 /** Versioned drill record persisted under private `.local/ops-evidence`. */
 export interface LoadDrillRecord {
   schema: "jit.ops.drill/v1";
@@ -82,6 +101,8 @@ export interface LoadDrillRecord {
   config: LoadDrillConfig;
   legs: DrillLeg[];
   measurements: DrillMeasurements;
+  /** Typed limit events observed during the drill (unique, fixed order). */
+  exhaustedLimits: ExhaustedLimit[];
   fixtureHonesty: string[];
   outcome: "passed" | "blocked" | "failed";
   nextAction: DrillAction;
@@ -128,18 +149,26 @@ export interface OpsProfile {
   versions: LoadDrillRecord["versions"];
   config: LoadDrillConfig;
   measurements: DrillMeasurements;
-  exhaustedLimits: string[];
+  exhaustedLimits: ExhaustedLimit[];
   sampleLimitations: string[];
   piReadiness: "not-claimed";
   nextAction: DrillAction;
 }
 
-const secretLike = /bearer\s|authorization\s*:|x-telegram|bot[_-]?token|password|secret|ssh:\/\/|[0-9]{5,}:[A-Za-z0-9_-]{8,}|\d{1,3}(?:\.\d{1,3}){3}/i;
+const secretLike = /bearer\s|authorization\s*:|x-telegram|bot[_-]?token|password|secret|ssh:\/\/|[0-9]{5,}:[A-Za-z0-9_-]{8,}/i;
+/** Network addresses: IPv4, IPv6 (incl. bracketed), any URL scheme, or host:port. */
+const addressLike = /\b\d{1,3}(?:\.\d{1,3}){3}\b|\[[0-9a-f:]*:[0-9a-f:]*\]|\b(?:[0-9a-f]{1,4}:){2,7}[0-9a-f]{0,4}\b|\b[a-z][a-z0-9+.-]*:\/\/|\b[a-z0-9-]+(?:\.[a-z0-9-]+)+:\d{2,5}\b/i;
+/** Filesystem paths: absolute POSIX (`/x`), home (`~/`), relative traversal (`./`, `../`) or a Windows drive. */
+const pathLike = /(?:^|[\s(=:,'"])(?:\/[A-Za-z0-9._-]|~\/|\.{1,2}\/)|\b[A-Za-z]:\\/;
 
-/** Rejects notes that could carry credentials, addresses or raw transport output. */
+/**
+ * Rejects notes that could carry credentials, addresses, paths or raw transport
+ * output. Credentials use the shared detector (`containsCredential`, the same
+ * patterns as outbox and export hygiene) plus ops-specific labels.
+ */
 export function safeNote(value: unknown): string {
-  if (typeof value !== "string" || !value.length || value.length > 500 || /[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(value)) throw new Error("invalid_ops_note");
-  if (secretLike.test(value)) throw new Error("invalid_ops_note");
+  if (typeof value !== "string" || !value.length || value.length > 500 || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value)) throw new Error("invalid_ops_note");
+  if (secretLike.test(value) || containsCredential(value) || addressLike.test(value) || pathLike.test(value)) throw new Error("invalid_ops_note");
   return value;
 }
 
@@ -170,8 +199,9 @@ const exact = (o: unknown, keys: string[]): o is Record<string, unknown> => !!o 
   Object.keys(o).length === keys.length && keys.every(k => Object.hasOwn(o, k));
 
 /** Exact measurement field set, shared by drill and profile validation. */
-export const measurementKeys = ["peakRssBytes", "stateBytesBefore", "stateBytesAfter", "stateGrowthBytes", "diskPressure", "queueWaitMs",
-  "stopAckMs", "fetchCalls", "sentDeliveries", "unknownDeliveries", "failedDeliveries", "succeededJobs", "waitingJobs", "cancelledJobs",
+export const measurementKeys = ["peakRssBytes", "stateBytesBefore", "stateBytesAfter", "stateGrowthBytes", "diskPressure",
+  "queueWaitMaxMs", "queueWaitP95Ms", "queueWaitSamples",
+  "stopAckMs", "fetchCalls", "sentDeliveries", "unknownDeliveries", "failedDeliveries", "deliveryAttempts", "succeededJobs", "waitingJobs", "cancelledJobs",
   "prReports", "alertIntents", "exportBytes", "backupBytes", "commandAckMaxMs", "requestMaxMs", "commands"];
 
 const contractId = /^[a-z][a-z0-9_.-]{0,63}\/v[0-9]{1,3}$/;
@@ -192,35 +222,98 @@ export function validateRevisions(value: unknown): asserts value is TestedRevisi
       !Number.isSafeInteger(e.snapshotFormat) || e.snapshotFormat < 1 || e.snapshotFormat > 1000) fail();
 }
 
-const finitePositive = (v: unknown, max: number): v is number => Number.isSafeInteger(v) && (v as number) >= 1 && (v as number) <= max;
+/** Note check for record validators: any unsafe note is an invalid record, not a separate error class. */
+const noteOk = (v: unknown): boolean => { try { return safeNote(v) === v; } catch { return false; } };
+const isoTime = (v: unknown): boolean => typeof v === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(v) && Number.isFinite(Date.parse(v));
+const configKeys = ["groups", "prSnapshots", "memoryQueries", "deliveries", "schedules", "diskWatermarkBytes", "deadlineMs"];
+
+/** Exact drill config under the shared bounds (src/ops/limits.ts). */
+export function validateDrillConfig(value: unknown): asserts value is LoadDrillConfig {
+  if (!exact(value, configKeys)) throw new Error("invalid_ops_record");
+  const c = value as unknown as Record<string, unknown>;
+  for (const [name, bound] of Object.entries(drillWorkloadBounds)) if (!withinBound(c[name], bound)) throw new Error("invalid_ops_record");
+  if (!withinBound(c.diskWatermarkBytes, opsBounds.diskWatermarkBytes) || !withinBound(c.deadlineMs, opsBounds.drillDeadlineMs)) throw new Error("invalid_ops_record");
+}
+
+/** Exact measurement set: bounded non-negative integers, `diskPressure` boolean, `stopAckMs` nullable. */
+export function validateMeasurements(value: unknown): asserts value is DrillMeasurements {
+  const fail = (): never => { throw new Error("invalid_ops_record"); };
+  if (!exact(value, measurementKeys)) fail();
+  for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
+    if (key === "diskPressure") { if (typeof v !== "boolean") fail(); continue; }
+    if (key === "stopAckMs") { if (v !== null && (!Number.isSafeInteger(v) || (v as number) < 0 || (v as number) > 3600000)) fail(); continue; }
+    if (!Number.isSafeInteger(v) || (v as number) < 0 || (v as number) > 1099511627776) fail();
+  }
+}
+
+function validateExhaustedLimits(value: unknown): asserts value is ExhaustedLimit[] {
+  if (!Array.isArray(value) || value.length > exhaustedLimitKinds.length || new Set(value).size !== value.length ||
+      value.some(v => !exhaustedLimitKinds.includes(v))) throw new Error("invalid_ops_record");
+}
 
 /** Rejects malformed, unknown-field or oversized drill records before persistence or export. */
 export function validateDrillRecord(value: unknown): asserts value is LoadDrillRecord {
   const fail = (): never => { throw new Error("invalid_ops_record"); };
-  if (!exact(value, ["schema", "id", "observedAt", "installationLabel", "versions", "config", "legs", "measurements", "fixtureHonesty", "outcome", "nextAction"])) fail();
+  if (!exact(value, ["schema", "id", "observedAt", "installationLabel", "versions", "config", "legs", "measurements", "exhaustedLimits", "fixtureHonesty", "outcome", "nextAction"])) fail();
   const r = value as LoadDrillRecord;
-  if (r.schema !== "jit.ops.drill/v1" || !uuidPattern.test(r.id) ||
-      typeof r.observedAt !== "string" || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(r.observedAt) || !Number.isFinite(Date.parse(r.observedAt)) ||
+  if (r.schema !== "jit.ops.drill/v1" || !uuidPattern.test(r.id) || !isoTime(r.observedAt) ||
       safeOpsAlias(r.installationLabel) !== r.installationLabel || !["passed", "blocked", "failed"].includes(r.outcome) || !drillActions.includes(r.nextAction)) fail();
   validateRevisions(r.versions);
-  const c = r.config;
-  if (!exact(c, ["groups", "prSnapshots", "memoryQueries", "deliveries", "schedules", "diskWatermarkBytes", "deadlineMs"]) ||
-      !finitePositive(c.groups, 8) || !finitePositive(c.prSnapshots, 64) || !finitePositive(c.memoryQueries, 256) ||
-      !finitePositive(c.deliveries, 32) || !Number.isSafeInteger(c.schedules) || c.schedules < 0 || c.schedules > 16 ||
-      !finitePositive(c.diskWatermarkBytes, 1073741824) || !finitePositive(c.deadlineMs, 300000)) fail();
+  validateDrillConfig(r.config);
   if (!Array.isArray(r.legs) || r.legs.length > 16) fail();
   for (const leg of r.legs) {
     if (!exact(leg, ["leg", "state", "elapsedMs", "detail", "sampleLimit"]) || safeOpsAlias(leg.leg) !== leg.leg ||
         !drillLegStates.includes(leg.state) || !Number.isSafeInteger(leg.elapsedMs) || leg.elapsedMs < 0 || leg.elapsedMs > 3600000 ||
-        safeNote(leg.detail) !== leg.detail || safeNote(leg.sampleLimit) !== leg.sampleLimit) fail();
+        !noteOk(leg.detail) || !noteOk(leg.sampleLimit)) fail();
   }
-  const m = r.measurements;
-  if (!exact(m, measurementKeys)) fail();
-  for (const [key, v] of Object.entries(m)) {
-    if (key === "diskPressure") { if (typeof v !== "boolean") fail(); continue; }
-    if (key === "stopAckMs") { if (v !== null && (!Number.isSafeInteger(v) || v < 0 || v > 3600000)) fail(); continue; }
-    if (!Number.isSafeInteger(v) || (v as number) < 0 || (v as number) > 1099511627776) fail();
-  }
-  if (!Array.isArray(r.fixtureHonesty) || r.fixtureHonesty.length > 16 || r.fixtureHonesty.some(n => safeNote(n) !== n)) fail();
+  validateMeasurements(r.measurements);
+  validateExhaustedLimits(r.exhaustedLimits);
+  if (!Array.isArray(r.fixtureHonesty) || r.fixtureHonesty.length > 16 || r.fixtureHonesty.some(n => !noteOk(n))) fail();
+  if (Buffer.byteLength(JSON.stringify(r)) > 32768) fail();
+}
+
+/** Exact profile record: identity, tested revisions, bounded config/measurements, typed limits, sanitized limitations, no readiness claim. */
+export function validateProfileRecord(value: unknown): asserts value is OpsProfile {
+  const fail = (): never => { throw new Error("invalid_ops_record"); };
+  if (!exact(value, ["schema", "id", "observedAt", "installationLabel", "drillId", "versions", "config", "measurements", "exhaustedLimits", "sampleLimitations", "piReadiness", "nextAction"])) fail();
+  const r = value as OpsProfile;
+  if (r.schema !== "jit.ops.profile/v1" || !uuidPattern.test(r.id) || !isoTime(r.observedAt) ||
+      safeOpsAlias(r.installationLabel) !== r.installationLabel || typeof r.drillId !== "string" || !uuidPattern.test(r.drillId) ||
+      r.piReadiness !== "not-claimed" || !drillActions.includes(r.nextAction)) fail();
+  validateRevisions(r.versions);
+  validateDrillConfig(r.config);
+  validateMeasurements(r.measurements);
+  validateExhaustedLimits(r.exhaustedLimits);
+  if (!Array.isArray(r.sampleLimitations) || r.sampleLimitations.length > 32 || r.sampleLimitations.some(n => !noteOk(n))) fail();
+  if (Buffer.byteLength(JSON.stringify(r)) > 32768) fail();
+}
+
+function validateRows(rows: unknown, ids: readonly string[], human: boolean): ChecklistItem[] {
+  const fail = (): never => { throw new Error("invalid_ops_record"); };
+  if (!Array.isArray(rows) || rows.length !== ids.length) fail();
+  return (rows as unknown[]).map((row, index) => {
+    if (!exact(row, ["id", "state", "evidenceId", "note"])) fail();
+    const item = row as ChecklistItem;
+    if (item.id !== ids[index] || !checklistStates.includes(item.state) ||
+        (item.evidenceId !== null && (typeof item.evidenceId !== "string" || !uuidPattern.test(item.evidenceId))) ||
+        (item.state === "not-run" && item.evidenceId !== null) || (human && item.state !== "not-run" && item.evidenceId === null) ||
+        !noteOk(item.note)) fail();
+    return item;
+  });
+}
+
+/** Exact release record: fixed row order, row invariants, and outcome/next action consistent with the rows. */
+export function validateReleaseRecord(value: unknown): asserts value is ReleaseChecklist {
+  const fail = (): never => { throw new Error("invalid_ops_record"); };
+  if (!exact(value, ["schema", "id", "observedAt", "installationLabel", "drillId", "deterministic", "human", "outcome", "nextAction"])) fail();
+  const r = value as ReleaseChecklist;
+  if (r.schema !== "jit.ops.release/v1" || !uuidPattern.test(r.id) || !isoTime(r.observedAt) ||
+      safeOpsAlias(r.installationLabel) !== r.installationLabel ||
+      (r.drillId !== null && (typeof r.drillId !== "string" || !uuidPattern.test(r.drillId)))) fail();
+  const states = [...validateRows(r.deterministic, deterministicChecklistIds, false), ...validateRows(r.human, humanChecklistIds, true)].map(i => i.state);
+  if (r.drillId === null && r.deterministic.some(i => i.state !== "not-run")) fail();
+  const outcome = states.includes("failed") ? "failed" : states.includes("blocked") || states.includes("not-run") ? "blocked" : "passed";
+  const nextAction = outcome === "passed" ? "none" : outcome === "failed" ? "inspect-sanitized-drill" : "resolve-blocked-work";
+  if (r.outcome !== outcome || r.nextAction !== nextAction) fail();
   if (Buffer.byteLength(JSON.stringify(r)) > 32768) fail();
 }

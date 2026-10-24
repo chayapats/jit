@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runOpsCommand } from "../src/ops-cli";
@@ -11,11 +11,12 @@ import { JobQueue } from "../src/jobs/queue";
 import { unavailableNativePort } from "../src/ops/backup";
 import { gatherDiagnostics, inspectDiagnostics } from "../src/ops/diagnostics";
 import { contentHash, gitRevision } from "../src/ops/revisions";
+import { opsBounds, opsEvidenceRetention } from "../src/ops/limits";
 import { writeUpgradeFence } from "../src/ops/upgrade-fence";
 import { quarantineRestorePort, runLoadDrill } from "../src/ops/drill";
-import { exportOpsSummary, readOpsRecord, writeOpsRecord } from "../src/ops/records";
+import { exportOpsSummary, readOpsRecord, validateOpsRecord, writeOpsRecord } from "../src/ops/records";
 import { composeProfile, composeReleaseChecklist, deriveDeterministicRows } from "../src/ops/report";
-import { validateDrillRecord } from "../src/ops/contracts";
+import { safeNote, validateDrillRecord } from "../src/ops/contracts";
 import { TransactionStore, schemaVersion } from "../src/store";
 
 const roots: string[] = [];
@@ -32,14 +33,16 @@ function setup() {
 type DiagnosticsInput = Parameters<typeof inspectDiagnostics>[0];
 /** A healthy, fully configured scripted installation; failure fixtures override one field each. */
 function healthy(overrides: Partial<DiagnosticsInput> = {}): DiagnosticsInput {
+  const queue = overrides.queue ?? { available: true, queued: 0, admitted: 0, waiting: 0 };
   return { now: 1800000000000,
+    coverage: { activeJobs: queue.queued + queue.admitted + queue.waiting, omittedRouteGroups: 0, omittedActiveJobs: 0, countsCapped: false },
     queue: { available: true, queued: 0, admitted: 0, waiting: 0 },
     routes: [], budgets: { exhausted: 0, deadlineFailed: 0 },
     waits: { quota: 0, needsLogin: 0, routeUnavailable: 0, authorizationChanged: 0 },
     disk: { stateBytes: 100, watermarkBytes: 1000 },
     telegram: { configured: true, binding: "bound", pendingIntents: 0, unknownDeliveries: 0 },
     engine: { mode: "scripted", available: true },
-    providers: { configuredRoutes: 1, observedRoutes: 0 },
+    providers: { configuredRoutes: 1 },
     schema: { current: schemaVersion, supported: schemaVersion },
     upgrade: { fence: "none", activeState: null },
     restore: { open: 0, blocked: 0, gate: "none" },
@@ -71,7 +74,7 @@ test("failure fixtures produce inspectable next actions; observed route readines
   const cases: [Partial<DiagnosticsInput>, string][] = [
     [{ telegram: { configured: false, binding: "unbound", pendingIntents: 0, unknownDeliveries: 0 } }, "configure-telegram"],
     [{ telegram: { configured: true, binding: "pending", pendingIntents: 0, unknownDeliveries: 0 } }, "bind-telegram"],
-    [{ engine: { mode: "schway", available: true }, providers: { configuredRoutes: 0, observedRoutes: 0 } }, "configure-provider-route"],
+    [{ engine: { mode: "schway", available: true }, providers: { configuredRoutes: 0 } }, "configure-provider-route"],
     [{ telegram: { configured: true, binding: "bound", pendingIntents: 1, unknownDeliveries: 1 } }, "resolve-unknown-delivery"],
     [{ engine: { mode: "schway", available: false } }, "restore-engine"],
     [{ waits: { quota: 0, needsLogin: 1, routeUnavailable: 0, authorizationChanged: 0 }, queue: { available: true, queued: 0, admitted: 0, waiting: 1 } }, "reconnect-provider-login"],
@@ -97,14 +100,16 @@ test("failure fixtures produce inspectable next actions; observed route readines
     expect(snapshot.nextActions[0]).toBe(action as never);
   }
   // Combined failures stay inspectable: every applicable action is listed in priority order.
-  const combined = inspectDiagnostics(healthy({ engine: { mode: "schway", available: false }, providers: { configuredRoutes: 0, observedRoutes: 0 },
+  const combined = inspectDiagnostics(healthy({ engine: { mode: "schway", available: false }, providers: { configuredRoutes: 0 },
     restore: { open: 1, blocked: 1, gate: "none" }, telegram: { configured: false, binding: "unbound", pendingIntents: 0, unknownDeliveries: 3 } }));
   expect(combined.nextActions).toEqual(["resolve-restore-quarantine", "restore-engine", "configure-provider-route", "resolve-unknown-delivery", "configure-telegram"]);
   expect(combined).toMatchObject({ engine: { state: "unavailable", observed: "not-observed" }, restore: { state: "quarantine-blocked" },
     providers: { readiness: "not-configured" } });
-  expect(inspectDiagnostics(healthy()).providers).toEqual({ configuredRoutes: 1, observedRoutes: 0, readiness: "configured-unverified" });
-  expect(inspectDiagnostics(healthy({ providers: { configuredRoutes: 1, observedRoutes: 1 } })).providers.readiness).toBe("observed-ready");
-  expect(() => inspectDiagnostics(healthy({ providers: { configuredRoutes: 0, observedRoutes: 1 } }))).toThrow();
+  // Observed readiness is never produced here: a caller-supplied observation count is rejected outright.
+  expect(inspectDiagnostics(healthy()).providers).toEqual({ configuredRoutes: 1, readiness: "configured-unverified", observed: "not-observed" });
+  expect(() => inspectDiagnostics(healthy({ providers: { configuredRoutes: 1, observedRoutes: 1 } as never }))).toThrow("invalid_diagnostics");
+  // Coverage must agree with the queue counts.
+  expect(() => inspectDiagnostics(healthy({ coverage: { activeJobs: 5, omittedRouteGroups: 0, omittedActiveJobs: 0, countsCapped: false } }))).toThrow();
   expect(inspectDiagnostics(healthy({ engine: { mode: "scripted", available: false } })).engine.state).toBe("scripted");
 });
 
@@ -137,7 +142,7 @@ test("gathered diagnostics read restore, upgrade, engine, route and authority st
   expect(readdirSync(root).sort()).toEqual(before);
   expect(snapshot).toMatchObject({ upgrade: { fence: "upgrade" }, restore: { open: 1, blocked: 0, gate: "none", state: "quarantine-open" },
     engine: { mode: "schway", state: "unavailable", observed: "not-observed" },
-    providers: { configuredRoutes: 1, observedRoutes: 0, readiness: "configured-unverified" },
+    providers: { configuredRoutes: 1, readiness: "configured-unverified", observed: "not-observed" },
     schemaVersion: { current: schemaVersion, supported: schemaVersion, state: "current" } });
   expect(snapshot.nextActions.slice(0, 3)).toEqual(["finish-or-rollback-upgrade", "resolve-restore-quarantine", "restore-engine"]);
   expect(JSON.stringify(snapshot)).not.toMatch(/grok|owner-grok|\.jit-host|state\.sqlite/);
@@ -204,12 +209,20 @@ test("gathered diagnostics count expired authority and provider-login waits with
 test("drill configuration is finite and explicit; missing or unbounded limits fail preflight", () => {
   const fallback = { diskWatermarkBytes: 104857600, drillDeadlineMs: 120000 };
   expect(parseDrillConfig({ ...drillConfig }, fallback)).toEqual(drillConfig);
-  expect(parseDrillConfig({ groups: 1, prSnapshots: 1, memoryQueries: 1, deliveries: 1, schedules: 0 }, fallback))
+  expect(parseDrillConfig({ groups: 1, prSnapshots: 1, memoryQueries: 1, deliveries: 1, schedules: 1 }, fallback))
     .toMatchObject({ diskWatermarkBytes: 104857600, deadlineMs: 120000 });
+  // One bound definition: every installation-valid knob is a valid drill fallback, and readConfig rejects what the drill would.
+  const knobs = readConfig({ JIT_OPS_DISK_WATERMARK_BYTES: "2147483648", JIT_OPS_DRILL_DEADLINE_MS: "600000" }).ops;
+  expect(parseDrillConfig({ groups: 1, prSnapshots: 1, memoryQueries: 1, deliveries: 1, schedules: 1 },
+    { diskWatermarkBytes: knobs.diskWatermarkBytes, drillDeadlineMs: knobs.drillDeadlineMs })).toMatchObject({ diskWatermarkBytes: 2147483648, deadlineMs: 600000 });
+  for (const env of [{ JIT_OPS_DISK_WATERMARK_BYTES: "1024" }, { JIT_OPS_DRILL_DEADLINE_MS: "999" }, { JIT_OPS_DRILL_DEADLINE_MS: "600001" },
+    { JIT_OPS_DISK_WATERMARK_BYTES: String(opsBounds.diskWatermarkBytes.max + 1) }, { JIT_OPS_RETENTION_DAYS: "0" }]) {
+    expect(() => readConfig(env)).toThrow();
+  }
   const bad = [{}, { ...drillConfig, groups: 0 }, { ...drillConfig, groups: -1 }, { ...drillConfig, groups: 9 },
     { ...drillConfig, prSnapshots: 65 }, { ...drillConfig, memoryQueries: Infinity }, { ...drillConfig, deliveries: 0 },
-    { ...drillConfig, schedules: 17 }, { ...drillConfig, diskWatermarkBytes: 1 }, { ...drillConfig, deadlineMs: 999 },
-    { ...drillConfig, deadlineMs: Infinity }, { ...drillConfig, unknown: 1 }, { ...drillConfig, groups: "2" },
+    { ...drillConfig, schedules: 17 }, { ...drillConfig, schedules: 0 }, { ...drillConfig, diskWatermarkBytes: 1 }, { ...drillConfig, deadlineMs: 999 },
+    { ...drillConfig, deadlineMs: Infinity }, { ...drillConfig, deadlineMs: 600001 }, { ...drillConfig, unknown: 1 }, { ...drillConfig, groups: "2" },
     { ...drillConfig, groups: 1.5 }, { ...drillConfig, groups: Number.MAX_SAFE_INTEGER + 1 }, "config", null, [],
     { ...drillConfig, diskWatermarkBytes: "Authorization: Bearer TOKEN_SENTINEL" }];
   for (const raw of bad) expect(() => parseDrillConfig(raw, fallback)).toThrow("invalid_drill_config");
@@ -293,6 +306,10 @@ test("engine-unavailable drill blocks backup and upgrade preflight and names the
   expect(record.outcome).toBe("blocked");
   expect(record.nextAction).toBe("restore-engine");
   expect(record.fixtureHonesty.join("\n")).toMatch(/injected native port/);
+  // Blocked legs are not limits: only typed limit events reach exhaustedLimits (here the scripted delivery retry ceiling).
+  expect(record.exhaustedLimits).toEqual(["delivery-retry"]);
+  const profile = composeProfile({ installationLabel: record.installationLabel, drill: record, sampleLimitations: [], nextAction: record.nextAction });
+  expect(profile.exhaustedLimits).toEqual(["delivery-retry"]);
 });
 
 test("restore seam derives the quarantine leg from the injected port's result, failing closed on bad evidence", async () => {
@@ -356,7 +373,8 @@ test("owner cancellation records remaining legs as not-run and asks for a bounde
   const partial = await runLoadDrill({ ...drillConfig }, { signal: midway.signal,
     restore: async () => { midway.abort(); return { state: "passed", detail: "quarantine validated=true discarded=true" }; } });
   roots.push(partial.root);
-  expect(stateOf(partial.record, "quarantine")).toBe("passed");
+  // Cancellation stops the running leg itself (fail closed), not only the legs after it.
+  expect(partial.record.legs.find(l => l.leg === "quarantine")).toMatchObject({ state: "blocked", detail: "stopped: drill cancelled by owner during leg" });
   expect(partial.record.legs.find(l => l.leg === "network")).toMatchObject({ state: "not-run", detail: "skipped: drill cancelled by owner" });
   expect(stateOf(partial.record, "disk-watermark")).toBe("not-run");
   expect(partial.record.outcome).toBe("blocked");
@@ -417,13 +435,217 @@ test("composed profile carries versions, limits and sample bounds but never Pi r
   const { record, root } = await runLoadDrill({ ...drillConfig });
   roots.push(root);
   const profile = composeProfile({ installationLabel: record.installationLabel, drill: record,
-    exhaustedLimits: ["quarantine"], sampleLimitations: [...record.fixtureHonesty], nextAction: record.nextAction });
+    sampleLimitations: [...record.fixtureHonesty], nextAction: record.nextAction });
+  // Exhausted limits are the drill's typed limit events (scripted safe-failure retries hit the delivery retry ceiling).
+  expect(profile.exhaustedLimits).toEqual(record.exhaustedLimits);
+  expect(record.exhaustedLimits).toEqual(["delivery-retry"]);
   expect(profile).toMatchObject({ schema: "jit.ops.profile/v1", drillId: record.id, piReadiness: "not-claimed" });
   expect(profile.versions).toEqual(record.versions);
   expect(profile.versions.schema).toBe(schemaVersion);
   expect(profile.config).toEqual(record.config);
   expect(() => composeProfile({ installationLabel: "drill-fixture", drill: { ...record, schema: "jit.host.evidence/v1" } as never,
-    exhaustedLimits: [], sampleLimitations: [], nextAction: "none" })).toThrow();
+    sampleLimitations: [], nextAction: "none" })).toThrow();
+  expect(() => composeProfile({ installationLabel: "drill-fixture", drill: { ...record, exhaustedLimits: ["quarantine"] } as never,
+    sampleLimitations: [], nextAction: "none" })).toThrow();
+});
+
+test("diagnostics count active work with whole-table aggregates, so history beyond any row bound cannot hide it", async () => {
+  const root = setup();
+  const database = join(root, "history.sqlite");
+  const config = readConfig({ JIT_DATABASE: database, JIT_TELEGRAM_BOT_TOKEN_PATH: join(root, "missing.token") });
+  const store = new TransactionStore(database);
+  try {
+    const app = new Application(store, config, { now: () => 1800000000000 });
+    await app.setupOwner("ops-drill-owner-password");
+    const actor = app.authenticate(await app.login("ops-drill-owner-password")).actor;
+    const project = app.execute(actor, { kind: "project.create", requestId: crypto.randomUUID(), projectId: null, expectedRevision: 0, payload: { name: "History" } }).project;
+    const record = (state: string, reason: string, provider: string) => JSON.stringify({ state, reason, route: { provider, model: null, authRoute: "internal" } });
+    store.transaction(tx => {
+      for (let n = 1; n <= 10001; n++) {
+        tx.run("INSERT INTO jobs (id, project_id, queue_order, priority, state, occupies, route_key, record_json) VALUES (?, ?, ?, 0, 'succeeded', 0, 'r', ?)",
+          crypto.randomUUID(), project.id, n, record("succeeded", "complete", "historic"));
+      }
+      tx.run("INSERT INTO jobs (id, project_id, queue_order, priority, state, occupies, route_key, record_json) VALUES (?, ?, ?, 0, 'queued', 0, 'r', ?)",
+        crypto.randomUUID(), project.id, 10002, record("queued", "queued", "fresh-route"));
+      // Ten more active route groups than the sample holds, plus one unlabelled provider.
+      for (let n = 0; n < 10; n++) {
+        tx.run("INSERT INTO jobs (id, project_id, queue_order, priority, state, occupies, route_key, record_json) VALUES (?, ?, ?, 0, 'waiting', 0, 'r', ?)",
+          crypto.randomUUID(), project.id, 10003 + n, record("waiting", "quota", `route-group-${n}`));
+      }
+      tx.run("INSERT INTO jobs (id, project_id, queue_order, priority, state, occupies, route_key, record_json) VALUES (?, ?, ?, 0, 'waiting', 0, 'r', ?)",
+        crypto.randomUUID(), project.id, 20000, record("waiting", "quota", "Authorization: Bearer TOKEN_SENTINEL"));
+    });
+  } finally { store.close(); }
+  const snapshot = inspectDiagnostics(gatherDiagnostics(root, config, 1800000000000));
+  expect(snapshot.queue).toMatchObject({ queued: 1, admitted: 0, waiting: 11 });
+  expect(snapshot.waits.quota).toBe(11);
+  expect(snapshot.nextActions).toContain("drain-queue");
+  expect(snapshot.routes).toHaveLength(8);
+  // Oldest active work first: the fresh queued job's route is sampled even behind 10001 historic rows.
+  expect(snapshot.routes[0]).toMatchObject({ reference: "route-1", state: "queued", attempts: 1 });
+  expect(snapshot.coverage).toEqual({ activeJobs: 12, omittedRouteGroups: 4, omittedActiveJobs: 4, countsCapped: false });
+  expect(JSON.stringify(snapshot)).not.toMatch(/TOKEN_SENTINEL|fresh-route|route-group|historic/);
+});
+
+test("ops notes reject the shared credential forms, paths and addresses", () => {
+  for (const note of ["ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "token sk-ant-api03-AAAAAAAAAAAAAAAAAAAA", "xoxb-1234567890-abcdef",
+    "AKIAABCDEFGHIJKLMNOP", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijklmnop", "api_key=abcdefgh12345678",
+    "evidence at /private/install/path", "see ~/secrets", "copied ../outside", "C:\\Users\\owner", "https://intranet.example",
+    "ssh to pi.local:2222", "host fd00::1:2:3", "[::1] loopback", "192.0.2.44", "-----BEGIN PRIVATE KEY-----"]) {
+    expect(() => safeNote(note)).toThrow("invalid_ops_note");
+  }
+  for (const note of ["service identity inventory recorded", "partial drill coverage (backup=scripted quarantine=passed)",
+    "Scripted specialist/synthesis runs; no Bot API traffic", "states=quarantined>migrated>ledger_applied>validated"]) {
+    expect(safeNote(note)).toBe(note);
+  }
+  expect(() => composeReleaseChecklist({ installationLabel: "drill-fixture", drill: null,
+    human: { FEAS: { state: "blocked", evidenceId: id, note: "ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" } } })).toThrow();
+});
+
+test("profile and release records are deep-validated on compose, write, read and export", async () => {
+  const root = setup();
+  const { record, root: drillRoot } = await runLoadDrill({ ...drillConfig });
+  roots.push(drillRoot);
+  const profile = composeProfile({ installationLabel: record.installationLabel, drill: record, sampleLimitations: [...record.fixtureHonesty], nextAction: record.nextAction });
+  const release = composeReleaseChecklist({ installationLabel: "drill-fixture", drill: record, human: {} });
+  validateOpsRecord(profile);
+  validateOpsRecord(release);
+  const badProfiles = [{ ...profile, id: "not-a-uuid" }, { ...profile, observedAt: "/private/install/path" }, { ...profile, piReadiness: "claimed-ready" },
+    { ...profile, measurements: { ...profile.measurements, credential: "ghp_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBB" } },
+    { ...profile, config: { ...profile.config, groups: 1000 } }, { ...profile, exhaustedLimits: ["backup"] },
+    { ...profile, sampleLimitations: ["see /private/path"] }, { ...profile, versions: { ...profile.versions, git: "main" } }];
+  const badReleases = [{ ...release, outcome: "passed" }, { ...release, nextAction: "none" },
+    { ...release, deterministic: release.deterministic.slice(1) },
+    { ...release, human: release.human.map(r => ({ ...r, state: "passed" })) },
+    { ...release, deterministic: release.deterministic.map(r => r.id === "J03" ? { ...r, evidenceId: "not-a-uuid" } : r) },
+    { ...release, drillId: null }];
+  for (const bad of [...badProfiles, ...badReleases]) {
+    expect(() => validateOpsRecord(bad)).toThrow("invalid_ops_record");
+    expect(() => exportOpsSummary(bad)).toThrow();
+    await expect(writeOpsRecord(root, bad.id === "not-a-uuid" ? bad : { ...bad, id: crypto.randomUUID() })).rejects.toThrow();
+  }
+  await writeOpsRecord(root, profile);
+  const file = join(root, ".local/ops-evidence", `${profile.id}.json`);
+  writeFileSync(file, JSON.stringify({ ...profile, piReadiness: "claimed-ready" }));
+  await expect(readOpsRecord(root, profile.id)).rejects.toThrow();
+  expect(readdirSync(join(root, ".local/ops-evidence"))).toHaveLength(1);
+});
+
+test("ops-evidence retention prunes by age, count and bytes whenever a record is created", async () => {
+  const root = setup();
+  const { record, root: drillRoot } = await runLoadDrill({ ...drillConfig });
+  roots.push(drillRoot);
+  const dir = join(root, ".local/ops-evidence");
+  const now = 1800000000000;
+  await writeOpsRecord(root, record, { retentionDays: 30, now });
+  const old = join(dir, `${record.id}.json`);
+  utimesSync(old, new Date(now - 31 * 86_400_000), new Date(now - 31 * 86_400_000));
+  // A planted symlink and a foreign file are never pruned.
+  symlinkSync(join(tmpdir()), join(dir, `${crypto.randomUUID()}.json`));
+  writeFileSync(join(dir, "notes.txt"), "keep");
+  const fresh = { ...record, id: crypto.randomUUID() };
+  await writeOpsRecord(root, fresh, { retentionDays: 30, now });
+  expect(readdirSync(dir).filter(n => n.endsWith(".json") && !lstatSync(join(dir, n)).isSymbolicLink())).toEqual([`${fresh.id}.json`]);
+  expect(readdirSync(dir)).toContain("notes.txt");
+  // Count ceiling: fill to the limit with valid-looking records, then one more write keeps exactly the ceiling, oldest first out.
+  const body = readFileSync(join(dir, `${fresh.id}.json`));
+  const filler: string[] = [];
+  for (let n = 0; n < opsEvidenceRetention.maxRecords; n++) {
+    const name = `${crypto.randomUUID()}.json`;
+    writeFileSync(join(dir, name), body, { mode: 0o600 });
+    utimesSync(join(dir, name), new Date(now - (opsEvidenceRetention.maxRecords - n) * 1000), new Date(now - (opsEvidenceRetention.maxRecords - n) * 1000));
+    filler.push(name);
+  }
+  const last = { ...record, id: crypto.randomUUID() };
+  await writeOpsRecord(root, last, { retentionDays: 30, now });
+  const records = readdirSync(dir).filter(n => /^[a-f0-9-]{36}\.json$/.test(n) && !lstatSync(join(dir, n)).isSymbolicLink());
+  expect(records).toHaveLength(opsEvidenceRetention.maxRecords);
+  expect(records).toContain(`${last.id}.json`);
+  expect(records).not.toContain(filler[0]);
+  expect(records.reduce((sum, n) => sum + statSync(join(dir, n)).size, 0)).toBeLessThanOrEqual(opsEvidenceRetention.maxBytes);
+  await expect(writeOpsRecord(root, { ...record, id: crypto.randomUUID() }, { retentionDays: 0, now })).rejects.toThrow("invalid_ops_retention");
+});
+
+test("deliveries go through the DeliveryWorker over a fixture binding; counts come from persisted intents and attempts", async () => {
+  const root = setup();
+  const { record } = await runLoadDrill({ ...drillConfig }, { root, keepRoot: true });
+  expect(record.measurements).toMatchObject({ sentDeliveries: 1, unknownDeliveries: 1, failedDeliveries: 2 });
+  const store = new TransactionStore(join(root, "state", "app.sqlite"));
+  try {
+    const intents = store.read(tx => tx.all<{ id: string; record_json: string }>("SELECT id, record_json FROM delivery_intents WHERE dedupe_key LIKE 'drill/delivery-%' ORDER BY sequence"));
+    expect(intents.map(i => (JSON.parse(i.record_json) as { status: string }).status)).toEqual(["sent", "unknown", "failed", "failed"]);
+    const attempts = store.read(tx => tx.all<{ record_json: string }>(
+      "SELECT record_json FROM delivery_attempts WHERE intent_id IN (SELECT id FROM delivery_intents WHERE dedupe_key LIKE 'drill/delivery-%')"));
+    expect(attempts).toHaveLength(record.measurements.deliveryAttempts);
+    // Safe failures retried within their budget: more attempts than intents, each invoked only after its claim committed.
+    expect(attempts.length).toBeGreaterThan(config4());
+    expect(attempts.every(a => (JSON.parse(a.record_json) as { senderInvoked: boolean }).senderInvoked)).toBe(true);
+    expect(store.read(tx => tx.get<{ state: string }>("SELECT state FROM telegram_binding WHERE id = 1"))!.state).toBe("bound");
+  } finally { store.close(); }
+  expect(record.legs.find(l => l.leg === "deliveries")!.detail).toMatch(/attempts=\d+ unsettled=0/);
+});
+const config4 = () => drillConfig.deliveries;
+
+test("queue wait is per-job admission latency and peak RSS is the process high-water mark", async () => {
+  const before = process.resourceUsage().maxRSS * 1024;
+  let during = 0;
+  const { record, root } = await runLoadDrill({ ...drillConfig }, { restore: async context => {
+    // A transient allocation inside a leg must be reflected by the high-water mark even after it is released.
+    let block: Uint8Array | null = new Uint8Array(96 * 1024 * 1024).fill(7);
+    during = process.memoryUsage().rss;
+    block = null; void block;
+    return quarantineRestorePort(context);
+  } });
+  roots.push(root);
+  const m = record.measurements;
+  // Snapshot + review jobs per PR candidate, the quota probe and the gated stop probe; schedule jobs are not sampled.
+  expect(m.queueWaitSamples).toBe(drillConfig.prSnapshots * 2 + 2);
+  expect(m.queueWaitMaxMs).toBeGreaterThanOrEqual(m.queueWaitP95Ms);
+  expect(m.queueWaitMaxMs).toBeLessThan(drillConfig.deadlineMs);
+  expect(m.peakRssBytes).toBeGreaterThanOrEqual(before);
+  expect(m.peakRssBytes).toBeGreaterThanOrEqual(during);
+  expect(record.fixtureHonesty.join("\n")).toMatch(/high-water RSS/);
+});
+
+test("the drill deadline bounds a running leg, fails closed and skips the rest", async () => {
+  const cooperative = await runLoadDrill({ ...drillConfig, deadlineMs: 1000 }, { restore: async ({ signal }) => {
+    await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+    return { state: "passed", detail: "should not be recorded" };
+  } });
+  roots.push(cooperative.root);
+  expect(cooperative.record.legs.find(l => l.leg === "quarantine")).toMatchObject({ state: "blocked", detail: "stopped: drill deadline reached during leg" });
+  expect(cooperative.record.legs.find(l => l.leg === "network")).toMatchObject({ state: "not-run", detail: "skipped: drill deadline exceeded" });
+  expect(cooperative.record.exhaustedLimits).toContain("drill-deadline");
+  expect(cooperative.record.outcome).toBe("blocked");
+  expect(cooperative.record.nextAction).toBe("retry-bounded-drill");
+  // A leg that ignores its signal is abandoned after a bounded grace instead of extending the drill.
+  const t0 = performance.now();
+  const stubborn = await runLoadDrill({ ...drillConfig, deadlineMs: 1000 }, { restore: async () => {
+    await Bun.sleep(4000);
+    return { state: "passed", detail: "late" };
+  } });
+  roots.push(stubborn.root);
+  expect(performance.now() - t0).toBeLessThan(3500);
+  expect(stubborn.record.legs.find(l => l.leg === "quarantine")!.state).toBe("blocked");
+  validateDrillRecord(stubborn.record);
+}, 15000);
+
+test("the fetch guard is single-flight and compare-and-restore", async () => {
+  const original = globalThis.fetch;
+  const first = runLoadDrill({ ...drillConfig });
+  await expect(runLoadDrill({ ...drillConfig })).rejects.toThrow("drill_in_progress");
+  const done = await first;
+  roots.push(done.root);
+  expect(globalThis.fetch).toBe(original);
+  // Someone replacing the guard mid-drill fails the network leg, and cleanup never clobbers their function.
+  const foreign = (() => { throw new Error("foreign"); }) as unknown as typeof fetch;
+  try {
+    const replaced = await runLoadDrill({ ...drillConfig }, { restore: async context => { globalThis.fetch = foreign; return quarantineRestorePort(context); } });
+    roots.push(replaced.root);
+    expect(replaced.record.legs.find(l => l.leg === "network")).toMatchObject({ state: "failed" });
+    expect(replaced.record.legs.find(l => l.leg === "network")!.detail).toContain("fetch guard replaced");
+    expect(globalThis.fetch).toBe(foreign);
+  } finally { globalThis.fetch = original; }
 });
 
 test("oversized records, symlinked storage and sentinel configs fail safely without partial writes", async () => {
@@ -470,7 +692,12 @@ test("standalone CLI drills, reports and rejects invalid invocations with fixed 
   writeFileSync(join(root, ".local/checklist.json"), JSON.stringify({ human: {} }));
   const reported = await run(["report", "--id", summary.recordId, "--checklist", ".local/checklist.json"]);
   expect(reported.exit).toBe(0);
-  const printed = JSON.parse(reported.stdout) as { revisions: unknown; checklist: { outcome: string; rows: { id: string; state: string; evidenceId: string | null }[] } };
+  const printed = JSON.parse(reported.stdout) as { revisions: unknown; profile: Record<string, unknown>; checklist: { outcome: string; rows: { id: string; state: string; evidenceId: string | null }[] } };
+  // The printed profile is a reviewable artifact on its own: revisions, workload, limits, limitations and the disclaimer.
+  expect(Object.keys(printed.profile).sort()).toEqual(["config", "drillId", "exhaustedLimits", "measurements", "nextAction", "observedAt",
+    "piReadiness", "readinessDisclaimer", "recordId", "sampleLimitations", "schema", "versions"]);
+  expect(printed.profile).toMatchObject({ piReadiness: "not-claimed", drillId: summary.recordId, config: drillConfig, exhaustedLimits: ["delivery-retry"] });
+  expect(String(printed.profile.readinessDisclaimer)).toContain("not Pi or capacity readiness");
   expect(printed.checklist.outcome).toBe("blocked");
   expect(printed.revisions).toEqual((exported as { versions: unknown }).versions);
   expect(printed.checklist.rows.find(r => r.id === "J03")).toEqual({ id: "J03", state: "passed", evidenceId: summary.recordId });
@@ -486,7 +713,7 @@ test("standalone CLI drills, reports and rejects invalid invocations with fixed 
   const diagnosed = await run(["diagnose"]);
   expect(diagnosed.exit).toBe(0);
   expect(JSON.parse(diagnosed.stdout)).toMatchObject({ schema: "jit.ops.diagnostics/v1", nextAction: "configure-telegram",
-    engine: { mode: "scripted", state: "scripted", observed: "not-observed" }, providers: { observedRoutes: 0 },
+    engine: { mode: "scripted", state: "scripted", observed: "not-observed" }, providers: { observed: "not-observed" },
     upgrade: { fence: "none", activeState: null }, restore: { state: "none" } });
 });
 

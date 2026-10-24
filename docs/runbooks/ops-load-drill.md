@@ -41,6 +41,8 @@ bun run ops:drill drill --config .local/ops-drill.json
 - Creates disposable state and runs, in order: groups, the static PR path (snapshot → scripted review → alert admission), memory queries, fixture deliveries (including unknown), explicit-clock schedules, a quota wait, a cooperative cancel, a sanitized project export, a managed backup with integrity re-verification, a read-only upgrade preflight, a quarantined restore of that backup (prepare → migrate → ledger replay → validate → discard; never activated), a network-isolation check and the disk watermark.
 - `scripted` on `backup`/`upgrade-preflight` means the fixture engine declared the snapshot contract; no Schway engine ran.
 - `quarantine` passes only when validation passed every check, the quarantine was discarded and the fence and read gate were released. `blocked` names the journal reason (for example an untrusted `ledger_checkpoint_*`); fix that on the real installation per §7 before trusting a restore. This is part of the result, not a failure to hide.
+- `deadlineMs` bounds the whole drill: a leg still running at the deadline is stopped and recorded `blocked`, and the rest are skipped (`retry-bounded-drill`). Only one drill runs per process.
+- `exhaustedLimits` lists only typed limit events (deadline, disk watermark, job budget/deadline, delivery retry ceiling, queue limit). The default fixture reaches `delivery-retry` on purpose: its safe-failure delivery exhausts the intent's retry budget.
 - A `blocked` outcome is valid. Re-run only with the same config after addressing the recorded `nextAction`; never loosen limits to force a pass. `retry-bounded-drill` means the drill was cancelled or hit `deadlineMs`; the skipped legs are listed as `not-run`.
 
 ## 3. Pause/stop
@@ -52,11 +54,11 @@ bun run ops:drill drill --config .local/ops-drill.json
 ## 4. Disk pressure
 
 - `relieve-disk-pressure` means managed `.local` state (or drill growth) passed `JIT_OPS_DISK_WATERMARK_BYTES`.
-- Inspect with `diagnose`; prune `.local/ops-evidence` records older than `JIT_OPS_RETENTION_DAYS`; prune managed backups from `/backups` (`backup.prune`, keeps the newest 1–10); remove expired exports from the project's exports page. Re-run the drill before any release claim. Never delete SQLite, WAL or backup files directly.
+- Inspect with `diagnose`. `.local/ops-evidence` is pruned automatically whenever a record is written (older than `JIT_OPS_RETENTION_DAYS`, then beyond 256 records or 8 MiB); lower the retention knob rather than deleting records by hand; prune managed backups from `/backups` (`backup.prune`, keeps the newest 1–10); remove expired exports from the project's exports page. Re-run the drill before any release claim. Never delete SQLite, WAL or backup files directly.
 
 ## 5. Delivery unknown
 
-- In the drill, `unknownDeliveries > 0` is expected: the scripted sender classifies sent/failed/unknown without Bot API traffic, and PR alert intents wait unbound.
+- In the drill, `unknownDeliveries > 0` is expected: the DeliveryWorker sends every committed intent over a fixture binding and scripted transport (sent/unknown/failed), without Bot API traffic.
 - On a live installation, `resolve-unknown-delivery` means a send may or may not have reached Telegram. Open `/projects/<id>/delivery`, check the chat, then resend explicitly (`delivery.resend`) or retire the intent (`delivery.retire`). Never treat unknown as sent; migration, restore and reconciliation never resend on their own.
 
 ## 6. Quota/auth reconnection and engine

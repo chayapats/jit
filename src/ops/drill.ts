@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { Application, type OwnerActor } from "../application";
 import { readConfig } from "../config";
 import type { AppConfig } from "../config";
-import { ScriptedTelegramSender } from "../delivery/sender";
+import { DeliveryWorker } from "../delivery/outbox";
+import type { DeliverySendInput, DeliverySendResult, DeliverySender, SenderScript } from "../delivery/sender";
+import { TelegramChannel } from "../telegram";
 import { JobQueue } from "../jobs/queue";
 import { scheduleReminderWork, tickSchedules } from "../jobs/schedules";
 import type { JobLimits, WorkDefinition } from "../jobs/types";
@@ -19,7 +21,7 @@ import { containsCredential } from "../security/credentials";
 import { TransactionStore } from "../store";
 import { ScriptedRunPort, fixtureOutcome } from "../team/scripted-port";
 import type { BackupNativePort } from "./backup";
-import { safeNote, safeOpsAlias, type DrillAction, type DrillLeg, type DrillLegState, type DrillMeasurements,
+import { drillLegStates, exhaustedLimitKinds, safeNote, safeOpsAlias, type DrillAction, type ExhaustedLimit, type DrillLeg, type DrillLegState, type DrillMeasurements,
   type LoadDrillConfig, type LoadDrillRecord } from "./contracts";
 import { testedRevisions } from "./revisions";
 import { upgradeEngineContract, upgradeNativeFormatVersion } from "./upgrade";
@@ -33,6 +35,8 @@ export interface DrillRestoreContext {
   /** Verified managed backup created by the `backup` leg. */
   backupId: string;
   now: () => number;
+  /** Aborts on owner cancellation or when the drill deadline is reached during the leg. */
+  signal: AbortSignal;
 }
 
 /** Bounded leg result. `detail` must be fixed-vocabulary text; it passes `safeNote`. */
@@ -56,7 +60,7 @@ const restoreSteps = ["restore.migrate", "restore.apply_ledger", "restore.valida
  * blocked or failed journal is `blocked` with its fixed reason (and is still
  * discarded when it can be).
  */
-export const quarantineRestorePort: DrillRestorePort = async ({ app, actor, backupId }) => {
+export const quarantineRestorePort: DrillRestorePort = async ({ app, actor, backupId, signal }) => {
   const revision = (): number => app.restoreConsole(actor).revision;
   // A refused step still writes its journal (blocked/failed, fence held while blocked) and then throws;
   // the drill reads that journal back by request id instead of treating the refusal as a crash.
@@ -74,7 +78,8 @@ export const quarantineRestorePort: DrillRestorePort = async ({ app, actor, back
   if (!journal) return { state: "blocked", detail: "restore prepare refused before writing a journal" };
   const states: string[] = [journal.state];
   for (const kind of restoreSteps) {
-    if (journal.state === "blocked" || journal.state === "failed") break;
+    // Stop advancing on cancellation/deadline; the discard below still ends the quarantine.
+    if (journal.state === "blocked" || journal.state === "failed" || signal.aborted) break;
     const next: RestoreEvidence | null = await step(kind, journal.id);
     journal = next ?? app.restore(actor, journal.id).quarantine;
     states.push(journal.state);
@@ -175,8 +180,38 @@ function dirBytes(path: string): number {
   return total;
 }
 
-function rss(): number {
-  return process.memoryUsage().rss;
+/** Process high-water RSS in bytes: getrusage `maxrss` (KiB in Node and Bun), never below the current RSS. */
+function peakRss(): number {
+  let high = 0;
+  try { high = process.resourceUsage().maxRSS * 1024; } catch { high = 0; }
+  return Math.max(high, process.memoryUsage().rss);
+}
+
+/** Nearest-rank percentile of non-negative samples; 0 when there are none. */
+function percentile(samples: number[], p: number): number {
+  if (samples.length === 0) return 0;
+  const sorted = [...samples].sort((a, b) => a - b);
+  return sorted[Math.max(0, Math.ceil(p * sorted.length) - 1)]!;
+}
+
+/** Process-wide single-flight: the fetch guard is process-global, so two drills never overlap. */
+let drillInFlight = false;
+/** Bounded wait for an aborted leg to settle before teardown. */
+const abortGraceMs = 1000;
+
+/** Fixture Telegram transport selected by dedupe key, so other intents (PR alerts) never consume a drill script. */
+class DrillSender implements DeliverySender {
+  readonly modes = new Map<string, SenderScript>();
+  calls = 0;
+  #messageId = 0;
+  send(input: DeliverySendInput): DeliverySendResult {
+    this.calls++;
+    const mode = this.modes.get(input.dedupeKey) ?? "accept";
+    if (mode === "reject") return { outcome: "failed", reason: "telegram_rejected", retryable: false };
+    if (mode === "safe_failure") return { outcome: "failed", reason: "telegram_unavailable", retryable: true };
+    if (mode === "timeout_after_accept") return { outcome: "unknown" };
+    return { outcome: "sent", messageId: ++this.#messageId };
+  }
 }
 
 /**
@@ -190,7 +225,14 @@ function rss(): number {
  * blocking contract, never skipped.
  */
 export async function runLoadDrill(config: LoadDrillConfig, ports: DrillPorts = {}): Promise<DrillResult> {
-  const startMs = Date.now();
+  if (drillInFlight) throw new Error("drill_in_progress");
+  drillInFlight = true;
+  try { return await drillOnce(config, ports); } finally { drillInFlight = false; }
+}
+
+async function drillOnce(config: LoadDrillConfig, ports: DrillPorts): Promise<DrillResult> {
+  // Monotonic absolute deadline for the whole drill; every leg receives the remaining budget as an abort signal.
+  const deadlineAt = performance.now() + config.deadlineMs;
   let fakeNow = 1800000000000;
   const now = ports.now ?? (() => fakeNow);
   const advance = (ms: number): void => { fakeNow += ms; };
@@ -199,39 +241,58 @@ export async function runLoadDrill(config: LoadDrillConfig, ports: DrillPorts = 
   const root = ports.root ?? mkdtempSync(join(tmpdir(), "jit-ops-drill-"));
   const realFetch = globalThis.fetch;
   let fetchCalls = 0;
-  globalThis.fetch = (() => { fetchCalls++; throw new Error("network_not_authorized"); }) as unknown as typeof fetch;
+  const fetchGuard = (() => { fetchCalls++; throw new Error("network_not_authorized"); }) as unknown as typeof fetch;
+  globalThis.fetch = fetchGuard;
 
   const legs: DrillLeg[] = [];
-  let peakRss = rss();
-  const sample = (): void => { peakRss = Math.max(peakRss, rss()); };
-  const deadlineExceeded = (): boolean => Date.now() - startMs > config.deadlineMs;
-  const timed = async (leg: string, sampleLimit: string, run: () => Promise<DrillLegResult>): Promise<void> => {
-    if (ports.signal?.aborted) {
-      legs.push({ leg, state: "not-run", elapsedMs: 0, detail: "skipped: drill cancelled by owner", sampleLimit });
+  const limits = new Set<ExhaustedLimit>();
+  let halted: "cancelled" | "deadline" | null = null;
+  const timed = async (leg: string, sampleLimit: string, run: (signal: AbortSignal) => Promise<DrillLegResult>): Promise<void> => {
+    if (ports.signal?.aborted) halted ??= "cancelled";
+    if (!halted && performance.now() >= deadlineAt) { halted = "deadline"; limits.add("drill-deadline"); }
+    if (halted) {
+      legs.push({ leg, state: "not-run", elapsedMs: 0, detail: halted === "cancelled" ? "skipped: drill cancelled by owner" : "skipped: drill deadline exceeded", sampleLimit });
       return;
     }
-    if (deadlineExceeded()) {
-      legs.push({ leg, state: "not-run", elapsedMs: 0, detail: "skipped: drill deadline exceeded", sampleLimit });
-      return;
-    }
-    const t0 = Date.now();
+    const t0 = performance.now();
+    const controller = new AbortController();
+    const onOwner = (): void => controller.abort("cancelled");
+    ports.signal?.addEventListener("abort", onOwner, { once: true });
+    const timer = setTimeout(() => controller.abort("deadline"), Math.max(0, deadlineAt - performance.now()));
+    const stopped = new Promise<"stopped">(resolve => controller.signal.addEventListener("abort", () => resolve("stopped"), { once: true }));
+    const running = run(controller.signal).then(value => ({ value }), () => ({ error: true as const }));
     let result: DrillLegResult;
     try {
-      result = await run();
-      if (!["passed", "failed", "blocked", "not-run", "scripted"].includes(result.state)) throw new Error("invalid_leg_state");
-      result = { state: result.state, detail: safeNote(result.detail) };
+      const winner = await Promise.race([running, stopped]);
+      if (winner === "stopped") {
+        // Fail closed: the leg is recorded as stopped and every later leg is skipped; the leg gets a bounded grace to settle.
+        halted = controller.signal.reason === "cancelled" ? "cancelled" : "deadline";
+        if (halted === "deadline") limits.add("drill-deadline");
+        await Promise.race([running, Bun.sleep(abortGraceMs)]);
+        result = { state: "blocked", detail: halted === "deadline" ? "stopped: drill deadline reached during leg" : "stopped: drill cancelled by owner during leg" };
+      } else if ("error" in winner) {
+        result = { state: "failed", detail: "leg raised instead of returning bounded evidence" };
+      } else {
+        const value = winner.value;
+        if (!value || !drillLegStates.includes(value.state)) throw new Error("invalid_leg_state");
+        result = { state: value.state, detail: safeNote(value.detail) };
+      }
     } catch {
       result = { state: "failed", detail: "leg raised instead of returning bounded evidence" };
+    } finally {
+      clearTimeout(timer);
+      ports.signal?.removeEventListener("abort", onOwner);
     }
-    legs.push({ leg, state: result.state, elapsedMs: Math.min(Date.now() - t0, 3600000), detail: result.detail, sampleLimit });
-    sample();
+    legs.push({ leg, state: result.state, elapsedMs: Math.min(Math.round(performance.now() - t0), 3600000), detail: result.detail, sampleLimit });
   };
 
   let queue: JobQueue | undefined;
   let store: TransactionStore | undefined;
   const stateDir = join(root, "state");
   const stateBytesBefore = dirBytes(root);
-  let queueWaitMs = 0, stopAckMs: number | null = null;
+  let stopAckMs: number | null = null;
+  const enqueuedAt = new Map<string, number>(), admittedAt = new Map<string, number>();
+  let deliveryAttempts = 0;
   let sent = 0, unknown = 0, failed = 0, succeededJobs = 0, waitingJobs = 0, cancelledJobs = 0;
   let prReports = 0, alertIntents = 0, exportBytes = 0, backupBytes = 0;
   let commandAckMaxMs = 0, requestMaxMs = 0, commands = 0;
@@ -261,21 +322,25 @@ export async function runLoadDrill(config: LoadDrillConfig, ports: DrillPorts = 
       session: null,
     }));
     const cacheRoot = join(stateDir, "pr-cache");
+    /** Admission observation: the first invocation of a job's work, on the monotonic clock. */
+    const observed = (definition: WorkDefinition): WorkDefinition => ({ ...definition,
+      run: context => { if (!admittedAt.has(context.job.id)) admittedAt.set(context.job.id, performance.now()); return definition.run(context); } });
     queue = new JobQueue(store, appConfig.jobs, [
-      prSnapshotWork({ store, cacheRoot, fixtureFor }),
-      prReviewWork({ store, port: reviewPort, now, sourceLimit: appConfig.team.sourceLimit, contextBytes: appConfig.team.contextBytes,
-        outputBytes: appConfig.jobs.outputBytes, alertBytes: appConfig.messageBytes }),
-      { ...fixtureWork("drill.quota-probe", "Quota probe fixture", "quota probe fixture evidence"),
-        run: () => ({ state: "waiting", reason: "quota" as const }) },
-      { ...fixtureWork("drill.gated", "Gated stop fixture", "gated fixture evidence"),
-        run: async () => { gatedStarted = true; await gate; return { state: "succeeded", evidence: "gated fixture evidence" }; } },
+      observed(prSnapshotWork({ store, cacheRoot, fixtureFor })),
+      observed(prReviewWork({ store, port: reviewPort, now, sourceLimit: appConfig.team.sourceLimit, contextBytes: appConfig.team.contextBytes,
+        outputBytes: appConfig.jobs.outputBytes, alertBytes: appConfig.messageBytes })),
+      observed({ ...fixtureWork("drill.quota-probe", "Quota probe fixture", "quota probe fixture evidence"),
+        run: () => ({ state: "waiting", reason: "quota" as const }) }),
+      observed({ ...fixtureWork("drill.gated", "Gated stop fixture", "gated fixture evidence"),
+        run: async () => { gatedStarted = true; await gate; return { state: "succeeded", evidence: "gated fixture evidence" }; } }),
       scheduleReminderWork(store, appConfig, now),
     ], { now });
     const jobs = queue;
     const app = new Application(store, appConfig, { jobs, now, nativeSnapshot: native,
       backupDir: join(stateDir, "backups") });
     await app.setupOwner("drill-fixture-owner-password");
-    const actor = app.authenticate(await app.login("drill-fixture-owner-password")).actor;
+    const ownerToken = await app.login("drill-fixture-owner-password");
+    const actor = app.authenticate(ownerToken).actor;
     /** Owner command through the Application boundary; acknowledgment = receipt returned. */
     const command = <T>(run: () => T): T => {
       const t0 = Date.now();
@@ -299,16 +364,28 @@ export async function runLoadDrill(config: LoadDrillConfig, ports: DrillPorts = 
         if (pending === 0) return;
       }
     };
-    const enqueue = (projectId: string, type: string, purpose: string, input: Record<string, string>, limits: JobLimits,
-      priority: "background" | "interactive" = "background") => command(() => app.execute(actor, {
-      kind: "job.enqueue", requestId: crypto.randomUUID(), projectId, expectedRevision: revisionOf(projectId),
-      payload: { type, configurationRevision: 1, policyRevision: appConfig.jobs.revision, purpose, inputRevision: revisionOf(projectId),
-        input, priority, limits: structuredClone(limits) } }));
+    /** Owner enqueue; the timestamp is taken before the command so an in-command admission still counts as wait >= 0. */
+    const enqueue = (projectId: string, type: string, purpose: string, input: Record<string, string>, jobLimitsFor: JobLimits,
+      priority: "background" | "interactive" = "background") => {
+      const at = performance.now();
+      try {
+        const receipt = command(() => app.execute(actor, {
+          kind: "job.enqueue", requestId: crypto.randomUUID(), projectId, expectedRevision: revisionOf(projectId),
+          payload: { type, configurationRevision: 1, policyRevision: appConfig.jobs.revision, purpose, inputRevision: revisionOf(projectId),
+            input, priority, limits: structuredClone(jobLimitsFor) } }));
+        enqueuedAt.set(receipt.job.id, at);
+        return receipt;
+      } catch (error) {
+        if (error instanceof AppError && error.code === "job_queue_full") limits.add("queue-limit");
+        throw error;
+      }
+    };
 
     const projectIds: string[] = [];
     const topicIds: string[] = [];
-    await timed("groups", "Topics stand in for groups; one project carries one stable group.", async () => {
+    await timed("groups", "Topics stand in for groups; one project carries one stable group.", async signal => {
       for (let n = 0; n < config.groups; n++) {
+        signal.throwIfAborted();
         const project = command(() => app.execute(actor, { kind: "project.create", requestId: crypto.randomUUID(),
           projectId: null, expectedRevision: app.workspace(actor).revision, payload: { name: `Drill group ${n + 1}` } })).project;
         projectIds.push(project.id);
@@ -323,10 +400,10 @@ export async function runLoadDrill(config: LoadDrillConfig, ports: DrillPorts = 
     // Static PR path: one monitor per group over an in-memory GitHub fixture, durable candidates from a poll,
     // then owner-enqueued pr.snapshot jobs. GitHub is read-only and never reached over the network.
     const candidates: { projectId: string; monitorId: string; candidateId: string }[] = [];
-    await timed("pr-snapshots", "In-memory GitHub fixture; immutable snapshot capture only, no GitHub writes.", async () => {
+    await timed("pr-snapshots", "In-memory GitHub fixture; immutable snapshot capture only, no GitHub writes.", async signal => {
       if (projectIds.length === 0) return { state: "not-run", detail: "no groups to monitor" };
-      const t0 = Date.now();
       for (let g = 0; g < projectIds.length; g++) {
+        signal.throwIfAborted();
         const projectId = projectIds[g]!;
         const count = Math.floor(config.prSnapshots / projectIds.length) + (g < config.prSnapshots % projectIds.length ? 1 : 0);
         if (count === 0) continue;
@@ -350,12 +427,12 @@ export async function runLoadDrill(config: LoadDrillConfig, ports: DrillPorts = 
       }
       let snapshots = 0;
       for (let start = 0; start < candidates.length; start += wave) {
+        signal.throwIfAborted();
         const ids = candidates.slice(start, start + wave).map(c => ({ projectId: c.projectId,
           id: enqueue(c.projectId, "pr.snapshot", "Drill PR snapshot", { monitorId: c.monitorId, candidateId: c.candidateId }, jobLimits).job.id }));
         await drain();
         snapshots += ids.filter(({ projectId, id }) => request(() => app.job(actor, projectId, id)).state === "succeeded").length;
       }
-      queueWaitMs = Date.now() - t0;
       succeededJobs += snapshots;
       advance(1000);
       return snapshots === config.prSnapshots && candidates.length === config.prSnapshots
@@ -363,10 +440,11 @@ export async function runLoadDrill(config: LoadDrillConfig, ports: DrillPorts = 
         : { state: "failed", detail: `candidates=${candidates.length} snapshots=${snapshots} expected=${config.prSnapshots}` };
     });
 
-    await timed("pr-alerts", "Scripted specialist/synthesis runs; alert intents wait for a Telegram binding, none are sent.", async () => {
+    await timed("pr-alerts", "Scripted specialist/synthesis runs; alert intents are admitted before any Telegram binding exists.", async signal => {
       if (candidates.length === 0) return { state: "not-run", detail: "no captured PR snapshots to review" };
       let reviews = 0;
       for (let start = 0; start < candidates.length; start += wave) {
+        signal.throwIfAborted();
         const ids = candidates.slice(start, start + wave).map(c => ({ projectId: c.projectId,
           id: enqueue(c.projectId, "pr.review", "Drill PR review", { monitorId: c.monitorId, candidateId: c.candidateId }, reviewLimits).job.id }));
         await drain();
@@ -387,10 +465,11 @@ export async function runLoadDrill(config: LoadDrillConfig, ports: DrillPorts = 
         : { state: "failed", detail: `reviews=${reviews} reports=${prReports} alerts=${counts.alerts} alertIntents=${alertIntents}` };
     });
 
-    await timed("memory-queries", "Reads committed claims only; empty stores answer without inference.", async () => {
+    await timed("memory-queries", "Reads committed claims only; empty stores answer without inference.", async signal => {
       if (projectIds.length === 0) return { state: "not-run", detail: "no groups to query" };
       let claims = 0;
       for (let n = 0; n < config.memoryQueries; n++) {
+        signal.throwIfAborted();
         const found = request(() => app.memory(actor, projectIds[n % projectIds.length]!, 0, 0, 0, ""));
         claims += (found as { claims?: unknown[] }).claims?.length ?? 0;
         advance(10);
@@ -398,23 +477,47 @@ export async function runLoadDrill(config: LoadDrillConfig, ports: DrillPorts = 
       return { state: "passed", detail: `queries=${config.memoryQueries} claims=${claims}` };
     });
 
-    await timed("deliveries", "Fixture send classifications; no Bot API traffic and no exactly-once claim.", async () => {
+    await timed("deliveries", "Fixture Telegram binding and transport; the DeliveryWorker claims, sends and records every committed intent. No Bot API traffic.", async signal => {
       if (projectIds.length === 0) return { state: "not-run", detail: "no groups to deliver to" };
+      // Owner binding through the Telegram channel's own bind/confirm commands (fixture identities, no Bot API).
+      const channel = new TelegramChannel(liveStore, appConfig, { now });
+      const owner = channel.authenticate(ownerToken);
+      const pending = command(() => channel.execute(owner, { kind: "telegram.bind", requestId: crypto.randomUUID(),
+        expectedRevision: channel.status(owner).binding.revision, payload: { telegramUserId: 4242, telegramChatId: 7777 } }));
+      command(() => channel.execute(owner, { kind: "telegram.confirm", requestId: crypto.randomUUID(), expectedRevision: pending.binding.revision,
+        payload: { telegramUserId: 4242, telegramChatId: 7777, challengeNonce: pending.binding.challengeNonce! } }));
       const modes = ["accept", "timeout_after_accept", "safe_failure", "reject"] as const;
-      const sender = new ScriptedTelegramSender();
-      sender.scripts = Array.from({ length: config.deliveries }, (_, n) => modes[n % modes.length]!);
+      const sender = new DrillSender();
+      const intentIds: string[] = [];
       for (let n = 0; n < config.deliveries; n++) {
+        signal.throwIfAborted();
         const projectId = projectIds[n % projectIds.length]!;
         const key = `drill/delivery-${String(n + 1).padStart(4, "0")}`;
-        command(() => app.execute(actor, { kind: "delivery.commit", requestId: crypto.randomUUID(), projectId,
-          expectedRevision: revisionOf(projectId), payload: { kind: "report", text: `Drill delivery ${n + 1}`, dedupeKey: key } }));
-        const result = sender.send({ chatId: 1, text: `Drill delivery ${n + 1}`, dedupeKey: key });
-        if (result.outcome === "sent") sent++;
-        else if (result.outcome === "unknown") unknown++;
-        else failed++;
+        sender.modes.set(key, modes[n % modes.length]!);
+        intentIds.push(command(() => app.execute(actor, { kind: "delivery.commit", requestId: crypto.randomUUID(), projectId,
+          expectedRevision: revisionOf(projectId), payload: { kind: "report", text: `Drill delivery ${n + 1}`, dedupeKey: key } })).intent.id);
         advance(100);
       }
-      return { state: sent + unknown + failed === config.deliveries ? "passed" : "failed", detail: `sent=${sent} unknown=${unknown} failed=${failed}` };
+      const worker = new DeliveryWorker(liveStore, { sender, now });
+      try {
+        // Bounded: each pump handles at most 32 claims; safe retries are bounded by the intent's own retry budget.
+        for (let round = 0; round < 16; round++) {
+          signal.throwIfAborted();
+          if (worker.pump().length === 0) break;
+          advance(1000);
+        }
+      } finally { worker.close(); }
+      const persisted = liveStore.read(tx => intentIds.map(id => ({
+        intent: JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM delivery_intents WHERE id = ?", id)!.record_json) as { status: string; nextAction: string },
+        attempts: tx.get<{ n: number }>("SELECT count(*) AS n FROM delivery_attempts WHERE intent_id = ?", id)!.n })));
+      sent = persisted.filter(p => p.intent.status === "sent").length;
+      unknown = persisted.filter(p => p.intent.status === "unknown").length;
+      failed = persisted.filter(p => p.intent.status === "failed").length;
+      deliveryAttempts = persisted.reduce((sum, p) => sum + p.attempts, 0);
+      if (persisted.some(p => p.intent.nextAction === "safe_retry_limit_reached")) limits.add("delivery-retry");
+      const settled = sent + unknown + failed;
+      return { state: settled === config.deliveries ? "passed" : "failed",
+        detail: `sent=${sent} unknown=${unknown} failed=${failed} attempts=${deliveryAttempts} unsettled=${config.deliveries - settled}` };
     });
 
     await timed("schedules", "Reminder occurrences ticked with an explicit clock, not host time.", async () => {
@@ -509,13 +612,14 @@ export async function runLoadDrill(config: LoadDrillConfig, ports: DrillPorts = 
         detail: `schema=${status.currentSchema} target=${status.target} engine=compatible fenced=false` };
     });
 
-    await timed("quarantine", "Quarantine is exercised and discarded; the drill never activates a restore over its own state.", async () => {
+    await timed("quarantine", "Quarantine is exercised and discarded; the drill never activates a restore over its own state.", async signal => {
       if (!verifiedBackupId) return { state: "not-run", detail: "no verified backup to restore into quarantine" };
-      return (ports.restore ?? quarantineRestorePort)({ app, actor, backupId: verifiedBackupId, now });
+      return (ports.restore ?? quarantineRestorePort)({ app, actor, backupId: verifiedBackupId, now, signal });
     });
 
-    await timed("network", "Global fetch is a throwing stub for the whole drill; any call is an escape.", async () =>
-      fetchCalls === 0 ? { state: "passed", detail: "fetchCalls=0" } : { state: "failed", detail: `fetchCalls=${fetchCalls}` });
+    await timed("network", "Global fetch is a throwing stub for the whole drill; any call or replaced guard is an escape.", async () =>
+      globalThis.fetch !== fetchGuard ? { state: "failed", detail: `fetch guard replaced during drill fetchCalls=${fetchCalls}` }
+        : fetchCalls === 0 ? { state: "passed", detail: "fetchCalls=0" } : { state: "failed", detail: `fetchCalls=${fetchCalls}` });
 
     await timed("disk-watermark", "Managed-state growth only; host disks outside state are out of scope.", async () => {
       const after = dirBytes(stateDir);
@@ -528,9 +632,17 @@ export async function runLoadDrill(config: LoadDrillConfig, ports: DrillPorts = 
     const stateBytesAfter = dirBytes(stateDir);
     const stateGrowthBytes = Math.max(0, stateBytesAfter - stateBytesBefore);
     const diskPressure = stateGrowthBytes > config.diskWatermarkBytes;
+    if (diskPressure) limits.add("disk-watermark");
+    const jobLimitEvents = liveStore.read(tx => ({
+      budget: tx.get<{ n: number }>("SELECT count(*) AS n FROM jobs WHERE state = 'blocked' AND json_extract(record_json, '$.reason') = 'budget_exhausted'")!.n,
+      deadline: tx.get<{ n: number }>("SELECT count(*) AS n FROM jobs WHERE state = 'failed' AND json_extract(record_json, '$.reason') = 'deadline'")!.n,
+    }));
+    if (jobLimitEvents.budget > 0) limits.add("job-budget");
+    if (jobLimitEvents.deadline > 0) limits.add("job-deadline");
+    const waits = [...enqueuedAt].flatMap(([id, at]) => admittedAt.has(id) ? [Math.max(0, Math.round(admittedAt.get(id)! - at))] : []);
     const failedLegs = legs.filter(l => l.state === "failed").length;
     const blocked = legs.filter(l => l.state === "blocked");
-    const skipped = legs.some(l => l.state === "not-run" && l.detail.startsWith("skipped:"));
+    const skipped = halted !== null;
     const engineBlocked = blocked.some(l => /native_snapshot_unavailable|engine_unavailable|unsupported_engine/.test(l.detail));
     const pendingOnly = blocked.length > 0 && blocked.every(l => l.detail.startsWith("pending "));
     const outcome = failedLegs > 0 ? "failed" : blocked.length > 0 || skipped ? "blocked" : "passed";
@@ -540,14 +652,17 @@ export async function runLoadDrill(config: LoadDrillConfig, ports: DrillPorts = 
       : skipped ? "retry-bounded-drill"
       : pendingOnly ? "integrate-pending-contract"
       : blocked.length > 0 ? "resolve-blocked-work" : "none";
-    const measurements: DrillMeasurements = { peakRssBytes: peakRss, stateBytesBefore,
-      stateBytesAfter, stateGrowthBytes, diskPressure, queueWaitMs, stopAckMs, fetchCalls,
-      sentDeliveries: sent, unknownDeliveries: unknown, failedDeliveries: failed,
+    const measurements: DrillMeasurements = { peakRssBytes: peakRss(), stateBytesBefore,
+      stateBytesAfter, stateGrowthBytes, diskPressure,
+      queueWaitMaxMs: waits.length ? Math.max(...waits) : 0, queueWaitP95Ms: percentile(waits, 0.95), queueWaitSamples: waits.length,
+      stopAckMs, fetchCalls, sentDeliveries: sent, unknownDeliveries: unknown, failedDeliveries: failed, deliveryAttempts,
       succeededJobs, waitingJobs, cancelledJobs, prReports, alertIntents, exportBytes, backupBytes,
       commandAckMaxMs, requestMaxMs, commands };
     const fixtureHonesty = [
       "PR reads come from an in-memory GitHub fixture and reviews from the scripted run port; no model judged any code.",
-      "Delivery outcomes classify a scripted sender and PR alert intents wait unbound; no Bot API evidence is claimed.",
+      "Deliveries ran through the DeliveryWorker over a fixture binding and scripted transport; no Bot API evidence is claimed.",
+      "peakRssBytes is the process high-water RSS (getrusage maxrss), so it includes memory in use before the drill started.",
+      "Queue wait covers owner-enqueued drill jobs only (enqueue receipt to first work invocation); schedule-produced jobs are not sampled.",
       fixtureEngine
         ? "Backup and upgrade preflight used a fixture engine declaring the snapshot contract; no Schway engine was exercised."
         : "Backup and upgrade preflight used an injected native port; its engine identity is the caller's claim.",
@@ -559,10 +674,12 @@ export async function runLoadDrill(config: LoadDrillConfig, ports: DrillPorts = 
     const record: LoadDrillRecord = { schema: "jit.ops.drill/v1", id: crypto.randomUUID(),
       observedAt: new Date(Date.now()).toISOString(), installationLabel: label,
       versions: testedRevisions(store.read(tx => tx.get<{ user_version: number }>("PRAGMA user_version")!).user_version),
-      config: { ...config }, legs, measurements, fixtureHonesty, outcome, nextAction };
+      config: { ...config }, legs, measurements,
+      exhaustedLimits: exhaustedLimitKinds.filter(kind => limits.has(kind)), fixtureHonesty, outcome, nextAction };
     return { record, root };
   } finally {
-    globalThis.fetch = realFetch;
+    // Compare-and-restore: never clobber a fetch someone else installed after the guard.
+    if (globalThis.fetch === fetchGuard) globalThis.fetch = realFetch;
     try { await queue?.idle(); } catch { /* Disposable teardown; the record already carries leg states. */ }
     try { queue?.close(); } catch { /* See above. */ }
     try { store?.close(); } catch { /* See above. */ }
