@@ -656,7 +656,7 @@ export function exportDetailPage(state: { project: Project; manifest: import("./
     <p>exclusions ${m.exclusions.length} · missing ${m.missingRefs.length} · การลบที่ค้าง ${m.pendingDeletions.length} · tombstones ${m.lifecycle.tombstonesApplied}</p>
     <p>สำรองที่ยังเก็บข้อมูลนี้: ${m.residuals.backups.length ? escape(m.residuals.backups.join(", ")) : "ไม่มี"} · ภายนอก: ${escape(m.residuals.external.join(", "))}</p>
     <p>รูปแบบ ${m.formatVersion} · schema ${m.appSchema} · ไม่ใช่สำเนาสำรองที่กู้คืนได้ และไม่ได้ลบสำเนาภายนอก · ไม่มีความลับหรือ native session · ข้อความดิบ ${m.disclosure.rawHistory === "included" ? "รวม" : "เฉพาะ metadata"}</p>
-    <p><small>${m.artifact ? `hash ${escape(m.artifact.hash)} · ${m.artifact.bytes} bytes · ${escape(m.artifact.path)}` : `ส่งออกไม่สำเร็จ: ${escape(m.failure?.reason ?? "export_failed")} (ขั้น ${escape(m.failure?.stage ?? "stage")}) · ไม่มีไฟล์ถูกเผยแพร่`}</small></p></article>
+    <p><small>${m.artifact ? `hash ${escape(m.artifact.hash)} · ${m.artifact.bytes} bytes · ${m.artifact.storage === "sqlite" ? `<a href="${escape(m.artifact.downloadPath)}" download>ดาวน์โหลด JSON</a>` : `ไฟล์รูปแบบเดิม ${escape(m.artifact.path)} (ไม่ได้ยืนยัน fsync)`}` : `ส่งออกไม่สำเร็จ: ${escape(m.failure?.reason ?? "export_failed")} (ขั้น ${escape(m.failure?.stage ?? "stage")}) · ไม่มีไฟล์ถูกเผยแพร่`}</small></p></article>
     <p><a href="/projects/${project.id}/exports">กลับไปรายการส่งออก</a></p></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
 }
 

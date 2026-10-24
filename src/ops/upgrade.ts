@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { AppError } from "../errors";
+import { stripExportsFromSnapshot } from "./export";
 import { lookupSource, requireId } from "../sources";
 import { TransactionStore, type AppTransaction } from "../store";
 import {
@@ -171,7 +172,8 @@ export function prepareUpgrade(tx: AppTransaction, store: TransactionStore, inpu
     throw new AppError(plan.reason === "engine_unavailable" ? "engine_unavailable" : "unsupported_upgrade", 409);
   }
   // Fail-closed snapshot: an unavailable engine snapshot never yields a usable recovery point.
-  const snapshot = store.snapshotBytes();
+  // The recovery backup is an ordinary backup: export artifacts are stripped from it.
+  const snapshot = stripExportsFromSnapshot(store.snapshotBytes());
   const hash = createHash("sha256").update(snapshot).digest("hex");
   const native = resolveNativeSnapshot(input.engine);
   if (native.state !== "valid") {

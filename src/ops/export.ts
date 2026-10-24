@@ -1,6 +1,6 @@
+import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { closeSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, renameSync, statSync, unlinkSync, writeSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { closeSync, constants, lstatSync, openSync, readFileSync, unlinkSync } from "node:fs";
 import { AppError } from "../errors";
 import { lookupSource, requireId } from "../sources";
 import type { AppTransaction } from "../store";
@@ -19,7 +19,7 @@ export const exportSchemaVersion = 20;
  * and metadata-only message sources when history is not selected. See docs/contracts/ops-project-export-v1.md.
  */
 export const exportFormatVersion = 2 as const;
-/** Per-project registry bounds; `maxBytes` is also the absolute ceiling for one artifact. */
+/** Per-project bounds on valid exports (count and total artifact bytes); `maxBytes` is also the ceiling for one artifact. Failed records are bounded separately by `maxExports`. */
 export const exportRetention = Object.freeze({ maxExports: 20, maxBytes: 32 * 1024 * 1024 });
 /** Per-collection read bounds; anything beyond a bound is reported in `completeness`, never silently dropped. */
 export const exportCollectionBounds = Object.freeze({
@@ -41,10 +41,9 @@ export interface CreateExportCommand {
 export type ExportCommand = CreateExportCommand;
 
 /** Bounded, secret-free failure codes a durable failed export may carry. */
-export const exportFailureReasons = ["export_storage_unavailable", "unsafe_export_destination", "export_fenced_by_lifecycle",
-  "export_too_large", "export_interrupted", "export_failed"] as const;
+export const exportFailureReasons = ["export_storage_unavailable", "export_fenced_by_lifecycle", "export_too_large", "export_failed"] as const;
 export type ExportFailureReason = typeof exportFailureReasons[number];
-/** Where a failed export stopped: staging the temp file + registration, publishing it, or committing it valid. */
+/** Where a failed export stopped: building the artifact, the lifecycle fence before publication, or the committing write. */
 export interface ExportFailure { reason: ExportFailureReason; stage: "stage" | "publish" | "commit" }
 
 export interface ExportExclusion { kind: "source" | "claim" | "job" | "report" | "context" | "message"; id: string; reason: string }
@@ -82,17 +81,19 @@ interface ExportManifestBase {
   disclosure: ExportDisclosure;
   retention: { maxExports: number; maxBytes: number; pruned: string[] };
 }
-/** Artifact reference; `directorySync` is `unsupported` only where the platform refuses directory fsync. */
-export interface ExportArtifactRef { path: string; bytes: number; hash: string; directorySync: "synced" | "unsupported" }
-/** A committed export whose artifact passed its lifecycle check before being renamed into place. */
+/**
+ * Artifact reference. Format 2 stores the bytes in SQLite beside the registration and serves
+ * them only through the owner-authenticated download path. Format-1 records kept a plain file
+ * written without fsync; they read back as `legacy_file` with `directorySync: "legacy_unverified"`.
+ */
+export type ExportArtifactRef =
+  | { storage: "sqlite"; bytes: number; hash: string; downloadPath: string }
+  | { storage: "legacy_file"; path: string; bytes: number; hash: string; directorySync: "legacy_unverified" };
+/** A committed export: its artifact exists iff this row is valid. */
 export interface ValidExportManifest extends ExportManifestBase { state: "valid"; failure: null; artifact: ExportArtifactRef }
 /** A durable failed export: no artifact exists, coverage is empty and the reason is a bounded code. */
 export interface FailedExportManifest extends ExportManifestBase { state: "failed"; failure: ExportFailure; artifact: null }
-/** Readers only ever expose valid or failed records; staged registrations are internal. */
 export type ExportManifest = ValidExportManifest | FailedExportManifest;
-/** Internal registration committed before publication; never returned by readers. */
-interface StagedExportManifest extends ExportManifestBase { state: "staged"; failure: null; artifact: ExportArtifactRef }
-type StoredExportManifest = ExportManifest | StagedExportManifest;
 
 export interface ExportReceipt { manifest: ValidExportManifest; duplicate: boolean }
 export interface ExportPreview {
@@ -100,31 +101,6 @@ export interface ExportPreview {
   counts: ExportManifest["counts"];
 }
 
-/**
- * Filesystem operations used to stage and publish artifacts. Production uses
- * {@link nodeExportFileOps}; deterministic tests inject faults (short writes, fsync errors).
- */
-export interface ExportFileOps {
-  write(fd: number, buffer: Uint8Array, offset: number, length: number): number;
-  fsync(fd: number): void;
-  rename(from: string, to: string): void;
-  /** fsyncs a directory; returns `unsupported` only for platform "not supported" errors, throws otherwise. */
-  fsyncDir(dir: string): "synced" | "unsupported";
-}
-const unsupportedDirSync = new Set(["EINVAL", "ENOTSUP", "EOPNOTSUPP"]);
-export const nodeExportFileOps: ExportFileOps = Object.freeze({
-  write: (fd: number, buffer: Uint8Array, offset: number, length: number) => writeSync(fd, buffer, offset, length),
-  fsync: (fd: number) => fsyncSync(fd),
-  rename: (from: string, to: string) => renameSync(from, to),
-  fsyncDir: (dir: string): "synced" | "unsupported" => {
-    const fd = openSync(dir, "r");
-    try { fsyncSync(fd); return "synced"; }
-    catch (error) {
-      if (unsupportedDirSync.has((error as NodeJS.ErrnoException).code ?? "")) return "unsupported";
-      throw error;
-    } finally { closeSync(fd); }
-  },
-});
 /** Installation limits an Application may tighten (tests use small ceilings). */
 export interface ExportLimits { maxExports: number; maxBytes: number }
 
@@ -132,8 +108,6 @@ const residualExternal = ["telegram_delivery_copies_not_exported_or_deleted", "p
 const lifecycleNote = "รวมเฉพาะ generation ที่ยัง active; ที่ถูกลบ/ลืม/แก้อยู่ใน exclusions";
 const disclosureFor = (scope: ExportScope): ExportDisclosure => ({ restorableBackup: false, externalCopiesDeleted: false,
   secrets: "excluded", nativeSessions: "excluded", rawHistory: scope.includeHistory ? "included" : "metadata_only" });
-const exportFileName = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json$/;
-const exportTempName = /^\.[0-9a-f-]{36}\.json\.tmp(-[0-9]+)?$/;
 /** Credential shapes that never leave through PR-derived text (auth headers, Telegram/GitHub/API tokens, private keys). */
 export const exportSecretLike = /bearer\s|authorization\s*:|x-telegram|x-api-key|api[_-]?key\s*[:=]|bot[_ -]?token|[0-9]{5,}:[A-Za-z0-9_-]{8,}|\bgh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,}|\bsk-[A-Za-z0-9_-]{16,}|-----BEGIN [A-Z ]*PRIVATE KEY/i;
 const redacted = "(redacted: payload_hygiene_secret)";
@@ -148,11 +122,8 @@ export function sanitizeExportStrings<T>(value: T): T {
   return value;
 }
 
-/** Deterministic artifact and temp paths for one export id inside the managed directory. */
-export function exportPaths(dir: string, id: string): { finalPath: string; tempPath: string } {
-  requireId(id);
-  return { finalPath: join(dir, `${id}.json`), tempPath: join(dir, `.${id}.json.tmp`) };
-}
+/** Owner-authenticated download path serving one artifact from its committed row. */
+export const downloadPath = (projectId: string, id: string) => `/projects/${projectId}/exports/${id}/artifact`;
 
 const exact = (value: unknown, keys: string[]) =>
   !!value && typeof value === "object" && !Array.isArray(value) &&
@@ -170,41 +141,67 @@ export function exportIdentity(command: ExportCommand): string {
   return createHash("sha256").update(JSON.stringify([command.kind, command.projectId, command.expectedRevision, command.payload])).digest("hex");
 }
 
-export function exportDirFor(databasePath: string): string {
-  return `${databasePath}.exports`;
-}
-
 const emptyCompleteness = (): ExportManifestBase["completeness"] => ({ complete: true, collections: {} });
 
-/** Normalizes stored manifests; format-1 records predate failure/disclosure/completeness and always embedded message text. */
-function parseStored(json: string): StoredExportManifest {
-  const raw = JSON.parse(json) as StoredExportManifest & { formatVersion?: number; failure?: ExportFailure | null; disclosure?: ExportDisclosure;
-    completeness?: ExportManifestBase["completeness"] };
+/**
+ * Normalizes stored manifests. Format-1 records (written by the pre-format-2 writer) predate
+ * failure/disclosure/completeness, always embedded message text and stored their artifact as
+ * a plain file without any fsync, so their artifact reads back as `legacy_file` with
+ * `directorySync: "legacy_unverified"`.
+ */
+function parseStored(json: string): ExportManifest {
+  const raw = JSON.parse(json) as Omit<ExportManifest, "artifact"> & { formatVersion?: number; failure?: ExportFailure | null; disclosure?: ExportDisclosure;
+    completeness?: ExportManifestBase["completeness"]; artifact: (Partial<ExportArtifactRef> & { path?: string; bytes: number; hash: string }) | null };
   if (raw.contract !== exportContract) throw new AppError("export_corrupt", 500);
   const legacy = raw.formatVersion === undefined;
+  const artifact: ExportArtifactRef | null = !raw.artifact ? null
+    : raw.artifact.storage === "sqlite" ? { storage: "sqlite", bytes: raw.artifact.bytes, hash: raw.artifact.hash, downloadPath: downloadPath(raw.projectId, raw.id) }
+    : { storage: "legacy_file", path: raw.artifact.path ?? "", bytes: raw.artifact.bytes, hash: raw.artifact.hash, directorySync: "legacy_unverified" };
   return { ...raw, formatVersion: raw.formatVersion ?? 1, failure: raw.failure ?? null,
     counts: { ...raw.counts, prReports: raw.counts?.prReports ?? 0 },
     completeness: raw.completeness ?? { ...emptyCompleteness(), complete: !legacy },
-    artifact: raw.artifact ? { ...raw.artifact, directorySync: raw.artifact.directorySync ?? "synced" } : null,
-    disclosure: raw.disclosure ?? { ...disclosureFor(raw.scope), rawHistory: legacy ? "included" : disclosureFor(raw.scope).rawHistory } } as StoredExportManifest;
+    artifact,
+    disclosure: raw.disclosure ?? { ...disclosureFor(raw.scope), rawHistory: legacy ? "included" : disclosureFor(raw.scope).rawHistory } } as ExportManifest;
 }
 
-/** Reads one valid or failed export; staged (not yet committed-valid) registrations are not exposed. */
+/** Reads one registered export (valid or failed). Pruned or deleted exports are `export_not_found`. */
 export function readExportManifest(tx: AppTransaction, projectId: string, id: string): ExportManifest {
   requireId(projectId); requireId(id);
   const row = tx.get<{ record_json: string }>("SELECT record_json FROM export_artifacts WHERE id = ? AND project_id = ?", id, projectId);
   if (!row) throw new AppError("export_not_found", 404);
-  const manifest = parseStored(row.record_json);
-  if (manifest.state === "staged") throw new AppError("export_not_found", 404);
-  return manifest;
+  return parseStored(row.record_json);
 }
 
-/** Lists valid and failed exports for one project, oldest first; staged registrations are skipped. */
+/** Lists valid and failed exports for one project, oldest first. */
 export function listExportArtifacts(tx: AppTransaction, projectId: string, limit = 50): ExportManifest[] {
   requireId(projectId);
-  return tx.all<{ record_json: string }>(
-    "SELECT record_json FROM export_artifacts WHERE project_id = ? AND coalesce(json_extract(record_json, '$.state'), 'valid') != 'staged' ORDER BY created_at, id LIMIT ?",
-    projectId, Math.min(Math.max(limit, 1), 100)).map(row => parseStored(row.record_json) as ExportManifest);
+  return tx.all<{ record_json: string }>("SELECT record_json FROM export_artifacts WHERE project_id = ? ORDER BY created_at, rowid LIMIT ?",
+    projectId, Math.min(Math.max(limit, 1), 100)).map(row => parseStored(row.record_json));
+}
+
+/**
+ * Reads the committed artifact bytes of one valid export and verifies its sha256. Format-2
+ * bytes come from the same SQLite row family as the registration, so an artifact exists iff
+ * its committed row is valid. Legacy format-1 files are read without following symlinks.
+ */
+export function readExportArtifact(tx: AppTransaction, projectId: string, id: string): { manifest: ValidExportManifest; body: Uint8Array } {
+  const manifest = readExportManifest(tx, projectId, id);
+  if (manifest.state !== "valid") throw new AppError("export_failed_no_artifact", 409);
+  let body: Uint8Array;
+  if (manifest.artifact.storage === "sqlite") {
+    const row = hasBodies(tx) ? tx.get<{ body: Uint8Array }>("SELECT body FROM export_artifact_bodies WHERE id = ?", id) : null;
+    if (!row) throw new AppError("export_corrupt", 500);
+    body = row.body;
+  } else {
+    try {
+      const fd = openSync(manifest.artifact.path, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try { body = readFileSync(fd); } finally { closeSync(fd); }
+    } catch { throw new AppError("export_artifact_unavailable", 410); }
+  }
+  if (body.length !== manifest.artifact.bytes || createHash("sha256").update(body).digest("hex") !== manifest.artifact.hash) {
+    throw new AppError("export_corrupt", 500);
+  }
+  return { manifest, body };
 }
 
 interface Assembled {
@@ -520,96 +517,18 @@ export function exportPreview(tx: AppTransaction, projectId: string, scope: Expo
   return { manifest: { ...base, id: null, state: "valid", failure: null, artifact: null }, counts: assembled.counts };
 }
 
-const storedBytes = (json: string): number => {
-  try { return (JSON.parse(json) as StoredExportManifest).artifact?.bytes ?? 0; } catch { return 0; }
-};
-
-/** Retires over-bound registrations in the transaction; returns file paths to remove only after commit. */
-function enforceExportRetention(tx: AppTransaction, exportDir: string, projectId: string, incomingBytes: number, limits: ExportLimits): { pruned: string[]; files: string[] } {
-  const existing = tx.all<{ id: string; record_json: string }>(
-    "SELECT id, record_json FROM export_artifacts WHERE project_id = ? ORDER BY created_at, id", projectId);
-  let totalBytes = incomingBytes + existing.reduce((sum, row) => sum + storedBytes(row.record_json), 0);
-  const pruned: string[] = [];
-  const retire = (row: { id: string; record_json: string }) => {
-    tx.run("DELETE FROM export_artifacts WHERE id = ?", row.id);
-    pruned.push(row.id);
-    totalBytes -= storedBytes(row.record_json);
-  };
-  const overCount = Math.max(0, existing.length + 1 - limits.maxExports);
-  for (const row of existing.slice(0, overCount)) retire(row);
-  for (const row of existing.slice(overCount)) {
-    if (totalBytes <= limits.maxBytes) break;
-    retire(row);
-  }
-  return { pruned, files: pruned.flatMap(id => { const paths = exportPaths(exportDir, id); return [paths.finalPath, paths.tempPath]; }) };
+/** Artifact bytes live beside registrations; deleting a registration cascades to its bytes. */
+export function ensureExportBodies(tx: AppTransaction): void {
+  tx.run(`CREATE TABLE IF NOT EXISTS export_artifact_bodies (
+    id TEXT PRIMARY KEY REFERENCES export_artifacts(id) ON DELETE CASCADE,
+    body BLOB NOT NULL
+  )`);
+}
+function hasBodies(tx: AppTransaction): boolean {
+  return !!tx.get("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'export_artifact_bodies'");
 }
 
-function serviceUid(): number | null {
-  try {
-    const getuid = (process as unknown as { getuid?: () => number }).getuid;
-    return typeof getuid === "function" ? getuid() : null;
-  } catch { return null; }
-}
-
-/**
- * Creates (0700) or verifies the managed export directory. A symlink, non-directory,
- * group/world-accessible or foreign-owned directory fails closed so no artifact is
- * written through a redirected or shared path.
- */
-export function ensureExportDir(dir: string): void {
-  try { mkdirSync(dir, { recursive: true, mode: 0o700 }); } catch { throw new AppError("export_storage_unavailable", 503); }
-  let stats: ReturnType<typeof lstatSync>;
-  try { stats = lstatSync(dir); } catch { throw new AppError("export_storage_unavailable", 503); }
-  const uid = serviceUid();
-  if (stats.isSymbolicLink() || !stats.isDirectory() || (stats.mode & 0o077) !== 0 || (uid !== null && stats.uid !== uid)) {
-    throw new AppError("unsafe_export_destination", 409);
-  }
-}
-
-const unlinkQuietly = (path: string) => { try { if (!lstatSync(path).isDirectory()) unlinkSync(path); } catch { /* Already absent. */ } };
-const exists = (path: string) => { try { lstatSync(path); return true; } catch { return false; } };
-
-/**
- * Crash recovery for the commit-gated publish protocol (bounded scan, any project):
- * a `staged` registration never committed valid, so it becomes a failed export
- * (`export_interrupted`) and its temp/final files are removed; a `valid` registration whose
- * file never reached the final path but whose temp file exists finishes its rename.
- */
-export function reconcileExports(tx: AppTransaction, dir: string, ops: ExportFileOps = nodeExportFileOps): void {
-  for (const row of tx.all<{ id: string; record_json: string }>(
-    "SELECT id, record_json FROM export_artifacts WHERE json_extract(record_json, '$.state') = 'staged' ORDER BY created_at, id LIMIT 100")) {
-    let staged: StoredExportManifest;
-    try { staged = parseStored(row.record_json); } catch { continue; }
-    const paths = exportPaths(dir, row.id);
-    unlinkQuietly(paths.tempPath); unlinkQuietly(paths.finalPath);
-    const failed: FailedExportManifest = { ...staged, coverage: { sources: [], claims: [], truncated: false },
-      state: "failed", failure: { reason: "export_interrupted", stage: "publish" }, artifact: null };
-    tx.run("UPDATE export_artifacts SET record_json = ? WHERE id = ?", JSON.stringify(failed), row.id);
-  }
-  for (const row of tx.all<{ id: string }>(
-    "SELECT id FROM export_artifacts WHERE coalesce(json_extract(record_json, '$.state'), 'valid') = 'valid' ORDER BY created_at DESC, id LIMIT 200")) {
-    const paths = exportPaths(dir, row.id);
-    if (!exists(paths.finalPath) && exists(paths.tempPath)) {
-      try { ops.rename(paths.tempPath, paths.finalPath); ops.fsyncDir(dir); } catch { /* Retried on the next reconcile. */ }
-    }
-  }
-}
-
-/** Removes artifacts and temp files with no live registration (valid or staged), left by crashes or retention. */
-function sweepOrphanExports(tx: AppTransaction, dir: string): void {
-  let names: string[];
-  try { names = readdirSync(dir).slice(0, 500); } catch { return; }
-  for (const name of names) {
-    const temp = exportTempName.test(name);
-    if (!temp && !exportFileName.test(name)) continue;
-    const id = temp ? name.slice(1, 37) : name.slice(0, 36);
-    const state = tx.get<{ state: string | null }>("SELECT coalesce(json_extract(record_json, '$.state'), 'valid') AS state FROM export_artifacts WHERE id = ?", id)?.state;
-    if (state === "staged" || (state === "valid" && (!temp || !exists(join(dir, `${id}.json`))))) continue;
-    unlinkQuietly(join(dir, name));
-  }
-}
-
-/** Lifecycle generation of one project's exportable state; any change between staging and commit fences the artifact. */
+/** Lifecycle generation of one project's exportable state; a change between assembly and publication fences the artifact. */
 export function exportLifecycleMark(tx: AppTransaction, projectId: string): string {
   const parts = [
     tx.get<{ revision: number }>("SELECT revision FROM projects WHERE id = ?", projectId)?.revision ?? null,
@@ -622,153 +541,149 @@ export function exportLifecycleMark(tx: AppTransaction, projectId: string): stri
   return createHash("sha256").update(JSON.stringify(parts)).digest("hex");
 }
 
-/** A staged export: registration (`staged`) in the open transaction and a complete private temp file. */
-export interface StagedExport {
-  manifest: StagedExportManifest;
-  tempPath: string;
-  finalPath: string;
-  dir: string;
+/** An assembled, size-checked artifact not yet registered; nothing is visible until {@link registerExport}. */
+export interface BuiltExport {
+  input: { id: string; now: number; projectId: string; projectRevision: number; scope: ExportScope };
+  assembled: Assembled;
+  body: Uint8Array;
+  hash: string;
   lifecycleMark: string;
-  prunedFiles: string[];
-}
-
-/** Writes every byte (short writes loop; a zero/negative/invalid count fails) and verifies size on disk. */
-function writeFully(ops: ExportFileOps, fd: number, bytes: Uint8Array): void {
-  let offset = 0;
-  while (offset < bytes.length) {
-    const written = ops.write(fd, bytes, offset, bytes.length - offset);
-    if (!Number.isSafeInteger(written) || written <= 0 || written > bytes.length - offset) throw new Error("short_write");
-    offset += written;
-  }
-  ops.fsync(fd);
-  if (fstatSync(fd).size !== bytes.length) throw new Error("size_mismatch");
+  limits: ExportLimits;
 }
 
 /**
- * Stages one export inside the caller transaction: reconciles crash leftovers, lifecycle-
- * checks every included ref, rejects artifacts above `limits.maxBytes`, writes the artifact
- * fully to an exclusive 0600 temp file (fsynced, size-verified, directory fsynced), retires
- * over-bound registrations and registers the manifest as `staged`. Readers never expose a
- * staged row. On any error after the temp file is created the temp file is removed before
- * rethrowing; callers still call {@link discardExport} if the transaction does not commit.
+ * Builds one export inside the caller transaction: takes the lifecycle mark, assembles and
+ * lifecycle-checks every included ref, and rejects artifacts above `limits.maxBytes`
+ * (`export_too_large`). Writes nothing.
  */
-export function stageExport(tx: AppTransaction, input: {
-  id: string; now: number; projectId: string; projectRevision: number; scope: ExportScope;
-  exportDir: string; note: string; ops?: ExportFileOps; limits?: ExportLimits;
-}): StagedExport {
-  const ops = input.ops ?? nodeExportFileOps, limits = input.limits ?? exportRetention;
-  const { finalPath, tempPath } = exportPaths(input.exportDir, input.id);
-  ensureExportDir(input.exportDir);
-  reconcileExports(tx, input.exportDir, ops);
-  sweepOrphanExports(tx, input.exportDir);
+export function buildExport(tx: AppTransaction, input: {
+  id: string; now: number; projectId: string; projectRevision: number; scope: ExportScope; note: string; limits?: ExportLimits;
+}): BuiltExport {
+  requireId(input.id);
+  const limits = input.limits ?? exportRetention;
   const lifecycleMark = exportLifecycleMark(tx, input.projectId);
   const assembled = assembleExport(tx, input.projectId, input.scope);
   const body = Buffer.from(JSON.stringify({ contract: exportContract, formatVersion: exportFormatVersion, exportId: input.id, projectId: input.projectId,
     exportedAt: input.now, scope: input.scope, disclosure: disclosureFor(input.scope), note: input.note, data: assembled.data }));
   if (body.length > limits.maxBytes) throw new AppError("export_too_large", 413);
-  const hash = createHash("sha256").update(body).digest("hex");
-  let fd: number;
-  // "wx" is O_CREAT|O_EXCL: an existing file or planted symlink at the temp path fails instead of being followed.
-  try { fd = openSync(tempPath, "wx", 0o600); } catch { throw new AppError("export_storage_unavailable", 503); }
+  return { input: { id: input.id, now: input.now, projectId: input.projectId, projectRevision: input.projectRevision, scope: { ...input.scope } },
+    assembled, body, hash: createHash("sha256").update(body).digest("hex"), lifecycleMark, limits };
+}
+
+const storedBytes = (json: string): number => {
+  try { return (JSON.parse(json) as { artifact?: { bytes?: number } | null }).artifact?.bytes ?? 0; } catch { return 0; }
+};
+const storedState = (json: string): string => {
+  try { return (JSON.parse(json) as { state?: string }).state ?? "valid"; } catch { return "valid"; }
+};
+
+/** Deletes registrations (bytes cascade); a legacy format-1 file is unlinked first so no data file outlives its row. */
+function retire(tx: AppTransaction, row: { id: string; record_json: string }): void {
   try {
-    try { writeFully(ops, fd, body); } finally { closeSync(fd); }
-    let directorySync: "synced" | "unsupported";
-    try { directorySync = ops.fsyncDir(input.exportDir); } catch { throw new AppError("export_storage_unavailable", 503); }
-    const { pruned, files } = enforceExportRetention(tx, input.exportDir, input.projectId, body.length, limits);
-    const manifest: StagedExportManifest = {
-      ...manifestBase(tx, input, assembled),
-      retention: { maxExports: limits.maxExports, maxBytes: limits.maxBytes, pruned },
-      state: "staged", failure: null,
-      artifact: { path: finalPath, bytes: body.length, hash, directorySync },
-    };
-    tx.run("INSERT INTO export_artifacts VALUES (?, ?, ?, ?)", manifest.id, input.projectId, manifest.createdAt, JSON.stringify(manifest));
-    return { manifest, tempPath, finalPath, dir: input.exportDir, lifecycleMark, prunedFiles: files };
-  } catch (error) {
-    unlinkQuietly(tempPath);
-    throw error instanceof AppError ? error : new AppError("export_storage_unavailable", 503);
-  }
+    const raw = JSON.parse(row.record_json) as { formatVersion?: number; artifact?: { path?: string } | null };
+    if (raw.formatVersion === undefined && raw.artifact?.path) {
+      try { if (!lstatSync(raw.artifact.path).isDirectory()) unlinkSync(raw.artifact.path); } catch { /* Already absent. */ }
+    }
+  } catch { /* Corrupt rows are still retired. */ }
+  if (hasBodies(tx)) tx.run("DELETE FROM export_artifact_bodies WHERE id = ?", row.id);
+  tx.run("DELETE FROM export_artifacts WHERE id = ?", row.id);
 }
 
 /**
- * Second transaction of the commit-gated protocol: re-checks that the registration is still
- * `staged` and that the project lifecycle generation (revision, deletion ledger/operations,
- * suppression, source availability, claim status) is unchanged, then marks it `valid`.
- * A change throws `export_fenced_by_lifecycle`. The file reaches its final path only after
- * this transaction commits ({@link publishExport}).
+ * Publishes a built export in the same transaction that will commit it: re-checks the
+ * lifecycle mark (`export_fenced_by_lifecycle` on any change), inserts the valid registration
+ * and its bytes, then applies retention computed from that final outcome (oldest valid
+ * exports beyond `maxExports` or `maxBytes`, never the new one). A rollback undoes all of it.
  */
-export function commitExport(tx: AppTransaction, staged: StagedExport): ValidExportManifest {
-  const row = tx.get<{ record_json: string }>("SELECT record_json FROM export_artifacts WHERE id = ?", staged.manifest.id);
-  const current = row ? parseStored(row.record_json) : null;
-  if (!current || current.state !== "staged" || exportLifecycleMark(tx, staged.manifest.projectId) !== staged.lifecycleMark) {
-    throw new AppError("export_fenced_by_lifecycle", 409);
+export function registerExport(tx: AppTransaction, built: BuiltExport): ValidExportManifest {
+  const { input, limits } = built;
+  if (exportLifecycleMark(tx, input.projectId) !== built.lifecycleMark) throw new AppError("export_fenced_by_lifecycle", 409);
+  ensureExportBodies(tx);
+  // Bytes whose registration was removed without the cascade (foreign keys off) never stay retained.
+  tx.run("DELETE FROM export_artifact_bodies WHERE id NOT IN (SELECT id FROM export_artifacts)");
+  const valid = tx.all<{ id: string; record_json: string }>(
+    "SELECT id, record_json FROM export_artifacts WHERE project_id = ? ORDER BY created_at, rowid", input.projectId)
+    .filter(row => storedState(row.record_json) === "valid");
+  let count = valid.length + 1, bytes = built.body.length + valid.reduce((sum, row) => sum + storedBytes(row.record_json), 0);
+  const victims: { id: string; record_json: string }[] = [];
+  for (const row of valid) {
+    if (count <= limits.maxExports && bytes <= limits.maxBytes) break;
+    victims.push(row); count -= 1; bytes -= storedBytes(row.record_json);
   }
-  const manifest: ValidExportManifest = { ...staged.manifest, state: "valid", failure: null };
-  tx.run("UPDATE export_artifacts SET record_json = ? WHERE id = ?", JSON.stringify(manifest), manifest.id);
+  const manifest: ValidExportManifest = {
+    ...manifestBase(tx, input, built.assembled),
+    retention: { maxExports: limits.maxExports, maxBytes: limits.maxBytes, pruned: victims.map(v => v.id) },
+    state: "valid", failure: null,
+    artifact: { storage: "sqlite", bytes: built.body.length, hash: built.hash, downloadPath: downloadPath(input.projectId, input.id) },
+  };
+  tx.run("INSERT INTO export_artifacts VALUES (?, ?, ?, ?)", manifest.id, input.projectId, manifest.createdAt, JSON.stringify(manifest));
+  tx.run("INSERT INTO export_artifact_bodies (id, body) VALUES (?, ?)", manifest.id, built.body);
+  for (const victim of victims) retire(tx, victim);
   return manifest;
 }
 
 /**
- * After the valid registration commits: verifies the temp file's size, renames it into
- * place (rename(2) replaces, never follows, a planted final-path entry) and fsyncs the
- * directory. Errors other than a platform "unsupported" directory fsync throw
- * `export_storage_unavailable`; the caller then discards the file and records the failure.
- */
-export function publishExport(staged: StagedExport, ops: ExportFileOps = nodeExportFileOps): void {
-  try {
-    if (statSync(staged.tempPath).size !== staged.manifest.artifact.bytes) throw new Error("size_mismatch");
-    ops.rename(staged.tempPath, staged.finalPath);
-    ops.fsyncDir(staged.dir);
-  } catch {
-    throw new AppError("export_storage_unavailable", 503);
-  }
-}
-
-/** Removes a staged/published artifact whose export did not end valid; never touches other exports. */
-export function discardExport(paths: { tempPath: string; finalPath: string }): void {
-  unlinkQuietly(paths.tempPath);
-  unlinkQuietly(paths.finalPath);
-}
-
-/** Best-effort removal of artifact files whose registrations a committed transaction retired. */
-export function removeRetiredExportFiles(paths: readonly string[]): void {
-  for (const path of paths) unlinkQuietly(path);
-}
-
-/**
- * Records a durable failed export (no artifact, empty coverage), replacing any staged or
- * valid registration of the same id, so the request has one inspectable logical outcome.
- * Only bounded reason codes are stored, never error text or paths.
+ * Records a durable failed export (no artifact, empty coverage) so the request has one
+ * inspectable logical outcome. Only bounded reason codes are stored, never error text.
+ * Failed records are bounded among themselves and never retire a valid export.
  */
 export function recordFailedExport(tx: AppTransaction, input: {
-  id: string; now: number; projectId: string; projectRevision: number; scope: ExportScope; failure: ExportFailure; exportDir: string; limits?: ExportLimits;
-}): { manifest: FailedExportManifest; prunedFiles: string[] } {
+  id: string; now: number; projectId: string; projectRevision: number; scope: ExportScope; failure: ExportFailure; limits?: ExportLimits;
+}): FailedExportManifest {
   const limits = input.limits ?? exportRetention;
   const empty = { coverage: { sources: [], claims: [], truncated: false },
     counts: { topics: 0, messages: 0, tasks: 0, decisions: 0, claims: 0, jobs: 0, deliveries: 0, prReports: 0 },
     completeness: emptyCompleteness(), exclusions: [], missingRefs: [] };
-  tx.run("DELETE FROM export_artifacts WHERE id = ?", input.id);
-  // Failed records share the same bounded registry so repeated failures cannot grow it without limit.
-  const { pruned, files } = enforceExportRetention(tx, input.exportDir, input.projectId, 0, limits);
+  const failed = tx.all<{ id: string; record_json: string }>(
+    "SELECT id, record_json FROM export_artifacts WHERE project_id = ? ORDER BY created_at, rowid", input.projectId)
+    .filter(row => storedState(row.record_json) === "failed" && row.id !== input.id);
+  const victims = failed.slice(0, Math.max(0, failed.length + 1 - limits.maxExports));
+  for (const victim of victims) retire(tx, victim);
   const manifest: FailedExportManifest = {
     ...manifestBase(tx, input, empty),
-    retention: { maxExports: limits.maxExports, maxBytes: limits.maxBytes, pruned },
+    retention: { maxExports: limits.maxExports, maxBytes: limits.maxBytes, pruned: victims.map(v => v.id) },
     state: "failed", failure: { ...input.failure }, artifact: null,
   };
   tx.run("INSERT INTO export_artifacts VALUES (?, ?, ?, ?)", manifest.id, input.projectId, manifest.createdAt, JSON.stringify(manifest));
-  return { manifest, prunedFiles: files };
+  return manifest;
 }
 
-/** Current reader-visible state of a registration, for request replays. */
-export function exportRegistration(tx: AppTransaction, id: string): StoredExportManifest["state"] | null {
+/** Current state of a registration for request replays: valid, failed, or null once pruned/deleted. */
+export function exportRegistration(tx: AppTransaction, id: string): ExportManifest | null {
   const row = tx.get<{ record_json: string }>("SELECT record_json FROM export_artifacts WHERE id = ?", id);
   if (!row) return null;
-  try { return parseStored(row.record_json).state; } catch { return null; }
+  try { return parseStored(row.record_json); } catch { return null; }
 }
 
 /** Maps any thrown value to a bounded failure reason; error messages never reach records. */
 export function exportFailureReason(error: unknown): ExportFailureReason {
-  const code = error instanceof AppError ? error.code : "";
+  const code = error instanceof AppError ? error.code : String((error as { code?: unknown })?.code ?? "");
+  if (code.startsWith("SQLITE_FULL") || code.startsWith("SQLITE_IOERR")) return "export_storage_unavailable";
   return (exportFailureReasons as readonly string[]).includes(code) ? code as ExportFailureReason : "export_failed";
+}
+
+/**
+ * Removes every export registration and artifact byte from a database snapshot destined for
+ * a backup, then VACUUMs so freed pages carry no artifact text. Backups therefore never hold
+ * export artifacts, and a restore cannot resurrect content deleted after the export.
+ */
+export function stripExportsFromSnapshot(bytes: Uint8Array): Uint8Array {
+  // A WAL-mode image (header bytes 18/19 = 2) cannot be opened in memory; edit a rollback-journal copy
+  // and restore the original header bytes afterwards.
+  const copy = Uint8Array.from(bytes);
+  const [write, read] = [copy[18], copy[19]];
+  if (copy.length >= 100) { copy[18] = 1; copy[19] = 1; }
+  const db = Database.deserialize(copy);
+  try {
+    const has = (name: string) => !!db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name);
+    if (!has("export_artifacts")) return bytes;
+    if (has("export_artifact_bodies")) db.exec("DELETE FROM export_artifact_bodies");
+    db.exec("DELETE FROM export_artifacts");
+    db.exec("VACUUM");
+    const stripped = Uint8Array.from(db.serialize());
+    if (stripped.length >= 100 && write !== undefined && read !== undefined) { stripped[18] = write; stripped[19] = read; }
+    return stripped;
+  } finally { db.close(); }
 }
 
 /** Scans an export artifact for secret material; returns canary hits (empty when clean). */
@@ -776,12 +691,3 @@ export function scanExportSecrets(artifactJson: string, canaries: string[]): str
   return canaries.filter(c => c && artifactJson.includes(c));
 }
 
-export function artifactBytes(dir: string, id: string): number {
-  try { return statSync(join(dir, `${id}.json`)).size; } catch { return -1; }
-}
-
-export function ownExportDir(databasePath: string, override?: string): string {
-  const dir = override ?? exportDirFor(databasePath);
-  if (dirname(dir) === dir || dir.length > 1024) throw new AppError("invalid_export_destination", 500);
-  return dir;
-}

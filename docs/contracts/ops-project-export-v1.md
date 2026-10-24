@@ -1,6 +1,6 @@
 # Project export, v1
 
-Owner: Jit #31 (OPS03). Contract: `ops.project_export/v1`, artifact/manifest `formatVersion` 2. Implementation: `src/ops/export.ts`, `src/application.ts`, `src/memory/delete.ts` (retained-export tracking), `src/web.ts`, `src/web-layout.ts`. Uses `app.project_commands/v1` (receipts, expected revision), `app.data_lifecycle/v1` (deletion ledger, operations, suppression), `ops.backup_manifest/v1` (residual backups) and `jobs.attempt_fence/v1` (job evidence references only). FR-04, FR-05, FR-16, FR-18, NFR-07, NFR-09, NFR-10, NFR-11, NFR-12.
+Owner: Jit #31 (OPS03). Contract: `ops.project_export/v1`, artifact/manifest `formatVersion` 2. Implementation: `src/ops/export.ts`, `src/application.ts`, `src/memory/delete.ts` (retained-export tracking), `src/web.ts`, `src/web-layout.ts`, `src/ops/upgrade.ts` (recovery backup strip). Uses `app.project_commands/v1` (receipts, expected revision), `app.data_lifecycle/v1` (deletion ledger, operations, suppression), `ops.backup_manifest/v1` (residual backups) and `jobs.attempt_fence/v1` (job evidence references only). FR-04, FR-05, FR-16, FR-18, NFR-07, NFR-09, NFR-10, NFR-11, NFR-12.
 
 An ordinary export is an inspectable, portable JSON copy of one project. It is **not** a restorable backup, it never deletes external copies (Telegram, provider sessions, older backups), and it never contains secrets or native session data. Import or synchronization across installations is out of scope.
 
@@ -10,56 +10,64 @@ An ordinary export is an inspectable, portable JSON copy of one project. It is *
 exportIdentity(command: CreateExportCommand): string
 exportPreview(tx, projectId, scope: ExportScope, projectRevision): ExportPreview
 assembleExport(tx, projectId, scope): Assembled
-stageExport(tx, input): StagedExport                 // txn 1: full temp write + `staged` registration
-commitExport(tx, staged): ValidExportManifest        // txn 2: lifecycle fence, registration becomes `valid`
-publishExport(staged, ops?): void                    // after txn 2 commits: size check, rename, directory fsync
-discardExport({ tempPath, finalPath }): void
-reconcileExports(tx, dir, ops?): void                // crash recovery for staged/unpublished registrations
-recordFailedExport(tx, input): { manifest: FailedExportManifest; prunedFiles: string[] }
-removeRetiredExportFiles(paths): void
-exportRegistration(tx, id): "staged" | "valid" | "failed" | null
-exportFailureReason(error): ExportFailureReason
+buildExport(tx, input): BuiltExport                      // assemble + size ceiling; writes nothing
+registerExport(tx, built): ValidExportManifest           // lifecycle fence, valid row + bytes, retention
+recordFailedExport(tx, input): FailedExportManifest
+readExportManifest(tx, projectId, id): ExportManifest
+listExportArtifacts(tx, projectId, limit?): ExportManifest[]
+readExportArtifact(tx, projectId, id): { manifest: ValidExportManifest; body: Uint8Array }  // sha256-verified
+exportRegistration(tx, id): ExportManifest | null
 exportLifecycleMark(tx, projectId): string
-exportPaths(dir, id): { finalPath; tempPath }
-ensureExportDir(dir): void
+exportFailureReason(error): ExportFailureReason
+ensureExportBodies(tx): void
+stripExportsFromSnapshot(bytes): Uint8Array               // used by backup.create and the upgrade recovery backup
 sanitizeExportStrings<T>(value: T): T
-readExportManifest(tx, projectId, id): ExportManifest        // valid or failed only
-listExportArtifacts(tx, projectId, limit?): ExportManifest[] // valid or failed only
-nodeExportFileOps: ExportFileOps                              // write / fsync / rename / fsyncDir seam
+downloadPath(projectId, id): string
 
 Application.execute(actor, CreateExportCommand): ExportReceipt      // { manifest: ValidExportManifest; duplicate }
 Application.exportPreview(actor, projectId, includeHistory): { project; preview }
 Application.exports(actor, projectId): { project; manifests: ExportManifest[] }
 Application.export(actor, projectId, id): { project; manifest: ExportManifest }
-ApplicationOptions.exportFileOps?: Partial<ExportFileOps>          // fault injection
+Application.exportArtifact(actor, projectId, id): { manifest; body }
+GET /projects/:projectId/exports/:id/artifact  (and /api/...)       // owner session only; attachment, no-store, nosniff
 ApplicationOptions.exportLimits?: Partial<{ maxExports; maxBytes }> // may only tighten the defaults
+ApplicationOptions.exportDir?: string                               // deprecated, ignored
 ```
 
 `CreateExportCommand` is `{ kind: "export.create", requestId, projectId, expectedRevision, payload: { includeHistory: boolean, note: string ≤ 500 bytes } }`; extra keys are rejected.
 
-## Request lifecycle (commit-gated publication)
+## Storage and request lifecycle
+
+Format-2 artifact bytes are stored in SQLite (`export_artifact_bodies`, keyed by the registration id with `ON DELETE CASCADE`). They are registered beside their manifest in `export_artifacts`. **An artifact exists iff its committed registration row is `valid`.** There are no temp files, renames, directory fsyncs, orphan sweeps or caller-chosen destinations. Bytes are served only to the authenticated owner. On read they are hash-verified, and a mismatch is `export_corrupt`.
 
 1. Owner-only. The preview (`exportPreview`) reports the selected scope, the current project revision, counts, completeness, exclusions and missing references without writing anything.
-2. Rejections before staging (`authentication_required`, `invalid_export_command`, `request_id_conflict`, `stale_revision`, `project_not_found`) are plain rejections and record nothing.
-3. **Transaction 1 (stage).** Verifies the export directory (`ensureExportDir`) and reconciles crash leftovers (`reconcileExports`). It sweeps `<uuid>.json` and `.<uuid>.json.tmp` files that have no live registration. It then takes the project lifecycle mark and assembles the data. An artifact above `maxBytes` is rejected (`export_too_large`) before anything is written. Otherwise the whole body goes to an exclusive temp file (`O_CREAT|O_EXCL`, 0600): short writes loop, a write making no progress fails, and the file is fsynced and size-verified before the directory is fsynced. Retention runs next, then the manifest is registered as `staged` and the receipt and audit row are bound to the request ID. If anything fails after the temp file exists, it is removed before the error propagates.
-4. Retention-retired files are removed after transaction 1 commits.
-5. **Transaction 2 (commit).** `commitExport` re-takes the lifecycle mark: project revision, deletion ledger and operations, suppressed sources, source availability and generations, claim revisions and statuses. It also checks that the registration is still `staged`. Any change throws `export_fenced_by_lifecycle`. Otherwise the registration becomes `valid` and the receipt is updated.
-6. **Publish, after transaction 2 commits.** The temp file's size is re-checked, then it is renamed into place. `rename(2)` replaces a planted final-path entry rather than following it. The directory is then fsynced. `fsyncDir` tolerates only `EINVAL`, `ENOTSUP` or `EOPNOTSUPP`, in which case `artifact.directorySync` is `"unsupported"`; any other error fails the export.
-7. Any failure from step 3 on removes both files. A separate transaction then records a **failed export** (`state: "failed"`, `artifact: null`, empty coverage, `failure: { reason, stage }`), replacing any staged or valid row with the same id and updating the receipt. The command throws `AppError(reason)` with `detail: { projectId, exportId, path }`. A replay of the same request ID follows the registration's current state: valid returns the receipt, failed re-throws, staged is reconciled first. A new request ID is a new logical export.
-
-Visibility: the final path only ever holds an artifact whose `valid` registration committed. Readers never return `staged` rows, while delete previews still list them. Crash recovery runs on the next export or replay. A `staged` row becomes `export_interrupted` and both of its files are removed. A `valid` row whose file is still at the temp path has its rename completed. If publication fails after the valid commit, the record ends `failed`. That is the same logical export, not a second one. The protocol assumes a single writer process per database, as the job scheduler already does.
+2. Rejections before building (`authentication_required`, `invalid_export_command`, `request_id_conflict`, `stale_revision`, `project_not_found`) are plain rejections and record nothing.
+3. **One immediate transaction** does all of the following in order:
+   1. Takes the project lifecycle mark.
+   2. Assembles the artifact. An artifact above `maxBytes` is rejected as `export_too_large` before anything is written.
+   3. Re-checks the mark immediately before publication: project revision, deletion ledger and operations, suppressed sources, source availability and generations, claim revisions and statuses. Any change throws `export_fenced_by_lifecycle`.
+   4. Inserts the `valid` registration and its bytes.
+   5. Applies retention computed from that final outcome: the oldest valid exports beyond `maxExports` or `maxBytes`, never the new one. Their bytes are removed in the same transaction.
+   6. Binds the receipt and audit row.
+4. Any failure rolls back everything, including retention, so a failed or fenced export never retires an older valid export. A separate transaction then records a **failed export** (`state: "failed"`, `artifact: null`, empty coverage, `failure: { reason, stage }`) and binds the request ID to it. Failed records are bounded among themselves (`maxExports`) and never retire valid ones. The command throws `AppError(reason)` with `detail: { projectId, exportId, path }`.
+5. **Replays** follow the registration's current state:
+   - valid returns the current manifest;
+   - failed re-throws the recorded failure;
+   - a registration pruned by retention or removed by deletion throws `export_expired` (410, `detail.exportId`). A replay never returns a cached valid result for an artifact that no longer exists.
 
 Failure reasons are a closed set:
-- `export_storage_unavailable` (503)
-- `unsafe_export_destination` (409): symlink, non-directory, group/world-accessible or foreign-owned directory
-- `export_fenced_by_lifecycle` (409)
 - `export_too_large` (413)
-- `export_interrupted` (409, crash recovery)
-- `export_failed` (500): any other error; its text is never stored
+- `export_fenced_by_lifecycle` (409)
+- `export_storage_unavailable` (503; `SQLITE_FULL`/`SQLITE_IOERR`)
+- `export_failed` (500; any other error, whose text is never stored)
 
-Stages are `stage`, `publish` and `commit`.
+Stages are `stage` (build), `publish` (fence, registration and bytes) and `commit` (receipt and commit).
 
-Assembly happens synchronously inside transaction 1, so a deletion cannot interleave with it. A deletion landing between the two transactions is fenced in transaction 2. A deletion landing after publication sees a normal retained export in its delete preview. Confirmed-but-unreconciled deletions are already excluded and listed in `pendingDeletions`. Exports are not jobs and have no cancel generation.
+Assembly, the fence and publication share one SQLite write transaction, so a deletion cannot interleave. A deletion committed afterwards sees a normal retained export in its delete preview. Confirmed-but-unreconciled deletions are already excluded and listed in `pendingDeletions`. Exports are not jobs and have no cancel generation.
+
+**Backups.** `backup.create` and the upgrade recovery backup strip `export_artifacts` and `export_artifact_bodies` from the database image and `VACUUM` it, so freed pages carry no artifact text. A restore therefore cannot resurrect exported content, and replays of restored receipts answer `export_expired`. In the live database, freed pages after retention or deletion follow the application-wide SQLite setting; `secure_delete` is not enabled for any table.
+
+**Legacy format-1 records.** These were written to `<db>.exports/<id>.json` by the pre-format-2 writer, without fsync. They read back with `artifact: { storage: "legacy_file", path, bytes, hash, directorySync: "legacy_unverified" }` and `completeness.complete: false`. Their file is served hash-verified with `O_NOFOLLOW`. Retention unlinks the file before deleting its row in the same transaction, so a data file never outlives its registration.
 
 ## Manifest (`ExportManifest`)
 
@@ -69,8 +77,8 @@ Fields:
 - `counts`: rows **included** per kind (`topics`, `messages`, `tasks`, `decisions`, `claims`, `jobs`, `deliveries`, `prReports`).
 - `completeness: { complete, collections: { <name>: { included, total, truncated } } }` for every bounded collection. Bounds are in `exportCollectionBounds`: jobs, deliveries and reports at 1000; sources and claims at 2000; messages at 5000; and so on. Without history scope, `messages` reports `included: 0`, the real `total` and `truncated: false`. The rows are excluded by scope, not by a bound. `data.messageCount` is that total.
 - `exclusions[] { kind, id, reason }`, `missingRefs[]`, `pendingDeletions[]`, `residuals: { backups[], external[] }`, `lifecycle: { tombstonesApplied, note }`, `disclosure`.
-- `retention: { maxExports: 20, maxBytes: 32 MiB, pruned[] }`. `maxBytes` caps the per-project registry and is also the ceiling for any single artifact.
-- `state` (`valid` | `failed`), `failure`, `artifact: { path, bytes, hash (sha256), directorySync } | null`.
+- `retention: { maxExports: 20, maxBytes: 32 MiB, pruned[] }`. `maxBytes` caps the bytes of a project's valid exports and is also the ceiling for any single artifact. `pruned` lists the registrations this outcome retired.
+- `state` (`valid` | `failed`), `failure`, `artifact: { storage: "sqlite", bytes, hash (sha256), downloadPath } | { storage: "legacy_file", path, bytes, hash, directorySync: "legacy_unverified" } | null`.
 
 `disclosure` is `{ restorableBackup: false, externalCopiesDeleted: false, secrets: "excluded", nativeSessions: "excluded", rawHistory: "included" | "metadata_only" }`. `residuals.external` always names `telegram_delivery_copies_not_exported_or_deleted` and `provider_session_copies_not_exported`. `residuals.backups` lists backup manifests that may still hold this project's data.
 
@@ -94,7 +102,7 @@ Fields:
 - Deleted sources and claims (deletion ledger) are absent and listed in `exclusions` with reason `deleted`.
 - Forgotten and corrected claims are never active memory: `claim_forgotten`/`forgotten_inactive` and `claim_corrected`/`corrected_superseded`.
 - One scope-aware resolver handles every payload-bearing key: topic titles, messages, sources, and delivery outbox/report text. Raw history kept by forget (suppressed sources) is included only when `includeHistory` is true. Otherwise it is excluded as `forgotten_raw_history_excluded`. Message sources without history scope export identity only (`raw_history_not_selected`).
-- Every valid or staged export stays registered in `export_artifacts`. A later delete preview (`affected.exports`) lists this project's exports whose coverage contains the doomed source generation or a derived claim. It also lists any export with truncated coverage. Deletion never edits a stored export. Failed exports published nothing and are never listed.
+- Every valid export stays registered in `export_artifacts` with its bytes. A later delete preview (`affected.exports`) lists this project's exports whose coverage contains the doomed source generation or a derived claim, and also any export with truncated coverage. Deletion never edits a stored export. Purging one is row deletion: `DELETE FROM export_artifacts WHERE id = ?` cascades to `export_artifact_bodies`. Only legacy format-1 rows also have a file to unlink. Failed exports hold no artifact and are never listed.
 
 ## Never exported
 

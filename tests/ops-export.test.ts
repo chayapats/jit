@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Application } from "../src/application";
@@ -8,7 +8,8 @@ import {
   reconcileDeletions,
   type DeleteCommand, type DeletionConfirmReceipt, type DeletionReceipt,
 } from "../src/memory/delete";
-import { nodeExportFileOps, scanExportSecrets, type ExportFileOps, type FailedExportManifest } from "../src/ops/export";
+import { scanExportSecrets, type FailedExportManifest, type ValidExportManifest } from "../src/ops/export";
+import { Database } from "bun:sqlite";
 import { AppError } from "../src/errors";
 import { memoryExtractionMarker, memoryExtractionWork, scriptedMemoryResult } from "../src/memory/extract";
 import type { ClaimReference, MemoryClaim } from "../src/memory/types";
@@ -40,7 +41,7 @@ type Script = (request: ApplicationRunRequest, signal: AbortSignal) => unknown |
 type Config = ReturnType<typeof readConfig>;
 const sha = (n: number) => n.toString(16).padStart(40, "0");
 
-function boot(config: Config, hooks: { extract: Script; specialist: Script }, clock: { now: number }, backupDir: string, exportDir: string) {
+function boot(config: Config, hooks: { extract: Script; specialist: Script }, clock: { now: number }, backupDir: string) {
   const store = new TransactionStore(config.databasePath); stores.push(store);
   const script = (request: ApplicationRunRequest, signal: AbortSignal, observe: (event: never) => void) =>
     request.instructions.operator.includes(memoryExtractionMarker) ? hooks.extract(request, signal)
@@ -51,7 +52,7 @@ function boot(config: Config, hooks: { extract: Script; specialist: Script }, cl
   const queue = new JobQueue(store, config.jobs, [memoryExtractionWork(store, config, port, now), discussionPlanWork(),
     specialistAnalysisWork(store, config, port, now), coordinatorSynthesisWork(store, config, port, now)], { now }); live.push(queue);
   const nativeSnapshot = { available: () => true, snapshot: () => ({ refs: [] as { id: string; generation: number }[], bytes: 128, engine: "scripted-fixture-v1" }) };
-  const app = new Application(store, config, { jobs: queue, now, backupDir, exportDir, nativeSnapshot });
+  const app = new Application(store, config, { jobs: queue, now, backupDir, nativeSnapshot });
   return { store, port, queue, app };
 }
 
@@ -71,7 +72,7 @@ async function fixture() {
     specialist: ((request: ApplicationRunRequest) => fixtureOutcome("complete", withContextAnswer("ตอบจำลอง", request, config.jobs.outputBytes))) as Script,
   };
   const hooks = { ...defaults };
-  const rt = boot(config, hooks, clock, join(root, "backups"), join(root, "exports"));
+  const rt = boot(config, hooks, clock, join(root, "backups"));
   await rt.app.setupOwner(password);
   const f = { root, config, clock, hooks, defaults, rt, token: await rt.app.login(password), roles: { tech: "", coordinator: "" } };
   const owner = rt.app.authenticate(f.token).actor;
@@ -83,6 +84,9 @@ async function fixture() {
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 const actor = (f: Fixture) => f.rt.app.authenticate(f.token).actor;
+/** Downloads one committed artifact through the owner API and decodes it independently. */
+const artifactText = (f: Fixture, manifest: { projectId: string; id: string }) =>
+  new TextDecoder().decode(f.rt.app.exportArtifact(actor(f), manifest.projectId, manifest.id).body);
 async function drain(f: Fixture) {
   for (let i = 0; i < 400; i++) {
     f.rt.queue.pump();
@@ -226,8 +230,7 @@ test("export with history preserves all kinds, honors corrected/forgotten/delete
   expect(receipt.manifest.artifact.hash).toHaveLength(64);
   expect(receipt.duplicate).toBe(false);
   // Independent parse: Thai/English/Unicode survive verbatim.
-  const { readFileSync } = await import("node:fs");
-  const artifact = JSON.parse(readFileSync(receipt.manifest.artifact.path, "utf8")) as { data: Record<string, unknown[] | unknown> };
+  const artifact = JSON.parse(artifactText(f, receipt.manifest)) as { data: Record<string, unknown[] | unknown> };
   const text = JSON.stringify(artifact);
   expect(text).toContain("โครงการส่งออก ไทย/English 🧠");
   expect(text).toContain("hello world 🌏");
@@ -260,7 +263,7 @@ test("export with history preserves all kinds, honors corrected/forgotten/delete
   expect(Array.isArray(receipt.manifest.missingRefs)).toBe(true);
   // Project B isolation: no A payload crosses projects.
   const bExport = f.rt.app.execute(actor(f), exportCommand(f, b, true));
-  const bText = readFileSync(bExport.manifest.artifact.path, "utf8");
+  const bText = artifactText(f, bExport.manifest);
   expect(bText).toContain("B only content");
   expect(bText).not.toContain("hello world");
   // Coverage is bounded and disclosed.
@@ -273,9 +276,8 @@ test("history scope excludes raw messages and forgotten raw history but keeps st
   const full = f.rt.app.execute(actor(f), exportCommand(f, a, true));
   const slim = f.rt.app.execute(actor(f), exportCommand(f, a, false));
   expect(slim.manifest.scope.includeHistory).toBe(false);
-  const { readFileSync } = await import("node:fs");
-  const fullJson = readFileSync(full.manifest.artifact.path, "utf8");
-  const slimJson = JSON.parse(readFileSync(slim.manifest.artifact.path, "utf8")) as { data: { messages: unknown[]; messageCount: number } };
+  const fullJson = artifactText(f, full.manifest);
+  const slimJson = JSON.parse(artifactText(f, slim.manifest)) as { data: { messages: unknown[]; messageCount: number } };
   expect(fullJson).toContain("เรื่องลืม forget-me-008 ไม่ใช้แล้ว");
   expect(slimJson.data.messages).toEqual([]);
   expect(slimJson.data.messageCount).toBeGreaterThan(0);
@@ -314,8 +316,7 @@ test("deletion during build is fenced by the lifecycle check; pending deletions 
   // In-flight managed deletion is disclosed, and the deleted payload is already excluded.
   const receipt = f.rt.app.execute(actor(f), exportCommand(f, a, true));
   expect(receipt.manifest.pendingDeletions).toContain(confirmed.operation.id);
-  const { readFileSync } = await import("node:fs");
-  expect(readFileSync(receipt.manifest.artifact.path, "utf8")).not.toContain("race-one-010");
+  expect(artifactText(f, receipt.manifest)).not.toContain("race-one-010");
   await reconcileDeletions(f.rt.store, f.rt.port as unknown as ApplicationRunPort, f.clock.now);
   expect(f.rt.app.deletionOperation(actor(f), a.id, confirmed.operation.id).operation!.state).toBe("complete");
 });
@@ -329,25 +330,26 @@ test("retained exports are tracked for subsequent delete previews", async () => 
   expect(preview.preview.affected.exports.map((e: { id: string }) => e.id)).toContain(before.manifest.id);
 });
 
-test("unsafe destinations fail closed; secrets never enter ordinary exports", async () => {
+test("no caller-chosen destination exists: artifacts are owner-only downloads; secrets never enter ordinary exports", async () => {
   const f = await fixture();
   const { a } = await rich(f);
   const receipt = f.rt.app.execute(actor(f), exportCommand(f, a, true));
-  const { readFileSync } = await import("node:fs");
-  const artifactJson = readFileSync(receipt.manifest.artifact.path, "utf8");
+  const artifactJson = artifactText(f, receipt.manifest);
   expect(scanExportSecrets(artifactJson, [password, f.token, "sk-secret-test"])).toEqual([]);
   for (const key of ["password_hash", "token_hash", "sessions", "botToken", "process.env", "apiBase"]) {
     expect(artifactJson.includes(`"${key}"`)).toBe(false);
   }
   expect(JSON.stringify(receipt.manifest).includes(f.token)).toBe(false);
-  const mode = statSync(receipt.manifest.artifact.path).mode & 0o777;
-  expect(mode).toBe(0o600);
-  // A file blocking the export directory fails with an explicit storage error.
-  const blocker = join(f.root, "blocker");
-  writeFileSync(blocker, "x");
-  const fragile = new Application(f.rt.store, f.config, { jobs: f.rt.queue, now: () => f.clock.now, backupDir: join(f.root, "backups"), exportDir: blocker });
-  expect(() => fragile.execute(fragile.authenticate(f.token).actor, { kind: "export.create" as const, requestId: rid(), projectId: a.id,
-    expectedRevision: fragile.project(fragile.authenticate(f.token).actor, a.id).revision, payload: { includeHistory: true, note: "x" } })).toThrow("export_storage_unavailable");
+  // The artifact is served only to the authenticated owner, from the committed row.
+  const web = createWebHandler(f.rt.app);
+  const path = receipt.manifest.artifact.storage === "sqlite" ? receipt.manifest.artifact.downloadPath : "";
+  const anonymous = await web(new Request(`http://localhost:3000${path}`));
+  expect(anonymous.status).toBe(303);
+  const owned = await web(new Request(`http://localhost:3000${path}`, { headers: { cookie: `jit_session=${f.token}` } }));
+  expect(owned.status).toBe(200);
+  expect(owned.headers.get("cache-control")).toBe("no-store");
+  expect(owned.headers.get("content-disposition")).toContain("attachment");
+  expect(await owned.text()).toBe(artifactJson);
 });
 
 test("retention prunes oldest exports and web renders without secrets or worker activation", async () => {
@@ -371,21 +373,19 @@ test("retention prunes oldest exports and web renders without secrets or worker 
   expect(await detail.text()).toContain("ops.project_export/v1");
 });
 
-function hookedApp(f: Fixture, beforeCommit: (stage: string) => void, exportDir = join(f.root, "exports"),
-  extra: { exportFileOps?: Partial<ExportFileOps>; exportLimits?: { maxBytes?: number } } = {}) {
-  return new Application(f.rt.store, f.config, { jobs: f.rt.queue, now: () => f.clock.now, backupDir: join(f.root, "backups"), exportDir, beforeCommit, ...extra });
+function hookedApp(f: Fixture, beforeCommit: (stage: string) => void, extra: { exportLimits?: { maxBytes?: number; maxExports?: number } } = {}) {
+  return new Application(f.rt.store, f.config, { jobs: f.rt.queue, now: () => f.clock.now, backupDir: join(f.root, "backups"), beforeCommit, ...extra });
 }
 function rejection(run: () => unknown): AppError {
   try { run(); } catch (error) { if (error instanceof AppError) return error; throw error; }
   throw new Error("expected an AppError rejection");
 }
-const artifactFiles = (dir: string) => existsSync(dir) ? readdirSync(dir).sort() : [];
 
 test("stale PR reports export revision, scope, stale flag and findings with Unicode; secret-like text is redacted", async () => {
   const f = await fixture();
   const { a, b, prReport } = await rich(f);
   const receipt = f.rt.app.execute(actor(f), exportCommand(f, a, false));
-  const text = readFileSync(receipt.manifest.artifact.path, "utf8");
+  const text = artifactText(f, receipt.manifest);
   const artifact = JSON.parse(text) as { formatVersion: number; exportId: string; disclosure: { restorableBackup: boolean }; data: {
     prReports: { id: string; revision: number; status: string; stale: boolean; staleReason: string | null; headSha: string;
       scope: { requiredRoles: string[]; analyzedRoles: string[]; skippedScope: string[]; coverageOverall: string };
@@ -418,7 +418,7 @@ test("stale PR reports export revision, scope, stale flag and findings with Unic
   expect(decided.revision).toBeGreaterThan(0);
   expect(decided.sourceAvailability).toBe("available");
   // Project isolation holds for PR reports too.
-  const bText = readFileSync(f.rt.app.execute(actor(f), exportCommand(f, b, false)).manifest.artifact.path, "utf8");
+  const bText = artifactText(f, f.rt.app.execute(actor(f), exportCommand(f, b, false)).manifest);
   expect((JSON.parse(bText) as { data: { prReports: unknown[] } }).data.prReports).toEqual([]);
 });
 
@@ -426,7 +426,7 @@ test("without history scope, raw message sources export identity only", async ()
   const f = await fixture();
   const { a, sKeep } = await rich(f);
   const slim = f.rt.app.execute(actor(f), exportCommand(f, a, false));
-  const data = (JSON.parse(readFileSync(slim.manifest.artifact.path, "utf8")) as { data: { sources: { state: string; kind?: string; text?: string | null; reference: SourceReference }[] } }).data;
+  const data = (JSON.parse(artifactText(f, slim.manifest)) as { data: { sources: { state: string; kind?: string; text?: string | null; reference: SourceReference }[] } }).data;
   const messages = data.sources.filter(source => source.kind === "message");
   expect(messages.length).toBeGreaterThan(0);
   expect(messages.every(source => source.state === "metadata_only" && source.text === null)).toBe(true);
@@ -435,7 +435,7 @@ test("without history scope, raw message sources export identity only", async ()
   expect(slim.manifest.coverage.sources.some(s => s.sourceId === sKeep.sourceId)).toBe(false);
   const full = f.rt.app.execute(actor(f), exportCommand(f, a, true));
   expect(full.manifest.disclosure.rawHistory).toBe("included");
-  expect(readFileSync(full.manifest.artifact.path, "utf8")).toContain("ความรู้ที่เก็บไว้ hello world 🌏");
+  expect(artifactText(f, full.manifest)).toContain("ความรู้ที่เก็บไว้ hello world 🌏");
 });
 
 test("a deleted delivery source never resurrects through outbox or report copies", async () => {
@@ -450,7 +450,7 @@ test("a deleted delivery source never resurrects through outbox or report copies
     expectedRevision: projectRevision(f, a), payload: { previewId: preview.preview.id, acknowledged: true, acknowledgedWholeSession: false } });
   await reconcileDeletions(f.rt.store, f.rt.port as unknown as ApplicationRunPort, f.clock.now);
   const receipt = f.rt.app.execute(actor(f), exportCommand(f, a, true));
-  const text = readFileSync(receipt.manifest.artifact.path, "utf8");
+  const text = artifactText(f, receipt.manifest);
   expect(text).not.toContain("delivery-gone-013");
   const data = (JSON.parse(text) as { data: { reports: { id: string; text: string | null }[]; deliveries: { id: string; text: string | null; availability: string }[] } }).data;
   expect(data.reports.find(r => r.id === delivery.report.id)!.text).toBeNull();
@@ -458,7 +458,7 @@ test("a deleted delivery source never resurrects through outbox or report copies
   expect(receipt.manifest.exclusions.some(e => e.id === delivery.report.id)).toBe(true);
 });
 
-test("a rollback after staging leaves no artifact; the failure is durable and replays as one logical export", async () => {
+test("a rollback leaves no artifact; the failure is durable and replays as one logical export", async () => {
   const f = await fixture();
   const a = project(f, "โครงการล้มเหลว", "หัวข้อ");
   say(f, a, "ข้อความ rollback-012");
@@ -469,8 +469,6 @@ test("a rollback after staging leaves no artifact; the failure is durable and re
   const first = rejection(() => app.execute(owner, cmd));
   expect(first.code).toBe("export_failed");
   const exportId = first.detail!.exportId as string;
-  const dir = join(f.root, "exports");
-  expect(artifactFiles(dir)).toEqual([]);
   const failed = app.export(owner, a.id, exportId).manifest as FailedExportManifest;
   expect(failed.state).toBe("failed");
   expect(failed.failure).toEqual({ reason: "export_failed", stage: "commit" });
@@ -490,8 +488,9 @@ test("a rollback after staging leaves no artifact; the failure is durable and re
   expect(preview.preview.affected.exports).toEqual([]);
   // A fresh request publishes exactly one artifact.
   const ok = app.execute(owner, exportCommand(f, a, true));
-  expect(artifactFiles(dir)).toEqual([`${ok.manifest.id}.json`]);
-  expect(statSync(ok.manifest.artifact.path).mode & 0o777).toBe(0o600);
+  expect(app.exports(owner, a.id).manifests.map(m => m.state).sort()).toEqual(["failed", "valid"]);
+  expect(artifactText(f, ok.manifest)).toContain("rollback-012");
+  expect(() => app.exportArtifact(owner, a.id, exportId)).toThrow("export_failed_no_artifact");
 });
 
 test("a lifecycle change between assembly and publish fences the artifact before it becomes visible", async () => {
@@ -505,42 +504,9 @@ test("a lifecycle change between assembly and publish fences the artifact before
   const owner = app.authenticate(f.token).actor;
   const error = rejection(() => app.execute(owner, exportCommand(f, a, true)));
   expect(error.code).toBe("export_fenced_by_lifecycle");
-  expect(artifactFiles(join(f.root, "exports"))).toEqual([]);
   const failed = app.export(owner, a.id, error.detail!.exportId as string).manifest;
   expect(failed.state).toBe("failed");
   expect(failed.failure).toEqual({ reason: "export_fenced_by_lifecycle", stage: "publish" });
-});
-
-test("symlinked or shared export destinations fail closed without writing through them", async () => {
-  const f = await fixture();
-  const a = project(f, "โครงการปลายทาง", "หัวข้อ");
-  say(f, a, "ข้อความ unsafe-015");
-  const target = join(f.root, "elsewhere");
-  mkdirSync(target, { mode: 0o700 });
-  symlinkSync(target, join(f.root, "linked"));
-  const linked = hookedApp(f, () => {}, join(f.root, "linked"));
-  const owner = linked.authenticate(f.token).actor;
-  const error = rejection(() => linked.execute(owner, exportCommand(f, a, true)));
-  expect(error.code).toBe("unsafe_export_destination");
-  expect(readdirSync(target)).toEqual([]);
-  expect((linked.export(owner, a.id, error.detail!.exportId as string).manifest as FailedExportManifest).failure.reason).toBe("unsafe_export_destination");
-  const shared = join(f.root, "shared");
-  mkdirSync(shared); chmodSync(shared, 0o755);
-  const lax = hookedApp(f, () => {}, shared);
-  expect(() => lax.execute(lax.authenticate(f.token).actor, exportCommand(f, a, true))).toThrow("unsafe_export_destination");
-  expect(readdirSync(shared)).toEqual([]);
-});
-
-test("unregistered artifacts and temp files left by a crash are swept; registered artifacts stay", async () => {
-  const f = await fixture();
-  const a = project(f, "โครงการกวาด", "หัวข้อ");
-  const kept = f.rt.app.execute(actor(f), exportCommand(f, a, true));
-  const dir = join(f.root, "exports");
-  const orphan = `${crypto.randomUUID()}.json`, temp = `.${crypto.randomUUID()}.json.tmp-4242`;
-  writeFileSync(join(dir, orphan), "{}", { mode: 0o600 });
-  writeFileSync(join(dir, temp), "{}", { mode: 0o600 });
-  const next = f.rt.app.execute(actor(f), exportCommand(f, a, true));
-  expect(artifactFiles(dir)).toEqual([`${kept.manifest.id}.json`, `${next.manifest.id}.json`].sort());
 });
 
 test("delete previews conservatively list exports whose bounded coverage was truncated", async () => {
@@ -561,82 +527,6 @@ test("delete previews conservatively list exports whose bounded coverage was tru
   const after = asDeletePreview(f.rt.app.execute(actor(f), { kind: "memory.delete.preview" as const, requestId: rid(), projectId: a.id,
     expectedRevision: projectRevision(f, a), payload: { scope } }));
   expect(after.preview.affected.exports.map(e => e.id)).toEqual([receipt.manifest.id]);
-});
-
-test("the final artifact path appears only after its valid registration commits", async () => {
-  const f = await fixture();
-  const a = project(f, "โครงการมองเห็น", "หัวข้อ");
-  say(f, a, "ข้อความ visible-017");
-  const dir = join(f.root, "exports");
-  const seen: Record<string, string[]> = {};
-  const app = hookedApp(f, stage => { seen[stage] = artifactFiles(dir); });
-  const owner = app.authenticate(f.token).actor;
-  const receipt = app.execute(owner, exportCommand(f, a, true));
-  const name = `${receipt.manifest.id}.json`;
-  // Inside both transactions only the private temp file exists; the final path is absent.
-  expect(seen.ops).toEqual([`.${name}.tmp`]);
-  expect(seen.receipt).toEqual([`.${name}.tmp`]);
-  expect(artifactFiles(dir)).toEqual([name]);
-  expect(receipt.manifest.state).toBe("valid");
-  expect(receipt.manifest.artifact.directorySync).toBe("synced");
-});
-
-test("a crash after staging is reconciled: staged rows stay hidden, are tracked by delete previews, then fail durably", async () => {
-  const f = await fixture();
-  const a = project(f, "โครงการชน", "หัวข้อ");
-  say(f, a, "ข้อความ crash-018");
-  const dir = join(f.root, "exports");
-  const cmd = exportCommand(f, a, true);
-  const crashed = f.rt.app.execute(actor(f), cmd).manifest;
-  // Rewind to the on-disk state of a crash between the staged commit and the valid commit.
-  const { renameSync } = await import("node:fs");
-  renameSync(crashed.artifact.path, join(dir, `.${crashed.id}.json.tmp`));
-  f.rt.store.transaction(tx => tx.run("UPDATE export_artifacts SET record_json = ? WHERE id = ?", JSON.stringify({ ...crashed, state: "staged" }), crashed.id));
-  expect(f.rt.app.exports(actor(f), a.id).manifests).toEqual([]);
-  expect(() => f.rt.app.export(actor(f), a.id, crashed.id)).toThrow("export_not_found");
-  const preview = asDeletePreview(f.rt.app.execute(actor(f), { kind: "memory.delete.preview" as const, requestId: rid(), projectId: a.id,
-    expectedRevision: projectRevision(f, a), payload: { scope: { kind: "source", projectId: a.id, source: a.topic.source } } }));
-  expect(preview.preview.affected.exports.map(e => e.id)).toEqual([crashed.id]);
-  // Replaying the interrupted request reconciles it into one durable failure and removes its files.
-  const replay = rejection(() => f.rt.app.execute(actor(f), cmd));
-  expect(replay.code).toBe("export_interrupted");
-  expect(replay.detail!.exportId).toBe(crashed.id);
-  expect(artifactFiles(dir)).toEqual([]);
-  expect(f.rt.app.export(actor(f), a.id, crashed.id).manifest.failure).toEqual({ reason: "export_interrupted", stage: "publish" });
-  // A crash after the valid commit but before the rename finishes publishing on the next export.
-  const valid = f.rt.app.execute(actor(f), exportCommand(f, a, true)).manifest;
-  renameSync(valid.artifact.path, join(dir, `.${valid.id}.json.tmp`));
-  const next = f.rt.app.execute(actor(f), exportCommand(f, a, false)).manifest;
-  expect(artifactFiles(dir)).toEqual([`${valid.id}.json`, `${next.id}.json`].sort());
-});
-
-test("a fault after the temp file is fully written leaves no temp or final file", async () => {
-  const f = await fixture();
-  const a = project(f, "โครงการค้าง", "หัวข้อ");
-  say(f, a, "ข้อความ residue-019");
-  const dir = join(f.root, "exports");
-  let dirSyncs = 0;
-  const syncFault = hookedApp(f, () => {}, dir, { exportFileOps: { fsyncDir: () => { dirSyncs++; throw Object.assign(new Error("EIO"), { code: "EIO" }); } } });
-  const owner = syncFault.authenticate(f.token).actor;
-  const first = rejection(() => syncFault.execute(owner, exportCommand(f, a, true)));
-  expect(first.code).toBe("export_storage_unavailable");
-  expect(dirSyncs).toBe(1);
-  expect(artifactFiles(dir)).toEqual([]);
-  expect(syncFault.export(owner, a.id, first.detail!.exportId as string).manifest.failure).toEqual({ reason: "export_storage_unavailable", stage: "stage" });
-  // The registration insert itself fails after the write.
-  f.rt.store.transaction(tx => tx.run(`CREATE TEMP TRIGGER block_staged_export BEFORE INSERT ON export_artifacts
-    WHEN json_extract(NEW.record_json, '$.state') = 'staged' BEGIN SELECT RAISE(ABORT, 'registry unavailable'); END`));
-  try {
-    const second = rejection(() => f.rt.app.execute(actor(f), exportCommand(f, a, true)));
-    expect(second.code).toBe("export_storage_unavailable");
-    expect(artifactFiles(dir)).toEqual([]);
-  } finally {
-    f.rt.store.transaction(tx => tx.run("DROP TRIGGER block_staged_export"));
-  }
-  // A fault in the second (valid) transaction also leaves nothing behind.
-  const late = hookedApp(f, stage => { if (stage === "receipt") throw new Error("late"); }, dir);
-  expect(rejection(() => late.execute(late.authenticate(f.token).actor, exportCommand(f, a, true))).detail!.exportId).toBeString();
-  expect(artifactFiles(dir)).toEqual([]);
 });
 
 test("every PR-derived string is sanitized; canaries in each field never reach the artifact", async () => {
@@ -668,7 +558,7 @@ test("every PR-derived string is sanitized; canaries in each field never reach t
   f.rt.store.transaction(tx => annotateReport(tx, { kind: "pr.report.dismiss", requestId: rid(), projectId: a.id, expectedRevision: report.revision,
     payload: { reportId: report.id, reason: `owner note ${canaries[7]}` } }, f.clock.now));
   const receipt = f.rt.app.execute(actor(f), exportCommand(f, a, false));
-  const text = readFileSync(receipt.manifest.artifact.path, "utf8");
+  const text = artifactText(f, receipt.manifest);
   expect(scanExportSecrets(text, canaries)).toEqual([]);
   const exported = (JSON.parse(text) as { data: { prReports: { revision: number; findings: { id: string; title: string }[] }[] } }).data.prReports[0]!;
   expect(exported.revision).toBe(2);
@@ -693,13 +583,13 @@ test("forget suppression gates delivery and report text exactly like raw sources
   });
   expect(f.rt.store.read(tx => tx.get("SELECT 1 AS ok FROM memory_suppressed_sources WHERE source_id = ?", source.sourceId))).not.toBeNull();
   const slim = f.rt.app.execute(actor(f), exportCommand(f, a, false));
-  const slimText = readFileSync(slim.manifest.artifact.path, "utf8");
+  const slimText = artifactText(f, slim.manifest);
   expect(slimText).not.toContain("forgotten-delivery-021");
   expect(slim.manifest.exclusions.some(e => e.id === delivery.report.id && e.reason === "delivery_report_forgotten_raw_history_excluded")).toBe(true);
   expect(slim.manifest.coverage.sources.some(s => s.sourceId === source.sourceId)).toBe(false);
   // Explicit history scope releases the forget-retained raw text, and coverage then names it.
   const full = f.rt.app.execute(actor(f), exportCommand(f, a, true));
-  expect(readFileSync(full.manifest.artifact.path, "utf8")).toContain("forgotten-delivery-021");
+  expect(artifactText(f, full.manifest)).toContain("forgotten-delivery-021");
   expect(full.manifest.coverage.sources.some(s => s.sourceId === source.sourceId)).toBe(true);
 });
 
@@ -714,7 +604,7 @@ test("bounded collections report included versus total instead of silently trunc
     }
   });
   const receipt = f.rt.app.execute(actor(f), exportCommand(f, a, false));
-  const data = (JSON.parse(readFileSync(receipt.manifest.artifact.path, "utf8")) as { data: { jobs: unknown[] } }).data;
+  const data = (JSON.parse(artifactText(f, receipt.manifest)) as { data: { jobs: unknown[] } }).data;
   expect(data.jobs).toHaveLength(1000);
   expect(receipt.manifest.counts.jobs).toBe(1000);
   expect(receipt.manifest.completeness.collections.jobs).toEqual({ included: 1000, total: 1001, truncated: true });
@@ -722,63 +612,133 @@ test("bounded collections report included versus total instead of silently trunc
   expect(receipt.manifest.completeness.collections.messages).toEqual({ included: 0, total: 0, truncated: false });
 });
 
-test("short writes loop to completion; a stalled write fails without residue", async () => {
-  const f = await fixture();
-  const a = project(f, "โครงการเขียนสั้น", "หัวข้อ ไทย 🧪");
-  say(f, a, "ข้อความ short-write-022 ไทย");
-  const dir = join(f.root, "exports");
-  // Seven bytes per call still produces the exact artifact.
-  const trickle = hookedApp(f, () => {}, dir, { exportFileOps: { write: (fd, buffer, offset, length) => nodeExportFileOps.write(fd, buffer, offset, Math.min(length, 7)) } });
-  const ok = trickle.execute(trickle.authenticate(f.token).actor, exportCommand(f, a, true));
-  const bytes = readFileSync(ok.manifest.artifact.path);
-  expect(bytes.length).toBe(ok.manifest.artifact.bytes);
-  expect(new Bun.CryptoHasher("sha256").update(bytes).digest("hex")).toBe(ok.manifest.artifact.hash);
-  // A write that stops making progress is a storage failure, not a truncated artifact.
-  let calls = 0;
-  const stall = hookedApp(f, () => {}, dir, { exportFileOps: { write: (fd, buffer, offset, length) => calls++ === 0 ? nodeExportFileOps.write(fd, buffer, offset, Math.min(length, 10)) : 0 } });
-  const error = rejection(() => stall.execute(stall.authenticate(f.token).actor, exportCommand(f, a, true)));
-  expect(error.code).toBe("export_storage_unavailable");
-  expect(artifactFiles(dir)).toEqual([`${ok.manifest.id}.json`]);
-});
-
-test("a directory fsync failure after rename discards the artifact; only 'unsupported' is tolerated and disclosed", async () => {
-  const f = await fixture();
-  const a = project(f, "โครงการ fsync", "หัวข้อ");
-  say(f, a, "ข้อความ fsync-023");
-  const dir = join(f.root, "exports");
-  let calls = 0;
-  const failing = hookedApp(f, () => {}, dir, { exportFileOps: { fsyncDir: (path: string) => {
-    if (++calls === 2) throw Object.assign(new Error("EIO"), { code: "EIO" });
-    return nodeExportFileOps.fsyncDir(path);
-  } } });
-  const owner = failing.authenticate(f.token).actor;
-  const cmd = exportCommand(f, a, true);
-  const error = rejection(() => failing.execute(owner, cmd));
-  expect(error.code).toBe("export_storage_unavailable");
-  expect(artifactFiles(dir)).toEqual([]);
-  const failed = failing.export(owner, a.id, error.detail!.exportId as string).manifest;
-  expect(failed.failure).toEqual({ reason: "export_storage_unavailable", stage: "publish" });
-  expect(rejection(() => failing.execute(owner, cmd)).detail!.exportId).toBe(error.detail!.exportId);
-  const unsupported = hookedApp(f, () => {}, dir, { exportFileOps: { fsyncDir: () => "unsupported" } });
-  const ok = unsupported.execute(unsupported.authenticate(f.token).actor, exportCommand(f, a, true));
-  expect(ok.manifest.artifact.directorySync).toBe("unsupported");
-  expect(existsSync(ok.manifest.artifact.path)).toBe(true);
-});
-
 test("an artifact above the byte ceiling is rejected before registration", async () => {
   const f = await fixture();
   const a = project(f, "โครงการใหญ่", "หัวข้อ");
   for (let i = 0; i < 4; i++) say(f, a, `ข้อความยาว ${i} ${"ใหญ่".repeat(120)}`);
-  const dir = join(f.root, "exports");
-  const small = hookedApp(f, () => {}, dir, { exportLimits: { maxBytes: 4096 } });
+  const small = hookedApp(f, () => {}, { exportLimits: { maxBytes: 4096 } });
   const owner = small.authenticate(f.token).actor;
   const error = rejection(() => small.execute(owner, exportCommand(f, a, true)));
   expect(error.code).toBe("export_too_large");
   expect(error.status).toBe(413);
-  expect(artifactFiles(dir)).toEqual([]);
   const failed = small.export(owner, a.id, error.detail!.exportId as string).manifest as FailedExportManifest;
   expect(failed.failure).toEqual({ reason: "export_too_large", stage: "stage" });
   expect(failed.retention.maxBytes).toBe(4096);
   // The metadata-only scope fits under the same ceiling.
   expect(small.execute(owner, exportCommand(f, a, false)).manifest.artifact.bytes).toBeLessThanOrEqual(4096);
+});
+
+test("a replay after retention pruned the export returns an explicit expired result, never a valid one", async () => {
+  const f = await fixture();
+  const a = project(f, "โครงการหมดอายุ", "หัวข้อ");
+  say(f, a, "ข้อความ expired-024");
+  const app = hookedApp(f, () => {}, { exportLimits: { maxExports: 1 } });
+  const owner = app.authenticate(f.token).actor;
+  const firstCmd = exportCommand(f, a, true);
+  const first = app.execute(owner, firstCmd);
+  expect(app.execute(owner, firstCmd)).toEqual(first);
+  const second = app.execute(owner, exportCommand(f, a, true));
+  expect(second.manifest.retention.pruned).toEqual([first.manifest.id]);
+  const expired = rejection(() => app.execute(owner, firstCmd));
+  expect(expired.code).toBe("export_expired");
+  expect(expired.status).toBe(410);
+  expect(expired.detail!.exportId).toBe(first.manifest.id);
+  expect(() => app.exportArtifact(owner, a.id, first.manifest.id)).toThrow("export_not_found");
+  // Pruning removed the bytes with the registration in the same transaction.
+  expect(f.rt.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM export_artifact_bodies")!.n)).toBe(1);
+});
+
+test("a failed or fenced export rolls back entirely and never retires older valid artifacts", async () => {
+  const f = await fixture();
+  const a = project(f, "โครงการรักษาของเก่า", "หัวข้อ");
+  const s = say(f, a, "ข้อความ preserve-025");
+  let mode: "none" | "fence" | "receipt" = "none";
+  const app = hookedApp(f, stage => {
+    if (mode === "fence" && stage === "ops") f.rt.store.transaction(tx => tx.run("UPDATE sources SET availability = 'unavailable' WHERE id = ?", s.sourceId));
+    if (mode === "receipt" && stage === "receipt") throw new Error("late failure");
+  }, { exportLimits: { maxExports: 1 } });
+  const owner = app.authenticate(f.token).actor;
+  const kept = app.execute(owner, exportCommand(f, a, true)).manifest;
+  for (const next of ["fence", "receipt"] as const) {
+    mode = next;
+    const error = rejection(() => app.execute(owner, exportCommand(f, a, true)));
+    expect(error.code).toBe(next === "fence" ? "export_fenced_by_lifecycle" : "export_failed");
+    const failed = app.export(owner, a.id, error.detail!.exportId as string).manifest as FailedExportManifest;
+    expect(failed.retention.pruned).not.toContain(kept.id);
+    expect(artifactText(f, kept)).toContain("preserve-025");
+  }
+  // The registry write itself failing leaves the old export too.
+  mode = "none";
+  f.rt.store.transaction(tx => tx.run(`CREATE TEMP TRIGGER block_export_body BEFORE INSERT ON export_artifact_bodies
+    BEGIN SELECT RAISE(ABORT, 'registry unavailable'); END`));
+  try {
+    expect(rejection(() => app.execute(owner, exportCommand(f, a, true))).code).toBe("export_failed");
+  } finally {
+    f.rt.store.transaction(tx => tx.run("DROP TRIGGER block_export_body"));
+  }
+  const states = app.exports(owner, a.id).manifests.map(m => `${m.id === kept.id ? "kept" : "other"}:${m.state}`);
+  // Failed records are bounded among themselves (maxExports 1) and the valid export survives.
+  expect(states.sort()).toEqual(["kept:valid", "other:failed"]);
+  expect(artifactText(f, kept)).toContain("preserve-025");
+});
+
+test("an artifact exists iff its committed row is valid: other connections never see an uncommitted export", async () => {
+  const f = await fixture();
+  const a = project(f, "โครงการมองเห็น", "หัวข้อ");
+  say(f, a, "ข้อความ visible-017");
+  const observer = new TransactionStore(f.config.databasePath); stores.push(observer);
+  const seen: number[] = [];
+  const app = hookedApp(f, stage => {
+    if (stage === "receipt") seen.push(observer.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM export_artifacts")!.n));
+  });
+  const receipt = app.execute(app.authenticate(f.token).actor, exportCommand(f, a, true));
+  expect(seen).toEqual([0]);
+  expect(observer.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM export_artifact_bodies WHERE id = ?", receipt.manifest.id)!.n)).toBe(1);
+  expect(receipt.manifest.artifact).toEqual({ storage: "sqlite", bytes: receipt.manifest.artifact.bytes, hash: receipt.manifest.artifact.hash,
+    downloadPath: `/projects/${a.id}/exports/${receipt.manifest.id}/artifact` });
+});
+
+test("format-1 manifests normalize as legacy, unverified files and retire their file with the row", async () => {
+  const f = await fixture();
+  const a = project(f, "โครงการรุ่นเก่า", "หัวข้อ");
+  const id = crypto.randomUUID(), path = join(f.root, `${id}.json`);
+  const body = JSON.stringify({ contract: "ops.project_export/v1", projectId: a.id, exportedAt: epoch, scope: { includeHistory: false }, note: "v1", data: { legacy: "ไทย ✓" } });
+  writeFileSync(path, body, { mode: 0o600 });
+  const legacy = { contract: "ops.project_export/v1", id, projectId: a.id, createdAt: epoch - 1, appSchema: 18, scope: { includeHistory: false }, projectRevision: 1,
+    coverage: { sources: [], claims: [], truncated: false }, counts: { topics: 1, messages: 0, tasks: 0, decisions: 0, claims: 0, jobs: 0, deliveries: 0 },
+    exclusions: [], missingRefs: [], pendingDeletions: [], residuals: { backups: [], external: [] }, lifecycle: { tombstonesApplied: 0, note: "" },
+    retention: { maxExports: 20, maxBytes: 33554432, pruned: [] }, state: "valid",
+    artifact: { path, bytes: Buffer.byteLength(body), hash: new Bun.CryptoHasher("sha256").update(body).digest("hex") } };
+  f.rt.store.transaction(tx => tx.run("INSERT INTO export_artifacts VALUES (?, ?, ?, ?)", id, a.id, legacy.createdAt, JSON.stringify(legacy)));
+  const read = f.rt.app.export(actor(f), a.id, id).manifest as ValidExportManifest;
+  expect(read.formatVersion).toBe(1);
+  expect(read.artifact).toEqual({ storage: "legacy_file", path, bytes: legacy.artifact.bytes, hash: legacy.artifact.hash, directorySync: "legacy_unverified" });
+  expect(read.completeness.complete).toBe(false);
+  expect(read.disclosure.rawHistory).toBe("included");
+  expect(read.counts.prReports).toBe(0);
+  expect(artifactText(f, read)).toBe(body);
+  // Retention retires the legacy row and its file together.
+  const app = hookedApp(f, () => {}, { exportLimits: { maxExports: 1 } });
+  const next = app.execute(app.authenticate(f.token).actor, exportCommand(f, a, false));
+  expect(next.manifest.retention.pruned).toEqual([id]);
+  expect(() => readFileSync(path)).toThrow();
+});
+
+test("backups never carry export artifacts, so a restore cannot resurrect exported content", async () => {
+  const f = await fixture();
+  const a = project(f, "โครงการสำรอง", "หัวข้อ");
+  say(f, a, "ข้อความ backup-strip-026 ไทย");
+  f.rt.app.execute(actor(f), exportCommand(f, a, true));
+  const backup = f.rt.app.execute(actor(f), { kind: "backup.create" as const, requestId: rid(), projectId: null,
+    expectedRevision: f.rt.app.workspace(actor(f)).revision, payload: { note: "strip check" } });
+  const bytes = readFileSync(backup.manifest.artifact.path);
+  const copyPath = join(f.root, "backup-copy.sqlite");
+  writeFileSync(copyPath, bytes);
+  const copy = new Database(copyPath);
+  try {
+    expect(copy.query("SELECT count(*) AS n FROM export_artifacts").get()).toEqual({ n: 0 });
+    expect(copy.query("SELECT count(*) AS n FROM export_artifact_bodies").get()).toEqual({ n: 0 });
+  } finally { copy.close(); }
+  // The artifact framing never appears in the backup's free pages either.
+  expect(bytes.includes(Buffer.from('"formatVersion":2,"exportId"'))).toBe(false);
 });
