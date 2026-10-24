@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
 import { AppError } from "../errors";
+import { containsCredential } from "../security/credentials";
 import { requireId } from "../sources";
 import { readAttempts } from "../jobs/attempts";
 import type { AppTransaction } from "../store";
+import { retirePrAlerts } from "./alert-links";
 import { readMonitor } from "./authority";
 import { readCandidate } from "./poll";
 import { ensurePrSchema } from "./schema";
@@ -30,7 +32,6 @@ const digest = (value: string) => createHash("sha256").update(value).digest("hex
 const requestIdOk = (value: string) => /^[a-zA-Z0-9_-]{8,128}$/.test(value);
 const findingIdOk = (value: string) => /^[a-z0-9][a-z0-9_-]{0,63}$/.test(value);
 const SHA = /^[a-f0-9]{40}$/;
-const secretLike = /bearer\s|authorization\s*:|x-telegram|bot[_ -]?token|[0-9]{5,}:[A-Za-z0-9_-]{8,}/i;
 
 const exact = (value: unknown, keys: string[]): value is Record<string, unknown> =>
   !!value && typeof value === "object" && !Array.isArray(value)
@@ -104,9 +105,9 @@ export function validateFinding(input: unknown, snapshot: ImmutableSnapshot, tra
 
   if (evidenceType === "none") errors.push("evidence_none_not_actionable");
   if (!condition || !impact || !reasoning) errors.push("unsupported_assertion");
-  if (typeof raw.title === "string" && secretLike.test(raw.title as string)) errors.push("payload_hygiene_secret");
-  for (const field of [condition, impact, reasoning]) {
-    if (field && secretLike.test(field)) errors.push("payload_hygiene_secret");
+  if (typeof raw.title === "string" && containsCredential(raw.title as string)) errors.push("payload_hygiene_secret");
+  for (const field of [condition, impact, reasoning, evidenceRef ?? "", path]) {
+    if (field && containsCredential(field)) errors.push("payload_hygiene_secret");
   }
 
   if (path) {
@@ -162,6 +163,28 @@ export function validateFinding(input: unknown, snapshot: ImmutableSnapshot, tra
     status: actionable ? "actionable" : "suspected",
     validationErrors: [...new Set(errors)],
   };
+}
+
+/**
+ * Makes finding IDs unique before a report is persisted without choosing a winner. Copies that
+ * repeat a model-supplied ID all record it as `duplicateGroup`; the first keeps the ID and later
+ * copies are renamed `<id>-dup<n>`. Each copy keeps its own validated status and errors. Which copy
+ * (if any) notifies is decided per policy evaluation (`evaluateReport`), at most one per group.
+ */
+export function canonicalizeFindingIds(findings: readonly PrFinding[]): PrFinding[] {
+  const counts = new Map<string, number>();
+  for (const finding of findings) counts.set(finding.id, (counts.get(finding.id) ?? 0) + 1);
+  const taken = new Set(counts.keys());
+  const seen = new Set<string>();
+  return findings.map(finding => {
+    if ((counts.get(finding.id) ?? 0) < 2) return finding;
+    const group = finding.duplicateGroup ?? finding.id;
+    if (!seen.has(finding.id)) { seen.add(finding.id); return { ...finding, duplicateGroup: group }; }
+    let n = 2, id = "";
+    do { id = `${finding.id.slice(0, 56)}-dup${n++}`; } while (taken.has(id));
+    taken.add(id);
+    return { ...finding, id, duplicateGroup: group };
+  });
 }
 
 export interface NormalizedReview {
@@ -232,10 +255,10 @@ export function normalizeReviewOutput(output: string, snapshot: ImmutableSnapsho
       || !stringList(raw.disagreements, 256, 2000)) return invalid();
   const list = raw.findings.slice(0, MAX_REVIEW_FINDINGS);
   const findingsOverflow = raw.findings.length - list.length;
-  const findings = list.map(item => {
+  const findings = canonicalizeFindingIds(list.map(item => {
     try { return validateFinding(item, snapshot, transmitted); }
     catch { return validateFinding({}, snapshot, transmitted); }
-  });
+  }));
   const analyzedRoles = [...new Set(raw.analyzedRoles)];
   const skippedScope = [...new Set(raw.skippedScope)];
   const disagreements = raw.disagreements.slice(0, MAX_MODEL_DISAGREEMENTS);
@@ -529,7 +552,7 @@ export function persistReport(tx: AppTransaction, input: PersistReportInput): Pr
     status,
     stale: false,
     staleReason: null,
-    findings: input.normalized.findings,
+    findings: canonicalizeFindingIds(input.normalized.findings),
     analyzedRoles,
     requiredRoles: [...input.requiredRoles],
     skippedScope: skippedScope.slice(0, 32),
@@ -555,6 +578,10 @@ export function persistReport(tx: AppTransaction, input: PersistReportInput): Pr
     "INSERT INTO pr_reports(id, candidate_id, project_id, monitor_id, status, record_json) VALUES (?, ?, ?, ?, ?, ?)",
     report.id, report.candidateId, report.projectId, report.monitorId, report.status, JSON.stringify(report),
   );
+  // PR03: alerts of older reviews of this candidate are no longer current (`superseded_by_newer_review`).
+  retirePrAlerts(tx, { projectId: input.projectId, candidateId: candidate.id }, "superseded_by_newer_review", input.now, {
+    markSettledStale: true, filter: link => link.reportId !== report.id,
+  });
   return withStale(report, candidate, monitor, authorityGeneration, currentReviewPolicy);
 }
 
@@ -565,18 +592,24 @@ export function prReportIdentity(command: DismissReportCommand): string {
       || !requestIdOk(command.requestId)
       || !/^[a-f0-9-]{36}$/.test(command.projectId)
       || !Number.isSafeInteger(command.expectedRevision) || command.expectedRevision < 1
-      || !exact(command.payload, ["reportId", "reason"])
+      || !(exact(command.payload, ["reportId", "reason"]) || exact(command.payload, ["reportId", "reason", "findingId"]))
       || !/^[a-f0-9-]{36}$/.test(command.payload.reportId)
+      || (command.payload.findingId !== undefined && (typeof command.payload.findingId !== "string" || !findingIdOk(command.payload.findingId)))
       || typeof command.payload.reason !== "string" || !command.payload.reason.trim()
       || command.payload.reason.length > 2000 || Buffer.byteLength(command.payload.reason) > 2000) {
     throw new AppError("invalid_pr_report_command");
   }
-  return digest(JSON.stringify([command.kind, command.projectId, command.expectedRevision, command.payload.reportId, command.payload.reason]));
+  const identity: unknown[] = [command.kind, command.projectId, command.expectedRevision, command.payload.reportId, command.payload.reason];
+  if (command.payload.findingId !== undefined) identity.push(command.payload.findingId);
+  return digest(JSON.stringify(identity));
 }
 
 /**
  * Appends a revisioned dismissal/feedback annotation without rewriting finding history.
- * The report revision advances; findings and evidence stay immutable.
+ * The report revision advances; findings and evidence stay immutable. The annotation links the
+ * latest stored alert decision; a dismissal (whole report or one `findingId`) retires pending alert
+ * intents in the same transaction and feeds later admission/send rechecks. It never writes memory
+ * claims, so a rejected finding is never learned as a confirmed fact.
  */
 export function annotateReport(tx: AppTransaction, command: DismissReportCommand, now: number, kind: "dismiss" | "feedback" = "dismiss"): PrReportReceipt {
   ensurePrSchema(tx);
@@ -589,7 +622,10 @@ export function annotateReport(tx: AppTransaction, command: DismissReportCommand
   if (!row) throw new AppError("pr_report_not_found", 404);
   const report = storedOf(row) as PrivateReport;
   if (report.revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
-  if (secretLike.test(command.payload.reason)) throw new AppError("invalid_pr_report_command");
+  if (containsCredential(command.payload.reason)) throw new AppError("invalid_pr_report_command");
+  const findingId = command.payload.findingId ?? null;
+  if (findingId !== null && !report.findings.some(f => f.id === findingId)) throw new AppError("pr_finding_not_found", 404);
+  const decision = tx.get<{ id: string }>("SELECT id FROM pr_alert_decisions WHERE report_id = ? ORDER BY sequence DESC LIMIT 1", report.id);
   const annotation: ReportAnnotation = {
     id: crypto.randomUUID(),
     reportId: report.id,
@@ -598,12 +634,20 @@ export function annotateReport(tx: AppTransaction, command: DismissReportCommand
     kind,
     text: command.payload.reason.trim().slice(0, 2000),
     createdAt: now,
+    findingId,
+    decisionId: decision?.id ?? null,
   };
   tx.run("INSERT INTO pr_report_annotations(id, report_id, revision, record_json) VALUES (?, ?, ?, ?)",
     annotation.id, annotation.reportId, annotation.revision, JSON.stringify(annotation));
   const next: PrivateReport = { ...report, revision: annotation.revision, updatedAt: now };
   tx.run("UPDATE pr_reports SET status = ?, record_json = ? WHERE id = ?",
     next.status, JSON.stringify(next), next.id);
+  if (kind === "dismiss") {
+    retirePrAlerts(tx, findingId === null
+      ? { projectId: command.projectId, reportId: report.id }
+      : { projectId: command.projectId, reportId: report.id, findingId },
+    findingId === null ? "report_dismissed" : "finding_dismissed", now, { markSettledStale: false });
+  }
   const projected = overlay(tx, command.projectId, next, {});
   return { report: projected, annotation, projectRevision: project.revision };
 }

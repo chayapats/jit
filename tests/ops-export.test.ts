@@ -556,15 +556,26 @@ test("every PR-derived string is sanitized; canaries in each field never reach t
       normalized: normalizeReviewOutput(review, snapshot, DEFAULT_REVIEW_POLICY.requiredRoles), requiredRoles: [...DEFAULT_REVIEW_POLICY.requiredRoles],
       specialistRuns: [], synthesis: { state: "complete", reason: null }, jobId: null, attemptId: null, now: f.clock.now });
   });
-  f.rt.store.transaction(tx => annotateReport(tx, { kind: "pr.report.dismiss", requestId: rid(), projectId: a.id, expectedRevision: report.revision,
-    payload: { reportId: report.id, reason: `owner note ${canaries[7]}` } }, f.clock.now));
+  // The shared credential detector now rejects a credential-bearing dismissal at input (#24)...
+  expect(() => f.rt.store.transaction(tx => annotateReport(tx, { kind: "pr.report.dismiss", requestId: rid(), projectId: a.id, expectedRevision: report.revision,
+    payload: { reportId: report.id, reason: `owner note ${canaries[7]}` } }, f.clock.now))).toThrow("invalid_pr_report_command");
+  // ...so a legacy row that already holds one is planted directly to prove the export sink still sanitizes it.
+  f.rt.store.transaction(tx => {
+    const annotation = { id: crypto.randomUUID(), reportId: report.id, projectId: a.id, revision: report.revision + 1, kind: "dismiss", text: `owner note ${canaries[7]}`, createdAt: f.clock.now };
+    tx.run("INSERT INTO pr_report_annotations(id, report_id, revision, record_json) VALUES (?, ?, ?, ?)", annotation.id, report.id, annotation.revision, JSON.stringify(annotation));
+    const row = JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM pr_reports WHERE id = ?", report.id)!.record_json);
+    row.revision = annotation.revision;
+    tx.run("UPDATE pr_reports SET record_json = ? WHERE id = ?", JSON.stringify(row), report.id);
+  });
   const receipt = f.rt.app.execute(actor(f), exportCommand(f, a, false));
   const text = artifactText(f, receipt.manifest);
   expect(scanExportSecrets(text, canaries)).toEqual([]);
   const exported = (JSON.parse(text) as { data: { prReports: { revision: number; findings: { id: string; title: string }[] }[] } }).data.prReports[0]!;
   expect(exported.revision).toBe(2);
   expect(exported.findings.map(finding => finding.id)).toEqual(["finding-1", "finding-2"]);
-  expect(exported.findings[1]!.title).toBe("clean prose");
+  // finding-2 carries credentials in its path/evidenceRef; the shared detector (#24) now flags the whole
+  // finding payload_hygiene_secret at validation, so the export redacts all of its text fields.
+  expect(exported.findings[1]!.title).toBe("(redacted: payload_hygiene_secret)");
 });
 
 test("forget suppression gates delivery and report text exactly like raw sources", async () => {

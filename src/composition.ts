@@ -63,6 +63,7 @@ export function composeJobQueue(store: TransactionStore, config: AppConfig, opti
     prReviewWork({
       store, port: teamPort, ...(options.now ? { now: options.now } : {}),
       sourceLimit: config.team.sourceLimit, contextBytes: config.team.contextBytes, outputBytes: config.jobs.outputBytes,
+      alertBytes: config.messageBytes,
     }),
   ], { ...(options.now ? { now: options.now } : {}), ...(options.timers ? { timers: options.timers } : {}) });
   return { queue, teamPort };

@@ -1,6 +1,7 @@
 import type { AppTransaction } from "../store";
 import type { JobQueue } from "../jobs/queue";
 import type { WorkDefinition } from "../jobs/types";
+import { retirePrAlerts } from "./alert-links";
 import { readMonitor } from "./authority";
 import { TrustedGitHubConnector, type FakeGitHubFixture } from "./github";
 import { readCandidate } from "./poll";
@@ -74,6 +75,7 @@ export function prSnapshotWork(options: {
           candidate.updatedAt = job.updatedAt;
           tx.run("UPDATE pr_candidates SET status = ?, record_json = ? WHERE id = ?",
             "stale", JSON.stringify(candidate), candidate.id);
+          retirePrAlerts(tx, { projectId: job.projectId, candidateId: candidate.id }, "candidate_stale", job.updatedAt, { markSettledStale: true });
         });
         return outcome;
       }

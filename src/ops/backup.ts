@@ -244,6 +244,10 @@ export const backupImageTables: Readonly<Record<string, "include" | "exclude" | 
   task_events: "include", task_evidence_artifacts: "include", task_proposals: "include", tasks: "include",
   team_contexts: "include", team_runs: "include", team_state: "include",
   telegram_inbox: "include", telegram_poll: "include", topics: "include", upgrade_journal: "include",
+  // PR tables are created lazily by ensurePrSchema; none holds credentials (payloads are credential-screened).
+  pr_monitors: "include", pr_poll_checkpoints: "include", pr_candidates: "include", pr_snapshots: "include",
+  pr_reports: "include", pr_report_annotations: "include",
+  pr_alert_policies: "include", pr_alert_decisions: "include", pr_alerts: "include",
 });
 
 /** JSON keys whose values are one-time secrets and are nulled wherever receipts persist them. */

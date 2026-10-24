@@ -8,6 +8,7 @@ import { normalizePortResult } from "../team/scripted-port";
 import { portFailureOutcome, schwayMaxAttempts } from "../team/schway-port";
 import type { ApplicationRunPort } from "../team/run-port";
 import type { ApplicationRunOutcome, ApplicationRunRequest, RoleRoute } from "../team/types";
+import { admitCommittedReportAlerts } from "./alerts";
 import { readMonitor } from "./authority";
 import { readCandidate } from "./poll";
 import { ensurePrSchema } from "./schema";
@@ -62,6 +63,8 @@ export interface PrReviewWorkOptions {
    * version models an upgrade and fences work captured under the old policy.
    */
   reviewPolicy?: PrReviewPolicy;
+  /** Byte ceiling for alert payloads admitted on report commit (composition passes `config.messageBytes`). */
+  alertBytes?: number;
 }
 
 /**
@@ -261,7 +264,8 @@ function toSources(projectId: string, chunks: string[]): ManifestSource[] {
  * a concrete port without a configured route is rejected before dispatch, and
  * retries reuse the first capture without fallback. Every request is packed to
  * the port's source/byte limits and the exact transmitted manifest is committed
- * with the report; completion derives from it. Snapshot capture stays on
+ * with the report; completion derives from it. The same fenced commit admits
+ * `pr.private_alerts/v1` intents; an admission failure never rolls back the report. Snapshot capture stays on
  * `TrustedGitHubConnector` + `fixtureFor`, never through this port.
  */
 export function prReviewWork(options: PrReviewWorkOptions): WorkDefinition {
@@ -398,7 +402,7 @@ export function prReviewWork(options: PrReviewWorkOptions): WorkDefinition {
         const outcome = { state: "succeeded" as const, evidence: evidence.slice(0, 1024) };
         const at = now();
         const ok = commit(outcome, (tx) => {
-          persistReport(tx, {
+          const report = persistReport(tx, {
             projectId: job.projectId,
             monitorId: input.monitorId,
             candidateId: input.candidateId,
@@ -416,6 +420,7 @@ export function prReviewWork(options: PrReviewWorkOptions): WorkDefinition {
             attemptId: attempt.id,
             now: at,
           });
+          admitCommittedReportAlerts(tx, { projectId: job.projectId, reportId: report.id, maxBytes: options.alertBytes ?? 4000 }, at);
         });
         return ok ? outcome : { state: "failed" as const, reason: "worker_failed" as const };
       };

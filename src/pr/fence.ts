@@ -1,6 +1,7 @@
 import { AppError } from "../errors";
 import { invalidatePendingJob } from "../jobs/queue";
 import type { AppTransaction } from "../store";
+import { retirePrAlerts } from "./alert-links";
 import { ensurePrSchema } from "./schema";
 import type { ReviewCandidate } from "./types";
 
@@ -54,5 +55,7 @@ export function retirePrSnapshot(tx: AppTransaction, projectId: string, candidat
   candidate.staleReason = "source_retired";
   candidate.updatedAt = Math.max(candidate.updatedAt, now);
   tx.run("UPDATE pr_candidates SET status = ?, record_json = ? WHERE id = ?", candidate.status, JSON.stringify(candidate), candidate.id);
+  // PR03: alerts built on the retired evidence stop (pending) or read stale (settled).
+  retirePrAlerts(tx, { projectId, candidateId }, "source_retired", now, { markSettledStale: true });
   return { candidate, fencedJobs: fencePrCandidateWork(tx, projectId, candidateId, "source_retired", now) };
 }

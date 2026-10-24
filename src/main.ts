@@ -14,6 +14,7 @@ import { composeJobQueue } from "./composition";
 import type { JobQueue } from "./jobs/queue";
 import { tickSchedules } from "./jobs/schedules";
 import { backupNativePortFor } from "./ops/schway-backup";
+import { prepareServiceState } from "./bootstrap";
 
 async function secret(): Promise<string> {
   if (!process.stdin.isTTY) {
@@ -67,6 +68,7 @@ async function main(): Promise<void> {
   const store = new TransactionStore(config.databasePath);
   let queue: JobQueue | undefined;
   try { if (command === "serve") {
+    prepareServiceState(store, Date.now());
     if (config.runPort === "schway") {
       const gate = await verifySchwayBridge(store);
       if (!gate.ok) {

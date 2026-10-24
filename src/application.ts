@@ -21,11 +21,14 @@ import {
   readDeliveryReport, resendDeliveryIntent, retireDeliveryReport,
 } from "./delivery";
 import { annotateReport, listReports, listReviewStates, prReportIdentity, readAnnotations, readReport, reportRunEvidence } from "./pr/report";
-import { admitReportAlerts, evaluateReport } from "./pr/alerts";
+import { admitReportAlerts, alertPolicyIdentity, evaluateReport, readAlertDecisions, readAlertPolicy, setAlertPolicy } from "./pr/alerts";
+import { readAlertLinks } from "./pr/alert-links";
 import type {
+  AlertPolicyReceipt,
   DismissReportCommand,
   PrReportCommand,
   PrReportReceipt,
+  SetAlertPolicyCommand,
 } from "./pr/types";
 import type {
   CommitDeliveryCommand, DeliveryCommand, DeliveryIntent, DeliveryPage, DeliveryReceipt, DeliveryReport,
@@ -316,6 +319,7 @@ export class Application {
   execute(actor: OwnerActor, command: ResendDeliveryCommand): DeliveryResendReceipt;
   execute(actor: OwnerActor, command: RetireDeliveryCommand): DeliveryRetireReceipt;
   execute(actor: OwnerActor, command: PrReportCommand): PrReportReceipt;
+  execute(actor: OwnerActor, command: SetAlertPolicyCommand): AlertPolicyReceipt;
   execute(actor: OwnerActor, command: CreateBackupCommand): Promise<BackupReceipt>;
   execute(actor: OwnerActor, command: PruneBackupsCommand): BackupReceipt;
   execute(actor: OwnerActor, command: BackupCommand): BackupReceipt | Promise<BackupReceipt>;
@@ -323,8 +327,8 @@ export class Application {
   execute(actor: OwnerActor, command: ExportCommand): ExportReceipt;
   execute(actor: OwnerActor, command: UpgradeCommand): UpgradeReceipt;
   execute(actor: OwnerActor, command: RestoreCommand): RestoreReceipt;
-  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | UpgradeReceipt | RestoreReceipt;
-  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | UpgradeReceipt | RestoreReceipt {
+  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | UpgradeReceipt | RestoreReceipt;
+  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | UpgradeReceipt | RestoreReceipt {
     if (command?.kind === "export.create") return this.#exportCommand(actor, command);
     if (command?.kind.startsWith("restore.")) return this.#restoreCommand(actor, command as RestoreCommand);
     if (command?.kind.startsWith("upgrade.")) return this.#upgradeCommand(actor, command as UpgradeCommand);
@@ -335,6 +339,7 @@ export class Application {
     if (command?.kind === "memory.correct") return this.#correctCommand(actor, command);
     if (command?.kind === "memory.forget") return this.#forgetCommand(actor, command);
     if (command?.kind === "pr.report.dismiss") return this.#prReportCommand(actor, command as DismissReportCommand);
+    if (command?.kind === "pr.alert_policy.set") return this.#alertPolicyCommand(actor, command as SetAlertPolicyCommand);
     if (command?.kind === "schedule.create" || command?.kind === "schedule.pause" || command?.kind === "schedule.resume" ||
       command?.kind === "schedule.edit" || command?.kind === "schedule.revoke") return this.#scheduleCommand(actor, command as ScheduleCommand);
     if (isTaskCommand(command)) return this.#taskCommand(actor, command);
@@ -1135,7 +1140,7 @@ export class Application {
       this.#requireOwner(tx, actor);
       const project = this.#project(tx, projectId);
       // Per-candidate states keep not-reviewed, running, failed and stale distinguishable.
-      return { project, items: listReports(tx, projectId, monitorId), reviews: listReviewStates(tx, projectId, monitorId) };
+      return { project, items: listReports(tx, projectId, monitorId), reviews: listReviewStates(tx, projectId, monitorId), policy: readAlertPolicy(tx, projectId) };
     });
   }
 
@@ -1150,28 +1155,66 @@ export class Application {
       const project = this.#project(tx, projectId);
       const report = readReport(tx, projectId, reportId);
       const annotations = readAnnotations(tx, reportId);
-      const evaluation = evaluateReport(report);
+      const policy = readAlertPolicy(tx, projectId);
+      // Preview under the current policy; `decisions` is the stored record of what admission actually did.
+      const evaluation = evaluateReport(report, policy);
+      const decisions = readAlertDecisions(tx, reportId);
+      const links = readAlertLinks(tx, reportId);
       const alerts = tx.all<{ record_json: string }>(
-        "SELECT record_json FROM delivery_intents WHERE project_id = ? AND dedupe_key LIKE ? ORDER BY sequence",
-        projectId, `pr-alert/${reportId}/%`,
-      ).map(row => JSON.parse(row.record_json) as DeliveryIntent);
+        `SELECT record_json FROM delivery_intents WHERE project_id = ? AND (dedupe_key LIKE ? OR id IN (SELECT intent_id FROM pr_alerts WHERE report_id = ?)) ORDER BY sequence`,
+        projectId, `pr-alert/${reportId}/%`, reportId,
+      ).map(row => {
+        const intent = JSON.parse(row.record_json) as DeliveryIntent;
+        return { ...intent, findingId: links.find(link => link.intentId === intent.id)?.findingId ?? null };
+      });
       // Immutable source manifest, transmitted manifest and bounded attempt summaries.
       const evidence = reportRunEvidence(tx, projectId, report);
-      return { project, report, annotations, evaluation, alerts, evidence };
+      return { project, report, annotations, evaluation, alerts, evidence, policy, decisions, decision: decisions.at(-1) ?? null };
     });
   }
 
   /**
    * Admits at most one logical private alert per qualifying finding after rechecking
-   * current base/head/policy, report validity and enabled monitoring.
-   * `pr.private_alerts/v1` admission; replay dedupes to the existing intent.
+   * current base/head/policy, report validity, owner dismissal and enabled monitoring.
+   * `pr.private_alerts/v1` owner re-admission (the `pr.review` report commit admits automatically);
+   * replay dedupes to the existing intent and stored decision.
    */
   admitPrAlerts(actor: OwnerActor, projectId: string, reportId: string) {
     requireId(projectId); requireId(reportId);
     return this.store.transaction(tx => {
       this.#requireOwner(tx, actor);
       this.#project(tx, projectId);
-      return admitReportAlerts(tx, { projectId, reportId, maxBytes: this.config.messageBytes }, this.#now());
+      return admitReportAlerts(tx, { projectId, reportId, maxBytes: this.config.messageBytes, trigger: "owner_admit" }, this.#now());
+    });
+  }
+
+  /** Reads the current project alert policy (explicit default until the owner or first admission persists it). */
+  prAlertPolicy(actor: OwnerActor, projectId: string) {
+    requireId(projectId);
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor);
+      return { project: this.#project(tx, projectId), policy: readAlertPolicy(tx, projectId) };
+    });
+  }
+
+  /** Writes the next owner alert policy version under the shared command receipt pattern. */
+  #alertPolicyCommand(actor: OwnerActor, command: SetAlertPolicyCommand): AlertPolicyReceipt {
+    const payloadHash = digest(alertPolicyIdentity(command));
+    return this.store.transaction(tx => {
+      this.#requireOwner(tx, actor, ["web"]);
+      this.#project(tx, command.projectId);
+      const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
+      if (prior) {
+        if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409);
+        return JSON.parse(prior.result_json) as AlertPolicyReceipt;
+      }
+      const now = this.#now();
+      const result = setAlertPolicy(tx, command, now, this.config.messageBytes);
+      this.#beforeCommit?.("delivery");
+      tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
+      tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);
+      this.#beforeCommit?.("receipt");
+      return result;
     });
   }
 
