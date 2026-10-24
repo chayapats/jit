@@ -27,6 +27,7 @@ import {
   evaluateReport,
   ALERT_POLICY_VERSION,
   DEFAULT_ALERT_POLICY,
+  quarantineLegacyPrAlerts,
   readAlertDecisions,
   readAlertLinks,
   readAlertPolicy,
@@ -1049,4 +1050,73 @@ test("retirement keeps a terminal failed delivery recorded and only marks it sta
   resetCheckpoint(f, monitor.id);
   f.store.transaction(tx => pollMonitorCatchUp(tx, f.project.id, monitor.id, conn, f.clock.now));
   expect(intentsOf(f)[0]).toMatchObject({ status: "failed", remote: "rejected", failureReason: "telegram_rejected", stale: true, staleReason: "candidate_superseded" });
+});
+
+test("duplicate-ID repair picks the evidence-backed representative in either order and sends it", async () => {
+  const suspected = { id: "dup-1", title: "maybe", category: "uncertain", severity: "high", location: { path: "a.ts", line: 1 }, condition: "c0", impact: "i0", reasoning: "r0", evidenceType: "none", evidenceRef: null };
+  const actionable = { id: "dup-1", title: "real bug", category: "correctness", severity: "high", location: { path: "a.ts", line: 2 }, condition: "c1", impact: "i1", reasoning: "r1", evidenceType: "diff", evidenceRef: "a.ts" };
+  for (const order of [[suspected, actionable], [actionable, suspected]]) {
+    const f = await fixture(scripted(JSON.stringify({ findings: order, analyzedRoles: ["correctness", "security"], skippedScope: [], disagreements: [] })));
+    bindTelegram(f);
+    const { report } = await prepareReport(f);
+    const canonical = report.findings.find(x => x.id === "dup-1")!;
+    expect(canonical).toMatchObject({ status: "actionable", title: "real bug" });
+    const copy = report.findings.find(x => x.id === "dup-1-dup2")!;
+    expect(copy).toMatchObject({ status: "suspected", title: "maybe" });
+    expect(copy.validationErrors).toContain("duplicate_finding_id");
+    expect(report.findings.map(x => x.title)).toEqual(order.map(x => x.title));
+    const decision = f.store.read(tx => readAlertDecisions(tx, report.id)).at(-1)!;
+    expect(decision.findings.find(d => d.findingId === "dup-1")!.decision).toBe("notified");
+    expect(decision.findings.find(d => d.findingId === "dup-1-dup2")!.decision).toBe("held");
+    expect(worker(f).pump().map(i => i.status)).toEqual(["sent"]);
+    expect(f.sender.external[0]!.text).toContain("real bug");
+  }
+});
+
+test("quarantined legacy credential-bearing intent no longer stores the credential in outbox, report or source", async () => {
+  const token = "sk-proj-AbCdEfGhIjKlMnOpQrStUvWx0123456789";
+  const plant = (f: F, intentId: string) => f.store.transaction(tx => {
+    tx.run("DELETE FROM pr_alerts WHERE intent_id = ?", intentId);
+    const row = JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM delivery_intents WHERE id = ?", intentId)!.record_json);
+    delete row.guard;
+    row.payload.text = `${row.payload.text}\nkey ${token}`;
+    tx.run("UPDATE delivery_intents SET record_json = ? WHERE id = ?", JSON.stringify(row), intentId);
+    const report = JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM delivery_reports WHERE id = ?", row.provenance.reportId)!.record_json);
+    report.text = row.payload.text;
+    tx.run("UPDATE delivery_reports SET record_json = ? WHERE id = ?", JSON.stringify(report), report.id);
+    tx.run("UPDATE source_versions SET content_text = ? WHERE source_id = ?", row.payload.text, report.sourceId);
+  });
+  const leaks = (f: F) => f.store.read(tx => [
+    ...tx.all<{ v: string }>("SELECT record_json AS v FROM delivery_intents"),
+    ...tx.all<{ v: string }>("SELECT record_json AS v FROM delivery_reports"),
+    ...tx.all<{ v: string }>("SELECT record_json AS v FROM delivery_attempts"),
+    ...tx.all<{ v: string }>("SELECT coalesce(content_text, '') AS v FROM source_versions"),
+  ].filter(r => r.v.includes(token)).length);
+  // Pending: the send guard quarantines it at claim time.
+  {
+    const f = await fixture();
+    bindTelegram(f);
+    await prepareReport(f);
+    plant(f, intentsOf(f)[0]!.id);
+    expect(leaks(f)).toBe(3);
+    worker(f).pump();
+    expect(f.sender.calls).toBe(0);
+    expect(intentsOf(f)[0]).toMatchObject({ status: "cancelled", stale: true, staleReason: "legacy_alert_unverifiable" });
+    expect(leaks(f)).toBe(0);
+    expect(intentsOf(f)[0]!.payload.text).toContain("[credential-redacted]");
+  }
+  // Settled (failed): the boot sweep redacts and marks stale while keeping the honest outcome.
+  {
+    const f = await fixture();
+    bindTelegram(f);
+    await prepareReport(f);
+    f.sender.scripts = ["reject"];
+    worker(f).pump();
+    const id = intentsOf(f)[0]!.id;
+    plant(f, id);
+    const quarantined = f.store.transaction(tx => quarantineLegacyPrAlerts(tx, f.clock.now));
+    expect(quarantined).toEqual([id]);
+    expect(intentsOf(f)[0]).toMatchObject({ status: "failed", remote: "rejected", failureReason: "telegram_rejected", stale: true, staleReason: "legacy_alert_unverifiable" });
+    expect(leaks(f)).toBe(0);
+  }
 });

@@ -229,6 +229,40 @@ function cancelUnsent(tx: AppTransaction, intent: DeliveryIntent, reason: string
 }
 
 /**
+ * Rewrites the stored text of one intent with `scrub` (for example `redactCredentials`) across the
+ * intent payload, its delivery report and the report's source version, inside the caller's
+ * transaction. Status, remote outcome, attempts and failure reasons are left untouched. The passed
+ * `intent` object is updated in place so a caller holding it saves the scrubbed text. Returns
+ * whether anything changed.
+ */
+export function scrubDeliveryIntentText(tx: AppTransaction, intent: DeliveryIntent, scrub: (text: string) => string): boolean {
+  let changed = false;
+  const text = scrub(intent.payload.text);
+  if (text !== intent.payload.text) {
+    intent.payload = { ...intent.payload, text };
+    saveIntent(tx, intent);
+    changed = true;
+  }
+  let report: DeliveryReport | null = null;
+  try { report = readDeliveryReport(tx, intent.projectId, intent.provenance.reportId); } catch { report = null; }
+  if (report) {
+    const reportText = scrub(report.text);
+    if (reportText !== report.text) { report.text = reportText; saveReport(tx, report); changed = true; }
+    const version = tx.get<{ text: string | null }>("SELECT content_text AS text FROM source_versions WHERE source_id = ? AND revision = ? AND generation = ?",
+      report.sourceId, report.sourceRevision, report.sourceGeneration);
+    if (version?.text) {
+      const sourceText = scrub(version.text);
+      if (sourceText !== version.text) {
+        tx.run("UPDATE source_versions SET content_text = ? WHERE source_id = ? AND revision = ? AND generation = ?",
+          sourceText, report.sourceId, report.sourceRevision, report.sourceGeneration);
+        changed = true;
+      }
+    }
+  }
+  return changed;
+}
+
+/**
  * Retires one logical intent because its domain source is no longer current.
  * Unsent work is cancelled and marked stale with `reason`. With `markSettledStale`, an intent that
  * already has a sent/unknown/failed outcome stays recorded but is marked visibly stale; an in-flight

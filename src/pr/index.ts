@@ -93,6 +93,7 @@ export {
   evaluateReport,
   listAlertPolicies,
   prAlertCurrentness,
+  quarantineLegacyPrAlerts,
   readAlertDecisions,
   readAlertPolicy,
   setAlertPolicy,

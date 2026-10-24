@@ -19,6 +19,7 @@ import { SchwayRunPort, verifySchwayBridge } from "./team/schway-port";
 import { scriptedPreviewWork } from "./team/preview";
 import { prReviewWork } from "./pr/review";
 import { prSnapshotWork } from "./pr/work";
+import { quarantineLegacyPrAlerts } from "./pr/alerts";
 import { FakeGitHubFixture } from "./pr/github";
 import { memoryExtractionWork, scriptedMemoryResult } from "./memory/extract";
 import { scheduleReminderWork, scheduleSummaryWork, tickSchedules } from "./jobs/schedules";
@@ -105,6 +106,8 @@ async function main(): Promise<void> {
       prReviewWork({ store, port: fixturePort, alertBytes: config.messageBytes }),
     ]);
     await queue.reconcile(teamPort);
+    // PR03: pre-guard pr-alert intents are backfilled or quarantined (credentials redacted) before any send.
+    store.transaction(tx => quarantineLegacyPrAlerts(tx, Date.now()));
   } }
   catch (error) { queue?.close(); store.close(); throw error; }
   const app = new Application(store, config, queue ? { jobs: queue } : {});

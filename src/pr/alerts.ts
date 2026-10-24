@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { AppError } from "../errors";
-import { commitDeliveryIntent, readDeliveryIntent, registerDeliveryGuard, type DeliveryCurrentness, type DeliveryIntent, type DeliveryReceipt } from "../delivery";
-import { containsCredential } from "../security/credentials";
+import { commitDeliveryIntent, readDeliveryIntent, registerDeliveryGuard, retireDeliveryIntent, scrubDeliveryIntentText, type DeliveryCurrentness, type DeliveryIntent, type DeliveryReceipt } from "../delivery";
+import { containsCredential, redactCredentials } from "../security/credentials";
 import { neutralizeDestinations } from "../security/destinations";
 import { requireId } from "../sources";
 import type { AppTransaction } from "../store";
@@ -423,7 +423,11 @@ export function admitCommittedReportAlerts(
  */
 export function prAlertCurrentness(tx: AppTransaction, intent: DeliveryIntent): DeliveryCurrentness {
   const link = readAlertLink(tx, intent.id) ?? backfillLegacyAlertLink(tx, intent);
-  if (!link) return { current: false, reason: "legacy_alert_unverifiable" };
+  if (!link) {
+    // Quarantine: the outbox cancels it; any credential in its stored text is redacted first.
+    scrubDeliveryIntentText(tx, intent, redactCredentials);
+    return { current: false, reason: "legacy_alert_unverifiable" };
+  }
   if (link.projectId !== intent.projectId) return { current: false, reason: "alert_link_missing" };
   let report: PrivateReport;
   try { report = readReport(tx, link.projectId, link.reportId); }
@@ -487,6 +491,29 @@ export function backfillLegacyAlertLink(tx: AppTransaction, intent: DeliveryInte
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, link.intentId, link.projectId, link.reportId, link.findingId, link.candidateId, link.monitorId,
   link.policyVersion, JSON.stringify(link));
   return link;
+}
+
+/**
+ * Boot-time sweep over every pre-guard `pr-alert/` intent without a link, including settled ones the
+ * send guard never revisits. Verifiable intents are backfilled; the rest have credentials redacted
+ * from intent payload, delivery report and source version, and are cancelled (unsent) or marked
+ * stale (settled) as `legacy_alert_unverifiable`, keeping honest delivery outcome fields.
+ * Returns the IDs of quarantined intents.
+ */
+export function quarantineLegacyPrAlerts(tx: AppTransaction, now: number): string[] {
+  ensurePrSchema(tx);
+  if (!Number.isSafeInteger(now) || now < 0) throw new AppError("invalid_commit_time");
+  const quarantined: string[] = [];
+  for (const row of tx.all<{ id: string; project_id: string }>(
+    "SELECT id, project_id FROM delivery_intents WHERE dedupe_key LIKE 'pr-alert/%' AND id NOT IN (SELECT intent_id FROM pr_alerts) ORDER BY sequence",
+  )) {
+    const intent = readDeliveryIntent(tx, row.project_id, row.id);
+    if (backfillLegacyAlertLink(tx, intent)) continue;
+    scrubDeliveryIntentText(tx, intent, redactCredentials);
+    retireDeliveryIntent(tx, row.project_id, row.id, "legacy_alert_unverifiable", now, { markSettledStale: true });
+    quarantined.push(row.id);
+  }
+  return quarantined;
 }
 
 registerDeliveryGuard(PR_ALERT_GUARD, prAlertCurrentness);
