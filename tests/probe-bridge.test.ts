@@ -1531,3 +1531,43 @@ test("a failed terminal publication keeps tracking for a later same-process reco
     releaseWrite();
   }
 });
+
+test("no inference starts past the absolute deadline, even before its timer fires", async () => {
+  const root = setup();
+  const starter = bridgePorts({ root, fetch: successFetch() });
+  let inferCalled = false;
+  // A blocked event loop delays the owned timer; the dispatch check reads
+  // the absolute deadline itself.
+  const { record } = await liveProbe("fixture-probe-host",
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 50 },
+    { ...starter.ports, now: () => 1800000000000, id: () => ID,
+      readCredential: async () => { const until = Date.now() + 150; while (Date.now() < until) { /* busy */ } return "ok"; },
+      infer: async () => { inferCalled = true; return "success"; } }, starter.root);
+  expect(inferCalled).toBe(false);
+  expect(record.lifecycle).toBe("cancelled");
+  expect(record.attempts).toBe(0);
+});
+
+test("slow readiness does not restart the settlement budget", async () => {
+  const root = setup();
+  const starter = bridgePorts({ root, fetch: successFetch() });
+  const store = {
+    get: async () => null,
+    set: () => new Promise<void>(() => {}),
+    delete: async () => false,
+    compareAndDelete: async () => true,
+  };
+  const startedAt = Date.now();
+  const { record } = await liveProbe("fixture-probe-host",
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 400 },
+    { ...starter.ports, now: () => 1800000000000, id: () => ID,
+      readCredential: async () => { await new Promise(r => setTimeout(r, 300)); return "ok"; },
+      infer: async input => {
+        await input.fence!.writeStore({ account: "grok-subscription:xai" }, "probe-value", store);
+        return "success";
+      } }, starter.root);
+  // Settlement waits only for what remains of the one absolute deadline,
+  // never a fresh budget measured from after readiness.
+  expect(Date.now() - startedAt).toBeLessThan(650);
+  expect(record.lifecycle).toBe("store-unavailable");
+});

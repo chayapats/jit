@@ -455,6 +455,15 @@ function releaseTracking(id: string): void {
   schwayWindows.delete(id);
 }
 
+/**
+ * Marks unverified cleanup only while the run is still tracked. After the
+ * terminal CAS released tracking the record is immutable, so a late mark
+ * would only leak the id (and taint any later attempt reusing it).
+ */
+function markUncertain(id: string): void {
+  if (inflightWrites.has(id)) cleanupUncertainIds.add(id);
+}
+
 /** True when the attempt cannot claim clean final credential visibility. */
 function cleanupUnverified(id: string): boolean {
   return cleanupUncertainIds.has(id) || (unresolvedWrites.get(id) ?? 0) > 0 || (schwayWindows.get(id)?.size ?? 0) > 0;
@@ -1032,13 +1041,14 @@ export async function liveProbe(installationLabel: string, options: LiveProbeOpt
   const dispatched: ProbeAttempt = { schema: PROBE_SCHEMA, id, observedAt: new Date(started).toISOString(), installationLabel,
     mode: "live", route, model, lifecycle: "started", maxAttempts, attempts: 0, deadlineMs, elapsedMs: 0,
     observations: base, promptBytes: Buffer.byteLength(PROBE_PROMPT), nextAction: "run-opt-in-probe" };
-  // Persist the attempt before any account request so a crash leaves explicit started evidence.
-  await writeAttempt(root, dispatched);
   const elapsed = () => Math.max(0, Math.min(120000, ports.now() - started));
-  // Compose the caller signal with an internally owned deadline: the public
-  // orchestration enforces its configured bound even when invoked directly
-  // without a CLI timeout signal. A blocked credential store therefore fails
-  // closed at the deadline instead of hanging forever.
+  // One absolute deadline, captured before the first persistence await:
+  // every timer, dispatch check, host budget and settlement wait derives
+  // from its remaining time, so slow persistence or readiness can neither
+  // start inference late nor restart the budget. Composed with the caller
+  // signal so the public orchestration enforces its configured bound even
+  // when invoked directly; a blocked store fails closed at the deadline.
+  const deadlineAt = Date.now() + deadlineMs;
   const owned = new AbortController();
   const timer = setTimeout(() => owned.abort(), deadlineMs);
   const onCallerAbort = () => owned.abort();
@@ -1046,7 +1056,9 @@ export async function liveProbe(installationLabel: string, options: LiveProbeOpt
   else signal.addEventListener("abort", onCallerAbort, { once: true });
   const effective = owned.signal;
   try {
-    return await runLive(root, id, dispatched, base, bounds, route, model, maxAttempts, ports, effective, elapsed);
+    // Persist the attempt before any account request so a crash leaves explicit started evidence.
+    await writeAttempt(root, dispatched);
+    return await runLive(root, id, dispatched, base, bounds, route, model, maxAttempts, ports, effective, elapsed, deadlineAt, () => owned.abort());
   } finally {
     clearTimeout(timer);
     signal.removeEventListener("abort", onCallerAbort);
@@ -1056,8 +1068,15 @@ export async function liveProbe(installationLabel: string, options: LiveProbeOpt
 /** Live probe body running under the composed deadline signal. */
 async function runLive(root: string, id: string, dispatched: ProbeAttempt, base: ProbeObservationEntry[],
   bounds: { maxAttempts: number; deadlineMs: number }, route: string, model: string, maxAttempts: number,
-  ports: ProbePorts, effective: AbortSignal, elapsed: () => number,
+  ports: ProbePorts, effective: AbortSignal, elapsed: () => number, deadlineAt: number, expire: () => void,
 ): Promise<{ record: ProbeAttempt; self: ProbeSelfSample }> {
+  // Past the absolute deadline nothing new may start, even if the owned
+  // timer has not fired yet (a busy event loop delays it): the signal is
+  // aborted synchronously so every abort path applies unchanged.
+  const expired = (): boolean => {
+    if (!effective.aborted && Date.now() >= deadlineAt) expire();
+    return effective.aborted;
+  };
   // Every terminal write below goes through the transactional CAS: a
   // concurrent cancel/reconcile/commit wins exactly once, and losers report
   // the settled record byte-for-byte instead of overwriting it. Attempts and
@@ -1091,7 +1110,7 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
     });
     return { record, self: await finishSelf(record) };
   };
-  if (effective.aborted) {
+  if (expired()) {
     return abortTo("unobserved", "unobserved");
   }
   // Ports are not trusted to honor cancellation: every port call runs
@@ -1100,7 +1119,7 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
   // durable admission is being written starts no provider contact afterward.
   // Late settlements are ignored; they never touch the record.
   const withDeadline = async <T>(work: () => Promise<T>): Promise<T> => {
-    if (effective.aborted) throw new Error("aborted");
+    if (expired()) throw new Error("aborted");
     return await Promise.race([
       work(),
       new Promise<never>((_, reject) => effective.addEventListener("abort", () => reject(new Error("aborted")), { once: true })),
@@ -1113,7 +1132,7 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
   } catch {
     credential = "failed";
   }
-  if (effective.aborted) {
+  if (expired()) {
     return abortTo(credential, "unobserved");
   }
   // Before-send gate shared with the transport: the lifecycle check, the
@@ -1154,7 +1173,8 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
         db.exec("BEGIN IMMEDIATE");
         try {
           const current = await readProbeAttempt(root, id);
-          if (current.lifecycle !== "started") {
+          // No provider send starts past the absolute deadline.
+          if (current.lifecycle !== "started" || expired()) {
             db.exec("ROLLBACK");
             throw new Error("fenced");
           }
@@ -1225,7 +1245,7 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
   // racing past an in-flight write.
   const inflight = new Set<Promise<unknown>>();
   inflightWrites.set(id, inflight);
-  probeDeadlines.set(id, { startedAt: Date.now(), deadlineMs: bounds.deadlineMs });
+  probeDeadlines.set(id, { startedAt: deadlineAt - bounds.deadlineMs, deadlineMs: bounds.deadlineMs });
   // The infer call currently in flight; guard admissions open a window
   // bound to it, closed when that call settles (not when the deadline race
   // abandons it).
@@ -1298,14 +1318,14 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
             // legitimate credential of a still-running attempt; instead the
             // write stays unresolved and marked uncertain, so terminalization
             // reports store-unavailable.
-            cleanupUncertainIds.add(id);
+            markUncertain(id);
             return;
           }
           if (settled.lifecycle !== "started") {
             try {
               await store.compareAndDelete(identity, value);
             } catch (error) {
-              cleanupUncertainIds.add(id);
+              markUncertain(id);
               throw cleanupUncertainError(error);
             } finally {
               resolveWrite(id);
@@ -1339,7 +1359,7 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
             try {
               await store.compareAndDelete(identity, value);
             } catch (error) {
-              cleanupUncertainIds.add(id);
+              markUncertain(id);
               throw cleanupUncertainError(error);
             } finally {
               resolveWrite(id);
@@ -1358,7 +1378,7 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
               } catch {
                 // After the run released its tracking the record is
                 // immutable; adding then would only leak the id.
-                if (inflightWrites.has(id)) cleanupUncertainIds.add(id);
+                markUncertain(id);
               }
             }, () => {}).finally(() => resolveWrite(id));
             inflight.add(late);
@@ -1374,7 +1394,7 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
   };
   try {
   for (let turn = 0; turn < maxAttempts; turn++) {
-    if (effective.aborted) break;
+    if (expired()) break;
     // Reserve the admission durably before any provider contact: the
     // reservation rechecks `started` inside the cross-process transaction, so
     // a concurrent cancel serializes against it (no new request starts after
@@ -1389,12 +1409,12 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
     admissionSends = { inference: 0, token: 0 };
     // A deadline that fires while the reservation was being written must not
     // start provider contact afterward: recheck before invoking the port.
-    if (effective.aborted) break;
+    if (expired()) break;
     try {
       const token = {};
       const outcome = await withDeadline(() => {
         currentInfer = token;
-        const call = ports.infer({ route, model, prompt: PROBE_PROMPT, tools: PROBE_TOOLS, discovery: { ...PROBE_DISCOVERY }, deadlineMs: bounds.deadlineMs, gate: gateSend, fence }, effective);
+        const call = ports.infer({ route, model, prompt: PROBE_PROMPT, tools: PROBE_TOOLS, discovery: { ...PROBE_DISCOVERY }, deadlineMs: Math.max(1, deadlineAt - Date.now()), gate: gateSend, fence }, effective);
         // A call that settles under abort may have left an unabortable
         // native write detached (Schway races its refresh against the
         // signal), so its window stays open through terminalization; only
