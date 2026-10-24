@@ -1289,3 +1289,34 @@ test("a store without atomic cleanup fails the write closed before backend conta
   expect(setCalls).toBe(0);
   expect(record.lifecycle).toBe("store-unavailable");
 });
+
+test("class-backed stores keep their prototype methods through the seam", async () => {
+  const root = setup();
+  const initial = JSON.stringify({ accessToken: "old-access", refreshToken: "refresh-token", obtainedAt: 0, expiresAt: 1 });
+  const backend = new Map<string, string>([["grok-subscription:xai", initial]]);
+  // Class prototype methods are non-enumerable: an object spread would drop
+  // them and the write would fail closed without backend contact.
+  class ClassStore {
+    async get(identity: { account: string }) { return backend.get(identity.account) ?? null; }
+    async set(identity: { account: string }, value: string) { backend.set(identity.account, value); }
+    async delete(identity: { account: string }) { return backend.delete(identity.account); }
+    async compareAndDelete(identity: { account: string }, expected: string) {
+      if (backend.get(identity.account) !== expected) return false;
+      backend.delete(identity.account);
+      return true;
+    }
+  }
+  const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, store: new ClassStore() as never, fetch: async (input: any, init?: any) => {
+    const url = String(typeof input === "string" ? input : input.url);
+    if (url.toLowerCase().includes("token")) {
+      return new Response(JSON.stringify({ access_token: "new-access", refresh_token: "refresh-token", expires_in: 3600 }), { status: 200 });
+    }
+    return successFetch("late")(input, init);
+  } });
+  const { record } = await liveProbe("fixture-probe-host",
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 8000 },
+    { ...ports, now: () => 1800000000000, id: () => OTHER_ID }, root);
+  expect(record.lifecycle).toBe("observed-ready");
+  // The refresh reached the class store's own set (not a failed-closed write).
+  expect(JSON.parse(backend.get("grok-subscription:xai")!).accessToken).toBe("new-access");
+});

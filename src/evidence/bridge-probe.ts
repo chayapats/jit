@@ -173,12 +173,17 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
         // risking a racy read-then-delete. Scripted ports without
         // writeStore keep the plain dispatch-checked write.
         set: (identity: HostCredentialReference, value: string) => {
-          const atomic = base as HostCredentialStore & { compareAndDelete?: (identity: HostCredentialReference, expectedValue: string) => Promise<boolean> };
+          // Atomic compare-and-delete is required at this seam: a store
+          // without one fails the write closed before any backend contact
+          // instead of risking a racy read-then-delete. The original store
+          // is passed through (never spread: spreading drops class
+          // prototype methods) after the capability check above.
+          const atomic = base as HostCredentialStore & { compareAndDelete: (identity: HostCredentialReference, expectedValue: string) => Promise<boolean> };
           if (typeof atomic.compareAndDelete !== "function") {
             throw new Error("fenced store requires atomic compare-and-delete");
           }
           return fence.writeStore
-            ? fence.writeStore(identity, value, { ...atomic, compareAndDelete: (id, expected) => atomic.compareAndDelete!(id as HostCredentialReference, expected) })
+            ? fence.writeStore(identity, value, atomic)
             : fence.write(() => base.set(identity, value));
         },
         delete: (identity: HostCredentialReference) => fence.write(() => base.delete(identity)),
