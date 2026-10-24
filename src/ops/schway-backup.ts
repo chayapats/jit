@@ -130,6 +130,12 @@ export class SchwayBackupNativePort implements BackupNativePort {
    * row, excluded or not, enters the fingerprint.
    */
   resolve(tx: AppTransaction): BackupNativePlan {
+    // Installations older than schema 21 predate the bridge correlation table:
+    // no managed native session can exist, so the exact set is empty.
+    if (!tx.get("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schway_native_refs'")) {
+      const detail: SchwayPlanDetail = { entries: [], unresolved: 0, busy: 0, orphaned: 0 };
+      return { refs: [], fingerprint: createHash("sha256").update("[]").digest("hex"), detail };
+    }
     const rows = tx.all<{ run_id: string; generation: number; session_id: string; branch_id: string; state: "running" | "finished"; context_state: string | null }>(
       `SELECT r.run_id, r.generation, r.session_id, r.branch_id, r.state, c.state AS context_state
        FROM schway_native_refs r LEFT JOIN team_contexts c ON c.id = r.context_id AND c.generation = r.generation

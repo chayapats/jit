@@ -407,10 +407,16 @@ export function normalizeNativeSnapshot(snap: unknown, plan?: BackupNativePlan, 
     return emptyNative("incomplete", "native_snapshot_invalid");
   }
   const engine = s.engine;
+  // The declared size is informational, but a non-integer or negative declaration is a broken engine result.
+  if (!Number.isSafeInteger(s.bytes) || s.bytes < 0) return emptyNative("incomplete", "native_snapshot_invalid", engine);
   try {
+    const seen = new Set<string>();
     for (const ref of s.refs) {
+      // Exact `{ id, generation }` shape, valid id, positive safe generation, no duplicates.
+      if (!exact(ref, ["id", "generation"])) return emptyNative("incomplete", "native_snapshot_invalid", engine);
       requireId(ref.id);
-      if (!Number.isSafeInteger(ref.generation) || ref.generation < 1) return emptyNative("incomplete", "native_snapshot_invalid", engine);
+      if (!Number.isSafeInteger(ref.generation) || ref.generation < 1 || seen.has(ref.id)) return emptyNative("incomplete", "native_snapshot_invalid", engine);
+      seen.add(ref.id);
     }
   } catch { return emptyNative("incomplete", "native_snapshot_invalid", engine); }
   if (plan && JSON.stringify(plan.refs) !== JSON.stringify(s.refs.map(r => ({ id: r.id, generation: r.generation })))) {
@@ -543,6 +549,107 @@ export function captureAppSide(tx: AppTransaction, store: Pick<TransactionStore,
   const lifecycle = lifecycleCheckpoint(tx);
   const image = captureBackupImage(tx, store);
   return { appSchema, appRevision, inventory, lifecycle, image };
+}
+
+/** Inputs for {@link stageManagedBackup}; shared by `backup.create` and upgrade prepare (ops.schema_migrations/v1). */
+export interface StageBackupInput<R> {
+  store: TransactionStore;
+  backupDir: string;
+  port: BackupNativePort | undefined;
+  jitVersion: string;
+  now(): number;
+  /** Backup ids whose files are staged but not yet committed; reconciliation never removes them. */
+  inflight: Set<string>;
+  /**
+   * Authorizes inside each transaction (`capture`, then `commit`). A non-null
+   * result (for example a duplicate receipt) ends creation with that result
+   * and discards anything staged.
+   */
+  guard(tx: AppTransaction, phase: "capture" | "commit"): R | null;
+  /** Records the committed manifest (receipts, audit, journals) inside the commit transaction. */
+  record(tx: AppTransaction, manifest: BackupManifest, now: number): R;
+  /** Fault seam after retention selection, before the manifest row is written. */
+  beforeCommit?(): void;
+}
+
+/**
+ * Staged ops.backup_manifest/v1 creation, the one implementation behind
+ * `backup.create` and the upgrade recovery point.
+ *
+ * 1. One immediate transaction: guard, reconcile orphans, then capture the
+ *    credential-free app image, reference inventory, lifecycle checkpoint and
+ *    exact native reference plan from the same committed view.
+ * 2. Await the engine's supported native snapshot for exactly that plan
+ *    (the port is invoked exactly once).
+ * 3. Reject an over-ceiling backup before anything is deleted, then stage the
+ *    image and native artifacts (mode 0600) in the managed directory.
+ * 4. One immediate transaction: guard again, recheck the native plan
+ *    fingerprint, retire retention victims' rows, insert the manifest and call
+ *    `record`.
+ * 5. Only after commit, delete victims' files. Any failure before commit
+ *    removes only this attempt's staged files; committed backups are untouched.
+ */
+export async function stageManagedBackup<R>(input: StageBackupInput<R>): Promise<R> {
+  const id = crypto.randomUUID();
+  const { store, backupDir, port } = input;
+  input.inflight.add(id);
+  const written: string[] = [];
+  try {
+    const staged = store.transaction(tx => {
+      const prior = input.guard(tx, "capture");
+      if (prior !== null) return { done: true as const, prior };
+      reconcileBackupArtifacts(tx, backupDir, input.inflight);
+      const app = captureAppSide(tx, store);
+      let plan: BackupNativePlan | undefined;
+      let planFailed = false;
+      try { plan = port?.resolve?.(tx); } catch { planFailed = true; }
+      return { done: false as const, app, plan, planFailed };
+    });
+    if (staged.done) return staged.prior;
+    const capture: NativeCapture = staged.planFailed
+      ? { section: { state: "incomplete", refs: [], bytes: 0, engine: port?.engine ?? null, reason: "native_snapshot_failed", contract: null, formatVersion: null }, artifacts: [] }
+      : await captureNativeSnapshot(port, staged.plan, { maxBytes: Math.max(0, backupRetention.maxBytes - staged.app.image.bytes.length) });
+    const incoming = staged.app.image.bytes.length + capture.artifacts.reduce((sum, a) => sum + a.bytes.length, 0);
+    if (incoming > backupRetention.maxBytes) throw new AppError("backup_too_large", 507);
+    const artifactPath = writeArtifact(backupDir, id, staged.app.image.bytes);
+    written.push(artifactPath);
+    const nativeArtifacts = writeNativeArtifacts(backupDir, id, capture.artifacts, written);
+    let victims: string[] = [];
+    const discard: string[] = [];
+    const result = store.transaction(tx => {
+      const prior = input.guard(tx, "commit");
+      if (prior !== null) { discard.push(...written); return prior; }
+      let native: BackupManifest["native"] = { ...capture.section, artifacts: nativeArtifacts };
+      if (native.state === "valid" && staged.plan && port?.resolve) {
+        let current: BackupNativePlan | null = null;
+        try { current = port.resolve(tx); } catch { current = null; }
+        if (!current || current.fingerprint !== staged.plan.fingerprint) {
+          // The native set moved during capture: never present it as valid.
+          discard.push(...nativeArtifacts.map(a => a.path));
+          native = { ...native, state: "incomplete", refs: [], bytes: 0, reason: "native_changed_during_backup", artifacts: [] };
+        }
+      }
+      const storedBytes = staged.app.image.bytes.length + native.artifacts.reduce((sum, a) => sum + a.bytes, 0);
+      const selected = selectRetentionVictims(tx, backupDir, storedBytes);
+      victims = selected.files;
+      input.beforeCommit?.();
+      const now = input.now();
+      const manifest = prepareBackupManifest(tx, {
+        id, now, appRevision: staged.app.appRevision, appSchema: staged.app.appSchema, jitVersion: input.jitVersion,
+        image: staged.app.image, native, artifactPath, pruned: selected.pruned,
+        inventory: staged.app.inventory, lifecycle: staged.app.lifecycle,
+      });
+      tx.run("INSERT INTO ops_backups VALUES (?, ?, ?)", manifest.id, manifest.createdAt, JSON.stringify(manifest));
+      return input.record(tx, manifest, now);
+    });
+    written.length = 0;
+    removeManagedFiles([...victims, ...discard]);
+    return result;
+  } finally {
+    // Anything still listed was staged by a failed attempt and never committed.
+    removeManagedFiles(written);
+    input.inflight.delete(id);
+  }
 }
 
 /** Structural validation for manifests read back from inventory or used for restore. */

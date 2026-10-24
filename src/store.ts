@@ -1,5 +1,5 @@
 import { Database, type SQLQueryBindings } from "bun:sqlite";
-import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { commitDecisionMemorySource, retireDecisionMemorySource } from "./memory/decision-sources";
 
@@ -20,12 +20,36 @@ export interface AppTransaction {
   run(sql: string, ...bindings: SQLQueryBindings[]): void;
 }
 
+/**
+ * Schema inspection: the `user_version` of an existing installation database,
+ * or null when no database exists yet. Never creates, migrates or writes
+ * database content (ops.schema_migrations/v1 preflight and boot gates); SQLite
+ * may create its WAL index sibling to read a WAL-mode file.
+ */
+export function inspectStoreSchema(path: string): number | null {
+  if (!existsSync(path) || statSync(path).size === 0) return null;
+  const db = new Database(path, { readwrite: true, create: false, strict: true });
+  try { return (db.query("PRAGMA user_version").get() as { user_version: number }).user_version; }
+  finally { db.close(); }
+}
+
+/** Store opening options. */
+export interface StoreOptions {
+  /**
+   * When false, an existing installation at an older schema is opened as-is
+   * instead of being migrated in place. Only the owner-authorized staged
+   * upgrade (ops.schema_migrations/v1) migrates an installation, and it does so
+   * on a staged copy. New (empty) databases are always initialized.
+   */
+  migrateExisting?: boolean;
+}
+
 /** Local transaction store; state, receipts and audit entries commit or roll back together. */
 export class TransactionStore {
   #db: Database;
   #tx: AppTransaction;
 
-  constructor(readonly path: string) {
+  constructor(readonly path: string, options: StoreOptions = {}) {
     const existing = existsSync(path) && statSync(path).size > 0;
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.#db = new Database(path, { create: true, strict: true });
@@ -38,7 +62,7 @@ export class TransactionStore {
       const version = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
       if (version > schemaVersion) throw new Error("Database schema is newer than this application");
       this.#db.exec("PRAGMA busy_timeout = 2000; PRAGMA foreign_keys = ON;");
-      if (version < schemaVersion) {
+      if (version < schemaVersion && (options.migrateExisting !== false || !existing)) {
         // SQLite table rebuilds must not delete referenced parents with enforcement enabled.
         this.#db.exec("PRAGMA foreign_keys = OFF;");
         this.#db.transaction(() => {
@@ -644,14 +668,19 @@ export class TransactionStore {
   }
 
   /**
-   * Activates a staged image by replacing this database file with validated bytes and
-   * reopening the same store handle. Callers record journal intent first; a crash between
-   * intent and completion leaves an explicit non-terminal journal entry to resume from.
-   * Installation-scoped tables ({@link installationScopedTables}: credentials and the managed
-   * backup registry) are always carried over from the live store, never taken from the image.
+   * Activates a staged image by atomically replacing this database file with
+   * validated bytes and reopening the same store handle. The replacement image
+   * is fully built before the live file changes: installation-scoped tables
+   * ({@link installationScopedTables}: credentials and the managed backup
+   * registry) are copied from the live store into the image, scheduler and
+   * delivery claims are cleared, and the result is written to a sibling file,
+   * fsynced and renamed over the live path. A crash therefore leaves either the
+   * complete previous database or the complete activated one, never a mix.
+   * Callers record durable activation intent first (ops.schema_migrations/v1
+   * keeps it outside the database) and reconcile it on reopen.
    */
   swapFrom(sourcePath: string): void {
-    const bytes = readFileSync(sourcePath);
+    const source = new Uint8Array(readFileSync(sourcePath));
     // Credentials never round-trip through images (ops.backup_manifest/v1):
     // the activated database keeps exactly the live installation's owner
     // verifier, browser sessions and login throttle. A live store without an
@@ -662,35 +691,49 @@ export class TransactionStore {
       try { return { table, rows: this.#db.query(`SELECT * FROM "${table}" ORDER BY rowid`).all() as Record<string, SQLQueryBindings>[], present: true }; }
       catch { return { table, rows: [] as Record<string, SQLQueryBindings>[], present: false }; }
     });
+    // A WAL-mode header cannot be deserialized; the reopened file re-enables WAL.
+    if (source.length >= 20) { source[18] = 1; source[19] = 1; }
+    let bytes: Uint8Array;
+    const image = Database.deserialize(source, { strict: true });
+    try {
+      image.exec("PRAGMA foreign_keys = OFF;");
+      const tables = new Set((image.query("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[]).map(r => r.name));
+      image.transaction(() => {
+        // Scheduler and delivery-worker claims belong to the pre-swap boot; a stale claim
+        // must never authorize work after activation. The service reboots and reconciles.
+        for (const table of ["job_scheduler", "delivery_worker"]) if (tables.has(table)) image.exec(`DELETE FROM "${table}"`);
+        // Children before parents on delete (sessions reference owner), parents first on insert.
+        for (const { table } of [...preserved].reverse()) if (tables.has(table)) image.exec(`DELETE FROM "${table}"`);
+        for (const { table, rows, present } of preserved) {
+          // Images predating the table get it (empty) from migration.
+          if (!present || !tables.has(table)) continue;
+          for (const row of rows) {
+            const columns = Object.keys(row);
+            image.query(`INSERT INTO "${table}" (${columns.map(c => `"${c}"`).join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`)
+              .run(...columns.map(c => row[c]!));
+          }
+        }
+      })();
+      bytes = image.serialize();
+    } finally {
+      image.close();
+    }
+    const temp = `${this.path}.swap-${crypto.randomUUID()}`;
+    const fd = openSync(temp, "wx", 0o600);
+    try { writeFileSync(fd, bytes); fsyncSync(fd); } finally { closeSync(fd); }
     try { this.#db.exec("PRAGMA wal_checkpoint(TRUNCATE);"); } catch { /* Best-effort checkpoint before close. */ }
     this.#db.close();
-    writeFileSync(this.path, bytes);
-    chmodSync(this.path, 0o600);
+    // Stale WAL siblings must never be replayed onto the replacement file.
     for (const suffix of ["-wal", "-shm"]) {
-      try { rmSync(`${this.path}${suffix}`); } catch { /* Stale WAL siblings are recreated on open. */ }
+      try { rmSync(`${this.path}${suffix}`); } catch { /* Absent after a clean close. */ }
     }
+    renameSync(temp, this.path);
+    try { const dir = openSync(dirname(this.path), "r"); try { fsyncSync(dir); } finally { closeSync(dir); } } catch { /* Directory fsync is best-effort on some filesystems. */ }
     const reopened = new Database(this.path, { create: true, strict: true });
     try {
       reopened.exec("PRAGMA busy_timeout = 2000; PRAGMA foreign_keys = ON;");
       reopened.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;");
       chmodSync(this.path, 0o600);
-      // Scheduler and delivery-worker claims belong to the pre-swap boot; a stale claim
-      // must never authorize work after activation. The service reboots and reconciles.
-      try { reopened.exec("DELETE FROM job_scheduler; DELETE FROM delivery_worker;"); } catch { /* Ancient images predate these tables. */ }
-      reopened.transaction(() => {
-        // Children before parents on delete (sessions reference owner), parents first on insert.
-        for (const { table } of [...preserved].reverse()) {
-          try { reopened.exec(`DELETE FROM "${table}"`); } catch { /* Images predating the table get it from migration. */ }
-        }
-        for (const { table, rows, present } of preserved) {
-          if (!present) continue;
-          for (const row of rows) {
-            const columns = Object.keys(row);
-            reopened.query(`INSERT INTO "${table}" (${columns.map(c => `"${c}"`).join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`)
-              .run(...columns.map(c => row[c]!));
-          }
-        }
-      }).immediate();
     } catch (error) {
       reopened.close();
       throw error;

@@ -8,6 +8,7 @@ import { composeJobQueue } from "../composition";
 import type { ApplicationRunPort } from "../team/run-port";
 import { TransactionStore, schemaVersion } from "../store";
 import { backupNativePortFor } from "./schway-backup";
+import { ManagedService } from "./upgrade-service";
 import { validateArtifact, type BuildManifest } from "../../ops/package/bun-build";
 import { parseServiceConfig, type ServiceConfig } from "../../ops/package/service-config";
 
@@ -56,9 +57,11 @@ export function readQuarantine(service: ServiceConfig): { quarantined: boolean; 
 }
 
 /**
- * Preflight gates full-app activation. Read-only except for opening the store,
- * which migrates exactly as serve would. Jobs, memory assembly and deliveries
- * stay disabled until every gate is ready; callers keep a read-only status path.
+ * Preflight gates full-app activation. Read-only: callers open the store with
+ * `migrateExisting: false`, so an installation at an older schema is reported
+ * (`run-owner-upgrade`, ops.schema_migrations/v1) instead of being migrated in
+ * place. Jobs, memory assembly and deliveries stay disabled until every gate
+ * is ready; callers keep a read-only status path.
  */
 export function preflightService(input: PreflightInput): PreflightResult {
   const gates: PreflightGate[] = [];
@@ -73,9 +76,11 @@ export function preflightService(input: PreflightInput): PreflightResult {
     : { gate: "config", state: "blocked", nextAction: "prepare-service-directories", detail: "service directory missing" });
   let userVersion: number | null = null;
   try { userVersion = input.store.read(tx => tx.get<{ user_version: number }>("PRAGMA user_version")!).user_version; } catch { /* Stay blocked below. */ }
-  gates.push(userVersion !== null && userVersion <= schemaVersion
-    ? { gate: "schema", state: "ready", nextAction: "none", detail: `state schema ${userVersion} within app schema ${schemaVersion}` }
-    : { gate: "schema", state: "blocked", nextAction: "use-compatible-app-artifact", detail: "state schema unreadable or newer than app" });
+  gates.push(userVersion === schemaVersion
+    ? { gate: "schema", state: "ready", nextAction: "none", detail: `state schema ${userVersion} matches app schema ${schemaVersion}` }
+    : userVersion !== null && userVersion < schemaVersion
+      ? { gate: "schema", state: "blocked", nextAction: "run-owner-upgrade", detail: `state schema ${userVersion} older than app schema ${schemaVersion}; staged upgrade required` }
+      : { gate: "schema", state: "blocked", nextAction: "use-compatible-app-artifact", detail: "state schema unreadable or newer than app" });
   gates.push(input.requiredEngine === "jit.schway.bridge/v1"
     ? { gate: "engine", state: "ready", nextAction: "none", detail: "declared bridge contract only; live capability proven separately" }
     : { gate: "engine", state: "blocked", nextAction: "use-supported-engine-contract", detail: "engine contract not supported" });
@@ -129,10 +134,13 @@ export function createFullAppQueue(store: TransactionStore, config: AppConfig, n
 
 export interface FullAppHandle {
   store: TransactionStore;
-  queue: JobQueue;
+  /** Current scheduler (rebuilt by the managed service after an upgrade activates or rolls back). */
+  readonly queue: JobQueue;
   /** Team port the composed queue reconciles native runs against. */
-  teamPort: ApplicationRunPort;
+  readonly teamPort: ApplicationRunPort;
   app: Application;
+  /** Service lifecycle owner shared with the upgrade (ops.schema_migrations/v1). */
+  service: ManagedService;
 }
 
 export interface StartInput {
@@ -155,7 +163,8 @@ export function startFullApp(input: StartInput): { ok: true; handle: FullAppHand
     return { ok: false, gates: [{ gate: "quarantine", state: "blocked", nextAction: "inspect-quarantine-and-ledger", detail: quarantine.reason }] };
   }
   const now = input.now ?? Date.now;
-  const store = input.store ?? new TransactionStore(resolve(input.storePath ?? join(service.stateDirectory, "app.sqlite")));
+  // Never migrate an existing installation at boot; preflight blocks older schemas (run-owner-upgrade).
+  const store = input.store ?? new TransactionStore(resolve(input.storePath ?? join(service.stateDirectory, "app.sqlite")), { migrateExisting: false });
   let queue: JobQueue | undefined;
   try {
     const preflight = preflightService({ store, config: input.config, service, requiredEngine: input.requiredEngine ?? "jit.schway.bridge/v1" });
@@ -163,16 +172,24 @@ export function startFullApp(input: StartInput): { ok: true; handle: FullAppHand
       if (!input.store) store.close();
       return { ok: false, gates: preflight.gates };
     }
+    const managed = ManagedService.forConfig(store, input.config, { now });
     const composed = composeJobQueue(store, input.config, { now });
+    managed.adopt(composed);
     queue = composed.queue;
     // Same selection as serve (backupNativePortFor); managed backups land in
     // the validated service backup directory, never beside the database.
     const nativeSnapshot = backupNativePortFor(input.config, store);
+    // The managed service owns the queue so an owner upgrade can quiesce, rebuild and reconcile it.
     const app = new Application(store, input.config, {
-      jobs: queue, now, backupDir: service.backupDirectory,
+      service: managed, now, backupDir: service.backupDirectory,
       ...(nativeSnapshot ? { nativeSnapshot } : {}),
     });
-    return { ok: true, handle: { store, queue, teamPort: composed.teamPort, app } };
+    const handle: FullAppHandle = {
+      store, app, service: managed,
+      get queue() { return managed.queue ?? composed.queue; },
+      get teamPort() { return managed.composed?.teamPort ?? composed.teamPort; },
+    };
+    return { ok: true, handle };
   } catch (error) {
     try { queue?.close(); } catch { /* Teardown only. */ }
     if (!input.store) { try { store.close(); } catch { /* Teardown only. */ } }
@@ -255,8 +272,10 @@ function fsyncFile(path: string): void {
 
 /**
  * Stages an upgrade through a validated pinned artifact with a recovery backup
- * before touching active state. Migration semantics belong to the open OPS06
- * (#32) path; this step records the backup pair and rolls back on failed
+ * before touching active state. Schema migration is not done here: after
+ * switching to a build with a newer schema, `serve` refuses the installation
+ * until the owner runs the ops.schema_migrations/v1 upgrade (`upgrade`
+ * command). This step records the backup pair and rolls back on failed
  * health, preserving the ledger byte-for-byte. Rollback restores only the
  * recorded compatible pair, never a rewritten ledger.
  */

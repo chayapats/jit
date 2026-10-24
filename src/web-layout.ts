@@ -679,27 +679,47 @@ export function exportDetailPage(state: { project: Project; manifest: import("./
     <p><a href="/projects/${project.id}/exports">กลับไปรายการส่งออก</a></p></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
 }
 
-/** ops.schema_migrations/v1: inspectable staged upgrades with recoverable prior versions. */
-export function upgradesPage(state: { journals: import("./ops/upgrade").UpgradeJournal[] }, workspace: Workspace, csrf: string, revision: number): string {
+type UpgradeView = import("./ops/upgrade").UpgradeJournal & { actions: import("./ops/upgrade").UpgradeAction[] };
+
+/**
+ * ops.schema_migrations/v1: inspectable staged upgrades with recoverable prior
+ * versions. The prepare form targets the one schema this build supports
+ * (`status.target`), and is offered only when preflight can pass.
+ */
+export function upgradesPage(state: { journals: UpgradeView[]; status: import("./ops/upgrade").UpgradeStatus }, workspace: Workspace, csrf: string, revision: number): string {
+  const s = state.status;
   const items = state.journals.map(j => `<article class="team-card" id="upgrade-${j.id}"><header><h3><a href="/upgrades/${j.id}">${escape(j.id)}</a></h3><span class="job-status" data-state="${j.state}">${escape(j.state)}</span></header>
-    <p>schema ${j.fromSchema} → ${j.targetSchema} · snapshot ${j.snapshotBackupId ? escape(j.snapshotBackupId) : "ไม่มี"} · ${escape(j.nextAction)}</p>
+    <p>schema ${j.fromSchema} → ${j.targetSchema} · จุดกู้คืน ${j.snapshotBackupId ? escape(j.snapshotBackupId) : "ไม่มี"} · ${escape(j.nextAction)}</p>
     ${j.reason ? `<p>เหตุผล: ${escape(j.reason)}</p>` : ""}</article>`).join("");
-  return shell("อัปเกรด", { workspace, csrf, section: "home" }, `<div class="content"><section class="hero"><p class="eyebrow">ops.schema_migrations/v1</p><h2>อัปเกรดแบบ staged</h2><p>ตรวจ preflight, snapshot กู้คืน, migrate ลง staged, validate invariants แล้วค่อย activate ข้อมูลเดิมกู้คืนได้จาก snapshot เสมอ ไม่ parse รูปแบบ private ของ engine</p></section>
-    <form class="create-form" method="post" action="/upgrades">${hiddenCommand(csrf, revision)}<input type="hidden" name="targetSchema" value="20"><input type="hidden" name="note" value="manual upgrade"><button class="primary">เตรียมอัปเกรด${icon("plus")}</button></form>
+  const engine = s.engine.compatible ? `${escape(s.engine.contract ?? "")} (${escape(s.engine.engine ?? "engine")}) รองรับ`
+    : `ไม่พร้อม: ${escape(s.engine.reason ?? "engine_unavailable")}`;
+  const form = s.active || s.fenced ? `<p>มีอัปเกรดค้างอยู่ <a href="/upgrades/${s.active ? s.active.id : ""}">ดำเนินการต่อ</a></p>`
+    : `<form class="create-form" method="post" action="/upgrades">${hiddenCommand(csrf, revision)}<input type="hidden" name="targetSchema" value="${s.target}"><input type="hidden" name="note" value="manual upgrade"><button class="primary">เตรียมอัปเกรดเป็น schema ${s.target}${icon("plus")}</button></form>`;
+  return shell("อัปเกรด", { workspace, csrf, section: "home" }, `<div class="content"><section class="hero"><p class="eyebrow">ops.schema_migrations/v1</p><h2>อัปเกรดแบบ staged</h2><p>ตรวจ preflight, หยุดรับงาน, สร้างจุดกู้คืน, migrate ลง staged, validate แล้วค่อย activate และ reconcile ไม่ parse รูปแบบ private ของ engine</p></section>
+    <article class="team-card"><h3>สถานะ</h3><p>schema ปัจจุบัน ${s.currentSchema} · เป้าหมายที่รองรับ ${s.target} (ต้นทางต่ำสุด ${s.supported.minSource}) · ${escape(s.jitVersion)} · engine ${engine}${s.fenced ? " · หยุดรับงานระหว่างอัปเกรด" : ""}</p></article>
+    ${form}
     <section aria-label="อัปเกรด">${items || '<p class="empty-list">ยังไม่มีอัปเกรด</p>'}</section></div>`);
 }
 
-/** One upgrade journal: preflight, staged steps, validation report and recovery choice. */
-export function upgradeDetailPage(state: { journal: import("./ops/upgrade").UpgradeJournal }, workspace: Workspace, csrf: string, revision: number): string {
+const upgradeActionLabels: Record<import("./ops/upgrade").UpgradeAction, string> = {
+  migrate: "migrate ลงสำเนา staged", validate: "ตรวจสอบสำเนา staged", activate: "activate และ reconcile", rollback: "ยกเลิก (คงข้อมูลจริงเดิม)",
+};
+
+/** One upgrade journal: preflight, staged steps, validation report and the recovery choices valid for its phase. */
+export function upgradeDetailPage(state: { journal: UpgradeView }, workspace: Workspace, csrf: string, revision: number): string {
   const j = state.journal;
   const checks = j.validation ? j.validation.checks.map(c => `<li>${escape(c.name)}: ${c.pass ? "ผ่าน" : "ไม่ผ่าน"} <small>${escape(c.detail)}</small></li>`).join("") : "<li>ยังไม่ตรวจสอบ</li>";
-  const action = (name: string, label: string) => `<form class="team-form" method="post" action="/upgrades/${j.id}">${hiddenCommand(csrf, revision)}<input type="hidden" name="action" value="${name}"><button>${label}</button></form>`;
+  const action = (name: import("./ops/upgrade").UpgradeAction) => `<form class="team-form" method="post" action="/upgrades/${j.id}">${hiddenCommand(csrf, revision)}<input type="hidden" name="action" value="${name}"><button>${upgradeActionLabels[name]}</button></form>`;
+  const engine = j.preflight.engine;
+  const restoreHint = (j.state === "complete" || j.state === "activated") && j.snapshotBackupId
+    ? `<p>กลับรุ่นก่อนหน้า: กู้คืน backup ${escape(j.snapshotBackupId)} ผ่าน <a href="/restores">quarantine (OPS02)</a> พร้อม ledger ล่าสุด</p>` : "";
   return shell(`อัปเกรด ${j.id.slice(0, 8)}`, { workspace, csrf, section: "home" }, `<div class="content"><section class="hero"><p class="eyebrow">${escape(j.contract)} · ${escape(j.state)}</p><h2>อัปเกรด schema ${j.fromSchema} → ${j.targetSchema}</h2><p>${escape(j.nextAction)}${j.reason ? ` · ${escape(j.reason)}` : ""}</p></section>
-    <article class="team-card"><h3>preflight</h3><p>engine ${escape(j.preflight.engine ?? "ไม่พร้อม")} · compatible ${j.preflight.compatible ? "ใช่" : "ไม่"} · ขั้นตอน ${escape(j.preflight.plannedSteps.join(", "))}</p>
+    <article class="team-card"><h3>preflight</h3><p>${escape(j.preflight.jitVersion)} · engine ${escape(engine.engine ?? "ไม่พร้อม")} · ${escape(engine.contract ?? "ไม่มีสัญญา")} v${engine.formatVersion ?? "-"} · compatible ${j.preflight.compatible ? "ใช่" : "ไม่"} · migrations ${escape(j.preflight.migrations.join(", ") || "ไม่มี")}</p>
     <h3>steps</h3><ul>${j.steps.map(s => `<li>${escape(s.name)}: ${s.ok ? "ผ่าน" : "ล้มเหลว"} <small>${escape(s.detail)}</small></li>`).join("")}</ul>
     <h3>validation</h3><ul>${checks}</ul>
-    <p>snapshot ${j.snapshotBackupId ? escape(j.snapshotBackupId) : "ไม่มี"} · staged ${j.stagedPath ? escape(j.stagedPath) : "ไม่มี"} · tombstones ${j.validation ? j.validation.checks.find(c => c.name === "ledger_preservation")?.detail ?? "" : "ยังไม่ตรวจ"}</p>
-    <div>${j.state === "prepared" ? action("migrate", "migrate ลง staged") : ""}${j.state === "staged" ? action("validate", "ตรวจสอบ staged") : ""}${j.state === "ready" ? `${action("activate", "activate staged")} ${action("rollback", "rollback จาก snapshot")}` : ""}${j.state === "failed" || j.state === "complete" ? action("rollback", "rollback จาก snapshot") : ""}</div></article>
+    <p>จุดกู้คืน ${j.snapshotBackupId ? escape(j.snapshotBackupId) : "ไม่มี"}${j.checkpoint ? ` · schema ${j.checkpoint.appSchema} · native refs ${j.checkpoint.nativeRefs}` : ""} · ledger ${j.ledger ? `tombstones ${j.ledger.deletions} · suppressions ${j.ledger.suppressions} · sources ${j.ledger.sources}` : "ไม่มี"} · reconcile ${j.reconcile ? escape(j.reconcile.detail) : "ยังไม่ทำ"}</p>
+    ${restoreHint}
+    <div>${j.actions.map(action).join(" ")}</div></article>
     <p><a href="/upgrades">กลับไปรายการอัปเกรด</a></p></div>`, { breadcrumb: { title: "อัปเกรด", href: "/upgrades" } });
 }
 

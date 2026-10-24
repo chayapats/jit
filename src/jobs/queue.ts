@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { AppError } from "../errors";
 import { TransactionStore, type AppTransaction } from "../store";
 import type { Job, JobCommand, JobData, JobLimits, JobPolicy, JobReason, JobUsage, WorkDefinition, WorkOutcome } from "./types";
+import { upgradeFenced } from "../ops/upgrade-fence";
 
 const counters = ["roles", "calls", "rounds", "hops", "contextTokens", "outputTokens", "retries"] as const;
 const limitKeys = [...counters, "wallMs"];
@@ -199,8 +200,11 @@ export class JobQueue {
     if (!this.available(tx)) throw new AppError("scheduler_unavailable", 503);
   }
 
-  /** Reports local admission availability without contacting or claiming readiness for a provider. */
-  available(tx: AppTransaction): boolean { return !this.#closing && !this.#fault && this.#owns(tx); }
+  /**
+   * Reports local admission availability without contacting or claiming readiness for a provider.
+   * The durable ops.schema_migrations/v1 upgrade fence makes admission unavailable.
+   */
+  available(tx: AppTransaction): boolean { return !this.#closing && !this.#fault && !upgradeFenced(this.store.path) && this.#owns(tx); }
 
   /** Mutates only inside the authenticated application's receipt/audit transaction. */
   execute(tx: AppTransaction, command: JobCommand, generation: number, now: number) {
@@ -257,6 +261,8 @@ export class JobQueue {
 
   /** Admits only available capacity in priority order; it never waits for or preempts an existing call. */
   pump(): void {
+    // An upgrade fence stops admission without faulting the scheduler.
+    if (upgradeFenced(this.store.path)) return;
     try {
       for (;;) {
         const admitted = this.store.transaction(tx => {
