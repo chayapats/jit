@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { AppError } from "../errors";
 import type { AppTransaction } from "../store";
 import { ensurePrSchema } from "./schema";
+import { fencePrCandidateWork } from "./fence";
 import {
   DEFAULT_PR_LIMITS,
   DEFAULT_TRIGGER_POLICY,
@@ -199,6 +200,8 @@ export function mutateMonitor(
       candidate.updatedAt = now;
       tx.run("UPDATE pr_candidates SET status = ?, record_json = ? WHERE id = ?",
         "cancelled", JSON.stringify(candidate), row.id);
+      // Same transaction: revoked monitoring fences the candidate's snapshot/review work.
+      fencePrCandidateWork(tx, monitor.projectId, row.id, "revoked", now);
     }
     onRevoke?.(monitor);
   }

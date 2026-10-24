@@ -105,6 +105,12 @@ const messages: Record<string, string> = {
   export_not_found: "ไม่พบไฟล์ส่งออกในโครงการที่เลือก",
   export_corrupt: "ไฟล์ส่งออกนี้ตรวจสอบไม่ผ่าน",
   export_storage_unavailable: "พื้นที่ส่งออกไม่พร้อมใช้งาน",
+  export_fenced_by_lifecycle: "ข้อมูลโครงการเปลี่ยน (ลบ/ลืม/แก้) ระหว่างส่งออก จึงยกเลิกไฟล์นี้ กรุณาส่งออกใหม่",
+  export_failed: "ส่งออกไม่สำเร็จ บันทึกความล้มเหลวไว้แล้ว",
+  export_too_large: "ไฟล์ส่งออกใหญ่เกินเพดานที่กำหนด ลองส่งออกโดยไม่รวมประวัติข้อความ",
+  export_expired: "ไฟล์ส่งออกนี้ถูกลบตาม retention หรือการลบข้อมูลแล้ว กรุณาส่งออกใหม่",
+  export_failed_no_artifact: "การส่งออกนี้ไม่สำเร็จจึงไม่มีไฟล์",
+  export_artifact_unavailable: "ไฟล์ส่งออกรูปแบบเดิมไม่พบแล้ว",
   invalid_export_command: "ข้อมูลคำขอส่งออกไม่ถูกต้อง กรุณาเปิดหน้าใหม่",
   upgrade_not_found: "ไม่พบบันทึกอัปเกรดที่เลือก",
   upgrade_corrupt: "บันทึกอัปเกรดนี้ตรวจสอบไม่ผ่าน",
@@ -131,6 +137,9 @@ const messages: Record<string, string> = {
   backup_not_found: "ไม่พบสำรองข้อมูลที่เลือก",
   backup_corrupt: "สำรองข้อมูลนี้ตรวจสอบไม่ผ่าน",
   backup_storage_unavailable: "พื้นที่สำรองข้อมูลไม่พร้อมใช้งาน",
+  backup_incomplete: "สำรองข้อมูลนี้ไม่สมบูรณ์ จึงกู้คืนไม่ได้",
+  backup_too_large: "สำรองข้อมูลนี้ใหญ่เกินเพดานพื้นที่ที่กำหนด จึงไม่ได้สร้าง",
+  backup_schema_unclassified: "โครงสร้างข้อมูลยังไม่ได้จัดประเภทสำหรับการสำรอง จึงไม่ได้สร้าง",
   native_snapshot_unavailable: "engine ยังไม่รองรับ native snapshot สำรองนี้จึงไม่สมบูรณ์",
   invalid_backup_command: "คำขอสำรองข้อมูลไม่ถูกต้อง กรุณาเปิดหน้าใหม่",
 };
@@ -243,6 +252,7 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       const deletionRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/memory\/deletions\/([a-f0-9-]{36})$/.exec(url.pathname);
       const exportsRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/exports$/.exec(url.pathname);
       const exportRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/exports\/([a-f0-9-]{36})$/.exec(url.pathname);
+      const exportArtifactRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/exports\/([a-f0-9-]{36})\/artifact$/.exec(url.pathname);
       const upgradesRoute = /^\/(api\/)?upgrades$/.exec(url.pathname);
       const upgradeRoute = /^\/(api\/)?upgrades\/([a-f0-9-]{36})$/.exec(url.pathname);
       const restoresRoute = /^\/(api\/)?restores$/.exec(url.pathname);
@@ -316,6 +326,12 @@ export function createWebHandler(app: Application): (request: Request) => Promis
         const state = app.exports(auth.actor, exportsRoute[2]!);
         const { preview } = app.exportPreview(auth.actor, exportsRoute[2]!, url.searchParams.get("history") === "1");
         return api ? json({ ...state, preview }) : respond(exportsPage({ ...state, preview }, app.workspace(auth.actor), auth.csrf));
+      }
+      if (request.method === "GET" && exportArtifactRoute) {
+        // Owner-authenticated only; bytes come from the committed valid row, never a filesystem path.
+        const { manifest, body } = app.exportArtifact(auth.actor, exportArtifactRoute[2]!, exportArtifactRoute[3]!);
+        return respond(Buffer.from(body), 200, { "Content-Type": "application/json; charset=utf-8",
+          "Content-Disposition": `attachment; filename="jit-export-${manifest.id}.json"`, "X-Content-Type-Options": "nosniff" });
       }
       if (request.method === "GET" && exportRoute) {
         const state = app.export(auth.actor, exportRoute[2]!, exportRoute[3]!);
@@ -681,7 +697,7 @@ export function createWebHandler(app: Application): (request: Request) => Promis
           const revision = typeof body.expectedRevision === "string" && /^\d{1,15}$/.test(body.expectedRevision) ? Number(body.expectedRevision) : body.expectedRevision;
           const command = { kind: "backup.create" as const, requestId: body.requestId as string, projectId: null,
             expectedRevision: revision as number, payload: { note: (body.note as string) ?? "manual backup" } };
-          const receipt = app.execute(auth.actor, command);
+          const receipt = await app.execute(auth.actor, command);
           return api ? json(receipt) : respond(null, 303, { Location: `/backups/${receipt.manifest.id}` });
         }
         if (schedulesRoute || scheduleAction) {

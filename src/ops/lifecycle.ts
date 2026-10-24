@@ -3,19 +3,11 @@ import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import { Application } from "../application";
 import type { AppConfig } from "../config";
-import { JobQueue } from "../jobs/queue";
-import { projectStateWork } from "../jobs/project-state";
-import { scheduleReminderWork, scheduleSummaryWork } from "../jobs/schedules";
-import { lookupSource } from "../sources";
-import { TransactionStore, schemaVersion } from "../store";
+import type { JobQueue } from "../jobs/queue";
+import { composeJobQueue } from "../composition";
 import type { ApplicationRunPort } from "../team/run-port";
-import { ScriptedRunPort } from "../team/scripted-port";
-import { SchwayRunPort, assertSchwayGate } from "../team/schway-port";
-import { coordinatorSynthesisWork } from "../team/decisions";
-import { discussionPlanWork, specialistAnalysisWork } from "../team/dispatch";
-import { scriptedMemoryResult } from "../memory/extract";
-import { memoryExtractionWork } from "../memory/extract";
-import { scriptedPreviewWork } from "../team/preview";
+import { TransactionStore, schemaVersion } from "../store";
+import { backupNativePortFor } from "./schway-backup";
 import { validateArtifact, type BuildManifest } from "../../ops/package/bun-build";
 import { parseServiceConfig, type ServiceConfig } from "../../ops/package/service-config";
 
@@ -126,40 +118,20 @@ export function preflightService(input: PreflightInput): PreflightResult {
 }
 
 /**
- * Builds the full-application job queue with exactly the worker registrations
- * the normal Web path uses. There is no probe runner here: S01 probe startup is
- * a separate human-involved command, never part of service boot.
+ * Builds the full-application job queue through the shared `composeJobQueue`
+ * (src/composition.ts), so serve and the service lifecycle register exactly the
+ * same workers with the same port/route policy. There is no probe runner here:
+ * S01 probe startup is a separate human-involved command, never part of service boot.
  */
 export function createFullAppQueue(store: TransactionStore, config: AppConfig, now: () => number = Date.now): JobQueue {
-  return composeFullApp(store, config, now).queue;
-}
-
-/** The composed queue plus the team lifecycle port that startup reconciliation must use. */
-function composeFullApp(store: TransactionStore, config: AppConfig, now: () => number): { queue: JobQueue; teamPort: ApplicationRunPort } {
-  if (config.runPort === "schway") assertSchwayGate(store.path);
-  const teamPort: ApplicationRunPort = config.runPort === "schway"
-    ? new SchwayRunPort(store, config.team, config.jobs.outputBytes)
-    : new ScriptedRunPort(store, config.team, config.jobs.outputBytes);
-  // Fixture-authorized work (role preview, schedule/PR summaries, memory)
-  // never routes through live inference; see JBR01 authorization boundary.
-  const fixturePort: ApplicationRunPort = config.runPort === "schway"
-    ? new ScriptedRunPort(store, config.team, config.jobs.outputBytes)
-    : teamPort;
-  const memoryPort = new ScriptedRunPort(store, config.team, config.jobs.outputBytes, request => {
-    const source = store.read(tx => lookupSource(tx, request.projectId, request.manifest.sources[0]!.reference));
-    return scriptedMemoryResult(request, source.state === "available" && source.attribution.kind === "owner", config.jobs.outputBytes);
-  });
-  const queue = new JobQueue(store, config.jobs, [
-    projectStateWork(store), scriptedPreviewWork(store, config, fixturePort), discussionPlanWork(),
-    specialistAnalysisWork(store, config, teamPort), coordinatorSynthesisWork(store, config, teamPort),
-    memoryExtractionWork(store, config, memoryPort), scheduleReminderWork(store, config), scheduleSummaryWork(store, config, fixturePort),
-  ], { now });
-  return { queue, teamPort };
+  return composeJobQueue(store, config, { now }).queue;
 }
 
 export interface FullAppHandle {
   store: TransactionStore;
   queue: JobQueue;
+  /** Team port the composed queue reconciles native runs against. */
+  teamPort: ApplicationRunPort;
   app: Application;
 }
 
@@ -195,11 +167,18 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
       if (!input.store) store.close();
       return { ok: false, gates: preflight.gates };
     }
-    const composed = composeFullApp(store, input.config, now);
+    const composed = composeJobQueue(store, input.config, { now });
     queue = composed.queue;
+    // Reconcile sessions and pending deletions through the composed team port before exposing the app.
     await queue.reconcile(composed.teamPort);
-    const app = new Application(store, input.config, { jobs: queue, now });
-    return { ok: true, handle: { store, queue, app } };
+    // Same selection as serve (backupNativePortFor); managed backups land in
+    // the validated service backup directory, never beside the database.
+    const nativeSnapshot = backupNativePortFor(input.config, store);
+    const app = new Application(store, input.config, {
+      jobs: queue, now, backupDir: service.backupDirectory,
+      ...(nativeSnapshot ? { nativeSnapshot } : {}),
+    });
+    return { ok: true, handle: { store, queue, teamPort: composed.teamPort, app } };
   } catch (error) {
     try { queue?.close(); } catch { /* Teardown only. */ }
     if (!input.store) { try { store.close(); } catch { /* Teardown only. */ } }

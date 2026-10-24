@@ -4,7 +4,8 @@ import { join, resolve } from "node:path";
 import { AppError } from "../errors";
 import { readDeliveryReport, retireDeliveryReport } from "../delivery/outbox";
 import { invalidatePendingJob, jobData } from "../jobs/queue";
-import { exportDirFor } from "../ops/export";
+import { validateManifestRecord, verifyBackupArtifacts } from "../ops/backup";
+import { readExportManifest } from "../ops/export";
 import { lookupSource, requireId, requireReference, type SourceReference } from "../sources";
 import type { AppTransaction, TransactionStore } from "../store";
 import type { ApplicationRunPort } from "../team/run-port";
@@ -85,8 +86,11 @@ export interface DeletionPreview {
     contexts: { id: string; generation: number; projectId: string; ownerKind: string; ownerId: string }[];
     pendingJobs: { id: string; projectId: string }[];
     nativeSessions: DeletionNativeSession[];
-    /** Every recorded whole-store snapshot (bounded by retention); `coverage` when its manifest names affected data. */
-    backups: { id: string; createdAt: number; state: string; evidence: "coverage" | "whole_store_snapshot" }[];
+    /**
+     * Every recorded whole-store snapshot (bounded by retention); `coverage` when its manifest names affected data.
+     * `state` is the verified artifact integrity (never the persisted manifest state), or `unchecked` without a backup dir.
+     */
+    backups: { id: string; createdAt: number; state: "verified" | "incomplete" | "unchecked"; reason: string | null; evidence: "coverage" | "whole_store_snapshot" }[];
     /** App-owned export artifacts confirmation purges (coverage match, or any artifact of an affected project without complete coverage). */
     exports: { id: string; projectId: string; createdAt: number; evidence: "coverage" | "incomplete_coverage" }[];
     /** Owner-authored tasks/decisions are disclosed and retained unchanged; deletion never completes or cancels them. */
@@ -122,9 +126,12 @@ export interface DeletionContextScope {
   attempts: number; reason: string | null; nextAction: string; updatedAt: number;
 }
 
-/** One app-owned local export artifact the operation must purge (registry row removed at confirm, file after commit). */
+/**
+ * One app-owned export the operation purges. Format-2 (`sqlite`) artifacts are deleted with their registry and
+ * body rows inside the confirm transaction; only format-1 `legacy_file` rows have a file, purged after commit.
+ */
 export interface DeletionExportScope {
-  id: string; projectId: string; path: string;
+  id: string; projectId: string; storage: "sqlite" | "legacy_file" | "none"; path: string;
   state: "pending" | "purged" | "failed";
   attempts: number; reason: string | null; updatedAt: number;
 }
@@ -152,6 +159,9 @@ export interface DeletionOperation {
   reason: string | null; nextAction: string;
   createdAt: number; updatedAt: number;
 }
+
+/** Trusted service-owned locations the inventory may inspect (never read from persisted JSON). */
+export interface DeletionEnvironment { backupDir?: string }
 
 export interface DeletionReceipt { preview: DeletionPreview; duplicate: boolean }
 export interface DeletionConfirmReceipt { operation: DeletionOperation; duplicate: boolean }
@@ -215,7 +225,7 @@ function normalizeOperation(raw: DeletionOperation): DeletionOperation {
     state: context.state ?? "pending", attempts: context.attempts ?? 0, reason: context.reason ?? null,
     nextAction: context.nextAction ?? "reconcile_managed_delete_then_verify", updatedAt: context.updatedAt ?? raw.updatedAt,
   } satisfies DeletionContextScope));
-  const normalized = { ...raw, contexts, exports: raw.exports ?? [] };
+  const normalized = { ...raw, contexts, exports: (raw.exports ?? []).map(entry => ({ ...entry, storage: entry.storage ?? "legacy_file" as const })) };
   return { ...normalized, scopes: localScopes(normalized) };
 }
 
@@ -403,7 +413,7 @@ function addDerived(tx: AppTransaction, sources: Map<string, SourceEntry>, row: 
  * by lineage, not text), citing jobs and their managed native sessions, retained copies and obligations.
  * Unreadable rows and scan ceilings become named blockers; nothing relevant is silently omitted.
  */
-function buildInventory(tx: AppTransaction, scope: DeleteScope): Inventory {
+function buildInventory(tx: AppTransaction, scope: DeleteScope, env: DeletionEnvironment = {}): Inventory {
   const blockers = new Set<string>();
   const lineage: SourceReference = { ...scope.source };
   const sources = new Map<string, SourceEntry>([[sourceKey(lineage), { projectId: scope.projectId, source: lineage, relation: "scope" }]]);
@@ -511,7 +521,7 @@ function buildInventory(tx: AppTransaction, scope: DeleteScope): Inventory {
   const inventory: Inventory = {
     sources, claims, contexts, pendingJobs,
     sessions: [...sessions.values()].map(({ claimKeys: _c, sourceKeys: _s, ...session }) => session),
-    backups: retainedBackups(tx, allSources, blockers),
+    backups: retainedBackups(tx, allSources, blockers, env),
     exports: retainedExports(tx, allSources, [...claims.values()], blockers),
     obligations: obligationsFor(tx, scope, allSources, blockers),
     taskProposals: taskProposalsFor(tx, allSources, blockers),
@@ -645,35 +655,43 @@ function taskProposalsFor(tx: AppTransaction, sources: SourceEntry[], blockers: 
  * retaining the data; manifest coverage (a bounded prefix) and wall-clock order are never proof of absence.
  * Unreadable manifests are named blockers.
  */
-function retainedBackups(tx: AppTransaction, sources: SourceEntry[], blockers: Set<string>): DeletionPreview["affected"]["backups"] {
+function retainedBackups(tx: AppTransaction, sources: SourceEntry[], blockers: Set<string>, env: DeletionEnvironment): DeletionPreview["affected"]["backups"] {
   const keys = new Set(sources.map(s => sourceKey(s.source)));
   const items: DeletionPreview["affected"]["backups"] = [];
   try {
     scanTable<{ json: string }>(tx, "ops_backups", "record_json AS json", row => {
-      let manifest: { id: string; createdAt: number; state: string; sourceGenerations?: SourceReference[] };
-      try {
-        manifest = JSON.parse(row.json) as typeof manifest;
-        if (typeof manifest?.id !== "string" || !Number.isFinite(manifest.createdAt)) throw new Error("unreadable");
-      } catch { blockers.add("unreadable_record:ops_backups"); return; }
+      let manifest;
+      try { manifest = validateManifestRecord(JSON.parse(row.json)); } catch { blockers.add("unreadable_record:ops_backups"); return; }
       const listed = Array.isArray(manifest.sourceGenerations) && manifest.sourceGenerations.some(s => validReference(s) && keys.has(sourceKey(s)));
-      items.push({ id: manifest.id, createdAt: manifest.createdAt, state: manifest.state, evidence: listed ? "coverage" : "whole_store_snapshot" });
+      let state: "verified" | "incomplete" | "unchecked" = "unchecked", reason: string | null = "integrity_not_verified";
+      if (env.backupDir) {
+        try {
+          const verdict = verifyBackupArtifacts(manifest, env.backupDir);
+          state = verdict.state === "verified" ? "verified" : "incomplete"; reason = verdict.reason;
+        } catch { state = "incomplete"; reason = "manifest_unverifiable"; }
+      }
+      items.push({ id: manifest.id, createdAt: manifest.createdAt, state, reason, evidence: listed ? "coverage" : "whole_store_snapshot" });
     }, { blockers });
   } catch (error) { if (!(error instanceof Error) || !/no such table/.test(error.message)) throw error; }
   return items;
 }
 
-/** Export coverage is trusted as complete only when it says so; missing/unknown completeness metadata is incomplete. */
-function exportCoverageComplete(coverage: unknown): boolean {
-  if (!coverage || typeof coverage !== "object") return false;
-  const record = coverage as Record<string, unknown>;
-  if (record.truncated !== false || !Array.isArray(record.sources) || !Array.isArray(record.claims)) return false;
-  return !Object.values(record).some(value => !!value && typeof value === "object" && !Array.isArray(value) &&
-    ((value as { truncated?: unknown }).truncated !== false));
+/**
+ * Export coverage is trusted as complete only when the manifest's `completeness` section says so for every
+ * collection (and coverage itself is not truncated); missing/unknown completeness metadata is incomplete.
+ */
+function exportCoverageComplete(manifest: { completeness?: unknown; coverage?: unknown }): boolean {
+  const completeness = manifest.completeness as { complete?: unknown; collections?: Record<string, { included?: unknown; total?: unknown; truncated?: unknown }> } | undefined;
+  if (!completeness || completeness.complete !== true || !completeness.collections || typeof completeness.collections !== "object") return false;
+  // Scope exclusions (e.g. no history) make included < total legitimately; only truncation is incompleteness.
+  if (Object.values(completeness.collections).some(c => c?.truncated !== false)) return false;
+  const coverage = manifest.coverage as { truncated?: unknown; sources?: unknown; claims?: unknown } | undefined;
+  return !!coverage && coverage.truncated !== true && Array.isArray(coverage.sources) && Array.isArray(coverage.claims);
 }
 
 /**
- * App-owned export artifacts holding affected data: a coverage match, or (for incomplete coverage)
- * an export of an affected project created after the affected data was committed. Confirmation purges them.
+ * App-owned export artifacts holding affected data: a coverage match, or any export of an affected project
+ * whose completeness is not proven. Failed exports published no artifact. Confirmation purges them.
  */
 function retainedExports(tx: AppTransaction, sources: SourceEntry[], claims: ClaimRow[], blockers: Set<string>): DeletionPreview["affected"]["exports"] {
   const keys = new Set(sources.map(s => sourceKey(s.source)));
@@ -682,21 +700,42 @@ function retainedExports(tx: AppTransaction, sources: SourceEntry[], claims: Cla
   const items: DeletionPreview["affected"]["exports"] = [];
   try {
     scanTable<{ id: string; projectId: string; json: string }>(tx, "export_artifacts", "id, project_id AS projectId, record_json AS json", row => {
-      let manifest: { id: string; projectId: string; createdAt: number;
-        coverage?: { sources?: SourceReference[]; claims?: { claimId: string }[]; truncated?: unknown } };
-      try {
-        manifest = JSON.parse(row.json) as typeof manifest;
-        if (manifest?.id !== row.id || !Number.isFinite(manifest.createdAt)) throw new Error("unreadable");
-      } catch { blockers.add("unreadable_record:export_artifacts"); return; }
-      const complete = exportCoverageComplete(manifest.coverage);
-      const listed = (Array.isArray(manifest.coverage?.sources) && manifest.coverage.sources.some(s => validReference(s) && keys.has(sourceKey(s)))) ||
-        (Array.isArray(manifest.coverage?.claims) && manifest.coverage.claims.some(c => claimIds.has(c?.claimId)));
-      if (listed || (!complete && projects.has(row.projectId))) {
+      let manifest, raw: { completeness?: unknown; coverage?: unknown };
+      try { manifest = readExportManifest(tx, row.projectId, row.id); raw = JSON.parse(row.json) as typeof raw; }
+      catch { blockers.add("unreadable_record:export_artifacts"); return; }
+      if (manifest.state === "failed") return;
+      const coverage = manifest.coverage as { sources?: SourceReference[]; claims?: { claimId: string }[] } | undefined;
+      const listed = (Array.isArray(coverage?.sources) && coverage.sources.some(s => validReference(s) && keys.has(sourceKey(s)))) ||
+        (Array.isArray(coverage?.claims) && coverage.claims.some(c => claimIds.has(c?.claimId)));
+      // Completeness is judged on the stored record: a missing section (older writers) is incomplete.
+      if (listed || (!exportCoverageComplete(raw) && projects.has(row.projectId))) {
         items.push({ id: row.id, projectId: row.projectId, createdAt: manifest.createdAt, evidence: listed ? "coverage" : "incomplete_coverage" });
       }
     }, { blockers });
   } catch (error) { if (!(error instanceof Error) || !/no such table/.test(error.message)) throw error; }
   return items;
+}
+
+/**
+ * Removes one export registration and its SQLite body in the caller transaction. Format-2 artifacts are gone
+ * when this commits; a format-1 `legacy_file` row returns its recorded path for the post-commit file purge.
+ */
+function dropExportRegistration(tx: AppTransaction, projectId: string, id: string, now: number, reason: string): DeletionExportScope {
+  let storage: DeletionExportScope["storage"] = "none", path = "";
+  try {
+    const manifest = readExportManifest(tx, projectId, id);
+    if (manifest.artifact?.storage === "legacy_file") { storage = "legacy_file"; path = manifest.artifact.path; }
+    else if (manifest.artifact?.storage === "sqlite") storage = "sqlite";
+  } catch {
+    // Unparseable rows cannot prove where their bytes are: treat as a legacy file so purge fails closed.
+    storage = "legacy_file";
+  }
+  try { tx.run("DELETE FROM export_artifact_bodies WHERE id = ?", id); }
+  catch (error) { if (!(error instanceof Error) || !/no such table/.test(error.message)) throw error; }
+  tx.run("DELETE FROM export_artifacts WHERE id = ?", id);
+  return storage === "legacy_file"
+    ? { id, projectId, storage, path, state: "pending", attempts: 0, reason, updatedAt: now }
+    : { id, projectId, storage, path: "", state: "purged", attempts: 0, reason: null, updatedAt: now };
 }
 
 /** Whole-session requirement: shared topic identity, unresolvable orphans, or dispatched sessions holding collateral. */
@@ -766,7 +805,7 @@ function bounded<T>(items: T[], bound: number): { items: T[]; truncated: boolean
  * app.data_lifecycle/v1 preview: revision-bound, expiring deletion preview over the complete affected
  * inventory, with an inventory digest and named blockers. Nothing mutates; the owner confirms separately.
  */
-export function prepareDeletionPreview(tx: AppTransaction, command: DeletePreviewCommand, projectRevision: number, now: number): DeletionPreview {
+export function prepareDeletionPreview(tx: AppTransaction, command: DeletePreviewCommand, projectRevision: number, now: number, env: DeletionEnvironment = {}): DeletionPreview {
   deleteCommandIdentity(command, 65536);
   const scope = command.payload.scope;
   if (projectRevision !== command.expectedRevision) throw new AppError("stale_revision", 409);
@@ -779,7 +818,7 @@ export function prepareDeletionPreview(tx: AppTransaction, command: DeletePrevie
     throw new AppError("memory_delete_stale_scope", 409);
   }
   if (current.availability !== "available") throw new AppError("memory_delete_unavailable", 409);
-  const inventory = buildInventory(tx, scope);
+  const inventory = buildInventory(tx, scope, env);
   const sources = bounded([...inventory.sources.values()], deletePreviewBounds.sources);
   const claims = bounded([...inventory.claims.values()], deletePreviewBounds.claims);
   const contexts = bounded([...inventory.contexts.values()], deletePreviewBounds.contexts);
@@ -991,7 +1030,7 @@ function localScopes(operation: Pick<DeletionOperation, "tombstones" | "backupsR
  * descendants and cached copies, writes identity-only tombstones and opens a per-scope operation.
  * Native sessions are deleted only through the managed run-port lifecycle (reconcile).
  */
-export function confirmDeletion(tx: AppTransaction, command: DeleteConfirmCommand, projectRevision: number, now: number): DeletionConfirmReceipt {
+export function confirmDeletion(tx: AppTransaction, command: DeleteConfirmCommand, projectRevision: number, now: number, env: DeletionEnvironment = {}): DeletionConfirmReceipt {
   deleteCommandIdentity(command, 65536);
   const preview = readDeletionPreview(tx, command.projectId, command.payload.previewId);
   if (!preview || preview.projectId !== command.projectId) throw new AppError("memory_delete_stale_preview", 409);
@@ -1012,7 +1051,7 @@ export function confirmDeletion(tx: AppTransaction, command: DeleteConfirmComman
   if (!current || current.revision !== lineage.revision || current.generation !== lineage.generation || current.availability !== "available") {
     throw new AppError("memory_delete_stale_preview", 409);
   }
-  const inventory = buildInventory(tx, preview.scope);
+  const inventory = buildInventory(tx, preview.scope, env);
   if (typeof preview.inventoryDigest !== "string" ||
       inventoryDigest(tx, preview.scope, inventory, wholeSessionFor(tx, preview.scope, inventory.sessions)) !== preview.inventoryDigest) {
     throw new AppError("memory_delete_stale_preview", 409);
@@ -1089,15 +1128,9 @@ export function confirmDeletion(tx: AppTransaction, command: DeleteConfirmComman
       crypto.randomUUID(), operationId, tombstone.projectId, tombstone.kind, tombstone.sourceId, tombstone.claimId,
       tombstone.revision, tombstone.generation, now);
   }
-  // App-owned export artifacts leave the registry now; their files are purged right after commit.
-  const exports: DeletionExportScope[] = inventory.exports.map(entry => {
-    const row = tx.get<{ json: string }>("SELECT record_json AS json FROM export_artifacts WHERE id = ?", entry.id);
-    let path = "";
-    try { path = (JSON.parse(row?.json ?? "{}") as { artifact?: { path?: unknown } }).artifact?.path as string ?? ""; } catch { /* Path stays empty: fails closed below. */ }
-    tx.run("DELETE FROM export_artifacts WHERE id = ?", entry.id);
-    return { id: entry.id, projectId: entry.projectId, path: typeof path === "string" ? path : "", state: "pending" as const, attempts: 0,
-      reason: "awaiting_file_purge", updatedAt: now };
-  });
+  // App-owned exports: SQLite artifacts (registry + body rows) are deleted in this transaction; format-1
+  // legacy files are purged right after commit.
+  const exports = inventory.exports.map(entry => dropExportRegistration(tx, entry.projectId, entry.id, now, "awaiting_legacy_file_purge"));
   const contexts: DeletionContextScope[] = sessions.map(session => ({
     id: session.id, generation: session.generation,
     state: session.appState === "missing" ? "missing" : "pending", attempts: 0,
@@ -1207,8 +1240,8 @@ function settlePass(tx: AppTransaction, operationId: string, outcomes: PassOutco
   return settled;
 }
 
-/** The authorized, service-owned export root for a store unless the application supplies its configured one. */
-export function defaultExportRoot(store: TransactionStore): string { return resolve(exportDirFor(store.path)); }
+/** The only root format-1 export files were written under (`<database>.exports`); format-2 artifacts have no files. */
+export function defaultExportRoot(store: TransactionStore): string { return resolve(`${store.path}.exports`); }
 
 /**
  * Removes one export artifact only as `<authorized root>/<id>.json`. The persisted path is never used as a
@@ -1217,6 +1250,7 @@ export function defaultExportRoot(store: TransactionStore): string { return reso
  */
 function removeExportFile(entry: DeletionExportScope, exportRoot: string): void {
   requireId(entry.id);
+  if (entry.storage === "sqlite" || entry.storage === "none") return;
   const root = resolve(exportRoot);
   if (!entry.path || resolve(entry.path) !== join(root, `${entry.id}.json`)) throw new AppError("export_outside_authorized_root");
   let target: string;
@@ -1232,7 +1266,7 @@ function removeExportFile(entry: DeletionExportScope, exportRoot: string): void 
  * any transaction, then records per-file outcomes. Each file has its own bounded attempt count; files are
  * never recreated and a failure keeps the operation from reading as complete.
  */
-export function purgeDeletedExports(store: TransactionStore, now: number, exportRoot: string, operationId?: string): DeletionOperation[] {
+export function purgeDeletedExports(store: TransactionStore, now: number, operationId?: string, exportRoot = defaultExportRoot(store)): DeletionOperation[] {
   const ids = operationId ? [operationId] : store.read(tx => tx.all<{ id: string }>(
     "SELECT id FROM deletion_operations WHERE state IN ('pending', 'blocked') ORDER BY rowid LIMIT 100").map(row => row.id));
   const results: DeletionOperation[] = [];
@@ -1280,12 +1314,9 @@ export function reconstructLegacyExportScopes(store: TransactionStore, now: numb
       try { listed = new Set((JSON.parse(preview?.json ?? "{}") as DeletionPreview).affected?.exports?.map(e => e.id) ?? []); } catch { /* Projects below still apply. */ }
       const projects = new Set((raw.tombstones ?? []).map(t => t.projectId));
       const exports: DeletionExportScope[] = [];
-      for (const live of tx.all<{ id: string; projectId: string; json: string }>("SELECT id, project_id AS projectId, record_json AS json FROM export_artifacts")) {
+      for (const live of tx.all<{ id: string; projectId: string }>("SELECT id, project_id AS projectId FROM export_artifacts")) {
         if (!listed.has(live.id) && !projects.has(live.projectId)) continue;
-        let path = "";
-        try { const value = (JSON.parse(live.json) as { artifact?: { path?: unknown } }).artifact?.path; path = typeof value === "string" ? value : ""; } catch { /* Fails closed at purge. */ }
-        tx.run("DELETE FROM export_artifacts WHERE id = ?", live.id);
-        exports.push({ id: live.id, projectId: live.projectId, path, state: "pending", attempts: 0, reason: "legacy_operation_reconstructed", updatedAt: now });
+        exports.push(dropExportRegistration(tx, live.projectId, live.id, now, "legacy_operation_reconstructed"));
       }
       const next = aggregate({ ...normalizeOperation(raw), exports }, now);
       saveOperation(tx, next);
@@ -1307,7 +1338,7 @@ export async function reconcileDeletions(store: TransactionStore, port: Applicat
     "SELECT id FROM deletion_operations WHERE state IN ('pending', 'blocked') ORDER BY rowid LIMIT 100").map(row => row.id));
   const results: DeletionOperation[] = [];
   for (const id of pending) {
-    purgeDeletedExports(store, now, exportRoot, id);
+    purgeDeletedExports(store, now, id, exportRoot);
     const { operation, dispatch } = store.transaction(tx => reservePass(tx, id, now));
     if (!dispatch.length) { if (operation) results.push(operation); continue; }
     const outcomes: PassOutcome[] = [];

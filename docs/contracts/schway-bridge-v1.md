@@ -152,12 +152,20 @@ and fixture-free protocol transport.
   acknowledges; partial/blocked stays `delete_failed` with retry.
 - `snapshot` captures a quiesced per-context snapshot through
   `snapshotSessions`. Empty backing resolves to the explicit unsupported
-  diagnostic; backup integration stays a later slice.
+  diagnostic. Managed backups (`ops.backup_manifest/v1`, OPS01) capture the
+  installation's native set through `SchwayBackupNativePort`
+  (`src/ops/schway-backup.ts`) on the same lifecycle host; see
+  `docs/contracts/ops-backup-manifest-v1.md`.
 - `status()` reports the pinned release for inspection surfaces; it never
   probes credentials or infers readiness. Serve wiring (`JIT_RUN_PORT`,
-  default `scripted`) selects the concrete port for specialist/coordinator
-  runs only; role preview, schedule/PR summaries and memory extraction stay
-  scripted under their fixture authorizations. Queue construction asserts the
+  default `scripted`) selects the concrete port for specialist, coordinator
+  and private PR review (`pr.review`) runs; role preview, schedule summaries
+  and memory extraction stay scripted under their fixture authorizations.
+  PR review runs on the owner-configured project-default, then owner-default
+  route captured with configuration revisions at admission; the concrete port
+  blocks admission without one and never falls back to the scripted fixture
+  route (`pr.private_report/v1`). `serve` and `startFullApp` share one
+  composition (`composeJobQueue`). Queue construction asserts the
   synchronous startup gate (service-owned `.jit-host` dirs plus pinned
   release) before any admission owner exists; `serve` additionally runs the
   full asynchronous gate before starting. Model identifiers outside the pinned

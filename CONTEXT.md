@@ -59,3 +59,7 @@ _Avoid_: Verified access, successful model request.
 **Schway session**:
 A durable native conversation with workspace identity and conversation branches, distinct from a Jit project group or running process.
 _Avoid_: Group chat, durable job execution.
+
+**Managed backup**:
+A committed local backup inventory entry with a credential-free application image and opaque native session snapshots, inspectable but never activated without quarantined restore.
+_Avoid_: Database copy, export, credential backup.
