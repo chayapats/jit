@@ -85,12 +85,14 @@ export interface ProjectReceipt { project: Project; workspaceRevision: number }
 export interface Workspace { revision: number; projects: Project[]; hasMore: boolean }
 
 import {
-  backupIdentity, enforceRetention, listBackups, ownBackupDir, prepareBackupManifest, readBackupManifest, resolveNativeSnapshot,
-  writeArtifact, type BackupCommand, type BackupManifest, type BackupNativePort, type BackupReceipt,
+  backupIdentity, backupRetention, captureAppSide, captureNativeSnapshot, isJitVersion, jitAppVersion, listBackups, ownBackupDir,
+  prepareBackupManifest, readBackupManifest, reconcileBackupArtifacts, removeManagedFiles, selectRetentionVictims, writeArtifact,
+  writeNativeArtifacts, type BackupCommand, type BackupManifest, type BackupNativePlan, type BackupNativePort, type BackupReceipt,
+  type CreateBackupCommand, type PruneBackupsCommand, type BackupIntegrity, verifyBackupArtifacts,
 } from "./ops/backup";
 import {
   buildExport, exportFailureReason, exportIdentity, exportPreview, exportRegistration, exportRetention, listExportArtifacts,
-  readExportArtifact, readExportManifest, recordFailedExport, registerExport, stripExportsFromSnapshot,
+  readExportArtifact, readExportManifest, recordFailedExport, registerExport,
   type BuiltExport, type ExportCommand, type ExportFailure, type ExportLimits, type ExportManifest, type ExportPreview, type ExportReceipt,
   type FailedExportManifest, type ValidExportManifest,
 } from "./ops/export";
@@ -118,6 +120,8 @@ export interface ApplicationOptions {
   upgradeDir?: string;
   restoreDir?: string;
   nativeSnapshot?: BackupNativePort;
+  /** Producing build identity recorded in backup manifests; defaults to the shipped package version. */
+  jitVersion?: string;
 }
 
 /** Owns identity validation and revisioned app commands independently of Web or model transports. */
@@ -131,6 +135,9 @@ export class Application {
   #restoreDir: string;
   #upgradeDir: string;
   #nativeSnapshot: BackupNativePort | undefined;
+  #jitVersion: string;
+  /** Backup ids whose files are staged but not yet committed; reconciliation never removes them. */
+  #stagingBackups = new Set<string>();
 
   constructor(readonly store: TransactionStore, readonly config: AppConfig, options: ApplicationOptions = {}) {
     this.#now = options.now ?? Date.now;
@@ -145,6 +152,8 @@ export class Application {
     this.#restoreDir = ownRestoreDirFor(store.path, options.restoreDir);
     this.#upgradeDir = ownUpgradeDirFor(store.path, options.upgradeDir);
     this.#nativeSnapshot = options.nativeSnapshot;
+    this.#jitVersion = options.jitVersion ?? jitAppVersion;
+    if (!isJitVersion(this.#jitVersion)) throw new AppError("invalid_jit_version", 500);
   }
 
   /** Provisions exactly one owner through trusted local setup; no HTTP route exposes this method. */
@@ -307,17 +316,20 @@ export class Application {
   execute(actor: OwnerActor, command: ResendDeliveryCommand): DeliveryResendReceipt;
   execute(actor: OwnerActor, command: RetireDeliveryCommand): DeliveryRetireReceipt;
   execute(actor: OwnerActor, command: PrReportCommand): PrReportReceipt;
-  execute(actor: OwnerActor, command: BackupCommand): BackupReceipt;
+  execute(actor: OwnerActor, command: CreateBackupCommand): Promise<BackupReceipt>;
+  execute(actor: OwnerActor, command: PruneBackupsCommand): BackupReceipt;
+  execute(actor: OwnerActor, command: BackupCommand): BackupReceipt | Promise<BackupReceipt>;
   execute(actor: OwnerActor, command: DeleteCommand): DeletionReceipt | DeletionConfirmReceipt | DeletionOperation;
   execute(actor: OwnerActor, command: ExportCommand): ExportReceipt;
   execute(actor: OwnerActor, command: UpgradeCommand): UpgradeReceipt;
   execute(actor: OwnerActor, command: RestoreCommand): RestoreReceipt;
-  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | UpgradeReceipt | RestoreReceipt;
-  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | UpgradeReceipt | RestoreReceipt {
+  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | UpgradeReceipt | RestoreReceipt;
+  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | UpgradeReceipt | RestoreReceipt {
     if (command?.kind === "export.create") return this.#exportCommand(actor, command);
     if (command?.kind.startsWith("restore.")) return this.#restoreCommand(actor, command as RestoreCommand);
     if (command?.kind.startsWith("upgrade.")) return this.#upgradeCommand(actor, command as UpgradeCommand);
-    if (command?.kind === "backup.create" || command?.kind === "backup.prune") return this.#backupCommand(actor, command);
+    if (command?.kind === "backup.create") return this.#createBackup(actor, command);
+    if (command?.kind === "backup.prune") return this.#pruneBackups(actor, command);
     if (command?.kind === "memory.delete.preview" || command?.kind === "memory.delete.confirm" || command?.kind === "memory.delete.retry") return this.#deleteCommand(actor, command);
     if (command?.kind === "memory.extract") return this.#memoryCommand(actor, command);
     if (command?.kind === "memory.correct") return this.#correctCommand(actor, command);
@@ -600,7 +612,7 @@ export class Application {
           if (revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
           const journal = prepareUpgrade(tx, this.store, { id, now, appRevision: revision,
             targetSchema: command.payload.targetSchema, note: command.payload.note,
-            upgradeDir: this.#upgradeDir, backupDir: this.#backupDir, engine: this.#nativeSnapshot });
+            upgradeDir: this.#upgradeDir, backupDir: this.#backupDir, engine: this.#nativeSnapshot, jitVersion: this.#jitVersion });
           this.#beforeCommit?.("ops");
           const result: UpgradeReceipt = { journal, duplicate: false };
           tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
@@ -695,7 +707,7 @@ export class Application {
           const now = this.#now();
           const revision = tx.get<{ revision: number }>("SELECT revision FROM app_state WHERE id = 1")!.revision;
           if (revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
-          const quarantine = prepareRestore(tx, { id, now, liveRevision: revision, backupId: command.payload.backupId, restoreDir: this.#restoreDir });
+          const quarantine = prepareRestore(tx, { id, now, liveRevision: revision, backupId: command.payload.backupId, restoreDir: this.#restoreDir, backupDir: this.#backupDir });
           this.#beforeCommit?.("ops");
           const result: RestoreReceipt = { quarantine, duplicate: false };
           tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
@@ -1236,70 +1248,174 @@ export class Application {
   }
 
   /** ops.backup_manifest/v1 reads: bounded inventory outside ordinary project data. */
-  backups(actor: OwnerActor): { manifests: BackupManifest[] } {
-    return this.store.read(tx => {
+  backups(actor: OwnerActor): { manifests: BackupManifest[]; integrity: Record<string, BackupIntegrity> } {
+    const listed = this.store.read(tx => {
       this.#requireOwner(tx, actor);
-      return { manifests: listBackups(tx) };
+      return listBackups(tx);
     });
+    // The inventory is installation-bounded (retention: 10 backups, 64 MiB), so every
+    // listed entry is verified; an invalid entry is never labelled valid.
+    const integrity: Record<string, BackupIntegrity> = {};
+    const manifests = listed.map(manifest => {
+      let verdict: BackupIntegrity;
+      try { verdict = verifyBackupArtifacts(manifest, this.#backupDir); }
+      catch { verdict = { state: "invalid", reason: "manifest_unverifiable" }; }
+      integrity[manifest.id] = verdict;
+      return verdict.state === "verified" ? manifest : { ...manifest, state: "incomplete" as const, reason: verdict.reason };
+    });
+    return { manifests, integrity };
   }
 
-  /** Reads one backup manifest without parsing backup bytes or activating workers. */
-  backup(actor: OwnerActor, id: string): { manifest: BackupManifest } {
-    return this.store.read(tx => {
+  /**
+   * Reads one backup manifest and verifies its managed files (location, type,
+   * size, SHA-256, native contract) without parsing them or activating
+   * workers. Missing or corrupt files present the backup as `incomplete` with
+   * `integrity.state: "invalid"`.
+   */
+  backup(actor: OwnerActor, id: string): { manifest: BackupManifest; integrity: BackupIntegrity } {
+    const manifest = this.store.read(tx => {
       this.#requireOwner(tx, actor);
-      return { manifest: readBackupManifest(tx, id) };
+      return readBackupManifest(tx, id);
     });
+    const integrity = verifyBackupArtifacts(manifest, this.#backupDir);
+    return integrity.state === "verified"
+      ? { manifest, integrity }
+      : { manifest: { ...manifest, state: "incomplete", reason: integrity.reason }, integrity };
   }
 
-  #backupCommand(actor: OwnerActor, command: BackupCommand): BackupReceipt {
+  #priorBackupReceipt(tx: AppTransaction, command: BackupCommand, payloadHash: string): BackupReceipt | null {
+    const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
+    if (!prior) return null;
+    if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409);
+    return JSON.parse(prior.result_json) as BackupReceipt;
+  }
+
+  /**
+   * backup.prune: removes the oldest inventory rows inside one transaction and
+   * deletes their files only after that transaction commits.
+   */
+  #pruneBackups(actor: OwnerActor, command: PruneBackupsCommand): BackupReceipt {
     const payloadHash = digest(backupIdentity(command));
-    return this.store.transaction(tx => {
+    let victims: string[] = [];
+    const result = this.store.transaction(tx => {
       this.#requireOwner(tx, actor);
-      const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
-      if (prior) {
-        if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409);
-        return JSON.parse(prior.result_json) as BackupReceipt;
-      }
+      const prior = this.#priorBackupReceipt(tx, command, payloadHash);
+      if (prior) return prior;
       const now = this.#now();
       const revision = tx.get<{ revision: number }>("SELECT revision FROM app_state WHERE id = 1")!.revision;
       if (revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
-      if (command.kind === "backup.prune") {
-        const pruned = enforceRetention(tx, this.#backupDir, 0, command.payload.keep);
-        this.#beforeCommit?.("backup");
-        const result: BackupReceipt = {
-          manifest: {
-            contract: "ops.backup_manifest/v1", id: "prune", createdAt: now, appSchema: tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version, jitVersion: "jit-mvp-fixture",
-            appRevision: revision, projects: [], sourceGenerations: [],
-            lifecycle: { available: true, checkpoint: null, reason: null },
-            native: { state: "valid", refs: [], bytes: 0, engine: null, reason: null },
-            content: { bytes: 0, hash: "", projects: 0, sources: 0 },
-            retention: { maxBackups: 10, maxBytes: 64 * 1024 * 1024, pruned },
-            state: "valid", reason: null, artifact: { path: "", bytes: 0, hash: "" },
-          },
-          duplicate: false,
-        };
-        tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
-        tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, 'owner', ?)", command.kind, command.requestId, now);
-        this.#beforeCommit?.("receipt");
-        return result;
-      }
-      const id = crypto.randomUUID();
-      // Backups never carry export artifacts, so a restore cannot resurrect content deleted after an export.
-      const snapshot = stripExportsFromSnapshot(this.store.snapshotBytes());
-      const hash = createHash("sha256").update(snapshot).digest("hex");
-      const native = resolveNativeSnapshot(this.#nativeSnapshot);
-      const pruned = enforceRetention(tx, this.#backupDir, snapshot.length);
-      const artifactPath = writeArtifact(this.#backupDir, id, snapshot);
+      const selected = selectRetentionVictims(tx, this.#backupDir, null, command.payload.keep);
+      victims = selected.files;
       this.#beforeCommit?.("backup");
-      const appSchema = tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
-      const manifest = prepareBackupManifest(tx, { id, now, appRevision: revision, appSchema, snapshotBytes: snapshot, snapshotHash: hash, native, artifactPath, pruned });
-      tx.run("INSERT INTO ops_backups VALUES (?, ?, ?)", manifest.id, manifest.createdAt, JSON.stringify(manifest));
-      const result: BackupReceipt = { manifest, duplicate: false };
-      tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
+      const receipt: BackupReceipt = {
+        manifest: {
+          contract: "ops.backup_manifest/v1", id: "prune", createdAt: now, appSchema: tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version, jitVersion: this.#jitVersion,
+          appRevision: revision, projects: [], sourceGenerations: [],
+          inventory: { complete: true, projects: { total: 0, recorded: 0 }, sources: { total: 0, recorded: 0 } },
+          lifecycle: { available: true, checkpoint: null, reason: null },
+          native: { state: "valid", refs: [], bytes: 0, engine: null, reason: null, contract: null, formatVersion: null, artifacts: [] },
+          content: { bytes: 0, hash: "", projects: 0, sources: 0 },
+          retention: { maxBackups: backupRetention.maxBackups, maxBytes: backupRetention.maxBytes, pruned: selected.pruned },
+          credentials: { included: false, excludedTables: [], scrubbed: [], restore: "owner_credential_setup_required" },
+          state: "valid", reason: null, artifact: { path: "", bytes: 0, hash: "" },
+        },
+        duplicate: false,
+      };
+      tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(receipt), now);
       tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, 'owner', ?)", command.kind, command.requestId, now);
       this.#beforeCommit?.("receipt");
-      return result;
+      return receipt;
     });
+    removeManagedFiles(victims);
+    return result;
+  }
+
+  /**
+   * backup.create — staged ops.backup_manifest/v1 creation.
+   *
+   * 1. One immediate transaction: authorize, dedup, check revision, reconcile
+   *    orphans, then capture the credential-free app image, reference
+   *    inventory, lifecycle checkpoint and exact native reference plan from
+   *    the same committed view.
+   * 2. Await the engine's supported native snapshot for exactly that plan.
+   * 3. Reject an over-ceiling backup before anything is deleted, then stage
+   *    the image and native artifacts (mode 0600) in the managed directory.
+   * 4. One immediate transaction: re-authorize, re-dedup, recheck the native
+   *    plan fingerprint, retire retention victims' rows, insert manifest,
+   *    receipt and audit.
+   * 5. Only after commit, delete victims' files. Any failure before commit
+   *    removes only this attempt's staged files; committed backups are untouched.
+   */
+  async #createBackup(actor: OwnerActor, command: CreateBackupCommand): Promise<BackupReceipt> {
+    const payloadHash = digest(backupIdentity(command));
+    const id = crypto.randomUUID();
+    const port = this.#nativeSnapshot;
+    this.#stagingBackups.add(id);
+    const written: string[] = [];
+    try {
+      const staged = this.store.transaction(tx => {
+        this.#requireOwner(tx, actor);
+        const prior = this.#priorBackupReceipt(tx, command, payloadHash);
+        if (prior) return { prior } as const;
+        const revision = tx.get<{ revision: number }>("SELECT revision FROM app_state WHERE id = 1")!.revision;
+        if (revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
+        reconcileBackupArtifacts(tx, this.#backupDir, this.#stagingBackups);
+        const app = captureAppSide(tx, this.store);
+        let plan: BackupNativePlan | undefined;
+        let planFailed = false;
+        try { plan = port?.resolve?.(tx); } catch { planFailed = true; }
+        return { prior: null, app, plan, planFailed } as const;
+      });
+      if (staged.prior) return staged.prior;
+      const capture = staged.planFailed
+        ? { section: { state: "incomplete" as const, refs: [], bytes: 0, engine: port?.engine ?? null, reason: "native_snapshot_failed", contract: null, formatVersion: null }, artifacts: [] }
+        : await captureNativeSnapshot(port, staged.plan, { maxBytes: Math.max(0, backupRetention.maxBytes - staged.app.image.bytes.length) });
+      const incoming = staged.app.image.bytes.length + capture.artifacts.reduce((sum, a) => sum + a.bytes.length, 0);
+      if (incoming > backupRetention.maxBytes) throw new AppError("backup_too_large", 507);
+      const artifactPath = writeArtifact(this.#backupDir, id, staged.app.image.bytes);
+      written.push(artifactPath);
+      const nativeArtifacts = writeNativeArtifacts(this.#backupDir, id, capture.artifacts, written);
+      let victims: string[] = [];
+      const discard: string[] = [];
+      const result = this.store.transaction(tx => {
+        this.#requireOwner(tx, actor);
+        const prior = this.#priorBackupReceipt(tx, command, payloadHash);
+        if (prior) { discard.push(...written); return prior; }
+        let native: BackupManifest["native"] = { ...capture.section, artifacts: nativeArtifacts };
+        if (native.state === "valid" && staged.plan && port?.resolve) {
+          let now: BackupNativePlan | null = null;
+          try { now = port.resolve(tx); } catch { now = null; }
+          if (!now || now.fingerprint !== staged.plan.fingerprint) {
+            // The native set moved during capture: never present it as valid.
+            discard.push(...nativeArtifacts.map(a => a.path));
+            native = { ...native, state: "incomplete", refs: [], bytes: 0, reason: "native_changed_during_backup", artifacts: [] };
+          }
+        }
+        const storedBytes = staged.app.image.bytes.length + native.artifacts.reduce((sum, a) => sum + a.bytes, 0);
+        const selected = selectRetentionVictims(tx, this.#backupDir, storedBytes);
+        victims = selected.files;
+        this.#beforeCommit?.("backup");
+        const now = this.#now();
+        const manifest = prepareBackupManifest(tx, {
+          id, now, appRevision: staged.app.appRevision, appSchema: staged.app.appSchema, jitVersion: this.#jitVersion,
+          image: staged.app.image, native, artifactPath, pruned: selected.pruned,
+          inventory: staged.app.inventory, lifecycle: staged.app.lifecycle,
+        });
+        tx.run("INSERT INTO ops_backups VALUES (?, ?, ?)", manifest.id, manifest.createdAt, JSON.stringify(manifest));
+        const receipt: BackupReceipt = { manifest, duplicate: false };
+        tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(receipt), now);
+        tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, 'owner', ?)", command.kind, command.requestId, now);
+        this.#beforeCommit?.("receipt");
+        return receipt;
+      });
+      written.length = 0;
+      removeManagedFiles([...victims, ...discard]);
+      return result;
+    } finally {
+      // Anything still listed was staged by a failed attempt and never committed.
+      removeManagedFiles(written);
+      this.#stagingBackups.delete(id);
+    }
   }
 
   #createProject(actor: OwnerActor, command: CreateProjectCommand): ProjectReceipt {

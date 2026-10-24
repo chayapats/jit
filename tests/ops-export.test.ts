@@ -729,7 +729,7 @@ test("backups never carry export artifacts, so a restore cannot resurrect export
   const a = project(f, "โครงการสำรอง", "หัวข้อ");
   say(f, a, "ข้อความ backup-strip-026 ไทย");
   f.rt.app.execute(actor(f), exportCommand(f, a, true));
-  const backup = f.rt.app.execute(actor(f), { kind: "backup.create" as const, requestId: rid(), projectId: null,
+  const backup = await f.rt.app.execute(actor(f), { kind: "backup.create" as const, requestId: rid(), projectId: null,
     expectedRevision: f.rt.app.workspace(actor(f)).revision, payload: { note: "strip check" } });
   const bytes = readFileSync(backup.manifest.artifact.path);
   const copyPath = join(f.root, "backup-copy.sqlite");

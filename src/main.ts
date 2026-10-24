@@ -21,6 +21,7 @@ import { prReviewWork } from "./pr/review";
 import { prSnapshotWork } from "./pr/work";
 import { FakeGitHubFixture } from "./pr/github";
 import { memoryExtractionWork, scriptedMemoryResult } from "./memory/extract";
+import { backupNativePortFor } from "./ops/schway-backup";
 import { scheduleReminderWork, scheduleSummaryWork, tickSchedules } from "./jobs/schedules";
 import { lookupSource } from "./sources";
 
@@ -107,7 +108,13 @@ async function main(): Promise<void> {
     await queue.reconcile(teamPort);
   } }
   catch (error) { queue?.close(); store.close(); throw error; }
-  const app = new Application(store, config, queue ? { jobs: queue } : {});
+  // Backups ride the concrete native bridge only under explicit schway mode;
+  // scripted default stays fail-closed (no native port), exactly like runPort.
+  const nativeSnapshot = backupNativePortFor(config, store);
+  const app = new Application(store, config, {
+    ...(queue ? { jobs: queue } : {}),
+    ...(nativeSnapshot ? { nativeSnapshot } : {}),
+  });
   if (command !== "serve") {
     try { await app.setupOwner(await secret(), command === "reset-owner"); console.log("Owner credentials saved; existing browser sessions revoked."); }
     finally { store.close(); }
