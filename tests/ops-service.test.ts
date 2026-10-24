@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Application } from "../src/application";
@@ -10,6 +10,7 @@ import { artifactPiStatus, buildPackage, readManifest, validateArtifact } from "
 import { assertNoSecretValues, parseServiceConfig, planServiceConfig, renderServiceUnit } from "../ops/package/service-config";
 import type { ServiceConfig } from "../ops/package/service-config";
 import { preflightService, readQuarantine, startFullApp, stopDrain, upgradeStaged } from "../src/ops/lifecycle";
+import { backupDirectoryProblem } from "../src/ops/backup";
 import { gatherServiceStatus, serviceStatus } from "../src/ops/status";
 
 const roots: string[] = [];
@@ -238,6 +239,30 @@ test("crash and stop-timeout fence unsettled work without claiming success", asy
   expect(JSON.stringify(current)).not.toContain("must not publish");
   next.close();
   reopened.close();
+});
+
+test("preflight rejects a permissive, symlinked or foreign-owned backup destination instead of trusting existence", async () => {
+  const { root, service, config, backup } = setup();
+  const store = new TransactionStore(config.databasePath);
+  const configGate = (candidate: ServiceConfig) => preflightService({ store, config, service: candidate, requiredEngine: "jit.schway.bridge/v1" })
+    .gates.find(g => g.gate === "config")!;
+  try {
+    expect(configGate(service)).toMatchObject({ state: "ready" });
+    chmodSync(backup, 0o777);
+    expect(configGate(service)).toMatchObject({ state: "blocked", nextAction: "restrict-backup-directory", detail: "backup directory untrusted: backup_directory_permissive" });
+    chmodSync(backup, 0o750);
+    expect(configGate(service).state).toBe("blocked");
+    chmodSync(backup, 0o700);
+    const linked = join(root, "backup-link");
+    symlinkSync(backup, linked);
+    expect(configGate({ ...service, backupDirectory: linked })).toMatchObject({ state: "blocked", detail: "backup directory untrusted: backup_directory_symlink" });
+    expect(configGate({ ...service, backupDirectory: join(root, "absent") })).toMatchObject({ state: "blocked", nextAction: "prepare-service-directories" });
+    // A different owner cannot be created without root; the check compares against the service uid.
+    expect(backupDirectoryProblem(backup)).toBeNull();
+    expect(backupDirectoryProblem(backup, (process.getuid?.() ?? 0) + 1)).toBe("backup_directory_foreign_owner");
+  } finally { store.close(); }
+  const refused = await startFullApp({ config, service: { ...service, backupDirectory: join(root, "backup-link") } });
+  expect(refused.ok).toBe(false);
 });
 
 test("quarantine boot refuses activation while read-only status stays available", async () => {

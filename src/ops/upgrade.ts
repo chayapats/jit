@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync, readdirSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, lstatSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { SNAPSHOT_NATIVE_FORMAT_VERSION } from "schway/host";
 import { AppError } from "../errors";
 import { lookupSource, requireId } from "../sources";
@@ -284,7 +284,7 @@ export function upgradeActions(journal: Pick<UpgradeJournal, "state" | "snapshot
     case "staged": return ["validate", "rollback"];
     case "ready": return ["activate", "rollback"];
     case "blocked":
-      if (journal.reason === "activation_state_unknown") return [];
+      if (journal.reason === "activation_state_unknown" || journal.reason === "upgrade_corrupt") return [];
       return journal.snapshotBackupId ? ["migrate", "rollback"] : ["rollback"];
     case "activating": case "activated": return ["activate"];
     default: return [];
@@ -298,19 +298,131 @@ export function upgradeActions(journal: Pick<UpgradeJournal, "state" | "snapshot
 const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const journalPath = (dir: string, id: string) => join(dir, id, "journal.json");
 
-function parseJournal(text: string, id: string): UpgradeJournal {
-  let journal: UpgradeJournal;
-  try { journal = JSON.parse(text) as UpgradeJournal; } catch { throw new AppError("upgrade_corrupt", 500); }
-  if (!journal || journal.contract !== upgradeContract || journal.id !== id || !Array.isArray(journal.requests)) throw new AppError("upgrade_corrupt", 500);
-  return journal;
+/** Trusted per-attempt directory; every attempt file path is derived from it, never read from the journal. */
+export function upgradeAttemptDir(upgradeDir: string, id: string): string {
+  if (!ID.test(id)) throw new AppError("upgrade_corrupt", 500);
+  return join(upgradeDir, id);
+}
+/** The one staged-copy path an attempt may use. */
+export function upgradeStagedPath(upgradeDir: string, id: string): string { return join(upgradeAttemptDir(upgradeDir, id), "staged.sqlite"); }
+/** The one ledger-sidecar path an attempt may use. */
+export function upgradeLedgerPath(upgradeDir: string, id: string): string { return join(upgradeAttemptDir(upgradeDir, id), "ledger.json"); }
+
+const HEX64 = /^[0-9a-f]{64}$/;
+const states: readonly UpgradeState[] = ["preparing", "prepared", "staged", "ready", "activating", "activated", "complete", "blocked", "failed", "rolled_back"];
+const kinds: readonly UpgradeCommand["kind"][] = ["upgrade.prepare", "upgrade.migrate", "upgrade.validate", "upgrade.activate", "upgrade.rollback"];
+const isObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
+const isInt = (value: unknown, min = 0) => Number.isSafeInteger(value) && (value as number) >= min;
+const isText = (value: unknown, max = 512) => typeof value === "string" && value.length <= max;
+const isNullable = (value: unknown, check: (v: unknown) => boolean): boolean => value === null || check(value);
+
+/**
+ * Exact journal schema and state-dependent invariants. The journal is
+ * control-plane data outside the database, so it is never trusted beyond what
+ * this check proves: paths must equal the ones derived from the trusted
+ * upgrade directory and id, and each state must carry exactly the artifacts
+ * it implies. Anything else is `upgrade_corrupt`.
+ */
+function checkJournal(value: unknown, upgradeDir: string, id: string): UpgradeJournal {
+  const corrupt = (): never => { throw new AppError("upgrade_corrupt", 500); };
+  if (!isObject(value) || !exact(value, ["id", "contract", "fromSchema", "targetSchema", "state", "steps", "preflight", "quiesce", "snapshotBackupId",
+    "checkpoint", "ledger", "stagedPath", "stagedSchema", "liveDigest", "stagedDigest", "validation", "reconcile", "reason", "nextAction",
+    "requests", "createdAt", "updatedAt"])) return corrupt();
+  const j = value as unknown as UpgradeJournal;
+  if (j.contract !== upgradeContract || j.id !== id || !ID.test(id) || !states.includes(j.state) ||
+      !Number.isSafeInteger(j.fromSchema) || !Number.isSafeInteger(j.targetSchema) || !isInt(j.createdAt) || !isInt(j.updatedAt) ||
+      !isNullable(j.reason, v => isText(v, 128)) || !isText(j.nextAction) ||
+      !isNullable(j.stagedSchema, v => isInt(v)) || !isNullable(j.liveDigest, v => typeof v === "string" && HEX64.test(v)) ||
+      !isNullable(j.stagedDigest, v => typeof v === "string" && HEX64.test(v)) ||
+      !isNullable(j.snapshotBackupId, v => typeof v === "string" && ID.test(v))) return corrupt();
+  if (!Array.isArray(j.steps) || j.steps.length > 200 || !j.steps.every(step => isObject(step) && exact(step, ["name", "at", "ok", "detail"]) &&
+      isText(step.name, 64) && isInt(step.at) && typeof step.ok === "boolean" && isText(step.detail))) return corrupt();
+  if (!Array.isArray(j.requests) || j.requests.length > 100 || !j.requests.every(r => isObject(r) && exact(r, ["requestId", "kind", "payloadHash", "at"]) &&
+      typeof r.requestId === "string" && /^[a-zA-Z0-9_-]{8,128}$/.test(r.requestId) && kinds.includes(r.kind as UpgradeCommand["kind"]) &&
+      typeof r.payloadHash === "string" && HEX64.test(r.payloadHash) && isInt(r.at))) return corrupt();
+  const p = j.preflight as unknown;
+  if (!isObject(p) || !Number.isSafeInteger(p.currentSchema) || !Number.isSafeInteger(p.targetSchema) || !isText(p.jitVersion, 128) ||
+      !isObject(p.supported) || !Array.isArray(p.migrations) || !(p.migrations as unknown[]).every(v => isInt(v)) || !isObject(p.engine) ||
+      typeof p.compatible !== "boolean" || !Array.isArray(p.plannedSteps)) return corrupt();
+  if (j.stagedPath !== null && j.stagedPath !== upgradeStagedPath(upgradeDir, id)) return corrupt();
+  if (j.ledger !== null && (!isObject(j.ledger) || j.ledger.path !== upgradeLedgerPath(upgradeDir, id) || typeof j.ledger.hash !== "string" ||
+      !HEX64.test(j.ledger.hash) || !isNullable(j.ledger.checkpoint, v => isText(v, 128)) || !isInt(j.ledger.deletions) ||
+      !isInt(j.ledger.suppressions) || !isInt(j.ledger.suppressedSources) || !isInt(j.ledger.sources))) return corrupt();
+  if (!isNullable(j.quiesce, v => isObject(v) && typeof v.settled === "boolean" && isInt(v.fencedJobs) && isText(v.detail) && Array.isArray(v.disabled))) return corrupt();
+  if (!isNullable(j.checkpoint, v => isObject(v) && typeof v.backupId === "string" && v.backupId === j.snapshotBackupId && isInt(v.nativeRefs))) return corrupt();
+  if (!isNullable(j.validation, v => isObject(v) && Array.isArray(v.checks))) return corrupt();
+  if (!isNullable(j.reconcile, v => isObject(v) && typeof v.reconciled === "boolean" && isText(v.detail) && isInt(v.at))) return corrupt();
+  // State-dependent invariants: each phase carries exactly the artifacts it implies.
+  const prepared = j.snapshotBackupId !== null && j.ledger !== null && j.stagedPath !== null && j.preflight.compatible;
+  switch (j.state) {
+    case "prepared": if (!prepared) return corrupt(); break;
+    case "staged": if (!prepared || j.stagedSchema === null || j.liveDigest === null) return corrupt(); break;
+    case "ready": case "activating":
+      if (!prepared || j.stagedSchema === null || j.liveDigest === null || j.stagedDigest === null) return corrupt(); break;
+    case "activated": case "complete": if (!prepared || j.stagedDigest === null) return corrupt(); break;
+    case "blocked": if (j.snapshotBackupId !== null && !prepared) return corrupt(); break;
+    case "rolled_back": if (!prepared) return corrupt(); break;
+    case "preparing": case "failed": break;
+  }
+  return j;
 }
 
-/** Reads one journal. Throws `upgrade_not_found` or `upgrade_corrupt`. */
+/** Regular, non-symlink file check; absent is allowed when `optional`. */
+function regularFile(path: string, optional: boolean): boolean {
+  let stats;
+  try { stats = lstatSync(path); } catch { return optional; }
+  return stats.isFile() && !stats.isSymbolicLink();
+}
+
+/** Trusted attempt directory must be a real directory (not a symlink) when present. */
+function realAttemptDir(upgradeDir: string, id: string): boolean {
+  let stats;
+  try { stats = lstatSync(upgradeAttemptDir(upgradeDir, id)); } catch { return true; }
+  return stats.isDirectory() && !stats.isSymbolicLink();
+}
+
+/**
+ * Resolves an attempt file for a file operation: always the derived path,
+ * inside a real attempt directory, a regular non-symlink file (or absent when
+ * `optional`), and never the live database or anything inside the backup
+ * directory. Throws `upgrade_corrupt` otherwise, before any I/O on it.
+ */
+function attemptFile(ctx: Pick<UpgradeContext, "upgradeDir" | "backupDir" | "store">, id: string, name: "staged.sqlite" | "ledger.json", optional: boolean): string {
+  const path = name === "staged.sqlite" ? upgradeStagedPath(ctx.upgradeDir, id) : upgradeLedgerPath(ctx.upgradeDir, id);
+  const absolute = resolve(path), live = resolve(ctx.store.path), backups = resolve(ctx.backupDir);
+  if (absolute === live || absolute.startsWith(`${live}-`) || absolute === backups || absolute.startsWith(`${backups}/`)) throw new AppError("upgrade_corrupt", 500);
+  if (!realAttemptDir(ctx.upgradeDir, id)) throw new AppError("upgrade_corrupt", 500);
+  for (const suffix of name === "staged.sqlite" ? ["", "-wal", "-shm"] : [""]) {
+    if (!regularFile(`${path}${suffix}`, optional || suffix !== "")) throw new AppError("upgrade_corrupt", 500);
+  }
+  return path;
+}
+
+/**
+ * {@link attemptFile} for a step on a fenced journal: an unsafe attempt file
+ * moves the journal to a durable `blocked` `upgrade_corrupt` state with no
+ * actions before throwing, so nothing destructive can be retried on it.
+ */
+function stepFile(ctx: UpgradeContext, journal: UpgradeJournal, name: "staged.sqlite" | "ledger.json", optional: boolean): string {
+  try { return attemptFile(ctx, journal.id, name, optional); }
+  catch (error) {
+    saveJournal(ctx.upgradeDir, { ...journal, state: "blocked", steps: step(journal, "attempt_files", ctx.now(), false, "upgrade_corrupt"),
+      reason: "upgrade_corrupt", stagedDigest: null, nextAction: "inspect_corrupt_upgrade_attempt_files", updatedAt: ctx.now() });
+    throw error;
+  }
+}
+
+/** Reads one journal. Throws `upgrade_not_found` or `upgrade_corrupt` (exact schema, derived paths, regular files). */
 export function readUpgrade(upgradeDir: string, id: string): UpgradeJournal {
   requireId(id);
-  let text: string;
-  try { text = readFileSync(journalPath(upgradeDir, id), "utf8"); } catch { throw new AppError("upgrade_not_found", 404); }
-  return parseJournal(text, id);
+  if (!ID.test(id)) throw new AppError("upgrade_not_found", 404);
+  const path = journalPath(upgradeDir, id);
+  let stats;
+  try { stats = lstatSync(path); } catch { throw new AppError("upgrade_not_found", 404); }
+  if (!stats.isFile() || stats.isSymbolicLink() || !realAttemptDir(upgradeDir, id)) throw new AppError("upgrade_corrupt", 500);
+  let parsed: unknown;
+  try { parsed = JSON.parse(readFileSync(path, "utf8")); } catch { throw new AppError("upgrade_corrupt", 500); }
+  return checkJournal(parsed, upgradeDir, id);
 }
 
 /** Bounded journal list, oldest first; unreadable entries are reported as corrupt placeholders, never skipped silently. */
@@ -322,21 +434,26 @@ export function listUpgrades(upgradeDir: string, limit = 50): UpgradeJournal[] {
     try { journals.push(readUpgrade(upgradeDir, id)); }
     catch (error) {
       if (error instanceof AppError && error.code === "upgrade_not_found") continue;
-      journals.push(corruptPlaceholder(id));
+      journals.push(corruptUpgrade(id));
     }
   }
   journals.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
   return journals.slice(-Math.min(Math.max(limit, 1), 100));
 }
 
-function corruptPlaceholder(id: string): UpgradeJournal {
+/**
+ * Durable blocked view of a journal that failed {@link readUpgrade}: no
+ * actions, no paths, and it keeps the installation fenced (prepare refuses)
+ * until a human inspects the control-plane file.
+ */
+export function corruptUpgrade(id: string): UpgradeJournal {
   return { id, contract: upgradeContract, fromSchema: -1, targetSchema: -1, state: "blocked", steps: [],
     preflight: { currentSchema: -1, targetSchema: -1, jitVersion: jitAppVersion, supported: { minSource: minUpgradeSourceSchema, target: currentSupportedSchema },
       migrations: [], engine: { engine: null, contract: null, formatVersion: null, compatible: false, reason: "upgrade_corrupt" },
       compatible: false, reason: "upgrade_corrupt", plannedSteps: [] },
     quiesce: null, snapshotBackupId: null, checkpoint: null, ledger: null, stagedPath: null, stagedSchema: null,
     liveDigest: null, stagedDigest: null, validation: null, reconcile: null,
-    reason: "activation_state_unknown", nextAction: "inspect_corrupt_upgrade_journal", requests: [], createdAt: 0, updatedAt: 0 };
+    reason: "upgrade_corrupt", nextAction: "inspect_corrupt_upgrade_journal", requests: [], createdAt: 0, updatedAt: 0 };
 }
 
 /** The journal currently holding (or entitled to) the fence, if any. */
@@ -460,16 +577,16 @@ function ledgerRows(tx: AppTransaction): LedgerRows {
 
 function writeLedgerSidecar(ctx: UpgradeContext, id: string, now: number): NonNullable<UpgradeJournal["ledger"]> {
   const captured = ctx.store.read(tx => ({ rows: ledgerRows(tx), checkpoint: lifecycleCheckpoint(tx).checkpoint }));
-  const path = join(ctx.upgradeDir, id, "ledger.json");
+  const path = attemptFile(ctx, id, "ledger.json", true);
   const body = JSON.stringify({ contract: "app.deletion_ledger/v1", upgradeId: id, capturedAt: now, checkpoint: captured.checkpoint, ...captured.rows });
   writeFileAtomic(path, body);
   return { path, hash: sha256(body), checkpoint: captured.checkpoint, deletions: captured.rows.deletions.length,
     suppressions: captured.rows.suppressions.length, suppressedSources: captured.rows.suppressedSources.length, sources: captured.rows.sources.length };
 }
 
-function readLedgerSidecar(ledger: NonNullable<UpgradeJournal["ledger"]>): LedgerRows | null {
+function readLedgerSidecar(ctx: UpgradeContext, id: string, ledger: NonNullable<UpgradeJournal["ledger"]>): LedgerRows | null {
   try {
-    const body = readFileSync(ledger.path, "utf8");
+    const body = readFileSync(attemptFile(ctx, id, "ledger.json", false), "utf8");
     if (sha256(body) !== ledger.hash) return null;
     const parsed = JSON.parse(body) as LedgerRows;
     return parsed;
@@ -562,7 +679,7 @@ export async function prepareUpgrade(ctx: UpgradeContext, input: { request: Upgr
     // The fence holds, so the separately captured ledger must be the recovery point's position.
     if (ledger.checkpoint !== manifest.lifecycle.checkpoint) throw new AppError("ledger_moved_during_snapshot", 409);
     journal = saveJournal(ctx.upgradeDir, { ...journal, state: "prepared", ledger,
-      stagedPath: join(ctx.upgradeDir, id, "staged.sqlite"),
+      stagedPath: upgradeStagedPath(ctx.upgradeDir, id),
       steps: step(journal, "ledger", ctx.now(), true, `deletions_${ledger.deletions}_suppressions_${ledger.suppressions}_sources_${ledger.sources}`),
       reason: null, nextAction: "migrate_to_staged_copy", updatedAt: ctx.now() });
     ctx.fault?.("ledger");
@@ -583,7 +700,7 @@ async function failAfterFence(ctx: UpgradeContext, journal: UpgradeJournal, phas
   clearUpgradeFence(ctx.store.path);
   const resumed = await safeResume(ctx);
   failed = saveJournal(ctx.upgradeDir, { ...failed, reconcile: { ...resumed, at: ctx.now() } });
-  removeStaged(failed);
+  removeStaged(ctx, failed);
   recordAudit(ctx, failed);
   return failed;
 }
@@ -593,10 +710,39 @@ async function safeResume(ctx: UpgradeContext): Promise<UpgradeResumeResult> {
   catch (error) { return { reconciled: false, detail: error instanceof AppError ? error.code : "service_resume_failed" }; }
 }
 
-function removeStaged(journal: UpgradeJournal): void {
+/**
+ * Best-effort maintenance cleanup for attempts that already ended (complete,
+ * failed) or are about to be re-copied: removes only a regular file at the
+ * derived staged path; anything else is left untouched. Rollback uses the
+ * strict {@link discardStaged} instead.
+ */
+function removeStaged(ctx: UpgradeContext, journal: UpgradeJournal): void {
   if (!journal.stagedPath) return;
+  let path: string;
+  try { path = attemptFile(ctx, journal.id, "staged.sqlite", true); } catch { return; }
   for (const suffix of ["", "-wal", "-shm"]) {
-    try { rmSync(`${journal.stagedPath}${suffix}`, { force: true }); } catch { /* Left for the next prune. */ }
+    try { rmSync(`${path}${suffix}`, { force: true }); } catch { /* Left for the next prune. */ }
+  }
+}
+
+/**
+ * Strict staged-copy removal for a fenced attempt: the artifact must be a
+ * regular file at the derived path ({@link stepFile}) and must be gone
+ * afterwards. Anything unsafe or undeletable moves the journal to durable
+ * `blocked` `upgrade_corrupt` and throws, so the fence is never released over it.
+ */
+function discardStaged(ctx: UpgradeContext, journal: UpgradeJournal): void {
+  if (!journal.stagedPath) return;
+  const path = stepFile(ctx, journal, "staged.sqlite", true);
+  for (const suffix of ["", "-wal", "-shm"]) {
+    const target = `${path}${suffix}`;
+    let gone = false;
+    try { rmSync(target, { force: true }); gone = !existsSync(target); } catch { gone = false; }
+    if (!gone) {
+      saveJournal(ctx.upgradeDir, { ...journal, state: "blocked", steps: step(journal, "attempt_files", ctx.now(), false, "staged_copy_undeletable"),
+        reason: "upgrade_corrupt", stagedDigest: null, nextAction: "inspect_corrupt_upgrade_attempt_files", updatedAt: ctx.now() });
+      throw new AppError("upgrade_corrupt", 500);
+    }
   }
 }
 
@@ -650,9 +796,9 @@ export function migrateUpgrade(ctx: UpgradeContext, journal: UpgradeJournal, req
   }
   ensureFence(ctx, journal);
   const now = ctx.now();
-  const stagedPath = journal.stagedPath!;
+  const stagedPath = stepFile(ctx, journal, "staged.sqlite", true);
   const block = (reason: string, detail: string, liveDigest: string | null): never => {
-    removeStaged(journal);
+    removeStaged(ctx, journal);
     saveJournal(ctx.upgradeDir, { ...journal, state: "blocked", steps: step(journal, "migrate", now, false, detail), reason,
       stagedSchema: null, liveDigest, stagedDigest: null, validation: null,
       nextAction: "inspect_failed_migration_then_migrate_again_or_rollback", requests: withRequest(journal, request), updatedAt: now });
@@ -664,7 +810,7 @@ export function migrateUpgrade(ctx: UpgradeContext, journal: UpgradeJournal, req
     const code = error instanceof AppError ? error.code : "staged_copy_unreadable";
     return block(code, code, null);
   }
-  removeStaged(journal);
+  removeStaged(ctx, journal);
   writeFileAtomic(stagedPath, captured.bytes);
   ctx.fault?.("staged_copy");
   let copyDigest: string;
@@ -702,6 +848,46 @@ function count(tx: AppTransaction, sql: string, ...bindings: (string | number)[]
 function boundedAll<T>(tx: AppTransaction, table: string, sql: string): T[] {
   if (count(tx, `SELECT count(*) AS n FROM ${quoteIdent(table)}`) > upgradeLimits.rowsPerTable) throw new AppError("upgrade_validation_bound_exceeded", 409);
   return tx.all<T>(sql);
+}
+
+const attemptStates = ["prepared", "dispatched", "committed", "interrupted", "rejected"];
+const attemptNativeStates = ["uninspected", "missing", "running", "finished"];
+const attemptContextStates = ["none", "pending", "retired", "deleted", "retire_failed", "delete_failed"];
+const attemptTransports = ["none", "dispatched", "settled"];
+const runRequestKeys = ["runId", "projectId", "topicId", "roleId", "purpose", "route", "configuration", "context", "fence", "instructions", "manifest", "tools", "policy", "limits"];
+
+/**
+ * Exact JobAttempt schema (src/jobs/attempts.ts) bound to its table row and
+ * owning job; a non-null native reference additionally requires `data` to be
+ * the admitted ApplicationRunRequest for exactly that run, context, job and
+ * attempt generation. Returns a problem label, or null when the envelope holds.
+ */
+function attemptEnvelopeProblem(attempt: unknown, row: { id: string; job_id: string }): string | null {
+  if (!isObject(attempt) || !exact(attempt, ["native", "data", "id", "jobId", "generation", "scheduler", "leaseUntil", "snapshot", "createdAt",
+    "state", "reason", "nativeState", "contextState", "transport"])) return "envelope_invalid";
+  if (attempt.id !== row.id || attempt.jobId !== row.job_id || !isInt(attempt.generation, 1) || typeof attempt.scheduler !== "string" ||
+      !attempt.scheduler || !isInt(attempt.leaseUntil) || !isInt(attempt.createdAt) || !attemptStates.includes(attempt.state as string) ||
+      !(attempt.reason === null || isText(attempt.reason, 64)) || !attemptNativeStates.includes(attempt.nativeState as string) ||
+      !attemptContextStates.includes(attempt.contextState as string) || !attemptTransports.includes(attempt.transport as string)) return "envelope_invalid";
+  const snapshot = attempt.snapshot;
+  if (!isObject(snapshot) || snapshot.id !== row.job_id || typeof snapshot.projectId !== "string" || typeof snapshot.type !== "string" ||
+      !isInt(snapshot.revision, 1) || typeof snapshot.state !== "string") return "snapshot_invalid";
+  const native = attempt.native;
+  if (native === null) return attempt.contextState === "none" ? null : "context_state_without_native";
+  if (!isObject(native) || !exact(native, ["adapter", "runId", "sessionId", "context"]) || !["scripted", "schway"].includes(native.adapter as string) ||
+      typeof native.runId !== "string" || !ID.test(native.runId) || native.sessionId !== native.runId || !isObject(native.context) ||
+      !exact(native.context, ["id", "generation"]) || typeof native.context.id !== "string" || !isInt(native.context.generation, 1)) {
+    return "native_ref_invalid";
+  }
+  if (attempt.contextState === "none") return "native_without_context_state";
+  const data = attempt.data;
+  if (!isObject(data) || !exact(data, runRequestKeys)) return "run_request_invalid";
+  const context = native.context as { id: string; generation: number };
+  const runContext = data.context, fence = data.fence;
+  if (data.runId !== native.runId || data.projectId !== snapshot.projectId || !isObject(runContext) || !exact(runContext, ["id", "generation"]) ||
+      runContext.id !== context.id || runContext.generation !== context.generation) return "run_mismatch";
+  if (!isObject(fence) || fence.jobId !== row.job_id || fence.generation !== attempt.generation || !isInt(fence.ownerGeneration, 1)) return "fence_mismatch";
+  return null;
 }
 
 /**
@@ -747,8 +933,9 @@ export function validateUpgrade(ctx: UpgradeContext, journal: UpgradeJournal, re
   });
   check(checks, "quiesce", () => live.admitted === 0 || `admitted_${live.admitted}_running`);
   let summary = { tables: 0, rows: 0, nativeRefs: 0, unknownOutbox: 0, ledgersMatch: false, stagedSchema: journal.stagedSchema, stagedDigest: null as string | null };
+  const stagedPath = stepFile(ctx, journal, "staged.sqlite", false);
   try {
-    summary = withStaged(journal.stagedPath, false, staged => staged.read(tx => {
+    summary = withStaged(stagedPath, false, staged => staged.read(tx => {
       const stagedSchema = readSchema(tx);
       let tables = 0, rows = 0, nativeRefs = 0, unknownOutbox = 0, ledgersMatch = false;
       check(checks, "staged_schema", () => stagedSchema === journal.targetSchema && stagedSchema === currentSupportedSchema || `schema_${stagedSchema}_unsupported`);
@@ -831,13 +1018,7 @@ export function validateUpgrade(ctx: UpgradeContext, journal: UpgradeJournal, re
           if (!["active", "retired", "delete_failed", "deleted"].includes(row.state) || !Number.isSafeInteger(row.generation) || row.generation < 1) return "team_context_invalid";
           contexts.set(`${row.id}/${row.generation}`, row.state);
         }
-        for (const row of boundedAll<{ record_json: string }>(tx, "job_attempts", "SELECT record_json FROM job_attempts")) {
-          let native: { id?: unknown; generation?: unknown } | undefined;
-          try { native = (JSON.parse(row.record_json) as { native?: { context?: { id?: unknown; generation?: unknown } } }).native?.context; }
-          catch { return "attempt_unreadable"; }
-          if (native && (typeof native.id !== "string" || !Number.isSafeInteger(native.generation) || (native.generation as number) < 1)) return "attempt_native_ref_invalid";
-          if (native) nativeRefs++;
-        }
+        const refs = new Map<string, { context_id: string; generation: number; session_id: string; state: string }>();
         const covered: string[] = [];
         if (hasTable(tx, "schway_native_refs")) {
           for (const row of boundedAll<{ run_id: string; context_id: string; generation: number; session_id: string; branch_id: string; state: string }>(tx, "schway_native_refs",
@@ -845,10 +1026,31 @@ export function validateUpgrade(ctx: UpgradeContext, journal: UpgradeJournal, re
             nativeRefs++;
             if (!Number.isSafeInteger(row.generation) || row.generation < 1 || !["running", "finished"].includes(row.state) ||
                 typeof row.session_id !== "string" || typeof row.branch_id !== "string") return "native_ref_invalid";
+            refs.set(row.run_id, row);
             const contextState = contexts.get(`${row.context_id}/${row.generation}`);
             if (contextState === "deleted") continue;
             if (!contextState) return "native_ref_orphaned";
             covered.push(canonical([row.run_id, row.generation]));
+          }
+        }
+        // Every attempt's native identity must belong to an existing context, to its own job and run
+        // request, and (for Schway) correlate exactly with the durable bridge row. Bytes stay opaque.
+        for (const row of boundedAll<{ id: string; job_id: string; record_json: string }>(tx, "job_attempts", "SELECT id, job_id, record_json FROM job_attempts")) {
+          let attempt: Record<string, unknown>;
+          try { attempt = JSON.parse(row.record_json) as Record<string, unknown>; } catch { return "attempt_unreadable"; }
+          const problem = attemptEnvelopeProblem(attempt, row);
+          if (problem) return `attempt_${row.id}_${problem}`;
+          const native = attempt.native as { adapter: string; runId: string; sessionId: string; context: { id: string; generation: number } } | null;
+          if (native === null) continue;
+          nativeRefs++;
+          const context = native.context;
+          if (!contexts.has(`${context.id}/${context.generation}`)) return `attempt_${row.id}_context_orphaned`;
+          if (native.adapter === "schway") {
+            const ref = refs.get(native.runId as string);
+            const engaged = attempt.transport !== "none" || ["running", "finished"].includes(attempt.nativeState as string);
+            if (!ref) { if (engaged) return `attempt_${row.id}_native_ref_missing`; continue; }
+            if (ref.context_id !== context.id || ref.generation !== context.generation) return `attempt_${row.id}_native_ref_mismatch`;
+            if (attempt.nativeState === "finished" && ref.session_id === "") return `attempt_${row.id}_native_session_unresolved`;
           }
         }
         // Opaque binding: the recovery point captured exactly the staged copy's live native set.
@@ -859,7 +1061,7 @@ export function validateUpgrade(ctx: UpgradeContext, journal: UpgradeJournal, re
       });
       check(checks, "ledger_preservation", () => {
         if (!journal.ledger) return "ledger_sidecar_missing";
-        const sidecar = readLedgerSidecar(journal.ledger);
+        const sidecar = readLedgerSidecar(ctx, journal.id, journal.ledger);
         if (!sidecar) return "ledger_sidecar_unreadable";
         const staged = ledgerRows(tx);
         for (const key of ["deletions", "suppressions", "suppressedClaims", "suppressedSources", "sources"] as const) {
@@ -976,13 +1178,14 @@ export async function activateUpgrade(ctx: UpgradeContext, journal: UpgradeJourn
   let liveDigest: string | null = null, stagedDigest: string | null = null;
   try { liveDigest = ctx.store.read(managedStateDigest); } catch { liveDigest = null; }
   if (liveDigest !== journal.liveDigest) return block("upgrade_stale_live", "live_changed_since_validate");
-  try { stagedDigest = withStaged(journal.stagedPath, false, staged => staged.read(managedStateDigest)); } catch { stagedDigest = null; }
+  const stagedPath = stepFile(ctx, journal, "staged.sqlite", false);
+  try { stagedDigest = withStaged(stagedPath, false, staged => staged.read(managedStateDigest)); } catch { stagedDigest = null; }
   if (stagedDigest !== journal.stagedDigest) return block("upgrade_staged_changed", "staged_changed_since_validate");
   const intent = saveJournal(ctx.upgradeDir, { ...journal, state: "activating", steps: step(journal, "activation_intent", now, true, "intent_persisted"),
     nextAction: "reconcile_activation_intent", requests: withRequest(journal, request), updatedAt: now });
   ctx.fault?.("activation_intent");
   try {
-    ctx.store.swapFrom(journal.stagedPath);
+    ctx.store.swapFrom(stagedPath);
   } catch (error) {
     if (error instanceof SimulatedCrash) throw error;
     // The swap is atomic: resolve which side is live instead of assuming.
@@ -1019,7 +1222,7 @@ function finishReconcile(ctx: UpgradeContext, journal: UpgradeJournal, resumed: 
     steps: step(journal, "reconcile", now, true, resumed.detail), reason: null,
     nextAction: "none; to return to the prior version restore the pre-upgrade backup through OPS02 quarantine",
     requests: withRequest(journal, request), updatedAt: now });
-  removeStaged(complete);
+  removeStaged(ctx, complete);
   recordAudit(ctx, complete);
   return complete;
 }
@@ -1053,7 +1256,8 @@ export async function rollbackUpgrade(ctx: UpgradeContext, journal: UpgradeJourn
   if (journal.state === "activated" || journal.state === "complete") throw new AppError("upgrade_rollback_requires_restore", 409);
   if (!upgradeActions(journal).includes("rollback")) throw new AppError("upgrade_bad_state", 409);
   const now = ctx.now();
-  removeStaged(journal);
+  // Strict: an unsafe or undeletable staged artifact blocks the attempt (fence held) instead of being ignored.
+  discardStaged(ctx, journal);
   let rolled = saveJournal(ctx.upgradeDir, { ...journal, state: "rolled_back", stagedDigest: null,
     steps: step(journal, "rollback", now, true, "live_installation_kept_staged_copy_discarded"),
     reason: "rolled_back_before_activation", nextAction: "inspect_then_prepare_again",

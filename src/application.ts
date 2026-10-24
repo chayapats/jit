@@ -100,7 +100,7 @@ import {
   type FailedExportManifest, type ValidExportManifest,
 } from "./ops/export";
 import {
-  activateUpgrade, completeAfterBootReconcile, findUpgradeRequest, listUpgrades, migrateUpgrade, ownUpgradeDirFor, prepareUpgrade,
+  activateUpgrade, completeAfterBootReconcile, corruptUpgrade, findUpgradeRequest, listUpgrades, migrateUpgrade, ownUpgradeDirFor, prepareUpgrade,
   readUpgrade, recoverUpgradesOnOpen, rollbackUpgrade, upgradeEvidence, upgradeIdentity, upgradeStatus, validateUpgrade,
   type UpgradeCommand, type UpgradeContext, type UpgradeFaultPoint, type UpgradeJournal, type UpgradeReceipt, type UpgradeRequest,
   type UpgradeResumeResult, type UpgradeServiceControl, type UpgradeStatus,
@@ -640,7 +640,14 @@ export class Application {
   upgrade(actor: OwnerActor, id: string): { journal: ReturnType<typeof upgradeEvidence> } {
     requireId(id);
     this.store.read(tx => this.#requireOwner(tx, actor));
-    return { journal: upgradeEvidence(readUpgrade(this.#upgradeDir, id)) };
+    let journal: UpgradeJournal;
+    try { journal = readUpgrade(this.#upgradeDir, id); }
+    catch (error) {
+      // A malformed control-plane journal is shown as its durable blocked corrupt view, never acted on.
+      if (!(error instanceof AppError) || error.code !== "upgrade_corrupt") throw error;
+      journal = corruptUpgrade(id);
+    }
+    return { journal: upgradeEvidence(journal) };
   }
 
   /** ops.schema_migrations/v1: bounded upgrade journal for the installation. */
@@ -1166,7 +1173,10 @@ export class Application {
 
   /**
    * Lists private PR review reports and per-candidate review states for one project.
-   * `pr.private_report/v1` inspection; reading never admits work or sends.
+   * `pr.private_report/v1` + `pr.private_alerts/v1` inspection; reading never admits work or sends.
+   * Returns `{project, items, reviews, pending, policy}`: `reviews` is every candidate's projected
+   * state (`listReviewStates`); `pending` is the subset still awaiting a report for that projection
+   * (`not_reviewed` or `running`, always `reportId: null`).
    */
   prReports(actor: OwnerActor, projectId: string, monitorId?: string) {
     requireId(projectId);
@@ -1175,7 +1185,9 @@ export class Application {
       this.#requireOwner(tx, actor);
       const project = this.#project(tx, projectId);
       // Per-candidate states keep not-reviewed, running, failed and stale distinguishable.
-      return { project, items: listReports(tx, projectId, monitorId), reviews: listReviewStates(tx, projectId, monitorId), policy: readAlertPolicy(tx, projectId) };
+      const reviews = listReviewStates(tx, projectId, monitorId);
+      const pending = reviews.filter(review => review.observed === "not_reviewed" || review.observed === "running");
+      return { project, items: listReports(tx, projectId, monitorId), reviews, pending, policy: readAlertPolicy(tx, projectId) };
     });
   }
 

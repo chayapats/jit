@@ -882,6 +882,30 @@ test("citations: diff refs, patch line ranges, CI availability and transmission 
   }, snapshot, transmitted).validationErrors).toContain("evidence_not_transmitted");
 });
 
+test("prReports API shape matches the versioned contracts independent of the Web renderer", async () => {
+  const f = await fixture();
+  const monitor = enable(f);
+  const { candidate } = prepareSnapshot(f, monitor);
+  const keys = (value: object) => Object.keys(value).sort();
+  const before = f.app.prReports(f.auth.actor, f.project.id);
+  expect(keys(before)).toEqual(["items", "pending", "policy", "project", "reviews"]);
+  expect(before.items).toEqual([]);
+  expect(before.pending).toEqual(before.reviews);
+  expect(before.pending).toMatchObject([{ candidateId: candidate.id, observed: "not_reviewed", reportId: null }]);
+  expect(before.policy).toMatchObject({ version: 1 });
+  const job = enqueueReview(f, monitor.id, candidate.id);
+  expect(f.app.prReports(f.auth.actor, f.project.id).pending).toMatchObject([{ candidateId: candidate.id, observed: "running", jobId: job.id, reportId: null }]);
+  f.queue.pump(); await f.queue.idle();
+  const done = f.app.prReports(f.auth.actor, f.project.id);
+  // A reviewed candidate leaves `pending` but stays in `reviews`; its report is listed in `items`.
+  expect(done.pending).toEqual([]);
+  expect(done.reviews).toMatchObject([{ candidateId: candidate.id, observed: "complete_findings" }]);
+  expect(done.items.map(item => item.id)).toEqual([done.reviews[0]!.reportId!]);
+  // A re-review in flight is pending again; the earlier report is only historical context.
+  enqueueReview(f, monitor.id, candidate.id);
+  expect(f.app.prReports(f.auth.actor, f.project.id).pending).toMatchObject([{ observed: "running", reportId: null, previousReportId: done.items[0]!.id }]);
+});
+
 test("read model: not-reviewed, running, complete, failed and stale stay distinguishable; report exposes its source manifest", async () => {
   const f = await fixture();
   const monitor = enable(f);

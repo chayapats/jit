@@ -516,11 +516,11 @@ test("delete previews conservatively list exports whose bounded coverage was tru
   const s = say(f, a, "ข้อความ coverage-016");
   const receipt = f.rt.app.execute(actor(f), exportCommand(f, a, false));
   expect(receipt.manifest.coverage.truncated).toBe(false);
-  // Without history the message text is not in the artifact, so it is not listed.
+  // Coverage never describes raw task/proposal/decision text, so even a no-history export of the affected project is listed.
   const scope = { kind: "source" as const, projectId: a.id, source: { ...s } };
   const before = asDeletePreview(f.rt.app.execute(actor(f), { kind: "memory.delete.preview" as const, requestId: rid(), projectId: a.id,
     expectedRevision: projectRevision(f, a), payload: { scope } }));
-  expect(before.preview.affected.exports).toEqual([]);
+  expect(before.preview.affected.exports).toEqual([expect.objectContaining({ id: receipt.manifest.id, evidence: "affected_project" })]);
   f.rt.store.transaction(tx => {
     const manifest = { ...receipt.manifest, coverage: { ...receipt.manifest.coverage, truncated: true } };
     tx.run("UPDATE export_artifacts SET record_json = ? WHERE id = ?", JSON.stringify(manifest), manifest.id);
@@ -576,6 +576,81 @@ test("every PR-derived string is sanitized; canaries in each field never reach t
   // finding-2 carries credentials in its path/evidenceRef; the shared detector (#24) now flags the whole
   // finding payload_hygiene_secret at validation, so the export redacts all of its text fields.
   expect(exported.findings[1]!.title).toBe("(redacted: payload_hygiene_secret)");
+});
+
+test("every exported string field passes the credential sanitizer before serialization", async () => {
+  const f = await fixture();
+  const { a, keep } = await rich(f);
+  const c = {
+    project: "sk-proj-CanaryProjectName0001abcd", topic: "ghp_CanaryTopicTitle0000000001", message: "github_pat_CanaryMessage_00000000001",
+    taskTitle: "xai-CanaryTaskTitle000001", taskSummary: "glpat-CanaryTaskSummary001", closed: "xoxb-CanaryClosed01",
+    proposalTitle: "sk_live_CanaryProposal000001", proposalSummary: "AIzaCanaryProposalSummary000000000000", event: "ya29.CanaryEventReason000000001",
+    conclusion: "AKIACANARYCONCLUSION", rationale: "npm_CanaryRationale000000000000000001", artifact: "eyJCanaryArtifact.CanaryArtifactB.CanaryArtifactC",
+    claim: "Bearer CanaryClaimToken01", jobReason: "Authorization: CanaryJobReason01", jobEvidence: "x-telegram-bot-api-secret-token: CanaryJobEvidence",
+    delivery: "bot_token=CanaryDeliveryText01", report: "https://user:CanaryReportPass@host.example/x", note: "api_key=CanaryNoteValue001",
+  };
+  // Owner-facing commands accept the text as ordinary content...
+  const topic = f.rt.app.execute(actor(f), { kind: "topic.create", requestId: rid(), projectId: a.id, expectedRevision: projectRevision(f, a), payload: { title: `หัวข้อ ${c.topic}` } }).topic;
+  f.rt.app.execute(actor(f), { kind: "message.send", requestId: rid(), projectId: a.id, expectedRevision: topic.revision, payload: { topicId: topic.id, text: `ข้อความ ${c.message}` } });
+  // ...and stored rows that already hold credential-shaped text are planted directly to prove the sink.
+  f.rt.store.transaction(tx => {
+    tx.run("UPDATE projects SET name = ? WHERE id = ?", `โครงการ ${c.project}`, a.id);
+    tx.run("UPDATE tasks SET title = ?, summary = ?, closed_reason = ? WHERE project_id = ?", `งาน ${c.taskTitle}`, `สรุป ${c.taskSummary}`, `ปิด ${c.closed}`, a.id);
+    tx.run("UPDATE task_proposals SET title = ?, summary = ? WHERE project_id = ?", `ข้อเสนอ ${c.proposalTitle}`, `สรุป ${c.proposalSummary}`, a.id);
+    tx.run("UPDATE task_events SET reason = ? WHERE project_id = ?", `เหตุผล ${c.event}`, a.id);
+    tx.run("UPDATE owner_decisions SET conclusion = ?, rationale = ? WHERE project_id = ?", `สรุป ${c.conclusion}`, `เหตุผล ${c.rationale}`, a.id);
+    const edit = (table: string, where: string, change: (record: any) => void, arg: string) => {
+      for (const row of tx.all<{ rid: number; record_json: string }>(`SELECT rowid AS rid, record_json FROM ${table} WHERE ${where}`, arg)) {
+        const record = JSON.parse(row.record_json); change(record);
+        tx.run(`UPDATE ${table} SET record_json = ? WHERE rowid = ?`, JSON.stringify(record), row.rid);
+      }
+    };
+    edit("decision_proposals", "project_id = ?", record => { record.question = `คำถาม ${c.artifact}`; }, a.id);
+    edit("memory_claims", "id = ?", record => { record.text = `ความรู้ ${c.claim}`; }, keep.claimId);
+    edit("jobs", "project_id = ?", record => { record.reason = c.jobReason; record.evidence = c.jobEvidence; }, a.id);
+    edit("delivery_intents", "project_id = ?", record => { record.payload.text = `ส่ง ${c.delivery}`; }, a.id);
+    edit("delivery_reports", "project_id = ?", record => { record.text = `รายงาน ${c.report}`; }, a.id);
+  });
+  const receipt = f.rt.app.execute(actor(f), { ...exportCommand(f, a, true), payload: { includeHistory: true, note: `บันทึก ${c.note}` } });
+  expect(receipt.manifest.state).toBe("valid");
+  const text = artifactText(f, receipt.manifest);
+  expect(scanExportSecrets(text, Object.values(c))).toEqual([]);
+  expect(text.toLowerCase()).not.toContain("canary");
+  // Each field is still exported, now as the redaction marker (never silently dropped).
+  const marker = "(redacted: payload_hygiene_secret)";
+  const artifact = JSON.parse(text) as { note: string; data: any };
+  expect(artifact.note).toBe(marker);
+  expect(artifact.data.project.name).toBe(marker);
+  expect(artifact.data.topics.map((t: any) => t.title)).toContain(marker);
+  expect(artifact.data.messages.map((m: any) => m.text)).toContain(marker);
+  expect(artifact.data.tasks.every((t: any) => t.task.title === marker && t.task.summary === marker && t.task.closed_reason === marker)).toBe(true);
+  expect(artifact.data.proposals.every((p: any) => p.title === marker && p.summary === marker)).toBe(true);
+  expect(artifact.data.events.every((e: any) => e.reason === marker)).toBe(true);
+  expect(artifact.data.ownerDecisions.every((d: any) => d.conclusion === marker && d.rationale === marker)).toBe(true);
+  expect(artifact.data.decisions.every((d: any) => d.artifact.question === marker)).toBe(true);
+  expect(artifact.data.claims.find((x: any) => x.state === "available" && x.claim.claimId === keep.claimId).claim.text).toBe(marker);
+  expect(artifact.data.jobs.every((j: any) => j.reason === marker && j.evidence === marker)).toBe(true);
+  expect(artifact.data.deliveries.every((d: any) => d.text === null || d.text === marker)).toBe(true);
+  expect(artifact.data.deliveries.some((d: any) => d.text === marker)).toBe(true);
+  expect(artifact.data.reports.some((r: any) => r.text === marker)).toBe(true);
+  // Unicode non-credential content is untouched.
+  expect(text).toContain("hello world 🌏");
+});
+
+test("a credential shape that survives per-string sanitizing fails the whole export closed", async () => {
+  const f = await fixture();
+  const { a } = await rich(f);
+  // Neither the key nor the value is credential-shaped alone; serialized together they form a secret assignment.
+  f.rt.store.transaction(tx => {
+    for (const row of tx.all<{ id: string; record_json: string }>("SELECT id, record_json FROM decision_proposals WHERE project_id = ?", a.id)) {
+      tx.run("UPDATE decision_proposals SET record_json = ? WHERE id = ?", JSON.stringify({ ...JSON.parse(row.record_json), password: "hunter2hunter2" }), row.id);
+    }
+  });
+  const failure = rejection(() => f.rt.app.execute(actor(f), exportCommand(f, a, true)));
+  expect(failure.code).toBe("export_failed");
+  const failed = f.rt.app.export(actor(f), a.id, failure.detail!.exportId as string).manifest as FailedExportManifest;
+  expect(failed).toMatchObject({ state: "failed", artifact: null, failure: { reason: "export_failed", stage: "stage" } });
+  expect(JSON.stringify(failed)).not.toContain("hunter2hunter2");
 });
 
 test("forget suppression gates delivery and report text exactly like raw sources", async () => {

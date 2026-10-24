@@ -30,6 +30,7 @@ import {
   type PrMonitor,
   type ReviewCandidate,
 } from "../src/pr";
+import { Utf8Budget, truncateUtf8 } from "../src/utf8";
 
 const password = "fixture-pr-owner-password";
 const epoch = 1_800_000_000_000;
@@ -424,6 +425,108 @@ test("rate limit and huge payload ceilings keep coverage incomplete", async () =
   const limited = f.store.transaction(tx => pollMonitorPage(tx, f.project.id, monitor.id, conn, f.clock.now));
   expect(limited.checkpoint).toMatchObject({ complete: false, reason: "rate_limited", nextPage: 1 });
   void candidate;
+});
+
+/** UTF-8 bytes of every connector-supplied string the snapshot retains, as serialized in JSON. */
+function contentBytes(snapshot: { title: string; body: string; files: { path: string; status: string; patch: string | null }[];
+  issues: { title: string; body: string }[]; specs: { path: string; text: string }[]; ci: { name: string; conclusion: string | null; reason: string | null }[] }): number {
+  const strings = [snapshot.title, snapshot.body, ...snapshot.files.flatMap(f => [f.path, f.status, f.patch ?? ""]),
+    ...snapshot.issues.flatMap(i => [i.title, i.body]), ...snapshot.specs.flatMap(s => [s.path, s.text]),
+    ...snapshot.ci.flatMap(c => [c.name, c.conclusion ?? "", c.reason ?? ""])];
+  return strings.reduce((sum, value) => sum + Buffer.byteLength(JSON.stringify(value)) - 2, 0);
+}
+/** True when `kept` is a code-point-safe UTF-8 prefix of `original`. */
+const utf8Prefix = (kept: string, original: string) => kept.isWellFormed() && !kept.includes("\uFFFD")
+  && Buffer.from(original).subarray(0, Buffer.byteLength(kept)).equals(Buffer.from(kept));
+
+test("utf8 truncation never splits a code point and never exceeds the byte ceiling", () => {
+  const thai = "ก".repeat(10); // 3 bytes each
+  for (let max = 0; max <= 31; max++) {
+    const cut = truncateUtf8(thai, max);
+    expect(cut.bytes).toBeLessThanOrEqual(max);
+    expect(cut.bytes).toBe(Math.min(30, Math.floor(max / 3) * 3));
+    expect(utf8Prefix(cut.text, thai)).toBe(true);
+  }
+  expect(truncateUtf8("a🧪b", 4)).toEqual({ text: "a", bytes: 1, truncated: true });
+  expect(truncateUtf8("a🧪b", 5)).toEqual({ text: "a🧪", bytes: 5, truncated: true });
+  const budget = new Utf8Budget(7);
+  expect(budget.take("กขค", 100)).toMatchObject({ text: "กข", bytes: 6, cutBy: "budget" });
+  expect(budget.fits("ab")).toBe(false);
+  expect(budget.remaining).toBe(1);
+});
+
+test("maxDiffBytes counts UTF-8 bytes: a Thai patch is cut at a code-point boundary within the ceiling", async () => {
+  const f = await fixture();
+  const monitor = enable(f, { limits: { maxDiffBytes: 20 } });
+  const base = sha(1), head = sha(2);
+  const patch = "ก".repeat(500);
+  f.github.pulls = [fixturePull({ number: 16, base: { sha: base, ref: "main" }, head: { sha: head, ref: "x" } })];
+  setFiles(f, 16, base, head, [{ filename: "thai.ts", patch }]);
+  f.github.checks.set(head, []);
+  const conn = connector(f, monitor);
+  f.store.transaction(tx => pollMonitorCatchUp(tx, f.project.id, monitor.id, conn, f.clock.now));
+  const candidate = f.store.read(tx => readCandidates(tx, f.project.id, monitor.id)[0]!);
+  const snapshot = f.store.transaction(tx => captureSnapshot(tx, f.project.id, candidate.id, conn, f.clock.now))!;
+  const kept = snapshot.files[0]!.patch!;
+  expect(Buffer.byteLength(kept)).toBe(18);
+  expect(utf8Prefix(kept, patch)).toBe(true);
+  expect(snapshot.coverage.entries.find(e => e.path === "thai.ts")).toMatchObject({ state: "truncated", reason: "max_diff_bytes", bytes: 18 });
+  expect(snapshot.coverage.overall).toBe("partial");
+});
+
+test("maxPayloadBytes is one cumulative UTF-8 budget across every snapshot field; cuts are recorded in coverage", async () => {
+  // Diffs exhaust the budget: the next patch is cut, later files, the body and CI are disclosed as cut.
+  {
+    const f = await fixture();
+    const maxPayloadBytes = 600;
+    const monitor = enable(f, { limits: { maxPayloadBytes } });
+    const base = sha(1), head = sha(2);
+    const title = "ชื่อ PR ไทย".repeat(2), patchA = "ข".repeat(100), patchB = "ค".repeat(100);
+    f.github.pulls = [fixturePull({ number: 17, title, body: "Fixes #12 ปัญหาไทย", base: { sha: base, ref: "main" }, head: { sha: head, ref: "x" } })];
+    setFiles(f, 17, base, head, [{ filename: "a.ts", patch: patchA }, { filename: "b.ts", patch: patchB }, { filename: "c.ts", patch: "ง" }]);
+    f.github.issues.set(12, { number: 12, title: "บั๊ก", body: "รายละเอียด" });
+    f.github.checks.set(head, [{ name: "ci", conclusion: "success" }]);
+    const conn = connector(f, monitor);
+    f.store.transaction(tx => pollMonitorCatchUp(tx, f.project.id, monitor.id, conn, f.clock.now));
+    const candidate = f.store.read(tx => readCandidates(tx, f.project.id, monitor.id)[0]!);
+    const snapshot = f.store.transaction(tx => captureSnapshot(tx, f.project.id, candidate.id, conn, f.clock.now))!;
+    expect(contentBytes(snapshot)).toBeLessThanOrEqual(maxPayloadBytes);
+    expect(contentBytes(f.store.read(tx => readSnapshot(tx, candidate.id)))).toBeLessThanOrEqual(maxPayloadBytes);
+    expect(snapshot.title).toBe(title);
+    expect(snapshot.files.map(file => file.path)).toEqual(["a.ts", "b.ts"]);
+    expect(snapshot.files[0]!.patch).toBe(patchA);
+    expect(utf8Prefix(snapshot.files[1]!.patch!, patchB)).toBe(true);
+    expect(snapshot.coverage.entries.find(e => e.path === "b.ts")).toMatchObject({ state: "truncated", reason: "max_payload_bytes", limit: maxPayloadBytes });
+    expect(snapshot.coverage.entries.some(e => e.kind === "files" && e.reason === "max_payload_bytes")).toBe(true);
+    expect(snapshot.coverage.entries.some(e => e.kind === "pr" && e.path === "body" && e.reason === "max_payload_bytes")).toBe(true);
+    expect(snapshot.coverage.entries.find(e => e.kind === "ci")).toMatchObject({ state: "truncated", reason: "max_payload_bytes" });
+    expect(snapshot.coverage.enumerationComplete).toBe(false);
+    expect(snapshot.coverage.overall).toBe("incomplete");
+  }
+  // Evidence reads draw from the same budget after the diff: an issue body is cut, never the ceiling exceeded.
+  {
+    const f = await fixture();
+    const maxPayloadBytes = 400;
+    const monitor = enable(f, { limits: { maxPayloadBytes } });
+    const base = sha(1), head = sha(2);
+    const issueBody = "รายละเอียดปัญหา".repeat(40);
+    f.github.pulls = [fixturePull({ number: 18, title: "แก้บั๊ก", body: "Fixes #12 ไทย", base: { sha: base, ref: "main" }, head: { sha: head, ref: "x" } })];
+    setFiles(f, 18, base, head, [{ filename: "a.ts", patch: "+ไทย" }]);
+    f.github.issues.set(12, { number: 12, title: "บั๊กไทย", body: issueBody });
+    f.github.checks.set(head, []);
+    const conn = connector(f, monitor);
+    f.store.transaction(tx => pollMonitorCatchUp(tx, f.project.id, monitor.id, conn, f.clock.now));
+    const candidate = f.store.read(tx => readCandidates(tx, f.project.id, monitor.id)[0]!);
+    const snapshot = f.store.transaction(tx => captureSnapshot(tx, f.project.id, candidate.id, conn, f.clock.now))!;
+    expect(contentBytes(snapshot)).toBeLessThanOrEqual(maxPayloadBytes);
+    expect(snapshot.coverage.enumerationComplete).toBe(true);
+    expect(snapshot.issues[0]!.title).toBe("บั๊กไทย");
+    expect(utf8Prefix(snapshot.issues[0]!.body, issueBody)).toBe(true);
+    expect(snapshot.issues[0]!.body.length).toBeLessThan(issueBody.length);
+    expect(snapshot.coverage.entries.find(e => e.kind === "issue")).toMatchObject({ state: "truncated", reason: "max_payload_bytes" });
+    expect(snapshot.coverage.overall).toBe("partial");
+    expect(f.store.read(tx => readCandidate(tx, f.project.id, candidate.id).status)).toBe("partial");
+  }
 });
 
 test("store reopen preserves monitors checkpoints and candidates", async () => {
