@@ -224,6 +224,11 @@ function ensureDir(dir: string): void {
 export const backupImageTables: Readonly<Record<string, "include" | "exclude" | "scrub">> = Object.freeze({
   owner: "exclude", sessions: "exclude", login_throttle: "exclude",
   job_scheduler: "exclude", delivery_worker: "exclude",
+  // Installation-scoped registry: preserved from live on activation, never restored from an image.
+  ops_backups: "exclude",
+  // Hook for #31 (PR #68): export bodies stored in SQLite stay out of images. Classifying a
+  // table that does not exist yet is inert; flip export_artifacts at that merge if required.
+  export_artifact_bodies: "exclude",
   telegram_binding: "scrub", command_receipts: "scrub",
   app_state: "include", audit: "include", coordinator_syntheses: "include", decision_proposals: "include",
   deletion_ledger: "include", deletion_operations: "include", deletion_previews: "include",
@@ -233,7 +238,7 @@ export const backupImageTables: Readonly<Record<string, "include" | "exclude" | 
   memory_claims: "include", memory_context_entries: "include", memory_contexts: "include", memory_corrections: "include",
   memory_decision_sources: "include", memory_derived_sources: "include", memory_extractions: "include",
   memory_suppressed_claims: "include", memory_suppressed_sources: "include", memory_suppressions: "include",
-  messages: "include", ops_backups: "include", owner_decisions: "include", project_groups: "include",
+  messages: "include", owner_decisions: "include", project_groups: "include",
   project_team: "include", projects: "include", restore_quarantines: "include", roles: "include",
   schway_native_refs: "include", source_versions: "include", sources: "include",
   task_events: "include", task_evidence_artifacts: "include", task_proposals: "include", tasks: "include",

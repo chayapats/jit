@@ -27,7 +27,7 @@ orphans.
 | --- | --- |
 | `Application.execute(actor, backup.create)` → `Promise<BackupReceipt>` | Staged creation (below). Duplicate `requestId` returns the committed receipt; a different payload is `request_id_conflict`; a stale workspace revision is `stale_revision`. |
 | `Application.execute(actor, backup.prune)` → `BackupReceipt` | Keeps the newest `keep` (1–10) backups. Rows are removed in one transaction; files are deleted only after it commits. |
-| `Application.backups(actor)` / `Application.backup(actor, id)` | Bounded inventory (≤ 100, oldest first) and one validated manifest plus `integrity` from `verifyBackupArtifacts`; an `invalid` verdict presents the manifest as `incomplete` with the integrity reason. Neither parses backup bytes. Web: `GET /backups`, `GET /backups/:id`, `GET /api/backups`, `POST /api/backups`. |
+| `Application.backups(actor)` / `Application.backup(actor, id)` | Bounded inventory (≤ 100, oldest first; retention keeps it installation-bounded) with `integrity` per id, and one validated manifest with `integrity`, both from `verifyBackupArtifacts`; every listed entry is verified and an `invalid` verdict presents the manifest as `incomplete` with the integrity reason. Neither parses backup bytes. Web: `GET /backups`, `GET /backups/:id`, `GET /api/backups`, `POST /api/backups`. |
 | `backupNativePortFor(config, store)` | The single selection rule for `serve` and `startFullApp`: `SchwayBackupNativePort` only when `JIT_RUN_PORT=schway`; otherwise no port. |
 
 ### Staged creation
@@ -128,16 +128,21 @@ ceiling or streamed snapshot).
 
 Every table is classified in `backupImageTables`; an unclassified table fails
 creation with `backup_schema_unclassified`. The image empties `owner`,
-`sessions`, `login_throttle`, `job_scheduler` and `delivery_worker`, nulls
+`sessions`, `login_throttle`, `ops_backups`, `job_scheduler` and `delivery_worker`, nulls
 pending Telegram challenge nonces, nulls secret-bearing keys inside
 `command_receipts.result_json`, zeroes freed pages (`secure_delete`) and
 vacuums. The manifest records `credentials: { included: false, excludedTables,
 scrubbed, restore: "owner_credential_setup_required" }`. There is no secret
 backup procedure in v1.
 
+The managed backup registry (`ops_backups`) is installation state, likewise
+excluded from images (`installationScopedTables` in `src/store.ts`).
 Activation (`TransactionStore.swapFrom`, used by OPS02 restore and upgrade
-rollback) always keeps the live installation's owner verifier, sessions and
-throttle. Restoring into an installation without an owner therefore requires
+rollback) always keeps the live installation's owner verifier, sessions,
+throttle and backup registry, so restoring one backup never forgets the others
+or orphans their files; listing re-verifies every preserved row against its
+managed files and orphan reconciliation only removes files with no live row.
+`export_artifact_bodies` is pre-classified `exclude` for #31. Restoring into an installation without an owner therefore requires
 owner credential setup (`bun src/main.ts setup`). Restored images never start
 workers: scheduler and delivery claims are absent and OPS02 quarantine plus
 external-ledger reconciliation gate activation.

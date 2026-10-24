@@ -396,7 +396,7 @@ test("ordinary backup image excludes every credential and secret-bearing value",
     expect(image.query("SELECT challenge_nonce FROM telegram_binding").get()).toEqual({ challenge_nonce: null });
     expect((image.query("SELECT count(*) AS n FROM projects").get() as { n: number }).n).toBe(1);
   } finally { image.close(); }
-  expect(receipt.manifest.credentials).toEqual({ included: false, excludedTables: ["delivery_worker", "job_scheduler", "login_throttle", "owner", "sessions"],
+  expect(receipt.manifest.credentials).toEqual({ included: false, excludedTables: ["delivery_worker", "job_scheduler", "login_throttle", "ops_backups", "owner", "sessions"],
     scrubbed: ["telegram_binding.challenge_nonce", "command_receipts.result_json"], restore: "owner_credential_setup_required" });
   expect(scanBackupSecrets(receipt.manifest, [passwordHash, tokenHash, f.token, nonce])).toEqual([]);
   // The live installation still holds its credentials.
@@ -859,4 +859,56 @@ test("the native byte budget is enforced after each single-session host call and
     SchwayRunPort.prototype.openLifecycleHost = original;
   }
   expect(managedFiles(f.backupDir)).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------
+// Review round 3 regressions
+// ---------------------------------------------------------------------------
+
+test("the bounded inventory list verifies every entry and never labels a broken backup valid", async () => {
+  const f = await fixture({ native: scriptedNative() });
+  createProject(f); seedLifecycle(f);
+  const good = (await f.app.execute(f.auth.actor, backupCommand(f))).manifest;
+  const broken = (await f.app.execute(f.auth.actor, backupCommand(f))).manifest;
+  rmSync(broken.native.artifacts[0]!.path);
+  const listed = f.app.backups(f.auth.actor);
+  expect(listed.integrity).toEqual({ [good.id]: { state: "verified", reason: null }, [broken.id]: { state: "invalid", reason: "native_artifact_missing" } });
+  expect(listed.manifests.find(m => m.id === good.id)!.state).toBe("valid");
+  expect(listed.manifests.find(m => m.id === broken.id)).toMatchObject({ state: "incomplete", reason: "native_artifact_missing" });
+  const api = await f.web(new Request("http://localhost:3000/api/backups", { headers: { cookie: `jit_session=${f.token}` } }));
+  const body = await api.json() as { manifests: { id: string; state: string }[]; integrity: Record<string, { state: string }> };
+  expect(body.manifests.find(m => m.id === broken.id)!.state).toBe("incomplete");
+  expect(body.integrity[broken.id]!.state).toBe("invalid");
+  const html = await (await f.web(new Request("http://localhost:3000/backups", { headers: { cookie: `jit_session=${f.token}` } }))).text();
+  expect(html).toContain(`id="backup-${broken.id}"><header><h3><a href="/backups/${broken.id}">${broken.id}</a></h3><span class="job-status" data-state="incomplete"`);
+});
+
+test("restore activation keeps the live backup registry: two backups survive restoring the older one", async () => {
+  const f = await fixture({ native: scriptedNative() });
+  createProject(f); seedLifecycle(f);
+  const older = (await f.app.execute(f.auth.actor, backupCommand(f))).manifest;
+  createProject(f, "after older backup");
+  const newer = (await f.app.execute(f.auth.actor, backupCommand(f))).manifest;
+  // The registry is installation state: it is not inside any image.
+  const image = new Database(older.artifact.path, { readonly: true });
+  try { expect((image.query("SELECT count(*) AS n FROM ops_backups").get() as { n: number }).n).toBe(0); } finally { image.close(); }
+  const step = (kind: "restore.migrate" | "restore.validate" | "restore.activate", quarantineId: string) => f.app.execute(f.auth.actor, {
+    kind, requestId: rid(), projectId: null, expectedRevision: f.app.workspace(f.auth.actor).revision, payload: { quarantineId } });
+  const prepared = restorePrepare(f, older.id).quarantine;
+  step("restore.migrate", prepared.id);
+  f.app.execute(f.auth.actor, { kind: "restore.apply_ledger", requestId: rid(), projectId: null, expectedRevision: f.app.workspace(f.auth.actor).revision,
+    payload: { quarantineId: prepared.id, tombstones: [], source: "live-deletion-ledger", asOf: 1800000000000, acknowledgedEmpty: true } });
+  expect(step("restore.validate", prepared.id).quarantine.state).toBe("validated");
+  expect(step("restore.activate", prepared.id).quarantine.state).toBe("complete");
+  // Restored content is the older image; the registry, files and integrity are the live ones.
+  expect(f.app.workspace(f.auth.actor).projects).toHaveLength(1);
+  const listed = f.app.backups(f.auth.actor);
+  expect(listed.manifests.map(m => m.id)).toEqual([older.id, newer.id]);
+  expect(Object.values(listed.integrity).every(v => v.state === "verified")).toBe(true);
+  // Reconciliation keeps every registered file: nothing is orphaned by the activation.
+  const old = new Date(Date.now() - 60 * 60 * 1000);
+  for (const name of managedFiles(f.backupDir)) utimesSync(join(f.backupDir, name), old, old);
+  const third = (await f.app.execute(f.auth.actor, backupCommand(f))).manifest;
+  expect(f.app.backups(f.auth.actor).manifests.map(m => m.id)).toEqual([older.id, newer.id, third.id]);
+  for (const id of [older.id, newer.id]) expect(f.app.backup(f.auth.actor, id).integrity.state).toBe("verified");
 });

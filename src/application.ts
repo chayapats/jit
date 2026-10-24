@@ -1187,11 +1187,22 @@ export class Application {
   }
 
   /** ops.backup_manifest/v1 reads: bounded inventory outside ordinary project data. */
-  backups(actor: OwnerActor): { manifests: BackupManifest[] } {
-    return this.store.read(tx => {
+  backups(actor: OwnerActor): { manifests: BackupManifest[]; integrity: Record<string, BackupIntegrity> } {
+    const listed = this.store.read(tx => {
       this.#requireOwner(tx, actor);
-      return { manifests: listBackups(tx) };
+      return listBackups(tx);
     });
+    // The inventory is installation-bounded (retention: 10 backups, 64 MiB), so every
+    // listed entry is verified; an invalid entry is never labelled valid.
+    const integrity: Record<string, BackupIntegrity> = {};
+    const manifests = listed.map(manifest => {
+      let verdict: BackupIntegrity;
+      try { verdict = verifyBackupArtifacts(manifest, this.#backupDir); }
+      catch { verdict = { state: "invalid", reason: "manifest_unverifiable" }; }
+      integrity[manifest.id] = verdict;
+      return verdict.state === "verified" ? manifest : { ...manifest, state: "incomplete" as const, reason: verdict.reason };
+    });
+    return { manifests, integrity };
   }
 
   /**
