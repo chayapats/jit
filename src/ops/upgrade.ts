@@ -85,8 +85,56 @@ function ownUpgradeDir(databasePath: string, override?: string): string {
 }
 
 /**
- * Pure preflight matrix over schema versions and engine availability. Downgrades,
+ * Supported engine session-snapshot contract for upgrade compat. Native
+ * sessions validate and migrate only through this supported snapshot identity;
+ * Jit never parses or rewrites their private format. The string stays opaque
+ * here — support is exact-match only, so a future engine fails closed until
+ * its contract is adopted. Mirrors SCHWAY_SNAPSHOT_CONTRACT in
+ * src/team/schway-port.ts (pinned by tests/ops-upgrade.test.ts).
+ */
+export const upgradeEngineContract = "schway.host.session-snapshot/v1" as const;
+
+/**
+ * Opaque engine identity resolved through the supported session-snapshot path,
+ * plus the fail-closed native snapshot behind it. A null engine means no
+ * supported engine backs the installation.
+ */
+export interface UpgradeEngineResolution {
+  engine: string | null;
+  native: BackupManifest["native"];
+}
+
+/**
+ * Resolves the upgrade engine through the supported session-snapshot path.
+ * Resolution is fail-closed exactly like the backup manifest: an unavailable
+ * port never yields an identity. The returned identity is the port's declared
+ * engine string and is never derived from native private bytes.
+ */
+export function resolveUpgradeEngine(port: BackupNativePort | undefined): UpgradeEngineResolution {
+  const native = resolveNativeSnapshot(port);
+  return { engine: native.state === "valid" && native.engine ? native.engine : null, native };
+}
+
+/**
+ * Supported-engine compat over a resolved opaque identity. Null (absent or
+ * unusable snapshot) reports engine_unavailable; any other identity that is
+ * not the supported session-snapshot contract — legacy placeholders and
+ * future contracts included — reports unsupported_engine. Both fail closed
+ * before any mutation.
+ */
+export function checkUpgradeEngine(engine: string | null): { supported: boolean; reason: string | null } {
+  if (!engine) return { supported: false, reason: "engine_unavailable" };
+  if (engine !== upgradeEngineContract) return { supported: false, reason: "unsupported_engine" };
+  return { supported: true, reason: null };
+}
+
+/**
+ * Pure preflight matrix over schema versions and engine compat. Downgrades,
  * future targets and newer-than-supported live schemas fail before any mutation.
+ * Engine compat requires the supported session-snapshot identity
+ * (`upgradeEngineContract`); a missing engine fails as engine_unavailable and
+ * any other identity fails as unsupported_engine. Native payloads are never
+ * inspected here.
  */
 export function planUpgrade(fromSchema: number, targetSchema: number, engine: string | null): {
   compatible: boolean; reason: string | null; plannedSteps: string[];
@@ -100,7 +148,8 @@ export function planUpgrade(fromSchema: number, targetSchema: number, engine: st
   if (targetSchema < fromSchema) return { compatible: false, reason: "downgrade_rejected", plannedSteps: [] };
   if (targetSchema > currentSupportedSchema) return { compatible: false, reason: "forward_upgrade_unsupported", plannedSteps: [] };
   if (fromSchema < minSupportedSchema) return { compatible: false, reason: "manual_recovery_required", plannedSteps: [] };
-  if (!engine) return { compatible: false, reason: "engine_unavailable", plannedSteps: [] };
+  const compat = checkUpgradeEngine(engine);
+  if (!compat.supported) return { compatible: false, reason: compat.reason, plannedSteps: [] };
   return { compatible: true, reason: null,
     plannedSteps: ["quiesce", "snapshot", "migrate", "validate", "activate"] };
 }
@@ -163,17 +212,26 @@ export function prepareUpgrade(tx: AppTransaction, store: TransactionStore, inpu
     throw new AppError("upgrade_in_progress", 409);
   }
   const fromSchema = currentSchema(tx);
-  const engineName = input.engine?.available() ? "scripted-fixture-v1" : null;
-  const plan = planUpgrade(fromSchema, input.targetSchema, engineName);
+  const resolved = resolveUpgradeEngine(input.engine);
+  const plan = planUpgrade(fromSchema, input.targetSchema, resolved.engine);
   // Failed preflights throw before mutating; the caller persists the failed journal
   // outside this rolled-back transaction so the rejection stays inspectable.
   if (!plan.compatible) {
-    throw new AppError(plan.reason === "engine_unavailable" ? "engine_unavailable" : "unsupported_upgrade", 409);
+    // A present port whose snapshot cannot be resolved keeps the snapshot
+    // diagnostic instead of the generic engine rejection.
+    if (plan.reason === "engine_unavailable" && (input.engine?.available() ?? false) && resolved.native.state !== "valid") {
+      throw new AppError("native_snapshot_unavailable", 503);
+    }
+    throw new AppError(plan.reason === "engine_unavailable" ? "engine_unavailable"
+      : plan.reason === "unsupported_engine" ? "unsupported_engine" : "unsupported_upgrade", 409);
   }
-  // Fail-closed snapshot: an unavailable engine snapshot never yields a usable recovery point.
+  // Fail-closed snapshot: a compatible plan implies a valid resolved snapshot,
+  // and the recovery point below carries its supported engine identity.
+  // The explicit recheck keeps an unusable snapshot from ever becoming a
+  // recovery point even if resolution rules change.
   const snapshot = store.snapshotBytes();
   const hash = createHash("sha256").update(snapshot).digest("hex");
-  const native = resolveNativeSnapshot(input.engine);
+  const native = resolved.native;
   if (native.state !== "valid") {
     // Fail-closed snapshot: an unavailable engine snapshot never yields a usable recovery point.
     // The caller persists the failed journal outside this rolled-back transaction.
@@ -204,7 +262,7 @@ export function prepareUpgrade(tx: AppTransaction, store: TransactionStore, inpu
     state: "prepared", steps: [{ name: "preflight", at: input.now, ok: true, detail: "compatible" },
       { name: "quiesce", at: input.now, ok: true, detail: "outstanding_recorded" },
       { name: "snapshot", at: input.now, ok: true, detail: backupId }],
-    preflight: { currentSchema: fromSchema, targetSchema: input.targetSchema, engine: engineName, compatible: true, plannedSteps: plan.plannedSteps },
+    preflight: { currentSchema: fromSchema, targetSchema: input.targetSchema, engine: resolved.engine, compatible: true, plannedSteps: plan.plannedSteps },
     snapshotBackupId: backupId, stagedPath: join(input.upgradeDir, input.id, "staged.sqlite"), stagedSchema: null,
     sidecarPath, liveRevisionAtValidate: null, outstanding: outstandingWork(tx), validation: null,
     reason: null, nextAction: "migrate_to_staged_copy", createdAt: input.now, updatedAt: input.now };
@@ -221,16 +279,20 @@ export function recordFailedUpgrade(tx: AppTransaction, input: {
   id: string; now: number; targetSchema: number; engine: BackupNativePort | undefined; reason: string;
 }): UpgradeJournal {
   const fromSchema = currentSchema(tx);
-  const engineName = input.engine?.available() ? "scripted-fixture-v1" : null;
-  const plan = planUpgrade(fromSchema, input.targetSchema, engineName);
-  const preflightFailed = !plan.compatible;
+  const resolved = resolveUpgradeEngine(input.engine);
+  const plan = planUpgrade(fromSchema, input.targetSchema, resolved.engine);
+  // Mirrors prepareUpgrade: a present-but-unresolvable snapshot records the
+  // snapshot failure (keeping the thrown reason) rather than a preflight one.
+  const snapshotFailure = !plan.compatible && plan.reason === "engine_unavailable"
+    && (input.engine?.available() ?? false) && resolved.native.state !== "valid";
+  const preflightFailed = !plan.compatible && !snapshotFailure;
   const snapshotDetail = preflightFailed ? "preflight_failed" : input.reason;
   const journal: UpgradeJournal = { id: input.id, contract: upgradeContract, fromSchema, targetSchema: input.targetSchema,
     state: "failed",
     steps: preflightFailed ? [{ name: "preflight", at: input.now, ok: false, detail: plan.reason! }]
       : [{ name: "preflight", at: input.now, ok: true, detail: "compatible" },
         { name: "snapshot", at: input.now, ok: false, detail: snapshotDetail }],
-    preflight: { currentSchema: fromSchema, targetSchema: input.targetSchema, engine: engineName, compatible: plan.compatible, plannedSteps: plan.compatible ? plan.plannedSteps : [] },
+    preflight: { currentSchema: fromSchema, targetSchema: input.targetSchema, engine: resolved.engine, compatible: plan.compatible, plannedSteps: plan.compatible ? plan.plannedSteps : [] },
     snapshotBackupId: null, stagedPath: null, stagedSchema: null, sidecarPath: null, liveRevisionAtValidate: null,
     outstanding: outstandingWork(tx), validation: null, reason: preflightFailed ? plan.reason! : input.reason,
     nextAction: preflightFailed ? "inspect_preflight_and_retry_with_supported_target" : "resolve_engine_snapshot_then_prepare_again",
@@ -251,6 +313,9 @@ function withStaged<T>(stagedPath: string, fn: (store: TransactionStore) => T): 
 /**
  * upgrade.migrate: copies the live image to staged storage and applies versioned
  * migrations there. The live installation is never mutated by this step.
+ * Native sessions migrate opaquely inside the staged copy under the supported
+ * snapshot identity recorded at prepare; their private format is never parsed
+ * or rewritten, and validateUpgrade re-verifies that identity before activation.
  */
 export function migrateUpgrade(tx: AppTransaction, store: TransactionStore, journal: UpgradeJournal, now: number): UpgradeJournal {
   if (journal.state === "staged" || journal.state === "ready" || journal.state === "complete") return journal;
@@ -296,6 +361,14 @@ export function validateUpgrade(live: TransactionStore, journal: UpgradeJournal,
     checks.push(stagedSchema === currentSupportedSchema
       ? { name: "staged_schema", pass: true, detail: `schema_${stagedSchema}` }
       : { name: "staged_schema", pass: false, detail: `schema_${stagedSchema}_unsupported` });
+    // Engine compat is re-verified at validation: only staged data prepared
+    // under the supported session-snapshot identity may activate. Journals
+    // prepared under a legacy placeholder or future engine fail here even if
+    // every other invariant holds. The identity stays opaque — no native
+    // private format is inspected.
+    checks.push(journal.preflight.engine === upgradeEngineContract
+      ? { name: "engine_compat", pass: true, detail: journal.preflight.engine }
+      : { name: "engine_compat", pass: false, detail: "unsupported_upgrade_engine" });
     checks.push(tx.all("PRAGMA foreign_key_check").length === 0
       ? { name: "foreign_keys", pass: true, detail: "no_violations" }
       : { name: "foreign_keys", pass: false, detail: "violations_found" });
