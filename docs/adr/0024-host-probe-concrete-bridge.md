@@ -27,9 +27,14 @@ plaintext fallback, and the selected route/model never changes.
 more turns surfaces as a bounded non-ready outcome instead of silently
 spending unreserved calls. The worst-case admission (`maxAttempts = 1` per
 call) is exact, so attempt accounting needs no reservation beyond the live
-loop's own budget.
+loop's own budget. Provider sends per admitted attempt are structurally
+bounded on the pinned release (at most two inference sends: one Schway-owned
+401 refresh plus its single replay, no loop) and counted exactly per call
+through the transport wrapper; the bound is enforced fail-closed and the
+counts surface in the renewal observation. Exact per-request accounting
+beyond this bound awaits schway#415.
 
-## Readiness is local; renewal stays explicitly unobserved
+## Readiness is local; renewal is measured, not claimed
 
 `readCredential` performs a local `checkAuthReadiness` only: configured
 access without a live request stays `configured-unverified`, a missing or

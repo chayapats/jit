@@ -44,9 +44,9 @@ outer retry exists beyond the stated attempt budget.
 | `parseProbeConfig(raw)` | Bounded local config; unknown keys fail. |
 | `validateProbeAttempt(value)` | Rejects malformed, unknown-field and oversized (>8192 bytes) probe records. Four observations exactly once each: `service-start`, `credential-read`, `live-request`, `renewal`, each cross-checked against the `routeEvidence` classifier. |
 | `preflightProbe(label, route, model, ports, root, bounds?)` | Persists one terminal `configured-unverified` record; calls no credential/inference port. |
-| `liveProbe(label, options, ports, root, signal?)` | Persists the `started` attempt before any inference; counts every admitted request; late completions after cancel/deadline never become success; renewal stays `unobserved`. |
+| `liveProbe(label, options, ports, root, signal?)` | Persists the `started` attempt before any inference; counts every admitted request; late completions after cancel/deadline never become success; Schway-owned renewal sends surface in the `renewal` observation with exact counts. |
 | `reconcileProbeAttempts(root)` | Restart recovery: every started attempt becomes `interrupted` up to an explicit file cap with a fail-closed error beyond it; unreadable records are reported, never silently skipped. Terminal records are never rewritten. |
-| `cancelProbeAttempt(root, id)` / `commitProbeOutcome(root, id, ...)` | Owner stop wins; commit is a cross-process compare-and-set via an exclusive terminal-claim file (stale claims taken over by dead-owner/age check) that returns false once the lifecycle left `started`. Terminal writes are atomic (exclusive temp file, fsync, atomic rename, required directory fsync). A deadline/cancel that fires during the owning invocation's own terminal write converts it to cancelled rather than leaving aborted success behind. |
+| `cancelProbeAttempt(root, id)` / `commitProbeOutcome(root, id, ...)` | Owner stop wins; every terminal transition runs inside one SQLite `BEGIN IMMEDIATE` transaction that re-reads the record and writes only `started` rows, so exactly one claimant terminalizes each attempt across processes and losers report the settled record byte-for-byte unchanged. Terminal writes are atomic (exclusive temp file, fsync, atomic rename, required directory fsync). A deadline/cancel that fires during the owning invocation's own terminal write rewrites its live-request observation to non-success in the same transaction rather than leaving aborted success behind. |
 | `exportProbeSummary(value)` | Allowlisted projection; route/model become redacted markers, no secrets. |
 | `bridgeProbePorts(options)` in `src/evidence/bridge-probe.ts` | Builds live-boundary ports on the pinned `schway/host` release: local `checkAuthReadiness` for the credential boundary, one bounded route-bound request per `infer` with the fixed prompt, empty tools and strict context. Non-Grok/Codex routes and models outside the host grammar fail before any host contact. |
 | `probeHostDirs(root)` | Service-owned `.local/host-probe-host/` directories (mode 0700, symlink/permission-checked); never a developer checkout or home. |
@@ -63,15 +63,25 @@ Each record carries four labeled entries that cannot stand in for each other:
   successful read never proves inference.
 - `live-request` / `inference`: bounded attempts with the fixed prompt, empty
   tools and strict discovery off. Only a successful selected-route request
-  within deadline yields `observed-ready`.
-- `renewal` / `renewal`: always `unobserved` in this skeleton. A successful
-  login never becomes renewal evidence; renewal needs its own future client.
+  within deadline yields `observed-ready`. One admitted attempt issues at most
+  two inference sends on the pinned release (a single Schway-owned 401
+  refresh plus its replay, structurally bounded with no loop); the counting
+  transport fails the attempt closed if the bound is ever exceeded, and the
+  exact per-attempt send counts are reported (see renewal).
+- `renewal` / `renewal`: `unobserved` unless a Schway-owned renewal send
+  occurred during the probe, in which case it carries the exact token-send
+  count (still `configured-unverified`, never readiness). A successful login
+  never becomes renewal evidence on its own; only measured transport sends
+  are reported. Full per-request accounting awaits schway#415.
 
 ## Storage
 
 Attempts persist as mode-0600 files under the ignored `.local/host-probe/`
 directory (`<uuid>.json`, bounded reads, no overwrite of terminal states,
-no symlink traversal). Export is a projection for review before sharing.
+no symlink traversal). Every terminal transition additionally serializes
+through an installation-local SQLite ledger (`lifecycle.db`, `BEGIN
+IMMEDIATE` with a bounded busy timeout) so concurrent CLI invocations agree
+on exactly one winner. Export is a projection for review before sharing.
 
 ## Schway integration
 
@@ -81,8 +91,10 @@ revision `6fe3808`, `schway.host.release/v1`; see
 with strict context, an exact empty tool registry, single-turn/single-attempt
 bounds and the live deadline, then submits one route-bound request and closes.
 The live loop bounds total attempts; no outer retry exists beyond the stated
-budget. Credential renewal observation stays explicitly unobserved: there is
-no renewal client, and a successful login never becomes renewal evidence.
+budget. Provider-send budget per admitted attempt: at most two inference
+sends plus token-endpoint sends on the pinned release (structurally bounded,
+counted per call, fail-closed on violation). The exact counts surface in the
+renewal observation; a successful login alone never becomes renewal evidence.
 
 ## Evidence
 

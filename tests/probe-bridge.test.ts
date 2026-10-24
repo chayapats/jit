@@ -206,11 +206,18 @@ test("a refreshable 401 admits exactly one retry inside the single attempt budge
   const { record } = await liveProbe("fixture-probe-host",
     { route: "grok", model: "grok-4-fixture", maxAttempts: 3, deadlineMs: 8000 },
     { ...ports, now: () => 1800000000000, id: () => ID }, root);
-  // One admitted attempt: at most one Schway-owned refresh plus its single inference retry.
+  // Exact provider-send accounting: the pinned adapter structurally issues at
+  // most two inference sends per admitted attempt (one 401 replay, no loop).
+  // The replay is reported in the renewal observation, never hidden.
   expect(record.lifecycle).toBe("observed-ready");
   expect(record.attempts).toBe(1);
   expect(tokenFetches).toBe(1);
+  expect(inferenceFetches).toBeLessThanOrEqual(2);
   expect(inferenceFetches).toBe(2);
+  const renewal = record.observations.find(item => item.observation === "renewal")!;
+  expect(renewal.event).toBe("success");
+  expect(renewal.attempts).toBe(1);
+  expect(ports.takeProviderSends!()).toEqual({ inference: 2, token: 1 });
 });
 
 test("a blocked credential store does not outlive the probe deadline", async () => {
@@ -313,27 +320,34 @@ test("cross-process cancel and commit keep exactly one terminal outcome", async 
   for (let spin = 0; spin < 100; spin++) {
     try { await readProbeAttempt(root, ID); break; } catch { await new Promise(r => setTimeout(r, 5)); }
   }
-  const child = (mode: "cancel" | "commit") => Bun.spawnSync(["bun", "-e", `
+  // Truly concurrent children: every contender is spawned before any is
+  // awaited, so cancel and commit race through the transactional CAS instead
+  // of running sequentially. Exactly one commit may acknowledge.
+  const childSource = (mode: "cancel" | "commit") => `
     const { cancelProbeAttempt, commitProbeOutcome, readProbeAttempt } = await import(${JSON.stringify(join(import.meta.dir, "../src/evidence/probe.ts"))});
     const root = ${JSON.stringify(root)}, id = ${JSON.stringify(ID)};
+    await Bun.sleep(Math.floor(Math.random() * 50));
     if (${JSON.stringify(mode)} === "cancel") {
-      const record = await readProbeAttempt(root, id).catch(() => null);
-      if (!record) { console.log(JSON.stringify({ kind: "cancel", ok: false })); process.exit(0); }
-      const out = await cancelProbeAttempt(root, id);
-      console.log(JSON.stringify({ kind: "cancel", lifecycle: out.lifecycle }));
+      const out = await cancelProbeAttempt(root, id).catch(() => null);
+      console.log(JSON.stringify({ kind: "cancel", lifecycle: out?.lifecycle ?? "error" }));
     } else {
       const record = await readProbeAttempt(root, id).catch(() => null);
-      if (!record || record.lifecycle !== "started") { console.log(JSON.stringify({ kind: "commit", ok: false })); process.exit(0); }
+      if (!record) { console.log(JSON.stringify({ kind: "commit", ok: false })); process.exit(0); }
       const ok = await commitProbeOutcome(root, id, record.observations, 1, 10).catch(() => false);
       console.log(JSON.stringify({ kind: "commit", ok }));
     }
-  `]).stdout.toString();
-  const runs: string[] = [];
-  for (let i = 0; i < 4; i++) {
-    runs.push(child("cancel"));
-    runs.push(child("commit"));
+  `;
+  const children: ReturnType<typeof Bun.spawn>[] = [];
+  for (let i = 0; i < 6; i++) {
+    children.push(Bun.spawn(["bun", "-e", childSource("cancel")], { stdout: "pipe", stderr: "ignore" }));
+    children.push(Bun.spawn(["bun", "-e", childSource("commit")], { stdout: "pipe", stderr: "ignore" }));
   }
-  const results = runs.map(line => JSON.parse(line) as { kind: string; ok?: boolean; lifecycle?: string });
+  const outputs = await Promise.all(children.map(async proc => {
+    const text = await new Response(proc.stdout as unknown as ReadableStream).text();
+    await proc.exited;
+    return text.trim();
+  }));
+  const results = outputs.map(line => JSON.parse(line) as { kind: string; ok?: boolean; lifecycle?: string });
   const commitWins = results.filter(item => item.kind === "commit" && item.ok);
   expect(commitWins.length).toBeLessThanOrEqual(1);
   release("unobserved");
@@ -343,4 +357,6 @@ test("cross-process cancel and commit keep exactly one terminal outcome", async 
   expect(final.lifecycle).not.toBe("observed-ready");
   expect(late.record.lifecycle).not.toBe("observed-ready");
   if (commitWins.length === 0) expect(final.lifecycle).toBe("cancelled");
+  // The settled record is byte-stable: a re-read matches exactly.
+  expect(await readProbeAttempt(root, ID)).toEqual(final);
 });

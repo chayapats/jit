@@ -63,17 +63,44 @@ export function probeHostDirs(root: string): { base: string; workspaceRoot: stri
 const MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 /**
+ * Structural provider-send bound per admitted attempt on the pinned release.
+ * The Grok adapter performs at most one transparent 401 refresh plus one
+ * inference replay (no loop); the Codex adapter performs no silent inference
+ * replay. One admitted attempt therefore issues at most two inference sends
+ * plus token-endpoint sends. The counting transport below reports exact
+ * counts and fails the attempt closed when the bound is ever exceeded, so a
+ * future pin change cannot silently widen the budget. Exact per-request
+ * accounting beyond this bound awaits schway#415.
+ */
+export const BRIDGE_MAX_INFERENCE_SENDS = 2;
+
+/** Exact provider-send counts observed on one bounded infer call. */
+export interface BridgeProviderSends { inference: number; token: number }
+
+/**
  * Builds scriptable live-boundary ports over the concrete Schway bridge.
  * `readCredential` performs a local readiness read only; `infer` runs one
  * bounded route-bound request with the fixed prompt, empty tools and strict
- * context. No outer retry, fallback route, billing change or secret read.
+ * context. Every provider send is counted through the transport wrapper;
+ * `takeProviderSends` reports the last call's exact counts. No outer retry,
+ * fallback route, billing change or secret read.
  */
 export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
   if (options.route !== "grok" && options.route !== "codex") throw new Error("invalid_probe_options");
   if (!MODEL_PATTERN.test(options.model)) throw new Error("invalid_probe_options");
   const selection = { route: options.route, model: options.model } as const;
   const store = options.store;
-  const fetch = options.fetch;
+  const providedFetch = options.fetch;
+  let lastSends: BridgeProviderSends = { inference: 0, token: 0 };
+
+  /** Counts every provider send; token endpoints carry "token" on both pinned routes. */
+  const countingFetch: HostAuthFetch = async (input, init) => {
+    const url = String(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+    if (url.toLowerCase().includes("token")) lastSends.token++;
+    else lastSends.inference++;
+    const transport = providedFetch ?? ((target: string | URL | Request, requestInit?: RequestInit) => fetch(target as string, requestInit));
+    return transport(input, init);
+  };
 
   const openHost = async (deadlineMs: number) => {
     const dirs = probeHostDirs(options.root);
@@ -99,13 +126,14 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
         deadlineMs: Math.min(Math.max(1, deadlineMs), 86_400_000),
         maxAttempts: BRIDGE_PROBE_MAX_ATTEMPTS,
       },
-      auth: { ...selection, ...(store ? { store } : null), ...(fetch ? { fetch } : null) },
+      auth: { ...selection, ...(store ? { store } : null), fetch: countingFetch },
     });
   };
 
   return {
     now: Date.now,
     id: () => crypto.randomUUID(),
+    takeProviderSends: () => ({ ...lastSends }),
     readCredential: async (signal) => {
       if (signal?.aborted) throw new Error("aborted");
       const readiness = await Promise.race([
@@ -124,6 +152,7 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
           input.discovery.repository !== false || input.discovery.hosted !== false) {
         throw new Error("invalid_probe_input");
       }
+      lastSends = { inference: 0, token: 0 };
       let host: HostRuntime | null = null;
       let session: HostSession | null = null;
       try {
@@ -131,6 +160,9 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
         session = await host.createSession();
         const options: HostRunOptions = { signal };
         const result = await session.submitWithRoute({ text: BRIDGE_PROBE_PROMPT }, options);
+        // Fail closed on a structural budget violation: the pinned adapters
+        // issue at most two inference sends per admitted attempt.
+        if (lastSends.inference > BRIDGE_MAX_INFERENCE_SENDS) return "failed";
         if (result.outcome === "completed") return "success";
         switch (result.auth.status) {
           case "needs-login": return "login";

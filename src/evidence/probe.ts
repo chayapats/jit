@@ -1,5 +1,6 @@
-import { constants } from "node:fs";
-import { lstat, mkdir, open, readdir, realpath, readFile, rename, unlink } from "node:fs/promises";
+import { Database } from "bun:sqlite";
+import { chmodSync, constants, existsSync } from "node:fs";
+import { lstat, mkdir, open, readdir, realpath, rename, unlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import { routeEvidence, safeAlias, type NextAction, type RouteState } from "./contract";
 
@@ -75,17 +76,23 @@ async function selfResources(root: string): Promise<Pick<ProbeSelfSample, "peakM
   let peakMemoryBytes = 0;
   try { peakMemoryBytes = process.memoryUsage().heapUsed; } catch { /* Own-process sample only. */ }
   let managedBytes = 0, managedFiles = 0;
-  try {
-    const dir = resolve(root, ".local", "host-probe");
-    const names = (await readdir(dir)).slice(0, 4096);
+  const scan = async (dir: string): Promise<void> => {
+    let names: string[];
+    try {
+      names = (await readdir(dir)).slice(0, MAX_SELF_SCAN_FILES);
+    } catch { return; }
     for (const name of names) {
-      if (!uuidPattern.test(name.replace(/\.json$/, ""))) continue;
+      if (name.startsWith(".tmp-")) continue;
       try {
         const stats = await lstat(resolve(dir, name));
         if (stats.isFile() && !stats.isSymbolicLink()) { managedFiles++; managedBytes += stats.size; }
       } catch { /* One unreadable artifact does not fail the sample. */ }
     }
-  } catch { /* Missing directory reads as empty. */ }
+  };
+  try {
+    await scan(resolve(root, ".local", "host-probe"));
+    await scan(resolve(root, ".local", "host-probe-host"));
+  } catch { /* Missing directories read as empty. */ }
   return { peakMemoryBytes, managedBytes, managedFiles };
 }
 
@@ -97,6 +104,12 @@ export interface ProbePorts {
   readCredential(signal: AbortSignal): Promise<"ok" | "missing" | "locked">;
   /** One bounded inference attempt with the fixed prompt, empty tools and strict discovery off. */
   infer(input: { route: string; model: string; prompt: typeof PROBE_PROMPT; tools: readonly []; discovery: { repository: false; hosted: false }; deadlineMs: number }, signal: AbortSignal): Promise<ProbeEvent>;
+  /**
+   * Exact provider-send counts for the last infer call. Absent on scripted
+   * ports; the concrete bridge reports every transport send through its
+   * counting wrapper so Schway-owned refresh traffic is never hidden.
+   */
+  takeProviderSends?(): { inference: number; token: number };
 }
 
 /** Live options demand explicit opt-in: exact route/model plus finite attempts/deadline. */
@@ -104,6 +117,8 @@ export interface LiveProbeOptions { route: string; model: string; maxAttempts: n
 
 const uuidPattern = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/;
 const instantPattern = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/;
+/** Cap for every managed-artifact scan; the walk never grows with installation size. */
+const MAX_SELF_SCAN_FILES = 4096;
 
 function fail(): never { throw new Error("invalid_probe_record"); }
 
@@ -269,67 +284,59 @@ async function withRecordLock<T>(id: string, work: () => Promise<T>): Promise<T>
 }
 
 /**
- * Cross-process terminal-claim compare-and-set. The first claimant wins;
- * losers back off and report the settled record. Stale claims (dead owner or
- * older than the bound) are taken over so a crash between claim and write
- * cannot wedge the record forever. Claims are write-once tombstones: they
- * are never deleted, only superseded by a stale takeover.
+ * Cross-process terminal compare-and-set. Every lifecycle transition runs
+ * inside one SQLite `BEGIN IMMEDIATE` transaction: the record is re-read
+ * under the lock, a non-started record is returned byte-for-byte unchanged,
+ * and only the first claimant writes its terminal record. The file write
+ * happens inside the same critical section, so no stale-takeover race or
+ * owner-age rule exists: a crashed holder's transaction rolls back and the
+ * next contender re-reads authoritative state. Losers never acknowledge.
  */
-interface TerminalClaim { owner: number; at: number; kind: "commit" | "cancel" | "reconcile" }
-
-const CLAIM_STALE_MS = 10_000;
-
-function isClaimLive(claim: TerminalClaim, now: number): boolean {
-  if (!Number.isSafeInteger(claim.owner) || claim.owner <= 0 || !Number.isSafeInteger(claim.at) || claim.at > now) return false;
-  if (now - claim.at >= CLAIM_STALE_MS) return false;
-  try {
-    process.kill(claim.owner, 0);
-    return true;
-  } catch (error) {
-    // ESRCH means the owner is gone; EPERM means it exists without signal
-    // permission. Anything unrecognizable keeps the claim (fail closed).
-    return (error as NodeJS.ErrnoException)?.code !== "ESRCH";
+function lifecycleDb(dir: string): Database {
+  const path = resolve(dir, "lifecycle.db");
+  const fresh = !existsSync(path);
+  const db = new Database(path, { create: true });
+  if (fresh) {
+    try { chmodSync(path, 0o600); } catch { /* Best effort after create. */ }
   }
+  db.exec("PRAGMA busy_timeout = 5000;");
+  db.exec("PRAGMA synchronous = FULL;");
+  db.exec("CREATE TABLE IF NOT EXISTS probe_terminal(id TEXT PRIMARY KEY, lifecycle TEXT NOT NULL)");
+  return db;
 }
 
-async function readClaim(dir: string, id: string): Promise<TerminalClaim | null> {
-  try {
-    const raw = await readFile(resolve(dir, `${id}.claim.json`), "utf8");
-    const parsed = JSON.parse(raw) as Partial<TerminalClaim>;
-    if (typeof parsed.owner === "number" && typeof parsed.at === "number" && typeof parsed.kind === "string") {
-      return { owner: parsed.owner, at: parsed.at, kind: parsed.kind as TerminalClaim["kind"] };
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-async function tryClaimTerminal(root: string, id: string, kind: TerminalClaim["kind"], now: number): Promise<boolean> {
-  const dir = await probeDirectory(root, true);
-  const path = resolve(dir, `${id}.claim.json`);
-  for (let attempt = 0; attempt < 3; attempt++) {
+async function transitionTerminal(root: string, id: string,
+  build: (current: ProbeAttempt) => ProbeAttempt | null,
+): Promise<{ committed: boolean; record: ProbeAttempt }> {
+  return withRecordLock(id, async () => {
+    const dir = await probeDirectory(root, true);
+    const db = lifecycleDb(dir);
     try {
-      const file = await open(path, "wx", 0o600);
+      db.exec("BEGIN IMMEDIATE");
       try {
-        await file.writeFile(JSON.stringify({ owner: process.pid, at: now, kind }));
-        await file.sync();
-      } finally {
-        await file.close();
+        const current = await readProbeAttempt(root, id);
+        if (current.lifecycle !== "started") {
+          db.exec("ROLLBACK");
+          return { committed: false, record: current };
+        }
+        const next = build(current);
+        if (next === null) {
+          db.exec("ROLLBACK");
+          return { committed: false, record: current };
+        }
+        validateProbeAttempt(next);
+        await atomicWriteFile(dir, `${id}.json`, JSON.stringify(next) + "\n");
+        db.query("INSERT OR IGNORE INTO probe_terminal(id, lifecycle) VALUES (?, ?)").run(id, next.lifecycle);
+        db.exec("COMMIT");
+        return { committed: true, record: next };
+      } catch (error) {
+        try { db.exec("ROLLBACK"); } catch { /* Already rolled back. */ }
+        throw error;
       }
-      return true;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    } finally {
+      db.close();
     }
-    const current = await readClaim(dir, id);
-    if (current !== null && isClaimLive(current, now)) return false;
-    try {
-      await unlink(path);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-  }
-  return false;
+  });
 }
 
 let tmpCounter = 0;
@@ -441,19 +448,13 @@ async function listProbeKeys(root: string): Promise<{ id: string; record: ProbeA
 export async function reconcileProbeAttempts(root: string): Promise<ProbeAttempt[]> {
   const updated: ProbeAttempt[] = [];
   const failures: string[] = [];
-  for (const { id, record } of await listProbeKeys(root)) {
-    if (record.lifecycle !== "started") continue;
+  for (const { id } of await listProbeKeys(root)) {
     try {
-      const claimed = await withRecordLock(id, async () => {
-        const current = await readProbeAttempt(root, id);
-        if (current.lifecycle !== "started") return false;
-        if (!(await tryClaimTerminal(root, id, "reconcile", Date.now()))) return false;
-        const next: ProbeAttempt = { ...current, lifecycle: "interrupted", nextAction: "inspect-sanitized-failure" };
-        await overwriteAttempt(root, next);
-        updated.push(next);
-        return true;
-      });
-      if (!claimed) failures.push(`${id}:contended`);
+      const { committed, record } = await transitionTerminal(root, id, current => ({
+        ...current, lifecycle: "interrupted", nextAction: "inspect-sanitized-failure",
+      }));
+      if (committed) updated.push(record);
+      else if (record.lifecycle === "started") failures.push(`${id}:contended`);
     } catch {
       failures.push(id);
     }
@@ -464,37 +465,31 @@ export async function reconcileProbeAttempts(root: string): Promise<ProbeAttempt
 
 /**
  * Cancels a dispatched attempt after an owner stop. Later completions can no
- * longer promote it to success; the cross-process claim keeps the first
- * terminal state across CLI invocations.
+ * longer promote it to success; the transactional CAS keeps the first
+ * terminal state byte-for-byte across CLI invocations.
  */
 export async function cancelProbeAttempt(root: string, id: string): Promise<ProbeAttempt> {
-  return withRecordLock(id, async () => {
-    const record = await readProbeAttempt(root, id);
-    if (record.lifecycle !== "started") return record;
-    if (!(await tryClaimTerminal(root, id, "cancel", Date.now()))) return readProbeAttempt(root, id);
-    const next: ProbeAttempt = { ...record, lifecycle: "cancelled", nextAction: "inspect-sanitized-failure" };
-    await overwriteAttempt(root, next);
-    return next;
-  });
+  const { record } = await transitionTerminal(root, id, current => ({
+    ...current, lifecycle: "cancelled", nextAction: "inspect-sanitized-failure",
+  }));
+  return record;
 }
 
 /**
  * Commits a terminal outcome only when the attempt is still dispatched.
- * Late completions after cancel/restart return false and change nothing.
+ * Late completions after cancel/restart change nothing and report the
+ * settled record instead of success.
  */
 export async function commitProbeOutcome(root: string, id: string, observations: ProbeObservationEntry[], attempts: number, elapsedMs: number): Promise<boolean> {
-  return withRecordLock(id, async () => {
-    const record = await readProbeAttempt(root, id);
-    if (record.lifecycle !== "started") return false;
-    if (!(await tryClaimTerminal(root, id, "commit", Date.now()))) return false;
+  const { committed } = await transitionTerminal(root, id, current => {
     const inference = observations.find(item => item.observation === "live-request")!;
     const credential = observations.find(item => item.observation === "credential-read")!;
     const terminal = inference.event === "unobserved"
       ? { state: credential.state, nextAction: credential.nextAction }
       : { state: inference.state, nextAction: inference.nextAction };
-    await overwriteAttempt(root, { ...record, lifecycle: terminal.state, observations, attempts, elapsedMs, nextAction: terminal.nextAction });
-    return true;
+    return { ...current, lifecycle: terminal.state, observations, attempts, elapsedMs, nextAction: terminal.nextAction };
   });
+  return committed;
 }
 
 /** Default preflight: reports configured-unverified with zero credential/inference invocations. */
@@ -518,23 +513,10 @@ export async function preflightProbe(installationLabel: string, route: string, m
     mode: "preflight", route, model, lifecycle: summary.state, maxAttempts: bounds.maxAttempts, attempts: 0,
     deadlineMs: bounds.deadlineMs, elapsedMs: 0, observations, promptBytes: Buffer.byteLength(PROBE_PROMPT), nextAction: summary.nextAction };
   // A preflight commits atomically: create the file directly in its terminal
-  // state so no restart can mistake it for a dispatched live attempt.
-  const file = await (async () => {
-    validateProbeAttempt(record);
-    const dir = await probeDirectory(root, true), path = resolve(dir, `${record.id}.json`);
-    const handle = await open(path, "wx", 0o600);
-    let complete = false;
-    try {
-      await handle.writeFile(JSON.stringify(record) + "\n");
-      await handle.sync();
-      complete = true;
-    } finally {
-      await handle.close();
-      if (!complete) await unlink(path);
-    }
-    return record;
-  })();
-  void file;
+  // state through the durable writer (file fsync plus required
+  // parent-directory sync), so no restart can mistake it for a dispatched
+  // live attempt and no power loss can erase the acknowledged filename.
+  await writeAttempt(root, record);
   return { record, self: { elapsedMs: 0, attemptsUsed: 0, maxAttempts: record.maxAttempts, ...(await selfResources(root)) } };
 }
 
@@ -561,9 +543,18 @@ export async function liveProbe(installationLabel: string, options: LiveProbeOpt
   // Persist the attempt before any account request so a crash leaves explicit started evidence.
   await writeAttempt(root, dispatched);
   const elapsed = () => Math.max(0, Math.min(120000, ports.now() - started));
+  // Every terminal write below goes through the transactional CAS: a
+  // concurrent cancel/reconcile/commit wins exactly once, and losers report
+  // the settled record byte-for-byte instead of overwriting it.
+  const abortTo = async (observations: ProbeObservationEntry[], attemptsUsed: number) => {
+    const { record } = await transitionTerminal(root, id, current => ({
+      ...current, lifecycle: "cancelled", observations, attempts: attemptsUsed,
+      elapsedMs: elapsed(), nextAction: "inspect-sanitized-failure",
+    }));
+    return { record, self: { elapsedMs: elapsed(), attemptsUsed, maxAttempts, ...(await selfResources(root)) } };
+  };
   if (signal.aborted) {
-    await overwriteAttempt(root, { ...dispatched, lifecycle: "cancelled", nextAction: "inspect-sanitized-failure" });
-    return { record: await readProbeAttempt(root, id), self: { elapsedMs: elapsed(), attemptsUsed: 0, maxAttempts, ...(await selfResources(root)) } };
+    return abortTo(dispatched.observations, 0);
   }
   let credential: ProbeEvent = "unobserved";
   try {
@@ -574,10 +565,9 @@ export async function liveProbe(installationLabel: string, options: LiveProbeOpt
   }
   if (signal.aborted) {
     const observations: ProbeObservationEntry[] = [base[0]!, credentialEntry(route, model, bounds, credential), base[2]!, base[3]!];
-    await overwriteAttempt(root, { ...dispatched, lifecycle: "cancelled", observations, nextAction: "inspect-sanitized-failure" });
-    return { record: await readProbeAttempt(root, id), self: { elapsedMs: elapsed(), attemptsUsed: 0, maxAttempts, ...(await selfResources(root)) } };
+    return abortTo(observations, 0);
   }
-  let attempts = 0, inference: ProbeEvent = "failed";
+  let attempts = 0, inference: ProbeEvent = "failed", tokenSends = 0;
   for (let turn = 0; turn < maxAttempts; turn++) {
     if (signal.aborted) break;
     attempts++;
@@ -587,32 +577,48 @@ export async function liveProbe(installationLabel: string, options: LiveProbeOpt
     } catch {
       inference = "failed";
     }
+    // Exact provider-send accounting: every transport send during the
+    // admitted attempt is reported, including Schway-owned refresh traffic.
+    // A silent inference replay therefore always surfaces in the renewal
+    // observation instead of hiding inside one recorded attempt.
+    const sends = ports.takeProviderSends?.();
+    if (sends) tokenSends += Math.max(0, sends.token | 0);
     // A late completion after cancellation is never success evidence.
     if (signal.aborted) { inference = "failed"; break; }
     // Terminal classifications stop immediately; transient store/transport
     // failures consume the next bounded attempt instead of an outer retry.
     if (inference === "success" || inference === "login" || inference === "quota" || inference === "rejected") break;
   }
+  // A Schway-owned renewal send is bounded evidence, never readiness: the
+  // renewal observation stays configured-unverified by construction.
+  const renewalEntry = () => tokenSends > 0
+    ? entry(route, model, bounds, "renewal", "success", Math.min(tokenSends, maxAttempts), elapsed())
+    : base[3]!;
   if (signal.aborted) {
     // The inference result arrived too late: record that inference was
     // attempted but keep the cancelled lifecycle so it can never read success.
+    // The live-request observation stays non-success inside the same terminal
+    // transaction, so a cancelled probe is never exported as success.
     const observations: ProbeObservationEntry[] = [base[0]!, credentialEntry(route, model, bounds, credential),
-      entry(route, model, bounds, "live-request", "unobserved", attempts, elapsed()), base[3]!];
-    await overwriteAttempt(root, { ...dispatched, lifecycle: "cancelled", observations, attempts, elapsedMs: elapsed(), nextAction: "inspect-sanitized-failure" });
-    return { record: await readProbeAttempt(root, id), self: { elapsedMs: elapsed(), attemptsUsed: attempts, maxAttempts, ...(await selfResources(root)) } };
+      entry(route, model, bounds, "live-request", "unobserved", attempts, elapsed()), renewalEntry()];
+    return abortTo(observations, attempts);
   }
   const observations: ProbeObservationEntry[] = [base[0]!, credentialEntry(route, model, bounds, credential),
-    entry(route, model, bounds, "live-request", inference, attempts, elapsed()), base[3]!];
+    entry(route, model, bounds, "live-request", inference, attempts, elapsed()), renewalEntry()];
   await commitProbeOutcome(root, id, observations, attempts, elapsed());
-  // A deadline/cancel that fires during the terminal write still wins: the
-  // owning invocation converts its own just-written record rather than
-  // leaving aborted success evidence behind.
+  // A deadline/cancel that fires during the terminal write converts the
+  // owning invocation's own record rather than leaving aborted success
+  // behind — but only when the commit did not already terminalize it: a
+  // committed success that lost the race to nobody stays success, and a
+  // record another owner already settled stays byte-for-byte unchanged.
   if (signal.aborted) {
-    await withRecordLock(id, async () => {
-      const current = await readProbeAttempt(root, id);
-      if (current.lifecycle === "cancelled" || current.lifecycle === "interrupted") return;
-      await overwriteAttempt(root, { ...current, lifecycle: "cancelled", nextAction: "inspect-sanitized-failure" });
+    const { record: settled } = await transitionTerminal(root, id, current => {
+      if (current.lifecycle !== "started") return null;
+      const revised: ProbeObservationEntry[] = [current.observations[0]!, current.observations[1]!,
+        entry(route, model, bounds, "live-request", "failed", current.attempts, elapsed()), current.observations[3]!];
+      return { ...current, lifecycle: "cancelled", observations: revised, elapsedMs: elapsed(), nextAction: "inspect-sanitized-failure" };
     });
+    void settled;
   }
   return { record: await readProbeAttempt(root, id), self: { elapsedMs: elapsed(), attemptsUsed: attempts, maxAttempts, ...(await selfResources(root)) } };
 }
