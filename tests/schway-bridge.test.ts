@@ -97,8 +97,21 @@ test("pinned artifact gate reports the exact vendored release", () => {
 });
 
 test("vendored tarball matches the pinned sha256", () => {
-  const bytes = readFileSync(join(import.meta.dir, "../vendor/schway-1.0.0-rc.2-6fe3808.tgz"));
+  const bytes = readFileSync(join(import.meta.dir, "../vendor/schway-1.0.0-rc.2-128b77a.tgz"));
   expect(createHash("sha256").update(bytes).digest("hex")).toBe(SCHWAY_PINNED_TARBALL_SHA256);
+});
+
+test("contract docs publish the pinned source constants", () => {
+  const doc = readFileSync(join(import.meta.dir, "../docs/contracts/schway-bridge-v1.md"), "utf8");
+  expect(doc).toContain(SCHWAY_PINNED_REVISION);
+  expect(doc).toContain(SCHWAY_PINNED_TARBALL_SHA256);
+  expect(doc).toContain(SCHWAY_RELEASE_CONTRACT);
+});
+
+test("host-probe contract documents the exact send-ledger shape", () => {
+  const doc = readFileSync(join(import.meta.dir, "../docs/contracts/host-probe-v1.md"), "utf8");
+  expect(doc).toContain("{inference, token, confirmed, admission}");
+  expect(doc).toContain("admission ordinal");
 });
 
 test("effective run maps strict context, exact tools and the selected route without secrets", () => {
