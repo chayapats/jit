@@ -29,10 +29,10 @@ spending unreserved calls. The worst-case admission (`maxAttempts = 1` per
 call) is exact, so attempt accounting needs no reservation beyond the live
 loop's own budget. Provider sends per admitted attempt are structurally
 bounded on the pinned release (at most two inference sends: one Schway-owned
-401 refresh plus its single replay, no loop) and counted exactly per call
+401 refresh plus its single replay, no loop) and counted exactly per send
 through the transport wrapper; the bound is enforced fail-closed and the
-counts surface in the renewal observation. Exact per-request accounting
-beyond this bound awaits schway#415.
+confirmed counts surface in the renewal observation ledger and the self
+sample. Exact per-request accounting beyond this bound awaits schway#415.
 
 ## Readiness is local; renewal is measured, not claimed
 

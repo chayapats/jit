@@ -72,15 +72,15 @@ Each record carries four labeled entries that cannot stand in for each other:
   of swapping counts.
 - `renewal` / `renewal`: always `unobserved` with zero attempts — never a
   readiness or success claim. The renewal observation carries a validated
-  per-admission send array (one `{inference, token, confirmed}` entry per
-  admitted infer call, each bounded by the pinned 2+2 ceiling, empty on
-  preflight), retained through restart reconciliation and included in the
-  allowlisted export (with `confirmed`). `confirmed:false` marks a send that
-  was authorized but whose completion was never observed — uncertainty, not
-  exact evidence. Only renewal carries a ledger: any send array on another
-  observation fails validation, and the renewal length must equal admitted
-  attempts. A successful login never becomes renewal evidence on its own.
-  Full per-request accounting awaits schway#415.
+  per-send ledger (one `{inference, token, confirmed}` entry per transport
+  send, exactly one send per entry, at most four entries per admitted attempt
+  on the pinned 2+2 ceiling, empty on preflight), retained through restart
+  reconciliation and included in the allowlisted export (with `confirmed`).
+  `confirmed:false` marks a send that was authorized but whose completion was
+  never observed — uncertainty, not exact evidence. Only renewal carries a
+  ledger: any send array on another observation fails validation. A
+  successful login never becomes renewal evidence on its own. Full per-request
+  accounting awaits schway#415.
 
 ## Storage
 
@@ -102,8 +102,9 @@ bounds and the live deadline, then submits one route-bound request and closes.
 The live loop bounds total attempts; no outer retry exists beyond the stated
 budget. Provider-send budget per admitted attempt: at most two inference
 sends plus two token sends on the pinned release (structurally bounded,
-counted per call, fail-closed on violation). The exact per-admission counts
-persist in the renewal observation ledger and surface in the self sample;
+counted per send with confirmation, fail-closed on violation). The exact
+per-send counts persist in the renewal observation ledger (confirmed entries
+only) and surface in the self sample;
 a successful login alone never becomes renewal evidence.
 
 ## Evidence

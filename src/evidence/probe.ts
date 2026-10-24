@@ -194,16 +194,18 @@ const exactKeys = (value: unknown, keys: string[]): value is Record<string, unkn
   !!value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
 
 /**
- * Validates a per-admission provider-send ledger: one entry per admitted
- * infer call, each bounded by the pinned per-admission structural ceiling
- * (two inference sends plus two token sends), with an explicit confirmation
- * flag. Anything wider fails closed.
+ * Validates a per-send ledger: one entry per transport send, each entry
+ * exactly one send of one kind, bounded in total by the pinned structural
+ * ceiling (four sends per admitted attempt: two inference plus two token).
+ * Anything wider fails closed.
  */
 function validSendLedger(value: unknown, maxAttempts: number): value is { inference: number; token: number; confirmed: boolean }[] {
-  if (!Array.isArray(value) || value.length > maxAttempts) return false;
+  if (!Array.isArray(value) || value.length > 4 * maxAttempts) return false;
   return value.every(item => !!item && typeof item === "object" && !Array.isArray(item) &&
     Object.keys(item).sort().join(",") === "confirmed,inference,token" &&
-    [item.inference, item.token].every(n => Number.isSafeInteger(n) && (n as number) >= 0 && (n as number) <= 2) &&
+    ((item as { inference: unknown }).inference === 0 || (item as { inference: unknown }).inference === 1) &&
+    ((item as { token: unknown }).token === 0 || (item as { token: unknown }).token === 1) &&
+    ((item as { inference: number }).inference + (item as { token: number }).token === 1) &&
     typeof (item as { confirmed: unknown }).confirmed === "boolean");
 }
 
@@ -230,11 +232,11 @@ export function validateProbeAttempt(value: unknown): asserts value is ProbeAtte
     const { sends, ...rest } = itemEntry as ProbeObservationEntry & { sends?: unknown };
     if (!exactKeys(rest, ["observation", "probeClass", "event", "state", "nextAction", "attempts", "elapsedMs"]) ||
         (sends !== undefined && !validSendLedger(sends, record.maxAttempts)) ||
-        // The renewal observation carries the sole send ledger; every other
-        // observation must keep an empty one so provider evidence cannot hide
-        // under service-start, credential or live-request entries.
+        // The renewal observation carries the sole send ledger; any send
+        // array on another observation fails validation. The ledger holds
+        // one entry per transport send (see validSendLedger for the shape
+        // and structural ceiling).
         (sends !== undefined && itemEntry.observation !== "renewal" && (sends as unknown[]).length !== 0) ||
-        (sends !== undefined && itemEntry.observation === "renewal" && (sends as unknown[]).length !== record.attempts) ||
         !probeObservations.includes(itemEntry.observation) || seen.has(itemEntry.observation) ||
         (itemEntry.observation === "live-request" ? itemEntry.probeClass !== "inference"
           : itemEntry.observation === "renewal" ? itemEntry.probeClass !== "renewal" : itemEntry.probeClass !== "preflight") ||
@@ -550,11 +552,7 @@ async function updateStartedRecord(root: string, id: string,
 async function reserveAttempt(root: string, id: string): Promise<{ admitted: boolean; attempts: number }> {
   const { updated, record } = await updateStartedRecord(root, id, current => {
     if (current.attempts >= current.maxAttempts) return null;
-    const renewal = current.observations.find(item => item.observation === "renewal")!;
-    const sends = [...(renewal.sends ?? []), { inference: 0, token: 0, confirmed: true }];
-    const observations = current.observations.map(item =>
-      item.observation === "renewal" ? { ...item, sends } : item);
-    return { ...current, attempts: current.attempts + 1, observations };
+    return { ...current, attempts: current.attempts + 1 };
   });
   return { admitted: updated, attempts: record.attempts };
 }
@@ -885,7 +883,12 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
   // returned to the transport only when confirmation commits — so a late
   // token response can never be processed into a credential write after
   // cancellation.
+  // Strict per-admission send budget, reset on every admitted attempt.
+  // The durable cumulative bound below is the crash-safe backstop; this
+  // counter enforces the pinned 2+2 shape exactly in the normal path.
+  let admissionSends = { inference: 0, token: 0 };
   const gateSend = async <R>(kind: "inference" | "token", start: () => Promise<R>): Promise<R> => {
+    if (admissionSends[kind] + 1 > 2) throw new Error("provider_budget_exceeded");
     const dir = await probeDirectory(root, true);
     const release = await acquireRecordLock(id);
     let pending: Promise<R> | null = null;
@@ -901,48 +904,28 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
           }
           const renewal = current.observations.find(item => item.observation === "renewal")!;
           const ledger = [...(renewal.sends ?? [])];
-          const last = ledger[ledger.length - 1];
-          if (!last) {
-            db.exec("ROLLBACK");
-            throw new Error("fenced");
-          }
-          const next = { inference: last.inference + (kind === "inference" ? 1 : 0), token: last.token + (kind === "token" ? 1 : 0), confirmed: false };
-          // Pinned per-admission structural bound (schway#415 tracks exact
-          // accounting beyond it): refuse the send without recording it.
-          if (next.inference > 2 || next.token > 2) {
+          // Crash-safe cumulative bound: one ledger entry per transport
+          // send, at most four per admitted attempt (two inference plus
+          // two token sends on the pinned release; schway#415 tracks exact
+          // accounting beyond this bound).
+          if (ledger.length + 1 > 4 * current.attempts) {
             db.exec("ROLLBACK");
             throw new Error("provider_budget_exceeded");
           }
-          ledger[ledger.length - 1] = next;
+          ledger.push({ inference: kind === "inference" ? 1 : 0, token: kind === "token" ? 1 : 0, confirmed: false });
           const updated: ProbeAttempt = { ...current, observations: current.observations.map(item =>
             item.observation === "renewal" ? { ...item, sends: ledger } : item) };
           validateProbeAttempt(updated);
-          try {
-            await atomicWriteFile(dir, `${id}.json`, JSON.stringify(updated) + "\n", () => {
-              if (effective.aborted) throw new PublishAborted();
-            });
-          } catch (error) {
-            // Pre-start persistence failure: the intent may already be
-            // renamed into the record even though transport never ran.
-            // Repair it best-effort back to a zeroed entry so a directory
-            // failure can never leave a false exact count behind; an
-            // unrepairable intent stays explicitly unconfirmed (uncertain).
-            try { db.exec("ROLLBACK"); } catch { /* Already rolled back. */ }
-            if (pending === null) {
-              await updateStartedRecord(root, id, current => {
-                const renewal = current.observations.find(item => item.observation === "renewal")!;
-                const ledger = [...(renewal.sends ?? [])];
-                const last = ledger[ledger.length - 1];
-                if (!last || last.confirmed) return null;
-                ledger[ledger.length - 1] = { inference: 0, token: 0, confirmed: true };
-                return { ...current, observations: current.observations.map(item =>
-                  item.observation === "renewal" ? { ...item, sends: ledger } : item) };
-              }).catch(() => ({ updated: false as const, record: null as never }));
-            }
-            throw error;
-          }
+          // No repair on pre-start persistence failure: the stranded intent
+          // entry stays explicitly unconfirmed, which the self sample
+          // excludes and validation reports as uncertainty rather than a
+          // false exact count.
+          await atomicWriteFile(dir, `${id}.json`, JSON.stringify(updated) + "\n", () => {
+            if (effective.aborted) throw new PublishAborted();
+          });
           pending = start();
           db.exec("COMMIT");
+          admissionSends[kind]++;
         } catch (error) {
           try { db.exec("ROLLBACK"); } catch { /* Already rolled back. */ }
           throw error;
@@ -996,6 +979,7 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
     // reservation was being written must not start provider contact
     // afterward, and the admitted count is never written back lowered.
     attempts = reservation.attempts;
+    admissionSends = { inference: 0, token: 0 };
     // A deadline that fires while the reservation was being written must not
     // start provider contact afterward: recheck before invoking the port.
     if (effective.aborted) break;

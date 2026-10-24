@@ -212,8 +212,9 @@ test("a refreshable 401 admits exactly one retry inside the single attempt budge
     { ...ports, now: () => 1800000000000, id: () => ID }, root);
   // Exact provider-send accounting: the pinned adapter structurally issues at
   // most two inference sends per admitted attempt (one 401 replay, no loop).
-  // The replay is reported in the self sample, never hidden, while renewal
-  // stays explicitly unobserved as an evidence claim.
+  // The replay is reported in the per-send ledger, never hidden, while
+  // renewal stays explicitly unobserved as an evidence claim. The 401
+  // refresh reuses the warmed credential without a second token send.
   expect(record.lifecycle).toBe("observed-ready");
   expect(record.attempts).toBe(1);
   expect(tokenFetches).toBe(1);
@@ -222,7 +223,7 @@ test("a refreshable 401 admits exactly one retry inside the single attempt budge
   const renewal = record.observations.find(item => item.observation === "renewal")!;
   expect(renewal.event).toBe("unobserved");
   expect(renewal.attempts).toBe(0);
-  expect(renewal.sends).toEqual([{ inference: 2, token: 1, confirmed: true }]);
+  expect(renewal.sends).toEqual([{ inference: 0, token: 1, confirmed: true }, { inference: 1, token: 0, confirmed: true }, { inference: 1, token: 0, confirmed: true }]);
   expect(self.providerSends).toEqual({ inference: 2, token: 1 });
 });
 
@@ -578,7 +579,7 @@ test("ledger placement is validated: non-renewal sends and length mismatch rejec
     ...record,
     id: OTHER_ID,
     observations: record.observations.map(item => item.observation === "renewal"
-      ? { ...item, sends: [{ inference: 1, token: 0, confirmed: true }, { inference: 1, token: 0, confirmed: true }] } : item),
+      ? { ...item, sends: [{ inference: 1, token: 0, confirmed: true }, { inference: 1, token: 0, confirmed: true }, { inference: 0, token: 1, confirmed: true }, { inference: 0, token: 1, confirmed: true }, { inference: 1, token: 0, confirmed: true }] } : item),
   };
   writeFileSync(join(root, ".local", "host-probe", `${OTHER_ID}.json`), JSON.stringify(stretched) + "\n");
   await expect(readProbeAttempt(root, OTHER_ID)).rejects.toThrow();
@@ -606,7 +607,7 @@ test("a stale terminal commit cannot erase persisted admissions or ledgers", asy
   expect(committed).toBe(true);
   const settled = await readProbeAttempt(root, ID);
   expect(settled.attempts).toBe(1);
-  expect(settled.observations.find(item => item.observation === "renewal")!.sends).toEqual([{ inference: 0, token: 0, confirmed: true }]);
+  expect(settled.observations.find(item => item.observation === "renewal")!.sends).toEqual([]);
   release();
   const late = await pending;
   expect(late.record.lifecycle).not.toBe("started");
