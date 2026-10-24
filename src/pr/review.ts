@@ -271,7 +271,7 @@ export function prReviewWork(options: PrReviewWorkOptions): WorkDefinition {
   const policy: PrReviewPolicy = options.reviewPolicy
     ? { version: options.reviewPolicy.version, requiredRoles: [...options.reviewPolicy.requiredRoles] }
     : { version: DEFAULT_REVIEW_POLICY.version, requiredRoles: [...DEFAULT_REVIEW_POLICY.requiredRoles] };
-  if (!Number.isSafeInteger(sourceLimit) || sourceLimit < 1 || sourceLimit > 32 || !Number.isSafeInteger(contextBytes) || contextBytes < 4096 || contextBytes > 65536 ||
+  if (!Number.isSafeInteger(sourceLimit) || sourceLimit < 1 || sourceLimit > 32 || !Number.isSafeInteger(contextBytes) || contextBytes < 1 || contextBytes > 65536 ||
       !Number.isSafeInteger(outputBytes) || outputBytes < 1 || outputBytes > 65536 ||
       !Number.isSafeInteger(policy.version) || policy.version < 1 || policy.requiredRoles.length < 1 || policy.requiredRoles.length > 8 ||
       policy.requiredRoles.some(role => !/^[a-z][a-z0-9_-]{0,63}$/.test(role))) throw new AppError("invalid_work_definition");
