@@ -9,6 +9,7 @@ import type { ApplicationRunPort } from "../team/run-port";
 import { TransactionStore, schemaVersion } from "../store";
 import { backupDirectoryProblem } from "./backup";
 import { backupNativePortFor } from "./schway-backup";
+import { syncLedgerCheckpoint } from "./lifecycle-ledger";
 import { ManagedService } from "./upgrade-service";
 import { validateArtifact, type BuildManifest } from "../../ops/package/bun-build";
 import { parseServiceConfig, type ServiceConfig } from "../../ops/package/service-config";
@@ -191,9 +192,17 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
     // The managed service owns the queue so an owner upgrade can quiesce, rebuild and reconcile it.
     // Constructing the Application first resolves durable upgrade intent left by a crash.
     const app = new Application(store, input.config, {
-      service: managed, now, backupDir: service.backupDirectory,
+      service: managed, now, backupDir: service.backupDirectory, ledgerPath: service.ledgerPath,
       ...(nativeSnapshot ? { nativeSnapshot } : {}),
     });
+    // app.deletion_ledger/v1: the configured ledger file is the installation ledger's checkpoint. A seed
+    // placeholder is replaced by the real checkpoint; a diverged or unverifiable one keeps the service quarantined.
+    const ledger = syncLedgerCheckpoint(store, service.ledgerPath, now());
+    if (ledger.state !== "trusted") {
+      managed.close();
+      if (!input.store) store.close();
+      return { ok: false, gates: [{ gate: "quarantine", state: "blocked", nextAction: "inspect-quarantine-and-ledger", detail: `lifecycle ledger ${ledger.reason}` }] };
+    }
     // Reconcile sessions and pending deletions through the composed team port before exposing the app
     // (skipped while an upgrade fence holds admission; activation/rollback reconciles), and complete
     // an activated upgrade once that reconciliation succeeded (ops.schema_migrations/v1).

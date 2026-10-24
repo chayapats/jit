@@ -319,6 +319,8 @@ interface JobEvidence {
   contexts: Map<string, { id: string; generation: number }>;
   dispatched: Set<string>;
   extractionSources: SourceReference[];
+  /** A run/synthesis/attempt record was unreadable or carried no structurally valid manifest: what it cited is unknown. */
+  opaque: boolean;
 }
 
 interface ClaimRow { projectId: string; claim: MemoryClaim }
@@ -347,7 +349,7 @@ function jobEvidence(tx: AppTransaction, blockers: Set<string>): Map<string, Job
   const entry = (jobId: string, projectId: string) => {
     let found = jobs.get(jobId);
     if (!found) {
-      found = { jobId, projectId, manifests: [], runIds: new Set(), contexts: new Map(), dispatched: new Set(), extractionSources: [] };
+      found = { jobId, projectId, manifests: [], runIds: new Set(), contexts: new Map(), dispatched: new Set(), extractionSources: [], opaque: false };
       jobs.set(jobId, found);
     }
     return found;
@@ -373,8 +375,10 @@ function jobEvidence(tx: AppTransaction, blockers: Set<string>): Map<string, Job
         target.contexts.set(`${row.contextId}:1`, { id: row.contextId, generation: 1 });
         if (table === "team_runs") target.runIds.add(row.id);
         const parsed = parse(table, row.json);
-        if (!parsed) return;
-        target.manifests.push(...manifestsIn(parsed));
+        if (!parsed) { target.opaque = true; return; }
+        const found = manifestsIn(parsed);
+        if (!found.length || !found.every(validManifest)) target.opaque = true;
+        target.manifests.push(...found);
         const request = parsed.request as { runId?: unknown } | undefined;
         if (typeof request?.runId === "string") target.runIds.add(request.runId);
       }, { blockers });
@@ -384,17 +388,23 @@ function jobEvidence(tx: AppTransaction, blockers: Set<string>): Map<string, Job
       const target = entry(row.jobId, row.projectId);
       target.extractionSources.push({ sourceId: row.sourceId, revision: row.revision, generation: row.generation });
       const parsed = parse("memory_extractions", row.json);
-      if (!parsed) return;
+      if (!parsed) { target.opaque = true; return; }
       // The queued request's context is a placeholder; native contexts come only from admitted attempts.
-      target.manifests.push(...manifestsIn(parsed.request));
+      const found = manifestsIn(parsed.request);
+      // The extraction source alone does not prove what else the request cited (dependencies, claims).
+      if (!found.length || !found.every(validManifest)) target.opaque = true;
+      target.manifests.push(...found);
     }, { blockers });
   scanTable<{ jobId: string; projectId: string | null; json: string }>(tx, "job_attempts",
     "job_id AS jobId, (SELECT project_id FROM jobs WHERE jobs.id = job_attempts.job_id) AS projectId, record_json AS json", row => {
       const parsed = parse("job_attempts", row.json);
       const target = entry(row.jobId, row.projectId ?? "");
-      if (!parsed) return;
+      if (!parsed) { target.opaque = true; return; }
       const data = parsed.data as { runId?: unknown } | null | undefined;
-      target.manifests.push(...manifestsIn(data));
+      const found = manifestsIn(data);
+      // A native run attempt's data is its request: without a valid manifest its session content is unknown.
+      if ((parsed.native as { context?: unknown } | null | undefined)?.context && (!found.length || !found.every(validManifest))) target.opaque = true;
+      target.manifests.push(...found);
       if (typeof data?.runId === "string") target.runIds.add(data.runId);
       // The attempt's native reference is the authoritative managed session identity.
       const native = (parsed.native as { context?: unknown } | null | undefined)?.context as { id?: unknown; generation?: unknown } | null | undefined;
@@ -404,6 +414,12 @@ function jobEvidence(tx: AppTransaction, blockers: Set<string>): Map<string, Job
       }
     }, { blockers });
   return jobs;
+}
+
+/** Bounded, structurally valid manifest: every source has an exact reference and every claim an id. */
+function validManifest(manifest: ManifestLike): boolean {
+  return manifest.sources.length <= 256 && manifest.claims.length <= 256 &&
+    manifest.sources.every(s => !!s && validReference(s.reference)) && manifest.claims.every(c => !!c && typeof c.claimId === "string");
 }
 
 function cites(manifest: ManifestLike, sources: Map<string, SourceEntry>, claims: Map<string, ClaimRow>): boolean {
@@ -1629,4 +1645,51 @@ export function pruneExpiredPreviews(tx: AppTransaction, now: number): number {
   const rows = tx.all<{ id: string }>("SELECT id FROM deletion_previews WHERE expires_at < ? LIMIT 500", now);
   for (const row of rows) tx.run("DELETE FROM deletion_previews WHERE id = ?", row.id);
   return rows.length;
+}
+
+/**
+ * ops.quarantined_restore/v1 replay hook: applies the lineage-bound copy redaction a confirm performs
+ * (producing-run outputs, stored manifests and conversation receipts) to tombstones replayed from the
+ * installation lifecycle ledger into a quarantined image. Identity-only input; dispatches nothing.
+ */
+export function redactReplayedLineage(tx: AppTransaction, sources: { projectId: string; source: SourceReference }[], claimIds: Set<string>): void {
+  // Ledger tombstones do not record their relation; derived-run lookup is a no-op for sources without a producing run.
+  const entries: SourceEntry[] = sources.map(entry => ({ projectId: entry.projectId, source: { ...entry.source }, relation: "derived_output" }));
+  redactDerivedRuns(tx, entries);
+  scrubStoredManifests(tx, new Set(entries.map(entry => sourceKey(entry.source))), claimIds);
+  scrubConversationReceipts(tx, entries, claimIds);
+}
+
+/** One managed native context and what its owning work cited, relative to a lifecycle ledger. */
+export interface ContextCitation { id: string; generation: number; projectId: string; cites: "deleted" | "unknown" | "suppressed" }
+
+/**
+ * ops.quarantined_restore/v1 replay and validation hook over the same job evidence the deletion
+ * inventory uses (team runs, coordinator syntheses, memory extractions and job attempts, with their
+ * managed native contexts). A context is `deleted` when its work cited a deleted source generation or
+ * claim, `unknown` when any of its records is unreadable or lacks a structurally valid manifest (fail
+ * closed: treated like deleted), `suppressed` when it cited forgotten material. Unaffected contexts are
+ * omitted. Inventory blockers (unreadable rows, scan ceilings) are returned and must block activation.
+ */
+export function contextCitations(tx: AppTransaction, deleted: { sources: Set<string>; claims: Set<string> },
+  suppressed: { sources: Set<string>; claims: Set<string> }): { contexts: ContextCitation[]; blockers: string[] } {
+  const blockers = new Set<string>();
+  const jobs = jobEvidence(tx, blockers);
+  const rank = { suppressed: 1, unknown: 2, deleted: 3 } as const;
+  const found = new Map<string, ContextCitation>();
+  const hits = (job: JobEvidence, set: { sources: Set<string>; claims: Set<string> }) =>
+    job.extractionSources.some(s => set.sources.has(sourceKey(s))) || job.manifests.some(m =>
+      m.sources.some(s => validReference(s?.reference) && set.sources.has(sourceKey(s.reference))) ||
+      m.claims.some(c => typeof c?.claimId === "string" && set.claims.has(c.claimId)));
+  for (const job of jobs.values()) {
+    if (!job.contexts.size) continue;
+    const opaque = job.opaque || (!job.manifests.length && !job.extractionSources.length);
+    const verdict: ContextCitation["cites"] | null = hits(job, deleted) ? "deleted" : opaque ? "unknown" : hits(job, suppressed) ? "suppressed" : null;
+    if (!verdict) continue;
+    for (const context of job.contexts.values()) {
+      const current = found.get(context.id);
+      if (!current || rank[verdict] > rank[current.cites]) found.set(context.id, { id: context.id, generation: context.generation, projectId: job.projectId, cites: verdict });
+    }
+  }
+  return { contexts: [...found.values()], blockers: [...blockers].sort() };
 }

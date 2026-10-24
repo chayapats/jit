@@ -15,7 +15,9 @@ reconciliation), `delivery.outbox/v1` (unknown outcomes stay unknown),
 ## Versions
 
 - Target: exactly the schema this build migrates to
-  (`currentSupportedSchema` = `schemaVersion`, 22 at this revision).
+  (`currentSupportedSchema` = `schemaVersion`, 23 at this revision; 23 adds
+  the installation lifecycle ledger of app.deletion_ledger/v1, backfilled from
+  existing tombstones and suppressions).
 - Sources: `minUpgradeSourceSchema` (17) through the target. A recovery point
   needs the managed backup registry (schema 16) and the deletion ledger
   (schema 17); older installations are `manual_recovery_required`.
@@ -26,8 +28,8 @@ reconciliation), `delivery.outbox/v1` (unknown outcomes stay unknown),
   `SNAPSHOT_NATIVE_FORMAT_VERSION` (4) exactly. Anything else is
   `engine_unavailable` or `unsupported_engine`. The scripted default has no
   native port, so it cannot upgrade (fail closed, like backups).
-- Tested from/to: fixture installations at 17, 18, 19, 20 and 21 → 22, and
-  22 → 22 (no schema change; recovery point, validation and reconciliation
+- Tested from/to: fixture installations at 17, 18, 19, 20, 21 and 22 → 23, and
+  23 → 23 (no schema change; recovery point, validation and reconciliation
   still run). No production historical release exists yet; fixtures are the
   evidence.
 
@@ -111,6 +113,16 @@ engine rejections write only the journal file, never the installation
 database. At most 50 terminal journals are retained.
 
 ## Fence and quiesce
+
+`writeUpgradeFence` acquires the fence exclusively (claim hard-linked into
+place; a fence held by another id is never overwritten and raises
+`upgrade_in_progress`/`restore_in_progress`; re-acquiring one's own claim is
+a no-op) and `clearUpgradeFence(path, ownerId)` removes only that owner's
+claim. The fence is shared with `ops.quarantined_restore/v1`: a restore writes it
+with `holder: "restore"` (and its restore id as `upgradeId`). Upgrade prepare
+refuses while any fence or active restore exists, upgrade steps refuse a fence
+held by another id, and upgrade recovery never releases a restore's fence, so
+the two operations exclude each other.
 
 `<db>.upgrade-fence` is created after preflight passes and held through
 activation or rollback; an unreadable fence still fences. While present:

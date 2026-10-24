@@ -67,3 +67,11 @@ _Avoid_: Database copy, export, credential backup.
 **Installation upgrade**:
 An owner-authorized move of the whole installation to the schema this build supports: fence and quiesce, one recovery point, migrations on a staged copy only, validation, atomic activation and reconciliation; never an in-place boot migration or a backup restore.
 _Avoid_: Auto-migration, restore, rollback after activation.
+
+**Quarantined restore**:
+An owner-authorized return of the installation to a managed backup: compatibility and integrity checks, a fenced and quiesced installation, an isolated copy migrated and reconciled against the latest lifecycle ledger, validation, atomic activation and reconciliation before any worker or reader resumes.
+_Avoid_: Database copy-back, backup import, rollback.
+
+**Lifecycle ledger**:
+The installation's append-only, identity-only record of every deletion and forget, kept outside every backup image with an independent checkpoint; the only authority for what a restored image must still not contain.
+_Avoid_: A backup's own tombstones, owner-attested deletion list.

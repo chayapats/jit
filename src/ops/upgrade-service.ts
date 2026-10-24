@@ -2,6 +2,7 @@ import type { AppConfig } from "../config";
 import { composeJobQueue, type ComposeOptions, type ComposedQueue } from "../composition";
 import { AppError } from "../errors";
 import type { JobQueue } from "../jobs/queue";
+import type { ApplicationRunPort } from "../team/run-port";
 import type { TransactionStore } from "../store";
 import type { UpgradeQuiesceResult, UpgradeResumeResult, UpgradeServiceControl } from "./upgrade";
 import { upgradeFenced } from "./upgrade-fence";
@@ -113,6 +114,23 @@ export class ManagedService implements UpgradeServiceControl {
     });
     // Unknown deliveries stay visible and are never resent by reconciliation.
     return { reconciled: true, detail: unknown ? `jobs_sessions_reconciled_unknown_deliveries_${unknown}` : "jobs_sessions_reconciled" };
+  }
+
+  /**
+   * Runs `run` with a freshly composed team port while the durable fence still
+   * holds (ops.quarantined_restore/v1): the composed queue claims the
+   * scheduler but cannot admit or pump anything under the fence, so managed
+   * native-session deletions can complete before any reader or worker is
+   * enabled. The temporary queue is closed afterwards; `resume` composes the
+   * serving queue.
+   */
+  async fencedLifecycle<T>(run: (port: ApplicationRunPort) => Promise<T>): Promise<T> {
+    try { this.#current?.queue.close(); } catch { /* Already closed or store swapped. */ }
+    const composed = this.compose();
+    try { return await run(composed.teamPort); }
+    finally {
+      try { composed.queue.close(); await composed.queue.idle(); } catch { /* Teardown only. */ }
+    }
   }
 
   close(): void { try { this.#current?.queue.close(); } catch { /* Teardown only. */ } }
