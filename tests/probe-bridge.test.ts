@@ -301,3 +301,46 @@ test("an ancestor symlink cannot redirect managed probe state", async () => {
     { ...ports, now: () => 1800000000000, id: () => OTHER_ID }, root)).rejects.toThrow("unsafe_local_directory");
   expect(readdirSync(outside)).toEqual([]);
 });
+
+test("cross-process cancel and commit keep exactly one terminal outcome", async () => {
+  const root = setup();
+  const starter = bridgePorts({ root, fetch: successFetch() });
+  let release!: (event: "unobserved") => void;
+  const gate = new Promise<ProbeEvent>(resolve => { release = resolve as (event: ProbeEvent) => void; });
+  const pending = liveProbe("fixture-probe-host",
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 8000 },
+    { ...starter.ports, now: () => 1800000000000, id: () => ID, infer: () => gate }, root);
+  for (let spin = 0; spin < 100; spin++) {
+    try { await readProbeAttempt(root, ID); break; } catch { await new Promise(r => setTimeout(r, 5)); }
+  }
+  const child = (mode: "cancel" | "commit") => Bun.spawnSync(["bun", "-e", `
+    const { cancelProbeAttempt, commitProbeOutcome, readProbeAttempt } = await import(${JSON.stringify(join(import.meta.dir, "../src/evidence/probe.ts"))});
+    const root = ${JSON.stringify(root)}, id = ${JSON.stringify(ID)};
+    if (${JSON.stringify(mode)} === "cancel") {
+      const record = await readProbeAttempt(root, id).catch(() => null);
+      if (!record) { console.log(JSON.stringify({ kind: "cancel", ok: false })); process.exit(0); }
+      const out = await cancelProbeAttempt(root, id);
+      console.log(JSON.stringify({ kind: "cancel", lifecycle: out.lifecycle }));
+    } else {
+      const record = await readProbeAttempt(root, id).catch(() => null);
+      if (!record || record.lifecycle !== "started") { console.log(JSON.stringify({ kind: "commit", ok: false })); process.exit(0); }
+      const ok = await commitProbeOutcome(root, id, record.observations, 1, 10).catch(() => false);
+      console.log(JSON.stringify({ kind: "commit", ok }));
+    }
+  `]).stdout.toString();
+  const runs: string[] = [];
+  for (let i = 0; i < 4; i++) {
+    runs.push(child("cancel"));
+    runs.push(child("commit"));
+  }
+  const results = runs.map(line => JSON.parse(line) as { kind: string; ok?: boolean; lifecycle?: string });
+  const commitWins = results.filter(item => item.kind === "commit" && item.ok);
+  expect(commitWins.length).toBeLessThanOrEqual(1);
+  release("unobserved");
+  const late = await pending;
+  const final = await readProbeAttempt(root, ID);
+  // No torn records, no post-terminal overwrite, no late success beyond the fenced outcome.
+  expect(final.lifecycle).not.toBe("observed-ready");
+  expect(late.record.lifecycle).not.toBe("observed-ready");
+  if (commitWins.length === 0) expect(final.lifecycle).toBe("cancelled");
+});

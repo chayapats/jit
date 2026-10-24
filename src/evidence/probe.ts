@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readdir, realpath, rename, unlink } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, realpath, readFile, rename, unlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import { routeEvidence, safeAlias, type NextAction, type RouteState } from "./contract";
 
@@ -268,11 +268,77 @@ async function withRecordLock<T>(id: string, work: () => Promise<T>): Promise<T>
   }
 }
 
+/**
+ * Cross-process terminal-claim compare-and-set. The first claimant wins;
+ * losers back off and report the settled record. Stale claims (dead owner or
+ * older than the bound) are taken over so a crash between claim and write
+ * cannot wedge the record forever. Claims are write-once tombstones: they
+ * are never deleted, only superseded by a stale takeover.
+ */
+interface TerminalClaim { owner: number; at: number; kind: "commit" | "cancel" | "reconcile" }
+
+const CLAIM_STALE_MS = 10_000;
+
+function isClaimLive(claim: TerminalClaim, now: number): boolean {
+  if (!Number.isSafeInteger(claim.owner) || claim.owner <= 0 || !Number.isSafeInteger(claim.at) || claim.at > now) return false;
+  if (now - claim.at >= CLAIM_STALE_MS) return false;
+  try {
+    process.kill(claim.owner, 0);
+    return true;
+  } catch (error) {
+    // ESRCH means the owner is gone; EPERM means it exists without signal
+    // permission. Anything unrecognizable keeps the claim (fail closed).
+    return (error as NodeJS.ErrnoException)?.code !== "ESRCH";
+  }
+}
+
+async function readClaim(dir: string, id: string): Promise<TerminalClaim | null> {
+  try {
+    const raw = await readFile(resolve(dir, `${id}.claim.json`), "utf8");
+    const parsed = JSON.parse(raw) as Partial<TerminalClaim>;
+    if (typeof parsed.owner === "number" && typeof parsed.at === "number" && typeof parsed.kind === "string") {
+      return { owner: parsed.owner, at: parsed.at, kind: parsed.kind as TerminalClaim["kind"] };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function tryClaimTerminal(root: string, id: string, kind: TerminalClaim["kind"], now: number): Promise<boolean> {
+  const dir = await probeDirectory(root, true);
+  const path = resolve(dir, `${id}.claim.json`);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const file = await open(path, "wx", 0o600);
+      try {
+        await file.writeFile(JSON.stringify({ owner: process.pid, at: now, kind }));
+        await file.sync();
+      } finally {
+        await file.close();
+      }
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    const current = await readClaim(dir, id);
+    if (current !== null && isClaimLive(current, now)) return false;
+    try {
+      await unlink(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+  return false;
+}
+
 let tmpCounter = 0;
 
 /**
- * Publishes one record atomically: exclusive temp file, fsync, atomic rename,
- * best-effort directory fsync. Readers never observe a torn record.
+ * Publishes one record atomically: exclusive temp file, fsync, atomic rename
+ * and a required directory sync. Directory-open/sync failures are persistence
+ * failures, never best-effort skips: acknowledging them would let dispatch
+ * proceed on evidence a restart cannot see. Failed temp files are removed.
  */
 async function atomicWriteFile(dir: string, name: string, data: string): Promise<void> {
   const tmp = resolve(dir, `${name}.tmp-${process.pid}-${(tmpCounter = (tmpCounter + 1) % 1000000)}.json`);
@@ -280,14 +346,24 @@ async function atomicWriteFile(dir: string, name: string, data: string): Promise
   try {
     await file.writeFile(data);
     await file.sync();
+  } catch (error) {
+    try { await unlink(tmp); } catch { /* Best-effort temp cleanup. */ }
+    throw error;
   } finally {
     await file.close();
   }
-  await rename(tmp, resolve(dir, name));
   try {
-    const dirFd = await open(dir, "r");
-    try { await dirFd.sync(); } finally { await dirFd.close(); }
-  } catch { /* Directory fsync is best effort per platform. */ }
+    await rename(tmp, resolve(dir, name));
+  } catch (error) {
+    try { await unlink(tmp); } catch { /* Best-effort temp cleanup. */ }
+    throw error;
+  }
+  const dirFd = await open(dir, "r");
+  try {
+    await dirFd.sync();
+  } finally {
+    await dirFd.close();
+  }
 }
 
 async function writeAttempt(root: string, record: ProbeAttempt): Promise<void> {
@@ -357,6 +433,7 @@ async function listProbeKeys(root: string): Promise<{ id: string; record: ProbeA
       failures.push(id);
     }
   }
+  if (failures.length > 0) throw new Error(`reconcile-unreadable: ${failures.slice(0, 8).join(",")}`);
   return records;
 }
 
@@ -367,13 +444,16 @@ export async function reconcileProbeAttempts(root: string): Promise<ProbeAttempt
   for (const { id, record } of await listProbeKeys(root)) {
     if (record.lifecycle !== "started") continue;
     try {
-      await withRecordLock(id, async () => {
+      const claimed = await withRecordLock(id, async () => {
         const current = await readProbeAttempt(root, id);
-        if (current.lifecycle !== "started") return;
+        if (current.lifecycle !== "started") return false;
+        if (!(await tryClaimTerminal(root, id, "reconcile", Date.now()))) return false;
         const next: ProbeAttempt = { ...current, lifecycle: "interrupted", nextAction: "inspect-sanitized-failure" };
         await overwriteAttempt(root, next);
         updated.push(next);
+        return true;
       });
+      if (!claimed) failures.push(`${id}:contended`);
     } catch {
       failures.push(id);
     }
@@ -384,13 +464,14 @@ export async function reconcileProbeAttempts(root: string): Promise<ProbeAttempt
 
 /**
  * Cancels a dispatched attempt after an owner stop. Later completions can no
- * longer promote it to success; the serialized compare-and-set keeps the
- * first terminal state.
+ * longer promote it to success; the cross-process claim keeps the first
+ * terminal state across CLI invocations.
  */
 export async function cancelProbeAttempt(root: string, id: string): Promise<ProbeAttempt> {
   return withRecordLock(id, async () => {
     const record = await readProbeAttempt(root, id);
     if (record.lifecycle !== "started") return record;
+    if (!(await tryClaimTerminal(root, id, "cancel", Date.now()))) return readProbeAttempt(root, id);
     const next: ProbeAttempt = { ...record, lifecycle: "cancelled", nextAction: "inspect-sanitized-failure" };
     await overwriteAttempt(root, next);
     return next;
@@ -405,6 +486,7 @@ export async function commitProbeOutcome(root: string, id: string, observations:
   return withRecordLock(id, async () => {
     const record = await readProbeAttempt(root, id);
     if (record.lifecycle !== "started") return false;
+    if (!(await tryClaimTerminal(root, id, "commit", Date.now()))) return false;
     const inference = observations.find(item => item.observation === "live-request")!;
     const credential = observations.find(item => item.observation === "credential-read")!;
     const terminal = inference.event === "unobserved"
