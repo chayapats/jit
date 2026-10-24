@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
-import { constants } from "node:fs";
-import { lstat, mkdir, open, opendir, readdir, realpath, rename, unlink } from "node:fs/promises";
+import { constants, renameSync } from "node:fs";
+import { lstat, mkdir, open, opendir, readdir, realpath, unlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import { routeEvidence, safeAlias, type NextAction, type RouteState } from "./contract";
 
@@ -41,6 +41,14 @@ export interface ProbeObservationEntry {
   nextAction: NextAction;
   attempts: number;
   elapsedMs: number;
+  /**
+   * Per-admission provider-send ledger, auditable evidence for the pinned
+   * transport bound. Only the renewal observation carries it (one entry per
+   * admitted infer call, each bounded by the pinned per-admission ceiling);
+   * every other observation carries an empty array. Absent on pre-bridge
+   * records, which predate provider-send accounting.
+   */
+  sends?: { inference: number; token: number }[];
 }
 
 /** Persisted probe attempt; terminal route states never overwrite an interrupted/cancelled lifecycle. */
@@ -175,6 +183,18 @@ export function parseProbeConfig(raw: unknown): { installationLabel: string } {
 const exactKeys = (value: unknown, keys: string[]): value is Record<string, unknown> =>
   !!value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
 
+/**
+ * Validates a per-admission provider-send ledger: one entry per admitted
+ * infer call, each bounded by the pinned per-admission structural ceiling
+ * (two inference sends plus two token sends). Anything wider fails closed.
+ */
+function validSendLedger(value: unknown, maxAttempts: number): value is { inference: number; token: number }[] {
+  if (!Array.isArray(value) || value.length > maxAttempts) return false;
+  return value.every(item => !!item && typeof item === "object" && !Array.isArray(item) &&
+    Object.keys(item).sort().join(",") === "inference,token" &&
+    [item.inference, item.token].every(n => Number.isSafeInteger(n) && (n as number) >= 0 && (n as number) <= 2));
+}
+
 /** Rejects malformed or unknown-field probe records before any read, write or export. */
 export function validateProbeAttempt(value: unknown): asserts value is ProbeAttempt {
   if (!exactKeys(value, ["schema", "id", "observedAt", "installationLabel", "mode", "route", "model", "lifecycle",
@@ -195,7 +215,9 @@ export function validateProbeAttempt(value: unknown): asserts value is ProbeAtte
   const seen = new Set<string>();
   for (const item of record.observations) {
     const itemEntry = item as ProbeObservationEntry;
-    if (!exactKeys(itemEntry, ["observation", "probeClass", "event", "state", "nextAction", "attempts", "elapsedMs"]) ||
+    const { sends, ...rest } = itemEntry as ProbeObservationEntry & { sends?: unknown };
+    if (!exactKeys(rest, ["observation", "probeClass", "event", "state", "nextAction", "attempts", "elapsedMs"]) ||
+        (sends !== undefined && !validSendLedger(sends, record.maxAttempts)) ||
         !probeObservations.includes(itemEntry.observation) || seen.has(itemEntry.observation) ||
         (itemEntry.observation === "live-request" ? itemEntry.probeClass !== "inference"
           : itemEntry.observation === "renewal" ? itemEntry.probeClass !== "renewal" : itemEntry.probeClass !== "preflight") ||
@@ -220,11 +242,12 @@ export function validateProbeAttempt(value: unknown): asserts value is ProbeAtte
 }
 
 function entry(route: string, model: string | null, bounds: { maxAttempts: number; deadlineMs: number },
-  observation: ProbeObservation, event: ProbeEvent, attempts: number, elapsedMs: number): ProbeObservationEntry {
+  observation: ProbeObservation, event: ProbeEvent, attempts: number, elapsedMs: number,
+  sends: { inference: number; token: number }[] = []): ProbeObservationEntry {
   const probeClass = observation === "live-request" ? "inference" as const : observation === "renewal" ? "renewal" as const : "preflight" as const;
   const classified = routeEvidence({ route, model, observation: observation === "service-start" ? "service-start" : observation,
     probeClass, maxAttempts: bounds.maxAttempts, attempts, deadlineMs: bounds.deadlineMs, elapsedMs, configured: true, event });
-  return { observation, probeClass, event, state: classified.state, nextAction: classified.nextAction, attempts, elapsedMs };
+  return { observation, probeClass, event, state: classified.state, nextAction: classified.nextAction, attempts, elapsedMs, sends };
 }
 
 /** A credential read is one observation; only an actual read outcome counts as an attempt. */
@@ -507,8 +530,11 @@ async function atomicWriteFile(dir: string, name: string, data: string, preRenam
     try { await unlink(tmp); } catch { /* Best-effort temp cleanup. */ }
     throw error;
   }
+  // The rename is synchronous: no await yields between the pre-rename abort
+  // check and the linearization point, so a deadline firing in that window
+  // cannot publish success after the check. Directory durability follows.
   try {
-    await rename(tmp, resolve(dir, name));
+    renameSync(tmp, resolve(dir, name));
   } catch (error) {
     try { await unlink(tmp); } catch { /* Best-effort temp cleanup. */ }
     throw error;
@@ -719,6 +745,7 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
   // concurrent cancel/reconcile/commit wins exactly once, and losers report
   // the settled record byte-for-byte instead of overwriting it.
   let attempts = 0, inference: ProbeEvent = "failed", inferenceSends = 0, tokenSends = 0;
+  const sendLedger: { inference: number; token: number }[] = [];
   const finishSelf = async (attemptsUsed: number) => ({ elapsedMs: elapsed(), attemptsUsed, maxAttempts,
     providerSends: { inference: inferenceSends, token: tokenSends }, ...(await selfResources(root)) });
   const abortTo = async (observations: ProbeObservationEntry[], attemptsUsed: number) => {
@@ -775,13 +802,15 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
     }
     // Exact provider-send accounting: every transport send during the
     // admitted attempt is counted, including Schway-owned refresh traffic.
-    // A silent inference replay therefore always surfaces in the count
-    // instead of hiding inside one recorded attempt.
+    // A silent inference replay therefore always surfaces in the per-call
+    // ledger instead of hiding inside one recorded attempt.
     const sends = ports.takeProviderSends?.();
-    if (sends) {
-      inferenceSends += Math.max(0, sends.inference | 0);
-      tokenSends += Math.max(0, sends.token | 0);
-    }
+    const call = sends
+      ? { inference: Math.max(0, sends.inference | 0), token: Math.max(0, sends.token | 0) }
+      : { inference: 0, token: 0 };
+    sendLedger.push(call);
+    inferenceSends += call.inference;
+    tokenSends += call.token;
     // Counter-validation failure terminalizes as failed, never as success
     // and never by leaving the record started: the pinned per-admission
     // structural bound is two inference sends plus two token sends.
@@ -799,13 +828,16 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
     // The inference result arrived too late: record that inference was
     // attempted but keep the cancelled lifecycle so it can never read success.
     // The live-request observation stays non-success inside the same terminal
-    // transaction, so a cancelled probe is never exported as success.
+    // transaction, so a cancelled probe is never exported as success. The
+    // per-admission send ledger is retained for audit either way.
     const observations: ProbeObservationEntry[] = [base[0]!, credentialEntry(route, model, bounds, credential),
-      entry(route, model, bounds, "live-request", "unobserved", attempts, elapsed()), base[3]!];
+      entry(route, model, bounds, "live-request", "unobserved", attempts, elapsed()),
+      entry(route, model, bounds, "renewal", "unobserved", 0, elapsed(), sendLedger)];
     return abortTo(observations, attempts);
   }
   const observations: ProbeObservationEntry[] = [base[0]!, credentialEntry(route, model, bounds, credential),
-    entry(route, model, bounds, "live-request", inference, attempts, elapsed()), base[3]!];
+    entry(route, model, bounds, "live-request", inference, attempts, elapsed()),
+    entry(route, model, bounds, "renewal", "unobserved", 0, elapsed(), sendLedger)];
   // The signal is rechecked inside the winning transaction, immediately
   // before publication: an abort that fires during the terminal file write
   // publishes cancelled with non-success evidence in that same transaction
@@ -839,6 +871,7 @@ export function exportProbeSummary(record: ProbeAttempt) {
     deadlineMs: record.deadlineMs, elapsedMs: record.elapsedMs,
     observations: record.observations.map(item => ({ observation: item.observation, probeClass: item.probeClass,
       event: item.event === "success" ? "success" : "not-success", state: item.state, nextAction: item.nextAction,
-      attempts: item.attempts, elapsedMs: item.elapsedMs })),
+      attempts: item.attempts, elapsedMs: item.elapsedMs,
+      sends: (item.sends ?? []).map(call => ({ inference: call.inference, token: call.token })) })),
     promptBytes: record.promptBytes, nextAction: record.nextAction };
 }

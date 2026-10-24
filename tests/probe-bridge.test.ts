@@ -63,15 +63,17 @@ function sseSuccess(text = "ready", inputTokens = 5, outputTokens = 3): string {
 const successFetch = (text = "ready"): HostAuthFetch => async () =>
   new Response(sseSuccess(text), { status: 200, headers: { "content-type": "text/event-stream" } });
 
-function bridgePorts(overrides: { root?: string; store?: HostCredentialStore | null; fetch?: HostAuthFetch | undefined; id?: string } = {}) {
+function bridgePorts(overrides: { root?: string; route?: "grok" | "codex"; model?: string; store?: HostCredentialStore | null; fetch?: HostAuthFetch | undefined; id?: string } = {}) {
   const root = overrides.root ?? setup();
-  const options: { route: "grok"; model: string; root: string; store?: HostCredentialStore; fetch?: HostAuthFetch } =
-    { route: "grok", model: "grok-4-fixture", root };
+  const route = overrides.route ?? "grok";
+  const model = overrides.model ?? (route === "codex" ? "codex-fixture" : "grok-4-fixture");
+  const options: { route: "grok" | "codex"; model: string; root: string; store?: HostCredentialStore; fetch?: HostAuthFetch } =
+    { route, model, root };
   if (overrides.store === undefined) options.store = memStore(validTokens);
   else if (overrides.store !== null) options.store = overrides.store;
   if (overrides.fetch) options.fetch = overrides.fetch;
   const ports = bridgeProbePorts(options);
-  return { root, ports: { ...ports, now: () => 1800000000000, id: () => overrides.id ?? ID } };
+  return { root, route, model, ports: { ...ports, now: () => 1800000000000, id: () => overrides.id ?? ID } };
 }
 
 test("bridge probe reports observed-ready only for a successful selected-route request", async () => {
@@ -220,6 +222,7 @@ test("a refreshable 401 admits exactly one retry inside the single attempt budge
   const renewal = record.observations.find(item => item.observation === "renewal")!;
   expect(renewal.event).toBe("unobserved");
   expect(renewal.attempts).toBe(0);
+  expect(renewal.sends).toEqual([{ inference: 2, token: 1 }]);
   expect(self.providerSends).toEqual({ inference: 2, token: 1 });
 });
 
@@ -450,4 +453,56 @@ test("restart preserves admitted attempts instead of recording zero", async () =
   const late = await pending;
   expect(late.record.lifecycle).toBe("interrupted");
   expect(late.record.attempts).toBe(1);
+});
+
+test("codex success reports exact counts with no renewal claim", async () => {
+  const { root, route, model, ports } = bridgePorts({ route: "codex", fetch: successFetch("codex ready") });
+  const { record, self } = await liveProbe("fixture-probe-host",
+    { route, model, maxAttempts: 3, deadlineMs: 8000 }, ports, root);
+  expect(record.lifecycle).toBe("observed-ready");
+  expect(record.route).toBe("codex");
+  expect(record.attempts).toBe(1);
+  expect(record.observations.find(item => item.observation === "renewal")).toMatchObject({ event: "unobserved", attempts: 0 });
+  expect(self.providerSends).toEqual({ inference: 1, token: 0 });
+  const renewal = record.observations.find(item => item.observation === "renewal")!;
+  expect(renewal.sends).toEqual([{ inference: 1, token: 0 }]);
+  const live = record.observations.find(item => item.observation === "live-request")!;
+  expect(live.sends).toEqual([]);
+});
+
+test("codex deadline aborts refresh traffic with no post-deadline credential write", async () => {
+  const root = setup();
+  let tokenCalls = 0, setCalls = 0;
+  let releaseToken!: (response: Response) => void;
+  const tokenGate = new Promise<Response>(resolve => { releaseToken = resolve; });
+  const store: HostCredentialStore = {
+    get: async () => JSON.stringify({ accessToken: "old-access", refreshToken: "refresh-token", obtainedAt: 0, expiresAt: 1 }),
+    set: async () => { setCalls++; },
+    delete: async () => true,
+  };
+  const fetch: HostAuthFetch = async (input: any, init?: any) => {
+    const url = String(typeof input === "string" ? input : input.url);
+    if (url.toLowerCase().includes("token")) {
+      tokenCalls++;
+      // A faithful transport honors abort: the composed probe signal rejects
+      // the pending refresh instead of letting it complete after the deadline.
+      if (init?.signal?.aborted) throw new Error("aborted");
+      return await Promise.race([
+        tokenGate,
+        new Promise<never>((_, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true })),
+      ]);
+    }
+    return new Response(sseSuccess("late codex"), { status: 200, headers: { "content-type": "text/event-stream" } });
+  };
+  const ports = bridgeProbePorts({ route: "codex", model: "codex-fixture", root, store, fetch });
+  const { record } = await liveProbe("fixture-probe-host",
+    { route: "codex", model: "codex-fixture", maxAttempts: 1, deadlineMs: 100 },
+    { ...ports, now: () => 1800000000000, id: () => OTHER_ID }, root);
+  expect(record.lifecycle).toBe("cancelled");
+  expect(tokenCalls).toBe(1);
+  // Releasing the refresh after the deadline must not write credentials:
+  // the composed signal already settled the refresh as aborted.
+  releaseToken(new Response(JSON.stringify({ access_token: "late-access", refresh_token: "r", expires_in: 3600 }), { status: 200 }));
+  await new Promise(r => setTimeout(r, 200));
+  expect(setCalls).toBe(0);
 });

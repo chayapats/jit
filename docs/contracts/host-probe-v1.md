@@ -69,11 +69,12 @@ Each record carries four labeled entries that cannot stand in for each other:
   transport fails the attempt closed if the bound is ever exceeded, and the
   exact per-attempt send counts are reported (see renewal).
 - `renewal` / `renewal`: always `unobserved` with zero attempts — never a
-  readiness or success claim. Schway-owned renewal traffic is reported only
-  as exact bounded counts in the probe self sample (`providerSends`), with a
-  pinned per-admission structural bound (two inference sends plus two token
-  sends) enforced fail-closed. A successful login never becomes renewal
-  evidence on its own. Full per-request accounting awaits schway#415.
+  readiness or success claim. The renewal observation carries a validated
+  per-admission send array (one `{inference, token}` entry per admitted
+  infer call, each bounded by the pinned 2+2 ceiling, empty on preflight),
+  retained through restart reconciliation and included in the allowlisted
+  export. A successful login never becomes renewal evidence on its own.
+  Full per-request accounting awaits schway#415.
 
 ## Storage
 
@@ -94,9 +95,10 @@ with strict context, an exact empty tool registry, single-turn/single-attempt
 bounds and the live deadline, then submits one route-bound request and closes.
 The live loop bounds total attempts; no outer retry exists beyond the stated
 budget. Provider-send budget per admitted attempt: at most two inference
-sends plus token-endpoint sends on the pinned release (structurally bounded,
-counted per call, fail-closed on violation). The exact counts surface in the
-renewal observation; a successful login alone never becomes renewal evidence.
+sends plus two token sends on the pinned release (structurally bounded,
+counted per call, fail-closed on violation). The exact per-admission counts
+persist in the renewal observation ledger and surface in the self sample;
+a successful login alone never becomes renewal evidence.
 
 ## Evidence
 

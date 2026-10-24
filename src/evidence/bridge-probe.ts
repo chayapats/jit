@@ -67,12 +67,13 @@ const MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
  * The Grok adapter performs at most one transparent 401 refresh plus one
  * inference replay (no loop); the Codex adapter performs no silent inference
  * replay. One admitted attempt therefore issues at most two inference sends
- * plus token-endpoint sends. The counting transport below reports exact
+ * plus two token sends. The counting transport below reports exact
  * counts and fails the attempt closed when the bound is ever exceeded, so a
  * future pin change cannot silently widen the budget. Exact per-request
  * accounting beyond this bound awaits schway#415.
  */
 export const BRIDGE_MAX_INFERENCE_SENDS = 2;
+export const BRIDGE_MAX_TOKEN_SENDS = 2;
 
 /** Exact provider-send counts observed on one bounded infer call. */
 export interface BridgeProviderSends { inference: number; token: number }
@@ -93,16 +94,7 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
   const providedFetch = options.fetch;
   let lastSends: BridgeProviderSends = { inference: 0, token: 0 };
 
-  /** Counts every provider send; token endpoints carry "token" on both pinned routes. */
-  const countingFetch: HostAuthFetch = async (input, init) => {
-    const url = String(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
-    if (url.toLowerCase().includes("token")) lastSends.token++;
-    else lastSends.inference++;
-    const transport = providedFetch ?? ((target: string | URL | Request, requestInit?: RequestInit) => fetch(target as string, requestInit));
-    return transport(input, init);
-  };
-
-  const openHost = async (deadlineMs: number) => {
+  const openHost = async (deadlineMs: number, fetch: HostAuthFetch) => {
     const dirs = probeHostDirs(options.root);
     ensureServiceDir(dirs.base);
     ensureServiceDir(dirs.workspaceRoot);
@@ -126,7 +118,7 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
         deadlineMs: Math.min(Math.max(1, deadlineMs), 86_400_000),
         maxAttempts: BRIDGE_PROBE_MAX_ATTEMPTS,
       },
-      auth: { ...selection, ...(store ? { store } : null), fetch: countingFetch },
+      auth: { ...selection, ...(store ? { store } : null), fetch },
     });
   };
 
@@ -157,17 +149,33 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
       if (input.route !== selection.route || input.model !== selection.model) {
         throw new Error("invalid_probe_input");
       }
-      lastSends = { inference: 0, token: 0 };
+      // Per-call transport: counts every provider send and composes the live
+      // probe signal into every request, so a deadline aborts Schway-owned
+      // refresh traffic as well — no post-deadline credential mutation.
+      // Token endpoints carry "token" on both pinned routes.
+      const sends: BridgeProviderSends = { inference: 0, token: 0 };
+      lastSends = sends;
+      const countingFetch: HostAuthFetch = async (target, init) => {
+        const url = String(typeof target === "string" ? target : target instanceof URL ? target.href : target.url);
+        if (url.toLowerCase().includes("token")) sends.token++;
+        else sends.inference++;
+        const composed = init?.signal
+          ? { ...init, signal: AbortSignal.any([signal, init.signal]) }
+          : { ...init, signal };
+        const transport = providedFetch ?? ((t: string | URL | Request, requestInit?: RequestInit) => fetch(t as string, requestInit));
+        return transport(target, composed);
+      };
       let host: HostRuntime | null = null;
       let session: HostSession | null = null;
       try {
-        host = await openHost(input.deadlineMs);
+        host = await openHost(input.deadlineMs, countingFetch);
         session = await host.createSession();
         const options: HostRunOptions = { signal };
         const result = await session.submitWithRoute({ text: BRIDGE_PROBE_PROMPT }, options);
         // Fail closed on a structural budget violation: the pinned adapters
-        // issue at most two inference sends per admitted attempt.
-        if (lastSends.inference > BRIDGE_MAX_INFERENCE_SENDS) return "failed";
+        // issue at most two inference sends plus two token sends per
+        // admitted attempt (one Schway-owned refresh plus its replay, no loop).
+        if (sends.inference > BRIDGE_MAX_INFERENCE_SENDS || sends.token > BRIDGE_MAX_TOKEN_SENDS) return "failed";
         if (result.outcome === "completed") return "success";
         switch (result.auth.status) {
           case "needs-login": return "login";
