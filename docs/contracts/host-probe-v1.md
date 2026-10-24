@@ -75,11 +75,15 @@ Each record carries four labeled entries that cannot stand in for each other:
   instead of wedging the deadline. Production uses the supported Schway
   guard seam (schway#416, landed): post-terminal writes are refused on
   Schway's own default native store, so no late settlement becomes
-  credential evidence. A terminal record written while a credential write
-  is still unresolved, or after a cleanup failed to verify, reports
-  `store-unavailable` / `check-secure-store`, never a clean
-  cancelled/failed claim. This is conservative: a later successful cleanup
-  cannot downgrade the immutable record.
+  credential evidence. Write admission is recorded under the same
+  serialization as the terminal compare-and-set. Every in-process terminal
+  writer (commit, cancel, reconcile, deadline abort, final publication)
+  reports `store-unavailable` / `check-secure-store` instead of a clean
+  claim in three cases: a credential write is still unresolved, a cleanup
+  or record read failed to verify, or a Schway guard window is open. The
+  guard cannot observe the native write, so an admitted guard call holds a
+  window until the issuing infer call settles. This is conservative: a
+  later successful cleanup cannot downgrade the immutable record.
 - `renewal` / `renewal`: always `unobserved` with zero attempts — never a
   readiness or success claim. The renewal observation carries a validated
   per-send ledger (one `{inference, token, confirmed, admission}` entry per

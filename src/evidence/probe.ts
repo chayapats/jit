@@ -159,7 +159,7 @@ export interface ProbePorts {
    * orchestration. Ports instances are single-flight: overlapping infer
    * calls on one instance throw instead of silently swapping counts.
    */
-  infer(input: { route: string; model: string; prompt: typeof PROBE_PROMPT; tools: readonly []; discovery: { repository: false; hosted: false }; deadlineMs: number; gate?: <R>(kind: "inference" | "token", start: () => Promise<R>) => Promise<R>; fence?: { write<T>(work: () => Promise<T>): Promise<T>; writeStore(identity: { account: string }, value: string, store: { get(identity: { account: string }): Promise<string | null>; set(identity: { account: string }, value: string): Promise<void>; delete(identity: { account: string }): Promise<boolean>; compareAndDelete(identity: { account: string }, expectedValue: string): Promise<boolean> }): Promise<void> } }, signal: AbortSignal): Promise<ProbeEvent>;
+  infer(input: { route: string; model: string; prompt: typeof PROBE_PROMPT; tools: readonly []; discovery: { repository: false; hosted: false }; deadlineMs: number; gate?: <R>(kind: "inference" | "token", start: () => Promise<R>) => Promise<R>; fence?: { write<T>(work: () => Promise<T>): Promise<T>; guard?(): Promise<void>; writeStore(identity: { account: string }, value: string, store: { get(identity: { account: string }): Promise<string | null>; set(identity: { account: string }, value: string): Promise<void>; delete(identity: { account: string }): Promise<boolean>; compareAndDelete(identity: { account: string }, expectedValue: string): Promise<boolean> }): Promise<void> } }, signal: AbortSignal): Promise<ProbeEvent>;
 }
 
 /** Live options demand explicit opt-in: exact route/model plus finite attempts/deadline. */
@@ -417,9 +417,58 @@ function resolveWrite(id: string): void {
   else unresolvedWrites.set(id, count - 1);
 }
 
+/**
+ * Open Schway-owned mutation windows per attempt. The supported guard seam
+ * cannot tell a pre-write from a post-write call, so any admitted guard
+ * call opens a window for the infer call that issued it, closed only when
+ * that infer call actually settles (Schway awaits its own write and
+ * cleanup inside it). Conservative: a terminal record written while a
+ * window is open reports uncertainty even if the write had already landed
+ * legitimately.
+ */
+const schwayWindows = new Map<string, Set<object>>();
+
+function openWindow(id: string, token: object): void {
+  const open = schwayWindows.get(id) ?? new Set<object>();
+  open.add(token);
+  schwayWindows.set(id, open);
+}
+
+function closeWindow(id: string, token: object): void {
+  const open = schwayWindows.get(id);
+  if (!open) return;
+  open.delete(token);
+  if (open.size === 0) schwayWindows.delete(id);
+}
+
 /** True when the attempt cannot claim clean final credential visibility. */
 function cleanupUnverified(id: string): boolean {
-  return cleanupUncertainIds.has(id) || (unresolvedWrites.get(id) ?? 0) > 0;
+  return cleanupUncertainIds.has(id) || (unresolvedWrites.get(id) ?? 0) > 0 || (schwayWindows.get(id)?.size ?? 0) > 0;
+}
+
+/**
+ * Rewrites a terminal record to store-unavailable when credential visibility
+ * cannot be verified. Applied inside the terminal CAS for every writer
+ * (commit, cancel, reconcile, abort, final publication), under the same
+ * serialization that admits credential writes, so no writer can publish a
+ * clean claim over an unresolved in-process write.
+ */
+function uncertainTerminal(next: ProbeAttempt): ProbeAttempt {
+  if (next.lifecycle === "store-unavailable" || next.route === null) return next;
+  const bounds = { maxAttempts: next.maxAttempts, deadlineMs: next.deadlineMs };
+  // Writes are only admitted inside an admitted attempt, so the live entry
+  // carries the durable count; with none admitted the store state belongs
+  // to the credential observation instead.
+  return { ...next, lifecycle: "store-unavailable", nextAction: "check-secure-store",
+    observations: next.observations.map(item => next.attempts > 0
+      ? item.observation === "live-request"
+        ? entry(next.route!, next.model, bounds, "live-request", "store", next.attempts, item.elapsedMs)
+        : item
+      : item.observation === "credential-read"
+        ? credentialEntry(next.route!, next.model, bounds, "store")
+        : item.observation === "live-request"
+          ? entry(next.route!, next.model, bounds, "live-request", "unobserved", 0, item.elapsedMs)
+          : item) };
 }
 
 /** Marker for a credential-cleanup outcome that could not be verified; never carries secret material.
@@ -576,6 +625,7 @@ async function transitionTerminal(root: string, id: string,
           db.exec("ROLLBACK");
           return { committed: false, record: current };
         }
+        if (cleanupUnverified(id)) next = uncertainTerminal(next);
         validateProbeAttempt(next);
         try {
           await atomicWriteFile(dir, `${id}.json`, JSON.stringify(next) + "\n", () => {
@@ -586,11 +636,12 @@ async function transitionTerminal(root: string, id: string,
           // The deadline fired during publication: publish cancelled with
           // non-success evidence in this same winning transaction instead of
           // the success payload that was already built.
-          const fallback = opts.abortBuild?.(current) ?? null;
+          let fallback = opts.abortBuild?.(current) ?? null;
           if (fallback === null) {
             db.exec("ROLLBACK");
             return { committed: false, record: current };
           }
+          if (cleanupUnverified(id)) fallback = uncertainTerminal(fallback);
           validateProbeAttempt(fallback);
           await atomicWriteFile(dir, `${id}.json`, JSON.stringify(fallback) + "\n");
           next = fallback;
@@ -621,7 +672,7 @@ async function transitionTerminal(root: string, id: string,
  * Throws `fenced`
  * when the record is already terminal or the signal is already aborted.
  */
-export async function fencedStoreWrite<T>(root: string, id: string, signal: AbortSignal | null, work: () => Promise<T>): Promise<T> {
+export async function fencedStoreWrite<T>(root: string, id: string, signal: AbortSignal | null, work: () => Promise<T>, onAdmit?: () => void): Promise<T> {
   if (signal?.aborted) throw new Error("fenced");
   const dir = await probeDirectory(root, true);
   // Phase 1: quick dispatch check under the shared serialization. The lock
@@ -639,6 +690,10 @@ export async function fencedStoreWrite<T>(root: string, id: string, signal: Abor
           db.exec("ROLLBACK");
           throw new Error("fenced");
         }
+        // Admission is recorded inside the same serialization the terminal
+        // CAS uses: a terminal writer either runs first (and this write is
+        // refused) or observes the admission and reports uncertainty.
+        onAdmit?.();
         db.exec("ROLLBACK");
       } catch (error) {
         try { db.exec("ROLLBACK"); } catch { /* Already rolled back. */ }
@@ -872,10 +927,8 @@ export async function cancelProbeAttempt(root: string, id: string): Promise<Prob
   // A failed settlement-attached cleanup marks the attempt uncertain, so
   // the record reports store-unavailable instead of a clean cancelled claim.
   await settleInflightWrites(id);
-  const uncertain = cleanupUnverified(id);
   const { record } = await transitionTerminal(root, id, current => ({
-    ...current, lifecycle: uncertain ? "store-unavailable" as const : "cancelled",
-    nextAction: uncertain ? "check-secure-store" as const : "inspect-sanitized-failure",
+    ...current, lifecycle: "cancelled", nextAction: "inspect-sanitized-failure",
   }));
   return record;
 }
@@ -1007,16 +1060,14 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
     // the record reports store-unavailable instead of a clean cancelled
     // claim over a possibly visible credential.
     await settleInflightWrites(id);
-    const uncertain = cleanupUnverified(id);
     const { record } = await transitionTerminal(root, id, current => {
       const renewal = current.observations.find(item => item.observation === "renewal")!;
-      const event = uncertain ? "store" as const : liveEvent;
-      return { ...current, lifecycle: uncertain ? "store-unavailable" as const : "cancelled",
+      return { ...current, lifecycle: "cancelled",
         observations: [current.observations[0]!,
           credentialEntry(route, model, bounds, credentialEvent),
-          entry(route, model, bounds, "live-request", event, current.attempts, elapsed()),
+          entry(route, model, bounds, "live-request", liveEvent, current.attempts, elapsed()),
           renewal],
-        attempts: current.attempts, elapsedMs: elapsed(), nextAction: uncertain ? "check-secure-store" as const : "inspect-sanitized-failure" };
+        attempts: current.attempts, elapsedMs: elapsed(), nextAction: "inspect-sanitized-failure" };
     });
     return { record, self: await finishSelf(record) };
   };
@@ -1155,9 +1206,26 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
   const inflight = new Set<Promise<unknown>>();
   inflightWrites.set(id, inflight);
   probeDeadlines.set(id, { startedAt: Date.now(), deadlineMs: bounds.deadlineMs });
+  // The infer call currently in flight; guard admissions open a window
+  // bound to it, closed when that call settles (not when the deadline race
+  // abandons it).
+  let currentInfer: object | null = null;
   const fence = {
     write: <T>(work: () => Promise<T>): Promise<T> => {
       const pending = fencedStoreWrite(root, id, effective, work);
+      inflight.add(pending);
+      pending.then(() => inflight.delete(pending), () => inflight.delete(pending));
+      return pending;
+    },
+    // Supported Schway guard seam for Schway's own native store: the guard
+    // only sees the dispatch decision, never the mutation itself, so an
+    // admitted call opens a mutation window until the issuing infer call
+    // settles. Terminalizing inside the window reports store-unavailable.
+    guard: (): Promise<void> => {
+      const token = currentInfer;
+      const pending = fencedStoreWrite(root, id, effective, async () => {}, () => {
+        if (token !== null) openWindow(id, token);
+      });
       inflight.add(pending);
       pending.then(() => inflight.delete(pending), () => inflight.delete(pending));
       return pending;
@@ -1181,12 +1249,14 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
       // primitive cannot be cleaned, so it cannot be fenced.
       if (typeof store.compareAndDelete !== "function") throw new Error("fenced");
       const op = (async () => {
-        const slot: { raw: Promise<void> | null } = { raw: null };
+        const slot: { raw: Promise<void> | null; admitted: boolean } = { raw: null, admitted: false };
         const outcome = await (async () => {
           const pending = fencedStoreWrite(root, id, effective, () => {
-            unresolvedWrites.set(id, (unresolvedWrites.get(id) ?? 0) + 1);
             slot.raw = store.set(identity, value);
             return slot.raw;
+          }, () => {
+            slot.admitted = true;
+            unresolvedWrites.set(id, (unresolvedWrites.get(id) ?? 0) + 1);
           });
           try {
             await pending;
@@ -1202,7 +1272,16 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
           // (already removed or legitimately replaced) is a clean no-op,
           // never an error.
           const settled = await readProbeAttempt(root, id).catch(() => null);
-          if (settled !== null && settled.lifecycle !== "started") {
+          if (settled === null) {
+            // Unverifiable: the record could not be read, so neither keeping
+            // nor removing the value is proven safe. Removing could destroy a
+            // legitimate credential of a still-running attempt; instead the
+            // write stays unresolved and marked uncertain, so terminalization
+            // reports store-unavailable.
+            cleanupUncertainIds.add(id);
+            return;
+          }
+          if (settled.lifecycle !== "started") {
             try {
               await store.compareAndDelete(identity, value);
             } catch (error) {
@@ -1223,6 +1302,8 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
         // concurrent legitimate write. Wait for settlement bounded by the
         // remaining live deadline so acknowledgement observes the outcome.
         const raw = slot.raw;
+        // Admitted but aborted before the backend was invoked: nothing ran.
+        if (raw === null && slot.admitted) resolveWrite(id);
         if (raw !== null) {
           const budget = probeDeadlines.get(id);
           const remaining = budget === undefined
@@ -1290,7 +1371,14 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
     // start provider contact afterward: recheck before invoking the port.
     if (effective.aborted) break;
     try {
-      const outcome = await withDeadline(() => ports.infer({ route, model, prompt: PROBE_PROMPT, tools: PROBE_TOOLS, discovery: { ...PROBE_DISCOVERY }, deadlineMs: bounds.deadlineMs, gate: gateSend, fence }, effective));
+      const token = {};
+      const outcome = await withDeadline(() => {
+        currentInfer = token;
+        const call = ports.infer({ route, model, prompt: PROBE_PROMPT, tools: PROBE_TOOLS, discovery: { ...PROBE_DISCOVERY }, deadlineMs: bounds.deadlineMs, gate: gateSend, fence }, effective);
+        const close = () => closeWindow(id, token);
+        call.then(close, close);
+        return call;
+      });
       inference = probeEvents.includes(outcome) ? outcome : "failed";
     } catch {
       inference = "failed";
@@ -1330,11 +1418,8 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
   // publishes cancelled with non-success evidence in that same transaction
   // instead of leaving aborted success behind.
   await transitionTerminal(root, id, current => {
-    // A failed cleanup marks the attempt uncertain: uncertainty wins over
-    // every other terminal claim, so the record reports store-unavailable
-    // instead of success, cancelled, or a clean failure over a possibly
-    // visible credential.
-    if (cleanupUnverified(id)) return terminalFor(current, "store");
+    // Unverified credential visibility is applied inside the CAS itself
+    // (uncertainTerminal), so it wins over every claim built here.
     if (effective.aborted) {
       return { ...terminalFor(current, "failed"), lifecycle: "cancelled", nextAction: "inspect-sanitized-failure" };
     }
@@ -1347,6 +1432,7 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
     probeDeadlines.delete(id);
     cleanupUncertainIds.delete(id);
     unresolvedWrites.delete(id);
+    schwayWindows.delete(id);
   }
 }
 

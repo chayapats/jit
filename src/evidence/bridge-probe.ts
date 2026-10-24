@@ -191,8 +191,11 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
       // The supported guard carries the same lifecycle fence to Schway's own
       // store: the dispatch check runs inside the serialization and the
       // mutation races the live signal outside every lock.
+      // An admitted guard call opens a mutation window held until this infer
+      // call settles, since the guard cannot observe the native write itself.
       const credentialWriteGuard = fence && !base ? async (): Promise<void> => {
-        await fence.write(async () => {});
+        if (fence.guard) await fence.guard();
+        else await fence.write(async () => {});
       } : undefined;
       // Per-call transport: the shared before-send gate durably rechecks
       // `started` and bounds the send before anything is forwarded, so a

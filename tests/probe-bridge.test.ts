@@ -1357,3 +1357,71 @@ test("a post-deadline landing whose cleanup fails never publishes a clean cancel
   expect(backend.size).toBe(1);
   expect((await readProbeAttempt(root, OTHER_ID)).lifecycle).toBe("store-unavailable");
 });
+
+test("same-process reconcile over an unresolved write reports store-unavailable", async () => {
+  const root = setup();
+  const backend = new Map<string, string>();
+  let releaseWrite!: () => void;
+  const writeGate = new Promise<void>(resolve => { releaseWrite = resolve; });
+  let enteredSet = false;
+  const store = {
+    get: async () => null,
+    set: async (identity: { account: string }, value: string) => { enteredSet = true; await writeGate; backend.set(identity.account, value); },
+    delete: async (identity: { account: string }) => backend.delete(identity.account),
+    compareAndDelete: async () => { throw new Error("backend down"); },
+  };
+  const starter = bridgePorts({ root, fetch: successFetch() });
+  const pending = liveProbe("fixture-probe-host",
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 8000 },
+    { ...starter.ports, now: () => 1800000000000, id: () => ID, infer: async input => {
+      await input.fence!.writeStore({ account: "grok-subscription:xai" }, "probe-value", store);
+      return "success";
+    } }, starter.root);
+  try {
+    for (let spin = 0; spin < 200 && !enteredSet; spin++) await new Promise(r => setTimeout(r, 10));
+    expect(enteredSet).toBe(true);
+    // A reconcile in the probing process sees the unresolved write inside
+    // the terminal CAS and refuses a clean interrupted claim.
+    const [reconciled] = await reconcileProbeAttempts(root);
+    expect(reconciled!.lifecycle).toBe("store-unavailable");
+    expect(reconciled!.nextAction).toBe("check-secure-store");
+    releaseWrite();
+    const late = await pending;
+    expect(late.record.lifecycle).toBe("store-unavailable");
+    expect(backend.size).toBe(1);
+  } finally {
+    releaseWrite();
+    await pending.catch(() => null);
+  }
+});
+
+test("a deadline inside a Schway guard window never publishes a clean cancelled", async () => {
+  const root = setup();
+  const starter = bridgePorts({ root, fetch: successFetch() });
+  // Emulates the pinned native-store path: guard, then an unobservable
+  // native write that outlives the deadline.
+  const { record } = await liveProbe("fixture-probe-host",
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 100 },
+    { ...starter.ports, now: () => 1800000000000, id: () => ID, infer: async input => {
+      await input.fence!.guard!();
+      await new Promise(r => setTimeout(r, 400));
+      return "success";
+    } }, starter.root);
+  expect(record.lifecycle).toBe("store-unavailable");
+  expect(record.nextAction).toBe("check-secure-store");
+  await new Promise(r => setTimeout(r, 500));
+  expect((await readProbeAttempt(root, ID)).lifecycle).toBe("store-unavailable");
+});
+
+test("a settled Schway guard window does not over-report a successful probe", async () => {
+  const root = setup();
+  const starter = bridgePorts({ root, fetch: successFetch() });
+  const { record } = await liveProbe("fixture-probe-host",
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 8000 },
+    { ...starter.ports, now: () => 1800000000000, id: () => ID, infer: async input => {
+      await input.fence!.guard!();
+      await input.fence!.guard!();
+      return "success";
+    } }, starter.root);
+  expect(record.lifecycle).toBe("observed-ready");
+});
