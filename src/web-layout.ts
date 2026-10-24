@@ -190,6 +190,16 @@ const prStatusLabels: Record<string, string> = {
   failed: "ตรวจไม่สำเร็จ",
 };
 
+const prReviewLabels: Record<string, string> = {
+  ...prStatusLabels,
+  not_reviewed: "ยังไม่ได้ตรวจ",
+  running: "กำลังตรวจ (ยังไม่มีรายงาน)",
+  stale: "ไม่ใช่ผลปัจจุบัน (stale)",
+  failed: "ตรวจไม่สำเร็จ",
+};
+
+const transmissionLabels: Record<string, string> = { sent: "ส่งครบ", truncated: "ตัดทอน", omitted: "ไม่ได้ส่ง", unavailable: "อ่านไม่ได้" };
+
 const prDeliveryLabels: Record<string, string> = {
   waiting: "รอช่องทาง", queued: "รอส่ง", claimed: "กำลังส่ง", sent: "ปลายทางตอบรับแล้ว",
   failed: "ส่งไม่สำเร็จ", unknown: "ไม่ทราบผล", cancelled: "ยกเลิกก่อนส่ง",
@@ -200,18 +210,27 @@ export function prReportsPage(state: ReturnType<Application["prReports"]>, works
   const { project } = state;
   void csrf;
   return shell("รายงานตรวจ PR", { project, workspace, csrf, section: "delivery" }, `<div class="content"><section class="hero"><p class="eyebrow">ตรวจแบบ static ส่วนตัว</p><h2>รายงานของ ${escape(project.name)}</h2><p>รายงานผูกกับ base/head/policy รุ่นที่ตรวจเท่านั้น รุ่นใหม่ทำให้รายงานเดิมเป็น stale และจะไม่ถูกอ้างว่าเป็นผลล่าสุด</p></section>
+    <article class="team-card"><h3>สถานะการตรวจต่อ PR revision</h3>${state.reviews.length ? `<ul>${state.reviews.map(item => `<li data-review-state="${escape(item.observed)}">${escape(`PR #${item.pullNumber} · ${item.baseSha.slice(0, 8)}...${item.headSha.slice(0, 8)}`)} · ${item.reportId ? `<a href="/projects/${project.id}/pr/reports/${item.reportId}">${escape(prReviewLabels[item.observed] ?? item.observed)}</a>` : escape(prReviewLabels[item.observed] ?? item.observed)}${item.staleReason ? ` (${escape(item.staleReason)})` : ""}${item.previousReportId ? ` · <a href="/projects/${project.id}/pr/reports/${item.previousReportId}">รายงานก่อนหน้า (ประวัติ)</a>` : ""}${item.jobState ? ` · งาน ${escape(item.jobState)}/${escape(item.jobReason ?? "")}` : ""}</li>`).join("")}</ul>` : '<p class="empty-list">ยังไม่มี PR ที่ติดตาม</p>'}</article>
     ${state.items.length ? `<ul>${state.items.map(item => `<li class="topic-row"><div class="topic-row-main"><h3><a href="/projects/${project.id}/pr/reports/${item.id}">${escape(`PR #${item.pullNumber} · ${item.baseSha.slice(0, 8)}...${item.headSha.slice(0, 8)}`)}</a></h3><p>${escape(item.stale ? `stale (${item.staleReason ?? ""})` : prStatusLabels[item.status] ?? item.status)} · findings ${item.findings.filter(f => f.status === "actionable").length}/${item.findings.length}</p><p class="literal">coverage ${escape(item.coverageOverall)} · enum ${item.enumerationComplete ? "ครบ" : "ไม่ครบ"} · roles ${escape(item.analyzedRoles.join(","))}</p></div></li>`).join("")}</ul>` : '<p class="empty-list">ยังไม่มีรายงานตรวจ PR</p>'}
     </div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
 }
 
 /** Shows one private report with findings, alert evaluation and linked delivery. */
 export function prReportPage(state: ReturnType<Application["prReport"]>, workspace: Workspace, csrf: string): string {
-  const { project, report, annotations, evaluation, alerts } = state;
+  const { project, report, annotations, evaluation, alerts, evidence } = state;
+  const transmitted = evidence.transmitted;
+  const transmissionRows = (entries: NonNullable<typeof transmitted>["specialist"]) => entries.map(e => `<li data-transmission="${escape(e.state)}">${escape(e.kind)} ${escape(e.ref)} · ${escape(transmissionLabels[e.state] ?? e.state)}${e.required ? "" : " (ไม่บังคับ)"} · ${e.sentBytes}/${e.bytes} bytes</li>`).join("");
   const observed = report.stale ? `stale (${report.staleReason ?? ""})` : prStatusLabels[report.status] ?? report.status;
   return shell("รายละเอียดรายงาน PR", { project, workspace, csrf, section: "delivery" }, `<div class="content"><section class="hero"><p class="eyebrow">รายงานส่วนตัว · ไม่คอมเมนต์ GitHub</p><h2>${escape(`PR #${report.pullNumber} · ${report.baseSha.slice(0, 8)}...${report.headSha.slice(0, 8)}`)}</h2><p>${escape(observed)} · coverage ${escape(report.coverageOverall)} · ${report.enumerationComplete ? "enumeration ครบ" : "enumeration ไม่ครบ"}</p><p>base ${escape(report.baseSha)} · head ${escape(report.headSha)} · policy v${report.policyVersion} · review v${report.reviewPolicyVersion} · revision ${report.revision}</p></section>
     <article class="team-card"><h3>ประเด็น (${report.findings.length})</h3>${report.findings.length ? `<ul>${report.findings.map(f => `<li><strong>${escape(f.title)}</strong> [${escape(f.category)}/${escape(f.severity)}/${escape(f.status)}]<br><span class="literal">${escape(f.location.path)}${f.location.line ? `:${f.location.line}` : ""} · ${escape(f.evidenceType)}${f.evidenceRef ? ` ${escape(f.evidenceRef)}` : ""}</span><br><span>${escape(f.condition)}</span><br><span>${escape(f.impact)}</span>${f.validationErrors.length ? `<br><small>ตรวจ: ${escape(f.validationErrors.join(", "))}</small>` : ""}</li>`).join("")}</ul>` : '<p class="empty-list">ไม่พบประเด็น</p>'}
     <p>วิเคราะห์: ${escape(report.analyzedRoles.join(", ") || "-")} · ต้องการ: ${escape(report.requiredRoles.join(", "))} · ข้าม: ${escape(report.skippedScope.join(", ") || "-")}</p>
     ${report.disagreements.length ? `<p>ข้อขัดแย้ง: ${escape(report.disagreements.join(" · "))}</p>` : ""}</article>
+    <article class="team-card"><h3>แหล่งข้อมูลและการส่งให้การวิเคราะห์</h3>
+    <p>route ${report.capture ? escape(`${report.capture.route.provider} / ${report.capture.route.model} · ${report.capture.route.authRoute} (${report.capture.layer}, owner r${report.capture.configuration.ownerRevision}/project r${report.capture.configuration.projectRevision})`) : "-"} · mode ${escape(report.mode ?? "-")}</p>
+    ${evidence.coverage ? `<details><summary>source manifest (${evidence.coverage.entries.length})</summary><ul>${evidence.coverage.entries.map(e => `<li>${escape(e.kind)} ${escape(e.path ?? "")} · ${escape(e.state)}${e.immutableRef ? ` · ${escape(e.immutableRef)}` : ""}${e.reason ? ` (${escape(e.reason)})` : ""}</li>`).join("")}</ul></details>` : "<p>ไม่พบ source manifest</p>"}
+    ${transmitted ? `<details><summary>ส่งให้ specialist (${transmitted.specialist.length})</summary><ul>${transmissionRows(transmitted.specialist)}</ul></details><details><summary>ส่งให้ synthesis (${transmitted.synthesis.length})</summary><ul>${transmissionRows(transmitted.synthesis)}</ul></details>` : "<p>ไม่มีบันทึกการส่ง: ยืนยันความครบไม่ได้</p>"}
+    <p>specialists: ${escape(report.specialistRuns.map(r => `${r.role}=${r.state}${r.reason ? `/${r.reason}` : ""}`).join(", ") || "-")} · synthesis ${escape(`${report.synthesis.state}${report.synthesis.reason ? `/${report.synthesis.reason}` : ""}`)}</p>
+    ${evidence.job ? `<p>งาน ${escape(evidence.job.state)}/${escape(evidence.job.reason)} · attempts ${evidence.attempts.length}</p><ul>${evidence.attempts.map(a => `<li>g${a.generation} · ${escape(a.state)}${a.reason ? `/${escape(a.reason)}` : ""} · transport ${escape(a.transport)}</li>`).join("")}</ul>` : ""}</article>
     <article class="team-card"><h3>การแจ้ง (qualifying ${evaluation.qualifying.length} · held ${evaluation.held.length})</h3>
     ${evaluation.qualifying.length ? `<ul>${evaluation.qualifying.map(f => `<li>${escape(f.id)} · ${escape(f.title)}</li>`).join("")}</ul>` : "<p>ไม่มีประเด็นที่เข้าเกณฑ์แจ้ง</p>"}
     ${evaluation.held.length ? `<details><summary>เหตุที่ค้างไว้ (${evaluation.held.length})</summary><ul>${evaluation.held.map(h => `<li>${escape(h.finding.id)}: ${escape(h.reason)}</li>`).join("")}</ul></details>` : ""}
@@ -637,7 +656,7 @@ export function exportsPage(state: { project: Project; manifests: import("./ops/
   const { project, manifests, preview } = state;
   const items = manifests.map(m => `<article class="team-card" id="export-${m.id}"><header><h3><a href="/projects/${project.id}/exports/${m.id}">${escape(m.id)}</a></h3><span class="job-status" data-state="${m.state}">${escape(m.state)}</span></header>
     <p>${time(m.createdAt)} · ประวัติ ${m.scope.includeHistory ? "รวมข้อความดิบ" : "เฉพาะ metadata"} · claims ${m.counts.claims} · งาน ${m.counts.jobs} · exclusions ${m.exclusions.length}</p>
-    <p><small>hash ${escape(m.artifact.hash.slice(0, 16))}… · ${m.artifact.bytes} bytes · tombstones ${m.lifecycle.tombstonesApplied}</small></p></article>`).join("");
+    <p><small>${m.artifact ? `hash ${escape(m.artifact.hash.slice(0, 16))}… · ${m.artifact.bytes} bytes` : `ไม่สำเร็จ ${escape(m.failure?.reason ?? "export_failed")} · ไม่มีไฟล์`} · tombstones ${m.lifecycle.tombstonesApplied}</small></p></article>`).join("");
   return shell("ส่งออกข้อมูล", { project, workspace, csrf, section: "memory" }, `<div class="content"><section class="hero"><p class="eyebrow">ops.project_export/v1</p><h2>ส่งออก ${escape(project.name)}</h2><p>ไฟล์ JSON ที่ตรวจซ้ำได้ ไม่มีความลับ ไม่ปลุกข้อมูลที่ลบ/ลืม ประวัติข้อความดิบรวมเฉพาะเมื่อติ๊กเลือก</p></section>
     <details class="team-card" open><summary>ดูตัวอย่างก่อนส่งออก</summary><p>topics ${preview.counts.topics} · messages ${preview.counts.messages} · tasks ${preview.counts.tasks} · decisions ${preview.counts.decisions} · claims ${preview.counts.claims} · exclusions ${preview.manifest.exclusions.length} · missing ${preview.manifest.missingRefs.length}</p>
     <p><small>${escape(preview.manifest.lifecycle.note)}</small></p>
@@ -655,7 +674,8 @@ export function exportDetailPage(state: { project: Project; manifest: import("./
     <article class="team-card"><h3>ขอบเขตและความครบถ้วน</h3><p>topics ${m.counts.topics} · messages ${m.counts.messages} · tasks ${m.counts.tasks} · decisions ${m.counts.decisions} · claims ${m.counts.claims} · jobs ${m.counts.jobs} · deliveries ${m.counts.deliveries}</p>
     <p>exclusions ${m.exclusions.length} · missing ${m.missingRefs.length} · การลบที่ค้าง ${m.pendingDeletions.length} · tombstones ${m.lifecycle.tombstonesApplied}</p>
     <p>สำรองที่ยังเก็บข้อมูลนี้: ${m.residuals.backups.length ? escape(m.residuals.backups.join(", ")) : "ไม่มี"} · ภายนอก: ${escape(m.residuals.external.join(", "))}</p>
-    <p><small>hash ${escape(m.artifact.hash)} · ${m.artifact.bytes} bytes · ${escape(m.artifact.path)}</small></p></article>
+    <p>รูปแบบ ${m.formatVersion} · schema ${m.appSchema} · ไม่ใช่สำเนาสำรองที่กู้คืนได้ และไม่ได้ลบสำเนาภายนอก · ไม่มีความลับหรือ native session · ข้อความดิบ ${m.disclosure.rawHistory === "included" ? "รวม" : "เฉพาะ metadata"}</p>
+    <p><small>${m.artifact ? `hash ${escape(m.artifact.hash)} · ${m.artifact.bytes} bytes · ${m.artifact.storage === "sqlite" ? `<a href="${escape(m.artifact.downloadPath)}" download>ดาวน์โหลด JSON</a>` : `ไฟล์รูปแบบเดิม ${escape(m.artifact.path)} (ไม่ได้ยืนยัน fsync)`}` : `ส่งออกไม่สำเร็จ: ${escape(m.failure?.reason ?? "export_failed")} (ขั้น ${escape(m.failure?.stage ?? "stage")}) · ไม่มีไฟล์ถูกเผยแพร่`}</small></p></article>
     <p><a href="/projects/${project.id}/exports">กลับไปรายการส่งออก</a></p></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
 }
 

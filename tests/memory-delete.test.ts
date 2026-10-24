@@ -277,7 +277,7 @@ test("topic-identity scope forces whole-session acknowledgment; backup inventory
   expect(topicPreview.preview.wholeSession.required).toBe(true);
   expect(topicPreview.preview.wholeSession.reason).toBe("topic_identity_shared");
   expect(() => f.rt.app.execute(actor(f), confirmCommand(f, a, topicPreview.preview.id, true, false))).toThrow("memory_delete_ambiguous");
-  const backup = f.rt.app.execute(actor(f), { kind: "backup.create" as const, requestId: rid(), projectId: null,
+  const backup = await f.rt.app.execute(actor(f), { kind: "backup.create" as const, requestId: rid(), projectId: null,
     expectedRevision: f.rt.app.workspace(actor(f)).revision, payload: { note: "pre-delete backup" } });
   const preview = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, s1)));
   expect(preview.preview.affected.backups.map(b => b.id)).toContain(backup.manifest.id);
