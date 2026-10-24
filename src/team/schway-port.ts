@@ -51,11 +51,11 @@ export const SCHWAY_RELEASE_CONTRACT = RELEASE_CONTRACT;
 /** Supported native snapshot behavior set for operations reads. */
 export const SCHWAY_SNAPSHOT_CONTRACT = SNAPSHOT_CONTRACT;
 /** Exact pinned Schway git revision backing the vendored artifact. */
-export const SCHWAY_PINNED_REVISION = "a7cf4d22688b35c2f47163ec4627d6d14dd5cb18";
+export const SCHWAY_PINNED_REVISION = "128b77aa70c3774154969fd0b617be0480520c5f";
 /** Exact pinned Schway npm version carried by the vendored tarball. */
 export const SCHWAY_PINNED_VERSION = "1.0.0-rc.2";
-/** SHA-256 of `vendor/schway-1.0.0-rc.2-a7cf4d2.tgz`, the tested artifact. */
-export const SCHWAY_PINNED_TARBALL_SHA256 = "d5924bca7b7b79a99af833ecea5193c9d535a965ed802e3bb001337d42b4ec40";
+/** SHA-256 of `vendor/schway-1.0.0-rc.2-128b77a.tgz`, the tested artifact. */
+export const SCHWAY_PINNED_TARBALL_SHA256 = "8ada843fefbecd906d5f76b8fb3f0665f8f1275ef7bc04bdabacf0a0ace84f65";
 /** Owner next action when the pinned release gate does not hold. */
 export const SCHWAY_NEXT_ACTION = "pin_supported_schway_host_release";
 /** Owner next action when no managed native session exists for a snapshot read. */

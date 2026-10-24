@@ -11,9 +11,9 @@ fails closed before any native session exists.
 Pinned artifact (verified, deterministic):
 
 - npm `schway@1.0.0-rc.2`, git revision
-  `a7cf4d22688b35c2f47163ec4627d6d14dd5cb18` (Schway main, #416+#418+#420+#424 merged).
-- Vendored tarball `vendor/schway-1.0.0-rc.2-a7cf4d2.tgz`,
-  SHA-256 `d5924bca7b7b79a99af833ecea5193c9d535a965ed802e3bb001337d42b4ec40`.
+  `128b77aa70c3774154969fd0b617be0480520c5f` (Schway main, #416+#418+#420+#424+#426 merged).
+- Vendored tarball `vendor/schway-1.0.0-rc.2-128b77a.tgz`,
+  SHA-256 `8ada843fefbecd906d5f76b8fb3f0665f8f1275ef7bc04bdabacf0a0ace84f65`.
 - Behavior set `schway.host.release/v1` (composes `base`, `context-policy`,
   `tool-policy`, `durable-sessions`, `auth-routes`, `run-control`,
   `managed-session-data`, `session-snapshot`).
@@ -26,9 +26,9 @@ Pinned artifact (verified, deterministic):
 ```ts
 SCHWAY_RELEASE_CONTRACT: "schway.host.release/v1";
 SCHWAY_SNAPSHOT_CONTRACT: "schway.host.session-snapshot/v1";
-SCHWAY_PINNED_REVISION: "a7cf4d2...";
+SCHWAY_PINNED_REVISION: "128b77a...";
 SCHWAY_PINNED_VERSION: "1.0.0-rc.2";
-SCHWAY_PINNED_TARBALL_SHA256: "d5924bcd...";
+SCHWAY_PINNED_TARBALL_SHA256: "8ada843f...";
 SCHWAY_NEXT_ACTION: "pin_supported_schway_host_release";
 SCHWAY_SNAPSHOT_NEXT_ACTION: "await_supported_schway_snapshot_api";
 SCHWAY_SYSTEM_PROMPT: string;
