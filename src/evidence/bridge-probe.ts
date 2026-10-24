@@ -1,5 +1,5 @@
-import { lstatSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { lstatSync, mkdirSync, realpathSync } from "node:fs";
+import { join, resolve } from "node:path";
 import {
   checkAuthReadiness,
   createHost,
@@ -32,15 +32,31 @@ export interface BridgeProbeOptions {
   fetch?: HostAuthFetch;
 }
 
-function serviceDir(path: string): void {
+function serviceUid(): number | null {
+  try {
+    const getuid = (process as unknown as { getuid?: () => number }).getuid;
+    return typeof getuid === "function" ? getuid() : null;
+  } catch { return null; }
+}
+
+function ensureServiceDir(path: string): void {
   mkdirSync(path, { recursive: true, mode: 0o700 });
   const stats = lstatSync(path);
-  if (!stats.isDirectory() || stats.isSymbolicLink() || (stats.mode & 0o077) !== 0) throw new Error("unsafe_probe_host_directory");
+  const uid = serviceUid();
+  if (!stats.isDirectory() || stats.isSymbolicLink() || (stats.mode & 0o077) !== 0 || (uid !== null && stats.uid !== uid)) {
+    throw new Error("unsafe_probe_host_directory");
+  }
 }
 
 /** Service-owned probe host directories beside the probe records; never a developer checkout or home. */
 export function probeHostDirs(root: string): { base: string; workspaceRoot: string; homeDirectory: string; sessionDirectory: string } {
-  const base = join(root, ".local", "host-probe-host");
+  // Canonicalize through the installation root first: a symlinked `.local`
+  // ancestor would otherwise redirect every child outside the installation.
+  const canonRoot = realpathSync(root);
+  const local = resolve(canonRoot, ".local");
+  ensureServiceDir(local);
+  if (realpathSync(local) !== local) throw new Error("unsafe_probe_host_directory");
+  const base = join(local, "host-probe-host");
   return { base, workspaceRoot: join(base, "workspace"), homeDirectory: join(base, "home"), sessionDirectory: join(base, "sessions") };
 }
 
@@ -61,10 +77,10 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
 
   const openHost = async (deadlineMs: number) => {
     const dirs = probeHostDirs(options.root);
-    serviceDir(dirs.base);
-    serviceDir(dirs.workspaceRoot);
-    serviceDir(dirs.homeDirectory);
-    serviceDir(dirs.sessionDirectory);
+    ensureServiceDir(dirs.base);
+    ensureServiceDir(dirs.workspaceRoot);
+    ensureServiceDir(dirs.homeDirectory);
+    ensureServiceDir(dirs.sessionDirectory);
     return createHost({
       workspaceRoot: dirs.workspaceRoot,
       homeDirectory: dirs.homeDirectory,
@@ -90,8 +106,12 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
   return {
     now: Date.now,
     id: () => crypto.randomUUID(),
-    readCredential: async () => {
-      const readiness = await checkAuthReadiness({ ...selection, ...(store ? { store } : null) });
+    readCredential: async (signal) => {
+      if (signal?.aborted) throw new Error("aborted");
+      const readiness = await Promise.race([
+        checkAuthReadiness({ ...selection, ...(store ? { store } : null) }),
+        new Promise<never>((_, reject) => signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true })),
+      ]);
       switch (readiness.status) {
         case "configured-unverified": return "ok";
         case "store-unavailable":

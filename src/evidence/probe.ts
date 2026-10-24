@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readdir, realpath, unlink } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, realpath, rename, unlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import { routeEvidence, safeAlias, type NextAction, type RouteState } from "./contract";
 
@@ -196,43 +196,118 @@ function summarize(observations: ProbeObservationEntry[], lifecycle: ProbeAttemp
   return { state: inference.state, nextAction: inference.nextAction };
 }
 
-async function probeDirectory(root: string, create: boolean): Promise<string> {
-  const local = resolve(root, ".local");
+function serviceUid(): number | null {
+  try {
+    const getuid = (process as unknown as { getuid?: () => number }).getuid;
+    return typeof getuid === "function" ? getuid() : null;
+  } catch { return null; }
+}
+
+/**
+ * Canonical installation-local directory: the convention path itself must
+ * resolve to a real directory with restrictive mode and service ownership.
+ * An ancestor or self symlink would redirect managed state outside the
+ * installation, so canonical identity is checked, not just the final link.
+ */
+function missingProbeDirectory(): NodeJS.ErrnoException {
+  const missing = new Error("missing_probe_directory") as NodeJS.ErrnoException;
+  missing.code = "ENOENT";
+  return missing;
+}
+
+async function canonicalLocal(root: string, create: boolean): Promise<string> {
+  const canonRoot = await realpath(root);
+  const local = resolve(canonRoot, ".local");
   if (create) { try { await mkdir(local, { mode: 0o700 }); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; } }
-  const info = await lstat(local);
-  if (!info.isDirectory() || info.isSymbolicLink() || info.mode & 0o077) throw new Error("unsafe_local_directory");
-  const dir = resolve(await realpath(local), "host-probe");
+  // The convention directory itself must be a real directory: an ancestor or
+  // self symlink would redirect managed state outside the installation.
+  const present = await lstat(local).catch(() => null);
+  if (present === null) {
+    if (create) throw new Error("unsafe_local_directory");
+    throw missingProbeDirectory();
+  }
+  if (await realpath(local) !== local) throw new Error("unsafe_local_directory");
+  const uid = serviceUid();
+  if (!present.isDirectory() || present.isSymbolicLink() || (present.mode & 0o077) !== 0 || (uid !== null && present.uid !== uid)) {
+    throw new Error("unsafe_local_directory");
+  }
+  return local;
+}
+
+async function probeDirectory(root: string, create: boolean): Promise<string> {
+  const local = await canonicalLocal(root, create);
+  const dir = resolve(local, "host-probe");
   if (create) { try { await mkdir(dir, { mode: 0o700 }); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; } }
-  const stats = await lstat(dir);
-  if (!stats.isDirectory() || stats.isSymbolicLink() || stats.mode & 0o077) throw new Error("unsafe_probe_directory");
+  const present = await lstat(dir).catch(() => null);
+  if (present === null) {
+    if (create) throw new Error("unsafe_probe_directory");
+    throw missingProbeDirectory();
+  }
+  if (await realpath(dir) !== dir) throw new Error("unsafe_probe_directory");
+  const uid = serviceUid();
+  if (!present.isDirectory() || present.isSymbolicLink() || (present.mode & 0o077) !== 0 || (uid !== null && present.uid !== uid)) {
+    throw new Error("unsafe_probe_directory");
+  }
   return dir;
+}
+
+/** One in-process mutex per record id so concurrent lifecycle transitions serialize. */
+const recordLocks = new Map<string, Promise<void>>();
+
+async function withRecordLock<T>(id: string, work: () => Promise<T>): Promise<T> {
+  const prior = recordLocks.get(id) ?? Promise.resolve();
+  let release!: () => void;
+  const mine = new Promise<void>(resolve => { release = resolve; });
+  recordLocks.set(id, mine);
+  await prior.catch(() => {});
+  try {
+    return await work();
+  } finally {
+    release();
+    if (recordLocks.get(id) === mine) recordLocks.delete(id);
+  }
+}
+
+let tmpCounter = 0;
+
+/**
+ * Publishes one record atomically: exclusive temp file, fsync, atomic rename,
+ * best-effort directory fsync. Readers never observe a torn record.
+ */
+async function atomicWriteFile(dir: string, name: string, data: string): Promise<void> {
+  const tmp = resolve(dir, `${name}.tmp-${process.pid}-${(tmpCounter = (tmpCounter + 1) % 1000000)}.json`);
+  const file = await open(tmp, "wx", 0o600);
+  try {
+    await file.writeFile(data);
+    await file.sync();
+  } finally {
+    await file.close();
+  }
+  await rename(tmp, resolve(dir, name));
+  try {
+    const dirFd = await open(dir, "r");
+    try { await dirFd.sync(); } finally { await dirFd.close(); }
+  } catch { /* Directory fsync is best effort per platform. */ }
 }
 
 async function writeAttempt(root: string, record: ProbeAttempt): Promise<void> {
   validateProbeAttempt(record);
-  const dir = await probeDirectory(root, true), path = resolve(dir, `${record.id}.json`);
-  const file = await open(path, "wx", 0o600);
-  let complete = false;
+  const dir = await probeDirectory(root, true);
+  // Create-only: a terminal record is never replaced by a fresh dispatch.
   try {
-    await file.writeFile(JSON.stringify(record) + "\n");
-    await file.sync();
-    complete = true;
-  } finally {
-    await file.close();
-    if (!complete) await unlink(path);
+    await lstat(resolve(dir, `${record.id}.json`));
+    throw new Error("invalid_probe_record");
+  } catch (error) {
+    if (error instanceof Error && error.message === "invalid_probe_record") throw error;
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
+  await atomicWriteFile(dir, `${record.id}.json`, JSON.stringify(record) + "\n");
 }
 
 async function overwriteAttempt(root: string, record: ProbeAttempt): Promise<void> {
   validateProbeAttempt(record);
-  const dir = await probeDirectory(root, true), path = resolve(dir, `${record.id}.json`);
-  const file = await open(path, "w", 0o600);
-  try {
-    await file.writeFile(JSON.stringify(record) + "\n");
-    await file.sync();
-  } finally {
-    await file.close();
-  }
+  const dir = await probeDirectory(root, true);
+  await atomicWriteFile(dir, `${record.id}.json`, JSON.stringify(record) + "\n");
 }
 
 /** Reads one named probe attempt; malformed records cannot be exported. */
@@ -256,19 +331,30 @@ export async function readProbeAttempt(root: string, id: string): Promise<ProbeA
 
 /** Lists persisted attempts in bounded filename order for restart reconciliation. */
 export async function listProbeAttempts(root: string): Promise<ProbeAttempt[]> {
+  return (await listProbeKeys(root)).map(({ id, record }) => record);
+}
+
+const MAX_RECONCILE_FILES = 4096;
+
+async function listProbeKeys(root: string): Promise<{ id: string; record: ProbeAttempt }[]> {
   let dir: string;
   try {
     dir = await probeDirectory(root, false);
-  } catch {
-    return [];
+  } catch (error) {
+    // A missing probe directory means no attempts; anything else fails closed.
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
   }
-  const names = (await readdir(dir)).filter(name => uuidPattern.test(name.replace(/\.json$/, ""))).slice(0, 64).sort();
-  const records: ProbeAttempt[] = [];
+  const names = (await readdir(dir)).filter(name => uuidPattern.test(name.replace(/\.json$/, ""))).sort();
+  if (names.length > MAX_RECONCILE_FILES) throw new Error("reconciliation_overflow");
+  const records: { id: string; record: ProbeAttempt }[] = [];
+  const failures: string[] = [];
   for (const name of names) {
+    const id = name.replace(/\.json$/, "");
     try {
-      records.push(await readProbeAttempt(root, name.replace(/\.json$/, "")));
+      records.push({ id, record: await readProbeAttempt(root, id) });
     } catch {
-      /* Corrupt probe records stay unreadable; reconciliation never invents success. */
+      failures.push(id);
     }
   }
   return records;
@@ -277,25 +363,38 @@ export async function listProbeAttempts(root: string): Promise<ProbeAttempt[]> {
 /** Marks attempts orphaned by a restart as interrupted; terminal records are never rewritten. */
 export async function reconcileProbeAttempts(root: string): Promise<ProbeAttempt[]> {
   const updated: ProbeAttempt[] = [];
-  for (const record of await listProbeAttempts(root)) {
+  const failures: string[] = [];
+  for (const { id, record } of await listProbeKeys(root)) {
     if (record.lifecycle !== "started") continue;
-    const next: ProbeAttempt = { ...record, lifecycle: "interrupted", nextAction: "inspect-sanitized-failure" };
-    await overwriteAttempt(root, next);
-    updated.push(next);
+    try {
+      await withRecordLock(id, async () => {
+        const current = await readProbeAttempt(root, id);
+        if (current.lifecycle !== "started") return;
+        const next: ProbeAttempt = { ...current, lifecycle: "interrupted", nextAction: "inspect-sanitized-failure" };
+        await overwriteAttempt(root, next);
+        updated.push(next);
+      });
+    } catch {
+      failures.push(id);
+    }
   }
+  if (failures.length > 0) throw new Error(`reconcile-unreadable: ${failures.slice(0, 8).join(",")}`);
   return updated;
 }
 
 /**
  * Cancels a dispatched attempt after an owner stop. Later completions can no
- * longer promote it to success; the file compare keeps the first terminal state.
+ * longer promote it to success; the serialized compare-and-set keeps the
+ * first terminal state.
  */
 export async function cancelProbeAttempt(root: string, id: string): Promise<ProbeAttempt> {
-  const record = await readProbeAttempt(root, id);
-  if (record.lifecycle !== "started") return record;
-  const next: ProbeAttempt = { ...record, lifecycle: "cancelled", nextAction: "inspect-sanitized-failure" };
-  await overwriteAttempt(root, next);
-  return next;
+  return withRecordLock(id, async () => {
+    const record = await readProbeAttempt(root, id);
+    if (record.lifecycle !== "started") return record;
+    const next: ProbeAttempt = { ...record, lifecycle: "cancelled", nextAction: "inspect-sanitized-failure" };
+    await overwriteAttempt(root, next);
+    return next;
+  });
 }
 
 /**
@@ -303,15 +402,17 @@ export async function cancelProbeAttempt(root: string, id: string): Promise<Prob
  * Late completions after cancel/restart return false and change nothing.
  */
 export async function commitProbeOutcome(root: string, id: string, observations: ProbeObservationEntry[], attempts: number, elapsedMs: number): Promise<boolean> {
-  const record = await readProbeAttempt(root, id);
-  if (record.lifecycle !== "started") return false;
-  const inference = observations.find(item => item.observation === "live-request")!;
-  const credential = observations.find(item => item.observation === "credential-read")!;
-  const terminal = inference.event === "unobserved"
-    ? { state: credential.state, nextAction: credential.nextAction }
-    : { state: inference.state, nextAction: inference.nextAction };
-  await overwriteAttempt(root, { ...record, lifecycle: terminal.state, observations, attempts, elapsedMs, nextAction: terminal.nextAction });
-  return true;
+  return withRecordLock(id, async () => {
+    const record = await readProbeAttempt(root, id);
+    if (record.lifecycle !== "started") return false;
+    const inference = observations.find(item => item.observation === "live-request")!;
+    const credential = observations.find(item => item.observation === "credential-read")!;
+    const terminal = inference.event === "unobserved"
+      ? { state: credential.state, nextAction: credential.nextAction }
+      : { state: inference.state, nextAction: inference.nextAction };
+    await overwriteAttempt(root, { ...record, lifecycle: terminal.state, observations, attempts, elapsedMs, nextAction: terminal.nextAction });
+    return true;
+  });
 }
 
 /** Default preflight: reports configured-unverified with zero credential/inference invocations. */
@@ -420,8 +521,17 @@ export async function liveProbe(installationLabel: string, options: LiveProbeOpt
   }
   const observations: ProbeObservationEntry[] = [base[0]!, credentialEntry(route, model, bounds, credential),
     entry(route, model, bounds, "live-request", inference, attempts, elapsed()), base[3]!];
-  const committed = await commitProbeOutcome(root, id, observations, attempts, elapsed());
-  void committed;
+  await commitProbeOutcome(root, id, observations, attempts, elapsed());
+  // A deadline/cancel that fires during the terminal write still wins: the
+  // owning invocation converts its own just-written record rather than
+  // leaving aborted success evidence behind.
+  if (signal.aborted) {
+    await withRecordLock(id, async () => {
+      const current = await readProbeAttempt(root, id);
+      if (current.lifecycle === "cancelled" || current.lifecycle === "interrupted") return;
+      await overwriteAttempt(root, { ...current, lifecycle: "cancelled", nextAction: "inspect-sanitized-failure" });
+    });
+  }
   return { record: await readProbeAttempt(root, id), self: { elapsedMs: elapsed(), attemptsUsed: attempts, maxAttempts, ...(await selfResources(root)) } };
 }
 

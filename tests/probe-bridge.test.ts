@@ -1,10 +1,10 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HostAuthFetch, HostCredentialStore } from "schway/host";
 import { bridgeProbePorts } from "../src/evidence/bridge-probe";
-import { exportProbeSummary, liveProbe, type ProbeEvent } from "../src/evidence/probe";
+import { cancelProbeAttempt, commitProbeOutcome, exportProbeSummary, liveProbe, readProbeAttempt, reconcileProbeAttempts, type ProbeEvent } from "../src/evidence/probe";
 import { runProbeCommand } from "../src/probe-cli";
 
 const roots: string[] = [];
@@ -63,8 +63,8 @@ function sseSuccess(text = "ready", inputTokens = 5, outputTokens = 3): string {
 const successFetch = (text = "ready"): HostAuthFetch => async () =>
   new Response(sseSuccess(text), { status: 200, headers: { "content-type": "text/event-stream" } });
 
-function bridgePorts(overrides: { store?: HostCredentialStore | null; fetch?: HostAuthFetch | undefined; id?: string } = {}) {
-  const root = setup();
+function bridgePorts(overrides: { root?: string; store?: HostCredentialStore | null; fetch?: HostAuthFetch | undefined; id?: string } = {}) {
+  const root = overrides.root ?? setup();
   const options: { route: "grok"; model: string; root: string; store?: HostCredentialStore; fetch?: HostAuthFetch } =
     { route: "grok", model: "grok-4-fixture", root };
   if (overrides.store === undefined) options.store = memStore(validTokens);
@@ -186,4 +186,118 @@ test("bridge self sample stays bounded without environment or token leakage", as
   expect(dumped).not.toContain("fixture-access");
   expect(dumped).not.toContain(SECRET);
   expect(dumped).not.toContain("grok-4-fixture");
+});
+
+test("a refreshable 401 admits exactly one retry inside the single attempt budget", async () => {
+  const root = setup();
+  const expired = JSON.stringify({ accessToken: "old-access", refreshToken: "refresh-token", obtainedAt: 0, expiresAt: 1 });
+  let tokenFetches = 0, inferenceFetches = 0;
+  const fetch: HostAuthFetch = async (input: any) => {
+    const url = String(typeof input === "string" ? input : input.url);
+    if (url.includes("oauth2/token")) {
+      tokenFetches++;
+      return new Response(JSON.stringify({ access_token: "new-access", refresh_token: "refresh-token", expires_in: 3600 }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    inferenceFetches++;
+    if (inferenceFetches === 1) return new Response("unauthorized", { status: 401 });
+    return new Response(sseSuccess("ready after refresh", 7, 2), { status: 200, headers: { "content-type": "text/event-stream" } });
+  };
+  const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, store: memStore(expired), fetch });
+  const { record } = await liveProbe("fixture-probe-host",
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 3, deadlineMs: 8000 },
+    { ...ports, now: () => 1800000000000, id: () => ID }, root);
+  // One admitted attempt: at most one Schway-owned refresh plus its single inference retry.
+  expect(record.lifecycle).toBe("observed-ready");
+  expect(record.attempts).toBe(1);
+  expect(tokenFetches).toBe(1);
+  expect(inferenceFetches).toBe(2);
+});
+
+test("a blocked credential store does not outlive the probe deadline", async () => {
+  const root = setup();
+  const hanging: HostCredentialStore = {
+    get: () => new Promise<never>(() => {}),
+    set: async () => {},
+    delete: async () => true,
+  };
+  const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, store: hanging });
+  const controller = new AbortController();
+  controller.abort();
+  await expect(ports.readCredential!(controller.signal)).rejects.toThrow();
+});
+
+test("concurrent cancel and commit never corrupt the record or promote late success", async () => {
+  const root = setup();
+  let release!: (event: ProbeEvent) => void;
+  const gate = new Promise<ProbeEvent>(resolve => { release = resolve; });
+  const starter = bridgePorts({ root, fetch: successFetch() });
+  const pending = liveProbe("fixture-probe-host",
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 8000 },
+    { ...starter.ports, now: () => 1800000000000, id: () => ID, infer: () => gate }, starter.root);
+  for (let spin = 0; spin < 100; spin++) {
+    try { await readProbeAttempt(root, ID); break; } catch { await new Promise(r => setTimeout(r, 5)); }
+  }
+  // Deterministic cancel-first: an acknowledged cancel makes later commits fail.
+  const cancelled = await cancelProbeAttempt(root, ID);
+  expect(cancelled.lifecycle).toBe("cancelled");
+  release("success");
+  const late = await pending;
+  expect(late.record.lifecycle).toBe("cancelled");
+  // Concurrent storm on the terminal record: the lock serializes every
+  // transition, nothing corrupts, and no late success is promoted.
+  const outcomes: boolean[] = [];
+  const racers: Promise<unknown>[] = [];
+  for (let k = 1; k <= 20; k++) {
+    racers.push(cancelProbeAttempt(root, ID).catch(() => null));
+    racers.push(commitProbeOutcome(root, ID, cancelled.observations, k, 10).catch(() => false).then(ok => { outcomes.push(!!ok); }));
+  }
+  await Promise.all(racers);
+  const final = await readProbeAttempt(root, ID);
+  expect(final.lifecycle).toBe("cancelled");
+  expect(outcomes.every(committed => committed === false)).toBe(true);
+  // Deterministic commit-first: a committed terminal is never rewritten by a later cancel.
+  const other = `ee781630-4d14-4d8b-a0eb-000000001001`;
+  const direct = bridgePorts({ root, id: other, fetch: successFetch() });
+  const run = await liveProbe("fixture-probe-host",
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 8000 },
+    { ...direct.ports, now: () => 1800000000000, id: () => other }, root);
+  expect(run.record.lifecycle).toBe("observed-ready");
+  const afterCancel = await cancelProbeAttempt(root, other);
+  expect(afterCancel.lifecycle).toBe("observed-ready");
+});
+
+test("restart reconciles every started attempt without a slice cap", async () => {
+  const root = setup();
+  const gate = new Promise<ProbeEvent>(() => {});
+  const gated = bridgePorts({ fetch: successFetch() });
+  void liveProbe("fixture-probe-host",
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 8000 },
+    { ...gated.ports, now: () => 1800000000000, id: () => ID, infer: () => gate }, root);
+  for (let spin = 0; spin < 100; spin++) {
+    try { await readProbeAttempt(root, ID); break; } catch { await new Promise(r => setTimeout(r, 5)); }
+  }
+  const template = await readProbeAttempt(root, ID);
+  for (let i = 0; i < 70; i++) {
+    const id = `ee781630-4d14-4d8b-a0eb-${String(1000 + i).padStart(12, "0")}`;
+    writeFileSync(join(root, ".local", "host-probe", `${id}.json`), JSON.stringify({ ...template, id }) + "\n");
+  }
+  const updated = await reconcileProbeAttempts(root);
+  expect(updated).toHaveLength(71);
+  expect(updated.every(record => record.lifecycle === "interrupted")).toBe(true);
+  await cancelProbeAttempt(root, ID).catch(() => null);
+});
+
+test("an ancestor symlink cannot redirect managed probe state", async () => {
+  const root = setup();
+  const outside = mkdtempSync(join(tmpdir(), "jit-probe-outside-")); roots.push(outside);
+  const link = join(root, ".local");
+  rmSync(link, { force: true, recursive: true });
+  const { symlinkSync } = await import("node:fs");
+  symlinkSync(outside, link, "dir");
+  const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, store: memStore(validTokens), fetch: successFetch() });
+  // The symlinked ancestor fails closed before any attempt is persisted or any account is touched.
+  await expect(liveProbe("fixture-probe-host",
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 8000 },
+    { ...ports, now: () => 1800000000000, id: () => OTHER_ID }, root)).rejects.toThrow("unsafe_local_directory");
+  expect(readdirSync(outside)).toEqual([]);
 });
