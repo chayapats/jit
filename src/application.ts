@@ -100,7 +100,7 @@ import {
   type FailedExportManifest, type ValidExportManifest,
 } from "./ops/export";
 import {
-  activateUpgrade, completeAfterBootReconcile, findUpgradeRequest, listUpgrades, migrateUpgrade, ownUpgradeDirFor, prepareUpgrade,
+  activateUpgrade, completeAfterBootReconcile, corruptUpgrade, findUpgradeRequest, listUpgrades, migrateUpgrade, ownUpgradeDirFor, prepareUpgrade,
   readUpgrade, recoverUpgradesOnOpen, rollbackUpgrade, upgradeEvidence, upgradeIdentity, upgradeStatus, validateUpgrade,
   type UpgradeCommand, type UpgradeContext, type UpgradeFaultPoint, type UpgradeJournal, type UpgradeReceipt, type UpgradeRequest,
   type UpgradeResumeResult, type UpgradeServiceControl, type UpgradeStatus,
@@ -616,7 +616,14 @@ export class Application {
   upgrade(actor: OwnerActor, id: string): { journal: ReturnType<typeof upgradeEvidence> } {
     requireId(id);
     this.store.read(tx => this.#requireOwner(tx, actor));
-    return { journal: upgradeEvidence(readUpgrade(this.#upgradeDir, id)) };
+    let journal: UpgradeJournal;
+    try { journal = readUpgrade(this.#upgradeDir, id); }
+    catch (error) {
+      // A malformed control-plane journal is shown as its durable blocked corrupt view, never acted on.
+      if (!(error instanceof AppError) || error.code !== "upgrade_corrupt") throw error;
+      journal = corruptUpgrade(id);
+    }
+    return { journal: upgradeEvidence(journal) };
   }
 
   /** ops.schema_migrations/v1: bounded upgrade journal for the installation. */
