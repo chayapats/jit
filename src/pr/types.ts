@@ -376,6 +376,8 @@ export interface AlertLink {
   projectId: string;
   reportId: string;
   findingId: string;
+  /** `findingFingerprint` of the linked finding; absent on links written before cross-attempt fingerprints. */
+  fingerprint?: string;
   candidateId: string;
   monitorId: string;
   decisionId: string;

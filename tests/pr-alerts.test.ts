@@ -24,6 +24,7 @@ import {
   admitReportAlerts,
   alertKey,
   buildAlertPayload,
+  findingFingerprint,
   evaluateReport,
   ALERT_POLICY_VERSION,
   DEFAULT_ALERT_POLICY,
@@ -1071,6 +1072,63 @@ test("retirement keeps a terminal failed delivery recorded and only marks it sta
   resetCheckpoint(f, monitor.id);
   f.store.transaction(tx => pollMonitorCatchUp(tx, f.project.id, monitor.id, conn, f.clock.now));
   expect(intentsOf(f)[0]).toMatchObject({ status: "failed", remote: "rejected", failureReason: "telegram_rejected", stale: true, staleReason: "candidate_superseded" });
+});
+
+test("cross-attempt dedupe uses the canonical fingerprint: a reused generic ID for a different defect still alerts", async () => {
+  let json = oneFinding({ location: { path: "a.ts", line: 10 }, condition: "when input empty" });
+  const f = await fixture(() => scripted(json)());
+  bindTelegram(f);
+  const { report, monitor, candidate } = await prepareReport(f);
+  const first = intentsOf(f)[0]!;
+  expect(f.store.read(tx => readAlertLinks(tx, report.id))[0]!.fingerprint).toBe(findingFingerprint(report.findings[0]!));
+  const w = worker(f);
+  expect(w.pump().map(i => i.status)).toEqual(["sent"]);
+  // Second attempt on the same revision: same raw ID "finding-1", different location and condition.
+  json = oneFinding({ title: "off-by-one", location: { path: "a.ts", line: 20 }, condition: "when the list has one item" });
+  enqueueReview(f, monitor.id, candidate.id);
+  f.queue.pump(); await f.queue.idle();
+  const reports = f.store.read(tx => tx.all<{ id: string }>("SELECT id FROM pr_reports ORDER BY rowid")).map(r => r.id);
+  expect(reports).toHaveLength(2);
+  const decision = f.store.read(tx => readAlertDecisions(tx, reports[1]!)).at(-1)!;
+  expect(decision.findings.find(d => d.findingId === "finding-1")!.decision).toBe("notified");
+  const second = intentsOf(f).filter(i => i.id !== first.id);
+  expect(second).toHaveLength(1);
+  expect(w.pump().map(i => i.status)).toEqual(["sent"]);
+  expect(f.sender.calls).toBe(2);
+  expect(f.sender.external[1]!.text).toContain("off-by-one");
+  // Third attempt: the same defect as the second under a fresh model ID stays already notified.
+  json = oneFinding({ id: "renamed-7", title: "off-by-one again", location: { path: "a.ts", line: 20 }, condition: "When  the list has one item" });
+  enqueueReview(f, monitor.id, candidate.id);
+  f.queue.pump(); await f.queue.idle();
+  const third = f.store.read(tx => tx.all<{ id: string }>("SELECT id FROM pr_reports ORDER BY rowid")).map(r => r.id)[2]!;
+  expect(f.store.read(tx => readAlertDecisions(tx, third)).at(-1)!.findings.find(d => d.findingId === "renamed-7"))
+    .toMatchObject({ decision: "already_notified", intentId: second[0]!.id });
+  expect(intentsOf(f)).toHaveLength(2);
+});
+
+test("a definitive failed delivery is not notified: the next review attempt alerts exactly once", async () => {
+  const f = await fixture();
+  bindTelegram(f);
+  const { monitor, candidate } = await prepareReport(f);
+  f.sender.scripts = ["reject", "accept"];
+  const w = worker(f);
+  w.pump();
+  const failed = intentsOf(f)[0]!;
+  expect(failed).toMatchObject({ status: "failed", failureReason: "telegram_rejected" });
+  enqueueReview(f, monitor.id, candidate.id);
+  f.queue.pump(); await f.queue.idle();
+  const retry = f.store.read(tx => tx.all<{ id: string }>("SELECT id FROM pr_reports ORDER BY rowid")).map(r => r.id)[1]!;
+  const decision = f.store.read(tx => readAlertDecisions(tx, retry)).at(-1)!;
+  expect(decision.findings.find(d => d.findingId === "finding-1")!.decision).toBe("notified");
+  const fresh = intentsOf(f).filter(i => i.id !== failed.id);
+  expect(fresh).toHaveLength(1);
+  expect(w.pump().map(i => i.status)).toEqual(["sent"]);
+  // Re-admitting the current report replays the same intent; nothing is sent twice.
+  expect(f.app.admitPrAlerts(f.auth.actor, f.project.id, retry).admitted[0]!.created).toBe(false);
+  w.pump();
+  expect(intentsOf(f)).toHaveLength(2);
+  expect(f.sender.external.filter(m => m.text.includes("finding finding-1"))).toHaveLength(1);
+  expect(intentsOf(f)[0]).toMatchObject({ id: failed.id, status: "failed", failureReason: "telegram_rejected" });
 });
 
 test("duplicate-ID repair picks the evidence-backed representative in either order and sends it", async () => {

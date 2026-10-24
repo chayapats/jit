@@ -159,6 +159,24 @@ export function alertKey(report: Pick<PrivateReport, "id" | "headSha" | "policyV
   return base;
 }
 
+/**
+ * Service-derived canonical identity of one finding's defect within a PR revision. Built from
+ * revision-stable location, declared evidence and normalized triggering condition, never from the
+ * model-supplied finding ID, so a generic reused ID for a different defect does not alias across
+ * review attempts while an equivalent finding under a fresh ID still does.
+ */
+export function findingFingerprint(finding: Pick<PrFinding, "location" | "evidenceType" | "evidenceRef" | "condition">): string {
+  const norm = (value: string | null) => (value ?? "").normalize("NFKC").toLowerCase().replace(/\s+/g, " ").trim();
+  return digest(JSON.stringify(["pr-finding/v1", finding.location.path, finding.location.line ?? null,
+    finding.evidenceType, norm(finding.evidenceRef), norm(finding.condition)]));
+}
+
+/**
+ * Whether an outbox state means the owner was (or may yet be) told: pending, sent and unknown count;
+ * a cancelled intent or a definitive `failed` delivery never notified anyone.
+ */
+const notifiedState = (status: DeliveryIntent["status"]) => status !== "cancelled" && status !== "failed";
+
 function fitBytes(value: string, max: number): string {
   if (Buffer.byteLength(value) <= max) return value;
   const budget = Math.max(0, max - Buffer.byteLength("…"));
@@ -299,7 +317,9 @@ function wholeReportSuppression(tx: AppTransaction, projectId: string, report: P
  * Rechecks current base/head/policy, report validity, enabled monitoring, owner generation and owner
  * dismissal immediately before outbox admission, evaluates the persisted project policy, then commits
  * at most one logical guarded intent per qualifying finding via `commitDeliveryIntent` replay dedupe.
- * A finding that already has a live alert under an earlier policy version is `already_notified`.
+ * A finding grouping that already holds a pending/sent/unknown alert (an earlier policy version of this
+ * report, or an earlier attempt's report on the same revision with an equal `findingFingerprint`) is
+ * `already_notified`; cancelled and definitively `failed` deliveries do not count as notified.
  * The outcome is stored as an owner-inspectable `AlertDecision`. Old revisions are suppressed, never labeled latest.
  * Per-finding outbox failures roll back to a savepoint and are held as `admission_failed`.
  */
@@ -339,10 +359,22 @@ export function admitReportAlerts(
     const links = readAlertLinks(tx, report.id);
     const priorLinks = tx.all<{ record_json: string }>("SELECT record_json FROM pr_alerts WHERE project_id = ? AND candidate_id = ? AND report_id <> ? ORDER BY rowid",
       input.projectId, report.candidateId, report.id).map(row => JSON.parse(row.record_json) as AlertLink);
+    const intentOf = (link: AlertLink) => { try { return readDeliveryIntent(tx, input.projectId, link.intentId); } catch { return null; } };
     const liveIntent = (findingId: string) => links
       .filter(link => link.findingId === findingId)
-      .map(link => { try { return readDeliveryIntent(tx, input.projectId, link.intentId); } catch { return null; } })
-      .find((intent): intent is DeliveryIntent => !!intent && intent.status !== "cancelled") ?? null;
+      .map(intentOf)
+      .find((intent): intent is DeliveryIntent => !!intent && notifiedState(intent.status)) ?? null;
+    // Prior attempts are matched by canonical fingerprint; legacy links without one derive it from their
+    // report when the finding ID is unambiguous there, otherwise they never suppress.
+    const priorReports = new Map<string, PrivateReport | null>();
+    const linkFingerprint = (link: AlertLink): string | null => {
+      if (link.fingerprint) return link.fingerprint;
+      if (!priorReports.has(link.reportId)) {
+        try { priorReports.set(link.reportId, readReport(tx, input.projectId, link.reportId)); } catch { priorReports.set(link.reportId, null); }
+      }
+      const matches = priorReports.get(link.reportId)?.findings.filter(f => f.id === link.findingId) ?? [];
+      return matches.length === 1 ? findingFingerprint(matches[0]!) : null;
+    };
     // Copies already holding a live alert stay the group representative, so a policy change never re-alerts the group.
     const preferred = new Set(report.findings.filter(f => f.duplicateGroup && liveIntent(f.id)).map(f => f.id));
     const evaluation = evaluateReport({ ...report, findings: report.findings.filter(f => !repeated.has(f.id)) }, policy, preferred);
@@ -366,12 +398,20 @@ export function admitReportAlerts(
       }
       const dedupeKey = alertKey(report, finding, policy.version);
       const siblings = finding.duplicateGroup ? report.findings.filter(f => f.duplicateGroup === finding.duplicateGroup && f.id !== finding.id) : [];
-      // Earlier reviews of the same PR revision (per-attempt reports): a finding the owner was already
-      // told about (sent/unknown/failed, even if now stale) is not re-alerted; retired pending ones are.
-      const memberIds = new Set([finding.id, ...siblings.map(f => f.id), ...(finding.duplicateGroup ? [finding.duplicateGroup] : [])]);
-      const earlier = [...links.filter(link => memberIds.has(link.findingId)), ...priorLinks.filter(link => memberIds.has(link.findingId))]
-        .map(link => { try { return readDeliveryIntent(tx, input.projectId, link.intentId); } catch { return null; } })
-        .find((intent): intent is DeliveryIntent => !!intent && intent.dedupeKey !== dedupeKey && intent.status !== "cancelled");
+      // The grouping (this finding plus same-report duplicate-group copies) is one logical alert. Within this
+      // report, service-canonical finding IDs identify members (an earlier policy version's intent). Earlier
+      // reviews of the same PR revision (per-attempt reports) match only by canonical fingerprint, never by
+      // the raw model ID. Pending, sent or unknown alerts (even if now stale) are not repeated; cancelled
+      // ones and definitive `failed` deliveries never reached the owner, so the current report re-alerts.
+      const members = [finding, ...siblings];
+      const memberIds = new Set(members.map(f => f.id));
+      const memberPrints = new Set(members.map(findingFingerprint));
+      const earlier = [
+        ...links.filter(link => memberIds.has(link.findingId)),
+        ...priorLinks.filter(link => { const print = linkFingerprint(link); return print !== null && memberPrints.has(print); }),
+      ]
+        .map(intentOf)
+        .find((intent): intent is DeliveryIntent => !!intent && intent.dedupeKey !== dedupeKey && notifiedState(intent.status));
       if (earlier) {
         held.push({ findingId: finding.id, reason: "already_notified" });
         decide(finding.id, "already_notified", null, earlier.id);
@@ -407,7 +447,7 @@ export function admitReportAlerts(
       if (receipt.created) {
         pending.push({
           intentId: receipt.intent.id, projectId: input.projectId, reportId: report.id, findingId: finding.id,
-          candidateId: report.candidateId, monitorId: report.monitorId, policyVersion: policy.version,
+          fingerprint: findingFingerprint(finding), candidateId: report.candidateId, monitorId: report.monitorId, policyVersion: policy.version,
           reportRevision: report.revision, baseSha: report.baseSha, headSha: report.headSha,
           triggerPolicyVersion: report.policyVersion, ownerGeneration, createdAt: now,
         });
@@ -511,7 +551,8 @@ export function backfillLegacyAlertLink(tx: AppTransaction, intent: DeliveryInte
   } catch { return null; }
   if (intent.payload.text !== expected || containsCredential(intent.payload.text)) return null;
   const link: AlertLink = {
-    intentId: intent.id, projectId: intent.projectId, reportId: report.id, findingId: findingId!, candidateId: report.candidateId,
+    intentId: intent.id, projectId: intent.projectId, reportId: report.id, findingId: findingId!,
+    fingerprint: findingFingerprint(matches[0]!), candidateId: report.candidateId,
     monitorId: report.monitorId, decisionId: "legacy-backfill", policyVersion: Number(policyVersion), reportRevision: report.revision,
     baseSha: report.baseSha, headSha: report.headSha, triggerPolicyVersion: report.policyVersion,
     ownerGeneration: intent.authorityGeneration, createdAt: intent.createdAt,
