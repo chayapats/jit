@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { Database } from "bun:sqlite";
 import packageManifest from "../../package.json";
@@ -85,7 +85,7 @@ export interface BackupNativePort {
    * when no plan is given). Ports performing engine I/O return a Promise and
    * set `staged`; they are only driven by the staged backup command.
    */
-  snapshot(plan?: BackupNativePlan): BackupNativeSnapshot | Promise<BackupNativeSnapshot>;
+  snapshot(plan?: BackupNativePlan, limits?: BackupNativeLimits): BackupNativeSnapshot | Promise<BackupNativeSnapshot>;
   /** Resolves the exact native reference set inside the app snapshot transaction. */
   resolve?(tx: AppTransaction): BackupNativePlan;
   /**
@@ -96,7 +96,14 @@ export interface BackupNativePort {
   readonly engine?: string;
   /** True when `snapshot` is asynchronous engine I/O; synchronous callers must fail closed instead of invoking it. */
   readonly staged?: boolean;
+  /** Supported snapshot contract; required for any non-empty capture, which must match it exactly. */
+  readonly contract?: string;
+  /** Supported native format version; a non-empty capture must match it exactly. */
+  readonly formatVersion?: number;
 }
+
+/** Per-capture limits the core passes to a port; `maxBytes` is the remaining backup budget for native artifacts. */
+export interface BackupNativeLimits { maxBytes: number }
 
 export const unavailableNativePort: BackupNativePort = {
   available: () => false,
@@ -140,7 +147,8 @@ export interface BackupManifest {
     projects: { total: number; recorded: number };
     sources: { total: number; recorded: number };
   };
-  lifecycle: { available: boolean; checkpoint: string | null; reason: string | null };
+  /** Lifecycle-ledger checkpoint; `position` counts committed deletion tombstones and suppressions. */
+  lifecycle: { available: boolean; checkpoint: string | null; reason: string | null; position?: { deletions: number; suppressions: number } | null };
   native: {
     state: "valid" | "unavailable" | "incomplete";
     refs: { id: string; generation: number }[];
@@ -311,15 +319,26 @@ export function captureBackupImage(tx: AppTransaction, store: Pick<TransactionSt
 // Reference inventory
 // ---------------------------------------------------------------------------
 
-function lifecycleCheckpoint(tx: AppTransaction): { available: boolean; checkpoint: string | null; reason: string | null } {
+/**
+ * Lifecycle-ledger checkpoint: the exact committed position of the deletion
+ * ledger (`app.deletion_ledger/v1`) and owner suppressions, read in the same
+ * transaction as the image. An empty but readable ledger is position zero and
+ * is recorded as such; an unreadable or malformed ledger is `unavailable`
+ * (`ledger_unverifiable`), never inferred as "no deletions".
+ */
+export function lifecycleCheckpoint(tx: AppTransaction): BackupManifest["lifecycle"] {
   try {
-    const rows = tx.all<{ record_json: string }>("SELECT record_json FROM memory_suppressions ORDER BY rowid DESC LIMIT 1");
-    if (!rows.length) return { available: false, checkpoint: null, reason: "no_ledger_checkpoint" };
-    const parsed = JSON.parse(rows[0]!.record_json) as { id?: string };
-    if (typeof parsed.id !== "string") return { available: false, checkpoint: null, reason: "ledger_unverifiable" };
-    return { available: true, checkpoint: parsed.id, reason: null };
+    const deletions = tx.all<{ id: string }>("SELECT id FROM deletion_ledger ORDER BY rowid").map(r => r.id);
+    const suppressions: string[] = [];
+    for (const row of tx.all<{ record_json: string }>("SELECT record_json FROM memory_suppressions ORDER BY rowid")) {
+      const parsed = JSON.parse(row.record_json) as { id?: unknown } | null;
+      if (!parsed || typeof parsed.id !== "string") return { available: false, checkpoint: null, reason: "ledger_unverifiable", position: null };
+      suppressions.push(parsed.id);
+    }
+    const checkpoint = `ledger:${sha256(new TextEncoder().encode(JSON.stringify([deletions, suppressions])))}`;
+    return { available: true, checkpoint, reason: null, position: { deletions: deletions.length, suppressions: suppressions.length } };
   } catch {
-    return { available: false, checkpoint: null, reason: "ledger_unverifiable" };
+    return { available: false, checkpoint: null, reason: "ledger_unverifiable", position: null };
   }
 }
 
@@ -370,7 +389,14 @@ function nativeFailure(error: unknown, engine: string | null): NativeCapture {
 const ARTIFACT_NAME = /^[a-z0-9][a-z0-9.-]{0,63}$/;
 
 /** Validates a port result fail-closed: refs, artifact hashes and coverage; never inspects artifact content. */
-export function normalizeNativeSnapshot(snap: unknown, plan?: BackupNativePlan): NativeCapture {
+const CONTRACT_PATTERN = /^[a-z0-9][a-z0-9.-]{0,96}\/v[1-9][0-9]{0,3}$/;
+
+/** True for a well-formed snapshot contract id and positive format version. */
+export function isNativeContract(contract: unknown, formatVersion: unknown): boolean {
+  return typeof contract === "string" && CONTRACT_PATTERN.test(contract) && Number.isSafeInteger(formatVersion) && (formatVersion as number) >= 1;
+}
+
+export function normalizeNativeSnapshot(snap: unknown, plan?: BackupNativePlan, port?: Pick<BackupNativePort, "contract" | "formatVersion">): NativeCapture {
   const s = snap as BackupNativeSnapshot | null;
   if (!s || typeof s !== "object" || !Array.isArray(s.refs) || typeof s.engine !== "string" || !s.engine || s.engine.length > 200) {
     return emptyNative("incomplete", "native_snapshot_invalid");
@@ -399,25 +425,37 @@ export function normalizeNativeSnapshot(snap: unknown, plan?: BackupNativePlan):
     bytes += artifact.bytes.length;
   }
   if (s.refs.length > 0 && artifacts.length === 0) return emptyNative("incomplete", "native_artifacts_missing", engine);
+  if (artifacts.length > 0 && s.refs.length === 0) return emptyNative("incomplete", "native_snapshot_invalid", engine);
+  // Non-empty captures must declare the supported contract and format they conform to.
+  if (artifacts.length > 0 && (!isNativeContract(s.contract, s.formatVersion) || !port || !isNativeContract(port.contract, port.formatVersion) ||
+      s.contract !== port.contract || s.formatVersion !== port.formatVersion)) {
+    return emptyNative("incomplete", "native_snapshot_incompatible", engine);
+  }
+  const declared = isNativeContract(s.contract, s.formatVersion);
   return {
     section: {
       state: "valid", refs: s.refs.map(r => ({ id: r.id, generation: r.generation })), bytes, engine, reason: null,
-      contract: typeof s.contract === "string" ? s.contract : null,
-      formatVersion: Number.isSafeInteger(s.formatVersion) ? s.formatVersion! : null,
+      contract: declared ? s.contract! : null,
+      formatVersion: declared ? s.formatVersion! : null,
     },
     artifacts: artifacts.map(a => ({ name: a.name, bytes: a.bytes, sha256: a.sha256 })),
   };
 }
 
 /** Staged capture: drives synchronous or asynchronous ports; any failure is an explicit non-valid state. */
-export async function captureNativeSnapshot(port: BackupNativePort | undefined, plan?: BackupNativePlan): Promise<NativeCapture> {
+export async function captureNativeSnapshot(port: BackupNativePort | undefined, plan?: BackupNativePlan,
+  limits: BackupNativeLimits = { maxBytes: backupRetention.maxBytes }): Promise<NativeCapture> {
   if (!port) return emptyNative("unavailable", "native_snapshot_unavailable");
   let available = false;
   try { available = port.available(); } catch { available = false; }
   if (!available) return emptyNative("unavailable", "native_snapshot_unavailable", port.engine ?? null);
   try {
-    return normalizeNativeSnapshot(await port.snapshot(plan), plan);
+    const result = normalizeNativeSnapshot(await port.snapshot(plan, limits), plan, port);
+    if (result.section.state === "valid" && result.section.bytes > limits.maxBytes) throw new AppError("backup_too_large", 507);
+    return result;
   } catch (error) {
+    // An over-budget capture is an explicit command failure, never a manifest.
+    if (error instanceof AppError && error.code === "backup_too_large") throw error;
     return nativeFailure(error, port.engine ?? null);
   }
 }
@@ -444,7 +482,7 @@ export function resolveNativeCaptureSync(port: BackupNativePort | undefined): Na
       result.catch(() => { /* Never awaited on the synchronous path. */ });
       return emptyNative("unavailable", "native_snapshot_requires_staged_backup", port.engine ?? null);
     }
-    return normalizeNativeSnapshot(result);
+    return normalizeNativeSnapshot(result, undefined, port);
   } catch (error) {
     return nativeFailure(error, port.engine ?? null);
   }
@@ -469,7 +507,7 @@ export function prepareBackupManifest(tx: AppTransaction, input: {
   const collected = input.inventory ?? collectInventory(tx);
   const lifecycle = input.lifecycle ?? lifecycleCheckpoint(tx);
   const reason = input.native.state !== "valid" ? input.native.reason ?? "native_snapshot_failed"
-    : !lifecycle.available ? lifecycle.reason ?? "no_ledger_checkpoint"
+    : !lifecycle.available || !lifecycle.checkpoint ? lifecycle.reason ?? "ledger_unverifiable"
       : !collected.inventory.complete ? "inventory_truncated" : null;
   return {
     contract: backupContract,
@@ -511,6 +549,66 @@ export function validateManifestRecord(value: unknown): BackupManifest {
     throw new AppError("backup_corrupt", 500);
   }
   return m;
+}
+
+/** Integrity verdict for a committed backup's managed files. */
+export type BackupIntegrity = { state: "verified"; reason: null } | { state: "invalid"; reason: string };
+
+function checkManagedFile(path: string, expected: string, bytes: unknown, hash: unknown, prefix: string): string | null {
+  if (path !== expected) return `${prefix}_outside_backup_dir`;
+  let stats;
+  try { stats = lstatSync(path); } catch { return `${prefix}_missing`; }
+  if (!stats.isFile() || stats.isSymbolicLink()) return `${prefix}_not_regular_file`;
+  if (!Number.isSafeInteger(bytes) || stats.size !== bytes) return `${prefix}_size_mismatch`;
+  let content: Uint8Array;
+  try { content = readFileSync(path); } catch { return `${prefix}_missing`; }
+  if (content.length !== bytes || typeof hash !== "string" || sha256(content) !== hash) return `${prefix}_hash_mismatch`;
+  return null;
+}
+
+/**
+ * Strict managed-artifact validation used by detailed inspection and restore.
+ * Every file must be the exact managed child of `backupDir` for this backup id
+ * (`<id>.sqlite`, `<id>.native-<n>.json` in order), a regular non-symlink file
+ * with the recorded size and SHA-256; native artifacts additionally need a
+ * declared snapshot contract/format and must cover a non-empty native set.
+ * Content is hashed, never parsed.
+ */
+export function verifyBackupArtifacts(manifest: BackupManifest, backupDir: string): BackupIntegrity {
+  const fail = (reason: string): BackupIntegrity => ({ state: "invalid", reason });
+  const dir = resolve(backupDir);
+  const image = checkManagedFile(manifest.artifact?.path, artifactPathFor(dir, manifest.id), manifest.artifact?.bytes, manifest.artifact?.hash, "image");
+  if (image) return fail(image);
+  const native = manifest.native as Partial<BackupManifest["native"]> | undefined;
+  if (!native) return fail("native_record_missing");
+  const artifacts = native.artifacts ?? [];
+  if (!Array.isArray(artifacts)) return fail("native_record_invalid");
+  if (native.state === "valid" && (native.refs ?? []).length > 0 && artifacts.length === 0) return fail("native_artifacts_missing");
+  if (artifacts.length > 0 && !isNativeContract(native.contract, native.formatVersion)) return fail("native_contract_invalid");
+  let total = 0;
+  for (const [index, artifact] of artifacts.entries()) {
+    const problem = checkManagedFile(artifact?.path, join(dir, `${manifest.id}.native-${index}.json`), artifact?.bytes, artifact?.hash, "native_artifact");
+    if (problem) return fail(problem);
+    total += artifact.bytes;
+  }
+  if (native.bytes !== total) return fail("native_size_mismatch");
+  return { state: "verified", reason: null };
+}
+
+/**
+ * Restore gate: only a `valid` manifest with a lifecycle-ledger checkpoint, a
+ * valid native capture, a complete inventory and verified managed files may be
+ * prepared for restore. No owner acknowledgment overrides this.
+ */
+export function assertRestorableBackup(manifest: BackupManifest, backupDir: string): void {
+  if (manifest.state !== "valid" || !manifest.lifecycle?.available || !manifest.lifecycle.checkpoint ||
+      manifest.native?.state !== "valid" || manifest.inventory?.complete !== true) {
+    throw new AppError("backup_incomplete", 409);
+  }
+  const integrity = verifyBackupArtifacts(manifest, backupDir);
+  if (integrity.state !== "verified") {
+    throw new AppError(integrity.reason === "image_missing" ? "backup_artifact_missing" : "backup_integrity_failed", 409);
+  }
 }
 
 /** Reads one manifest without parsing backup bytes or native private formats. */

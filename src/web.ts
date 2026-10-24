@@ -130,6 +130,7 @@ const messages: Record<string, string> = {
   backup_not_found: "ไม่พบสำรองข้อมูลที่เลือก",
   backup_corrupt: "สำรองข้อมูลนี้ตรวจสอบไม่ผ่าน",
   backup_storage_unavailable: "พื้นที่สำรองข้อมูลไม่พร้อมใช้งาน",
+  backup_incomplete: "สำรองข้อมูลนี้ไม่สมบูรณ์ จึงกู้คืนไม่ได้",
   backup_too_large: "สำรองข้อมูลนี้ใหญ่เกินเพดานพื้นที่ที่กำหนด จึงไม่ได้สร้าง",
   backup_schema_unclassified: "โครงสร้างข้อมูลยังไม่ได้จัดประเภทสำหรับการสำรอง จึงไม่ได้สร้าง",
   native_snapshot_unavailable: "engine ยังไม่รองรับ native snapshot สำรองนี้จึงไม่สมบูรณ์",

@@ -88,7 +88,7 @@ import {
   backupIdentity, backupRetention, captureAppSide, captureNativeSnapshot, isJitVersion, jitAppVersion, listBackups, ownBackupDir,
   prepareBackupManifest, readBackupManifest, reconcileBackupArtifacts, removeManagedFiles, selectRetentionVictims, writeArtifact,
   writeNativeArtifacts, type BackupCommand, type BackupManifest, type BackupNativePlan, type BackupNativePort, type BackupReceipt,
-  type CreateBackupCommand, type PruneBackupsCommand,
+  type CreateBackupCommand, type PruneBackupsCommand, type BackupIntegrity, verifyBackupArtifacts,
 } from "./ops/backup";
 import {
   createExport, exportIdentity, exportPreview, listExportArtifacts, ownExportDir, readExportManifest,
@@ -646,7 +646,7 @@ export class Application {
           const now = this.#now();
           const revision = tx.get<{ revision: number }>("SELECT revision FROM app_state WHERE id = 1")!.revision;
           if (revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
-          const quarantine = prepareRestore(tx, { id, now, liveRevision: revision, backupId: command.payload.backupId, restoreDir: this.#restoreDir });
+          const quarantine = prepareRestore(tx, { id, now, liveRevision: revision, backupId: command.payload.backupId, restoreDir: this.#restoreDir, backupDir: this.#backupDir });
           this.#beforeCommit?.("ops");
           const result: RestoreReceipt = { quarantine, duplicate: false };
           tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
@@ -1194,12 +1194,21 @@ export class Application {
     });
   }
 
-  /** Reads one backup manifest without parsing backup bytes or activating workers. */
-  backup(actor: OwnerActor, id: string): { manifest: BackupManifest } {
-    return this.store.read(tx => {
+  /**
+   * Reads one backup manifest and verifies its managed files (location, type,
+   * size, SHA-256, native contract) without parsing them or activating
+   * workers. Missing or corrupt files present the backup as `incomplete` with
+   * `integrity.state: "invalid"`.
+   */
+  backup(actor: OwnerActor, id: string): { manifest: BackupManifest; integrity: BackupIntegrity } {
+    const manifest = this.store.read(tx => {
       this.#requireOwner(tx, actor);
-      return { manifest: readBackupManifest(tx, id) };
+      return readBackupManifest(tx, id);
     });
+    const integrity = verifyBackupArtifacts(manifest, this.#backupDir);
+    return integrity.state === "verified"
+      ? { manifest, integrity }
+      : { manifest: { ...manifest, state: "incomplete", reason: integrity.reason }, integrity };
   }
 
   #priorBackupReceipt(tx: AppTransaction, command: BackupCommand, payloadHash: string): BackupReceipt | null {
@@ -1288,7 +1297,7 @@ export class Application {
       if (staged.prior) return staged.prior;
       const capture = staged.planFailed
         ? { section: { state: "incomplete" as const, refs: [], bytes: 0, engine: port?.engine ?? null, reason: "native_snapshot_failed", contract: null, formatVersion: null }, artifacts: [] }
-        : await captureNativeSnapshot(port, staged.plan);
+        : await captureNativeSnapshot(port, staged.plan, { maxBytes: Math.max(0, backupRetention.maxBytes - staged.app.image.bytes.length) });
       const incoming = staged.app.image.bytes.length + capture.artifacts.reduce((sum, a) => sum + a.bytes.length, 0);
       if (incoming > backupRetention.maxBytes) throw new AppError("backup_too_large", 507);
       const artifactPath = writeArtifact(this.#backupDir, id, staged.app.image.bytes);

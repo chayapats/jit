@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Model, ModelRequest } from "schway/host";
@@ -9,7 +9,7 @@ import packageManifest from "../package.json";
 import { Application } from "../src/application";
 import { readConfig } from "../src/config";
 import {
-  backupImageTables, backupRetention, jitAppVersion, planRetention, resolveNativeSnapshot, scanBackupSecrets,
+  backupImageTables, backupRetention, captureNativeSnapshot, jitAppVersion, normalizeNativeSnapshot, planRetention, resolveNativeSnapshot, scanBackupSecrets,
   type BackupNativePort,
 } from "../src/ops/backup";
 import { SchwayBackupNativePort, createSchwayBackupNativePort, schwayBackupEngine } from "../src/ops/schway-backup";
@@ -32,9 +32,12 @@ const artifactOf = (text: string, name = "fixture-0") => {
   const bytes = new TextEncoder().encode(text);
   return { name, bytes, sha256: sha(bytes) };
 };
+/** Explicit fixture snapshot contract: non-empty native captures must declare one. */
+const fixtureContract = { contract: "jit.fixture.native-snapshot/v1", formatVersion: 1 } as const;
 const scriptedNative = (refs = [{ id: crypto.randomUUID(), generation: 1 }]): BackupNativePort => ({
+  ...fixtureContract,
   available: () => true,
-  snapshot: () => ({ refs, bytes: 2048, engine: "scripted-fixture-v1", artifacts: [artifactOf(`native:${refs.map(r => r.id).join(",")}`)] }),
+  snapshot: () => ({ refs, bytes: 2048, engine: "scripted-fixture-v1", ...fixtureContract, artifacts: [artifactOf(`native:${refs.map(r => r.id).join(",")}`)] }),
 });
 const unavailableNative: BackupNativePort = {
   available: () => false,
@@ -106,8 +109,11 @@ const backupCommand = (f: { app: Application; auth: { actor: Fixture["auth"]["ac
   expectedRevision: f.app.workspace(f.auth.actor).revision, payload: { note: "manual backup" },
 });
 const managedFiles = (dir: string) => { try { return readdirSync(dir).sort(); } catch { return []; } };
+const restorePrepare = (f: { app: Application; auth: { actor: Fixture["auth"]["actor"] } }, backupId: string) => f.app.execute(f.auth.actor, {
+  kind: "restore.prepare" as const, requestId: rid(), projectId: null, expectedRevision: f.app.workspace(f.auth.actor).revision,
+  payload: { backupId, note: "restore gate" } });
 
-test("fail-closed without engine snapshot and without lifecycle checkpoint: incomplete, never valid", async () => {
+test("fail-closed without engine snapshot: incomplete, never valid", async () => {
   const f = await fixture();
   createProject(f);
   const receipt = await f.app.execute(f.auth.actor, backupCommand(f));
@@ -116,8 +122,10 @@ test("fail-closed without engine snapshot and without lifecycle checkpoint: inco
   expect(receipt.manifest.native.state).toBe("unavailable");
   expect(receipt.manifest.native.reason).toBe("native_snapshot_unavailable");
   expect(receipt.manifest.native.artifacts).toEqual([]);
-  expect(receipt.manifest.lifecycle.available).toBe(false);
-  expect(receipt.manifest.reason).toBeString();
+  // An empty but readable ledger is an explicit position-zero checkpoint, not an inference.
+  expect(receipt.manifest.lifecycle).toMatchObject({ available: true, position: { deletions: 0, suppressions: 0 } });
+  expect(receipt.manifest.lifecycle.checkpoint).toStartWith("ledger:");
+  expect(receipt.manifest.reason).toBe("native_snapshot_unavailable");
   expect(receipt.manifest.artifact.bytes).toBeGreaterThan(0);
   expect(receipt.manifest.artifact.hash).toHaveLength(64);
   expect(receipt.manifest.retention.maxBackups).toBe(backupRetention.maxBackups);
@@ -296,12 +304,13 @@ test("retention plan rejects an oversize incoming backup and prunes the minimal 
 test("an incoming backup above the byte ceiling is rejected before anything is pruned or written", async () => {
   let huge = false;
   const port: BackupNativePort = {
+    ...fixtureContract,
     available: () => true,
     snapshot: () => {
       const refs = [{ id: "00000000-0000-4000-8000-000000000001", generation: 1 }];
-      if (!huge) return { refs, bytes: 1, engine: "fixture", artifacts: [artifactOf("small")] };
+      if (!huge) return { refs, bytes: 1, engine: "fixture", ...fixtureContract, artifacts: [artifactOf("small")] };
       const bytes = new Uint8Array(backupRetention.maxBytes + 1).fill(7);
-      return { refs, bytes: bytes.length, engine: "fixture", artifacts: [{ name: "big", bytes, sha256: sha(bytes) }] };
+      return { refs, bytes: bytes.length, engine: "fixture", ...fixtureContract, artifacts: [{ name: "big", bytes, sha256: sha(bytes) }] };
     },
   };
   const f = await fixture({ native: port });
@@ -565,24 +574,27 @@ test("concrete port snapshots real native sessions through snapshotSessions and 
   expect(receipt.manifest.state).toBe("valid");
   expect(receipt.manifest.native).toMatchObject({ state: "valid", engine: schwayBackupEngine, contract: "schway.host.session-snapshot/v1", reason: null });
   expect(receipt.manifest.native.refs).toEqual([{ id: first.run.runId, generation: 1 }, { id: second.run.runId, generation: 1 }]);
-  expect(receipt.manifest.native.artifacts).toHaveLength(1);
-  const artifact = receipt.manifest.native.artifacts[0]!;
-  expect(artifact.path.startsWith(f.backupDir + "/")).toBe(true);
-  expect(sha(readFileSync(artifact.path))).toBe(artifact.hash);
-  expect(receipt.manifest.native.bytes).toBe(artifact.bytes);
-  const verdict = await validateNativeFile(f.store, artifact.path);
-  expect(verdict.status).toBe("valid");
-  if (verdict.status === "valid") expect(verdict.sessions).toHaveLength(2);
+  // Default single-session calls: one validated opaque artifact per session.
+  expect(receipt.manifest.native.artifacts).toHaveLength(2);
+  for (const artifact of receipt.manifest.native.artifacts) {
+    expect(artifact.path.startsWith(f.backupDir + "/")).toBe(true);
+    expect(sha(readFileSync(artifact.path))).toBe(artifact.hash);
+    const verdict = await validateNativeFile(f.store, artifact.path);
+    expect(verdict.status).toBe("valid");
+    if (verdict.status === "valid") expect(verdict.sessions).toHaveLength(1);
+  }
+  expect(receipt.manifest.native.bytes).toBe(receipt.manifest.native.artifacts.reduce((sum, a) => sum + a.bytes, 0));
+  expect(f.app.backup(f.auth.actor, receipt.manifest.id).integrity).toEqual({ state: "verified", reason: null });
   // Opaque native session/branch ids never leave the store in the manifest.
   const sessionIds = f.store.read(tx => tx.all<{ session_id: string; branch_id: string }>("SELECT session_id, branch_id FROM schway_native_refs"));
   for (const row of sessionIds) {
     expect(JSON.stringify(receipt.manifest)).not.toContain(row.session_id);
   }
   expect(scanBackupSecrets(receipt.manifest, [password, f.token])).toEqual([]);
-  // Chunked capture: one artifact per supported snapshot call, same coverage.
-  const chunked = new SchwayBackupNativePort(f.store, { chunkSize: 1 });
+  // Larger chunks: one artifact per supported snapshot call, same coverage.
+  const chunked = new SchwayBackupNativePort(f.store, { chunkSize: 64 });
   const snap = await chunked.snapshot();
-  expect(snap.artifacts).toHaveLength(2);
+  expect(snap.artifacts).toHaveLength(1);
 });
 
 test("nonexistent or natively deleted sessions fail closed instead of presenting a valid backup", async () => {
@@ -646,7 +658,7 @@ test("native set changes during capture and over-limit sets never commit as vali
   await run.outcome;
   const concrete = new SchwayBackupNativePort(f.store);
   const racing: BackupNativePort = {
-    engine: concrete.engine, staged: true,
+    engine: concrete.engine, staged: true, contract: concrete.contract, formatVersion: concrete.formatVersion,
     available: () => concrete.available(),
     resolve: tx => concrete.resolve(tx),
     snapshot: async plan => {
@@ -693,4 +705,158 @@ test("upgrade prepare records a credential-free recovery point with the real ver
     targetSchema: currentSupportedSchema, note: "concrete engine", upgradeDir: join(c.root, "upgrades"), backupDir: c.backupDir, engine: c.port,
   }))).toThrow("native_snapshot_unavailable");
   expect(c.app.backups(c.auth.actor).manifests).toHaveLength(0);
+});
+
+// ---------------------------------------------------------------------------
+// Review round 2 regressions
+// ---------------------------------------------------------------------------
+
+test("restore preparation rejects every non-valid backup; owner acknowledgments cannot override it", async () => {
+  // Native unavailable.
+  const f = await fixture();
+  createProject(f);
+  const noNative = await f.app.execute(f.auth.actor, backupCommand(f));
+  expect(noNative.manifest.state).toBe("incomplete");
+  expect(() => restorePrepare(f, noNative.manifest.id)).toThrow("backup_incomplete");
+  // Unverifiable lifecycle ledger: explicit, unavailable, never "no deletions".
+  const g = await fixture({ native: scriptedNative() });
+  createProject(g); seedLifecycle(g);
+  g.store.transaction(tx => tx.run("UPDATE memory_suppressions SET record_json = '{\"broken\":true}'"));
+  const noLedger = await g.app.execute(g.auth.actor, backupCommand(g));
+  expect(noLedger.manifest.lifecycle).toEqual({ available: false, checkpoint: null, reason: "ledger_unverifiable", position: null });
+  expect(noLedger.manifest).toMatchObject({ state: "incomplete", reason: "ledger_unverifiable" });
+  expect(() => restorePrepare(g, noLedger.manifest.id)).toThrow("backup_incomplete");
+  // Even a record forged to say valid is rejected when its lifecycle checkpoint is missing.
+  g.store.transaction(tx => tx.run("UPDATE ops_backups SET record_json = json_set(record_json, '$.state', 'valid') WHERE id = ?", noLedger.manifest.id));
+  expect(() => restorePrepare(g, noLedger.manifest.id)).toThrow("backup_incomplete");
+  expect(g.app.restores(g.auth.actor).quarantines).toHaveLength(0);
+  // A complete backup still prepares.
+  g.store.transaction(tx => tx.run("UPDATE memory_suppressions SET record_json = json_object('id', id)"));
+  const good = await g.app.execute(g.auth.actor, backupCommand(g));
+  expect(good.manifest.state).toBe("valid");
+  expect(restorePrepare(g, good.manifest.id).quarantine.state).toBe("quarantining");
+});
+
+test("inspection and restore verify every managed artifact: missing, corrupt, relocated or symlinked files are invalid", async () => {
+  const f = await fixture({ native: scriptedNative() });
+  createProject(f); seedLifecycle(f);
+  const make = async () => (await f.app.execute(f.auth.actor, backupCommand(f))).manifest;
+  const ok = await make();
+  expect(f.app.backup(f.auth.actor, ok.id)).toEqual({ manifest: ok, integrity: { state: "verified", reason: null } });
+  // Deleting the only native file.
+  const missing = await make();
+  rmSync(missing.native.artifacts[0]!.path);
+  const inspected = f.app.backup(f.auth.actor, missing.id);
+  expect(inspected.integrity).toEqual({ state: "invalid", reason: "native_artifact_missing" });
+  expect(inspected.manifest.state).toBe("incomplete");
+  expect(() => restorePrepare(f, missing.id)).toThrow("backup_integrity_failed");
+  // Corrupt native bytes of the same size.
+  const corrupt = await make();
+  const nativePath = corrupt.native.artifacts[0]!.path;
+  writeFileSync(nativePath, Buffer.alloc(corrupt.native.artifacts[0]!.bytes, 1));
+  expect(f.app.backup(f.auth.actor, corrupt.id).integrity.reason).toBe("native_artifact_hash_mismatch");
+  // A manifest pointing outside the managed directory, even at identical bytes.
+  const moved = await make();
+  const outside = join(f.root, "elsewhere.json");
+  copyFileSync(moved.native.artifacts[0]!.path, outside);
+  f.store.transaction(tx => tx.run("UPDATE ops_backups SET record_json = json_set(record_json, '$.native.artifacts[0].path', ?) WHERE id = ?", outside, moved.id));
+  expect(f.app.backup(f.auth.actor, moved.id).integrity.reason).toBe("native_artifact_outside_backup_dir");
+  expect(() => restorePrepare(f, moved.id)).toThrow("backup_integrity_failed");
+  // A symlink in place of the managed image.
+  const linked = await make();
+  const copy = join(f.root, "image-copy.sqlite");
+  copyFileSync(linked.artifact.path, copy);
+  rmSync(linked.artifact.path);
+  symlinkSync(copy, linked.artifact.path);
+  expect(f.app.backup(f.auth.actor, linked.id).integrity.reason).toBe("image_not_regular_file");
+  // A valid native set whose artifact list was emptied.
+  const stripped = await make();
+  f.store.transaction(tx => tx.run("UPDATE ops_backups SET record_json = json_set(record_json, '$.native.artifacts', json('[]')) WHERE id = ?", stripped.id));
+  expect(f.app.backup(f.auth.actor, stripped.id).integrity.reason).toBe("native_artifacts_missing");
+  // Missing image keeps the established restore code.
+  const noImage = await make();
+  rmSync(noImage.artifact.path);
+  expect(() => restorePrepare(f, noImage.id)).toThrow("backup_artifact_missing");
+  expect(f.app.restores(f.auth.actor).quarantines).toHaveLength(0);
+});
+
+test("inventory overflow is not restorable", async () => {
+  const f = await fixture({ native: scriptedNative() });
+  createProject(f); seedLifecycle(f);
+  f.store.transaction(tx => {
+    for (let i = 0; i < 1000; i++) tx.run("INSERT INTO projects VALUES (?, ?, 1, ?)", rid(), `bulk ${i}`, 1800000000000 + i);
+  });
+  const receipt = await f.app.execute(f.auth.actor, backupCommand(f));
+  expect(receipt.manifest.inventory.complete).toBe(false);
+  expect(() => restorePrepare(f, receipt.manifest.id)).toThrow("backup_incomplete");
+});
+
+test("non-empty native captures must declare the port's supported contract and format version", () => {
+  const ref = { id: rid(), generation: 1 };
+  const artifact = artifactOf("opaque");
+  const base = { refs: [ref], bytes: 6, engine: "fixture", artifacts: [artifact] };
+  const port = fixtureContract;
+  expect(normalizeNativeSnapshot(base, undefined, port).section).toMatchObject({ state: "incomplete", reason: "native_snapshot_incompatible" });
+  expect(normalizeNativeSnapshot({ ...base, contract: fixtureContract.contract }, undefined, port).section.state).toBe("incomplete");
+  expect(normalizeNativeSnapshot({ ...base, contract: "other.snapshot/v1", formatVersion: 1 }, undefined, port).section.reason).toBe("native_snapshot_incompatible");
+  expect(normalizeNativeSnapshot({ ...base, ...fixtureContract, formatVersion: 2 }, undefined, port).section.reason).toBe("native_snapshot_incompatible");
+  expect(normalizeNativeSnapshot({ ...base, ...fixtureContract }, undefined, {}).section.reason).toBe("native_snapshot_incompatible");
+  expect(normalizeNativeSnapshot({ ...base, ...fixtureContract }, undefined, port).section).toMatchObject({ state: "valid", ...fixtureContract });
+  // An empty set needs no artifacts and declares nothing.
+  expect(normalizeNativeSnapshot({ refs: [], bytes: 0, engine: "fixture" }, undefined, {}).section.state).toBe("valid");
+});
+
+test("orphaned and generation-mismatched native refs fail capture instead of being dropped", async () => {
+  const f = await concreteFixture();
+  const run = await nativeRun(f.store, f.config);
+  await run.outcome;
+  expect((await f.app.execute(f.auth.actor, backupCommand(f))).manifest.native.state).toBe("valid");
+  // A ref whose context row is missing (no foreign key prevents it).
+  const orphanRun = rid();
+  f.store.transaction(tx => tx.run("INSERT INTO schway_native_refs (run_id, context_id, generation, session_id, branch_id, state, created_at, updated_at) VALUES (?, ?, 1, ?, 'main', 'finished', 1, 1)",
+    orphanRun, rid(), rid()));
+  const orphan = await f.app.execute(f.auth.actor, backupCommand(f));
+  expect(orphan.manifest.native).toMatchObject({ state: "incomplete", reason: "native_ref_orphaned" });
+  expect(orphan.manifest.state).toBe("incomplete");
+  // A ref whose generation does not match its context row.
+  f.store.transaction(tx => tx.run("UPDATE schway_native_refs SET context_id = ?, generation = 2 WHERE run_id = ?", run.run.context.id, orphanRun));
+  const mismatched = await f.app.execute(f.auth.actor, backupCommand(f));
+  expect(mismatched.manifest.native).toMatchObject({ state: "incomplete", reason: "native_ref_orphaned" });
+  // Orphans enter the fingerprint: adding one changes the plan.
+  const port = new SchwayBackupNativePort(f.store);
+  const before = f.store.read(tx => port.resolve(tx)).fingerprint;
+  f.store.transaction(tx => tx.run("DELETE FROM schway_native_refs WHERE run_id = ?", orphanRun));
+  expect(f.store.read(tx => port.resolve(tx)).fingerprint).not.toBe(before);
+  expect((await f.app.execute(f.auth.actor, backupCommand(f))).manifest.native.state).toBe("valid");
+});
+
+test("the native byte budget is enforced after each single-session host call and stops further capture", async () => {
+  const f = await concreteFixture();
+  for (let i = 0; i < 3; i++) await (await nativeRun(f.store, f.config)).outcome;
+  const original = SchwayRunPort.prototype.openLifecycleHost;
+  let calls = 0;
+  SchwayRunPort.prototype.openLifecycleHost = async function (this: SchwayRunPort) {
+    const host = await original.call(this);
+    // The host object is frozen; forward exactly the members the backup port uses.
+    return {
+      capabilities: host.capabilities,
+      snapshotSessions: async (...args: Parameters<typeof host.snapshotSessions>) => { calls++; return host.snapshotSessions(...args); },
+      validateSessionSnapshot: (snapshot: unknown) => host.validateSessionSnapshot(snapshot),
+      close: () => host.close(),
+    } as unknown as typeof host;
+  };
+  try {
+    const port = new SchwayBackupNativePort(f.store);
+    const plan = f.store.read(tx => port.resolve(tx));
+    const one = (await port.snapshot(plan)).artifacts![0]!.bytes.length;
+    calls = 0;
+    await expect(port.snapshot(plan, { maxBytes: one + 1 })).rejects.toThrow("backup_too_large");
+    expect(calls).toBe(2);
+    calls = 0;
+    await expect(captureNativeSnapshot(port, plan, { maxBytes: 1 })).rejects.toThrow("backup_too_large");
+    expect(calls).toBe(1);
+  } finally {
+    SchwayRunPort.prototype.openLifecycleHost = original;
+  }
+  expect(managedFiles(f.backupDir)).toEqual([]);
 });

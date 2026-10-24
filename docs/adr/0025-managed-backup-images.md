@@ -39,7 +39,20 @@ credential rows on every activation (restore and upgrade rollback); restoring
 into a fresh installation requires owner credential setup. An old backup can
 therefore never resurrect a previous password verifier or browser session.
 
+## Lifecycle checkpoint as a ledger position
+
+The lifecycle checkpoint is the committed position of the deletion ledger and
+owner suppressions, read in the image transaction. An empty readable ledger is
+an explicit position zero; only an unreadable or malformed ledger is
+unavailable. Restore requires a valid manifest with this checkpoint, a valid
+native capture, a complete inventory and verified managed files; external
+ledger acknowledgments cannot substitute for any of them.
+
 ## Follow-ups
+
+- Schway `snapshotSessions` lacks a caller byte ceiling; Jit bounds memory to
+  one session's capture beyond the budget. A strict bound needs an upstream
+  host contract.
 
 - Upgrade prepare (#32) runs inside one synchronous transaction and fails
   closed on staged engine ports; it should reuse staged backup creation.

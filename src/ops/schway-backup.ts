@@ -16,7 +16,7 @@ import {
   SCHWAY_SNAPSHOT_CONTRACT,
   SchwayRunPort,
 } from "../team/schway-port";
-import type { BackupNativeArtifact, BackupNativePlan, BackupNativePort, BackupNativeSnapshot } from "./backup";
+import { backupRetention, type BackupNativeArtifact, type BackupNativeLimits, type BackupNativePlan, type BackupNativePort, type BackupNativeSnapshot } from "./backup";
 
 /**
  * Concrete native-snapshot port — ops.backup_manifest/v1 over
@@ -47,7 +47,11 @@ export const SCHWAY_BACKUP_MAX_SESSIONS = 1024;
 export interface SchwayBackupOptions {
   /** Sessions per backup; a larger resolved set fails closed as `native_snapshot_over_limit`. */
   maxSessions?: number;
-  /** Sessions per `snapshotSessions` call, at most the host's `MAX_SNAPSHOT_SESSIONS`. */
+  /**
+   * Sessions per `snapshotSessions` call (default 1, at most the host's
+   * `MAX_SNAPSHOT_SESSIONS`). Single-session calls let the byte budget stop
+   * capture before the next session is read.
+   */
   chunkSize?: number;
 }
 
@@ -56,7 +60,7 @@ interface PlanEntry {
   state: "running" | "finished"; contextState: string;
 }
 
-interface SchwayPlanDetail { entries: PlanEntry[]; unresolved: number; busy: number }
+interface SchwayPlanDetail { entries: PlanEntry[]; unresolved: number; busy: number; orphaned: number }
 
 /** Lifecycle-only policy: no inference ever runs through the backup host. */
 const LIFECYCLE_POLICY = { roleLimit: 24, responsibilityBytes: 2048, sourceLimit: 8, contextBytes: 32768 };
@@ -94,12 +98,14 @@ export function verifySchwaySnapshot(host: Pick<HostRuntime, "validateSessionSna
 export class SchwayBackupNativePort implements BackupNativePort {
   readonly engine = schwayBackupEngine;
   readonly staged = true;
+  readonly contract = SCHWAY_SNAPSHOT_CONTRACT;
+  readonly formatVersion = SNAPSHOT_NATIVE_FORMAT_VERSION;
   readonly #maxSessions: number;
   readonly #chunkSize: number;
 
   constructor(readonly store: TransactionStore, options: SchwayBackupOptions = {}) {
     this.#maxSessions = options.maxSessions ?? SCHWAY_BACKUP_MAX_SESSIONS;
-    this.#chunkSize = Math.min(options.chunkSize ?? MAX_SNAPSHOT_SESSIONS, MAX_SNAPSHOT_SESSIONS);
+    this.#chunkSize = Math.min(options.chunkSize ?? 1, MAX_SNAPSHOT_SESSIONS);
     if (!Number.isSafeInteger(this.#maxSessions) || this.#maxSessions < 1 || !Number.isSafeInteger(this.#chunkSize) || this.#chunkSize < 1) {
       throw new AppError("invalid_backup_native_options", 500);
     }
@@ -116,36 +122,41 @@ export class SchwayBackupNativePort implements BackupNativePort {
   }
 
   /**
-   * Exact native reference set as committed in `tx`. Rows of app-deleted
-   * contexts are excluded; reserved intents without a native id and running
-   * sessions are counted so `snapshot` can fail closed.
+   * Exact native reference set as committed in `tx`. Only rows whose context
+   * the app explicitly marked `deleted` are excluded. Rows with a missing,
+   * generation-mismatched or unknown context (no foreign key guards this) are
+   * orphaned corruption, reserved intents without a native id are unresolved,
+   * and running sessions are busy; `snapshot` fails closed on all three. Every
+   * row, excluded or not, enters the fingerprint.
    */
   resolve(tx: AppTransaction): BackupNativePlan {
     const rows = tx.all<{ run_id: string; generation: number; session_id: string; branch_id: string; state: "running" | "finished"; context_state: string | null }>(
       `SELECT r.run_id, r.generation, r.session_id, r.branch_id, r.state, c.state AS context_state
        FROM schway_native_refs r LEFT JOIN team_contexts c ON c.id = r.context_id AND c.generation = r.generation
        ORDER BY r.sequence`);
-    const live = rows.filter(row => row.context_state === "active" || row.context_state === "retired" || row.context_state === "delete_failed");
     const entries: PlanEntry[] = [];
-    let unresolved = 0, busy = 0;
-    for (const row of live) {
+    let unresolved = 0, busy = 0, orphaned = 0;
+    for (const row of rows) {
+      if (row.context_state === "deleted") continue;
+      if (row.context_state !== "active" && row.context_state !== "retired" && row.context_state !== "delete_failed") { orphaned++; continue; }
       if (row.session_id === "") { unresolved++; continue; }
       if (row.state === "running") busy++;
-      entries.push({ runId: row.run_id, generation: row.generation, sessionId: row.session_id, branchId: row.branch_id, state: row.state, contextState: row.context_state! });
+      entries.push({ runId: row.run_id, generation: row.generation, sessionId: row.session_id, branchId: row.branch_id, state: row.state, contextState: row.context_state });
     }
-    const fingerprint = createHash("sha256").update(JSON.stringify([
-      unresolved, live.map(row => [row.run_id, row.session_id, row.branch_id, row.state, row.context_state]),
-    ])).digest("hex");
-    const detail: SchwayPlanDetail = { entries, unresolved, busy };
+    const fingerprint = createHash("sha256").update(JSON.stringify(
+      rows.map(row => [row.run_id, row.generation, row.session_id, row.branch_id, row.state, row.context_state]),
+    )).digest("hex");
+    const detail: SchwayPlanDetail = { entries, unresolved, busy, orphaned };
     return { refs: entries.map(entry => ({ id: entry.runId, generation: entry.generation })), fingerprint, detail };
   }
 
   /** Captures the resolved set through the supported host snapshot API. */
-  async snapshot(plan?: BackupNativePlan): Promise<BackupNativeSnapshot> {
+  async snapshot(plan?: BackupNativePlan, limits: BackupNativeLimits = { maxBytes: backupRetention.maxBytes }): Promise<BackupNativeSnapshot> {
     const resolved = plan ?? this.store.read(tx => this.resolve(tx));
     const detail = resolved.detail as SchwayPlanDetail | undefined;
     if (!detail || !Array.isArray(detail.entries)) throw new AppError("native_snapshot_invalid", 500);
     try { assertSchwayGate(this.store.path); } catch { throw new AppError("native_snapshot_unavailable", 503); }
+    if (detail.orphaned > 0) throw new AppError("native_ref_orphaned", 409);
     if (detail.unresolved > 0) throw new AppError("native_ref_unresolved", 409);
     if (detail.busy > 0) throw new AppError("native_sessions_busy", 409);
     if (detail.entries.length > this.#maxSessions) throw new AppError("native_snapshot_over_limit", 409);
@@ -153,6 +164,7 @@ export class SchwayBackupNativePort implements BackupNativePort {
     if (detail.entries.length === 0) return { ...base, bytes: 0, artifacts: [] };
     let host: HostRuntime | null = null;
     const artifacts: BackupNativeArtifact[] = [];
+    let captured = 0;
     try {
       try {
         host = await new SchwayRunPort(this.store, LIFECYCLE_POLICY, 4096).openLifecycleHost();
@@ -167,6 +179,11 @@ export class SchwayBackupNativePort implements BackupNativePort {
         catch (error) { throw mapHostError(error); }
         verifySchwaySnapshot(host, snapshot, requested);
         const bytes = new TextEncoder().encode(JSON.stringify(snapshot));
+        captured += bytes.length;
+        // Enforce the remaining backup budget after every host call and stop
+        // before requesting more sessions. The pinned host has no caller byte
+        // ceiling, so one call may still read up to its own bound first.
+        if (captured > limits.maxBytes) throw new AppError("backup_too_large", 507);
         artifacts.push({ name: `session-snapshot-${index}`, bytes, sha256: createHash("sha256").update(bytes).digest("hex") });
       }
     } finally {

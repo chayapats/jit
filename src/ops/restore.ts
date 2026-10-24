@@ -7,7 +7,7 @@ import { TransactionStore, type AppTransaction } from "../store";
 import { invalidatePendingJob, readJob } from "../jobs/queue";
 import { fenceStaleContexts } from "../memory/context";
 import { currentSupportedSchema, minSupportedSchema } from "./upgrade";
-import { validateManifestRecord } from "./backup";
+import { assertRestorableBackup, validateManifestRecord } from "./backup";
 import { redactedText, scrubFreeTextOccurrences, scrubOutputSources } from "../memory/delete";
 
 export const restoreContract = "ops.quarantined_restore/v1" as const;
@@ -170,6 +170,8 @@ function withQuarantine<T>(workingFile: string, fn: (store: TransactionStore) =>
  */
 export function prepareRestore(tx: AppTransaction, input: {
   id: string; now: number; liveRevision: number; backupId: string; restoreDir: string;
+  /** Managed backup directory every artifact must live in (ops.backup_manifest/v1). */
+  backupDir: string;
 }): RestoreQuarantine {
   if (tx.get<{ id: string }>("SELECT id FROM restore_quarantines WHERE state IN ('quarantining', 'migrated', 'ledger_applied', 'validated', 'blocked') LIMIT 1")) {
     throw new AppError("restore_in_progress", 409);
@@ -185,6 +187,8 @@ export function prepareRestore(tx: AppTransaction, input: {
   if (compat.action === "reject") {
     throw new AppError(compat.reason === "newer_backup_unsupported" ? "newer_backup_unsupported" : "backup_unrestorable", 409);
   }
+  // Only complete, verified backups enter quarantine; ledger acknowledgment cannot override this.
+  assertRestorableBackup(manifest, input.backupDir);
   let bytes: Uint8Array;
   try {
     bytes = readFileSync(manifest.artifact.path);

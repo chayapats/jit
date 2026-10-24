@@ -27,7 +27,7 @@ orphans.
 | --- | --- |
 | `Application.execute(actor, backup.create)` → `Promise<BackupReceipt>` | Staged creation (below). Duplicate `requestId` returns the committed receipt; a different payload is `request_id_conflict`; a stale workspace revision is `stale_revision`. |
 | `Application.execute(actor, backup.prune)` → `BackupReceipt` | Keeps the newest `keep` (1–10) backups. Rows are removed in one transaction; files are deleted only after it commits. |
-| `Application.backups(actor)` / `Application.backup(actor, id)` | Bounded inventory (≤ 100, oldest first) and one validated manifest. Neither parses backup bytes. Web: `GET /backups`, `GET /backups/:id`, `GET /api/backups`, `POST /api/backups`. |
+| `Application.backups(actor)` / `Application.backup(actor, id)` | Bounded inventory (≤ 100, oldest first) and one validated manifest plus `integrity` from `verifyBackupArtifacts`; an `invalid` verdict presents the manifest as `incomplete` with the integrity reason. Neither parses backup bytes. Web: `GET /backups`, `GET /backups/:id`, `GET /api/backups`, `POST /api/backups`. |
 | `backupNativePortFor(config, store)` | The single selection rule for `serve` and `startFullApp`: `SchwayBackupNativePort` only when `JIT_RUN_PORT=schway`; otherwise no port. |
 
 ### Staged creation
@@ -51,20 +51,28 @@ orphans.
 ### Native port (`BackupNativePort`)
 
 `available()`, optional `resolve(tx) → { refs, fingerprint, detail }`,
-`snapshot(plan) → BackupNativeSnapshot | Promise<…>`, optional `engine` and
-`staged`. The snapshot returns `refs`, `engine`, `contract`, `formatVersion`
-and opaque `artifacts: { name, bytes, sha256 }[]`. The core validates refs,
-recomputes every artifact hash (`native_artifact_hash_mismatch`), requires an
-artifact for any non-empty ref set (`native_artifacts_missing`) and never
-inspects artifact content.
+`snapshot(plan, { maxBytes }) → BackupNativeSnapshot | Promise<…>`, optional
+`engine`, `staged`, and the supported `contract`/`formatVersion`. The snapshot
+returns `refs`, `engine`, `contract`, `formatVersion` and opaque
+`artifacts: { name, bytes, sha256 }[]`. The core validates refs, recomputes
+every artifact hash (`native_artifact_hash_mismatch`), requires an artifact for
+any non-empty ref set (`native_artifacts_missing`), requires every non-empty
+capture to declare exactly the port's supported contract and positive format
+version (`native_snapshot_incompatible`), and never inspects artifact content.
+`maxBytes` is the remaining 64 MiB budget after the app image; exceeding it is
+`backup_too_large`.
 
 `SchwayBackupNativePort` resolves `schway_native_refs` joined with
-`team_contexts`. App-deleted contexts are excluded; reserved intents without a
-native id fail `native_ref_unresolved`; running sessions fail
+`team_contexts` on id and generation. Only contexts explicitly `deleted` are
+excluded; refs with a missing, generation-mismatched or unknown context fail
+`native_ref_orphaned`; every row enters the fingerprint; reserved intents
+without a native id fail `native_ref_unresolved`; running sessions fail
 `native_sessions_busy`; more than 1024 sessions fail
 `native_snapshot_over_limit`. Capture opens the pinned lifecycle host, checks
-`capabilities.snapshotContract`, calls `snapshotSessions` in chunks of at most
-`MAX_SNAPSHOT_SESSIONS`, and maps host errors: `busy` →
+`capabilities.snapshotContract`, calls `snapshotSessions` one session per call
+by default (at most `MAX_SNAPSHOT_SESSIONS`), checks the cumulative serialized
+size against `maxBytes` after every call and stops before requesting more, and
+maps host errors: `busy` →
 `native_sessions_busy`, `conflict` → `native_snapshot_conflict`,
 `storage`/`invalid-reference` → `native_artifact_missing`,
 `workspace-mismatch` → `native_snapshot_incompatible`. Each snapshot must pass
@@ -79,8 +87,11 @@ closed with `native_snapshot_requires_staged_backup`.
 (`jit/<package.json version>`, injectable as `ApplicationOptions.jitVersion`,
 validated as `jit/<semver>` on read and restore), `appRevision`, `projects`,
 `sourceGenerations`, `inventory` (`complete` plus `total`/`recorded` for
-projects ≤ 1000 and sources ≤ 4000), `lifecycle` (`available`, `checkpoint`,
-`reason` — absence is explicit, never inferred as "no deletions"), `native`
+projects ≤ 1000 and sources ≤ 4000), `lifecycle` (`available`, `checkpoint`
+`ledger:<sha256>` over the ordered deletion-ledger and suppression ids,
+`position` counts, `reason`; an empty readable ledger is position zero, an
+unreadable or malformed ledger is `ledger_unverifiable` and never inferred as
+"no deletions"), `native`
 (`state`, `refs` as app run ids + generations, measured `bytes`, `engine`,
 `reason`, `contract`, `formatVersion`, `artifacts[{name, path, bytes, hash}]`),
 `content` (image bytes/hash and counts), `retention` (`maxBackups` 10,
@@ -90,6 +101,28 @@ projects ≤ 1000 and sources ≤ 4000), `lifecycle` (`available`, `checkpoint`,
 `state` is `valid` only when native capture, lifecycle checkpoint and inventory
 are all complete; otherwise `incomplete` with the first failing reason. Opaque
 native session/branch ids never appear in a manifest.
+
+## Integrity and restore gate
+
+`verifyBackupArtifacts(manifest, backupDir)` requires the image at exactly
+`<backupDir>/<id>.sqlite` and native artifacts at exactly
+`<backupDir>/<id>.native-<n>.json` in order, each a regular non-symlink file
+with the recorded size and SHA-256; native artifacts need a declared
+contract/format and a valid non-empty native set needs artifacts. Restore
+preparation (`assertRestorableBackup`, before any quarantine copy) requires
+`state: "valid"`, an available lifecycle checkpoint, native `valid`, a complete
+inventory (`backup_incomplete`) and verified files (`backup_artifact_missing`
+for a missing image, otherwise `backup_integrity_failed`). No owner
+acknowledgment, including an empty external ledger, overrides it.
+
+## Upstream residual
+
+`snapshotSessions` has no caller byte ceiling or streaming form, so one call
+may read and return up to the host's own bounds (`MAX_SNAPSHOT_ARTIFACT_BYTES`
+32 MiB per artifact, 256 MiB decoded per snapshot) before Jit can reject it.
+Single-session calls keep that to one session's capture. A strict
+pre-allocation bound needs a Schway host contract extension (a caller byte
+ceiling or streamed snapshot).
 
 ## Credential exclusion
 
