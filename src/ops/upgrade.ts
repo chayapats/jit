@@ -5,8 +5,8 @@ import { AppError } from "../errors";
 import { lookupSource, requireId } from "../sources";
 import { TransactionStore, schemaVersion, type AppTransaction } from "../store";
 import {
-  prepareBackupManifest, resolveNativeSnapshot, writeArtifact,
-  type BackupManifest, type BackupNativePort,
+  captureAppSide, jitAppVersion, prepareBackupManifest, resolveNativeSnapshot, writeArtifact,
+  type BackupNativePort,
 } from "./backup";
 
 export const upgradeContract = "ops.schema_migrations/v1" as const;
@@ -158,12 +158,14 @@ function writeLedgerSidecar(tx: AppTransaction, dir: string, id: string, now: nu
 export function prepareUpgrade(tx: AppTransaction, store: TransactionStore, input: {
   id: string; now: number; appRevision: number; targetSchema: number; note: string;
   upgradeDir: string; backupDir: string; engine: BackupNativePort | undefined;
+  /** Producing build recorded in the recovery-point manifest; defaults to the shipped package version. */
+  jitVersion?: string;
 }): UpgradeJournal {
   if (tx.get<{ id: string }>("SELECT id FROM upgrade_journal WHERE state IN ('prepared', 'staged', 'ready') LIMIT 1")) {
     throw new AppError("upgrade_in_progress", 409);
   }
   const fromSchema = currentSchema(tx);
-  const engineName = input.engine?.available() ? "scripted-fixture-v1" : null;
+  const engineName = input.engine?.available() ? (input.engine.engine ?? "scripted-fixture-v1") : null;
   const plan = planUpgrade(fromSchema, input.targetSchema, engineName);
   // Failed preflights throw before mutating; the caller persists the failed journal
   // outside this rolled-back transaction so the rejection stays inspectable.
@@ -171,33 +173,24 @@ export function prepareUpgrade(tx: AppTransaction, store: TransactionStore, inpu
     throw new AppError(plan.reason === "engine_unavailable" ? "engine_unavailable" : "unsupported_upgrade", 409);
   }
   // Fail-closed snapshot: an unavailable engine snapshot never yields a usable recovery point.
-  const snapshot = store.snapshotBytes();
-  const hash = createHash("sha256").update(snapshot).digest("hex");
+  // Staged (asynchronous) engine ports cannot run inside this synchronous transaction and
+  // therefore fail closed here; upgrade prepare must reuse staged backup creation to use them.
   const native = resolveNativeSnapshot(input.engine);
-  if (native.state !== "valid") {
-    // Fail-closed snapshot: an unavailable engine snapshot never yields a usable recovery point.
+  if (native.state !== "valid" || native.refs.length > 0) {
+    // A synchronous capture has no artifacts to stage, so a non-empty native set is never usable.
     // The caller persists the failed journal outside this rolled-back transaction.
     throw new AppError("native_snapshot_unavailable", 503);
   }
+  // The recovery point is the same credential-free ops.backup_manifest/v1 image as an ordinary
+  // backup; rollback activation keeps the live credentials (TransactionStore.swapFrom).
+  const app = captureAppSide(tx, store);
   const backupId = crypto.randomUUID();
-  const artifactPath = writeArtifact(input.backupDir, backupId, snapshot);
-  const manifest: BackupManifest = {
-    contract: "ops.backup_manifest/v1", id: backupId, createdAt: input.now, appSchema: fromSchema,
-    jitVersion: "jit-mvp-fixture", appRevision: input.appRevision,
-    projects: tx.all<{ projectId: string; revision: number }>("SELECT id AS projectId, revision FROM projects ORDER BY created_at, id LIMIT 1000"),
-    sourceGenerations: tx.all<{ projectId: string; sourceId: string; revision: number; generation: number }>(
-      "SELECT project_id AS projectId, id AS sourceId, current_revision AS revision, generation FROM sources ORDER BY project_id, id LIMIT 4000"),
-    lifecycle: (() => { try {
-      const latest = tx.all<{ record_json: string }>("SELECT record_json FROM memory_suppressions ORDER BY rowid DESC LIMIT 1");
-      return latest.length ? { available: true, checkpoint: (JSON.parse(latest[0]!.record_json) as { id: string }).id, reason: null as string | null }
-        : { available: false, checkpoint: null, reason: "no_ledger_checkpoint" as string | null };
-    } catch { return { available: false, checkpoint: null, reason: "ledger_unverifiable" as string | null }; } })(),
-    native, content: { bytes: snapshot.length, hash, projects: 0, sources: 0 },
-    retention: { maxBackups: 10, maxBytes: 64 * 1024 * 1024, pruned: [] },
-    state: "valid", reason: null, artifact: { path: artifactPath, bytes: snapshot.length, hash },
-  };
-  manifest.content.projects = manifest.projects.length;
-  manifest.content.sources = manifest.sourceGenerations.length;
+  const artifactPath = writeArtifact(input.backupDir, backupId, app.image.bytes);
+  const manifest = prepareBackupManifest(tx, {
+    id: backupId, now: input.now, appRevision: input.appRevision, appSchema: fromSchema,
+    jitVersion: input.jitVersion ?? jitAppVersion, image: app.image, native, artifactPath, pruned: [],
+    inventory: app.inventory, lifecycle: app.lifecycle,
+  });
   tx.run("INSERT INTO ops_backups VALUES (?, ?, ?)", manifest.id, manifest.createdAt, JSON.stringify(manifest));
   const sidecarPath = writeLedgerSidecar(tx, input.upgradeDir, input.id, input.now);
   const journal: UpgradeJournal = { id: input.id, contract: upgradeContract, fromSchema, targetSchema: input.targetSchema,
@@ -221,7 +214,7 @@ export function recordFailedUpgrade(tx: AppTransaction, input: {
   id: string; now: number; targetSchema: number; engine: BackupNativePort | undefined; reason: string;
 }): UpgradeJournal {
   const fromSchema = currentSchema(tx);
-  const engineName = input.engine?.available() ? "scripted-fixture-v1" : null;
+  const engineName = input.engine?.available() ? (input.engine.engine ?? "scripted-fixture-v1") : null;
   const plan = planUpgrade(fromSchema, input.targetSchema, engineName);
   const preflightFailed = !plan.compatible;
   const snapshotDetail = preflightFailed ? "preflight_failed" : input.reason;

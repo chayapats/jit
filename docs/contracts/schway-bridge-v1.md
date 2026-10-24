@@ -152,7 +152,10 @@ and fixture-free protocol transport.
   acknowledges; partial/blocked stays `delete_failed` with retry.
 - `snapshot` captures a quiesced per-context snapshot through
   `snapshotSessions`. Empty backing resolves to the explicit unsupported
-  diagnostic; backup integration stays a later slice.
+  diagnostic. Managed backups (`ops.backup_manifest/v1`, OPS01) capture the
+  installation's native set through `SchwayBackupNativePort`
+  (`src/ops/schway-backup.ts`) on the same lifecycle host; see
+  `docs/contracts/ops-backup-manifest-v1.md`.
 - `status()` reports the pinned release for inspection surfaces; it never
   probes credentials or infers readiness. Serve wiring (`JIT_RUN_PORT`,
   default `scripted`) selects the concrete port for specialist, coordinator

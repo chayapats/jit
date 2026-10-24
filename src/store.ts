@@ -6,6 +6,13 @@ import { commitDecisionMemorySource, retireDecisionMemorySource } from "./memory
 /** Current application schema revision. Service packaging pins and checks this value. */
 export const schemaVersion = 22;
 
+/**
+ * Installation-scoped state that never round-trips through backup images and
+ * is preserved from the live store on every activation (`swapFrom`). Order is
+ * parent-first for inserts. ops.backup_manifest/v1 excludes these from images.
+ */
+export const installationScopedTables = Object.freeze(["owner", "sessions", "login_throttle", "ops_backups"] as const);
+
 /** Synchronous SQL operations scoped to an application transaction. */
 export interface AppTransaction {
   get<T>(sql: string, ...bindings: SQLQueryBindings[]): T | null;
@@ -640,9 +647,21 @@ export class TransactionStore {
    * Activates a staged image by replacing this database file with validated bytes and
    * reopening the same store handle. Callers record journal intent first; a crash between
    * intent and completion leaves an explicit non-terminal journal entry to resume from.
+   * Installation-scoped tables ({@link installationScopedTables}: credentials and the managed
+   * backup registry) are always carried over from the live store, never taken from the image.
    */
   swapFrom(sourcePath: string): void {
     const bytes = readFileSync(sourcePath);
+    // Credentials never round-trip through images (ops.backup_manifest/v1):
+    // the activated database keeps exactly the live installation's owner
+    // verifier, browser sessions and login throttle. A live store without an
+    // owner activates without one, so the owner runs credential setup.
+    // The managed backup registry likewise stays the live installation's: an
+    // image never rolls back which backups exist or which files they own.
+    const preserved = installationScopedTables.map(table => {
+      try { return { table, rows: this.#db.query(`SELECT * FROM "${table}" ORDER BY rowid`).all() as Record<string, SQLQueryBindings>[], present: true }; }
+      catch { return { table, rows: [] as Record<string, SQLQueryBindings>[], present: false }; }
+    });
     try { this.#db.exec("PRAGMA wal_checkpoint(TRUNCATE);"); } catch { /* Best-effort checkpoint before close. */ }
     this.#db.close();
     writeFileSync(this.path, bytes);
@@ -658,6 +677,20 @@ export class TransactionStore {
       // Scheduler and delivery-worker claims belong to the pre-swap boot; a stale claim
       // must never authorize work after activation. The service reboots and reconciles.
       try { reopened.exec("DELETE FROM job_scheduler; DELETE FROM delivery_worker;"); } catch { /* Ancient images predate these tables. */ }
+      reopened.transaction(() => {
+        // Children before parents on delete (sessions reference owner), parents first on insert.
+        for (const { table } of [...preserved].reverse()) {
+          try { reopened.exec(`DELETE FROM "${table}"`); } catch { /* Images predating the table get it from migration. */ }
+        }
+        for (const { table, rows, present } of preserved) {
+          if (!present) continue;
+          for (const row of rows) {
+            const columns = Object.keys(row);
+            reopened.query(`INSERT INTO "${table}" (${columns.map(c => `"${c}"`).join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`)
+              .run(...columns.map(c => row[c]!));
+          }
+        }
+      }).immediate();
     } catch (error) {
       reopened.close();
       throw error;
