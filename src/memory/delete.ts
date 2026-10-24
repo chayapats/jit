@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { existsSync, lstatSync, rmSync } from "node:fs";
+import { basename, isAbsolute } from "node:path";
 import { AppError } from "../errors";
 import { invalidatePendingJob, jobData } from "../jobs/queue";
 import { lookupSource, requireId, requireReference, type SourceReference } from "../sources";
@@ -6,7 +8,7 @@ import type { AppTransaction, TransactionStore } from "../store";
 import type { ApplicationRunPort } from "../team/run-port";
 import { fenceStaleContexts, lexicalScore, lexicalTerms } from "./context";
 import { fenceUnavailableExtractions } from "./extract";
-import { deletedSource, lookupActiveClaim } from "./read";
+import { deletedSource, ledgerQueryFailed, lookupActiveClaim } from "./read";
 import type { ClaimReference, MemoryClaim } from "./types";
 
 export const deletePreviewContract = "app.data_deletion_preview/v1" as const;
@@ -14,7 +16,7 @@ export const deleteOperationContract = "app.data_deletion_operation/v1" as const
 
 /** Bounded preview lists. Truncating any list that confirmation acts on is a named blocker, never silently complete. */
 export const deletePreviewBounds = Object.freeze({
-  sources: 1000, claims: 2000, contexts: 100, pendingJobs: 500, nativeSessions: 100, backups: 50, obligations: 100,
+  sources: 1000, claims: 2000, contexts: 100, pendingJobs: 500, nativeSessions: 100, backups: 50, exports: 50, obligations: 100,
 });
 /** Inventory scans page through whole tables; a table past `scanRows` blocks confirmation instead of hiding rows. */
 export const deleteInventoryPolicy = Object.freeze({ scanRows: 200_000, page: 500, closureRounds: 32, chunk: 400 });
@@ -75,8 +77,10 @@ export interface DeletionPreview {
     contexts: { id: string; generation: number; projectId: string; ownerKind: string; ownerId: string }[];
     pendingJobs: { id: string; projectId: string }[];
     nativeSessions: DeletionNativeSession[];
-    backups: { id: string; createdAt: number; state: string }[];
-    exports: { id: string; projectId: string; createdAt: number }[];
+    /** Retained whole-store snapshots: listed in coverage, or taken at/after the affected data was committed. */
+    backups: { id: string; createdAt: number; state: string; evidence: "coverage" | "snapshot_time" }[];
+    /** App-owned export artifacts confirmation purges (coverage match, or incomplete coverage of an affected project). */
+    exports: { id: string; projectId: string; createdAt: number; evidence: "coverage" | "incomplete_coverage" }[];
     /** Owner-authored tasks/decisions are disclosed and retained unchanged; deletion never completes or cancels them. */
     obligations: { kind: "task" | "decision"; id: string; title: string; revision: number; effect: "retained_unchanged" }[];
   };
@@ -97,10 +101,17 @@ export interface DeletionContextScope {
   attempts: number; reason: string | null; nextAction: string; updatedAt: number;
 }
 
+/** One app-owned local export artifact the operation must purge (registry row removed at confirm, file after commit). */
+export interface DeletionExportScope {
+  id: string; projectId: string; path: string;
+  state: "pending" | "purged" | "failed";
+  attempts: number; reason: string | null; updatedAt: number;
+}
+
 /** Non-native scopes: active-local purge versus retained/external copies this command does not erase. */
 export interface DeletionLocalScope {
-  scope: "app_store" | "retained_backups" | "retained_exports" | "external_copies";
-  state: "purged" | "retained" | "none" | "not_attempted";
+  scope: "app_store" | "retained_backups" | "local_exports" | "external_copies";
+  state: "purged" | "pending" | "failed" | "retained" | "none" | "not_attempted";
   detail: string;
 }
 
@@ -112,6 +123,8 @@ export interface DeletionOperation {
   attempts: number; maxAttempts: number;
   tombstones: DeletionTombstone[];
   contexts: DeletionContextScope[];
+  /** App-owned export files holding affected data; the operation is never complete while one remains. */
+  exports: DeletionExportScope[];
   scopes: DeletionLocalScope[];
   backupsRetained: string[];
   residuals: string[];
@@ -156,7 +169,8 @@ export function deleteCommandIdentity(command: DeleteCommand, contextBytes: numb
   return encoded;
 }
 
-/** The durable tombstones for restore replay, ordered by deletion time. */
+/** The durable tombstones for restore replay, ordered by deletion time. Fails closed (`deletion_ledger_unavailable`)
+ *  on any current-schema ledger error; only a pre-migration store without the table reads as empty. */
 export function readDeletionLedger(tx: AppTransaction): (DeletionTombstone & { operationId: string; deletedAt: number })[] {
   try {
     return tx.all<{ operation_id: string; project_id: string; kind: "source" | "claim"; source_id: string | null;
@@ -164,7 +178,7 @@ export function readDeletionLedger(tx: AppTransaction): (DeletionTombstone & { o
       "SELECT operation_id, project_id, kind, source_id, claim_id, revision, generation, deleted_at AS deletedAt FROM deletion_ledger ORDER BY deleted_at, id")
       .map(row => ({ operationId: row.operation_id, projectId: row.project_id, kind: row.kind,
         sourceId: row.source_id, claimId: row.claim_id, revision: row.revision, generation: row.generation, deletedAt: row.deletedAt }));
-  } catch { return []; }
+  } catch (error) { ledgerQueryFailed(tx, error); return []; }
 }
 
 export function readDeletionPreview(tx: AppTransaction, projectId: string, previewId: string): DeletionPreview | null {
@@ -180,7 +194,8 @@ function normalizeOperation(raw: DeletionOperation): DeletionOperation {
     state: context.state ?? "pending", attempts: context.attempts ?? 0, reason: context.reason ?? null,
     nextAction: context.nextAction ?? "reconcile_managed_delete_then_verify", updatedAt: context.updatedAt ?? raw.updatedAt,
   } satisfies DeletionContextScope));
-  return { ...raw, contexts, scopes: raw.scopes ?? localScopes(raw.tombstones?.length ?? 0, 0, raw.backupsRetained ?? [], []) };
+  const normalized = { ...raw, contexts, exports: raw.exports ?? [] };
+  return { ...normalized, scopes: localScopes(normalized) };
 }
 
 function readOperationRow(tx: AppTransaction, operationId: string): DeletionOperation | null {
@@ -453,17 +468,24 @@ function buildInventory(tx: AppTransaction, scope: DeleteScope): Inventory {
     }
   }
   const allSources = [...sources.values()];
-  return {
+  const inventory: Inventory = {
     sources, claims, contexts, pendingJobs,
     sessions: [...sessions.values()].map(({ claimKeys: _c, sourceKeys: _s, ...session }) => session),
-    backups: retainedBackups(tx, allSources),
-    exports: retainedExports(tx, allSources, new Set(claims.keys())),
-    obligations: obligationsFor(tx, scope, allSources),
+    backups: retainedBackups(tx, allSources, [...claims.values()], blockers),
+    exports: retainedExports(tx, allSources, [...claims.values()], blockers),
+    obligations: obligationsFor(tx, scope, allSources, blockers),
     blockers,
   };
+  // Lists confirmation acts on (or the owner must see in full) block when they exceed display bounds; backups are disclosure only.
+  const sizes: [string, number, number][] = [["sources", sources.size, deletePreviewBounds.sources], ["claims", claims.size, deletePreviewBounds.claims],
+    ["contexts", contexts.size, deletePreviewBounds.contexts], ["pendingJobs", pendingJobs.length, deletePreviewBounds.pendingJobs],
+    ["nativeSessions", inventory.sessions.length, deletePreviewBounds.nativeSessions], ["exports", inventory.exports.length, deletePreviewBounds.exports],
+    ["obligations", inventory.obligations.length, deletePreviewBounds.obligations]];
+  for (const [name, size, bound] of sizes) if (size > bound) blockers.add(`inventory_truncated:${name}`);
+  return inventory;
 }
 
-function obligationsFor(tx: AppTransaction, scope: DeleteScope, sources: SourceEntry[]): DeletionPreview["affected"]["obligations"] {
+function obligationsFor(tx: AppTransaction, scope: DeleteScope, sources: SourceEntry[], blockers: Set<string>): DeletionPreview["affected"]["obligations"] {
   const out = new Map<string, DeletionPreview["affected"]["obligations"][number]>();
   const clip = (value: string) => Array.from(value).slice(0, 120).join("");
   const add = (kind: "task" | "decision", id: string, title: string, revision: number) =>
@@ -476,50 +498,89 @@ function obligationsFor(tx: AppTransaction, scope: DeleteScope, sources: SourceE
       `SELECT d.id, d.conclusion, d.revision FROM owner_decisions d JOIN decision_proposals p ON p.id = d.proposal_id
        WHERE d.superseded_by IS NULL AND p.source_id IN (${marks(batch.length)})`, ...batch)) add("decision", row.id, row.conclusion, row.revision);
   }
-  // Lexical overlap is disclosure only (owner-authored text is never rewritten); lineage matches above are exact.
+  // Lexical overlap is disclosure (owner-authored text is never rewritten); every active row is checked, not a prefix.
   const query = lexicalTerms(sourceText(tx, scope.source));
-  for (const row of tx.all<{ id: string; title: string; summary: string; revision: number }>(
-    `SELECT id, title, summary, task_revision AS revision FROM tasks WHERE project_id = ? AND ${active} LIMIT 200`, scope.projectId)) {
+  scanTable<{ id: string; title: string; summary: string; revision: number }>(tx, "tasks", "id, title, summary, task_revision AS revision", row => {
     if (lexicalScore(query, `${row.title}\n${row.summary}`) >= 3) add("task", row.id, row.title, row.revision);
-  }
-  for (const row of tx.all<{ id: string; conclusion: string; rationale: string; revision: number }>(
-    "SELECT id, conclusion, rationale, revision FROM owner_decisions WHERE project_id = ? AND superseded_by IS NULL LIMIT 200", scope.projectId)) {
+  }, { blockers }, `project_id = ? AND ${active}`, [scope.projectId]);
+  scanTable<{ id: string; conclusion: string; rationale: string; revision: number }>(tx, "owner_decisions", "id, conclusion, rationale, revision", row => {
     if (lexicalScore(query, `${row.conclusion}\n${row.rationale}`) >= 3) add("decision", row.id, row.conclusion, row.revision);
-  }
+  }, { blockers }, "project_id = ? AND superseded_by IS NULL", [scope.projectId]);
   return [...out.values()];
 }
 
-function retainedBackups(tx: AppTransaction, sources: SourceEntry[]): DeletionPreview["affected"]["backups"] {
+/** Earliest commit time of affected data per project (sources by version commit, claims by creation). */
+function affectedSince(tx: AppTransaction, sources: SourceEntry[], claims: ClaimRow[]): Map<string, number> {
+  const since = new Map<string, number>();
+  const note = (projectId: string, at: number) => { if (Number.isFinite(at)) since.set(projectId, Math.min(since.get(projectId) ?? at, at)); };
+  for (const entry of sources) {
+    note(entry.projectId, tx.get<{ at: number }>("SELECT committed_at AS at FROM source_versions WHERE source_id = ? AND revision = ? AND generation = ?",
+      entry.source.sourceId, entry.source.revision, entry.source.generation)?.at ?? Number.NEGATIVE_INFINITY);
+  }
+  for (const entry of claims) note(entry.projectId, typeof entry.claim.createdAt === "number" ? entry.claim.createdAt : Number.NEGATIVE_INFINITY);
+  return since;
+}
+
+/**
+ * Backups are whole-store snapshots, so manifest coverage (a bounded prefix) is not trusted as proof of
+ * absence: a backup created at or after any affected generation was committed is treated as retaining it.
+ * Unreadable manifests are named blockers.
+ */
+function retainedBackups(tx: AppTransaction, sources: SourceEntry[], claims: ClaimRow[], blockers: Set<string>): DeletionPreview["affected"]["backups"] {
   const keys = new Set(sources.map(s => sourceKey(s.source)));
+  const since = Math.min(...affectedSince(tx, sources, claims).values());
   const items: DeletionPreview["affected"]["backups"] = [];
   try {
     scanTable<{ json: string }>(tx, "ops_backups", "record_json AS json", row => {
+      let manifest: { id: string; createdAt: number; state: string; sourceGenerations?: SourceReference[] };
       try {
-        const manifest = JSON.parse(row.json) as { id: string; createdAt: number; state: string; sourceGenerations?: SourceReference[] };
-        if (manifest.sourceGenerations?.some(s => validReference(s) && keys.has(sourceKey(s)))) {
-          items.push({ id: manifest.id, createdAt: manifest.createdAt, state: manifest.state });
-        }
-      } catch { /* Corrupt manifests stay visible to backup validation, not silently skipped here. */ }
-    }, null);
-  } catch { /* Pre-backup schemas retain nothing. */ }
+        manifest = JSON.parse(row.json) as typeof manifest;
+        if (typeof manifest?.id !== "string" || !Number.isFinite(manifest.createdAt)) throw new Error("unreadable");
+      } catch { blockers.add("unreadable_record:ops_backups"); return; }
+      const listed = Array.isArray(manifest.sourceGenerations) && manifest.sourceGenerations.some(s => validReference(s) && keys.has(sourceKey(s)));
+      if (listed || manifest.createdAt >= since) {
+        items.push({ id: manifest.id, createdAt: manifest.createdAt, state: manifest.state, evidence: listed ? "coverage" : "snapshot_time" });
+      }
+    }, { blockers });
+  } catch (error) { if (!(error instanceof Error) || !/no such table/.test(error.message)) throw error; }
   return items;
 }
 
-/** Managed export artifacts whose coverage includes a doomed lineage; deletion never edits them. */
-function retainedExports(tx: AppTransaction, sources: SourceEntry[], claimIds: Set<string>): DeletionPreview["affected"]["exports"] {
+/** Export coverage is trusted as complete only when it says so; missing/unknown completeness metadata is incomplete. */
+function exportCoverageComplete(coverage: unknown): boolean {
+  if (!coverage || typeof coverage !== "object") return false;
+  const record = coverage as Record<string, unknown>;
+  if (record.truncated !== false || !Array.isArray(record.sources) || !Array.isArray(record.claims)) return false;
+  return !Object.values(record).some(value => !!value && typeof value === "object" && !Array.isArray(value) &&
+    ((value as { truncated?: unknown }).truncated !== false));
+}
+
+/**
+ * App-owned export artifacts holding affected data: a coverage match, or (for incomplete coverage)
+ * an export of an affected project created after the affected data was committed. Confirmation purges them.
+ */
+function retainedExports(tx: AppTransaction, sources: SourceEntry[], claims: ClaimRow[], blockers: Set<string>): DeletionPreview["affected"]["exports"] {
   const keys = new Set(sources.map(s => sourceKey(s.source)));
+  const claimIds = new Set(claims.map(c => c.claim.claimId));
+  const since = affectedSince(tx, sources, claims);
   const items: DeletionPreview["affected"]["exports"] = [];
   try {
-    scanTable<{ json: string }>(tx, "export_artifacts", "record_json AS json", row => {
+    scanTable<{ id: string; projectId: string; json: string }>(tx, "export_artifacts", "id, project_id AS projectId, record_json AS json", row => {
+      let manifest: { id: string; projectId: string; createdAt: number;
+        coverage?: { sources?: SourceReference[]; claims?: { claimId: string }[]; truncated?: unknown } };
       try {
-        const manifest = JSON.parse(row.json) as { id: string; projectId: string; createdAt: number;
-          coverage?: { sources?: SourceReference[]; claims?: { claimId: string }[] } };
-        const hit = manifest.coverage?.sources?.some(s => validReference(s) && keys.has(sourceKey(s))) ?? false;
-        const claimHit = manifest.coverage?.claims?.some(c => claimIds.has(c.claimId)) ?? false;
-        if (hit || claimHit) items.push({ id: manifest.id, projectId: manifest.projectId, createdAt: manifest.createdAt });
-      } catch { /* Corrupt artifacts stay visible to export validation, not silently skipped here. */ }
-    }, null);
-  } catch { /* Pre-export schemas retain nothing. */ }
+        manifest = JSON.parse(row.json) as typeof manifest;
+        if (manifest?.id !== row.id || !Number.isFinite(manifest.createdAt)) throw new Error("unreadable");
+      } catch { blockers.add("unreadable_record:export_artifacts"); return; }
+      const complete = exportCoverageComplete(manifest.coverage);
+      const listed = (Array.isArray(manifest.coverage?.sources) && manifest.coverage.sources.some(s => validReference(s) && keys.has(sourceKey(s)))) ||
+        (Array.isArray(manifest.coverage?.claims) && manifest.coverage.claims.some(c => claimIds.has(c?.claimId)));
+      const after = since.has(row.projectId) && manifest.createdAt >= since.get(row.projectId)!;
+      if (listed || (!complete && after)) {
+        items.push({ id: row.id, projectId: row.projectId, createdAt: manifest.createdAt, evidence: listed ? "coverage" : "incomplete_coverage" });
+      }
+    }, { blockers });
+  } catch (error) { if (!(error instanceof Error) || !/no such table/.test(error.message)) throw error; }
   return items;
 }
 
@@ -608,12 +669,8 @@ export function prepareDeletionPreview(tx: AppTransaction, command: DeletePrevie
   const pendingJobs = bounded(inventory.pendingJobs, deletePreviewBounds.pendingJobs);
   const sessions = bounded(inventory.sessions, deletePreviewBounds.nativeSessions);
   const backups = bounded(inventory.backups, deletePreviewBounds.backups);
-  const exports = bounded(inventory.exports, deletePreviewBounds.backups);
+  const exports = bounded(inventory.exports, deletePreviewBounds.exports);
   const obligations = bounded(inventory.obligations, deletePreviewBounds.obligations);
-  // Lists that confirmation acts on must be shown complete; retained-copy lists are disclosure only.
-  for (const [name, list] of [["sources", sources], ["claims", claims], ["contexts", contexts], ["pendingJobs", pendingJobs], ["nativeSessions", sessions]] as const) {
-    if (list.truncated) inventory.blockers.add(`inventory_truncated:${name}`);
-  }
   const wholeSession = wholeSessionFor(tx, scope, inventory.sessions);
   const preview: DeletionPreview = {
     id: crypto.randomUUID(), contract: deletePreviewContract,
@@ -778,15 +835,18 @@ function redactDerivedRuns(tx: AppTransaction, sources: SourceEntry[]): void {
   }
 }
 
-function localScopes(sources: number, claims: number, backups: string[], exports: string[]): DeletionLocalScope[] {
+function localScopes(operation: Pick<DeletionOperation, "tombstones" | "backupsRetained" | "exports">): DeletionLocalScope[] {
+  const sources = operation.tombstones.filter(t => t.kind === "source").length, claims = operation.tombstones.length - sources;
+  const exports = operation.exports;
+  const exportState: DeletionLocalScope["state"] = !exports.length ? "none" : exports.some(e => e.state === "failed") ? "failed"
+    : exports.some(e => e.state === "pending") ? "pending" : "purged";
   return [
     { scope: "app_store", state: "purged", detail: `${sources} source generations and ${claims} claims purged; manifests, attempts and receipts redacted` },
-    backups.length
-      ? { scope: "retained_backups", state: "retained", detail: `${backups.length} backups keep the deleted data until retention purge` }
-      : { scope: "retained_backups", state: "none", detail: "no recorded backup covers this lineage" },
-    exports.length
-      ? { scope: "retained_exports", state: "retained", detail: `${exports.length} export artifacts keep the deleted data; exporters apply the ledger to new artifacts` }
-      : { scope: "retained_exports", state: "none", detail: "no recorded export covers this lineage" },
+    operation.backupsRetained.length
+      ? { scope: "retained_backups", state: "retained", detail: `${operation.backupsRetained.length} backups may keep the deleted data until retention purge` }
+      : { scope: "retained_backups", state: "none", detail: "no recorded backup was taken after this data was committed" },
+    { scope: "local_exports", state: exportState, detail: exports.length
+      ? `${exports.filter(e => e.state === "purged").length}/${exports.length} affected export artifacts purged` : "no local export holds this data" },
     { scope: "external_copies", state: "not_attempted", detail: "Telegram delivery and provider session copies are not deleted by this command" },
   ];
 }
@@ -884,6 +944,15 @@ export function confirmDeletion(tx: AppTransaction, command: DeleteConfirmComman
       crypto.randomUUID(), operationId, tombstone.projectId, tombstone.kind, tombstone.sourceId, tombstone.claimId,
       tombstone.revision, tombstone.generation, now);
   }
+  // App-owned export artifacts leave the registry now; their files are purged right after commit.
+  const exports: DeletionExportScope[] = inventory.exports.map(entry => {
+    const row = tx.get<{ json: string }>("SELECT record_json AS json FROM export_artifacts WHERE id = ?", entry.id);
+    let path = "";
+    try { path = (JSON.parse(row?.json ?? "{}") as { artifact?: { path?: unknown } }).artifact?.path as string ?? ""; } catch { /* Path stays empty: fails closed below. */ }
+    tx.run("DELETE FROM export_artifacts WHERE id = ?", entry.id);
+    return { id: entry.id, projectId: entry.projectId, path: typeof path === "string" ? path : "", state: "pending" as const, attempts: 0,
+      reason: "awaiting_file_purge", updatedAt: now };
+  });
   const contexts: DeletionContextScope[] = sessions.map(session => ({
     id: session.id, generation: session.generation,
     state: session.appState === "missing" ? "missing" : "pending", attempts: 0,
@@ -896,8 +965,7 @@ export function confirmDeletion(tx: AppTransaction, command: DeleteConfirmComman
     projectId: command.projectId, previewId: preview.id,
     scope: { kind: "source", projectId: preview.scope.projectId, source: { ...lineage } },
     state: "pending", attempts: 0, maxAttempts: deletePolicy.maxAttempts,
-    tombstones, contexts,
-    scopes: localScopes(sources.length, claimEntries.length, backupsRetained, inventory.exports.map(e => e.id)),
+    tombstones, contexts, exports, scopes: [],
     backupsRetained,
     residuals: ["telegram_delivery_copies_not_deleted", "provider_session_copies_not_deleted", "retained_backups_require_retention_purge"],
     reason: null, nextAction: "", createdAt: now, updatedAt: now,
@@ -907,17 +975,25 @@ export function confirmDeletion(tx: AppTransaction, command: DeleteConfirmComman
   return { operation, duplicate: false };
 }
 
-/** Derives the operation state from its per-context records; never claims completion beyond deleted evidence. */
-function aggregate(operation: DeletionOperation, now: number): DeletionOperation {
-  const remaining = operation.contexts.filter(context => context.state !== "deleted");
-  const stuck = remaining.some(context => context.state !== "pending");
-  if (!remaining.length) return { ...operation, state: "complete", reason: null, nextAction: "inspect_completed_deletion", updatedAt: now };
-  if (operation.attempts >= operation.maxAttempts) {
-    return { ...operation, state: "failed", reason: "retry_budget_exhausted", nextAction: "inspect_blocked_scope_and_retry_manually", updatedAt: now };
+/** Derives the operation state from its per-scope records; never claims completion beyond deleted/purged evidence. */
+function aggregate(raw: DeletionOperation, now: number): DeletionOperation {
+  const operation = { ...raw, exports: raw.exports ?? [] };
+  const scoped = (next: DeletionOperation) => ({ ...next, scopes: localScopes(next), updatedAt: now });
+  const native = operation.contexts.filter(context => context.state !== "deleted");
+  const files = operation.exports.filter(entry => entry.state !== "purged");
+  if (!native.length && !files.length) return scoped({ ...operation, state: "complete", reason: null, nextAction: "inspect_completed_deletion" });
+  if (native.length && operation.attempts >= operation.maxAttempts) {
+    return scoped({ ...operation, state: "failed", reason: "retry_budget_exhausted", nextAction: "inspect_blocked_scope_and_retry_manually" });
   }
-  return stuck
-    ? { ...operation, state: "blocked", reason: "native_delete_blocked_or_missing", nextAction: "retry_managed_delete", updatedAt: now }
-    : { ...operation, state: "pending", reason: "native_sessions_pending_managed_delete", nextAction: "reconcile_managed_delete_then_verify", updatedAt: now };
+  if (files.some(entry => entry.state === "failed")) {
+    return scoped({ ...operation, state: "failed", reason: "export_purge_failed", nextAction: "remove_export_artifact_manually_then_verify" });
+  }
+  if (native.some(context => context.state !== "pending")) {
+    return scoped({ ...operation, state: "blocked", reason: "native_delete_blocked_or_missing", nextAction: "retry_managed_delete" });
+  }
+  return native.length
+    ? scoped({ ...operation, state: "pending", reason: "native_sessions_pending_managed_delete", nextAction: "reconcile_managed_delete_then_verify" })
+    : scoped({ ...operation, state: "pending", reason: "local_exports_pending_purge", nextAction: "purge_local_exports" });
 }
 
 /** Marks scopes whose context the managed lifecycle already deleted (by another operation or adapter) as deleted. */
@@ -957,7 +1033,9 @@ function reservePass(tx: AppTransaction, operationId: string, now: number): { op
   const operation = readOperationRow(tx, operationId);
   if (!operation || operation.state === "complete" || operation.state === "failed") return { operation, dispatch: [] };
   const synced = aggregate(syncDeletedContexts(tx, operation, now), now);
-  if (synced.state === "complete" || synced.state === "failed") { saveOperation(tx, synced); return { operation: synced, dispatch: [] }; }
+  if (synced.state === "complete" || synced.state === "failed" || synced.contexts.every(context => context.state === "deleted")) {
+    saveOperation(tx, synced); return { operation: synced, dispatch: [] };
+  }
   const reserved: DeletionOperation = {
     ...synced, attempts: synced.attempts + 1,
     contexts: synced.contexts.map(context => context.state === "deleted" ? context
@@ -984,6 +1062,49 @@ function settlePass(tx: AppTransaction, operationId: string, outcomes: PassOutco
   return settled;
 }
 
+/** Removes one export artifact file if it is the registered `<id>.json` regular file; a missing file is already purged. */
+function removeExportFile(entry: DeletionExportScope): void {
+  if (!entry.path || !isAbsolute(entry.path) || basename(entry.path) !== `${entry.id}.json`) throw new AppError("export_path_untrusted");
+  if (!existsSync(entry.path)) return;
+  if (!lstatSync(entry.path).isFile()) throw new AppError("export_path_untrusted");
+  rmSync(entry.path);
+}
+
+/**
+ * Purges pending app-owned export files for one operation (or every pending/blocked operation), outside
+ * any transaction, then records per-file outcomes. Each file has its own bounded attempt count; files are
+ * never recreated and a failure keeps the operation from reading as complete.
+ */
+export function purgeDeletedExports(store: TransactionStore, now: number, operationId?: string): DeletionOperation[] {
+  const ids = operationId ? [operationId] : store.read(tx => tx.all<{ id: string }>(
+    "SELECT id FROM deletion_operations WHERE state IN ('pending', 'blocked') ORDER BY rowid LIMIT 100").map(row => row.id));
+  const results: DeletionOperation[] = [];
+  for (const id of ids) {
+    const operation = store.read(tx => readOperationRow(tx, id));
+    if (!operation || !operation.exports.some(entry => entry.state === "pending")) continue;
+    const outcomes = new Map<string, { ok: boolean; reason: string | null }>();
+    for (const entry of operation.exports.filter(item => item.state === "pending")) {
+      try { removeExportFile(entry); outcomes.set(entry.id, { ok: true, reason: null }); }
+      catch (error) { outcomes.set(entry.id, { ok: false, reason: error instanceof AppError ? error.code : "export_file_purge_failed" }); }
+    }
+    const settled = store.transaction(tx => {
+      const current = readOperationRow(tx, id);
+      if (!current) return null;
+      const next = aggregate({ ...current, exports: current.exports.map(entry => {
+        const outcome = outcomes.get(entry.id);
+        if (!outcome || entry.state !== "pending") return entry;
+        const attempts = entry.attempts + 1;
+        return outcome.ok ? { ...entry, state: "purged" as const, attempts, reason: null, updatedAt: now }
+          : { ...entry, state: attempts >= current.maxAttempts ? "failed" as const : "pending" as const, attempts, reason: outcome.reason, updatedAt: now };
+      }) }, now);
+      saveOperation(tx, next);
+      return next;
+    });
+    if (settled) results.push(settled);
+  }
+  return results;
+}
+
 /**
  * Service lifecycle helper: one budgeted pass per pending/blocked operation through the managed
  * run-port delete path (never native byte edits). Each pass reserves an attempt before dispatch, so
@@ -994,6 +1115,7 @@ export async function reconcileDeletions(store: TransactionStore, port: Applicat
     "SELECT id FROM deletion_operations WHERE state IN ('pending', 'blocked') ORDER BY rowid LIMIT 100").map(row => row.id));
   const results: DeletionOperation[] = [];
   for (const id of pending) {
+    purgeDeletedExports(store, now, id);
     const { operation, dispatch } = store.transaction(tx => reservePass(tx, id, now));
     if (!dispatch.length) { if (operation) results.push(operation); continue; }
     const outcomes: PassOutcome[] = [];

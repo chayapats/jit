@@ -619,7 +619,7 @@ export function deletionDetailPage(state: { project: Project; preview: import(".
   const previewCard = preview ? `<article class="team-card"><h3>ผลกระทบของ ${ref(preview.scope.source)}</h3>
     <p>หมดอายุ ${time(preview.expiresAt)} · inventory ${escape((preview.inventoryDigest ?? "").slice(0, 12))} · claims ${preview.affected.claims.length}${plus(preview.truncated.claims)} · contexts ${preview.affected.contexts.length}${plus(preview.truncated.contexts)} · งานที่ต้อง fence ${preview.affected.pendingJobs.length}${plus(preview.truncated.pendingJobs)}</p>
     <p>sources ที่ถูกลบ: ${preview.affected.sources.map(s => `${ref(s.source)} (${s.relation === "scope" ? "ต้นฉบับ" : "output ที่สืบทอด"})`).join(" · ")}${plus(preview.truncated.sources)}</p>
-    <p>native sessions ${preview.affected.nativeSessions.length}${plus(preview.truncated.nativeSessions)} · สำรองที่ยังเก็บข้อมูลนี้ ${preview.affected.backups.length}${plus(preview.truncated.backups)} · export ที่ยังเก็บ ${preview.affected.exports.length}${plus(preview.truncated.exports)} · ข้อผูกพันที่คงไว้ไม่เปลี่ยน ${preview.affected.obligations.length}${plus(preview.truncated.obligations)}</p>
+    <p>native sessions ${preview.affected.nativeSessions.length}${plus(preview.truncated.nativeSessions)} · สำรองที่อาจยังเก็บข้อมูลนี้ ${preview.affected.backups.length}${plus(preview.truncated.backups)} · export ในเครื่องที่จะถูกลบ ${preview.affected.exports.length}${plus(preview.truncated.exports)} · ข้อผูกพันที่คงไว้ไม่เปลี่ยน ${preview.affected.obligations.length}${plus(preview.truncated.obligations)}</p>
     ${sessionRows ? `<ul aria-label="native sessions">${sessionRows}</ul>` : ""}
     ${preview.wholeSession.required ? `<p>ต้องลบทั้ง session (${escape((preview.wholeSession.reasons ?? [preview.wholeSession.reason ?? ""]).join(", "))}) ขอบเขต: ${escape(preview.wholeSession.sessionScope.join(", "))} ให้ติ๊กยืนยันทั้ง session ก่อน</p>` : ""}
     ${blockers.length ? `<p class="error" role="alert">ยืนยันไม่ได้: ${escape(blockers.join(", "))} · ตรวจสอบข้อมูลแล้วขอดูผลกระทบใหม่</p>` : ""}
@@ -630,10 +630,12 @@ export function deletionDetailPage(state: { project: Project; preview: import(".
       ${preview.wholeSession.required ? `<label><input type="checkbox" name="acknowledgedWholeSession" value="on"> ยืนยันขอบเขตทั้ง session</label>` : ""}
       <button class="danger">ยืนยันการลบ</button></form>`}</article>` : "";
   const contextRows = (operation?.contexts ?? []).map(context => `<li data-state="${escape(context.state)}">${escape(context.id)} g${context.generation} · ${escape(context.state)} · attempts ${context.attempts}${context.reason ? ` · ${escape(context.reason)}` : ""} · ${escape(context.nextAction)}</li>`).join("");
+  const exportRows = (operation?.exports ?? []).map(entry => `<li data-state="${escape(entry.state)}">export ${escape(entry.id)} · ${escape(entry.state)} · attempts ${entry.attempts}${entry.reason ? ` · ${escape(entry.reason)}` : ""}</li>`).join("");
   const scopeRows = (operation?.scopes ?? []).map(scope => `<li data-state="${escape(scope.state)}">${escape(scope.scope)} · ${escape(scope.state)} · ${escape(scope.detail)}</li>`).join("");
   const operationCard = operation ? `<article class="team-card"><h3>การลบ ${escape(operation.id)}</h3><p>สถานะ ${escape(operation.state)}${operation.state === "complete" ? " (เฉพาะ local serving และ native sessions ที่จัดการ ไม่ใช่สำรอง/สำเนาภายนอก)" : ""} · attempts ${operation.attempts}/${operation.maxAttempts} · tombstones ${operation.tombstones.length}</p>
     <p>${escape(operation.nextAction)}${operation.reason ? ` · ${escape(operation.reason)}` : ""}</p>
     ${contextRows ? `<ul aria-label="native session scopes">${contextRows}</ul>` : "<p>ไม่มี native session ที่ต้องลบ</p>"}
+    ${exportRows ? `<ul aria-label="local export artifacts">${exportRows}</ul>` : ""}
     ${scopeRows ? `<ul aria-label="local scopes">${scopeRows}</ul>` : ""}
     <p>สำรองที่ยังเก็บข้อมูลนี้: ${operation.backupsRetained.length ? escape(operation.backupsRetained.join(", ")) : "ไม่มี"}</p>
     <p>สำเนาที่ไม่ได้ลบ: ${escape(operation.residuals.join(", "))}</p>

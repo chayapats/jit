@@ -1,11 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Application, type OwnerActor } from "../src/application";
 import { readConfig } from "../src/config";
 import {
-  reconcileDeletions,
+  readDeletionLedger, reconcileDeletions,
   type DeleteScope, type DeletionConfirmReceipt, type DeletionOperation, type DeletionReceipt,
 } from "../src/memory/delete";
 import { memoryExtractionMarker, memoryExtractionWork, scriptedMemoryResult } from "../src/memory/extract";
@@ -19,7 +19,8 @@ import { coordinatorSynthesisMarker, coordinatorSynthesisWork } from "../src/tea
 import { discussionPlanWork, specialistAnalysisWork } from "../src/team/dispatch";
 import { SchwayRunPort } from "../src/team/schway-port";
 import type { Model } from "schway/host";
-import { TransactionStore } from "../src/store";
+import { TransactionStore, type AppTransaction } from "../src/store";
+import { deletedSource } from "../src/memory/read";
 import { createWebHandler } from "../src/web";
 
 const roots: string[] = [], stores: TransactionStore[] = [], live: JobQueue[] = [];
@@ -676,4 +677,140 @@ test("worker sessions created through SchwayRunPort are deleted by queue reconci
   const raw = f.rt.store.read(tx => tx.all<{ t: string | null }>("SELECT content_text AS t FROM source_versions").map(r => r.t ?? "").join("\n"));
   expect(raw).not.toContain("concrete-e2e-222");
   expect(raw).not.toContain("concrete-output-321");
+});
+
+const exportCommand = (f: Fixture, p: Project) => ({ kind: "export.create" as const, requestId: rid(), projectId: p.id,
+  expectedRevision: projectRevision(f, p), payload: { includeHistory: true, note: "delete fixture export" } });
+/** Full run port whose managed delete is replaced by a counting (optionally failing) stub. */
+function countingPort(inner: ApplicationRunPort, calls: { n: number }, fail: () => boolean): ApplicationRunPort {
+  return new Proxy(inner, { get(target, key) {
+    if (key === "delete") return async (context: { id: string; generation: number }) => {
+      calls.n++;
+      return fail() ? { state: "delete_failed", context: { ...context }, nextAction: "retry_managed_delete" } : target.delete(context);
+    };
+    const value = Reflect.get(target, key, target);
+    return typeof value === "function" ? value.bind(target) : value;
+  } });
+}
+
+test("receipt replays and duplicate confirmations queue no managed-delete pass; only new or re-armed work does", async () => {
+  const f = await fixture();
+  const a = project(f, "โครงการ replay", "หัวข้อ replay");
+  const s1 = say(f, a, "ข้อความ replay-canary-121 ต้องลบ");
+  await remember(f, a, s1);
+  const calls = { n: 0 };
+  await f.rt.queue.reconcile(countingPort(f.rt.port, calls, () => true));
+  const preview = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, s1)));
+  const confirm = confirmCommand(f, a, preview.preview.id);
+  const first = asConfirmed(f.rt.app.execute(actor(f), confirm));
+  await f.rt.queue.idle();
+  const perPass = calls.n;
+  expect(perPass).toBe(first.operation.contexts.length);
+  expect(operation(f, a, first.operation.id).attempts).toBe(1);
+  // Same request ID replays the stored receipt (still duplicate:false) without new work.
+  expect(asConfirmed(f.rt.app.execute(actor(f), confirm)).duplicate).toBe(false);
+  await f.rt.queue.idle();
+  // A new request ID for the same preview is a duplicate confirmation without new work.
+  expect(asConfirmed(f.rt.app.execute(actor(f), { ...confirmCommand(f, a, preview.preview.id) })).duplicate).toBe(true);
+  await f.rt.queue.idle();
+  expect(calls.n).toBe(perPass);
+  expect(operation(f, a, first.operation.id).attempts).toBe(1);
+  // An explicit owner retry re-arms once; replaying that retry does nothing more.
+  const retry = retryCommand(f, a, first.operation.id);
+  f.rt.app.execute(actor(f), retry); await f.rt.queue.idle();
+  f.rt.app.execute(actor(f), retry); await f.rt.queue.idle();
+  expect(calls.n).toBe(perPass * 2);
+  expect(operation(f, a, first.operation.id).attempts).toBe(2);
+});
+
+test("obligations are discovered over every active task and truncation blocks confirmation", async () => {
+  const f = await fixture();
+  const a = project(f, "โครงการภาระ", "หัวข้อภาระ");
+  const s1 = say(f, a, "alpha bravo charlie delta echo obligation-canary-131");
+  const propose = (title: string) => f.rt.app.execute(actor(f), { kind: "task.propose", requestId: rid(), projectId: a.id, expectedRevision: topicRevision(f, a),
+    payload: { topicId: a.topic.id, title, summary: "งานทั่วไป" } }).task.id as string;
+  for (let i = 0; i < 205; i++) propose(`unrelated chore ${i}`);
+  const late = propose("alpha bravo charlie delta follow-up");
+  const preview = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, s1)));
+  expect(preview.preview.affected.obligations.find(o => o.id === late)).toMatchObject({ kind: "task", effect: "retained_unchanged" });
+  expect(preview.preview.blockers).toEqual([]);
+  for (let i = 0; i < 100; i++) propose(`alpha bravo charlie delta item ${i}`);
+  const crowded = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, s1)));
+  expect(crowded.preview.truncated.obligations).toBe(true);
+  expect(crowded.preview.blockers).toContain("inventory_truncated:obligations");
+  expect(() => f.rt.app.execute(actor(f), confirmCommand(f, a, crowded.preview.id))).toThrow("memory_delete_blocked");
+  expect(f.rt.app.task(actor(f), a.id, late).task.state).toBe("proposed");
+});
+
+test("retained backups and exports are found despite truncated or unknown coverage; unreadable manifests block", async () => {
+  const f = await fixture();
+  const a = project(f, "โครงการ coverage", "หัวข้อ coverage");
+  const s1 = say(f, a, "ข้อความ coverage-canary-141 ต้องลบ");
+  await remember(f, a, s1);
+  const backup = f.rt.app.execute(actor(f), { kind: "backup.create" as const, requestId: rid(), projectId: null,
+    expectedRevision: f.rt.app.workspace(actor(f)).revision, payload: { note: "coverage backup" } });
+  const exported = f.rt.app.execute(actor(f), exportCommand(f, a));
+  // Simulate bounded/older manifests: the lineage is absent from coverage and completeness is unknown.
+  f.rt.store.transaction(tx => {
+    const b = JSON.parse(tx.get<{ j: string }>("SELECT record_json AS j FROM ops_backups WHERE id = ?", backup.manifest.id)!.j);
+    tx.run("UPDATE ops_backups SET record_json = ? WHERE id = ?", JSON.stringify({ ...b, sourceGenerations: [] }), backup.manifest.id);
+    const e = JSON.parse(tx.get<{ j: string }>("SELECT record_json AS j FROM export_artifacts WHERE id = ?", exported.manifest.id)!.j);
+    tx.run("UPDATE export_artifacts SET record_json = ? WHERE id = ?", JSON.stringify({ ...e, coverage: { sources: [], claims: [] } }), exported.manifest.id);
+  });
+  const preview = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, s1)));
+  expect(preview.preview.affected.backups).toContainEqual(expect.objectContaining({ id: backup.manifest.id, evidence: "snapshot_time" }));
+  expect(preview.preview.affected.exports).toContainEqual(expect.objectContaining({ id: exported.manifest.id, evidence: "incomplete_coverage" }));
+  expect(preview.preview.blockers).toEqual([]);
+  f.rt.store.transaction(tx => { tx.run("UPDATE ops_backups SET record_json = '{broken' WHERE id = ?", backup.manifest.id); });
+  const blocked = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, s1)));
+  expect(blocked.preview.blockers).toContain("unreadable_record:ops_backups");
+  expect(() => f.rt.app.execute(actor(f), confirmCommand(f, a, blocked.preview.id))).toThrow("memory_delete_blocked");
+});
+
+test("app-owned exports holding deleted payload are purged per file and gate completion", async () => {
+  const f = await fixture();
+  const a = project(f, "โครงการ export purge", "หัวข้อ export purge");
+  const s1 = say(f, a, "ข้อความ export-canary-151 ต้องลบ");
+  await remember(f, a, s1);
+  const kept = f.rt.app.execute(actor(f), exportCommand(f, a));
+  const stuck = f.rt.app.execute(actor(f), exportCommand(f, a));
+  for (const m of [kept.manifest, stuck.manifest]) expect(readFileSync(m.artifact.path, "utf8")).toContain("export-canary-151");
+  const preview = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, s1)));
+  expect(preview.preview.affected.exports.map(e => e.id).sort()).toEqual([kept.manifest.id, stuck.manifest.id].sort());
+  // One file cannot be removed (a directory sits at its path): its scope stays pending, never complete.
+  rmSync(stuck.manifest.artifact.path); mkdirSync(stuck.manifest.artifact.path);
+  const confirmed = asConfirmed(f.rt.app.execute(actor(f), confirmCommand(f, a, preview.preview.id)));
+  expect(confirmed.operation.exports.map(e => e.state)).toEqual(["pending", "pending"]);
+  expect(f.rt.store.read(tx => tx.all("SELECT id FROM export_artifacts WHERE project_id = ?", a.id))).toHaveLength(0);
+  await reconcileDeletions(f.rt.store, f.rt.port as unknown as ApplicationRunPort, f.clock.now);
+  const partial = operation(f, a, confirmed.operation.id);
+  expect(existsSync(kept.manifest.artifact.path)).toBe(false);
+  expect(partial.exports.find(e => e.id === kept.manifest.id)!.state).toBe("purged");
+  expect(partial.exports.find(e => e.id === stuck.manifest.id)).toMatchObject({ state: "pending", reason: "export_path_untrusted" });
+  expect(partial.contexts.every(c => c.state === "deleted")).toBe(true);
+  expect(partial.state).not.toBe("complete");
+  expect(partial.scopes.find(s => s.scope === "local_exports")!.state).toBe("pending");
+  rmSync(stuck.manifest.artifact.path, { recursive: true });
+  await reconcileDeletions(f.rt.store, f.rt.port as unknown as ApplicationRunPort, f.clock.now);
+  const done = operation(f, a, confirmed.operation.id);
+  expect(done.state).toBe("complete");
+  expect(done.exports.every(e => e.state === "purged")).toBe(true);
+});
+
+test("the deletion ledger fails closed on storage errors except the explicit pre-migration path", async () => {
+  const f = await fixture();
+  const a = project(f, "โครงการ ledger", "หัวข้อ ledger");
+  const s1 = say(f, a, "ข้อความ ledger-canary-161");
+  f.rt.store.transaction(tx => { tx.run("DROP TABLE deletion_ledger"); });
+  expect(() => f.rt.app.deletionLedger(actor(f))).toThrow("deletion_ledger_unavailable");
+  expect(() => f.rt.app.execute(actor(f), extractCommand(f, a, s1))).toThrow("deletion_ledger_unavailable");
+  expect(() => f.rt.app.execute(actor(f), exportCommand(f, a))).toThrow("deletion_ledger_unavailable");
+  const preMigration = (version: number) => ({
+    get: (sql: string) => { if (sql.startsWith("PRAGMA")) return { user_version: version }; throw new Error("no such table: deletion_ledger"); },
+    all: () => { throw new Error("no such table: deletion_ledger"); }, run: () => {},
+  }) as unknown as AppTransaction;
+  expect(deletedSource(preMigration(16), s1)).toBe(false);
+  expect(readDeletionLedger(preMigration(16))).toEqual([]);
+  expect(() => deletedSource(preMigration(21), s1)).toThrow("deletion_ledger_unavailable");
+  expect(() => readDeletionLedger(preMigration(21))).toThrow("deletion_ledger_unavailable");
 });
