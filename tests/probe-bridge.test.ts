@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HostAuthFetch, HostCredentialStore } from "schway/host";
 import { bridgeProbePorts } from "../src/evidence/bridge-probe";
-import { cancelProbeAttempt, commitProbeOutcome, exportProbeSummary, liveProbe, readProbeAttempt, reconcileProbeAttempts, type ProbeEvent } from "../src/evidence/probe";
+import { PROBE_PROMPT, cancelProbeAttempt, commitProbeOutcome, exportProbeSummary, liveProbe, readProbeAttempt, reconcileProbeAttempts, type ProbeEvent } from "../src/evidence/probe";
 import { runProbeCommand } from "../src/probe-cli";
 
 const roots: string[] = [];
@@ -215,7 +215,9 @@ test("a refreshable 401 admits exactly one retry inside the single attempt budge
   expect(inferenceFetches).toBeLessThanOrEqual(2);
   expect(inferenceFetches).toBe(2);
   const renewal = record.observations.find(item => item.observation === "renewal")!;
-  expect(renewal.event).toBe("success");
+  // Renewal stays explicitly unobserved as an evidence claim; the
+  // Schway-owned send is reported only as an exact bounded count.
+  expect(renewal.event).toBe("unobserved");
   expect(renewal.attempts).toBe(1);
   expect(ports.takeProviderSends!()).toEqual({ inference: 2, token: 1 });
 });
@@ -277,9 +279,10 @@ test("restart reconciles every started attempt without a slice cap", async () =>
   const root = setup();
   const gate = new Promise<ProbeEvent>(() => {});
   const gated = bridgePorts({ fetch: successFetch() });
-  void liveProbe("fixture-probe-host",
+  const controller = new AbortController();
+  const pending = liveProbe("fixture-probe-host",
     { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 8000 },
-    { ...gated.ports, now: () => 1800000000000, id: () => ID, infer: () => gate }, root);
+    { ...gated.ports, now: () => 1800000000000, id: () => ID, infer: () => gate }, root, controller.signal);
   for (let spin = 0; spin < 100; spin++) {
     try { await readProbeAttempt(root, ID); break; } catch { await new Promise(r => setTimeout(r, 5)); }
   }
@@ -292,6 +295,11 @@ test("restart reconciles every started attempt without a slice cap", async () =>
   expect(updated).toHaveLength(71);
   expect(updated.every(record => record.lifecycle === "interrupted")).toBe(true);
   await cancelProbeAttempt(root, ID).catch(() => null);
+  // Settle the gated owner instead of leaking it past the test: the internal
+  // deadline race lets the abort through and the CAS keeps interrupted.
+  controller.abort();
+  const late = await pending;
+  expect(late.record.lifecycle).toBe("interrupted");
 });
 
 test("an ancestor symlink cannot redirect managed probe state", async () => {
@@ -359,4 +367,86 @@ test("cross-process cancel and commit keep exactly one terminal outcome", async 
   if (commitWins.length === 0) expect(final.lifecycle).toBe("cancelled");
   // The settled record is byte-stable: a re-read matches exactly.
   expect(await readProbeAttempt(root, ID)).toEqual(final);
+});
+
+test("bridge infer rejects route/model mismatches with zero provider contact", async () => {
+  const root = setup();
+  const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, store: memStore(validTokens), fetch: successFetch() });
+  const signal = new AbortController().signal;
+  await expect(ports.infer({ route: "codex", model: "gpt-5-codex", prompt: PROBE_PROMPT, tools: [], discovery: { repository: false, hosted: false }, deadlineMs: 8000 }, signal))
+    .rejects.toThrow("invalid_probe_input");
+  await expect(ports.infer({ route: "grok", model: "other-model", prompt: PROBE_PROMPT, tools: [], discovery: { repository: false, hosted: false }, deadlineMs: 8000 }, signal))
+    .rejects.toThrow("invalid_probe_input");
+  expect(ports.takeProviderSends!()).toEqual({ inference: 0, token: 0 });
+});
+
+test("live probe enforces its deadline even with a hanging credential store", async () => {
+  const root = setup();
+  let inferCalls = 0;
+  const ports: import("../src/evidence/probe").ProbePorts = {
+    now: () => 1800000000000,
+    id: () => ID,
+    readCredential: () => new Promise<never>(() => {}),
+    infer: async () => { inferCalls++; return "success"; },
+  };
+  const startedAt = Date.now();
+  const { record } = await liveProbe("fixture-probe-host",
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 3, deadlineMs: 100 }, ports, root);
+  expect(Date.now() - startedAt).toBeLessThan(5000);
+  expect(record.lifecycle).toBe("cancelled");
+  expect(record.attempts).toBe(0);
+  expect(inferCalls).toBe(0);
+});
+
+test("cancel during a gated admission starts no further provider requests", async () => {
+  const root = setup();
+  let inferCalls = 0;
+  let release!: (event: ProbeEvent) => void;
+  const gate = new Promise<ProbeEvent>(resolve => { release = resolve; });
+  const starter = bridgePorts({ root, fetch: successFetch() });
+  const pending = liveProbe("fixture-probe-host",
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 3, deadlineMs: 8000 },
+    { ...starter.ports, now: () => 1800000000000, id: () => OTHER_ID,
+      infer: async () => { inferCalls++; return gate; } }, root);
+  for (let spin = 0; spin < 100; spin++) {
+    try {
+      const current = await readProbeAttempt(root, OTHER_ID);
+      if (current.attempts === 1) break;
+    } catch { /* Not persisted yet. */ }
+    await new Promise(r => setTimeout(r, 5));
+  }
+  // The first admission is durably reserved before any provider contact.
+  expect((await readProbeAttempt(root, OTHER_ID)).attempts).toBe(1);
+  await cancelProbeAttempt(root, OTHER_ID);
+  release("success");
+  const late = await pending;
+  expect(late.record.lifecycle).toBe("cancelled");
+  // No second admission was ever reserved: exactly one provider request.
+  expect(inferCalls).toBe(1);
+  expect((await readProbeAttempt(root, OTHER_ID)).attempts).toBe(1);
+});
+
+test("restart preserves admitted attempts instead of recording zero", async () => {
+  const root = setup();
+  let release!: (event: ProbeEvent) => void;
+  const gate = new Promise<ProbeEvent>(resolve => { release = resolve; });
+  const starter = bridgePorts({ root, fetch: successFetch() });
+  const pending = liveProbe("fixture-probe-host",
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 2, deadlineMs: 8000 },
+    { ...starter.ports, now: () => 1800000000000, id: () => ID, infer: () => gate }, root);
+  for (let spin = 0; spin < 100; spin++) {
+    try {
+      if ((await readProbeAttempt(root, ID)).attempts === 1) break;
+    } catch { /* Not persisted yet. */ }
+    await new Promise(r => setTimeout(r, 5));
+  }
+  const reconciled = await reconcileProbeAttempts(root);
+  expect(reconciled).toHaveLength(1);
+  expect(reconciled[0]!.lifecycle).toBe("interrupted");
+  expect(reconciled[0]!.attempts).toBe(1);
+  // A late completion after the restart can never promote the record.
+  release("success");
+  const late = await pending;
+  expect(late.record.lifecycle).toBe("interrupted");
+  expect(late.record.attempts).toBe(1);
 });

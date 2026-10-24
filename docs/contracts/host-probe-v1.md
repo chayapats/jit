@@ -44,7 +44,7 @@ outer retry exists beyond the stated attempt budget.
 | `parseProbeConfig(raw)` | Bounded local config; unknown keys fail. |
 | `validateProbeAttempt(value)` | Rejects malformed, unknown-field and oversized (>8192 bytes) probe records. Four observations exactly once each: `service-start`, `credential-read`, `live-request`, `renewal`, each cross-checked against the `routeEvidence` classifier. |
 | `preflightProbe(label, route, model, ports, root, bounds?)` | Persists one terminal `configured-unverified` record; calls no credential/inference port. |
-| `liveProbe(label, options, ports, root, signal?)` | Persists the `started` attempt before any inference; counts every admitted request; late completions after cancel/deadline never become success; Schway-owned renewal sends surface in the `renewal` observation with exact counts. |
+| `liveProbe(label, options, ports, root, signal?)` | Persists the `started` attempt before any inference; the public orchestration composes the caller signal with an internally owned deadline so a blocked store fails closed at the bound. Every admission is durably reserved (persisted count rechecked `started` inside the transaction) before provider contact, so cancel serializes against new requests and restarts preserve admitted counts. Late completions after cancel/deadline never become success; Schway-owned renewal sends surface as exact bounded counts on an explicitly unobserved renewal observation. |
 | `reconcileProbeAttempts(root)` | Restart recovery: every started attempt becomes `interrupted` up to an explicit file cap with a fail-closed error beyond it; unreadable records are reported, never silently skipped. Terminal records are never rewritten. |
 | `cancelProbeAttempt(root, id)` / `commitProbeOutcome(root, id, ...)` | Owner stop wins; every terminal transition runs inside one SQLite `BEGIN IMMEDIATE` transaction that re-reads the record and writes only `started` rows, so exactly one claimant terminalizes each attempt across processes and losers report the settled record byte-for-byte unchanged. Terminal writes are atomic (exclusive temp file, fsync, atomic rename, required directory fsync). A deadline/cancel that fires during the owning invocation's own terminal write rewrites its live-request observation to non-success in the same transaction rather than leaving aborted success behind. |
 | `exportProbeSummary(value)` | Allowlisted projection; route/model become redacted markers, no secrets. |
@@ -68,11 +68,11 @@ Each record carries four labeled entries that cannot stand in for each other:
   refresh plus its replay, structurally bounded with no loop); the counting
   transport fails the attempt closed if the bound is ever exceeded, and the
   exact per-attempt send counts are reported (see renewal).
-- `renewal` / `renewal`: `unobserved` unless a Schway-owned renewal send
-  occurred during the probe, in which case it carries the exact token-send
-  count (still `configured-unverified`, never readiness). A successful login
-  never becomes renewal evidence on its own; only measured transport sends
-  are reported. Full per-request accounting awaits schway#415.
+- `renewal` / `renewal`: `unobserved` always as an evidence claim. When a
+  Schway-owned renewal send occurs during the probe it is reported only as an
+  exact bounded count on the attempts field (still `configured-unverified`,
+  never readiness). A successful login never becomes renewal evidence on its
+  own. Full per-request accounting awaits schway#415.
 
 ## Storage
 
@@ -80,8 +80,9 @@ Attempts persist as mode-0600 files under the ignored `.local/host-probe/`
 directory (`<uuid>.json`, bounded reads, no overwrite of terminal states,
 no symlink traversal). Every terminal transition additionally serializes
 through an installation-local SQLite ledger (`lifecycle.db`, `BEGIN
-IMMEDIATE` with a bounded busy timeout) so concurrent CLI invocations agree
-on exactly one winner. Export is a projection for review before sharing.
+IMMEDIATE` with a bounded busy timeout) that rejects planted symlinks and
+foreign files, so concurrent CLI invocations agree on exactly one winner.
+Export is a projection for review before sharing.
 
 ## Schway integration
 

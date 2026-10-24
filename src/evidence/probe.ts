@@ -76,17 +76,33 @@ async function selfResources(root: string): Promise<Pick<ProbeSelfSample, "peakM
   let peakMemoryBytes = 0;
   try { peakMemoryBytes = process.memoryUsage().heapUsed; } catch { /* Own-process sample only. */ }
   let managedBytes = 0, managedFiles = 0;
-  const scan = async (dir: string): Promise<void> => {
-    let names: string[];
-    try {
-      names = (await readdir(dir)).slice(0, MAX_SELF_SCAN_FILES);
-    } catch { return; }
-    for (const name of names) {
-      if (name.startsWith(".tmp-")) continue;
+  // Symlink-safe recursive walk over every managed artifact: records, the
+  // lifecycle ledger and native session state. One global entry cap bounds
+  // the walk; symlinks are never followed so linked state cannot inflate or
+  // redirect the count.
+  const scan = async (top: string): Promise<void> => {
+    const stack: string[] = [top];
+    let seen = 0;
+    while (stack.length > 0) {
+      if (seen >= MAX_SELF_SCAN_FILES) return;
+      const current = stack.pop()!;
+      let names: string[];
       try {
-        const stats = await lstat(resolve(dir, name));
-        if (stats.isFile() && !stats.isSymbolicLink()) { managedFiles++; managedBytes += stats.size; }
-      } catch { /* One unreadable artifact does not fail the sample. */ }
+        names = await readdir(current);
+      } catch { continue; }
+      for (const name of names) {
+        if (seen >= MAX_SELF_SCAN_FILES) return;
+        if (name.startsWith(".tmp-")) continue;
+        const full = resolve(current, name);
+        let stats;
+        try {
+          stats = await lstat(full);
+        } catch { continue; }
+        if (stats.isSymbolicLink()) continue;
+        seen++;
+        if (stats.isDirectory()) stack.push(full);
+        else if (stats.isFile()) { managedFiles++; managedBytes += stats.size; }
+      }
     }
   };
   try {
@@ -292,13 +308,26 @@ async function withRecordLock<T>(id: string, work: () => Promise<T>): Promise<T>
  * owner-age rule exists: a crashed holder's transaction rolls back and the
  * next contender re-reads authoritative state. Losers never acknowledge.
  */
-function lifecycleDb(dir: string): Database {
+/**
+ * Opens the installation-local lifecycle ledger without following planted
+ * symlinks or foreign files. An existing ledger must be a service-owned
+ * regular mode-0600 file; a missing ledger is created exclusively before
+ * SQLite touches the path, so terminalization can never create or modify a
+ * database outside the managed directory.
+ */
+async function lifecycleDb(dir: string): Promise<Database> {
   const path = resolve(dir, "lifecycle.db");
-  const fresh = !existsSync(path);
-  const db = new Database(path, { create: true });
-  if (fresh) {
-    try { chmodSync(path, 0o600); } catch { /* Best effort after create. */ }
+  const present = await lstat(path).catch(() => null);
+  if (present !== null) {
+    if (!present.isFile() || present.isSymbolicLink()) throw new Error("unsafe_probe_ledger");
+    if (await realpath(path) !== path) throw new Error("unsafe_probe_ledger");
+    const uid = serviceUid();
+    if ((present.mode & 0o077) !== 0 || (uid !== null && present.uid !== uid)) throw new Error("unsafe_probe_ledger");
+  } else {
+    const handle = await open(path, "wx", 0o600);
+    await handle.close();
   }
+  const db = new Database(path, { create: true });
   db.exec("PRAGMA busy_timeout = 5000;");
   db.exec("PRAGMA synchronous = FULL;");
   db.exec("CREATE TABLE IF NOT EXISTS probe_terminal(id TEXT PRIMARY KEY, lifecycle TEXT NOT NULL)");
@@ -310,7 +339,7 @@ async function transitionTerminal(root: string, id: string,
 ): Promise<{ committed: boolean; record: ProbeAttempt }> {
   return withRecordLock(id, async () => {
     const dir = await probeDirectory(root, true);
-    const db = lifecycleDb(dir);
+    const db = await lifecycleDb(dir);
     try {
       db.exec("BEGIN IMMEDIATE");
       try {
@@ -329,6 +358,40 @@ async function transitionTerminal(root: string, id: string,
         db.query("INSERT OR IGNORE INTO probe_terminal(id, lifecycle) VALUES (?, ?)").run(id, next.lifecycle);
         db.exec("COMMIT");
         return { committed: true, record: next };
+      } catch (error) {
+        try { db.exec("ROLLBACK"); } catch { /* Already rolled back. */ }
+        throw error;
+      }
+    } finally {
+      db.close();
+    }
+  });
+}
+
+/**
+ * Durably reserves one admission before any provider contact. The persisted
+ * attempt count grows inside the same cross-process transaction that
+ * rechecks `started`, so a separate cancel serializes against the
+ * reservation (no new request starts after cancellation acknowledges) and a
+ * crash/restart preserves the admitted count instead of recording zero.
+ */
+async function reserveAttempt(root: string, id: string): Promise<{ admitted: boolean; attempts: number }> {
+  return withRecordLock(id, async () => {
+    const dir = await probeDirectory(root, true);
+    const db = await lifecycleDb(dir);
+    try {
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const current = await readProbeAttempt(root, id);
+        if (current.lifecycle !== "started" || current.attempts >= current.maxAttempts) {
+          db.exec("ROLLBACK");
+          return { admitted: false, attempts: current.attempts };
+        }
+        const next: ProbeAttempt = { ...current, attempts: current.attempts + 1 };
+        validateProbeAttempt(next);
+        await atomicWriteFile(dir, `${id}.json`, JSON.stringify(next) + "\n");
+        db.exec("COMMIT");
+        return { admitted: true, attempts: next.attempts };
       } catch (error) {
         try { db.exec("ROLLBACK"); } catch { /* Already rolled back. */ }
         throw error;
@@ -543,6 +606,29 @@ export async function liveProbe(installationLabel: string, options: LiveProbeOpt
   // Persist the attempt before any account request so a crash leaves explicit started evidence.
   await writeAttempt(root, dispatched);
   const elapsed = () => Math.max(0, Math.min(120000, ports.now() - started));
+  // Compose the caller signal with an internally owned deadline: the public
+  // orchestration enforces its configured bound even when invoked directly
+  // without a CLI timeout signal. A blocked credential store therefore fails
+  // closed at the deadline instead of hanging forever.
+  const owned = new AbortController();
+  const timer = setTimeout(() => owned.abort(), deadlineMs);
+  const onCallerAbort = () => owned.abort();
+  if (signal.aborted) owned.abort();
+  else signal.addEventListener("abort", onCallerAbort, { once: true });
+  const effective = owned.signal;
+  try {
+    return await runLive(root, id, dispatched, base, bounds, route, model, maxAttempts, ports, effective, elapsed);
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener("abort", onCallerAbort);
+  }
+}
+
+/** Live probe body running under the composed deadline signal. */
+async function runLive(root: string, id: string, dispatched: ProbeAttempt, base: ProbeObservationEntry[],
+  bounds: { maxAttempts: number; deadlineMs: number }, route: string, model: string, maxAttempts: number,
+  ports: ProbePorts, effective: AbortSignal, elapsed: () => number,
+): Promise<{ record: ProbeAttempt; self: ProbeSelfSample }> {
   // Every terminal write below goes through the transactional CAS: a
   // concurrent cancel/reconcile/commit wins exactly once, and losers report
   // the settled record byte-for-byte instead of overwriting it.
@@ -553,48 +639,67 @@ export async function liveProbe(installationLabel: string, options: LiveProbeOpt
     }));
     return { record, self: { elapsedMs: elapsed(), attemptsUsed, maxAttempts, ...(await selfResources(root)) } };
   };
-  if (signal.aborted) {
+  if (effective.aborted) {
     return abortTo(dispatched.observations, 0);
   }
+  // Ports are not trusted to honor cancellation: race every port call
+  // against the composed deadline so a blocked store or transport fails
+  // closed at the bound instead of hanging the orchestration forever.
+  // Late settlements are ignored; they never touch the record.
+  const withDeadline = async <T>(work: Promise<T>): Promise<T> => {
+    if (effective.aborted) throw new Error("aborted");
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => effective.addEventListener("abort", () => reject(new Error("aborted")), { once: true })),
+    ]);
+  };
   let credential: ProbeEvent = "unobserved";
   try {
-    const read = await ports.readCredential(signal);
+    const read = await withDeadline(ports.readCredential(effective));
     credential = read === "ok" ? "unobserved" : read === "missing" ? "store" : "login";
   } catch {
     credential = "failed";
   }
-  if (signal.aborted) {
+  if (effective.aborted) {
     const observations: ProbeObservationEntry[] = [base[0]!, credentialEntry(route, model, bounds, credential), base[2]!, base[3]!];
     return abortTo(observations, 0);
   }
   let attempts = 0, inference: ProbeEvent = "failed", tokenSends = 0;
   for (let turn = 0; turn < maxAttempts; turn++) {
-    if (signal.aborted) break;
-    attempts++;
+    if (effective.aborted) break;
+    // Reserve the admission durably before any provider contact: the
+    // reservation rechecks `started` inside the cross-process transaction, so
+    // a concurrent cancel serializes against it (no new request starts after
+    // cancellation acknowledges) and a crash preserves the admitted count
+    // instead of recording zero.
+    const reservation = await reserveAttempt(root, id);
+    if (!reservation.admitted) break;
+    attempts = reservation.attempts;
     try {
-      const outcome = await ports.infer({ route, model, prompt: PROBE_PROMPT, tools: PROBE_TOOLS, discovery: { ...PROBE_DISCOVERY }, deadlineMs }, signal);
+      const outcome = await withDeadline(ports.infer({ route, model, prompt: PROBE_PROMPT, tools: PROBE_TOOLS, discovery: { ...PROBE_DISCOVERY }, deadlineMs: bounds.deadlineMs }, effective));
       inference = probeEvents.includes(outcome) ? outcome : "failed";
     } catch {
       inference = "failed";
     }
     // Exact provider-send accounting: every transport send during the
-    // admitted attempt is reported, including Schway-owned refresh traffic.
-    // A silent inference replay therefore always surfaces in the renewal
-    // observation instead of hiding inside one recorded attempt.
+    // admitted attempt is counted, including Schway-owned refresh traffic.
+    // A silent inference replay therefore always surfaces in the count
+    // instead of hiding inside one recorded attempt.
     const sends = ports.takeProviderSends?.();
     if (sends) tokenSends += Math.max(0, sends.token | 0);
     // A late completion after cancellation is never success evidence.
-    if (signal.aborted) { inference = "failed"; break; }
+    if (effective.aborted) { inference = "failed"; break; }
     // Terminal classifications stop immediately; transient store/transport
     // failures consume the next bounded attempt instead of an outer retry.
     if (inference === "success" || inference === "login" || inference === "quota" || inference === "rejected") break;
   }
-  // A Schway-owned renewal send is bounded evidence, never readiness: the
-  // renewal observation stays configured-unverified by construction.
+  // Renewal stays explicitly unobserved as an evidence claim: a Schway-owned
+  // renewal send is reported only as an exact bounded count, never as
+  // readiness. Renewal proof belongs to FEAS04, not this command.
   const renewalEntry = () => tokenSends > 0
-    ? entry(route, model, bounds, "renewal", "success", Math.min(tokenSends, maxAttempts), elapsed())
+    ? entry(route, model, bounds, "renewal", "unobserved", tokenSends, elapsed())
     : base[3]!;
-  if (signal.aborted) {
+  if (effective.aborted) {
     // The inference result arrived too late: record that inference was
     // attempted but keep the cancelled lifecycle so it can never read success.
     // The live-request observation stays non-success inside the same terminal
@@ -605,21 +710,23 @@ export async function liveProbe(installationLabel: string, options: LiveProbeOpt
   }
   const observations: ProbeObservationEntry[] = [base[0]!, credentialEntry(route, model, bounds, credential),
     entry(route, model, bounds, "live-request", inference, attempts, elapsed()), renewalEntry()];
-  await commitProbeOutcome(root, id, observations, attempts, elapsed());
-  // A deadline/cancel that fires during the terminal write converts the
-  // owning invocation's own record rather than leaving aborted success
-  // behind — but only when the commit did not already terminalize it: a
-  // committed success that lost the race to nobody stays success, and a
-  // record another owner already settled stays byte-for-byte unchanged.
-  if (signal.aborted) {
-    const { record: settled } = await transitionTerminal(root, id, current => {
-      if (current.lifecycle !== "started") return null;
+  // Recheck the deadline signal inside the winning transaction, immediately
+  // before publication: an abort that fires during the terminal write
+  // publishes cancelled with non-success evidence in that same transaction
+  // instead of leaving aborted success behind.
+  await transitionTerminal(root, id, current => {
+    if (effective.aborted) {
       const revised: ProbeObservationEntry[] = [current.observations[0]!, current.observations[1]!,
-        entry(route, model, bounds, "live-request", "failed", current.attempts, elapsed()), current.observations[3]!];
+        entry(route, model, bounds, "live-request", "failed", current.attempts, elapsed()), renewalEntry()];
       return { ...current, lifecycle: "cancelled", observations: revised, elapsedMs: elapsed(), nextAction: "inspect-sanitized-failure" };
-    });
-    void settled;
-  }
+    }
+    const liveEntry = observations.find(item => item.observation === "live-request")!;
+    const credentialEntryItem = observations.find(item => item.observation === "credential-read")!;
+    const terminal = liveEntry.event === "unobserved"
+      ? { state: credentialEntryItem.state, nextAction: credentialEntryItem.nextAction }
+      : { state: liveEntry.state, nextAction: liveEntry.nextAction };
+    return { ...current, lifecycle: terminal.state, observations, attempts, elapsedMs: elapsed(), nextAction: terminal.nextAction };
+  });
   return { record: await readProbeAttempt(root, id), self: { elapsedMs: elapsed(), attemptsUsed: attempts, maxAttempts, ...(await selfResources(root)) } };
 }
 

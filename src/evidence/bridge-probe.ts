@@ -152,6 +152,11 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
           input.discovery.repository !== false || input.discovery.hosted !== false) {
         throw new Error("invalid_probe_input");
       }
+      // Bind the call to the constructed selection: evidence for one route
+      // must never be produced by contacting another.
+      if (input.route !== selection.route || input.model !== selection.model) {
+        throw new Error("invalid_probe_input");
+      }
       lastSends = { inference: 0, token: 0 };
       let host: HostRuntime | null = null;
       let session: HostSession | null = null;
