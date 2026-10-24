@@ -1477,3 +1477,57 @@ test("an unreadable record after a landed write stays uncertain, never kept as c
   expect(backend.size).toBe(1);
   expect((await readProbeAttempt(root, ID)).lifecycle).toBe("store-unavailable");
 });
+
+test("uncertainty past the deadline still publishes a valid store-unavailable record", async () => {
+  const root = setup();
+  const starter = bridgePorts({ root, fetch: successFetch() });
+  // Wall clock past the deadline at terminalization (production Date.now
+  // shape): the uncertainty observation must still validate.
+  let ticks = 0;
+  const { record } = await liveProbe("fixture-probe-host",
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 100 },
+    { ...starter.ports, now: () => 1800000000000 + (ticks++ === 0 ? 0 : 5000), id: () => ID, infer: async (input, signal) => {
+      await input.fence!.guard!();
+      await new Promise((_, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+      return "failed";
+    } }, starter.root);
+  expect(record.lifecycle).toBe("store-unavailable");
+  expect(record.nextAction).toBe("check-secure-store");
+  expect(record.elapsedMs).toBe(5000);
+  expect((await readProbeAttempt(root, ID)).lifecycle).toBe("store-unavailable");
+});
+
+test("a failed terminal publication keeps tracking for a later same-process reconcile", async () => {
+  const root = setup();
+  const backend = new Map<string, string>();
+  const recordPath = join(root, ".local", "host-probe", `${ID}.json`);
+  const parked = join(root, "parked.json");
+  let releaseWrite!: () => void;
+  const writeGate = new Promise<void>(resolve => { releaseWrite = resolve; });
+  let enteredSet = false;
+  const store = {
+    get: async () => null,
+    set: async (identity: { account: string }, value: string) => { enteredSet = true; await writeGate; backend.set(identity.account, value); },
+    delete: async (identity: { account: string }) => backend.delete(identity.account),
+    compareAndDelete: async () => { throw new Error("backend down"); },
+  };
+  const starter = bridgePorts({ root, fetch: successFetch() });
+  const run = liveProbe("fixture-probe-host",
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 8000 },
+    { ...starter.ports, now: () => 1800000000000, id: () => ID, infer: async input => {
+      // Leave an admitted write unresolved, then make terminal publication fail.
+      void input.fence!.writeStore({ account: "grok-subscription:xai" }, "probe-value", store).catch(() => {});
+      for (let spin = 0; spin < 200 && !enteredSet; spin++) await new Promise(r => setTimeout(r, 5));
+      renameSync(recordPath, parked);
+      return "success";
+    } }, starter.root);
+  try {
+    await expect(run).rejects.toThrow();
+    renameSync(parked, recordPath);
+    const [reconciled] = await reconcileProbeAttempts(root);
+    expect(reconciled!.lifecycle).toBe("store-unavailable");
+    expect(reconciled!.nextAction).toBe("check-secure-store");
+  } finally {
+    releaseWrite();
+  }
+});

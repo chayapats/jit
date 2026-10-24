@@ -441,6 +441,20 @@ function closeWindow(id: string, token: object): void {
   if (open.size === 0) schwayWindows.delete(id);
 }
 
+/**
+ * Releases process-local tracking once a terminal record is committed or
+ * observed: the record is then immutable, so uncertainty can no longer be
+ * published. Never released on a failed publication, so a later
+ * same-process cancel/reconcile still sees unresolved writes.
+ */
+function releaseTracking(id: string): void {
+  inflightWrites.delete(id);
+  probeDeadlines.delete(id);
+  cleanupUncertainIds.delete(id);
+  unresolvedWrites.delete(id);
+  schwayWindows.delete(id);
+}
+
 /** True when the attempt cannot claim clean final credential visibility. */
 function cleanupUnverified(id: string): boolean {
   return cleanupUncertainIds.has(id) || (unresolvedWrites.get(id) ?? 0) > 0 || (schwayWindows.get(id)?.size ?? 0) > 0;
@@ -458,16 +472,20 @@ function uncertainTerminal(next: ProbeAttempt): ProbeAttempt {
   const bounds = { maxAttempts: next.maxAttempts, deadlineMs: next.deadlineMs };
   // Writes are only admitted inside an admitted attempt, so the live entry
   // carries the durable count; with none admitted the store state belongs
-  // to the credential observation instead.
+  // to the credential observation instead. The uncertainty observation is
+  // classified at most at the deadline instant (past it the classifier
+  // would read a plain timeout); the record's top-level elapsedMs stays
+  // the truthful wall time.
+  const atDeadline = (elapsedMs: number) => Math.min(elapsedMs, next.deadlineMs);
   return { ...next, lifecycle: "store-unavailable", nextAction: "check-secure-store",
     observations: next.observations.map(item => next.attempts > 0
       ? item.observation === "live-request"
-        ? entry(next.route!, next.model, bounds, "live-request", "store", next.attempts, item.elapsedMs)
+        ? entry(next.route!, next.model, bounds, "live-request", "store", next.attempts, atDeadline(item.elapsedMs))
         : item
       : item.observation === "credential-read"
         ? credentialEntry(next.route!, next.model, bounds, "store")
         : item.observation === "live-request"
-          ? entry(next.route!, next.model, bounds, "live-request", "unobserved", 0, item.elapsedMs)
+          ? entry(next.route!, next.model, bounds, "live-request", "unobserved", 0, atDeadline(item.elapsedMs))
           : item) };
 }
 
@@ -618,6 +636,7 @@ async function transitionTerminal(root: string, id: string,
         const current = await readProbeAttempt(root, id);
         if (current.lifecycle !== "started") {
           db.exec("ROLLBACK");
+          releaseTracking(id);
           return { committed: false, record: current };
         }
         let next = build(current);
@@ -648,6 +667,7 @@ async function transitionTerminal(root: string, id: string,
         }
         db.query("INSERT OR IGNORE INTO probe_terminal(id, lifecycle) VALUES (?, ?)").run(id, next.lifecycle);
         db.exec("COMMIT");
+        releaseTracking(id);
         return { committed: true, record: next };
       } catch (error) {
         try { db.exec("ROLLBACK"); } catch { /* Already rolled back. */ }
@@ -1432,11 +1452,11 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
   const outcome = { record: await readProbeAttempt(root, id), self: await finishSelf(await readProbeAttempt(root, id)) };
   return outcome;
   } finally {
-    inflightWrites.delete(id);
-    probeDeadlines.delete(id);
-    cleanupUncertainIds.delete(id);
-    unresolvedWrites.delete(id);
-    schwayWindows.delete(id);
+    // Tracking is released by the terminal CAS itself once a record is
+    // committed or observed terminal. A run that ends without one (failed
+    // publication) keeps it for a later same-process cancel/reconcile.
+    const settled = await readProbeAttempt(root, id).catch(() => null);
+    if (settled !== null && settled.lifecycle !== "started") releaseTracking(id);
   }
 }
 
