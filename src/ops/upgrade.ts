@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync }
 import { dirname, join } from "node:path";
 import { AppError } from "../errors";
 import { lookupSource, requireId } from "../sources";
-import { TransactionStore, type AppTransaction } from "../store";
+import { TransactionStore, schemaVersion, type AppTransaction } from "../store";
 import {
   captureAppSide, jitAppVersion, prepareBackupManifest, resolveNativeSnapshot, writeArtifact,
   type BackupNativePort,
@@ -12,7 +12,7 @@ import {
 export const upgradeContract = "ops.schema_migrations/v1" as const;
 /** Oldest live schema this code migrates forward; anything older needs manual recovery. */
 export const minSupportedSchema = 15;
-export const currentSupportedSchema = 21;
+export const currentSupportedSchema = schemaVersion;
 
 export type UpgradeState = "prepared" | "staged" | "ready" | "complete" | "failed" | "rolled_back";
 

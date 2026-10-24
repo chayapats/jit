@@ -75,9 +75,26 @@ counters are labeled, not zeroed. A single subscription identity serves all
 aliases of one provider route until #413 lands.
 
 Production adapter exceptions normalize to a production error that never
-claims fixture evidence. Fixture-authorized work (role preview, schedule and
-PR summaries, memory extraction) stays scripted; only specialist and
-coordinator runs switch ports, matching their authorization boundary.
+claims fixture evidence. Fixture-authorized work (role preview, schedule
+summaries, memory extraction) stays scripted; specialist, coordinator and
+private PR review (`pr.review`, #19) runs switch ports, matching their
+authorization boundary.
+
+PR review authorization boundary: a concrete PR review run needs the owner's
+standing read-only monitoring authority for the repository
+(`pr.monitoring_authority/v1`) plus an explicit owner `job.enqueue` of
+`pr.review` for one captured candidate. Route policy: the run route is the
+owner-configured project default route, then the owner default route
+(`route.save` with `roleId: null`), captured with its owner/project
+configuration revisions and the review policy version at attempt admission.
+Retries reuse that capture exactly; a changed review policy blocks the job. On
+the concrete port a missing route blocks admission before any dispatch; the
+scripted fixture route is only a scripted-port default and never a concrete
+fallback. PR, issue, spec and CI text are untrusted manifest evidence and
+cannot select a route, tools, lookup, task acceptance or GitHub mutation.
+Serve and the service lifecycle build their queue through one shared
+composition (`composeJobQueue`, `src/composition.ts`) so both register the
+same workers under this policy.
 
 ## Request-scoped host runtimes
 

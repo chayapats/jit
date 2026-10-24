@@ -20,7 +20,7 @@ import {
   commitDeliveryIntent, deliveryCommandIdentity, listDeliveryAttempts, listDeliveryIntents, readDeliveryIntent,
   readDeliveryReport, resendDeliveryIntent, retireDeliveryReport,
 } from "./delivery";
-import { annotateReport, listReports, prReportIdentity, readAnnotations, readReport } from "./pr/report";
+import { annotateReport, listReports, listReviewStates, prReportIdentity, readAnnotations, readReport, reportRunEvidence } from "./pr/report";
 import { admitReportAlerts, evaluateReport } from "./pr/alerts";
 import type {
   DismissReportCommand,
@@ -1110,7 +1110,7 @@ export class Application {
   }
 
   /**
-   * Lists private PR review reports for one project.
+   * Lists private PR review reports and per-candidate review states for one project.
    * `pr.private_report/v1` inspection; reading never admits work or sends.
    */
   prReports(actor: OwnerActor, projectId: string, monitorId?: string) {
@@ -1119,7 +1119,8 @@ export class Application {
     return this.store.read(tx => {
       this.#requireOwner(tx, actor);
       const project = this.#project(tx, projectId);
-      return { project, items: listReports(tx, projectId, monitorId) };
+      // Per-candidate states keep not-reviewed, running, failed and stale distinguishable.
+      return { project, items: listReports(tx, projectId, monitorId), reviews: listReviewStates(tx, projectId, monitorId) };
     });
   }
 
@@ -1139,7 +1140,9 @@ export class Application {
         "SELECT record_json FROM delivery_intents WHERE project_id = ? AND dedupe_key LIKE ? ORDER BY sequence",
         projectId, `pr-alert/${reportId}/%`,
       ).map(row => JSON.parse(row.record_json) as DeliveryIntent);
-      return { project, report, annotations, evaluation, alerts };
+      // Immutable source manifest, transmitted manifest and bounded attempt summaries.
+      const evidence = reportRunEvidence(tx, projectId, report);
+      return { project, report, annotations, evaluation, alerts, evidence };
     });
   }
 
