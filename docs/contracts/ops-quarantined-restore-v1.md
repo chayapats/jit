@@ -60,18 +60,24 @@ registry:
    `minSupportedSchema` (15) and the build → `migrate`; newer →
    `newer_backup_unsupported`; older than 15 → `backup_unrestorable`
    (`manual_recovery_required`).
-3. Manifest and integrity (`assertRestorableBackup`): `valid` state,
+3. Application build (`restoreAppCompat`): the producing `jitVersion` must be
+   this build or an older build of the same major version; a newer build is
+   `newer_app_unsupported` (even at an equal schema number), another major
+   line or an unparseable identity `unsupported_app_version`.
+4. Manifest and integrity (`assertRestorableBackup`): `valid` state,
    available lifecycle checkpoint, native `valid`, complete inventory and
    every managed file verified (`backup_incomplete`, `backup_integrity_failed`,
    `backup_artifact_missing`).
-4. Engine (`restoreEngineCompat`, metadata only, never snapshots): a backup
+5. Engine (`restoreEngineCompat`, metadata only, never snapshots): a backup
    without native references does not depend on the engine; otherwise its
    native capture must declare `schway.host.session-snapshot/v1` with the
    pinned format and the current port must be available and declare the same
    (`unsupported_engine`, `engine_unavailable`).
 
-Then: the shared fence `<db>.upgrade-fence` is written with
-`holder: "restore"` (`upgradeId` = restore id), the service is quiesced
+Then: the shared fence `<db>.upgrade-fence` is acquired exclusively (the
+claim is hard-linked into place, failing if any fence exists; it is cleared
+only by the id it names) with `holder: "restore"` (`upgradeId` = restore id);
+losing the race fails the attempt (`restore_in_progress`/`upgrade_in_progress`). the service is quiesced
 (`job_admission`, `model_runs`, `memory_extraction`, `context_assembly`,
 `pr_monitoring`, `schedules`, `delivery` disabled; unsettled work fails with
 `restore_quiesce_incomplete` and releases the fence), the fenced live revision
@@ -101,11 +107,15 @@ part of any image, plus its checkpoint file. `syncLedgerCheckpoint` returns
 prefix of it; otherwise the restore is `blocked` with the reason:
 `ledger_unreadable`, `ledger_bound_exceeded` (200 000 entries),
 `ledger_checkpoint_missing` (missing after establishment at that location),
+`ledger_checkpoint_relocation_unverified` (the configured location changed
+and holds no verified checkpoint covering what was already checkpointed —
+relocation means copying the verified checkpoint file; database contents
+never re-establish authority once a checkpoint exists),
 `ledger_checkpoint_unverifiable` (corrupt, self-inconsistent, or a seed
 placeholder over an established checkpoint), `ledger_checkpoint_incompatible`
 (other format), `ledger_checkpoint_mismatch` (the installation table lost or
 changed entries its checkpoint holds, e.g. the database was replaced outside
-this flow) or `ledger_checkpoint_unavailable` (cannot write). There is no
+this flow, or an older checkpoint copy was put back) or `ledger_checkpoint_unavailable` (cannot write). There is no
 override; the owner remedy is to put back a verified checkpoint, never to
 assert that nothing was deleted.
 
@@ -130,11 +140,16 @@ image and are purged; the ledger has none), with `secure_delete` on:
   consult the installation ledger;
 - derived invalidation: pending work citing deleted or suppressed material is
   fenced (`source_retired`), stale contexts and extractions are fenced;
-- native contexts: a context deleted in live is marked deleted; a context
-  citing deleted data is retired and, unless an open deletion operation
-  already covers it, gets a restore deletion operation (managed delete
-  through the run port at activation); a context citing suppressed data, or
-  retired/delete_failed in live, is retired;
+- native contexts: classified with the deletion inventory's own job evidence
+  (`contextCitations` in src/memory/delete.ts: team runs, coordinator
+  syntheses, memory extractions and job attempts). A context whose work cited
+  deleted data — or whose records are unreadable or carry no structurally
+  valid manifest (`unknown`, fail closed) — is retired and, unless a pending
+  or blocked deletion operation covers it, gets a restore deletion operation
+  (managed delete through the run port at activation); a context citing
+  suppressed data, or retired/delete_failed in live, is retired; a context
+  deleted in live is marked deleted; an inventory blocker fails the replay
+  (`restore_context_inventory_blocked`);
 - jobs: every non-terminal job loses commit authority (`invalidateJob`
   `interrupted`, attempts interrupted, occupancy cleared) and waits with
   `inspect_restored_job_then_resume_explicitly`; read work restarts only by an
@@ -181,13 +196,28 @@ from live), then the live digest must equal the quarantine digest. Completion
 1. revoke every session (pre-restore browsers, adapters and stale commands
    are fenced; the owner signs in again; the Web redirects to `/login`);
 2. with the fence still held, `ManagedService.fencedLifecycle` composes the
-   team port (no admission possible) and runs `reconcileDeletions`; any
-   operation with a `pending`, `delete_failed` or `retire_failed` context keeps
-   the journal `activated` with `native_delete_pending` and the fence held
-   (budget-exhausted `failed` operations are reported, not retried);
+   team port (no admission possible) and runs session reconciliation and
+   `reconcileDeletions`; a budget-exhausted (`failed`) operation still holding
+   native data gets a fresh restore deletion operation on each owner retry;
+   any operation (pending, blocked or failed) with a `pending`,
+   `delete_failed` or `retire_failed` context keeps the journal `activated`
+   with `native_delete_pending` and the fence held (`missing` means the engine
+   reported the context absent);
 3. release the fence and `ManagedService.resume` (rebuild scheduler and ports,
-   reconcile jobs and native sessions, report unknown deliveries); failure →
-   `activated`, `reconcile_pending`.
+   reconcile jobs and native sessions, report unknown deliveries); failure
+   re-acquires the fence → `activated`, `reconcile_pending`. Reopen re-fences
+   every unfinished restore, so a crash between release and resume is fenced
+   again.
+
+Read gate: `<db>.restore-pending` is the one durable "restore complete"
+predicate. It is written before the activation intent and removed only at
+`complete` (or when the intent resolves to not swapped). While it exists every
+`Application` read model and command (login sessions included) is refused
+with `restore_incomplete` (423) except restore status, the restore console
+(`restoreConsole`: revision and gate holder), the backup inventory, restore
+commands and logout; the Web redirects ordinary pages to `/restores`, renders
+the console without project data, and `serve` logs that only restore
+remediation is served.
 
 Without a managed service in process the journal stays `activated` with the
 fence held, and `Application.boot()` (serve, `startFullApp`) completes it
@@ -223,6 +253,9 @@ restored from snapshots; Telegram/provider copies are outside Jit),
 (`allowed`, `blockers`). Evidence carries identities and counts only.
 
 ## Residuals and follow-ups
+
+- Before activation (quarantine) the live installation is untouched current
+  data, so reads stay available; only writes are fenced.
 
 - Native sessions are not restored from the backup's opaque snapshots
   (Schway `restoreSessionSnapshot` is not used); restored references resolve

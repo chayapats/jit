@@ -16,10 +16,10 @@ import type { BackupNativePort } from "../src/ops/backup";
 import { ledgerCheckpointPathFor, syncLedgerCheckpoint } from "../src/ops/lifecycle-ledger";
 import { startFullApp } from "../src/ops/lifecycle";
 import {
-  SimulatedRestoreCrash, restoreCompat, restoreEngineCompat, type RestoreEvidence, type RestoreFaultPoint,
+  SimulatedRestoreCrash, readRestoreGate, restoreAppCompat, restoreCompat, restoreEngineCompat, type RestoreEvidence, type RestoreFaultPoint,
 } from "../src/ops/restore";
 import { upgradeEngineContract, upgradeNativeFormatVersion } from "../src/ops/upgrade";
-import { readUpgradeFence, upgradeFencePath } from "../src/ops/upgrade-fence";
+import { clearUpgradeFence, readUpgradeFence, upgradeFencePath, writeUpgradeFence } from "../src/ops/upgrade-fence";
 import { ManagedService } from "../src/ops/upgrade-service";
 import type { SourceReference } from "../src/sources";
 import { TransactionStore, schemaVersion } from "../src/store";
@@ -55,7 +55,7 @@ function enginePort(options: { contract?: string; available?: boolean } = {}): B
     snapshot: () => ({ refs: [], bytes: 0, engine: "fixture-engine/1", contract, formatVersion: upgradeNativeFormatVersion, artifacts: [] }) };
 }
 
-interface Flags { deleteFail: boolean; failCompose: boolean; fault: RestoreFaultPoint | null }
+interface Flags { deleteFail: boolean; failCompose: boolean; failResume: boolean; fault: RestoreFaultPoint | null }
 interface Runtime { store: TransactionStore; port: ScriptedRunPort; service: ManagedService; app: Application }
 
 async function boot(config: Config, hooks: { extract: Script; specialist: Script }, clock: { now: number }, dirs: { backup: string; restore: string; upgrade: string },
@@ -63,7 +63,9 @@ async function boot(config: Config, hooks: { extract: Script; specialist: Script
   const store = new TransactionStore(config.databasePath, { migrateExisting: false }); stores.push(store);
   const script = (request: ApplicationRunRequest, signal: AbortSignal) =>
     request.instructions.operator.includes(memoryExtractionMarker) ? hooks.extract(request, signal)
-      : request.instructions.operator.includes(coordinatorSynthesisMarker) ? fixtureOutcome("complete", JSON.stringify({ question: "q", disagreement: false, consensus: true, options: [] }))
+      : request.instructions.operator.includes(coordinatorSynthesisMarker) ? fixtureOutcome("complete", JSON.stringify({ question: "เจ้าของจะเลือกทางใด", disagreement: false, consensus: true,
+        options: [{ id: "first", label: "ทางแรก", rationale: "ตามผลวิเคราะห์", citations: request.manifest.sources.map(source => ({ ...source.reference })) },
+          { id: "second", label: "ทางที่สอง", rationale: "alternative", citations: request.manifest.sources.map(source => ({ ...source.reference })) }] }))
       : hooks.specialist(request, signal);
   const port = new ScriptedRunPort(store, config.team, config.jobs.outputBytes, script, () => flags.deleteFail, () => false);
   const now = () => clock.now;
@@ -73,6 +75,8 @@ async function boot(config: Config, hooks: { extract: Script; specialist: Script
       specialistAnalysisWork(store, config, port, now), coordinatorSynthesisWork(store, config, port, now)], { now }) };
   }, { drainTimeoutMs: 200 });
   services.push(service);
+  const resume = service.resume.bind(service);
+  service.resume = async () => flags.failResume ? { reconciled: false, detail: "fixture_resume_failure" } : resume();
   const app = new Application(store, config, { service, now, backupDir: dirs.backup, restoreDir: dirs.restore, upgradeDir: dirs.upgrade, nativeSnapshot: native,
     restoreFault: point => { if (flags.fault === point) { flags.fault = null; throw new SimulatedRestoreCrash(point); } } });
   await app.boot();
@@ -82,7 +86,7 @@ async function boot(config: Config, hooks: { extract: Script; specialist: Script
 async function fixture(native: BackupNativePort = enginePort()) {
   const root = mkdtempSync(join(tmpdir(), "jit-ops-restore-")); roots.push(root);
   const config = readConfig({ JIT_DATABASE: join(root, "state.sqlite") }), clock = { now: epoch };
-  const flags: Flags = { deleteFail: false, failCompose: false, fault: null };
+  const flags: Flags = { deleteFail: false, failCompose: false, failResume: false, fault: null };
   const requests: string[] = [];
   const defaults = {
     extract: ((request: ApplicationRunRequest) => scriptedMemoryResult(request, true)) as Script,
@@ -92,9 +96,11 @@ async function fixture(native: BackupNativePort = enginePort()) {
   const dirs = { backup: join(root, "backups"), restore: join(root, "restores"), upgrade: join(root, "upgrades") };
   const rt = await boot(config, hooks, clock, dirs, flags, native);
   await rt.app.setupOwner(password);
-  const f = { root, config, clock, flags, hooks, defaults, dirs, rt, native, requests, token: await rt.app.login(password), roles: { tech: "" } };
+  const f = { root, config, clock, flags, hooks, defaults, dirs, rt, native, requests, token: await rt.app.login(password), roles: { tech: "", coordinator: "" } };
   f.roles.tech = rt.app.execute(actor(f), { kind: "role.save", projectId: null, requestId: rid(), expectedRevision: rt.app.team(actor(f)).ownerRevision,
     payload: { roleId: null, name: "เทคโนโลยี", kind: "specialist", responsibility: "วิเคราะห์ฐานข้อมูลและโครงสร้างซอฟต์แวร์", enabled: true, route: grok } }).role!.id;
+  f.roles.coordinator = rt.app.execute(actor(f), { kind: "role.save", projectId: null, requestId: rid(), expectedRevision: rt.app.team(actor(f)).ownerRevision,
+    payload: { roleId: null, name: "ผู้ประสานงาน", kind: "coordinator", responsibility: "สรุปความเห็นต่างให้เจ้าของตัดสิน", enabled: true, route: grok } }).role!.id;
   return f;
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
@@ -153,7 +159,7 @@ function forget(f: Fixture, p: Project, claim: ClaimReference) {
   return f.rt.app.execute(actor(f), { kind: "memory.forget", requestId: rid(), projectId: p.id, expectedRevision: projectRevision(f, p),
     payload: { claim: ref(claim), reason: "เจ้าของขอให้ลืม", acknowledged: true } });
 }
-const appRevision = (f: Fixture) => f.rt.app.workspace(actor(f)).revision;
+const appRevision = (f: Fixture) => f.rt.app.restoreConsole(actor(f)).revision;
 const backupNow = async (f: Fixture) => (await f.rt.app.execute(actor(f), { kind: "backup.create" as const, requestId: rid(), projectId: null,
   expectedRevision: appRevision(f), payload: { note: "restore fixture backup" } })).manifest;
 const prepare = (f: Fixture, backupId: string) => f.rt.app.execute(actor(f), { kind: "restore.prepare", requestId: rid(), projectId: null,
@@ -175,6 +181,16 @@ const dbContains = (store: TransactionStore, needle: string) => Buffer.from(stor
 // ---------------------------------------------------------------------------
 // Compatibility
 // ---------------------------------------------------------------------------
+
+test("app build compatibility: same or older build of the same major only", () => {
+  expect(restoreAppCompat("jit/0.1.0", "jit/0.1.0")).toEqual({ compatible: true, reason: null });
+  expect(restoreAppCompat("jit/0.0.9", "jit/0.1.0")).toEqual({ compatible: true, reason: null });
+  expect(restoreAppCompat("jit/0.1.1", "jit/0.1.0")).toEqual({ compatible: false, reason: "newer_app_unsupported" });
+  expect(restoreAppCompat("jit/0.2.0", "jit/0.1.9")).toEqual({ compatible: false, reason: "newer_app_unsupported" });
+  expect(restoreAppCompat("jit/999.0.0", "jit/0.1.0")).toEqual({ compatible: false, reason: "newer_app_unsupported" });
+  expect(restoreAppCompat("jit/0.1.0", "jit/1.0.0")).toEqual({ compatible: false, reason: "unsupported_app_version" });
+  expect(restoreAppCompat("not-a-version", "jit/0.1.0")).toEqual({ compatible: false, reason: "unsupported_app_version" });
+});
 
 test("compat matrix: direct, staged migrate and reject before touching data; engine contract only matters with native references", () => {
   expect(restoreCompat(schemaVersion)).toEqual({ action: "direct", reason: null });
@@ -207,6 +223,9 @@ test("older backup restored after delete and forget: removed payload never reach
   const sLate = say(f, a, "ข้อมูลที่ลืมหลังสำรอง restore-late-canary-004");
   const pending = f.rt.app.execute(actor(f), { kind: "delivery.commit", requestId: rid(), projectId: a.id, expectedRevision: projectRevision(f, a),
     payload: { kind: "report", text: "รายงานก่อนสำรอง restore-report-canary-005", dedupeKey: "pre-backup-1" } });
+  // A local notification quoting the payload that is deleted after the backup.
+  const quoting = f.rt.app.execute(actor(f), { kind: "delivery.commit", requestId: rid(), projectId: a.id, expectedRevision: projectRevision(f, a),
+    payload: { kind: "report", text: "อ้างถึง: ข้อมูลที่ต้องลบ restore-del-canary-002 ทิ้ง", dedupeKey: "pre-backup-quote" } }) as { intent: { id: string } };
   const backup = await backupNow(f);
   f.clock.now += 60_000;
   deleteSource(f, a, sDel);
@@ -238,7 +257,7 @@ test("older backup restored after delete and forget: removed payload never reach
   expect(validated.report.invalidated!.sourcesPurged).toBeGreaterThan(0);
   expect(validated.report.invalidated!.claimsForgotten).toBeGreaterThan(0);
   expect(validated.report.invalidated!.ledgerOnlySuppressions).toBe(1);
-  expect(validated.report.invalidated!.deliveriesHeld).toBe(1);
+  expect(validated.report.invalidated!.deliveriesHeld).toBe(2);
   expect(validated.report.discarded.liveOnlySources).toBeGreaterThan(0);
   expect(validated.report.generation.restoredRevision).toBeGreaterThan(liveRevision);
   expect(validated.report.retention.length).toBeGreaterThan(0);
@@ -264,6 +283,10 @@ test("older backup restored after delete and forget: removed payload never reach
   expect(f.rt.app.deletionLedger(actor(f)).tombstones.some(t => t.sourceId === sDel.sourceId)).toBe(true);
   // No payload bytes of the deleted source survive in the activated database (freed pages included).
   expect(dbContains(f.rt.store, "restore-del-canary-002")).toBe(false);
+  const quoted = f.rt.app.delivery(actor(f), a.id, quoting.intent.id);
+  expect(JSON.stringify(quoted.intent.payload)).not.toContain("restore-del-canary-002");
+  expect(JSON.stringify(quoted.report)).not.toContain("restore-del-canary-002");
+  expect(quoted.intent.status).toBe("unknown");
   // Notification: the restored unsent report is held as unknown and never sent by a worker.
   const intentId = (pending as { intent: { id: string } }).intent.id;
   expect(f.rt.app.delivery(actor(f), a.id, intentId).intent).toMatchObject({ status: "unknown", nextAction: "inspect_restored_intent_then_resend_explicitly" });
@@ -363,6 +386,13 @@ test("a context deleted after the backup is deleted through the run port before 
   const s1 = say(f, a, "ข้อความ native-canary-001 ที่ถูกอ้างถึง");
   f.rt.app.execute(actor(f), dispatch(f, a, "งานที่ใช้ native session", [s1]));
   await drain(f);
+  // A coordinator synthesis owns its own native context (outside team_runs).
+  const discussion = f.rt.app.discussions(actor(f), a.id, a.topic.id)[0]!;
+  f.rt.app.execute(actor(f), { kind: "decision.synthesize", requestId: rid(), projectId: a.id, expectedRevision: discussion.revision,
+    payload: { discussionId: discussion.id, limits: { ...f.config.jobs.maximum } } });
+  await drain(f);
+  const synthesisContexts = () => f.rt.store.read(tx => tx.all<{ state: string }>("SELECT c.state FROM team_contexts c JOIN coordinator_syntheses s ON s.context_id = c.id WHERE s.project_id = ?", a.id));
+  expect(synthesisContexts().length).toBeGreaterThan(0);
   const contexts = () => f.rt.store.read(tx => tx.all<{ id: string; state: string }>("SELECT c.id, c.state FROM team_contexts c JOIN team_runs r ON r.context_id = c.id WHERE r.project_id = ?", a.id));
   expect(contexts().length).toBeGreaterThan(0);
   const backup = await backupNow(f);
@@ -378,8 +408,26 @@ test("a context deleted after the backup is deleted through the run port before 
   // Still fenced: no reader/worker is enabled, nothing else is admitted; the backup stays in the registry.
   await relogin(f);
   expect(readUpgradeFence(f.rt.store.path)?.upgradeId).toBe(q.id);
-  expect(() => f.rt.app.execute(actor(f), { kind: "project.create", projectId: null, requestId: rid(), expectedRevision: appRevision(f), payload: { name: "x" } })).toThrow("restore_in_progress");
+  // Read-side gate: a fresh session sees only restore status and remediation, never restored read models.
+  expect(() => f.rt.app.workspace(actor(f))).toThrow("restore_incomplete");
+  expect(() => f.rt.app.memory(actor(f), a.id)).toThrow("restore_incomplete");
+  expect(() => f.rt.app.execute(actor(f), { kind: "project.create", projectId: null, requestId: rid(), expectedRevision: 1, payload: { name: "x" } })).toThrow("restore_incomplete");
+  expect(f.rt.app.restoreConsole(actor(f)).gatedBy).toBe(q.id);
+  const web = createWebHandler(f.rt.app);
+  const home = await web(new Request("http://localhost:3000/", { headers: { cookie: `jit_session=${f.token}` } }));
+  expect([home.status, home.headers.get("location")]).toEqual([303, "/restores"]);
+  const consolePage = await web(new Request("http://localhost:3000/restores", { headers: { cookie: `jit_session=${f.token}` } }));
+  expect(consolePage.status).toBe(200);
+  expect(await consolePage.text()).not.toContain("โครงการ native");
+  const memoryApi = await web(new Request(`http://localhost:3000/api/projects/${a.id}/memory`, { headers: { cookie: `jit_session=${f.token}` } }));
+  expect(memoryApi.status).toBe(423);
   expect(f.rt.app.backups(actor(f)).manifests.some(m => m.id === backup.id)).toBe(true);
+  // Exhausting the managed-delete budget never releases the fence: a failed operation still holding native data blocks.
+  for (let i = 0; i < 6; i++) expect((await stepCmd(f, "restore.activate", q.id)).quarantine).toMatchObject({ state: "activated", reason: "native_delete_pending" });
+  expect(f.rt.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM deletion_operations WHERE state = 'failed'")!.n)).toBeGreaterThan(0);
+  expect(journal(f, q.id).report.pending.nativeDeletesPending).toBeGreaterThan(0);
+  expect(readUpgradeFence(f.rt.store.path)?.upgradeId).toBe(q.id);
+  expect(readRestoreGate(f.rt.store.path)).toBe(q.id);
   // A restart keeps it fenced and retries under the fence at boot.
   await restart(f);
   expect(journal(f, q.id)).toMatchObject({ state: "activated", reason: "native_delete_pending" });
@@ -387,6 +435,9 @@ test("a context deleted after the backup is deleted through the run port before 
   const done = (await stepCmd(f, "restore.activate", q.id)).quarantine;
   expect(done.state).toBe("complete");
   expect(contexts().every(c => c.state === "deleted")).toBe(true);
+  expect(synthesisContexts().every(c => c.state === "deleted")).toBe(true);
+  expect(f.rt.app.restoreConsole(actor(f)).gatedBy).toBeNull();
+  expect(f.rt.app.workspace(actor(f)).projects.length).toBeGreaterThan(0);
   expect(existsSync(upgradeFencePath(f.rt.store.path))).toBe(false);
 }, 60_000);
 
@@ -535,6 +586,10 @@ test("supported older images migrate inside quarantine; unsupported, failed or e
     .toMatchObject({ state: "failed", reason: "newer_backup_unsupported", nextAction: "keep_backup_and_restore_with_a_build_supporting_its_schema" });
   f.rt.store.transaction(tx => tx.run("UPDATE ops_backups SET record_json = json_set(record_json, '$.appSchema', 3) WHERE id = ?", newer.id));
   await expect(prepare(f, newer.id)).rejects.toThrow("backup_unrestorable");
+  // Same schema, newer producing build: refused by the app-version gate before any fence.
+  f.rt.store.transaction(tx => tx.run("UPDATE ops_backups SET record_json = json_set(record_json, '$.appSchema', ?, '$.jitVersion', 'jit/999.0.0') WHERE id = ?", schemaVersion, newer.id));
+  await expect(prepare(f, newer.id)).rejects.toThrow("newer_app_unsupported");
+  expect(f.rt.app.restores(actor(f)).quarantines.some(q => q.backupId === newer.id && q.reason === "newer_app_unsupported" && q.compat.jitVersion.compatible === false)).toBe(true);
   expect(existsSync(upgradeFencePath(f.rt.store.path))).toBe(false);
   // Failed staged migration blocks the quarantine; live and the backup stay intact.
   const broken = (await prepare(f, failing.id)).quarantine;
@@ -589,6 +644,73 @@ test("an external integration revoked after the backup is never silently re-enab
     .toEqual({ state: "unbound", telegram_chat_id: null });
 });
 
+test("a run record without a valid manifest is treated as unknown: its context is deleted before service resumes", async () => {
+  const f = await fixture();
+  const a = project(f, "โครงการ opaque", "หัวข้อ opaque");
+  const s1 = say(f, a, "ข้อความ opaque-canary-001");
+  f.rt.app.execute(actor(f), dispatch(f, a, "งานเก่าไม่มี manifest", [s1]));
+  await drain(f);
+  // Legacy/damaged records: what they cited cannot be proven.
+  f.rt.store.transaction(tx => tx.run("UPDATE team_runs SET record_json = json_object('id', id) WHERE project_id = ?", a.id));
+  const backup = await backupNow(f);
+  const q = await restoreThrough(f, backup.id, "restore.validate");
+  expect(q.state).toBe("validated");
+  expect(q.report.invalidated!.contextsUnknownCitation).toBeGreaterThan(0);
+  expect(q.report.invalidated!.contextsScheduledForDeletion).toBeGreaterThan(0);
+  expect((await stepCmd(f, "restore.activate", q.id)).quarantine.state).toBe("complete");
+  await relogin(f);
+  const states = f.rt.store.read(tx => tx.all<{ state: string }>("SELECT c.state FROM team_contexts c JOIN team_runs r ON r.context_id = c.id WHERE r.project_id = ?", a.id));
+  expect(states.length).toBeGreaterThan(0);
+  expect(states.every(c => c.state === "deleted")).toBe(true);
+});
+
+test("a failed service resume re-acquires the fence: nothing is admitted or readable until reconciliation succeeds", async () => {
+  const f = await fixture();
+  const a = project(f, "โครงการ resume", "หัวข้อ resume");
+  say(f, a, "ข้อความ resume-001");
+  const backup = await backupNow(f);
+  f.flags.failResume = true;
+  const q = await restoreThrough(f, backup.id);
+  expect(q).toMatchObject({ state: "activated", reason: "reconcile_pending", activation: { nativeReconciled: true, fenceReleased: false } });
+  expect(readUpgradeFence(f.rt.store.path)?.upgradeId).toBe(q.id);
+  expect(readRestoreGate(f.rt.store.path)).toBe(q.id);
+  await relogin(f);
+  expect(() => f.rt.app.execute(actor(f), { kind: "project.create", projectId: null, requestId: rid(), expectedRevision: appRevision(f), payload: { name: "x" } })).toThrow("restore_incomplete");
+  // A crash right after releasing the fence is re-fenced on reopen (durable intent wins), then completed at boot.
+  f.flags.failResume = false;
+  f.flags.fault = "reconciled";
+  await expect(stepCmd(f, "restore.activate", q.id)).rejects.toBeInstanceOf(SimulatedRestoreCrash);
+  await restart(f);
+  await relogin(f);
+  expect(journal(f, q.id).state).toBe("complete");
+  expect(existsSync(upgradeFencePath(f.rt.store.path))).toBe(false);
+  expect(readRestoreGate(f.rt.store.path)).toBeNull();
+});
+
+test("the shared fence is acquired exclusively: two processes racing restore against upgrade yield exactly one holder", async () => {
+  const root = mkdtempSync(join(tmpdir(), "jit-fence-race-")); roots.push(root);
+  const db = join(root, "state.sqlite"), barrier = join(root, "go");
+  for (let round = 0; round < 3; round++) {
+    const ids = [crypto.randomUUID(), crypto.randomUUID()];
+    const workers = ids.map((id, i) => Bun.spawn(["bun", join(import.meta.dir, "fence-race-worker.ts"), db, id, i === 0 ? "restore" : "upgrade", barrier], { stdout: "pipe", stderr: "pipe" }));
+    await new Promise(resolve => setTimeout(resolve, 150));
+    writeFileSync(barrier, "go");
+    const results = await Promise.all(workers.map(async w => { await w.exited; return JSON.parse((await new Response(w.stdout).text()).trim()) as { id: string; won: boolean; code?: string }; }));
+    const winners = results.filter(r => r.won);
+    expect(winners).toHaveLength(1);
+    expect(results.find(r => !r.won)!.code).toMatch(/^(restore|upgrade)_in_progress$/);
+    expect(readUpgradeFence(db)?.upgradeId).toBe(winners[0]!.id);
+    // The loser can neither overwrite nor clear the winner's claim.
+    const loser = results.find(r => !r.won)!.id;
+    expect(() => writeUpgradeFence(db, loser, 2, "upgrade")).toThrow(/_in_progress/);
+    clearUpgradeFence(db, loser);
+    expect(readUpgradeFence(db)?.upgradeId).toBe(winners[0]!.id);
+    clearUpgradeFence(db, winners[0]!.id);
+    expect(readUpgradeFence(db)).toBeNull();
+    rmSync(barrier);
+  }
+});
+
 test("restore and upgrade exclude each other through the one durable fence", async () => {
   const f = await fixture();
   project(f, "โครงการ exclusive", "หัวข้อ exclusive");
@@ -611,7 +733,8 @@ test("lifecycle ledger: trigger entries commit with the lifecycle change; the ch
   const s1 = say(f, a, "ข้อความ checkpoint-canary-001");
   const [claim] = await remember(f, a, s1);
   const path = ledgerCheckpointPathFor(f.rt.store.path);
-  const before = JSON.parse(readFileSync(path, "utf8")) as { count: number; revision: number };
+  const beforeText = readFileSync(path, "utf8");
+  const before = JSON.parse(beforeText) as { count: number; revision: number };
   expect(before).toMatchObject({ count: 0, revision: 1 });
   forget(f, a, claim!);
   const after = JSON.parse(readFileSync(path, "utf8")) as { count: number; entries: { kind: string; record: Record<string, unknown> }[] };
@@ -627,12 +750,24 @@ test("lifecycle ledger: trigger entries commit with the lifecycle change; the ch
   })).toThrow("rollback");
   expect(f.rt.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM lifecycle_ledger")!.n)).toBe(count);
   expect(syncLedgerCheckpoint(f.rt.store, path, f.clock.now)).toMatchObject({ state: "trusted", count });
-  // Service packaging: a seeded placeholder at the configured ledgerPath becomes the real checkpoint; a diverged one quarantines.
+  // An older, internally valid checkpoint copy put back over the established one is stale, not a lag to extend.
+  const current = readFileSync(path, "utf8");
+  writeFileSync(path, beforeText);
+  expect(syncLedgerCheckpoint(f.rt.store, path, f.clock.now)).toMatchObject({ state: "untrusted", reason: "ledger_checkpoint_mismatch" });
+  writeFileSync(path, current);
+  // Service packaging: the configured ledgerPath must carry the verified checkpoint; a diverged one quarantines.
   const service = serviceFor(f.root);
   f.rt.service.close(); await f.rt.service.queue?.idle();
+  // The installation already checkpointed at its default location: a seed at a new location cannot
+  // re-establish authority from database contents (relocation must carry the verified checkpoint).
   const seeded = await startFullApp({ config: f.config, service, store: f.rt.store, now: () => f.clock.now });
-  expect(seeded.ok ? "ok" : JSON.stringify(seeded.gates)).toBe("ok");
-  if (seeded.ok) seeded.handle.service.close();
+  expect(seeded).toMatchObject({ ok: false, gates: [{ gate: "quarantine", detail: "lifecycle ledger ledger_checkpoint_relocation_unverified" }] });
+  rmSync(service.ledgerPath);
+  expect(await startFullApp({ config: f.config, service, store: f.rt.store, now: () => f.clock.now })).toMatchObject({ ok: false });
+  writeFileSync(service.ledgerPath, readFileSync(path));
+  const moved = await startFullApp({ config: f.config, service, store: f.rt.store, now: () => f.clock.now });
+  expect(moved.ok ? "ok" : JSON.stringify(moved.gates)).toBe("ok");
+  if (moved.ok) moved.handle.service.close();
   expect(JSON.parse(readFileSync(service.ledgerPath, "utf8"))).toMatchObject({ ledger: "jit.deletion.ledger/v1", count });
   const body = JSON.parse(readFileSync(service.ledgerPath, "utf8"));
   writeFileSync(service.ledgerPath, JSON.stringify({ ...body, head: body.head + 5 }));

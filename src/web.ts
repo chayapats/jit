@@ -135,6 +135,11 @@ const messages: Record<string, string> = {
   restore_in_progress: "มี quarantine ที่ยังไม่จบอยู่ ดำเนินการต่อหรือทิ้งก่อน",
   restore_bad_state: "สถานะ quarantine ไม่ตรงกับขั้นตอนนี้",
   restore_stale_live: "ข้อมูลปัจจุบันเปลี่ยนหลังเตรียม quarantine ให้เตรียมใหม่",
+  restore_incomplete: "การกู้คืนยังไม่เสร็จ ระบบแสดงได้เฉพาะสถานะและขั้นตอนแก้ไขการกู้คืน",
+  ledger_checkpoint_relocation_unverified: "ตำแหน่ง checkpoint ของ ledger เปลี่ยน ให้คัดลอก checkpoint ที่ตรวจสอบแล้วจากตำแหน่งเดิมมาก่อน",
+  newer_app_unsupported: "สำรองข้อมูลนี้สร้างจาก Jit รุ่นที่ใหม่กว่า กู้คืนด้วยรุ่นนี้ไม่ได้",
+  unsupported_app_version: "รุ่นของ Jit ที่สร้างสำรองข้อมูลนี้ไม่รองรับ",
+  restore_context_inventory_blocked: "ตรวจรายการ context ใน quarantine ไม่ครบ quarantine ถูกระงับไว้",
   restore_quiesce_incomplete: "งานที่กำลังทำยังไม่หยุด รอให้ settle แล้วลองใหม่",
   restore_ledger_moved: "ledger ล่าสุดเปลี่ยนหลังตรวจสอบ ให้ใช้ ledger และตรวจสอบใหม่",
   restore_quarantine_changed: "สำเนา quarantine เปลี่ยนหลังตรวจสอบ ให้ใช้ ledger และตรวจสอบใหม่",
@@ -366,15 +371,19 @@ export function createWebHandler(app: Application): (request: Request) => Promis
         const state = app.upgrade(auth.actor, upgradeRoute[2]!);
         return api ? json(state) : respond(upgradeDetailPage(state, app.workspace(auth.actor), auth.csrf, app.workspace(auth.actor).revision));
       }
-      if (request.method === "GET" && restoresRoute) {
-        const state = app.restores(auth.actor);
-        const revision = app.workspace(auth.actor).revision;
-        const backups = app.backups(auth.actor);
-        return api ? json({ ...state, backups }) : respond(restoresPage({ ...state, backups: backups.manifests }, app.workspace(auth.actor), auth.csrf, revision));
-      }
-      if (request.method === "GET" && restoreRoute) {
-        const state = app.restore(auth.actor, restoreRoute[2]!);
-        return api ? json(state) : respond(restoreDetailPage(state, app.workspace(auth.actor), auth.csrf, app.workspace(auth.actor).revision));
+      if (request.method === "GET" && (restoresRoute || restoreRoute)) {
+        // ops.quarantined_restore/v1: restore status and remediation stay available while the read gate holds;
+        // the shell then carries no project data.
+        const consoleState = app.restoreConsole(auth.actor);
+        const workspace = consoleState.gatedBy ? { revision: consoleState.revision, projects: [], hasMore: false } : app.workspace(auth.actor);
+        if (restoresRoute) {
+          const state = app.restores(auth.actor);
+          const backups = app.backups(auth.actor);
+          return api ? json({ ...state, backups, gatedBy: consoleState.gatedBy })
+            : respond(restoresPage({ ...state, backups: backups.manifests }, workspace, auth.csrf, consoleState.revision));
+        }
+        const state = app.restore(auth.actor, restoreRoute![2]!);
+        return api ? json(state) : respond(restoreDetailPage(state, workspace, auth.csrf, consoleState.revision));
       }
       if (request.method === "GET" && backupsRoute) {
         const state = app.backups(auth.actor);
@@ -814,6 +823,8 @@ export function createWebHandler(app: Application): (request: Request) => Promis
     } catch (error) {
       const rejection = error instanceof AppError ? error : new AppError("storage_unavailable", 503);
       if (!api && rejection.code === "authentication_required") return respond(null, 303, { "Location": "/login" });
+      // Until an activated restore completes, every ordinary page leads to the restore console.
+      if (!api && rejection.code === "restore_incomplete" && request.method === "GET") return respond(null, 303, { "Location": "/restores" });
       const text = messages[rejection.code] ?? "คำสั่งไม่ถูกต้อง กรุณาลองใหม่";
       const detail = rejection.detail;
       const recovery = detail && typeof detail.projectId === "string" && /^[a-f0-9-]{36}$/.test(detail.projectId) && typeof detail.path === "string" && detail.path.startsWith(`/projects/${detail.projectId}/`)

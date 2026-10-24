@@ -114,7 +114,11 @@ database. At most 50 terminal journals are retained.
 
 ## Fence and quiesce
 
-The fence is shared with `ops.quarantined_restore/v1`: a restore writes it
+`writeUpgradeFence` acquires the fence exclusively (claim hard-linked into
+place; a fence held by another id is never overwritten and raises
+`upgrade_in_progress`/`restore_in_progress`; re-acquiring one's own claim is
+a no-op) and `clearUpgradeFence(path, ownerId)` removes only that owner's
+claim. The fence is shared with `ops.quarantined_restore/v1`: a restore writes it
 with `holder: "restore"` (and its restore id as `upgradeId`). Upgrade prepare
 refuses while any fence or active restore exists, upgrade steps refuse a fence
 held by another id, and upgrade recovery never releases a restore's fence, so

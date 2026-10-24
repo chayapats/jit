@@ -58,7 +58,7 @@ export interface LedgerCheckpointFile {
 
 export type LedgerUntrustedReason =
   | "ledger_unreadable" | "ledger_bound_exceeded" | "ledger_checkpoint_missing" | "ledger_checkpoint_unverifiable"
-  | "ledger_checkpoint_incompatible" | "ledger_checkpoint_mismatch" | "ledger_checkpoint_unavailable";
+  | "ledger_checkpoint_incompatible" | "ledger_checkpoint_mismatch" | "ledger_checkpoint_unavailable" | "ledger_checkpoint_relocation_unverified";
 
 /** Result of resolving the latest trusted lifecycle ledger. */
 export type TrustedLedger =
@@ -126,6 +126,7 @@ function readCheckpoint(path: string): FileRead {
 
 function untrusted(reason: LedgerUntrustedReason, head: number | null = null, count: number | null = null): TrustedLedger {
   const nextAction = reason === "ledger_checkpoint_missing" ? "restore_the_ledger_checkpoint_file_from_its_configured_location_then_retry"
+    : reason === "ledger_checkpoint_relocation_unverified" ? "copy_the_verified_checkpoint_from_the_previous_ledger_location_then_retry"
     : reason === "ledger_checkpoint_mismatch" ? "inspect_installation_database_and_ledger_checkpoint_then_retry"
       : reason === "ledger_unreadable" ? "inspect_installation_lifecycle_ledger"
         : reason === "ledger_bound_exceeded" ? "ledger_exceeds_supported_bound_manual_recovery_required"
@@ -173,9 +174,14 @@ export function syncLedgerCheckpoint(store: TransactionStore, path: string, now:
   const read = readCheckpoint(path);
   let established = false;
   if (read.state === "missing" || read.state === "placeholder") {
-    // Only a checkpoint already established at this location can go missing; a new location (or the first
-    // use after the schema 23 upgrade) is established from the verified installation ledger.
-    if (marker && marker.path === path) return untrusted(read.state === "missing" ? "ledger_checkpoint_missing" : "ledger_checkpoint_unverifiable", head, entries.length);
+    // Establishing from database contents alone is allowed only when no checkpoint was ever established
+    // (fresh installation, first use after the schema 23 upgrade). Once a marker exists, a missing or seed
+    // file — at the established location or a new one — never re-establishes authority: relocation means
+    // copying the verified checkpoint file to the new location (it must then cover the marker's prefix).
+    if (marker) {
+      return untrusted(marker.path !== path ? "ledger_checkpoint_relocation_unverified"
+        : read.state === "missing" ? "ledger_checkpoint_missing" : "ledger_checkpoint_unverifiable", head, entries.length);
+    }
     established = true;
   } else if (read.state === "corrupt") return untrusted("ledger_checkpoint_unverifiable", head, entries.length);
   else if (read.state === "incompatible") return untrusted("ledger_checkpoint_incompatible", head, entries.length);
@@ -183,6 +189,8 @@ export function syncLedgerCheckpoint(store: TransactionStore, path: string, now:
     const file = read.file;
     const prefix = entries.filter(e => e.sequence <= file.head);
     if (file.head > head || prefix.length !== file.count || ledgerDigest(prefix) !== file.digest) return untrusted("ledger_checkpoint_mismatch", head, entries.length);
+    // A checkpoint older than what this installation already checkpointed was replaced by a stale copy.
+    if (marker && (file.head < marker.head || file.count < marker.count)) return untrusted("ledger_checkpoint_mismatch", head, entries.length);
     if (file.head === head && file.count === entries.length) {
       if (write && (!marker || marker.head !== head || marker.path !== path)) recordMarker(store, path, head, entries.length, digest, file.writtenAt);
       return { state: "trusted", head, count: entries.length, digest, entries, writtenAt: file.writtenAt, established: false };

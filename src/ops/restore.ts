@@ -1,16 +1,17 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { AppError } from "../errors";
 import { requireId } from "../sources";
 import { TransactionStore, type AppTransaction } from "../store";
 import { invalidateJob } from "../jobs/attempts";
+import { reconcileSessions } from "../jobs/reconcile";
 import { invalidatePendingJob } from "../jobs/queue";
 import type { Job } from "../jobs/types";
 import { fenceStaleContexts } from "../memory/context";
 import { fenceUnavailableExtractions } from "../memory/extract";
 import {
-  reconcileDeletions, redactReplayedLineage, redactedText, refreshOperationState, scrubFreeTextOccurrences, scrubOutputSources, type DeletionOperation,
+  contextCitations, reconcileDeletions, redactReplayedLineage, redactedText, refreshOperationState, scrubFreeTextOccurrences, scrubOutputSources, type DeletionOperation,
 } from "../memory/delete";
 import type { ApplicationRunPort } from "../team/run-port";
 import { assertRestorableBackup, jitAppVersion, validateManifestRecord, verifyBackupArtifacts, type BackupManifest, type BackupNativePort } from "./backup";
@@ -75,7 +76,7 @@ export interface RestoreRequest { requestId: string; kind: RestoreCommand["kind"
 export interface RestoreCompat {
   action: "direct" | "migrate" | "reject"; reason: string | null;
   backupSchema: number; currentSchema: number; minSchema: number;
-  jitVersion: { backup: string; current: string };
+  jitVersion: { backup: string; current: string; compatible: boolean; reason: string | null };
   engine: { nativeRefs: number; backupContract: string | null; backupFormatVersion: number | null; current: UpgradeEngineCheck | null; compatible: boolean; reason: string | null };
 }
 
@@ -89,7 +90,7 @@ export interface RestoreLedgerSummary {
 export interface RestoreReplay {
   appliedDeletions: number; appliedSuppressions: number; ledgerOnlySuppressions: number; notInImage: number;
   purgedSources: number; purgedClaims: number; forgottenClaims: number;
-  contexts: { retired: number; deletedLive: number; deleteScheduled: number };
+  contexts: { retired: number; deletedLive: number; deleteScheduled: number; unknownCitation: number };
   deleteOperations: string[];
   jobsFenced: { id: string; projectId: string; type: string; priorState: string }[];
   attemptsFenced: number;
@@ -109,7 +110,7 @@ export interface RestoreValidation {
   checks: RestoreCheck[];
   pendingJobs: { id: string; projectId: string; state: string; reason: string }[];
   unknownOutbox: number;
-  nativePending: { operationId: string; contexts: number }[];
+  nativePending: { operationId: string; contexts: number; state: string }[];
   liveOnly: { projects: number; sources: number; contexts: number };
   quarantineSchema: number;
 }
@@ -143,7 +144,7 @@ export interface RestoreReport {
   ledger: RestoreLedgerSummary | null;
   invalidated: {
     sourcesPurged: number; claimsPurged: number; claimsForgotten: number; suppressionsApplied: number; ledgerOnlySuppressions: number;
-    contextsRetired: number; contextsAlreadyDeleted: number; contextsScheduledForDeletion: number;
+    contextsRetired: number; contextsAlreadyDeleted: number; contextsScheduledForDeletion: number; contextsUnknownCitation: number;
     jobsFenced: number; attemptsFenced: number; deliveriesHeld: number;
     telegramBinding: "unchanged" | "adopted_live"; prMonitorsAdopted: number;
   } | null;
@@ -177,6 +178,8 @@ export interface RestoreContext {
   /** Lifecycle ledger checkpoint file (app.deletion_ledger/v1). */
   ledgerPath: string;
   port: BackupNativePort | undefined;
+  /** This build's identity (`jit/<semver>`); restore refuses images from newer builds. */
+  jitVersion: string;
   now(): number;
   service: RestoreServiceControl;
   authorize(tx: AppTransaction): void;
@@ -232,6 +235,28 @@ export function restoreCompat(backupSchema: number): { action: "direct" | "migra
   if (backupSchema === currentSupportedSchema) return { action: "direct", reason: null };
   if (backupSchema < minSupportedSchema) return { action: "reject", reason: "manual_recovery_required" };
   return { action: "migrate", reason: null };
+}
+
+/**
+ * Application build compatibility (`jit/<semver>`): this build restores images
+ * produced by itself or an older build of the same major version. A newer
+ * build (any higher major, minor or patch), another major line or an
+ * unparseable identity is refused before any fence, even at an equal schema
+ * number, because a newer build may write state this one cannot interpret.
+ */
+export function restoreAppCompat(backup: string, current: string): { compatible: boolean; reason: string | null } {
+  const parse = (value: string) => {
+    const match = /^jit\/(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(value);
+    return match ? [Number(match[1]), Number(match[2]), Number(match[3])] as const : null;
+  };
+  const b = parse(backup), c = parse(current);
+  if (!b || !c || b.some(n => !Number.isSafeInteger(n)) || c.some(n => !Number.isSafeInteger(n))) return { compatible: false, reason: "unsupported_app_version" };
+  if (b[0] !== c[0]) return { compatible: false, reason: b[0] > c[0] ? "newer_app_unsupported" : "unsupported_app_version" };
+  for (let i = 1; i < 3; i++) {
+    if (b[i]! > c[i]!) return { compatible: false, reason: "newer_app_unsupported" };
+    if (b[i]! < c[i]!) break;
+  }
+  return { compatible: true, reason: null };
 }
 
 /**
@@ -308,7 +333,7 @@ export function listRestores(restoreDir: string, limit = 50): RestoreJournal[] {
 
 function emptyCompat(): RestoreCompat {
   return { action: "reject", reason: "restore_corrupt", backupSchema: -1, currentSchema: currentSupportedSchema, minSchema: minSupportedSchema,
-    jitVersion: { backup: "unknown", current: jitAppVersion },
+    jitVersion: { backup: "unknown", current: jitAppVersion, compatible: false, reason: "restore_corrupt" },
     engine: { nativeRefs: 0, backupContract: null, backupFormatVersion: null, current: null, compatible: false, reason: "restore_corrupt" } };
 }
 
@@ -366,6 +391,7 @@ export function restoreReport(journal: RestoreJournal): RestoreReport {
       sourcesPurged: replay.purgedSources, claimsPurged: replay.purgedClaims, claimsForgotten: replay.forgottenClaims,
       suppressionsApplied: replay.appliedSuppressions, ledgerOnlySuppressions: replay.ledgerOnlySuppressions,
       contextsRetired: replay.contexts.retired, contextsAlreadyDeleted: replay.contexts.deletedLive, contextsScheduledForDeletion: replay.contexts.deleteScheduled,
+      contextsUnknownCitation: replay.contexts.unknownCitation ?? 0,
       jobsFenced: replay.jobsFenced.length, attemptsFenced: replay.attemptsFenced, deliveriesHeld: replay.deliveriesHeld.length,
       telegramBinding: replay.integrations?.telegramBinding ?? "unchanged", prMonitorsAdopted: replay.integrations?.prMonitorsAdopted ?? 0,
     } : null,
@@ -429,14 +455,44 @@ function recordAudit(ctx: RestoreContext, journal: RestoreJournal): void {
 
 /** Re-establishes this restore's fence; any other holder means another operation owns the installation. */
 function ensureFence(ctx: RestoreContext, journal: RestoreJournal): void {
-  const fence = readUpgradeFence(ctx.store.path);
-  if (fence && fence.upgradeId !== journal.id) throw new AppError(fence.holder === "restore" ? "restore_in_progress" : "upgrade_in_progress", 409);
-  if (!fence) writeUpgradeFence(ctx.store.path, journal.id, ctx.now(), "restore");
+  // Exclusive acquisition: no-op when this restore already holds it, refused when anyone else does.
+  writeUpgradeFence(ctx.store.path, journal.id, ctx.now(), "restore");
 }
 
 function releaseFence(ctx: RestoreContext, journal: RestoreJournal): void {
-  const fence = readUpgradeFence(ctx.store.path);
-  if (fence && fence.upgradeId === journal.id) clearUpgradeFence(ctx.store.path);
+  clearUpgradeFence(ctx.store.path, journal.id);
+}
+
+/**
+ * Durable "restore complete" predicate. `<db>.restore-pending` exists from the
+ * activation intent until the restore is complete (or the intent resolves to
+ * not swapped). While it exists the application serves only sanitized restore
+ * status and remediation (Application gate), whatever the fence state.
+ */
+export function restoreGatePath(databasePath: string): string {
+  return `${databasePath}.restore-pending`;
+}
+
+/** The restore id holding the read gate, `unknown` for an unreadable gate, or null when normal service is allowed. */
+export function readRestoreGate(databasePath: string): string | null {
+  const path = restoreGatePath(databasePath);
+  if (!existsSync(path)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as { contract?: unknown; restoreId?: unknown };
+    if (parsed?.contract === restoreContract && typeof parsed.restoreId === "string") return parsed.restoreId;
+  } catch { /* Unreadable gate still gates. */ }
+  return "unknown";
+}
+
+function writeRestoreGate(databasePath: string, restoreId: string): void {
+  if (readRestoreGate(databasePath) === restoreId) return;
+  try { writeFileAtomic(restoreGatePath(databasePath), JSON.stringify({ contract: restoreContract, restoreId })); }
+  catch { throw new AppError("restore_storage_unavailable", 503); }
+}
+
+function clearRestoreGate(databasePath: string, restoreId: string): void {
+  if (readRestoreGate(databasePath) !== restoreId) return;
+  try { rmSync(restoreGatePath(databasePath), { force: true }); } catch { throw new AppError("restore_storage_unavailable", 503); }
 }
 
 async function safeResume(ctx: RestoreContext): Promise<UpgradeResumeResult> {
@@ -499,10 +555,15 @@ export async function prepareRestore(ctx: RestoreContext, input: { request: Rest
     return fail(emptyCompat(), "backup_corrupt", "inspect_backup_registry_entry_then_choose_another_backup", "backup_corrupt", 500);
   }
   const schema = restoreCompat(manifest.appSchema);
+  const app = restoreAppCompat(manifest.jitVersion, ctx.jitVersion);
   const engine = restoreEngineCompat(manifest, ctx.port);
-  const compat: RestoreCompat = { action: schema.action === "reject" || !engine.compatible ? "reject" : schema.action,
-    reason: schema.reason ?? engine.reason, backupSchema: manifest.appSchema, currentSchema: currentSupportedSchema, minSchema: minSupportedSchema,
-    jitVersion: { backup: manifest.jitVersion, current: jitAppVersion }, engine };
+  const compat: RestoreCompat = { action: schema.action === "reject" || !app.compatible || !engine.compatible ? "reject" : schema.action,
+    reason: schema.reason ?? app.reason ?? engine.reason, backupSchema: manifest.appSchema, currentSchema: currentSupportedSchema, minSchema: minSupportedSchema,
+    jitVersion: { backup: manifest.jitVersion, current: ctx.jitVersion, ...app }, engine };
+  if (!app.compatible) {
+    return fail(compat, app.reason!, app.reason === "newer_app_unsupported" ? "keep_backup_and_restore_with_the_build_that_produced_it_or_newer"
+      : "manual_recovery_required_keep_backup", app.reason!);
+  }
   if (schema.action === "reject") {
     return fail(compat, schema.reason!, schema.reason === "newer_backup_unsupported" ? "keep_backup_and_restore_with_a_build_supporting_its_schema"
       : "manual_recovery_required_keep_backup", schema.reason === "newer_backup_unsupported" ? "newer_backup_unsupported" : "backup_unrestorable");
@@ -520,7 +581,16 @@ export async function prepareRestore(ctx: RestoreContext, input: { request: Rest
   let journal = save(ctx.restoreDir, { ...baseJournal(ctx.restoreDir, id, input.backupId, input.note, compat, now),
     steps: [{ name: "preflight", at: now, ok: true, detail: `schema_${manifest.appSchema}_${schema.action}` }],
     artifactHash: manifest.artifact.hash, nextAction: "wait_for_quiesce_and_quarantine_copy", requests: [input.request] });
-  writeUpgradeFence(ctx.store.path, id, now, "restore");
+  try { writeUpgradeFence(ctx.store.path, id, now, "restore"); }
+  catch (error) {
+    // Lost the exclusive acquisition to a concurrent upgrade or restore: this attempt never held the fence.
+    const code = error instanceof AppError ? error.code : "restore_storage_unavailable";
+    removeQuarantine(journal);
+    const failed = save(ctx.restoreDir, { ...journal, state: "failed", steps: step(journal, "fence", now, false, code), reason: code,
+      nextAction: "wait_for_the_other_installation_operation_then_prepare_again", updatedAt: now });
+    recordAudit(ctx, failed);
+    throw error;
+  }
   journal = save(ctx.restoreDir, { ...journal, steps: step(journal, "fence", now, true, "admission_fenced") });
   ctx.fault?.("fenced");
   let phase = "quiesce";
@@ -620,20 +690,6 @@ export function migrateRestore(ctx: RestoreContext, journal: RestoreJournal, req
 // Ledger replay
 // ---------------------------------------------------------------------------
 
-type Manifest = { claims?: { claimId?: unknown }[]; sources?: { reference?: { sourceId?: unknown; revision?: unknown; generation?: unknown } }[] };
-
-function citedBy(json: string): { claims: string[]; sources: string[] } | null {
-  try {
-    const parsed = JSON.parse(json) as { request?: { manifest?: Manifest }; manifest?: Manifest; kind?: unknown };
-    const manifest = parsed.request?.manifest ?? parsed.manifest;
-    if (!manifest) return { claims: [], sources: [] };
-    return {
-      claims: (manifest.claims ?? []).flatMap(c => typeof c?.claimId === "string" ? [c.claimId] : []),
-      sources: (manifest.sources ?? []).flatMap(s => s?.reference ? [`${s.reference.sourceId}:${s.reference.revision}:${s.reference.generation}`] : []),
-    };
-  } catch { return null; }
-}
-
 function trustedSummary(trusted: Extract<TrustedLedger, { state: "trusted" }>, manifest: BackupManifest | null): RestoreLedgerSummary {
   const view = ledgerView(trusted.entries);
   return { source: "installation_lifecycle_ledger", head: trusted.head, count: trusted.count, digest: trusted.digest,
@@ -647,6 +703,50 @@ function liveManifest(ctx: RestoreContext, backupId: string): BackupManifest | n
   const row = ctx.store.read(tx => tx.get<{ record_json: string }>("SELECT record_json FROM ops_backups WHERE id = ?", backupId));
   if (!row) return null;
   try { return validateManifestRecord(JSON.parse(row.record_json)); } catch { return null; }
+}
+
+/** Context identities a pending, blocked or failed deletion operation still has to delete. */
+function openDeletionContexts(tx: AppTransaction): Set<string> {
+  const open = new Set<string>();
+  for (const op of tx.all<{ record_json: string }>("SELECT record_json FROM deletion_operations WHERE state IN ('pending', 'blocked')")) {
+    try {
+      for (const c of (JSON.parse(op.record_json) as DeletionOperation).contexts ?? []) if (c.state !== "deleted") open.add(`${c.id}:${c.generation}`);
+    } catch { /* Unreadable operations surface through validation. */ }
+  }
+  return open;
+}
+
+/** Context states that still hold native data (a `missing` context was reported absent by the engine). */
+const undeletedStates = new Set(["pending", "delete_failed", "retire_failed"]);
+
+/** Opens one budgeted app.data_lifecycle/v1 deletion operation for restored contexts (managed delete through the run port). */
+function scheduleRestoreDeletion(tx: AppTransaction, projectId: string, contexts: { id: string; generation: number }[], now: number, reason: string): string {
+  const operationId = randomUUID();
+  const operation = {
+    id: operationId, contract: "app.data_deletion_operation/v1", projectId, previewId: `restore-replay:${operationId}`,
+    scope: { kind: "source", projectId, source: { sourceId: "restore-ledger-replay", revision: 1, generation: 1 } },
+    state: "pending", attempts: 0, maxAttempts: 5, tombstones: [],
+    contexts: contexts.map(c => ({ ...c, state: "pending", attempts: 0, reason, nextAction: "reconcile_managed_delete_then_verify", updatedAt: now })),
+    exports: [], scopes: [], backupsRetained: [],
+    residuals: ["telegram_delivery_copies_not_deleted", "provider_session_copies_not_deleted", "retained_backups_require_retention_purge"],
+    reason: "native_sessions_pending_managed_delete", nextAction: "reconcile_managed_delete_then_verify", createdAt: now, updatedAt: now,
+  };
+  tx.run("INSERT INTO deletion_operations (id, project_id, preview_id, state, attempts, record_json) VALUES (?, ?, ?, 'pending', 0, ?)",
+    operationId, projectId, operation.previewId, JSON.stringify(operation));
+  return operationId;
+}
+
+/** Every deletion operation (any state, budget-exhausted included) whose contexts still hold native data. */
+function undeletedOperations(tx: AppTransaction): { id: string; state: string; projectId: string; contexts: { id: string; generation: number }[] }[] {
+  return tx.all<{ id: string; state: string; projectId: string; json: string }>(
+    "SELECT id, state, project_id AS projectId, record_json AS json FROM deletion_operations WHERE state IN ('pending', 'blocked', 'failed')")
+    .flatMap(op => {
+      try {
+        const contexts = ((JSON.parse(op.json) as DeletionOperation).contexts ?? []).filter(c => undeletedStates.has(c.state))
+          .filter(c => tx.get<{ state: string }>("SELECT state FROM team_contexts WHERE id = ? AND generation = ?", c.id, c.generation)?.state !== "deleted");
+        return contexts.length ? [{ id: op.id, state: op.state, projectId: op.projectId, contexts: contexts.map(c => ({ id: c.id, generation: c.generation })) }] : [];
+      } catch { return [{ id: op.id, state: op.state, projectId: op.projectId, contexts: [] }]; }
+    });
 }
 
 /**
@@ -667,7 +767,7 @@ function replayLedger(staged: TransactionStore, entries: LifecycleLedgerEntry[],
         entry.kind, entry.key, entry.subject, entry.projectId, JSON.stringify(entry.record), entry.recordedAt);
     }
     const replay: RestoreReplay = { appliedDeletions: 0, appliedSuppressions: 0, ledgerOnlySuppressions: 0, notInImage: 0,
-      purgedSources: 0, purgedClaims: 0, forgottenClaims: 0, contexts: { retired: 0, deletedLive: 0, deleteScheduled: 0 },
+      purgedSources: 0, purgedClaims: 0, forgottenClaims: 0, contexts: { retired: 0, deletedLive: 0, deleteScheduled: 0, unknownCitation: 0 },
       deleteOperations: [], jobsFenced: [], attemptsFenced: 0, deliveriesHeld: [],
       integrations: { telegramBinding: "unchanged", prMonitorsAdopted: 0 },
       revision: { live: liveRevision, image: readRevision(tx), restored: 0 } };
@@ -738,26 +838,19 @@ function replayLedger(staged: TransactionStore, entries: LifecycleLedgerEntry[],
       for (const c of lineage) tx.run("INSERT OR IGNORE INTO memory_suppressed_sources VALUES (?, ?, ?, ?, ?)", s.id, c.projectId, c.sourceId, c.revision, c.generation);
       replay.appliedSuppressions++;
     }
-    // Derived invalidation: fence pending work and classify native contexts by what their runs cited.
-    const contextAction = new Map<string, "delete" | "retire">();
-    for (const row of tx.all<{ projectId: string; jobId: string; contextId: string; json: string }>(
-      "SELECT project_id AS projectId, job_id AS jobId, context_id AS contextId, record_json AS json FROM team_runs")) {
-      const cited = citedBy(row.json);
-      const deleted = !cited || cited.claims.some(c => deletedClaims.has(c)) || cited.sources.some(s => deletedSources.has(s));
-      const suppressed = !!cited && (cited.claims.some(c => suppressedClaims.has(c)) || cited.sources.some(s => suppressedSources.has(s)));
-      if (deleted) contextAction.set(row.contextId, "delete");
-      else if (suppressed && contextAction.get(row.contextId) !== "delete") contextAction.set(row.contextId, "retire");
-      if (deleted || suppressed) {
-        try { invalidatePendingJob(tx, row.projectId, row.jobId, "source_retired", now); } catch { /* Jobs are fenced wholesale below. */ }
-      }
-    }
+    // Derived invalidation: the deletion inventory's own job evidence (runs, syntheses, extractions, attempts) classifies
+    // every managed native context; opaque or manifest-less owners are unknown and handled like deleted (fail closed).
+    const citations = contextCitations(tx, { sources: deletedSources, claims: deletedClaims }, { sources: suppressedSources, claims: suppressedClaims });
+    if (citations.blockers.length) throw new AppError("restore_context_inventory_blocked", 409);
+    const contextAction = new Map(citations.contexts.map(c => [c.id, c]));
+    replay.contexts.unknownCitation = citations.contexts.filter(c => c.cites === "unknown").length;
     try { fenceStaleContexts(tx, now); } catch { /* Wholesale job fencing below still denies commit authority. */ }
     for (const project of projects) {
       try { fenceUnavailableExtractions(tx, project, now); } catch { /* Same. */ }
     }
     // Quoted copies of purged payloads in run records, syntheses, jobs and free text.
     for (const table of ["team_runs", "coordinator_syntheses", "jobs"] as const) {
-      for (const row of tx.all<{ rowid: number; json: string }>(`SELECT rowid, record_json AS json FROM ${table}`)) {
+      for (const row of tx.all<{ rowid_: number; json: string }>(`SELECT rowid AS rowid_, record_json AS json FROM ${table}`)) {
         let changed = false;
         const parsed = (() => { try { return JSON.parse(row.json) as unknown; } catch { return null; } })();
         if (!parsed || typeof parsed !== "object") continue;
@@ -770,7 +863,7 @@ function replayLedger(staged: TransactionStore, entries: LifecycleLedgerEntry[],
           }));
         };
         const next = JSON.stringify(redact(parsed));
-        if (changed) tx.run(`UPDATE ${table} SET record_json = ? WHERE rowid = ?`, next, row.rowid);
+        if (changed) tx.run(`UPDATE ${table} SET record_json = ? WHERE rowid = ?`, next, row.rowid_);
       }
     }
     // Lineage-bound copies (producing runs, stored manifests, receipts), exactly as a deletion confirm redacts them.
@@ -791,22 +884,17 @@ function replayLedger(staged: TransactionStore, entries: LifecycleLedgerEntry[],
     }
     // Local notification copies quoting a purged payload (they are also held below and never sent automatically).
     for (const table of ["delivery_intents", "delivery_reports"] as const) {
-      for (const row of tx.all<{ rowid: number; json: string }>(`SELECT rowid, record_json AS json FROM ${table}`)) {
+      // `sequence`/`id` may alias the rowid; select it under an explicit alias.
+      for (const row of tx.all<{ rowid_: number; json: string }>(`SELECT rowid AS rowid_, record_json AS json FROM ${table}`)) {
         let next = row.json;
         for (const term of scrub) if (next.includes(term)) next = next.split(term).join(redactedText);
-        if (next !== row.json) tx.run(`UPDATE ${table} SET record_json = ? WHERE rowid = ?`, next, row.rowid);
+        if (next !== row.json) tx.run(`UPDATE ${table} SET record_json = ? WHERE rowid = ?`, next, row.rowid_);
       }
     }
-    // Native contexts: adopt the live lifecycle (it is newer), retire suppressed, schedule managed deletion of deleted.
+    // Native contexts: adopt the live lifecycle (it is newer), retire suppressed, schedule managed deletion of deleted/unknown.
     const pendingByProject = new Map<string, { id: string; generation: number }[]>();
-    const covered = new Set<string>();
-    for (const op of tx.all<{ record_json: string }>("SELECT record_json FROM deletion_operations WHERE state IN ('pending', 'blocked')")) {
-      try {
-        for (const c of (JSON.parse(op.record_json) as DeletionOperation).contexts ?? []) if (c.state !== "deleted") covered.add(`${c.id}:${c.generation}`);
-      } catch { /* Unreadable operations surface through validation. */ }
-    }
-    for (const context of tx.all<{ id: string; generation: number; state: string; projectId: string | null }>(
-      "SELECT c.id, c.generation, c.state, r.project_id AS projectId FROM team_contexts c LEFT JOIN team_runs r ON r.context_id = c.id")) {
+    const covered = openDeletionContexts(tx);
+    for (const context of tx.all<{ id: string; generation: number; state: string }>("SELECT id, generation, state FROM team_contexts")) {
       if (context.state === "deleted") continue;
       const live = liveContexts.get(`${context.id}:${context.generation}`);
       if (live === "deleted") {
@@ -814,32 +902,20 @@ function replayLedger(staged: TransactionStore, entries: LifecycleLedgerEntry[],
         replay.contexts.deletedLive++;
         continue;
       }
-      const action = contextAction.get(context.id);
-      const nextState = live === "delete_failed" ? "delete_failed" : action || live === "retired" ? (context.state === "delete_failed" ? "delete_failed" : "retired") : context.state;
+      const citation = contextAction.get(context.id);
+      const nextState = live === "delete_failed" || context.state === "delete_failed" ? "delete_failed" : citation || live === "retired" ? "retired" : context.state;
       if (nextState !== context.state) {
         tx.run("UPDATE team_contexts SET state = ? WHERE id = ? AND generation = ?", nextState, context.id, context.generation);
         replay.contexts.retired++;
       }
-      if (action === "delete" && context.projectId && !covered.has(`${context.id}:${context.generation}`)) {
-        const list = pendingByProject.get(context.projectId) ?? [];
+      if (citation && citation.cites !== "suppressed" && !covered.has(`${context.id}:${context.generation}`)) {
+        const list = pendingByProject.get(citation.projectId) ?? [];
         list.push({ id: context.id, generation: context.generation });
-        pendingByProject.set(context.projectId, list);
+        pendingByProject.set(citation.projectId, list);
       }
     }
     for (const [projectId, contexts] of pendingByProject) {
-      const operationId = randomUUID();
-      const operation = {
-        id: operationId, contract: "app.data_deletion_operation/v1", projectId, previewId: `restore-replay:${operationId}`,
-        scope: { kind: "source", projectId, source: { sourceId: "restore-ledger-replay", revision: 1, generation: 1 } },
-        state: "pending", attempts: 0, maxAttempts: 5, tombstones: [],
-        contexts: contexts.map(c => ({ ...c, state: "pending", attempts: 0, reason: "restore_ledger_replay", nextAction: "reconcile_managed_delete_then_verify", updatedAt: now })),
-        exports: [], scopes: [], backupsRetained: [],
-        residuals: ["telegram_delivery_copies_not_deleted", "provider_session_copies_not_deleted", "retained_backups_require_retention_purge"],
-        reason: "native_sessions_pending_managed_delete", nextAction: "reconcile_managed_delete_then_verify", createdAt: now, updatedAt: now,
-      };
-      tx.run("INSERT INTO deletion_operations (id, project_id, preview_id, state, attempts, record_json) VALUES (?, ?, ?, 'pending', 0, ?)",
-        operationId, projectId, operation.previewId, JSON.stringify(operation));
-      replay.deleteOperations.push(operationId);
+      replay.deleteOperations.push(scheduleRestoreDeletion(tx, projectId, contexts, now, "restore_ledger_replay"));
       replay.contexts.deleteScheduled += contexts.length;
     }
     for (const op of tx.all<{ id: string }>("SELECT id FROM deletion_operations WHERE state IN ('pending', 'blocked')")) {
@@ -1087,21 +1163,20 @@ export function validateRestore(ctx: RestoreContext, journal: RestoreJournal, re
       const suppressedSources = new Set(view.suppressedSources.map(s => `${s.sourceId}:${s.revision}:${s.generation}`));
       const nativePending: RestoreValidation["nativePending"] = [];
       check(checks, "native_sessions", () => {
+        // Every operation that still holds native data is pending, whatever its retry budget.
         const scheduled = new Set<string>();
-        for (const op of tx.all<{ id: string; state: string; json: string }>("SELECT id, state, record_json AS json FROM deletion_operations WHERE state IN ('pending', 'blocked', 'failed')")) {
-          const operation = JSON.parse(op.json) as DeletionOperation;
-          const open = (operation.contexts ?? []).filter(c => c.state !== "deleted");
-          for (const c of open) scheduled.add(`${c.id}:${c.generation}`);
-          if (open.length && op.state !== "failed") nativePending.push({ operationId: op.id, contexts: open.length });
+        for (const op of undeletedOperations(tx)) {
+          for (const c of op.contexts) scheduled.add(`${c.id}:${c.generation}`);
+          nativePending.push({ operationId: op.id, contexts: op.contexts.length, state: op.state });
         }
+        const citations = contextCitations(tx, { sources: deletedSources, claims: deletedClaims }, { sources: suppressedSources, claims: suppressed });
+        if (citations.blockers.length) return `context_inventory_${citations.blockers.slice(0, 4).join(",")}`;
         let active = 0, unscheduled = 0;
-        for (const row of tx.all<{ json: string; id: string; generation: number; state: string }>(
-          "SELECT r.record_json AS json, c.id, c.generation, c.state FROM team_runs r JOIN team_contexts c ON c.id = r.context_id")) {
-          const cited = citedBy(row.json);
-          const del = !cited || cited.claims.some(c => deletedClaims.has(c)) || cited.sources.some(s => deletedSources.has(s));
-          const sup = !!cited && (cited.claims.some(c => suppressed.has(c)) || cited.sources.some(s => suppressedSources.has(s)));
-          if ((del || sup) && row.state === "active") active++;
-          if (del && row.state !== "deleted" && !scheduled.has(`${row.id}:${row.generation}`)) unscheduled++;
+        for (const citation of citations.contexts) {
+          for (const row of tx.all<{ generation: number; state: string }>("SELECT generation, state FROM team_contexts WHERE id = ?", citation.id)) {
+            if (row.state === "active") active++;
+            if (citation.cites !== "suppressed" && row.state !== "deleted" && !scheduled.has(`${citation.id}:${row.generation}`)) unscheduled++;
+          }
         }
         return active + unscheduled === 0 || `active_${active}_unscheduled_${unscheduled}`;
       });
@@ -1159,6 +1234,7 @@ export function resolveRestoreActivation(store: TransactionStore, restoreDir: st
       reason: null, nextAction: "complete_native_reconciliation_then_resume", activation: { ...journal.activation, at: journal.activation.at ?? now }, updatedAt: now });
   }
   if (digest !== null && digest === journal.live?.digest) {
+    clearRestoreGate(store.path, journal.id);
     return save(restoreDir, { ...journal, state: "validated", steps: step(journal, "activate", now, false, "swap_not_applied"),
       reason: "activation_interrupted", nextAction: "review_report_then_activate_or_discard", updatedAt: now });
   }
@@ -1178,19 +1254,26 @@ export function recoverRestoresOnOpen(store: TransactionStore, restoreDir: strin
       removeQuarantine(journal);
       save(restoreDir, { ...journal, state: "failed", steps: step(journal, "prepare", now, false, "prepare_interrupted"),
         reason: "prepare_interrupted", nextAction: "inspect_failure_then_prepare_again", updatedAt: now });
-      const fence = readUpgradeFence(store.path);
-      if (fence?.upgradeId === journal.id) clearUpgradeFence(store.path);
+      clearUpgradeFence(store.path, journal.id);
     } else if (journal.state === "activating") {
       resolveRestoreActivation(store, restoreDir, journal, now);
     }
   }
-  const active = activeRestore(restoreDir);
+  const journals = listRestores(restoreDir, 100);
+  const active = journals.find(j => fencedRestoreStates.includes(j.state)) ?? null;
   const fence = readUpgradeFence(store.path);
-  if (active && !active.activation.fenceReleased) {
-    if (!fence) writeUpgradeFence(store.path, active.id, now, "restore");
+  if (active) {
+    // Durable intent wins: an unfinished restore is always fenced on reopen, even if a crash hit after release.
+    if (!fence) { try { writeUpgradeFence(store.path, active.id, now, "restore"); } catch { /* Another holder already fences. */ } }
+    if (["activating", "activated"].includes(active.state)) writeRestoreGate(store.path, active.id);
   } else if (fence?.holder === "restore") {
-    const owner = listRestores(restoreDir, 100).find(j => j.id === fence.upgradeId);
-    if (owner && (terminalRestoreStates.includes(owner.state) || owner.activation.fenceReleased)) clearUpgradeFence(store.path);
+    const owner = journals.find(j => j.id === fence.upgradeId);
+    if (owner && terminalRestoreStates.includes(owner.state)) clearUpgradeFence(store.path, owner.id);
+  }
+  const gate = readRestoreGate(store.path);
+  if (gate && gate !== "unknown") {
+    const owner = journals.find(j => j.id === gate);
+    if (owner && (terminalRestoreStates.includes(owner.state) || ["validated", "ledger_applied", "migrated", "quarantined"].includes(owner.state))) clearRestoreGate(store.path, gate);
   }
   return active;
 }
@@ -1228,6 +1311,8 @@ export async function activateRestore(ctx: RestoreContext, journal: RestoreJourn
   if (liveDigest !== journal.live.digest) return block("restore_stale_live", "live_changed_since_prepare", "discard_and_prepare_again");
   try { quarantineDigest = withQuarantine(journal.quarantinePath, false, staged => staged.read(managedStateDigest)); } catch { quarantineDigest = null; }
   if (quarantineDigest !== journal.quarantineDigest) return block("restore_quarantine_changed", "quarantine_changed_since_validate", "apply_ledger_again_then_validate");
+  // From the intent on, only restore status and remediation are served until the restore is complete.
+  writeRestoreGate(ctx.store.path, journal.id);
   const intent = save(ctx.restoreDir, { ...journal, state: "activating", steps: step(journal, "activation_intent", now, true, "intent_persisted"),
     nextAction: "reconcile_activation_intent", requests: withRequest(journal, request), updatedAt: now });
   ctx.fault?.("activation_intent");
@@ -1260,6 +1345,12 @@ export async function activateRestore(ctx: RestoreContext, journal: RestoreJourn
 export async function completeRestoreActivation(ctx: RestoreContext, journal: RestoreJournal, request: RestoreRequest | null): Promise<RestoreJournal> {
   if (journal.state !== "activated") throw new AppError("restore_bad_state", 409);
   let current = { ...journal, requests: withRequest(journal, request) };
+  writeRestoreGate(ctx.store.path, current.id);
+  // Completion only ever runs fenced; a journal left unfenced by an earlier failure is re-fenced first.
+  if (current.activation.fenceReleased || !readUpgradeFence(ctx.store.path)) {
+    ensureFence(ctx, current);
+    current = save(ctx.restoreDir, { ...current, activation: { ...current.activation, fenceReleased: false }, updatedAt: ctx.now() });
+  }
   if (!current.activation.sessionsRevoked) {
     ctx.store.transaction(tx => tx.run("DELETE FROM sessions"));
     current = save(ctx.restoreDir, { ...current, activation: { ...current.activation, sessionsRevoked: true },
@@ -1270,41 +1361,54 @@ export async function completeRestoreActivation(ctx: RestoreContext, journal: Re
     if (!ctx.service.fencedLifecycle) {
       return save(ctx.restoreDir, { ...current, reason: "reconcile_pending", nextAction: "start_service_to_reconcile_native_sessions_jobs_outbox", updatedAt: ctx.now() });
     }
-    let detail = "no_pending_native_deletes";
+    // An exhausted operation still holding native data gets a fresh, explicit managed-delete operation on each owner retry.
+    ctx.store.transaction(tx => {
+      const open = openDeletionContexts(tx);
+      for (const op of undeletedOperations(tx).filter(o => o.state === "failed")) {
+        const contexts = op.contexts.filter(c => !open.has(`${c.id}:${c.generation}`));
+        if (contexts.length) scheduleRestoreDeletion(tx, op.projectId, contexts, ctx.now(), "restore_retry_exhausted_operation");
+      }
+    });
+    let detail = "native_sessions_reconciled";
     try {
-      await ctx.service.fencedLifecycle(port => reconcileDeletions(ctx.store, port, ctx.now()));
+      // Sessions and managed deletions reconcile through the team port while nothing can be admitted.
+      await ctx.service.fencedLifecycle(async port => {
+        await reconcileSessions(ctx.store, port, ctx.now());
+        await reconcileDeletions(ctx.store, port, ctx.now());
+      });
     } catch (error) { detail = error instanceof AppError ? error.code : "native_reconcile_failed"; }
-    const open = ctx.store.read(tx => tx.all<{ id: string; state: string; json: string }>(
-      "SELECT id, state, record_json AS json FROM deletion_operations WHERE state IN ('pending', 'blocked')")
-      .flatMap(op => {
-        // A missing native context holds nothing; pending or failed acknowledgments still hold deleted data.
-        try { return (JSON.parse(op.json) as DeletionOperation).contexts.some(c => ["pending", "delete_failed", "retire_failed"].includes(c.state)) ? [op.id] : []; }
-        catch { return [op.id]; }
-      }));
-    if (open.length || detail !== "no_pending_native_deletes") {
+    const open = ctx.store.transaction(tx => {
+      for (const op of tx.all<{ id: string }>("SELECT id FROM deletion_operations WHERE state IN ('pending', 'blocked', 'failed')")) {
+        try { refreshOperationState(tx, op.id, ctx.now()); } catch { /* Counted below. */ }
+      }
+      return undeletedOperations(tx);
+    });
+    if (open.length || detail !== "native_sessions_reconciled") {
       return save(ctx.restoreDir, { ...current, reason: "native_delete_pending",
-        steps: step(current, "native_reconcile", ctx.now(), false, open.length ? `operations_${open.length}_open` : detail),
+        steps: step(current, "native_reconcile", ctx.now(), false, open.length ? `operations_${open.length}_hold_native_data` : detail),
         nextAction: "retry_activate_to_reconcile_native_sessions", updatedAt: ctx.now() });
     }
     current = save(ctx.restoreDir, { ...current, activation: { ...current.activation, nativeReconciled: true },
       steps: step(current, "native_reconcile", ctx.now(), true, detail), updatedAt: ctx.now() });
   }
   ctx.fault?.("native_reconciled");
-  if (!current.activation.fenceReleased) {
-    releaseFence(ctx, current);
-    current = save(ctx.restoreDir, { ...current, activation: { ...current.activation, fenceReleased: true }, updatedAt: ctx.now() });
-  }
+  // Scheduler admission needs the fence gone; reads stay gated until completion and a failure re-acquires the fence.
+  releaseFence(ctx, current);
+  current = save(ctx.restoreDir, { ...current, activation: { ...current.activation, fenceReleased: true }, updatedAt: ctx.now() });
   const resumed = await safeResume(ctx);
   ctx.fault?.("reconciled");
   const now = ctx.now();
   if (!resumed.reconciled) {
-    return save(ctx.restoreDir, { ...current, reconcile: { ...resumed, at: now }, steps: step(current, "reconcile", now, false, resumed.detail),
+    ensureFence(ctx, current);
+    return save(ctx.restoreDir, { ...current, activation: { ...current.activation, fenceReleased: false },
+      reconcile: { ...resumed, at: now }, steps: step(current, "reconcile", now, false, resumed.detail),
       reason: "reconcile_pending", nextAction: resumed.detail === "no_scheduler_in_process" || resumed.detail === "service_restart_required"
         ? "start_service_to_reconcile_native_sessions_jobs_outbox" : "retry_activate_to_reconcile", updatedAt: now });
   }
   const complete = save(ctx.restoreDir, { ...current, state: "complete", reconcile: { ...resumed, at: now },
     steps: step(current, "reconcile", now, true, resumed.detail), reason: null,
     nextAction: "sign_in_again_then_inspect_jobs_awaiting_resume_and_unknown_deliveries", updatedAt: now });
+  clearRestoreGate(ctx.store.path, complete.id);
   removeQuarantine(complete);
   recordAudit(ctx, complete);
   return complete;

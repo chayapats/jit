@@ -1,4 +1,4 @@
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { AppError } from "../errors";
 
@@ -54,15 +54,48 @@ export function assertNotUpgradeFenced(databasePath: string): void {
   if (upgradeFenced(databasePath)) throw new AppError("upgrade_in_progress", 409);
 }
 
-/** Durably establishes the fence for `upgradeId` (or, with `holder: "restore"`, for a restore id). */
+/**
+ * Durably acquires the fence for `upgradeId` (or, with `holder: "restore"`,
+ * for a restore id). Acquisition is an OS-level exclusive create: the complete
+ * claim is written to a private temp file and hard-linked into place, which
+ * fails if any fence already exists, so two processes can never both hold it
+ * and a claim is never overwritten. Re-acquiring a fence this id already
+ * holds is a no-op. Throws `upgrade_in_progress` / `restore_in_progress` when
+ * another id holds it, `upgrade_storage_unavailable` on storage errors.
+ */
 export function writeUpgradeFence(databasePath: string, upgradeId: string, since: number, holder: "upgrade" | "restore" = "upgrade"): void {
-  writeFileAtomic(upgradeFencePath(databasePath), JSON.stringify({ contract: "ops.schema_migrations/v1", upgradeId, since,
-    ...(holder === "restore" ? { holder } : {}) } satisfies UpgradeFence));
+  const path = upgradeFencePath(databasePath);
+  const temp = `${path}.claim-${crypto.randomUUID()}`;
+  const body = JSON.stringify({ contract: "ops.schema_migrations/v1", upgradeId, since, ...(holder === "restore" ? { holder } : {}) } satisfies UpgradeFence);
+  let linked = false;
+  try {
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    const fd = openSync(temp, "wx", 0o600);
+    try { writeFileSync(fd, body); fsyncSync(fd); } finally { closeSync(fd); }
+    try { linkSync(temp, path); linked = true; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+  } catch {
+    throw new AppError("upgrade_storage_unavailable", 503);
+  } finally {
+    try { rmSync(temp, { force: true }); } catch { /* Leftover claim temp files are inert. */ }
+  }
+  if (linked) { fsyncDir(dirname(path)); return; }
+  const current = readUpgradeFence(databasePath);
+  if (current?.upgradeId === upgradeId) return;
+  throw new AppError(current?.holder === "restore" ? "restore_in_progress" : "upgrade_in_progress", 409);
 }
 
-/** Releases the fence (idempotent). */
-export function clearUpgradeFence(databasePath: string): void {
+/**
+ * Releases the fence (idempotent). With `ownerId`, only a fence whose claim
+ * names that id is removed; claims are only ever created exclusively, so a
+ * fence held by someone else is never cleared by this caller.
+ */
+export function clearUpgradeFence(databasePath: string, ownerId?: string): void {
   const path = upgradeFencePath(databasePath);
+  if (ownerId !== undefined) {
+    const current = readUpgradeFence(databasePath);
+    if (!current || current.upgradeId !== ownerId) return;
+  }
   try { rmSync(path, { force: true }); } catch { throw new AppError("upgrade_storage_unavailable", 503); }
   fsyncDir(dirname(path));
 }

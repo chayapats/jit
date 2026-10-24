@@ -35,7 +35,8 @@ a missing (after establishment at that location), unverifiable, incompatible
 or diverged checkpoint fails closed. An in-database marker records the
 location and position already checkpointed, distinguishing first
 establishment (fresh install, first use after the upgrade, a seed placeholder
-written by packaging) from loss. There is no acknowledgment override.
+written by packaging) from loss; once established, a new location must carry
+the verified checkpoint, never a seed. There is no acknowledgment override.
 
 ## One fence and one service lifecycle for restore and upgrade
 
@@ -46,6 +47,21 @@ quarantine copy) is in files beside the database, as for upgrades, so
 activation cannot erase its own evidence. The live installation is fenced and
 quiesced from prepare to completion, which keeps its managed-state digest
 stable; activation is bound to that digest and to the trusted ledger head.
+
+## One durable "restore complete" predicate
+
+`<db>.restore-pending` exists from the activation intent until completion and
+gates every read model and command except restore status and remediation.
+The fence (writes, admission, delivery) is held through native deletion and
+re-acquired if the service resume fails; fence acquisition is an exclusive
+create so restore and upgrade cannot both hold it.
+
+## Reuse the deletion inventory
+
+Replay and validation classify native contexts with the deletion inventory's
+job evidence (`contextCitations`), so every context owner the deletion path
+knows (runs, coordinator syntheses, extractions, attempts) is covered, and
+records without a valid manifest fail closed as `unknown`.
 
 ## Reconcile before anything reads or works
 

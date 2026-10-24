@@ -107,7 +107,7 @@ import {
 } from "./ops/upgrade";
 import { readUpgradeFence, upgradeFenced } from "./ops/upgrade-fence";
 import {
-  activateRestore, activeRestore, applyRestoreLedger, completeRestoreOnBoot, discardRestore, findRestoreRequest, listRestores, migrateRestore,
+  activateRestore, activeRestore, applyRestoreLedger, readRestoreGate, completeRestoreOnBoot, discardRestore, findRestoreRequest, listRestores, migrateRestore,
   ownRestoreDirFor, prepareRestore, readRestore, recoverRestoresOnOpen, restoreEvidence, restoreIdentity, validateRestore,
   type RestoreCommand, type RestoreContext, type RestoreEvidence, type RestoreFaultPoint, type RestoreJournal, type RestoreReceipt,
   type RestoreRequest, type RestoreServiceControl,
@@ -298,7 +298,7 @@ export class Application {
 
   /** Revokes this browser session, including actors issued before logout. */
   logout(actor: OwnerActor): void {
-    this.store.transaction(tx => { const key = this.#requireOwner(tx, actor); tx.run("DELETE FROM sessions WHERE token_hash = ?", key); });
+    this.store.transaction(tx => { const key = this.#requireOwner(tx, actor, ["web", "telegram"], false); tx.run("DELETE FROM sessions WHERE token_hash = ?", key); });
   }
 
   /** Returns one bounded owner projection; project names never select authorization identities. */
@@ -750,8 +750,19 @@ export class Application {
   /** ops.quarantined_restore/v1: one restore journal with its owner report and valid next actions. */
   restore(actor: OwnerActor, id: string): { quarantine: RestoreEvidence } {
     requireId(id);
-    this.store.read(tx => this.#requireOwner(tx, actor));
+    this.store.read(tx => this.#requireOwner(tx, actor, ["web"], false));
     return { quarantine: restoreEvidence(readRestore(this.#restoreDir, id)) };
+  }
+
+  /**
+   * ops.quarantined_restore/v1 console: the installation revision restore commands expect and the
+   * restore holding the read gate (null once normal service is allowed). Never gated.
+   */
+  restoreConsole(actor: OwnerActor): { revision: number; gatedBy: string | null } {
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor, ["web"], false);
+      return { revision: tx.get<{ revision: number }>("SELECT revision FROM app_state WHERE id = 1")!.revision, gatedBy: readRestoreGate(this.store.path) };
+    });
   }
 
   /**
@@ -760,7 +771,7 @@ export class Application {
    * the checkpoint).
    */
   restores(actor: OwnerActor): { quarantines: RestoreEvidence[]; ledger: Omit<Extract<TrustedLedger, { state: "trusted" }>, "entries"> | Extract<TrustedLedger, { state: "untrusted" }> } {
-    this.store.read(tx => this.#requireOwner(tx, actor));
+    this.store.read(tx => this.#requireOwner(tx, actor, ["web"], false));
     const ledger = syncLedgerCheckpoint(this.store, this.#ledgerPath, this.#now(), { write: false });
     const summary = ledger.state === "trusted" ? (({ entries: _entries, ...rest }) => rest)(ledger) : ledger;
     return { quarantines: listRestores(this.#restoreDir).map(restoreEvidence), ledger: summary };
@@ -769,8 +780,8 @@ export class Application {
   #restoreContext(actor: OwnerActor | null): RestoreContext {
     return {
       store: this.store, restoreDir: this.#restoreDir, backupDir: this.#backupDir, ledgerPath: this.#ledgerPath,
-      port: this.#nativeSnapshot, now: this.#now, service: this.#upgradeService(),
-      authorize: tx => { if (actor) this.#requireOwner(tx, actor); },
+      port: this.#nativeSnapshot, jitVersion: this.#jitVersion, now: this.#now, service: this.#upgradeService(),
+      authorize: tx => { if (actor) this.#requireOwner(tx, actor, ["web"], false); },
       ...(this.#restoreFault ? { fault: this.#restoreFault } : {}),
     };
   }
@@ -785,7 +796,7 @@ export class Application {
   async #restoreCommand(actor: OwnerActor, command: RestoreCommand): Promise<RestoreReceipt> {
     const payloadHash = digest(restoreIdentity(command));
     const checked = this.store.read(tx => {
-      this.#requireOwner(tx, actor);
+      this.#requireOwner(tx, actor, ["web"], false);
       return {
         receipt: tx.get<{ payload_hash: string }>("SELECT payload_hash FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId),
         revision: tx.get<{ revision: number }>("SELECT revision FROM app_state WHERE id = 1")!.revision,
@@ -1359,7 +1370,8 @@ export class Application {
   /** ops.backup_manifest/v1 reads: bounded inventory outside ordinary project data. */
   backups(actor: OwnerActor): { manifests: BackupManifest[]; integrity: Record<string, BackupIntegrity> } {
     const listed = this.store.read(tx => {
-      this.#requireOwner(tx, actor);
+      // Identity-only inventory of recoverable source artifacts: part of restore remediation, so not read-gated.
+      this.#requireOwner(tx, actor, ["web"], false);
       return listBackups(tx);
     });
     // The inventory is installation-bounded (retention: 10 backups, 64 MiB), so every
@@ -1511,11 +1523,14 @@ export class Application {
     return project;
   }
 
-  #requireOwner(tx: AppTransaction, actor: OwnerActor, channels: readonly TaskChannel[] = ["web"]): string {
+  #requireOwner(tx: AppTransaction, actor: OwnerActor, channels: readonly TaskChannel[] = ["web"], restoreGate = true): string {
     const key = actor && this.#actors.get(actor);
     if (!key) throw new AppError("authentication_required", 401);
     this.#session(tx, key);
     if (!channels.includes(actor.channel)) throw new AppError("channel_not_authorized", 403);
+    // ops.quarantined_restore/v1: from activation intent until the restore is complete, every read model and
+    // command except restore status/remediation is refused (one durable predicate, `<db>.restore-pending`).
+    if (restoreGate && readRestoreGate(this.store.path)) throw new AppError("restore_incomplete", 423);
     return key;
   }
 }
