@@ -21,6 +21,6 @@
     "typescript": "7.0.2"
   },
   "dependencies": {
-    "schway": "file:vendor/schway-1.0.0-rc.2-d52e32a.tgz"
+    "schway": "file:vendor/schway-1.0.0-rc.2-265ebfe.tgz"
   }
 }
