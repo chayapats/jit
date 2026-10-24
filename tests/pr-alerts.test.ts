@@ -1131,6 +1131,49 @@ test("a definitive failed delivery is not notified: the next review attempt aler
   expect(intentsOf(f)[0]).toMatchObject({ id: failed.id, status: "failed", failureReason: "telegram_rejected" });
 });
 
+test("maxFiles at a page boundary: the review is not complete, no clean/unwarned alert, Web shows the non-complete state", async () => {
+  const f = await fixture();
+  bindTelegram(f);
+  const monitor = f.store.transaction(tx => {
+    ensurePrSchema(tx);
+    return mutateMonitor(tx, {
+      kind: "pr.monitor.enable", requestId: crypto.randomUUID(), projectId: f.project.id, expectedRevision: projectRevision(f),
+      payload: { repository: { host: "github.com", owner: "acme", name: "widgets" }, apiBase: "https://api.github.com",
+        allowed: { issues: true, specs: true, ci: true }, acceptPolicyVersion: 1 as 1, limits: { pageSize: 1, maxFiles: 1 } },
+    }, f.clock.now).monitor;
+  });
+  f.github.pageSize = 1;
+  const base = sha(1), head = sha(2);
+  f.github.pulls = [fixturePull({ number: 1, base: { sha: base, ref: "main" }, head: { sha: head, ref: "feat" } })];
+  f.github.files.set(f.github.key(1, base, head), [
+    { filename: "a.ts", status: "modified", patch: "@@ -1,1 +1,40 @@\n+a" },
+    { filename: "b.ts", status: "modified", patch: "@@ -1,1 +1,40 @@\n+b" },
+  ]);
+  f.github.checks.set(head, []);
+  const conn = connector(f, monitor);
+  f.store.transaction(tx => pollMonitorCatchUp(tx, f.project.id, monitor.id, conn, f.clock.now));
+  const candidate = f.store.read(tx => readCandidates(tx, f.project.id, monitor.id)[0]!);
+  const snapshot = f.store.transaction(tx => captureSnapshot(tx, f.project.id, candidate.id, conn, f.clock.now))!;
+  expect(snapshot.coverage).toMatchObject({ enumerationComplete: false, overall: "incomplete" });
+  enqueueReview(f, monitor.id, candidate.id);
+  f.queue.pump(); await f.queue.idle();
+  const reportId = f.store.read(tx => tx.get<{ id: string }>("SELECT id FROM pr_reports")!.id);
+  const report = f.store.read(tx => readReport(tx, f.project.id, reportId));
+  expect(report).toMatchObject({ status: "incomplete", enumerationComplete: false });
+  // An incomplete review never notifies; any payload built for it carries the partial-scope warning.
+  expect(f.store.read(tx => readAlertDecisions(tx, report.id)).at(-1)!.suppressedReason).toBe("report_incomplete");
+  expect(intentsOf(f)).toHaveLength(0);
+  const text = buildAlertPayload({ repository: report.repository, pullNumber: report.pullNumber, baseSha: report.baseSha, headSha: report.headSha,
+    policyVersion: report.policyVersion, reportId: report.id, finding: report.findings.find(x => x.id === "finding-1")!,
+    coverageOverall: report.coverageOverall, enumerationComplete: report.enumerationComplete, projectId: f.project.id });
+  expect(text).toContain("คำเตือน: ตรวจไม่ครบ");
+  const web = createWebHandler(f.app);
+  const html = await (await web(new Request(`http://localhost:3000/projects/${f.project.id}/pr/reports`, { headers: { cookie: `jit_session=${f.token}` } }))).text();
+  expect(html).toContain('data-review-state="incomplete"');
+  expect(html).not.toContain('data-review-state="complete_clean"');
+  expect(html).not.toContain('data-review-state="complete_findings"');
+});
+
 test("duplicate-ID repair picks the evidence-backed representative in either order and sends it", async () => {
   const suspected = { id: "dup-1", title: "maybe", category: "uncertain", severity: "high", location: { path: "a.ts", line: 1 }, condition: "c0", impact: "i0", reasoning: "r0", evidenceType: "none", evidenceRef: null };
   const actionable = { id: "dup-1", title: "real bug", category: "correctness", severity: "high", location: { path: "a.ts", line: 2 }, condition: "c1", impact: "i1", reasoning: "r1", evidenceType: "diff", evidenceRef: "a.ts" };

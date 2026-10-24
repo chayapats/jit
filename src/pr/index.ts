@@ -63,7 +63,7 @@ export type {
 
 export { ensurePrSchema } from "./schema";
 export { mutateMonitor, prMonitorIdentity, readMonitor, readMonitors } from "./authority";
-export { FakeGitHubFixture, TrustedGitHubConnector, fixturePull } from "./github";
+export { FakeGitHubFixture, PR_DENIAL_CATEGORIES, TrustedGitHubConnector, fixturePull, prDenialReason } from "./github";
 export { pollMonitorCatchUp, pollMonitorPage, readCandidate, readCandidates } from "./poll";
 export {
   captureSnapshot,
