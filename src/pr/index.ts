@@ -63,7 +63,7 @@ export type {
 
 export { ensurePrSchema } from "./schema";
 export { mutateMonitor, prMonitorIdentity, readMonitor, readMonitors } from "./authority";
-export { FakeGitHubFixture, TrustedGitHubConnector, fixturePull } from "./github";
+export { FakeGitHubFixture, PR_DENIAL_CATEGORIES, TrustedGitHubConnector, fixturePull, prDenialReason } from "./github";
 export { pollMonitorCatchUp, pollMonitorPage, readCandidate, readCandidates } from "./poll";
 export {
   captureSnapshot,
@@ -97,6 +97,7 @@ export {
 export { PR_REVIEW_SCRIPTED_ROUTE, prReviewWork, resolvePrReviewRoute, type PrReviewWorkOptions } from "./review";
 export { activePrJobIds, fencePrCandidateWork, fencePrReviewJobs, retirePrSnapshot, type PrFenceReason } from "./fence";
 export {
+  ALERT_FIELD_RESERVE_BYTES,
   ALERT_POLICY_VERSION,
   DEFAULT_ALERT_POLICY,
   NOTIFIABLE_CATEGORIES,

@@ -12,6 +12,36 @@ import type {
 
 const SHA = /^[a-f0-9]{40}$/;
 
+/** Evidence kinds whose adapter denials are normalized at the connector boundary. */
+export type PrDenialKind = "issue" | "spec" | "ci";
+
+/** Closed set of service-owned denial categories; adapter text never reaches a snapshot. */
+export const PR_DENIAL_CATEGORIES = ["not_found", "forbidden", "rate_limited", "not_allowed", "unavailable"] as const;
+
+/**
+ * Maps any adapter-supplied denial reason to the bounded service code `<kind>_<category>`
+ * (for example `issue_forbidden`). Only a short string is inspected, and only to pick a category
+ * from {@link PR_DENIAL_CATEGORIES}; the adapter text itself (which may be huge or carry
+ * credentials) is never returned.
+ */
+export function prDenialReason(kind: PrDenialKind, raw: unknown): string {
+  const text = typeof raw === "string" && raw.length <= 64 ? raw.toLowerCase() : "";
+  const category: typeof PR_DENIAL_CATEGORIES[number] =
+    /not_allowed/.test(text) ? "not_allowed"
+      : /not[_ -]?found|missing|\b404\b/.test(text) ? "not_found"
+        : /rate|throttl|\b429\b/.test(text) ? "rate_limited"
+          : /forbid|denied|permission|unauthori|\b40[13]\b/.test(text) ? "forbidden"
+            : "unavailable";
+  return `${kind}_${category}`;
+}
+
+/** Listing reasons the poller/snapshot act on; anything else from an adapter fails safe as `pagination_failed`. */
+function listReason(raw: unknown, incomplete: boolean): "rate_limited" | "pagination_failed" | "more_pages" | null {
+  if (raw === "rate_limited" || raw === "pagination_failed" || raw === "more_pages") return raw;
+  if (raw === null || raw === undefined) return incomplete ? "more_pages" : null;
+  return "pagination_failed";
+}
+
 /** In-memory fake GitHub protocol used by deterministic PR01 tests. */
 export class FakeGitHubFixture implements GitHubReadPort {
   pulls: ProtocolPull[] = [];
@@ -123,7 +153,8 @@ export class TrustedGitHubConnector implements GitHubReadPort {
 
   listPulls(page: number) {
     if (this.#monitor.state !== "active") throw new AppError("pr_monitor_not_active", 409);
-    return this.#port.listPulls(page);
+    const listed = this.#port.listPulls(page);
+    return { ...listed, reason: listReason(listed.reason, listed.incomplete) };
   }
 
   resolvePull(number: number) {
@@ -135,28 +166,34 @@ export class TrustedGitHubConnector implements GitHubReadPort {
   listFiles(number: number, baseSha: string, headSha: string, page: number) {
     this.assertTrusted({ ref: baseSha });
     this.assertTrusted({ ref: headSha });
-    return this.#port.listFiles(number, baseSha, headSha, page);
+    const listed = this.#port.listFiles(number, baseSha, headSha, page);
+    return { ...listed, reason: listReason(listed.reason, listed.incomplete) };
   }
 
+  /** Denials carry only a bounded service code from {@link prDenialReason}. */
   readIssue(number: number): ProtocolIssue | { denied: true; reason: string } {
-    if (!this.#monitor.allowed.issues) return { denied: true as const, reason: "issues_not_allowed" };
-    return this.#port.readIssue(number);
+    if (!this.#monitor.allowed.issues) return { denied: true as const, reason: prDenialReason("issue", "not_allowed") };
+    const issue = this.#port.readIssue(number);
+    return "denied" in issue ? { denied: true as const, reason: prDenialReason("issue", issue.reason) } : issue;
   }
 
   readSpec(path: string, ref: string): ProtocolSpec | { denied: true; reason: string } | { truncated: true; path: string; text: string } {
-    if (!this.#monitor.allowed.specs) return { denied: true as const, reason: "specs_not_allowed" };
+    if (!this.#monitor.allowed.specs) return { denied: true as const, reason: prDenialReason("spec", "not_allowed") };
     this.assertTrusted({ ref });
     if (!path || path.includes("\0") || path.split("/").includes("..") || path.startsWith("/") || path.includes("\\")) {
       throw new AppError("pr_spec_path_rejected");
     }
     // Snapshots are untrusted data: AGENTS/skills/config paths are never autoloaded as authority.
-    return this.#port.readSpec(path, ref);
+    let spec: ReturnType<GitHubReadPort["readSpec"]>;
+    try { spec = this.#port.readSpec(path, ref); } catch { return { denied: true as const, reason: prDenialReason("spec", null) }; }
+    return "denied" in spec ? { denied: true as const, reason: prDenialReason("spec", spec.reason) } : spec;
   }
 
   readChecks(headSha: string): ProtocolCheck[] | { denied: true; reason: string } {
-    if (!this.#monitor.allowed.ci) return { denied: true as const, reason: "ci_not_allowed" };
+    if (!this.#monitor.allowed.ci) return { denied: true as const, reason: prDenialReason("ci", "not_allowed") };
     this.assertTrusted({ ref: headSha });
-    return this.#port.readChecks(headSha);
+    const checks = this.#port.readChecks(headSha);
+    return "denied" in checks ? { denied: true as const, reason: prDenialReason("ci", checks.reason) } : checks;
   }
 }
 

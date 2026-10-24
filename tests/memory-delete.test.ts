@@ -1174,6 +1174,49 @@ test("a definitively failed delivery previews redact_keep_state and confirm keep
   expect(raw).not.toContain("failed-canary-251");
 });
 
+test("deleting payloads equal to schema keys redacts string values only; receipts replay intact", async () => {
+  const f = await fixture();
+  const a = project(f, "โครงการคีย์", "หัวข้อคีย์");
+  const topicCommand = { kind: "topic.create" as const, requestId: rid(), projectId: a.id, expectedRevision: projectRevision(f, a), payload: { title: "หัวข้อที่สอง" } };
+  const original = f.rt.app.execute(actor(f), topicCommand);
+  const receiptsBefore = f.rt.store.read(tx => tx.all<{ request_id: string; result_json: string }>("SELECT request_id, result_json FROM command_receipts ORDER BY request_id"));
+  for (const text of ["projectId", "sourceId", "record_json"]) {
+    const source = say(f, a, text);
+    const preview = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, source)));
+    expect(preview.preview.blockers).toEqual([]);
+    asConfirmed(f.rt.app.execute(actor(f), confirmCommand(f, a, preview.preview.id)));
+  }
+  // Every receipt still parses with its original keys; the topic.create replay returns the same result.
+  const receiptsAfter = new Map(f.rt.store.read(tx => tx.all<{ request_id: string; result_json: string }>("SELECT request_id, result_json FROM command_receipts"))
+    .map(row => [row.request_id, row.result_json]));
+  const keysOf = (value: unknown): string[] => !value || typeof value !== "object" ? [] : Array.isArray(value) ? value.flatMap(keysOf)
+    : Object.entries(value).flatMap(([key, item]) => [key, ...keysOf(item)]);
+  for (const before of receiptsBefore) {
+    const after = receiptsAfter.get(before.request_id)!;
+    expect(keysOf(JSON.parse(after)).sort()).toEqual(keysOf(JSON.parse(before.result_json)).sort());
+    expect(after).not.toContain("(memory ไม่พร้อมใช้งาน)\":");
+  }
+  const replay = f.rt.app.execute(actor(f), topicCommand);
+  expect(replay).toEqual(original);
+  expect(Object.keys(replay.topic)).toContain("projectId");
+  expect(replay.topic.projectId).toBe(a.id);
+});
+
+test("a quoted-copy target that is unreadable JSON blocks deletion instead of being raw-replaced", async () => {
+  const f = await fixture();
+  const a = project(f, "โครงการอ่านไม่ได้", "หัวข้ออ่านไม่ได้");
+  const source = say(f, a, "ข้อความ unreadable-canary-261 ต้องลบ");
+  f.rt.store.transaction(tx => {
+    tx.run("INSERT INTO command_receipts (request_id, actor_id, payload_hash, result_json, committed_at) SELECT ?, actor_id, payload_hash, ?, committed_at FROM command_receipts LIMIT 1",
+      rid(), "{not json ข้อความ unreadable-canary-261 ต้องลบ");
+  });
+  const preview = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, source)));
+  expect(preview.preview.blockers).toContain("unreadable_record:command_receipts");
+  expect(() => f.rt.app.execute(actor(f), confirmCommand(f, a, preview.preview.id))).toThrow("memory_delete_blocked");
+  // Nothing was rewritten raw.
+  expect(f.rt.store.read(tx => tx.all<{ j: string }>("SELECT result_json AS j FROM command_receipts").some(r => r.j.startsWith("{not json")))).toBe(true);
+});
+
 test("quoted-copy cleanup covers the whole payload set and names unsafe short or oversized sets", async () => {
   const f = await fixture();
   const a = project(f, "โครงการ scrub", "หัวข้อ scrub");
