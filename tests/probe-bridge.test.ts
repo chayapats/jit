@@ -381,7 +381,15 @@ test("bridge infer rejects route/model mismatches with zero provider contact", a
     .rejects.toThrow("invalid_probe_input");
   await expect(ports.infer({ route: "grok", model: "other-model", prompt: PROBE_PROMPT, tools: [], discovery: { repository: false, hosted: false }, deadlineMs: 8000 }, signal))
     .rejects.toThrow("invalid_probe_input");
-  expect(ports.takeProviderSends!()).toEqual({ inference: 0, token: 0 });
+  // Overlapping infer calls on one ports instance throw instead of swapping counts.
+  // The gate rejects at once, so the first call fails closed after the
+  // overlap is detected and performs no provider contact.
+  const first = ports.infer({ route: "grok", model: "grok-4-fixture", prompt: PROBE_PROMPT, tools: [], discovery: { repository: false, hosted: false }, deadlineMs: 8000, gate: async () => { throw new Error("fenced"); } }, new AbortController().signal);
+  await expect(ports.infer({ route: "grok", model: "grok-4-fixture", prompt: PROBE_PROMPT, tools: [], discovery: { repository: false, hosted: false }, deadlineMs: 8000 }, signal))
+    .rejects.toThrow("invalid_probe_input");
+  // The fenced first send surfaces as failed evidence, never as success and
+  // never as a transmitted request.
+  await expect(first).resolves.toBe("failed");
 });
 
 test("live probe enforces its deadline even with a hanging credential store", async () => {
@@ -505,4 +513,70 @@ test("codex deadline aborts refresh traffic with no post-deadline credential wri
   releaseToken(new Response(JSON.stringify({ access_token: "late-access", refresh_token: "r", expires_in: 3600 }), { status: 200 }));
   await new Promise(r => setTimeout(r, 200));
   expect(setCalls).toBe(0);
+});
+
+test("no replay send starts after cancellation acknowledges", async () => {
+  const root = setup();
+  const expired = JSON.stringify({ accessToken: "old-access", refreshToken: "refresh-token", obtainedAt: 0, expiresAt: 1 });
+  let inferenceFetches = 0, tokenFetches = 0;
+  let releaseToken!: () => void;
+  const tokenGate = new Promise<void>(resolve => { releaseToken = resolve; });
+  const fetch: HostAuthFetch = async (input: any) => {
+    const url = String(typeof input === "string" ? input : input.url);
+    if (url.toLowerCase().includes("token")) {
+      tokenFetches++;
+      await tokenGate;
+      return new Response(JSON.stringify({ access_token: "new-access", refresh_token: "refresh-token", expires_in: 3600 }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    inferenceFetches++;
+    if (inferenceFetches === 1) return new Response("unauthorized", { status: 401 });
+    return new Response(sseSuccess("late replay", 7, 2), { status: 200, headers: { "content-type": "text/event-stream" } });
+  };
+  const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, store: memStore(expired), fetch });
+  const pending = liveProbe("fixture-probe-host",
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 3, deadlineMs: 8000 },
+    { ...ports, now: () => 1800000000000, id: () => ID }, root);
+  for (let spin = 0; spin < 200 && tokenFetches === 0; spin++) {
+    await new Promise(r => setTimeout(r, 5));
+  }
+  expect(tokenFetches).toBe(1);
+  // Cancellation acknowledges while the proactive refresh is still gated:
+  // the first inference send must never start afterward.
+  const cancelled = await cancelProbeAttempt(root, ID);
+  expect(cancelled.lifecycle).toBe("cancelled");
+  releaseToken();
+  const late = await pending;
+  expect(late.record.lifecycle).toBe("cancelled");
+  // The fenced inference send was refused at the shared gate: no inference
+  // request ever left the transport, and the ledger says exactly that.
+  expect(inferenceFetches).toBe(0);
+  const final = await readProbeAttempt(root, ID);
+  expect(final.attempts).toBe(1);
+  expect(final.observations.find(item => item.observation === "renewal")!.sends).toEqual([{ inference: 0, token: 1 }]);
+});
+
+test("ledger placement is validated: non-renewal sends and length mismatch reject", async () => {
+  const root = setup();
+  const { ports } = bridgePorts({ fetch: successFetch() });
+  const { record } = await liveProbe("fixture-probe-host",
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 8000 }, ports, root);
+  expect(record.lifecycle).toBe("observed-ready");
+  const polluted = {
+    ...record,
+    id: OTHER_ID,
+    observations: record.observations.map(item => item.observation === "service-start"
+      ? { ...item, sends: [{ inference: 1, token: 0 }] }
+      : item.observation === "renewal" ? { ...item, sends: [] } : item),
+  };
+  writeFileSync(join(root, ".local", "host-probe", `${OTHER_ID}.json`), JSON.stringify(polluted) + "\n");
+  await expect(readProbeAttempt(root, OTHER_ID)).rejects.toThrow();
+  expect(() => exportProbeSummary(polluted as never)).toThrow();
+  const stretched = {
+    ...record,
+    id: OTHER_ID,
+    observations: record.observations.map(item => item.observation === "renewal"
+      ? { ...item, sends: [{ inference: 1, token: 0 }, { inference: 1, token: 0 }] } : item),
+  };
+  writeFileSync(join(root, ".local", "host-probe", `${OTHER_ID}.json`), JSON.stringify(stretched) + "\n");
+  await expect(readProbeAttempt(root, OTHER_ID)).rejects.toThrow();
 });

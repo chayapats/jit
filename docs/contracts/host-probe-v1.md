@@ -44,7 +44,7 @@ outer retry exists beyond the stated attempt budget.
 | `parseProbeConfig(raw)` | Bounded local config; unknown keys fail. |
 | `validateProbeAttempt(value)` | Rejects malformed, unknown-field and oversized (>8192 bytes) probe records. Four observations exactly once each: `service-start`, `credential-read`, `live-request`, `renewal`, each cross-checked against the `routeEvidence` classifier. |
 | `preflightProbe(label, route, model, ports, root, bounds?)` | Persists one terminal `configured-unverified` record; calls no credential/inference port. |
-| `liveProbe(label, options, ports, root, signal?)` | Persists the `started` attempt before any inference; the public orchestration composes the caller signal with an internally owned deadline so a blocked store fails closed at the bound. Every admission is durably reserved (persisted count rechecked `started` inside the transaction) before provider contact, so cancel serializes against new requests and restarts preserve admitted counts. Late completions after cancel/deadline never become success; exact per-call provider-send counts surface in the self sample. |
+| `liveProbe(label, options, ports, root, signal?)` | Persists the `started` attempt before any inference; the public orchestration composes the caller signal with an internally owned deadline so a blocked store fails closed at the bound. Every admission is durably reserved (persisted count rechecked `started` inside the transaction) before provider contact, so cancel serializes against new requests and restarts preserve admitted counts. Every transport send passes a shared before-send gate that rechecks `started` and bounds the send inside the same cross-process serialization — fenced or over-budget sends are refused, never transmitted. Late completions after cancel/deadline never become success; exact per-admission send counts persist in the renewal ledger and surface in the self sample. |
 | `reconcileProbeAttempts(root)` | Restart recovery: every started attempt becomes `interrupted` up to an explicit file cap with a fail-closed error beyond it; unreadable records are reported, never silently skipped. Terminal records are never rewritten. |
 | `cancelProbeAttempt(root, id)` / `commitProbeOutcome(root, id, ...)` | Owner stop wins; every terminal transition runs inside one SQLite `BEGIN IMMEDIATE` transaction that re-reads the record and writes only `started` rows, so exactly one claimant terminalizes each attempt across processes and losers report the settled record byte-for-byte unchanged. Terminal writes are atomic (exclusive temp file, fsync, atomic rename, required directory fsync). A deadline/cancel that fires during the owning invocation's own terminal write rewrites its live-request observation to non-success in the same transaction rather than leaving aborted success behind. |
 | `exportProbeSummary(value)` | Allowlisted projection; route/model become redacted markers, no secrets. |
@@ -67,13 +67,17 @@ Each record carries four labeled entries that cannot stand in for each other:
   two inference sends on the pinned release (a single Schway-owned 401
   refresh plus its replay, structurally bounded with no loop); the counting
   transport fails the attempt closed if the bound is ever exceeded, and the
-  exact per-attempt send counts are reported (see renewal).
+  exact per-attempt send counts are reported (see renewal). Ports instances
+  are single-flight: overlapping infer calls on one instance throw instead
+  of swapping counts.
 - `renewal` / `renewal`: always `unobserved` with zero attempts — never a
   readiness or success claim. The renewal observation carries a validated
   per-admission send array (one `{inference, token}` entry per admitted
   infer call, each bounded by the pinned 2+2 ceiling, empty on preflight),
   retained through restart reconciliation and included in the allowlisted
-  export. A successful login never becomes renewal evidence on its own.
+  export. Only renewal carries a ledger: any send array on another
+  observation fails validation, and the renewal length must equal admitted
+  attempts. A successful login never becomes renewal evidence on its own.
   Full per-request accounting awaits schway#415.
 
 ## Storage

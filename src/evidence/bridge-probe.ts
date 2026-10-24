@@ -92,7 +92,10 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
   const selection = { route: options.route, model: options.model } as const;
   const store = options.store;
   const providedFetch = options.fetch;
-  let lastSends: BridgeProviderSends = { inference: 0, token: 0 };
+  // Ports instances are single-flight: liveProbe never overlaps infer calls
+  // on one instance. A second concurrent call throws instead of silently
+  // swapping per-call send counts.
+  let inflight = false;
 
   const openHost = async (deadlineMs: number, fetch: HostAuthFetch) => {
     const dirs = probeHostDirs(options.root);
@@ -125,7 +128,6 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
   return {
     now: Date.now,
     id: () => crypto.randomUUID(),
-    takeProviderSends: () => ({ ...lastSends }),
     readCredential: async (signal) => {
       if (signal?.aborted) throw new Error("aborted");
       const readiness = await Promise.race([
@@ -149,16 +151,29 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
       if (input.route !== selection.route || input.model !== selection.model) {
         throw new Error("invalid_probe_input");
       }
-      // Per-call transport: counts every provider send and composes the live
-      // probe signal into every request, so a deadline aborts Schway-owned
-      // refresh traffic as well — no post-deadline credential mutation.
-      // Token endpoints carry "token" on both pinned routes.
+      if (inflight) throw new Error("invalid_probe_input");
+      inflight = true;
+      // Per-call transport: the shared before-send gate durably rechecks
+      // `started` and bounds the send before anything is forwarded, so a
+      // send after cancellation acknowledges — or beyond the pinned
+      // per-admission bound — is refused instead of transmitted. The live
+      // deadline signal is composed into every request, so Schway-owned
+      // refresh traffic aborts with the probe instead of mutating the
+      // credential store afterward. Token endpoints carry "token" on both
+      // pinned routes.
       const sends: BridgeProviderSends = { inference: 0, token: 0 };
-      lastSends = sends;
       const countingFetch: HostAuthFetch = async (target, init) => {
         const url = String(typeof target === "string" ? target : target instanceof URL ? target.href : target.url);
-        if (url.toLowerCase().includes("token")) sends.token++;
-        else sends.inference++;
+        const kind = url.toLowerCase().includes("token") ? "token" as const : "inference" as const;
+        // Local structural bound first: never forward an over-budget send.
+        if (sends[kind] + 1 > (kind === "inference" ? BRIDGE_MAX_INFERENCE_SENDS : BRIDGE_MAX_TOKEN_SENDS)) {
+          throw new Error("provider_budget_exceeded");
+        }
+        // Durable shared gate: refuses fenced or over-budget sends. A throw
+        // here suppresses the send; the adapter surfaces it as a failed
+        // terminal instead of a silent extra request.
+        await input.gate?.(kind);
+        sends[kind]++;
         const composed = init?.signal
           ? { ...init, signal: AbortSignal.any([signal, init.signal]) }
           : { ...init, signal };
@@ -172,10 +187,6 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
         session = await host.createSession();
         const options: HostRunOptions = { signal };
         const result = await session.submitWithRoute({ text: BRIDGE_PROBE_PROMPT }, options);
-        // Fail closed on a structural budget violation: the pinned adapters
-        // issue at most two inference sends plus two token sends per
-        // admitted attempt (one Schway-owned refresh plus its replay, no loop).
-        if (sends.inference > BRIDGE_MAX_INFERENCE_SENDS || sends.token > BRIDGE_MAX_TOKEN_SENDS) return "failed";
         if (result.outcome === "completed") return "success";
         switch (result.auth.status) {
           case "needs-login": return "login";
@@ -188,6 +199,7 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
         try { session?.cancel(); } catch { /* Idle or already settled. */ }
         try { await session?.close(); } catch { /* Best effort. */ }
         try { await host?.close(); } catch { /* Best effort. */ }
+        inflight = false;
       }
     },
   };
