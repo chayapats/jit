@@ -396,7 +396,7 @@ test("ordinary backup image excludes every credential and secret-bearing value",
     expect(image.query("SELECT challenge_nonce FROM telegram_binding").get()).toEqual({ challenge_nonce: null });
     expect((image.query("SELECT count(*) AS n FROM projects").get() as { n: number }).n).toBe(1);
   } finally { image.close(); }
-  expect(receipt.manifest.credentials).toEqual({ included: false, excludedTables: ["delivery_worker", "job_scheduler", "login_throttle", "ops_backups", "owner", "sessions"],
+  expect(receipt.manifest.credentials).toEqual({ included: false, excludedTables: ["delivery_worker", "export_artifacts", "job_scheduler", "login_throttle", "ops_backups", "owner", "sessions"],
     scrubbed: ["telegram_binding.challenge_nonce", "command_receipts.result_json"], restore: "owner_credential_setup_required" });
   expect(scanBackupSecrets(receipt.manifest, [passwordHash, tokenHash, f.token, nonce])).toEqual([]);
   // The live installation still holds its credentials.

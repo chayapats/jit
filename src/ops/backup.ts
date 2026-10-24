@@ -226,14 +226,14 @@ export const backupImageTables: Readonly<Record<string, "include" | "exclude" | 
   job_scheduler: "exclude", delivery_worker: "exclude",
   // Installation-scoped registry: preserved from live on activation, never restored from an image.
   ops_backups: "exclude",
-  // Hook for #31 (PR #68): export bodies stored in SQLite stay out of images. Classifying a
-  // table that does not exist yet is inert; flip export_artifacts at that merge if required.
+  // Export artifacts (registry + bytes) never enter images, so a restore cannot resurrect
+  // content deleted after an export; restored request ids replay as export_expired.
   export_artifact_bodies: "exclude",
   telegram_binding: "scrub", command_receipts: "scrub",
   app_state: "include", audit: "include", coordinator_syntheses: "include", decision_proposals: "include",
   deletion_ledger: "include", deletion_operations: "include", deletion_previews: "include",
   delivery_attempts: "include", delivery_intents: "include", delivery_reports: "include",
-  export_artifacts: "include", job_attempts: "include", job_authority: "include", job_reconciliation: "include",
+  export_artifacts: "exclude", job_attempts: "include", job_authority: "include", job_reconciliation: "include",
   job_schedule_occurrences: "include", job_schedules: "include", jobs: "include",
   memory_claims: "include", memory_context_entries: "include", memory_contexts: "include", memory_corrections: "include",
   memory_decision_sources: "include", memory_derived_sources: "include", memory_extractions: "include",

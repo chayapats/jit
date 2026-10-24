@@ -283,19 +283,24 @@ function retainedBackups(tx: AppTransaction, lineage: SourceReference): { items:
   } catch { return { items: [], truncated: false }; }
 }
 
-/** Managed export artifacts whose coverage includes the doomed lineage; deletion never edits them. */
-function retainedExports(tx: AppTransaction, lineage: SourceReference, claimIds: Set<string>): { items: DeletionPreview["affected"]["exports"]; truncated: boolean } {
+/**
+ * Managed export artifacts of this project whose coverage includes the doomed lineage; deletion
+ * never edits them. A truncated coverage list cannot prove absence, so such exports are listed
+ * conservatively. Failed exports published no artifact and are never listed.
+ */
+function retainedExports(tx: AppTransaction, projectId: string, lineage: SourceReference, claimIds: Set<string>): { items: DeletionPreview["affected"]["exports"]; truncated: boolean } {
   try {
-    const rows = tx.all<{ record_json: string }>("SELECT record_json FROM export_artifacts ORDER BY created_at, id LIMIT 100");
+    const rows = tx.all<{ record_json: string }>("SELECT record_json FROM export_artifacts WHERE project_id = ? ORDER BY created_at, id LIMIT 100", projectId);
     const items: DeletionPreview["affected"]["exports"] = [];
     for (const row of rows) {
       try {
-        const manifest = JSON.parse(row.record_json) as { id: string; projectId: string; createdAt: number;
-          coverage?: { sources?: { sourceId: string; revision: number; generation: number }[]; claims?: { claimId: string }[] } };
+        const manifest = JSON.parse(row.record_json) as { id: string; projectId: string; createdAt: number; state?: string;
+          coverage?: { sources?: { sourceId: string; revision: number; generation: number }[]; claims?: { claimId: string }[]; truncated?: boolean } };
+        if (manifest.state === "failed") continue;
         const hit = manifest.coverage?.sources?.some(s => s.sourceId === lineage.sourceId && s.revision === lineage.revision && s.generation === lineage.generation)
           ?? false;
         const claimHit = manifest.coverage?.claims?.some(c => claimIds.has(c.claimId)) ?? false;
-        if (hit || claimHit) items.push({ id: manifest.id, projectId: manifest.projectId, createdAt: manifest.createdAt });
+        if (hit || claimHit || manifest.coverage?.truncated === true) items.push({ id: manifest.id, projectId: manifest.projectId, createdAt: manifest.createdAt });
       } catch { /* Corrupt artifacts stay visible to export validation, not silently skipped here. */ }
     }
     return { items: items.slice(0, deletePreviewBounds.backups), truncated: items.length > deletePreviewBounds.backups };
@@ -336,7 +341,7 @@ export function prepareDeletionPreview(tx: AppTransaction, command: DeletePrevie
   const { items: pendingJobs, truncated: pendingTruncated } = pendingCiting(tx, claimIds, lineage);
   const nativeSessions = nativeSessionsFor(tx, claimIds);
   const { items: backups, truncated: backupsTruncated } = retainedBackups(tx, lineage);
-  const { items: exports, truncated: exportsTruncated } = retainedExports(tx, lineage, claimIds);
+  const { items: exports, truncated: exportsTruncated } = retainedExports(tx, scope.projectId, lineage, claimIds);
   const descriptor = tx.get<{ descriptor: string }>("SELECT descriptor_json AS descriptor FROM source_versions WHERE source_id = ? AND revision = ? AND generation = ?",
     lineage.sourceId, lineage.revision, lineage.generation);
   let descriptorKind = "message";
