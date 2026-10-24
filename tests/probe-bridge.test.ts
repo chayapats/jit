@@ -524,8 +524,10 @@ test("codex deadline aborts refresh traffic with no post-deadline credential wri
   };
   const ports = bridgeProbePorts({ route: "codex", model: "codex-fixture", root, store, fetch });
   const { record } = await liveProbe("fixture-probe-host",
-    { route: "codex", model: "codex-fixture", maxAttempts: 1, deadlineMs: 100 },
+    { route: "codex", model: "codex-fixture", maxAttempts: 1, deadlineMs: 1500 },
     { ...ports, now: () => 1800000000000, id: () => OTHER_ID }, root);
+  // The refresh never settles on its own, so a generous deadline still expires
+  // while it is pending, without racing host construction on slow CI runners.
   // Terminal state is deadline-driven (either timer may win the race);
   // the guarantee under test is boundedness with zero post-deadline writes.
   expect(["cancelled", "failed"].includes(record.lifecycle)).toBe(true);
