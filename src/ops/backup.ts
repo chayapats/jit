@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  closeSync, constants as fsConstants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync,
+  realpathSync, rmSync, statSync, writeSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { Database } from "bun:sqlite";
 import packageManifest from "../../package.json";
@@ -206,8 +209,45 @@ export function backupDirFor(databasePath: string): string {
   return `${databasePath}.backups`;
 }
 
+/**
+ * Why `dir` is not a trusted managed-backup directory, or `null` when it is: it must exist as a real directory
+ * (the final component is never a symlink; its canonical path resolves to the same inode), be owned by the
+ * service user (`uid`, the current process by default) and grant no group/other access. `mkdirSync` modes only
+ * apply on creation, so an existing directory is always inspected rather than trusted.
+ */
+export function backupDirectoryProblem(dir: string, uid: number | undefined = process.getuid?.()): string | null {
+  let link;
+  try { link = lstatSync(dir); } catch { return "backup_directory_missing"; }
+  if (link.isSymbolicLink()) return "backup_directory_symlink";
+  if (!link.isDirectory()) return "backup_directory_not_directory";
+  try {
+    const real = statSync(realpathSync(dir));
+    if (real.ino !== link.ino || real.dev !== link.dev) return "backup_directory_moved";
+  } catch { return "backup_directory_missing"; }
+  if (uid !== undefined && link.uid !== uid) return "backup_directory_foreign_owner";
+  if ((link.mode & 0o077) !== 0) return "backup_directory_permissive";
+  return null;
+}
+
+/**
+ * Creates the managed directory (0700) or hardens an existing one before any write: the directory is opened
+ * without following a symlink, a foreign owner is rejected and group/other access is removed through the
+ * opened descriptor. Throws `backup_storage_unavailable`.
+ */
 function ensureDir(dir: string): void {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
+  let fd: number | null = null;
+  try {
+    fd = openSync(dir, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
+    const opened = fstatSync(fd), uid = process.getuid?.();
+    if (!opened.isDirectory() || (uid !== undefined && opened.uid !== uid)) throw new Error("untrusted");
+    if ((opened.mode & 0o077) !== 0) fchmodSync(fd, opened.mode & 0o700);
+  } catch {
+    throw new AppError("backup_storage_unavailable", 503);
+  } finally {
+    if (fd !== null) closeSync(fd);
+  }
+  if (backupDirectoryProblem(dir) !== null) throw new AppError("backup_storage_unavailable", 503);
 }
 
 // ---------------------------------------------------------------------------
@@ -746,14 +786,26 @@ export function reconcileBackupArtifacts(tx: AppTransaction, backupDir: string, 
 // Files
 // ---------------------------------------------------------------------------
 
-/** Writes one managed file with restrictive permissions; throws `backup_storage_unavailable` on failure. */
+/**
+ * Writes one managed file (0600) into a trusted, hardened directory. The file is created exclusively and without
+ * following symlinks, so an existing file or planted link at the name is never overwritten or followed (only a
+ * file this call created is removed on failure). Throws `backup_storage_unavailable` on failure.
+ */
 export function writeManagedFile(dir: string, name: string, bytes: Uint8Array): string {
   const path = join(dir, name);
+  ensureDir(dir);
+  let fd: number | null = null;
   try {
-    ensureDir(dir);
-    writeFileSync(path, bytes, { mode: 0o600 });
-    chmodSync(path, 0o600);
+    fd = openSync(path, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600);
   } catch {
+    throw new AppError("backup_storage_unavailable", 503);
+  }
+  try {
+    fchmodSync(fd, 0o600);
+    for (let offset = 0; offset < bytes.length;) offset += writeSync(fd, bytes, offset, bytes.length - offset);
+    closeSync(fd); fd = null;
+  } catch {
+    if (fd !== null) { try { closeSync(fd); } catch { /* Already failing. */ } }
     try { rmSync(path, { force: true }); } catch { /* Partial file becomes an orphan. */ }
     throw new AppError("backup_storage_unavailable", 503);
   }
