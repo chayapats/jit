@@ -108,6 +108,12 @@ test("contract docs publish the pinned source constants", () => {
   expect(doc).toContain(SCHWAY_RELEASE_CONTRACT);
 });
 
+test("host-probe contract documents the exact send-ledger shape", () => {
+  const doc = readFileSync(join(import.meta.dir, "../docs/contracts/host-probe-v1.md"), "utf8");
+  expect(doc).toContain("{inference, token, confirmed, admission}");
+  expect(doc).toContain("admission ordinal");
+});
+
 test("effective run maps strict context, exact tools and the selected route without secrets", () => {
   const { config } = setup();
   const run = request(config);

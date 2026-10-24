@@ -165,7 +165,14 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
       const fence = input.fence;
       const fencedStore: HostCredentialStore | undefined = base && fence ? {
         get: (identity: HostCredentialReference) => base.get(identity),
-        set: (identity: HostCredentialReference, value: string) => fence.write(() => base.set(identity, value)),
+        // Generation-fenced final visibility: the fence removes exactly our
+        // value when the attempt already terminalized, so no
+        // post-acknowledgement credential stays visible. Scripted ports
+        // without writeStore keep the plain dispatch-checked write.
+        set: (identity: HostCredentialReference, value: string) =>
+          fence.writeStore
+            ? fence.writeStore(identity, value, base)
+            : fence.write(() => base.set(identity, value)),
         delete: (identity: HostCredentialReference) => fence.write(() => base.delete(identity)),
       } : base;
       // The supported guard carries the same lifecycle fence to Schway's own

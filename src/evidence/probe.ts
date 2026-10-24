@@ -42,13 +42,14 @@ export interface ProbeObservationEntry {
   attempts: number;
   elapsedMs: number;
   /**
-   * Per-admission provider-send ledger, auditable evidence for the pinned
+   * Per-send provider-send ledger, auditable evidence for the pinned
    * transport bound. Only the renewal observation carries it (one entry per
-   * admitted infer call, each bounded by the pinned per-admission ceiling);
-   * every other observation carries an empty array. Absent on pre-bridge
-   * records, which predate provider-send accounting. `confirmed` marks
-   * transport-confirmed sends: false means authorized but completion
-   * unobserved (crash or abort window) — uncertainty, never exact evidence.
+   * transport send, stamped with its 1-based admission ordinal, each
+   * ordinal bounded by the pinned 2+2 ceiling); every other observation
+   * carries an empty array. Absent on pre-bridge records, which predate
+   * provider-send accounting. `confirmed` marks transport-confirmed sends:
+   * false means authorized but completion unobserved (crash or abort
+   * window) — uncertainty, never exact evidence.
    */
   sends?: { inference: number; token: number; confirmed: boolean; admission: number }[];
 }
@@ -150,13 +151,15 @@ export interface ProbePorts {
    * synchronously so no provider contact starts after cancellation
    * acknowledges, then confirms the completed send. A refused send throws
    * without forwarding anything. Credential-store mutations must go through
-   * the optional fence, which runs them inside the lifecycle serialization
-   * so no write can complete after cancellation acknowledges. Ports that
-   * do not forward through gate/fence (scripted fixtures) leave accounting
-   * to the orchestration. Ports instances are single-flight: overlapping
-   * infer calls on one instance throw instead of silently swapping counts.
+   * the optional fence: `write` runs them with a dispatch check bounded by
+   * the live signal, and `writeStore` additionally removes exactly the
+   * written value when the attempt already terminalized, so no
+   * post-terminal credential stays visible. Ports that do not forward
+   * through gate/fence (scripted fixtures) leave accounting to the
+   * orchestration. Ports instances are single-flight: overlapping infer
+   * calls on one instance throw instead of silently swapping counts.
    */
-  infer(input: { route: string; model: string; prompt: typeof PROBE_PROMPT; tools: readonly []; discovery: { repository: false; hosted: false }; deadlineMs: number; gate?: <R>(kind: "inference" | "token", start: () => Promise<R>) => Promise<R>; fence?: { write<T>(work: () => Promise<T>): Promise<T> } }, signal: AbortSignal): Promise<ProbeEvent>;
+  infer(input: { route: string; model: string; prompt: typeof PROBE_PROMPT; tools: readonly []; discovery: { repository: false; hosted: false }; deadlineMs: number; gate?: <R>(kind: "inference" | "token", start: () => Promise<R>) => Promise<R>; fence?: { write<T>(work: () => Promise<T>): Promise<T>; writeStore(identity: { account: string }, value: string, store: { get(identity: { account: string }): Promise<string | null>; set(identity: { account: string }, value: string): Promise<void>; delete(identity: { account: string }): Promise<boolean> }): Promise<void> } }, signal: AbortSignal): Promise<ProbeEvent>;
 }
 
 /** Live options demand explicit opt-in: exact route/model plus finite attempts/deadline. */
@@ -1086,12 +1089,45 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
   const inflight = new Set<Promise<unknown>>();
   inflightWrites.set(id, inflight);
   probeDeadlines.set(id, { startedAt: Date.now(), deadlineMs: bounds.deadlineMs });
-  const fence = { write: <T>(work: () => Promise<T>): Promise<T> => {
+  const fence = {
+    write: <T>(work: () => Promise<T>): Promise<T> => {
       const pending = fencedStoreWrite(root, id, effective, work);
       inflight.add(pending);
       pending.then(() => inflight.delete(pending), () => inflight.delete(pending));
       return pending;
-    } };
+    },
+    // Generation-fenced final visibility for explicit stores: the check runs
+    // when the backend actually settles — not when the bounded race above
+    // decides — because a late settlement is exactly what must be fenced.
+    // Removes exactly the written value and never touches a concurrent
+    // legitimate write. Runs unfenced on purpose: it is the fence's own
+    // compensation, and fencing it would refuse the cleanup.
+    writeStore: async (identity: { account: string }, value: string,
+      store: { get(identity: { account: string }): Promise<string | null>; set(identity: { account: string }, value: string): Promise<void>; delete(identity: { account: string }): Promise<boolean> }): Promise<void> => {
+      const outcome = await (async () => {
+        const pending = fencedStoreWrite(root, id, effective, () => {
+          const raw = store.set(identity, value);
+          raw.then(async () => {
+            const settled = await readProbeAttempt(root, id).catch(() => null);
+            if (settled !== null && settled.lifecycle !== "started") {
+              const current = await store.get(identity).catch(() => null);
+              if (current === value) await store.delete(identity).catch(() => {});
+            }
+          }, () => {});
+          return raw;
+        });
+        inflight.add(pending);
+        pending.then(() => inflight.delete(pending), () => inflight.delete(pending));
+        try {
+          await pending;
+          return "written" as const;
+        } catch {
+          return "fenced" as const;
+        }
+      })();
+      if (outcome === "fenced") throw new Error("fenced");
+    },
+  };
   try {
   for (let turn = 0; turn < maxAttempts; turn++) {
     if (effective.aborted) break;
