@@ -977,3 +977,22 @@ test("renewal success or nonzero attempts fail validation and never export", asy
   const exported = exportProbeSummary(record);
   expect(exported.observations.find(item => item.observation === "renewal")!.event).toBe("not-success");
 });
+
+for (const route of ["grok", "codex"] as const) {
+  test(`${route} truncated 200 SSE never becomes observed-ready`, async () => {
+    const root = setup();
+    const empty200: HostAuthFetch = async () =>
+      new Response("", { status: 200, headers: { "content-type": "text/event-stream" } });
+    const ports = bridgeProbePorts({ route, model: route === "codex" ? "codex-fixture" : "grok-4-fixture", root, store: memStore(validTokens), fetch: empty200 });
+    const { record, self } = await liveProbe("fixture-probe-host",
+      { route, model: route === "codex" ? "codex-fixture" : "grok-4-fixture", maxAttempts: 2, deadlineMs: 8000 },
+      { ...ports, now: () => 1800000000000, id: () => OTHER_ID }, root);
+    // The pinned release requires the protocol terminal frame (schway#418):
+    // a body that ends without one fails closed instead of reporting success.
+    expect(record.lifecycle).not.toBe("observed-ready");
+    expect(record.lifecycle).toBe("failed");
+    expect(self.providerSends.inference).toBeLessThanOrEqual(4);
+    const live = record.observations.find(item => item.observation === "live-request")!;
+    expect(live.event).not.toBe("success");
+  });
+}
