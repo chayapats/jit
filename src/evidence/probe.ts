@@ -46,9 +46,11 @@ export interface ProbeObservationEntry {
    * transport bound. Only the renewal observation carries it (one entry per
    * admitted infer call, each bounded by the pinned per-admission ceiling);
    * every other observation carries an empty array. Absent on pre-bridge
-   * records, which predate provider-send accounting.
+   * records, which predate provider-send accounting. `confirmed` marks
+   * transport-confirmed sends: false means authorized but completion
+   * unobserved (crash or abort window) — uncertainty, never exact evidence.
    */
-  sends?: { inference: number; token: number }[];
+  sends?: { inference: number; token: number; confirmed: boolean }[];
 }
 
 /** Persisted probe attempt; terminal route states never overwrite an interrupted/cancelled lifecycle. */
@@ -142,14 +144,17 @@ export interface ProbePorts {
   readCredential(signal: AbortSignal): Promise<"ok" | "missing" | "locked">;
   /**
    * One bounded inference attempt with the fixed prompt, empty tools and
-   * strict discovery off. The optional gate runs inside the transport before
-   * every provider send: it durably rechecks `started` and bounds the send,
-   * throwing to suppress the send when fenced or over budget. Ports that do
-   * not forward through the gate (scripted fixtures) leave accounting to the
-   * orchestration. Ports instances are single-flight: overlapping infer calls
-   * on one instance throw instead of silently swapping counts.
+   * strict discovery off. The optional gate runs inside the transport around
+   * every provider send: it durably rechecks `started` and bounds the send
+   * inside the same cross-process serialization, invokes the given starter
+   * synchronously so no provider contact starts after cancellation
+   * acknowledges, then confirms the completed send. A refused send throws
+   * without forwarding anything. Ports that do not forward through the gate
+   * (scripted fixtures) leave accounting to the orchestration. Ports
+   * instances are single-flight: overlapping infer calls on one instance
+   * throw instead of silently swapping counts.
    */
-  infer(input: { route: string; model: string; prompt: typeof PROBE_PROMPT; tools: readonly []; discovery: { repository: false; hosted: false }; deadlineMs: number; gate?: (kind: "inference" | "token") => Promise<void> }, signal: AbortSignal): Promise<ProbeEvent>;
+  infer(input: { route: string; model: string; prompt: typeof PROBE_PROMPT; tools: readonly []; discovery: { repository: false; hosted: false }; deadlineMs: number; gate?: <R>(kind: "inference" | "token", start: () => Promise<R>) => Promise<R> }, signal: AbortSignal): Promise<ProbeEvent>;
 }
 
 /** Live options demand explicit opt-in: exact route/model plus finite attempts/deadline. */
@@ -188,13 +193,15 @@ const exactKeys = (value: unknown, keys: string[]): value is Record<string, unkn
 /**
  * Validates a per-admission provider-send ledger: one entry per admitted
  * infer call, each bounded by the pinned per-admission structural ceiling
- * (two inference sends plus two token sends). Anything wider fails closed.
+ * (two inference sends plus two token sends), with an explicit confirmation
+ * flag. Anything wider fails closed.
  */
-function validSendLedger(value: unknown, maxAttempts: number): value is { inference: number; token: number }[] {
+function validSendLedger(value: unknown, maxAttempts: number): value is { inference: number; token: number; confirmed: boolean }[] {
   if (!Array.isArray(value) || value.length > maxAttempts) return false;
   return value.every(item => !!item && typeof item === "object" && !Array.isArray(item) &&
-    Object.keys(item).sort().join(",") === "inference,token" &&
-    [item.inference, item.token].every(n => Number.isSafeInteger(n) && (n as number) >= 0 && (n as number) <= 2));
+    Object.keys(item).sort().join(",") === "confirmed,inference,token" &&
+    [item.inference, item.token].every(n => Number.isSafeInteger(n) && (n as number) >= 0 && (n as number) <= 2) &&
+    typeof (item as { confirmed: unknown }).confirmed === "boolean");
 }
 
 /** Rejects malformed or unknown-field probe records before any read, write or export. */
@@ -250,7 +257,7 @@ export function validateProbeAttempt(value: unknown): asserts value is ProbeAtte
 
 function entry(route: string, model: string | null, bounds: { maxAttempts: number; deadlineMs: number },
   observation: ProbeObservation, event: ProbeEvent, attempts: number, elapsedMs: number,
-  sends: { inference: number; token: number }[] = []): ProbeObservationEntry {
+  sends: { inference: number; token: number; confirmed: boolean }[] = []): ProbeObservationEntry {
   const probeClass = observation === "live-request" ? "inference" as const : observation === "renewal" ? "renewal" as const : "preflight" as const;
   const classified = routeEvidence({ route, model, observation: observation === "service-start" ? "service-start" : observation,
     probeClass, maxAttempts: bounds.maxAttempts, attempts, deadlineMs: bounds.deadlineMs, elapsedMs, configured: true, event });
@@ -525,7 +532,7 @@ async function reserveAttempt(root: string, id: string): Promise<{ admitted: boo
   const { updated, record } = await updateStartedRecord(root, id, current => {
     if (current.attempts >= current.maxAttempts) return null;
     const renewal = current.observations.find(item => item.observation === "renewal")!;
-    const sends = [...(renewal.sends ?? []), { inference: 0, token: 0 }];
+    const sends = [...(renewal.sends ?? []), { inference: 0, token: 0, confirmed: true }];
     const observations = current.observations.map(item =>
       item.observation === "renewal" ? { ...item, sends } : item);
     return { ...current, attempts: current.attempts + 1, observations };
@@ -685,14 +692,27 @@ export async function cancelProbeAttempt(root: string, id: string): Promise<Prob
  * Late completions after cancel/restart change nothing and report the
  * settled record instead of success.
  */
+/**
+ * Commits a terminal outcome only when the attempt is still dispatched.
+ * Late completions after cancel/restart change nothing and report the
+ * settled record. The caller supplies only terminal event evidence; counts
+ * and the send ledger always come from the durable record, so a stale
+ * caller can never erase a persisted admission.
+ */
 export async function commitProbeOutcome(root: string, id: string, observations: ProbeObservationEntry[], attempts: number, elapsedMs: number): Promise<boolean> {
+  void attempts;
   const { committed } = await transitionTerminal(root, id, current => {
-    const inference = observations.find(item => item.observation === "live-request")!;
+    const live = observations.find(item => item.observation === "live-request")!;
     const credential = observations.find(item => item.observation === "credential-read")!;
-    const terminal = inference.event === "unobserved"
-      ? { state: credential.state, nextAction: credential.nextAction }
-      : { state: inference.state, nextAction: inference.nextAction };
-    return { ...current, lifecycle: terminal.state, observations, attempts, elapsedMs, nextAction: terminal.nextAction };
+    const renewal = current.observations.find(item => item.observation === "renewal")!;
+    const liveEntry = entry(current.route, current.model, { maxAttempts: current.maxAttempts, deadlineMs: current.deadlineMs }, "live-request", live.event, current.attempts, elapsedMs);
+    const credentialEntryItem = credentialEntry(current.route, current.model, { maxAttempts: current.maxAttempts, deadlineMs: current.deadlineMs }, credential.event);
+    const terminal = live.event === "unobserved"
+      ? { state: credentialEntryItem.state, nextAction: credentialEntryItem.nextAction }
+      : { state: liveEntry.state, nextAction: liveEntry.nextAction };
+    return { ...current, lifecycle: terminal.state,
+      observations: [current.observations[0]!, credentialEntryItem, liveEntry, renewal],
+      attempts: current.attempts, elapsedMs, nextAction: terminal.nextAction };
   });
   return committed;
 }
@@ -820,29 +840,78 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
   if (effective.aborted) {
     return abortTo(credential, "unobserved");
   }
-  // Before-send gate shared with the transport: every provider send is
-  // durably recorded and bounded inside the same cross-process serialization
-  // as cancellation, before it is forwarded. A send after cancellation
-  // acknowledges, or beyond the per-admission bound, is refused here — so
-  // no provider contact starts after the fence and no over-budget send is
-  // ever transmitted.
-  const gateTotals = { inference: 0, token: 0 };
-  const gateSend = async (kind: "inference" | "token"): Promise<void> => {
-    const { updated } = await updateStartedRecord(root, id, current => {
+  // Before-send gate shared with the transport: the lifecycle check, the
+  // durable intent record and the synchronous transport initiation happen
+  // inside one cross-process serialization, so cancellation cannot
+  // acknowledge between permission and dispatch and no over-budget send is
+  // ever forwarded. A completed send is confirmed in a second transaction;
+  // a crash between initiation and confirmation leaves the entry explicitly
+  // unconfirmed (uncertain) instead of false exact evidence.
+  const gateSend = async <R>(kind: "inference" | "token", start: () => Promise<R>): Promise<R> => {
+    const dir = await probeDirectory(root, true);
+    const db = await lifecycleDb(dir);
+    let pending: Promise<R> | null = null;
+    try {
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const current = await readProbeAttempt(root, id);
+        if (current.lifecycle !== "started") {
+          db.exec("ROLLBACK");
+          throw new Error("fenced");
+        }
+        const renewal = current.observations.find(item => item.observation === "renewal")!;
+        const ledger = [...(renewal.sends ?? [])];
+        const last = ledger[ledger.length - 1];
+        if (!last) {
+          db.exec("ROLLBACK");
+          throw new Error("fenced");
+        }
+        const next = { inference: last.inference + (kind === "inference" ? 1 : 0), token: last.token + (kind === "token" ? 1 : 0), confirmed: false };
+        // Pinned per-admission structural bound (schway#415 tracks exact
+        // accounting beyond it): refuse the send without recording it.
+        if (next.inference > 2 || next.token > 2) {
+          db.exec("ROLLBACK");
+          throw new Error("provider_budget_exceeded");
+        }
+        ledger[ledger.length - 1] = next;
+        const updated: ProbeAttempt = { ...current, observations: current.observations.map(item =>
+          item.observation === "renewal" ? { ...item, sends: ledger } : item) };
+        validateProbeAttempt(updated);
+        await atomicWriteFile(dir, `${id}.json`, JSON.stringify(updated) + "\n", () => {
+          if (effective.aborted) throw new PublishAborted();
+        });
+        try {
+          pending = start();
+        } catch (error) {
+          db.exec("ROLLBACK");
+          throw error;
+        }
+        db.exec("COMMIT");
+      } catch (error) {
+        try { db.exec("ROLLBACK"); } catch { /* Already rolled back. */ }
+        throw error;
+      }
+    } finally {
+      db.close();
+    }
+    let response: R;
+    try {
+      response = await pending!;
+    } catch (error) {
+      throw error;
+    }
+    // Confirm the completed send; a terminal record keeps the entry
+    // explicitly unconfirmed instead of rewriting settled evidence.
+    await updateStartedRecord(root, id, current => {
       const renewal = current.observations.find(item => item.observation === "renewal")!;
       const ledger = [...(renewal.sends ?? [])];
       const last = ledger[ledger.length - 1];
-      if (!last) return null;
-      const next = { inference: last.inference + (kind === "inference" ? 1 : 0), token: last.token + (kind === "token" ? 1 : 0) };
-      // Pinned per-admission structural bound (schway#415 tracks exact
-      // accounting beyond it): refuse the send without recording it.
-      if (next.inference > 2 || next.token > 2) return null;
-      ledger[ledger.length - 1] = next;
+      if (!last || last.confirmed) return null;
+      ledger[ledger.length - 1] = { ...last, confirmed: true };
       return { ...current, observations: current.observations.map(item =>
         item.observation === "renewal" ? { ...item, sends: ledger } : item) };
-    });
-    if (!updated) throw new Error("fenced");
-    gateTotals[kind]++;
+    }).catch(() => ({ updated: false as const, record: null as never }));
+    return response;
   };
   let attempts = 0, inference: ProbeEvent = "failed";
   for (let turn = 0; turn < maxAttempts; turn++) {
@@ -867,13 +936,9 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
     } catch {
       inference = "failed";
     }
-    // Counter-validation failure terminalizes as failed, never as success
-    // and never by leaving the record started: the totals must stay within
-    // the pinned per-admission structural bound times admissions.
-    if (gateTotals.inference > 2 * attempts || gateTotals.token > 2 * attempts) {
-      inference = "failed";
-      break;
-    }
+    // A fenced or over-budget send fails the attempt closed inside the gate;
+    // the bound is enforced durably per admission, so no cumulative guard
+    // is needed here. Transient failures consume the next bounded attempt.
     // A late completion after cancellation is never success evidence.
     if (effective.aborted) { inference = "failed"; break; }
     // Terminal classifications stop immediately; transient store/transport

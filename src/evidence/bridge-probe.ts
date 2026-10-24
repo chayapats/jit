@@ -169,16 +169,22 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
         if (sends[kind] + 1 > (kind === "inference" ? BRIDGE_MAX_INFERENCE_SENDS : BRIDGE_MAX_TOKEN_SENDS)) {
           throw new Error("provider_budget_exceeded");
         }
-        // Durable shared gate: refuses fenced or over-budget sends. A throw
-        // here suppresses the send; the adapter surfaces it as a failed
-        // terminal instead of a silent extra request.
-        await input.gate?.(kind);
-        sends[kind]++;
+        // Shared durable gate owns the send: it rechecks `started`, records
+        // the intent and invokes the transport synchronously inside one
+        // cross-process serialization. A refusal throws before anything is
+        // forwarded; the adapter surfaces it as a failed terminal.
+        const gate = input.gate;
         const composed = init?.signal
           ? { ...init, signal: AbortSignal.any([signal, init.signal]) }
           : { ...init, signal };
         const transport = providedFetch ?? ((t: string | URL | Request, requestInit?: RequestInit) => fetch(t as string, requestInit));
-        return transport(target, composed);
+        if (!gate) {
+          sends[kind]++;
+          return transport(target, composed);
+        }
+        const response = await gate(kind, () => transport(target, composed));
+        sends[kind]++;
+        return response;
       };
       let host: HostRuntime | null = null;
       let session: HostSession | null = null;

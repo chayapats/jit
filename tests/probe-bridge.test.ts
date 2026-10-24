@@ -222,7 +222,7 @@ test("a refreshable 401 admits exactly one retry inside the single attempt budge
   const renewal = record.observations.find(item => item.observation === "renewal")!;
   expect(renewal.event).toBe("unobserved");
   expect(renewal.attempts).toBe(0);
-  expect(renewal.sends).toEqual([{ inference: 2, token: 1 }]);
+  expect(renewal.sends).toEqual([{ inference: 2, token: 1, confirmed: true }]);
   expect(self.providerSends).toEqual({ inference: 2, token: 1 });
 });
 
@@ -473,7 +473,7 @@ test("codex success reports exact counts with no renewal claim", async () => {
   expect(record.observations.find(item => item.observation === "renewal")).toMatchObject({ event: "unobserved", attempts: 0 });
   expect(self.providerSends).toEqual({ inference: 1, token: 0 });
   const renewal = record.observations.find(item => item.observation === "renewal")!;
-  expect(renewal.sends).toEqual([{ inference: 1, token: 0 }]);
+  expect(renewal.sends).toEqual([{ inference: 1, token: 0, confirmed: true }]);
   const live = record.observations.find(item => item.observation === "live-request")!;
   expect(live.sends).toEqual([]);
 });
@@ -548,11 +548,14 @@ test("no replay send starts after cancellation acknowledges", async () => {
   const late = await pending;
   expect(late.record.lifecycle).toBe("cancelled");
   // The fenced inference send was refused at the shared gate: no inference
-  // request ever left the transport, and the ledger says exactly that.
+  // request ever left the transport. The token entry stays explicitly
+  // unconfirmed: its transport completed only after cancellation had already
+  // terminalized the record, so confirmation correctly refused to rewrite
+  // settled evidence.
   expect(inferenceFetches).toBe(0);
   const final = await readProbeAttempt(root, ID);
   expect(final.attempts).toBe(1);
-  expect(final.observations.find(item => item.observation === "renewal")!.sends).toEqual([{ inference: 0, token: 1 }]);
+  expect(final.observations.find(item => item.observation === "renewal")!.sends).toEqual([{ inference: 0, token: 1, confirmed: false }]);
 });
 
 test("ledger placement is validated: non-renewal sends and length mismatch reject", async () => {
@@ -565,7 +568,7 @@ test("ledger placement is validated: non-renewal sends and length mismatch rejec
     ...record,
     id: OTHER_ID,
     observations: record.observations.map(item => item.observation === "service-start"
-      ? { ...item, sends: [{ inference: 1, token: 0 }] }
+      ? { ...item, sends: [{ inference: 1, token: 0, confirmed: true }] }
       : item.observation === "renewal" ? { ...item, sends: [] } : item),
   };
   writeFileSync(join(root, ".local", "host-probe", `${OTHER_ID}.json`), JSON.stringify(polluted) + "\n");
@@ -575,8 +578,36 @@ test("ledger placement is validated: non-renewal sends and length mismatch rejec
     ...record,
     id: OTHER_ID,
     observations: record.observations.map(item => item.observation === "renewal"
-      ? { ...item, sends: [{ inference: 1, token: 0 }, { inference: 1, token: 0 }] } : item),
+      ? { ...item, sends: [{ inference: 1, token: 0, confirmed: true }, { inference: 1, token: 0, confirmed: true }] } : item),
   };
   writeFileSync(join(root, ".local", "host-probe", `${OTHER_ID}.json`), JSON.stringify(stretched) + "\n");
   await expect(readProbeAttempt(root, OTHER_ID)).rejects.toThrow();
+});
+
+test("a stale terminal commit cannot erase persisted admissions or ledgers", async () => {
+  const root = setup();
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const starter = bridgePorts({ root, fetch: successFetch() });
+  const pending = liveProbe("fixture-probe-host",
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 8000 },
+    { ...starter.ports, now: () => 1800000000000, id: () => ID, infer: () => gate.then(() => "success" as const) }, root);
+  for (let spin = 0; spin < 100; spin++) {
+    try {
+      if ((await readProbeAttempt(root, ID)).attempts === 1) break;
+    } catch { /* Not persisted yet. */ }
+    await new Promise(r => setTimeout(r, 5));
+  }
+  // A stale writer passes zeroed counters and an empty ledger: the commit
+  // wins (the record is still started) but preserves durable state.
+  const stale = await readProbeAttempt(root, ID);
+  const committed = await commitProbeOutcome(root, ID, stale.observations.map(item =>
+    item.observation === "renewal" ? { ...item, sends: [] } : item), 0, 10);
+  expect(committed).toBe(true);
+  const settled = await readProbeAttempt(root, ID);
+  expect(settled.attempts).toBe(1);
+  expect(settled.observations.find(item => item.observation === "renewal")!.sends).toEqual([{ inference: 0, token: 0, confirmed: true }]);
+  release();
+  const late = await pending;
+  expect(late.record.lifecycle).not.toBe("started");
 });
