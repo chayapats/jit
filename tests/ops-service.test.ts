@@ -56,7 +56,9 @@ test("versioned artifact pins runtime, lock, schema and engine without dev-cwd d
   try { buildPackage({ srcDir: repoRoot, outDir: second, engineContract: "jit.schway.bridge/v1", engineRevision: null }); }
   finally { process.chdir(cwd); }
   const again = readManifest(second);
-  expect({ ...again, artifactId: "", builtAt: "" }).toEqual({ ...built, artifactId: "", builtAt: "" });
+  // Identity and build time differ per build, and the content pin binds them, so it differs too.
+  expect({ ...again, artifactId: "", builtAt: "", contentHash: "" }).toEqual({ ...built, artifactId: "", builtAt: "", contentHash: "" });
+  expect(again.contentHash).not.toBe(built.contentHash);
   expect(artifactPiStatus({ arch: "x64", piValidation: { status: "pending", detail: "x" } })).toBe("not-run");
   expect(artifactPiStatus({ arch: "arm64", piValidation: { status: "pending", detail: "x" } })).toBe("pending");
   expect(artifactPiStatus(built)).toBe(process.arch === "arm64" ? "pending" : "not-run");

@@ -119,10 +119,31 @@ function listFiles(root: string, dir = root, out: string[] = []): string[] {
   return out;
 }
 
-/** Content digest of a packaged tree: sorted relative paths with per-file SHA-256. */
-export function artifactContentHash(dir: string): string {
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map(k => `${JSON.stringify(k)}:${canonical((value as Record<string, unknown>)[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+/** Every manifest field except the digest itself; bound into `contentHash` so no pin can be edited after build. */
+export function manifestMetadata(manifest: Omit<BuildManifest, "contentHash"> | BuildManifest): Omit<BuildManifest, "contentHash"> {
+  const { contentHash: _ignored, ...metadata } = manifest as BuildManifest;
+  void _ignored;
+  return metadata;
+}
+
+/**
+ * Content digest of a packaged artifact: the canonical manifest metadata
+ * (identity, version, runtime, lock, schema, engine, arch, Pi status, build
+ * time) followed by sorted relative paths with per-file SHA-256. Editing any
+ * manifest field or packaged file changes it.
+ */
+export function artifactContentHash(dir: string, metadata: Omit<BuildManifest, "contentHash">): string {
   const root = resolve(dir);
   const hash = createHash("sha256");
+  hash.update(`manifest\0${canonical(manifestMetadata(metadata))}\n`);
   for (const rel of listFiles(root)) hash.update(`${rel}\0${sha256File(join(root, rel))}\n`);
   return hash.digest("hex");
 }
@@ -158,12 +179,12 @@ export function buildPackage(options: BuildOptions): BuildManifest {
     for (const entry of packagedEntries) {
       cpSync(join(srcDir, entry), join(outDir, entry), { recursive: true, filter: path => !excluded(relative(srcDir, path)) });
     }
-    const built: BuildManifest = { artifact: "jit.service.artifact/v1", artifactId: randomUUID(),
+    const metadata: Omit<BuildManifest, "contentHash"> = { artifact: "jit.service.artifact/v1", artifactId: randomUUID(),
       appVersion: manifest.version as string, bunVersion: Bun.version, lockHash: sha256File(join(srcDir, "bun.lock")),
       schemaVersion, engineContract: options.engineContract, engineRevision, arch: process.arch,
-      contentHash: artifactContentHash(outDir),
       piValidation: { status: "pending", detail: "desktop packaging never certifies ARM64; Pi evidence belongs to OPS05" },
       builtAt: new Date().toISOString() };
+    const built: BuildManifest = { ...metadata, contentHash: artifactContentHash(outDir, metadata) };
     writeFileSync(join(outDir, "manifest.json"), JSON.stringify(built, null, 2) + "\n", { mode: 0o644 });
     return built;
   } catch (error) {
@@ -234,8 +255,11 @@ export function validateArtifact(outDir: string, options: { runtime?: boolean } 
   }
   try { checks.push({ check: "lock-pin", ok: sha256File(join(dir, "bun.lock")) === manifest.lockHash }); }
   catch { checks.push({ check: "lock-pin", ok: false }); }
-  try { checks.push({ check: "content-pin", ok: artifactContentHash(dir) === manifest.contentHash }); }
+  try { checks.push({ check: "content-pin", ok: artifactContentHash(dir, manifestMetadata(manifest)) === manifest.contentHash }); }
   catch { checks.push({ check: "content-pin", ok: false }); }
+  // The claimed app version must be the packaged package.json version.
+  try { checks.push({ check: "app-version", ok: (JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as { version?: unknown }).version === manifest.appVersion }); }
+  catch { checks.push({ check: "app-version", ok: false }); }
   // The validating build must be the build being packaged: it owns exactly this schema's migrations.
   checks.push({ check: "schema-pin", ok: manifest.schemaVersion === schemaVersion });
   checks.push({ check: "pi-pending", ok: artifactPiStatus(manifest) === "pending" || manifest.arch !== "arm64" });

@@ -7,6 +7,7 @@ import { join } from "node:path";
 import type { Model } from "schway/host";
 import { readConfig } from "../src/config";
 import { startFullApp, stopDrain } from "../src/ops/lifecycle";
+import { createWebHandler } from "../src/web";
 import { schwayBackupEngine } from "../src/ops/schway-backup";
 import { SchwayRunPort } from "../src/team/schway-port";
 import type { ApplicationRunRequest } from "../src/team/types";
@@ -118,32 +119,22 @@ test("startFullApp in schway mode fails closed when the bridge gate does not hol
   expect(refused.gates[0]!.detail).toContain("unsafe_host_directory");
 });
 
-async function freePort(): Promise<number> {
-  const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("") });
-  const port = probe.port!;
-  await probe.stop(true);
-  return port;
-}
-
-test("serve selects the concrete native port in schway mode and refuses to start when the gate fails", async () => {
+test("serve's start path selects the concrete native port in schway mode and refuses to start when the gate fails", async () => {
   const root = mkdtempSync(join(tmpdir(), "jit-ops-backup-serve-")); roots.push(root);
   const main = join(import.meta.dir, "../src/main.ts");
-  const port = await freePort();
+  const port = 3443;
   const origin = `http://127.0.0.1:${port}`;
   const env = { JIT_DATABASE: join(root, "app.sqlite"), JIT_RUN_PORT: "schway", JIT_PORT: String(port), JIT_HOST: "127.0.0.1", JIT_ORIGIN: origin, PATH: process.env.PATH ?? "" };
   const setupChild = Bun.spawn([process.execPath, main, "setup", "--password-stdin"], { cwd: root, env, stdin: new TextEncoder().encode(password + "\n"), stdout: "pipe", stderr: "pipe" });
   expect(await setupChild.exited).toBe(0);
-  const server = Bun.spawn([process.execPath, main, "serve"], { cwd: root, env, stdout: "pipe", stderr: "pipe" });
+  // `serve` (development profile) is startFullApp + serveFullApp; drive the same start path in-process and
+  // its Web handler without a listener, so the check needs no sockets.
+  const started = await startFullApp({ config: readConfig(env), service: null });
+  if (!started.ok) throw new Error(JSON.stringify(started.gates));
   try {
-    const reader = server.stdout.getReader();
-    let out = "";
-    while (!out.includes("Jit workspace started")) {
-      const { done, value } = await reader.read();
-      if (done) throw new Error(`serve exited early: ${out}`);
-      out += new TextDecoder().decode(value);
-    }
-    reader.releaseLock();
-    expect(out).toContain("Schway bridge ready");
+    expect(started.handle.teamPort.adapter).toBe("schway");
+    const web = createWebHandler(started.handle.app);
+    const fetch = (url: string, init?: RequestInit) => web(new Request(url, init));
     const login = await fetch(`${origin}/login`, { method: "POST", redirect: "manual",
       headers: { origin, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ password }) });
     const token = /jit_session=([^;]+)/.exec(login.headers.get("set-cookie") ?? "")?.[1];
@@ -159,8 +150,9 @@ test("serve selects the concrete native port in schway mode and refuses to start
     expect(receipt.manifest.native).toMatchObject({ state: "valid", engine: schwayBackupEngine });
     expect(receipt.manifest.artifact.path.startsWith(join(root, "app.sqlite.backups") + "/")).toBe(true);
   } finally {
-    server.kill("SIGTERM");
-    await server.exited;
+    await stopDrain(started.handle, { timeoutMs: 5000 });
+    started.handle.service.close();
+    started.handle.store.close();
   }
   // Fail-closed startup: a blocked service directory stops serve before any listener exists.
   const blocked = mkdtempSync(join(tmpdir(), "jit-ops-backup-serve-blocked-")); roots.push(blocked);

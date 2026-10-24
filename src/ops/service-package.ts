@@ -138,6 +138,67 @@ function directory(check: string, path: string, uid: number | null, strict: bool
   } catch { return blocked(check, "prepare-service-directories", "missing"); }
 }
 
+type AccessFlag = "-r" | "-w" | "-x";
+
+/**
+ * Asks whether the resolved service identity itself can access `path`, as
+ * the kernel decides it: fixed argv `runuser -u <user> -- test <flag> <path>`
+ * through the injectable runner (no shell). Mode bits alone cannot answer
+ * this (ACLs, supplementary groups, parent traversal).
+ */
+async function serviceCan(run: CommandRunner, user: string, path: string, flags: AccessFlag[]): Promise<AccessFlag[]> {
+  const missing: AccessFlag[] = [];
+  for (const flag of flags) {
+    const result = await run(["runuser", "-u", user, "--", "test", flag, path], { timeoutMs: 10_000 });
+    if (result.exitCode !== 0) missing.push(flag);
+  }
+  return missing;
+}
+
+const flagNames: Record<AccessFlag, string> = { "-r": "read", "-w": "write", "-x": "traverse" };
+
+/** Access checks for every path the unit needs, evaluated as the service identity. */
+async function accessChecks(run: CommandRunner, service: ServiceConfig, host: OperatorHost, resolved: boolean): Promise<OperatorCheck[]> {
+  const required: [string, string, AccessFlag[]][] = [
+    ["access:state-directory", service.stateDirectory, ["-r", "-w", "-x"]],
+    ["access:backup-directory", service.backupDirectory, ["-r", "-w", "-x"]],
+    ["access:ledger-directory", dirname(service.ledgerPath), ["-w", "-x"]],
+    ["access:working-directory", service.workingDirectory, ["-r", "-x"]],
+    ["access:release-parent", dirname(service.executablePath), ["-x"]],
+  ];
+  if (existsSync(host.configDir)) required.push(["access:config-directory", host.configDir, ["-x"]]);
+  if (existsSync(service.ledgerPath)) required.push(["access:ledger", service.ledgerPath, ["-r", "-w"]]);
+  for (const ref of service.secretRefs) if (ref.store === "credential-file" && existsSync(ref.key)) required.push([`access:secret:${ref.name}`, ref.key, ["-r"]]);
+  const checks: OperatorCheck[] = [];
+  for (const [check, path, flags] of required) {
+    // An unresolved identity is already a blocked `identity` check; access cannot be evaluated for it.
+    if (!resolved) break;
+    const missing = await serviceCan(run, service.serviceUser, path, flags);
+    checks.push(missing.length === 0 ? ok(check, `service identity can ${flags.map(f => flagNames[f]).join("/")}`)
+      : blocked(check, "grant-service-identity-access", `service identity cannot ${missing.map(f => flagNames[f]).join("/")}`));
+  }
+  return checks;
+}
+
+/** An existing ledger checkpoint must be a regular, non-symlink, service-owned 0600 file. */
+function ledgerFileCheck(service: ServiceConfig, uid: number | null): OperatorCheck | null {
+  let stats;
+  try { stats = lstatSync(service.ledgerPath); } catch { return null; }
+  if (stats.isSymbolicLink() || !stats.isFile()) return blocked("ledger", "replace-ledger-with-regular-file", "ledger checkpoint is not a regular file");
+  if (uid === null || stats.uid !== uid) return blocked("ledger", "chown-ledger-to-service-identity", "ledger checkpoint not owned by the service identity");
+  if ((stats.mode & 0o777) !== 0o600) return blocked("ledger", "restrict-ledger-mode-0600", "ledger checkpoint mode is not 0600");
+  return ok("ledger", "ledger checkpoint regular, service-owned, 0600");
+}
+
+/** An existing config directory must be a real directory, not writable by group/other. */
+function configDirectoryCheck(host: OperatorHost): OperatorCheck {
+  let stats;
+  try { stats = lstatSync(host.configDir); } catch { return ok("config-directory", "created by install as root:<service gid> 0750"); }
+  if (stats.isSymbolicLink() || !stats.isDirectory()) return blocked("config-directory", "replace-config-directory", "config path is not a real directory");
+  if ((stats.mode & 0o022) !== 0) return blocked("config-directory", "restrict-config-directory", "config directory writable by group/other");
+  return ok("config-directory", "present; install sets root:<service gid> 0750");
+}
+
 function secretChecks(service: ServiceConfig, uid: number | null): OperatorCheck[] {
   return service.secretRefs.map(ref => {
     if (ref.store !== "credential-file") return blocked(`secret:${ref.name}`, "verify-secret-store", `${ref.store} access cannot be verified by the package`);
@@ -195,7 +256,11 @@ export async function planInstall(input: { service: unknown; artifactDir: string
   checks.push(directory("backup-directory", service.backupDirectory, who.uid, true));
   checks.push(directory("working-directory", service.workingDirectory, null, false));
   checks.push(directory("ledger-directory", dirname(service.ledgerPath), null, false));
+  const ledgerCheck = ledgerFileCheck(service, who.uid);
+  if (ledgerCheck) checks.push(ledgerCheck);
+  checks.push(configDirectoryCheck(host));
   checks.push(...secretChecks(service, who.uid));
+  checks.push(...await accessChecks(host.run, service, host, who.uid !== null && who.gid !== null));
   checks.push(await privateBind(host.run, service));
   checks.push(activeReleaseCheck(service));
   const supervisor = new SystemdSupervisor(host.run);
@@ -269,25 +334,54 @@ export interface InstallResult { ok: boolean; plan: InstallPlan; release: string
  */
 export async function installService(input: { service: unknown; artifactDir: string; host: OperatorHost }): Promise<InstallResult> {
   const plan = await planInstall(input);
-  if (!plan.ok) return { ok: false, plan, release: null, supervisor: null };
+  if (!plan.ok || !plan.identity) return { ok: false, plan, release: null, supervisor: null };
   const service = parseServiceConfig(input.service);
+  const { uid, gid } = plan.identity;
+  const host = input.host;
+  const chown = host.chown ?? chownVerified;
+  const fail = (nextAction: string, detail: string, release: string | null = null): InstallResult =>
+    ({ ok: false, plan: { ...plan, ok: false, checks: [...plan.checks, blocked("install", nextAction, detail)] }, release, supervisor: null });
   const manifest = readManifest(input.artifactDir);
   const release = stageRelease(service, input.artifactDir, manifest);
-  const chown = input.host.chown ?? chownVerified;
+  // The service identity must traverse the config directory to read --service-config: root:<gid> 0750.
+  try {
+    mkdirSync(host.configDir, { recursive: true, mode: 0o750 });
+    if (lstatSync(host.configDir).isSymbolicLink()) return fail("replace-config-directory", "config path is a symlink", release);
+    chmodSync(host.configDir, 0o750);
+    chown(host.configDir, 0, gid);
+  } catch { return fail("run-install-as-root", "could not assign config directory ownership", release); }
+  let seeded = false;
   for (const file of plan.files) {
     const content = file.content ?? JSON.stringify(service, null, 2) + "\n";
+    const isLedger = file.path === service.ledgerPath;
     // The ledger seed is written only when absent; a real checkpoint is never replaced by packaging.
-    if (file.path === service.ledgerPath && existsSync(file.path)) continue;
+    if (isLedger && existsSync(file.path)) continue;
     writeFileAtomic(file.path, content);
+    if (isLedger) seeded = true;
     chmodSync(file.path, Number.parseInt(file.mode, 8));
     if (file.owner) {
       // Any ownership failure fails the install before the release is activated or the unit enabled.
       try { chown(file.path, file.owner.uid, file.owner.gid); }
-      catch { return { ok: false, plan: { ...plan, ok: false, checks: [...plan.checks, blocked("ownership", "run-install-as-root", `could not assign ${file.path === service.ledgerPath ? "ledger" : "configuration"} ownership`)] }, release, supervisor: null }; }
+      catch {
+        // Never leave an installer-owned seed behind for a retry to inherit.
+        if (isLedger) rmSync(file.path, { force: true });
+        return fail("run-install-as-root", `could not assign ${isLedger ? "ledger" : "configuration"} ownership`, release);
+      }
     }
   }
+  // Verify, as the service identity, everything the unit needs before activating anything.
+  const verify: [string, AccessFlag[]][] = [[installedConfigPath(host), ["-r"]], [service.ledgerPath, ["-r", "-w"]],
+    [release, ["-r", "-x"]], [join(release, "src", "main.ts"), ["-r"]]];
+  for (const [path, flags] of verify) {
+    const missing = await serviceCan(host.run, service.serviceUser, path, flags);
+    if (missing.length) {
+      if (seeded) rmSync(service.ledgerPath, { force: true });
+      return fail("grant-service-identity-access", `service identity cannot ${missing.map(f => flagNames[f]).join("/")} an installed path`, release);
+    }
+  }
+  void uid;
   switchRelease(service.executablePath, release);
-  const supervisor = new SystemdSupervisor(input.host.run);
+  const supervisor = new SystemdSupervisor(host.run);
   const reloaded = await supervisor.daemonReload();
   const enabled = reloaded && await supervisor.enable();
   return { ok: reloaded && enabled, plan, release, supervisor: { reloaded, enabled } };

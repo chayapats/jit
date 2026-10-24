@@ -25,9 +25,10 @@ bun ops/package/bun-build.ts install-deps <outDir>   # on the target host/arch; 
 Create ignored `.local/service-config.json` (fields in the contract). Configure exactly one `ledgerPath` for the installation and never hand-edit that file after the service has established it. Then:
 
 ```sh
-bun src/main.ts service plan --config .local/service-config.json --artifact <outDir> --bun <abs bun>
+sudo bun src/main.ts service plan --config .local/service-config.json --artifact <outDir> --bun <abs bun>
 ```
 
+- Run as root: access is checked as the service identity with `runuser -u <identity> -- test ...` (state, backups, ledger, working directory, release parent, config directory, credential files).
 - Exit 0 only when every check passes; each blocked check names its next action (create identity, restrict directory, provision credential file, install pinned Bun, rebuild artifact, bring up private interface, stop running unit).
 - The plan prints the exact unit and journald texts, file paths/modes/digests and commands; secret references appear by name only. Nothing is written.
 
@@ -37,7 +38,7 @@ bun src/main.ts service plan --config .local/service-config.json --artifact <out
 sudo bun src/main.ts service install --config .local/service-config.json --artifact <outDir> --bun <abs bun>
 ```
 
-- Run as root. Writes `/etc/jit/service-config.json` (root:<service gid>, 0640), `/etc/systemd/system/jit.service` (0644), `/etc/systemd/journald@jit.conf` (0644), stages `/opt/jit/releases/<artifactId>`, points the active-release symlink, seeds the ledger placeholder only if absent (owned by the service identity, 0600), `daemon-reload` and `enable`. It does not start the service.
+- Run as root. Creates `/etc/jit` as root:<service gid> 0750 and writes `/etc/jit/service-config.json` (root:<service gid>, 0640), `/etc/systemd/system/jit.service` (0644), `/etc/systemd/journald@jit.conf` (0644), stages `/opt/jit/releases/<artifactId>`, points the active-release symlink, seeds the ledger placeholder only if absent (owned by the service identity, 0600), `daemon-reload` and `enable`. It does not start the service.
 
 ## 4. Owner setup, start, status, stop
 
@@ -45,7 +46,7 @@ sudo bun src/main.ts service install --config .local/service-config.json --artif
 sudo -u <identity> JIT_DATABASE=<stateDirectory>/app.sqlite \
   <abs bun> /opt/jit/current/src/main.ts setup          # trusted local owner provisioning (once; interactive password)
 sudo bun src/main.ts service start
-bun src/main.ts service status
+sudo bun src/main.ts service status                     # or as a member of the service group: /etc/jit is root:<gid> 0750
 sudo bun src/main.ts service stop
 journalctl --namespace=jit -u jit.service                # bounded by journald@jit.conf
 ```

@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { fixtureLedgerGate } from "./fixtures/ledger-gate";
 import { Database } from "bun:sqlite";
-import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants as fsConstants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Application } from "../src/application";
@@ -32,7 +32,9 @@ import { parseServiceConfig, renderServiceUnit, serviceDatabasePath, type Servic
  */
 const roots: string[] = [];
 const children: Array<ReturnType<typeof Bun.spawn>> = [];
+const stopAll: Array<() => Promise<void>> = [];
 afterEach(async () => {
+  for (const stop of stopAll.splice(0)) await stop();
   for (const child of children.splice(0)) { try { child.kill("SIGKILL"); await child.exited; } catch { /* Already gone. */ } }
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -44,12 +46,6 @@ const chowns: Array<[string, number, number]> = [];
 const recordChown = (path: string, owner: number, group: number) => { chowns.push([path, owner, group]); };
 const rid = () => crypto.randomUUID();
 
-async function freePort(): Promise<number> {
-  const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("") });
-  const port = probe.port!;
-  await probe.stop(true);
-  return port;
-}
 
 function layout(port = 3443) {
   const root = mkdtempSync(join(tmpdir(), "jit-service-package-")); roots.push(root);
@@ -118,55 +114,74 @@ interface FakeSupervisor {
  * Environment and WorkingDirectory as a real child; `stop` sends SIGTERM and
  * escalates to SIGKILL after TimeoutStopSec, like systemd.
  */
-function fakeSupervisor(unitDir: string, options: { spawnService?: boolean } = {}): FakeSupervisor {
-  let child: ReturnType<typeof Bun.spawn> | null = null;
+/** In-process service started by the fake supervisor from the release's own modules (no sockets). */
+interface RunningRelease { handle: any; web: (request: Request) => Promise<Response>; stopDrain: (handle: any, o: { timeoutMs: number }) => Promise<unknown> }
+
+/**
+ * Fake systemd. `start` reads the installed unit, takes its ExecStart
+ * (`<release>/src/main.ts serve --service-config <path>`), Environment and
+ * TimeoutStopSec, and boots that release's real start path in-process:
+ * `readConfig(Environment)`, `readServiceConfigFile(<path>)` and
+ * `startFullApp` imported from the release directory, with the fixture
+ * ledger gate standing in for the OPS02 writer. HTTP goes through the
+ * release's `createWebHandler` — no listener or socket. `stop` drains with
+ * the unit's stop budget, like SIGTERM handling in serve.
+ */
+function fakeSupervisor(unitDir: string, options: { spawnService?: boolean } = {}): FakeSupervisor & { running: () => RunningRelease | null } {
+  let running: RunningRelease | null = null;
   let simulatedActive = false;
-  const fake: FakeSupervisor = { calls: [], identity: `jit-service:x:${uid}:${gid}::/var/lib/jit:/usr/sbin/nologin`, group: `jit-service:x:${gid}:`,
-    active: () => options.spawnService === false ? simulatedActive : child !== null && child.exitCode === null && !child.killed,
+  const fake: FakeSupervisor & { running: () => RunningRelease | null } = {
+    calls: [], identity: `jit-service:x:${uid}:${gid}::/var/lib/jit:/usr/sbin/nologin`, group: `jit-service:x:${gid}:`,
+    running: () => running,
+    active: () => options.spawnService === false ? simulatedActive : running !== null,
     run: async (argv, opts) => {
       fake.calls.push(argv);
       const done = (exitCode: number, stdout = ""): CommandResult => ({ exitCode, stdout, timedOut: false });
       if (argv[0] === "getent" && argv[1] === "group") return fake.group ? done(0, fake.group + "\n") : done(2);
       if (argv[0] === "getent") return fake.identity ? done(0, fake.identity + "\n") : done(2);
+      if (argv[0] === "runuser" && argv[4] === "test") {
+        // The test process plays the service identity: the kernel decides access exactly as for that user.
+        const mode = { "-r": fsConstants.R_OK, "-w": fsConstants.W_OK, "-x": fsConstants.X_OK }[argv[5]!];
+        try { accessSync(argv[6]!, mode); return done(0); } catch { return done(1); }
+      }
       if (argv[1] === "--version") return done(0, `${Bun.version}\n`);
       if (argv.includes("upgrade") && fake.upgrade) return fake.upgrade(argv, opts);
       if (argv[0] !== "systemctl") return done(127);
       const verb = argv[1];
       if (verb === "daemon-reload" || verb === "enable") return done(0);
-      if (verb === "show") return done(0, `ActiveState=${fake.active() ? "active" : "inactive"}\nUnitFileState=enabled\nNRestarts=0\nMainPID=${child?.pid ?? 0}\n`);
+      if (verb === "show") return done(0, `ActiveState=${fake.active() ? "active" : "inactive"}\nUnitFileState=enabled\nNRestarts=0\nMainPID=${running ? process.pid : 0}\n`);
       if (verb === "start") {
         if (options.spawnService === false) { simulatedActive = true; return done(0); }
+        if (running) return done(0);
         const unit = readFileSync(join(unitDir, "jit.service"), "utf8");
-        const [bun, entry, ...rest] = /^ExecStart=(.+)$/m.exec(unit)![1]!.split(" ");
-        // Same ExecStart, but the release's real serve path runs under the fixture ledger gate (OPS02 writer not integrated).
-        const exec = [bun!, harness, resolve(entry!, "..", ".."), ...rest];
+        const [, entry, command, flag, configPath] = /^ExecStart=(.+)$/m.exec(unit)![1]!.split(" ");
+        expect([command, flag]).toEqual(["serve", "--service-config"]);
         const env = Object.fromEntries([...unit.matchAll(/^Environment=([A-Z_]+)=(.*)$/gm)].map(m => [m[1]!, m[2]!]));
-        const cwd = /^WorkingDirectory=(.+)$/m.exec(unit)![1]!;
-        const proc = Bun.spawn(exec, { cwd, env: { ...env, PATH: process.env.PATH ?? "" }, stdout: "pipe", stderr: "pipe" });
-        child = proc;
-        children.push(proc);
-        const reader = proc.stdout.getReader();
-        let out = "";
-        while (!out.includes("Jit workspace started")) {
-          const { done: ended, value } = await reader.read();
-          if (ended) return done(1);
-          out += new TextDecoder().decode(value);
-        }
-        reader.releaseLock();
+        const release = resolve(entry!, "..", "..");
+        const { readConfig: releaseConfig } = await import(join(release, "src", "config.ts"));
+        const { readServiceConfigFile } = await import(join(release, "src", "ops", "service-package.ts"));
+        const lifecycle = await import(join(release, "src", "ops", "lifecycle.ts"));
+        const { createWebHandler } = await import(join(release, "src", "web.ts"));
+        const started = await lifecycle.startFullApp({ config: releaseConfig(env), service: readServiceConfigFile(configPath!), ledgerGate: fixtureLedgerGate });
+        if (!started.ok) return done(1, JSON.stringify(started.gates));
+        running = { handle: started.handle, web: createWebHandler(started.handle.app), stopDrain: lifecycle.stopDrain };
         return done(0);
       }
       if (verb === "stop" || verb === "disable") {
         if (options.spawnService === false) { simulatedActive = false; return done(0); }
-        if (child && child.exitCode === null) {
+        if (running) {
           const timeout = Number(/^TimeoutStopSec=(\d+)$/m.exec(readFileSync(join(unitDir, "jit.service"), "utf8"))![1]) * 1000;
-          child.kill("SIGTERM");
-          const exited = await Promise.race([child.exited.then(() => true), Bun.sleep(timeout).then(() => false)]);
-          if (!exited) { child.kill("SIGKILL"); await child.exited; }
+          const { handle, stopDrain: drain } = running;
+          running = null;
+          await drain(handle, { timeoutMs: Math.min(timeout, 300_000) });
+          handle.service.close();
+          handle.store.close();
         }
         return done(0);
       }
       return done(1);
     } };
+  stopAll.push(async () => { if (running) await fake.run(["systemctl", "stop", "jit.service"], { timeoutMs: 1000 }); });
   return fake;
 }
 
@@ -271,7 +286,7 @@ test("configuration negatives reject before any install or background activation
 }, 60_000);
 
 test("fresh artifact → plan → install → supervised full app → owner state persists across stop/restart with one scheduler owner", async () => {
-  const port = await freePort();
+  const port = 3443;
   const l = layout(port);
   const art = await artifact(l.root, "artifact", { runnable: true });
   const fake = fakeSupervisor(l.dirs.unit);
@@ -290,6 +305,8 @@ test("fresh artifact → plan → install → supervised full app → owner stat
   expect(await setup.exited).toBe(0);
   expect((await cli(["start"], fake, l)).exitCode).toBe(0);
   const origin = `http://127.0.0.1:${port}`;
+  // In-process HTTP against the running release's Web handler: no listener, no socket.
+  const fetch = (url: string, init?: RequestInit) => fake.running()!.web(new Request(url, init));
   const login = async () => {
     const response = await fetch(`${origin}/login`, { method: "POST", redirect: "manual",
       headers: { origin, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ password }) });
@@ -330,8 +347,7 @@ test("fresh artifact → plan → install → supervised full app → owner stat
 }, 120_000);
 
 test("serve in the packaged release refuses a modified release before any background activation", async () => {
-  const port = await freePort();
-  const l = layout(port);
+  const l = layout();
   const art = await artifact(l.root, "artifact", { runnable: true });
   const fake = fakeSupervisor(l.dirs.unit);
   expect((await cli(["install", "--config", l.source, "--artifact", art], fake, l)).exitCode).toBe(0);
@@ -606,7 +622,9 @@ test("install assigns the ledger to the service identity and the config to root:
   rmSync(l.service.ledgerPath, { force: true });
   const installed = await cli(["install", "--config", l.source, "--artifact", art], fake, l);
   expect(installed.exitCode).toBe(0);
-  expect(chowns).toEqual([[join(l.dirs.configDir, "service-config.json"), 0, 4242], [l.service.ledgerPath, uid, 4242]]);
+  expect(chowns).toEqual([[l.dirs.configDir, 0, 4242], [join(l.dirs.configDir, "service-config.json"), 0, 4242], [l.service.ledgerPath, uid, 4242]]);
+  // The service identity traverses root:<gid> 0750 to read its 0640 configuration.
+  expect(lstatSync(l.dirs.configDir).mode & 0o777).toBe(0o750);
   expect(readFileSync(join(l.dirs.unit, "jit.service"), "utf8")).toMatch(/^Group=4242$/m);
   expect(lstatSync(l.service.ledgerPath).mode & 0o777).toBe(0o600);
 });
@@ -670,4 +688,101 @@ test("an idle stop with historical failed jobs reports stopped, not interrupted"
     // Nothing was in flight: this drain interrupted nothing, whatever the job history holds.
     expect(await stopDrain({ queue, store }, { timeoutMs: 5000 })).toMatchObject({ outcome: "stopped", fencedJobs: 0, nextAction: "none" });
   } finally { store.close(); }
+});
+
+// ---------------------------------------------------------------------------
+// Review round 2 regressions
+// ---------------------------------------------------------------------------
+
+test("every manifest field is bound into the content pin, and appVersion must match the packaged package.json", async () => {
+  const l = layout();
+  const art = join(l.root, "artifact");
+  const built = buildPackage({ srcDir: repoRoot, outDir: art, engineContract: "jit.schway.bridge/v1", engineRevision: null });
+  expect(validateArtifact(art).ok).toBe(true);
+  const forged: Record<string, unknown> = {
+    artifactId: rid(), appVersion: "9.9.9", bunVersion: "9.9.9", lockHash: "a".repeat(64), engineContract: "jit.schway.bridge/v2",
+    engineRevision: "9.9.9", arch: built.arch === "arm64" ? "x64" : "arm64", piValidation: { status: "pending", detail: "forged" },
+    builtAt: "2030-01-01T00:00:00.000Z",
+  };
+  for (const [field, value] of Object.entries(forged)) {
+    writeFileSync(join(art, "manifest.json"), JSON.stringify({ ...built, [field]: value }));
+    const result = validateArtifact(art);
+    expect([field, result.ok]).toEqual([field, false]);
+    expect(result.checks).toContainEqual({ check: "content-pin", ok: false });
+  }
+  writeFileSync(join(art, "manifest.json"), JSON.stringify(built));
+  expect(validateArtifact(art).ok).toBe(true);
+  // A package.json edited to match a forged appVersion still breaks the content pin; the cross-check names it too.
+  const pkg = JSON.parse(readFileSync(join(art, "package.json"), "utf8"));
+  writeFileSync(join(art, "package.json"), JSON.stringify({ ...pkg, version: "9.9.9" }));
+  expect(validateArtifact(art).checks).toEqual(expect.arrayContaining([{ check: "content-pin", ok: false }, { check: "app-version", ok: false }]));
+});
+
+test("plan validates access as the service identity and rejects inaccessible directories and unsafe existing ledgers", async () => {
+  const l = layout();
+  const art = await artifact(l.root, "artifact");
+  const fake = fakeSupervisor(l.dirs.unit);
+  const host = (): OperatorHost => ({ run: fake.run, unitDir: l.dirs.unit, journaldDir: l.dirs.journald, configDir: l.dirs.configDir, bunPath: process.execPath, ledgerGate: fixtureLedgerGate });
+  const failing = async () => (await planInstall({ service: l.service, artifactDir: art, host: host() })).checks.filter(c => !c.ok).map(c => [c.check, c.nextAction]);
+  expect(await failing()).toEqual([]);
+  chmodSync(l.dirs.work, 0o000);
+  try { expect(await failing()).toEqual([["access:working-directory", "grant-service-identity-access"]]); }
+  finally { chmodSync(l.dirs.work, 0o755); }
+  // Existing ledgers: wrong mode, not service-owned, symlink.
+  writeFileSync(l.service.ledgerPath, JSON.stringify({ ledger: "jit.deletion.ledger/v1", revision: 1 }), { mode: 0o644 });
+  chmodSync(l.service.ledgerPath, 0o644);
+  expect(await failing()).toEqual([["ledger", "restrict-ledger-mode-0600"]]);
+  chmodSync(l.service.ledgerPath, 0o600);
+  expect(await failing()).toEqual([]);
+  fake.identity = `jit-service:x:${uid + 1}:${gid}::/var/lib/jit:/usr/sbin/nologin`;
+  expect((await failing()).map(c => c[0])).toContain("ledger");
+  fake.identity = `jit-service:x:${uid}:${gid}::/var/lib/jit:/usr/sbin/nologin`;
+  const target = join(l.root, "elsewhere.json");
+  writeFileSync(target, "{}", { mode: 0o600 });
+  rmSync(l.service.ledgerPath);
+  symlinkSync(target, l.service.ledgerPath);
+  expect(await failing()).toContainEqual(["ledger", "replace-ledger-with-regular-file"]);
+  rmSync(l.service.ledgerPath);
+  chmodSync(l.service.ledgerPath.replace(/ledger\.json$/, ""), 0o500);
+  try { expect(await failing()).toContainEqual(["access:ledger-directory", "grant-service-identity-access"]); }
+  finally { chmodSync(l.service.ledgerPath.replace(/ledger\.json$/, ""), 0o700); }
+});
+
+test("a failed ledger chown removes the new seed, so a retry re-seeds and re-assigns it instead of inheriting it", async () => {
+  const l = layout();
+  const art = await artifact(l.root, "artifact");
+  const fake = fakeSupervisor(l.dirs.unit, { spawnService: false });
+  const deps = (chown: (path: string, owner: number, group: number) => void) => ({ cwd: l.root, run: fake.run, bunPath: process.execPath, ledgerGate: fixtureLedgerGate, chown });
+  const args = ["install", "--config", l.source, "--artifact", art, "--unit-dir", l.dirs.unit, "--journald-dir", l.dirs.journald, "--config-dir", l.dirs.configDir];
+  const first = await runServiceCommand(args, deps((path) => { if (path === l.service.ledgerPath) throw new Error("EPERM"); }));
+  expect(first).toMatchObject({ exitCode: 1, output: { ok: false } });
+  expect(existsSync(l.service.ledgerPath)).toBe(false);
+  expect(existsSync(l.service.executablePath)).toBe(false);
+  const retried: string[] = [];
+  const second = await runServiceCommand(args, deps(path => { retried.push(path); }));
+  expect(second.exitCode).toBe(0);
+  expect(retried).toContain(l.service.ledgerPath);
+});
+
+test("read-only stores read committed WAL data with both sidecars and fail closed with only one", async () => {
+  const { openReadOnlyStore } = await import("../src/ops/readonly-store");
+  const l = layout();
+  const db = join(l.dirs.state, "wal.sqlite");
+  const live = new TransactionStore(db);
+  try {
+    live.transaction(tx => tx.run("PRAGMA user_version = 22"));
+    live.transaction(tx => tx.run("CREATE TABLE IF NOT EXISTS probe (n INTEGER)"));
+    live.transaction(tx => tx.run("INSERT INTO probe VALUES (1)"));
+    expect(existsSync(`${db}-wal`) && existsSync(`${db}-shm`)).toBe(true);
+    expect(openReadOnlyStore(db)!.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM probe")!.n)).toBe(1);
+    // Copy the database plus its WAL but not its SHM: committed data lives only in the WAL.
+    const copy = join(l.dirs.state, "copy.sqlite");
+    writeFileSync(copy, readFileSync(db));
+    writeFileSync(`${copy}-wal`, readFileSync(`${db}-wal`));
+    expect(() => openReadOnlyStore(copy)!.read(tx => tx.get("SELECT count(*) AS n FROM probe"))).toThrow("store_sidecars_incomplete");
+    expect(existsSync(`${copy}-shm`)).toBe(false);
+  } finally { live.close(); }
+  // Clean close removes both sidecars; the immutable read then sees everything that was checkpointed.
+  expect(openReadOnlyStore(db)!.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM probe")!.n)).toBe(1);
+  expect(openReadOnlyStore(join(l.dirs.state, "absent.sqlite"))).toBeNull();
 });

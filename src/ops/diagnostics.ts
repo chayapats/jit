@@ -1,6 +1,6 @@
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { TransactionStore } from "../store";
+import { openReadOnlyStore, unavailableReadOnlyStore } from "./readonly-store";
 import type { AppConfig } from "../config";
 import { botCredentialConfigured } from "../telegram/secrets";
 import { redactModel, redactRouteId, safeEvidenceId, safeNote, safeOpsAlias } from "./contracts";
@@ -129,8 +129,9 @@ function decodeJob(recordJson: string): StoredJob | null {
  * output. Callers must not run background work around this call.
  */
 export function gatherDiagnostics(root: string, config: AppConfig, now: number = Date.now()): DiagnosticsInput {
-  const store = new TransactionStore(config.databasePath, { migrateExisting: false });
-  try {
+  // Read-only connection: diagnose never creates, migrates, journals or chmods; missing/unreadable reads as unavailable.
+  const store = openReadOnlyStore(config.databasePath) ?? unavailableReadOnlyStore(config.databasePath);
+  {
     const jobs = store.read(tx => {
       try {
         return tx.all<{ record_json: string }>("SELECT record_json FROM jobs LIMIT 10001").map(r => r.record_json);
@@ -177,5 +178,5 @@ export function gatherDiagnostics(root: string, config: AppConfig, now: number =
       telegram: { configured: botCredentialConfigured(config.telegram.botTokenPath),
         pendingIntents: delivery.pendingIntents, unknownDeliveries: delivery.unknownDeliveries },
       artifacts };
-  } finally { store.close(); }
+  }
 }
