@@ -611,3 +611,37 @@ test("a stale terminal commit cannot erase persisted admissions or ledgers", asy
   const late = await pending;
   expect(late.record.lifecycle).not.toBe("started");
 });
+
+test("a send that completes after cancellation stays unconfirmed and unwritten", async () => {
+  const root = setup();
+  let releaseFetch!: (response: Response) => void;
+  const fetchGate = new Promise<Response>(resolve => { releaseFetch = resolve; });
+  const fetch: HostAuthFetch = async () => fetchGate;
+  const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, store: memStore(validTokens), fetch });
+  const pending = liveProbe("fixture-probe-host",
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 8000 },
+    { ...ports, now: () => 1800000000000, id: () => OTHER_ID }, root);
+  for (let spin = 0; spin < 200; spin++) {
+    try {
+      const current = await readProbeAttempt(root, OTHER_ID);
+      const sends = current.observations.find(item => item.observation === "renewal")!.sends;
+      if (sends?.length === 1 && sends[0]!.inference === 1) break;
+    } catch { /* Not persisted yet. */ }
+    await new Promise(r => setTimeout(r, 5));
+  }
+  // The admission (and its unconfirmed intent) is durable before cancel wins.
+  expect((await readProbeAttempt(root, OTHER_ID)).observations.find(item => item.observation === "renewal")!.sends)
+    .toEqual([{ inference: 1, token: 0, confirmed: false }]);
+  const cancelled = await cancelProbeAttempt(root, OTHER_ID);
+  expect(cancelled.lifecycle).toBe("cancelled");
+  // The transport completes only after cancellation acknowledged: the
+  // confirmation is refused, the store of record keeps the entry explicitly
+  // unconfirmed, and the late response never becomes success evidence.
+  releaseFetch(new Response(sseSuccess("late success"), { status: 200, headers: { "content-type": "text/event-stream" } }));
+  const late = await pending;
+  expect(late.record.lifecycle).toBe("cancelled");
+  const final = await readProbeAttempt(root, OTHER_ID);
+  expect(final.observations.find(item => item.observation === "renewal")!.sends).toEqual([{ inference: 1, token: 0, confirmed: false }]);
+  const exported = exportProbeSummary(final);
+  expect(exported.observations.find(item => item.observation === "renewal")!.sends).toEqual([{ inference: 1, token: 0, confirmed: false }]);
+});

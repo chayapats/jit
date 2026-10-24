@@ -72,10 +72,12 @@ Each record carries four labeled entries that cannot stand in for each other:
   of swapping counts.
 - `renewal` / `renewal`: always `unobserved` with zero attempts — never a
   readiness or success claim. The renewal observation carries a validated
-  per-admission send array (one `{inference, token}` entry per admitted
-  infer call, each bounded by the pinned 2+2 ceiling, empty on preflight),
-  retained through restart reconciliation and included in the allowlisted
-  export. Only renewal carries a ledger: any send array on another
+  per-admission send array (one `{inference, token, confirmed}` entry per
+  admitted infer call, each bounded by the pinned 2+2 ceiling, empty on
+  preflight), retained through restart reconciliation and included in the
+  allowlisted export (with `confirmed`). `confirmed:false` marks a send that
+  was authorized but whose completion was never observed — uncertainty, not
+  exact evidence. Only renewal carries a ledger: any send array on another
   observation fails validation, and the renewal length must equal admitted
   attempts. A successful login never becomes renewal evidence on its own.
   Full per-request accounting awaits schway#415.

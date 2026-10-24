@@ -337,17 +337,33 @@ async function probeDirectory(root: string, create: boolean): Promise<string> {
 const recordLocks = new Map<string, Promise<void>>();
 
 async function withRecordLock<T>(id: string, work: () => Promise<T>): Promise<T> {
+  const release = await acquireRecordLock(id);
+  try {
+    return await work();
+  } finally {
+    release();
+  }
+}
+
+/**
+ * Acquires the per-record in-process mutex, returning a release function.
+ * Callers that must stop holding the mutex before their async work settles
+ * (the before-send gate releases before awaiting transport) use this
+ * directly instead of withRecordLock.
+ */
+async function acquireRecordLock(id: string): Promise<() => void> {
   const prior = recordLocks.get(id) ?? Promise.resolve();
   let release!: () => void;
   const mine = new Promise<void>(resolve => { release = resolve; });
   recordLocks.set(id, mine);
   await prior.catch(() => {});
-  try {
-    return await work();
-  } finally {
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
     release();
     if (recordLocks.get(id) === mine) recordLocks.delete(id);
-  }
+  };
 }
 
 /**
@@ -846,53 +862,72 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
   // acknowledge between permission and dispatch and no over-budget send is
   // ever forwarded. A completed send is confirmed in a second transaction;
   // a crash between initiation and confirmation leaves the entry explicitly
-  // unconfirmed (uncertain) instead of false exact evidence.
+  // unconfirmed (uncertain) instead of false exact evidence. The in-process
+  // record lock is held only across the synchronous section and released
+  // before awaiting transport, so a same-process cancellation waits on the
+  // mutex instead of timing out on the SQLite lock.
+  // Before-send gate shared with the transport: the lifecycle check, the
+  // durable intent record and the synchronous transport initiation happen
+  // inside one cross-process serialization (plus the shared in-process
+  // record lock, released before awaiting transport), so cancellation
+  // cannot acknowledge between permission and dispatch and no over-budget
+  // send is ever forwarded. A completed send is confirmed in a second
+  // transaction; a crash between initiation and confirmation leaves the
+  // entry explicitly unconfirmed (uncertain) instead of false exact
+  // evidence. Confirmation runs only while the record is still dispatched:
+  // a terminal record keeps the entry unconfirmed, and a response is
+  // returned to the transport only when confirmation commits — so a late
+  // token response can never be processed into a credential write after
+  // cancellation.
   const gateSend = async <R>(kind: "inference" | "token", start: () => Promise<R>): Promise<R> => {
     const dir = await probeDirectory(root, true);
-    const db = await lifecycleDb(dir);
+    const release = await acquireRecordLock(id);
     let pending: Promise<R> | null = null;
     try {
-      db.exec("BEGIN IMMEDIATE");
+      const db = await lifecycleDb(dir);
       try {
-        const current = await readProbeAttempt(root, id);
-        if (current.lifecycle !== "started") {
-          db.exec("ROLLBACK");
-          throw new Error("fenced");
-        }
-        const renewal = current.observations.find(item => item.observation === "renewal")!;
-        const ledger = [...(renewal.sends ?? [])];
-        const last = ledger[ledger.length - 1];
-        if (!last) {
-          db.exec("ROLLBACK");
-          throw new Error("fenced");
-        }
-        const next = { inference: last.inference + (kind === "inference" ? 1 : 0), token: last.token + (kind === "token" ? 1 : 0), confirmed: false };
-        // Pinned per-admission structural bound (schway#415 tracks exact
-        // accounting beyond it): refuse the send without recording it.
-        if (next.inference > 2 || next.token > 2) {
-          db.exec("ROLLBACK");
-          throw new Error("provider_budget_exceeded");
-        }
-        ledger[ledger.length - 1] = next;
-        const updated: ProbeAttempt = { ...current, observations: current.observations.map(item =>
-          item.observation === "renewal" ? { ...item, sends: ledger } : item) };
-        validateProbeAttempt(updated);
-        await atomicWriteFile(dir, `${id}.json`, JSON.stringify(updated) + "\n", () => {
-          if (effective.aborted) throw new PublishAborted();
-        });
+        db.exec("BEGIN IMMEDIATE");
         try {
+          const current = await readProbeAttempt(root, id);
+          if (current.lifecycle !== "started") {
+            db.exec("ROLLBACK");
+            throw new Error("fenced");
+          }
+          const renewal = current.observations.find(item => item.observation === "renewal")!;
+          const ledger = [...(renewal.sends ?? [])];
+          const last = ledger[ledger.length - 1];
+          if (!last) {
+            db.exec("ROLLBACK");
+            throw new Error("fenced");
+          }
+          const next = { inference: last.inference + (kind === "inference" ? 1 : 0), token: last.token + (kind === "token" ? 1 : 0), confirmed: false };
+          // Pinned per-admission structural bound (schway#415 tracks exact
+          // accounting beyond it): refuse the send without recording it.
+          if (next.inference > 2 || next.token > 2) {
+            db.exec("ROLLBACK");
+            throw new Error("provider_budget_exceeded");
+          }
+          ledger[ledger.length - 1] = next;
+          const updated: ProbeAttempt = { ...current, observations: current.observations.map(item =>
+            item.observation === "renewal" ? { ...item, sends: ledger } : item) };
+          validateProbeAttempt(updated);
+          await atomicWriteFile(dir, `${id}.json`, JSON.stringify(updated) + "\n", () => {
+            if (effective.aborted) throw new PublishAborted();
+          });
           pending = start();
+          db.exec("COMMIT");
         } catch (error) {
-          db.exec("ROLLBACK");
+          try { db.exec("ROLLBACK"); } catch { /* Already rolled back. */ }
           throw error;
+        } finally {
+          db.close();
         }
-        db.exec("COMMIT");
-      } catch (error) {
-        try { db.exec("ROLLBACK"); } catch { /* Already rolled back. */ }
-        throw error;
+      } finally {
+        release();
       }
-    } finally {
-      db.close();
+    } catch (error) {
+      release();
+      throw error;
     }
     let response: R;
     try {
@@ -900,9 +935,7 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
     } catch (error) {
       throw error;
     }
-    // Confirm the completed send; a terminal record keeps the entry
-    // explicitly unconfirmed instead of rewriting settled evidence.
-    await updateStartedRecord(root, id, current => {
+    const { updated } = await updateStartedRecord(root, id, current => {
       const renewal = current.observations.find(item => item.observation === "renewal")!;
       const ledger = [...(renewal.sends ?? [])];
       const last = ledger[ledger.length - 1];
@@ -910,7 +943,8 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
       ledger[ledger.length - 1] = { ...last, confirmed: true };
       return { ...current, observations: current.observations.map(item =>
         item.observation === "renewal" ? { ...item, sends: ledger } : item) };
-    }).catch(() => ({ updated: false as const, record: null as never }));
+    });
+    if (!updated) throw new Error("fenced");
     return response;
   };
   let attempts = 0, inference: ProbeEvent = "failed";
@@ -986,6 +1020,6 @@ export function exportProbeSummary(record: ProbeAttempt) {
     observations: record.observations.map(item => ({ observation: item.observation, probeClass: item.probeClass,
       event: item.event === "success" ? "success" : "not-success", state: item.state, nextAction: item.nextAction,
       attempts: item.attempts, elapsedMs: item.elapsedMs,
-      sends: (item.sends ?? []).map(call => ({ inference: call.inference, token: call.token })) })),
+      sends: (item.sends ?? []).map(call => ({ inference: call.inference, token: call.token, confirmed: call.confirmed })) })),
     promptBytes: record.promptBytes, nextAction: record.nextAction };
 }
