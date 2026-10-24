@@ -69,7 +69,10 @@ Each record carries four labeled entries that cannot stand in for each other:
   transport fails the attempt closed if the bound is ever exceeded, and the
   exact per-attempt send counts are reported (see renewal). Ports instances
   are single-flight: overlapping infer calls on one instance throw instead
-  of swapping counts.
+  of swapping counts. Credential-store mutations recheck dispatch first and
+  fail closed when unreadable; the default native store (no explicit store
+  passed) is Schway-owned and cannot be wrapped from Jit — that residual
+  awaits schway#416, and Jit never claims fenced production writes.
 - `renewal` / `renewal`: always `unobserved` with zero attempts — never a
   readiness or success claim. The renewal observation carries a validated
   per-send ledger (one `{inference, token, confirmed}` entry per transport

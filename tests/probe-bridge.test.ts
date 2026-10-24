@@ -696,3 +696,25 @@ test("no credential write happens after cancellation acknowledges", async () => 
   // it explicitly unconfirmed (uncertain) rather than confirmed or erased.
   expect(final.observations.find(item => item.observation === "renewal")!.sends).toEqual([{ inference: 0, token: 1, confirmed: false }]);
 });
+
+test("concurrent probes on distinct records settle without lock errors", async () => {
+  const root = setup();
+  const starter = bridgePorts({ root, fetch: successFetch("concurrent") });
+  const ids = [ID, OTHER_ID, "ee781630-4d14-4d8b-a0eb-000000000001", "ee781630-4d14-4d8b-a0eb-000000000002"];
+  const runs = ids.map((id, index) => liveProbe("fixture-probe-host",
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 8000 },
+    { ...starter.ports, now: () => 1800000000000 + index, id: () => id }, root));
+  const settled = await Promise.all(runs.map(run => run.then(
+    result => ({ ok: true as const, record: result.record }),
+    error => ({ ok: false as const, error: String(error && (error as Error).message || error) }),
+  )));
+  expect(settled.filter(item => item.ok)).toHaveLength(ids.length);
+  for (const item of settled) {
+    expect(item.ok).toBe(true);
+    if (item.ok) expect(["observed-ready", "failed", "cancelled", "interrupted"].includes(item.record.lifecycle)).toBe(true);
+  }
+  // No record is left behind in started: every admission terminalized.
+  for (const id of ids) {
+    expect((await readProbeAttempt(root, id)).lifecycle).not.toBe("started");
+  }
+});

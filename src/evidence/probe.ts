@@ -338,37 +338,36 @@ async function probeDirectory(root: string, create: boolean): Promise<string> {
   return dir;
 }
 
-/** One in-process mutex per record id so concurrent lifecycle transitions serialize. */
-const recordLocks = new Map<string, Promise<void>>();
+/** One in-process mutex per installation lifecycle directory. Every SQLite
+ * lifecycle transaction in this process serializes through it: per-record
+ * locks are not sufficient, because two records share one database file and
+ * a second BEGIN IMMEDIATE would block the event loop on a SQLite busy-wait
+ * while the first transaction awaits file I/O. The lock is always released
+ * before awaiting transport, so cancellation never deadlocks on it. */
+const dirLocks = new Map<string, Promise<void>>();
 
-async function withRecordLock<T>(id: string, work: () => Promise<T>): Promise<T> {
-  const release = await acquireRecordLock(id);
-  try {
-    return await work();
-  } finally {
-    release();
-  }
-}
-
-/**
- * Acquires the per-record in-process mutex, returning a release function.
- * Callers that must stop holding the mutex before their async work settles
- * (the before-send gate releases before awaiting transport) use this
- * directly instead of withRecordLock.
- */
-async function acquireRecordLock(id: string): Promise<() => void> {
-  const prior = recordLocks.get(id) ?? Promise.resolve();
+async function acquireDirLock(dir: string): Promise<() => void> {
+  const prior = dirLocks.get(dir);
   let release!: () => void;
   const mine = new Promise<void>(resolve => { release = resolve; });
-  recordLocks.set(id, mine);
-  await prior.catch(() => {});
+  dirLocks.set(dir, mine);
+  if (prior) await prior.catch(() => {});
   let released = false;
   return () => {
     if (released) return;
     released = true;
     release();
-    if (recordLocks.get(id) === mine) recordLocks.delete(id);
+    if (dirLocks.get(dir) === mine) dirLocks.delete(dir);
   };
+}
+
+async function withDirLock<T>(dir: string, work: () => Promise<T>): Promise<T> {
+  const release = await acquireDirLock(dir);
+  try {
+    return await work();
+  } finally {
+    release();
+  }
 }
 
 /**
@@ -455,8 +454,8 @@ async function transitionTerminal(root: string, id: string,
   build: (current: ProbeAttempt) => ProbeAttempt | null,
   opts: { signal?: AbortSignal; abortBuild?: (current: ProbeAttempt) => ProbeAttempt | null } = {},
 ): Promise<{ committed: boolean; record: ProbeAttempt }> {
-  return withRecordLock(id, async () => {
-    const dir = await probeDirectory(root, true);
+  const dir = await probeDirectory(root, true);
+  return withDirLock(dir, async () => {
     const db = await lifecycleDb(dir);
     try {
       db.exec("BEGIN IMMEDIATE");
@@ -511,8 +510,8 @@ async function transitionTerminal(root: string, id: string,
 async function updateStartedRecord(root: string, id: string,
   mutate: (current: ProbeAttempt) => ProbeAttempt | null,
 ): Promise<{ updated: boolean; record: ProbeAttempt }> {
-  return withRecordLock(id, async () => {
-    const dir = await probeDirectory(root, true);
+  const dir = await probeDirectory(root, true);
+  return withDirLock(dir, async () => {
     const db = await lifecycleDb(dir);
     try {
       db.exec("BEGIN IMMEDIATE");
@@ -890,7 +889,7 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
   const gateSend = async <R>(kind: "inference" | "token", start: () => Promise<R>): Promise<R> => {
     if (admissionSends[kind] + 1 > 2) throw new Error("provider_budget_exceeded");
     const dir = await probeDirectory(root, true);
-    const release = await acquireRecordLock(id);
+    const release = await acquireDirLock(dir);
     let pending: Promise<R> | null = null;
     try {
       const db = await lifecycleDb(dir);
