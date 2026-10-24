@@ -107,10 +107,11 @@ part of any image, plus its checkpoint file. `syncLedgerCheckpoint` returns
 prefix of it; otherwise the restore is `blocked` with the reason:
 `ledger_unreadable`, `ledger_bound_exceeded` (200 000 entries),
 `ledger_checkpoint_missing` (missing after establishment at that location),
-`ledger_checkpoint_relocation_unverified` (the configured location changed
-and holds no verified checkpoint covering what was already checkpointed —
-relocation means copying the verified checkpoint file; database contents
-never re-establish authority once a checkpoint exists),
+`ledger_checkpoint_relocation_unverified` (the configured location changed:
+the checkpoint at the previously established location must be readable and
+consistent with the table, and the new file must equal or extend it — copy
+the verified checkpoint file; the marker moves only after that proof;
+database contents never re-establish authority once a checkpoint exists),
 `ledger_checkpoint_unverifiable` (corrupt, self-inconsistent, or a seed
 placeholder over an established checkpoint), `ledger_checkpoint_incompatible`
 (other format), `ledger_checkpoint_mismatch` (the installation table lost or
@@ -253,6 +254,14 @@ restored from snapshots; Telegram/provider copies are outside Jit),
 (`allowed`, `blockers`). Evidence carries identities and counts only.
 
 ## Residuals and follow-ups
+
+- Declared residual (fence release): `clearUpgradeFence(path, ownerId)` reads
+  the claim and then unlinks it. If two clearers of the same stale owner run
+  concurrently and a new acquirer creates its claim between one clearer's
+  read and unlink, that new fence could be removed. It requires two
+  concurrent clearers of the same stale owner plus an interleaving new
+  acquisition; same class as schway#428. A proper fix needs an OS-released
+  lock primitive (no such primitive is used here).
 
 - Before activation (quarantine) the live installation is untouched current
   data, so reads stay available; only writes are fenced.

@@ -93,6 +93,8 @@ export function writeUpgradeFence(databasePath: string, upgradeId: string, since
 export function clearUpgradeFence(databasePath: string, ownerId?: string): void {
   const path = upgradeFencePath(databasePath);
   if (ownerId !== undefined) {
+    // Declared residual: read-then-unlink. Two concurrent clearers of the same stale owner straddling a new
+    // acquisition could remove the new fence (same class as schway#428; needs an OS-released lock primitive).
     const current = readUpgradeFence(databasePath);
     if (!current || current.upgradeId !== ownerId) return;
   }

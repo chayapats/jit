@@ -664,6 +664,49 @@ test("a run record without a valid manifest is treated as unknown: its context i
   expect(states.every(c => c.state === "deleted")).toBe(true);
 });
 
+test("a legacy extraction without a request manifest is unknown: its native context is deleted even though its source survives", async () => {
+  const f = await fixture();
+  const a = project(f, "โครงการ legacy extraction", "หัวข้อ legacy");
+  const sDep = say(f, a, "ข้อมูลอ้างอิงที่จะถูกลบ legacy-dep-canary-001");
+  await remember(f, a, sDep);
+  const sOther = say(f, a, "ข้อความอื่น legacy-other-002 ที่ยังอยู่");
+  await remember(f, a, sOther);
+  const job = f.rt.store.read(tx => tx.get<{ jobId: string }>("SELECT job_id AS jobId FROM memory_extractions WHERE source_id = ?", sOther.sourceId))!.jobId;
+  // Legacy shape: the extraction and its attempt no longer say what the request cited beyond the source.
+  f.rt.store.transaction(tx => {
+    tx.run("UPDATE memory_extractions SET record_json = json_remove(record_json, '$.request') WHERE job_id = ?", job);
+    tx.run("UPDATE job_attempts SET record_json = json_set(record_json, '$.data', json('null')) WHERE job_id = ?", job);
+  });
+  const context = f.rt.store.read(tx => tx.get<{ id: string }>("SELECT json_extract(record_json, '$.native.context.id') AS id FROM job_attempts WHERE job_id = ?", job))!.id;
+  const backup = await backupNow(f);
+  deleteSource(f, a, sDep);
+  const q = await restoreThrough(f, backup.id, "restore.validate");
+  expect(q.state).toBe("validated");
+  expect(q.report.invalidated!.contextsUnknownCitation).toBeGreaterThan(0);
+  expect((await stepCmd(f, "restore.activate", q.id)).quarantine.state).toBe("complete");
+  await relogin(f);
+  expect(f.rt.store.read(tx => tx.get<{ state: string }>("SELECT state FROM team_contexts WHERE id = ?", context))!.state).toBe("deleted");
+});
+
+test("ledger relocation needs the prior checkpoint as authority: a rolled-back database with a stale copy at a new path is refused", async () => {
+  const f = await fixture();
+  const a = project(f, "โครงการ relocation", "หัวข้อ relocation");
+  const s1 = say(f, a, "ข้อความ relocation-canary-001");
+  const stale = readFileSync(ledgerCheckpointPathFor(f.rt.store.path), "utf8");
+  const [claim] = await remember(f, a, s1);
+  forget(f, a, claim!);
+  const prior = ledgerCheckpointPathFor(f.rt.store.path), moved = join(f.root, "moved-ledger.json");
+  expect(JSON.parse(readFileSync(prior, "utf8")).count).toBeGreaterThan(0);
+  // Roll the installation database's ledger and marker back to the stale (valid) checkpoint's position.
+  f.rt.store.transaction(tx => { tx.run("DELETE FROM lifecycle_ledger"); tx.run("UPDATE lifecycle_checkpoint SET head = 0, count = 0, digest = ?", JSON.parse(stale).digest); });
+  writeFileSync(moved, stale);
+  expect(syncLedgerCheckpoint(f.rt.store, moved, f.clock.now)).toMatchObject({ state: "untrusted", reason: "ledger_checkpoint_mismatch" });
+  // Without the prior authority, relocation is refused outright and the marker never moves.
+  rmSync(prior);
+  expect(syncLedgerCheckpoint(f.rt.store, moved, f.clock.now)).toMatchObject({ state: "untrusted", reason: "ledger_checkpoint_relocation_unverified" });
+  expect(f.rt.store.read(tx => tx.get<{ path: string }>("SELECT path FROM lifecycle_checkpoint WHERE id = 1"))!.path).toBe(prior);
+});
+
 test("a failed service resume re-acquires the fence: nothing is admitted or readable until reconciliation succeeds", async () => {
   const f = await fixture();
   const a = project(f, "โครงการ resume", "หัวข้อ resume");

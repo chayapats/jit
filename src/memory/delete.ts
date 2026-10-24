@@ -388,9 +388,12 @@ function jobEvidence(tx: AppTransaction, blockers: Set<string>): Map<string, Job
       const target = entry(row.jobId, row.projectId);
       target.extractionSources.push({ sourceId: row.sourceId, revision: row.revision, generation: row.generation });
       const parsed = parse("memory_extractions", row.json);
-      if (!parsed) return;
+      if (!parsed) { target.opaque = true; return; }
       // The queued request's context is a placeholder; native contexts come only from admitted attempts.
-      target.manifests.push(...manifestsIn(parsed.request));
+      const found = manifestsIn(parsed.request);
+      // The extraction source alone does not prove what else the request cited (dependencies, claims).
+      if (!found.length || !found.every(validManifest)) target.opaque = true;
+      target.manifests.push(...found);
     }, { blockers });
   scanTable<{ jobId: string; projectId: string | null; json: string }>(tx, "job_attempts",
     "job_id AS jobId, (SELECT project_id FROM jobs WHERE jobs.id = job_attempts.job_id) AS projectId, record_json AS json", row => {
@@ -398,7 +401,10 @@ function jobEvidence(tx: AppTransaction, blockers: Set<string>): Map<string, Job
       const target = entry(row.jobId, row.projectId ?? "");
       if (!parsed) { target.opaque = true; return; }
       const data = parsed.data as { runId?: unknown } | null | undefined;
-      target.manifests.push(...manifestsIn(data));
+      const found = manifestsIn(data);
+      // A native run attempt's data is its request: without a valid manifest its session content is unknown.
+      if ((parsed.native as { context?: unknown } | null | undefined)?.context && (!found.length || !found.every(validManifest))) target.opaque = true;
+      target.manifests.push(...found);
       if (typeof data?.runId === "string") target.runIds.add(data.runId);
       // The attempt's native reference is the authoritative managed session identity.
       const native = (parsed.native as { context?: unknown } | null | undefined)?.context as { id?: unknown; generation?: unknown } | null | undefined;

@@ -191,6 +191,21 @@ export function syncLedgerCheckpoint(store: TransactionStore, path: string, now:
     if (file.head > head || prefix.length !== file.count || ledgerDigest(prefix) !== file.digest) return untrusted("ledger_checkpoint_mismatch", head, entries.length);
     // A checkpoint older than what this installation already checkpointed was replaced by a stale copy.
     if (marker && (file.head < marker.head || file.count < marker.count)) return untrusted("ledger_checkpoint_mismatch", head, entries.length);
+    if (marker && marker.path !== path) {
+      // Relocation proof: the checkpoint at the previously established location is the authority. It must be
+      // readable and consistent with the installation table, and the new file must equal or extend it. Only
+      // then may the marker move (a rolled-back database plus a stale copy elsewhere is refused here).
+      const prior = readCheckpoint(marker.path);
+      if (prior.state !== "valid") return untrusted("ledger_checkpoint_relocation_unverified", head, entries.length);
+      const priorPrefix = entries.filter(e => e.sequence <= prior.file.head);
+      if (prior.file.head > head || priorPrefix.length !== prior.file.count || ledgerDigest(priorPrefix) !== prior.file.digest) {
+        return untrusted("ledger_checkpoint_mismatch", head, entries.length);
+      }
+      const covered = file.entries.filter(e => e.sequence <= prior.file.head);
+      if (file.head < prior.file.head || file.count < prior.file.count || covered.length !== prior.file.count || ledgerDigest(covered) !== prior.file.digest) {
+        return untrusted("ledger_checkpoint_relocation_unverified", head, entries.length);
+      }
+    }
     if (file.head === head && file.count === entries.length) {
       if (write && (!marker || marker.head !== head || marker.path !== path)) recordMarker(store, path, head, entries.length, digest, file.writtenAt);
       return { state: "trusted", head, count: entries.length, digest, entries, writtenAt: file.writtenAt, established: false };
