@@ -49,6 +49,7 @@ Attempts persist as mode-0600 files under the ignored `.local/host-probe/`
 directory; native session state lives beside them under
 `.local/host-probe-host/` (mode 0700, symlink/permission-checked). Exports
 are allowlisted projections with redacted route/model aliases. Self samples
-report process heap, managed artifact bytes/count and duration only — bounded
-observations of the probe process itself, never representative full-app
-capacity and never environment, token or address material.
+report process heap, managed artifact bytes/count, duration and exact
+provider-send counts only — bounded observations of the probe process
+itself, never representative full-app capacity and never environment, token
+or address material.

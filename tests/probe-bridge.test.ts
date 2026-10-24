@@ -84,8 +84,10 @@ test("bridge probe reports observed-ready only for a successful selected-route r
   expect(record.attempts).toBe(1);
   expect(record.observations.find(item => item.observation === "live-request")).toMatchObject({ event: "success" });
   // Renewal stays unobserved: a successful inference never proves renewal.
-  expect(record.observations.find(item => item.observation === "renewal")).toMatchObject({ event: "unobserved" });
+  expect(record.observations.find(item => item.observation === "renewal")).toMatchObject({ event: "unobserved", attempts: 0 });
   expect(self.attemptsUsed).toBe(1);
+  // Exact counts: one inference send, no token send on the clean path.
+  expect(self.providerSends).toEqual({ inference: 1, token: 0 });
   const exported = exportProbeSummary(record);
   expect(exported.lifecycle).toBe("observed-ready");
   expect(JSON.stringify({ record, exported })).not.toContain("fixture-access");
@@ -203,23 +205,22 @@ test("a refreshable 401 admits exactly one retry inside the single attempt budge
     return new Response(sseSuccess("ready after refresh", 7, 2), { status: 200, headers: { "content-type": "text/event-stream" } });
   };
   const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, store: memStore(expired), fetch });
-  const { record } = await liveProbe("fixture-probe-host",
+  const { record, self } = await liveProbe("fixture-probe-host",
     { route: "grok", model: "grok-4-fixture", maxAttempts: 3, deadlineMs: 8000 },
     { ...ports, now: () => 1800000000000, id: () => ID }, root);
   // Exact provider-send accounting: the pinned adapter structurally issues at
   // most two inference sends per admitted attempt (one 401 replay, no loop).
-  // The replay is reported in the renewal observation, never hidden.
+  // The replay is reported in the self sample, never hidden, while renewal
+  // stays explicitly unobserved as an evidence claim.
   expect(record.lifecycle).toBe("observed-ready");
   expect(record.attempts).toBe(1);
   expect(tokenFetches).toBe(1);
   expect(inferenceFetches).toBeLessThanOrEqual(2);
   expect(inferenceFetches).toBe(2);
   const renewal = record.observations.find(item => item.observation === "renewal")!;
-  // Renewal stays explicitly unobserved as an evidence claim; the
-  // Schway-owned send is reported only as an exact bounded count.
   expect(renewal.event).toBe("unobserved");
-  expect(renewal.attempts).toBe(1);
-  expect(ports.takeProviderSends!()).toEqual({ inference: 2, token: 1 });
+  expect(renewal.attempts).toBe(0);
+  expect(self.providerSends).toEqual({ inference: 2, token: 1 });
 });
 
 test("a blocked credential store does not outlive the probe deadline", async () => {

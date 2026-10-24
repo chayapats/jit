@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
-import { chmodSync, constants, existsSync } from "node:fs";
-import { lstat, mkdir, open, readdir, realpath, rename, unlink } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, mkdir, open, opendir, readdir, realpath, rename, unlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import { routeEvidence, safeAlias, type NextAction, type RouteState } from "./contract";
 
@@ -69,6 +69,13 @@ export interface ProbeSelfSample {
   peakMemoryBytes: number;
   /** Bounded scan of managed probe artifacts; file count caps the walk. */
   managedBytes: number; managedFiles: number;
+  /**
+   * Exact provider-send counts observed on the counting transport for this
+   * probe (inference plus token-endpoint sends). The pinned per-admission
+   * structural bound is two of each; a counter-validation failure
+   * terminalizes the attempt as failed, never as success.
+   */
+  providerSends: { inference: number; token: number };
 }
 
 /** Best-effort self resource sample; failures report zeros rather than failing the probe. */
@@ -76,32 +83,39 @@ async function selfResources(root: string): Promise<Pick<ProbeSelfSample, "peakM
   let peakMemoryBytes = 0;
   try { peakMemoryBytes = process.memoryUsage().heapUsed; } catch { /* Own-process sample only. */ }
   let managedBytes = 0, managedFiles = 0;
-  // Symlink-safe recursive walk over every managed artifact: records, the
-  // lifecycle ledger and native session state. One global entry cap bounds
-  // the walk; symlinks are never followed so linked state cannot inflate or
-  // redirect the count.
+  // One entry budget shared across every managed root: each directory entry
+  // is debited before filtering, symlink checks or stats, so skipped entries
+  // cannot widen the walk. Streaming directory reads never materialize an
+  // unbounded listing, and symlinks are never followed.
+  let seen = 0;
   const scan = async (top: string): Promise<void> => {
     const stack: string[] = [top];
-    let seen = 0;
     while (stack.length > 0) {
       if (seen >= MAX_SELF_SCAN_FILES) return;
       const current = stack.pop()!;
-      let names: string[];
+      let dir;
       try {
-        names = await readdir(current);
+        dir = await opendir(current);
       } catch { continue; }
-      for (const name of names) {
-        if (seen >= MAX_SELF_SCAN_FILES) return;
-        if (name.startsWith(".tmp-")) continue;
-        const full = resolve(current, name);
-        let stats;
-        try {
-          stats = await lstat(full);
-        } catch { continue; }
-        if (stats.isSymbolicLink()) continue;
-        seen++;
-        if (stats.isDirectory()) stack.push(full);
-        else if (stats.isFile()) { managedFiles++; managedBytes += stats.size; }
+      try {
+        for await (const entry of dir) {
+          if (seen >= MAX_SELF_SCAN_FILES) return;
+          seen++;
+          if (entry.name.startsWith(".tmp-")) continue;
+          if (entry.isSymbolicLink()) continue;
+          const full = resolve(current, entry.name);
+          if (entry.isDirectory()) {
+            stack.push(full);
+            continue;
+          }
+          if (!entry.isFile()) continue;
+          try {
+            const stats = await lstat(full);
+            if (stats.isFile() && !stats.isSymbolicLink()) { managedFiles++; managedBytes += stats.size; }
+          } catch { /* One unreadable artifact does not fail the sample. */ }
+        }
+      } finally {
+        await dir.close().catch(() => {});
       }
     }
   };
@@ -313,20 +327,12 @@ async function withRecordLock<T>(id: string, work: () => Promise<T>): Promise<T>
  * symlinks or foreign files. An existing ledger must be a service-owned
  * regular mode-0600 file; a missing ledger is created exclusively before
  * SQLite touches the path, so terminalization can never create or modify a
- * database outside the managed directory.
+ * database outside the managed directory. A lost exclusive-create race
+ * (EEXIST) reopens through the same validation instead of failing: the
+ * winner's file is verified, never trusted blindly.
  */
 async function lifecycleDb(dir: string): Promise<Database> {
-  const path = resolve(dir, "lifecycle.db");
-  const present = await lstat(path).catch(() => null);
-  if (present !== null) {
-    if (!present.isFile() || present.isSymbolicLink()) throw new Error("unsafe_probe_ledger");
-    if (await realpath(path) !== path) throw new Error("unsafe_probe_ledger");
-    const uid = serviceUid();
-    if ((present.mode & 0o077) !== 0 || (uid !== null && present.uid !== uid)) throw new Error("unsafe_probe_ledger");
-  } else {
-    const handle = await open(path, "wx", 0o600);
-    await handle.close();
-  }
+  const path = await ensureLedgerFile(dir);
   const db = new Database(path, { create: true });
   db.exec("PRAGMA busy_timeout = 5000;");
   db.exec("PRAGMA synchronous = FULL;");
@@ -334,8 +340,62 @@ async function lifecycleDb(dir: string): Promise<Database> {
   return db;
 }
 
+/** Thrown when the deadline fires between payload build and publication. */
+class PublishAborted extends Error {
+  constructor() { super("publish_aborted"); }
+}
+
+/**
+ * In-process serialization for first-use ledger creation. The cross-process
+ * EEXIST retry below remains the correctness mechanism; this gate only
+ * avoids redundant creation races inside one process.
+ */
+const ledgerInit = new Map<string, Promise<void>>();
+
+async function ensureLedgerFile(dir: string): Promise<string> {
+  const path = resolve(dir, "lifecycle.db");
+  let init = ledgerInit.get(dir);
+  if (!init) {
+    init = (async () => {
+      const present = await lstat(path).catch(() => null);
+      if (present !== null) {
+        assertLedgerFile(dir, path, present);
+      } else {
+        try {
+          const handle = await open(path, "wx", 0o600);
+          await handle.close();
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException)?.code !== "EEXIST") throw error;
+          const raced = await lstat(path).catch(() => null);
+          if (raced === null) throw error;
+          assertLedgerFile(dir, path, raced);
+        }
+      }
+    })();
+    ledgerInit.set(dir, init);
+    init.then(
+      () => { if (ledgerInit.get(dir) === init) ledgerInit.delete(dir); },
+      () => { if (ledgerInit.get(dir) === init) ledgerInit.delete(dir); },
+    );
+  }
+  await init;
+  return path;
+}
+
+function assertLedgerFile(dir: string, path: string, present: { isFile(): boolean; isSymbolicLink(): boolean; mode: number; uid: number }): void {
+  if (!present.isFile() || present.isSymbolicLink()) throw new Error("unsafe_probe_ledger");
+  // The parent directory is canonical-checked by probeDirectory, so a
+  // non-symlink regular file here cannot escape the managed directory; a
+  // hardlink to outside content would still require write access to this
+  // service-owned mode-0700 directory, which already owns the evidence.
+  void dir; void path;
+  const uid = serviceUid();
+  if ((present.mode & 0o077) !== 0 || (uid !== null && present.uid !== uid)) throw new Error("unsafe_probe_ledger");
+}
+
 async function transitionTerminal(root: string, id: string,
   build: (current: ProbeAttempt) => ProbeAttempt | null,
+  opts: { signal?: AbortSignal; abortBuild?: (current: ProbeAttempt) => ProbeAttempt | null } = {},
 ): Promise<{ committed: boolean; record: ProbeAttempt }> {
   return withRecordLock(id, async () => {
     const dir = await probeDirectory(root, true);
@@ -348,13 +408,30 @@ async function transitionTerminal(root: string, id: string,
           db.exec("ROLLBACK");
           return { committed: false, record: current };
         }
-        const next = build(current);
+        let next = build(current);
         if (next === null) {
           db.exec("ROLLBACK");
           return { committed: false, record: current };
         }
         validateProbeAttempt(next);
-        await atomicWriteFile(dir, `${id}.json`, JSON.stringify(next) + "\n");
+        try {
+          await atomicWriteFile(dir, `${id}.json`, JSON.stringify(next) + "\n", () => {
+            if (opts.signal?.aborted) throw new PublishAborted();
+          });
+        } catch (error) {
+          if (!(error instanceof PublishAborted)) throw error;
+          // The deadline fired during publication: publish cancelled with
+          // non-success evidence in this same winning transaction instead of
+          // the success payload that was already built.
+          const fallback = opts.abortBuild?.(current) ?? null;
+          if (fallback === null) {
+            db.exec("ROLLBACK");
+            return { committed: false, record: current };
+          }
+          validateProbeAttempt(fallback);
+          await atomicWriteFile(dir, `${id}.json`, JSON.stringify(fallback) + "\n");
+          next = fallback;
+        }
         db.query("INSERT OR IGNORE INTO probe_terminal(id, lifecycle) VALUES (?, ?)").run(id, next.lifecycle);
         db.exec("COMMIT");
         return { committed: true, record: next };
@@ -409,8 +486,10 @@ let tmpCounter = 0;
  * and a required directory sync. Directory-open/sync failures are persistence
  * failures, never best-effort skips: acknowledging them would let dispatch
  * proceed on evidence a restart cannot see. Failed temp files are removed.
+ * The optional pre-rename hook runs immediately before the rename — the
+ * linearization point — and may throw PublishAborted to cancel publication.
  */
-async function atomicWriteFile(dir: string, name: string, data: string): Promise<void> {
+async function atomicWriteFile(dir: string, name: string, data: string, preRename?: () => void): Promise<void> {
   const tmp = resolve(dir, `${name}.tmp-${process.pid}-${(tmpCounter = (tmpCounter + 1) % 1000000)}.json`);
   const file = await open(tmp, "wx", 0o600);
   try {
@@ -421,6 +500,12 @@ async function atomicWriteFile(dir: string, name: string, data: string): Promise
     throw error;
   } finally {
     await file.close();
+  }
+  try {
+    preRename?.();
+  } catch (error) {
+    try { await unlink(tmp); } catch { /* Best-effort temp cleanup. */ }
+    throw error;
   }
   try {
     await rename(tmp, resolve(dir, name));
@@ -580,7 +665,8 @@ export async function preflightProbe(installationLabel: string, route: string, m
   // parent-directory sync), so no restart can mistake it for a dispatched
   // live attempt and no power loss can erase the acknowledged filename.
   await writeAttempt(root, record);
-  return { record, self: { elapsedMs: 0, attemptsUsed: 0, maxAttempts: record.maxAttempts, ...(await selfResources(root)) } };
+  return { record, self: { elapsedMs: 0, attemptsUsed: 0, maxAttempts: record.maxAttempts,
+    providerSends: { inference: 0, token: 0 }, ...(await selfResources(root)) } };
 }
 
 /**
@@ -632,30 +718,34 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
   // Every terminal write below goes through the transactional CAS: a
   // concurrent cancel/reconcile/commit wins exactly once, and losers report
   // the settled record byte-for-byte instead of overwriting it.
+  let attempts = 0, inference: ProbeEvent = "failed", inferenceSends = 0, tokenSends = 0;
+  const finishSelf = async (attemptsUsed: number) => ({ elapsedMs: elapsed(), attemptsUsed, maxAttempts,
+    providerSends: { inference: inferenceSends, token: tokenSends }, ...(await selfResources(root)) });
   const abortTo = async (observations: ProbeObservationEntry[], attemptsUsed: number) => {
     const { record } = await transitionTerminal(root, id, current => ({
       ...current, lifecycle: "cancelled", observations, attempts: attemptsUsed,
       elapsedMs: elapsed(), nextAction: "inspect-sanitized-failure",
     }));
-    return { record, self: { elapsedMs: elapsed(), attemptsUsed, maxAttempts, ...(await selfResources(root)) } };
+    return { record, self: await finishSelf(attemptsUsed) };
   };
   if (effective.aborted) {
     return abortTo(dispatched.observations, 0);
   }
-  // Ports are not trusted to honor cancellation: race every port call
-  // against the composed deadline so a blocked store or transport fails
-  // closed at the bound instead of hanging the orchestration forever.
+  // Ports are not trusted to honor cancellation: every port call runs
+  // through a deadline race, and the port is invoked only after the race's
+  // abort check (thunk factory), so even a deadline that fires while a
+  // durable admission is being written starts no provider contact afterward.
   // Late settlements are ignored; they never touch the record.
-  const withDeadline = async <T>(work: Promise<T>): Promise<T> => {
+  const withDeadline = async <T>(work: () => Promise<T>): Promise<T> => {
     if (effective.aborted) throw new Error("aborted");
     return await Promise.race([
-      work,
+      work(),
       new Promise<never>((_, reject) => effective.addEventListener("abort", () => reject(new Error("aborted")), { once: true })),
     ]);
   };
   let credential: ProbeEvent = "unobserved";
   try {
-    const read = await withDeadline(ports.readCredential(effective));
+    const read = await withDeadline(() => ports.readCredential(effective));
     credential = read === "ok" ? "unobserved" : read === "missing" ? "store" : "login";
   } catch {
     credential = "failed";
@@ -664,7 +754,6 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
     const observations: ProbeObservationEntry[] = [base[0]!, credentialEntry(route, model, bounds, credential), base[2]!, base[3]!];
     return abortTo(observations, 0);
   }
-  let attempts = 0, inference: ProbeEvent = "failed", tokenSends = 0;
   for (let turn = 0; turn < maxAttempts; turn++) {
     if (effective.aborted) break;
     // Reserve the admission durably before any provider contact: the
@@ -674,9 +763,12 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
     // instead of recording zero.
     const reservation = await reserveAttempt(root, id);
     if (!reservation.admitted) break;
+    // A deadline that fires while the reservation was being written must not
+    // start provider contact afterward: recheck before invoking the port.
+    if (effective.aborted) break;
     attempts = reservation.attempts;
     try {
-      const outcome = await withDeadline(ports.infer({ route, model, prompt: PROBE_PROMPT, tools: PROBE_TOOLS, discovery: { ...PROBE_DISCOVERY }, deadlineMs: bounds.deadlineMs }, effective));
+      const outcome = await withDeadline(() => ports.infer({ route, model, prompt: PROBE_PROMPT, tools: PROBE_TOOLS, discovery: { ...PROBE_DISCOVERY }, deadlineMs: bounds.deadlineMs }, effective));
       inference = probeEvents.includes(outcome) ? outcome : "failed";
     } catch {
       inference = "failed";
@@ -686,38 +778,42 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
     // A silent inference replay therefore always surfaces in the count
     // instead of hiding inside one recorded attempt.
     const sends = ports.takeProviderSends?.();
-    if (sends) tokenSends += Math.max(0, sends.token | 0);
+    if (sends) {
+      inferenceSends += Math.max(0, sends.inference | 0);
+      tokenSends += Math.max(0, sends.token | 0);
+    }
+    // Counter-validation failure terminalizes as failed, never as success
+    // and never by leaving the record started: the pinned per-admission
+    // structural bound is two inference sends plus two token sends.
+    if (inferenceSends > 2 * attempts || tokenSends > 2 * attempts) {
+      inference = "failed";
+      break;
+    }
     // A late completion after cancellation is never success evidence.
     if (effective.aborted) { inference = "failed"; break; }
     // Terminal classifications stop immediately; transient store/transport
     // failures consume the next bounded attempt instead of an outer retry.
     if (inference === "success" || inference === "login" || inference === "quota" || inference === "rejected") break;
   }
-  // Renewal stays explicitly unobserved as an evidence claim: a Schway-owned
-  // renewal send is reported only as an exact bounded count, never as
-  // readiness. Renewal proof belongs to FEAS04, not this command.
-  const renewalEntry = () => tokenSends > 0
-    ? entry(route, model, bounds, "renewal", "unobserved", tokenSends, elapsed())
-    : base[3]!;
   if (effective.aborted) {
     // The inference result arrived too late: record that inference was
     // attempted but keep the cancelled lifecycle so it can never read success.
     // The live-request observation stays non-success inside the same terminal
     // transaction, so a cancelled probe is never exported as success.
     const observations: ProbeObservationEntry[] = [base[0]!, credentialEntry(route, model, bounds, credential),
-      entry(route, model, bounds, "live-request", "unobserved", attempts, elapsed()), renewalEntry()];
+      entry(route, model, bounds, "live-request", "unobserved", attempts, elapsed()), base[3]!];
     return abortTo(observations, attempts);
   }
   const observations: ProbeObservationEntry[] = [base[0]!, credentialEntry(route, model, bounds, credential),
-    entry(route, model, bounds, "live-request", inference, attempts, elapsed()), renewalEntry()];
-  // Recheck the deadline signal inside the winning transaction, immediately
-  // before publication: an abort that fires during the terminal write
+    entry(route, model, bounds, "live-request", inference, attempts, elapsed()), base[3]!];
+  // The signal is rechecked inside the winning transaction, immediately
+  // before publication: an abort that fires during the terminal file write
   // publishes cancelled with non-success evidence in that same transaction
   // instead of leaving aborted success behind.
   await transitionTerminal(root, id, current => {
     if (effective.aborted) {
       const revised: ProbeObservationEntry[] = [current.observations[0]!, current.observations[1]!,
-        entry(route, model, bounds, "live-request", "failed", current.attempts, elapsed()), renewalEntry()];
+        entry(route, model, bounds, "live-request", "failed", current.attempts, elapsed()), current.observations[3]!];
       return { ...current, lifecycle: "cancelled", observations: revised, elapsedMs: elapsed(), nextAction: "inspect-sanitized-failure" };
     }
     const liveEntry = observations.find(item => item.observation === "live-request")!;
@@ -726,8 +822,12 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
       ? { state: credentialEntryItem.state, nextAction: credentialEntryItem.nextAction }
       : { state: liveEntry.state, nextAction: liveEntry.nextAction };
     return { ...current, lifecycle: terminal.state, observations, attempts, elapsedMs: elapsed(), nextAction: terminal.nextAction };
-  });
-  return { record: await readProbeAttempt(root, id), self: { elapsedMs: elapsed(), attemptsUsed: attempts, maxAttempts, ...(await selfResources(root)) } };
+  }, { signal: effective, abortBuild: current => {
+    const revised: ProbeObservationEntry[] = [current.observations[0]!, current.observations[1]!,
+      entry(route, model, bounds, "live-request", "failed", current.attempts, elapsed()), current.observations[3]!];
+    return { ...current, lifecycle: "cancelled", observations: revised, elapsedMs: elapsed(), nextAction: "inspect-sanitized-failure" };
+  } });
+  return { record: await readProbeAttempt(root, id), self: await finishSelf(attempts) };
 }
 
 /** Projects only allowlisted readiness facts; aliases, timing and identifiers never carry secrets. */
