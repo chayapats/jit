@@ -7,7 +7,7 @@ Owner-executable checklist for the packaged service (`ops.service_package/v1`, d
 - A dedicated non-root, non-login service identity (for example `jit`, shell `/usr/sbin/nologin`, home outside `/home`). The package never creates users.
 - Directories owned by that identity, mode 0700: state (for example `/var/lib/jit/state`), backups (`/var/lib/jit/backups`); a working directory (`/var/lib/jit/work`); a releases parent (`/opt/jit`).
 - The pinned Bun at an absolute path (`bun --version` must equal the manifest pin).
-- Private access: bind loopback behind configured private ingress (for example a VPN `serve`/reverse proxy terminating HTTPS), or an address on the VPN interface. No public ingress is installed or exposed by the package.
+- Private access: bind loopback behind configured private ingress (for example a VPN `serve`/reverse proxy terminating HTTPS), or an address on the VPN interface with an explicit HTTPS `network.origin` (required for any non-loopback bind). No public ingress is installed or exposed by the package.
 - Credentials: the Telegram bot token, when used, is a 0600 file owned by the identity. Keyring-backed references stay `verify-secret-store` until OPS05 proves service-context access.
 
 ## 1. Build and prepare the artifact
@@ -37,7 +37,7 @@ bun src/main.ts service plan --config .local/service-config.json --artifact <out
 sudo bun src/main.ts service install --config .local/service-config.json --artifact <outDir> --bun <abs bun>
 ```
 
-- Writes `/etc/jit/service-config.json` (0640, group = service identity), `/etc/systemd/system/jit.service` (0644), `/etc/systemd/journald@jit.conf` (0644), stages `/opt/jit/releases/<artifactId>`, points the active-release symlink, seeds the ledger placeholder only if absent, `daemon-reload` and `enable`. It does not start the service.
+- Run as root. Writes `/etc/jit/service-config.json` (root:<service gid>, 0640), `/etc/systemd/system/jit.service` (0644), `/etc/systemd/journald@jit.conf` (0644), stages `/opt/jit/releases/<artifactId>`, points the active-release symlink, seeds the ledger placeholder only if absent (owned by the service identity, 0600), `daemon-reload` and `enable`. It does not start the service.
 
 ## 4. Owner setup, start, status, stop
 
@@ -50,6 +50,7 @@ sudo bun src/main.ts service stop
 journalctl --namespace=jit -u jit.service                # bounded by journald@jit.conf
 ```
 
+- **Until the OPS02 (#33) ledger checkpoint writer is integrated, an installed service refuses to activate** (`Service blocked at quarantine: ... (next: integrate-ops02-ledger-checkpoint)`). This is intended: a placeholder ledger proves nothing about current deletion/suppression state. Do not edit the ledger file to get past it.
 - Start runs `serve --service-config`: preflight, quarantine/ledger, schema/upgrade, engine and artifact gates, reconciliation, then listening. A blocked gate exits with `Service blocked at <gate>: ... (next: ...)`; resolve it, never bypass it. `bun src/main.ts preflight --service-config /etc/jit/service-config.json` shows all gates read-only.
 - Status: `running` needs the scheduler owned by the supervised process; `observed-ready` appears only with explicit live evidence. `channels: blocked` means Telegram is enabled but its secret or transport is unavailable; `routes.verified` is always 0 here.
 - Stop drains cooperatively within `stopTimeoutSeconds`; systemd kills after `TimeoutStopSec`. Interrupted work and uncertain sends are recorded as interrupted/`unknown` and reconciled on the next start; never treat them as stopped or sent.

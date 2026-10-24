@@ -12,7 +12,7 @@ StartLimitBurst={{RESTART_BURST}}
 [Service]
 Type=simple
 User={{SERVICE_USER}}
-Group={{SERVICE_USER}}
+Group={{SERVICE_GROUP}}
 WorkingDirectory={{WORKING_DIR}}
 ExecStart={{BUN_PATH}} {{APP_DIR}}/src/main.ts serve --service-config {{CONFIG_PATH}}
 {{ENVIRONMENT}}

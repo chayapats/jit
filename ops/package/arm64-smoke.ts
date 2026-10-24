@@ -11,9 +11,12 @@ import { spawnRunner } from "../../src/ops/supervisor";
  * Not part of `bun test`. It refuses unless `JIT_OPS_SMOKE=1` and the host is
  * Linux arm64, then: builds the artifact into a disposable directory,
  * installs its pinned dependencies for this host (explicit registry/cache
- * access), validates it, renders the unit, launches the release's `serve
- * --service-config` with the unit environment against disposable state,
- * probes GET /login on loopback, sends SIGTERM and checks a clean drain.
+ * access), validates it, renders the unit, runs the release's read-only
+ * `preflight --service-config` (artifact gate must be ready; the ledger gate
+ * is reported, and stays blocked until OPS02's writer is integrated), then
+ * launches the release's `serve` in the development profile against
+ * disposable state, probes GET /login on loopback, sends SIGTERM and checks
+ * a clean drain.
  * It never touches systemd, VPN, credentials, the owner account or the real
  * installation; the printed summary is sanitized evidence for a human to
  * attach to OPS05, which still owns real restart/reboot evidence.
@@ -47,7 +50,11 @@ async function smoke(srcDir: string): Promise<Record<string, unknown>> {
     writeFileSync(configPath, JSON.stringify(service), { mode: 0o600 });
     await renderServiceUnit(service, { bunPath: process.execPath, configPath });
     const env = { ...Object.fromEntries(serviceEnvironment(service)), PATH: process.env.PATH ?? "/usr/bin:/bin" };
-    const child = Bun.spawn([process.execPath, join(artifact, "src", "main.ts"), "serve", "--service-config", configPath],
+    const preflight = Bun.spawn([process.execPath, join(artifact, "src", "main.ts"), "preflight", "--service-config", configPath],
+      { cwd: join(root, "work"), env, stdout: "pipe", stderr: "ignore" });
+    const gates = (JSON.parse((await new Response(preflight.stdout).text()).trim() || "{}") as { gates?: { gate: string; state: string; nextAction: string }[] }).gates ?? [];
+    await preflight.exited;
+    const child = Bun.spawn([process.execPath, join(artifact, "src", "main.ts"), "serve"],
       { cwd: join(root, "work"), env, stdout: "pipe", stderr: "pipe" });
     const reader = child.stdout.getReader();
     let out = "";
@@ -62,7 +69,9 @@ async function smoke(srcDir: string): Promise<Record<string, unknown>> {
     try { login = (await fetch(`http://127.0.0.1:${port}/login`, { signal: AbortSignal.timeout(5000) })).status; } catch { login = 0; }
     child.kill("SIGTERM");
     const exit = await child.exited;
-    return { ok: out.includes("Jit workspace started") && login === 200 && exit === 0, artifactId: manifest.artifactId, appVersion: manifest.appVersion,
+    const artifactGate = gates.find(g => g.gate === "artifact");
+    return { ok: out.includes("Jit workspace started") && login === 200 && exit === 0 && artifactGate?.state === "ready",
+      gates: gates.map(g => ({ gate: g.gate, state: g.state, nextAction: g.nextAction })), artifactId: manifest.artifactId, appVersion: manifest.appVersion,
       bunVersion: manifest.bunVersion, schemaVersion: manifest.schemaVersion, arch: process.arch, platform: process.platform,
       started: out.includes("Jit workspace started"), loginStatus: login, exitCode: exit,
       evidence: "simulated-disposable-state; systemd, reboot, credentials and VPN evidence remain OPS05 human gates" };

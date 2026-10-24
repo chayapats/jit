@@ -2,8 +2,8 @@ import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { AppConfig } from "../config";
 import { botCredentialConfigured } from "../telegram/secrets";
-import { TransactionStore } from "../store";
-import { preflightService, readQuarantine, serviceAppConfig, type LedgerGate } from "./lifecycle";
+import { preflightService, serviceAppConfig, type LedgerGate, type ReadableStore } from "./lifecycle";
+import { openReadOnlyStore } from "./readonly-store";
 import type { ChannelTransportFactory } from "./service-channels";
 import { telegramEnabled, type ServiceConfig } from "../../ops/package/service-config";
 
@@ -83,7 +83,8 @@ export function serviceStatus(input: ServiceStatusInput): ServiceStatus {
     blockedGates: [...input.blockedGates], nextAction };
 }
 
-function ownerPid(store: TransactionStore, table: "job_scheduler" | "delivery_worker"): { state: "free" | "owned" | "stale"; pid: number | null } {
+function ownerPid(store: ReadableStore | null, table: "job_scheduler" | "delivery_worker"): { state: "free" | "owned" | "stale"; pid: number | null } {
+  if (!store) return { state: "free", pid: null };
   try {
     const row = store.read(tx => tx.get<{ pid: number }>(`SELECT pid FROM ${table} WHERE id = 1`));
     if (!row) return { state: "free", pid: null };
@@ -94,7 +95,8 @@ function ownerPid(store: TransactionStore, table: "job_scheduler" | "delivery_wo
 }
 
 /**
- * Gathers service status with read-only checks. Opens the store for reads only,
+ * Gathers service status with read-only checks. Opens a read-only SQLite
+ * connection (a missing database is reported as blocked, never created),
  * runs the preflight gates in inspect mode and stats (never reads) the
  * credential file. Scheduler and delivery ownership are reported as fields,
  * not as blocked gates, because the running service owns them. Live
@@ -103,8 +105,9 @@ function ownerPid(store: TransactionStore, table: "job_scheduler" | "delivery_wo
  */
 export function gatherServiceStatus(config: AppConfig, service: ServiceConfig, options: { ledgerGate?: LedgerGate; transports?: ChannelTransportFactory; requiredEngine?: string } = {}): ServiceStatus {
   const effective = serviceAppConfig(config, service);
-  const store = new TransactionStore(effective.databasePath, { migrateExisting: false });
-  try {
+  // Read-only connection: status never creates, migrates, journals or chmods the installation.
+  const store = openReadOnlyStore(effective.databasePath);
+  {
     const scheduler = ownerPid(store, "job_scheduler"), worker = ownerPid(store, "delivery_worker");
     const preflight = preflightService({ store, config: effective, service, requiredEngine: options.requiredEngine ?? "jit.schway.bridge/v1",
       ...(options.ledgerGate ? { ledgerGate: options.ledgerGate } : {}), ...(options.transports ? { transports: options.transports } : {}) });
@@ -112,14 +115,14 @@ export function gatherServiceStatus(config: AppConfig, service: ServiceConfig, o
     const channelGate = preflight.gates.find(g => g.gate === "channels");
     const status = serviceStatus({ now: Date.now(), scheduler: scheduler.state,
       worker: worker.state === "owned" && scheduler.state === "owned" && worker.pid === scheduler.pid ? "service" : worker.state,
-      quarantined: readQuarantine(service).quarantined || blockedGates.includes("quarantine"),
+      quarantined: blockedGates.includes("quarantine"),
       evidenceReady: false, blockedGates,
       routes: { total: service.routes.length, configured: service.routes.filter(r => r.configured).length },
       channels: !telegramEnabled(service) ? "disabled" : channelGate?.state === "blocked" ? "blocked" : "ready" });
     let telegram: "configured" | "unconfigured" = "unconfigured";
     try { telegram = botCredentialConfigured(effective.telegram.botTokenPath) ? "configured" : "unconfigured"; } catch { /* File check only. */ }
     return { ...status, telegram };
-  } finally { store.close(); }
+  }
 }
 
 export function listOpsArtifacts(root: string): string[] {

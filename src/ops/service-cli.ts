@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { readConfig } from "../config";
+import type { LedgerGate } from "./lifecycle";
 import { gatherServiceStatus } from "./status";
 import {
   defaultHostPaths, disableService, installService, installedConfigPath, planInstall, readServiceConfigFile, upgradePackage,
@@ -17,6 +18,10 @@ export interface ServiceCliDeps {
   /** Liveness probe for upgrade (tests); production polls the supervisor and the private bind. */
   health?: () => Promise<boolean>;
   bunPath?: string;
+  /** Ledger gate for status/upgrade (tests inject fixtures; production uses the default). */
+  ledgerGate?: LedgerGate;
+  /** Ownership operation for install (tests inject a recorder). */
+  chown?: OperatorHost["chown"];
 }
 
 const usage = "Use: service <plan|install|start|stop|restart|status|upgrade|disable|uninstall> [--config <path>] [--artifact <dir>] " +
@@ -59,6 +64,8 @@ export async function runServiceCommand(args: string[], deps: ServiceCliDeps): P
     journaldDir: resolve(deps.cwd, flags.get("--journald-dir") ?? defaultHostPaths.journaldDir),
     configDir: resolve(deps.cwd, flags.get("--config-dir") ?? defaultHostPaths.configDir),
     bunPath: resolve(deps.cwd, flags.get("--bun") ?? deps.bunPath ?? process.execPath),
+    ...(deps.ledgerGate ? { ledgerGate: deps.ledgerGate } : {}),
+    ...(deps.chown ? { chown: deps.chown } : {}),
   };
   const configPath = flags.get("--config") ? resolve(deps.cwd, flags.get("--config")!) : installedConfigPath(host);
   try {
@@ -79,7 +86,7 @@ export async function runServiceCommand(args: string[], deps: ServiceCliDeps): P
     }
     const service = readServiceConfigFile(configPath);
     const supervisor = new SystemdSupervisor(run);
-    const status = async () => ({ supervisor: await supervisor.state(), service: gatherServiceStatus(readConfig({}), service) });
+    const status = async () => ({ supervisor: await supervisor.state(), service: gatherServiceStatus(readConfig({}), service, deps.ledgerGate ? { ledgerGate: deps.ledgerGate } : {}) });
     if (command === "status") return { exitCode: 0, output: sanitized(await status()) };
     if (command === "start" || command === "stop" || command === "restart") {
       const done = command === "start" ? await supervisor.start()

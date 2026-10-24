@@ -26,8 +26,9 @@ export interface ServiceConfig {
   network: {
     bindHost: string; port: number; vpnInterface: string | null;
     /**
-     * Owner-facing origin served through private ingress. Defaults to
-     * `http://<loopback bind>:<port>`; a non-loopback origin must be HTTPS.
+     * Owner-facing origin served through private ingress. Required and HTTPS
+     * for any non-loopback bind; only a loopback bind defaults to
+     * `http://<loopback bind>:<port>`.
      */
     origin?: string;
   };
@@ -61,8 +62,11 @@ const pathPattern = /^\/[A-Za-z0-9._@+\/-]{0,4095}$/;
 const ipv4 = /^(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
 const ipv6 = /^[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,7}$/i;
 const loopbackHosts = ["127.0.0.1", "::1"];
-/** Interactive home trees: hidden by `ProtectHome=true` and never a durable service location. */
-const homeRoots = ["/home", "/root", "/Users", "/run/user"];
+/**
+ * Interactive home trees on the Linux target: exactly what `ProtectHome=true`
+ * hides from the unit, so they are never a durable service location.
+ */
+const homeRoots = ["/home", "/root", "/run/user"];
 
 /**
  * Private, VPN or loopback address ranges: RFC 1918, CGNAT 100.64/10 (used by
@@ -102,7 +106,8 @@ function keysWithin(value: Record<string, unknown>, required: string[], optional
 }
 
 function parseOrigin(raw: unknown, bindHost: string, port: number): string | undefined {
-  if (raw === undefined) return undefined;
+  // Only a loopback bind may default to a synthesized http://127.0.0.1 origin; any private/VPN bind names its HTTPS origin.
+  if (raw === undefined) return loopbackHosts.includes(bindHost) ? undefined : fail();
   if (typeof raw !== "string" || raw.length > 256) fail();
   let url: URL;
   try { url = new URL(raw as string); } catch { return fail(); }
@@ -211,6 +216,7 @@ export function serviceReleasesDirectory(config: ServiceConfig): string {
 /** Owner origin served by this installation. */
 export function serviceOrigin(config: ServiceConfig): string {
   if (config.network.origin) return config.network.origin;
+  if (!loopbackHosts.includes(config.network.bindHost)) throw new Error("invalid_service_config");
   const host = config.network.bindHost.includes(":") ? `[${config.network.bindHost}]` : config.network.bindHost;
   return `http://${host}:${config.network.port}`;
 }
@@ -297,15 +303,18 @@ export function serviceWritablePaths(config: ServiceConfig): string[] {
  * as file paths, never values. `appDir` defaults to the active-release path so
  * an upgrade switches releases without rewriting the unit.
  */
-export async function renderServiceUnit(config: ServiceConfig, exec: { bunPath: string; appDir?: string; configPath?: string }): Promise<string> {
+export async function renderServiceUnit(config: ServiceConfig, exec: { bunPath: string; appDir?: string; configPath?: string; gid?: number }): Promise<string> {
   const parsed = parseServiceConfig(config);
   const appDir = exec?.appDir ?? parsed.executablePath;
   const configPath = exec?.configPath ?? join(parsed.stateDirectory, "service-config.json");
   for (const path of [exec?.bunPath, appDir, configPath]) absolutePath(path);
+  // Install resolves and validates the identity's primary group and renders its numeric GID.
+  if (exec.gid !== undefined && (!Number.isSafeInteger(exec.gid) || exec.gid < 1 || exec.gid > 4294967294)) throw new Error("invalid_service_config");
   const template = await Bun.file(templateUrl).text();
   const stopSeconds = serviceDrainTimeoutMs(parsed) / 1000;
   return template
     .replaceAll("{{SERVICE_USER}}", parsed.serviceUser)
+    .replaceAll("{{SERVICE_GROUP}}", exec.gid !== undefined ? String(exec.gid) : parsed.serviceUser)
     .replaceAll("{{BUN_PATH}}", exec.bunPath)
     .replaceAll("{{APP_DIR}}", appDir)
     .replaceAll("{{CONFIG_PATH}}", configPath)

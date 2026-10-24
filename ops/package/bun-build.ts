@@ -1,4 +1,4 @@
-import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { join, relative, resolve } from "node:path";
 import { safeVersion } from "../../src/evidence/contract";
@@ -38,9 +38,14 @@ export interface DependencyRecord {
   schema: "jit.service.dependencies/v1";
   artifactId: string;
   lockHash: string;
+  /** Manifest content pin the dependencies were installed against. */
+  contentHash: string;
   platform: string;
   arch: string;
   bunVersion: string;
+  /** SHA-256 over every path and file of the symlink-free `node_modules` tree. */
+  dependencyHash: string;
+  dependencyFiles: number;
   installedAt: string;
 }
 
@@ -61,6 +66,45 @@ const requiredFiles = ["package.json", "bun.lock", "src/main.ts", "ops/package/s
 const excluded = (path: string) => /(^|\/)(node_modules|\.local|\.git)(\/|$)/.test(path) || /(^|\/)\.DS_Store$/.test(path);
 
 const sha256File = (path: string): string => createHash("sha256").update(readFileSync(path)).digest("hex");
+
+/**
+ * Ignored subtrees of a source checkout that may hold build output (for
+ * example a worktree-local TMPDIR). Output may never overlap a packaged entry.
+ */
+export const buildOutputSubtrees = [".tmp", ".local", "dist"] as const;
+
+function inside(child: string, parent: string): boolean {
+  return child === parent || child.startsWith(parent + "/");
+}
+
+/** Upper bound on files in a sealed dependency tree; above it sealing fails closed. */
+const dependencyFileLimit = 50_000;
+
+/**
+ * Seals an installed dependency tree: every entry must be a regular file or
+ * directory (no symlinks, devices or sockets), and the digest covers every
+ * relative path and file content in sorted order.
+ */
+export function dependencyTreeHash(dir: string): { hash: string; files: number } {
+  const root = resolve(dir, "node_modules");
+  const hash = createHash("sha256");
+  let files = 0;
+  const walk = (current: string) => {
+    for (const name of readdirSync(current).sort()) {
+      const path = join(current, name), rel = relative(root, path);
+      const stats = lstatSync(path);
+      if (stats.isSymbolicLink()) throw new Error("invalid_dependency_symlink");
+      if (stats.isDirectory()) { hash.update(`d\0${rel}\n`); walk(path); }
+      else if (stats.isFile()) {
+        if (++files > dependencyFileLimit) throw new Error("invalid_dependency_tree");
+        hash.update(`f\0${rel}\0${sha256File(path)}\n`);
+      } else throw new Error("invalid_dependency_tree");
+    }
+  };
+  if (!lstatSync(root).isDirectory()) throw new Error("invalid_dependency_tree");
+  walk(root);
+  return { hash: hash.digest("hex"), files };
+}
 
 function listFiles(root: string, dir = root, out: string[] = []): string[] {
   for (const name of readdirSync(dir).sort()) {
@@ -93,7 +137,10 @@ export function artifactContentHash(dir: string): string {
 export function buildPackage(options: BuildOptions): BuildManifest {
   if (!options || typeof options !== "object") throw new Error("invalid_build_options");
   const srcDir = resolve(options.srcDir), outDir = resolve(options.outDir);
-  if (!srcDir || !outDir || srcDir === outDir || outDir.startsWith(srcDir + "/")) throw new Error("invalid_build_options");
+  // Output outside the checkout, or inside a designated ignored subtree of it; never overlapping packaged entries.
+  if (!srcDir || !outDir || inside(srcDir, outDir) ||
+      (inside(outDir, srcDir) && !buildOutputSubtrees.some(sub => inside(outDir, join(srcDir, sub)) && outDir !== join(srcDir, sub))) ||
+      packagedEntries.some(entry => inside(outDir, join(srcDir, entry)))) throw new Error("invalid_build_options");
   if (typeof options.engineContract !== "string" || !isEngineContract(options.engineContract)) {
     throw new Error("invalid_build_options");
   }
@@ -154,13 +201,17 @@ export function artifactPiStatus(manifest: Pick<BuildManifest, "arch" | "piValid
   return "pending";
 }
 
-/** Reads the dependency record; null when dependencies were never installed for this artifact. */
+/** Reads the dependency record strictly; null when absent or malformed. */
 export function readDependencyRecord(dir: string): DependencyRecord | null {
+  const keys = ["schema", "artifactId", "lockHash", "contentHash", "platform", "arch", "bunVersion", "dependencyHash", "dependencyFiles", "installedAt"];
   try {
-    const raw = JSON.parse(readFileSync(join(resolve(dir), "dependencies.json"), "utf8")) as DependencyRecord;
-    if (raw?.schema !== "jit.service.dependencies/v1" || typeof raw.artifactId !== "string" || typeof raw.lockHash !== "string" ||
-        typeof raw.platform !== "string" || typeof raw.arch !== "string" || typeof raw.bunVersion !== "string") return null;
-    return raw;
+    const raw = JSON.parse(readFileSync(join(resolve(dir), "dependencies.json"), "utf8")) as Record<string, unknown>;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw) || Object.keys(raw).length !== keys.length || keys.some(k => !Object.hasOwn(raw, k))) return null;
+    if (raw.schema !== "jit.service.dependencies/v1" || typeof raw.artifactId !== "string" ||
+        [raw.lockHash, raw.contentHash, raw.dependencyHash].some(h => typeof h !== "string" || !/^[a-f0-9]{64}$/.test(h)) ||
+        typeof raw.platform !== "string" || typeof raw.arch !== "string" || safeVersion(raw.bunVersion) !== raw.bunVersion ||
+        !Number.isSafeInteger(raw.dependencyFiles) || typeof raw.installedAt !== "string") return null;
+    return raw as unknown as DependencyRecord;
   } catch { return null; }
 }
 
@@ -189,17 +240,25 @@ export function validateArtifact(outDir: string, options: { runtime?: boolean } 
   checks.push({ check: "schema-pin", ok: manifest.schemaVersion === schemaVersion });
   checks.push({ check: "pi-pending", ok: artifactPiStatus(manifest) === "pending" || manifest.arch !== "arm64" });
   if (options.runtime) {
+    // The dependency tree is re-hashed, so a modified, added or removed dependency file fails validation.
     const deps = readDependencyRecord(dir);
-    checks.push({ check: "dependencies", ok: !!deps && deps.artifactId === manifest.artifactId && deps.lockHash === manifest.lockHash &&
-      deps.platform === process.platform && deps.arch === process.arch && existsSync(join(dir, "node_modules")) });
+    let sealed = false;
+    if (deps && deps.artifactId === manifest.artifactId && deps.lockHash === manifest.lockHash && deps.contentHash === manifest.contentHash &&
+        deps.platform === process.platform && deps.arch === process.arch && deps.bunVersion === manifest.bunVersion) {
+      try { const tree = dependencyTreeHash(dir); sealed = tree.hash === deps.dependencyHash && tree.files === deps.dependencyFiles; }
+      catch { sealed = false; }
+    }
+    checks.push({ check: "dependencies", ok: sealed });
   }
   return { ok: checks.every(c => c.ok), manifest, checks };
 }
 
 /**
  * Installs the artifact's pinned dependencies on the host that will run it:
- * `bun install --frozen-lockfile --production --ignore-scripts` inside the
- * artifact, then records platform/arch. Explicit operator step only — the
+ * `bun install --frozen-lockfile --production --ignore-scripts --linker=hoisted`
+ * inside the artifact, removes the bin-link directory (unused at runtime),
+ * then seals the symlink-free tree into a strict record bound to the
+ * artifact's content pin and this platform/arch. Explicit operator step only — the
  * service unit and boot never install or download anything. Registry access
  * (or a pre-populated Bun cache) is the operator's responsibility.
  */
@@ -208,14 +267,18 @@ export async function installArtifactDependencies(dir: string, input: { bunPath:
   const valid = validateArtifact(root);
   if (!valid.ok || !valid.manifest) throw new Error("invalid_artifact");
   if (existsSync(join(root, "dependencies.json"))) throw new Error("dependencies_already_installed");
-  const result = await input.run([input.bunPath, "install", "--frozen-lockfile", "--production", "--ignore-scripts"],
+  const result = await input.run([input.bunPath, "install", "--frozen-lockfile", "--production", "--ignore-scripts", "--linker=hoisted"],
     { cwd: root, timeoutMs: input.timeoutMs ?? 600_000, env: { PATH: process.env.PATH ?? "/usr/bin:/bin" } });
   if (result.exitCode !== 0) throw new Error("dependency_install_failed");
   const version = await input.run([input.bunPath, "--version"], { timeoutMs: 30_000 });
   const bunVersion = version.stdout.trim();
   if (version.exitCode !== 0 || safeVersion(bunVersion) !== bunVersion || bunVersion !== valid.manifest.bunVersion) throw new Error("runtime_mismatch");
+  // Bin links are the only symlinks a hoisted install creates; the service never executes them.
+  rmSync(join(root, "node_modules", ".bin"), { recursive: true, force: true });
+  const tree = dependencyTreeHash(root);
   const record: DependencyRecord = { schema: "jit.service.dependencies/v1", artifactId: valid.manifest.artifactId, lockHash: valid.manifest.lockHash,
-    platform: process.platform, arch: process.arch, bunVersion, installedAt: new Date().toISOString() };
+    contentHash: valid.manifest.contentHash, platform: process.platform, arch: process.arch, bunVersion,
+    dependencyHash: tree.hash, dependencyFiles: tree.files, installedAt: new Date().toISOString() };
   writeFileSync(join(root, "dependencies.json"), JSON.stringify(record, null, 2) + "\n", { mode: 0o644 });
   return record;
 }

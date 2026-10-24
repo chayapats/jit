@@ -27,7 +27,22 @@ export type CommandRunner = (argv: string[], options: CommandOptions) => Promise
 
 const outputLimit = 64 * 1024;
 
-/** Real runner: Bun.spawn with a hard timeout, bounded stdout and discarded stderr. */
+/** Grace between SIGTERM and SIGKILL for a timed-out process group. */
+const killGraceMs = 1000;
+
+function signalGroup(pid: number, signal: "SIGTERM" | "SIGKILL"): void {
+  // The child leads its own process group (detached → setsid), so -pid reaches every descendant,
+  // including processes started under a `runuser` wrapper.
+  try { process.kill(-pid, signal); } catch { /* Group already gone. */ }
+}
+
+/**
+ * Real runner. The child runs in a dedicated process group with discarded
+ * stderr; stdout is streamed and capped while it is read. The timeout is
+ * wall-clock: on expiry the whole group receives SIGTERM, then SIGKILL
+ * after a bounded grace, and the call returns without waiting for a
+ * descendant that still holds the pipe.
+ */
 export const spawnRunner: CommandRunner = async (argv, options) => {
   if (!Array.isArray(argv) || !argv.length || argv.some(a => typeof a !== "string" || a.includes("\0"))) throw new Error("invalid_command");
   if (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1 || options.timeoutMs > 1_800_000) throw new Error("invalid_command");
@@ -35,14 +50,30 @@ export const spawnRunner: CommandRunner = async (argv, options) => {
     ...(options.cwd ? { cwd: options.cwd } : {}),
     env: options.env ?? { PATH: process.env.PATH ?? "/usr/bin:/bin" },
     stdin: options.stdin !== undefined ? new TextEncoder().encode(options.stdin) : "ignore",
-    stdout: "pipe", stderr: "ignore",
+    stdout: "pipe", stderr: "ignore", detached: true,
   });
-  let timedOut = false;
-  const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, options.timeoutMs);
-  try {
-    const [stdout, exitCode] = await Promise.all([new Response(child.stdout).text(), child.exited]);
-    return { exitCode: timedOut ? 124 : exitCode, stdout: stdout.slice(0, outputLimit), timedOut };
-  } finally { clearTimeout(timer); }
+  const reader = child.stdout.getReader();
+  const decoder = new TextDecoder();
+  let stdout = "";
+  const pump = (async () => {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      if (stdout.length < outputLimit) stdout += decoder.decode(value, { stream: true }).slice(0, outputLimit - stdout.length);
+    }
+  })().catch(() => { /* Pipe closed by cancellation. */ });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<"timeout">(resolve => { timer = setTimeout(() => resolve("timeout"), options.timeoutMs); });
+  const finished = Promise.all([child.exited, pump]).then(() => "exited" as const);
+  const first = await Promise.race([finished, expired]);
+  clearTimeout(timer);
+  if (first === "exited") return { exitCode: child.exitCode ?? 1, stdout, timedOut: false };
+  signalGroup(child.pid, "SIGTERM");
+  const graceful = await Promise.race([child.exited.then(() => true), Bun.sleep(killGraceMs).then(() => false)]);
+  signalGroup(child.pid, "SIGKILL");
+  if (!graceful) await Promise.race([child.exited, Bun.sleep(killGraceMs)]);
+  try { await reader.cancel(); } catch { /* Already closed. */ }
+  return { exitCode: 124, stdout, timedOut: true };
 };
 
 /** Observed supervisor state. `unknown` is reported honestly when systemctl gives no answer. */

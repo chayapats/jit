@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { fixtureLedgerGate } from "./fixtures/ledger-gate";
 import { Database } from "bun:sqlite";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -655,7 +656,7 @@ test("boot never migrates an older installation; the owner upgrade migrates stag
     const store = new TransactionStore(path, { migrateExisting: false }); stores.push(store);
     expect(store.read(tx => tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version)).toBe(version);
     const service = serviceFor(root);
-    expect(preflightService({ store, config, service, requiredEngine: "jit.schway.bridge/v1" }).gates.find(g => g.gate === "schema"))
+    expect(preflightService({ store, config, service, requiredEngine: "jit.schway.bridge/v1", ledgerGate: fixtureLedgerGate }).gates.find(g => g.gate === "schema"))
       .toMatchObject({ state: "blocked", nextAction: "run-owner-upgrade" });
     expect(readFileSync(path).subarray(100)).toEqual(bytes.subarray(100));
     // Owner-authorized staged upgrade on the old installation.
@@ -717,7 +718,7 @@ test("startFullApp blocks an older installation at the schema gate without migra
   new TransactionStore(path).close();
   historical(path, 21);
   const config = readConfig({ JIT_DATABASE: path });
-  const started = await startFullApp({ config, service });
+  const started = await startFullApp({ config, service, ledgerGate: fixtureLedgerGate });
   expect(started.ok).toBe(false);
   if (!started.ok) expect(started.gates.find(g => g.gate === "schema")).toMatchObject({ state: "blocked", nextAction: "run-owner-upgrade" });
   expect(inspectStoreSchema(path)).toBe(21);
@@ -833,7 +834,7 @@ test("startFullApp in schway mode upgrades over real native sessions and rebuild
   const root = mkdtempSync(join(tmpdir(), "jit-ops-upgrade-schway-")); roots.push(root);
   const service = serviceFor(root);
   const config = readConfig({ JIT_DATABASE: join(root, "state", "app.sqlite"), JIT_RUN_PORT: "schway" });
-  const started = await startFullApp({ config, service });
+  const started = await startFullApp({ config, service, ledgerGate: fixtureLedgerGate });
   if (!started.ok) throw new Error(JSON.stringify(started.gates));
   const { app, store } = started.handle;
   stores.push(store); services.push(started.handle.service);

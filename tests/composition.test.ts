@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { fixtureLedgerGate } from "./fixtures/ledger-gate";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -128,7 +129,7 @@ test("composition: startFullApp and serve share one factory with identical worke
   for (const runPort of ["scripted", "schway"] as const) {
     const { service: svc, state } = service();
     const config = readConfig({ JIT_DATABASE: join(state, "app.sqlite"), JIT_RUN_PORT: runPort });
-    const started = await startFullApp({ config, service: svc });
+    const started = await startFullApp({ config, service: svc, ledgerGate: fixtureLedgerGate });
     expect(started.ok).toBe(true);
     if (!started.ok) throw new Error("unreachable");
     expect(started.handle.teamPort.adapter).toBe(runPort);
@@ -145,7 +146,10 @@ test("composition: startFullApp and serve share one factory with identical worke
   }
   // serve starts only through startFullApp, whose queue comes from the shared factory owned by the managed service lifecycle.
   const main = readFileSync(join(import.meta.dir, "..", "src", "main.ts"), "utf8");
-  expect(main).toContain("await startFullApp({ config, service })");
+  expect(main).toContain("await serveCommand(config, process.argv.slice(3))");
+  const serve = readFileSync(join(import.meta.dir, "..", "src", "ops", "serve.ts"), "utf8");
+  expect(serve).toContain("await startFullApp({ config, service,");
+  expect(serve).not.toContain("ManagedService");
   const lifecycle = readFileSync(join(import.meta.dir, "..", "src", "ops", "lifecycle.ts"), "utf8");
   expect(lifecycle).toContain("ManagedService.forConfig(store, config, compose)");
   expect(main).not.toContain("ManagedService");

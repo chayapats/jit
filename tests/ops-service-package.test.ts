@@ -1,9 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
+import { fixtureLedgerGate } from "./fixtures/ledger-gate";
 import { Database } from "bun:sqlite";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { Application } from "../src/application";
 import { readConfig } from "../src/config";
+import { JobQueue } from "../src/jobs/queue";
 import { ScriptedTelegramSender } from "../src/delivery";
 import { startFullApp, stopDrain } from "../src/ops/lifecycle";
 import type { ChannelTransportFactory } from "../src/ops/service-channels";
@@ -36,6 +39,9 @@ afterEach(async () => {
 const repoRoot = resolve(import.meta.dir, "..");
 const password = "service-package-owner-pw";
 const uid = process.getuid?.() ?? 1000;
+const gid = process.getgid?.() ?? 1000;
+const chowns: Array<[string, number, number]> = [];
+const recordChown = (path: string, owner: number, group: number) => { chowns.push([path, owner, group]); };
 const rid = () => crypto.randomUUID();
 
 async function freePort(): Promise<number> {
@@ -65,15 +71,38 @@ function layout(port = 3443) {
 }
 
 /** Builds an artifact and "installs" dependencies by linking the build host's resolved node_modules (simulated `bun install`). */
-async function artifact(root: string, name: string): Promise<string> {
+/** Build-host packages the runtime never imports; leaving them out keeps the simulated install small. */
+const devOnly = new Set(["typescript", "@typescript", "bun-types", "@types", ".bin"]);
+
+/**
+ * Builds an artifact and simulates `bun install` for this host. `runnable`
+ * copies the build host's resolved production node_modules (a real,
+ * symlink-free tree the release can execute); otherwise a tiny placeholder
+ * tree is sealed, enough for validation-only tests.
+ */
+async function artifact(root: string, name: string, options: { runnable?: boolean } = {}): Promise<string> {
   const out = join(root, name);
   buildPackage({ srcDir: repoRoot, outDir: out, engineContract: "jit.schway.bridge/v1", engineRevision: null });
-  await installArtifactDependencies(out, { bunPath: process.execPath, run: async (argv, options) => {
-    if (argv[1] === "install") { symlinkSync(join(repoRoot, "node_modules"), join(options.cwd!, "node_modules")); return { exitCode: 0, stdout: "", timedOut: false }; }
+  await installArtifactDependencies(out, { bunPath: process.execPath, run: async (argv, opts) => {
+    if (argv[1] === "install") {
+      expect(argv).toContain("--linker=hoisted");
+      const target = join(opts.cwd!, "node_modules");
+      if (options.runnable) {
+        cpSync(join(repoRoot, "node_modules"), target, { recursive: true, filter: src => !devOnly.has(src.slice(join(repoRoot, "node_modules").length + 1).split("/")[0]!) });
+      } else {
+        mkdirSync(join(target, "fixture-dep"), { recursive: true });
+        writeFileSync(join(target, "fixture-dep", "index.js"), "export const pinned = 1;\n");
+      }
+      mkdirSync(join(target, ".bin"), { recursive: true });
+      symlinkSync("../fixture-dep/index.js", join(target, ".bin", "fixture"));
+      return { exitCode: 0, stdout: "", timedOut: false };
+    }
     return { exitCode: 0, stdout: `${Bun.version}\n`, timedOut: false };
   } });
   return out;
 }
+
+const harness = join(import.meta.dir, "fixtures", "serve-fixture-ledger.ts");
 
 interface FakeSupervisor {
   run: CommandRunner;
@@ -81,6 +110,7 @@ interface FakeSupervisor {
   active: () => boolean;
   upgrade?: (argv: string[], options: CommandOptions) => Promise<CommandResult>;
   identity: string | null;
+  group: string | null;
 }
 
 /**
@@ -91,11 +121,12 @@ interface FakeSupervisor {
 function fakeSupervisor(unitDir: string, options: { spawnService?: boolean } = {}): FakeSupervisor {
   let child: ReturnType<typeof Bun.spawn> | null = null;
   let simulatedActive = false;
-  const fake: FakeSupervisor = { calls: [], identity: `jit-service:x:${uid}:${uid}::/var/lib/jit:/usr/sbin/nologin`,
+  const fake: FakeSupervisor = { calls: [], identity: `jit-service:x:${uid}:${gid}::/var/lib/jit:/usr/sbin/nologin`, group: `jit-service:x:${gid}:`,
     active: () => options.spawnService === false ? simulatedActive : child !== null && child.exitCode === null && !child.killed,
     run: async (argv, opts) => {
       fake.calls.push(argv);
       const done = (exitCode: number, stdout = ""): CommandResult => ({ exitCode, stdout, timedOut: false });
+      if (argv[0] === "getent" && argv[1] === "group") return fake.group ? done(0, fake.group + "\n") : done(2);
       if (argv[0] === "getent") return fake.identity ? done(0, fake.identity + "\n") : done(2);
       if (argv[1] === "--version") return done(0, `${Bun.version}\n`);
       if (argv.includes("upgrade") && fake.upgrade) return fake.upgrade(argv, opts);
@@ -106,7 +137,9 @@ function fakeSupervisor(unitDir: string, options: { spawnService?: boolean } = {
       if (verb === "start") {
         if (options.spawnService === false) { simulatedActive = true; return done(0); }
         const unit = readFileSync(join(unitDir, "jit.service"), "utf8");
-        const exec = /^ExecStart=(.+)$/m.exec(unit)![1]!.split(" ");
+        const [bun, entry, ...rest] = /^ExecStart=(.+)$/m.exec(unit)![1]!.split(" ");
+        // Same ExecStart, but the release's real serve path runs under the fixture ledger gate (OPS02 writer not integrated).
+        const exec = [bun!, harness, resolve(entry!, "..", ".."), ...rest];
         const env = Object.fromEntries([...unit.matchAll(/^Environment=([A-Z_]+)=(.*)$/gm)].map(m => [m[1]!, m[2]!]));
         const cwd = /^WorkingDirectory=(.+)$/m.exec(unit)![1]!;
         const proc = Bun.spawn(exec, { cwd, env: { ...env, PATH: process.env.PATH ?? "" }, stdout: "pipe", stderr: "pipe" });
@@ -139,7 +172,7 @@ function fakeSupervisor(unitDir: string, options: { spawnService?: boolean } = {
 
 function cli(args: string[], fake: FakeSupervisor, l: ReturnType<typeof layout>, extra: { health?: () => Promise<boolean> } = {}) {
   return runServiceCommand([...args, "--unit-dir", l.dirs.unit, "--journald-dir", l.dirs.journald, "--config-dir", l.dirs.configDir],
-    { cwd: l.root, run: fake.run, readPassword: async () => password, bunPath: process.execPath, ...extra });
+    { cwd: l.root, run: fake.run, readPassword: async () => password, bunPath: process.execPath, ledgerGate: fixtureLedgerGate, chown: recordChown, ...extra });
 }
 
 test("plan prints the exact unit, journald and config files with modes and no secret values, and writes nothing", async () => {
@@ -174,15 +207,15 @@ test("configuration negatives reject before any install or background activation
   const l = layout();
   const art = await artifact(l.root, "artifact");
   const fake = fakeSupervisor(l.dirs.unit);
-  const host = (): OperatorHost => ({ run: fake.run, unitDir: l.dirs.unit, journaldDir: l.dirs.journald, configDir: l.dirs.configDir, bunPath: process.execPath });
+  const host = (): OperatorHost => ({ run: fake.run, unitDir: l.dirs.unit, journaldDir: l.dirs.journald, configDir: l.dirs.configDir, bunPath: process.execPath, ledgerGate: fixtureLedgerGate });
   const failing = async (service: ServiceConfig, artifactDir = art, h = host()) =>
     (await planInstall({ service, artifactDir, host: h })).checks.filter(c => !c.ok).map(c => [c.check, c.nextAction]);
   expect(await failing(l.service)).toEqual([]);
   fake.identity = null;
   expect(await failing(l.service)).toEqual([["identity", "create-dedicated-service-user"]]);
-  fake.identity = `jit-service:x:${uid}:${uid}::/home/jit:/bin/bash`;
+  fake.identity = `jit-service:x:${uid}:${gid}::/home/jit:/bin/bash`;
   expect(await failing(l.service)).toEqual([["identity", "use-dedicated-non-login-identity"]]);
-  fake.identity = `jit-service:x:${uid}:${uid}::/var/lib/jit:/usr/sbin/nologin`;
+  fake.identity = `jit-service:x:${uid}:${gid}::/var/lib/jit:/usr/sbin/nologin`;
   chmodSync(l.dirs.state, 0o755);
   expect(await failing(l.service)).toEqual([["state-directory", "restrict-service-directory"]]);
   chmodSync(l.dirs.state, 0o700);
@@ -213,9 +246,13 @@ test("configuration negatives reject before any install or background activation
     { ...l.service, network: { ...l.service.network, bindHost: "0.0.0.0" } },
     { ...l.service, network: { ...l.service.network, bindHost: "8.8.8.8", vpnInterface: "tailscale0" } },
     { ...l.service, network: { ...l.service.network, bindHost: "100.100.1.2", vpnInterface: null } },
+    // A private/VPN bind must name its HTTPS origin; only loopback may synthesize an http:// origin.
+    { ...l.service, network: { bindHost: "100.100.1.2", port: 3443, vpnInterface: "tailscale0" } },
+    { ...l.service, network: { bindHost: "100.100.1.2", port: 3443, vpnInterface: "tailscale0", origin: "http://100.100.1.2:3443" } },
     { ...l.service, network: { ...l.service.network, origin: "http://jit.example.test" } },
     { ...l.service, stateDirectory: "/home/dev/jit-state" },
-    { ...l.service, backupDirectory: "/Users/dev/backups" },
+    { ...l.service, backupDirectory: "/root/backups" },
+    { ...l.service, ledgerPath: "/run/user/1000/ledger.json" },
     { ...l.service, resources: { ...l.service.resources, unbounded: true } },
     { ...l.service, secretRefs: [{ name: "telegram-bot-token", store: "credential-file", key: "relative/token" }] },
     { ...l.service, channels: { telegram: "enabled" }, secretRefs: [] },
@@ -236,7 +273,7 @@ test("configuration negatives reject before any install or background activation
 test("fresh artifact → plan → install → supervised full app → owner state persists across stop/restart with one scheduler owner", async () => {
   const port = await freePort();
   const l = layout(port);
-  const art = await artifact(l.root, "artifact");
+  const art = await artifact(l.root, "artifact", { runnable: true });
   const fake = fakeSupervisor(l.dirs.unit);
   const installed = await cli(["install", "--config", l.source, "--artifact", art], fake, l);
   expect(installed).toMatchObject({ exitCode: 0, output: { ok: true, supervisor: { reloaded: true, enabled: true }, nextAction: "start-service" } });
@@ -272,7 +309,7 @@ test("fresh artifact → plan → install → supervised full app → owner stat
   const status = await cli(["status"], fake, l);
   expect(status.output).toMatchObject({ supervisor: { active: "active" }, service: { service: "running", scheduler: "owned", routes: { total: 2, configured: 1, verified: 0 }, channels: "disabled" } });
   // A duplicate writer started outside the supervisor is refused before any background activation.
-  const duplicate = Bun.spawn([process.execPath, join(l.service.executablePath, "src", "main.ts"), "serve", "--service-config", join(l.dirs.configDir, "service-config.json")],
+  const duplicate = Bun.spawn([process.execPath, harness, l.service.executablePath, "serve", "--service-config", join(l.dirs.configDir, "service-config.json")],
     { cwd: l.dirs.work, env: { ...env, PATH: process.env.PATH ?? "" }, stdout: "pipe", stderr: "pipe" });
   children.push(duplicate);
   expect(await duplicate.exited).toBe(1);
@@ -295,7 +332,7 @@ test("fresh artifact → plan → install → supervised full app → owner stat
 test("serve in the packaged release refuses a modified release before any background activation", async () => {
   const port = await freePort();
   const l = layout(port);
-  const art = await artifact(l.root, "artifact");
+  const art = await artifact(l.root, "artifact", { runnable: true });
   const fake = fakeSupervisor(l.dirs.unit);
   expect((await cli(["install", "--config", l.source, "--artifact", art], fake, l)).exitCode).toBe(0);
   const release = readlinkSync(l.service.executablePath);
@@ -305,7 +342,10 @@ test("serve in the packaged release refuses a modified release before any backgr
     { cwd: l.dirs.work, env: { ...env, PATH: process.env.PATH ?? "" }, stdout: "pipe", stderr: "pipe" });
   children.push(serve);
   expect(await serve.exited).toBe(1);
-  expect(await new Response(serve.stderr).text()).toContain("Service blocked at artifact: release failed validation: content-pin (next: reinstall-validated-artifact)");
+  const stderr = await new Response(serve.stderr).text();
+  expect(stderr).toContain("Service blocked at artifact: release failed validation: content-pin (next: reinstall-validated-artifact)");
+  // The unmodified production entry uses the default ledger gate: installed profiles stay quarantined until OPS02's writer lands.
+  expect(stderr).toContain("Service blocked at quarantine: installation ledger checkpoint writer not integrated (OPS02 #33); activation stays quarantined (next: integrate-ops02-ledger-checkpoint)");
   const store = new TransactionStore(join(l.dirs.state, "app.sqlite"), { migrateExisting: false });
   try { expect(store.read(tx => tx.all("SELECT * FROM job_scheduler"))).toEqual([]); } finally { store.close(); }
 }, 60_000);
@@ -322,7 +362,7 @@ async function installedForUpgrade() {
   new TransactionStore(serviceDatabasePath(l.service)).close();
   await fake.run(["systemctl", "start", "jit.service"], { timeoutMs: 1000 });
   const second = await artifact(l.root, "artifact-b");
-  const host: OperatorHost = { run: fake.run, unitDir: l.dirs.unit, journaldDir: l.dirs.journald, configDir: l.dirs.configDir, bunPath: process.execPath };
+  const host: OperatorHost = { run: fake.run, unitDir: l.dirs.unit, journaldDir: l.dirs.journald, configDir: l.dirs.configDir, bunPath: process.execPath, ledgerGate: fixtureLedgerGate };
   return { l, fake, host, a: readManifest(first), b: readManifest(second), second };
 }
 
@@ -420,7 +460,7 @@ function fixtureTransports(sender: ScriptedTelegramSender, polls: number[]): Cha
 test("an enabled Telegram channel fails closed without a supported transport or with an unsafe token file", async () => {
   const { l, service, config } = channelSetup();
   const blockedAt = async (transports?: ChannelTransportFactory) => {
-    const started = await startFullApp({ config, service, ...(transports ? { transports } : {}) });
+    const started = await startFullApp({ config, service, ledgerGate: fixtureLedgerGate, ...(transports ? { transports } : {}) });
     expect(started.ok).toBe(false);
     if (started.ok) throw new Error("unreachable");
     return started.gates.filter(g => g.state === "blocked").map(g => [g.gate, g.nextAction]);
@@ -428,7 +468,7 @@ test("an enabled Telegram channel fails closed without a supported transport or 
   expect(await blockedAt()).toEqual([["channels", "install-supported-telegram-transport"]]);
   chmodSync(l.credential, 0o644);
   expect(await blockedAt(fixtureTransports(new ScriptedTelegramSender(), []))).toEqual([["channels", "restrict-telegram-token-file"], ["secrets", "verify-secret-store"]]);
-  expect(gatherServiceStatus(config, service)).toMatchObject({ service: "blocked", channels: "blocked" });
+  expect(gatherServiceStatus(config, service, { ledgerGate: fixtureLedgerGate })).toMatchObject({ service: "blocked", channels: "blocked" });
   const store = new TransactionStore(serviceDatabasePath(service), { migrateExisting: false });
   try {
     expect(store.read(tx => tx.all("SELECT * FROM job_scheduler"))).toEqual([]);
@@ -444,7 +484,7 @@ test("boot starts the delivery worker and Telegram poller after reconciliation; 
   const { service, config } = channelSetup();
   const sender = new ScriptedTelegramSender();
   const polls: number[] = [];
-  const started = await startFullApp({ config, service, transports: fixtureTransports(sender, polls) });
+  const started = await startFullApp({ config, service, ledgerGate: fixtureLedgerGate, transports: fixtureTransports(sender, polls) });
   if (!started.ok) throw new Error(JSON.stringify(started.gates));
   const { app, store, channels } = started.handle;
   expect(channels).not.toBeNull();
@@ -478,7 +518,7 @@ test("boot starts the delivery worker and Telegram poller after reconciliation; 
   started.handle.service.close();
   store.close();
   const restartedSender = new ScriptedTelegramSender();
-  const restarted = await startFullApp({ config, service, transports: fixtureTransports(restartedSender, []) });
+  const restarted = await startFullApp({ config, service, ledgerGate: fixtureLedgerGate, transports: fixtureTransports(restartedSender, []) });
   if (!restarted.ok) throw new Error(JSON.stringify(restarted.gates));
   restarted.handle.channels!.tick();
   await restarted.handle.channels!.settled();
@@ -503,4 +543,131 @@ test("the Linux ARM64 package smoke is opt-in and refuses desktop hosts", () => 
   expect(smokeRefusal({ optIn: "1", platform: "darwin", arch: "arm64" })).toContain("desktop success is not Pi evidence");
   expect(smokeRefusal({ optIn: "1", platform: "linux", arch: "x64" })).toContain("Linux arm64");
   expect(smokeRefusal({ optIn: "1", platform: "linux", arch: "arm64" })).toBeNull();
+});
+
+// ---------------------------------------------------------------------------
+// Review round 1 regressions
+// ---------------------------------------------------------------------------
+
+test("build output is allowed in designated ignored subtrees of the checkout and never overlaps packaged entries", () => {
+  const scratch = join(repoRoot, ".tmp", `build-${rid()}`);
+  try {
+    const built = buildPackage({ srcDir: repoRoot, outDir: join(scratch, "artifact"), engineContract: "jit.schway.bridge/v1", engineRevision: null });
+    expect(validateArtifact(join(scratch, "artifact")).ok).toBe(true);
+    expect(built.contentHash).toMatch(/^[a-f0-9]{64}$/);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+  for (const outDir of [repoRoot, join(repoRoot, "src", "out"), join(repoRoot, "vendor", "out"), join(repoRoot, "ops", "package", "out"),
+    join(repoRoot, "out"), join(repoRoot, ".tmp"), resolve(repoRoot, "..")]) {
+    expect(() => buildPackage({ srcDir: repoRoot, outDir, engineContract: "jit.schway.bridge/v1", engineRevision: null })).toThrow("invalid_build_options");
+  }
+});
+
+test("the installed dependency tree is sealed: a modified, added or symlinked dependency file fails runtime validation", async () => {
+  const l = layout();
+  const art = await artifact(l.root, "artifact");
+  expect(existsSync(join(art, "node_modules", ".bin"))).toBe(false);
+  expect(validateArtifact(art, { runtime: true }).ok).toBe(true);
+  const dep = join(art, "node_modules", "fixture-dep", "index.js");
+  const original = readFileSync(dep, "utf8");
+  writeFileSync(dep, "export const pinned = 2;\n");
+  expect(validateArtifact(art, { runtime: true }).checks).toContainEqual({ check: "dependencies", ok: false });
+  writeFileSync(dep, original);
+  expect(validateArtifact(art, { runtime: true }).ok).toBe(true);
+  writeFileSync(join(art, "node_modules", "fixture-dep", "extra.js"), "1");
+  expect(validateArtifact(art, { runtime: true }).ok).toBe(false);
+  rmSync(join(art, "node_modules", "fixture-dep", "extra.js"));
+  symlinkSync(dep, join(art, "node_modules", "linked.js"));
+  expect(validateArtifact(art, { runtime: true }).ok).toBe(false);
+  rmSync(join(art, "node_modules", "linked.js"));
+  // A forged record with the right metadata but another tree digest is rejected too.
+  const record = JSON.parse(readFileSync(join(art, "dependencies.json"), "utf8"));
+  writeFileSync(join(art, "dependencies.json"), JSON.stringify({ ...record, dependencyHash: "0".repeat(64) }));
+  expect(validateArtifact(art, { runtime: true }).ok).toBe(false);
+  writeFileSync(join(art, "dependencies.json"), JSON.stringify({ ...record, extra: true }));
+  expect(validateArtifact(art, { runtime: true }).ok).toBe(false);
+});
+
+test("install assigns the ledger to the service identity and the config to root:<gid>, renders the real GID, and fails closed on ownership errors", async () => {
+  const l = layout();
+  const art = await artifact(l.root, "artifact");
+  const fake = fakeSupervisor(l.dirs.unit, { spawnService: false });
+  fake.identity = `jit-service:x:${uid}:4242::/var/lib/jit:/usr/sbin/nologin`;
+  fake.group = "jit-service:x:4242:";
+  const failing = await runServiceCommand(["install", "--config", l.source, "--artifact", art, "--unit-dir", l.dirs.unit, "--journald-dir", l.dirs.journald,
+    "--config-dir", l.dirs.configDir], { cwd: l.root, run: fake.run, bunPath: process.execPath, ledgerGate: fixtureLedgerGate,
+    chown: () => { throw new Error("EPERM"); } });
+  expect(failing).toMatchObject({ exitCode: 1, output: { ok: false, nextAction: "run-install-as-root" } });
+  expect(existsSync(l.service.executablePath)).toBe(false);
+  expect(fake.calls.some(c => c[1] === "enable")).toBe(false);
+  fake.group = null;
+  expect((await cli(["plan", "--config", l.source, "--artifact", art], fake, l)).output).toMatchObject({ ok: false });
+  fake.group = "jit-service:x:4242:";
+  chowns.splice(0);
+  rmSync(l.service.ledgerPath, { force: true });
+  const installed = await cli(["install", "--config", l.source, "--artifact", art], fake, l);
+  expect(installed.exitCode).toBe(0);
+  expect(chowns).toEqual([[join(l.dirs.configDir, "service-config.json"), 0, 4242], [l.service.ledgerPath, uid, 4242]]);
+  expect(readFileSync(join(l.dirs.unit, "jit.service"), "utf8")).toMatch(/^Group=4242$/m);
+  expect(lstatSync(l.service.ledgerPath).mode & 0o777).toBe(0o600);
+});
+
+test("status and preflight are read-only: a missing database is reported blocked and never created; an existing one is not modified", async () => {
+  const l = layout();
+  const config = readConfig({ JIT_DATABASE: serviceDatabasePath(l.service) });
+  const db = serviceDatabasePath(l.service);
+  const status = gatherServiceStatus(config, l.service, { ledgerGate: fixtureLedgerGate });
+  expect(status).toMatchObject({ service: "blocked", blockedGates: expect.arrayContaining(["schema"]) });
+  expect(existsSync(db)).toBe(false);
+  new TransactionStore(db).close();
+  chmodSync(db, 0o640);
+  const before = { bytes: readFileSync(db), mode: lstatSync(db).mode, mtime: lstatSync(db).mtimeMs };
+  const siblings = () => ["-wal", "-shm", "-journal"].filter(suffix => existsSync(db + suffix));
+  const existingSiblings = siblings();
+  expect(gatherServiceStatus(config, l.service, { ledgerGate: fixtureLedgerGate }).blockedGates).not.toContain("schema");
+  expect({ bytes: readFileSync(db), mode: lstatSync(db).mode, mtime: lstatSync(db).mtimeMs }).toEqual(before);
+  expect(siblings()).toEqual(existingSiblings);
+});
+
+test("the command runner enforces a wall-clock timeout and kills the whole process group, including descendants holding the pipe", async () => {
+  const { spawnRunner } = await import("../src/ops/supervisor");
+  const grandchild = `const g = Bun.spawn([process.execPath, "-e", "await Bun.sleep(20000)"], { stdout: "inherit", stderr: "ignore" }); console.log(g.pid); await Bun.sleep(20000);`;
+  const started = Date.now();
+  const result = await spawnRunner([process.execPath, "-e", grandchild], { timeoutMs: 300 });
+  const elapsed = Date.now() - started;
+  expect(result.timedOut).toBe(true);
+  expect(elapsed).toBeLessThan(2800);
+  const pid = Number(result.stdout.trim().split("\n")[0]);
+  expect(Number.isSafeInteger(pid) && pid > 0).toBe(true);
+  await Bun.sleep(200);
+  let alive = true;
+  try { process.kill(pid, 0); } catch { alive = false; }
+  expect(alive).toBe(false);
+  const quick = await spawnRunner([process.execPath, "-e", "console.log('ok')"], { timeoutMs: 10_000 });
+  expect(quick).toEqual({ exitCode: 0, stdout: "ok\n", timedOut: false });
+});
+
+test("an idle stop with historical failed jobs reports stopped, not interrupted", async () => {
+  const l = layout();
+  const config = readConfig({ JIT_DATABASE: serviceDatabasePath(l.service) });
+  const store = new TransactionStore(config.databasePath);
+  const queue = new JobQueue(store, config.jobs, [{
+    id: "test.fail", title: "Failing fixture", revision: 1, replay: "read",
+    route: { provider: "fixture", model: "scripted", authRoute: "internal" },
+    cost: { roles: 1, calls: 1, rounds: 1, hops: 1 }, validate: () => true,
+    run: async () => ({ state: "failed", reason: "worker_failed" }),
+  }]);
+  const app = new Application(store, config, { jobs: queue });
+  await app.setupOwner(password);
+  const actor = app.authenticate(await app.login(password)).actor;
+  const project = app.execute(actor, { kind: "project.create", requestId: rid(), projectId: null, expectedRevision: 0, payload: { name: "History" } }).project;
+  app.execute(actor, { kind: "job.enqueue", requestId: "historical-fail-01", projectId: project.id, expectedRevision: project.revision,
+    payload: { type: "test.fail", configurationRevision: 1, policyRevision: config.jobs.revision, purpose: "Failing fixture", inputRevision: project.revision,
+      input: {}, priority: "background", limits: { roles: 4, calls: 4, rounds: 4, hops: 4, contextTokens: 100, outputTokens: 100, retries: 1, wallMs: 60000 } } });
+  queue.pump();
+  await queue.idle();
+  try {
+    expect(store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM jobs WHERE state IN ('waiting', 'blocked', 'failed')")!.n)).toBeGreaterThan(0);
+    // Nothing was in flight: this drain interrupted nothing, whatever the job history holds.
+    expect(await stopDrain({ queue, store }, { timeoutMs: 5000 })).toMatchObject({ outcome: "stopped", fencedJobs: 0, nextAction: "none" });
+  } finally { store.close(); }
 });

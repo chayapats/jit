@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
-import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync } from "node:fs";
+import { chmodSync, chownSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { inspectStoreSchema, TransactionStore } from "../store";
 import { backupDirectoryProblem } from "./backup";
-import { checkpointFileLedgerGate, type LedgerGate } from "./lifecycle";
+import { defaultLedgerGate, type LedgerGate } from "./lifecycle";
 import { SystemdSupervisor, type CommandRunner, type SupervisorState } from "./supervisor";
 import { writeFileAtomic } from "./upgrade-fence";
 import { readManifest, validateArtifact, type BuildManifest } from "../../ops/package/bun-build";
@@ -35,6 +35,18 @@ export interface OperatorHost {
   bunPath: string;
   now?: () => number;
   ledgerGate?: LedgerGate;
+  /**
+   * Ownership operation for installed files (default `fs.chownSync` followed
+   * by a stat verification). Tests inject a recorder; any failure fails install.
+   */
+  chown?: (path: string, uid: number, gid: number) => void;
+}
+
+/** Default ownership change: chown, then verify the result instead of trusting it. */
+export function chownVerified(path: string, uid: number, gid: number): void {
+  chownSync(path, uid, gid);
+  const stats = lstatSync(path);
+  if (stats.uid !== uid || stats.gid !== gid) throw new Error("ownership_not_applied");
 }
 
 export const defaultHostPaths = { unitDir: "/etc/systemd/system", journaldDir: "/etc/systemd", configDir: "/etc/jit" } as const;
@@ -43,7 +55,7 @@ export const defaultHostPaths = { unitDir: "/etc/systemd/system", journaldDir: "
 export interface OperatorCheck { check: string; ok: boolean; nextAction: string; detail: string }
 
 /** A file the install writes, shown in the plan with its exact mode and content digest. */
-export interface PlannedFile { path: string; mode: string; sha256: string; content: string | null }
+export interface PlannedFile { path: string; mode: string; sha256: string; content: string | null; owner: { uid: number; gid: number } | null }
 
 export interface InstallPlan {
   schema: "jit.ops.service-plan/v1";
@@ -51,6 +63,8 @@ export interface InstallPlan {
   unit: string;
   artifactId: string | null;
   checks: OperatorCheck[];
+  /** Resolved service identity (numeric UID and primary GID), or null when unresolved. */
+  identity: { uid: number; gid: number } | null;
   changes: ServicePlanChange[];
   files: PlannedFile[];
   releaseDirectory: string | null;
@@ -79,17 +93,24 @@ export function readServiceConfigFile(path: string): ServiceConfig {
   return parseServiceConfig(JSON.parse(readFileSync(file, "utf8")));
 }
 
-async function identity(run: CommandRunner, user: string): Promise<{ check: OperatorCheck; uid: number | null }> {
+async function identity(run: CommandRunner, user: string): Promise<{ check: OperatorCheck; uid: number | null; gid: number | null }> {
+  const none = (check: OperatorCheck) => ({ check, uid: null, gid: null });
   const result = await run(["getent", "passwd", user], { timeoutMs: 10_000 });
-  if (result.exitCode !== 0) return { check: blocked("identity", "create-dedicated-service-user", "service identity not found"), uid: null };
+  if (result.exitCode !== 0) return none(blocked("identity", "create-dedicated-service-user", "service identity not found"));
   const fields = result.stdout.trim().split("\n")[0]?.split(":") ?? [];
-  const uid = Number(fields[2]), home = fields[5] ?? "", shell = fields[6] ?? "";
-  if (fields[0] !== user || !Number.isSafeInteger(uid)) return { check: blocked("identity", "create-dedicated-service-user", "service identity unreadable"), uid: null };
-  if (uid === 0) return { check: blocked("identity", "use-non-root-service-user", "service identity is root"), uid: null };
+  const uid = /^\d{1,10}$/.test(fields[2] ?? "") ? Number(fields[2]) : NaN, gid = /^\d{1,10}$/.test(fields[3] ?? "") ? Number(fields[3]) : NaN;
+  const home = fields[5] ?? "", shell = fields[6] ?? "";
+  if (fields[0] !== user || !Number.isSafeInteger(uid) || !Number.isSafeInteger(gid)) return none(blocked("identity", "create-dedicated-service-user", "service identity unreadable"));
+  if (uid === 0) return none(blocked("identity", "use-non-root-service-user", "service identity is root"));
+  if (gid === 0) return none(blocked("identity", "use-dedicated-service-group", "service identity's primary group is root"));
+  // The unit runs with the identity's real primary group; it must resolve.
+  const group = await run(["getent", "group", String(gid)], { timeoutMs: 10_000 });
+  const groupFields = group.stdout.trim().split("\n")[0]?.split(":") ?? [];
+  if (group.exitCode !== 0 || groupFields[2] !== String(gid)) return none(blocked("identity", "create-dedicated-service-group", "service identity's primary group not found"));
   if (!nologinShells.includes(shell) || home.startsWith("/home/")) {
-    return { check: blocked("identity", "use-dedicated-non-login-identity", "service identity is an interactive login user"), uid };
+    return { check: blocked("identity", "use-dedicated-non-login-identity", "service identity is an interactive login user"), uid, gid };
   }
-  return { check: ok("identity", "dedicated non-login service identity present"), uid };
+  return { check: ok("identity", "dedicated non-login service identity and primary group present"), uid, gid };
 }
 
 async function runtime(run: CommandRunner, bunPath: string, manifest: BuildManifest | null): Promise<OperatorCheck> {
@@ -184,26 +205,29 @@ export async function planInstall(input: { service: unknown; artifactDir: string
     ? blocked("instance", "stop-service-before-reinstall", `installed unit is ${state.active}`)
     : ok("instance", state ? "installed unit inactive" : "no installed unit"));
   const configPath = installedConfigPath(host);
-  const unit = await renderServiceUnit(service, { bunPath: host.bunPath, configPath });
+  const unit = await renderServiceUnit(service, { bunPath: host.bunPath, configPath, ...(who.gid !== null ? { gid: who.gid } : {}) });
   const journald = await renderJournaldConfig(service);
   const configText = JSON.stringify(service, null, 2) + "\n";
   for (const text of [unit, journald, configText]) assertNoSecretValues(text);
   const releaseDirectory = manifest ? join(serviceReleasesDirectory(service), manifest.artifactId) : null;
   const files: PlannedFile[] = [
-    { path: unitPath, mode: "0644", sha256: sha256(unit), content: unit },
-    { path: join(host.journaldDir, `journald@${serviceLogNamespace}.conf`), mode: "0644", sha256: sha256(journald), content: journald },
+    { path: unitPath, mode: "0644", sha256: sha256(unit), content: unit, owner: null },
+    { path: join(host.journaldDir, `journald@${serviceLogNamespace}.conf`), mode: "0644", sha256: sha256(journald), content: journald, owner: null },
     // The installed configuration is shown by digest only; its non-secret fields appear in `changes`.
-    { path: configPath, mode: "0640", sha256: sha256(configText), content: null },
+    // root:<service gid> 0640: readable by the service, writable only by the operator.
+    { path: configPath, mode: "0640", sha256: sha256(configText), content: null, owner: who.gid !== null ? { uid: 0, gid: who.gid } : null },
   ];
   if (!existsSync(service.ledgerPath)) {
+    // Seed placeholder owned by the service identity, which must read and later replace it.
     const seed = JSON.stringify({ ledger: "jit.deletion.ledger/v1", revision: 1 }) + "\n";
-    files.push({ path: service.ledgerPath, mode: "0600", sha256: sha256(seed), content: seed });
+    files.push({ path: service.ledgerPath, mode: "0600", sha256: sha256(seed), content: seed,
+      owner: who.uid !== null && who.gid !== null ? { uid: who.uid, gid: who.gid } : null });
   }
   return {
     schema: "jit.ops.service-plan/v1", ok: checks.every(c => c.ok), unit: serviceUnitName,
-    artifactId: manifest?.artifactId ?? null, checks, changes: planServiceConfig(readCurrent(host), service), files,
+    artifactId: manifest?.artifactId ?? null, checks, identity: who.uid !== null && who.gid !== null ? { uid: who.uid, gid: who.gid } : null, changes: planServiceConfig(readCurrent(host), service), files,
     releaseDirectory, activeRelease: service.executablePath,
-    commands: [["chown", `root:${service.serviceUser}`, configPath], ["systemctl", "daemon-reload"], ["systemctl", "enable", serviceUnitName]],
+    commands: [["systemctl", "daemon-reload"], ["systemctl", "enable", serviceUnitName]],
     preserved: [service.stateDirectory, service.backupDirectory, service.ledgerPath, ...service.secretRefs.map(r => `secret-ref:${r.name}`)],
   };
 }
@@ -249,18 +273,21 @@ export async function installService(input: { service: unknown; artifactDir: str
   const service = parseServiceConfig(input.service);
   const manifest = readManifest(input.artifactDir);
   const release = stageRelease(service, input.artifactDir, manifest);
+  const chown = input.host.chown ?? chownVerified;
   for (const file of plan.files) {
     const content = file.content ?? JSON.stringify(service, null, 2) + "\n";
     // The ledger seed is written only when absent; a real checkpoint is never replaced by packaging.
     if (file.path === service.ledgerPath && existsSync(file.path)) continue;
     writeFileAtomic(file.path, content);
     chmodSync(file.path, Number.parseInt(file.mode, 8));
+    if (file.owner) {
+      // Any ownership failure fails the install before the release is activated or the unit enabled.
+      try { chown(file.path, file.owner.uid, file.owner.gid); }
+      catch { return { ok: false, plan: { ...plan, ok: false, checks: [...plan.checks, blocked("ownership", "run-install-as-root", `could not assign ${file.path === service.ledgerPath ? "ledger" : "configuration"} ownership`)] }, release, supervisor: null }; }
+    }
   }
   switchRelease(service.executablePath, release);
   const supervisor = new SystemdSupervisor(input.host.run);
-  if (typeof process.getuid === "function" && process.getuid() === 0) {
-    await input.host.run(["chown", `root:${service.serviceUser}`, installedConfigPath(input.host)], { timeoutMs: 10_000 });
-  }
   const reloaded = await supervisor.daemonReload();
   const enabled = reloaded && await supervisor.enable();
   return { ok: reloaded && enabled, plan, release, supervisor: { reloaded, enabled } };
@@ -383,7 +410,7 @@ export async function upgradePackage(input: PackageUpgradeInput): Promise<Packag
   // Newer deletion/suppression ledger state is never ignored: a quarantined installation is not upgraded.
   const ledgerStore = new TransactionStore(serviceDatabasePath(service), { migrateExisting: false });
   let ledger;
-  try { ledger = (host.ledgerGate ?? checkpointFileLedgerGate)({ store: ledgerStore, ledgerPath: service.ledgerPath, now: (host.now ?? Date.now)(), mode: "inspect" }); }
+  try { ledger = (host.ledgerGate ?? defaultLedgerGate)({ store: ledgerStore, ledgerPath: service.ledgerPath, now: (host.now ?? Date.now)(), mode: "inspect" }); }
   finally { ledgerStore.close(); }
   if (!ledger.trusted) return result("blocked", ledger.reason, ledger.nextAction, { artifactId: manifest.artifactId });
   let release: string;

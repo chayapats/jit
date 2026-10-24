@@ -1,4 +1,4 @@
-import { readFileSync, realpathSync, statSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { Application } from "../application";
 import { prepareServiceState } from "../bootstrap";
@@ -43,8 +43,11 @@ export interface PreflightResult {
 /** Verdict of the installation ledger check that gates activation. */
 export type LedgerVerdict = { trusted: true; detail: string } | { trusted: false; reason: string; nextAction: string };
 
+/** The read surface preflight and ledger inspection use; status supplies a read-only SQLite adapter. */
+export type ReadableStore = Pick<TransactionStore, "read" | "path">;
+
 export interface LedgerGateInput {
-  store: TransactionStore;
+  store: ReadableStore;
   /** Configured checkpoint path (`ServiceConfig.ledgerPath`), or null for the development profile. */
   ledgerPath: string | null;
   now: number;
@@ -59,37 +62,39 @@ export interface LedgerGateInput {
  */
 export type LedgerGate = (input: LedgerGateInput) => LedgerVerdict;
 
-function checkpointFileOk(ledgerPath: string): boolean {
-  try {
-    const raw = JSON.parse(readFileSync(ledgerPath, "utf8")) as { ledger?: unknown; revision?: unknown };
-    return raw.ledger === "jit.deletion.ledger/v1" && Number.isSafeInteger(raw.revision) && (raw.revision as number) >= 1;
-  } catch { return false; }
-}
+/** Next action while the installation ledger writer is not integrated. */
+export const ledgerWriterPendingAction = "integrate-ops02-ledger-checkpoint";
 
 /**
- * Default ledger gate: the configured checkpoint file must exist in the
- * `jit.deletion.ledger/v1` format (the install seed or a real checkpoint).
- * The development profile has no installation ledger configured.
+ * Default ledger gate. An installed profile (configured `ledgerPath`) is
+ * BLOCKED: this build has no trusted writer for the installation
+ * deletion/suppression ledger checkpoint, and an installer placeholder or a
+ * file that merely exists proves nothing about current deletion state, so the
+ * service stays quarantined (`integrate-ops02-ledger-checkpoint`). The
+ * development profile (no installation ledger configured) is trusted.
+ * Deterministic tests inject fixture gates; production never does.
  *
  * TODO(#33): OPS02 ships the writer (`src/ops/lifecycle-ledger.ts`,
  * `syncLedgerCheckpoint`). When it lands, replace this default with a gate
  * that returns `trusted` only for `syncLedgerCheckpoint(store, ledgerPath ??
  * ledgerCheckpointPathFor(store.path), now, { write: mode === "boot" })
- * .state === "trusted"`, so a missing, diverged or unverifiable checkpoint
- * keeps the installation quarantined. Callers already pass the store, path,
- * clock and mode; nothing else in the lifecycle changes.
+ * .state === "trusted"` (inspect mode only reads, so the read-only store
+ * adapter suffices), so a missing, diverged or unverifiable checkpoint keeps
+ * the installation quarantined. Callers already pass the store, path, clock
+ * and mode; nothing else in the lifecycle changes.
  */
-export const checkpointFileLedgerGate: LedgerGate = ({ ledgerPath }) => {
+export const defaultLedgerGate: LedgerGate = ({ ledgerPath }) => {
   if (ledgerPath === null) return { trusted: true, detail: "development profile: no installation ledger configured" };
-  return checkpointFileOk(ledgerPath)
-    ? { trusted: true, detail: "ledger checkpoint present" }
-    : { trusted: false, reason: "missing deletion ledger; restore stays quarantined", nextAction: "inspect-quarantine-and-ledger" };
+  return { trusted: false, reason: "installation ledger checkpoint writer not integrated (OPS02 #33); activation stays quarantined",
+    nextAction: ledgerWriterPendingAction };
 };
 
-/** Reads quarantine state without starting anything: a missing ledger keeps the install quarantined. */
-export function readQuarantine(service: ServiceConfig): { quarantined: boolean; reason: string } {
-  if (!checkpointFileOk(service.ledgerPath)) return { quarantined: true, reason: "missing deletion ledger; restore stays quarantined" };
-  return { quarantined: false, reason: "ledger present" };
+/** Reads quarantine state through a ledger gate (inspect mode) without starting anything. */
+export function readQuarantine(service: ServiceConfig, store: ReadableStore | null = null, gate: LedgerGate = defaultLedgerGate): { quarantined: boolean; reason: string } {
+  try {
+    const verdict = gate({ store: store ?? { path: serviceDatabasePath(service), read: () => { throw new Error("store_unavailable"); } }, ledgerPath: service.ledgerPath, now: Date.now(), mode: "inspect" });
+    return verdict.trusted ? { quarantined: false, reason: verdict.detail } : { quarantined: true, reason: verdict.reason };
+  } catch { return { quarantined: true, reason: "ledger check failed" }; }
 }
 
 // ---------------------------------------------------------------------------
@@ -97,7 +102,8 @@ export function readQuarantine(service: ServiceConfig): { quarantined: boolean; 
 // ---------------------------------------------------------------------------
 
 export interface PreflightInput {
-  store: TransactionStore;
+  /** Read surface only; `null` when the installation database does not exist (reported blocked, never created). */
+  store: ReadableStore | null;
   config: AppConfig;
   /** Trusted installation configuration; null runs the development profile (service-only gates omitted). */
   service: ServiceConfig | null;
@@ -174,31 +180,33 @@ export function preflightService(input: PreflightInput): PreflightResult {
           ? { gate: "config", state: "blocked", nextAction: "restrict-backup-directory", detail: `backup directory untrusted: ${backupProblem}` }
           : { gate: "config", state: "ready", nextAction: "none", detail: "service directories present; state and backup directories restricted" });
   }
+  const store: ReadableStore = input.store ?? { path: serviceAppConfig(input.config, service).databasePath, read: () => { throw new Error("store_missing"); } };
   let userVersion: number | null = null;
-  try { userVersion = input.store.read(tx => tx.get<{ user_version: number }>("PRAGMA user_version")!).user_version; } catch { /* Stay blocked below. */ }
+  try { userVersion = store.read(tx => tx.get<{ user_version: number }>("PRAGMA user_version")!).user_version; } catch { /* Stay blocked below. */ }
   gates.push(userVersion === schemaVersion
     ? { gate: "schema", state: "ready", nextAction: "none", detail: `state schema ${userVersion} matches app schema ${schemaVersion}` }
     : userVersion !== null && userVersion < schemaVersion
       ? { gate: "schema", state: "blocked", nextAction: "run-owner-upgrade", detail: `state schema ${userVersion} older than app schema ${schemaVersion}; staged upgrade required` }
-      : { gate: "schema", state: "blocked", nextAction: "use-compatible-app-artifact", detail: "state schema unreadable or newer than app" });
+      : input.store === null
+        ? { gate: "schema", state: "blocked", nextAction: "start-service-to-initialize-installation", detail: "installation database missing" }
+        : { gate: "schema", state: "blocked", nextAction: "use-compatible-app-artifact", detail: "state schema unreadable or newer than app" });
   gates.push(input.requiredEngine === "jit.schway.bridge/v1"
     ? { gate: "engine", state: "ready", nextAction: "none", detail: "declared bridge contract only; live capability proven separately" }
     : { gate: "engine", state: "blocked", nextAction: "use-supported-engine-contract", detail: "engine contract not supported" });
   let ledger: LedgerVerdict;
-  try { ledger = (input.ledgerGate ?? checkpointFileLedgerGate)({ store: input.store, ledgerPath: service?.ledgerPath ?? null, now: now(), mode: "inspect" }); }
+  try { ledger = (input.ledgerGate ?? defaultLedgerGate)({ store, ledgerPath: service?.ledgerPath ?? null, now: now(), mode: "inspect" }); }
   catch { ledger = { trusted: false, reason: "ledger check failed", nextAction: "inspect-quarantine-and-ledger" }; }
   gates.push(ledger.trusted
     ? { gate: "quarantine", state: "ready", nextAction: "none", detail: ledger.detail }
     : { gate: "quarantine", state: "blocked", nextAction: ledger.nextAction, detail: ledger.reason });
-  const schedulerPid = input.store.read(tx => {
-    try { return tx.get<{ pid: number }>("SELECT pid FROM job_scheduler WHERE id = 1")?.pid ?? null; } catch { return null; }
-  });
+  const ownerPid = (table: "job_scheduler" | "delivery_worker"): number | null => {
+    try { return store.read(tx => tx.get<{ pid: number }>(`SELECT pid FROM ${table} WHERE id = 1`)?.pid ?? null); } catch { return null; }
+  };
+  const schedulerPid = ownerPid("job_scheduler");
   gates.push(schedulerPid === null || !alive(schedulerPid)
     ? { gate: "scheduler", state: "ready", nextAction: "none", detail: schedulerPid === null ? "admission free" : "stale owner; takeover permitted" }
     : { gate: "scheduler", state: "blocked", nextAction: "stop-other-instance", detail: "another scheduler owns admission" });
-  const workerPid = input.store.read(tx => {
-    try { return tx.get<{ pid: number }>("SELECT pid FROM delivery_worker WHERE id = 1")?.pid ?? null; } catch { return null; }
-  });
+  const workerPid = ownerPid("delivery_worker");
   gates.push(workerPid === null || !alive(workerPid)
     ? { gate: "deliveries", state: "ready", nextAction: "none", detail: "delivery worker free" }
     : { gate: "deliveries", state: "blocked", nextAction: "stop-other-delivery-worker", detail: "another delivery worker owns sending" });
@@ -317,7 +325,7 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
   const service = input.service === null ? null : parseServiceConfig(input.service);
   const config = serviceAppConfig(input.config, service);
   const now = input.now ?? Date.now;
-  const ledgerGate = input.ledgerGate ?? checkpointFileLedgerGate;
+  const ledgerGate = input.ledgerGate ?? defaultLedgerGate;
   const requiredEngine = input.requiredEngine ?? "jit.schway.bridge/v1";
   // Never migrate an existing installation at boot; preflight blocks older schemas (run-owner-upgrade).
   const store = input.store ?? new TransactionStore(resolve(input.storePath ?? config.databasePath), { migrateExisting: false });
@@ -444,7 +452,8 @@ export async function stopDrain(handle: Pick<FullAppHandle, "queue" | "store"> &
     throw new Error("invalid_drain_options");
   }
   try { await handle.channels?.close(); } catch { /* Ownership already released or store gone; reconciliation handles it. */ }
-  handle.queue.close();
+  // Only attempts this drain interrupted count; historical waiting/blocked/failed jobs are not new interruptions.
+  const { interrupted } = handle.queue.close();
   const deadline = Date.now() + options.timeoutMs;
   for (;;) {
     const unsettled = handle.store.read(tx => {
@@ -453,20 +462,15 @@ export async function stopDrain(handle: Pick<FullAppHandle, "queue" | "store"> &
     });
     if (unsettled === 0) break;
     if (Date.now() >= deadline) {
-      return { outcome: "unknown", fencedJobs: unsettled, unknownDeliveries: countUnknownDeliveries(handle.store),
+      return { outcome: "unknown", fencedJobs: Math.max(unsettled, interrupted.length), unknownDeliveries: countUnknownDeliveries(handle.store),
         nextAction: "terminate-supervised-process-and-reconcile" };
     }
     await Bun.sleep(5);
   }
   try { await handle.queue.idle(); } catch { /* Settlement already fenced; report honestly below. */ }
-  const fenced = handle.store.read(tx => {
-    try {
-      return tx.all<{ record_json: string }>("SELECT record_json FROM jobs WHERE state IN ('waiting', 'blocked', 'failed')").length;
-    } catch { return 0; }
-  });
-  return fenced === 0
+  return interrupted.length === 0
     ? { outcome: "stopped", fencedJobs: 0, unknownDeliveries: countUnknownDeliveries(handle.store), nextAction: "none" }
-    : { outcome: "interrupted", fencedJobs: fenced, unknownDeliveries: countUnknownDeliveries(handle.store),
+    : { outcome: "interrupted", fencedJobs: interrupted.length, unknownDeliveries: countUnknownDeliveries(handle.store),
       nextAction: "reconcile-interrupted-work-before-restart" };
 }
 
