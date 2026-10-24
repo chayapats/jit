@@ -8,7 +8,7 @@ import {
   reconcileDeletions,
   type DeleteCommand, type DeletionConfirmReceipt, type DeletionReceipt,
 } from "../src/memory/delete";
-import { scanExportSecrets, type FailedExportManifest } from "../src/ops/export";
+import { nodeExportFileOps, scanExportSecrets, type ExportFileOps, type FailedExportManifest } from "../src/ops/export";
 import { AppError } from "../src/errors";
 import { memoryExtractionMarker, memoryExtractionWork, scriptedMemoryResult } from "../src/memory/extract";
 import type { ClaimReference, MemoryClaim } from "../src/memory/types";
@@ -22,7 +22,7 @@ import { discussionPlanWork, specialistAnalysisWork } from "../src/team/dispatch
 import {
   FakeGitHubFixture, TrustedGitHubConnector, ensurePrSchema, fixturePull,
   mutateMonitor, pollMonitorCatchUp, prMonitorIdentity, TRIGGER_POLICY_VERSION,
-  captureSnapshot, normalizeReviewOutput, persistReport, readCandidates, readSnapshot, DEFAULT_REVIEW_POLICY,
+  annotateReport, captureSnapshot, normalizeReviewOutput, persistReport, readCandidates, readSnapshot, DEFAULT_REVIEW_POLICY,
   type EnableMonitorCommand,
 } from "../src/pr";
 import { TransactionStore } from "../src/store";
@@ -371,8 +371,9 @@ test("retention prunes oldest exports and web renders without secrets or worker 
   expect(await detail.text()).toContain("ops.project_export/v1");
 });
 
-function hookedApp(f: Fixture, beforeCommit: (stage: string) => void, exportDir = join(f.root, "exports")) {
-  return new Application(f.rt.store, f.config, { jobs: f.rt.queue, now: () => f.clock.now, backupDir: join(f.root, "backups"), exportDir, beforeCommit });
+function hookedApp(f: Fixture, beforeCommit: (stage: string) => void, exportDir = join(f.root, "exports"),
+  extra: { exportFileOps?: Partial<ExportFileOps>; exportLimits?: { maxBytes?: number } } = {}) {
+  return new Application(f.rt.store, f.config, { jobs: f.rt.queue, now: () => f.clock.now, backupDir: join(f.root, "backups"), exportDir, beforeCommit, ...extra });
 }
 function rejection(run: () => unknown): AppError {
   try { run(); } catch (error) { if (error instanceof AppError) return error; throw error; }
@@ -560,4 +561,224 @@ test("delete previews conservatively list exports whose bounded coverage was tru
   const after = asDeletePreview(f.rt.app.execute(actor(f), { kind: "memory.delete.preview" as const, requestId: rid(), projectId: a.id,
     expectedRevision: projectRevision(f, a), payload: { scope } }));
   expect(after.preview.affected.exports.map(e => e.id)).toEqual([receipt.manifest.id]);
+});
+
+test("the final artifact path appears only after its valid registration commits", async () => {
+  const f = await fixture();
+  const a = project(f, "โครงการมองเห็น", "หัวข้อ");
+  say(f, a, "ข้อความ visible-017");
+  const dir = join(f.root, "exports");
+  const seen: Record<string, string[]> = {};
+  const app = hookedApp(f, stage => { seen[stage] = artifactFiles(dir); });
+  const owner = app.authenticate(f.token).actor;
+  const receipt = app.execute(owner, exportCommand(f, a, true));
+  const name = `${receipt.manifest.id}.json`;
+  // Inside both transactions only the private temp file exists; the final path is absent.
+  expect(seen.ops).toEqual([`.${name}.tmp`]);
+  expect(seen.receipt).toEqual([`.${name}.tmp`]);
+  expect(artifactFiles(dir)).toEqual([name]);
+  expect(receipt.manifest.state).toBe("valid");
+  expect(receipt.manifest.artifact.directorySync).toBe("synced");
+});
+
+test("a crash after staging is reconciled: staged rows stay hidden, are tracked by delete previews, then fail durably", async () => {
+  const f = await fixture();
+  const a = project(f, "โครงการชน", "หัวข้อ");
+  say(f, a, "ข้อความ crash-018");
+  const dir = join(f.root, "exports");
+  const cmd = exportCommand(f, a, true);
+  const crashed = f.rt.app.execute(actor(f), cmd).manifest;
+  // Rewind to the on-disk state of a crash between the staged commit and the valid commit.
+  const { renameSync } = await import("node:fs");
+  renameSync(crashed.artifact.path, join(dir, `.${crashed.id}.json.tmp`));
+  f.rt.store.transaction(tx => tx.run("UPDATE export_artifacts SET record_json = ? WHERE id = ?", JSON.stringify({ ...crashed, state: "staged" }), crashed.id));
+  expect(f.rt.app.exports(actor(f), a.id).manifests).toEqual([]);
+  expect(() => f.rt.app.export(actor(f), a.id, crashed.id)).toThrow("export_not_found");
+  const preview = asDeletePreview(f.rt.app.execute(actor(f), { kind: "memory.delete.preview" as const, requestId: rid(), projectId: a.id,
+    expectedRevision: projectRevision(f, a), payload: { scope: { kind: "source", projectId: a.id, source: a.topic.source } } }));
+  expect(preview.preview.affected.exports.map(e => e.id)).toEqual([crashed.id]);
+  // Replaying the interrupted request reconciles it into one durable failure and removes its files.
+  const replay = rejection(() => f.rt.app.execute(actor(f), cmd));
+  expect(replay.code).toBe("export_interrupted");
+  expect(replay.detail!.exportId).toBe(crashed.id);
+  expect(artifactFiles(dir)).toEqual([]);
+  expect(f.rt.app.export(actor(f), a.id, crashed.id).manifest.failure).toEqual({ reason: "export_interrupted", stage: "publish" });
+  // A crash after the valid commit but before the rename finishes publishing on the next export.
+  const valid = f.rt.app.execute(actor(f), exportCommand(f, a, true)).manifest;
+  renameSync(valid.artifact.path, join(dir, `.${valid.id}.json.tmp`));
+  const next = f.rt.app.execute(actor(f), exportCommand(f, a, false)).manifest;
+  expect(artifactFiles(dir)).toEqual([`${valid.id}.json`, `${next.id}.json`].sort());
+});
+
+test("a fault after the temp file is fully written leaves no temp or final file", async () => {
+  const f = await fixture();
+  const a = project(f, "โครงการค้าง", "หัวข้อ");
+  say(f, a, "ข้อความ residue-019");
+  const dir = join(f.root, "exports");
+  let dirSyncs = 0;
+  const syncFault = hookedApp(f, () => {}, dir, { exportFileOps: { fsyncDir: () => { dirSyncs++; throw Object.assign(new Error("EIO"), { code: "EIO" }); } } });
+  const owner = syncFault.authenticate(f.token).actor;
+  const first = rejection(() => syncFault.execute(owner, exportCommand(f, a, true)));
+  expect(first.code).toBe("export_storage_unavailable");
+  expect(dirSyncs).toBe(1);
+  expect(artifactFiles(dir)).toEqual([]);
+  expect(syncFault.export(owner, a.id, first.detail!.exportId as string).manifest.failure).toEqual({ reason: "export_storage_unavailable", stage: "stage" });
+  // The registration insert itself fails after the write.
+  f.rt.store.transaction(tx => tx.run(`CREATE TEMP TRIGGER block_staged_export BEFORE INSERT ON export_artifacts
+    WHEN json_extract(NEW.record_json, '$.state') = 'staged' BEGIN SELECT RAISE(ABORT, 'registry unavailable'); END`));
+  try {
+    const second = rejection(() => f.rt.app.execute(actor(f), exportCommand(f, a, true)));
+    expect(second.code).toBe("export_storage_unavailable");
+    expect(artifactFiles(dir)).toEqual([]);
+  } finally {
+    f.rt.store.transaction(tx => tx.run("DROP TRIGGER block_staged_export"));
+  }
+  // A fault in the second (valid) transaction also leaves nothing behind.
+  const late = hookedApp(f, stage => { if (stage === "receipt") throw new Error("late"); }, dir);
+  expect(rejection(() => late.execute(late.authenticate(f.token).actor, exportCommand(f, a, true))).detail!.exportId).toBeString();
+  expect(artifactFiles(dir)).toEqual([]);
+});
+
+test("every PR-derived string is sanitized; canaries in each field never reach the artifact", async () => {
+  const f = await fixture();
+  const a = project(f, "โครงการ PR canary", "หัวข้อ");
+  const github = new FakeGitHubFixture();
+  const { monitor, conn } = enableMonitor(f, a, github);
+  const base = sha(1), head = sha(2);
+  github.pulls = [fixturePull({ number: 3, draft: false, base: { sha: base, ref: "main" }, head: { sha: head, ref: "feat" }, title: "PR" })];
+  github.files.set(github.key(3, base, head), [{ filename: "a.ts", status: "modified", patch: "@@\n+a" }]);
+  github.checks.set(head, []);
+  f.rt.store.transaction(tx => pollMonitorCatchUp(tx, a.id, monitor.id, conn, f.clock.now));
+  const canaries = ["canary-title-0020", "canary-cond-0020", "canary-evref-0020", "ghp_canaryPATHtoken0123456789", "canary-disagree-0020",
+    "sk-canaryskippedscope0123456789", "ghp_canaryROLEtoken0123456789", "github_pat_canaryANNOT_0123456789abcdef"];
+  const report = f.rt.store.transaction(tx => {
+    const candidate = readCandidates(tx, a.id, monitor.id)[0]!;
+    const snapshot = captureSnapshot(tx, a.id, candidate.id, conn, f.clock.now)!;
+    const review = JSON.stringify({ analyzedRoles: ["correctness", "security", `role ${canaries[6]}`], skippedScope: [`scope ${canaries[5]}`],
+      disagreements: [`x-api-key: ${canaries[4]}`], findings: [
+        { id: "finding-1", title: `Bearer ${canaries[0]}`, category: "security", severity: "high", location: { path: "a.ts", line: 1 },
+          condition: `Authorization: ${canaries[1]}`, impact: "leak", reasoning: "r", evidenceType: "diff", evidenceRef: "a.ts" },
+        { id: "finding-2", title: "clean prose", category: "correctness", severity: "low", location: { path: `src/${canaries[3]}.ts`, line: 2 },
+          condition: "c", impact: "i", reasoning: "r", evidenceType: "none", evidenceRef: `Authorization: Bearer ${canaries[2]}` },
+      ] });
+    return persistReport(tx, { projectId: a.id, monitorId: monitor.id, candidateId: candidate.id, snapshot,
+      normalized: normalizeReviewOutput(review, snapshot, DEFAULT_REVIEW_POLICY.requiredRoles), requiredRoles: [...DEFAULT_REVIEW_POLICY.requiredRoles],
+      specialistRuns: [], synthesis: { state: "complete", reason: null }, jobId: null, attemptId: null, now: f.clock.now });
+  });
+  f.rt.store.transaction(tx => annotateReport(tx, { kind: "pr.report.dismiss", requestId: rid(), projectId: a.id, expectedRevision: report.revision,
+    payload: { reportId: report.id, reason: `owner note ${canaries[7]}` } }, f.clock.now));
+  const receipt = f.rt.app.execute(actor(f), exportCommand(f, a, false));
+  const text = readFileSync(receipt.manifest.artifact.path, "utf8");
+  expect(scanExportSecrets(text, canaries)).toEqual([]);
+  const exported = (JSON.parse(text) as { data: { prReports: { revision: number; findings: { id: string; title: string }[] }[] } }).data.prReports[0]!;
+  expect(exported.revision).toBe(2);
+  expect(exported.findings.map(finding => finding.id)).toEqual(["finding-1", "finding-2"]);
+  expect(exported.findings[1]!.title).toBe("clean prose");
+});
+
+test("forget suppression gates delivery and report text exactly like raw sources", async () => {
+  const f = await fixture();
+  const a = project(f, "โครงการลืมรายงาน", "หัวข้อ");
+  const delivery = f.rt.app.execute(actor(f), { kind: "delivery.commit", requestId: rid(), projectId: a.id, expectedRevision: projectRevision(f, a),
+    payload: { kind: "report", text: "รายงาน forgotten-delivery-021 ที่ถูกลืม", dedupeKey: "forgotten-delivery" } });
+  const source: SourceReference = { sourceId: delivery.report.sourceId, revision: delivery.report.sourceRevision, generation: delivery.report.sourceGeneration };
+  // A real forget on a message-derived claim; the scripted extractor cannot read output sources,
+  // so the same suppression is extended to the delivery source as a forget of a report-derived claim would.
+  const [claim] = await remember(f, a, say(f, a, "ข้อความ forget-anchor-021"));
+  f.rt.app.execute(actor(f), { kind: "memory.forget" as const, requestId: rid(), projectId: a.id, expectedRevision: projectRevision(f, a),
+    payload: { claim: ref(claim!), reason: "ลืมรายงาน", acknowledged: true } });
+  f.rt.store.transaction(tx => {
+    const suppression = tx.get<{ id: string }>("SELECT suppression_id AS id FROM memory_suppressed_sources WHERE project_id = ? LIMIT 1", a.id)!.id;
+    tx.run("INSERT INTO memory_suppressed_sources VALUES (?, ?, ?, ?, ?)", suppression, a.id, source.sourceId, source.revision, source.generation);
+  });
+  expect(f.rt.store.read(tx => tx.get("SELECT 1 AS ok FROM memory_suppressed_sources WHERE source_id = ?", source.sourceId))).not.toBeNull();
+  const slim = f.rt.app.execute(actor(f), exportCommand(f, a, false));
+  const slimText = readFileSync(slim.manifest.artifact.path, "utf8");
+  expect(slimText).not.toContain("forgotten-delivery-021");
+  expect(slim.manifest.exclusions.some(e => e.id === delivery.report.id && e.reason === "delivery_report_forgotten_raw_history_excluded")).toBe(true);
+  expect(slim.manifest.coverage.sources.some(s => s.sourceId === source.sourceId)).toBe(false);
+  // Explicit history scope releases the forget-retained raw text, and coverage then names it.
+  const full = f.rt.app.execute(actor(f), exportCommand(f, a, true));
+  expect(readFileSync(full.manifest.artifact.path, "utf8")).toContain("forgotten-delivery-021");
+  expect(full.manifest.coverage.sources.some(s => s.sourceId === source.sourceId)).toBe(true);
+});
+
+test("bounded collections report included versus total instead of silently truncating", async () => {
+  const f = await fixture();
+  const a = project(f, "โครงการงานเยอะ", "หัวข้อ");
+  f.rt.store.transaction(tx => {
+    for (let i = 0; i < 1001; i++) {
+      const id = `job-${String(i).padStart(5, "0")}`;
+      tx.run("INSERT INTO jobs (id, project_id, queue_order, priority, state, occupies, route_key, record_json) VALUES (?, ?, ?, 0, 'succeeded', 0, 'fixture/none', ?)",
+        id, a.id, 900000 + i, JSON.stringify({ id, type: "fixture", state: "succeeded", reason: "complete", evidence: `evidence-${i}` }));
+    }
+  });
+  const receipt = f.rt.app.execute(actor(f), exportCommand(f, a, false));
+  const data = (JSON.parse(readFileSync(receipt.manifest.artifact.path, "utf8")) as { data: { jobs: unknown[] } }).data;
+  expect(data.jobs).toHaveLength(1000);
+  expect(receipt.manifest.counts.jobs).toBe(1000);
+  expect(receipt.manifest.completeness.collections.jobs).toEqual({ included: 1000, total: 1001, truncated: true });
+  expect(receipt.manifest.completeness.complete).toBe(false);
+  expect(receipt.manifest.completeness.collections.messages).toEqual({ included: 0, total: 0, truncated: false });
+});
+
+test("short writes loop to completion; a stalled write fails without residue", async () => {
+  const f = await fixture();
+  const a = project(f, "โครงการเขียนสั้น", "หัวข้อ ไทย 🧪");
+  say(f, a, "ข้อความ short-write-022 ไทย");
+  const dir = join(f.root, "exports");
+  // Seven bytes per call still produces the exact artifact.
+  const trickle = hookedApp(f, () => {}, dir, { exportFileOps: { write: (fd, buffer, offset, length) => nodeExportFileOps.write(fd, buffer, offset, Math.min(length, 7)) } });
+  const ok = trickle.execute(trickle.authenticate(f.token).actor, exportCommand(f, a, true));
+  const bytes = readFileSync(ok.manifest.artifact.path);
+  expect(bytes.length).toBe(ok.manifest.artifact.bytes);
+  expect(new Bun.CryptoHasher("sha256").update(bytes).digest("hex")).toBe(ok.manifest.artifact.hash);
+  // A write that stops making progress is a storage failure, not a truncated artifact.
+  let calls = 0;
+  const stall = hookedApp(f, () => {}, dir, { exportFileOps: { write: (fd, buffer, offset, length) => calls++ === 0 ? nodeExportFileOps.write(fd, buffer, offset, Math.min(length, 10)) : 0 } });
+  const error = rejection(() => stall.execute(stall.authenticate(f.token).actor, exportCommand(f, a, true)));
+  expect(error.code).toBe("export_storage_unavailable");
+  expect(artifactFiles(dir)).toEqual([`${ok.manifest.id}.json`]);
+});
+
+test("a directory fsync failure after rename discards the artifact; only 'unsupported' is tolerated and disclosed", async () => {
+  const f = await fixture();
+  const a = project(f, "โครงการ fsync", "หัวข้อ");
+  say(f, a, "ข้อความ fsync-023");
+  const dir = join(f.root, "exports");
+  let calls = 0;
+  const failing = hookedApp(f, () => {}, dir, { exportFileOps: { fsyncDir: (path: string) => {
+    if (++calls === 2) throw Object.assign(new Error("EIO"), { code: "EIO" });
+    return nodeExportFileOps.fsyncDir(path);
+  } } });
+  const owner = failing.authenticate(f.token).actor;
+  const cmd = exportCommand(f, a, true);
+  const error = rejection(() => failing.execute(owner, cmd));
+  expect(error.code).toBe("export_storage_unavailable");
+  expect(artifactFiles(dir)).toEqual([]);
+  const failed = failing.export(owner, a.id, error.detail!.exportId as string).manifest;
+  expect(failed.failure).toEqual({ reason: "export_storage_unavailable", stage: "publish" });
+  expect(rejection(() => failing.execute(owner, cmd)).detail!.exportId).toBe(error.detail!.exportId);
+  const unsupported = hookedApp(f, () => {}, dir, { exportFileOps: { fsyncDir: () => "unsupported" } });
+  const ok = unsupported.execute(unsupported.authenticate(f.token).actor, exportCommand(f, a, true));
+  expect(ok.manifest.artifact.directorySync).toBe("unsupported");
+  expect(existsSync(ok.manifest.artifact.path)).toBe(true);
+});
+
+test("an artifact above the byte ceiling is rejected before registration", async () => {
+  const f = await fixture();
+  const a = project(f, "โครงการใหญ่", "หัวข้อ");
+  for (let i = 0; i < 4; i++) say(f, a, `ข้อความยาว ${i} ${"ใหญ่".repeat(120)}`);
+  const dir = join(f.root, "exports");
+  const small = hookedApp(f, () => {}, dir, { exportLimits: { maxBytes: 4096 } });
+  const owner = small.authenticate(f.token).actor;
+  const error = rejection(() => small.execute(owner, exportCommand(f, a, true)));
+  expect(error.code).toBe("export_too_large");
+  expect(error.status).toBe(413);
+  expect(artifactFiles(dir)).toEqual([]);
+  const failed = small.export(owner, a.id, error.detail!.exportId as string).manifest as FailedExportManifest;
+  expect(failed.failure).toEqual({ reason: "export_too_large", stage: "stage" });
+  expect(failed.retention.maxBytes).toBe(4096);
+  // The metadata-only scope fits under the same ceiling.
+  expect(small.execute(owner, exportCommand(f, a, false)).manifest.artifact.bytes).toBeLessThanOrEqual(4096);
 });

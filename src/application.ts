@@ -89,9 +89,11 @@ import {
   writeArtifact, type BackupCommand, type BackupManifest, type BackupNativePort, type BackupReceipt,
 } from "./ops/backup";
 import {
-  discardExport, exportFailureReason, exportIdentity, exportPreview, finalizeExport, listExportArtifacts, ownExportDir, publishExport,
-  readExportManifest, recordFailedExport, removeRetiredExportFiles, stageExport,
-  type ExportCommand, type ExportFailure, type ExportManifest, type ExportPreview, type ExportReceipt, type FailedExportManifest, type StagedExport,
+  commitExport, discardExport, exportFailureReason, exportIdentity, exportPaths, exportPreview, exportRegistration, exportRetention,
+  listExportArtifacts, nodeExportFileOps, ownExportDir, publishExport, readExportManifest, recordFailedExport, reconcileExports,
+  removeRetiredExportFiles, stageExport,
+  type ExportCommand, type ExportFailure, type ExportFileOps, type ExportLimits, type ExportManifest, type ExportPreview, type ExportReceipt,
+  type FailedExportManifest, type StagedExport, type ValidExportManifest,
 } from "./ops/export";
 import {
   activateUpgrade, listUpgrades, migrateUpgrade, planUpgrade, prepareUpgrade, readUpgrade, recordFailedUpgrade, rollbackUpgrade,
@@ -111,6 +113,10 @@ export interface ApplicationOptions {
   jobs?: JobQueue;
   backupDir?: string;
   exportDir?: string;
+  /** Export filesystem seam (fault injection in tests); defaults to node:fs. */
+  exportFileOps?: Partial<ExportFileOps>;
+  /** Tightens export registry bounds (tests); never loosens the defaults. */
+  exportLimits?: Partial<ExportLimits>;
   upgradeDir?: string;
   restoreDir?: string;
   nativeSnapshot?: BackupNativePort;
@@ -124,6 +130,8 @@ export class Application {
   #jobs: JobQueue | undefined;
   #backupDir: string;
   #exportDir: string;
+  #exportOps: ExportFileOps;
+  #exportLimits: ExportLimits;
   #restoreDir: string;
   #upgradeDir: string;
   #nativeSnapshot: BackupNativePort | undefined;
@@ -135,6 +143,11 @@ export class Application {
     this.#jobs = options.jobs;
     this.#backupDir = ownBackupDir(store.path, options.backupDir);
     this.#exportDir = ownExportDir(store.path, options.exportDir);
+    this.#exportOps = { ...nodeExportFileOps, ...options.exportFileOps };
+    this.#exportLimits = {
+      maxExports: Math.min(exportRetention.maxExports, Math.max(1, options.exportLimits?.maxExports ?? exportRetention.maxExports)),
+      maxBytes: Math.min(exportRetention.maxBytes, Math.max(1, options.exportLimits?.maxBytes ?? exportRetention.maxBytes)),
+    };
     this.#restoreDir = ownRestoreDirFor(store.path, options.restoreDir);
     this.#upgradeDir = ownUpgradeDirFor(store.path, options.upgradeDir);
     this.#nativeSnapshot = options.nativeSnapshot;
@@ -473,57 +486,83 @@ export class Application {
   }
 
   /**
-   * ops.project_export/v1 create: stage (temp file + registration) → lifecycle fence →
-   * atomic publish → receipt, all in one transaction. A rollback discards the artifact; a
-   * build/publish/commit failure is recorded as a durable failed export bound to the same
-   * request ID, so a replay returns the same single logical outcome.
+   * ops.project_export/v1 create, commit-gated in three steps:
+   * 1. transaction: auth, request dedupe, expected revision, crash reconcile, assembly,
+   *    full temp-file write, retention, `staged` registration, receipt and audit;
+   * 2. transaction: lifecycle fence, then the registration becomes `valid`;
+   * 3. after that commit: size check, rename into place, directory fsync.
+   * The final path therefore only ever holds an artifact whose valid registration committed;
+   * readers never expose staged rows and delete previews track staged ones. Any failure from
+   * step 1 on removes the files and records a durable failed export bound to the request ID,
+   * so a replay returns the same single logical outcome.
    */
   #exportCommand(actor: OwnerActor, command: ExportCommand): ExportReceipt {
     const payloadHash = digest(exportIdentity(command));
     const id = crypto.randomUUID();
+    const paths = exportPaths(this.#exportDir, id);
     const work: { staged?: StagedExport; stage?: ExportFailure["stage"]; now?: number; projectRevision?: number } = {};
-    const failed = (manifest: FailedExportManifest) => new AppError(manifest.failure.reason, manifest.failure.reason === "export_failed" ? 500 : manifest.failure.reason === "export_storage_unavailable" ? 503 : 409,
+    const failed = (manifest: FailedExportManifest) => new AppError(manifest.failure.reason,
+      manifest.failure.reason === "export_failed" ? 500 : manifest.failure.reason === "export_storage_unavailable" ? 503 : manifest.failure.reason === "export_too_large" ? 413 : 409,
       { projectId: manifest.projectId, exportId: manifest.id, path: `/projects/${manifest.projectId}/exports/${manifest.id}` });
+    const saveReceipt = (tx: AppTransaction, manifest: ExportManifest | StagedExport["manifest"], now: number) => {
+      tx.run(`INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)
+        ON CONFLICT (actor_id, request_id) DO UPDATE SET result_json = excluded.result_json`, command.requestId, payloadHash, JSON.stringify({ manifest, duplicate: false }), now);
+      tx.run("INSERT OR IGNORE INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);
+    };
     try {
-      const result = this.store.transaction(tx => {
+      const staged = this.store.transaction(tx => {
         this.#requireOwner(tx, actor); const project = this.#project(tx, command.projectId);
         const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
         if (prior) {
           if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409);
-          const stored = JSON.parse(prior.result_json) as { manifest: ExportManifest; duplicate: boolean };
-          if (stored.manifest.state === "failed") throw failed(stored.manifest);
-          return stored as ExportReceipt;
+          const stored = JSON.parse(prior.result_json) as { manifest: { id: string; state?: string } };
+          // Replays follow the registration's current state; a never-finished stage is reconciled first.
+          if (exportRegistration(tx, stored.manifest.id) === "staged") reconcileExports(tx, this.#exportDir, this.#exportOps);
+          const state = exportRegistration(tx, stored.manifest.id);
+          if (state === "failed" || state === null && stored.manifest.state === "failed") {
+            const row = tx.get<{ record_json: string }>("SELECT record_json FROM export_artifacts WHERE id = ?", stored.manifest.id);
+            return { replay: failed((row ? JSON.parse(row.record_json) : stored.manifest) as FailedExportManifest) };
+          }
+          if (state === "valid") return { receipt: { manifest: readExportManifest(tx, command.projectId, stored.manifest.id) as ValidExportManifest, duplicate: false } };
+          if (stored.manifest.state === "valid" || stored.manifest.state === undefined) return { receipt: stored as unknown as ExportReceipt };
+          throw new AppError("export_not_found", 404);
         }
         const now = this.#now();
         if (project.revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
         work.now = now; work.projectRevision = project.revision; work.stage = "stage";
         work.staged = stageExport(tx, { id, now, projectId: command.projectId,
           projectRevision: project.revision, scope: { includeHistory: command.payload.includeHistory },
-          exportDir: this.#exportDir, note: command.payload.note });
+          exportDir: this.#exportDir, note: command.payload.note, ops: this.#exportOps, limits: this.#exportLimits });
+        saveReceipt(tx, work.staged.manifest, now);
         this.#beforeCommit?.("ops");
-        work.stage = "publish";
-        publishExport(tx, work.staged);
-        work.stage = "commit";
-        const result: ExportReceipt = { manifest: work.staged.manifest, duplicate: false };
-        tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
-        tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);
-        this.#beforeCommit?.("receipt");
-        return result;
+        return { staged: work.staged };
       });
-      if (work.staged) finalizeExport(work.staged);
-      return result;
+      if ("replay" in staged) { if (staged.replay) throw staged.replay; }
+      if ("receipt" in staged && staged.receipt) return staged.receipt;
+      const ready = work.staged!;
+      removeRetiredExportFiles(ready.prunedFiles);
+      work.stage = "publish";
+      const manifest = this.store.transaction(tx => {
+        const valid = commitExport(tx, ready);
+        work.stage = "commit";
+        saveReceipt(tx, valid, work.now!);
+        this.#beforeCommit?.("receipt");
+        return valid;
+      });
+      work.stage = "publish";
+      publishExport(ready, this.#exportOps);
+      return { manifest, duplicate: false };
     } catch (error) {
-      if (work.staged) discardExport(work.staged);
+      discardExport(paths);
       // Rejections before staging (auth, conflict, stale revision, replayed failure) stay plain rejections.
       if (!work.stage || work.now === undefined || work.projectRevision === undefined) throw error;
       const failure: ExportFailure = { reason: exportFailureReason(error), stage: work.stage };
       try {
         const recorded = this.store.transaction(tx => {
-          const { manifest, prunedFiles } = recordFailedExport(tx, { id, now: work.now!, projectId: command.projectId,
-            projectRevision: work.projectRevision!, scope: { includeHistory: command.payload.includeHistory }, failure, exportDir: this.#exportDir });
-          tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify({ manifest, duplicate: false }), work.now!);
-          tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, work.now!);
-          return { manifest, prunedFiles };
+          const result = recordFailedExport(tx, { id, now: work.now!, projectId: command.projectId, projectRevision: work.projectRevision!,
+            scope: { includeHistory: command.payload.includeHistory }, failure, exportDir: this.#exportDir, limits: this.#exportLimits });
+          saveReceipt(tx, result.manifest, work.now!);
+          return result;
         });
         removeRetiredExportFiles(recorded.prunedFiles);
         throw failed(recorded.manifest);
