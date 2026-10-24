@@ -128,7 +128,7 @@ test("composition: startFullApp and serve share one factory with identical worke
   for (const runPort of ["scripted", "schway"] as const) {
     const { service: svc, state } = service();
     const config = readConfig({ JIT_DATABASE: join(state, "app.sqlite"), JIT_RUN_PORT: runPort });
-    const started = startFullApp({ config, service: svc });
+    const started = await startFullApp({ config, service: svc });
     expect(started.ok).toBe(true);
     if (!started.ok) throw new Error("unreachable");
     expect(started.handle.teamPort.adapter).toBe(runPort);

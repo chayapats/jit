@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { AppError } from "../errors";
 import type { AppTransaction } from "../store";
+import { retirePrAlerts } from "./alert-links";
 import { ensurePrSchema } from "./schema";
 import { fencePrCandidateWork } from "./fence";
 import {
@@ -203,6 +204,8 @@ export function mutateMonitor(
       // Same transaction: revoked monitoring fences the candidate's snapshot/review work.
       fencePrCandidateWork(tx, monitor.projectId, row.id, "revoked", now);
     }
+    // PR03: revoked monitoring retires pending alerts and marks settled ones visibly stale.
+    retirePrAlerts(tx, { projectId: command.projectId, monitorId: monitor.id }, "monitoring_revoked", now, { markSettledStale: true });
     onRevoke?.(monitor);
   }
   monitor.revision += 1;

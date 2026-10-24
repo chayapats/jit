@@ -5,6 +5,8 @@ import type { AppTransaction } from "../store";
  * Formal `user_version` migration remains reserved for store ownership; tests and
  * trusted callers invoke this before monitor/candidate mutations.
  * PR02 adds `pr_reports` + `pr_report_annotations` under the same pattern.
+ * PR03 adds `pr_alert_policies` (versioned owner policy), `pr_alert_decisions`
+ * (append-only evaluation records) and `pr_alerts` (intent -> report/finding links), additively.
  */
 export function ensurePrSchema(tx: AppTransaction): void {
   tx.run(`CREATE TABLE IF NOT EXISTS pr_monitors (
@@ -56,4 +58,32 @@ export function ensurePrSchema(tx: AppTransaction): void {
     UNIQUE (report_id, revision)
   )`);
   tx.run(`CREATE INDEX IF NOT EXISTS pr_report_annotation_report ON pr_report_annotations(report_id, revision)`);
+  tx.run(`CREATE TABLE IF NOT EXISTS pr_alert_policies (
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    version INTEGER NOT NULL CHECK (version > 0),
+    record_json TEXT NOT NULL,
+    PRIMARY KEY (project_id, version)
+  )`);
+  tx.run(`CREATE TABLE IF NOT EXISTS pr_alert_decisions (
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    id TEXT NOT NULL UNIQUE,
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    report_id TEXT NOT NULL REFERENCES pr_reports(id),
+    digest TEXT NOT NULL,
+    record_json TEXT NOT NULL
+  )`);
+  tx.run(`CREATE INDEX IF NOT EXISTS pr_alert_decision_report ON pr_alert_decisions(report_id, sequence)`);
+  tx.run(`CREATE TABLE IF NOT EXISTS pr_alerts (
+    intent_id TEXT PRIMARY KEY REFERENCES delivery_intents(id),
+    project_id TEXT NOT NULL REFERENCES projects(id),
+    report_id TEXT NOT NULL REFERENCES pr_reports(id),
+    finding_id TEXT NOT NULL,
+    candidate_id TEXT NOT NULL,
+    monitor_id TEXT NOT NULL,
+    policy_version INTEGER NOT NULL CHECK (policy_version > 0),
+    record_json TEXT NOT NULL
+  )`);
+  tx.run(`CREATE INDEX IF NOT EXISTS pr_alert_report ON pr_alerts(report_id, finding_id)`);
+  tx.run(`CREATE INDEX IF NOT EXISTS pr_alert_candidate ON pr_alerts(candidate_id)`);
+  tx.run(`CREATE INDEX IF NOT EXISTS pr_alert_monitor ON pr_alerts(monitor_id)`);
 }

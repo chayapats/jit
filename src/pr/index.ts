@@ -8,7 +8,11 @@ export {
   TRIGGER_POLICY_VERSION,
 } from "./types";
 export type {
+  AlertDecision,
+  AlertFindingDecision,
+  AlertLink,
   AlertPolicy,
+  AlertPolicyReceipt,
   AllowedResources,
   CandidateStatus,
   CoverageEntry,
@@ -50,6 +54,8 @@ export type {
   ResumeMonitorCommand,
   ReviewCandidate,
   RevokeMonitorCommand,
+  SetAlertPolicyCommand,
+  StoredAlertPolicy,
   TransmissionState,
   TransmittedEntry,
   TransmittedManifest,
@@ -69,6 +75,7 @@ export {
 export { fencePrCandidateJobs, prSnapshotWork, type PrSnapshotInput } from "./work";
 export {
   annotateReport,
+  canonicalizeFindingIds,
   listReports,
   listReviewStates,
   MAX_MODEL_DISAGREEMENTS,
@@ -92,10 +99,23 @@ export { activePrJobIds, fencePrCandidateWork, fencePrReviewJobs, retirePrSnapsh
 export {
   ALERT_POLICY_VERSION,
   DEFAULT_ALERT_POLICY,
+  NOTIFIABLE_CATEGORIES,
+  PR_ALERT_GUARD,
+  admitCommittedReportAlerts,
   admitReportAlerts,
   alertKey,
+  alertPolicyIdentity,
   buildAlertPayload,
+  ensureAlertPolicy,
   evaluateReport,
+  findingQualifies,
+  listAlertPolicies,
+  prAlertCurrentness,
+  quarantineLegacyPrAlerts,
+  readAlertDecisions,
+  readAlertPolicy,
+  setAlertPolicy,
   type AdmitAlertResult,
   type AlertEvaluation,
 } from "./alerts";
+export { readAlertLink, readAlertLinks, retirePrAlerts, type AlertScope } from "./alert-links";

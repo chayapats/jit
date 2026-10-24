@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { closeSync, constants, lstatSync, openSync, readFileSync, unlinkSync } from "node:fs";
 import { AppError } from "../errors";
+import { containsCredential } from "../security/credentials";
 import { lookupSource, requireId } from "../sources";
 import type { AppTransaction } from "../store";
 import { lookupActiveClaim } from "../memory/read";
@@ -108,13 +109,19 @@ const residualExternal = ["telegram_delivery_copies_not_exported_or_deleted", "p
 const lifecycleNote = "รวมเฉพาะ generation ที่ยัง active; ที่ถูกลบ/ลืม/แก้อยู่ใน exclusions";
 const disclosureFor = (scope: ExportScope): ExportDisclosure => ({ restorableBackup: false, externalCopiesDeleted: false,
   secrets: "excluded", nativeSessions: "excluded", rawHistory: scope.includeHistory ? "included" : "metadata_only" });
-/** Credential shapes that never leave through PR-derived text (auth headers, Telegram/GitHub/API tokens, private keys). */
-export const exportSecretLike = /bearer\s|authorization\s*:|x-telegram|x-api-key|api[_-]?key\s*[:=]|bot[_ -]?token|[0-9]{5,}:[A-Za-z0-9_-]{8,}|\bgh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,}|\bsk-[A-Za-z0-9_-]{16,}|-----BEGIN [A-Z ]*PRIVATE KEY/i;
+/**
+ * Credential shapes that never leave through PR-derived or delivery text. One detector for the whole
+ * service: the shared `containsCredential` (src/security/credentials.ts) plus the export-only
+ * `x-api-key` header form.
+ */
+export function exportSecretLike(value: string): boolean {
+  return containsCredential(value) || /x-api-key/i.test(value);
+}
 const redacted = "(redacted: payload_hygiene_secret)";
 
 /** Deep-copies a JSON projection, replacing every credential-shaped string with a redaction marker. */
 export function sanitizeExportStrings<T>(value: T): T {
-  if (typeof value === "string") return (exportSecretLike.test(value) ? redacted : value) as T;
+  if (typeof value === "string") return (exportSecretLike(value) ? redacted : value) as T;
   if (Array.isArray(value)) return value.map(item => sanitizeExportStrings(item)) as T;
   if (value && typeof value === "object") {
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, sanitizeExportStrings(item)])) as T;
@@ -345,7 +352,8 @@ export function assembleExport(tx: AppTransaction, projectId: string, scope: Exp
     .map(row => {
       const reference: SourceReference = { sourceId: row.sourceId, revision: row.revision, generation: row.generation };
       const resolved = resolve(reference);
-      if (resolved.state === "available") return { state: "available" as const, reference, kind: row.kind, text: resolved.text };
+      // Service output sources (delivery/alert text, run output) pass the shared credential sanitizer.
+      if (resolved.state === "available") return { state: "available" as const, reference, kind: row.kind, text: row.kind === "output" && resolved.text !== null ? sanitizeExportStrings(resolved.text) : resolved.text };
       if (resolved.reason !== "deleted") {
         exclusions.push({ kind: resolved.state === "metadata_only" ? "message" : "source", id: row.sourceId, reason: resolved.reason });
       }
@@ -368,7 +376,7 @@ export function assembleExport(tx: AppTransaction, projectId: string, scope: Exp
       const resolved = resolve(reference);
       if (resolved.state !== "available") exclusions.push({ kind: "message", id: intent.id, reason: `delivery_text_${resolved.reason}` });
       return { id: intent.id, kind: intent.payload.kind, reportId: ref?.reportId ?? null, source: reference,
-        text: resolved.state === "available" ? intent.payload.text : null, availability: availability(resolved), status: intent.status };
+        text: resolved.state === "available" ? sanitizeExportStrings(intent.payload.text) : null, availability: availability(resolved), status: intent.status };
     });
   const reports = bounded("reports", total("delivery_reports"), tx.all<{ record_json: string }>("SELECT record_json FROM delivery_reports WHERE project_id = ? ORDER BY rowid LIMIT ?", projectId, bounds.reports))
     .map(row => {
@@ -378,7 +386,7 @@ export function assembleExport(tx: AppTransaction, projectId: string, scope: Exp
       const resolved = resolve(reference);
       if (resolved.state !== "available") exclusions.push({ kind: "report", id: report.id, reason: `delivery_report_${resolved.reason}` });
       return { id: report.id, projectId, kind: report.kind, revision: report.revision, generation: report.generation,
-        availability: resolved.state === "available" ? report.availability : availability(resolved), text: resolved.state === "available" ? report.text : null,
+        availability: resolved.state === "available" ? report.availability : availability(resolved), text: resolved.state === "available" ? sanitizeExportStrings(report.text) : null,
         sourceId: report.sourceId, sourceRevision: report.sourceRevision, sourceGeneration: report.sourceGeneration, committedAt: report.committedAt };
     });
   // Missing references: extraction dependencies that no longer resolve (bounded scan, disclosed).
@@ -470,7 +478,7 @@ function assemblePr(tx: AppTransaction, projectId: string, bounded: <T>(name: st
   }
   const projection = sanitizeExportStrings({ monitors, candidates, reports });
   // Defense in depth: the serialized projection must carry no credential shape at all.
-  if (exportSecretLike.test(JSON.stringify(projection))) throw new AppError("export_failed", 500);
+  if (exportSecretLike(JSON.stringify(projection))) throw new AppError("export_failed", 500);
   return projection;
 }
 

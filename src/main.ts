@@ -14,6 +14,8 @@ import { tickSchedules } from "./jobs/schedules";
 import { backupNativePortFor } from "./ops/schway-backup";
 import { ManagedService } from "./ops/upgrade-service";
 import { upgradeEvidence, type UpgradeJournal } from "./ops/upgrade";
+import { prepareServiceState } from "./bootstrap";
+import { upgradeFenced } from "./ops/upgrade-fence";
 
 async function secret(): Promise<string> {
   if (!process.stdin.isTTY) {
@@ -82,15 +84,20 @@ async function main(): Promise<void> {
       store.close();
       return;
     }
-    if (command === "serve" && config.runPort === "schway") {
-      const gate = await verifySchwayBridge(store);
-      if (!gate.ok) {
-        console.error(`Schway bridge unavailable: ${gate.detail} (next: ${gate.nextAction})`);
-        process.exitCode = 1;
-        store.close();
-        return;
+    if (command === "serve") {
+      // Pre-listen state preparation runs before the job queue, delivery work or HTTP server exist.
+      // Under an upgrade fence nothing sends and live state must stay the validated epoch, so it waits for the next boot.
+      if (!upgradeFenced(store.path)) prepareServiceState(store, Date.now());
+      if (config.runPort === "schway") {
+        const gate = await verifySchwayBridge(store);
+        if (!gate.ok) {
+          console.error(`Schway bridge unavailable: ${gate.detail} (next: ${gate.nextAction})`);
+          process.exitCode = 1;
+          store.close();
+          return;
+        }
+        console.log(`Schway bridge ready: ${gate.detail}`);
       }
-      console.log(`Schway bridge ready: ${gate.detail}`);
     }
     // Backups ride the concrete native bridge only under explicit schway mode;
     // scripted default stays fail-closed (no native port), exactly like runPort.

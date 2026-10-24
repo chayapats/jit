@@ -716,7 +716,7 @@ test("startFullApp blocks an older installation at the schema gate without migra
   new TransactionStore(path).close();
   historical(path, 21);
   const config = readConfig({ JIT_DATABASE: path });
-  const started = startFullApp({ config, service });
+  const started = await startFullApp({ config, service });
   expect(started.ok).toBe(false);
   if (!started.ok) expect(started.gates.find(g => g.gate === "schema")).toMatchObject({ state: "blocked", nextAction: "run-owner-upgrade" });
   expect(inspectStoreSchema(path)).toBe(21);
@@ -832,11 +832,10 @@ test("startFullApp in schway mode upgrades over real native sessions and rebuild
   const root = mkdtempSync(join(tmpdir(), "jit-ops-upgrade-schway-")); roots.push(root);
   const service = serviceFor(root);
   const config = readConfig({ JIT_DATABASE: join(root, "state", "app.sqlite"), JIT_RUN_PORT: "schway" });
-  const started = startFullApp({ config, service });
+  const started = await startFullApp({ config, service });
   if (!started.ok) throw new Error(JSON.stringify(started.gates));
   const { app, store } = started.handle;
   stores.push(store); services.push(started.handle.service);
-  await started.handle.queue.reconcile(started.handle.teamPort);
   await app.setupOwner(password);
   const owner = app.authenticate(await app.login(password)).actor;
   app.execute(owner, { kind: "project.create", requestId: rid(), projectId: null, expectedRevision: app.workspace(owner).revision, payload: { name: "schway upgrade" } });

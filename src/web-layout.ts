@@ -153,6 +153,10 @@ const deliveryNext: Record<string, string> = {
   authorization_changed: "สิทธิ์เจ้าของเปลี่ยนแล้ว", binding_revoked: "การผูกช่องทางถูกถอน", source_superseded: "รายงานถูกแทนที่",
   source_deleted: "ต้นทางถูกลบ", telegram_rejected: "ปลายทางปฏิเสธถาวร", telegram_unavailable: "ปลายทางไม่พร้อมชั่วคราว",
   unknown_transport: "ไม่ทราบผลหลังเริ่มส่ง", not_bound: "ยังไม่ได้ผูกช่องทาง",
+  wait_for_current_source: "พักไว้จนกว่าต้นทางจะกลับมาเป็นปัจจุบัน", currentness_unavailable: "ตรวจความเป็นปัจจุบันไม่ได้ จึงยังไม่ส่ง",
+  candidate_superseded: "PR มี revision ใหม่แล้ว", revision_changed: "base/head เปลี่ยนแล้ว", pr_closed: "PR ถูกปิดแล้ว",
+  monitoring_revoked: "การติดตาม PR ถูกเพิกถอน", report_dismissed: "เจ้าของปิดการแจ้งรายงานนี้", finding_dismissed: "เจ้าของปิดการแจ้งประเด็นนี้",
+  alert_policy_changed: "นโยบายแจ้งเตือนเปลี่ยนแล้ว",
 };
 
 /** Lists logical notification intents. Rendering this page does not send. */
@@ -205,23 +209,43 @@ const prDeliveryLabels: Record<string, string> = {
   failed: "ส่งไม่สำเร็จ", unknown: "ไม่ทราบผล", cancelled: "ยกเลิกก่อนส่ง",
 };
 
-/** Lists private static review reports; reading never admits work or sends. */
+const prObservedState = (report: { stale: boolean; status: string }) =>
+  report.stale ? "stale" : report.status === "complete_clean" ? "no_findings" : report.status === "complete_findings" ? "findings" : report.status;
+
+const prDecisionLabels: Record<string, string> = {
+  notified: "บันทึกคำขอแจ้งแล้ว", already_notified: "แจ้งไว้แล้วในรุ่นนโยบายก่อน", held: "ไม่แจ้ง เก็บไว้ในรายงาน", suppressed: "ระงับการแจ้ง",
+};
+
+const prSeverities = ["info", "low", "medium", "high", "critical"] as const;
+
+function alertPolicySummary(policy: ReturnType<Application["prReports"]>["policy"]): string {
+  return `นโยบายแจ้งเตือน v${policy.version}${policy.persisted ? "" : " (ค่าเริ่มต้นที่ยังไม่บันทึก)"} · หมวด ${escape(policy.allowedCategories.join(", ") || "ไม่แจ้งเลย")} · severity ขั้นต่ำ ${escape(policy.minimumSeverity)} · ${policy.notifyPartial ? "แจ้งรายงาน partial พร้อมคำเตือน" : "ไม่แจ้งรายงาน partial"} · ต้องมีหลักฐานและ actionable เสมอ`;
+}
+
+/** Lists private static review reports, unreviewed/running candidates and the owner alert policy; reading never admits work or sends. */
 export function prReportsPage(state: ReturnType<Application["prReports"]>, workspace: Workspace, csrf: string): string {
-  const { project } = state;
-  void csrf;
+  const { project, policy } = state;
+  const categories = ["correctness", "security", "behavior"] as const;
   return shell("รายงานตรวจ PR", { project, workspace, csrf, section: "delivery" }, `<div class="content"><section class="hero"><p class="eyebrow">ตรวจแบบ static ส่วนตัว</p><h2>รายงานของ ${escape(project.name)}</h2><p>รายงานผูกกับ base/head/policy รุ่นที่ตรวจเท่านั้น รุ่นใหม่ทำให้รายงานเดิมเป็น stale และจะไม่ถูกอ้างว่าเป็นผลล่าสุด</p></section>
     <article class="team-card"><h3>สถานะการตรวจต่อ PR revision</h3>${state.reviews.length ? `<ul>${state.reviews.map(item => `<li data-review-state="${escape(item.observed)}">${escape(`PR #${item.pullNumber} · ${item.baseSha.slice(0, 8)}...${item.headSha.slice(0, 8)}`)} · ${item.reportId ? `<a href="/projects/${project.id}/pr/reports/${item.reportId}">${escape(prReviewLabels[item.observed] ?? item.observed)}</a>` : escape(prReviewLabels[item.observed] ?? item.observed)}${item.staleReason ? ` (${escape(item.staleReason)})` : ""}${item.previousReportId ? ` · <a href="/projects/${project.id}/pr/reports/${item.previousReportId}">รายงานก่อนหน้า (ประวัติ)</a>` : ""}${item.jobState ? ` · งาน ${escape(item.jobState)}/${escape(item.jobReason ?? "")}` : ""}</li>`).join("")}</ul>` : '<p class="empty-list">ยังไม่มี PR ที่ติดตาม</p>'}</article>
-    ${state.items.length ? `<ul>${state.items.map(item => `<li class="topic-row"><div class="topic-row-main"><h3><a href="/projects/${project.id}/pr/reports/${item.id}">${escape(`PR #${item.pullNumber} · ${item.baseSha.slice(0, 8)}...${item.headSha.slice(0, 8)}`)}</a></h3><p>${escape(item.stale ? `stale (${item.staleReason ?? ""})` : prStatusLabels[item.status] ?? item.status)} · findings ${item.findings.filter(f => f.status === "actionable").length}/${item.findings.length}</p><p class="literal">coverage ${escape(item.coverageOverall)} · enum ${item.enumerationComplete ? "ครบ" : "ไม่ครบ"} · roles ${escape(item.analyzedRoles.join(","))}</p></div></li>`).join("")}</ul>` : '<p class="empty-list">ยังไม่มีรายงานตรวจ PR</p>'}
+    ${state.items.length ? `<ul>${state.items.map(item => `<li class="topic-row" data-state="${prObservedState(item)}"><div class="topic-row-main"><h3><a href="/projects/${project.id}/pr/reports/${item.id}">${escape(`PR #${item.pullNumber} · ${item.baseSha.slice(0, 8)}...${item.headSha.slice(0, 8)}`)}</a></h3><p>${escape(item.stale ? `stale (${item.staleReason ?? ""}) ไม่ใช่ผลล่าสุด` : prStatusLabels[item.status] ?? item.status)} · findings ${item.findings.filter(f => f.status === "actionable").length}/${item.findings.length}</p><p class="literal">coverage ${escape(item.coverageOverall)} · enum ${item.enumerationComplete ? "ครบ" : "ไม่ครบ"} · roles ${escape(item.analyzedRoles.join(","))}</p></div></li>`).join("")}</ul>` : '<p class="empty-list">ยังไม่มีรายงานตรวจ PR</p>'}
+    <article class="team-card"><h3>นโยบายแจ้งเตือน</h3><p>${alertPolicySummary(policy)}</p>
+    <form method="post" action="/projects/${project.id}/pr/alert-policy">${hiddenCommand(csrf, policy.version)}
+    <fieldset><legend>หมวดที่แจ้ง</legend>${categories.map(c => `<label><input type="checkbox" name="cat_${c}"${policy.allowedCategories.includes(c) ? " checked" : ""}> ${c}</label>`).join("")}</fieldset>
+    <label>severity ขั้นต่ำ<select name="minimumSeverity">${prSeverities.map(v => `<option value="${v}"${v === policy.minimumSeverity ? " selected" : ""}>${v}</option>`).join("")}</select></label>
+    <label><input type="checkbox" name="notifyPartial"${policy.notifyPartial ? " checked" : ""}> แจ้งรายงาน partial (มีคำเตือนเสมอ)</label>
+    <button class="primary">บันทึกนโยบายรุ่นใหม่</button><small>severity ไม่ใช้แทนหลักฐาน ข้อสงสัยและ style อยู่ในรายงานเท่านั้น</small></form></article>
     </div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
 }
 
-/** Shows one private report with findings, alert evaluation and linked delivery. */
+/** Shows one private report with findings, stored alert decisions, policy and linked delivery. */
 export function prReportPage(state: ReturnType<Application["prReport"]>, workspace: Workspace, csrf: string): string {
-  const { project, report, annotations, evaluation, alerts, evidence } = state;
+  const { project, report, annotations, evaluation, alerts, evidence, policy, decision } = state;
   const transmitted = evidence.transmitted;
   const transmissionRows = (entries: NonNullable<typeof transmitted>["specialist"]) => entries.map(e => `<li data-transmission="${escape(e.state)}">${escape(e.kind)} ${escape(e.ref)} · ${escape(transmissionLabels[e.state] ?? e.state)}${e.required ? "" : " (ไม่บังคับ)"} · ${e.sentBytes}/${e.bytes} bytes</li>`).join("");
-  const observed = report.stale ? `stale (${report.staleReason ?? ""})` : prStatusLabels[report.status] ?? report.status;
-  return shell("รายละเอียดรายงาน PR", { project, workspace, csrf, section: "delivery" }, `<div class="content"><section class="hero"><p class="eyebrow">รายงานส่วนตัว · ไม่คอมเมนต์ GitHub</p><h2>${escape(`PR #${report.pullNumber} · ${report.baseSha.slice(0, 8)}...${report.headSha.slice(0, 8)}`)}</h2><p>${escape(observed)} · coverage ${escape(report.coverageOverall)} · ${report.enumerationComplete ? "enumeration ครบ" : "enumeration ไม่ครบ"}</p><p>base ${escape(report.baseSha)} · head ${escape(report.headSha)} · policy v${report.policyVersion} · review v${report.reviewPolicyVersion} · revision ${report.revision}</p></section>
+  const observed = report.stale ? `stale (${report.staleReason ?? ""}) ไม่ใช่ผลล่าสุด` : prStatusLabels[report.status] ?? report.status;
+  const dismissed = annotations.some(a => a.kind === "dismiss" && !a.findingId);
+  return shell("รายละเอียดรายงาน PR", { project, workspace, csrf, section: "delivery" }, `<div class="content"><section class="hero" data-state="${prObservedState(report)}"><p class="eyebrow">รายงานส่วนตัว · ไม่คอมเมนต์ GitHub</p><h2>${escape(`PR #${report.pullNumber} · ${report.baseSha.slice(0, 8)}...${report.headSha.slice(0, 8)}`)}</h2><p>${escape(observed)} · coverage ${escape(report.coverageOverall)} · ${report.enumerationComplete ? "enumeration ครบ" : "enumeration ไม่ครบ"}</p><p>base ${escape(report.baseSha)} · head ${escape(report.headSha)} · policy v${report.policyVersion} · review v${report.reviewPolicyVersion} · revision ${report.revision}</p>${dismissed ? "<p>เจ้าของบันทึกว่าไม่ต้องแจ้งรายงานนี้แล้ว</p>" : ""}</section>
     <article class="team-card"><h3>ประเด็น (${report.findings.length})</h3>${report.findings.length ? `<ul>${report.findings.map(f => `<li><strong>${escape(f.title)}</strong> [${escape(f.category)}/${escape(f.severity)}/${escape(f.status)}]<br><span class="literal">${escape(f.location.path)}${f.location.line ? `:${f.location.line}` : ""} · ${escape(f.evidenceType)}${f.evidenceRef ? ` ${escape(f.evidenceRef)}` : ""}</span><br><span>${escape(f.condition)}</span><br><span>${escape(f.impact)}</span>${f.validationErrors.length ? `<br><small>ตรวจ: ${escape(f.validationErrors.join(", "))}</small>` : ""}</li>`).join("")}</ul>` : '<p class="empty-list">ไม่พบประเด็น</p>'}
     <p>วิเคราะห์: ${escape(report.analyzedRoles.join(", ") || "-")} · ต้องการ: ${escape(report.requiredRoles.join(", "))} · ข้าม: ${escape(report.skippedScope.join(", ") || "-")}</p>
     ${report.disagreements.length ? `<p>ข้อขัดแย้ง: ${escape(report.disagreements.join(" · "))}</p>` : ""}</article>
@@ -232,12 +256,14 @@ export function prReportPage(state: ReturnType<Application["prReport"]>, workspa
     <p>specialists: ${escape(report.specialistRuns.map(r => `${r.role}=${r.state}${r.reason ? `/${r.reason}` : ""}`).join(", ") || "-")} · synthesis ${escape(`${report.synthesis.state}${report.synthesis.reason ? `/${report.synthesis.reason}` : ""}`)}</p>
     ${evidence.job ? `<p>งาน ${escape(evidence.job.state)}/${escape(evidence.job.reason)} · attempts ${evidence.attempts.length}</p><ul>${evidence.attempts.map(a => `<li>g${a.generation} · ${escape(a.state)}${a.reason ? `/${escape(a.reason)}` : ""} · transport ${escape(a.transport)}</li>`).join("")}</ul>` : ""}</article>
     <article class="team-card"><h3>การแจ้ง (qualifying ${evaluation.qualifying.length} · held ${evaluation.held.length})</h3>
-    ${evaluation.qualifying.length ? `<ul>${evaluation.qualifying.map(f => `<li>${escape(f.id)} · ${escape(f.title)}</li>`).join("")}</ul>` : "<p>ไม่มีประเด็นที่เข้าเกณฑ์แจ้ง</p>"}
+    <p>${alertPolicySummary(policy)}</p>
+    ${decision ? `<div data-decision="${escape(decision.id)}"><p>การตัดสินที่บันทึกไว้: นโยบาย v${decision.policyVersion} · ${escape(decision.trigger)} · revision ${decision.reportRevision}${decision.suppressedReason ? ` · ระงับทั้งรายงาน: ${escape(decision.suppressedReason)}` : ""}</p><ul>${decision.findings.map(d => `<li data-finding-decision="${escape(d.decision)}">${escape(d.findingId)}: ${escape(prDecisionLabels[d.decision] ?? d.decision)}${d.reason ? ` (${escape(d.reason)})` : ""}${d.intentId ? ` · <a href="/projects/${project.id}/delivery/${d.intentId}">คำขอส่ง</a>` : ""}</li>`).join("")}</ul></div>` : "<p>ยังไม่มีการประเมินการแจ้งที่บันทึกไว้</p>"}
+    ${evaluation.qualifying.length ? `<details><summary>ตัวอย่างตามนโยบายปัจจุบัน</summary><ul>${evaluation.qualifying.map(f => `<li>${escape(f.id)} · ${escape(f.title)}</li>`).join("")}</ul></details>` : "<p>ไม่มีประเด็นที่เข้าเกณฑ์แจ้ง</p>"}
     ${evaluation.held.length ? `<details><summary>เหตุที่ค้างไว้ (${evaluation.held.length})</summary><ul>${evaluation.held.map(h => `<li>${escape(h.finding.id)}: ${escape(h.reason)}</li>`).join("")}</ul></details>` : ""}
-    ${alerts.length ? `<ul>${alerts.map(a => `<li><a href="/projects/${project.id}/delivery/${a.id}">${escape(prDeliveryLabels[a.status] ?? a.status)} · ${escape(a.remote)}</a> · ${escape(a.dedupeKey)}</li>`).join("")}</ul><p>unknown ไม่ถือว่าส่งแล้ว รายงานต้นทางยังเปิดอ่านได้</p>` : "<p>ยังไม่มีคำขอส่งสำหรับรายงานนี้</p>"}</article>
+    ${alerts.length ? `<ul>${alerts.map(a => `<li data-delivery="${escape(a.status)}"><a href="/projects/${project.id}/delivery/${a.id}">${escape(prDeliveryLabels[a.status] ?? a.status)} · ${escape(a.remote)}</a>${a.findingId ? ` · ${escape(a.findingId)}` : ""}${a.stale ? ` · stale (${escape(a.staleReason ?? "")}) ไม่ใช่ผลล่าสุด` : ""}${a.failureReason && !a.stale ? ` · ${escape(a.failureReason)}` : ""} · ${escape(a.dedupeKey)}</li>`).join("")}</ul><p>unknown ไม่ถือว่าส่งแล้ว รายงานต้นทางยังเปิดอ่านได้</p>` : "<p>ยังไม่มีคำขอส่งสำหรับรายงานนี้</p>"}</article>
     <article class="team-card"><h3>บันทึกของเจ้าของ (${annotations.length})</h3>
-    ${annotations.length ? `<ul>${annotations.map(a => `<li>r${a.revision} · ${escape(a.kind)} · ${escape(a.text)}</li>`).join("")}</ul>` : "<p>ยังไม่มีบันทึกเพิ่มเติม</p>"}
-    <form method="post" action="/projects/${project.id}/pr/reports/${report.id}">${hiddenCommand(csrf, report.revision)}<label>เหตุผลที่ไม่แจ้ง/ปิดประเด็น<input name="reason" required maxlength="2000"></label><button class="primary">บันทึกว่าไม่ต้องแจ้ง</button><small>บันทึกเป็น annotation รุ่นใหม่ ไม่เขียนทับหลักฐานเดิม</small></form></article>
+    ${annotations.length ? `<ul>${annotations.map(a => `<li>r${a.revision} · ${escape(a.kind)}${a.findingId ? ` · ${escape(a.findingId)}` : " · ทั้งรายงาน"} · ${escape(a.text)}</li>`).join("")}</ul>` : "<p>ยังไม่มีบันทึกเพิ่มเติม</p>"}
+    <form method="post" action="/projects/${project.id}/pr/reports/${report.id}">${hiddenCommand(csrf, report.revision)}<label>ประเด็น<select name="findingId"><option value="">ทั้งรายงาน</option>${report.findings.map(f => `<option value="${escape(f.id)}">${escape(f.id)}</option>`).join("")}</select></label><label>เหตุผลที่ไม่แจ้ง/ปิดประเด็น<input name="reason" required maxlength="2000"></label><button class="primary">บันทึกว่าไม่ต้องแจ้ง</button><small>บันทึกเป็น annotation รุ่นใหม่ ไม่เขียนทับหลักฐานเดิม และไม่ถูกเรียนรู้เป็นข้อเท็จจริง</small></form></article>
     </div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}/pr/reports` } });
 }
 
@@ -618,7 +644,7 @@ export function backupDetailPage(state: ReturnType<Application["backup"]>, works
 export function deletionsPage(state: { project: Project; operations: import("./memory/delete").DeletionOperation[] }, workspace: Workspace, csrf: string, sources: { reference: import("./sources").SourceReference; label: string }[]): string {
   const { project, operations } = state;
   const items = operations.map(op => `<article class="team-card" id="deletion-${op.id}"><header><h3><a href="/projects/${project.id}/memory/deletions/${op.id}">${escape(op.id)}</a></h3><span class="job-status" data-state="${op.state}">${escape(op.state)}</span></header>
-    <p>scope ${escape(op.scope.source.sourceId)} r${op.scope.source.revision} g${op.scope.source.generation} · tombstones ${op.tombstones.length} · attempts ${op.attempts}/${op.maxAttempts}</p>
+    <p>scope ${escape(op.scope.source.sourceId)} r${op.scope.source.revision} g${op.scope.source.generation} · tombstones ${op.tombstones.length} · attempts ${op.attempts}/${op.maxAttempts} · native sessions ลบแล้ว ${op.contexts.filter(c => c.state === "deleted").length}/${op.contexts.length}</p>
     <p>สำรองที่ยังเก็บข้อมูลนี้ ${op.backupsRetained.length ? escape(op.backupsRetained.join(", ")) : "ไม่มี"} · ${escape(op.nextAction)}</p>
     ${op.reason ? `<p>เหตุผล: ${escape(op.reason)}</p>` : ""}</article>`).join("");
   return shell("ลบข้อมูล", { project, workspace, csrf, section: "memory" }, `<div class="content"><section class="hero"><p class="eyebrow">app.data_lifecycle/v1</p><h2>ลบ source ต้นฉบับ ${escape(project.name)}</h2><p>ดูผลกระทบแบบผูก revision ก่อนยืนยัน งานที่รับรองและมติไม่ถูกเปลี่ยนโดยปริยาย สำรองเดิมและสำเนา Telegram/provider ไม่ได้ถูกลบโดยคำสั่งนี้</p></section>
@@ -628,24 +654,37 @@ export function deletionsPage(state: { project: Project; operations: import("./m
     <section aria-label="การลบ">${items || '<p class="empty-list">ยังไม่มีการลบในโครงการนี้</p>'}</section></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
 }
 
-/** One deletion preview or operation: collateral, truncation flags and honest pending state. */
+/** One deletion preview or operation: complete collateral, named blockers, whole-session scope and per-scope state. */
 export function deletionDetailPage(state: { project: Project; preview: import("./memory/delete").DeletionPreview | null; operation: import("./memory/delete").DeletionOperation | null }, workspace: Workspace, csrf: string): string {
   const { project, preview, operation } = state;
-  const previewCard = preview ? `<article class="team-card"><h3>ผลกระทบของ ${escape(preview.scope.source.sourceId)} r${preview.scope.source.revision} g${preview.scope.source.generation}</h3>
-    <p>หมดอายุ ${time(preview.expiresAt)} · claims ${preview.affected.claims.length}${preview.truncated.claims ? "+" : ""} · contexts ${preview.affected.contexts.length}${preview.truncated.contexts ? "+" : ""} · งานที่ต้อง fence ${preview.affected.pendingJobs.length}${preview.truncated.pendingJobs ? "+" : ""}</p>
-    <p>native sessions ${preview.affected.nativeSessions.length} · สำรองที่ยังเก็บข้อมูลนี้ ${preview.affected.backups.length}${preview.truncated.backups ? "+" : ""} · ข้อผูกพันที่คาบเกี่ยว ${preview.affected.obligations.length}</p>
-    ${preview.wholeSession.required ? `<p>ต้องลบทั้ง session (${escape(preview.wholeSession.reason ?? "")}) ให้ติ๊กยืนยันทั้ง session ก่อน</p>` : ""}
+  const ref = (s: { sourceId: string; revision: number; generation: number }) => `${escape(s.sourceId)} r${s.revision} g${s.generation}`;
+  const plus = (flag: boolean | undefined) => flag ? "+" : "";
+  const blockers = preview?.blockers ?? [];
+  const sessionRows = (preview?.affected.nativeSessions ?? []).map(session => `<li>${escape(session.id)} g${session.generation} · ${escape(session.appState)} · ${session.dispatched ? "มีข้อมูลใน session แล้ว" : "ยังไม่เริ่มทำงาน"} · ลบได้ทั้ง session เท่านั้น${session.collateral?.sources.length || session.collateral?.claims.length ? ` · ลบรวมด้วย: sources ${session.collateral.sources.map(c => ref(c.source)).join(", ") || "-"} · claims ${session.collateral.claims.map(c => escape(c.claimId)).join(", ") || "-"}` : ""}</li>`).join("");
+  const previewCard = preview ? `<article class="team-card"><h3>ผลกระทบของ ${ref(preview.scope.source)}</h3>
+    <p>หมดอายุ ${time(preview.expiresAt)} · inventory ${escape((preview.inventoryDigest ?? "").slice(0, 12))} · claims ${preview.affected.claims.length}${plus(preview.truncated.claims)} · contexts ${preview.affected.contexts.length}${plus(preview.truncated.contexts)} · งานที่ต้อง fence ${preview.affected.pendingJobs.length}${plus(preview.truncated.pendingJobs)}</p>
+    <p>sources ที่ถูกลบ: ${preview.affected.sources.map(s => `${ref(s.source)} (${s.relation === "scope" ? "ต้นฉบับ" : "output ที่สืบทอด"})`).join(" · ")}${plus(preview.truncated.sources)}</p>
+    <p>native sessions ${preview.affected.nativeSessions.length}${plus(preview.truncated.nativeSessions)} · สำรองที่อาจยังเก็บข้อมูลนี้ ${preview.affected.backups.length}${plus(preview.truncated.backups)} · export ในเครื่องที่จะถูกลบ ${preview.affected.exports.length}${plus(preview.truncated.exports)} · ข้อผูกพันที่คงไว้ไม่เปลี่ยน ${preview.affected.obligations.length}${plus(preview.truncated.obligations)}</p>
+    ${sessionRows ? `<ul aria-label="native sessions">${sessionRows}</ul>` : ""}
+    ${preview.wholeSession.required ? `<p>ต้องลบทั้ง session (${escape((preview.wholeSession.reasons ?? [preview.wholeSession.reason ?? ""]).join(", "))}) ขอบเขต: ${escape(preview.wholeSession.sessionScope.join(", "))} ให้ติ๊กยืนยันทั้ง session ก่อน</p>` : ""}
+    ${blockers.length ? `<p class="error" role="alert">ยืนยันไม่ได้: ${escape(blockers.join(", "))} · ตรวจสอบข้อมูลแล้วขอดูผลกระทบใหม่</p>` : ""}
     <p><small>${escape(preview.note)}</small></p>
-    <form class="team-form" method="post" action="/projects/${project.id}/memory/deletions">${hiddenCommand(csrf, project.revision)}
+    ${blockers.length ? "" : `<form class="team-form" method="post" action="/projects/${project.id}/memory/deletions">${hiddenCommand(csrf, project.revision)}
       <input type="hidden" name="mode" value="confirm"><input type="hidden" name="previewId" value="${preview.id}">
       <label><input type="checkbox" name="acknowledged" value="on"> ยืนยันขอบเขต (ไม่ยกเลิกงาน ไม่ถอนมติ)</label>
       ${preview.wholeSession.required ? `<label><input type="checkbox" name="acknowledgedWholeSession" value="on"> ยืนยันขอบเขตทั้ง session</label>` : ""}
-      <button class="danger">ยืนยันการลบ</button></form></article>` : "";
-  const operationCard = operation ? `<article class="team-card"><h3>การลบ ${escape(operation.id)}</h3><p>สถานะ ${escape(operation.state)} · attempts ${operation.attempts}/${operation.maxAttempts} · tombstones ${operation.tombstones.length}</p>
+      <button class="danger">ยืนยันการลบ</button></form>`}</article>` : "";
+  const contextRows = (operation?.contexts ?? []).map(context => `<li data-state="${escape(context.state)}">${escape(context.id)} g${context.generation} · ${escape(context.state)} · attempts ${context.attempts}${context.reason ? ` · ${escape(context.reason)}` : ""} · ${escape(context.nextAction)}</li>`).join("");
+  const exportRows = (operation?.exports ?? []).map(entry => `<li data-state="${escape(entry.state)}">export ${escape(entry.id)} · ${escape(entry.state)} · attempts ${entry.attempts}${entry.reason ? ` · ${escape(entry.reason)}` : ""}</li>`).join("");
+  const scopeRows = (operation?.scopes ?? []).map(scope => `<li data-state="${escape(scope.state)}">${escape(scope.scope)} · ${escape(scope.state)} · ${escape(scope.detail)}</li>`).join("");
+  const operationCard = operation ? `<article class="team-card"><h3>การลบ ${escape(operation.id)}</h3><p>สถานะ ${escape(operation.state)}${operation.state === "complete" ? " (เฉพาะ local serving และ native sessions ที่จัดการ ไม่ใช่สำรอง/สำเนาภายนอก)" : ""} · attempts ${operation.attempts}/${operation.maxAttempts} · tombstones ${operation.tombstones.length}</p>
     <p>${escape(operation.nextAction)}${operation.reason ? ` · ${escape(operation.reason)}` : ""}</p>
+    ${contextRows ? `<ul aria-label="native session scopes">${contextRows}</ul>` : "<p>ไม่มี native session ที่ต้องลบ</p>"}
+    ${exportRows ? `<ul aria-label="local export artifacts">${exportRows}</ul>` : ""}
+    ${scopeRows ? `<ul aria-label="local scopes">${scopeRows}</ul>` : ""}
     <p>สำรองที่ยังเก็บข้อมูลนี้: ${operation.backupsRetained.length ? escape(operation.backupsRetained.join(", ")) : "ไม่มี"}</p>
     <p>สำเนาที่ไม่ได้ลบ: ${escape(operation.residuals.join(", "))}</p>
-    ${operation.state !== "complete" ? `<form class="team-form" method="post" action="/projects/${project.id}/memory/deletions">${hiddenCommand(csrf, project.revision)}
+    ${operation.state === "pending" || operation.state === "blocked" ? `<form class="team-form" method="post" action="/projects/${project.id}/memory/deletions">${hiddenCommand(csrf, project.revision)}
       <input type="hidden" name="mode" value="retry"><input type="hidden" name="operationId" value="${operation.id}"><button>ลองจัดการ native sessions อีกครั้ง</button></form>` : ""}</article>` : "";
   return shell("ผลการลบ", { project, workspace, csrf, section: "memory" }, `<div class="content">${previewCard}${operationCard || (!preview ? '<p class="empty-list">ไม่พบบันทึกนี้</p>' : "")}
     <p><a href="/projects/${project.id}/memory/deletions">กลับไปรายการลบ</a></p></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });

@@ -160,8 +160,9 @@ path. The live digest must then equal the validated staged digest
 scheduler and ports through `composeJobQueue` and reconciles native sessions;
 only then is the journal `complete`. Without a managed service in process
 (offline CLI, bare Application) the journal stays `activated` with
-`start_service_to_reconcile_jobs_sessions`, and `Application.boot()` completes
-it after the boot reconciliation. A failed reconciliation stays `activated`
+`start_service_to_reconcile_jobs_sessions`, and `Application.boot()` (called by
+`serve` and `startFullApp`) completes it after the boot reconciliation, which
+is skipped while a fence holds. A failed reconciliation stays `activated`
 (`reconcile_pending`); success is never claimed early.
 
 Reopen (`recoverUpgradesOnOpen`, run by the Application constructor):

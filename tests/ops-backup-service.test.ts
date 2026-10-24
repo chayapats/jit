@@ -59,7 +59,7 @@ function runRequest(config: ReturnType<typeof readConfig>): ApplicationRunReques
 
 test("startFullApp in schway mode backs up real native sessions into the configured backup directory", async () => {
   const { service, config, backup, state } = setup("schway");
-  const started = startFullApp({ config, service });
+  const started = await startFullApp({ config, service });
   if (!started.ok) throw new Error(JSON.stringify(started.gates));
   const { app, store } = started.handle;
   try {
@@ -89,7 +89,7 @@ test("startFullApp in schway mode backs up real native sessions into the configu
 
 test("startFullApp in scripted mode has no native port and stays explicitly incomplete", async () => {
   const { service, config, backup } = setup("scripted");
-  const started = startFullApp({ config, service });
+  const started = await startFullApp({ config, service });
   if (!started.ok) throw new Error(JSON.stringify(started.gates));
   const { app, store } = started.handle;
   try {
@@ -106,10 +106,10 @@ test("startFullApp in scripted mode has no native port and stays explicitly inco
   }
 });
 
-test("startFullApp in schway mode fails closed when the bridge gate does not hold", () => {
+test("startFullApp in schway mode fails closed when the bridge gate does not hold", async () => {
   const { service, config, state } = setup("schway");
   writeFileSync(join(state, ".jit-host"), "blocker");
-  expect(() => startFullApp({ config, service })).toThrow("unsafe_host_directory");
+  await expect(startFullApp({ config, service })).rejects.toThrow("unsafe_host_directory");
 });
 
 async function freePort(): Promise<number> {
