@@ -127,7 +127,7 @@ test("rendered unit pins the service identity with bounded restart, memory cap a
 
 test("full app boots with the composed workers, persists owner state and restarts with one scheduler", async () => {
   const { service, config } = setup();
-  const first = startFullApp({ config, service });
+  const first = await startFullApp({ config, service });
   expect(first.ok).toBe(true);
   if (!first.ok) throw new Error("unreachable");
   const ids = first.handle.queue.choices().map(c => c.id).sort();
@@ -139,14 +139,14 @@ test("full app boots with the composed workers, persists owner state and restart
   const actor = app.authenticate(await app.login("service-owner-password")).actor;
   const project = app.execute(actor, { kind: "project.create", requestId: "service-boot-01", projectId: null,
     expectedRevision: 0, payload: { name: "Service project" } }).project;
-  const second = startFullApp({ config, service });
+  const second = await startFullApp({ config, service });
   expect(second.ok).toBe(false);
   if (second.ok) throw new Error("unreachable");
   expect(second.gates.find(g => g.gate === "scheduler")?.state).toBe("blocked");
   const drained = await stopDrain(first.handle, { timeoutMs: 5000 });
   expect(drained.outcome).toBe("stopped");
   first.handle.store.close();
-  const third = startFullApp({ config, service });
+  const third = await startFullApp({ config, service });
   expect(third.ok).toBe(true);
   if (!third.ok) throw new Error("unreachable");
   const thirdActor = third.handle.app.authenticate(await third.handle.app.login("service-owner-password")).actor;
@@ -154,6 +154,46 @@ test("full app boots with the composed workers, persists owner state and restart
   const done = await stopDrain(third.handle, { timeoutMs: 5000 });
   expect(done.outcome).toBe("stopped");
   third.handle.store.close();
+});
+
+test("full app startup reconciles pending native deletions before returning an active handle", async () => {
+  const { service, config } = setup();
+  const first = await startFullApp({ config, service });
+  if (!first.ok) throw new Error("unreachable");
+  const app = first.handle.app;
+  await app.setupOwner("service-owner-password");
+  const actor = app.authenticate(await app.login("service-owner-password")).actor;
+  const project = app.execute(actor, { kind: "project.create", requestId: "service-del-01", projectId: null, expectedRevision: 0, payload: { name: "Delete on boot" } }).project;
+  const topic = app.execute(actor, { kind: "topic.create", requestId: "service-del-02", projectId: project.id, expectedRevision: project.revision, payload: { title: "Boot topic" } }).topic;
+  const message = app.execute(actor, { kind: "message.send", requestId: "service-del-03", projectId: project.id, expectedRevision: topic.revision,
+    payload: { topicId: topic.id, text: "boot-delete-canary-313 must go" } }).message.source;
+  const role = app.execute(actor, { kind: "role.save", projectId: null, requestId: "service-del-04", expectedRevision: app.team(actor).ownerRevision,
+    payload: { roleId: null, name: "Tech", kind: "specialist", responsibility: "Analyze software structure", enabled: true,
+      route: { provider: "grok", model: "fixture-grok-exact", authRoute: "owner-grok" } } }).role!;
+  const revision = () => app.project(actor, project.id).revision;
+  app.execute(actor, { kind: "team.dispatch", requestId: "service-del-05", projectId: project.id, expectedRevision: revision(),
+    payload: { topicId: topic.id, purpose: "Read the message", sources: [message], include: [role.id], exclude: [], limits: { ...config.jobs.maximum } } });
+  // Stop first so the post-confirm pass cannot run: the operation stays pending across the restart.
+  await stopDrain(first.handle, { timeoutMs: 5000 });
+  const preview = app.execute(actor, { kind: "memory.delete.preview", requestId: "service-del-06", projectId: project.id, expectedRevision: revision(),
+    payload: { scope: { kind: "source", projectId: project.id, source: { ...message } } } }) as import("../src/memory/delete").DeletionReceipt;
+  const confirmed = app.execute(actor, { kind: "memory.delete.confirm", requestId: "service-del-07", projectId: project.id, expectedRevision: revision(),
+    payload: { previewId: preview.preview.id, acknowledged: true, acknowledgedWholeSession: preview.preview.wholeSession.required } }) as import("../src/memory/delete").DeletionConfirmReceipt;
+  expect(confirmed.operation.state).toBe("pending");
+  expect(confirmed.operation.contexts.length).toBeGreaterThan(0);
+  first.handle.store.close();
+  const second = await startFullApp({ config, service });
+  if (!second.ok) throw new Error("unreachable");
+  // No explicit reconcile call: startup itself drove the managed delete before exposing the app.
+  const secondActor = second.handle.app.authenticate(await second.handle.app.login("service-owner-password")).actor;
+  const operation = second.handle.app.deletionOperation(secondActor, project.id, confirmed.operation.id).operation!;
+  expect(operation.state).toBe("complete");
+  expect(operation.attempts).toBe(1);
+  for (const context of operation.contexts) {
+    expect(second.handle.store.read(tx => tx.get<{ state: string }>("SELECT state FROM team_contexts WHERE id = ? AND generation = ?", context.id, context.generation)?.state)).toBe("deleted");
+  }
+  await stopDrain(second.handle, { timeoutMs: 5000 });
+  second.handle.store.close();
 });
 
 test("crash and stop-timeout fence unsettled work without claiming success", async () => {
@@ -200,11 +240,11 @@ test("crash and stop-timeout fence unsettled work without claiming success", asy
   reopened.close();
 });
 
-test("quarantine boot refuses activation while read-only status stays available", () => {
+test("quarantine boot refuses activation while read-only status stays available", async () => {
   const { service, config } = setup();
   const quarantined = { ...service, ledgerPath: join(service.stateDirectory, "missing-ledger.json") };
   expect(readQuarantine(quarantined).quarantined).toBe(true);
-  const refused = startFullApp({ config, service: quarantined });
+  const refused = await startFullApp({ config, service: quarantined });
   expect(refused.ok).toBe(false);
   if (refused.ok) throw new Error("unreachable");
   expect(refused.gates).toMatchObject([{ gate: "quarantine", state: "blocked" }]);

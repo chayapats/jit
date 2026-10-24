@@ -131,6 +131,11 @@ export function preflightService(input: PreflightInput): PreflightResult {
  * a separate human-involved command, never part of service boot.
  */
 export function createFullAppQueue(store: TransactionStore, config: AppConfig, now: () => number = Date.now): JobQueue {
+  return composeFullApp(store, config, now).queue;
+}
+
+/** The composed queue plus the team lifecycle port that startup reconciliation must use. */
+function composeFullApp(store: TransactionStore, config: AppConfig, now: () => number): { queue: JobQueue; teamPort: ApplicationRunPort } {
   if (config.runPort === "schway") assertSchwayGate(store.path);
   const teamPort: ApplicationRunPort = config.runPort === "schway"
     ? new SchwayRunPort(store, config.team, config.jobs.outputBytes)
@@ -144,11 +149,12 @@ export function createFullAppQueue(store: TransactionStore, config: AppConfig, n
     const source = store.read(tx => lookupSource(tx, request.projectId, request.manifest.sources[0]!.reference));
     return scriptedMemoryResult(request, source.state === "available" && source.attribution.kind === "owner", config.jobs.outputBytes);
   });
-  return new JobQueue(store, config.jobs, [
+  const queue = new JobQueue(store, config.jobs, [
     projectStateWork(store), scriptedPreviewWork(store, config, fixturePort), discussionPlanWork(),
     specialistAnalysisWork(store, config, teamPort), coordinatorSynthesisWork(store, config, teamPort),
     memoryExtractionWork(store, config, memoryPort), scheduleReminderWork(store, config), scheduleSummaryWork(store, config, fixturePort),
   ], { now });
+  return { queue, teamPort };
 }
 
 export interface FullAppHandle {
@@ -169,8 +175,12 @@ export interface StartInput {
 /**
  * Starts the composed full application after preflight. A blocked preflight
  * returns its gates instead of enabling jobs, memory assembly or deliveries.
+ * Session and deletion reconciliation (jobs.session_reconcile/v1,
+ * app.data_lifecycle/v1) completes through the team lifecycle port before an
+ * active handle is returned, so stale workers and pending native deletions are
+ * reconciled before any serving or pumping.
  */
-export function startFullApp(input: StartInput): { ok: true; handle: FullAppHandle } | { ok: false; gates: PreflightGate[] } {
+export async function startFullApp(input: StartInput): Promise<{ ok: true; handle: FullAppHandle } | { ok: false; gates: PreflightGate[] }> {
   const service = parseServiceConfig(input.service);
   const quarantine = readQuarantine(service);
   if (quarantine.quarantined) {
@@ -185,7 +195,9 @@ export function startFullApp(input: StartInput): { ok: true; handle: FullAppHand
       if (!input.store) store.close();
       return { ok: false, gates: preflight.gates };
     }
-    queue = createFullAppQueue(store, input.config, now);
+    const composed = composeFullApp(store, input.config, now);
+    queue = composed.queue;
+    await queue.reconcile(composed.teamPort);
     const app = new Application(store, input.config, { jobs: queue, now });
     return { ok: true, handle: { store, queue, app } };
   } catch (error) {
