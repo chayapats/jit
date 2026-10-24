@@ -932,3 +932,28 @@ test("schway mode requires single route concurrency", () => {
   expect(() => readConfig({ JIT_RUN_PORT: "schway", JIT_JOB_ROUTE_CONCURRENCY: "2" })).toThrow("Invalid JIT_JOB_ROUTE_CONCURRENCY");
   expect(readConfig({ JIT_JOB_ROUTE_CONCURRENCY: "2" }).runPort).toBe("scripted");
 });
+
+test("same source id in two projects maps to distinct host documents", async () => {
+  const { config, store } = setup();
+  const port = new SchwayRunPort(store, config.team, config.jobs.outputBytes, { model: scripted("cross-project") });
+  const run = request(config);
+  const shared = { sourceId: rid(), revision: 1, generation: 1 };
+  const otherProject = rid();
+  run.manifest = {
+    sources: [
+      { projectId: run.projectId, reference: shared, text: "project one" },
+      { projectId: otherProject, reference: { ...shared }, text: "project two" },
+    ],
+    claims: [],
+  };
+  activate(store, run.context);
+  const effective = describeEffectiveRun(run);
+  expect(effective.sources.map(item => item.id)).toEqual([
+    `source/${run.projectId}/${shared.sourceId}`,
+    `source/${otherProject}/${shared.sourceId}`,
+  ]);
+  const events: ApplicationRunEvent[] = [];
+  const outcome = await port.invoke(run, new AbortController().signal, event => events.push(event));
+  expect(outcome).toMatchObject({ state: "complete", reason: "complete", mode: "production" });
+  expect(events.map(event => event.kind)).toEqual(["started", "progress", "progress", "finished"]);
+});

@@ -110,6 +110,8 @@ export const SCHWAY_SYSTEM_PROMPT =
 const emptyUsage = () => ({ calls: 0, rounds: 0, hops: 0, contextTokens: 0, outputTokens: 0, retries: 0, wallMs: 0, tokensUnknown: false });
 
 const MODEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+/** Pinned host identity grammar for composed source documents. */
+const HOST_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/;
 
 function clampInt(value: number, minimum: number, maximum: number): number {
   if (!Number.isSafeInteger(value)) return minimum;
@@ -141,14 +143,19 @@ export function describeEffectiveRun(request: ApplicationRunRequest): EffectiveS
     { name: "purpose", content: request.purpose },
     ...request.instructions.operator.map((content, index) => ({ name: `operator-${index + 1}`, content })),
   ];
+  // Composite host ids carry the project scope: the same source or claim id
+  // in two projects must never collapse to one native document.
   const sources = [
     ...request.manifest.sources.map(source => ({
-      id: `source/${source.reference.sourceId}`, revision: `r${source.reference.revision}g${source.reference.generation}`, content: source.text,
+      id: `source/${source.projectId}/${source.reference.sourceId}`, revision: `r${source.reference.revision}g${source.reference.generation}`, content: source.text,
     })),
     ...request.manifest.claims.map(claim => ({
-      id: `claim/${claim.claimId}`, revision: `r${claim.revision}g${claim.generation}`, content: claim.text,
+      id: `claim/${claim.projectId}/${claim.claimId}`, revision: `r${claim.revision}g${claim.generation}`, content: claim.text,
     })),
   ];
+  for (const document of sources) {
+    if (!HOST_ID_PATTERN.test(document.id) || !HOST_ID_PATTERN.test(document.revision)) throw new AppError("invalid_run_request");
+  }
   const inputText = request.purpose;
   const totalBytes = Buffer.byteLength(SCHWAY_SYSTEM_PROMPT)
     + sections.reduce((sum, section) => sum + Buffer.byteLength(section.name) + Buffer.byteLength(section.content), 0)
