@@ -62,7 +62,32 @@ export interface ProbeAttempt {
 }
 
 /** Bounded self-process sample for the probe command itself; never environment, tokens or paths. */
-export interface ProbeSelfSample { elapsedMs: number; attemptsUsed: number; maxAttempts: number }
+export interface ProbeSelfSample {
+  elapsedMs: number; attemptsUsed: number; maxAttempts: number;
+  /** Own-process heap at completion; a resource sample, never a capacity claim. */
+  peakMemoryBytes: number;
+  /** Bounded scan of managed probe artifacts; file count caps the walk. */
+  managedBytes: number; managedFiles: number;
+}
+
+/** Best-effort self resource sample; failures report zeros rather than failing the probe. */
+async function selfResources(root: string): Promise<Pick<ProbeSelfSample, "peakMemoryBytes" | "managedBytes" | "managedFiles">> {
+  let peakMemoryBytes = 0;
+  try { peakMemoryBytes = process.memoryUsage().heapUsed; } catch { /* Own-process sample only. */ }
+  let managedBytes = 0, managedFiles = 0;
+  try {
+    const dir = resolve(root, ".local", "host-probe");
+    const names = (await readdir(dir)).slice(0, 4096);
+    for (const name of names) {
+      if (!uuidPattern.test(name.replace(/\.json$/, ""))) continue;
+      try {
+        const stats = await lstat(resolve(dir, name));
+        if (stats.isFile() && !stats.isSymbolicLink()) { managedFiles++; managedBytes += stats.size; }
+      } catch { /* One unreadable artifact does not fail the sample. */ }
+    }
+  } catch { /* Missing directory reads as empty. */ }
+  return { peakMemoryBytes, managedBytes, managedFiles };
+}
 
 /** Scriptable live boundary; production implementations use Schway credential renewal and native transport. */
 export interface ProbePorts {
@@ -327,7 +352,7 @@ export async function preflightProbe(installationLabel: string, route: string, m
     return record;
   })();
   void file;
-  return { record, self: { elapsedMs: 0, attemptsUsed: 0, maxAttempts: record.maxAttempts } };
+  return { record, self: { elapsedMs: 0, attemptsUsed: 0, maxAttempts: record.maxAttempts, ...(await selfResources(root)) } };
 }
 
 /**
@@ -355,7 +380,7 @@ export async function liveProbe(installationLabel: string, options: LiveProbeOpt
   const elapsed = () => Math.max(0, Math.min(120000, ports.now() - started));
   if (signal.aborted) {
     await overwriteAttempt(root, { ...dispatched, lifecycle: "cancelled", nextAction: "inspect-sanitized-failure" });
-    return { record: await readProbeAttempt(root, id), self: { elapsedMs: elapsed(), attemptsUsed: 0, maxAttempts } };
+    return { record: await readProbeAttempt(root, id), self: { elapsedMs: elapsed(), attemptsUsed: 0, maxAttempts, ...(await selfResources(root)) } };
   }
   let credential: ProbeEvent = "unobserved";
   try {
@@ -367,7 +392,7 @@ export async function liveProbe(installationLabel: string, options: LiveProbeOpt
   if (signal.aborted) {
     const observations: ProbeObservationEntry[] = [base[0]!, credentialEntry(route, model, bounds, credential), base[2]!, base[3]!];
     await overwriteAttempt(root, { ...dispatched, lifecycle: "cancelled", observations, nextAction: "inspect-sanitized-failure" });
-    return { record: await readProbeAttempt(root, id), self: { elapsedMs: elapsed(), attemptsUsed: 0, maxAttempts } };
+    return { record: await readProbeAttempt(root, id), self: { elapsedMs: elapsed(), attemptsUsed: 0, maxAttempts, ...(await selfResources(root)) } };
   }
   let attempts = 0, inference: ProbeEvent = "failed";
   for (let turn = 0; turn < maxAttempts; turn++) {
@@ -391,13 +416,13 @@ export async function liveProbe(installationLabel: string, options: LiveProbeOpt
     const observations: ProbeObservationEntry[] = [base[0]!, credentialEntry(route, model, bounds, credential),
       entry(route, model, bounds, "live-request", "unobserved", attempts, elapsed()), base[3]!];
     await overwriteAttempt(root, { ...dispatched, lifecycle: "cancelled", observations, attempts, elapsedMs: elapsed(), nextAction: "inspect-sanitized-failure" });
-    return { record: await readProbeAttempt(root, id), self: { elapsedMs: elapsed(), attemptsUsed: attempts, maxAttempts } };
+    return { record: await readProbeAttempt(root, id), self: { elapsedMs: elapsed(), attemptsUsed: attempts, maxAttempts, ...(await selfResources(root)) } };
   }
   const observations: ProbeObservationEntry[] = [base[0]!, credentialEntry(route, model, bounds, credential),
     entry(route, model, bounds, "live-request", inference, attempts, elapsed()), base[3]!];
   const committed = await commitProbeOutcome(root, id, observations, attempts, elapsed());
   void committed;
-  return { record: await readProbeAttempt(root, id), self: { elapsedMs: elapsed(), attemptsUsed: attempts, maxAttempts } };
+  return { record: await readProbeAttempt(root, id), self: { elapsedMs: elapsed(), attemptsUsed: attempts, maxAttempts, ...(await selfResources(root)) } };
 }
 
 /** Projects only allowlisted readiness facts; aliases, timing and identifiers never carry secrets. */

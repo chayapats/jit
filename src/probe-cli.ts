@@ -1,5 +1,6 @@
 import { safeAlias } from "./evidence/contract";
 import { exportProbeSummary, cancelProbeAttempt, liveProbe, parseLiveOptions, parseProbeConfig, preflightProbe, readProbeAttempt, reconcileProbeAttempts, type ProbePorts } from "./evidence/probe";
+import { bridgeProbePorts } from "./evidence/bridge-probe";
 import { readLocalConfig } from "./evidence/records";
 
 /** Scriptable probe boundary; the default command ports fail closed with no network, accounts or secret reads. */
@@ -38,9 +39,10 @@ function probeRoutes(raw: unknown): { route: string; model: string | null; confi
 }
 
 /** Command boundary permits only preflight, explicit opt-in live, reconcile, cancel and sanitized export. */
-export async function runProbeCommand(args: string[], root: string, ports: ProbePorts = defaultProbePorts()): Promise<{ exitCode: number; output: unknown }> {
+export async function runProbeCommand(args: string[], root: string, ports?: ProbePorts): Promise<{ exitCode: number; output: unknown }> {
   const [command, ...rest] = args;
   try {
+    const effective = ports ?? defaultProbePorts();
     if (command === "reconcile") {
       if (rest.length !== 0) return usage();
       const updated = await reconcileProbeAttempts(root);
@@ -72,7 +74,7 @@ export async function runProbeCommand(args: string[], root: string, ports: Probe
         if (configured.length !== 1 || configured[0]!.model === null) {
           return { exitCode: 2, output: { error: "preflight-requires-one-configured-route", nextAction: "configure_exact_route" } };
         }
-        const { record, self } = await preflightProbe(installationLabel, configured[0]!.route, configured[0]!.model, ports, root);
+        const { record, self } = await preflightProbe(installationLabel, configured[0]!.route, configured[0]!.model, effective, root);
         return { exitCode: 0, output: { ...exportProbeSummary(record), stored: true, self } };
       }
       const route = flags.get("--route"), model = flags.get("--model"), attempts = flags.get("--attempts"), deadline = flags.get("--deadline");
@@ -80,7 +82,14 @@ export async function runProbeCommand(args: string[], root: string, ports: Probe
       const options = parseLiveOptions({ route, model, maxAttempts: Number(attempts), deadlineMs: Number(deadline) });
       if (!Number.isSafeInteger(options.maxAttempts) || !Number.isSafeInteger(options.deadlineMs) ||
           String(options.maxAttempts) !== attempts || String(options.deadlineMs) !== deadline) return usage();
-      const { record, self } = await liveProbe(installationLabel, options, ports, root, AbortSignal.timeout(options.deadlineMs));
+      // Explicit ports are test seams. Without them, live mode uses the
+      // concrete bridge on the exact selected Grok/Codex route; anything else
+      // fails closed before any account request.
+      const livePorts = ports ?? (options.route === "grok" || options.route === "codex"
+        ? bridgeProbePorts({ route: options.route, model: options.model, root })
+        : null);
+      if (!livePorts) return usage();
+      const { record, self } = await liveProbe(installationLabel, options, livePorts, root, AbortSignal.timeout(options.deadlineMs));
       return { exitCode: 0, output: { ...exportProbeSummary(record), stored: true, self } };
     }
     return usage();

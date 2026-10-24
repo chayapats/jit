@@ -1,17 +1,13 @@
-# Host probe skeleton, v1
+# Host probe, v1 (concrete)
 
-> SKELETON — `jit.host.probe/v1` is a behavior boundary, not a live check.
-> Schway ENG03/05/06/07/08/09 are OPEN, so no supported inference, renewal or
-> transport evidence exists here. Preflight reports `configured-unverified`
-> with zero port invocations; live mode is an explicit opt-in shape over
-> scripted ports in tests and fails closed on a real machine. This contract
-> cannot close FEAS02 (#17) and stays on that issue without a close.
-
-Owner: Jit #17 (FEAS02). Implementation: `src/evidence/probe.ts`,
-`src/probe-cli.ts`. Consumes `jit.host.evidence/v1` classifiers
-(see [host-evidence-v1](host-evidence-v1.md)) and the
-[jit.schway.bridge/v1](schway-bridge-v1.md) skeleton. It makes no Pi, account,
-login or reboot claim.
+Owner: Jit #17 (FEAS02). Implementation: `src/evidence/bridge-probe.ts`
+(builds `ProbePorts` over the concrete Schway bridge), `src/evidence/probe.ts`
+(persistence, fencing, restart reconciliation, sanitized export) and
+`src/probe-cli.ts` (operator command boundary). Consumes
+`jit.host.evidence/v1` classifiers (see [host-evidence-v1](host-evidence-v1.md))
+and the concrete `jit.schway.bridge/v1` (see [schway-bridge-v1](schway-bridge-v1.md)).
+It makes no Pi, account, login or reboot claim; live proof belongs to
+FEAS04/05 and the pilot to OPS05.
 
 Run from the installation root:
 
@@ -52,7 +48,9 @@ outer retry exists beyond the stated attempt budget.
 | `reconcileProbeAttempts(root)` | Restart recovery: `started` attempts become `interrupted`. Terminal records are never rewritten. |
 | `cancelProbeAttempt(root, id)` / `commitProbeOutcome(root, id, ...)` | Owner stop wins; commit is a compare-and-set that returns false once the lifecycle left `started`. |
 | `exportProbeSummary(value)` | Allowlisted projection; route/model become redacted markers, no secrets. |
-| `runProbeCommand(args, root, ports?)` in `src/probe-cli.ts` | Returns `{exitCode, output}`. CLI prints that safe JSON only. Honest blocked outcomes exit 0; usage/config/storage failures exit 2. |
+| `bridgeProbePorts(options)` in `src/evidence/bridge-probe.ts` | Builds live-boundary ports on the pinned `schway/host` release: local `checkAuthReadiness` for the credential boundary, one bounded route-bound request per `infer` with the fixed prompt, empty tools and strict context. Non-Grok/Codex routes and models outside the host grammar fail before any host contact. |
+| `probeHostDirs(root)` | Service-owned `.local/host-probe-host/` directories (mode 0700, symlink/permission-checked); never a developer checkout or home. |
+| `runProbeCommand(args, root, ports?)` in `src/probe-cli.ts` | Returns `{exitCode, output}`. CLI prints that safe JSON only. Explicit ports are the test seam; without them, `live` requires an exact `grok`/`codex` route and builds bridge ports, while anything else fails closed. Honest blocked outcomes exit 0; usage/config/storage failures exit 2. |
 
 ## Observation separation
 
@@ -75,18 +73,27 @@ Attempts persist as mode-0600 files under the ignored `.local/host-probe/`
 directory (`<uuid>.json`, bounded reads, no overwrite of terminal states,
 no symlink traversal). Export is a projection for review before sharing.
 
-## Schway gap table
+## Schway integration
 
-| Probe need | Schway contract | Status |
-| --- | --- | --- |
-| Supported inference transport + bounded retry | `schway.host.release/v1`, `schway.host.run-control/v1` | OPEN — chayapats/schway#403, #400 |
-| Credential renewal observation | `schway.host.auth-routes/v1` | OPEN — chayapats/schway#398 |
-| Native transport/session references | `schway.host.durable-sessions/v1`, `schway.host.base/v1` | OPEN — chayapats/schway#397, #395 |
+Live inference runs on the pinned supported host (`schway/host@1.0.0-rc.2`,
+revision `6fe3808`, `schway.host.release/v1`; see
+[schway-bridge-v1](schway-bridge-v1.md)). Each `infer` call opens one runtime
+with strict context, an exact empty tool registry, single-turn/single-attempt
+bounds and the live deadline, then submits one route-bound request and closes.
+The live loop bounds total attempts; no outer retry exists beyond the stated
+budget. Credential renewal observation stays explicitly unobserved: there is
+no renewal client, and a successful login never becomes renewal evidence.
 
 ## Evidence
 
 `tests/probe.test.ts`: preflight zero-invocation, live gating and bounds,
 classifier coverage for every outcome, budget honesty, persistence/restart
 and late-after-cancel fencing, observation separation, stop/cleanup plus
-self resources with secret sentinels absent. `bun test`,
-`bun run typecheck`. No network, accounts or Pi.
+self resources with secret sentinels absent. `tests/probe-bridge.test.ts`:
+concrete bridge over the pinned release — observed-ready only for a
+successful selected-route request with measured tokens, local credential
+boundary mapping (no secrets, no network), every classifier state with the
+route unchanged, single-attempt admission accounting, grammar/alias gating,
+symlinked-host rejection, self resource bounds, and CLI wiring that fails
+closed for unselected routes. `bun test`, `bun run typecheck`. No network,
+accounts or Pi.
