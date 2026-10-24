@@ -34,7 +34,7 @@ bun src/main.ts status
 | Public entry | Behavior |
 | --- | --- |
 | `preflightService(input)` in `src/ops/lifecycle.ts` | Gates activation on config, schema, engine, quarantine (deletion ledger present), scheduler, delivery worker, secret files and artifact pins. Read-only status stays available when blocked. |
-| `startFullApp(input)` | After preflight, boots the composed full application with exactly the Web worker registrations (no probe runner). A missing ledger refuses with a quarantine gate. |
+| `startFullApp(input)` | Async. After preflight, boots the composed full application with exactly the Web worker registrations (no probe runner) and awaits `queue.reconcile(teamPort)` (session plus pending-deletion reconciliation, [data-lifecycle-v1](data-lifecycle-v1.md)) before returning an active handle. A missing ledger refuses with a quarantine gate. |
 | `stopDrain(handle, {timeoutMs})` | Bounded cooperative cancellation. Timeout reports `unknown` for unsettled work and never marks remote delivery stopped or sent. |
 | `upgradeStaged(input)` | Validates the staged artifact, backs up state plus the artifact pair, applies, and runs the injected health check. Failure restores the backup pair; the ledger is never rewritten. Migration semantics belong to the open OPS06 (#32) path. |
 | `serviceStatus(input)` / `gatherServiceStatus(config, service)` in `src/ops/status.ts` | `running`/`blocked`/`observed-ready` without reading secrets. `observed-ready` requires explicit live evidence; only OPS05 may set it. |
