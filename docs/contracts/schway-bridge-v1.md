@@ -155,9 +155,14 @@ and fixture-free protocol transport.
   diagnostic; backup integration stays a later slice.
 - `status()` reports the pinned release for inspection surfaces; it never
   probes credentials or infers readiness. Serve wiring (`JIT_RUN_PORT`,
-  default `scripted`) selects the concrete port for specialist/coordinator
-  runs only; role preview, schedule/PR summaries and memory extraction stay
-  scripted under their fixture authorizations. Queue construction asserts the
+  default `scripted`) selects the concrete port for specialist, coordinator
+  and private PR review (`pr.review`) runs; role preview, schedule summaries
+  and memory extraction stay scripted under their fixture authorizations.
+  PR review runs on the owner-configured project-default, then owner-default
+  route captured with configuration revisions at admission; the concrete port
+  blocks admission without one and never falls back to the scripted fixture
+  route (`pr.private_report/v1`). `serve` and `startFullApp` share one
+  composition (`composeJobQueue`). Queue construction asserts the
   synchronous startup gate (service-owned `.jit-host` dirs plus pinned
   release) before any admission owner exists; `serve` additionally runs the
   full asynchronous gate before starting. Model identifiers outside the pinned
