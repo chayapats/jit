@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { accessSync, chmodSync, constants as fsConstants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, readdirSync, constants as fsConstants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Application } from "../src/application";
@@ -105,6 +105,8 @@ interface FakeSupervisor {
   upgrade?: (argv: string[], options: CommandOptions) => Promise<CommandResult>;
   identity: string | null;
   group: string | null;
+  /** Simulates a path the service identity cannot read inside a staged release. */
+  unreadable?: string;
 }
 
 /**
@@ -141,6 +143,17 @@ function fakeSupervisor(unitDir: string, options: { spawnService?: boolean } = {
         // The test process plays the service identity: the kernel decides access exactly as for that user.
         const mode = { "-r": fsConstants.R_OK, "-w": fsConstants.W_OK, "-x": fsConstants.X_OK }[argv[5]!];
         try { accessSync(argv[6]!, mode); return done(0); } catch { return done(1); }
+      }
+      if (argv[0] === "runuser" && argv[4] === "find") {
+        if (fake.unreadable) return done(0, `${fake.unreadable}\n`);
+        const walk = (path: string): string | null => {
+          const stats = lstatSync(path);
+          try { accessSync(path, fsConstants.R_OK | (stats.isDirectory() ? fsConstants.X_OK : 0)); } catch { return path; }
+          if (stats.isDirectory() && !stats.isSymbolicLink()) for (const name of readdirSync(path)) { const bad = walk(join(path, name)); if (bad) return bad; }
+          return null;
+        };
+        const bad = walk(argv[5]!);
+        return done(0, bad ? `${bad}\n` : "");
       }
       if (argv[1] === "--version") return done(0, `${Bun.version}\n`);
       if (argv.includes("upgrade") && fake.upgrade) return fake.upgrade(argv, opts);
@@ -790,4 +803,100 @@ test("read-only stores read committed WAL data with both sidecars and fail close
   // Clean close removes both sidecars; the immutable read then sees everything that was checkpointed.
   expect(openReadOnlyStore(db)!.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM probe")!.n)).toBe(1);
   expect(openReadOnlyStore(join(l.dirs.state, "absent.sqlite"))).toBeNull();
+});
+
+// ---------------------------------------------------------------------------
+// Review round 3 regressions
+// ---------------------------------------------------------------------------
+
+test("the ledger and backups may not collide with the database, its sidecars or any managed path", async () => {
+  const l = layout();
+  const db = join(l.dirs.state, "app.sqlite");
+  for (const ledgerPath of [db, `${db}-wal`, `${db}-shm`, `${db}-journal`, `${db}.backups/ledger.json`, `${db}.upgrades/ledger.json`,
+    `${db}.restores/ledger.json`, `${db}.restore-pending`, `${db}.upgrade-fence`, join(l.dirs.state, ".jit-host", "ledger.json"),
+    join(l.dirs.state, "pr-cache", "ledger.json"), l.dirs.state, l.dirs.backup, join(l.dirs.backup, "ledger.json"), l.dirs.work]) {
+    expect(() => parseServiceConfig({ ...l.service, ledgerPath })).toThrow("invalid_service_config");
+  }
+  for (const backupDirectory of [db, `${db}.backups`, `${db}-wal`, l.dirs.state, l.root, join(l.dirs.state, ".jit-host"), join(l.dirs.state, "pr-cache")]) {
+    expect(() => parseServiceConfig({ ...l.service, backupDirectory })).toThrow("invalid_service_config");
+  }
+  // The OPS02 default checkpoint location stays allowed.
+  expect(parseServiceConfig({ ...l.service, ledgerPath: `${db}.lifecycle-ledger.json` }).ledgerPath).toBe(`${db}.lifecycle-ledger.json`);
+  // Fresh install and start refuse the colliding configuration before writing anything.
+  const art = await artifact(l.root, "artifact");
+  writeFileSync(l.source, JSON.stringify({ ...l.service, ledgerPath: db }), { mode: 0o600 });
+  const fake = fakeSupervisor(l.dirs.unit);
+  expect(await cli(["install", "--config", l.source, "--artifact", art], fake, l)).toMatchObject({ exitCode: 2, output: { error: "invalid_service_config" } });
+  expect(existsSync(db)).toBe(false);
+  await expect(startFullApp({ config: readConfig({ JIT_DATABASE: db }), service: { ...l.service, ledgerPath: `${db}-wal` } })).rejects.toThrow("invalid_service_config");
+  expect(existsSync(db)).toBe(false);
+});
+
+test("release and dependency modes are canonical and sealed; a nested 0600 member never yields a release that cannot boot", async () => {
+  const l = layout();
+  // A source checkout with a restrictive nested member is canonicalized by the build.
+  const src = join(l.root, "checkout");
+  for (const entry of ["package.json", "bun.lock", "src", "ops/package", "vendor"]) cpSync(join(repoRoot, entry), join(src, entry), { recursive: true });
+  chmodSync(join(src, "src", "config.ts"), 0o600);
+  chmodSync(join(src, "src", "ops"), 0o700);
+  const out = join(l.root, "canonical");
+  buildPackage({ srcDir: src, outDir: out, engineContract: "jit.schway.bridge/v1", engineRevision: null });
+  expect(lstatSync(join(out, "src", "config.ts")).mode & 0o777).toBe(0o644);
+  expect(lstatSync(join(out, "src", "ops")).mode & 0o777).toBe(0o755);
+  expect(validateArtifact(out).ok).toBe(true);
+  // A release member made 0600 after the build breaks the seal.
+  chmodSync(join(out, "src", "config.ts"), 0o600);
+  expect(validateArtifact(out).checks).toEqual(expect.arrayContaining([{ check: "content-pin", ok: false }, { check: "release-modes", ok: false }]));
+  chmodSync(join(out, "src", "config.ts"), 0o644);
+  expect(validateArtifact(out).ok).toBe(true);
+  // Dependencies: canonicalized at install; a nested 0600 dependency file fails runtime validation.
+  const art = await artifact(l.root, "artifact");
+  expect(lstatSync(join(art, "node_modules", "fixture-dep", "index.js")).mode & 0o777).toBe(0o644);
+  chmodSync(join(art, "node_modules", "fixture-dep", "index.js"), 0o600);
+  expect(validateArtifact(art, { runtime: true }).checks).toContainEqual({ check: "dependencies", ok: false });
+  chmodSync(join(art, "node_modules", "fixture-dep", "index.js"), 0o644);
+  // Install and upgrade prove the whole staged release readable as the service identity before switching.
+  const fake = fakeSupervisor(l.dirs.unit, { spawnService: false });
+  fake.unreadable = join(l.dirs.opt, "releases", "x", "src", "config.ts");
+  const refused = await cli(["install", "--config", l.source, "--artifact", art], fake, l);
+  expect(refused).toMatchObject({ exitCode: 1, output: { ok: false, nextAction: "grant-service-identity-access" } });
+  expect(existsSync(l.service.executablePath)).toBe(false);
+  expect(existsSync(l.service.ledgerPath)).toBe(false);
+  delete fake.unreadable;
+  expect((await cli(["install", "--config", l.source, "--artifact", art], fake, l)).exitCode).toBe(0);
+});
+
+test("the bot token reader rejects FIFOs, symlinks and oversized files without blocking or reading them", async () => {
+  const { inspectBotTokenFile, readBotToken, botCredentialConfigured } = await import("../src/telegram/secrets");
+  const { channelReadiness } = await import("../src/ops/service-channels");
+  const l = layout();
+  const transports = fixtureTransports(new ScriptedTelegramSender(), []);
+  const blockedAction = (path: string) => {
+    const readiness = channelReadiness({ enabled: true, botTokenPath: path, transports });
+    return readiness.state === "blocked" ? readiness.nextAction : readiness.state;
+  };
+  expect(readBotToken(l.credential)).toContain("FIXTURE_TOKEN_VALUE");
+  expect(blockedAction(l.credential)).toBe("ready");
+  const link = join(l.root, "token-link");
+  symlinkSync(l.credential, link);
+  expect(inspectBotTokenFile(link)).toEqual({ state: "blocked", code: "telegram_token_not_regular" });
+  expect(() => readBotToken(link)).toThrow("telegram_token_not_regular");
+  expect(blockedAction(link)).toBe("replace-telegram-token-with-regular-file");
+  const huge = join(l.root, "huge.token");
+  writeFileSync(huge, "x".repeat(1024 * 1024), { mode: 0o600 });
+  expect(inspectBotTokenFile(huge)).toEqual({ state: "blocked", code: "telegram_token_invalid" });
+  expect(() => readBotToken(huge)).toThrow("telegram_token_invalid");
+  expect(botCredentialConfigured(huge)).toBe(false);
+  const fifo = join(l.root, "token.fifo");
+  const made = Bun.spawnSync(["mkfifo", "-m", "600", fifo]);
+  if (made.exitCode !== 0) { console.warn("skip FIFO case: mkfifo unavailable"); return; }
+  const started = Date.now();
+  expect(inspectBotTokenFile(fifo)).toEqual({ state: "blocked", code: "telegram_token_not_regular" });
+  expect(() => readBotToken(fifo)).toThrow("telegram_token_not_regular");
+  expect(blockedAction(fifo)).toBe("replace-telegram-token-with-regular-file");
+  expect(botCredentialConfigured(fifo)).toBe(false);
+  // Status (metadata only) on an enabled channel with a FIFO reference returns promptly and blocked.
+  const service: ServiceConfig = { ...l.service, secretRefs: [{ name: "telegram-bot-token", store: "credential-file", key: fifo }], channels: { telegram: "enabled" } };
+  expect(gatherServiceStatus(readConfig({ JIT_DATABASE: serviceDatabasePath(service) }), service)).toMatchObject({ channels: "blocked", telegram: "unconfigured" });
+  expect(Date.now() - started).toBeLessThan(2000);
 });

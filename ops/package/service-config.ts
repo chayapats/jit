@@ -87,6 +87,22 @@ function absolutePath(value: unknown): string {
   return value as string;
 }
 
+/**
+ * True when `path` collides with state the application derives from the
+ * installation database `<state>/app.sqlite`: the database, its `-wal`,
+ * `-shm` and `-journal` sidecars, every `<db>.<suffix>` control path
+ * (`.backups`, `.upgrades`, `.restores`, `.restore-pending`,
+ * `.upgrade-fence`, swaps and pre-migration snapshots) and the managed
+ * `.jit-host` and `pr-cache` trees. The ledger alone may use the OPS02
+ * default `<db>.lifecycle-ledger.json`.
+ */
+export function managedCollision(path: string, stateDirectory: string, role: "ledger" | "backup"): boolean {
+  const db = join(stateDirectory, "app.sqlite");
+  if (role === "ledger" && path === `${db}.lifecycle-ledger.json`) return false;
+  if (path === db || path.startsWith(`${db}-`) || path.startsWith(`${db}.`) || inside(db, path)) return true;
+  return inside(path, join(stateDirectory, ".jit-host")) || inside(path, join(stateDirectory, "pr-cache"));
+}
+
 function underHome(path: string): boolean {
   return homeRoots.some(root => path === root || path.startsWith(root + "/"));
 }
@@ -140,6 +156,12 @@ export function parseServiceConfig(raw: unknown): ServiceConfig {
     if (inside(dir, executablePath) || inside(dir, workingDirectory) || inside(dir, releases) || inside(executablePath, dir)) fail();
   }
   if (inside(ledgerPath, executablePath) || inside(ledgerPath, releases)) fail();
+  // Managed-path collisions: the ledger and backups may not occupy the database, its SQLite sidecars,
+  // any database-derived control path (backups, upgrades, restores, fences, swaps), the engine host
+  // tree, the PR cache or each other.
+  if (managedCollision(ledgerPath, stateDirectory, "ledger") || inside(ledgerPath, backupDirectory) ||
+      [stateDirectory, workingDirectory, backupDirectory].includes(ledgerPath)) fail();
+  if (managedCollision(backupDirectory, stateDirectory, "backup") || backupDirectory === stateDirectory || inside(stateDirectory, backupDirectory)) fail();
   for (const path of [stateDirectory, backupDirectory, ledgerPath, workingDirectory]) if (underHome(path)) fail();
   if (!Array.isArray(c.routes) || c.routes.length > 8) fail();
   const seen = new Set<string>();

@@ -313,6 +313,7 @@ function stageRelease(service: ServiceConfig, artifactDir: string, manifest: Bui
   const releases = serviceReleasesDirectory(service);
   const target = join(releases, manifest.artifactId);
   mkdirSync(releases, { recursive: true, mode: 0o755 });
+  chmodSync(releases, 0o755);
   if (!existsSync(target)) {
     const temp = join(releases, `.${manifest.artifactId}.staging-${crypto.randomUUID()}`);
     cpSync(resolve(artifactDir), temp, { recursive: true });
@@ -321,6 +322,21 @@ function stageRelease(service: ServiceConfig, artifactDir: string, manifest: Bui
   const copied = validateArtifact(target, { runtime: true });
   if (!copied.ok || copied.manifest?.artifactId !== manifest.artifactId) throw new Error("release_copy_invalid");
   return target;
+}
+
+/**
+ * Proves, as the service identity, that every entry of a staged release is
+ * readable and every directory traversable: one fixed-argv GNU `find` run
+ * through the runner (`runuser -u <user> -- find <release> ( ! -readable -o
+ * -type d ! -executable ) -print -quit`). Any output or failure means the
+ * non-root unit could not boot this release.
+ */
+export async function releaseReadableByService(run: CommandRunner, user: string, release: string): Promise<boolean> {
+  const parent = await run(["runuser", "-u", user, "--", "test", "-x", dirname(release)], { timeoutMs: 10_000 });
+  if (parent.exitCode !== 0) return false;
+  const result = await run(["runuser", "-u", user, "--", "find", release, "(", "!", "-readable", "-o", "-type", "d", "!", "-executable", ")", "-print", "-quit"],
+    { timeoutMs: 120_000 });
+  return result.exitCode === 0 && !result.timedOut && result.stdout.trim() === "";
 }
 
 export interface InstallResult { ok: boolean; plan: InstallPlan; release: string | null; supervisor: { reloaded: boolean; enabled: boolean } | null }
@@ -380,6 +396,10 @@ export async function installService(input: { service: unknown; artifactDir: str
     }
   }
   void uid;
+  if (!await releaseReadableByService(host.run, service.serviceUser, release)) {
+    if (seeded) rmSync(service.ledgerPath, { force: true });
+    return fail("grant-service-identity-access", "service identity cannot read or traverse the whole staged release", release);
+  }
   switchRelease(service.executablePath, release);
   const supervisor = new SystemdSupervisor(host.run);
   const reloaded = await supervisor.daemonReload();
@@ -510,6 +530,9 @@ export async function upgradePackage(input: PackageUpgradeInput): Promise<Packag
   let release: string;
   try { release = stageRelease(service, input.artifactDir, manifest); }
   catch { return result("blocked", "release copy failed validation", "rebuild-artifact", { artifactId: manifest.artifactId }); }
+  if (!await releaseReadableByService(host.run, service.serviceUser, release)) {
+    return result("blocked", "service identity cannot read or traverse the whole staged release", "grant-service-identity-access", { artifactId: manifest.artifactId });
+  }
   // Stop: systemd delivers SIGTERM; serve drains within its budget and the unit's TimeoutStopSec bounds the wait.
   await supervisor.stop();
   const stopped = await supervisor.state();

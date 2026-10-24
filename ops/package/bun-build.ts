@@ -1,4 +1,4 @@
-import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { join, relative, resolve } from "node:path";
 import { safeVersion } from "../../src/evidence/contract";
@@ -93,11 +93,16 @@ export function dependencyTreeHash(dir: string): { hash: string; files: number }
     for (const name of readdirSync(current).sort()) {
       const path = join(current, name), rel = relative(root, path);
       const stats = lstatSync(path);
+      const mode = stats.mode & 0o7777;
       if (stats.isSymbolicLink()) throw new Error("invalid_dependency_symlink");
-      if (stats.isDirectory()) { hash.update(`d\0${rel}\n`); walk(path); }
-      else if (stats.isFile()) {
+      // Modes are part of the seal: a dependency the non-root unit cannot read or traverse never validates.
+      if (stats.isDirectory()) {
+        if (mode !== 0o755) throw new Error("invalid_dependency_mode");
+        hash.update(`d\0${rel}\0${mode.toString(8)}\n`); walk(path);
+      } else if (stats.isFile()) {
+        if (mode !== 0o644 && mode !== 0o755) throw new Error("invalid_dependency_mode");
         if (++files > dependencyFileLimit) throw new Error("invalid_dependency_tree");
-        hash.update(`f\0${rel}\0${sha256File(path)}\n`);
+        hash.update(`f\0${rel}\0${mode.toString(8)}\0${sha256File(path)}\n`);
       } else throw new Error("invalid_dependency_tree");
     }
   };
@@ -106,15 +111,40 @@ export function dependencyTreeHash(dir: string): { hash: string; files: number }
   return { hash: hash.digest("hex"), files };
 }
 
-function listFiles(root: string, dir = root, out: string[] = []): string[] {
+/**
+ * Canonical release modes: directories 0755, files 0644 (0755 when an
+ * execute bit is present and `keepExec`), no setuid/setgid/sticky bits.
+ * Applied after copy/install so a restrictive source umask or a nested
+ * 0600 member can never produce a release the non-root unit cannot read.
+ */
+export function canonicalizeModes(root: string, options: { keepExec?: boolean; skip?: (rel: string) => boolean } = {}): void {
+  const walk = (current: string) => {
+    for (const name of readdirSync(current)) {
+      const path = join(current, name), rel = relative(root, path);
+      if (options.skip?.(rel)) continue;
+      const stats = lstatSync(path);
+      if (stats.isSymbolicLink()) continue; // Rejected by the seal, never followed here.
+      if (stats.isDirectory()) { chmodSync(path, 0o755); walk(path); }
+      else if (stats.isFile()) chmodSync(path, options.keepExec && (stats.mode & 0o111) ? 0o755 : 0o644);
+    }
+  };
+  chmodSync(root, 0o755);
+  walk(root);
+}
+
+interface TreeEntry { rel: string; type: "d" | "f"; mode: number }
+
+function listFiles(root: string, dir = root, out: TreeEntry[] = []): TreeEntry[] {
   for (const name of readdirSync(dir).sort()) {
     const path = join(dir, name), rel = relative(root, path);
     if (excluded(rel) || rel === "manifest.json" || rel === "dependencies.json") continue;
     const stats = lstatSync(path);
-    // Symlinks would let a release point outside itself; a packaged artifact holds regular files only.
+    // Symlinks would let a release point outside itself; a packaged artifact holds regular files and directories only.
     if (stats.isSymbolicLink()) throw new Error("invalid_artifact_symlink");
-    if (stats.isDirectory()) listFiles(root, path, out);
-    else if (stats.isFile()) out.push(rel);
+    const mode = stats.mode & 0o7777;
+    if (stats.isDirectory()) { out.push({ rel, type: "d", mode }); listFiles(root, path, out); }
+    else if (stats.isFile()) out.push({ rel, type: "f", mode });
+    else throw new Error("invalid_artifact_special_file");
   }
   return out;
 }
@@ -144,7 +174,11 @@ export function artifactContentHash(dir: string, metadata: Omit<BuildManifest, "
   const root = resolve(dir);
   const hash = createHash("sha256");
   hash.update(`manifest\0${canonical(manifestMetadata(metadata))}\n`);
-  for (const rel of listFiles(root)) hash.update(`${rel}\0${sha256File(join(root, rel))}\n`);
+  hash.update(`root\0${(lstatSync(root).mode & 0o7777).toString(8)}\n`);
+  for (const entry of listFiles(root)) {
+    hash.update(entry.type === "d" ? `d\0${entry.rel}\0${entry.mode.toString(8)}\n`
+      : `f\0${entry.rel}\0${entry.mode.toString(8)}\0${sha256File(join(root, entry.rel))}\n`);
+  }
   return hash.digest("hex");
 }
 
@@ -179,6 +213,8 @@ export function buildPackage(options: BuildOptions): BuildManifest {
     for (const entry of packagedEntries) {
       cpSync(join(srcDir, entry), join(outDir, entry), { recursive: true, filter: path => !excluded(relative(srcDir, path)) });
     }
+    // Canonical modes are bound into the content pin: dirs 0755, files 0644.
+    canonicalizeModes(outDir);
     const metadata: Omit<BuildManifest, "contentHash"> = { artifact: "jit.service.artifact/v1", artifactId: randomUUID(),
       appVersion: manifest.version as string, bunVersion: Bun.version, lockHash: sha256File(join(srcDir, "bun.lock")),
       schemaVersion, engineContract: options.engineContract, engineRevision, arch: process.arch,
@@ -186,6 +222,7 @@ export function buildPackage(options: BuildOptions): BuildManifest {
       builtAt: new Date().toISOString() };
     const built: BuildManifest = { ...metadata, contentHash: artifactContentHash(outDir, metadata) };
     writeFileSync(join(outDir, "manifest.json"), JSON.stringify(built, null, 2) + "\n", { mode: 0o644 });
+    chmodSync(join(outDir, "manifest.json"), 0o644);
     return built;
   } catch (error) {
     throw error instanceof Error && /^(invalid_|unsafe_)/.test(error.message) ? error : new Error("invalid_build_output");
@@ -257,6 +294,11 @@ export function validateArtifact(outDir: string, options: { runtime?: boolean } 
   catch { checks.push({ check: "lock-pin", ok: false }); }
   try { checks.push({ check: "content-pin", ok: artifactContentHash(dir, manifestMetadata(manifest)) === manifest.contentHash }); }
   catch { checks.push({ check: "content-pin", ok: false }); }
+  // Release modes: every packaged directory 0755 and file 0644, so the dedicated non-root unit can read all of it.
+  try {
+    const root = lstatSync(dir).mode & 0o7777;
+    checks.push({ check: "release-modes", ok: root === 0o755 && listFiles(dir).every(e => e.mode === (e.type === "d" ? 0o755 : 0o644)) });
+  } catch { checks.push({ check: "release-modes", ok: false }); }
   // The claimed app version must be the packaged package.json version.
   try { checks.push({ check: "app-version", ok: (JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as { version?: unknown }).version === manifest.appVersion }); }
   catch { checks.push({ check: "app-version", ok: false }); }
@@ -299,11 +341,13 @@ export async function installArtifactDependencies(dir: string, input: { bunPath:
   if (version.exitCode !== 0 || safeVersion(bunVersion) !== bunVersion || bunVersion !== valid.manifest.bunVersion) throw new Error("runtime_mismatch");
   // Bin links are the only symlinks a hoisted install creates; the service never executes them.
   rmSync(join(root, "node_modules", ".bin"), { recursive: true, force: true });
+  canonicalizeModes(join(root, "node_modules"), { keepExec: true });
   const tree = dependencyTreeHash(root);
   const record: DependencyRecord = { schema: "jit.service.dependencies/v1", artifactId: valid.manifest.artifactId, lockHash: valid.manifest.lockHash,
     contentHash: valid.manifest.contentHash, platform: process.platform, arch: process.arch, bunVersion,
     dependencyHash: tree.hash, dependencyFiles: tree.files, installedAt: new Date().toISOString() };
   writeFileSync(join(root, "dependencies.json"), JSON.stringify(record, null, 2) + "\n", { mode: 0o644 });
+  chmodSync(join(root, "dependencies.json"), 0o644);
   return record;
 }
 

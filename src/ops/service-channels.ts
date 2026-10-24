@@ -4,7 +4,7 @@ import { AppError } from "../errors";
 import type { TransactionStore } from "../store";
 import { TelegramChannel } from "../telegram/channel";
 import { TelegramControlOutbox } from "../telegram/control-outbox";
-import { readBotToken } from "../telegram/secrets";
+import { inspectBotTokenFile, readBotToken } from "../telegram/secrets";
 import type { TelegramUpdateTransport } from "../telegram/types";
 import { upgradeFenced } from "./upgrade-fence";
 
@@ -31,16 +31,19 @@ export type ChannelReadiness =
 
 /**
  * Checks whether the opt-in Telegram channel can start: it must be enabled,
- * its bot-token credential file readable with owner-only mode, and a
- * supported transport registered. Never reads the token into a result.
+ * its bot-token credential a regular, non-symlink, owner-only file of
+ * bounded size (metadata only; never opened here), and a supported
+ * transport registered. `ServiceChannels.start` performs the bounded read.
  */
 export function channelReadiness(input: { enabled: boolean; botTokenPath: string; transports: ChannelTransportFactory | undefined }): ChannelReadiness {
   if (!input.enabled) return { state: "disabled", detail: "telegram channel not enabled; no delivery worker or poller starts" };
-  try {
-    if (readBotToken(input.botTokenPath) === null) return { state: "blocked", nextAction: "configure-telegram-bot-token-reference", detail: "telegram bot token reference missing" };
-  } catch (error) {
-    const code = error instanceof AppError ? error.code : "telegram_token_unreadable";
-    return { state: "blocked", nextAction: code === "telegram_token_permissions" ? "restrict-telegram-token-file" : "verify-telegram-token-file", detail: `telegram secret blocked: ${code}` };
+  // Metadata only (lstat): preflight and status never open the secret, so a FIFO or huge file cannot block them.
+  const file = inspectBotTokenFile(input.botTokenPath);
+  if (file.state === "missing") return { state: "blocked", nextAction: "configure-telegram-bot-token-reference", detail: "telegram bot token reference missing" };
+  if (file.state === "blocked") {
+    const nextAction = file.code === "telegram_token_permissions" ? "restrict-telegram-token-file"
+      : file.code === "telegram_token_not_regular" ? "replace-telegram-token-with-regular-file" : "verify-telegram-token-file";
+    return { state: "blocked", nextAction, detail: `telegram secret blocked: ${file.code}` };
   }
   if (!input.transports) return { state: "blocked", nextAction: "install-supported-telegram-transport", detail: "telegram transport unavailable in this build" };
   return { state: "ready", detail: "telegram token reference readable; transport registered" };
