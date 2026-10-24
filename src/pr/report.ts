@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { AppError } from "../errors";
+import { containsCredential } from "../security/credentials";
 import { requireId } from "../sources";
 import type { AppTransaction } from "../store";
 import { retirePrAlerts } from "./alert-links";
@@ -25,7 +26,6 @@ const digest = (value: string) => createHash("sha256").update(value).digest("hex
 const requestIdOk = (value: string) => /^[a-zA-Z0-9_-]{8,128}$/.test(value);
 const findingIdOk = (value: string) => /^[a-z0-9][a-z0-9_-]{0,63}$/.test(value);
 const SHA = /^[a-f0-9]{40}$/;
-const secretLike = /bearer\s|authorization\s*:|x-telegram|bot[_ -]?token|[0-9]{5,}:[A-Za-z0-9_-]{8,}/i;
 
 const exact = (value: unknown, keys: string[]): value is Record<string, unknown> =>
   !!value && typeof value === "object" && !Array.isArray(value)
@@ -72,9 +72,9 @@ export function validateFinding(input: unknown, snapshot: ImmutableSnapshot): Pr
 
   if (evidenceType === "none") errors.push("evidence_none_not_actionable");
   if (!condition || !impact || !reasoning) errors.push("unsupported_assertion");
-  if (typeof raw.title === "string" && secretLike.test(raw.title as string)) errors.push("payload_hygiene_secret");
-  for (const field of [condition, impact, reasoning]) {
-    if (field && secretLike.test(field)) errors.push("payload_hygiene_secret");
+  if (typeof raw.title === "string" && containsCredential(raw.title as string)) errors.push("payload_hygiene_secret");
+  for (const field of [condition, impact, reasoning, evidenceRef ?? "", path]) {
+    if (field && containsCredential(field)) errors.push("payload_hygiene_secret");
   }
 
   if (path) {
@@ -115,6 +115,31 @@ export function validateFinding(input: unknown, snapshot: ImmutableSnapshot): Pr
   };
 }
 
+/**
+ * Makes finding IDs unique before a report is persisted. The first occurrence keeps its ID; each
+ * later repeat is renamed `<id>-dup<n>`, demoted to `suspected` and tagged `duplicate_finding_id`,
+ * so it stays visible in the private report but can never notify or shadow the original.
+ */
+export function canonicalizeFindingIds(findings: readonly PrFinding[]): PrFinding[] {
+  const seen = new Set<string>();
+  const out: PrFinding[] = [];
+  for (const finding of findings) {
+    if (!seen.has(finding.id)) {
+      seen.add(finding.id);
+      out.push(finding);
+      continue;
+    }
+    let n = 2, id = "";
+    do { id = `${finding.id.slice(0, 56)}-dup${n++}`; } while (seen.has(id));
+    seen.add(id);
+    out.push({
+      ...finding, id, status: "suspected",
+      validationErrors: [...new Set(["duplicate_finding_id", ...finding.validationErrors])],
+    });
+  }
+  return out;
+}
+
 export interface NormalizedReview {
   findings: PrFinding[];
   analyzedRoles: string[];
@@ -139,10 +164,10 @@ export function normalizeReviewOutput(output: string, snapshot: ImmutableSnapsho
   }
   const raw = parsed as Record<string, unknown>;
   const list = Array.isArray(raw.findings) ? raw.findings.slice(0, 32) : [];
-  const findings = list.map(item => {
+  const findings = canonicalizeFindingIds(list.map(item => {
     try { return validateFinding(item, snapshot); }
     catch { return validateFinding({}, snapshot); }
-  });
+  }));
   const analyzedRaw = Array.isArray(raw.analyzedRoles) ? raw.analyzedRoles.filter((r): r is string => typeof r === "string" && r.length <= 64) : [];
   const analyzedRoles = [...new Set(analyzedRaw)].slice(0, 8);
   const skippedRaw = Array.isArray(raw.skippedScope) ? raw.skippedScope.filter((s): s is string => typeof s === "string" && s.length <= 256) : [];
@@ -292,7 +317,7 @@ export function persistReport(tx: AppTransaction, input: PersistReportInput): Pr
     status,
     stale: false,
     staleReason: null,
-    findings: input.normalized.findings,
+    findings: canonicalizeFindingIds(input.normalized.findings),
     analyzedRoles: [...input.normalized.analyzedRoles],
     requiredRoles: [...input.requiredRoles],
     skippedScope: [...input.normalized.skippedScope],
@@ -353,7 +378,7 @@ export function annotateReport(tx: AppTransaction, command: DismissReportCommand
   if (!row) throw new AppError("pr_report_not_found", 404);
   const report = storedOf(row) as PrivateReport;
   if (report.revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
-  if (secretLike.test(command.payload.reason)) throw new AppError("invalid_pr_report_command");
+  if (containsCredential(command.payload.reason)) throw new AppError("invalid_pr_report_command");
   const findingId = command.payload.findingId ?? null;
   if (findingId !== null && !report.findings.some(f => f.id === findingId)) throw new AppError("pr_finding_not_found", 404);
   const decision = tx.get<{ id: string }>("SELECT id FROM pr_alert_decisions WHERE report_id = ? ORDER BY sequence DESC LIMIT 1", report.id);

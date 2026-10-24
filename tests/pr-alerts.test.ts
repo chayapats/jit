@@ -17,6 +17,8 @@ import {
   pollMonitorCatchUp,
   prReviewWork,
   prSnapshotWork,
+  normalizeReviewOutput,
+  persistReport,
   readCandidates,
   readReport,
   admitReportAlerts,
@@ -35,6 +37,8 @@ import { ScriptedRunPort, fixtureOutcome } from "../src/team/scripted-port";
 import { ScriptedTelegramSender, DeliveryWorker, commitDeliveryIntent, readDeliveryIntent } from "../src/delivery";
 import { TelegramChannel } from "../src/telegram";
 import { createWebHandler } from "../src/web";
+import { containsCredential, redactCredentials } from "../src/security/credentials";
+import { neutralizeDestinations } from "../src/security/destinations";
 
 const password = "fixture-pr-alerts-owner-password";
 const epoch = 1_800_000_000_000;
@@ -299,7 +303,8 @@ test("payload hygiene: no secrets or PR destinations", async () => {
       policyVersion: r.policyVersion, reportId: r.id, finding: r.findings.find(q => q.id === "finding-1")!,
       coverageOverall: r.coverageOverall, enumerationComplete: r.enumerationComplete,
     });
-    expect(payload).toContain("a.ts");
+    // PR-supplied file names are defanged so a client cannot autolink them as hosts.
+    expect(payload).toContain("ที่: a[.]ts:10");
     expect(payload).not.toMatch(/bot[_ -]?token|[0-9]{5,}:[A-Za-z0-9_-]{8,}/i);
     expect(payload).not.toContain("t.me");
     return payload;
@@ -836,4 +841,212 @@ test("web separates not-reviewed, running, no-findings and delivery queued/sent/
     expect(html).toContain('data-delivery="sent"');
     expect(html).toContain('data-state="findings"');
   }
+});
+
+const scripted = (json: string) => () => ({
+  ...fixtureOutcome("complete", json),
+  usage: { calls: 1, rounds: 1, hops: 1, contextTokens: 10, outputTokens: 100, retries: 0, wallMs: 10, tokensUnknown: false }, session: null,
+});
+const oneFinding = (overrides: Record<string, unknown>) => JSON.stringify({
+  findings: [{
+    id: "finding-1", title: "null deref", category: "correctness", severity: "high", location: { path: "a.ts", line: 10 },
+    condition: "when input empty", impact: "crash", reasoning: "unchecked access", evidenceType: "diff", evidenceRef: "a.ts", ...overrides,
+  }],
+  analyzedRoles: ["correctness", "security"], skippedScope: [], disagreements: [],
+});
+
+test("shared credential detector: provider tokens never reach findings, outbox, delivery reports or payloads", async () => {
+  const fixtures = [
+    "sk-proj-AbCdEfGhIjKlMnOpQrStUvWx0123456789", "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUv", "xai-AbCdEfGhIjKlMnOpQrStUvWx",
+    "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789", "github_pat_11ABCDEFG0123456789_abcdefghijklmnop", "glpat-AbCdEfGhIjKlMnOpQrSt",
+    "xoxb-1234567890-abcdefghij", "sk_live_AbCdEfGhIjKlMnOpQrSt", "AIzaSyAbCdEfGhIjKlMnOpQrStUvWxYz0123456",
+    "ya29.AbCdEfGhIjKlMnOpQrStUvWx", "AKIAABCDEFGHIJKLMNOP", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk",
+    "-----BEGIN RSA PRIVATE KEY-----\nMIIEow\n-----END RSA PRIVATE KEY-----", "Authorization: Bearer abc.def", "https://user:hunter2@example.com/x",
+    "api_key = 'AbCdEfGh12345678'", "123456789:AA-SECRET-VALUE-xyz",
+  ];
+  for (const value of fixtures) {
+    expect(containsCredential(`context ${value} tail`)).toBe(true);
+    expect(redactCredentials(`context ${value} tail`)).not.toContain(value.slice(0, 24));
+  }
+  expect(containsCredential("returns the token count for the session")).toBe(false);
+  const token = "sk-proj-AbCdEfGhIjKlMnOpQrStUvWx0123456789";
+  const f = await fixture(scripted(oneFinding({ condition: `config sets ${token} in a.ts` })));
+  bindTelegram(f);
+  const { report } = await prepareReport(f);
+  expect(report.findings[0]).toMatchObject({ status: "suspected" });
+  expect(report.findings[0]!.validationErrors).toContain("payload_hygiene_secret");
+  expect(intentsOf(f)).toHaveLength(0);
+  const outbound = f.store.read(tx => tx.all<{ record_json: string }>("SELECT record_json FROM delivery_reports").map(r => r.record_json).join("\n"));
+  expect(outbound).not.toContain("sk-proj");
+  expect(() => buildAlertPayload({
+    repository: report.repository, pullNumber: 1, baseSha: report.baseSha, headSha: report.headSha, policyVersion: 1, reportId: report.id,
+    finding: { ...report.findings[0]!, condition: "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789" }, coverageOverall: "complete", enumerationComplete: true,
+  })).toThrow("invalid_delivery_payload");
+  expect(() => f.store.transaction(tx => commitDeliveryIntent(tx, { projectId: f.project.id, kind: "report", text: `note xai-AbCdEfGhIjKlMnOpQrStUvWx`, dedupeKey: "owner/credential-0001", maxBytes: 4000 }, f.clock.now))).toThrow("invalid_delivery_payload");
+});
+
+test("every PR-supplied destination form is removed or defanged; only the service report path remains", async () => {
+  const f = await fixture();
+  const { report } = await prepareReport(f);
+  const finding = {
+    ...report.findings.find(q => q.id === "finding-1")!,
+    title: "[click me](https://x.io/a) now",
+    condition: "see evil.com/phish and //attacker.com/x plus <https://y.org> mailto:a@b.co ftp://files.example tg://resolve?domain=x",
+    impact: "visit www.z.net or bad.example:8443 or plain evil.org or 10.0.0.1 or t.me/joinchat/abc or user@mail.io",
+    evidenceRef: "a.ts",
+  };
+  const text = buildAlertPayload({
+    repository: report.repository, pullNumber: report.pullNumber, baseSha: report.baseSha, headSha: report.headSha,
+    policyVersion: 1, reportId: report.id, finding, coverageOverall: "complete", enumerationComplete: true, projectId: f.project.id,
+  });
+  for (const leak of ["x.io", "evil.com", "attacker.com", "y.org", "a@b.co", "files.example", "tg://", "z.net", "bad.example", "evil.org", "10.0.0.1", "t.me", "mail.io", "https://"]) {
+    expect(text).not.toContain(leak);
+  }
+  expect(text).toContain("click me");
+  expect(text.split("\n").filter(line => line.includes("/projects/"))).toEqual([`รายงาน: /projects/${f.project.id}/pr/reports/${report.id}`]);
+  expect(neutralizeDestinations("// comment and src/pr/alerts.ts")).toBe("// comment and src/pr/alerts[.]ts");
+});
+
+test("repeated finding IDs are canonicalized before persistence and never cancel the valid alert", async () => {
+  const dup = JSON.stringify({
+    findings: [
+      { id: "dup-1", title: "first", category: "correctness", severity: "critical", location: { path: "a.ts", line: 1 }, condition: "c1", impact: "i1", reasoning: "r1", evidenceType: "diff", evidenceRef: "a.ts" },
+      { id: "dup-1", title: "second", category: "correctness", severity: "low", location: { path: "a.ts", line: 2 }, condition: "c2", impact: "i2", reasoning: "r2", evidenceType: "diff", evidenceRef: "a.ts" },
+      { id: "dup-1", title: "third", category: "style", severity: "info", location: { path: "a.ts", line: 3 }, condition: "c3", impact: "i3", reasoning: "r3", evidenceType: "diff", evidenceRef: "a.ts" },
+    ],
+    analyzedRoles: ["correctness", "security"], skippedScope: [], disagreements: [],
+  });
+  const f = await fixture(scripted(dup));
+  bindTelegram(f);
+  const { report } = await prepareReport(f);
+  expect(report.findings.map(x => x.id)).toEqual(["dup-1", "dup-1-dup2", "dup-1-dup3"]);
+  expect(report.findings[1]).toMatchObject({ status: "suspected" });
+  expect(report.findings[1]!.validationErrors).toContain("duplicate_finding_id");
+  const decision = f.store.read(tx => readAlertDecisions(tx, report.id)).at(-1)!;
+  expect(new Set(decision.findings.map(d => d.findingId)).size).toBe(decision.findings.length);
+  expect(decision.findings.find(d => d.findingId === "dup-1")!.decision).toBe("notified");
+  // Raising the floor above the duplicate's severity does not affect the canonical alert.
+  setPolicy(f, 1, { allowedCategories: ["correctness", "security", "behavior"], minimumSeverity: "medium", notifyPartial: true });
+  expect(intentsOf(f)).toHaveLength(1);
+  expect(worker(f).pump().map(i => i.status)).toEqual(["sent"]);
+  expect(f.sender.calls).toBe(1);
+
+  // A legacy stored report that still repeats an ID holds every copy and never sends.
+  const g = await fixture();
+  bindTelegram(g);
+  const { report: legacy } = await prepareReport(g);
+  g.store.transaction(tx => {
+    const row = JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM pr_reports WHERE id = ?", legacy.id)!.record_json);
+    row.findings = [{ ...row.findings[0], severity: "low", status: "suspected", validationErrors: ["category_not_actionable"] }, row.findings[0]];
+    tx.run("UPDATE pr_reports SET record_json = ? WHERE id = ?", JSON.stringify(row), legacy.id);
+  });
+  worker(g).pump();
+  expect(g.sender.calls).toBe(0);
+  expect(intentsOf(g)[0]).toMatchObject({ status: "cancelled", staleReason: "duplicate_finding_id" });
+  const again = g.app.admitPrAlerts(g.auth.actor, g.project.id, legacy.id);
+  expect(again.held.filter(h => h.reason === "duplicate_finding_id")).toHaveLength(2);
+});
+
+test("policy update re-evaluates every current report without a silent cap", async () => {
+  const f = await fixture();
+  const monitor = enable(f);
+  const count = 55;
+  const base = sha(1), head = sha(2);
+  f.github.pulls = Array.from({ length: count }, (_, i) => fixturePull({ number: i + 1, base: { sha: base, ref: "main" }, head: { sha: head, ref: `f${i}` } }));
+  for (let i = 1; i <= count; i++) f.github.files.set(f.github.key(i, base, head), [{ filename: "a.ts", status: "modified", patch: "@@\n+a" }]);
+  f.github.checks.set(head, []);
+  const conn = connector(f, monitor);
+  f.store.transaction(tx => pollMonitorCatchUp(tx, f.project.id, monitor.id, conn, f.clock.now));
+  const candidates = f.store.read(tx => readCandidates(tx, f.project.id, monitor.id));
+  expect(candidates).toHaveLength(count);
+  for (const candidate of candidates) {
+    const snapshot = f.store.transaction(tx => captureSnapshot(tx, f.project.id, candidate.id, conn, f.clock.now))!;
+    f.store.transaction(tx => persistReport(tx, {
+      projectId: f.project.id, monitorId: monitor.id, candidateId: candidate.id, snapshot,
+      normalized: normalizeReviewOutput(goodFindingsJson(), snapshot), requiredRoles: ["correctness", "security"],
+      specialistRuns: [{ role: "correctness", state: "complete", reason: null }, { role: "security", state: "complete", reason: null }],
+      synthesis: { state: "complete", reason: null }, jobId: null, attemptId: null, now: f.clock.now,
+    }));
+  }
+  expect(intentsOf(f)).toHaveLength(0);
+  const receipt = setPolicy(f, 1, { allowedCategories: ["correctness"], minimumSeverity: "info", notifyPartial: true });
+  expect(receipt.decisions).toHaveLength(count);
+  expect(intentsOf(f)).toHaveLength(count);
+  const oldest = f.store.read(tx => tx.get<{ id: string }>("SELECT id FROM pr_reports ORDER BY rowid LIMIT 1")!.id);
+  expect(f.store.read(tx => readAlertDecisions(tx, oldest))).toHaveLength(1);
+});
+
+test("legacy guardless pr-alert intents fail closed: verifiable ones are backfilled, others cancelled visibly", async () => {
+  const legacyize = (f: F, intentId: string, text?: string) => f.store.transaction(tx => {
+    tx.run("DELETE FROM pr_alerts WHERE intent_id = ?", intentId);
+    const row = JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM delivery_intents WHERE id = ?", intentId)!.record_json);
+    delete row.guard;
+    if (text !== undefined) { row.payload.text = text; }
+    tx.run("UPDATE delivery_intents SET record_json = ? WHERE id = ?", JSON.stringify(row), intentId);
+  });
+  const legacyText = (r: Awaited<ReturnType<typeof prepareReport>>["report"]) => buildAlertPayload({
+    repository: r.repository, pullNumber: r.pullNumber, baseSha: r.baseSha, headSha: r.headSha, policyVersion: r.policyVersion, reportId: r.id,
+    finding: r.findings.find(x => x.id === "finding-1")!, coverageOverall: r.coverageOverall, enumerationComplete: r.enumerationComplete,
+  });
+  // Unverifiable text (not what the sanitized builder produces) is cancelled, never sent.
+  {
+    const f = await fixture();
+    bindTelegram(f);
+    await prepareReport(f);
+    const intent = intentsOf(f)[0]!;
+    legacyize(f, intent.id, `${intent.payload.text}\nดู evil.com/phish`);
+    expect(intentsOf(f)[0]!.guard).toBeUndefined();
+    worker(f).pump();
+    expect(f.sender.calls).toBe(0);
+    expect(intentsOf(f)[0]).toMatchObject({ status: "cancelled", stale: true, staleReason: "legacy_alert_unverifiable", guard: "pr-alert" });
+  }
+  // Verifiable but stale: the reviewer's repro now cancels instead of sending.
+  {
+    const f = await fixture();
+    bindTelegram(f);
+    const { report, candidate } = await prepareReport(f);
+    const intent = intentsOf(f)[0]!;
+    legacyize(f, intent.id, legacyText(report));
+    f.store.transaction(tx => {
+      const row = JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM pr_candidates WHERE id = ?", candidate.id)!.record_json);
+      row.status = "superseded";
+      tx.run("UPDATE pr_candidates SET status = 'superseded', record_json = ? WHERE id = ?", JSON.stringify(row), candidate.id);
+    });
+    worker(f).pump();
+    expect(f.sender.calls).toBe(0);
+    expect(intentsOf(f)[0]).toMatchObject({ status: "cancelled", stale: true, staleReason: "candidate_superseded" });
+  }
+  // Verifiable and current: backfilled with a link and guard, then sent once.
+  {
+    const f = await fixture();
+    bindTelegram(f);
+    const { report } = await prepareReport(f);
+    const intent = intentsOf(f)[0]!;
+    legacyize(f, intent.id, legacyText(report));
+    expect(worker(f).pump().map(i => i.status)).toEqual(["sent"]);
+    expect(intentsOf(f)[0]!.guard).toBe("pr-alert");
+    expect(f.store.read(tx => readAlertLinks(tx, report.id))[0]).toMatchObject({ intentId: intent.id, findingId: "finding-1", decisionId: "legacy-backfill" });
+  }
+  // New guardless pr-alert intents cannot be committed at all.
+  {
+    const f = await fixture();
+    expect(() => f.store.transaction(tx => commitDeliveryIntent(tx, { projectId: f.project.id, kind: "report", text: "x", dedupeKey: `pr-alert/${crypto.randomUUID()}/finding-1/v1/000000000002/1`, maxBytes: 4000 }, f.clock.now))).toThrow("invalid_delivery_command");
+  }
+});
+
+test("retirement keeps a terminal failed delivery recorded and only marks it stale", async () => {
+  const f = await fixture();
+  bindTelegram(f);
+  const { report, monitor, conn } = await prepareReport(f);
+  f.sender.scripts = ["reject"];
+  worker(f).pump();
+  const before = intentsOf(f)[0]!;
+  expect(before).toMatchObject({ status: "failed", remote: "rejected", failureReason: "telegram_rejected" });
+  // Dismissal stops pending sends only; a settled failure is unchanged.
+  f.app.execute(f.auth.actor, { kind: "pr.report.dismiss", requestId: crypto.randomUUID(), projectId: f.project.id, expectedRevision: report.revision, payload: { reportId: report.id, reason: "พอแล้ว" } });
+  expect(intentsOf(f)[0]).toMatchObject({ status: "failed", remote: "rejected", failureReason: "telegram_rejected", stale: false });
+  f.github.pulls = [fixturePull({ number: 1, base: { sha: sha(1), ref: "main" }, head: { sha: sha(55), ref: "feat" } })];
+  resetCheckpoint(f, monitor.id);
+  f.store.transaction(tx => pollMonitorCatchUp(tx, f.project.id, monitor.id, conn, f.clock.now));
+  expect(intentsOf(f)[0]).toMatchObject({ status: "failed", remote: "rejected", failureReason: "telegram_rejected", stale: true, staleReason: "candidate_superseded" });
 });

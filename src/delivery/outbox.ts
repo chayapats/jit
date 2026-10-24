@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { AppError } from "../errors";
 import { fenceDenied } from "../jobs/attempts";
+import { containsCredential } from "../security/credentials";
 import { commitOutputSource, requireId, requireText } from "../sources";
 import type { AppTransaction } from "../store";
 import { TransactionStore } from "../store";
@@ -15,7 +16,6 @@ const digest = (value: string) => createHash("sha256").update(value).digest("hex
 const requestIdOk = (value: string) => /^[a-zA-Z0-9_-]{8,128}$/.test(value);
 const dedupeOk = (value: string) => /^[A-Za-z0-9._:/-]{8,160}$/.test(value);
 const DEFAULT_SAFE_RETRIES = 2;
-const secretLike = /bearer\s|authorization\s*:|x-telegram|bot[_ -]?token|[0-9]{5,}:[A-Za-z0-9_-]{8,}/i;
 
 /** Phases a deterministic test can interrupt after the corresponding local commit. */
 export type DeliveryCrashPhase = "after_claim" | "after_remote_accept" | "before_response_commit";
@@ -55,6 +55,16 @@ const guardName = /^[a-z][a-z0-9-]{0,31}$/;
 const guards = new Map<string, DeliveryGuard>();
 
 /**
+ * Dedupe-key namespaces that always require their guard, including legacy intents committed before
+ * the `guard` field existed. Static so the outbox fails closed even when the owning module never loaded.
+ */
+const RESERVED_GUARDS: ReadonlyArray<readonly [prefix: string, guard: string]> = Object.freeze([["pr-alert/", "pr-alert"] as const]);
+
+function reservedGuard(dedupeKey: string): string | null {
+  return RESERVED_GUARDS.find(([prefix]) => dedupeKey.startsWith(prefix))?.[1] ?? null;
+}
+
+/**
  * Registers the process-wide send-time currentness guard for intents committed with `guard: name`.
  * Owning domains (for example `pr.private_alerts/v1`) register at module load. Re-registering a name
  * replaces the previous check. An intent whose guard is not registered waits rather than sends.
@@ -65,6 +75,9 @@ export function registerDeliveryGuard(name: string, check: DeliveryGuard): void 
 }
 
 function guardVerdict(tx: AppTransaction, intent: DeliveryIntent): DeliveryCurrentness {
+  const reserved = reservedGuard(intent.dedupeKey);
+  // A legacy guardless intent in a reserved namespace is upgraded in memory; the next save persists it.
+  if (reserved !== null && intent.guard !== reserved) intent.guard = reserved;
   const name = intent.guard ?? null;
   if (name === null) return { current: true };
   const check = guards.get(name);
@@ -149,8 +162,10 @@ export function commitDeliveryIntent(tx: AppTransaction, input: CommitInput, now
   if (input.kind !== "report" && input.kind !== "reminder") throw new AppError("invalid_delivery_command");
   if (!dedupeOk(input.dedupeKey)) throw new AppError("invalid_delivery_command");
   requireText(input.text, input.maxBytes);
-  if (secretLike.test(input.text) || secretLike.test(input.dedupeKey)) throw new AppError("invalid_delivery_payload");
+  if (containsCredential(input.text) || containsCredential(input.dedupeKey)) throw new AppError("invalid_delivery_payload");
   if (input.guard !== undefined && !guardName.test(input.guard)) throw new AppError("invalid_delivery_command");
+  const reserved = reservedGuard(input.dedupeKey);
+  if (reserved !== null && input.guard !== reserved) throw new AppError("invalid_delivery_command");
   const retries = input.maxSafeRetries ?? DEFAULT_SAFE_RETRIES;
   if (!Number.isSafeInteger(retries) || retries < 0 || retries > 5) throw new AppError("invalid_delivery_command");
   const project = tx.get<{ revision: number }>("SELECT revision FROM projects WHERE id = ?", input.projectId);
@@ -197,7 +212,8 @@ export function commitDeliveryIntent(tx: AppTransaction, input: CommitInput, now
 }
 
 function cancelUnsent(tx: AppTransaction, intent: DeliveryIntent, reason: string, now: number, stale = false): boolean {
-  if (intent.status === "sent" || intent.status === "unknown") return false;
+  // Terminal transport outcomes stay recorded: a known rejection is never rewritten as "never sent".
+  if (intent.status === "sent" || intent.status === "unknown" || intent.status === "failed") return false;
   const attempts = listDeliveryAttempts(tx, intent.id);
   if (attempts.some(attempt => attempt.senderInvoked && attempt.outcome === "none")) return false;
   for (const attempt of attempts) {

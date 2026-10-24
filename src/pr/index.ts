@@ -67,6 +67,7 @@ export {
 export { fencePrCandidateJobs, prSnapshotWork, type PrSnapshotInput } from "./work";
 export {
   annotateReport,
+  canonicalizeFindingIds,
   listReports,
   normalizeReviewOutput,
   persistReport,

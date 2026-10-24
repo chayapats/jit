@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { AppError } from "../errors";
 import { commitDeliveryIntent, readDeliveryIntent, registerDeliveryGuard, type DeliveryCurrentness, type DeliveryIntent, type DeliveryReceipt } from "../delivery";
+import { containsCredential } from "../security/credentials";
+import { neutralizeDestinations } from "../security/destinations";
 import { requireId } from "../sources";
 import type { AppTransaction } from "../store";
 import { readAlertLink, readAlertLinks, retirePrAlerts } from "./alert-links";
@@ -15,7 +17,6 @@ import type {
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const requestIdOk = (value: string) => /^[a-zA-Z0-9_-]{8,128}$/.test(value);
-const secretLike = /bearer\s|authorization\s*:|x-telegram|bot[_ -]?token|[0-9]{5,}:[A-Za-z0-9_-]{8,}/i;
 const destinationLike = /t\.me\/|telegram\.me|chat_id|sendMessage/i;
 
 /** Delivery guard name under which PR alert intents are rechecked immediately before send. */
@@ -139,11 +140,6 @@ export function alertKey(report: Pick<PrivateReport, "id" | "headSha" | "policyV
   return base;
 }
 
-/** Removes links/handles that could steer the owner to a PR-supplied destination. */
-function redact(value: string): string {
-  return value.replace(/(?:https?:\/\/|www\.|t\.me\/|telegram\.me\/|tg:\/\/|mailto:)\S*/gi, "[ลิงก์ถูกตัด]");
-}
-
 function fitBytes(value: string, max: number): string {
   if (Buffer.byteLength(value) <= max) return value;
   const budget = Math.max(0, max - Buffer.byteLength("…"));
@@ -157,15 +153,16 @@ function fitBytes(value: string, max: number): string {
 }
 
 function esc(value: string, maxBytes: number): string {
-  return fitBytes(redact(value.replace(/[\0\x08\x0B\x0C]/g, "").trim()), maxBytes);
+  return fitBytes(neutralizeDestinations(value.replace(/[\0\x08\x0B\x0C]/g, "").trim()), maxBytes);
 }
 
 /**
  * Builds the private payload for one qualifying finding within `maxBytes` (default 3500).
  * Contains only repository/PR/revision, location, condition, impact, evidence type
  * and a service-owned report link plus a partial-scope warning when applicable.
- * Credentials, provider token values and arbitrary PR-supplied destinations never enter;
- * URLs in PR-derived text are redacted and secret-like output throws instead of leaking.
+ * Credentials, provider token values and arbitrary PR-supplied destinations never enter: every
+ * PR-derived field passes `neutralizeDestinations`, and any credential match (`containsCredential`)
+ * throws instead of leaking. Only the service-owned report path is appended afterwards.
  */
 export function buildAlertPayload(input: {
   repository: PrivateReport["repository"];
@@ -202,7 +199,7 @@ export function buildAlertPayload(input: {
     `ผลกระทบ: ${esc(input.finding.impact, Math.min(share, 1600))}`,
     ...tail,
   ].join("\n");
-  if (secretLike.test(text)) throw new AppError("invalid_delivery_payload");
+  if (containsCredential(text)) throw new AppError("invalid_delivery_payload");
   return fitBytes(text, maxBytes);
 }
 
@@ -258,6 +255,12 @@ function recordDecision(tx: AppTransaction, draft: Omit<AlertDecision, "id" | "c
   return decision;
 }
 
+function repeatedFindingIds(report: Pick<PrivateReport, "findings">): Set<string> {
+  const seen = new Set<string>(), repeated = new Set<string>();
+  for (const finding of report.findings) (seen.has(finding.id) ? repeated : seen).add(finding.id);
+  return repeated;
+}
+
 function wholeReportSuppression(tx: AppTransaction, projectId: string, report: PrivateReport, annotations: ReportAnnotation[]): string | null {
   if (report.stale) return report.staleReason ?? "report_stale";
   if (report.status === "failed" || report.status === "incomplete" || report.status === "running") return `report_${report.status}`;
@@ -308,7 +311,13 @@ export function admitReportAlerts(
       decide(finding.id, "suppressed", suppressedReason, null);
     }
   } else {
-    const evaluation = evaluateReport(report, policy);
+    // Legacy rows may repeat a finding ID; such IDs are ambiguous, so every copy is held.
+    const repeated = repeatedFindingIds(report);
+    for (const finding of report.findings.filter(f => repeated.has(f.id))) {
+      held.push({ findingId: finding.id, reason: "duplicate_finding_id" });
+      decide(finding.id, "held", "duplicate_finding_id", null);
+    }
+    const evaluation = evaluateReport({ ...report, findings: report.findings.filter(f => !repeated.has(f.id)) }, policy);
     const dismissed = dismissals(annotations).findings;
     for (const item of evaluation.held) {
       held.push({ findingId: item.finding.id, reason: item.reason });
@@ -323,7 +332,7 @@ export function admitReportAlerts(
       }
       // Payload hygiene recheck: secrets or PR-supplied destinations never enter the outbox.
       const hygiene = `${finding.title}\n${finding.condition}\n${finding.impact}\n${finding.reasoning}\n${finding.evidenceRef ?? ""}`;
-      if (secretLike.test(hygiene) || destinationLike.test(hygiene)) {
+      if (containsCredential(`${hygiene}\n${finding.location.path}`) || destinationLike.test(hygiene)) {
         held.push({ findingId: finding.id, reason: "payload_hygiene" });
         decide(finding.id, "held", "payload_hygiene", null);
         continue;
@@ -413,8 +422,9 @@ export function admitCommittedReportAlerts(
  * finding all retire the intent. Paused monitoring holds it waiting.
  */
 export function prAlertCurrentness(tx: AppTransaction, intent: DeliveryIntent): DeliveryCurrentness {
-  const link = readAlertLink(tx, intent.id);
-  if (!link || link.projectId !== intent.projectId) return { current: false, reason: "alert_link_missing" };
+  const link = readAlertLink(tx, intent.id) ?? backfillLegacyAlertLink(tx, intent);
+  if (!link) return { current: false, reason: "legacy_alert_unverifiable" };
+  if (link.projectId !== intent.projectId) return { current: false, reason: "alert_link_missing" };
   let report: PrivateReport;
   try { report = readReport(tx, link.projectId, link.reportId); }
   catch { return { current: false, reason: "authority_unavailable" }; }
@@ -431,11 +441,52 @@ export function prAlertCurrentness(tx: AppTransaction, intent: DeliveryIntent): 
   const dismissed = dismissals(readAnnotations(tx, report.id));
   if (dismissed.report) return { current: false, reason: "report_dismissed" };
   if (dismissed.findings.has(link.findingId)) return { current: false, reason: "finding_dismissed" };
-  const finding = report.findings.find(item => item.id === link.findingId);
+  const matches = report.findings.filter(item => item.id === link.findingId);
+  if (matches.length > 1) return { current: false, reason: "duplicate_finding_id" };
+  const finding = matches[0];
   if (!finding) return { current: false, reason: "finding_missing" };
   const evaluation = evaluateReport({ ...report, findings: [finding] }, readAlertPolicy(tx, link.projectId));
   if (evaluation.qualifying.length !== 1) return { current: false, reason: "alert_policy_changed" };
   return { current: true };
+}
+
+const LEGACY_KEY = /^pr-alert\/([a-f0-9-]{36})\/([a-z0-9][a-z0-9_-]{0,63})\/v([1-9][0-9]{0,8})\/([a-f0-9]{12})\/([1-9][0-9]{0,8})$/;
+
+/**
+ * Upgrades one pre-guard `pr-alert/` intent (no `pr_alerts` link) inside the caller's transaction.
+ * It is verifiable only when its dedupe key names an existing report/finding/head/trigger policy in
+ * the same project and its stored text is exactly what today's sanitized payload builder produces
+ * for that finding (so no credential or PR-supplied destination can ride along). Verified intents get
+ * an `AlertLink` (decision `legacy-backfill`) and are then rechecked like any guarded alert; anything
+ * else returns null and the outbox cancels it visibly as `legacy_alert_unverifiable`.
+ */
+export function backfillLegacyAlertLink(tx: AppTransaction, intent: DeliveryIntent): AlertLink | null {
+  const match = LEGACY_KEY.exec(intent.dedupeKey);
+  if (!match || intent.payload?.kind !== "report") return null;
+  const [, reportId, findingId, policyVersion, head12, triggerPolicy] = match;
+  let report: PrivateReport;
+  try { report = readReport(tx, intent.projectId, reportId!); } catch { return null; }
+  const matches = report.findings.filter(f => f.id === findingId);
+  if (matches.length !== 1 || report.headSha.slice(0, 12) !== head12 || report.policyVersion !== Number(triggerPolicy)) return null;
+  let expected: string;
+  try {
+    expected = buildAlertPayload({
+      repository: report.repository, pullNumber: report.pullNumber, baseSha: report.baseSha, headSha: report.headSha,
+      policyVersion: report.policyVersion, reportId: report.id, finding: matches[0]!, coverageOverall: report.coverageOverall,
+      enumerationComplete: report.enumerationComplete,
+    });
+  } catch { return null; }
+  if (intent.payload.text !== expected || containsCredential(intent.payload.text)) return null;
+  const link: AlertLink = {
+    intentId: intent.id, projectId: intent.projectId, reportId: report.id, findingId: findingId!, candidateId: report.candidateId,
+    monitorId: report.monitorId, decisionId: "legacy-backfill", policyVersion: Number(policyVersion), reportRevision: report.revision,
+    baseSha: report.baseSha, headSha: report.headSha, triggerPolicyVersion: report.policyVersion,
+    ownerGeneration: intent.authorityGeneration, createdAt: intent.createdAt,
+  };
+  tx.run(`INSERT OR IGNORE INTO pr_alerts(intent_id, project_id, report_id, finding_id, candidate_id, monitor_id, policy_version, record_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, link.intentId, link.projectId, link.reportId, link.findingId, link.candidateId, link.monitorId,
+  link.policyVersion, JSON.stringify(link));
+  return link;
 }
 
 registerDeliveryGuard(PR_ALERT_GUARD, prAlertCurrentness);
@@ -491,7 +542,8 @@ export function setAlertPolicy(tx: AppTransaction, command: SetAlertPolicyComman
   insertPolicy(tx, policy);
   const retiredIntentIds: string[] = [];
   const decisions: AlertDecision[] = [];
-  for (const report of listReports(tx, command.projectId).slice(0, 50)) {
+  // Every report of the project is processed in this transaction; there is no silent cap.
+  for (const report of listReports(tx, command.projectId)) {
     const stillQualifies = new Set(evaluateReport(report, policy).qualifying.map(f => f.id));
     retiredIntentIds.push(...retirePrAlerts(tx, { projectId: command.projectId, reportId: report.id }, "alert_policy_changed", now, {
       markSettledStale: false, filter: link => !stillQualifies.has(link.findingId),
