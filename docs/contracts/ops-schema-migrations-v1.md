@@ -100,8 +100,11 @@ journal failing these checks is shown as a durable `blocked`
 `upgrade_corrupt` view (`corruptUpgrade`) with no actions; every step on it
 fails with `upgrade_corrupt`, and it keeps the installation fenced until a
 human inspects it. An unsafe attempt file found during a step moves the
-journal to `blocked` `upgrade_corrupt`; staged-copy removal never touches
-anything but a regular file at the derived path.
+journal to `blocked` `upgrade_corrupt`. Rollback removes the staged copy
+strictly: an unsafe or undeletable artifact blocks the journal as
+`upgrade_corrupt` with the fence held; only cleanup of already-ended attempts
+is best effort, and it never touches anything but a regular file at the
+derived path.
 When an attempt ends (`complete`, `failed` after the fence, `rolled_back`) its
 requests are mirrored into `command_receipts` and `audit`. Preflight and
 engine rejections write only the journal file, never the installation
@@ -159,9 +162,12 @@ columns — covers receipts, revisions, jobs, attempts, outbox and native
 references), `receipts_and_revisions`, `task_provenance`,
 `decision_provenance`, `source_lineage`, `jobs`, `outbox`,
 `native_opaque_refs` (bridge rows: shape and context ownership; every job
-attempt: exact envelope bound to its row and owning job, native identity
+attempt: exact JobAttempt schema (generation, scheduler, lease, complete
+admission snapshot of the owning job, reason and native/context/transport
+states) bound to its row and owning job; a non-null native identity
 `{adapter, runId, sessionId, context}` whose context exists in
-`team_contexts`, bound to the admitted run request's `runId` and context, and
+`team_contexts`, with `data` the exact admitted ApplicationRunRequest for that
+`runId`, context, job and attempt generation (fence), and
 for Schway attempts that engaged transport an exact `schway_native_refs`
 row for that run with the same context and generation and a resolved session
 when finished; the staged non-deleted bridge set equals the recovery point's

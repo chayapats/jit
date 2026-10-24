@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstatSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { SNAPSHOT_NATIVE_FORMAT_VERSION } from "schway/host";
 import { AppError } from "../errors";
@@ -709,9 +709,10 @@ async function safeResume(ctx: UpgradeContext): Promise<UpgradeResumeResult> {
 }
 
 /**
- * Removes only the derived staged copy, after proving it is a regular file
- * inside the attempt directory. Anything else (symlink, directory, live
- * database) is left untouched: removal is never destructive outside the attempt.
+ * Best-effort maintenance cleanup for attempts that already ended (complete,
+ * failed) or are about to be re-copied: removes only a regular file at the
+ * derived staged path; anything else is left untouched. Rollback uses the
+ * strict {@link discardStaged} instead.
  */
 function removeStaged(ctx: UpgradeContext, journal: UpgradeJournal): void {
   if (!journal.stagedPath) return;
@@ -719,6 +720,27 @@ function removeStaged(ctx: UpgradeContext, journal: UpgradeJournal): void {
   try { path = attemptFile(ctx, journal.id, "staged.sqlite", true); } catch { return; }
   for (const suffix of ["", "-wal", "-shm"]) {
     try { rmSync(`${path}${suffix}`, { force: true }); } catch { /* Left for the next prune. */ }
+  }
+}
+
+/**
+ * Strict staged-copy removal for a fenced attempt: the artifact must be a
+ * regular file at the derived path ({@link stepFile}) and must be gone
+ * afterwards. Anything unsafe or undeletable moves the journal to durable
+ * `blocked` `upgrade_corrupt` and throws, so the fence is never released over it.
+ */
+function discardStaged(ctx: UpgradeContext, journal: UpgradeJournal): void {
+  if (!journal.stagedPath) return;
+  const path = stepFile(ctx, journal, "staged.sqlite", true);
+  for (const suffix of ["", "-wal", "-shm"]) {
+    const target = `${path}${suffix}`;
+    let gone = false;
+    try { rmSync(target, { force: true }); gone = !existsSync(target); } catch { gone = false; }
+    if (!gone) {
+      saveJournal(ctx.upgradeDir, { ...journal, state: "blocked", steps: step(journal, "attempt_files", ctx.now(), false, "staged_copy_undeletable"),
+        reason: "upgrade_corrupt", stagedDigest: null, nextAction: "inspect_corrupt_upgrade_attempt_files", updatedAt: ctx.now() });
+      throw new AppError("upgrade_corrupt", 500);
+    }
   }
 }
 
@@ -824,6 +846,46 @@ function count(tx: AppTransaction, sql: string, ...bindings: (string | number)[]
 function boundedAll<T>(tx: AppTransaction, table: string, sql: string): T[] {
   if (count(tx, `SELECT count(*) AS n FROM ${quoteIdent(table)}`) > upgradeLimits.rowsPerTable) throw new AppError("upgrade_validation_bound_exceeded", 409);
   return tx.all<T>(sql);
+}
+
+const attemptStates = ["prepared", "dispatched", "committed", "interrupted", "rejected"];
+const attemptNativeStates = ["uninspected", "missing", "running", "finished"];
+const attemptContextStates = ["none", "pending", "retired", "deleted", "retire_failed", "delete_failed"];
+const attemptTransports = ["none", "dispatched", "settled"];
+const runRequestKeys = ["runId", "projectId", "topicId", "roleId", "purpose", "route", "configuration", "context", "fence", "instructions", "manifest", "tools", "policy", "limits"];
+
+/**
+ * Exact JobAttempt schema (src/jobs/attempts.ts) bound to its table row and
+ * owning job; a non-null native reference additionally requires `data` to be
+ * the admitted ApplicationRunRequest for exactly that run, context, job and
+ * attempt generation. Returns a problem label, or null when the envelope holds.
+ */
+function attemptEnvelopeProblem(attempt: unknown, row: { id: string; job_id: string }): string | null {
+  if (!isObject(attempt) || !exact(attempt, ["native", "data", "id", "jobId", "generation", "scheduler", "leaseUntil", "snapshot", "createdAt",
+    "state", "reason", "nativeState", "contextState", "transport"])) return "envelope_invalid";
+  if (attempt.id !== row.id || attempt.jobId !== row.job_id || !isInt(attempt.generation, 1) || typeof attempt.scheduler !== "string" ||
+      !attempt.scheduler || !isInt(attempt.leaseUntil) || !isInt(attempt.createdAt) || !attemptStates.includes(attempt.state as string) ||
+      !(attempt.reason === null || isText(attempt.reason, 64)) || !attemptNativeStates.includes(attempt.nativeState as string) ||
+      !attemptContextStates.includes(attempt.contextState as string) || !attemptTransports.includes(attempt.transport as string)) return "envelope_invalid";
+  const snapshot = attempt.snapshot;
+  if (!isObject(snapshot) || snapshot.id !== row.job_id || typeof snapshot.projectId !== "string" || typeof snapshot.type !== "string" ||
+      !isInt(snapshot.revision, 1) || typeof snapshot.state !== "string") return "snapshot_invalid";
+  const native = attempt.native;
+  if (native === null) return attempt.contextState === "none" ? null : "context_state_without_native";
+  if (!isObject(native) || !exact(native, ["adapter", "runId", "sessionId", "context"]) || !["scripted", "schway"].includes(native.adapter as string) ||
+      typeof native.runId !== "string" || !ID.test(native.runId) || native.sessionId !== native.runId || !isObject(native.context) ||
+      !exact(native.context, ["id", "generation"]) || typeof native.context.id !== "string" || !isInt(native.context.generation, 1)) {
+    return "native_ref_invalid";
+  }
+  if (attempt.contextState === "none") return "native_without_context_state";
+  const data = attempt.data;
+  if (!isObject(data) || !exact(data, runRequestKeys)) return "run_request_invalid";
+  const context = native.context as { id: string; generation: number };
+  const runContext = data.context, fence = data.fence;
+  if (data.runId !== native.runId || data.projectId !== snapshot.projectId || !isObject(runContext) || !exact(runContext, ["id", "generation"]) ||
+      runContext.id !== context.id || runContext.generation !== context.generation) return "run_mismatch";
+  if (!isObject(fence) || fence.jobId !== row.job_id || fence.generation !== attempt.generation || !isInt(fence.ownerGeneration, 1)) return "fence_mismatch";
+  return null;
 }
 
 /**
@@ -974,25 +1036,13 @@ export function validateUpgrade(ctx: UpgradeContext, journal: UpgradeJournal, re
         for (const row of boundedAll<{ id: string; job_id: string; record_json: string }>(tx, "job_attempts", "SELECT id, job_id, record_json FROM job_attempts")) {
           let attempt: Record<string, unknown>;
           try { attempt = JSON.parse(row.record_json) as Record<string, unknown>; } catch { return "attempt_unreadable"; }
-          if (!isObject(attempt) || attempt.id !== row.id || attempt.jobId !== row.job_id ||
-              (isObject(attempt.snapshot) && attempt.snapshot.id !== row.job_id) ||
-              !["prepared", "dispatched", "committed", "interrupted", "rejected"].includes(attempt.state as string) ||
-              !["none", "dispatched", "settled"].includes(attempt.transport as string)) return `attempt_${row.id}_envelope_invalid`;
-          const native = attempt.native;
-          if (native === null || native === undefined) continue;
-          if (!isObject(native) || !exact(native, ["adapter", "runId", "sessionId", "context"]) || !["scripted", "schway"].includes(native.adapter as string) ||
-              typeof native.runId !== "string" || typeof native.sessionId !== "string" || !isObject(native.context) ||
-              !exact(native.context, ["id", "generation"]) || typeof native.context.id !== "string" || !isInt(native.context.generation, 1)) {
-            return `attempt_${row.id}_native_ref_invalid`;
-          }
+          const problem = attemptEnvelopeProblem(attempt, row);
+          if (problem) return `attempt_${row.id}_${problem}`;
+          const native = attempt.native as { adapter: string; runId: string; sessionId: string; context: { id: string; generation: number } } | null;
+          if (native === null) continue;
           nativeRefs++;
-          const context = native.context as { id: string; generation: number };
+          const context = native.context;
           if (!contexts.has(`${context.id}/${context.generation}`)) return `attempt_${row.id}_context_orphaned`;
-          // Bound to the owning run request captured at admission.
-          if (isObject(attempt.data) && "runId" in attempt.data) {
-            const data = attempt.data as { runId?: unknown; context?: { id?: unknown; generation?: unknown } | null };
-            if (data.runId !== native.runId || data.context?.id !== context.id || data.context?.generation !== context.generation) return `attempt_${row.id}_run_mismatch`;
-          }
           if (native.adapter === "schway") {
             const ref = refs.get(native.runId as string);
             const engaged = attempt.transport !== "none" || ["running", "finished"].includes(attempt.nativeState as string);
@@ -1204,7 +1254,8 @@ export async function rollbackUpgrade(ctx: UpgradeContext, journal: UpgradeJourn
   if (journal.state === "activated" || journal.state === "complete") throw new AppError("upgrade_rollback_requires_restore", 409);
   if (!upgradeActions(journal).includes("rollback")) throw new AppError("upgrade_bad_state", 409);
   const now = ctx.now();
-  removeStaged(ctx, journal);
+  // Strict: an unsafe or undeletable staged artifact blocks the attempt (fence held) instead of being ignored.
+  discardStaged(ctx, journal);
   let rolled = saveJournal(ctx.upgradeDir, { ...journal, state: "rolled_back", stagedDigest: null,
     steps: step(journal, "rollback", now, true, "live_installation_kept_staged_copy_discarded"),
     reason: "rolled_back_before_activation", nextAction: "inspect_then_prepare_again",

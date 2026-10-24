@@ -933,11 +933,19 @@ test("a symlinked staged copy blocks the attempt as corrupt and never touches it
 test("orphaned, unbound or uncorrelated attempt native references fail validation and block activation", async () => {
   const cases: [string, string][] = [
     // Context identity missing from team_contexts.
-    [`UPDATE job_attempts SET record_json = json_set(record_json, '$.native.context.id', '${rid()}') WHERE rowid = (SELECT max(rowid) FROM job_attempts WHERE json_extract(record_json, '$.native') IS NOT NULL)`, "context_orphaned"],
+    [(() => { const context = rid(); return `UPDATE job_attempts SET record_json = json_set(record_json, '$.native.context.id', '${context}', '$.data.context.id', '${context}') WHERE rowid = (SELECT max(rowid) FROM job_attempts WHERE json_extract(record_json, '$.native') IS NOT NULL)`; })(), "context_orphaned"],
     // Not bound to the owning job.
     [`UPDATE job_attempts SET record_json = json_set(record_json, '$.jobId', '${rid()}') WHERE rowid = (SELECT max(rowid) FROM job_attempts)`, "envelope_invalid"],
     // Not bound to its run request.
-    [`UPDATE job_attempts SET record_json = json_set(record_json, '$.native.runId', '${rid()}') WHERE rowid = (SELECT max(rowid) FROM job_attempts WHERE json_extract(record_json, '$.native') IS NOT NULL)`, "run_mismatch"],
+    [(() => { const run = rid(); return `UPDATE job_attempts SET record_json = json_set(record_json, '$.native.runId', '${run}', '$.native.sessionId', '${run}') WHERE rowid = (SELECT max(rowid) FROM job_attempts WHERE json_extract(record_json, '$.native') IS NOT NULL)`; })(), "run_mismatch"],
+    // Missing or non-object admission snapshot.
+    [`UPDATE job_attempts SET record_json = json_remove(record_json, '$.snapshot') WHERE rowid = (SELECT max(rowid) FROM job_attempts)`, "envelope_invalid"],
+    [`UPDATE job_attempts SET record_json = json_set(record_json, '$.snapshot', 'gone') WHERE rowid = (SELECT max(rowid) FROM job_attempts)`, "snapshot_invalid"],
+    // A native reference whose data is not the admitted run request.
+    [`UPDATE job_attempts SET record_json = json_set(record_json, '$.data', 'opaque') WHERE rowid = (SELECT max(rowid) FROM job_attempts WHERE json_extract(record_json, '$.native') IS NOT NULL)`, "run_request_invalid"],
+    [`UPDATE job_attempts SET record_json = json_set(record_json, '$.data', json('null')) WHERE rowid = (SELECT max(rowid) FROM job_attempts WHERE json_extract(record_json, '$.native') IS NOT NULL)`, "run_request_invalid"],
+    // The run request's fence must belong to this job and attempt generation.
+    [`UPDATE job_attempts SET record_json = json_set(record_json, '$.data.fence.generation', 999) WHERE rowid = (SELECT max(rowid) FROM job_attempts WHERE json_extract(record_json, '$.native') IS NOT NULL)`, "fence_mismatch"],
     // A dispatched Schway attempt without its durable bridge correlation.
     [`UPDATE job_attempts SET record_json = json_set(record_json, '$.native.adapter', 'schway', '$.transport', 'settled') WHERE rowid = (SELECT max(rowid) FROM job_attempts WHERE json_extract(record_json, '$.native') IS NOT NULL)`, "native_ref_missing"],
   ];
@@ -953,5 +961,23 @@ test("orphaned, unbound or uncorrelated attempt native references fail validatio
     expect(validated.state).toBe("blocked");
     expect(validated.validation!.checks.find(c => c.name === "native_opaque_refs")!.detail).toContain(detail);
     await expect(stepCmd(f, "upgrade.activate", prepared.id)).rejects.toThrow("upgrade_bad_state");
+  }
+});
+
+test("rollback over an unsafe staged artifact blocks as corrupt, keeps the fence and never touches the target", async () => {
+  for (const unsafe of ["symlink", "directory"] as const) {
+    const f = await fixture();
+    project(f, "rollback-unsafe", "t");
+    const prepared = (await prepare(f)).journal;
+    await stepCmd(f, "upgrade.migrate", prepared.id);
+    rmSync(prepared.stagedPath!);
+    if (unsafe === "symlink") symlinkSync(f.rt.store.path, prepared.stagedPath!);
+    else { mkdirSync(prepared.stagedPath!); writeFileSync(join(prepared.stagedPath!, "keep"), "x"); }
+    await expect(stepCmd(f, "upgrade.rollback", prepared.id)).rejects.toThrow("upgrade_corrupt");
+    expect(f.rt.app.upgrade(actor(f), prepared.id).journal).toMatchObject({ state: "blocked", reason: "upgrade_corrupt", actions: [] });
+    expect(readUpgradeFence(f.rt.store.path)?.upgradeId).toBe(prepared.id);
+    expect(existsSync(f.rt.store.path)).toBe(true);
+    expect(f.rt.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM projects")!.n)).toBe(1);
+    if (unsafe === "directory") expect(existsSync(join(prepared.stagedPath!, "keep"))).toBe(true);
   }
 });
