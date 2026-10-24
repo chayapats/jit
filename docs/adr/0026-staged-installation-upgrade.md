@@ -70,9 +70,9 @@ current-ledger replay. Upgrade rollback therefore never swaps an image.
   swapped database and restore activation does not reconcile under service
   ownership; it can adopt this contract's file journal, fence and
   `ManagedService.resume`.
-- OPS07 (#35) `upgradeStaged` switches the package artifact; after a schema
-  change `serve` refuses until the owner upgrade runs, so the package flow must
-  run `upgrade` between switching artifacts and the health check.
+- OPS07 (#35) resolved: the package flow (`upgradePackage`, `service
+  upgrade`) stops the unit and runs the new build's `upgrade` before switching
+  the release and health-checking; see docs/contracts/ops-service-package-v1.md.
 - Fixture historical schemas are the only evidence until a real release
   exists. Native session storage is never migrated; a future engine contract
   change needs a supported Schway migration API first.

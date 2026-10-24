@@ -1,44 +1,83 @@
 # OPS service package contract, v1
 
-Owner: Jit #35. `ops.service_package/v1` is implemented on the `jit/35-service-package` branch, based on OPS04 (`jit/34-load-drill`) plus MVP merge `52c1736`. Downstream eligibility requires this reviewed artifact in the integration base. It performs no provisioning, VPN setup, login or reboot; those are OPS05 human gates.
+Owner: Jit #35 (ADR 0022). `ops.service_package/v1` is the install/operate package for the composed Jit application under a Linux supervisor (systemd). It performs no provisioning of users, VPN, credentials, accounts or reboots; those are OPS05 human gates. Consumed contracts: `jit.app.foundation/v1`, `app.owner_identity/v1`, `jobs.queue_admission/v1`, `jobs.attempt_fence/v1`, `jobs.session_reconcile/v1`, `delivery.outbox/v1`, `ops.schema_migrations/v1`, `ops.quarantined_restore/v1` (ledger, through a seam), `ops.load_drill/v1`, `jit.schway.bridge/v1`.
 
-## Build a versioned artifact (dev machine)
+## Build a versioned artifact (build host)
 
 ```sh
 bun ops/package/bun-build.ts <srcDir> <outDir> jit.schway.bridge/v1 [engineRevision]
+bun ops/package/bun-build.ts install-deps <outDir>     # on the host that will run it
 ```
 
 | Public entry | Behavior |
 | --- | --- |
-| `buildPackage(options)` in `ops/package/bun-build.ts` | Copies `package.json`, `bun.lock` and `src/` into a fresh output directory and writes `manifest.json` pinning app version, exact Bun version, lockfile SHA-256, schema `user_version`, engine contract/revision and build arch. `piValidation` is fixed to `pending`. All inputs are explicit absolute paths; the developer cwd never leaks in. |
-| `readManifest(outDir)` / `validateArtifact(outDir)` | Reads and checks the manifest, required files, lockfile pin match and schema pin match. Never executes the artifact. |
+| `buildPackage(options)` in `ops/package/bun-build.ts` | Copies `package.json`, `bun.lock`, `src/`, `ops/package/` and `vendor/` (pinned engine tarball) into a fresh output directory and writes `manifest.json` (`jit.service.artifact/v1`): app version, exact Bun version, lockfile SHA-256, schema `user_version`, engine contract/revision, build arch, `contentHash` (SHA-256 over every packaged path and file) and `piValidation: pending`. Inputs are explicit absolute paths; the developer cwd, `.local`, `.git` and `node_modules` never enter. Symlinks inside an artifact are rejected. |
+| `installArtifactDependencies(dir, {bunPath, run})` | Explicit operator step: `bun install --frozen-lockfile --production --ignore-scripts` inside the artifact (registry or pre-populated cache access is the operator's responsibility), checks `bun --version` against the pin and writes `dependencies.json` (`jit.service.dependencies/v1`: artifact id, lock hash, platform, arch, Bun version). Native dependencies are platform specific, so the record proves installation only for its own platform/arch. The unit and boot never install or download anything. |
+| `readManifest(dir)` / `validateArtifact(dir, {runtime?})` | Reads the manifest strictly; validation checks required files, lock pin, content pin (a modified release fails), schema pin against the executing build and, with `runtime`, a dependency record for this exact platform/arch. Never executes the artifact. |
 | `artifactPiStatus(manifest)` | `not-run` for any non-arm64 build; `pending` for arm64 until OPS05 collects host evidence. Desktop packaging never certifies ARM64. |
 
-## Configure a trusted installation (operator)
+## Trusted installation configuration
 
-`.local/service-config.json` (ignored) carries exactly: `serviceUser` (never root), absolute `executablePath`/`workingDirectory`/`stateDirectory`/`ledgerPath`/`backupDirectory` (managed state outside releases), `routes` (non-secret selection), `secretRefs` (opaque `{name,store,key}` references, never values), `network` (`bindHost` loopback or explicit VPN/private IP plus port; `0.0.0.0`/`::`/hostnames rejected), and `resources` (finite memory/restart/log/retention ceilings).
+The operator writes ignored `.local/service-config.json`; install copies it to `<configDir>/service-config.json` (default `/etc/jit`, mode 0640, read-only to the sandboxed service). Fields: `serviceUser` (existing dedicated non-root, non-login identity), absolute `executablePath` (active-release symlink; releases live in `<dirname>/releases/<artifactId>`), `workingDirectory`, `stateDirectory` (holds `app.sqlite`), `ledgerPath` (the one deletion/suppression ledger checkpoint location for this installation), `backupDirectory`, `routes` (non-secret selection), `secretRefs` (opaque `{name,store,key}`; file stores are absolute paths), `network` (`bindHost` loopback, or a private/VPN address — RFC 1918, 100.64/10, fc00::/7 — on a named `vpnInterface`; optional `origin`, HTTPS outside loopback), `resources` (finite memory/restart/log/retention ceilings, optional `stopTimeoutSeconds`), optional `runPort` (`scripted` default or `schway`) and optional `channels.telegram` (`disabled` default or `enabled`, which requires the `telegram-bot-token` credential-file reference). State, backups and the ledger may not live inside releases, the working directory or a home tree (`/home`, `/root`, `/Users`, `/run/user`); unknown fields, wildcard/public binds and secret-value fields fail.
 
 | Public entry | Behavior |
 | --- | --- |
-| `parseServiceConfig(raw)` in `ops/package/service-config.ts` | Strict validation of the trusted shape above. |
-| `planServiceConfig(current, desired)` | Prints only allowlisted non-secret diffs; secret references appear as counts plus a changed flag, never values. |
-| `renderServiceUnit(config, exec)` in `ops/package/service-config.ts` + `ops/package/systemd/jit.service` | Renders the supervised unit (`User=`, bounded restart, `MemoryMax`, `NoNewPrivileges`, loopback/VPN bind) from the checked-in template. `assertNoSecretValues` scans rendered text for secret-shaped values. |
+| `parseServiceConfig(raw)` in `ops/package/service-config.ts` | Strict validation of the shape above (`invalid_service_config`). |
+| `planServiceConfig(current \| null, desired)` | Allowlisted non-secret diffs; secret references appear as count plus names, never stores or keys. |
+| `renderServiceUnit(config, {bunPath, appDir?, configPath?})` + `ops/package/systemd/jit.service` | `ExecStart=<bun> <executablePath>/src/main.ts serve --service-config <configPath>`, `User=`/`Group=`, `Environment=` for `JIT_DATABASE`, `JIT_HOST`, `JIT_PORT`, `JIT_ORIGIN`, `JIT_RUN_PORT` and the bot-token reference path, `Restart=on-failure` with `StartLimitBurst`/`StartLimitIntervalSec`, finite `TimeoutStartSec`/`TimeoutStopSec` (drain + 15 s, `KillMode=mixed`), `MemoryMax`, `TasksMax`, `NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`, `ReadWritePaths` limited to state, backups and the ledger directory, `UMask=0077`, `LogNamespace=jit`, `WantedBy=multi-user.target`. |
+| `renderJournaldConfig(config)` + `systemd/journald@jit.conf` | Persistent journald namespace bounded by `SystemMaxUse=<logBytes>` and `MaxRetentionSec=<retentionDays>day`. |
+| `assertNoSecretValues(text)` | Rejects rendered text carrying token, bearer, private-key, password or API-key shaped values. |
 
-## Operate the service
+## Operator commands
 
 ```sh
-bun src/main.ts preflight [--contract jit.schway.bridge/v1]
-bun src/main.ts status
+bun src/main.ts service plan      --config .local/service-config.json --artifact <dir> [--bun <path>]
+bun src/main.ts service install   --config .local/service-config.json --artifact <dir> [--bun <path>]
+bun src/main.ts service start|stop|restart|status|disable|uninstall [--config <installed>]
+bun src/main.ts service upgrade   --artifact <dir> --password-stdin
+# host layout overrides (tests, staging): --unit-dir --journald-dir --config-dir
 ```
 
-| Public entry | Behavior |
+| Public entry (`src/ops/service-package.ts`, `src/ops/service-cli.ts`, `src/ops/supervisor.ts`) | Behavior |
 | --- | --- |
-| `preflightService(input)` in `src/ops/lifecycle.ts` | Gates activation on config, schema, engine, quarantine (deletion ledger present), scheduler, delivery worker, secret files and artifact pins. Read-only status stays available when blocked. |
-| `startFullApp(input)` | Async. After preflight, boots the composed full application with exactly the Web worker registrations (no probe runner) and awaits `queue.reconcile(teamPort)` (session plus pending-deletion reconciliation, [data-lifecycle-v1](data-lifecycle-v1.md)) before returning an active handle. A missing ledger refuses with a quarantine gate. |
-| `stopDrain(handle, {timeoutMs})` | Bounded cooperative cancellation. Timeout reports `unknown` for unsettled work and never marks remote delivery stopped or sent. |
-| `upgradeStaged(input)` | Validates the staged artifact, backs up state plus the artifact pair, applies, and runs the injected health check. Failure restores the backup pair; the ledger is never rewritten. Migration semantics belong to the open OPS06 (#32) path. |
-| `serviceStatus(input)` / `gatherServiceStatus(config, service)` in `src/ops/status.ts` | `running`/`blocked`/`observed-ready` without reading secrets. `observed-ready` requires explicit live evidence; only OPS05 may set it. |
+| `runServiceCommand(args, deps)` | Bounded command boundary; JSON output with fixed fields, sanitized by `assertNoSecretValues` (a violation prints `service-output-redacted`). |
+| `CommandRunner` / `spawnRunner` / `SystemdSupervisor` | Every external program (`systemctl`, `getent`, `ip`, `bun`, the new build's `upgrade`) runs through one injectable runner with finite timeouts and fixed argv vectors (no shell). Tests inject a fake supervisor and never call systemctl. |
+| `planInstall` (`plan`) | Read-only checks with safe next actions: artifact (runtime-validated), identity (`getent passwd`: exists, non-root, non-login shell, not under `/home`), runtime (`bun --version` equals the pin), state/backup directories owned by the identity and 0700-class, working/ledger directories, every secret reference (credential files owner-only and owned by the identity; keyring/environment stores are `verify-secret-store`), private bind on the named interface (`ip -o addr show dev`), active-release path managed, duplicate instance (installed unit not active). Prints the exact unit and journald texts, file paths/modes/digests and the commands install runs. Writes nothing. |
+| `installService` (`install`) | After a passing plan: stages the release copy (re-validated), seeds the ledger checkpoint placeholder `{ledger, revision: 1}` only when absent (never overwrites; OPS02 replaces it with the real checkpoint), writes config 0640, unit 0644 and journald 0644 atomically, points the active-release symlink, `daemon-reload`, `enable`. It does not start the service. |
+| `start` / `stop` / `restart` / `status` | Drive the unit; `status` combines `systemctl show` with `gatherServiceStatus`. |
+| `disableService` (`disable`, `uninstall`) | `disable --now`; `uninstall` also removes only the unit and journald files. Config, releases, state, backups, ledger and secret references are preserved; deleting managed data is a distinct authorized operation. |
+| `upgradePackage` (`upgrade`) | See *Upgrade*. |
 
-`JIT_HOST` rejects wildcard binds (`0.0.0.0`, `::`) by default; Web binds loopback or an explicitly configured private interface behind private ingress.
+## Start: one path for `serve` and the unit
 
-Deterministic checks: `bun test tests/ops-service.test.ts`, `bun test`, `bun run typecheck`. Tests use disposable directories, a fake supervisor path and scripted ports: no provisioning, VPN changes, login or reboot.
+`bun src/main.ts serve [--service-config <path>]` calls `startFullApp` then `serveFullApp`; the packaged unit runs exactly this with the installed configuration. Without `--service-config` the development profile runs the same path without installation-only gates (config, secrets, artifact) and with the development ledger profile.
+
+| Public entry (`src/ops/lifecycle.ts`) | Behavior |
+| --- | --- |
+| `preflightService(input)` | Read-only gates: `config` (directories present; state directory owned by the running uid and not group/other-writable; backup directory 0700-class), `schema` (older → `run-owner-upgrade`, never migrated in place), `engine`, `quarantine` (ledger gate, `inspect` mode), `scheduler` and `deliveries` (one live owner), `channels` (opt-in Telegram: token reference readable with owner-only mode and a supported transport registered), `secrets`, `artifact` (when running from the configured release: content, lock, schema and dependency pins; an unpackaged checkout reports `ready` with that detail). |
+| `serviceAppConfig(config, service)` | The installation's database, bind, origin, run port and bot-token reference come from the service configuration. |
+| `startFullApp(input)` | Preflight → concrete bridge verification in `schway` mode → pre-listen state preparation (unless fenced) → one `ManagedService` composition (same workers as Web, Telegram, PR, schedule and recovery paths; no probe runner; PR cache under state) → `Application` → ledger gate in `boot` mode → `app.boot()` (session and deletion reconciliation, upgrade completion) → opt-in `ServiceChannels` last. Returns gates instead of enabling anything when blocked. |
+| `LedgerGate` / `checkpointFileLedgerGate` | Seam for the installation deletion/suppression ledger (`{store, ledgerPath, now, mode}` → `trusted` or `{reason, nextAction}`). The default accepts a `jit.deletion.ledger/v1` checkpoint file (seed or real); OPS02 (#33) replaces it with `syncLedgerCheckpoint`, after which a missing, diverged or unverifiable checkpoint keeps the installation quarantined. |
+| `ServiceChannels` / `ChannelTransportFactory` (`src/ops/service-channels.ts`) | One delivery worker (claims `delivery_worker`; reconciles interrupted attempts to `unknown`) and one Telegram poller that persists updates before acknowledging the offset; nothing sends or polls under an upgrade/restore fence. The bot token reaches only the transport factory. This build registers no live Bot API transport, so `channels.telegram: enabled` fails closed (`install-supported-telegram-transport`) outside tests. Inbound project commands are not executed by the service: they require an owner session, and the service never derives owner authority from process identity, network address or a health request. |
+| `serveFullApp(handle)` | Listens on the configured private bind (owner authentication unchanged), pumps queue, schedules and channels; `stop()` stops listening, then drains. |
+| `stopDrain(handle, {timeoutMs})` | Stops channels, fences admission and in-flight attempts, waits at most `timeoutMs`. Timeout reports `unknown` and `terminate-supervised-process-and-reconcile`; remote work/delivery is never recorded as stopped, sent or completed without evidence. Restart reconciles before new work. |
+| `gatherServiceStatus(config, service)` (`src/ops/status.ts`) | `running` / `blocked` / `observed-ready` (only with explicit live evidence) plus scheduler and worker ownership (`service` when the scheduler's process sends), quarantine, `channels` (`disabled`/`ready`/`blocked`), `routes` (`total`, `configured`, `verified: 0`) and non-ownership blocked gates. Reads no secrets. |
+
+## Upgrade
+
+`upgradePackage` (`service upgrade`), run from the new build:
+
+1. Validate the staged artifact for this host (content, lock, schema, dependencies, engine). Block without stopping when it is older than the installation state, already active, or the ledger gate is not trusted (newer deletion/suppression state is never ignored).
+2. Stage the release copy; `systemctl stop` (cooperative drain, bounded by `TimeoutStopSec`); require `inactive`/`failed` and no live scheduler/delivery owner, else `blocked` / `terminate-supervised-process-and-reconcile`.
+3. Run the new build's `upgrade --service-config <installed> --password-stdin` (ops.schema_migrations/v1: fence, verified recovery point in the configured backup directory, staged migration, validation, atomic activation), as the service identity when invoked as root. The owner password goes only to its stdin.
+4. Upgrade did not activate → `upgrade-failed`: the release is not switched and the prior release restarts when the state still matches it.
+5. Switch the active-release symlink atomically, `systemctl start` (boot reconciles before admission), health-check (supervisor active and `GET /login` on the private bind, finite deadline; a health request is never an owner command).
+6. Unhealthy → stop; roll back to the prior release only when the state schema still equals the prior manifest's (`rolled-back`); otherwise `activation-unhealthy`, the service stays stopped on the new release and `recoveryBackupId` names the recovery point for an OPS02 quarantined restore. Native Schway format and the ledger are never rewritten.
+
+Result: `jit.ops.package-upgrade/v1` with outcome, previous/new/active artifact ids, schemas, recovery backup id, upgrade id, supervisor state and next action.
+
+## Verification
+
+Deterministic (`bun test tests/ops-service-package.test.ts tests/ops-service.test.ts`, `bun test`, `bun run typecheck`): disposable directories, a fake supervisor that executes the rendered unit's `ExecStart`/`Environment` as a real child process, simulated `getent`/`ip`/dependency install and simulated `upgrade` outcomes; real artifact build, plan/install writes, release symlink, full-app boot, HTTP owner login and persisted state. No systemctl, registry, network accounts, VPN or reboot.
+
+Opt-in, not in `bun test`: `JIT_OPS_SMOKE=1 bun run ops:smoke` on Linux arm64 builds, installs dependencies, validates and launches the release against disposable state and prints a sanitized summary; it refuses elsewhere. Real systemd install, unattended boot, reboot, Secret Service/credential access and VPN reachability on the Pi are OPS05 (#36) evidence.
