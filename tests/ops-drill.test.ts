@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runOpsCommand } from "../src/ops-cli";
@@ -172,7 +172,9 @@ test("standalone CLI drills, reports and rejects invalid invocations with fixed 
   expect((await run(["drill", "--config", ".local/drill.json"])).exit).toBe(2);
   const diagnosed = await run(["diagnose"]);
   expect(diagnosed.exit).toBe(0);
-  expect(JSON.parse(diagnosed.stdout)).toMatchObject({ schema: "jit.ops.diagnostics/v1", nextAction: "configure-telegram" });
+  // A missing installation database reads as unavailable; diagnose never creates it.
+  expect(JSON.parse(diagnosed.stdout)).toMatchObject({ schema: "jit.ops.diagnostics/v1", queue: { available: false } });
+  expect(existsSync(join(root, "state.sqlite"))).toBe(false);
 });
 
 test("main diagnose path inspects without claiming scheduler ownership or starting work", async () => {
@@ -183,10 +185,16 @@ test("main diagnose path inspects without claiming scheduler ownership or starti
   expect(stderr).toBe("");
   expect(exit).toBe(0);
   expect(JSON.parse(stdout).schema).toBe("jit.ops.diagnostics/v1");
+  // Read-only: a missing database is not created; an existing one is neither modified nor journaled.
+  expect(existsSync(join(root, "diag.sqlite"))).toBe(false);
   const { TransactionStore } = await import("../src/store");
-  const store = new TransactionStore(join(root, "diag.sqlite"));
-  try {
-    expect(store.read(tx => tx.get("SELECT * FROM job_scheduler"))).toBeNull();
-  } finally { store.close(); }
-  expect(readFileSync(join(root, "diag.sqlite")).length).toBeGreaterThan(0);
+  new TransactionStore(join(root, "diag.sqlite")).close();
+  chmodSync(join(root, "diag.sqlite"), 0o640);
+  const before = { bytes: readFileSync(join(root, "diag.sqlite")), mode: statSync(join(root, "diag.sqlite")).mode };
+  const again = Bun.spawn([process.execPath, main, "diagnose"], { cwd: root, env: { JIT_DATABASE: join(root, "diag.sqlite") }, stdout: "pipe", stderr: "pipe" });
+  const [againOut, , againExit] = await Promise.all([new Response(again.stdout).text(), new Response(again.stderr).text(), again.exited]);
+  expect(againExit).toBe(0);
+  expect(JSON.parse(againOut)).toMatchObject({ queue: { available: true } });
+  expect({ bytes: readFileSync(join(root, "diag.sqlite")), mode: statSync(join(root, "diag.sqlite")).mode }).toEqual(before);
+  expect(["-wal", "-shm", "-journal"].filter(suffix => existsSync(join(root, "diag.sqlite") + suffix))).toEqual([]);
 });

@@ -1,21 +1,29 @@
-import { chmodSync, copyFileSync, existsSync, mkdirSync, openSync, closeSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { randomUUID } from "node:crypto";
-import { join, resolve } from "node:path";
+import { realpathSync, statSync } from "node:fs";
+import { resolve } from "node:path";
 import { Application } from "../application";
+import { prepareServiceState } from "../bootstrap";
 import type { AppConfig } from "../config";
 import type { JobQueue } from "../jobs/queue";
+import { tickSchedules } from "../jobs/schedules";
 import { composeJobQueue } from "../composition";
 import type { ApplicationRunPort } from "../team/run-port";
+import { verifySchwayBridge } from "../team/schway-port";
 import { TransactionStore, schemaVersion } from "../store";
+import { createWebHandler } from "../web";
 import { backupDirectoryProblem } from "./backup";
 import { backupNativePortFor } from "./schway-backup";
-import { syncLedgerCheckpoint } from "./lifecycle-ledger";
+import { ledgerCheckpointPathFor, syncLedgerCheckpoint } from "./lifecycle-ledger";
+import { openReadOnlyStore, unavailableReadOnlyStore } from "./readonly-store";
+import { ServiceChannels, channelReadiness, type ChannelTransportFactory } from "./service-channels";
 import { ManagedService } from "./upgrade-service";
+import { upgradeFenced } from "./upgrade-fence";
 import { validateArtifact, type BuildManifest } from "../../ops/package/bun-build";
-import { parseServiceConfig, type ServiceConfig } from "../../ops/package/service-config";
+import {
+  parseServiceConfig, serviceDatabasePath, serviceDrainTimeoutMs, serviceOrigin, telegramEnabled, telegramTokenPath, type ServiceConfig,
+} from "../../ops/package/service-config";
 
 /** Fixed preflight gates. A blocked gate never implies its remedy is authorized. */
-export const preflightGates = ["config", "schema", "engine", "quarantine", "scheduler", "deliveries", "secrets", "artifact"] as const;
+export const preflightGates = ["config", "schema", "engine", "quarantine", "scheduler", "deliveries", "channels", "secrets", "artifact"] as const;
 export type PreflightGateName = typeof preflightGates[number];
 
 export interface PreflightGate {
@@ -30,13 +38,78 @@ export interface PreflightResult {
   gates: PreflightGate[];
 }
 
+// ---------------------------------------------------------------------------
+// Deletion/suppression ledger seam (ops.quarantined_restore/v1, #33)
+// ---------------------------------------------------------------------------
+
+/** Verdict of the installation ledger check that gates activation. */
+export type LedgerVerdict = { trusted: true; detail: string } | { trusted: false; reason: string; nextAction: string };
+
+/** The read surface preflight and ledger inspection use; status supplies a read-only SQLite adapter. */
+export type ReadableStore = Pick<TransactionStore, "read" | "path">;
+
+export interface LedgerGateInput {
+  store: ReadableStore;
+  /** Configured checkpoint path (`ServiceConfig.ledgerPath`), or null for the development profile. */
+  ledgerPath: string | null;
+  now: number;
+  /** `inspect` must not write (preflight/status); `boot` may establish or extend the checkpoint. */
+  mode: "inspect" | "boot";
+}
+
+/**
+ * Narrow seam through which the service consumes the installation-scoped
+ * deletion/suppression ledger. Activation (jobs, memory assembly,
+ * extraction, monitoring, deliveries) proceeds only on `trusted`.
+ */
+export type LedgerGate = (input: LedgerGateInput) => LedgerVerdict;
+
+/**
+ * Default ledger gate: the OPS02 installation lifecycle ledger checkpoint
+ * (app.deletion_ledger/v1, `syncLedgerCheckpoint`). The installed profile
+ * checks the configured `ledgerPath`; the development profile checks the
+ * default `<db>.lifecycle-ledger.json`. `inspect` never writes (read-only
+ * stores suffice); `boot` may establish the checkpoint from a fresh
+ * installation or the install seed `{ledger, revision}` (accepted once), or
+ * extend a lagging one. Untrusted — missing after establishment, diverged,
+ * stale, unverifiable, incompatible, or relocated without a verified copy
+ * of the previously established checkpoint — keeps activation quarantined.
+ */
+export const defaultLedgerGate: LedgerGate = ({ store, ledgerPath, now, mode }) => {
+  const path = ledgerPath ?? ledgerCheckpointPathFor(store.path);
+  // With `write: false` the checkpoint resolution only reads, so the read-only adapter is sufficient.
+  const verdict = syncLedgerCheckpoint(store as TransactionStore, path, now, { write: mode === "boot" });
+  return verdict.state === "trusted"
+    ? { trusted: true, detail: `lifecycle ledger trusted (head ${verdict.head}, ${verdict.count} entries${verdict.established ? ", established" : ""})` }
+    : { trusted: false, reason: `lifecycle ledger ${verdict.reason}`, nextAction: verdict.nextAction };
+};
+
+/** Reads quarantine state through a ledger gate (inspect mode) without starting anything. */
+export function readQuarantine(service: ServiceConfig, store: ReadableStore | null = null, gate: LedgerGate = defaultLedgerGate): { quarantined: boolean; reason: string } {
+  try {
+    const readable = store ?? openReadOnlyStore(serviceDatabasePath(service)) ?? unavailableReadOnlyStore(serviceDatabasePath(service));
+    const verdict = gate({ store: readable, ledgerPath: service.ledgerPath, now: Date.now(), mode: "inspect" });
+    return verdict.trusted ? { quarantined: false, reason: verdict.detail } : { quarantined: true, reason: verdict.reason };
+  } catch { return { quarantined: true, reason: "ledger check failed" }; }
+}
+
+// ---------------------------------------------------------------------------
+// Preflight
+// ---------------------------------------------------------------------------
+
 export interface PreflightInput {
-  store: TransactionStore;
+  /** Read surface only; `null` when the installation database does not exist (reported blocked, never created). */
+  store: ReadableStore | null;
   config: AppConfig;
-  service: ServiceConfig;
+  /** Trusted installation configuration; null runs the development profile (service-only gates omitted). */
+  service: ServiceConfig | null;
   requiredEngine: string;
+  /** Explicit artifact manifest to check (otherwise the running release is checked when packaged). */
   artifact?: BuildManifest;
   now?: () => number;
+  ledgerGate?: LedgerGate;
+  /** Telegram transport factory; absent means no supported transport is installed. */
+  transports?: ChannelTransportFactory;
 }
 
 function alive(pid: unknown): boolean {
@@ -45,17 +118,25 @@ function alive(pid: unknown): boolean {
   catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
 }
 
-function ledgerOk(ledgerPath: string): boolean {
-  try {
-    const raw = JSON.parse(readFileSync(ledgerPath, "utf8")) as { ledger?: unknown; revision?: unknown };
-    return raw.ledger === "jit.deletion.ledger/v1" && Number.isSafeInteger(raw.revision) && (raw.revision as number) >= 1;
-  } catch { return false; }
+/** Root of the build executing this code (the release directory under the packaged unit). */
+export const runningAppRoot = resolve(import.meta.dir, "../..");
+
+function realpathOrNull(path: string): string | null {
+  try { return realpathSync(path); } catch { return null; }
 }
 
-/** Reads quarantine state without starting anything: a missing ledger keeps the install quarantined. */
-export function readQuarantine(service: ServiceConfig): { quarantined: boolean; reason: string } {
-  if (!ledgerOk(service.ledgerPath)) return { quarantined: true, reason: "missing deletion ledger; restore stays quarantined" };
-  return { quarantined: false, reason: "ledger present" };
+/**
+ * Application configuration as the installation defines it: the database,
+ * bind, origin, run port and bot-token reference come from the trusted
+ * service configuration, so the unit's environment and the service file
+ * cannot disagree about which state is served.
+ */
+export function serviceAppConfig(config: AppConfig, service: ServiceConfig | null): AppConfig {
+  if (!service) return config;
+  const parsed = parseServiceConfig(service);
+  return { ...config, databasePath: serviceDatabasePath(parsed), hostname: parsed.network.bindHost, port: parsed.network.port,
+    origin: serviceOrigin(parsed), runPort: parsed.runPort ?? config.runPort,
+    telegram: { ...config.telegram, botTokenPath: telegramTokenPath(parsed) ?? config.telegram.botTokenPath } };
 }
 
 /**
@@ -67,63 +148,103 @@ export function readQuarantine(service: ServiceConfig): { quarantined: boolean; 
  */
 export function preflightService(input: PreflightInput): PreflightResult {
   const gates: PreflightGate[] = [];
-  let service: ServiceConfig;
-  try { service = parseServiceConfig(input.service); }
-  catch { return { ok: false, gates: [{ gate: "config", state: "blocked", nextAction: "fix-service-configuration", detail: "service configuration rejected" }] }; }
-  const dirReady = (path: string): boolean => {
-    try { return statSync(path).isDirectory(); } catch { return false; }
-  };
-  // The backup destination holds managed snapshots: it must be a real, service-owned 0700-class directory, never trusted merely for existing.
-  const backupProblem = backupDirectoryProblem(service.backupDirectory);
-  gates.push(!dirReady(service.stateDirectory) || !dirReady(service.workingDirectory) || backupProblem === "backup_directory_missing"
-    ? { gate: "config", state: "blocked", nextAction: "prepare-service-directories", detail: "service directory missing" }
-    : backupProblem !== null
-      ? { gate: "config", state: "blocked", nextAction: "restrict-backup-directory", detail: `backup directory untrusted: ${backupProblem}` }
-      : { gate: "config", state: "ready", nextAction: "none", detail: "service directories present; backup directory restricted" });
+  let service: ServiceConfig | null = null;
+  if (input.service !== null) {
+    try { service = parseServiceConfig(input.service); }
+    catch { return { ok: false, gates: [{ gate: "config", state: "blocked", nextAction: "fix-service-configuration", detail: "service configuration rejected" }] }; }
+  }
+  const now = input.now ?? Date.now;
+  if (service) {
+    const dirReady = (path: string): boolean => {
+      try { return statSync(path).isDirectory(); } catch { return false; }
+    };
+    const stateProblem = (() => {
+      try {
+        const stats = statSync(service.stateDirectory);
+        if ((stats.mode & 0o022) !== 0) return "state_directory_writable_by_others";
+        if (typeof process.getuid === "function" && stats.uid !== process.getuid()) return "state_directory_foreign_owner";
+        return null;
+      } catch { return "state_directory_missing"; }
+    })();
+    // The backup destination holds managed snapshots: it must be a real, service-owned 0700-class directory, never trusted merely for existing.
+    const backupProblem = backupDirectoryProblem(service.backupDirectory);
+    gates.push(!dirReady(service.stateDirectory) || !dirReady(service.workingDirectory) || backupProblem === "backup_directory_missing"
+      ? { gate: "config", state: "blocked", nextAction: "prepare-service-directories", detail: "service directory missing" }
+      : stateProblem !== null
+        ? { gate: "config", state: "blocked", nextAction: "restrict-state-directory", detail: `state directory untrusted: ${stateProblem}` }
+        : backupProblem !== null
+          ? { gate: "config", state: "blocked", nextAction: "restrict-backup-directory", detail: `backup directory untrusted: ${backupProblem}` }
+          : { gate: "config", state: "ready", nextAction: "none", detail: "service directories present; state and backup directories restricted" });
+  }
+  const store: ReadableStore = input.store ?? { path: serviceAppConfig(input.config, service).databasePath, read: () => { throw new Error("store_missing"); } };
   let userVersion: number | null = null;
-  try { userVersion = input.store.read(tx => tx.get<{ user_version: number }>("PRAGMA user_version")!).user_version; } catch { /* Stay blocked below. */ }
+  try { userVersion = store.read(tx => tx.get<{ user_version: number }>("PRAGMA user_version")!).user_version; } catch { /* Stay blocked below. */ }
   gates.push(userVersion === schemaVersion
     ? { gate: "schema", state: "ready", nextAction: "none", detail: `state schema ${userVersion} matches app schema ${schemaVersion}` }
     : userVersion !== null && userVersion < schemaVersion
       ? { gate: "schema", state: "blocked", nextAction: "run-owner-upgrade", detail: `state schema ${userVersion} older than app schema ${schemaVersion}; staged upgrade required` }
-      : { gate: "schema", state: "blocked", nextAction: "use-compatible-app-artifact", detail: "state schema unreadable or newer than app" });
+      : input.store === null
+        ? { gate: "schema", state: "blocked", nextAction: "start-service-to-initialize-installation", detail: "installation database missing" }
+        : { gate: "schema", state: "blocked", nextAction: "use-compatible-app-artifact", detail: "state schema unreadable or newer than app" });
   gates.push(input.requiredEngine === "jit.schway.bridge/v1"
     ? { gate: "engine", state: "ready", nextAction: "none", detail: "declared bridge contract only; live capability proven separately" }
     : { gate: "engine", state: "blocked", nextAction: "use-supported-engine-contract", detail: "engine contract not supported" });
-  const quarantine = readQuarantine(service);
-  gates.push(!quarantine.quarantined
-    ? { gate: "quarantine", state: "ready", nextAction: "none", detail: quarantine.reason }
-    : { gate: "quarantine", state: "blocked", nextAction: "inspect-quarantine-and-ledger", detail: quarantine.reason });
-  const schedulerPid = input.store.read(tx => {
-    try { return tx.get<{ pid: number }>("SELECT pid FROM job_scheduler WHERE id = 1")?.pid ?? null; } catch { return null; }
-  });
+  let ledger: LedgerVerdict;
+  try { ledger = (input.ledgerGate ?? defaultLedgerGate)({ store, ledgerPath: service?.ledgerPath ?? null, now: now(), mode: "inspect" }); }
+  catch { ledger = { trusted: false, reason: "ledger check failed", nextAction: "inspect-quarantine-and-ledger" }; }
+  gates.push(ledger.trusted
+    ? { gate: "quarantine", state: "ready", nextAction: "none", detail: ledger.detail }
+    : { gate: "quarantine", state: "blocked", nextAction: ledger.nextAction, detail: ledger.reason });
+  const ownerPid = (table: "job_scheduler" | "delivery_worker"): number | null => {
+    try { return store.read(tx => tx.get<{ pid: number }>(`SELECT pid FROM ${table} WHERE id = 1`)?.pid ?? null); } catch { return null; }
+  };
+  const schedulerPid = ownerPid("job_scheduler");
   gates.push(schedulerPid === null || !alive(schedulerPid)
     ? { gate: "scheduler", state: "ready", nextAction: "none", detail: schedulerPid === null ? "admission free" : "stale owner; takeover permitted" }
     : { gate: "scheduler", state: "blocked", nextAction: "stop-other-instance", detail: "another scheduler owns admission" });
-  const workerPid = input.store.read(tx => {
-    try { return tx.get<{ pid: number }>("SELECT pid FROM delivery_worker WHERE id = 1")?.pid ?? null; } catch { return null; }
-  });
+  const workerPid = ownerPid("delivery_worker");
   gates.push(workerPid === null || !alive(workerPid)
     ? { gate: "deliveries", state: "ready", nextAction: "none", detail: "delivery worker free" }
     : { gate: "deliveries", state: "blocked", nextAction: "stop-other-delivery-worker", detail: "another delivery worker owns sending" });
-  const secretProblems: string[] = [];
-  for (const ref of service.secretRefs) {
-    if (ref.store === "credential-file") {
-      try {
-        const mode = statSync(ref.key).mode & 0o777;
-        if ((mode & 0o077) !== 0 || !statSync(ref.key).isFile()) secretProblems.push(ref.name);
-      } catch { secretProblems.push(ref.name); }
-    } else {
-      secretProblems.push(ref.name);
+  const channels = channelReadiness({ enabled: service ? telegramEnabled(service) : false,
+    botTokenPath: serviceAppConfig(input.config, service).telegram.botTokenPath, transports: input.transports });
+  gates.push(channels.state === "blocked"
+    ? { gate: "channels", state: "blocked", nextAction: channels.nextAction, detail: channels.detail }
+    : { gate: "channels", state: "ready", nextAction: "none", detail: channels.detail });
+  if (service) {
+    const secretProblems: string[] = [];
+    for (const ref of service.secretRefs) {
+      if (ref.store === "credential-file") {
+        try {
+          const stats = statSync(ref.key);
+          if ((stats.mode & 0o077) !== 0 || !stats.isFile()) secretProblems.push(ref.name);
+        } catch { secretProblems.push(ref.name); }
+      } else {
+        // Keyring and environment-file stores cannot be verified from here; never assume access.
+        secretProblems.push(ref.name);
+      }
     }
+    gates.push(secretProblems.length === 0
+      ? { gate: "secrets", state: "ready", nextAction: "none", detail: "credential files present with safe modes" }
+      : { gate: "secrets", state: "blocked", nextAction: "verify-secret-store", detail: "secret store access unverified" });
   }
-  gates.push(secretProblems.length === 0
-    ? { gate: "secrets", state: "ready", nextAction: "none", detail: "credential files present with safe modes" }
-    : { gate: "secrets", state: "blocked", nextAction: "verify-secret-store", detail: "secret store access unverified" });
   if (input.artifact) {
-    gates.push(input.artifact.schemaVersion <= schemaVersion && input.artifact.engineContract === input.requiredEngine
+    gates.push(input.artifact.schemaVersion === schemaVersion && input.artifact.engineContract === input.requiredEngine
       ? { gate: "artifact", state: "ready", nextAction: "none", detail: "pinned artifact compatible" }
       : { gate: "artifact", state: "blocked", nextAction: "use-compatible-app-artifact", detail: "artifact incompatible" });
+  } else if (service) {
+    const release = realpathOrNull(service.executablePath);
+    if (release !== null && release === realpathOrNull(runningAppRoot)) {
+      // Running from the configured release: it must be the unmodified, pinned, dependency-installed artifact.
+      const checked = validateArtifact(release, { runtime: true });
+      const engineOk = checked.manifest?.engineContract === input.requiredEngine;
+      gates.push(checked.ok && engineOk
+        ? { gate: "artifact", state: "ready", nextAction: "none", detail: `release ${checked.manifest!.artifactId} verified` }
+        : { gate: "artifact", state: "blocked", nextAction: "reinstall-validated-artifact",
+          detail: `release failed validation: ${checked.checks.filter(c => !c.ok).map(c => c.check).join(",") || "engine-contract"}` });
+    } else {
+      gates.push({ gate: "artifact", state: "ready", nextAction: "none", detail: "unpackaged checkout: not running from the configured release" });
+    }
   }
   return { ok: gates.every(g => g.state === "ready"), gates };
 }
@@ -138,6 +259,10 @@ export function createFullAppQueue(store: TransactionStore, config: AppConfig, n
   return composeJobQueue(store, config, { now }).queue;
 }
 
+// ---------------------------------------------------------------------------
+// Start
+// ---------------------------------------------------------------------------
+
 export interface FullAppHandle {
   store: TransactionStore;
   /** Current scheduler (rebuilt by the managed service after an upgrade activates or rolls back). */
@@ -147,77 +272,162 @@ export interface FullAppHandle {
   app: Application;
   /** Service lifecycle owner shared with the upgrade (ops.schema_migrations/v1). */
   service: ManagedService;
+  /** Delivery worker and Telegram poller, or null when the channel is not enabled. */
+  channels: ServiceChannels | null;
+  /** Effective application configuration (service-defined database, bind and origin). */
+  config: AppConfig;
+  /** Trusted installation configuration, or null under the development profile. */
+  serviceConfig: ServiceConfig | null;
+  /** Boot reconciliation outcome; `reconciled: false` while an upgrade/restore fence holds. */
+  boot: { reconciled: boolean; detail: string; upgrade: { id: string; state: string } | null;
+    restore: { id: string; state: string; reason: string | null } | null };
 }
 
 export interface StartInput {
   config: AppConfig;
-  service: ServiceConfig;
+  /** Trusted installation configuration, or null for the development profile (`serve` without `--service-config`). */
+  service: ServiceConfig | null;
   storePath?: string;
   store?: TransactionStore;
   requiredEngine?: string;
   now?: () => number;
+  ledgerGate?: LedgerGate;
+  /** Telegram transport factory. Production builds register none, so an enabled channel fails closed. */
+  transports?: ChannelTransportFactory;
+  /** Process-owned PR snapshot cache (default `<state>/pr-cache` for a service, `.local/pr-cache` otherwise). */
+  prCacheRoot?: string;
 }
 
 /**
- * Starts the composed full application after preflight. A blocked preflight
- * returns its gates instead of enabling jobs, memory assembly or deliveries.
- * Session and deletion reconciliation (jobs.session_reconcile/v1,
- * app.data_lifecycle/v1) completes through the team lifecycle port before an
- * active handle is returned, so stale workers and pending native deletions are
- * reconciled before any serving or pumping.
+ * The one service start path, used by `bun src/main.ts serve` (with or
+ * without `--service-config`) and therefore by the packaged systemd unit:
+ *
+ * 1. Preflight (read-only): configuration, schema/upgrade, engine,
+ *    quarantine ledger, single scheduler and delivery owner, channels,
+ *    secrets and the running release artifact. Blocked gates are returned;
+ *    nothing is enabled.
+ * 2. Concrete engine gate (`JIT_RUN_PORT=schway`): the pinned bridge must
+ *    verify before any admission.
+ * 3. Pre-listen state preparation (legacy alert quarantine) unless an
+ *    upgrade/restore fence holds.
+ * 4. One managed composition (same workers as Web, Telegram, PR, schedule
+ *    and recovery paths) and the Application.
+ * 5. Ledger gate in `boot` mode, then session/deletion reconciliation
+ *    (jobs.session_reconcile/v1, app.data_lifecycle/v1) and completion of an
+ *    activated upgrade, before anything is served or pumped.
+ * 6. Opt-in channels (delivery worker + Telegram poller) last, so no send
+ *    can precede reconciliation.
  */
 export async function startFullApp(input: StartInput): Promise<{ ok: true; handle: FullAppHandle } | { ok: false; gates: PreflightGate[] }> {
-  const service = parseServiceConfig(input.service);
-  const quarantine = readQuarantine(service);
-  if (quarantine.quarantined) {
-    return { ok: false, gates: [{ gate: "quarantine", state: "blocked", nextAction: "inspect-quarantine-and-ledger", detail: quarantine.reason }] };
-  }
+  const service = input.service === null ? null : parseServiceConfig(input.service);
+  const config = serviceAppConfig(input.config, service);
   const now = input.now ?? Date.now;
+  const ledgerGate = input.ledgerGate ?? defaultLedgerGate;
+  const requiredEngine = input.requiredEngine ?? "jit.schway.bridge/v1";
   // Never migrate an existing installation at boot; preflight blocks older schemas (run-owner-upgrade).
-  const store = input.store ?? new TransactionStore(resolve(input.storePath ?? join(service.stateDirectory, "app.sqlite")), { migrateExisting: false });
-  let queue: JobQueue | undefined;
+  const store = input.store ?? new TransactionStore(resolve(input.storePath ?? config.databasePath), { migrateExisting: false });
+  const owned = !input.store;
+  let managed: ManagedService | undefined;
+  let channels: ServiceChannels | null = null;
+  const refuse = (gates: PreflightGate[]) => {
+    try { managed?.close(); } catch { /* Teardown only. */ }
+    if (owned) store.close();
+    return { ok: false as const, gates };
+  };
   try {
-    const preflight = preflightService({ store, config: input.config, service, requiredEngine: input.requiredEngine ?? "jit.schway.bridge/v1" });
-    if (!preflight.ok) {
-      if (!input.store) store.close();
-      return { ok: false, gates: preflight.gates };
+    const preflight = preflightService({ store, config, service, requiredEngine, now, ledgerGate,
+      ...(input.transports ? { transports: input.transports } : {}) });
+    if (!preflight.ok) return refuse(preflight.gates);
+    if (config.runPort === "schway") {
+      const bridge = await verifySchwayBridge(store);
+      if (!bridge.ok) return refuse([{ gate: "engine", state: "blocked", nextAction: bridge.nextAction, detail: `schway bridge unavailable: ${bridge.detail}` }]);
     }
-    const managed = ManagedService.forConfig(store, input.config, { now });
-    const composed = composeJobQueue(store, input.config, { now });
+    const fenced = upgradeFenced(store.path);
+    // Pre-listen state preparation runs before the job queue, delivery work or HTTP server exist.
+    // Under a fence nothing sends and live state must stay the validated epoch, so it waits for the next boot.
+    if (!fenced) prepareServiceState(store, now());
+    const compose = { now, prCacheRoot: input.prCacheRoot ?? (service ? resolve(service.stateDirectory, "pr-cache") : ".local/pr-cache") };
+    managed = ManagedService.forConfig(store, config, compose);
+    const composed = composeJobQueue(store, config, compose);
     managed.adopt(composed);
-    queue = composed.queue;
     // Same selection as serve (backupNativePortFor); managed backups land in
     // the validated service backup directory, never beside the database.
-    const nativeSnapshot = backupNativePortFor(input.config, store);
-    // The managed service owns the queue so an owner upgrade can quiesce, rebuild and reconcile it.
+    const nativeSnapshot = backupNativePortFor(config, store);
     // Constructing the Application first resolves durable upgrade intent left by a crash.
-    const app = new Application(store, input.config, {
-      service: managed, now, backupDir: service.backupDirectory, ledgerPath: service.ledgerPath,
+    const app = new Application(store, config, {
+      service: managed, now, ...(service ? { backupDir: service.backupDirectory, ledgerPath: service.ledgerPath } : {}),
       ...(nativeSnapshot ? { nativeSnapshot } : {}),
     });
-    // app.deletion_ledger/v1: the configured ledger file is the installation ledger's checkpoint. A seed
-    // placeholder is replaced by the real checkpoint; a diverged or unverifiable one keeps the service quarantined.
-    const ledger = syncLedgerCheckpoint(store, service.ledgerPath, now());
-    if (ledger.state !== "trusted") {
-      managed.close();
-      if (!input.store) store.close();
-      return { ok: false, gates: [{ gate: "quarantine", state: "blocked", nextAction: "inspect-quarantine-and-ledger", detail: `lifecycle ledger ${ledger.reason}` }] };
-    }
+    const ledger = ledgerGate({ store, ledgerPath: service?.ledgerPath ?? null, now: now(), mode: "boot" });
+    if (!ledger.trusted) return refuse([{ gate: "quarantine", state: "blocked", nextAction: ledger.nextAction, detail: ledger.reason }]);
     // Reconcile sessions and pending deletions through the composed team port before exposing the app
     // (skipped while an upgrade fence holds admission; activation/rollback reconciles), and complete
     // an activated upgrade once that reconciliation succeeded (ops.schema_migrations/v1).
-    await app.boot();
+    const booted = await app.boot();
+    if (service && telegramEnabled(service)) {
+      // Preflight proved the token reference and transport; a failure here still fails closed.
+      channels = ServiceChannels.start(store, config, input.transports!, now);
+    }
     const handle: FullAppHandle = {
-      store, app, service: managed,
-      get queue() { return managed.queue ?? composed.queue; },
-      get teamPort() { return managed.composed?.teamPort ?? composed.teamPort; },
+      store, app, service: managed, channels, config, serviceConfig: service,
+      boot: { reconciled: booted.reconciled, detail: booted.detail, upgrade: booted.upgrade ? { id: booted.upgrade.id, state: booted.upgrade.state } : null,
+        restore: booted.restore ? { id: booted.restore.id, state: booted.restore.state, reason: booted.restore.reason ?? null } : null },
+      get queue() { return managed!.queue ?? composed.queue; },
+      get teamPort() { return managed!.composed?.teamPort ?? composed.teamPort; },
     };
     return { ok: true, handle };
   } catch (error) {
-    try { queue?.close(); } catch { /* Teardown only. */ }
-    if (!input.store) { try { store.close(); } catch { /* Teardown only. */ } }
+    try { await channels?.close(); } catch { /* Teardown only. */ }
+    try { managed?.close(); } catch { /* Teardown only. */ }
+    if (owned) { try { store.close(); } catch { /* Teardown only. */ } }
     throw error;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Serve and stop
+// ---------------------------------------------------------------------------
+
+export interface RunningService {
+  server: ReturnType<typeof Bun.serve>;
+  /** Drains (bounded), stops listening and closes the store. Idempotent. */
+  stop(): Promise<DrainResult>;
+}
+
+/**
+ * Listens on the configured private bind and pumps the managed queue,
+ * schedules and opt-in channels. Owner authentication stays enforced by the
+ * Web handler; neither the bind address nor a request to `/login` grants
+ * owner authority.
+ */
+export function serveFullApp(handle: FullAppHandle, options: { drainTimeoutMs?: number; intervalMs?: number } = {}): RunningService {
+  const config = handle.config;
+  const server = Bun.serve({ hostname: config.hostname, port: config.port, maxRequestBodySize: config.bodyBytes,
+    idleTimeout: 15, fetch: createWebHandler(handle.app), error: () => new Response("Request failed", { status: 503 }) });
+  const timer = setInterval(() => {
+    const queue = handle.service.queue;
+    if (queue) {
+      try { queue.pump(); tickSchedules(handle.store, queue, config, Date.now()); } catch { /* Queue refuses acknowledgments after a storage/ownership failure or under an upgrade fence. */ }
+    }
+    handle.channels?.tick();
+  }, options.intervalMs ?? 100);
+  timer.unref();
+  let stopping: Promise<DrainResult> | null = null;
+  const drainTimeoutMs = options.drainTimeoutMs ?? (handle.serviceConfig ? serviceDrainTimeoutMs(handle.serviceConfig) : 5000);
+  return {
+    server,
+    stop: () => stopping ??= (async () => {
+      clearInterval(timer);
+      // Stop accepting requests first so no new owner command lands during the drain; in-flight
+      // requests get a short grace period, then idle keep-alive connections are closed.
+      await Promise.race([server.stop(), Bun.sleep(2000)]);
+      await server.stop(true);
+      let result: DrainResult;
+      try { result = await stopDrain(handle, { timeoutMs: drainTimeoutMs }); }
+      finally { handle.service.close(); try { handle.store.close(); } catch { /* Already closed. */ } }
+      return result;
+    })(),
+  };
 }
 
 export interface DrainResult {
@@ -228,16 +438,20 @@ export interface DrainResult {
 }
 
 /**
- * Drains the full app with bounded cooperative cancellation. The queue fences
- * admission and in-flight work first; the caller waits at most `timeoutMs` for
- * settlement. On timeout the supervisor must terminate, and remote
- * work/delivery is reported as interrupted or unknown, never as stopped or sent.
+ * Drains the full app with bounded cooperative cancellation. Channels stop
+ * sending and polling first, then the queue fences admission and in-flight
+ * work; the caller waits at most `timeoutMs` for settlement. On timeout the
+ * supervisor must terminate, and remote work/delivery is reported as
+ * interrupted or unknown, never as stopped or sent. The next start's
+ * delivery worker and queue reconciliation consume the recovery metadata.
  */
-export async function stopDrain(handle: Pick<FullAppHandle, "queue" | "store">, options: { timeoutMs: number }): Promise<DrainResult> {
+export async function stopDrain(handle: Pick<FullAppHandle, "queue" | "store"> & { channels?: ServiceChannels | null }, options: { timeoutMs: number }): Promise<DrainResult> {
   if (!options || !Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 0 || options.timeoutMs > 300000) {
     throw new Error("invalid_drain_options");
   }
-  handle.queue.close();
+  try { await handle.channels?.close(); } catch { /* Ownership already released or store gone; reconciliation handles it. */ }
+  // Only attempts this drain interrupted count; historical waiting/blocked/failed jobs are not new interruptions.
+  const { interrupted } = handle.queue.close();
   const deadline = Date.now() + options.timeoutMs;
   for (;;) {
     const unsettled = handle.store.read(tx => {
@@ -246,20 +460,15 @@ export async function stopDrain(handle: Pick<FullAppHandle, "queue" | "store">, 
     });
     if (unsettled === 0) break;
     if (Date.now() >= deadline) {
-      return { outcome: "unknown", fencedJobs: unsettled, unknownDeliveries: countUnknownDeliveries(handle.store),
+      return { outcome: "unknown", fencedJobs: Math.max(unsettled, interrupted.length), unknownDeliveries: countUnknownDeliveries(handle.store),
         nextAction: "terminate-supervised-process-and-reconcile" };
     }
     await Bun.sleep(5);
   }
   try { await handle.queue.idle(); } catch { /* Settlement already fenced; report honestly below. */ }
-  const fenced = handle.store.read(tx => {
-    try {
-      return tx.all<{ record_json: string }>("SELECT record_json FROM jobs WHERE state IN ('waiting', 'blocked', 'failed')").length;
-    } catch { return 0; }
-  });
-  return fenced === 0
+  return interrupted.length === 0
     ? { outcome: "stopped", fencedJobs: 0, unknownDeliveries: countUnknownDeliveries(handle.store), nextAction: "none" }
-    : { outcome: "interrupted", fencedJobs: fenced, unknownDeliveries: countUnknownDeliveries(handle.store),
+    : { outcome: "interrupted", fencedJobs: interrupted.length, unknownDeliveries: countUnknownDeliveries(handle.store),
       nextAction: "reconcile-interrupted-work-before-restart" };
 }
 
@@ -268,67 +477,4 @@ function countUnknownDeliveries(store: TransactionStore): number {
     return store.read(tx => tx.get<{ count: number }>(
       "SELECT count(*) AS count FROM delivery_attempts WHERE record_json LIKE '%\"outcome\":\"unknown\"%'")!.count);
   } catch { return 0; }
-}
-
-export interface UpgradeInput {
-  store: TransactionStore;
-  /** Active installation directory holding app.sqlite and artifact.json. */
-  activeDir: string;
-  /** Staged artifact directory produced by the package build. */
-  artifactDir: string;
-  backupRoot: string;
-  ledgerPath: string;
-  requiredEngine: string;
-  health: () => boolean | Promise<boolean>;
-}
-
-export interface UpgradeResult {
-  outcome: "upgraded" | "rolled-back" | "blocked";
-  backupId: string | null;
-  detail: string;
-}
-
-function fsyncFile(path: string): void {
-  const fd = openSync(path, "r");
-  try { (Bun as unknown as { fsyncSync(fd: number): void }).fsyncSync?.(fd); } finally { closeSync(fd); }
-}
-
-/**
- * Stages an upgrade through a validated pinned artifact with a recovery backup
- * before touching active state. Schema migration is not done here: after
- * switching to a build with a newer schema, `serve` refuses the installation
- * until the owner runs the ops.schema_migrations/v1 upgrade (`upgrade`
- * command). This step records the backup pair and rolls back on failed
- * health, preserving the ledger byte-for-byte. Rollback restores only the
- * recorded compatible pair, never a rewritten ledger.
- */
-export async function upgradeStaged(input: UpgradeInput): Promise<UpgradeResult> {
-  const activeDir = resolve(input.activeDir), artifactDir = resolve(input.artifactDir), backupRoot = resolve(input.backupRoot);
-  let manifest: BuildManifest | null = null;
-  try {
-    if (!validateArtifact(artifactDir).ok) return { outcome: "blocked", backupId: null, detail: "staged artifact failed validation" };
-    manifest = JSON.parse(readFileSync(join(artifactDir, "manifest.json"), "utf8")) as BuildManifest;
-  } catch { return { outcome: "blocked", backupId: null, detail: "staged artifact failed validation" }; }
-  if (!manifest || manifest.schemaVersion > schemaVersion || manifest.engineContract !== input.requiredEngine) {
-    return { outcome: "blocked", backupId: null, detail: "staged artifact incompatible with app and engine pins" };
-  }
-  const activeDb = join(activeDir, "app.sqlite"), activeMarker = join(activeDir, "artifact.json");
-  if (!existsSync(activeDb)) return { outcome: "blocked", backupId: null, detail: "active state missing" };
-  const backupId = randomUUID(), backupDir = join(backupRoot, backupId);
-  mkdirSync(backupDir, { recursive: true, mode: 0o700 });
-  const backupDb = join(backupDir, "app.sqlite"), backupMarker = join(backupDir, "artifact.json");
-  copyFileSync(activeDb, backupDb);
-  chmodSync(backupDb, 0o600);
-  fsyncFile(backupDb);
-  if (existsSync(activeMarker)) copyFileSync(activeMarker, backupMarker);
-  writeFileSync(join(backupDir, "manifest.json"), JSON.stringify({ artifactId: manifest.artifactId, schemaVersion: manifest.schemaVersion }) + "\n", { mode: 0o600 });
-  const previousMarker = existsSync(activeMarker) ? readFileSync(activeMarker) : null;
-  writeFileSync(activeMarker, JSON.stringify({ artifactId: manifest.artifactId, stagedAt: new Date().toISOString() }) + "\n", { mode: 0o600 });
-  let healthy = false;
-  try { healthy = await input.health(); } catch { healthy = false; }
-  if (healthy) return { outcome: "upgraded", backupId, detail: `active state now pinned to ${manifest.artifactId}` };
-  copyFileSync(backupDb, activeDb);
-  chmodSync(activeDb, 0o600);
-  if (previousMarker) writeFileSync(activeMarker, previousMarker, { mode: 0o600 });
-  return { outcome: "rolled-back", backupId, detail: "health check failed; backup pair restored, ledger untouched" };
 }

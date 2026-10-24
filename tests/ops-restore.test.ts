@@ -804,7 +804,9 @@ test("lifecycle ledger: trigger entries commit with the lifecycle change; the ch
   // The installation already checkpointed at its default location: a seed at a new location cannot
   // re-establish authority from database contents (relocation must carry the verified checkpoint).
   const seeded = await startFullApp({ config: f.config, service, store: f.rt.store, now: () => f.clock.now });
-  expect(seeded).toMatchObject({ ok: false, gates: [{ gate: "quarantine", detail: "lifecycle ledger ledger_checkpoint_relocation_unverified" }] });
+  // The shared start path reports every preflight gate; only the ledger blocks.
+  expect(seeded.ok).toBe(false);
+  if (!seeded.ok) expect(seeded.gates.filter(g => g.state === "blocked")).toMatchObject([{ gate: "quarantine", detail: "lifecycle ledger ledger_checkpoint_relocation_unverified" }]);
   rmSync(service.ledgerPath);
   expect(await startFullApp({ config: f.config, service, store: f.rt.store, now: () => f.clock.now })).toMatchObject({ ok: false });
   writeFileSync(service.ledgerPath, readFileSync(path));
@@ -815,7 +817,8 @@ test("lifecycle ledger: trigger entries commit with the lifecycle change; the ch
   const body = JSON.parse(readFileSync(service.ledgerPath, "utf8"));
   writeFileSync(service.ledgerPath, JSON.stringify({ ...body, head: body.head + 5 }));
   const blocked = await startFullApp({ config: f.config, service, store: f.rt.store, now: () => f.clock.now });
-  expect(blocked).toMatchObject({ ok: false, gates: [{ gate: "quarantine", state: "blocked" }] });
+  expect(blocked.ok).toBe(false);
+  if (!blocked.ok) expect(blocked.gates.filter(g => g.state === "blocked")).toMatchObject([{ gate: "quarantine", state: "blocked" }]);
 });
 
 function serviceFor(root: string): ServiceConfig {

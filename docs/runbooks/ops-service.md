@@ -1,49 +1,88 @@
 # Runbook: install, operate and upgrade the Jit service (OPS07)
 
-Owner-executable checklist for the packaged service. Build and validation run on the dev machine; install/enable/start/stop/upgrade on the host happen only in an owner-approved change window. Never paste tokens, addresses or raw diagnostics into issues; attach only sanitized summaries.
+Owner-executable checklist for the packaged service (`ops.service_package/v1`, docs/contracts/ops-service-package-v1.md). Build and plan run anywhere; install/enable/start/stop/upgrade on the host happen only in an owner-approved change window. Never paste tokens, addresses or raw diagnostics into issues; attach only sanitized summaries. Every command below has finite timeouts and never downloads packages or requests accounts, except the explicit dependency step in §1.
 
-## 1. Build the versioned artifact
+## 0. Host prerequisites (owner, not automated)
+
+- A dedicated non-root, non-login service identity (for example `jit`, shell `/usr/sbin/nologin`, home outside `/home`). The package never creates users.
+- Directories owned by that identity, mode 0700: state (for example `/var/lib/jit/state`), backups (`/var/lib/jit/backups`); a working directory (`/var/lib/jit/work`); a releases parent (`/opt/jit`).
+- The pinned Bun at an absolute path (`bun --version` must equal the manifest pin).
+- Private access: bind loopback behind configured private ingress (for example a VPN `serve`/reverse proxy terminating HTTPS), or an address on the VPN interface with an explicit HTTPS `network.origin` (required for any non-loopback bind). No public ingress is installed or exposed by the package.
+- Credentials: the Telegram bot token, when used, is a 0600 file owned by the identity. Keyring-backed references stay `verify-secret-store` until OPS05 proves service-context access.
+
+## 1. Build and prepare the artifact
 
 ```sh
 bun ops/package/bun-build.ts <checkout> <outDir> jit.schway.bridge/v1
+bun ops/package/bun-build.ts install-deps <outDir>   # on the target host/arch; needs registry or Bun cache access
 ```
 
-- Review `manifest.json`: app version, Bun version, lockfile hash, schema version, engine contract and build arch must match the tested revision.
-- `piValidation` stays `pending`. A desktop build never proves ARM64; do not relabel it as Pi evidence.
+- Review `manifest.json`: app, Bun, lockfile, schema, engine contract, build arch and content hash must match the tested revision. `piValidation` stays `pending`; a desktop build never proves ARM64.
+- `install-deps` is the only step that may fetch packages, and only when the owner runs it. Run it on the host that will execute the artifact.
 
 ## 2. Write and plan trusted configuration
 
-Create ignored `.local/service-config.json` with the dedicated service identity (never root), absolute release/working/state/ledger/backup paths (state outside releases), non-secret routes, opaque secret references, loopback or explicit VPN/private bind (wildcards rejected) and finite resource ceilings.
-
-- Preview changes with plan mode before installing; the plan prints non-secret diffs only.
-- Rendered units and configs contain references, never values. Scan them before copying anywhere.
-
-## 3. Install service descriptors
-
-- Copy the rendered `jit.service` unit and the artifact to their host paths in the approved window.
-- The unit runs as the dedicated identity with bounded restart, memory cap and no new privileges. Persistent state lives outside replaceable releases.
-- Disable or remove the service to stop it; managed data and secret references stay unless a distinct authorized deletion is used.
-
-## 4. Preflight, status, start, stop
+Create ignored `.local/service-config.json` (fields in the contract). Configure exactly one `ledgerPath` for the installation and never hand-edit that file after the service has established it. Then:
 
 ```sh
-bun src/main.ts preflight
-bun src/main.ts status
+sudo bun src/main.ts service plan --config .local/service-config.json --artifact <outDir> --bun <abs bun>
 ```
 
-- Preflight gates activation on config, schema, engine, quarantine ledger, scheduler, delivery worker, secret files and artifact pins. Resolve each blocked gate; do not bypass.
-- Status stays available while blocked. `observed-ready` appears only with explicit live evidence.
-- Stop drains cooperatively within its timeout. `unknown` means the supervisor must terminate and reconciliation runs on next start; never treat it as stopped or sent.
-- Run-port selection is operator configuration, not code: `JIT_RUN_PORT=schway` switches team dispatch from the scripted fixture to the concrete Schway bridge (JBR01 #15). Default `scripted` preserves fixture behavior. In `schway` mode `serve` verifies the pinned `schway.host.release/v1` artifact and service-owned `.jit-host` directories before admitting work; a blocked gate refuses startup with a next action instead of falling back to another route or billing path. Memory extraction stays scripted.
+- Run as root: access is checked as the service identity with `runuser -u <identity> -- test ...` (state, backups, ledger, working directory, release parent, config directory, credential files).
+- Exit 0 only when every check passes; each blocked check names its next action (create identity, restrict directory, provision credential file, install pinned Bun, rebuild artifact, bring up private interface, stop running unit).
+- The plan prints the exact unit and journald texts, file paths/modes/digests and commands; secret references appear by name only. Nothing is written.
+
+## 3. Install
+
+```sh
+sudo bun src/main.ts service install --config .local/service-config.json --artifact <outDir> --bun <abs bun>
+```
+
+- Run as root. Creates `/etc/jit` as root:<service gid> 0750 and writes `/etc/jit/service-config.json` (root:<service gid>, 0640), `/etc/systemd/system/jit.service` (0644), `/etc/systemd/journald@jit.conf` (0644), stages `/opt/jit/releases/<artifactId>`, points the active-release symlink, seeds the ledger placeholder only if absent (owned by the service identity, 0600), `daemon-reload` and `enable`. It does not start the service.
+
+## 4. Owner setup, start, status, stop
+
+```sh
+sudo -u <identity> JIT_DATABASE=<stateDirectory>/app.sqlite \
+  <abs bun> /opt/jit/current/src/main.ts setup          # trusted local owner provisioning (once; interactive password)
+sudo bun src/main.ts service start
+sudo bun src/main.ts service status                     # or as a member of the service group: /etc/jit is root:<gid> 0750
+sudo bun src/main.ts service stop
+journalctl --namespace=jit -u jit.service                # bounded by journald@jit.conf
+```
+
+- The first start turns the install seed into the real OPS02 ledger checkpoint at `ledgerPath`. From then on, a missing, replaced, tampered or relocated checkpoint blocks activation (`Service blocked at quarantine: lifecycle ledger ...`). Restore the file from its configured location or copy the verified checkpoint to a new location; never hand-edit it or reseed it.
+- Start runs `serve --service-config`: preflight, quarantine/ledger, schema/upgrade, engine and artifact gates, reconciliation, then listening. A blocked gate exits with `Service blocked at <gate>: ... (next: ...)`; resolve it, never bypass it. `bun src/main.ts preflight --service-config /etc/jit/service-config.json` shows all gates read-only.
+- Status: `running` needs the scheduler owned by the supervised process; `observed-ready` appears only with explicit live evidence. `channels: blocked` means Telegram is enabled but its secret or transport is unavailable; `routes.verified` is always 0 here.
+- Stop drains cooperatively within `stopTimeoutSeconds`; systemd kills after `TimeoutStopSec`. Interrupted work and uncertain sends are recorded as interrupted/`unknown` and reconciled on the next start; never treat them as stopped or sent.
+- Telegram (`channels.telegram: enabled`) fails closed in this build: no live Bot API transport ships, so preflight reports `install-supported-telegram-transport`. Leave it `disabled` until a supported transport exists.
+- Run-port: `runPort: "schway"` makes the unit set `JIT_RUN_PORT=schway`; the pinned bridge must verify before admission, without falling back to another route or billing path.
 
 ## 5. Upgrade and rollback
 
-- Stage a validated pinned artifact, back up state plus the artifact pair, then swap under the health gate.
-- Failed health restores the backup pair; the deletion ledger is never rewritten and newer suppression state is never ignored.
-- Rollback is permitted only to a compatible artifact/state pair. Record the backup ID in the private notes.
-- When the new build's schema is newer than the installation, `serve` and preflight refuse it (`run-owner-upgrade`) and never migrate in place. With the service stopped, run `bun src/main.ts upgrade --password-stdin` (ops.schema_migrations/v1): it fences admission, takes a verified recovery-point backup, migrates a staged copy, validates and activates it; the next `serve` reconciles jobs and sessions before admitting work. Returning to the prior version after activation is an OPS02 quarantined restore of the recorded recovery point.
+```sh
+bun ops/package/bun-build.ts <new checkout> <newDir> jit.schway.bridge/v1
+bun ops/package/bun-build.ts install-deps <newDir>
+sudo <abs bun> <newDir>/src/main.ts service upgrade --artifact <newDir> --password-stdin
+```
 
-## 6. Hand off to the Pi live round
+- Run the upgrade from the new build: it validates the artifact, refuses an older-than-state artifact or a quarantined ledger, stops the unit, runs the new build's owner `upgrade` (ops.schema_migrations/v1: fence, verified recovery point in the configured backup directory, staged migration, validation, activation), switches the release, starts and health-checks.
+- `upgrade-failed`: the prior release stays active; inspect the upgrade journal (Web `/upgrades`).
+- `rolled-back`: health failed and the prior release was compatible with the state; it is active again.
+- `activation-unhealthy`: health failed after a schema change; the service stays stopped. Return to the prior version only through an OPS02 quarantined restore of `recoveryBackupId`. Never point the symlink back by hand.
+- After switching to a build with a newer schema (for example schema 23 from OPS02), `serve` refuses the installation until the owner `upgrade` has run; `service upgrade` performs that step.
 
-- The packaged service, its manifest and the preflight record are prerequisites for `docs/runbooks/pi-live-round.md`.
-- Full-app restart and reboot evidence on the Pi belongs to OPS05 (#36); probe-only evidence from FEAS05 (#25) does not substitute for it.
+## 6. Disable or remove
+
+```sh
+sudo bun src/main.ts service disable      # stop and disable boot start
+sudo bun src/main.ts service uninstall    # also remove unit and journald files
+```
+
+- Configuration, releases, state, backups, the ledger and secret references are preserved. Deleting managed data requires a distinct authorized operation.
+
+## 7. Evidence boundaries and the Pi live round
+
+- Deterministic tests simulate systemd, `getent`, `ip`, dependency install and upgrade outcomes; they really build, install into disposable directories, boot the full app from the release, authenticate the owner over HTTP and persist state across stop/start.
+- `JIT_OPS_SMOKE=1 bun run ops:smoke` (Linux arm64 only) builds, installs dependencies, validates and launches the release against disposable state. It is opt-in and not part of `bun test`; its summary still is not reboot evidence.
+- Real unit install, unattended boot, restart/reboot, credential access and VPN reachability on the Pi belong to OPS05 (#36, `docs/runbooks/pi-live-round.md` Round D). Probe-only FEAS05 (#25) evidence does not substitute.
