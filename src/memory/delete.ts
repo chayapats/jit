@@ -536,7 +536,7 @@ function buildInventory(tx: AppTransaction, scope: DeleteScope, env: DeletionEnv
     const linked = keys.has(sourceKey(intent.source));
     if (!linked && !inventory.scrub.long.some(term => intent.text.includes(term))) continue;
     inventory.deliveries.push({ intentId: intent.id, reportId: intent.reportId, projectId: intent.projectId, status: intent.status,
-      evidence: linked ? "provenance" : "quoted_text", effect: ["sent", "unknown"].includes(intent.status) ? "redact_keep_state" : "cancel_and_redact" });
+      evidence: linked ? "provenance" : "quoted_text", effect: TERMINAL_DELIVERY.has(intent.status) ? "redact_keep_state" : "cancel_and_redact" });
   }
   if (inventory.scrub.short.length && shortPayloadCopied(tx, inventory.scrub.short, keys, new Set(citing.map(job => job.jobId)),
     new Set(inventory.deliveries.map(d => d.intentId)), new Set(inventory.deliveries.map(d => d.reportId)))) blockers.add("short_payload_unlinked_copy");
@@ -550,6 +550,9 @@ function buildInventory(tx: AppTransaction, scope: DeleteScope, env: DeletionEnv
   for (const [name, size, bound] of sizes) if (size > bound) blockers.add(`inventory_truncated:${name}`);
   return inventory;
 }
+
+/** Settled transport outcomes the outbox never cancels (`cancelUnsent`); deletion only redacts their text. */
+const TERMINAL_DELIVERY: ReadonlySet<string> = new Set(["sent", "unknown", "failed"]);
 
 interface DeliveryIntentRow { id: string; projectId: string; reportId: string; status: string; text: string; source: SourceReference }
 
@@ -1097,7 +1100,7 @@ export function confirmDeletion(tx: AppTransaction, command: DeleteConfirmComman
   scrubStoredManifests(tx, new Set(sources.map(entry => sourceKey(entry.source))), claimIds);
   scrubConversationReceipts(tx, sources, claimIds);
   // Local delivery copies: delete the report (cancelling unsent intents), then redact the local payload text
-  // while sent/unknown intents keep their delivery-state metadata.
+  // while sent/unknown/failed intents keep their delivery-state metadata.
   for (const delivery of inventory.deliveries) {
     try {
       const report = readDeliveryReport(tx, delivery.projectId, delivery.reportId);
