@@ -187,7 +187,7 @@ test("unsupported targets and missing engine fail before mutating, with failed j
   expect(f.rt.app.upgrades(actor(f)).journals.length).toBe(before + 2);
   expect(f.rt.app.upgrades(actor(f)).journals.every(j => j.state === "failed")).toBe(true);
   const broken = await fixture(false);
-  expect(() => broken.rt.app.execute(actor(broken), prepareCommand(broken, 21))).toThrow("engine_unavailable");
+  expect(() => broken.rt.app.execute(actor(broken), prepareCommand(broken, 22))).toThrow("engine_unavailable");
 });
 
 test("happy path preserves tasks, decisions, claims, receipts, jobs and outbox across activation", async () => {
@@ -195,14 +195,14 @@ test("happy path preserves tasks, decisions, claims, receipts, jobs and outbox a
   const { a, keep, queuedJobId } = await rich(f);
   const ledgersBefore = f.rt.app.deletionLedger(actor(f)).tombstones.length;
   const tasksBefore = f.rt.app.tasks(actor(f), a.id);
-  const prepared = f.rt.app.execute(actor(f), prepareCommand(f, 21));
+  const prepared = f.rt.app.execute(actor(f), prepareCommand(f, 22));
   expect(prepared.journal.state).toBe("prepared");
   expect(prepared.journal.snapshotBackupId).toBeString();
   expect(prepared.journal.sidecarPath).toBeString();
   expect(prepared.journal.preflight.compatible).toBe(true);
   const migrated = f.rt.app.execute(actor(f), stepCommand(f, "upgrade.migrate", prepared.journal.id));
   expect(migrated.journal.state).toBe("staged");
-  expect(migrated.journal.stagedSchema).toBe(21);
+  expect(migrated.journal.stagedSchema).toBe(22);
   const validated = f.rt.app.execute(actor(f), stepCommand(f, "upgrade.validate", prepared.journal.id));
   expect(validated.journal.state).toBe("ready");
   expect(validated.journal.validation!.checks.every(c => c.pass)).toBe(true);
@@ -224,7 +224,7 @@ test("unquiesced running work fails validation; drained work passes", async () =
   const f = await fixture();
   const a = project(f, "โครงการ quiesce", "หัวข้อ quiesce");
   say(f, a, "ข้อความ quiesce");
-  const prepared = f.rt.app.execute(actor(f), prepareCommand(f, 21));
+  const prepared = f.rt.app.execute(actor(f), prepareCommand(f, 22));
   const migrated = f.rt.app.execute(actor(f), stepCommand(f, "upgrade.migrate", prepared.journal.id));
   expect(migrated.journal.state).toBe("staged");
   let release: (() => void) | null = null;
@@ -261,7 +261,7 @@ test("crash at every journal boundary leaves a resumable journal; reopen preserv
   // Crash at prepare: nothing commits, but an explicit failed journal is recorded; resume prepares anew.
   fail = "ops";
   const app = fragile("ops");
-  const target = 21;
+  const target = 22;
   expect(() => app.execute(fragileActor(app), { kind: "upgrade.prepare" as const, requestId: rid(), projectId: null,
     expectedRevision: app.workspace(fragileActor(app)).revision, payload: { targetSchema: target, note: "x" } })).toThrow("fixture ops crash");
   const interrupted = app.upgrades(fragileActor(app)).journals.find(j => j.state === "failed")!;
@@ -300,7 +300,7 @@ test("rollback restores the snapshot and never clears a ledger", async () => {
   const f = await fixture();
   const { a } = await rich(f);
   const ledgersBefore = f.rt.app.deletionLedger(actor(f)).tombstones;
-  const prepared = f.rt.app.execute(actor(f), prepareCommand(f, 21));
+  const prepared = f.rt.app.execute(actor(f), prepareCommand(f, 22));
   f.rt.app.execute(actor(f), stepCommand(f, "upgrade.migrate", prepared.journal.id));
   f.rt.app.execute(actor(f), stepCommand(f, "upgrade.validate", prepared.journal.id));
   f.rt.app.execute(actor(f), stepCommand(f, "upgrade.activate", prepared.journal.id));
@@ -322,7 +322,7 @@ test("web upgrades render journals without secrets and drive the full flow", asy
   const req = (path: string, method = "GET", body?: unknown) => new Request(`http://localhost:3000${path}`, { method,
     headers: { cookie: `jit_session=${f.token}`, ...(body ? { origin: "http://localhost:3000", "x-csrf-token": f.rt.app.authenticate(f.token).csrf, "content-type": "application/json" } : {}) },
     ...(body ? { body: JSON.stringify(body) } : {}) });
-  const prepared = await (await web(req("/api/upgrades", "POST", { requestId: rid(), expectedRevision: appRevision(f), targetSchema: 21, note: "web" }))).json() as { journal: UpgradeJournal };
+  const prepared = await (await web(req("/api/upgrades", "POST", { requestId: rid(), expectedRevision: appRevision(f), targetSchema: 22, note: "web" }))).json() as { journal: UpgradeJournal };
   expect(prepared.journal.state).toBe("prepared");
   for (const action of ["migrate", "validate", "activate"] as const) {
     const receipt = await (await web(req(`/api/upgrades/${prepared.journal.id}`, "POST",

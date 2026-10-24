@@ -4,7 +4,14 @@ import { dirname } from "node:path";
 import { commitDecisionMemorySource, retireDecisionMemorySource } from "./memory/decision-sources";
 
 /** Current application schema revision. Service packaging pins and checks this value. */
-export const schemaVersion = 21;
+export const schemaVersion = 22;
+
+/**
+ * Installation-scoped state that never round-trips through backup images and
+ * is preserved from the live store on every activation (`swapFrom`). Order is
+ * parent-first for inserts. ops.backup_manifest/v1 excludes these from images.
+ */
+export const installationScopedTables = Object.freeze(["owner", "sessions", "login_throttle", "ops_backups"] as const);
 
 /** Synchronous SQL operations scoped to an application transaction. */
 export interface AppTransaction {
@@ -38,7 +45,7 @@ export class TransactionStore {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
           if (current === schemaVersion) return;
-          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20].includes(current)) throw new Error("Unsupported migration source");
+          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21].includes(current)) throw new Error("Unsupported migration source");
           if (existing) {
             const snapshot = `${path}.pre-v${current}-${crypto.randomUUID()}.sqlite`;
             const fd = openSync(snapshot, "wx", 0o600);
@@ -578,6 +585,27 @@ export class TransactionStore {
             CREATE INDEX IF NOT EXISTS schway_native_ref_context ON schway_native_refs(context_id, generation);
             PRAGMA user_version = 21;
           `);
+          if (current < 22) {
+            // PR02 report history: a candidate keeps every committed review (rerun, policy upgrade),
+            // so the lazily created pr_reports table drops its candidate uniqueness, preserving rows.
+            if (this.#tx.get("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'pr_reports'")) this.#db.exec(`
+              CREATE TABLE pr_reports_v22 (
+                id TEXT PRIMARY KEY,
+                candidate_id TEXT NOT NULL REFERENCES pr_candidates(id),
+                project_id TEXT NOT NULL REFERENCES projects(id),
+                monitor_id TEXT NOT NULL REFERENCES pr_monitors(id),
+                status TEXT NOT NULL CHECK (status IN ('running', 'complete_clean', 'complete_findings', 'partial', 'incomplete', 'failed')),
+                record_json TEXT NOT NULL
+              );
+              INSERT INTO pr_reports_v22 (rowid, id, candidate_id, project_id, monitor_id, status, record_json)
+                SELECT rowid, id, candidate_id, project_id, monitor_id, status, record_json FROM pr_reports;
+              DROP TABLE pr_reports;
+              ALTER TABLE pr_reports_v22 RENAME TO pr_reports;
+              CREATE INDEX IF NOT EXISTS pr_report_monitor ON pr_reports(project_id, monitor_id);
+              CREATE INDEX IF NOT EXISTS pr_report_candidate ON pr_reports(candidate_id);
+            `);
+            this.#db.exec("PRAGMA user_version = 22;");
+          }
           // A populated rebuilt graph must retain every reference; empty legacy fixture stores have no task graph to check.
           if (this.#tx.get("SELECT 1 FROM tasks LIMIT 1") && this.#tx.all("PRAGMA foreign_key_check").length) throw new Error("Migration foreign key check failed");
         }).immediate();
@@ -619,9 +647,21 @@ export class TransactionStore {
    * Activates a staged image by replacing this database file with validated bytes and
    * reopening the same store handle. Callers record journal intent first; a crash between
    * intent and completion leaves an explicit non-terminal journal entry to resume from.
+   * Installation-scoped tables ({@link installationScopedTables}: credentials and the managed
+   * backup registry) are always carried over from the live store, never taken from the image.
    */
   swapFrom(sourcePath: string): void {
     const bytes = readFileSync(sourcePath);
+    // Credentials never round-trip through images (ops.backup_manifest/v1):
+    // the activated database keeps exactly the live installation's owner
+    // verifier, browser sessions and login throttle. A live store without an
+    // owner activates without one, so the owner runs credential setup.
+    // The managed backup registry likewise stays the live installation's: an
+    // image never rolls back which backups exist or which files they own.
+    const preserved = installationScopedTables.map(table => {
+      try { return { table, rows: this.#db.query(`SELECT * FROM "${table}" ORDER BY rowid`).all() as Record<string, SQLQueryBindings>[], present: true }; }
+      catch { return { table, rows: [] as Record<string, SQLQueryBindings>[], present: false }; }
+    });
     try { this.#db.exec("PRAGMA wal_checkpoint(TRUNCATE);"); } catch { /* Best-effort checkpoint before close. */ }
     this.#db.close();
     writeFileSync(this.path, bytes);
@@ -637,6 +677,20 @@ export class TransactionStore {
       // Scheduler and delivery-worker claims belong to the pre-swap boot; a stale claim
       // must never authorize work after activation. The service reboots and reconciles.
       try { reopened.exec("DELETE FROM job_scheduler; DELETE FROM delivery_worker;"); } catch { /* Ancient images predate these tables. */ }
+      reopened.transaction(() => {
+        // Children before parents on delete (sessions reference owner), parents first on insert.
+        for (const { table } of [...preserved].reverse()) {
+          try { reopened.exec(`DELETE FROM "${table}"`); } catch { /* Images predating the table get it from migration. */ }
+        }
+        for (const { table, rows, present } of preserved) {
+          if (!present) continue;
+          for (const row of rows) {
+            const columns = Object.keys(row);
+            reopened.query(`INSERT INTO "${table}" (${columns.map(c => `"${c}"`).join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`)
+              .run(...columns.map(c => row[c]!));
+          }
+        }
+      }).immediate();
     } catch (error) {
       reopened.close();
       throw error;

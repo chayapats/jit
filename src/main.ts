@@ -8,22 +8,13 @@ import { readLocalDrillConfig } from "./ops/records";
 import { gatherServiceStatus } from "./ops/status";
 import { parseServiceConfig } from "../ops/package/service-config";
 import { readHiddenPassword } from "./terminal-password";
-import { JobQueue } from "./jobs/queue";
-import { projectStateWork } from "./jobs/project-state";
-import type { ApplicationRunPort } from "./team/run-port";
 import { AppError } from "./errors";
-import { coordinatorSynthesisWork } from "./team/decisions";
-import { discussionPlanWork, specialistAnalysisWork } from "./team/dispatch";
-import { ScriptedRunPort } from "./team/scripted-port";
-import { SchwayRunPort, verifySchwayBridge } from "./team/schway-port";
-import { scriptedPreviewWork } from "./team/preview";
-import { prReviewWork } from "./pr/review";
-import { prSnapshotWork } from "./pr/work";
+import { verifySchwayBridge } from "./team/schway-port";
+import { composeJobQueue } from "./composition";
+import type { JobQueue } from "./jobs/queue";
+import { tickSchedules } from "./jobs/schedules";
+import { backupNativePortFor } from "./ops/schway-backup";
 import { prepareServiceState } from "./bootstrap";
-import { FakeGitHubFixture } from "./pr/github";
-import { memoryExtractionWork, scriptedMemoryResult } from "./memory/extract";
-import { scheduleReminderWork, scheduleSummaryWork, tickSchedules } from "./jobs/schedules";
-import { lookupSource } from "./sources";
 
 async function secret(): Promise<string> {
   if (!process.stdin.isTTY) {
@@ -87,29 +78,20 @@ async function main(): Promise<void> {
       }
       console.log(`Schway bridge ready: ${gate.detail}`);
     }
-    const teamPort: ApplicationRunPort = config.runPort === "schway"
-      ? new SchwayRunPort(store, config.team, config.jobs.outputBytes)
-      : new ScriptedRunPort(store, config.team, config.jobs.outputBytes);
-    // Fixture-authorized work never routes through live inference: role preview
-    // explicitly authorizes one scripted invocation, and schedules/PR summaries
-    // keep their scripted profiles until their own slices switch them.
-    const fixturePort: ApplicationRunPort = config.runPort === "schway"
-      ? new ScriptedRunPort(store, config.team, config.jobs.outputBytes)
-      : teamPort;
-    const memoryPort = new ScriptedRunPort(store, config.team, config.jobs.outputBytes, request => {
-      const source = store.read(tx => lookupSource(tx, request.projectId, request.manifest.sources[0]!.reference));
-      return scriptedMemoryResult(request, source.state === "available" && source.attribution.kind === "owner", config.jobs.outputBytes);
-    });
-    queue = new JobQueue(store, config.jobs, [
-      projectStateWork(store), scriptedPreviewWork(store, config, fixturePort), discussionPlanWork(), specialistAnalysisWork(store, config, teamPort), coordinatorSynthesisWork(store, config, teamPort),
-      memoryExtractionWork(store, config, memoryPort), scheduleReminderWork(store, config), scheduleSummaryWork(store, config, fixturePort),
-      prSnapshotWork({ store, cacheRoot: ".local/pr-cache", fixtureFor: () => new FakeGitHubFixture() }),
-      prReviewWork({ store, port: fixturePort, alertBytes: config.messageBytes }),
-    ]);
+    // One shared composition with startFullApp: same workers, same port/route policy.
+    const composed = composeJobQueue(store, config);
+    queue = composed.queue;
+    const teamPort = composed.teamPort;
     await queue.reconcile(teamPort);
   } }
   catch (error) { queue?.close(); store.close(); throw error; }
-  const app = new Application(store, config, queue ? { jobs: queue } : {});
+  // Backups ride the concrete native bridge only under explicit schway mode;
+  // scripted default stays fail-closed (no native port), exactly like runPort.
+  const nativeSnapshot = backupNativePortFor(config, store);
+  const app = new Application(store, config, {
+    ...(queue ? { jobs: queue } : {}),
+    ...(nativeSnapshot ? { nativeSnapshot } : {}),
+  });
   if (command !== "serve") {
     try { await app.setupOwner(await secret(), command === "reset-owner"); console.log("Owner credentials saved; existing browser sessions revoked."); }
     finally { store.close(); }

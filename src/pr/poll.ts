@@ -5,6 +5,7 @@ import { readMonitor } from "./authority";
 import type { TrustedGitHubConnector } from "./github";
 import { ensurePrSchema } from "./schema";
 import type { CandidateStatus, PollCheckpoint, PrMonitor, ReviewCandidate } from "./types";
+import { fencePrCandidateWork } from "./fence";
 
 const SHA = /^[a-f0-9]{40}$/;
 
@@ -80,6 +81,8 @@ function supersedePrior(
     candidate.status = "superseded";
     candidate.updatedAt = now;
     saveCandidate(tx, candidate);
+    // Same transaction: older revisions' snapshot/review work cannot publish.
+    fencePrCandidateWork(tx, monitor.projectId, candidate.id, "superseded", now);
     // PR03: alerts for the old revision are retired (pending) or visibly stale (already settled).
     retirePrAlerts(tx, { projectId: candidate.projectId, candidateId: candidate.id }, "candidate_superseded", now, { markSettledStale: true });
     onSupersede?.(candidate);

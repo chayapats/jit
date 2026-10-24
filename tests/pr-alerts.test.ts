@@ -41,6 +41,8 @@ import { createWebHandler } from "../src/web";
 import { containsCredential, redactCredentials } from "../src/security/credentials";
 import { neutralizeDestinations } from "../src/security/destinations";
 import { prepareServiceState } from "../src/bootstrap";
+import { captureBackupImage } from "../src/ops/backup";
+import { retirePrSnapshot } from "../src/pr/fence";
 import { readFileSync } from "node:fs";
 
 const password = "fixture-pr-alerts-owner-password";
@@ -161,7 +163,7 @@ function prepareReport(f: F, monitor?: PrMonitor) {
   const mon = monitor ?? enable(f);
   const base = sha(1), head = sha(2);
   f.github.pulls = [fixturePull({ number: 1, base: { sha: base, ref: "main" }, head: { sha: head, ref: "feat" } })];
-  f.github.files.set(f.github.key(1, base, head), [{ filename: "a.ts", status: "modified", patch: "@@\n+a" }]);
+  f.github.files.set(f.github.key(1, base, head), [{ filename: "a.ts", status: "modified", patch: "@@ -1,1 +1,40 @@\n+a" }]);
   f.github.checks.set(head, []);
   const conn = connector(f, mon);
   f.store.transaction(tx => pollMonitorCatchUp(tx, f.project.id, mon.id, conn, f.clock.now));
@@ -370,7 +372,7 @@ test("partial report still alerts with warning; web shows partial scope", async 
   const monitor = enable(f);
   const base = sha(1), head = sha(2);
   f.github.pulls = [fixturePull({ number: 5, base: { sha: base, ref: "main" }, head: { sha: head, ref: "x" } })];
-  f.github.files.set(f.github.key(5, base, head), [{ filename: "only.ts", status: "modified", patch: "@@\n+ok", truncated: true }]);
+  f.github.files.set(f.github.key(5, base, head), [{ filename: "only.ts", status: "modified", patch: "@@ -1,1 +1,40 @@\n+ok", truncated: true }]);
   f.github.checks.set(head, []);
   const conn = connector(f, monitor);
   f.store.transaction(tx => pollMonitorCatchUp(tx, f.project.id, monitor.id, conn, f.clock.now));
@@ -478,12 +480,6 @@ test("report commit admits alerts transactionally with a stored decision; duplic
   const replay = f.app.admitPrAlerts(f.auth.actor, f.project.id, report.id);
   expect(replay.admitted[0]!.created).toBe(false);
   expect(replay.decision.id).toBe(decisions[0]!.id);
-  enqueueReview(f, monitor.id, candidate.id);
-  f.queue.pump(); await f.queue.idle();
-  expect(intentsOf(f)).toHaveLength(1);
-  expect(f.store.read(tx => readAlertDecisions(tx, report.id))).toHaveLength(1);
-  expect(f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM pr_reports")!.n)).toBe(1);
-
   // Owner can inspect why each finding was notified or held.
   const view = f.app.prReport(f.auth.actor, f.project.id, report.id);
   expect(view.decision!.id).toBe(decisions[0]!.id);
@@ -495,6 +491,17 @@ test("report commit admits alerts transactionally with a stored decision; duplic
   expect(html).toContain('data-finding-decision="held"');
   expect(html).toContain("category_not_actionable");
   expect(html).toContain('data-delivery="waiting"');
+  // A second review attempt commits a newer report (#19): the older report's pending alert is retired
+  // and only the current report's alert stays live.
+  enqueueReview(f, monitor.id, candidate.id);
+  f.queue.pump(); await f.queue.idle();
+  expect(f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM pr_reports")!.n)).toBe(2);
+  const all = intentsOf(f);
+  expect(all).toHaveLength(2);
+  expect(all[0]).toMatchObject({ id: intents[0]!.id, status: "cancelled", stale: true, staleReason: "superseded_by_newer_review" });
+  expect(all.filter(i => i.status !== "cancelled")).toHaveLength(1);
+  expect(f.store.read(tx => readAlertDecisions(tx, report.id))).toHaveLength(1);
+  expect(f.app.admitPrAlerts(f.auth.actor, f.project.id, report.id).suppressed[0]!.reason).toBe("superseded_by_newer_review");
 });
 
 test("admission failure never loses the committed report or faults the queue", async () => {
@@ -502,7 +509,7 @@ test("admission failure never loses the committed report or faults the queue", a
   const monitor = enable(f);
   const base = sha(1), head = sha(2);
   f.github.pulls = [fixturePull({ number: 1, base: { sha: base, ref: "main" }, head: { sha: head, ref: "feat" } })];
-  f.github.files.set(f.github.key(1, base, head), [{ filename: "a.ts", status: "modified", patch: "@@\n+a" }]);
+  f.github.files.set(f.github.key(1, base, head), [{ filename: "a.ts", status: "modified", patch: "@@ -1,1 +1,40 @@\n+a" }]);
   f.github.checks.set(head, []);
   const conn = connector(f, monitor);
   f.store.transaction(tx => pollMonitorCatchUp(tx, f.project.id, monitor.id, conn, f.clock.now));
@@ -806,21 +813,21 @@ test("web separates not-reviewed, running, no-findings and delivery queued/sent/
     const f = await fixture(() => ({ ...fixtureOutcome("complete", clean), usage: { calls: 1, rounds: 1, hops: 1, contextTokens: 10, outputTokens: 100, retries: 0, wallMs: 10, tokensUnknown: false }, session: null }));
     const monitor = enable(f);
     f.github.pulls = [fixturePull({ number: 9, base: { sha: sha(1), ref: "main" }, head: { sha: sha(2), ref: "feat" } })];
-    f.github.files.set(f.github.key(9, sha(1), sha(2)), [{ filename: "a.ts", status: "modified", patch: "@@\n+a" }]);
+    f.github.files.set(f.github.key(9, sha(1), sha(2)), [{ filename: "a.ts", status: "modified", patch: "@@ -1,1 +1,40 @@\n+a" }]);
     f.github.checks.set(sha(2), []);
     const conn = connector(f, monitor);
     f.store.transaction(tx => pollMonitorCatchUp(tx, f.project.id, monitor.id, conn, f.clock.now));
     const web = createWebHandler(f.app);
     const get = async (path: string) => (await web(new Request(`http://localhost:3000${path}`, { headers: { cookie: `jit_session=${f.token}` } }))).text();
-    expect(await get(`/projects/${f.project.id}/pr/reports`)).toContain('data-state="not_reviewed"');
+    expect(await get(`/projects/${f.project.id}/pr/reports`)).toContain('data-review-state="not_reviewed"');
     const candidate = f.store.read(tx => readCandidates(tx, f.project.id, monitor.id)[0]!);
     f.store.transaction(tx => captureSnapshot(tx, f.project.id, candidate.id, conn, f.clock.now));
     enqueueReview(f, monitor.id, candidate.id);
-    expect(await get(`/projects/${f.project.id}/pr/reports`)).toContain('data-state="running"');
+    expect(await get(`/projects/${f.project.id}/pr/reports`)).toContain('data-review-state="running"');
     f.queue.pump(); await f.queue.idle();
     const list = await get(`/projects/${f.project.id}/pr/reports`);
     expect(list).toContain('data-state="no_findings"');
-    expect(list).not.toContain('data-state="running"');
+    expect(list).not.toContain('data-review-state="running"');
     const reportId = f.store.read(tx => tx.get<{ id: string }>("SELECT id FROM pr_reports")!.id);
     expect(await get(`/projects/${f.project.id}/pr/reports/${reportId}`)).toContain("ยังไม่มีคำขอส่งสำหรับรายงานนี้");
   }
@@ -958,10 +965,11 @@ test("policy update re-evaluates every current report without a silent cap", asy
   const count = 55;
   const base = sha(1), head = sha(2);
   f.github.pulls = Array.from({ length: count }, (_, i) => fixturePull({ number: i + 1, base: { sha: base, ref: "main" }, head: { sha: head, ref: `f${i}` } }));
-  for (let i = 1; i <= count; i++) f.github.files.set(f.github.key(i, base, head), [{ filename: "a.ts", status: "modified", patch: "@@\n+a" }]);
+  for (let i = 1; i <= count; i++) f.github.files.set(f.github.key(i, base, head), [{ filename: "a.ts", status: "modified", patch: "@@ -1,1 +1,40 @@\n+a" }]);
   f.github.checks.set(head, []);
   const conn = connector(f, monitor);
-  f.store.transaction(tx => pollMonitorCatchUp(tx, f.project.id, monitor.id, conn, f.clock.now));
+  const polled = f.store.transaction(tx => pollMonitorCatchUp(tx, f.project.id, monitor.id, conn, f.clock.now));
+  expect(polled.created).toHaveLength(count);
   const candidates = f.store.read(tx => readCandidates(tx, f.project.id, monitor.id));
   expect(candidates).toHaveLength(count);
   for (const candidate of candidates) {
@@ -973,6 +981,15 @@ test("policy update re-evaluates every current report without a silent cap", asy
       synthesis: { state: "complete", reason: null }, jobId: null, attemptId: null, now: f.clock.now,
     }));
   }
+  // Direct persistence has no transmitted manifest (#19 marks it incomplete); model the job-committed
+  // complete result so every report is a current, alertable one.
+  f.store.transaction(tx => {
+    for (const row of tx.all<{ id: string; record_json: string }>("SELECT id, record_json FROM pr_reports")) {
+      const record = JSON.parse(row.record_json);
+      record.status = "complete_findings";
+      tx.run("UPDATE pr_reports SET status = 'complete_findings', record_json = ? WHERE id = ?", JSON.stringify(record), row.id);
+    }
+  });
   expect(intentsOf(f)).toHaveLength(0);
   const receipt = setPolicy(f, 1, { allowedCategories: ["correctness"], minimumSeverity: "info", notifyPartial: true });
   expect(receipt.decisions).toHaveLength(count);
@@ -1190,5 +1207,18 @@ test("service bootstrap quarantines legacy alerts before the queue or server is 
   const prepared = main.indexOf("prepareServiceState(store, Date.now());");
   expect(serveStart).toBeGreaterThan(-1);
   expect(prepared).toBeGreaterThan(serveStart);
-  for (const later of ["new JobQueue(", "Bun.serve(", "setInterval("]) expect(main.indexOf(later)).toBeGreaterThan(prepared);
+  for (const later of ["composeJobQueue(store", "Bun.serve(", "setInterval("]) expect(main.indexOf(later)).toBeGreaterThan(prepared);
+});
+
+test("snapshot retirement retires alerts; backup images classify the alert tables", async () => {
+  const f = await fixture();
+  bindTelegram(f);
+  const { candidate } = await prepareReport(f);
+  // Every lazily created PR/alert table is classified, so a backup image can be captured.
+  const image = f.store.read(tx => captureBackupImage(tx, f.store));
+  expect(image).toBeTruthy();
+  f.store.transaction(tx => retirePrSnapshot(tx, f.project.id, candidate.id, f.clock.now));
+  expect(intentsOf(f)[0]).toMatchObject({ status: "cancelled", stale: true, staleReason: "source_retired" });
+  worker(f).pump();
+  expect(f.sender.calls).toBe(0);
 });

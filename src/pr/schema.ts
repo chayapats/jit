@@ -39,9 +39,10 @@ export function ensurePrSchema(tx: AppTransaction): void {
     candidate_id TEXT NOT NULL UNIQUE REFERENCES pr_candidates(id),
     record_json TEXT NOT NULL
   )`);
+  // Store schema v22: one candidate keeps its full report history (no candidate uniqueness).
   tx.run(`CREATE TABLE IF NOT EXISTS pr_reports (
     id TEXT PRIMARY KEY,
-    candidate_id TEXT NOT NULL UNIQUE REFERENCES pr_candidates(id),
+    candidate_id TEXT NOT NULL REFERENCES pr_candidates(id),
     project_id TEXT NOT NULL REFERENCES projects(id),
     monitor_id TEXT NOT NULL REFERENCES pr_monitors(id),
     status TEXT NOT NULL CHECK (status IN ('running', 'complete_clean', 'complete_findings', 'partial', 'incomplete', 'failed')),

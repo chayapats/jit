@@ -337,6 +337,8 @@ export function admitReportAlerts(
       decide(finding.id, "held", "duplicate_finding_id", null);
     }
     const links = readAlertLinks(tx, report.id);
+    const priorLinks = tx.all<{ record_json: string }>("SELECT record_json FROM pr_alerts WHERE project_id = ? AND candidate_id = ? AND report_id <> ? ORDER BY rowid",
+      input.projectId, report.candidateId, report.id).map(row => JSON.parse(row.record_json) as AlertLink);
     const liveIntent = (findingId: string) => links
       .filter(link => link.findingId === findingId)
       .map(link => { try { return readDeliveryIntent(tx, input.projectId, link.intentId); } catch { return null; } })
@@ -364,8 +366,10 @@ export function admitReportAlerts(
       }
       const dedupeKey = alertKey(report, finding, policy.version);
       const siblings = finding.duplicateGroup ? report.findings.filter(f => f.duplicateGroup === finding.duplicateGroup && f.id !== finding.id) : [];
-      const earlier = [finding, ...siblings]
-        .flatMap(member => links.filter(link => link.findingId === member.id))
+      // Earlier reviews of the same PR revision (per-attempt reports): a finding the owner was already
+      // told about (sent/unknown/failed, even if now stale) is not re-alerted; retired pending ones are.
+      const memberIds = new Set([finding.id, ...siblings.map(f => f.id), ...(finding.duplicateGroup ? [finding.duplicateGroup] : [])]);
+      const earlier = [...links.filter(link => memberIds.has(link.findingId)), ...priorLinks.filter(link => memberIds.has(link.findingId))]
         .map(link => { try { return readDeliveryIntent(tx, input.projectId, link.intentId); } catch { return null; } })
         .find((intent): intent is DeliveryIntent => !!intent && intent.dedupeKey !== dedupeKey && intent.status !== "cancelled");
       if (earlier) {
