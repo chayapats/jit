@@ -12,7 +12,7 @@ import { unavailableNativePort } from "../src/ops/backup";
 import { gatherDiagnostics, inspectDiagnostics } from "../src/ops/diagnostics";
 import { contentHash, gitRevision } from "../src/ops/revisions";
 import { writeUpgradeFence } from "../src/ops/upgrade-fence";
-import { runLoadDrill } from "../src/ops/drill";
+import { quarantineRestorePort, runLoadDrill } from "../src/ops/drill";
 import { exportOpsSummary, readOpsRecord, writeOpsRecord } from "../src/ops/records";
 import { composeProfile, composeReleaseChecklist, deriveDeterministicRows } from "../src/ops/report";
 import { validateDrillRecord } from "../src/ops/contracts";
@@ -42,7 +42,7 @@ function healthy(overrides: Partial<DiagnosticsInput> = {}): DiagnosticsInput {
     providers: { configuredRoutes: 1, observedRoutes: 0 },
     schema: { current: schemaVersion, supported: schemaVersion },
     upgrade: { fence: "none", activeState: null },
-    restore: { open: 0, blocked: 0 },
+    restore: { open: 0, blocked: 0, gate: "none" },
     artifacts: [], ...overrides };
 }
 
@@ -63,7 +63,7 @@ test("diagnostics redacts identifiers and never carries secrets, paths or raw er
   expect(() => inspectDiagnostics(missing as never)).toThrow("invalid_diagnostics");
   expect(() => inspectDiagnostics({ ...healthy(), token: "TOKEN_SENTINEL" } as never)).toThrow("invalid_diagnostics");
   expect(() => inspectDiagnostics(healthy({ upgrade: { fence: "none", activeState: "Authorization: Bearer x" as never } }))).toThrow();
-  expect(() => inspectDiagnostics(healthy({ restore: { open: 0, blocked: 1 } }))).toThrow();
+  expect(() => inspectDiagnostics(healthy({ restore: { open: 0, blocked: 1, gate: "none" } }))).toThrow();
   expect(inspectDiagnostics(healthy())).toMatchObject({ nextAction: "none", nextActions: [] });
 });
 
@@ -77,9 +77,11 @@ test("failure fixtures produce inspectable next actions; observed route readines
     [{ waits: { quota: 0, needsLogin: 1, routeUnavailable: 0, authorizationChanged: 0 }, queue: { available: true, queued: 0, admitted: 0, waiting: 1 } }, "reconnect-provider-login"],
     [{ waits: { quota: 0, needsLogin: 0, routeUnavailable: 0, authorizationChanged: 2 } }, "reauthorize-owner-work"],
     [{ waits: { quota: 1, needsLogin: 0, routeUnavailable: 0, authorizationChanged: 0 }, queue: { available: true, queued: 0, admitted: 0, waiting: 1 } }, "wait-for-quota-then-resume"],
-    [{ restore: { open: 1, blocked: 0 } }, "resolve-restore-quarantine"],
-    [{ restore: { open: 2, blocked: 1 } }, "resolve-restore-quarantine"],
+    [{ restore: { open: 1, blocked: 0, gate: "none" } }, "resolve-restore-quarantine"],
+    [{ restore: { open: 2, blocked: 1, gate: "none" } }, "resolve-restore-quarantine"],
     [{ upgrade: { fence: "restore", activeState: null } }, "resolve-restore-quarantine"],
+    [{ restore: { open: 1, blocked: 0, gate: "pending" }, upgrade: { fence: "restore", activeState: null } }, "complete-restore-activation"],
+    [{ restore: { open: 0, blocked: 0, gate: "unreadable" } }, "complete-restore-activation"],
     [{ upgrade: { fence: "upgrade", activeState: "ready" } }, "finish-or-rollback-upgrade"],
     [{ upgrade: { fence: "none", activeState: "activated" } }, "finish-or-rollback-upgrade"],
     [{ upgrade: { fence: "unreadable", activeState: null } }, "finish-or-rollback-upgrade"],
@@ -96,7 +98,7 @@ test("failure fixtures produce inspectable next actions; observed route readines
   }
   // Combined failures stay inspectable: every applicable action is listed in priority order.
   const combined = inspectDiagnostics(healthy({ engine: { mode: "schway", available: false }, providers: { configuredRoutes: 0, observedRoutes: 0 },
-    restore: { open: 1, blocked: 1 }, telegram: { configured: false, binding: "unbound", pendingIntents: 0, unknownDeliveries: 3 } }));
+    restore: { open: 1, blocked: 1, gate: "none" }, telegram: { configured: false, binding: "unbound", pendingIntents: 0, unknownDeliveries: 3 } }));
   expect(combined.nextActions).toEqual(["resolve-restore-quarantine", "restore-engine", "configure-provider-route", "resolve-unknown-delivery", "configure-telegram"]);
   expect(combined).toMatchObject({ engine: { state: "unavailable", observed: "not-observed" }, restore: { state: "quarantine-blocked" },
     providers: { readiness: "not-configured" } });
@@ -112,11 +114,18 @@ test("gathered diagnostics read restore, upgrade, engine, route and authority st
   const store = new TransactionStore(database);
   try {
     store.transaction(tx => {
-      tx.run("INSERT INTO restore_quarantines VALUES (?, ?, ?, ?)", crypto.randomUUID(), 1, "validated", "{}");
-      tx.run("INSERT INTO restore_quarantines VALUES (?, ?, ?, ?)", crypto.randomUUID(), 2, "discarded", "{}");
       tx.run("UPDATE team_state SET route_json = ? WHERE id = 1", JSON.stringify({ provider: "grok", model: "fixture-grok", authRoute: "owner-grok" }));
     });
   } finally { store.close(); }
+  // OPS02 control plane: one open (validated) journal and one discarded journal under <db>.restores.
+  const journalFile = (state: string, createdAt: number) => {
+    const journalId = crypto.randomUUID();
+    mkdirSync(join(`${database}.restores`, journalId), { recursive: true, mode: 0o700 });
+    writeFileSync(join(`${database}.restores`, journalId, "journal.json"),
+      JSON.stringify({ id: journalId, contract: "ops.quarantined_restore/v1", state, requests: [], createdAt }));
+  };
+  journalFile("validated", 1);
+  journalFile("discarded", 2);
   writeUpgradeFence(database, crypto.randomUUID(), 1);
   // An unsafe (group-readable) host directory makes the declared engine unusable.
   mkdirSync(join(root, ".jit-host"), { mode: 0o755 });
@@ -126,12 +135,21 @@ test("gathered diagnostics read restore, upgrade, engine, route and authority st
   const before = readdirSync(root).sort();
   const snapshot = inspectDiagnostics(gatherDiagnostics(root, config, 1800000000000));
   expect(readdirSync(root).sort()).toEqual(before);
-  expect(snapshot).toMatchObject({ upgrade: { fence: "upgrade" }, restore: { open: 1, blocked: 0, state: "quarantine-open" },
+  expect(snapshot).toMatchObject({ upgrade: { fence: "upgrade" }, restore: { open: 1, blocked: 0, gate: "none", state: "quarantine-open" },
     engine: { mode: "schway", state: "unavailable", observed: "not-observed" },
     providers: { configuredRoutes: 1, observedRoutes: 0, readiness: "configured-unverified" },
     schemaVersion: { current: schemaVersion, supported: schemaVersion, state: "current" } });
   expect(snapshot.nextActions.slice(0, 3)).toEqual(["finish-or-rollback-upgrade", "resolve-restore-quarantine", "restore-engine"]);
   expect(JSON.stringify(snapshot)).not.toMatch(/grok|owner-grok|\.jit-host|state\.sqlite/);
+
+  // An unfinished activation leaves the read gate; it outranks every other action. A corrupt journal reads as blocked.
+  writeFileSync(`${database}.restore-pending`, JSON.stringify({ contract: "ops.quarantined_restore/v1", restoreId: crypto.randomUUID() }));
+  const corrupt = crypto.randomUUID();
+  mkdirSync(join(`${database}.restores`, corrupt), { mode: 0o700 });
+  writeFileSync(join(`${database}.restores`, corrupt, "journal.json"), "{not json");
+  const gated = inspectDiagnostics(gatherDiagnostics(root, config, 1800000000000));
+  expect(gated.restore).toEqual({ open: 2, blocked: 1, gate: "pending", state: "activation-pending" });
+  expect(gated.nextAction).toBe("complete-restore-activation");
 
   // An installation still at an older schema is reported, never migrated in place.
   const oldPath = join(root, "old.sqlite"), old = new Database(oldPath);
@@ -214,12 +232,14 @@ test("bounded fixture drill runs the static PR path, export, backup and upgrade 
     for (const leg of ["groups", "pr-snapshots", "pr-alerts", "memory-queries", "deliveries", "schedules", "quota-wait", "cancel", "export", "network", "disk-watermark"]) {
       expect([leg, stateOf(record, leg)]).toEqual([leg, "passed"]);
     }
-    // Engine-dependent legs ran against the fixture engine and say so; the restore leg is an honest gate.
+    // Engine-dependent legs ran against the fixture engine and say so.
     expect(stateOf(record, "backup")).toBe("scripted");
     expect(stateOf(record, "upgrade-preflight")).toBe("scripted");
     // (Asymmetric matchers inside toMatchObject can write into the subject under Bun; compare plain fields.)
-    expect(stateOf(record, "quarantine")).toBe("blocked");
-    expect(record.legs.find(l => l.leg === "quarantine")!.detail).toMatch(/^pending OPS02 \(#33\)/);
+    // The real OPS02 flow ran in quarantine and was discarded, releasing the shared fence and read gate.
+    expect(stateOf(record, "quarantine")).toBe("passed");
+    expect(record.legs.find(l => l.leg === "quarantine")!.detail)
+      .toBe("states=quarantined>migrated>ledger_applied>validated checks=16 failedChecks=0 discarded=true fenceReleased=true");
     expect(record.measurements).toMatchObject({ fetchCalls: 0, sentDeliveries: 1, unknownDeliveries: 1, failedDeliveries: 2,
       succeededJobs: 6, prReports: 3, alertIntents: 3, waitingJobs: 1, cancelledJobs: 1 });
     expect(record.measurements.exportBytes).toBeGreaterThan(0);
@@ -227,10 +247,10 @@ test("bounded fixture drill runs the static PR path, export, backup and upgrade 
     expect(record.measurements.commands).toBeGreaterThan(10);
     expect(record.measurements.stopAckMs).not.toBeNull();
     expect(record.measurements.peakRssBytes).toBeGreaterThan(0);
-    expect(record.fixtureHonesty.join("\n")).toMatch(/OPS02 \(#33\)/);
+    expect(record.fixtureHonesty.join("\n")).toMatch(/activation is never drilled/);
     expect(record.fixtureHonesty.join("\n")).toMatch(/not a latency SLO and not Pi capacity/);
-    expect(record.outcome).toBe("blocked");
-    expect(record.nextAction).toBe("integrate-pending-contract");
+    expect(record.outcome).toBe("passed");
+    expect(record.nextAction).toBe("none");
     expect(calls).toBe(0);
     validateDrillRecord(record);
     expect(JSON.stringify(record)).not.toMatch(/TOKEN_SENTINEL|Authorization|Bearer|192\.0\.2|DRILLPROBE|api_key|drill-fixture-owner-password/);
@@ -302,6 +322,28 @@ test("restore seam derives the quarantine leg from the injected port's result, f
   expect(stateOf(bogus.record, "quarantine")).toBe("failed");
 });
 
+test("quarantine leg reports an untrusted lifecycle ledger as blocked, never as a pass", async () => {
+  const root = setup();
+  const { record } = await runLoadDrill({ ...drillConfig }, { root, keepRoot: true, restore: async context => {
+    // Corrupt the installation lifecycle ledger checkpoint the restore must trust.
+    writeFileSync(join(root, "state", "app.sqlite.lifecycle-ledger.json"), "{corrupt");
+    return quarantineRestorePort(context);
+  } });
+  const leg = record.legs.find(l => l.leg === "quarantine")!;
+  expect(leg.state).toBe("blocked");
+  expect(leg.detail).toMatch(/reason=ledger_checkpoint_/);
+  expect(leg.detail).toContain("fenceReleased=true");
+  expect(record.outcome).toBe("blocked");
+  expect(record.nextAction).toBe("resolve-blocked-work");
+  validateDrillRecord(record);
+  // Every journal the drill opened ended (discarded or failed); nothing holds the fence or the read gate.
+  const restored = inspectDiagnostics(gatherDiagnostics(root, readConfig({ JIT_DATABASE: join(root, "state", "app.sqlite"),
+    JIT_TELEGRAM_BOT_TOKEN_PATH: join(root, "missing.token") })));
+  expect(restored.upgrade.fence).toBe("none");
+  expect(restored.restore).toEqual({ open: 0, blocked: 0, gate: "none", state: "none" });
+  expect(leg.detail).toContain("discarded=true");
+});
+
 test("owner cancellation records remaining legs as not-run and asks for a bounded retry", async () => {
   const before = new AbortController();
   before.abort();
@@ -343,9 +385,13 @@ test("release checklist derives deterministic rows from executed legs and links 
   expect(row("J01")).toMatchObject({ state: "blocked", evidenceId: record.id });
   expect(row("J01").note).toContain("partial drill coverage");
   expect(row("J05").note).toMatch(/OPS05 human evidence/);
-  // A blocked leg (restore pending OPS02) blocks its row regardless of coverage.
+  // crash executed every mapped leg (quarantine included) but is only partially drilled, so it stays blocked.
   expect(row("crash").state).toBe("blocked");
-  expect(row("crash").note).toContain("quarantine=blocked");
+  expect(row("crash").note).toContain("quarantine=passed");
+  expect(row("crash").note).toContain("partial drill coverage");
+  // A blocked leg blocks its row regardless of coverage.
+  const blockedQuarantine = { ...record, legs: record.legs.map(l => l.leg === "quarantine" ? { ...l, state: "blocked" as const } : l) };
+  expect(deriveDeterministicRows(blockedQuarantine).find(i => i.id === "crash")).toMatchObject({ state: "blocked", evidenceId: record.id });
   expect(checklist.human.find(i => i.id === "FEAS")).toMatchObject({ state: "blocked", evidenceId: id });
   expect(checklist.human.find(i => i.id === "OPS")).toMatchObject({ state: "not-run", evidenceId: null });
   expect(checklist.outcome).toBe("blocked");
@@ -417,7 +463,7 @@ test("standalone CLI drills, reports and rejects invalid invocations with fixed 
   expect(drilled.exit).toBe(0);
   const summary = JSON.parse(drilled.stdout) as { stored: boolean; legs: Array<{ leg: string; state: string }>; recordId: string };
   expect(summary.stored).toBe(true);
-  expect(summary.legs.find(l => l.leg === "quarantine")).toMatchObject({ state: "blocked" });
+  expect(summary.legs.find(l => l.leg === "quarantine")).toMatchObject({ state: "passed" });
   expect(drilled.stdout).not.toMatch(/TOKEN_SENTINEL|Authorization|Bearer/);
   const exported = await readOpsRecord(root, summary.recordId);
   expect({ ...exportOpsSummary(exported), stored: true }).toEqual(summary);

@@ -23,6 +23,8 @@ import { safeNote, safeOpsAlias, type DrillAction, type DrillLeg, type DrillLegS
   type LoadDrillConfig, type LoadDrillRecord } from "./contracts";
 import { testedRevisions } from "./revisions";
 import { upgradeEngineContract, upgradeNativeFormatVersion } from "./upgrade";
+import { terminalRestoreStates, type RestoreCommand, type RestoreEvidence } from "./restore";
+import { AppError } from "../errors";
 
 /** What a quarantine/restore leg receives: the drilled Application, its owner actor and the verified backup. */
 export interface DrillRestoreContext {
@@ -38,13 +40,58 @@ export interface DrillLegResult { state: DrillLegState; detail: string }
 
 /**
  * Seam for the quarantined-restore leg (`ops.quarantined_restore/v1`, OPS02 #33).
- * The integration base does not yet carry the accepted restore flow, so the
- * default drill records the leg as `blocked: pending OPS02 (#33)` after proving a
- * verified backup exists. Integrating OPS02 means supplying this port: prepare →
- * migrate → apply_ledger → validate in quarantine, then discard (the drill never
- * activates a restore over its own state).
+ * The default is {@link quarantineRestorePort}; tests inject failure ports.
  */
 export type DrillRestorePort = (context: DrillRestoreContext) => Promise<DrillLegResult>;
+
+const restoreSteps = ["restore.migrate", "restore.apply_ledger", "restore.validate"] as const;
+
+/**
+ * Exercises the accepted OPS02 restore flow against the drill's verified backup
+ * through the Application boundary: prepare → migrate → apply_ledger (latest
+ * trusted installation lifecycle ledger) → validate, then always discard. It
+ * never activates: activation would replace the drill's own state. The leg is
+ * `passed` only when validation passed every check, the quarantine was
+ * discarded and the shared fence and read gate are released afterwards; a
+ * blocked or failed journal is `blocked` with its fixed reason (and is still
+ * discarded when it can be).
+ */
+export const quarantineRestorePort: DrillRestorePort = async ({ app, actor, backupId }) => {
+  const revision = (): number => app.restoreConsole(actor).revision;
+  // A refused step still writes its journal (blocked/failed, fence held while blocked) and then throws;
+  // the drill reads that journal back by request id instead of treating the refusal as a crash.
+  const run = async (command: RestoreCommand): Promise<RestoreEvidence | null> => {
+    try { return (await app.execute(actor, command)).quarantine; }
+    catch (error) {
+      if (!(error instanceof AppError)) throw error;
+      return app.restores(actor).quarantines.find(j => j.requests.some(r => r.requestId === command.requestId)) ?? null;
+    }
+  };
+  const step = (kind: (typeof restoreSteps)[number] | "restore.discard", quarantineId: string) =>
+    run({ kind, requestId: crypto.randomUUID(), projectId: null, expectedRevision: revision(), payload: { quarantineId } });
+  let journal = await run({ kind: "restore.prepare", requestId: crypto.randomUUID(), projectId: null,
+    expectedRevision: revision(), payload: { backupId, note: "drill quarantine probe" } });
+  if (!journal) return { state: "blocked", detail: "restore prepare refused before writing a journal" };
+  const states: string[] = [journal.state];
+  for (const kind of restoreSteps) {
+    if (journal.state === "blocked" || journal.state === "failed") break;
+    const next: RestoreEvidence | null = await step(kind, journal.id);
+    journal = next ?? app.restore(actor, journal.id).quarantine;
+    states.push(journal.state);
+  }
+  const validated = journal.state === "validated";
+  const failedChecks = journal.validation?.checks.filter(c => !c.pass).length ?? 0;
+  const checks = journal.validation?.checks.length ?? 0;
+  const reason = reasonCode(journal.reason ?? "none");
+  let discarded = journal.state === "discarded";
+  if (!terminalRestoreStates.includes(journal.state)) discarded = (await step("restore.discard", journal.id))?.state === "discarded";
+  const released = app.restoreConsole(actor).gatedBy === null && !app.upgradeStatus(actor).fenced;
+  const detail = `states=${states.join(">")} checks=${checks} failedChecks=${failedChecks} discarded=${discarded} fenceReleased=${released}`;
+  if (validated && failedChecks === 0 && discarded && released) return { state: "passed", detail };
+  // A quarantine the drill could not end leaves the installation fenced: that is a drill failure, not a gate.
+  if (!released) return { state: "failed", detail: `${detail} reason=${reason}` };
+  return { state: "blocked", detail: `${detail} reason=${reason}` };
+};
 
 /** Injectable seams for deterministic tests. Production runs use real time and disposable state. */
 export interface DrillPorts {
@@ -62,7 +109,7 @@ export interface DrillPorts {
    * `unavailableNativePort` to drill the engine-unavailable path.
    */
   nativeSnapshot?: BackupNativePort;
-  /** Quarantined-restore leg; absent means pending OPS02 (#33). */
+  /** Quarantined-restore leg; defaults to {@link quarantineRestorePort}. */
   restore?: DrillRestorePort;
   /** Owner cancellation: legs not yet started are recorded `not-run`, never skipped silently. */
   signal?: AbortSignal;
@@ -226,7 +273,7 @@ export async function runLoadDrill(config: LoadDrillConfig, ports: DrillPorts = 
     ], { now });
     const jobs = queue;
     const app = new Application(store, appConfig, { jobs, now, nativeSnapshot: native,
-      backupDir: join(stateDir, "backups"), restoreDir: join(stateDir, "restores"), upgradeDir: join(stateDir, "upgrades") });
+      backupDir: join(stateDir, "backups") });
     await app.setupOwner("drill-fixture-owner-password");
     const actor = app.authenticate(await app.login("drill-fixture-owner-password")).actor;
     /** Owner command through the Application boundary; acknowledgment = receipt returned. */
@@ -464,8 +511,7 @@ export async function runLoadDrill(config: LoadDrillConfig, ports: DrillPorts = 
 
     await timed("quarantine", "Quarantine is exercised and discarded; the drill never activates a restore over its own state.", async () => {
       if (!verifiedBackupId) return { state: "not-run", detail: "no verified backup to restore into quarantine" };
-      if (!ports.restore) return { state: "blocked", detail: "pending OPS02 (#33): verified backup present; ops.quarantined_restore/v1 not in integration base" };
-      return ports.restore({ app, actor, backupId: verifiedBackupId, now });
+      return (ports.restore ?? quarantineRestorePort)({ app, actor, backupId: verifiedBackupId, now });
     });
 
     await timed("network", "Global fetch is a throwing stub for the whole drill; any call is an escape.", async () =>
@@ -507,7 +553,7 @@ export async function runLoadDrill(config: LoadDrillConfig, ports: DrillPorts = 
         : "Backup and upgrade preflight used an injected native port; its engine identity is the caller's claim.",
       ports.restore
         ? "Quarantine used an injected restore port inside disposable state; nothing was activated."
-        : "Quarantined restore is pending OPS02 (#33); only the verified backup precondition was observed.",
+        : "Quarantined restore ran prepare, migrate, ledger replay and validate on the drill backup, then discarded; activation is never drilled.",
       "Desktop fixture timing is not a latency SLO and not Pi capacity evidence.",
     ];
     const record: LoadDrillRecord = { schema: "jit.ops.drill/v1", id: crypto.randomUUID(),

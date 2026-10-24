@@ -8,6 +8,7 @@ import { hostCapabilities } from "schway/host";
 import { redactModel, redactRouteId, safeEvidenceId, safeNote, safeOpsAlias } from "./contracts";
 import { activeUpgrade, upgradeDirFor, type UpgradeState } from "./upgrade";
 import { readUpgradeFence } from "./upgrade-fence";
+import { listRestores, readRestoreGate, restoreDirFor, terminalRestoreStates } from "./restore";
 
 /** Fixed route lifecycle states visible to diagnostics; never a readiness promise. */
 export const diagnosticRouteStates = ["queued", "admitted", "waiting", "succeeded", "blocked", "failed"] as const;
@@ -18,7 +19,7 @@ export type DiagnosticRouteState = typeof diagnosticRouteStates[number];
  * None of them is authorized by diagnostics: each names the owner runbook
  * step (docs/runbooks/ops-load-drill.md) that the owner may choose to take.
  */
-export const diagnosticActions = ["none", "finish-or-rollback-upgrade", "resolve-restore-quarantine", "run-owner-upgrade",
+export const diagnosticActions = ["none", "complete-restore-activation", "finish-or-rollback-upgrade", "resolve-restore-quarantine", "run-owner-upgrade",
   "use-compatible-app-artifact", "relieve-disk-pressure", "restore-engine", "inspect-sanitized-diagnostics",
   "configure-provider-route", "reconnect-provider-login", "reauthorize-owner-work", "wait-for-quota-then-resume",
   "resolve-unknown-delivery", "resolve-blocked-work", "drain-queue", "configure-telegram", "bind-telegram"] as const;
@@ -51,8 +52,11 @@ export interface DiagnosticsInput {
   schema: { current: number; supported: number };
   /** Durable admission fence and the active upgrade journal state, if any. */
   upgrade: { fence: "none" | "upgrade" | "restore" | "unreadable"; activeState: UpgradeState | null };
-  /** Non-terminal restore quarantines (OPS02), and how many of them are blocked. */
-  restore: { open: number; blocked: number };
+  /**
+   * Non-terminal OPS02 restore journals, how many are blocked, and the durable
+   * read gate (`<db>.restore-pending`: an activation that has not completed).
+   */
+  restore: { open: number; blocked: number; gate: "none" | "pending" | "unreadable" };
   /** Sanitized ops-evidence record IDs present in local storage. */
   artifacts: string[];
 }
@@ -73,7 +77,8 @@ export interface Diagnostics {
   providers: { configuredRoutes: number; observedRoutes: number; readiness: "not-configured" | "configured-unverified" | "observed-ready" };
   schemaVersion: { current: number; supported: number; state: "current" | "upgrade-required" | "newer-unsupported" };
   upgrade: { fence: "none" | "upgrade" | "restore" | "unreadable"; activeState: UpgradeState | null };
-  restore: { open: number; blocked: number; state: "none" | "quarantine-open" | "quarantine-blocked" };
+  restore: { open: number; blocked: number; gate: "none" | "pending" | "unreadable";
+    state: "none" | "quarantine-open" | "quarantine-blocked" | "activation-pending" };
   artifacts: { count: number; references: string[] };
   /** Highest-priority applicable action; `nextActions` lists every applicable one in priority order. */
   nextAction: DiagnosticAction;
@@ -149,12 +154,15 @@ export function inspectDiagnostics(input: DiagnosticsInput): Diagnostics {
   const upgrade = { fence: u.fence, activeState: u.activeState };
   const r = input.restore;
   object(r);
-  const restore = { open: count(r.open, 100), blocked: count(r.blocked, 100), state: "none" as Diagnostics["restore"]["state"] };
+  if (!["none", "pending", "unreadable"].includes(r.gate)) fail();
+  const restore = { open: count(r.open, 100), blocked: count(r.blocked, 100), gate: r.gate, state: "none" as Diagnostics["restore"]["state"] };
   if (restore.blocked > restore.open) fail();
-  restore.state = restore.blocked > 0 ? "quarantine-blocked" : restore.open > 0 ? "quarantine-open" : "none";
+  restore.state = restore.gate !== "none" ? "activation-pending" : restore.blocked > 0 ? "quarantine-blocked" : restore.open > 0 ? "quarantine-open" : "none";
   if (!Array.isArray(input.artifacts) || input.artifacts.length > 32) fail();
   const artifacts = { count: input.artifacts.length, references: input.artifacts.map(a => safeEvidenceId(a)) };
   const applicable: [boolean, DiagnosticAction][] = [
+    // While the read gate exists the application serves only restore status and remediation.
+    [restore.gate !== "none", "complete-restore-activation"],
     // An active journal is fenced or activated-awaiting-reconcile; either way the owner finishes or rolls it back.
     [upgrade.fence === "upgrade" || upgrade.fence === "unreadable" ||
       (upgrade.activeState !== null && !["complete", "failed", "rolled_back"].includes(upgrade.activeState)), "finish-or-rollback-upgrade"],
@@ -257,14 +265,20 @@ function configuredRouteCount(store: TransactionStore): number {
   });
 }
 
-/** Non-terminal restore quarantines from the current OPS02 store table; absent table reads as none. */
-function restoreQuarantines(store: TransactionStore): { open: number; blocked: number } {
-  return store.read(tx => {
-    try {
-      const rows = tx.all<{ state: string }>("SELECT state FROM restore_quarantines WHERE state NOT IN ('complete', 'discarded', 'failed') LIMIT 100");
-      return { open: rows.length, blocked: rows.filter(r => r.state === "blocked").length };
-    } catch { return { open: 0, blocked: 0 }; }
-  });
+/**
+ * OPS02 restore state from its control plane: bounded journal files under
+ * `<db>.restores` (unreadable journals count as blocked placeholders) and the
+ * `<db>.restore-pending` read gate. File reads only; nothing is reconciled.
+ */
+function restoreState(databasePath: string): { open: number; blocked: number; gate: "none" | "pending" | "unreadable" } {
+  let open = 0, blocked = 0;
+  try {
+    const journals = listRestores(restoreDirFor(databasePath), 100).filter(j => !terminalRestoreStates.includes(j.state));
+    open = journals.length;
+    blocked = journals.filter(j => j.state === "blocked").length;
+  } catch { open = 1; blocked = 1; }
+  const holder = readRestoreGate(databasePath);
+  return { open, blocked, gate: holder === null ? "none" : holder === "unknown" ? "unreadable" : "pending" };
 }
 
 /**
@@ -341,7 +355,7 @@ export function gatherDiagnostics(root: string, config: AppConfig, now: number =
       schema: { current, supported: schemaVersion },
       upgrade: { fence: fence === null ? "none" : fence.upgradeId === "unknown" ? "unreadable"
         : (fence as { holder?: unknown }).holder === "restore" ? "restore" : "upgrade", activeState },
-      restore: restoreQuarantines(store),
+      restore: restoreState(config.databasePath),
       artifacts };
   } finally { store.close(); }
 }

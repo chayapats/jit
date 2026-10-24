@@ -8,12 +8,13 @@ Owner-executable checklist. The drill runs on the dev machine against disposable
 bun src/main.ts diagnose          # or: bun run ops:drill diagnose
 ```
 
-- Prints queue/admission, redacted routes, budget/deadline exhaustion, quota/login/authority waits, disk vs watermark, Telegram configured/bound, engine mode and declared state, configured vs observed provider routes, schema, upgrade fence/journal, restore quarantines, evidence references, `nextAction` and every applicable `nextActions` entry.
+- Prints queue/admission, redacted routes, budget/deadline exhaustion, quota/login/authority waits, disk vs watermark, Telegram configured/bound, engine mode and declared state, configured vs observed provider routes, schema, upgrade fence/journal, restore journals and the restore read gate, evidence references, `nextAction` and every applicable `nextActions` entry.
 - Claims no scheduler ownership, starts no background work, never probes the engine or a provider, and writes nothing. `providers.readiness` stays `configured-unverified` until live route evidence (S01/OPS05) exists; diagnose never upgrades it.
 - Work through `nextActions` in order using the table below. A listed action is the next owner step, not an authorization.
 
 | `nextAction` | Runbook step |
 | --- | --- |
+| `complete-restore-activation` | §7 Quarantined restore: an activation has not completed |
 | `finish-or-rollback-upgrade` | §8 Supported upgrades |
 | `resolve-restore-quarantine` | §7 Quarantined restore |
 | `run-owner-upgrade` | §8 Supported upgrades |
@@ -37,9 +38,9 @@ cat .local/ops-drill.json   # review workload sizes first; all values are finite
 bun run ops:drill drill --config .local/ops-drill.json
 ```
 
-- Creates disposable state and runs, in order: groups, the static PR path (snapshot → scripted review → alert admission), memory queries, fixture deliveries (including unknown), explicit-clock schedules, a quota wait, a cooperative cancel, a sanitized project export, a managed backup with integrity re-verification, a read-only upgrade preflight, the quarantine gate, a network-isolation check and the disk watermark.
+- Creates disposable state and runs, in order: groups, the static PR path (snapshot → scripted review → alert admission), memory queries, fixture deliveries (including unknown), explicit-clock schedules, a quota wait, a cooperative cancel, a sanitized project export, a managed backup with integrity re-verification, a read-only upgrade preflight, a quarantined restore of that backup (prepare → migrate → ledger replay → validate → discard; never activated), a network-isolation check and the disk watermark.
 - `scripted` on `backup`/`upgrade-preflight` means the fixture engine declared the snapshot contract; no Schway engine ran.
-- `quarantine` is `blocked` with `pending OPS02 (#33)` until the accepted `ops.quarantined_restore/v1` flow is integrated as the drill's restore port; the record then shows `nextAction: integrate-pending-contract`. This gate is part of the result, not a failure to hide.
+- `quarantine` passes only when validation passed every check, the quarantine was discarded and the fence and read gate were released. `blocked` names the journal reason (for example an untrusted `ledger_checkpoint_*`); fix that on the real installation per §7 before trusting a restore. This is part of the result, not a failure to hide.
 - A `blocked` outcome is valid. Re-run only with the same config after addressing the recorded `nextAction`; never loosen limits to force a pass. `retry-bounded-drill` means the drill was cancelled or hit `deadlineMs`; the skipped legs are listed as `not-run`.
 
 ## 3. Pause/stop
@@ -70,7 +71,8 @@ bun run ops:drill drill --config .local/ops-drill.json
 
 - `resolve-restore-quarantine`: a restore quarantine is open (or the shared fence is held by a restore). Open `/restores`, read the journal's checks and `nextAction`, and either continue the next step or discard the quarantine. A quarantine is never started by workers and never activates on its own.
 - Never hand-edit the deletion ledger, quarantine files or the fence to force readiness; a blocked validation stays blocked until its reason is fixed.
-- Restore activation and its ledger replay follow `ops.quarantined_restore/v1` (OPS02 #33). Until that flow is in the integration base, the drill records only that a verified backup exists.
+- `complete-restore-activation`: `<db>.restore-pending` exists, so an activation has not completed and every ordinary read and command is refused (`restore_incomplete`). Open `/restores/<id>` and retry `activate` (it resumes native reconciliation and service resume), or start the service so boot completes it. Never delete the gate file.
+- Restore activation and its ledger replay follow `ops.quarantined_restore/v1` (`docs/contracts/ops-quarantined-restore-v1.md`). The drill exercises every step except activation, which would replace the drill's own state.
 
 ## 8. Supported upgrades
 
