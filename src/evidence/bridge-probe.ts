@@ -121,21 +121,20 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
    * Fenced native-compatible credential store. It reads and writes the same
    * OS keychain entries as Schway's internal native store (same service and
    * identity-account addressing, verified against the pinned artifact), so
-   * production runs use exactly the owner's configured logins — but every
-   * mutation rechecks the probe lifecycle first. Reads stay unfenced; a
-   * missing store backend fails closed. Explicit fixture stores keep their
-   * own behavior and are wrapped the same way when a fence is supplied.
+   * production runs use exactly the owner's configured logins. Every
+   * mutation runs through the orchestration fence: dispatched-started check
+   * inside the lifecycle serialization, mutation racing the live signal
+   * outside every lock, so a hung backend can never wedge the deadline.
+   * Reads stay unfenced and uncaught: an unreadable store must reject so
+   * readiness reports store-unavailable instead of masquerading as a
+   * missing login.
    */
-  const fencedNativeStore = (fenced?: () => Promise<boolean>): HostCredentialStore => ({
-    get: identity => secrets.get({ service: BRIDGE_NATIVE_SERVICE, name: identity.account }).catch(() => null),
-    set: async (identity, value) => {
-      if (fenced && await fenced().catch(() => true)) throw new Error("fenced");
-      await secrets.set({ service: BRIDGE_NATIVE_SERVICE, name: identity.account, value });
-    },
-    delete: async identity => {
-      if (fenced && await fenced().catch(() => true)) throw new Error("fenced");
-      return secrets.delete({ service: BRIDGE_NATIVE_SERVICE, name: identity.account });
-    },
+  const fencedNativeStore = (fence?: { write<T>(work: () => Promise<T>): Promise<T> }): HostCredentialStore => ({
+    // No catch: an unreadable store must reject so readiness reports
+    // store-unavailable instead of masquerading as a missing login.
+    get: identity => secrets.get({ service: BRIDGE_NATIVE_SERVICE, name: identity.account }),
+    set: (identity, value) => (fence ? fence.write(() => secrets.set({ service: BRIDGE_NATIVE_SERVICE, name: identity.account, value })) : secrets.set({ service: BRIDGE_NATIVE_SERVICE, name: identity.account, value })),
+    delete: identity => (fence ? fence.write(() => secrets.delete({ service: BRIDGE_NATIVE_SERVICE, name: identity.account })) : secrets.delete({ service: BRIDGE_NATIVE_SERVICE, name: identity.account })),
   });
 
   const openHost = async (deadlineMs: number, fetch: HostAuthFetch, effectiveStore?: HostCredentialStore) => {
@@ -194,11 +193,14 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
       }
       if (inflight) throw new Error("invalid_probe_input");
       inflight = true;
-      // Credential-store mutations are fenced: every write rechecks the
-      // attempt is still dispatched first, so a late token response can
-      // never become a post-cancellation credential write. Unreadable
-      // records fail closed. Reads stay unfenced; only mutations are gated.
-      const base = store ?? fencedNativeStore(undefined);
+      // Credential-store mutations are fenced: the dispatch check runs
+      // inside the lifecycle serialization and the mutation races the
+      // live signal outside every lock, so a hung backend fails closed
+      // instead of wedging the deadline. Reads stay unfenced.
+      // Without an explicit fixture store, production uses the native
+      // OS keychain entries directly (same as Schway's internal native
+      // store, verified against the pinned artifact).
+      const base = store ?? fencedNativeStore(input.fence);
       const fence = input.fence;
       const fencedStore: HostCredentialStore = fence ? {
         get: (identity: HostCredentialReference) => base.get(identity),
@@ -249,6 +251,8 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
         switch (result.auth.status) {
           case "needs-login": return "login";
           case "quota-exceeded": return "quota";
+          case "store-unavailable":
+          case "invalid-store": return "store";
           case "rejected":
           case "model-unavailable": return "rejected";
           default: return "failed";

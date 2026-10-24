@@ -43,8 +43,10 @@ needs-login. Nothing here proves inference, and a successful login never
 becomes renewal evidence — renewal observation belongs to FEAS04 with its
 own opt-in and evidence, not to this command.
 
-Every credential-store mutation rechecks the probe lifecycle first, so a
-late token response can never become a post-cancellation write — including
+Every credential-store mutation runs through the fence — dispatch check
+inside the lifecycle serialization, mutation racing the live signal outside
+every lock — so a hung backend fails closed instead of wedging the deadline;
+a late settlement of the unabortable backend after acknowledgement — including
 production, where the bridge uses a fenced store over the same OS keychain
 entries as Schway's internal native store (verified against the pinned
 artifact; a key-scheme change fails closed). The public native-store seam

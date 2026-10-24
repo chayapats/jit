@@ -129,7 +129,7 @@ test("bridge credential boundary maps local store states without secrets or netw
 test("bridge infer covers every classifier state with the selected route unchanged", async () => {
   const table: [string, HostCredentialStore | null, HostAuthFetch | undefined, ProbeEvent][] = [
     ["login", memStore(null), undefined, "login"],
-    ["store", memStore(validTokens, "get"), undefined, "failed"],
+    ["store", memStore(validTokens, "get"), undefined, "store"],
     ["quota", memStore(validTokens), statusFetch(429), "quota"],
     // A 401 fails the fixture refresh and drops the login; a 403 rejects the route.
     ["rejected-after-401", memStore(validTokens), statusFetch(401), "login"],
@@ -821,20 +821,18 @@ test("no native credential write happens after cancellation on the default store
   expect(final.attempts).toBe(1);
 });
 
-test("cancellation waits for an in-flight credential mutation instead of racing it", async () => {
+test("cancellation acks promptly while a credential mutation hangs", async () => {
   const root = setup();
   const expired = JSON.stringify({ accessToken: "old-access", refreshToken: "refresh-token", obtainedAt: 0, expiresAt: 1 });
-  let releaseWrite!: () => void;
-  const writeGate = new Promise<void>(resolve => { releaseWrite = resolve; });
-  let writeAt = 0, cancelAt = 0;
+  const writeGate = new Promise<void>(() => {});
   const backend = new Map<string, string>();
   const secrets = {
-    get: async ({ name }: { service: string; name: string }) => name.includes("grok") ? expired : (backend.get(name) ?? null),
-    // Hold the OS write until released: cancellation must serialize against
-    // the whole mutation instead of acknowledging past it or failing.
+    // Expired Grok login in the native backend forces a proactive refresh;
+    // no explicit store is passed, so this exercises the production path.
+    get: async ({ name }: { service: string; name: string }) => name.includes("grok-subscription") ? expired : (backend.get(name) ?? null),
+    // Never-settling OS write: cancellation must ack without waiting for it.
     set: async ({ name, value }: { service: string; name: string; value: string }) => {
       await writeGate;
-      writeAt = Date.now();
       backend.set(name, value);
     },
     delete: async ({ name }: { service: string; name: string }) => backend.delete(name),
@@ -848,10 +846,10 @@ test("cancellation waits for an in-flight credential mutation instead of racing 
   };
   const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, nativeSecrets: secrets, fetch });
   const pending = liveProbe("fixture-probe-host",
-    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 8000 },
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 1000 },
     { ...ports, now: () => 1800000000000, id: () => OTHER_ID }, root);
-  // Wait until the credential write is actually in flight (attempt reserved
-  // and the refresh token response received).
+  // Wait until the credential mutation is actually in flight (attempt
+  // reserved and the refresh intent durably recorded).
   for (let spin = 0; spin < 200; spin++) {
     try {
       const sends = (await readProbeAttempt(root, OTHER_ID)).observations.find(item => item.observation === "renewal")!.sends;
@@ -860,18 +858,113 @@ test("cancellation waits for an in-flight credential mutation instead of racing 
     await new Promise(r => setTimeout(r, 5));
   }
   await new Promise(r => setTimeout(r, 50));
-  // Cancel while the write is in flight: it must wait for safe settlement
-  // instead of acknowledging past the mutation or failing on the lock.
-  const cancelPromise = cancelProbeAttempt(root, OTHER_ID);
-  await new Promise(r => setTimeout(r, 50));
-  releaseWrite();
-  const cancelled = await cancelPromise;
-  cancelAt = Date.now();
+  // Cancel acks promptly even though the OS write never settles: the fence
+  // races the live signal outside every lock instead of holding the
+  // lifecycle serialization across the unbounded backend.
+  const startedAt = Date.now();
+  const cancelled = await cancelProbeAttempt(root, OTHER_ID);
+  expect(Date.now() - startedAt).toBeLessThan(5000);
   expect(cancelled.lifecycle).toBe("cancelled");
   const late = await pending;
   expect(late.record.lifecycle).toBe("cancelled");
-  // The mutation settled before cancellation acknowledged: no failure and
-  // no post-acknowledgement write.
-  expect(backend.size).toBe(1);
-  expect(writeAt).toBeLessThanOrEqual(cancelAt);
+  // The hung write never completed; nothing was recorded as a success.
+  expect(backend.size).toBe(0);
+});
+
+test("a hanging credential mutation cannot wedge the probe past its deadline", async () => {
+  const root = setup();
+  const { fencedStoreWrite } = await import("../src/evidence/probe");
+  const { ports } = bridgePorts({ fetch: successFetch() });
+  const { record } = await liveProbe("fixture-probe-host",
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 8000 }, ports, root);
+  expect(record.lifecycle).toBe("observed-ready");
+  const hanging = new Promise<never>(() => {});
+  const controller = new AbortController();
+  const id = record.id;
+  setTimeout(() => controller.abort(), 50);
+  const startedAt = Date.now();
+  await expect(fencedStoreWrite(root, id, controller.signal, () => hanging)).rejects.toThrow();
+  // Bounded: the abort releases the lifecycle lock instead of hanging on it.
+  expect(Date.now() - startedAt).toBeLessThan(5000);
+  // The record is untouched by the aborted write.
+  expect((await readProbeAttempt(root, id)).lifecycle).toBe("observed-ready");
+});
+
+test("a crash between initiation and confirmation leaves explicitly unconfirmed evidence", async () => {
+  const root = setup();
+  const childId = "ee781630-4d14-4d8b-a0eb-000000001337";
+  // The token transport hangs forever: the child parks after the intent is
+  // durably recorded but before any confirmation can run. Killing it here
+  // is deterministic — no later step can advance the record.
+  const childSource = `
+    const { bridgeProbePorts } = await import(${JSON.stringify(join(import.meta.dir, "../src/evidence/bridge-probe.ts"))});
+    const { liveProbe } = await import(${JSON.stringify(join(import.meta.dir, "../src/evidence/probe.ts"))});
+    const root = ${JSON.stringify(root)}, id = ${JSON.stringify(childId)};
+    const expired = JSON.stringify({ accessToken: "old-access", refreshToken: "refresh-token", obtainedAt: 0, expiresAt: 1 });
+    const store = { get: async () => expired, set: async () => {}, delete: async () => true };
+    const fetch = async (input) => {
+      const url = String(typeof input === "string" ? input : input.url);
+      if (!url.toLowerCase().includes("token")) throw new Error("unreachable");
+      await new Promise(() => {});
+    };
+    const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, store, fetch });
+    await liveProbe("fixture-probe-host",
+      { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 60000 },
+      { now: () => 1800000000000, id: () => id, readCredential: ports.readCredential, infer: ports.infer }, root);
+  `;
+  const child = Bun.spawn(["bun", "-e", childSource], { stdout: "ignore", stderr: "ignore" });
+  try {
+    for (let spin = 0; spin < 200; spin++) {
+      try {
+        const sends = (await readProbeAttempt(root, childId)).observations.find(item => item.observation === "renewal")!.sends;
+        if (sends!.length > 0) break;
+      } catch { /* Not persisted yet. */ }
+      await new Promise(r => setTimeout(r, 25));
+    }
+    const crashed = await readProbeAttempt(root, childId);
+    expect(crashed.lifecycle).toBe("started");
+    expect(crashed.observations.find(item => item.observation === "renewal")!.sends).toEqual([{ inference: 0, token: 1, confirmed: false }]);
+    child.kill(9);
+    await child.exited;
+  } finally {
+    try { child.kill(9); } catch { /* Already exited. */ }
+  }
+  // Restart reconciles the orphan without inventing confirmation.
+  const updated = await reconcileProbeAttempts(root);
+  expect(updated).toHaveLength(1);
+  expect(updated[0]!.lifecycle).toBe("interrupted");
+  expect(updated[0]!.observations.find(item => item.observation === "renewal")!.sends).toEqual([{ inference: 0, token: 1, confirmed: false }]);
+});
+
+test("a throwing native store maps to store-unavailable, not a missing login", async () => {
+  const root = setup();
+  const boom = () => { throw new Error("locked keychain"); };
+  const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root,
+    nativeSecrets: { get: async () => { boom(); throw new Error("unreachable"); }, set: async () => {}, delete: async () => false },
+    fetch: successFetch("unused") });
+  expect(await ports.readCredential!(new AbortController().signal)).toBe("missing");
+  const { record } = await liveProbe("fixture-probe-host",
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 8000 },
+    { ...ports, now: () => 1800000000000, id: () => OTHER_ID }, root);
+  expect(record.observations.find(item => item.observation === "credential-read")!.event).toBe("store");
+  expect(record.lifecycle).toBe("store-unavailable");
+});
+
+test("a hanging credential write does not wedge the probe past its deadline", async () => {
+  const root = setup();
+  const expired = JSON.stringify({ accessToken: "old-access", refreshToken: "refresh-token", obtainedAt: 0, expiresAt: 1 });
+  const secrets = {
+    get: async () => expired,
+    set: () => new Promise<never>(() => {}),
+    delete: async () => false,
+  };
+  const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, nativeSecrets: secrets, fetch: successFetch("late") });
+  const startedAt = Date.now();
+  const { record } = await liveProbe("fixture-probe-host",
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 100 },
+    { ...ports, now: () => 1800000000000, id: () => OTHER_ID }, root);
+  // Bounded by the deadline even though the store write never settles.
+  expect(Date.now() - startedAt).toBeLessThan(5000);
+  expect(["cancelled", "failed"].includes(record.lifecycle)).toBe(true);
+  expect((await readProbeAttempt(root, OTHER_ID)).lifecycle).toBe(record.lifecycle);
 });

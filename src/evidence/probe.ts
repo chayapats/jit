@@ -502,38 +502,65 @@ async function transitionTerminal(root: string, id: string,
 }
 
 /**
- * Runs one credential-store mutation inside the lifecycle serialization:
- * rechecks `started` under the shared in-process mutex and the SQLite
- * transaction, performs the mutation, then commits. A concurrent
- * cancellation serializes against the whole mutation, so no credential
- * write can complete after cancellation acknowledges. Throws `fenced`
- * when the record is already terminal, and propagates persistence failures
- * instead of leaving silent half-written state.
+ * Runs one credential-store mutation with a pre-start dispatch check. The
+ * `started` recheck runs inside the shared lifecycle serialization and is
+ * released before the mutation starts, so a hung backend can never wedge
+ * the probe past its deadline or block cancellation: the mutation races
+ * the caller's signal outside every lock and transaction. An abort fails
+ * the write closed without waiting for the backend. The backend itself is
+ * unabortable (Bun.secrets has no cancellation), so a late settlement may
+ * still land in the OS keychain after acknowledgement — that residual is
+ * Schway-owned (schway#416) and never claimed as fenced. Throws `fenced`
+ * when the record is already terminal or the signal is already aborted.
  */
-export async function fencedStoreWrite<T>(root: string, id: string, work: () => Promise<T>): Promise<T> {
+export async function fencedStoreWrite<T>(root: string, id: string, signal: AbortSignal | null, work: () => Promise<T>): Promise<T> {
+  if (signal?.aborted) throw new Error("fenced");
   const dir = await probeDirectory(root, true);
+  // Phase 1: quick dispatch check under the shared serialization. The lock
+  // and database are always released before the mutation starts, even when
+  // opening or validating the ledger fails.
   const release = await acquireDirLock(dir);
-  const db = await lifecycleDb(dir);
+  let db: Database | null = null;
   try {
-    db.exec("BEGIN IMMEDIATE");
+    db = await lifecycleDb(dir);
     try {
-      const current = await readProbeAttempt(root, id);
-      if (current.lifecycle !== "started") {
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const current = await readProbeAttempt(root, id);
+        if (current.lifecycle !== "started") {
+          db.exec("ROLLBACK");
+          throw new Error("fenced");
+        }
         db.exec("ROLLBACK");
-        throw new Error("fenced");
+      } catch (error) {
+        try { db.exec("ROLLBACK"); } catch { /* Already rolled back. */ }
+        throw error;
       }
-      const result = await work();
-      db.exec("COMMIT");
-      return result;
-    } catch (error) {
-      try { db.exec("ROLLBACK"); } catch { /* Already rolled back. */ }
-      throw error;
     } finally {
       db.close();
     }
   } finally {
     release();
   }
+  // Phase 2: run the mutation outside every lock/transaction, bounded by
+  // the caller's signal. No await runs between the abort check and the
+  // invocation, so a pre-fired abort never starts unbounded work.
+  if (signal?.aborted) throw new Error("fenced");
+  if (!signal) return work();
+  return await Promise.race([
+    work(),
+    new Promise<never>((_, reject) => {
+      if (signal.aborted) {
+        reject(new Error("fenced"));
+        return;
+      }
+      const onAbort = () => {
+        signal.removeEventListener("abort", onAbort);
+        reject(new Error("fenced"));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+    }),
+  ]);
 }
 
 /**
@@ -992,10 +1019,12 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
   };
   let attempts = 0, inference: ProbeEvent = "failed";
   // A fenced store writer the bridge calls for every credential-store
-  // mutation: the write runs inside the lifecycle serialization, so a
-  // concurrent cancellation serializes against the whole mutation and no
-  // write can complete after cancellation acknowledges.
-  const fence = { write: <T>(work: () => Promise<T>): Promise<T> => fencedStoreWrite(root, id, work) };
+  // mutation: the dispatch check runs inside the lifecycle serialization
+  // and the mutation races the live signal outside every lock, so a hung
+  // backend can never wedge the probe or block cancellation. An abort
+  // fails the write closed; a late settlement of an unabortable backend
+  // remains Schway-owned residual (schway#416).
+  const fence = { write: <T>(work: () => Promise<T>): Promise<T> => fencedStoreWrite(root, id, effective, work) };
   for (let turn = 0; turn < maxAttempts; turn++) {
     if (effective.aborted) break;
     // Reserve the admission durably before any provider contact: the
