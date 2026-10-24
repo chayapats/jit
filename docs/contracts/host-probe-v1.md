@@ -82,7 +82,9 @@ Each record carries four labeled entries that cannot stand in for each other:
   claim in three cases: a credential write is still unresolved, a cleanup
   or record read failed to verify, or a Schway guard window is open. The
   guard cannot observe the native write, so an admitted guard call holds a
-  window until the issuing infer call settles. This is conservative: a
+  window until the issuing infer call settles normally. A call that settles
+  under abort may have left an unabortable native write detached, so its
+  window stays open through terminalization. This is conservative: a
   later successful cleanup cannot downgrade the immutable record.
 - `renewal` / `renewal`: always `unobserved` with zero attempts — never a
   readiness or success claim. The renewal observation carries a validated

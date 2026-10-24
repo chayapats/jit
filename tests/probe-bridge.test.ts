@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HostAuthFetch, HostCredentialStore } from "schway/host";
@@ -1424,4 +1424,56 @@ test("a settled Schway guard window does not over-report a successful probe", as
       return "success";
     } }, starter.root);
   expect(record.lifecycle).toBe("observed-ready");
+});
+
+test("an abort-settled Schway call keeps its guard window through terminalization", async () => {
+  const root = setup();
+  const starter = bridgePorts({ root, fetch: successFetch() });
+  // Pinned Schway rejects the caller on abort while its refresh (and the
+  // native write inside it) keeps running detached.
+  const { record } = await liveProbe("fixture-probe-host",
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 100 },
+    { ...starter.ports, now: () => 1800000000000, id: () => ID, infer: async (input, signal) => {
+      await input.fence!.guard!();
+      void new Promise(r => setTimeout(r, 400));
+      await new Promise((_, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+      return "failed";
+    } }, starter.root);
+  expect(record.lifecycle).toBe("store-unavailable");
+  expect(record.nextAction).toBe("check-secure-store");
+});
+
+test("an unreadable record after a landed write stays uncertain, never kept as clean", async () => {
+  const root = setup();
+  const backend = new Map<string, string>();
+  const recordPath = join(root, ".local", "host-probe", `${ID}.json`);
+  const parked = join(root, "parked.json");
+  const store = {
+    get: async () => null,
+    // The write lands, then the record becomes unreadable for the
+    // post-write visibility read only.
+    set: async (identity: { account: string }, value: string) => {
+      backend.set(identity.account, value);
+      renameSync(recordPath, parked);
+    },
+    delete: async (identity: { account: string }) => backend.delete(identity.account),
+    compareAndDelete: async (identity: { account: string }, expected: string) => {
+      if (backend.get(identity.account) !== expected) return false;
+      backend.delete(identity.account);
+      return true;
+    },
+  };
+  const starter = bridgePorts({ root, fetch: successFetch() });
+  const { record } = await liveProbe("fixture-probe-host",
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 8000 },
+    { ...starter.ports, now: () => 1800000000000, id: () => ID, infer: async input => {
+      await input.fence!.writeStore({ account: "grok-subscription:xai" }, "probe-value", store);
+      renameSync(parked, recordPath);
+      return "success";
+    } }, starter.root);
+  expect(record.lifecycle).toBe("store-unavailable");
+  expect(record.nextAction).toBe("check-secure-store");
+  // Not destroyed on an unverifiable read: the value stays and the record says so.
+  expect(backend.size).toBe(1);
+  expect((await readProbeAttempt(root, ID)).lifecycle).toBe("store-unavailable");
 });

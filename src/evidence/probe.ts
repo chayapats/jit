@@ -1375,7 +1375,11 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
       const outcome = await withDeadline(() => {
         currentInfer = token;
         const call = ports.infer({ route, model, prompt: PROBE_PROMPT, tools: PROBE_TOOLS, discovery: { ...PROBE_DISCOVERY }, deadlineMs: bounds.deadlineMs, gate: gateSend, fence }, effective);
-        const close = () => closeWindow(id, token);
+        // A call that settles under abort may have left an unabortable
+        // native write detached (Schway races its refresh against the
+        // signal), so its window stays open through terminalization; only
+        // a normally settled call proves its writes finished.
+        const close = () => { if (!effective.aborted) closeWindow(id, token); };
         call.then(close, close);
         return call;
       });
