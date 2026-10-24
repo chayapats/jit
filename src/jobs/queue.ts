@@ -322,20 +322,29 @@ export class JobQueue {
   /** Waits for currently admitted scripted steps; callers must not await a deliberately stalled adapter. */
   async idle(): Promise<void> { await Promise.all([...this.#active.values()].map(item => item.promise)); await this.#deletions; }
 
-  /** Stops admission and requests cancellation, retaining ownership while any adapter is still running. */
-  close(): void {
+  /**
+   * Stops admission and requests cancellation, retaining ownership while any adapter is still running.
+   * Returns the job IDs this call moved from admitted to `waiting`/`interrupted` (empty on repeat calls),
+   * so a drain reports only what it actually interrupted, never historical waiting or failed jobs.
+   */
+  close(): { interrupted: string[] } {
     this.#closing = true;
+    const interrupted: string[] = [];
     this.store.transaction(tx => {
       if (!this.#owns(tx)) return;
       for (const id of this.#active.keys()) {
         const attempts = readAttempts(tx, id), original = attempts.at(-1)?.snapshot;
         if (!original) continue;
         const job = readJob(tx, original.projectId, id);
-        if (job.state === "admitted") { invalidateJob(tx, id, "interrupted", this.#time()); this.#transition(job, "waiting", "interrupted"); this.#save(tx, job, true); }
+        if (job.state === "admitted") {
+          invalidateJob(tx, id, "interrupted", this.#time()); this.#transition(job, "waiting", "interrupted"); this.#save(tx, job, true);
+          interrupted.push(id);
+        }
       }
     });
     for (const item of this.#active.values()) item.abort.abort();
     if (!this.#active.size) this.#release();
+    return { interrupted };
   }
 
   /**

@@ -143,9 +143,15 @@ test("composition: startFullApp and serve share one factory with identical worke
     expect(composed.teamPort.adapter).toBe(runPort);
     expect(composed.queue.choices()).toEqual(fromLifecycle);
   }
-  // serve builds its queue only through the shared factory, owned by the managed service lifecycle.
+  // serve starts only through startFullApp, whose queue comes from the shared factory owned by the managed service lifecycle.
   const main = readFileSync(join(import.meta.dir, "..", "src", "main.ts"), "utf8");
-  expect(main).toContain("ManagedService.forConfig(store, config)");
+  expect(main).toContain("await serveCommand(config, process.argv.slice(3))");
+  const serve = readFileSync(join(import.meta.dir, "..", "src", "ops", "serve.ts"), "utf8");
+  expect(serve).toContain("await startFullApp({ config, service,");
+  expect(serve).not.toContain("ManagedService");
+  const lifecycle = readFileSync(join(import.meta.dir, "..", "src", "ops", "lifecycle.ts"), "utf8");
+  expect(lifecycle).toContain("ManagedService.forConfig(store, config, compose)");
+  expect(main).not.toContain("ManagedService");
   const managed = readFileSync(join(import.meta.dir, "..", "src", "ops", "upgrade-service.ts"), "utf8");
   expect(managed).toContain("composeJobQueue(store, config, compose)");
   for (const forbidden of ["new JobQueue(", "new ScriptedRunPort(", "new SchwayRunPort(", "prReviewWork(", "prSnapshotWork("]) {

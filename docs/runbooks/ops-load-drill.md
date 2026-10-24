@@ -14,6 +14,8 @@ bun src/main.ts diagnose          # or: bun run ops:drill diagnose
 
 | `nextAction` | Runbook step |
 | --- | --- |
+| `run-owner-setup` | No installation database exists at `JIT_DATABASE`: check the path, then `bun src/main.ts setup` (diagnose never creates it) |
+| `inspect-store-access` | The database could not be read (for example only one of `-wal`/`-shm` exists): stop other writers, start and cleanly stop the service so SQLite checkpoints, then re-run diagnose; never delete sidecars by hand |
 | `complete-restore-activation` | §7 Quarantined restore: an activation has not completed |
 | `finish-or-rollback-upgrade` | §8 Supported upgrades |
 | `resolve-restore-quarantine` | §7 Quarantined restore |

@@ -1,21 +1,18 @@
 import { Application } from "./application";
 import { readConfig } from "./config";
-import { TransactionStore, schemaVersion } from "./store";
-import { createWebHandler } from "./web";
+import { TransactionStore } from "./store";
 import { gatherDiagnostics, inspectDiagnostics } from "./ops/diagnostics";
-import { preflightService } from "./ops/lifecycle";
+import { preflightService, serviceAppConfig } from "./ops/lifecycle";
+import { serveCommand } from "./ops/serve";
 import { readLocalDrillConfig } from "./ops/records";
+import { readServiceConfigFile } from "./ops/service-package";
+import { openReadOnlyStore } from "./ops/readonly-store";
 import { gatherServiceStatus } from "./ops/status";
 import { parseServiceConfig } from "../ops/package/service-config";
 import { readHiddenPassword } from "./terminal-password";
 import { AppError } from "./errors";
-import { verifySchwayBridge } from "./team/schway-port";
-import { tickSchedules } from "./jobs/schedules";
 import { backupNativePortFor } from "./ops/schway-backup";
-import { ManagedService } from "./ops/upgrade-service";
 import { upgradeEvidence, type UpgradeJournal } from "./ops/upgrade";
-import { prepareServiceState } from "./bootstrap";
-import { upgradeFenced } from "./ops/upgrade-fence";
 
 async function secret(): Promise<string> {
   if (!process.stdin.isTTY) {
@@ -37,11 +34,23 @@ async function main(): Promise<void> {
     process.exitCode = result.exitCode === 0 ? 0 : 1;
     return;
   }
-  if (!["serve", "setup", "reset-owner", "probe", "diagnose", "preflight", "status", "upgrade"].includes(command ?? "")) {
-    throw new Error("Use serve, setup, reset-owner, probe, diagnose, preflight, status or upgrade");
+  if (!["serve", "setup", "reset-owner", "probe", "diagnose", "preflight", "status", "upgrade", "service"].includes(command ?? "")) {
+    throw new Error("Use serve, setup, reset-owner, probe, diagnose, preflight, status, upgrade or service");
+  }
+  if (command === "service") {
+    // Operator package commands (ops.service_package/v1): plan, install, start, stop, status, upgrade, disable, uninstall.
+    const { runServiceCommand } = await import("./ops/service-cli");
+    const result = await runServiceCommand(process.argv.slice(3), { cwd: process.cwd(), readPassword: secret });
+    console.log(JSON.stringify(result.output));
+    process.exitCode = result.exitCode;
+    return;
   }
   if (command === "upgrade") {
     await upgradeCommand(config, process.argv.slice(3));
+    return;
+  }
+  if (command === "serve") {
+    await serveCommand(config, process.argv.slice(3));
     return;
   }
   if (command === "diagnose") {
@@ -54,89 +63,35 @@ async function main(): Promise<void> {
     // read-only. Neither starts background work or claims the scheduler.
     const extra = process.argv.slice(3);
     let requiredEngine = "jit.schway.bridge/v1";
-    if (extra.length === 2 && extra[0] === "--contract") requiredEngine = extra[1]!;
-    else if (extra.length !== 0) throw new Error("Use preflight [--contract <engine-contract>] or status");
+    let configPath: string | null = null;
+    for (let i = 0; i < extra.length; i += 2) {
+      if (extra[i] === "--contract" && extra[i + 1] && command === "preflight") requiredEngine = extra[i + 1]!;
+      else if (extra[i] === "--service-config" && extra[i + 1]) configPath = extra[i + 1]!;
+      else throw new Error("Use preflight [--contract <engine-contract>] [--service-config <path>] or status [--service-config <path>]");
+    }
     let service;
-    try { service = parseServiceConfig(await readLocalDrillConfig(process.cwd(), ".local/service-config.json")); }
-    catch { throw new Error("Service is not configured. Create .local/service-config.json (see docs/runbooks/ops-service.md)."); }
+    try {
+      service = configPath ? readServiceConfigFile(configPath)
+        : parseServiceConfig(await readLocalDrillConfig(process.cwd(), ".local/service-config.json"));
+    } catch { throw new Error("Service is not configured. Create .local/service-config.json or pass --service-config (see docs/runbooks/ops-service.md)."); }
     if (command === "status") {
       console.log(JSON.stringify(gatherServiceStatus(config, service)));
       return;
     }
-    // Read-only gate: an older installation is reported, never migrated in place.
-    const store = new TransactionStore(config.databasePath, { migrateExisting: false });
-    try {
-      const result = preflightService({ store, config, service, requiredEngine });
-      console.log(JSON.stringify(result));
-    } finally { store.close(); }
+    // Read-only gate over a read-only connection: an older installation is reported, never migrated,
+    // and a missing database is reported, never created.
+    const effective = serviceAppConfig(config, service);
+    console.log(JSON.stringify(preflightService({ store: openReadOnlyStore(effective.databasePath), config: effective, service, requiredEngine })));
     return;
   }
-  // ops.schema_migrations/v1: an existing installation is never migrated in place at boot.
-  // Only the owner-authorized staged upgrade (`upgrade`) migrates, on a staged copy.
+  // setup / reset-owner: trusted local owner provisioning. An existing installation is never migrated in place.
   const store = new TransactionStore(config.databasePath, { migrateExisting: false });
-  let service: ManagedService | undefined;
-  let app: Application;
   try {
-    const installed = store.read(tx => tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version);
-    if (command === "serve" && installed < schemaVersion) {
-      console.error(`Upgrade required: installation schema ${installed}, this build supports ${schemaVersion}. Run \`bun src/main.ts upgrade\` (owner password) before serving.`);
-      process.exitCode = 1;
-      store.close();
-      return;
-    }
-    if (command === "serve") {
-      // Pre-listen state preparation runs before the job queue, delivery work or HTTP server exist.
-      // Under an upgrade fence nothing sends and live state must stay the validated epoch, so it waits for the next boot.
-      if (!upgradeFenced(store.path)) prepareServiceState(store, Date.now());
-      if (config.runPort === "schway") {
-        const gate = await verifySchwayBridge(store);
-        if (!gate.ok) {
-          console.error(`Schway bridge unavailable: ${gate.detail} (next: ${gate.nextAction})`);
-          process.exitCode = 1;
-          store.close();
-          return;
-        }
-        console.log(`Schway bridge ready: ${gate.detail}`);
-      }
-    }
-    // Backups ride the concrete native bridge only under explicit schway mode;
-    // scripted default stays fail-closed (no native port), exactly like runPort.
     const nativeSnapshot = backupNativePortFor(config, store);
-    // One shared composition with startFullApp: same workers, same port/route policy,
-    // owned by the service lifecycle so an upgrade can quiesce, rebuild and reconcile it.
-    if (command === "serve") service = ManagedService.forConfig(store, config);
-    app = new Application(store, config, {
-      ...(service ? { service } : {}),
-      ...(nativeSnapshot ? { nativeSnapshot } : {}),
-    });
-    if (service) {
-      const booted = await app.boot();
-      if (!booted.reconciled) console.log("Upgrade in progress: job admission stays fenced until the owner activates or rolls back.");
-      if (booted.upgrade) console.log(`Upgrade ${booted.upgrade.id} reconciled after activation: ${booted.upgrade.state}.`);
-      if (booted.restore && booted.restore.state !== "complete") {
-        console.log(`Restore ${booted.restore.id} is not complete (${booted.restore.reason ?? booted.restore.state}): only restore status and remediation (/restores) are served.`);
-      }
-    }
-  } catch (error) { service?.close(); store.close(); throw error; }
-  if (command !== "serve") {
-    try { await app.setupOwner(await secret(), command === "reset-owner"); console.log("Owner credentials saved; existing browser sessions revoked."); }
-    finally { store.close(); }
-    return;
-  }
-  let server: ReturnType<typeof Bun.serve>;
-  try { server = Bun.serve({ hostname: config.hostname, port: config.port, maxRequestBodySize: config.bodyBytes,
-    idleTimeout: 15, fetch: createWebHandler(app), error: () => new Response("Request failed", { status: 503 }) }); }
-  catch (error) { service?.close(); store.close(); throw error; }
-  const timer = setInterval(() => {
-    const queue = service!.queue;
-    if (!queue) return;
-    try { queue.pump(); tickSchedules(store, queue, config, Date.now()); } catch { /* Queue refuses acknowledgments after a storage/ownership failure or under an upgrade fence. */ }
-  }, 100);
-  timer.unref();
-  console.log("Jit workspace started. No external services connected.");
-  const stop = async () => { clearInterval(timer); service?.close(); await server.stop(); store.close(); process.exit(0); };
-  process.once("SIGINT", stop);
-  process.once("SIGTERM", stop);
+    const app = new Application(store, config, nativeSnapshot ? { nativeSnapshot } : {});
+    await app.setupOwner(await secret(), command === "reset-owner");
+    console.log("Owner credentials saved; existing browser sessions revoked.");
+  } finally { store.close(); }
 }
 
 /**
@@ -147,16 +102,22 @@ async function main(): Promise<void> {
  * prints sanitized evidence. Reconciliation of jobs/sessions happens at the
  * next `serve` boot before any admission (journal `activated` → `complete`).
  */
-async function upgradeCommand(config: ReturnType<typeof readConfig>, args: string[]): Promise<void> {
+async function upgradeCommand(baseConfig: ReturnType<typeof readConfig>, args: string[]): Promise<void> {
   let target: number | null = null;
+  let service = null;
   const rest = args.filter(arg => arg !== "--password-stdin");
-  if (rest.length === 2 && rest[0] === "--target" && /^\d{1,6}$/.test(rest[1]!)) target = Number(rest[1]);
-  else if (rest.length !== 0) throw new Error("Use upgrade [--target <schema>] [--password-stdin]");
+  for (let i = 0; i < rest.length; i += 2) {
+    if (rest[i] === "--target" && /^\d{1,6}$/.test(rest[i + 1] ?? "")) target = Number(rest[i + 1]);
+    else if (rest[i] === "--service-config" && rest[i + 1]) service = readServiceConfigFile(rest[i + 1]!);
+    else throw new Error("Use upgrade [--target <schema>] [--service-config <path>] [--password-stdin]");
+  }
+  // Under the package, the installation's database, run port and backup directory come from the installed configuration.
+  const config = serviceAppConfig(baseConfig, service);
   const store = new TransactionStore(config.databasePath, { migrateExisting: false });
   let last: UpgradeJournal | null = null;
   try {
     const nativeSnapshot = backupNativePortFor(config, store);
-    const app = new Application(store, config, nativeSnapshot ? { nativeSnapshot } : {});
+    const app = new Application(store, config, { ...(nativeSnapshot ? { nativeSnapshot } : {}), ...(service ? { backupDir: service.backupDirectory } : {}) });
     const token = await app.login(await secret());
     const { actor } = app.authenticate(token);
     const status = app.upgradeStatus(actor);

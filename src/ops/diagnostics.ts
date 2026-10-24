@@ -1,6 +1,7 @@
 import { lstatSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { TransactionStore, schemaVersion } from "../store";
+import { schemaVersion, type AppTransaction } from "../store";
+import { openReadOnlyStore } from "./readonly-store";
 import type { AppConfig } from "../config";
 import { botCredentialConfigured } from "../telegram/secrets";
 import { SCHWAY_RELEASE_CONTRACT, schwayHostDirs } from "../team/schway-port";
@@ -19,7 +20,7 @@ export type DiagnosticRouteState = typeof diagnosticRouteStates[number];
  * None of them is authorized by diagnostics: each names the owner runbook
  * step (docs/runbooks/ops-load-drill.md) that the owner may choose to take.
  */
-export const diagnosticActions = ["none", "complete-restore-activation", "finish-or-rollback-upgrade", "resolve-restore-quarantine", "run-owner-upgrade",
+export const diagnosticActions = ["none", "run-owner-setup", "inspect-store-access", "complete-restore-activation", "finish-or-rollback-upgrade", "resolve-restore-quarantine", "run-owner-upgrade",
   "use-compatible-app-artifact", "relieve-disk-pressure", "restore-engine", "inspect-sanitized-diagnostics",
   "configure-provider-route", "reconnect-provider-login", "reauthorize-owner-work", "wait-for-quota-then-resume",
   "resolve-unknown-delivery", "resolve-blocked-work", "drain-queue", "configure-telegram", "bind-telegram"] as const;
@@ -32,6 +33,13 @@ const upgradeStates: readonly UpgradeState[] = ["preparing", "prepared", "staged
 /** Read-only inputs gathered by the caller. No tokens, paths or raw diagnostics admitted. */
 export interface DiagnosticsInput {
   now: number;
+  /**
+   * How the installation database was read: `missing` (no database file),
+   * `unreadable` (read-only open failed, e.g. incomplete WAL sidecars), or
+   * `readable`. `queried` is false when no schema-specific query ran (missing,
+   * unreadable or newer schema); every count is then 0.
+   */
+  store: { state: "readable" | "missing" | "unreadable"; queried: boolean };
   queue: { available: boolean; queued: number; admitted: number; waiting: number };
   /**
    * Up to 8 active (queued/admitted/waiting) route groups, oldest active work
@@ -53,8 +61,8 @@ export interface DiagnosticsInput {
    * which this projection does not accept.
    */
   providers: { configuredRoutes: number };
-  /** Live database `user_version` against the schema this build supports. */
-  schema: { current: number; supported: number };
+  /** Live database `user_version` (null when the store could not be read) against the schema this build supports. */
+  schema: { current: number | null; supported: number };
   /** Durable admission fence and the active upgrade journal state, if any. */
   upgrade: { fence: "none" | "upgrade" | "restore" | "unreadable"; activeState: UpgradeState | null };
   /**
@@ -70,6 +78,7 @@ export interface DiagnosticsInput {
 export interface Diagnostics {
   schema: "jit.ops.diagnostics/v1";
   observedAt: string;
+  store: { state: "readable" | "missing" | "unreadable"; queried: boolean };
   queue: { available: boolean; queued: number; admitted: number; waiting: number };
   routes: { reference: string; model: "redacted" | "unselected"; state: DiagnosticRouteState; attempts: number }[];
   coverage: { activeJobs: number; omittedRouteGroups: number; omittedActiveJobs: number; countsCapped: boolean };
@@ -81,7 +90,7 @@ export interface Diagnostics {
   engine: { mode: "scripted" | "schway"; state: "scripted" | "declared" | "unavailable"; observed: "not-observed" };
   /** Host-evidence vocabulary; `observed-ready` is never produced here, only by live RouteEvidence records. */
   providers: { configuredRoutes: number; readiness: "not-configured" | "configured-unverified"; observed: "not-observed" };
-  schemaVersion: { current: number; supported: number; state: "current" | "upgrade-required" | "newer-unsupported" };
+  schemaVersion: { current: number | null; supported: number; state: "current" | "upgrade-required" | "newer-unsupported" | "unavailable" };
   upgrade: { fence: "none" | "upgrade" | "restore" | "unreadable"; activeState: UpgradeState | null };
   restore: { open: number; blocked: number; gate: "none" | "pending" | "unreadable";
     state: "none" | "quarantine-open" | "quarantine-blocked" | "activation-pending" };
@@ -99,7 +108,7 @@ const count = (v: unknown, max: number): number => {
   return v as number;
 };
 
-const inputKeys = ["now", "queue", "routes", "coverage", "budgets", "waits", "disk", "telegram", "engine", "providers", "schema", "upgrade", "restore", "artifacts"];
+const inputKeys = ["now", "store", "queue", "routes", "coverage", "budgets", "waits", "disk", "telegram", "engine", "providers", "schema", "upgrade", "restore", "artifacts"];
 
 /**
  * Projects a redacted diagnostics snapshot. Pure and read-only: it performs no I/O,
@@ -113,6 +122,10 @@ export function inspectDiagnostics(input: DiagnosticsInput): Diagnostics {
   const keys = Object.keys(input);
   if (keys.length !== inputKeys.length || keys.some(k => !inputKeys.includes(k))) fail();
   if (!Number.isSafeInteger(input.now) || input.now < 0) fail();
+  const st = input.store;
+  object(st);
+  if (!["readable", "missing", "unreadable"].includes(st.state) || typeof st.queried !== "boolean" || (st.queried && st.state !== "readable")) fail();
+  const store = { state: st.state, queried: st.queried };
   const q = input.queue;
   object(q);
   if (typeof q.available !== "boolean") fail();
@@ -160,9 +173,13 @@ export function inspectDiagnostics(input: DiagnosticsInput): Diagnostics {
     observed: "not-observed" as const };
   const s = input.schema;
   object(s);
-  const schema = { current: count(s.current, 100000), supported: count(s.supported, 100000), state: "current" as Diagnostics["schemaVersion"]["state"] };
-  if (schema.supported < 1) fail();
-  schema.state = schema.current === schema.supported ? "current" : schema.current < schema.supported ? "upgrade-required" : "newer-unsupported";
+  const schema = { current: s.current === null ? null : count(s.current, 100000), supported: count(s.supported, 100000),
+    state: "current" as Diagnostics["schemaVersion"]["state"] };
+  if (schema.supported < 1 || (schema.current === null) !== (store.state !== "readable")) fail();
+  schema.state = schema.current === null ? "unavailable" : schema.current === schema.supported ? "current"
+    : schema.current < schema.supported ? "upgrade-required" : "newer-unsupported";
+  // A store that was not queried cannot carry counts.
+  if (!store.queried && (q.queued + q.admitted + q.waiting > 0 || q.available || input.routes.length > 0)) fail();
   const u = input.upgrade;
   object(u);
   if (!["none", "upgrade", "restore", "unreadable"].includes(u.fence) || (u.activeState !== null && !upgradeStates.includes(u.activeState))) fail();
@@ -176,6 +193,8 @@ export function inspectDiagnostics(input: DiagnosticsInput): Diagnostics {
   if (!Array.isArray(input.artifacts) || input.artifacts.length > 32) fail();
   const artifacts = { count: input.artifacts.length, references: input.artifacts.map(a => safeEvidenceId(a)) };
   const applicable: [boolean, DiagnosticAction][] = [
+    [store.state === "missing", "run-owner-setup"],
+    [store.state === "unreadable", "inspect-store-access"],
     // While the read gate exists the application serves only restore status and remediation.
     [restore.gate !== "none", "complete-restore-activation"],
     // An active journal is fenced or activated-awaiting-reconcile; either way the owner finishes or rolls it back.
@@ -186,8 +205,8 @@ export function inspectDiagnostics(input: DiagnosticsInput): Diagnostics {
     [schema.state === "newer-unsupported", "use-compatible-app-artifact"],
     [disk.pressure, "relieve-disk-pressure"],
     [engine.state === "unavailable", "restore-engine"],
-    [!queue.available, "inspect-sanitized-diagnostics"],
-    [engine.mode === "schway" && providers.configuredRoutes === 0, "configure-provider-route"],
+    [store.queried && !queue.available, "inspect-sanitized-diagnostics"],
+    [store.queried && engine.mode === "schway" && providers.configuredRoutes === 0, "configure-provider-route"],
     [waits.needsLogin > 0, "reconnect-provider-login"],
     [waits.authorizationChanged > 0, "reauthorize-owner-work"],
     [waits.quota > 0 || waits.routeUnavailable > 0, "wait-for-quota-then-resume"],
@@ -201,7 +220,7 @@ export function inspectDiagnostics(input: DiagnosticsInput): Diagnostics {
   const nextAction: DiagnosticAction = nextActions[0] ?? "none";
   // Actions are fixed vocabulary; nothing caller-supplied reaches the snapshot beyond validated counts and enums.
   for (const action of nextActions) safeNote(action);
-  return { schema: "jit.ops.diagnostics/v1", observedAt: new Date(input.now).toISOString(),
+  return { schema: "jit.ops.diagnostics/v1", observedAt: new Date(input.now).toISOString(), store,
     queue, routes, coverage, budgets, waits, disk, connections, engine, providers, schemaVersion: schema, upgrade, restore, artifacts,
     nextAction, nextActions };
 }
@@ -241,8 +260,8 @@ function engineAvailable(config: AppConfig): boolean {
 }
 
 /** Distinct configured provider routes across owner, project and role configuration (bounded, identifiers discarded). */
-function configuredRouteCount(store: TransactionStore): number {
-  return store.read(tx => {
+function configuredRouteCount(tx: AppTransaction): number {
+  {
     const routes = new Set<string>();
     const add = (json: string | null | undefined): void => {
       if (!json || routes.size >= 64) return;
@@ -262,7 +281,7 @@ function configuredRouteCount(store: TransactionStore): number {
       }
     } catch { /* Pre-team schema. */ }
     return routes.size;
-  });
+  }
 }
 
 /**
@@ -281,94 +300,119 @@ function restoreState(databasePath: string): { open: number; blocked: number; ga
   return { open, blocked, gate: holder === null ? "none" : holder === "unknown" ? "unreadable" : "pending" };
 }
 
+/** Every schema-specific read gathered from one read-only connection; all zero when the store is not queried. */
+interface StoreReads {
+  tally: { state: string; reason: string | null; n: number }[];
+  available: boolean;
+  groups: { provider: unknown; model: unknown; state: string; n: number }[];
+  delivery: { pendingIntents: number; unknownDeliveries: number };
+  binding: "unbound" | "pending" | "bound";
+  configuredRoutes: number;
+}
+
+const emptyReads: StoreReads = { tally: [], available: false, groups: [], delivery: { pendingIntents: 0, unknownDeliveries: 0 },
+  binding: "unbound", configuredRoutes: 0 };
+
+/** Schema-specific queries; each one fails soft so an older schema still yields a bounded snapshot. */
+function readStore(tx: AppTransaction): StoreReads {
+  const tally = (() => {
+    try {
+      return tx.all<{ state: string; reason: string | null; n: number }>(
+        "SELECT state, json_extract(record_json, '$.reason') AS reason, count(*) AS n FROM jobs GROUP BY state, reason");
+    } catch { return []; }
+  })();
+  let available = false;
+  try { available = tx.get<{ token: string }>("SELECT token FROM job_scheduler WHERE id = 1") === null; } catch { available = false; }
+  // Active route sample: distinct (provider, model, state) groups over all active jobs, oldest active work first.
+  const groups = (() => {
+    try {
+      return tx.all<{ provider: unknown; model: unknown; state: string; n: number }>(
+        `SELECT json_extract(record_json, '$.route.provider') AS provider, json_extract(record_json, '$.route.model') AS model, state, count(*) AS n
+         FROM jobs WHERE state IN ('queued', 'admitted', 'waiting') GROUP BY provider, model, state ORDER BY min(queue_order) LIMIT 4096`);
+    } catch { return []; }
+  })();
+  let delivery = { pendingIntents: 0, unknownDeliveries: 0 };
+  try {
+    delivery = {
+      pendingIntents: tx.get<{ count: number }>("SELECT count(*) AS count FROM delivery_intents WHERE json_extract(record_json, '$.status') IN ('waiting', 'queued', 'claimed')")!.count,
+      unknownDeliveries: tx.get<{ count: number }>("SELECT count(*) AS count FROM delivery_attempts WHERE record_json LIKE '%\"outcome\":\"unknown\"%'")!.count,
+    };
+  } catch { /* Pre-outbox schema. */ }
+  let binding: StoreReads["binding"] = "unbound";
+  try {
+    const state = tx.get<{ state: string }>("SELECT state FROM telegram_binding WHERE id = 1")?.state;
+    binding = state === "bound" || state === "pending" ? state : "unbound";
+  } catch { /* Pre-Telegram schema. */ }
+  return { tally, available, groups, delivery, binding, configuredRoutes: configuredRouteCount(tx) };
+}
+
 /**
- * Gathers read-only diagnostics inputs from an installation. Opens the store for
- * reads only: no scheduler claim, no queue pump, no timers, no network, no engine
- * probe, no secret output. Route readiness stays `observedRoutes: 0` because this
- * path never collects live evidence. Callers must not run background work around
- * this call.
+ * Gathers read-only diagnostics inputs from an installation through the
+ * read-only store adapter (ops.service_package/v1): it never creates,
+ * migrates, journals, checkpoints or chmods the database. `user_version` is
+ * read first; a missing database is the fixed `missing` state, an unreadable
+ * one `unreadable`, and a newer schema yields a bounded snapshot without any
+ * schema-specific query (`use-compatible-app-artifact`). No scheduler claim,
+ * no queue pump, no timers, no network, no engine probe, no secret output.
  */
 export function gatherDiagnostics(root: string, config: AppConfig, now: number = Date.now()): DiagnosticsInput {
-  const store = new TransactionStore(config.databasePath, { migrateExisting: false });
-  try {
-    // Whole-table SQL aggregates over job state/reason: no row bound can hide newer active work behind history.
-    let capped = false;
-    const cap = (n: number): number => { if (n > countCap) { capped = true; return countCap; } return n; };
-    const tally = store.read(tx => {
-      try {
-        return tx.all<{ state: string; reason: string | null; n: number }>(
-          "SELECT state, json_extract(record_json, '$.reason') AS reason, count(*) AS n FROM jobs GROUP BY state, reason");
-      } catch { return []; }
-    });
-    const total = (state: string, reason?: string): number =>
-      cap(tally.filter(t => t.state === state && (reason === undefined || t.reason === reason)).reduce((sum, t) => sum + t.n, 0));
-    const queued = total("queued"), admitted = total("admitted"), waiting = total("waiting");
-    const available = store.read(tx => {
-      try { return tx.get<{ token: string }>("SELECT token FROM job_scheduler WHERE id = 1") === null; }
-      catch { return false; }
-    });
-    // Active route sample: distinct (provider, model, state) groups over all active jobs, oldest active work first, at most 8.
-    const groups = store.read(tx => {
-      try {
-        return tx.all<{ provider: unknown; model: unknown; state: string; n: number }>(
-          `SELECT json_extract(record_json, '$.route.provider') AS provider, json_extract(record_json, '$.route.model') AS model, state, count(*) AS n
-           FROM jobs WHERE state IN ('queued', 'admitted', 'waiting') GROUP BY provider, model, state ORDER BY min(queue_order) LIMIT 4096`);
-      } catch { return []; }
-    });
-    const routes: DiagnosticsInput["routes"] = [];
-    let omittedGroups = 0, omittedJobs = 0;
-    for (const group of groups) {
-      let usable = routes.length < 8 && typeof group.provider === "string" && (group.model === null || typeof group.model === "string");
-      if (usable) {
-        try { safeOpsAlias(group.provider); if (group.model !== null) safeOpsAlias(group.model); } catch { usable = false; }
-      }
-      if (!usable) { omittedGroups++; omittedJobs += group.n; continue; }
-      routes.push({ route: group.provider as string, model: group.model as string | null, state: group.state as DiagnosticRouteState, attempts: cap(group.n) });
-    }
-    const exhausted = total("blocked", "budget_exhausted");
-    const deadlineFailed = total("failed", "deadline");
-    const waitingFor = (reason: string): number => total("waiting", reason);
-    const authorizationChanged = total("blocked", "authorization_changed");
-    const delivery = store.read(tx => {
-      try {
-        const pending = tx.get<{ count: number }>("SELECT count(*) AS count FROM delivery_intents WHERE status IN ('pending', 'claimed', 'waiting')")!.count;
-        const unknownCount = tx.get<{ count: number }>("SELECT count(*) AS count FROM delivery_attempts WHERE record_json LIKE '%\"outcome\":\"unknown\"%'")!.count;
-        return { pendingIntents: cap(pending), unknownDeliveries: cap(unknownCount) };
-      } catch { return { pendingIntents: 0, unknownDeliveries: 0 }; }
-    });
-    const binding = store.read(tx => {
-      try {
-        const state = tx.get<{ state: string }>("SELECT state FROM telegram_binding WHERE id = 1")?.state;
-        return state === "bound" || state === "pending" ? state : "unbound";
-      } catch { return "unbound" as const; }
-    });
-    const current = store.read(tx => tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version);
-    const fence = readUpgradeFence(config.databasePath);
-    let activeState: UpgradeState | null = null;
-    try { activeState = activeUpgrade(upgradeDirFor(config.databasePath))?.state ?? null; } catch { activeState = "blocked"; }
-    let artifacts: string[] = [];
+  const opened = openReadOnlyStore(config.databasePath);
+  let storeState: DiagnosticsInput["store"]["state"] = opened ? "readable" : "missing";
+  let current: number | null = null;
+  let reads = emptyReads;
+  if (opened) {
     try {
-      artifacts = readdirSync(join(root, ".local", "ops-evidence"))
-        .filter(name => /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}\.json$/.test(name))
-        .map(name => name.slice(0, -5)).slice(0, 32);
-    } catch { /* Missing evidence storage is reported as zero artifacts, not a failure. */ }
-    return { now,
-      queue: { available, queued, admitted, waiting },
-      routes,
-      coverage: { activeJobs: queued + admitted + waiting, omittedRouteGroups: cap(omittedGroups), omittedActiveJobs: Math.min(cap(omittedJobs), queued + admitted + waiting),
-        countsCapped: capped },
-      budgets: { exhausted, deadlineFailed },
-      waits: { quota: waitingFor("quota"), needsLogin: waitingFor("needs_login"), routeUnavailable: waitingFor("route_unavailable"),
-        authorizationChanged },
-      disk: { stateBytes: managedStateBytes(join(root, ".local")), watermarkBytes: config.ops.diskWatermarkBytes },
-      telegram: { configured: botCredentialConfigured(config.telegram.botTokenPath), binding,
-        pendingIntents: delivery.pendingIntents, unknownDeliveries: delivery.unknownDeliveries },
-      engine: { mode: config.runPort, available: engineAvailable(config) },
-      providers: { configuredRoutes: configuredRouteCount(store) },
-      schema: { current, supported: schemaVersion },
-      upgrade: { fence: fence === null ? "none" : fence.upgradeId === "unknown" ? "unreadable"
-        : (fence as { holder?: unknown }).holder === "restore" ? "restore" : "upgrade", activeState },
-      restore: restoreState(config.databasePath),
-      artifacts };
-  } finally { store.close(); }
+      // One connection (one snapshot) for every read: version first, schema-specific queries only when supported.
+      const result = opened.read(tx => {
+        const version = tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
+        return { version, reads: Number.isSafeInteger(version) && version >= 0 && version <= schemaVersion ? readStore(tx) : null };
+      });
+      current = result.version;
+      reads = result.reads ?? emptyReads;
+    } catch { storeState = "unreadable"; }
+  }
+  const queried = reads !== emptyReads;
+  let capped = false;
+  const cap = (n: number): number => { if (n > countCap) { capped = true; return countCap; } return n; };
+  const total = (state: string, reason?: string): number =>
+    cap(reads.tally.filter(t => t.state === state && (reason === undefined || t.reason === reason)).reduce((sum, t) => sum + t.n, 0));
+  const queued = total("queued"), admitted = total("admitted"), waiting = total("waiting");
+  const routes: DiagnosticsInput["routes"] = [];
+  let omittedGroups = 0, omittedJobs = 0;
+  for (const group of reads.groups) {
+    let usable = routes.length < 8 && typeof group.provider === "string" && (group.model === null || typeof group.model === "string");
+    if (usable) {
+      try { safeOpsAlias(group.provider); if (group.model !== null) safeOpsAlias(group.model); } catch { usable = false; }
+    }
+    if (!usable) { omittedGroups++; omittedJobs += group.n; continue; }
+    routes.push({ route: group.provider as string, model: group.model as string | null, state: group.state as DiagnosticRouteState, attempts: cap(group.n) });
+  }
+  const fence = readUpgradeFence(config.databasePath);
+  let activeState: UpgradeState | null = null;
+  try { activeState = activeUpgrade(upgradeDirFor(config.databasePath))?.state ?? null; } catch { activeState = "blocked"; }
+  let artifacts: string[] = [];
+  try {
+    artifacts = readdirSync(join(root, ".local", "ops-evidence"))
+      .filter(name => /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}\.json$/.test(name))
+      .map(name => name.slice(0, -5)).slice(0, 32);
+  } catch { /* Missing evidence storage is reported as zero artifacts, not a failure. */ }
+  return { now,
+    store: { state: storeState, queried },
+    queue: { available: reads.available, queued, admitted, waiting },
+    routes,
+    coverage: { activeJobs: queued + admitted + waiting, omittedRouteGroups: cap(omittedGroups),
+      omittedActiveJobs: Math.min(cap(omittedJobs), queued + admitted + waiting), countsCapped: capped },
+    budgets: { exhausted: total("blocked", "budget_exhausted"), deadlineFailed: total("failed", "deadline") },
+    waits: { quota: total("waiting", "quota"), needsLogin: total("waiting", "needs_login"), routeUnavailable: total("waiting", "route_unavailable"),
+      authorizationChanged: total("blocked", "authorization_changed") },
+    disk: { stateBytes: managedStateBytes(join(root, ".local")), watermarkBytes: config.ops.diskWatermarkBytes },
+    telegram: { configured: botCredentialConfigured(config.telegram.botTokenPath), binding: reads.binding,
+      pendingIntents: cap(reads.delivery.pendingIntents), unknownDeliveries: cap(reads.delivery.unknownDeliveries) },
+    engine: { mode: config.runPort, available: engineAvailable(config) },
+    providers: { configuredRoutes: Math.min(reads.configuredRoutes, 64) },
+    schema: { current: current === null ? null : Math.min(Math.max(current, 0), 100000), supported: schemaVersion },
+    upgrade: { fence: fence === null ? "none" : fence.upgradeId === "unknown" ? "unreadable"
+      : (fence as { holder?: unknown }).holder === "restore" ? "restore" : "upgrade", activeState },
+    restore: restoreState(config.databasePath),
+    artifacts };
 }

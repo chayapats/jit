@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { chmodSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runOpsCommand } from "../src/ops-cli";
@@ -35,6 +35,7 @@ type DiagnosticsInput = Parameters<typeof inspectDiagnostics>[0];
 function healthy(overrides: Partial<DiagnosticsInput> = {}): DiagnosticsInput {
   const queue = overrides.queue ?? { available: true, queued: 0, admitted: 0, waiting: 0 };
   return { now: 1800000000000,
+    store: { state: "readable", queried: true },
     coverage: { activeJobs: queue.queued + queue.admitted + queue.waiting, omittedRouteGroups: 0, omittedActiveJobs: 0, countsCapped: false },
     queue: { available: true, queued: 0, admitted: 0, waiting: 0 },
     routes: [], budgets: { exhausted: 0, deadlineFailed: 0 },
@@ -204,6 +205,51 @@ test("gathered diagnostics count expired authority and provider-login waits with
   const login = inspectDiagnostics(healthy({ waits: { quota: 0, needsLogin: 1, routeUnavailable: 0, authorizationChanged: 0 },
     queue: { available: true, queued: 0, admitted: 0, waiting: 1 } }));
   expect(login.nextActions).toEqual(["reconnect-provider-login"]);
+});
+
+test("diagnose reads user_version first through the read-only adapter: missing, newer and existing stores are never touched", async () => {
+  const root = setup();
+  const cfg = (name: string) => readConfig({ JIT_DATABASE: join(root, name), JIT_TELEGRAM_BOT_TOKEN_PATH: join(root, "missing.token") });
+  const sidecars = (name: string) => ["-wal", "-shm", "-journal"].filter(suffix => existsSync(join(root, name) + suffix));
+  // Missing store: fixed state, nothing created.
+  const missing = inspectDiagnostics(gatherDiagnostics(root, cfg("absent.sqlite"), 1800000000000));
+  expect(missing).toMatchObject({ store: { state: "missing", queried: false }, nextAction: "run-owner-setup",
+    schemaVersion: { current: null, state: "unavailable" }, queue: { available: false, queued: 0 } });
+  expect(existsSync(join(root, "absent.sqlite"))).toBe(false);
+  expect(sidecars("absent.sqlite")).toEqual([]);
+  // Newer schema: a bounded snapshot with no schema-specific query, and the compatible-artifact action.
+  const newer = new Database(join(root, "newer.sqlite"));
+  newer.exec(`CREATE TABLE jobs (id TEXT); PRAGMA user_version = ${schemaVersion + 1};`);
+  newer.close();
+  chmodSync(join(root, "newer.sqlite"), 0o640);
+  const newerBefore = { bytes: readFileSync(join(root, "newer.sqlite")), mode: statSync(join(root, "newer.sqlite")).mode };
+  const newerSnapshot = inspectDiagnostics(gatherDiagnostics(root, cfg("newer.sqlite"), 1800000000000));
+  expect(newerSnapshot).toMatchObject({ store: { state: "readable", queried: false },
+    schemaVersion: { current: schemaVersion + 1, supported: schemaVersion, state: "newer-unsupported" }, nextAction: "use-compatible-app-artifact" });
+  expect({ bytes: readFileSync(join(root, "newer.sqlite")), mode: statSync(join(root, "newer.sqlite")).mode }).toEqual(newerBefore);
+  expect(sidecars("newer.sqlite")).toEqual([]);
+  // Existing current store, closed (no sidecars): bytes, mode and sidecars unchanged.
+  new TransactionStore(join(root, "current.sqlite")).close();
+  chmodSync(join(root, "current.sqlite"), 0o640);
+  const before = { bytes: readFileSync(join(root, "current.sqlite")), mode: statSync(join(root, "current.sqlite")).mode, sidecars: sidecars("current.sqlite") };
+  const current = inspectDiagnostics(gatherDiagnostics(root, cfg("current.sqlite"), 1800000000000));
+  expect(current).toMatchObject({ store: { state: "readable", queried: true }, schemaVersion: { state: "current" }, queue: { available: true } });
+  expect({ bytes: readFileSync(join(root, "current.sqlite")), mode: statSync(join(root, "current.sqlite")).mode, sidecars: sidecars("current.sqlite") }).toEqual(before);
+  // A live (open, WAL) store is read without changing its sidecars' presence; a lone sidecar reads as unreadable.
+  const live = new TransactionStore(join(root, "live.sqlite"));
+  try {
+    const liveSidecars = sidecars("live.sqlite");
+    expect(inspectDiagnostics(gatherDiagnostics(root, cfg("live.sqlite"), 1800000000000)).store).toEqual({ state: "readable", queried: true });
+    expect(sidecars("live.sqlite")).toEqual(liveSidecars);
+  } finally { live.close(); }
+  writeFileSync(join(root, "current.sqlite-wal"), "");
+  const torn = inspectDiagnostics(gatherDiagnostics(root, cfg("current.sqlite"), 1800000000000));
+  expect(torn).toMatchObject({ store: { state: "unreadable", queried: false }, nextAction: "inspect-store-access", schemaVersion: { state: "unavailable" } });
+  expect(readFileSync(join(root, "current.sqlite"))).toEqual(before.bytes);
+  // Store states are strict: a non-queried store cannot carry counts, and a readable one needs a version.
+  expect(() => inspectDiagnostics({ ...healthy(), store: { state: "missing", queried: true } })).toThrow();
+  expect(() => inspectDiagnostics({ ...healthy(), store: { state: "readable", queried: false } })).toThrow();
+  expect(() => inspectDiagnostics({ ...healthy(), schema: { current: null, supported: schemaVersion } })).toThrow();
 });
 
 test("drill configuration is finite and explicit; missing or unbounded limits fail preflight", () => {
@@ -712,9 +758,12 @@ test("standalone CLI drills, reports and rejects invalid invocations with fixed 
   expect((await run(["drill", "--config", ".local/drill.json"])).exit).toBe(2);
   const diagnosed = await run(["diagnose"]);
   expect(diagnosed.exit).toBe(0);
-  expect(JSON.parse(diagnosed.stdout)).toMatchObject({ schema: "jit.ops.diagnostics/v1", nextAction: "configure-telegram",
+  // A missing installation database is a fixed state with its own next action; diagnose never creates it.
+  expect(JSON.parse(diagnosed.stdout)).toMatchObject({ schema: "jit.ops.diagnostics/v1", queue: { available: false },
+    store: { state: "missing", queried: false }, nextAction: "run-owner-setup", schemaVersion: { current: null, state: "unavailable" },
     engine: { mode: "scripted", state: "scripted", observed: "not-observed" }, providers: { observed: "not-observed" },
     upgrade: { fence: "none", activeState: null }, restore: { state: "none" } });
+  expect(existsSync(join(root, "state.sqlite"))).toBe(false);
 });
 
 test("main diagnose path inspects without claiming scheduler ownership or starting work", async () => {
@@ -725,10 +774,16 @@ test("main diagnose path inspects without claiming scheduler ownership or starti
   expect(stderr).toBe("");
   expect(exit).toBe(0);
   expect(JSON.parse(stdout).schema).toBe("jit.ops.diagnostics/v1");
+  // Read-only: a missing database is not created; an existing one is neither modified nor journaled.
+  expect(existsSync(join(root, "diag.sqlite"))).toBe(false);
   const { TransactionStore } = await import("../src/store");
-  const store = new TransactionStore(join(root, "diag.sqlite"));
-  try {
-    expect(store.read(tx => tx.get("SELECT * FROM job_scheduler"))).toBeNull();
-  } finally { store.close(); }
-  expect(readFileSync(join(root, "diag.sqlite")).length).toBeGreaterThan(0);
+  new TransactionStore(join(root, "diag.sqlite")).close();
+  chmodSync(join(root, "diag.sqlite"), 0o640);
+  const before = { bytes: readFileSync(join(root, "diag.sqlite")), mode: statSync(join(root, "diag.sqlite")).mode };
+  const again = Bun.spawn([process.execPath, main, "diagnose"], { cwd: root, env: { JIT_DATABASE: join(root, "diag.sqlite") }, stdout: "pipe", stderr: "pipe" });
+  const [againOut, , againExit] = await Promise.all([new Response(again.stdout).text(), new Response(again.stderr).text(), again.exited]);
+  expect(againExit).toBe(0);
+  expect(JSON.parse(againOut)).toMatchObject({ queue: { available: true } });
+  expect({ bytes: readFileSync(join(root, "diag.sqlite")), mode: statSync(join(root, "diag.sqlite")).mode }).toEqual(before);
+  expect(["-wal", "-shm", "-journal"].filter(suffix => existsSync(join(root, "diag.sqlite") + suffix))).toEqual([]);
 });

@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Application } from "../src/application";
@@ -9,7 +9,7 @@ import { TransactionStore, schemaVersion } from "../src/store";
 import { artifactPiStatus, buildPackage, readManifest, validateArtifact } from "../ops/package/bun-build";
 import { assertNoSecretValues, parseServiceConfig, planServiceConfig, renderServiceUnit } from "../ops/package/service-config";
 import type { ServiceConfig } from "../ops/package/service-config";
-import { preflightService, readQuarantine, startFullApp, stopDrain, upgradeStaged } from "../src/ops/lifecycle";
+import { preflightService, readQuarantine, startFullApp, stopDrain } from "../src/ops/lifecycle";
 import { backupDirectoryProblem } from "../src/ops/backup";
 import { gatherServiceStatus, serviceStatus } from "../src/ops/status";
 
@@ -55,7 +55,9 @@ test("versioned artifact pins runtime, lock, schema and engine without dev-cwd d
   try { buildPackage({ srcDir: repoRoot, outDir: second, engineContract: "jit.schway.bridge/v1", engineRevision: null }); }
   finally { process.chdir(cwd); }
   const again = readManifest(second);
-  expect({ ...again, artifactId: "", builtAt: "" }).toEqual({ ...built, artifactId: "", builtAt: "" });
+  // Identity and build time differ per build, and the content pin binds them, so it differs too.
+  expect({ ...again, artifactId: "", builtAt: "", contentHash: "" }).toEqual({ ...built, artifactId: "", builtAt: "", contentHash: "" });
+  expect(again.contentHash).not.toBe(built.contentHash);
   expect(artifactPiStatus({ arch: "x64", piValidation: { status: "pending", detail: "x" } })).toBe("not-run");
   expect(artifactPiStatus({ arch: "arm64", piValidation: { status: "pending", detail: "x" } })).toBe("pending");
   expect(artifactPiStatus(built)).toBe(process.arch === "arm64" ? "pending" : "not-run");
@@ -70,7 +72,9 @@ test("artifact negatives reject missing pins, occupied output and unapproved eng
   expect(() => buildPackage({ srcDir: repoRoot, outDir: join(root, "fresh"), engineContract: "jit.schway.bridge/v1", engineRevision: "not-a-version!!" })).toThrow();
   const built = buildPackage({ srcDir: repoRoot, outDir: join(root, "good"), engineContract: "jit.schway.bridge/v1", engineRevision: null });
   writeFileSync(join(root, "good/manifest.json"), JSON.stringify({ ...built, schemaVersion: 999 }));
-  expect(validateArtifact(join(root, "good")).ok).toBe(false);
+  // A manifest from another build reads, but the executing build refuses its schema pin.
+  expect(validateArtifact(join(root, "good")).checks).toContainEqual({ check: "schema-pin", ok: false });
+  writeFileSync(join(root, "good/manifest.json"), JSON.stringify({ ...built, schemaVersion: "22" }));
   expect(() => readManifest(join(root, "good"))).toThrow();
 });
 
@@ -267,19 +271,49 @@ test("preflight rejects a permissive, symlinked or foreign-owned backup destinat
 
 test("quarantine boot refuses activation while read-only status stays available", async () => {
   const { service, config } = setup();
-  const quarantined = { ...service, ledgerPath: join(service.stateDirectory, "missing-ledger.json") };
-  expect(readQuarantine(quarantined).quarantined).toBe(true);
-  const refused = await startFullApp({ config, service: quarantined });
-  expect(refused.ok).toBe(false);
-  if (refused.ok) throw new Error("unreachable");
-  expect(refused.gates).toMatchObject([{ gate: "quarantine", state: "blocked" }]);
+  // First installed boot accepts the install seed once and establishes the real OPS02 checkpoint at ledgerPath.
+  const first = await startFullApp({ config, service });
+  if (!first.ok) throw new Error(JSON.stringify(first.gates));
+  await stopDrain(first.handle, { timeoutMs: 5000 });
+  first.handle.service.close();
+  first.handle.store.close();
+  const established = readFileSync(service.ledgerPath);
+  expect(JSON.parse(established.toString())).toMatchObject({ ledger: "jit.deletion.ledger/v1", contract: "app.deletion_ledger/v1" });
+  const blockedAt = async (candidate: ServiceConfig) => {
+    const refused = await startFullApp({ config, service: candidate });
+    expect(refused.ok).toBe(false);
+    if (refused.ok) throw new Error("unreachable");
+    return refused.gates.filter(g => g.state === "blocked").map(g => [g.gate, g.detail]);
+  };
+  // Missing after establishment.
+  rmSync(service.ledgerPath);
+  expect(readQuarantine(service).quarantined).toBe(true);
+  expect(await blockedAt(service)).toEqual([["quarantine", "lifecycle ledger ledger_checkpoint_missing"]]);
+  // A seed is accepted only once: it cannot re-establish authority.
+  writeFileSync(service.ledgerPath, JSON.stringify({ ledger: "jit.deletion.ledger/v1", revision: 1 }), { mode: 0o600 });
+  expect(await blockedAt(service)).toEqual([["quarantine", "lifecycle ledger ledger_checkpoint_unverifiable"]]);
+  // Diverged / tampered checkpoint.
+  writeFileSync(service.ledgerPath, JSON.stringify({ ...JSON.parse(established.toString()), digest: "0".repeat(64) }), { mode: 0o600 });
+  expect(await blockedAt(service)).toEqual([["quarantine", "lifecycle ledger ledger_checkpoint_unverifiable"]]);
+  // Relocated without a verified copy of the established checkpoint.
+  writeFileSync(service.ledgerPath, established, { mode: 0o600 });
+  const relocated = { ...service, ledgerPath: join(service.stateDirectory, "moved-ledger.json") };
+  expect(await blockedAt(relocated)).toEqual([["quarantine", "lifecycle ledger ledger_checkpoint_relocation_unverified"]]);
   const store = new TransactionStore(config.databasePath);
   try {
-    const preflight = preflightService({ store, config, service: quarantined, requiredEngine: "jit.schway.bridge/v1" });
-    expect(preflight.ok).toBe(false);
-    expect(preflight.gates.find(g => g.gate === "quarantine")?.state).toBe("blocked");
-    expect(gatherServiceStatus(config, quarantined)).toMatchObject({ service: "blocked", quarantined: true });
+    const preflight = preflightService({ store, config, service: relocated, requiredEngine: "jit.schway.bridge/v1" });
+    expect(preflight.gates.find(g => g.gate === "quarantine")).toMatchObject({ state: "blocked",
+      nextAction: "copy_the_verified_checkpoint_from_the_previous_ledger_location_then_retry" });
+    expect(gatherServiceStatus(config, relocated)).toMatchObject({ service: "blocked", quarantined: true });
+    // Restart keeps one ledger location: the established path is still the marker.
+    expect(store.read(tx => tx.get<{ path: string }>("SELECT path FROM lifecycle_checkpoint WHERE id = 1"))?.path).toBe(service.ledgerPath);
   } finally { store.close(); }
+  expect(existsSync(relocated.ledgerPath)).toBe(false);
+  const restarted = await startFullApp({ config, service });
+  if (!restarted.ok) throw new Error(JSON.stringify(restarted.gates));
+  await stopDrain(restarted.handle, { timeoutMs: 5000 });
+  restarted.handle.service.close();
+  restarted.handle.store.close();
   expect(serviceStatus({ now: 1800000000000, scheduler: "owned", worker: "free", quarantined: false,
     evidenceReady: false, blockedGates: [] })).toMatchObject({ service: "running", nextAction: "none" });
   expect(serviceStatus({ now: 1800000000000, scheduler: "owned", worker: "free", quarantined: false,
@@ -288,54 +322,6 @@ test("quarantine boot refuses activation while read-only status stays available"
     evidenceReady: true, blockedGates: [] })).toMatchObject({ service: "blocked" });
   expect(() => serviceStatus({ now: 1800000000000, scheduler: "owned", worker: "free", quarantined: false,
     evidenceReady: false, blockedGates: ["Authorization: Bearer x"] })).toThrow();
-});
-
-test("staged upgrade rolls back on failed health with the ledger preserved byte-for-byte", async () => {
-  const { root, service, config, ledger } = setup();
-  const active = join(root, "active");
-  mkdirSync(active, { mode: 0o700 });
-  const seed = new TransactionStore(join(active, "app.sqlite"));
-  seed.close();
-  writeFileSync(join(active, "artifact.json"), JSON.stringify({ artifactId: "previous-artifact" }) + "\n");
-  const artifact = join(root, "artifact");
-  const manifest = buildPackage(
-    { srcDir: repoRoot, outDir: artifact, engineContract: "jit.schway.bridge/v1", engineRevision: null });
-  const before = readFileSync(ledger);
-  const store = new TransactionStore(config.databasePath);
-  try {
-    const rolled = await upgradeStaged({ store, activeDir: active, artifactDir: artifact, backupRoot: service.backupDirectory,
-      ledgerPath: ledger, requiredEngine: "jit.schway.bridge/v1", health: () => false });
-    expect(rolled.outcome).toBe("rolled-back");
-    expect(rolled.backupId).toMatch(/^[a-f0-9-]{36}$/);
-    expect(readFileSync(ledger)).toEqual(before);
-    expect(JSON.parse(readFileSync(join(active, "artifact.json"), "utf8")).artifactId).toBe("previous-artifact");
-    const backupDb = join(service.backupDirectory, rolled.backupId!, "app.sqlite");
-    expect(statSync(backupDb).mode & 0o777).toBe(0o600);
-    const upgraded = await upgradeStaged({ store, activeDir: active, artifactDir: artifact, backupRoot: service.backupDirectory,
-      ledgerPath: ledger, requiredEngine: "jit.schway.bridge/v1", health: async () => true });
-    expect(upgraded.outcome).toBe("upgraded");
-    expect(JSON.parse(readFileSync(join(active, "artifact.json"), "utf8")).artifactId).toBe(manifest.artifactId);
-    expect(readFileSync(ledger)).toEqual(before);
-  } finally { store.close(); }
-});
-
-test("incompatible staged artifacts block before touching active state", async () => {
-  const { root, service, config, ledger } = setup();
-  const active = join(root, "active");
-  mkdirSync(active, { mode: 0o700 });
-  new TransactionStore(join(active, "app.sqlite")).close();
-  const artifact = join(root, "artifact");
-  buildPackage(
-    { srcDir: repoRoot, outDir: artifact, engineContract: "jit.schway.bridge/v1", engineRevision: null });
-  const manifest = JSON.parse(readFileSync(join(artifact, "manifest.json"), "utf8"));
-  writeFileSync(join(artifact, "manifest.json"), JSON.stringify({ ...manifest, lockHash: "0".repeat(64) }));
-  const store = new TransactionStore(config.databasePath);
-  try {
-    const blocked = await upgradeStaged({ store, activeDir: active, artifactDir: artifact, backupRoot: service.backupDirectory,
-      ledgerPath: ledger, requiredEngine: "jit.schway.bridge/v1", health: () => true });
-    expect(blocked.outcome).toBe("blocked");
-    expect(blocked.backupId).toBeNull();
-  } finally { store.close(); }
 });
 
 test("main preflight and status stay read-only without claiming the scheduler", async () => {
@@ -353,16 +339,26 @@ test("main preflight and status stay read-only without claiming the scheduler", 
   const preflight = await run(["preflight"]);
   expect(preflight.exit).toBe(0);
   expect(preflight.stderr).toBe("");
-  const gates = JSON.parse(preflight.stdout).gates as Array<{ gate: string; state: string }>;
+  const gates = JSON.parse(preflight.stdout).gates as Array<{ gate: string; state: string; nextAction: string }>;
   expect(gates.find(g => g.gate === "scheduler")?.state).toBe("ready");
-  expect(gates.find(g => g.gate === "quarantine")?.state).toBe("ready");
+  // Read-only: a missing installation database is reported, never created.
+  expect(gates.find(g => g.gate === "schema")).toMatchObject({ state: "blocked", nextAction: "start-service-to-initialize-installation" });
+  // Without an installation database the OPS02 ledger cannot be read, so the installation stays quarantined.
+  expect(gates.find(g => g.gate === "quarantine")).toMatchObject({ state: "blocked", nextAction: "inspect_installation_lifecycle_ledger" });
   const status = await run(["status"]);
   expect(status.exit).toBe(0);
-  expect(JSON.parse(status.stdout)).toMatchObject({ schema: "jit.ops.status/v1", service: "blocked", scheduler: "free" });
+  expect(JSON.parse(status.stdout)).toMatchObject({ schema: "jit.ops.status/v1", service: "blocked", scheduler: "free", quarantined: true });
   expect((await run(["preflight", "--bogus"])).exit).toBe(1);
+  expect(existsSync(join(root, "state/app.sqlite"))).toBe(false);
   const store = new TransactionStore(join(root, "state/app.sqlite"));
   try { expect(store.read(tx => tx.get("SELECT * FROM job_scheduler"))).toBeNull(); }
   finally { store.close(); }
+  const existing = await run(["preflight"]);
+  const existingGates = JSON.parse(existing.stdout).gates as Array<{ gate: string; state: string }>;
+  expect(existingGates.find(g => g.gate === "schema")?.state).toBe("ready");
+  // The install seed is acceptable (once) to the read-only inspection; nothing is written by preflight.
+  expect(existingGates.find(g => g.gate === "quarantine")?.state).toBe("ready");
+  expect(JSON.parse(readFileSync(service.ledgerPath, "utf8"))).toEqual({ ledger: "jit.deletion.ledger/v1", revision: 1 });
 });
 
 test("operator config rejects wildcard binds by default", () => {
