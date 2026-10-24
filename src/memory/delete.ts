@@ -568,6 +568,7 @@ function buildInventory(tx: AppTransaction, scope: DeleteScope, env: DeletionEnv
   };
   inventory.scrub = payloadNeedles(tx, allSources, [...claims.values()], inventory.taskProposals);
   if (inventory.scrub.long.length > deleteScrubPolicy.maxTerms) blockers.add("scrub_set_exceeds_bound");
+  else for (const blocker of unreadableScrubTargets(tx, inventory.scrub.long)) blockers.add(blocker);
   const keys = new Set(allSources.map(entry => sourceKey(entry.source)));
   for (const intent of intents.values()) {
     const linked = keys.has(sourceKey(intent.source));
@@ -1018,18 +1019,72 @@ export function scrubOutputSources(tx: AppTransaction, needles: string[]): void 
     }, null, "content_text IS NOT NULL AND source_id IN (SELECT id FROM sources WHERE kind = 'output')");
 }
 
-/** Replaces quoted copies of just-purged payloads in committed model outputs, job/attempt records, model-generated
- *  proposals and command receipts (raw and JSON-escaped forms); owner tasks/decisions are handled by the inventory. */
-export function scrubFreeTextOccurrences(tx: AppTransaction, needles: string[]): void {
-  const terms = [...new Set(needles.filter(n => n.length > 0).flatMap(n => [n, JSON.stringify(n).slice(1, -1)]))].sort();
-  if (!terms.length) return;
-  for (const [table, column] of [["team_runs", "record_json"], ["coordinator_syntheses", "record_json"], ["jobs", "record_json"],
-    ["job_attempts", "record_json"], ["decision_proposals", "record_json"], ["command_receipts", "result_json"]] as const) {
+/** JSON records that may quote a purged payload without durable provenance (the quoted-copy fallback targets). */
+const FREE_TEXT_TABLES = [["team_runs", "record_json"], ["coordinator_syntheses", "record_json"], ["jobs", "record_json"],
+  ["job_attempts", "record_json"], ["decision_proposals", "record_json"], ["command_receipts", "result_json"]] as const;
+/** Keys whose string values are structural identifiers or enums, never quoted payload; they are never rewritten. */
+const STRUCTURAL_KEY = /^(?:id|ids|kind|type|state|status|code|reason_code)$|(?:Id|Ids|_id|_ids)$/;
+
+/** Raw and JSON-escaped forms of every non-empty term (escaped forms reach JSON nested inside string values). */
+const scrubForms = (needles: string[]) =>
+  [...new Set(needles.filter(n => n.length > 0).flatMap(n => [n, JSON.stringify(n).slice(1, -1)]))].sort();
+
+/**
+ * Replaces every term inside string values only, recursively. Object keys, numbers, booleans and
+ * values under structural keys ({@link STRUCTURAL_KEY}) are preserved, so a payload equal to a schema
+ * key such as `projectId` can never corrupt a record's structure.
+ */
+function redactStringValues(value: unknown, terms: string[], key: string | null = null): unknown {
+  if (typeof value === "string") {
+    if (key !== null && STRUCTURAL_KEY.test(key)) return value;
+    let next = value;
+    for (const term of terms) if (next.includes(term)) next = next.split(term).join(redactedText);
+    return next;
+  }
+  if (Array.isArray(value)) return value.map(item => redactStringValues(item, terms, key));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([name, item]) => [name, redactStringValues(item, terms, name)]));
+  }
+  return value;
+}
+
+/**
+ * Names (`unreadable_record:<table>`) every quoted-copy target table holding a record that mentions a
+ * term but is not parseable JSON. Deletion previews add these as blockers, because such a record can
+ * only be redacted by raw substring replacement, which this module never does.
+ */
+export function unreadableScrubTargets(tx: AppTransaction, needles: string[]): string[] {
+  const terms = scrubForms(needles);
+  const out = new Set<string>();
+  if (!terms.length) return [];
+  for (const [table, column] of FREE_TEXT_TABLES) {
     try {
       scanTable<{ json: string }>(tx, table, `${column} AS json`, row => {
-        let next = row.json;
-        for (const term of terms) if (next.includes(term)) next = next.split(term).join(redactedText);
-        if (next !== row.json) tx.run(`UPDATE ${table} SET ${column} = ? WHERE rowid = ?`, next, (row as unknown as { rowid_: number }).rowid_);
+        if (out.has(`unreadable_record:${table}`) || !terms.some(term => row.json.includes(term))) return;
+        try { JSON.parse(row.json); } catch { out.add(`unreadable_record:${table}`); }
+      }, null);
+    } catch (error) {
+      if (!(error instanceof Error) || !/no such table/.test(error.message)) throw error;
+    }
+  }
+  return [...out].sort();
+}
+
+/** Replaces quoted copies of just-purged payloads in committed model outputs, job/attempt records, model-generated
+ *  proposals and command receipts; owner tasks/decisions are handled by the inventory. Each record is parsed and
+ *  only its string values are rewritten ({@link redactStringValues}); a record that mentions a term but is not
+ *  parseable JSON is never raw-replaced: this throws `unreadable_record` (previews block on it first). */
+export function scrubFreeTextOccurrences(tx: AppTransaction, needles: string[]): void {
+  const terms = scrubForms(needles);
+  if (!terms.length) return;
+  for (const [table, column] of FREE_TEXT_TABLES) {
+    try {
+      scanTable<{ json: string }>(tx, table, `${column} AS json`, row => {
+        if (!terms.some(term => row.json.includes(term))) return;
+        let parsed: unknown;
+        try { parsed = JSON.parse(row.json); } catch { throw new AppError("unreadable_record", 409, { table }); }
+        const next = JSON.stringify(redactStringValues(parsed, terms));
+        if (next !== JSON.stringify(parsed)) tx.run(`UPDATE ${table} SET ${column} = ? WHERE rowid = ?`, next, (row as unknown as { rowid_: number }).rowid_);
       }, null);
     } catch (error) {
       // Older quarantined schemas may predate a table; a missing table holds no copy.
