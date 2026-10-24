@@ -5,6 +5,7 @@ import { containsCredential } from "../security/credentials";
 import { commitOutputSource, requireId, requireText } from "../sources";
 import type { AppTransaction } from "../store";
 import { TransactionStore } from "../store";
+import { upgradeFenced } from "../ops/upgrade-fence";
 import { readBinding } from "../telegram/binding";
 import type { DeliverySender, DeliverySendResult } from "./sender";
 import type {
@@ -515,6 +516,8 @@ export class DeliveryWorker {
    * Unbound channels stay waiting. Revoked bindings and deleted sources cancel unsent work.
    */
   claimNext(): DeliveryAttempt | null {
+    // Delivery stays disabled while an ops.schema_migrations/v1 upgrade holds the fence.
+    if (upgradeFenced(this.store.path)) return null;
     return this.store.transaction(tx => this.#claim(tx));
   }
 
@@ -524,6 +527,8 @@ export class DeliveryWorker {
    */
   sendClaimed(attemptId: string): DeliveryIntent {
     requireId(attemptId);
+    // Never invoke the sender under an upgrade fence; the claim stays retryable.
+    if (upgradeFenced(this.store.path)) throw new AppError("upgrade_in_progress", 409);
     const prepared = this.store.transaction(tx => {
       if (this.#closed || !this.#owns(tx)) throw new AppError("delivery_worker_unavailable", 503);
       const row = tx.get<{ record_json: string }>("SELECT record_json FROM delivery_attempts WHERE id = ?", attemptId);

@@ -129,7 +129,7 @@ function decodeJob(recordJson: string): StoredJob | null {
  * output. Callers must not run background work around this call.
  */
 export function gatherDiagnostics(root: string, config: AppConfig, now: number = Date.now()): DiagnosticsInput {
-  const store = new TransactionStore(config.databasePath);
+  const store = new TransactionStore(config.databasePath, { migrateExisting: false });
   try {
     const jobs = store.read(tx => {
       try {

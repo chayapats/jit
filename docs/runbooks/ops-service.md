@@ -41,6 +41,7 @@ bun src/main.ts status
 - Stage a validated pinned artifact, back up state plus the artifact pair, then swap under the health gate.
 - Failed health restores the backup pair; the deletion ledger is never rewritten and newer suppression state is never ignored.
 - Rollback is permitted only to a compatible artifact/state pair. Record the backup ID in the private notes.
+- When the new build's schema is newer than the installation, `serve` and preflight refuse it (`run-owner-upgrade`) and never migrate in place. With the service stopped, run `bun src/main.ts upgrade --password-stdin` (ops.schema_migrations/v1): it fences admission, takes a verified recovery-point backup, migrates a staged copy, validates and activates it; the next `serve` reconciles jobs and sessions before admitting work. Returning to the prior version after activation is an OPS02 quarantined restore of the recorded recovery point.
 
 ## 6. Hand off to the Pi live round
 

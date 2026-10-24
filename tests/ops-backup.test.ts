@@ -13,7 +13,7 @@ import {
   writeManagedFile, type BackupNativePort,
 } from "../src/ops/backup";
 import { SchwayBackupNativePort, createSchwayBackupNativePort, schwayBackupEngine } from "../src/ops/schway-backup";
-import { currentSupportedSchema, prepareUpgrade } from "../src/ops/upgrade";
+import { currentSupportedSchema, upgradeEngineContract, upgradeNativeFormatVersion } from "../src/ops/upgrade";
 import { SchwayRunPort, schwayHostDirs, type SchwayPortOptions } from "../src/team/schway-port";
 import type { ApplicationRunRequest } from "../src/team/types";
 import { TelegramChannel } from "../src/telegram";
@@ -684,27 +684,40 @@ test("native set changes during capture and over-limit sets never commit as vali
   expect(over.manifest.native).toMatchObject({ state: "incomplete", reason: "native_snapshot_over_limit" });
 });
 
-test("upgrade prepare records a credential-free recovery point with the real version and fails closed on staged engine ports", async () => {
-  const f = await fixture({ native: { available: () => true, snapshot: () => ({ refs: [], bytes: 0, engine: "scripted-fixture-v1" }) } });
+test("upgrade prepare records a credential-free recovery point through staged backup creation, including the concrete port", async () => {
+  const upgradeCommand = (app: Application, actor: ReturnType<Application["authenticate"]>["actor"], kind: "upgrade.prepare" | "upgrade.migrate" | "upgrade.validate" | "upgrade.activate", upgradeId?: string) =>
+    app.execute(actor, kind === "upgrade.prepare"
+      ? { kind, requestId: rid(), projectId: null, expectedRevision: app.workspace(actor).revision, payload: { targetSchema: currentSupportedSchema, note: "recovery point" } }
+      : { kind, requestId: rid(), projectId: null, expectedRevision: app.workspace(actor).revision, payload: { upgradeId: upgradeId! } });
+  // Fixture engine declaring the supported snapshot contract.
+  const f = await fixture({ native: { available: () => true, snapshot: () => ({ refs: [], bytes: 0, engine: "fixture-engine", contract: upgradeEngineContract, formatVersion: upgradeNativeFormatVersion }),
+    contract: upgradeEngineContract, formatVersion: upgradeNativeFormatVersion, engine: "fixture-engine" } });
   createProject(f); seedLifecycle(f);
-  const journal = f.store.transaction(tx => prepareUpgrade(tx, f.store, {
-    id: rid(), now: 1800000000000, appRevision: f.app.workspace(f.auth.actor).revision,
-    targetSchema: currentSupportedSchema, note: "fixture engine", upgradeDir: join(f.root, "upgrades"), backupDir: f.backupDir,
-    engine: { available: () => true, snapshot: () => ({ refs: [], bytes: 0, engine: "scripted-fixture-v1" }) },
-  }));
-  const manifest = f.app.backup(f.auth.actor, journal.snapshotBackupId!).manifest;
+  const prepared = (await upgradeCommand(f.app, f.auth.actor, "upgrade.prepare")).journal;
+  expect(prepared.state).toBe("prepared");
+  const manifest = f.app.backup(f.auth.actor, prepared.snapshotBackupId!).manifest;
   expect(manifest.jitVersion).toBe(jitAppVersion);
   expect(manifest.credentials.included).toBe(false);
   const passwordHash = f.store.read(tx => tx.get<{ password_hash: string }>("SELECT password_hash FROM owner")!.password_hash);
   expect(readFileSync(manifest.artifact.path).includes(Buffer.from(passwordHash))).toBe(false);
+  // Concrete staged port: the recovery point captures the real native session through snapshotSessions.
   const c = await concreteFixture();
   const run = await nativeRun(c.store, c.config);
   await run.outcome;
-  expect(() => c.store.transaction(tx => prepareUpgrade(tx, c.store, {
-    id: rid(), now: 1800000000000, appRevision: c.app.workspace(c.auth.actor).revision,
-    targetSchema: currentSupportedSchema, note: "concrete engine", upgradeDir: join(c.root, "upgrades"), backupDir: c.backupDir, engine: c.port,
-  }))).toThrow("native_snapshot_unavailable");
-  expect(c.app.backups(c.auth.actor).manifests).toHaveLength(0);
+  const concrete = (await upgradeCommand(c.app, c.auth.actor, "upgrade.prepare")).journal;
+  expect(concrete).toMatchObject({ state: "prepared", checkpoint: { nativeRefs: 1, nativeEngine: schwayBackupEngine, nativeContract: upgradeEngineContract } });
+  const point = c.app.backup(c.auth.actor, concrete.snapshotBackupId!);
+  expect(point.integrity.state).toBe("verified");
+  expect(point.manifest.native).toMatchObject({ state: "valid", refs: [{ id: run.run.runId, generation: 1 }] });
+  expect((await validateNativeFile(c.store, point.manifest.native.artifacts[0]!.path)).status).toBe("valid");
+  await upgradeCommand(c.app, c.auth.actor, "upgrade.migrate", concrete.id);
+  const validated = (await upgradeCommand(c.app, c.auth.actor, "upgrade.validate", concrete.id)).journal;
+  expect(validated.state).toBe("ready");
+  expect(validated.validation!.checks.find(check => check.name === "native_opaque_refs")).toMatchObject({ pass: true });
+  const activated = (await upgradeCommand(c.app, c.auth.actor, "upgrade.activate", concrete.id)).journal;
+  // No managed service in this fixture: reconciliation is left to the next service boot, never claimed.
+  expect(activated).toMatchObject({ state: "activated", reason: "reconcile_pending" });
+  expect(c.app.backups(c.auth.actor).manifests.map(m => m.id)).toContain(concrete.snapshotBackupId!);
 });
 
 // ---------------------------------------------------------------------------

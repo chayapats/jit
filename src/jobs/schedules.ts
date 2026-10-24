@@ -12,6 +12,7 @@ import { requireRoleRoute } from "../team/configuration";
 import type { ApplicationRunPort } from "../team/run-port";
 import { fixtureOutcome, normalizeFixtureResult, validateRunRequest } from "../team/scripted-port";
 import type { ApplicationRunRequest, RoleRoute } from "../team/types";
+import { upgradeFenced } from "../ops/upgrade-fence";
 
 /** Behavior contract delivered by this module. Occurrence identity, timezone policy and
  *  fencing rules below are the versioned `jobs.configured_schedules/v1` surface. */
@@ -447,6 +448,8 @@ function tickOne(tx: AppTransaction, queue: JobQueue, config: AppConfig, schedul
  */
 export function tickSchedules(store: TransactionStore, queue: JobQueue, config: AppConfig, now: number): TickResult[] {
   if (!Number.isSafeInteger(now) || now < 0) throw new AppError("invalid_schedule_command");
+  // Schedules stay disabled while an ops.schema_migrations/v1 upgrade holds the fence.
+  if (upgradeFenced(store.path)) return [];
   const ids = store.read(tx => {
     queue.assertOwner(tx);
     return tx.all<{ id: string }>("SELECT id FROM job_schedules ORDER BY sequence").map(row => row.id);

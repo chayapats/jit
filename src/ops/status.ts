@@ -78,7 +78,7 @@ function ownership(store: TransactionStore, table: "job_scheduler" | "delivery_w
  * only explicit OPS05 evidence may set it through `serviceStatus` directly.
  */
 export function gatherServiceStatus(config: AppConfig, service: ServiceConfig): ServiceStatus {
-  const store = new TransactionStore(config.databasePath);
+  const store = new TransactionStore(config.databasePath, { migrateExisting: false });
   try {
     const status = serviceStatus({ now: Date.now(), scheduler: ownership(store, "job_scheduler"),
       worker: ownership(store, "delivery_worker"), quarantined: readQuarantine(service).quarantined,

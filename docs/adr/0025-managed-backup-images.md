@@ -35,7 +35,7 @@ credential and live-authority tables are emptied, one-time secrets are
 scrubbed, freed pages are zeroed and the image is vacuumed. Unclassified
 tables fail creation closed, so new schema must be classified before it can
 enter a backup. `TransactionStore.swapFrom` keeps the live installation's
-credential rows on every activation (restore and upgrade rollback); restoring
+credential rows on every activation (restore and upgrade activation); restoring
 into a fresh installation requires owner credential setup. An old backup can
 therefore never resurrect a previous password verifier or browser session.
 
@@ -54,8 +54,8 @@ ledger acknowledgments cannot substitute for any of them.
   one session's capture beyond the budget. A strict bound needs an upstream
   host contract.
 
-- Upgrade prepare (#32) runs inside one synchronous transaction and fails
-  closed on staged engine ports; it should reuse staged backup creation.
+- Upgrade prepare (#32) now reuses staged backup creation
+  (`stageManagedBackup`) for its recovery point; see ADR 0026.
 - Inventory is bounded (1000 projects, 4000 sources) with explicit
   completeness. Larger installations need an out-of-row inventory; consumers
   (deletion preview, export) must treat `inventory.complete: false` as
