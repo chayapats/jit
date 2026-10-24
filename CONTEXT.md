@@ -63,3 +63,7 @@ _Avoid_: Group chat, durable job execution.
 **Managed backup**:
 A committed local backup inventory entry with a credential-free application image and opaque native session snapshots, inspectable but never activated without quarantined restore.
 _Avoid_: Database copy, export, credential backup.
+
+**Installation upgrade**:
+An owner-authorized move of the whole installation to the schema this build supports: fence and quiesce, one recovery point, migrations on a staged copy only, validation, atomic activation and reconciliation; never an in-place boot migration or a backup restore.
+_Avoid_: Auto-migration, restore, rollback after activation.

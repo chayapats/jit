@@ -78,8 +78,10 @@ maps host errors: `busy` →
 `workspace-mismatch` → `native_snapshot_incompatible`. Each snapshot must pass
 `validateSessionSnapshot`, match `schway.host.session-snapshot/v1` and
 `SNAPSHOT_NATIVE_FORMAT_VERSION`, and cover exactly the requested references.
-Synchronous callers (upgrade prepare) never invoke a staged port; they fail
-closed with `native_snapshot_requires_staged_backup`.
+Synchronous callers never invoke a staged port; they fail closed with
+`native_snapshot_requires_staged_backup`. Upgrade prepare
+(ops.schema_migrations/v1) creates its recovery point through the same staged
+creation (`stageManagedBackup`), so the concrete port works there too.
 
 ## Manifest fields
 
@@ -97,6 +99,11 @@ unreadable or malformed ledger is `ledger_unverifiable` and never inferred as
 `content` (image bytes/hash and counts), `retention` (`maxBackups` 10,
 `maxBytes` 64 MiB, `pruned`), `credentials`, `state`, `reason`, `artifact`
 (image path/bytes/hash).
+
+A port result is `native_snapshot_invalid` unless its declared `bytes` is a
+non-negative safe integer and every ref is exactly `{ id, generation }` with a
+valid id, a positive safe-integer generation and no duplicate id; the manifest
+records measured bytes, never the declaration.
 
 `state` is `valid` only when native capture, lifecycle checkpoint and inventory
 are all complete; otherwise `incomplete` with the first failing reason. Opaque
@@ -138,7 +145,8 @@ backup procedure in v1.
 The managed backup registry (`ops_backups`) is installation state, likewise
 excluded from images (`installationScopedTables` in `src/store.ts`).
 Activation (`TransactionStore.swapFrom`, used by OPS02 restore and upgrade
-rollback) always keeps the live installation's owner verifier, sessions,
+activation) builds the complete replacement image before an atomic rename and
+always keeps the live installation's owner verifier, sessions,
 throttle and backup registry, so restoring one backup never forgets the others
 or orphans their files; listing re-verifies every preserved row against its
 managed files and orphan reconciliation only removes files with no live row.
@@ -160,7 +168,8 @@ injection/validation, inventory overflow, Web/API; concrete Schway port over
 real native sessions (scripted model, no network): gate failure,
 `snapshotSessions` capture validated by `validateSessionSnapshot`, chunking,
 nonexistent/deleted sessions, unresolved intents, busy rows and host leases,
-changes during capture, over-limit sets, upgrade fail-closed on staged ports.
+changes during capture, over-limit sets, upgrade recovery points through the
+concrete staged port.
 `tests/ops-backup-service.test.ts`: `startFullApp` in schway and scripted
 modes writing under `service.backupDirectory`, gate failure, and a `serve`
 subprocess creating a backup over HTTP plus fail-closed startup.
