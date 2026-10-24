@@ -800,16 +800,16 @@ test("retained backups and exports are found despite truncated or unknown covera
   });
   const preview = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, s1)));
   expect(preview.preview.affected.backups).toContainEqual(expect.objectContaining({ id: backup.manifest.id, evidence: "whole_store_snapshot" }));
-  expect(preview.preview.affected.exports).toContainEqual(expect.objectContaining({ id: exported.manifest.id, evidence: "incomplete_coverage" }));
+  expect(preview.preview.affected.exports).toContainEqual(expect.objectContaining({ id: exported.manifest.id, evidence: "affected_project" }));
   expect(preview.preview.blockers).toEqual([]);
-  // Explicit, complete per-collection completeness without a coverage match is trusted: not listed.
+  // Complete per-collection completeness without a coverage match is not proof of absence: still listed.
   f.rt.store.transaction(tx => {
     const e = JSON.parse(tx.get<{ j: string }>("SELECT record_json AS j FROM export_artifacts WHERE id = ?", exported.manifest.id)!.j);
     tx.run("UPDATE export_artifacts SET record_json = ? WHERE id = ?", JSON.stringify({ ...e, coverage: { sources: [], claims: [], truncated: false },
       completeness: { complete: true, collections: { sources: { included: 0, total: 0, truncated: false } } } }), exported.manifest.id);
   });
-  const trusted = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, s1)));
-  expect(trusted.preview.affected.exports.map(e => e.id)).not.toContain(exported.manifest.id);
+  const complete = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, s1)));
+  expect(complete.preview.affected.exports).toContainEqual(expect.objectContaining({ id: exported.manifest.id, evidence: "affected_project" }));
   f.rt.store.transaction(tx => { tx.run("UPDATE ops_backups SET record_json = '{broken' WHERE id = ?", backup.manifest.id); });
   const blocked = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, s1)));
   expect(blocked.preview.blockers).toContain("unreadable_record:ops_backups");
@@ -939,7 +939,32 @@ test("backups and incomplete-coverage exports are listed without trusting wall-c
   const s1 = say(f, a, "ข้อความ clock-canary-201 ต้องลบ");
   const preview = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, s1)));
   expect(preview.preview.affected.backups).toContainEqual(expect.objectContaining({ id: backup.manifest.id, evidence: "whole_store_snapshot" }));
-  expect(preview.preview.affected.exports).toContainEqual(expect.objectContaining({ id: exported.manifest.id, evidence: "incomplete_coverage" }));
+  expect(preview.preview.affected.exports).toContainEqual(expect.objectContaining({ id: exported.manifest.id, evidence: "affected_project" }));
+});
+
+test("a complete no-history export holding a task copy of the deleted message is purged with it", async () => {
+  const f = await fixture();
+  const a = project(f, "โครงการสำเนางาน", "หัวข้อสำเนางาน");
+  const other = project(f, "โครงการอื่น", "หัวข้ออื่น");
+  const text = "ข้อความ task-copy-canary-321 ต้องลบ";
+  const m = say(f, a, text);
+  // A dismissed (inactive) task quoting M verbatim: the export serializes its raw text without covering M.
+  const proposed = f.rt.app.execute(actor(f), { kind: "task.propose", requestId: rid(), projectId: a.id, expectedRevision: topicRevision(f, a),
+    payload: { topicId: a.topic.id, title: "สำเนางาน", summary: `คัดลอก: ${text}` } });
+  f.rt.app.execute(actor(f), { kind: "task.dismiss", requestId: rid(), projectId: a.id, expectedRevision: proposed.task.revision,
+    payload: { taskId: proposed.task.id, proposalId: proposed.proposal.id, reason: "ไม่ทำ" } });
+  const exported = f.rt.app.execute(actor(f), { ...exportCommand(f, a), payload: { includeHistory: false, note: "no history" } });
+  const unrelated = f.rt.app.execute(actor(f), exportCommand(f, other));
+  expect(exportBody(f, a, exported.manifest.id)).toContain("task-copy-canary-321");
+  const stored = f.rt.store.read(tx => JSON.parse(tx.get<{ j: string }>("SELECT record_json AS j FROM export_artifacts WHERE id = ?", exported.manifest.id)!.j));
+  expect(stored.completeness.complete).toBe(true);
+  expect(JSON.stringify(stored.coverage)).not.toContain(m.sourceId);
+  const preview = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, m)));
+  expect(preview.preview.affected.exports).toEqual([expect.objectContaining({ id: exported.manifest.id, evidence: "affected_project" })]);
+  const confirmed = asConfirmed(f.rt.app.execute(actor(f), confirmCommand(f, a, preview.preview.id, true, preview.preview.wholeSession.required)));
+  expect(confirmed.operation.exports).toEqual([expect.objectContaining({ id: exported.manifest.id, storage: "sqlite", state: "purged" })]);
+  expect(() => exportBody(f, a, exported.manifest.id)).toThrow("export_not_found");
+  expect(exportBody(f, other, unrelated.manifest.id).length).toBeGreaterThan(0);
 });
 
 test("legacy operations without export scopes are reconstructed and downgraded until exports are purged", async () => {

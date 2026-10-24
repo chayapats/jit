@@ -91,8 +91,8 @@ export interface DeletionPreview {
      * `state` is the verified artifact integrity (never the persisted manifest state), or `unchecked` without a backup dir.
      */
     backups: { id: string; createdAt: number; state: "verified" | "incomplete" | "unchecked"; reason: string | null; evidence: "coverage" | "whole_store_snapshot" }[];
-    /** App-owned export artifacts confirmation purges (coverage match, or any artifact of an affected project without complete coverage). */
-    exports: { id: string; projectId: string; createdAt: number; evidence: "coverage" | "incomplete_coverage" }[];
+    /** App-owned export artifacts confirmation purges: every non-failed export of an affected project, or a coverage match elsewhere. */
+    exports: { id: string; projectId: string; createdAt: number; evidence: "coverage" | "affected_project" }[];
     /** Owner-authored tasks/decisions are disclosed and retained unchanged; deletion never completes or cancels them. */
     obligations: { kind: "task" | "decision"; id: string; title: string; revision: number; effect: "retained_unchanged" }[];
     /**
@@ -677,21 +677,10 @@ function retainedBackups(tx: AppTransaction, sources: SourceEntry[], blockers: S
 }
 
 /**
- * Export coverage is trusted as complete only when the manifest's `completeness` section says so for every
- * collection (and coverage itself is not truncated); missing/unknown completeness metadata is incomplete.
- */
-function exportCoverageComplete(manifest: { completeness?: unknown; coverage?: unknown }): boolean {
-  const completeness = manifest.completeness as { complete?: unknown; collections?: Record<string, { included?: unknown; total?: unknown; truncated?: unknown }> } | undefined;
-  if (!completeness || completeness.complete !== true || !completeness.collections || typeof completeness.collections !== "object") return false;
-  // Scope exclusions (e.g. no history) make included < total legitimately; only truncation is incompleteness.
-  if (Object.values(completeness.collections).some(c => c?.truncated !== false)) return false;
-  const coverage = manifest.coverage as { truncated?: unknown; sources?: unknown; claims?: unknown } | undefined;
-  return !!coverage && coverage.truncated !== true && Array.isArray(coverage.sources) && Array.isArray(coverage.claims);
-}
-
-/**
- * App-owned export artifacts holding affected data: a coverage match, or any export of an affected project
- * whose completeness is not proven. Failed exports published no artifact. Confirmation purges them.
+ * App-owned export artifacts confirmation purges: every non-failed export of an affected project, plus any other
+ * export whose coverage names affected data. Export coverage describes resolver-emitted sources only, while raw
+ * task/proposal/decision text is serialized too, so complete-but-nonmatching coverage is never proof of absence;
+ * exports are regenerable and retention-bounded. Failed exports published no artifact.
  */
 function retainedExports(tx: AppTransaction, sources: SourceEntry[], claims: ClaimRow[], blockers: Set<string>): DeletionPreview["affected"]["exports"] {
   const keys = new Set(sources.map(s => sourceKey(s.source)));
@@ -699,17 +688,16 @@ function retainedExports(tx: AppTransaction, sources: SourceEntry[], claims: Cla
   const projects = new Set([...sources.map(entry => entry.projectId), ...claims.map(entry => entry.projectId)]);
   const items: DeletionPreview["affected"]["exports"] = [];
   try {
-    scanTable<{ id: string; projectId: string; json: string }>(tx, "export_artifacts", "id, project_id AS projectId, record_json AS json", row => {
-      let manifest, raw: { completeness?: unknown; coverage?: unknown };
-      try { manifest = readExportManifest(tx, row.projectId, row.id); raw = JSON.parse(row.json) as typeof raw; }
+    scanTable<{ id: string; projectId: string }>(tx, "export_artifacts", "id, project_id AS projectId", row => {
+      let manifest;
+      try { manifest = readExportManifest(tx, row.projectId, row.id); }
       catch { blockers.add("unreadable_record:export_artifacts"); return; }
       if (manifest.state === "failed") return;
       const coverage = manifest.coverage as { sources?: SourceReference[]; claims?: { claimId: string }[] } | undefined;
       const listed = (Array.isArray(coverage?.sources) && coverage.sources.some(s => validReference(s) && keys.has(sourceKey(s)))) ||
         (Array.isArray(coverage?.claims) && coverage.claims.some(c => claimIds.has(c?.claimId)));
-      // Completeness is judged on the stored record: a missing section (older writers) is incomplete.
-      if (listed || (!exportCoverageComplete(raw) && projects.has(row.projectId))) {
-        items.push({ id: row.id, projectId: row.projectId, createdAt: manifest.createdAt, evidence: listed ? "coverage" : "incomplete_coverage" });
+      if (listed || projects.has(row.projectId)) {
+        items.push({ id: row.id, projectId: row.projectId, createdAt: manifest.createdAt, evidence: listed ? "coverage" : "affected_project" });
       }
     }, { blockers });
   } catch (error) { if (!(error instanceof Error) || !/no such table/.test(error.message)) throw error; }
