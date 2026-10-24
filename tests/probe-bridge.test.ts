@@ -34,6 +34,9 @@ const memStore = (raw: string | null, fail?: "get"): HostCredentialStore => ({
   },
   set: async () => {},
   delete: async () => true,
+  // Vacuous atomic cleanup: set persists nothing, so there is never
+  // anything to remove; reporting true is exact, not optimistic.
+  compareAndDelete: async () => true,
 });
 
 /** Map-backed fixture store with a truly atomic compare-and-delete (no await between compare and delete). */
@@ -805,6 +808,13 @@ test("cancellation waits for an in-flight credential mutation to settle", async 
       backend.set("grok", value);
     },
     delete: async () => false,
+    // Atomic: single-threaded Map access with no await between compare
+    // and delete.
+    compareAndDelete: async (_identity, expected) => {
+      if (backend.get("grok") !== expected) return false;
+      backend.delete("grok");
+      return true;
+    },
   };
   const fetch: HostAuthFetch = async (input: any) => {
     const url = String(typeof input === "string" ? input : input.url);
@@ -938,6 +948,8 @@ test("a hanging credential write does not wedge the probe past its deadline", as
     get: async () => expired,
     set: () => new Promise<never>(() => {}),
     delete: async () => false,
+    // Vacuous: the write never settles, so no value ever needs removal.
+    compareAndDelete: async () => true,
   };
   const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, store, fetch: async (input: any, init?: any) => {
     const url = String(typeof input === "string" ? input : input.url);
@@ -1050,6 +1062,13 @@ test("separate-process cancel leaves no post-acknowledgement credential visible"
         backend.set(identity.account, value);
       },
       delete: async (identity) => backend.delete(identity.account),
+      // Atomic: single-threaded Map access with no await between compare
+      // and delete.
+      compareAndDelete: async (identity, expected) => {
+        if (backend.get(identity.account) !== expected) return false;
+        backend.delete(identity.account);
+        return true;
+      },
     };
     const fetch = async (input) => {
       const url = String(typeof input === "string" ? input : input.url);
@@ -1106,6 +1125,13 @@ test("a write completing after the deadline leaves no credential visible", async
       backend.set(identity.account, value);
     },
     delete: async identity => backend.delete(identity.account),
+    // Atomic: single-threaded Map access with no await between compare
+    // and delete, so a concurrent legitimate write can never slip in.
+    compareAndDelete: async (identity, expected) => {
+      if (backend.get(identity.account) !== expected) return false;
+      backend.delete(identity.account);
+      return true;
+    },
   };
   const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, store, fetch: async (input: any, init?: any) => {
     const url = String(typeof input === "string" ? input : input.url);
@@ -1188,20 +1214,78 @@ test("invalidation never removes a concurrent legitimate credential", async () =
     await pending.catch(() => null);
   }
 });
-test("cleanup backend failures still terminalize without crashing", async () => {
+test("cleanup backend failure surfaces store-unavailable, not a clean claim", async () => {
   const root = setup();
   const expired = JSON.stringify({ accessToken: "old-access", refreshToken: "refresh-token", obtainedAt: 0, expiresAt: 1 });
   const backend = new Map<string, string>();
-  const store: HostCredentialStore = {
-    get: async () => { throw new Error("store read failed"); },
-    set: async (identity, value) => { backend.set(identity.account, value); },
-    delete: async () => { throw new Error("store delete failed"); },
+  let releaseWrite!: () => void;
+  const writeGate = new Promise<void>(resolve => { releaseWrite = resolve; });
+  let enteredSet = false;
+  // The backend write lands, but its cleanup always fails: the attempt must
+  // report store-unavailable instead of a clean cancelled/failed claim over
+  // a possibly visible credential.
+  const store: HostCredentialStore & { compareAndDelete(identity: { account: string }, expected: string): Promise<boolean> } = {
+    get: async () => expired,
+    set: async (identity, value) => { enteredSet = true; await writeGate; backend.set(identity.account, value); },
+    delete: async identity => backend.delete(identity.account),
+    compareAndDelete: async () => { throw new Error("backend down"); },
   };
-  const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, store, fetch: successFetch("late") });
+  const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, store, fetch: async (input: any, init?: any) => {
+    const url = String(typeof input === "string" ? input : input.url);
+    if (url.toLowerCase().includes("token")) {
+      return new Response(JSON.stringify({ access_token: "new-access", refresh_token: "refresh-token", expires_in: 3600 }), { status: 200 });
+    }
+    return successFetch("late")(input, init);
+  } });
+  const controller = new AbortController();
+  const pending = liveProbe("fixture-probe-host",
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 8000 },
+    { ...ports, now: () => 1800000000000, id: () => OTHER_ID }, root, controller.signal);
+  try {
+    for (let spin = 0; spin < 200 && !enteredSet; spin++) {
+      await new Promise(r => setTimeout(r, 25));
+    }
+    expect(enteredSet).toBe(true);
+    // Abort while the write is in flight, then let it land: the fenced race
+    // loses, the supervised late cleanup fails, and the attempt reports
+    // uncertainty instead of a clean terminal.
+    controller.abort();
+    releaseWrite();
+    const late = await pending;
+    expect(late.record.lifecycle).toBe("store-unavailable");
+    expect(late.record.nextAction).toBe("check-secure-store");
+    // Honest visibility: the late value is still there, and the record
+    // says so instead of claiming a clean fence.
+    expect(backend.size).toBe(1);
+    expect((await readProbeAttempt(root, OTHER_ID)).lifecycle).toBe("store-unavailable");
+  } finally {
+    controller.abort();
+    releaseWrite();
+    await pending.catch(() => null);
+  }
+});
+
+test("a store without atomic cleanup fails the write closed before backend contact", async () => {
+  const root = setup();
+  const expired = JSON.stringify({ accessToken: "old-access", refreshToken: "refresh-token", obtainedAt: 0, expiresAt: 1 });
+  let setCalls = 0;
+  // No compare-and-delete: the seam refuses the write before any backend
+  // contact instead of risking a racy read-then-delete.
+  const store: HostCredentialStore = {
+    get: async () => expired,
+    set: async () => { setCalls++; },
+    delete: async () => true,
+  };
+  const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, store, fetch: async (input: any, init?: any) => {
+    const url = String(typeof input === "string" ? input : input.url);
+    if (url.toLowerCase().includes("token")) {
+      return new Response(JSON.stringify({ access_token: "new-access", refresh_token: "refresh-token", expires_in: 3600 }), { status: 200 });
+    }
+    return successFetch("late")(input, init);
+  } });
   const { record } = await liveProbe("fixture-probe-host",
     { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 8000 },
     { ...ports, now: () => 1800000000000, id: () => OTHER_ID }, root);
-  // Readiness already failed closed on the throwing store; the run
-  // terminalizes instead of hanging or throwing out of the probe.
-  expect(["failed", "store-unavailable", "needs-login", "cancelled"].includes(record.lifecycle)).toBe(true);
+  expect(setCalls).toBe(0);
+  expect(record.lifecycle).toBe("store-unavailable");
 });

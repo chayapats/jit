@@ -159,7 +159,7 @@ export interface ProbePorts {
    * orchestration. Ports instances are single-flight: overlapping infer
    * calls on one instance throw instead of silently swapping counts.
    */
-  infer(input: { route: string; model: string; prompt: typeof PROBE_PROMPT; tools: readonly []; discovery: { repository: false; hosted: false }; deadlineMs: number; gate?: <R>(kind: "inference" | "token", start: () => Promise<R>) => Promise<R>; fence?: { write<T>(work: () => Promise<T>): Promise<T>; writeStore(identity: { account: string }, value: string, store: { get(identity: { account: string }): Promise<string | null>; set(identity: { account: string }, value: string): Promise<void>; delete(identity: { account: string }): Promise<boolean>; compareAndDelete?(identity: { account: string }, expectedValue: string): Promise<boolean> }): Promise<void> } }, signal: AbortSignal): Promise<ProbeEvent>;
+  infer(input: { route: string; model: string; prompt: typeof PROBE_PROMPT; tools: readonly []; discovery: { repository: false; hosted: false }; deadlineMs: number; gate?: <R>(kind: "inference" | "token", start: () => Promise<R>) => Promise<R>; fence?: { write<T>(work: () => Promise<T>): Promise<T>; writeStore(identity: { account: string }, value: string, store: { get(identity: { account: string }): Promise<string | null>; set(identity: { account: string }, value: string): Promise<void>; delete(identity: { account: string }): Promise<boolean>; compareAndDelete(identity: { account: string }, expectedValue: string): Promise<boolean> }): Promise<void> } }, signal: AbortSignal): Promise<ProbeEvent>;
 }
 
 /** Live options demand explicit opt-in: exact route/model plus finite attempts/deadline. */
@@ -389,6 +389,40 @@ async function acquireDirLock(dir: string): Promise<() => void> {
 const inflightWrites = new Map<string, Set<Promise<unknown>>>();
 /** Live deadline per dispatched attempt, bounding any acknowledgement wait. */
 const probeDeadlines = new Map<string, { startedAt: number; deadlineMs: number }>();
+
+/**
+ * Attempt ids whose post-terminal credential cleanup failed to verify.
+ * Set when a supervised or settlement-attached compare-and-delete rejects;
+ * consulted at terminalization so the record reports store-unavailable
+ * instead of a clean cancelled/failed claim. Cleared when the run releases
+ * its tracking state.
+ */
+const cleanupUncertainIds = new Set<string>();
+
+/** Marker for a credential-cleanup outcome that could not be verified; never carries secret material.
+ * Sets the same `cleanupUncertain` flag Schway's guarded wrapper uses, so the
+ * pinned release preserves it through `preserveRefusal` instead of
+ * sanitizing it into a clean refusal; the message fallback survives the
+ * agent loop, which rethrows provider failures as sanitized plain messages.
+ */
+export function cleanupUncertainError(cause?: unknown): Error {
+  const error = new Error("Credential cleanup could not be verified; a late credential may still be visible.",
+    cause === undefined ? undefined : { cause });
+  (error as { code?: unknown }).code = "credential-cleanup-uncertain";
+  (error as { cleanupUncertain?: unknown }).cleanupUncertain = true;
+  return error;
+}
+
+/** True when an error marks an unverified credential cleanup rather than a clean fence.
+ * Brand-first for direct callers; flag- and message-fallbacks survive the
+ * pinned Schway layers, which preserve the flag through `preserveRefusal`
+ * but rethrow provider failures as sanitized plain messages. */
+export function isCleanupUncertain(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  if ((error as { cleanupUncertain?: unknown }).cleanupUncertain === true) return true;
+  if ((error as { code?: unknown }).code === "credential-cleanup-uncertain") return true;
+  return /credential cleanup (could not be verified|uncertain)/i.test(error.message);
+}
 
 /**
  * Waits for in-flight credential mutations to settle before acknowledgement,
@@ -812,9 +846,13 @@ export async function cancelProbeAttempt(root: string, id: string): Promise<Prob
   // Delay acknowledgement until in-flight mutations settle (bounded by the
   // remaining live deadline), so a started write cannot complete after the
   // stop is acknowledged while a hung backend cannot wedge the owner stop.
+  // A failed settlement-attached cleanup marks the attempt uncertain, so
+  // the record reports store-unavailable instead of a clean cancelled claim.
   await settleInflightWrites(id);
+  const uncertain = cleanupUncertainIds.has(id);
   const { record } = await transitionTerminal(root, id, current => ({
-    ...current, lifecycle: "cancelled", nextAction: "inspect-sanitized-failure",
+    ...current, lifecycle: uncertain ? "store-unavailable" as const : "cancelled",
+    nextAction: uncertain ? "check-secure-store" as const : "inspect-sanitized-failure",
   }));
   return record;
 }
@@ -942,15 +980,20 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
     // Settle first (bounded by the remaining deadline, usually zero here so
     // this is a no-op), then terminalize: the deadline stays absolute while
     // a settling backend is still given its last chance to land in order.
+    // A failed settlement-attached cleanup marks the attempt uncertain, so
+    // the record reports store-unavailable instead of a clean cancelled
+    // claim over a possibly visible credential.
     await settleInflightWrites(id);
+    const uncertain = cleanupUncertainIds.has(id);
     const { record } = await transitionTerminal(root, id, current => {
       const renewal = current.observations.find(item => item.observation === "renewal")!;
-      return { ...current, lifecycle: "cancelled",
+      const event = uncertain ? "store" as const : liveEvent;
+      return { ...current, lifecycle: uncertain ? "store-unavailable" as const : "cancelled",
         observations: [current.observations[0]!,
           credentialEntry(route, model, bounds, credentialEvent),
-          entry(route, model, bounds, "live-request", liveEvent, current.attempts, elapsed()),
+          entry(route, model, bounds, "live-request", event, current.attempts, elapsed()),
           renewal],
-        attempts: current.attempts, elapsedMs: elapsed(), nextAction: "inspect-sanitized-failure" };
+        attempts: current.attempts, elapsedMs: elapsed(), nextAction: uncertain ? "check-secure-store" as const : "inspect-sanitized-failure" };
     });
     return { record, self: await finishSelf(record) };
   };
@@ -1099,53 +1142,95 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
     // Generation-fenced final visibility for explicit stores: the check runs
     // when the backend actually settles — not when the bounded race above
     // decides — because a late settlement is exactly what must be fenced.
-    // Prefers the store's atomic compare-and-delete (no await between
-    // compare and delete, so even lock-bypassing same-process writers
-    // cannot slip in); without it, falls back to a serialized
-    // read-then-delete under the shared in-process lock. Removes exactly
+    // Requires the store's atomic compare-and-delete: without it there is
+    // no safe cleanup, so the write is refused before any backend contact
+    // instead of falling back to a racy read-then-delete. Removes exactly
     // the written value and never touches a concurrent legitimate write.
     // Runs unfenced on purpose: it is the fence's own compensation, and
-    // fencing it would refuse the cleanup. It only runs after the backend
-    // already proved responsive (the write just settled), so it cannot
-    // wedge the lock behind a hung backend.
+    // fencing it would refuse the cleanup. Cleanup runs supervised and
+    // awaited inside writeStore whenever the write landed. A fenced race
+    // whose backend still settles carries the same supervised cleanup,
+    // bounded by the remaining live deadline; a cleanup failure throws
+    // uncertain instead of being swallowed or claiming final visibility.
     writeStore: async (identity: { account: string }, value: string,
-      store: { get(identity: { account: string }): Promise<string | null>; set(identity: { account: string }, value: string): Promise<void>; delete(identity: { account: string }): Promise<boolean>; compareAndDelete?(identity: { account: string }, expectedValue: string): Promise<boolean> }): Promise<void> => {
-      const outcome = await (async () => {
-        const pending = fencedStoreWrite(root, id, effective, () => {
-          const raw = store.set(identity, value);
-          raw.then(async () => {
-            const settled = await readProbeAttempt(root, id).catch(() => null);
-            if (settled === null || settled.lifecycle === "started") return;
-            if (typeof store.compareAndDelete === "function") {
-              await store.compareAndDelete(identity, value).catch(() => false);
-              return;
-            }
-            let release: (() => void) | null = null;
+      store: { get(identity: { account: string }): Promise<string | null>; set(identity: { account: string }, value: string): Promise<void>; delete(identity: { account: string }): Promise<boolean>; compareAndDelete(identity: { account: string }, expectedValue: string): Promise<boolean> }): Promise<void> => {
+      // Fail closed before any backend contact: a store without an atomic
+      // primitive cannot be cleaned, so it cannot be fenced.
+      if (typeof store.compareAndDelete !== "function") throw new Error("fenced");
+      const op = (async () => {
+        const slot: { raw: Promise<void> | null } = { raw: null };
+        const outcome = await (async () => {
+          const pending = fencedStoreWrite(root, id, effective, () => {
+            slot.raw = store.set(identity, value);
+            return slot.raw;
+          });
+          try {
+            await pending;
+            return "written" as const;
+          } catch {
+            return "fenced" as const;
+          }
+        })();
+        if (outcome === "written") {
+          // Supervised final visibility: the write landed, so a terminal
+          // record must not keep our value visible. A cleanup failure
+          // throws uncertain instead of claiming a clean fence; a mismatch
+          // (already removed or legitimately replaced) is a clean no-op,
+          // never an error.
+          const settled = await readProbeAttempt(root, id).catch(() => null);
+          if (settled !== null && settled.lifecycle !== "started") {
             try {
-              const dir = await probeDirectory(root, true);
-              release = await acquireDirLock(dir);
-            } catch {
-              return;
+              await store.compareAndDelete(identity, value);
+            } catch (error) {
+              cleanupUncertainIds.add(id);
+              throw cleanupUncertainError(error);
             }
-            try {
-              const current = await store.get(identity).catch(() => null);
-              if (current === value) await store.delete(identity).catch(() => {});
-            } finally {
-              release();
-            }
-          }, () => {});
-          return raw;
-        });
-        inflight.add(pending);
-        pending.then(() => inflight.delete(pending), () => inflight.delete(pending));
-        try {
-          await pending;
-          return "written" as const;
-        } catch {
-          return "fenced" as const;
+          }
+          return;
         }
+        // The abort won the race but the unabortable backend may still
+        // land: the landing is doomed evidence either way (a fenced race
+        // never becomes success), so clean it up unconditionally when it
+        // lands — the atomic compare removes only our value, never a
+        // concurrent legitimate write. Wait for settlement bounded by the
+        // remaining live deadline so acknowledgement observes the outcome.
+        const raw = slot.raw;
+        if (raw !== null) {
+          const budget = probeDeadlines.get(id);
+          const remaining = budget === undefined
+            ? 0
+            : budget.deadlineMs - (Date.now() - budget.startedAt);
+          const landed = remaining > 0 && await Promise.race([
+            raw.then(() => true, () => false),
+            new Promise<false>(resolve => setTimeout(() => resolve(false), remaining)),
+          ]);
+          if (landed) {
+            try {
+              await store.compareAndDelete(identity, value);
+            } catch (error) {
+              cleanupUncertainIds.add(id);
+              throw cleanupUncertainError(error);
+            }
+          } else {
+            // Still in flight past the bound: best-effort tracked cleanup
+            // on eventual settlement; failure marks the attempt uncertain
+            // instead of being swallowed.
+            const late = raw.then(async () => {
+              try {
+                await store.compareAndDelete(identity, value);
+              } catch {
+                cleanupUncertainIds.add(id);
+              }
+            }, () => {});
+            inflight.add(late);
+            late.then(() => inflight.delete(late), () => inflight.delete(late));
+          }
+        }
+        throw new Error("fenced");
       })();
-      if (outcome === "fenced") throw new Error("fenced");
+      inflight.add(op);
+      op.then(() => inflight.delete(op), () => inflight.delete(op));
+      return op;
     },
   };
   try {
@@ -1204,6 +1289,11 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
   // publishes cancelled with non-success evidence in that same transaction
   // instead of leaving aborted success behind.
   await transitionTerminal(root, id, current => {
+    // A failed cleanup marks the attempt uncertain: uncertainty wins over
+    // every other terminal claim, so the record reports store-unavailable
+    // instead of success, cancelled, or a clean failure over a possibly
+    // visible credential.
+    if (cleanupUncertainIds.has(id)) return terminalFor(current, "store");
     if (effective.aborted) {
       return { ...terminalFor(current, "failed"), lifecycle: "cancelled", nextAction: "inspect-sanitized-failure" };
     }
@@ -1214,6 +1304,7 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
   } finally {
     inflightWrites.delete(id);
     probeDeadlines.delete(id);
+    cleanupUncertainIds.delete(id);
   }
 }
 

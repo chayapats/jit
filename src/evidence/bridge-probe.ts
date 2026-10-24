@@ -11,7 +11,7 @@ import {
   type HostSession,
 } from "schway/host";
 import type { ProbeEvent, ProbePorts } from "./probe";
-import { PROBE_PROMPT } from "./probe";
+import { isCleanupUncertain, PROBE_PROMPT } from "./probe";
 
 /** Pinned service-context probe over the supported Schway host contract. */
 export const BRIDGE_PROBE_CONTRACT = "schway.host.release/v1" as const;
@@ -167,12 +167,20 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
         get: (identity: HostCredentialReference) => base.get(identity),
         // Generation-fenced final visibility: the fence removes exactly our
         // value when the attempt already terminalized, so no
-        // post-acknowledgement credential stays visible. Scripted ports
-        // without writeStore keep the plain dispatch-checked write.
-        set: (identity: HostCredentialReference, value: string) =>
-          fence.writeStore
-            ? fence.writeStore(identity, value, base)
-            : fence.write(() => base.set(identity, value)),
+        // post-acknowledgement credential stays visible. Atomic
+        // compare-and-delete is required at this seam: a store without one
+        // fails the write closed before any backend contact instead of
+        // risking a racy read-then-delete. Scripted ports without
+        // writeStore keep the plain dispatch-checked write.
+        set: (identity: HostCredentialReference, value: string) => {
+          const atomic = base as HostCredentialStore & { compareAndDelete?: (identity: HostCredentialReference, expectedValue: string) => Promise<boolean> };
+          if (typeof atomic.compareAndDelete !== "function") {
+            throw new Error("fenced store requires atomic compare-and-delete");
+          }
+          return fence.writeStore
+            ? fence.writeStore(identity, value, { ...atomic, compareAndDelete: (id, expected) => atomic.compareAndDelete!(id as HostCredentialReference, expected) })
+            : fence.write(() => base.set(identity, value));
+        },
         delete: (identity: HostCredentialReference) => fence.write(() => base.delete(identity)),
       } : base;
       // The supported guard carries the same lifecycle fence to Schway's own
@@ -220,7 +228,16 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
         host = await openHost(input.deadlineMs, countingFetch, fencedStore, credentialWriteGuard);
         session = await host.createSession();
         const options: HostRunOptions = { signal };
-        const result = await session.submitWithRoute({ text: BRIDGE_PROBE_PROMPT }, options);
+        let result: Awaited<ReturnType<HostSession["submitWithRoute"]>>;
+        try {
+          result = await session.submitWithRoute({ text: BRIDGE_PROBE_PROMPT }, options);
+        } catch (error) {
+          // An unverified credential cleanup is uncertainty, not a silent
+          // failure: surface it as a store terminal so the record reports
+          // store-unavailable instead of a clean claim.
+          if (isCleanupUncertain(error)) return "store";
+          throw error;
+        }
         if (result.outcome === "completed") return "success";
         switch (result.auth.status) {
           case "needs-login": return "login";
