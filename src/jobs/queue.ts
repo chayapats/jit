@@ -1,4 +1,5 @@
 import { reconcileContext, reconcileSessions } from "./reconcile";
+import { reconcileDeletions } from "../memory/delete";
 import type { ApplicationRunPort } from "../team/run-port";
 import type { ManagedContextReference } from "../team/types";
 import { attemptAuthority, invalidateJob, readAttempt, readAttempts, saveAttempt, stopFullyObserved, unsettledTransportAttempts, type JobAttempt } from "./attempts";
@@ -333,7 +334,13 @@ export class JobQueue {
   /** Reconciles persisted references without dispatching or accepting native output. */
   async reconcile(port: ApplicationRunPort) {
     this.store.read(tx => this.assertOwner(tx));
-    return reconcileSessions(this.store, port, this.#time(), () => this.cancelFenced());
+    const sessions = await reconcileSessions(this.store, port, this.#time(), () => this.cancelFenced());
+    // Pending deletions converge through the same team port: the concrete
+    // bridge retires-then-deletes owned native sessions through its supported
+    // lifecycle, never native byte edits. Scripted ports fence the same
+    // contexts through their managed lifecycle; payloads stay purged.
+    await reconcileDeletions(this.store, port, this.#time());
+    return sessions;
   }
 
   /** Service lifecycle port: fence first, then await retirement/deletion acknowledgment before replacement. */
