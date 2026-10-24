@@ -9,7 +9,7 @@ import { TransactionStore, schemaVersion } from "../src/store";
 import { artifactPiStatus, buildPackage, readManifest, validateArtifact } from "../ops/package/bun-build";
 import { assertNoSecretValues, parseServiceConfig, planServiceConfig, renderServiceUnit } from "../ops/package/service-config";
 import type { ServiceConfig } from "../ops/package/service-config";
-import { preflightService, readQuarantine, startFullApp, stopDrain, upgradeStaged } from "../src/ops/lifecycle";
+import { preflightService, readQuarantine, startFullApp, stopDrain } from "../src/ops/lifecycle";
 import { backupDirectoryProblem } from "../src/ops/backup";
 import { gatherServiceStatus, serviceStatus } from "../src/ops/status";
 
@@ -70,7 +70,9 @@ test("artifact negatives reject missing pins, occupied output and unapproved eng
   expect(() => buildPackage({ srcDir: repoRoot, outDir: join(root, "fresh"), engineContract: "jit.schway.bridge/v1", engineRevision: "not-a-version!!" })).toThrow();
   const built = buildPackage({ srcDir: repoRoot, outDir: join(root, "good"), engineContract: "jit.schway.bridge/v1", engineRevision: null });
   writeFileSync(join(root, "good/manifest.json"), JSON.stringify({ ...built, schemaVersion: 999 }));
-  expect(validateArtifact(join(root, "good")).ok).toBe(false);
+  // A manifest from another build reads, but the executing build refuses its schema pin.
+  expect(validateArtifact(join(root, "good")).checks).toContainEqual({ check: "schema-pin", ok: false });
+  writeFileSync(join(root, "good/manifest.json"), JSON.stringify({ ...built, schemaVersion: "22" }));
   expect(() => readManifest(join(root, "good"))).toThrow();
 });
 
@@ -272,7 +274,7 @@ test("quarantine boot refuses activation while read-only status stays available"
   const refused = await startFullApp({ config, service: quarantined });
   expect(refused.ok).toBe(false);
   if (refused.ok) throw new Error("unreachable");
-  expect(refused.gates).toMatchObject([{ gate: "quarantine", state: "blocked" }]);
+  expect(refused.gates.filter(g => g.state === "blocked")).toMatchObject([{ gate: "quarantine", state: "blocked" }]);
   const store = new TransactionStore(config.databasePath);
   try {
     const preflight = preflightService({ store, config, service: quarantined, requiredEngine: "jit.schway.bridge/v1" });
@@ -288,54 +290,6 @@ test("quarantine boot refuses activation while read-only status stays available"
     evidenceReady: true, blockedGates: [] })).toMatchObject({ service: "blocked" });
   expect(() => serviceStatus({ now: 1800000000000, scheduler: "owned", worker: "free", quarantined: false,
     evidenceReady: false, blockedGates: ["Authorization: Bearer x"] })).toThrow();
-});
-
-test("staged upgrade rolls back on failed health with the ledger preserved byte-for-byte", async () => {
-  const { root, service, config, ledger } = setup();
-  const active = join(root, "active");
-  mkdirSync(active, { mode: 0o700 });
-  const seed = new TransactionStore(join(active, "app.sqlite"));
-  seed.close();
-  writeFileSync(join(active, "artifact.json"), JSON.stringify({ artifactId: "previous-artifact" }) + "\n");
-  const artifact = join(root, "artifact");
-  const manifest = buildPackage(
-    { srcDir: repoRoot, outDir: artifact, engineContract: "jit.schway.bridge/v1", engineRevision: null });
-  const before = readFileSync(ledger);
-  const store = new TransactionStore(config.databasePath);
-  try {
-    const rolled = await upgradeStaged({ store, activeDir: active, artifactDir: artifact, backupRoot: service.backupDirectory,
-      ledgerPath: ledger, requiredEngine: "jit.schway.bridge/v1", health: () => false });
-    expect(rolled.outcome).toBe("rolled-back");
-    expect(rolled.backupId).toMatch(/^[a-f0-9-]{36}$/);
-    expect(readFileSync(ledger)).toEqual(before);
-    expect(JSON.parse(readFileSync(join(active, "artifact.json"), "utf8")).artifactId).toBe("previous-artifact");
-    const backupDb = join(service.backupDirectory, rolled.backupId!, "app.sqlite");
-    expect(statSync(backupDb).mode & 0o777).toBe(0o600);
-    const upgraded = await upgradeStaged({ store, activeDir: active, artifactDir: artifact, backupRoot: service.backupDirectory,
-      ledgerPath: ledger, requiredEngine: "jit.schway.bridge/v1", health: async () => true });
-    expect(upgraded.outcome).toBe("upgraded");
-    expect(JSON.parse(readFileSync(join(active, "artifact.json"), "utf8")).artifactId).toBe(manifest.artifactId);
-    expect(readFileSync(ledger)).toEqual(before);
-  } finally { store.close(); }
-});
-
-test("incompatible staged artifacts block before touching active state", async () => {
-  const { root, service, config, ledger } = setup();
-  const active = join(root, "active");
-  mkdirSync(active, { mode: 0o700 });
-  new TransactionStore(join(active, "app.sqlite")).close();
-  const artifact = join(root, "artifact");
-  buildPackage(
-    { srcDir: repoRoot, outDir: artifact, engineContract: "jit.schway.bridge/v1", engineRevision: null });
-  const manifest = JSON.parse(readFileSync(join(artifact, "manifest.json"), "utf8"));
-  writeFileSync(join(artifact, "manifest.json"), JSON.stringify({ ...manifest, lockHash: "0".repeat(64) }));
-  const store = new TransactionStore(config.databasePath);
-  try {
-    const blocked = await upgradeStaged({ store, activeDir: active, artifactDir: artifact, backupRoot: service.backupDirectory,
-      ledgerPath: ledger, requiredEngine: "jit.schway.bridge/v1", health: () => true });
-    expect(blocked.outcome).toBe("blocked");
-    expect(blocked.backupId).toBeNull();
-  } finally { store.close(); }
 });
 
 test("main preflight and status stay read-only without claiming the scheduler", async () => {

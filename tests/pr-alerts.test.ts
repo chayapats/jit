@@ -1259,14 +1259,14 @@ test("service bootstrap quarantines legacy alerts before the queue or server is 
   expect(intentsOf(f)[0]).toMatchObject({ status: "failed", stale: true, staleReason: "legacy_alert_unverifiable" });
   expect(intentsOf(f)[0]!.payload.text).not.toContain("sk-proj");
   expect(prepareServiceState(f.store, f.clock.now).quarantinedLegacyAlerts).toEqual([]);
-  // main.ts composition: serve prepares state first, before the job queue, delivery or HTTP server exist.
-  const main = readFileSync(join(import.meta.dir, "../src/main.ts"), "utf8");
-  const serveStart = main.indexOf('if (command === "serve") {');
-  const prepared = main.indexOf("prepareServiceState(store, Date.now());");
+  // The shared start path (serve and the packaged unit) prepares state before the job queue, delivery or HTTP server exist.
+  const main = readFileSync(join(import.meta.dir, "../src/ops/lifecycle.ts"), "utf8");
+  const serveStart = main.indexOf("export async function startFullApp(");
+  const prepared = main.indexOf("prepareServiceState(store, now());");
   expect(serveStart).toBeGreaterThan(-1);
   expect(prepared).toBeGreaterThan(serveStart);
   // The queue is composed through the managed service lifecycle (ops.schema_migrations/v1).
-  for (const later of ["ManagedService.forConfig(store", "Bun.serve(", "setInterval("]) expect(main.indexOf(later)).toBeGreaterThan(prepared);
+  for (const later of ["ManagedService.forConfig(store", "ServiceChannels.start(", "Bun.serve(", "setInterval("]) expect(main.indexOf(later)).toBeGreaterThan(prepared);
 });
 
 test("snapshot retirement retires alerts; backup images classify the alert tables", async () => {

@@ -1,3 +1,6 @@
+# Rendered by `bun src/main.ts service plan|install` (ops.service_package/v1).
+# Installation-specific values come from ignored .local configuration; this
+# template carries no addresses, identifiers or credentials.
 [Unit]
 Description=Jit personal application
 Documentation=https://github.com/chayapats/jit
@@ -11,18 +14,29 @@ Type=simple
 User={{SERVICE_USER}}
 Group={{SERVICE_USER}}
 WorkingDirectory={{WORKING_DIR}}
-ExecStart={{BUN_PATH}} {{APP_DIR}}/src/main.ts serve
-Environment=JIT_HOST={{BIND_HOST}}
-Environment=JIT_PORT={{PORT}}
+ExecStart={{BUN_PATH}} {{APP_DIR}}/src/main.ts serve --service-config {{CONFIG_PATH}}
+{{ENVIRONMENT}}
 Restart=on-failure
 RestartSec=10
+TimeoutStartSec=120
+TimeoutStopSec={{STOP_TIMEOUT}}
+KillMode=mixed
+KillSignal=SIGTERM
 MemoryMax={{MEMORY_MAX}}
+TasksMax=256
+LimitNOFILE=4096
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths={{STATE_DIR}}
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths={{WRITABLE_PATHS}}
 UMask=0077
+LogNamespace={{LOG_NAMESPACE}}
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=1000
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target

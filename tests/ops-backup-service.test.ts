@@ -109,7 +109,12 @@ test("startFullApp in scripted mode has no native port and stays explicitly inco
 test("startFullApp in schway mode fails closed when the bridge gate does not hold", async () => {
   const { service, config, state } = setup("schway");
   writeFileSync(join(state, ".jit-host"), "blocker");
-  await expect(startFullApp({ config, service })).rejects.toThrow("unsafe_host_directory");
+  // The shared start path verifies the pinned bridge before composing anything and reports the blocked engine gate.
+  const refused = await startFullApp({ config, service });
+  expect(refused.ok).toBe(false);
+  if (refused.ok) throw new Error("unreachable");
+  expect(refused.gates).toMatchObject([{ gate: "engine", state: "blocked" }]);
+  expect(refused.gates[0]!.detail).toContain("unsafe_host_directory");
 });
 
 async function freePort(): Promise<number> {
