@@ -43,6 +43,13 @@ needs-login. Nothing here proves inference, and a successful login never
 becomes renewal evidence — renewal observation belongs to FEAS04 with its
 own opt-in and evidence, not to this command.
 
+Every credential-store mutation rechecks the probe lifecycle first, so a
+late token response can never become a post-cancellation write — including
+production, where the bridge uses a fenced store over the same OS keychain
+entries as Schway's internal native store (verified against the pinned
+artifact; a key-scheme change fails closed). The public native-store seam
+that would remove this coupling is tracked by schway#416.
+
 ## Evidence stays installation-local and bounded
 
 Attempts persist as mode-0600 files under the ignored `.local/host-probe/`

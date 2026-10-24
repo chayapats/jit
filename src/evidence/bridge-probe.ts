@@ -21,16 +21,34 @@ export const BRIDGE_PROBE_PROMPT = PROBE_PROMPT;
 export const BRIDGE_PROBE_MAX_TURNS = 1;
 export const BRIDGE_PROBE_MAX_ATTEMPTS = 1;
 
+/**
+ * OS secure-store namespace mirrored from the pinned Schway native store
+ * (`service: "schway"`, entry name = credential identity account). The
+ * mapping is verified against the pinned artifact; a future pin that
+ * changes it fails closed (missing/invalid login) instead of reading wrong
+ * credentials. Tracked for a public seam by schway#416.
+ */
+export const BRIDGE_NATIVE_SERVICE = "schway" as const;
+
+/** Minimal secure-store backend; defaults to the process OS credential store. */
+export interface BridgeSecretBackend {
+  get(entry: { service: string; name: string }): Promise<string | null>;
+  set(entry: { service: string; name: string; value: string }): Promise<void>;
+  delete(entry: { service: string; name: string }): Promise<boolean>;
+}
+
 /** Exact selected route/model for one probe identity; store/fetch are fixture seams (absent in production). */
 export interface BridgeProbeOptions {
   route: "grok" | "codex";
   model: string;
   /** Installation root owning `.local/host-probe-host/` service directories. */
   root: string;
-  /** Fixture credential store; absent selects the default OS store. Never tokens. */
+  /** Fixture credential store; absent selects the fenced native OS store below. */
   store?: HostCredentialStore;
   /** Fixture protocol transport; absent uses real native transport. Never used silently. */
   fetch?: HostAuthFetch;
+  /** Fixture secret backend; absent uses the OS credential store. Never used silently. */
+  nativeSecrets?: BridgeSecretBackend;
 }
 
 function serviceUid(): number | null {
@@ -93,10 +111,32 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
   const selection = { route: options.route, model: options.model } as const;
   const store = options.store;
   const providedFetch = options.fetch;
+  const secrets: BridgeSecretBackend = options.nativeSecrets ?? Bun.secrets;
   // Ports instances are single-flight: liveProbe never overlaps infer calls
   // on one instance. A second concurrent call throws instead of silently
   // swapping per-call send counts.
   let inflight = false;
+
+  /**
+   * Fenced native-compatible credential store. It reads and writes the same
+   * OS keychain entries as Schway's internal native store (same service and
+   * identity-account addressing, verified against the pinned artifact), so
+   * production runs use exactly the owner's configured logins — but every
+   * mutation rechecks the probe lifecycle first. Reads stay unfenced; a
+   * missing store backend fails closed. Explicit fixture stores keep their
+   * own behavior and are wrapped the same way when a fence is supplied.
+   */
+  const fencedNativeStore = (fenced?: () => Promise<boolean>): HostCredentialStore => ({
+    get: identity => secrets.get({ service: BRIDGE_NATIVE_SERVICE, name: identity.account }).catch(() => null),
+    set: async (identity, value) => {
+      if (fenced && await fenced().catch(() => true)) throw new Error("fenced");
+      await secrets.set({ service: BRIDGE_NATIVE_SERVICE, name: identity.account, value });
+    },
+    delete: async identity => {
+      if (fenced && await fenced().catch(() => true)) throw new Error("fenced");
+      return secrets.delete({ service: BRIDGE_NATIVE_SERVICE, name: identity.account });
+    },
+  });
 
   const openHost = async (deadlineMs: number, fetch: HostAuthFetch, effectiveStore?: HostCredentialStore) => {
     const dirs = probeHostDirs(options.root);
@@ -132,7 +172,7 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
     readCredential: async (signal) => {
       if (signal?.aborted) throw new Error("aborted");
       const readiness = await Promise.race([
-        checkAuthReadiness({ ...selection, ...(store ? { store } : null) }),
+        checkAuthReadiness({ ...selection, store: store ?? fencedNativeStore() }),
         new Promise<never>((_, reject) => signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true })),
       ]);
       switch (readiness.status) {
@@ -158,17 +198,18 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
       // attempt is still dispatched first, so a late token response can
       // never become a post-cancellation credential write. Unreadable
       // records fail closed. Reads stay unfenced; only mutations are gated.
-      const fencedStore: HostCredentialStore | undefined = store && input.fenced ? {
-        get: (identity: HostCredentialReference) => store.get(identity),
+      const base = store ?? fencedNativeStore(undefined);
+      const fencedStore: HostCredentialStore = input.fenced ? {
+        get: (identity: HostCredentialReference) => base.get(identity),
         set: async (identity: HostCredentialReference, value: string) => {
           if (await input.fenced!().catch(() => true)) throw new Error("fenced");
-          await store.set(identity, value);
+          await base.set(identity, value);
         },
         delete: async (identity: HostCredentialReference) => {
           if (await input.fenced!().catch(() => true)) throw new Error("fenced");
-          return store.delete(identity);
+          return base.delete(identity);
         },
-      } : undefined;
+      } : base;
       // Per-call transport: the shared before-send gate durably rechecks
       // `started` and bounds the send before anything is forwarded, so a
       // send after cancellation acknowledges — or beyond the pinned
@@ -205,7 +246,7 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
       let host: HostRuntime | null = null;
       let session: HostSession | null = null;
       try {
-        host = await openHost(input.deadlineMs, countingFetch, fencedStore ?? store);
+        host = await openHost(input.deadlineMs, countingFetch, fencedStore);
         session = await host.createSession();
         const options: HostRunOptions = { signal };
         const result = await session.submitWithRoute({ text: BRIDGE_PROBE_PROMPT }, options);

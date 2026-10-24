@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HostAuthFetch, HostCredentialStore } from "schway/host";
-import { bridgeProbePorts } from "../src/evidence/bridge-probe";
+import { bridgeProbePorts, type BridgeSecretBackend } from "../src/evidence/bridge-probe";
 import { PROBE_PROMPT, cancelProbeAttempt, commitProbeOutcome, exportProbeSummary, liveProbe, readProbeAttempt, reconcileProbeAttempts, type ProbeEvent } from "../src/evidence/probe";
 import { runProbeCommand } from "../src/probe-cli";
 
@@ -63,15 +63,31 @@ function sseSuccess(text = "ready", inputTokens = 5, outputTokens = 3): string {
 const successFetch = (text = "ready"): HostAuthFetch => async () =>
   new Response(sseSuccess(text), { status: 200, headers: { "content-type": "text/event-stream" } });
 
-function bridgePorts(overrides: { root?: string; route?: "grok" | "codex"; model?: string; store?: HostCredentialStore | null; fetch?: HostAuthFetch | undefined; id?: string } = {}) {
+/** Hermetic in-memory secret backend: the deterministic suite never touches the real OS keychain. */
+function memSecrets(initial: Record<string, string> = {}) {
+  const backend = new Map<string, string>(Object.entries(initial));
+  return {
+    backend,
+    secrets: {
+      get: async ({ name }: { service: string; name: string }) => backend.get(name) ?? null,
+      set: async ({ name, value }: { service: string; name: string; value: string }) => { backend.set(name, value); },
+      delete: async ({ name }: { service: string; name: string }) => backend.delete(name),
+    },
+  };
+}
+
+function bridgePorts(overrides: { root?: string; route?: "grok" | "codex"; model?: string; store?: HostCredentialStore | null; fetch?: HostAuthFetch | undefined; id?: string; nativeSecrets?: BridgeSecretBackend } = {}) {
   const root = overrides.root ?? setup();
   const route = overrides.route ?? "grok";
   const model = overrides.model ?? (route === "codex" ? "codex-fixture" : "grok-4-fixture");
-  const options: { route: "grok" | "codex"; model: string; root: string; store?: HostCredentialStore; fetch?: HostAuthFetch } =
+  const options: { route: "grok" | "codex"; model: string; root: string; store?: HostCredentialStore; fetch?: HostAuthFetch; nativeSecrets?: BridgeSecretBackend } =
     { route, model, root };
   if (overrides.store === undefined) options.store = memStore(validTokens);
   else if (overrides.store !== null) options.store = overrides.store;
   if (overrides.fetch) options.fetch = overrides.fetch;
+  // Hermetic by default: the deterministic suite never touches the real OS
+  // credential store, even on the no-explicit-store production path.
+  options.nativeSecrets = overrides.nativeSecrets ?? memSecrets().secrets;
   const ports = bridgeProbePorts(options);
   return { root, route, model, ports: { ...ports, now: () => 1800000000000, id: () => overrides.id ?? ID } };
 }
@@ -721,10 +737,19 @@ test("concurrent probes on distinct records settle without lock errors", async (
 
 test("production construction without an explicit store stays fenced and honest", async () => {
   const root = setup();
-  // Exact production construction path: no store is passed, so Schway
-  // resolves its internal native store, which Jit cannot wrap. The gate
-  // still serializes every send; the ledger stays exact either way.
-  const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, fetch: successFetch("prod-path") });
+  // Exact production construction path: no store is passed, so the bridge
+  // uses its fenced native-compatible store instead of Schway's unwrappable
+  // internal default. The mem backend keeps the deterministic suite off the
+  // real OS credential store while exercising the identical key scheme and
+  // fence logic. The gate still serializes every send; the ledger stays
+  // exact either way.
+  const backend = new Map<string, string>();
+  const nativeSecrets = {
+    get: async ({ name }: { service: string; name: string }) => backend.get(name) ?? null,
+    set: async ({ name, value }: { service: string; name: string; value: string }) => { backend.set(name, value); },
+    delete: async ({ name }: { service: string; name: string }) => backend.delete(name),
+  };
+  const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, fetch: successFetch("prod-path"), nativeSecrets });
   const { record, self } = await liveProbe("fixture-probe-host",
     { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 8000 },
     { ...ports, now: () => 1800000000000, id: () => OTHER_ID }, root);
@@ -742,4 +767,56 @@ test("production construction without an explicit store stays fenced and honest"
   });
   // The persisted record re-reads cleanly through validation.
   expect(await readProbeAttempt(root, OTHER_ID)).toEqual(record);
+});
+
+test("no native credential write happens after cancellation on the default store", async () => {
+  const root = setup();
+  const backend = new Map<string, string>();
+  let tokenCalls = 0;
+  let releaseBody!: (response: Response) => void;
+  const bodyGate = new Promise<Response>(resolve => { releaseBody = resolve; });
+  const nativeSecrets = {
+    get: async ({ name }: { service: string; name: string }) => {
+      if (name.includes("grok")) return JSON.stringify({ accessToken: "old-access", refreshToken: "refresh-token", obtainedAt: 0, expiresAt: 1 });
+      return backend.get(name) ?? null;
+    },
+    set: async ({ name, value }: { service: string; name: string; value: string }) => { backend.set(name, value); },
+    delete: async ({ name }: { service: string; name: string }) => backend.delete(name),
+  };
+  const fetch: HostAuthFetch = async (input: any, init?: any) => {
+    const url = String(typeof input === "string" ? input : input.url);
+    if (!url.toLowerCase().includes("token")) {
+      return new Response(sseSuccess("late", 1, 1), { status: 200, headers: { "content-type": "text/event-stream" } });
+    }
+    tokenCalls++;
+    if (init?.signal?.aborted) throw new Error("aborted");
+    return await Promise.race([
+      bodyGate,
+      new Promise<never>((_, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true })),
+    ]);
+  };
+  // No explicit store: the production path with a hermetic secret backend.
+  // The token transport hangs until released; cancellation wins first.
+  const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, fetch, nativeSecrets });
+  const pending = liveProbe("fixture-probe-host",
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 8000 },
+    { ...ports, now: () => 1800000000000, id: () => OTHER_ID }, root);
+  for (let spin = 0; spin < 200 && tokenCalls === 0; spin++) {
+    await new Promise(r => setTimeout(r, 5));
+  }
+  expect(tokenCalls).toBe(1);
+  const cancelled = await cancelProbeAttempt(root, OTHER_ID);
+  expect(cancelled.lifecycle).toBe("cancelled");
+  // The confirmed token response arrives after cancellation: the fenced
+  // store must refuse the write even though the transport completed.
+  releaseBody(new Response(JSON.stringify({ access_token: "late-access", refresh_token: "r", expires_in: 3600 }), { status: 200 }));
+  const late = await pending;
+  expect(late.record.lifecycle).toBe("cancelled");
+  await new Promise(r => setTimeout(r, 50));
+  expect(backend.size).toBe(0);
+  // The token transport completed, but confirmation was refused after
+  // cancellation: the entry stays explicitly unconfirmed.
+  const final = await readProbeAttempt(root, OTHER_ID);
+  expect(final.observations.find(item => item.observation === "renewal")!.sends).toEqual([{ inference: 0, token: 1, confirmed: false }]);
+  expect(final.attempts).toBe(1);
 });
