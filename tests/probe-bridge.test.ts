@@ -718,3 +718,28 @@ test("concurrent probes on distinct records settle without lock errors", async (
     expect((await readProbeAttempt(root, id)).lifecycle).not.toBe("started");
   }
 });
+
+test("production construction without an explicit store stays fenced and honest", async () => {
+  const root = setup();
+  // Exact production construction path: no store is passed, so Schway
+  // resolves its internal native store, which Jit cannot wrap. The gate
+  // still serializes every send; the ledger stays exact either way.
+  const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, fetch: successFetch("prod-path") });
+  const { record, self } = await liveProbe("fixture-probe-host",
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 8000 },
+    { ...ports, now: () => 1800000000000, id: () => OTHER_ID }, root);
+  // Terminal either way: observed-ready with a login present, or an
+  // honest blocked state without one. Never left started.
+  expect(["observed-ready", "needs-login", "store-unavailable", "rejected", "failed"].includes(record.lifecycle)).toBe(true);
+  const renewal = record.observations.find(item => item.observation === "renewal")!;
+  expect(renewal.event).toBe("unobserved");
+  // Every recorded send completed (no crash or cancel in this run); an
+  // empty ledger means no transport happened at all.
+  expect(renewal.sends!.every(call => call.confirmed)).toBe(true);
+  expect(self.providerSends).toEqual({
+    inference: renewal.sends!.reduce((n, call) => n + call.inference, 0),
+    token: renewal.sends!.reduce((n, call) => n + call.token, 0),
+  });
+  // The persisted record re-reads cleanly through validation.
+  expect(await readProbeAttempt(root, OTHER_ID)).toEqual(record);
+});
