@@ -2,6 +2,14 @@ import { resolve } from "node:path";
 import type { JobPolicy } from "./jobs/types";
 import type { TeamPolicy } from "./team/types";
 
+/**
+ * Smallest accepted `JIT_MESSAGE_BYTES`. Message ceilings also bound PR alert payloads, so this must
+ * fit the worst-case mandatory alert skeleton (maximum repository/PR/revision/finding identities,
+ * report link and partial warning) plus `ALERT_FIELD_RESERVE_BYTES` for each untrusted field;
+ * `tests/pr-alerts.test.ts` proves it. Smaller values are rejected at config load.
+ */
+export const MIN_MESSAGE_BYTES = 1024;
+
 /** Finite Telegram companion limits; bot credentials stay outside this projection. */
 export interface TelegramPolicy {  /** Path to the bot token file inside the trusted secret boundary; never logged or exported. */
   botTokenPath: string;
@@ -59,6 +67,10 @@ export function readConfig(env: Record<string, string | undefined> = process.env
     if (!Number.isSafeInteger(n) || n < 1 || n > maximum) throw new Error(`Invalid ${key}`);
     return n;
   };
+  const atLeast = (key: string, value: number, minimum: number) => {
+    if (value < minimum) throw new Error(`Invalid ${key}`);
+    return value;
+  };
   const origin = new URL(env.JIT_ORIGIN ?? "http://localhost:3000");
   if (!["http:", "https:"].includes(origin.protocol) || origin.username || origin.password ||
       origin.pathname !== "/" || origin.search || origin.hash) throw new Error("Invalid JIT_ORIGIN");
@@ -87,7 +99,7 @@ export function readConfig(env: Record<string, string | undefined> = process.env
     bodyBytes: positive("JIT_BODY_BYTES", 16384, 1048576),
     queryBytes: positive("JIT_QUERY_BYTES", 2048, 16384),
     pageSize: positive("JIT_PAGE_SIZE", 50, 200),
-    messageBytes: positive("JIT_MESSAGE_BYTES", 4096, 65536),
+    messageBytes: atLeast("JIT_MESSAGE_BYTES", positive("JIT_MESSAGE_BYTES", 4096, 65536), MIN_MESSAGE_BYTES),
     sessionSeconds: positive("JIT_SESSION_SECONDS", 28800, 86400),
     loginAttempts: positive("JIT_LOGIN_ATTEMPTS", 8, 100),
     loginWindowSeconds: positive("JIT_LOGIN_WINDOW_SECONDS", 900, 86400),

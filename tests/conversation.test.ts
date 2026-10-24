@@ -132,7 +132,7 @@ test("concurrent topic and message retries deduplicate globally while stale and 
 });
 
 test("bounded cursor history stays ordered under a fake clock and Unicode/ingress limits reject before mutation", async () => {
-  const f = await fixture({ JIT_PAGE_SIZE: "1", JIT_MESSAGE_BYTES: "32" }), p = project(f);
+  const f = await fixture({ JIT_PAGE_SIZE: "1", JIT_MESSAGE_BYTES: "1024" }), p = project(f);
   const t = f.app.execute(f.auth.actor, topicCommand(p.id)).topic;
   f.app.execute(f.auth.actor, topicCommand(p.id, 2, "อีกหัวข้อ"));
   const first = f.app.topics(f.auth.actor, p.id);
@@ -148,7 +148,7 @@ test("bounded cursor history stays ordered under a fake clock and Unicode/ingres
   }
   expect(texts).toEqual(["ข้อความ 1", "ข้อความ 2", "ข้อความ 3"]);
   const before = f.app.conversation(f.auth.actor, p.id, t.id);
-  for (const text of ["x".repeat(33), "😀".repeat(9), "\ud800", " \n "]) {
+  for (const text of ["x".repeat(1025), "😀".repeat(257), "\ud800", " \n "]) {
     expect(() => f.app.execute(f.auth.actor, messageCommand(p.id, t.id, 4, text))).toThrow();
   }
   expect(() => f.app.conversation(f.auth.actor, p.id, t.id, Infinity)).toThrow("invalid_cursor");
@@ -157,6 +157,8 @@ test("bounded cursor history stays ordered under a fake clock and Unicode/ingres
   expect(f.app.conversation(f.auth.actor, p.id, t.id)).toEqual(before);
   expect((await f.web(request(f, `/api/projects/${p.id}/topics/${t.id}?after=${Number.MAX_SAFE_INTEGER + 1}`))).status).toBe(400);
   expect(() => readConfig({ JIT_MESSAGE_BYTES: "0" })).toThrow();
+  expect(() => readConfig({ JIT_MESSAGE_BYTES: "1023" })).toThrow("Invalid JIT_MESSAGE_BYTES");
+  expect(readConfig({ JIT_MESSAGE_BYTES: "1024" }).messageBytes).toBe(1024);
   expect(() => readConfig({ JIT_MESSAGE_BYTES: "Infinity" })).toThrow();
 });
 

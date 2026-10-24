@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { MIN_MESSAGE_BYTES } from "../config";
 import { AppError } from "../errors";
 import { commitDeliveryIntent, readDeliveryIntent, registerDeliveryGuard, retireDeliveryIntent, scrubDeliveryIntentText, type DeliveryCurrentness, type DeliveryIntent, type DeliveryReceipt } from "../delivery";
 import { containsCredential, redactCredentials } from "../security/credentials";
@@ -189,17 +190,30 @@ function fitBytes(value: string, max: number): string {
   return `${out}…`;
 }
 
-function esc(value: string, maxBytes: number): string {
-  return fitBytes(neutralizeDestinations(value.replace(/[\0\x08\x0B\x0C]/g, "").trim()), maxBytes);
-}
+const clean = (value: string) => neutralizeDestinations(value.replace(/[\0\x08\x0B\x0C]/g, "").trim());
 
 /**
- * Builds the private payload for one qualifying finding within `maxBytes` (default 3500).
- * Contains only repository/PR/revision, location, condition, impact, evidence type
- * and a service-owned report link plus a partial-scope warning when applicable.
+ * Bytes every untrusted alert field (title, location path, condition, impact, evidence ref) is
+ * guaranteed, when it has that much text, at any ceiling of at least `MIN_MESSAGE_BYTES`.
+ */
+export const ALERT_FIELD_RESERVE_BYTES = 64;
+
+/** Per-field ceilings for untrusted alert text, in UTF-8 bytes. */
+const ALERT_FIELD_CAPS = { title: 300, path: 256, condition: 1600, impact: 1600, evidenceRef: 256 } as const;
+type AlertField = keyof typeof ALERT_FIELD_CAPS;
+
+/**
+ * Builds the private payload for one qualifying finding within `maxBytes` (default and upper bound
+ * 3500; below `MIN_MESSAGE_BYTES` it throws `invalid_delivery_payload`).
+ * The mandatory skeleton (repository/PR/revision, finding identity, location, condition, impact,
+ * evidence type, the service-owned report link and the partial-scope warning when applicable) is
+ * always present: it is laid out first with every untrusted field empty, then the remaining bytes
+ * are shared fairly among the untrusted fields (each cut on a code-point boundary with `…`).
+ * There is no final whole-message cut. `MIN_MESSAGE_BYTES` covers the worst-case skeleton plus
+ * {@link ALERT_FIELD_RESERVE_BYTES} for each untrusted field.
  * Credentials, provider token values and arbitrary PR-supplied destinations never enter: every
  * PR-derived field passes `neutralizeDestinations`, and any credential match (`containsCredential`)
- * throws instead of leaking. Only the service-owned report path is appended afterwards.
+ * throws instead of leaking.
  */
 export function buildAlertPayload(input: {
   repository: PrivateReport["repository"];
@@ -214,30 +228,51 @@ export function buildAlertPayload(input: {
   projectId?: string;
   maxBytes?: number;
 }): string {
-  const maxBytes = Math.max(512, Math.min(input.maxBytes ?? 3500, 3500));
-  const head = [
-    `PR ${input.repository.owner}/${input.repository.name}#${input.pullNumber}`,
-    `revision ${input.baseSha.slice(0, 12)}...${input.headSha.slice(0, 12)} policy v${input.policyVersion}`,
-    `finding ${input.finding.id} [${input.finding.category}/${input.finding.severity}] ${esc(input.finding.title, 300)}`,
-    `ที่: ${esc(input.finding.location.path, 256)}${input.finding.location.line ? `:${input.finding.location.line}` : ""}`,
-  ];
-  const tail = [
-    `หลักฐาน: ${input.finding.evidenceType}${input.finding.evidenceRef ? ` ${esc(input.finding.evidenceRef, 256)}` : ""}`,
-    input.projectId ? `รายงาน: /projects/${input.projectId}/pr/reports/${input.reportId}` : `รายงาน: ${input.reportId}`,
-  ];
-  if (input.coverageOverall !== "complete" || !input.enumerationComplete) {
-    tail.push("คำเตือน: ตรวจไม่ครบทุกไฟล์/หลักฐาน รายงานนี้เป็น partial/incomplete");
+  const maxBytes = Math.min(input.maxBytes ?? 3500, 3500);
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < MIN_MESSAGE_BYTES) throw new AppError("invalid_delivery_payload");
+  const finding = input.finding;
+  const hasRef = !!finding.evidenceRef;
+  const render = (v: Record<AlertField, string>) => {
+    const lines = [
+      `PR ${input.repository.owner}/${input.repository.name}#${input.pullNumber}`,
+      `revision ${input.baseSha.slice(0, 12)}...${input.headSha.slice(0, 12)} policy v${input.policyVersion}`,
+      `finding ${fitBytes(finding.id, 80)} [${finding.category}/${finding.severity}] ${v.title}`,
+      `ที่: ${v.path}${finding.location.line ? `:${finding.location.line}` : ""}`,
+      `เงื่อนไข: ${v.condition}`,
+      `ผลกระทบ: ${v.impact}`,
+      `หลักฐาน: ${finding.evidenceType}${hasRef ? ` ${v.evidenceRef}` : ""}`,
+      input.projectId ? `รายงาน: /projects/${input.projectId}/pr/reports/${input.reportId}` : `รายงาน: ${input.reportId}`,
+    ];
+    if (input.coverageOverall !== "complete" || !input.enumerationComplete) {
+      lines.push("คำเตือน: ตรวจไม่ครบทุกไฟล์/หลักฐาน รายงานนี้เป็น partial/incomplete");
+    }
+    return lines.join("\n");
+  };
+  const keys = Object.keys(ALERT_FIELD_CAPS) as AlertField[];
+  const texts: Record<AlertField, string> = {
+    title: clean(finding.title), path: clean(finding.location.path), condition: clean(finding.condition),
+    impact: clean(finding.impact), evidenceRef: hasRef ? clean(finding.evidenceRef!) : "",
+  };
+  const empty = { title: "", path: "", condition: "", impact: "", evidenceRef: "" };
+  let room = maxBytes - Buffer.byteLength(render(empty));
+  if (room < 0) throw new AppError("invalid_delivery_payload");
+  // Fair (water-filling) share of the remaining bytes; a field never takes more than it needs.
+  const need = Object.fromEntries(keys.map(k => [k, Math.min(Buffer.byteLength(texts[k]), ALERT_FIELD_CAPS[k] + 1)])) as Record<AlertField, number>;
+  const alloc: Record<AlertField, number> = { title: 0, path: 0, condition: 0, impact: 0, evidenceRef: 0 };
+  let open = keys.filter(k => need[k] > 0);
+  while (open.length && room >= open.length) {
+    const share = Math.floor(room / open.length);
+    for (const k of open) { const give = Math.min(need[k] - alloc[k], share); alloc[k] += give; room -= give; }
+    open = open.filter(k => alloc[k] < need[k]);
   }
-  const fixed = Buffer.byteLength([...head, ...tail].join("\n")) + Buffer.byteLength("\nเงื่อนไข: \nผลกระทบ: ") + 2;
-  const share = Math.max(32, Math.floor((maxBytes - fixed) / 2));
-  const text = [
-    ...head,
-    `เงื่อนไข: ${esc(input.finding.condition, Math.min(share, 1600))}`,
-    `ผลกระทบ: ${esc(input.finding.impact, Math.min(share, 1600))}`,
-    ...tail,
-  ].join("\n");
+  const fitted = Object.fromEntries(keys.map(k => {
+    const bound = Math.min(alloc[k], ALERT_FIELD_CAPS[k]);
+    return [k, Buffer.byteLength(texts[k]) <= bound ? texts[k] : bound >= 4 ? fitBytes(texts[k], bound) : ""];
+  })) as Record<AlertField, string>;
+  const text = render(fitted);
   if (containsCredential(text)) throw new AppError("invalid_delivery_payload");
-  return fitBytes(text, maxBytes);
+  if (Buffer.byteLength(text) > maxBytes) throw new AppError("invalid_delivery_payload");
+  return text;
 }
 
 export interface AdmitAlertResult {

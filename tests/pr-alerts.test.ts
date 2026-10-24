@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Application } from "../src/application";
-import { readConfig } from "../src/config";
+import { MIN_MESSAGE_BYTES, readConfig } from "../src/config";
 import { TransactionStore } from "../src/store";
 import { JobQueue } from "../src/jobs/queue";
 import type { EnqueueJobCommand, JobLimits } from "../src/jobs/types";
@@ -25,6 +25,7 @@ import {
   alertKey,
   buildAlertPayload,
   findingFingerprint,
+  ALERT_FIELD_RESERVE_BYTES,
   evaluateReport,
   ALERT_POLICY_VERSION,
   DEFAULT_ALERT_POLICY,
@@ -1129,6 +1130,88 @@ test("a definitive failed delivery is not notified: the next review attempt aler
   expect(intentsOf(f)).toHaveLength(2);
   expect(f.sender.external.filter(m => m.text.includes("finding finding-1"))).toHaveLength(1);
   expect(intentsOf(f)[0]).toMatchObject({ id: failed.id, status: "failed", failureReason: "telegram_rejected" });
+});
+
+test("maxFiles at a page boundary: the review is not complete, no clean/unwarned alert, Web shows the non-complete state", async () => {
+  const f = await fixture();
+  bindTelegram(f);
+  const monitor = f.store.transaction(tx => {
+    ensurePrSchema(tx);
+    return mutateMonitor(tx, {
+      kind: "pr.monitor.enable", requestId: crypto.randomUUID(), projectId: f.project.id, expectedRevision: projectRevision(f),
+      payload: { repository: { host: "github.com", owner: "acme", name: "widgets" }, apiBase: "https://api.github.com",
+        allowed: { issues: true, specs: true, ci: true }, acceptPolicyVersion: 1 as 1, limits: { pageSize: 1, maxFiles: 1 } },
+    }, f.clock.now).monitor;
+  });
+  f.github.pageSize = 1;
+  const base = sha(1), head = sha(2);
+  f.github.pulls = [fixturePull({ number: 1, base: { sha: base, ref: "main" }, head: { sha: head, ref: "feat" } })];
+  f.github.files.set(f.github.key(1, base, head), [
+    { filename: "a.ts", status: "modified", patch: "@@ -1,1 +1,40 @@\n+a" },
+    { filename: "b.ts", status: "modified", patch: "@@ -1,1 +1,40 @@\n+b" },
+  ]);
+  f.github.checks.set(head, []);
+  const conn = connector(f, monitor);
+  f.store.transaction(tx => pollMonitorCatchUp(tx, f.project.id, monitor.id, conn, f.clock.now));
+  const candidate = f.store.read(tx => readCandidates(tx, f.project.id, monitor.id)[0]!);
+  const snapshot = f.store.transaction(tx => captureSnapshot(tx, f.project.id, candidate.id, conn, f.clock.now))!;
+  expect(snapshot.coverage).toMatchObject({ enumerationComplete: false, overall: "incomplete" });
+  enqueueReview(f, monitor.id, candidate.id);
+  f.queue.pump(); await f.queue.idle();
+  const reportId = f.store.read(tx => tx.get<{ id: string }>("SELECT id FROM pr_reports")!.id);
+  const report = f.store.read(tx => readReport(tx, f.project.id, reportId));
+  expect(report).toMatchObject({ status: "incomplete", enumerationComplete: false });
+  // An incomplete review never notifies; any payload built for it carries the partial-scope warning.
+  expect(f.store.read(tx => readAlertDecisions(tx, report.id)).at(-1)!.suppressedReason).toBe("report_incomplete");
+  expect(intentsOf(f)).toHaveLength(0);
+  const text = buildAlertPayload({ repository: report.repository, pullNumber: report.pullNumber, baseSha: report.baseSha, headSha: report.headSha,
+    policyVersion: report.policyVersion, reportId: report.id, finding: report.findings.find(x => x.id === "finding-1")!,
+    coverageOverall: report.coverageOverall, enumerationComplete: report.enumerationComplete, projectId: f.project.id });
+  expect(text).toContain("คำเตือน: ตรวจไม่ครบ");
+  const web = createWebHandler(f.app);
+  const html = await (await web(new Request(`http://localhost:3000/projects/${f.project.id}/pr/reports`, { headers: { cookie: `jit_session=${f.token}` } }))).text();
+  expect(html).toContain('data-review-state="incomplete"');
+  expect(html).not.toContain('data-review-state="complete_clean"');
+  expect(html).not.toContain('data-review-state="complete_findings"');
+});
+
+test("alert payload keeps every mandatory field at the minimum message ceiling; smaller ceilings are rejected", () => {
+  const worst = {
+    repository: { host: "github.com", owner: "o".repeat(39), name: "n".repeat(100) }, pullNumber: Number.MAX_SAFE_INTEGER,
+    baseSha: "a".repeat(40), headSha: "b".repeat(40), policyVersion: 999_999_999,
+    reportId: "11111111-2222-3333-4444-555555555555", projectId: "66666666-7777-8888-9999-000000000000",
+    coverageOverall: "partial" as const, enumerationComplete: false,
+  };
+  const finding = (text: (n: number) => string) => ({
+    id: `f${"x".repeat(63)}`, title: text(500), category: "correctness" as const, severity: "critical" as const,
+    location: { path: `src/${"ก".repeat(80)}.ts`, line: 1_000_000 }, condition: text(2000), impact: text(2000), reasoning: "r",
+    evidenceType: "diff" as const, evidenceRef: `src/${"ข".repeat(80)}.ts`, status: "actionable" as const, validationErrors: [],
+  });
+  // The worst-case skeleton plus the per-field reserve fits the configured minimum.
+  const skeleton = buildAlertPayload({ ...worst, finding: { ...finding(() => ""), location: { path: "", line: 1_000_000 }, evidenceRef: "x" }, maxBytes: MIN_MESSAGE_BYTES });
+  expect(Buffer.byteLength(skeleton) - 1 + 5 * ALERT_FIELD_RESERVE_BYTES).toBeLessThanOrEqual(MIN_MESSAGE_BYTES);
+  for (const maxBytes of [MIN_MESSAGE_BYTES, 2048, 3500]) {
+    const text = buildAlertPayload({ ...worst, finding: finding(n => "เงื่อนไขยาว".repeat(n)), maxBytes });
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(maxBytes);
+    expect(text.isWellFormed()).toBe(true);
+    const lines = text.split("\n");
+    expect(lines[0]).toBe(`PR ${"o".repeat(39)}/${"n".repeat(100)}#${Number.MAX_SAFE_INTEGER}`);
+    expect(lines[1]).toBe(`revision ${"a".repeat(12)}...${"b".repeat(12)} policy v999999999`);
+    expect(lines[2]).toStartWith(`finding f${"x".repeat(63)} [correctness/critical] เงื่อนไข`);
+    expect(lines[3]).toMatch(/^ที่: src\/ก+.*:1000000$/);
+    expect(lines[4]).toMatch(/^เงื่อนไข: (เงื่อนไขยาว){1}/);
+    expect(lines[5]).toMatch(/^ผลกระทบ: (เงื่อนไขยาว){1}/);
+    expect(lines[6]).toMatch(/^หลักฐาน: diff src\/ข+/);
+    expect(lines[7]).toBe(`รายงาน: /projects/${worst.projectId}/pr/reports/${worst.reportId}`);
+    expect(lines[8]).toBe("คำเตือน: ตรวจไม่ครบทุกไฟล์/หลักฐาน รายงานนี้เป็น partial/incomplete");
+    expect(lines).toHaveLength(9);
+  }
+  // The reviewer's 512-byte ceiling (and anything below the minimum) is rejected, never silently cut.
+  for (const maxBytes of [512, MIN_MESSAGE_BYTES - 1]) {
+    expect(() => buildAlertPayload({ ...worst, finding: finding(() => "c"), maxBytes })).toThrow("invalid_delivery_payload");
+  }
+  expect(() => readConfig({ JIT_MESSAGE_BYTES: "512" })).toThrow("Invalid JIT_MESSAGE_BYTES");
+  expect(readConfig({ JIT_MESSAGE_BYTES: String(MIN_MESSAGE_BYTES) }).messageBytes).toBe(MIN_MESSAGE_BYTES);
 });
 
 test("duplicate-ID repair picks the evidence-backed representative in either order and sends it", async () => {
