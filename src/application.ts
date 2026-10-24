@@ -89,8 +89,9 @@ import {
   writeArtifact, type BackupCommand, type BackupManifest, type BackupNativePort, type BackupReceipt,
 } from "./ops/backup";
 import {
-  createExport, exportIdentity, exportPreview, listExportArtifacts, ownExportDir, readExportManifest,
-  type ExportCommand, type ExportManifest, type ExportPreview, type ExportReceipt,
+  discardExport, exportFailureReason, exportIdentity, exportPreview, finalizeExport, listExportArtifacts, ownExportDir, publishExport,
+  readExportManifest, recordFailedExport, removeRetiredExportFiles, stageExport,
+  type ExportCommand, type ExportFailure, type ExportManifest, type ExportPreview, type ExportReceipt, type FailedExportManifest, type StagedExport,
 } from "./ops/export";
 import {
   activateUpgrade, listUpgrades, migrateUpgrade, planUpgrade, prepareUpgrade, readUpgrade, recordFailedUpgrade, rollbackUpgrade,
@@ -471,27 +472,67 @@ export class Application {
     });
   }
 
+  /**
+   * ops.project_export/v1 create: stage (temp file + registration) → lifecycle fence →
+   * atomic publish → receipt, all in one transaction. A rollback discards the artifact; a
+   * build/publish/commit failure is recorded as a durable failed export bound to the same
+   * request ID, so a replay returns the same single logical outcome.
+   */
   #exportCommand(actor: OwnerActor, command: ExportCommand): ExportReceipt {
     const payloadHash = digest(exportIdentity(command));
-    return this.store.transaction(tx => {
-      this.#requireOwner(tx, actor); const project = this.#project(tx, command.projectId);
-      const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
-      if (prior) {
-        if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409);
-        return JSON.parse(prior.result_json) as ExportReceipt;
-      }
-      const now = this.#now();
-      if (project.revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
-      const manifest = createExport(tx, { id: crypto.randomUUID(), now, projectId: command.projectId,
-        projectRevision: project.revision, scope: { includeHistory: command.payload.includeHistory },
-        exportDir: this.#exportDir, note: command.payload.note });
-      this.#beforeCommit?.("ops");
-      const result: ExportReceipt = { manifest, duplicate: false };
-      tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
-      tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);
-      this.#beforeCommit?.("receipt");
+    const id = crypto.randomUUID();
+    const work: { staged?: StagedExport; stage?: ExportFailure["stage"]; now?: number; projectRevision?: number } = {};
+    const failed = (manifest: FailedExportManifest) => new AppError(manifest.failure.reason, manifest.failure.reason === "export_failed" ? 500 : manifest.failure.reason === "export_storage_unavailable" ? 503 : 409,
+      { projectId: manifest.projectId, exportId: manifest.id, path: `/projects/${manifest.projectId}/exports/${manifest.id}` });
+    try {
+      const result = this.store.transaction(tx => {
+        this.#requireOwner(tx, actor); const project = this.#project(tx, command.projectId);
+        const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
+        if (prior) {
+          if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409);
+          const stored = JSON.parse(prior.result_json) as { manifest: ExportManifest; duplicate: boolean };
+          if (stored.manifest.state === "failed") throw failed(stored.manifest);
+          return stored as ExportReceipt;
+        }
+        const now = this.#now();
+        if (project.revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
+        work.now = now; work.projectRevision = project.revision; work.stage = "stage";
+        work.staged = stageExport(tx, { id, now, projectId: command.projectId,
+          projectRevision: project.revision, scope: { includeHistory: command.payload.includeHistory },
+          exportDir: this.#exportDir, note: command.payload.note });
+        this.#beforeCommit?.("ops");
+        work.stage = "publish";
+        publishExport(tx, work.staged);
+        work.stage = "commit";
+        const result: ExportReceipt = { manifest: work.staged.manifest, duplicate: false };
+        tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
+        tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);
+        this.#beforeCommit?.("receipt");
+        return result;
+      });
+      if (work.staged) finalizeExport(work.staged);
       return result;
-    });
+    } catch (error) {
+      if (work.staged) discardExport(work.staged);
+      // Rejections before staging (auth, conflict, stale revision, replayed failure) stay plain rejections.
+      if (!work.stage || work.now === undefined || work.projectRevision === undefined) throw error;
+      const failure: ExportFailure = { reason: exportFailureReason(error), stage: work.stage };
+      try {
+        const recorded = this.store.transaction(tx => {
+          const { manifest, prunedFiles } = recordFailedExport(tx, { id, now: work.now!, projectId: command.projectId,
+            projectRevision: work.projectRevision!, scope: { includeHistory: command.payload.includeHistory }, failure, exportDir: this.#exportDir });
+          tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify({ manifest, duplicate: false }), work.now!);
+          tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, work.now!);
+          return { manifest, prunedFiles };
+        });
+        removeRetiredExportFiles(recorded.prunedFiles);
+        throw failed(recorded.manifest);
+      } catch (recordError) {
+        if (recordError instanceof AppError && recordError.detail?.exportId === id) throw recordError;
+        // The failure record could not commit either; the original rejection stays actionable.
+        throw error instanceof AppError ? error : new AppError("export_failed", 500);
+      }
+    }
   }
 
   /** ops.schema_migrations/v1: reads one upgrade journal with sanitized evidence. */
