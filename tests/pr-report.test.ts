@@ -1160,7 +1160,7 @@ test("report history: reruns and review-policy upgrades add current reports; old
   // Rerun: while queued the newest review reads running; after commit the new report is current.
   securityFails = false;
   const secondJob = enqueueReview(f, monitor.id, candidate.id);
-  expect(f.app.prReports(f.auth.actor, f.project.id).reviews[0]).toMatchObject({ observed: "running", jobId: secondJob.id, reportId: first.id });
+  expect(f.app.prReports(f.auth.actor, f.project.id).reviews[0]).toMatchObject({ observed: "running", jobId: secondJob.id, reportId: null, previousReportId: first.id });
   f.queue.pump(); await f.queue.idle();
   const listed = f.store.read(tx => listReports(tx, f.project.id));
   expect(listed).toHaveLength(2);
@@ -1279,5 +1279,59 @@ test("candidate fencing: supersede, revoke and source retirement fence the activ
     f.store.close(); stores.pop();
     const reopened = new TransactionStore(path); stores.push(reopened);
     expect(reopened.read(tx => readReport(tx, f.project.id, committed.id))).toMatchObject({ stale: true, staleReason: "source_retired" });
+  }
+});
+
+// ---- Second-eye round 3: newest-attempt projection, bounded disagreement merge ----
+
+test("read model: a terminal rerun without a report is projected, the earlier report only as history", async () => {
+  const f = await fixture(() => ({ ...fixtureOutcome("complete", clean), usage: okUsage, session: null }));
+  const monitor = enable(f);
+  const { candidate } = prepareSnapshot(f, monitor);
+  enqueueReview(f, monitor.id, candidate.id);
+  f.queue.pump(); await f.queue.idle();
+  const first = f.store.read(tx => listReports(tx, f.project.id)[0]!);
+  expect(f.app.prReports(f.auth.actor, f.project.id).reviews[0]).toMatchObject({ observed: "complete_clean", reportId: first.id, previousReportId: null });
+  // The rerun's snapshot is gone: the job ends without committing a report.
+  const rerun = enqueueReview(f, monitor.id, candidate.id);
+  f.store.transaction(tx => tx.run("DELETE FROM pr_snapshots WHERE candidate_id = ?", candidate.id));
+  f.queue.pump(); await f.queue.idle();
+  const job = f.app.job(f.auth.actor, f.project.id, rerun.id);
+  expect(["failed", "blocked", "partial"]).toContain(job.state);
+  expect(f.store.read(tx => listReports(tx, f.project.id))).toHaveLength(1);
+  expect(f.app.prReports(f.auth.actor, f.project.id).reviews[0]).toMatchObject({
+    observed: "failed", jobId: rerun.id, jobState: job.state, reportId: null, previousReportId: first.id,
+  });
+});
+
+test("disagreements: one bounded merge keeps omitted counts, finding overflow and specialist notes", async () => {
+  const many = (n: number) => Array.from({ length: n }, (_, i) => `d${i + 1}`);
+  // 17 model disagreements: 16 verbatim plus an explicit omitted count.
+  {
+    const f = await fixture(() => ({ ...fixtureOutcome("complete", JSON.stringify({ findings: [], analyzedRoles: ["correctness", "security"], skippedScope: [], disagreements: many(17) })), usage: okUsage, session: null }));
+    const monitor = enable(f);
+    const { candidate } = prepareSnapshot(f, monitor);
+    enqueueReview(f, monitor.id, candidate.id);
+    f.queue.pump(); await f.queue.idle();
+    const report = f.store.read(tx => listReports(tx, f.project.id)[0]!);
+    expect(report.disagreements.slice(0, 16)).toEqual(many(16));
+    expect(report.disagreements).toContain("1 more disagreements not shown");
+  }
+  // 16 model disagreements + 33 findings + a failed specialist: every service note survives.
+  {
+    const overflowing = JSON.stringify({ findings: Array(MAX_REVIEW_FINDINGS + 1).fill({}), analyzedRoles: ["correctness", "security"], skippedScope: [], disagreements: many(16) });
+    const f = await fixture((request: any) => request.purpose.startsWith("specialist:security")
+      ? { ...fixtureOutcome("max_rounds"), usage: okUsage, session: null }
+      : { ...fixtureOutcome("complete", request.purpose.startsWith("specialist:") ? "analysis" : overflowing), usage: okUsage, session: null });
+    const monitor = enable(f);
+    const { candidate } = prepareSnapshot(f, monitor);
+    enqueueReview(f, monitor.id, candidate.id);
+    f.queue.pump(); await f.queue.idle();
+    const report = f.store.read(tx => listReports(tx, f.project.id)[0]!);
+    expect(report.disagreements.slice(0, 16)).toEqual(many(16));
+    expect(report.disagreements).toContain("1 proposed findings exceeded the validation bound and were not reviewed");
+    expect(report.disagreements).toContain("security: incomplete/max_rounds");
+    expect(report.disagreements).toContain("synthesis declared security without a delivered specialist result");
+    expect(report.status).toBe("incomplete");
   }
 });

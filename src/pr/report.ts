@@ -171,7 +171,32 @@ export interface NormalizedReview {
   disagreements: string[];
   /** Proposed findings beyond `MAX_REVIEW_FINDINGS` that were not validated; nonzero forces incomplete. */
   findingsOverflow: number;
+  /** Model disagreements beyond `MAX_MODEL_DISAGREEMENTS` that are not shown verbatim. */
+  disagreementsOmitted?: number;
   valid: boolean;
+}
+
+/** Model-authored disagreements kept verbatim; more are counted, never silently dropped. */
+export const MAX_MODEL_DISAGREEMENTS = 16;
+/** Service-authored notes (specialist gaps, undelivered roles) kept after the model's. */
+const MAX_SERVICE_NOTES = 24;
+
+/**
+ * The one bounded disagreement merge: up to `MAX_MODEL_DISAGREEMENTS` model
+ * entries, then reserved slots for an explicit omitted-disagreement count, the
+ * finding-overflow notice and service notes (specialist results, undelivered roles).
+ * Reserved entries are never displaced by model text.
+ */
+export function mergeDisagreements(normalized: Pick<NormalizedReview, "disagreements" | "findingsOverflow" | "disagreementsOmitted">, notes: readonly string[] = []): string[] {
+  const model = normalized.disagreements.slice(0, MAX_MODEL_DISAGREEMENTS).map(d => d.slice(0, 2000));
+  const omitted = (normalized.disagreementsOmitted ?? 0) + Math.max(0, normalized.disagreements.length - MAX_MODEL_DISAGREEMENTS);
+  const merged = [...model];
+  if (omitted > 0) merged.push(`${omitted} more disagreements not shown`);
+  if ((normalized.findingsOverflow ?? 0) > 0) merged.push(`${normalized.findingsOverflow} proposed findings exceeded the validation bound and were not reviewed`);
+  const service = [...new Set(notes.map(n => n.slice(0, 2000)))];
+  merged.push(...service.slice(0, MAX_SERVICE_NOTES));
+  if (service.length > MAX_SERVICE_NOTES) merged.push(`${service.length - MAX_SERVICE_NOTES} more service notes not shown`);
+  return merged;
 }
 
 /** Maximum proposed findings validated per synthesis; more are counted, never silently dropped. */
@@ -189,7 +214,7 @@ const stringList = (value: unknown, maxItems: number, maxLength: number): value 
  * `analyzedRoles` (≤8 strings), `skippedScope` (≤16 strings) and
  * `disagreements` (strings); a missing or mistyped member is invalid (failed),
  * never an empty clean list. Findings beyond `MAX_REVIEW_FINDINGS` are counted
- * in `findingsOverflow`; extra disagreements are summarized, not dropped.
+ * in `findingsOverflow`; extra disagreements in `disagreementsOmitted` (see `mergeDisagreements`).
  * Unknown model fields (route/task/mutation/comment instructions) are ignored, never acted on.
  */
 export function normalizeReviewOutput(output: string, snapshot: ImmutableSnapshot, allowedRoles: readonly string[] = DEFAULT_REVIEW_POLICY.requiredRoles, transmitted: TransmittedManifest | null = null): NormalizedReview {
@@ -213,14 +238,13 @@ export function normalizeReviewOutput(output: string, snapshot: ImmutableSnapsho
   });
   const analyzedRoles = [...new Set(raw.analyzedRoles)];
   const skippedScope = [...new Set(raw.skippedScope)];
-  const disagreements = raw.disagreements.slice(0, 16);
-  if (raw.disagreements.length > 16) disagreements.push(`${raw.disagreements.length - 16} more disagreements not shown`);
-  if (findingsOverflow > 0) disagreements.push(`${findingsOverflow} proposed findings exceeded the validation bound and were not reviewed`);
+  const disagreements = raw.disagreements.slice(0, MAX_MODEL_DISAGREEMENTS);
+  const disagreementsOmitted = raw.disagreements.length - disagreements.length;
   // Explicit scope policy: roles never analyzed are skipped, never silently complete.
   for (const required of allowedRoles) {
     if (!analyzedRoles.includes(required) && !skippedScope.includes(required)) skippedScope.push(required);
   }
-  return { findings, analyzedRoles, skippedScope, disagreements, findingsOverflow, valid: true };
+  return { findings, analyzedRoles, skippedScope, disagreements, findingsOverflow, disagreementsOmitted, valid: true };
 }
 
 function storedOf(row: { record_json: string }): PrivateReport {
@@ -320,25 +344,29 @@ export function listReviewStates(tx: AppTransaction, projectId: string, monitorI
       "SELECT record_json FROM jobs WHERE project_id = ? AND json_extract(record_json, '$.type') = 'pr.review' AND json_extract(record_json, '$.input.candidateId') = ? ORDER BY rowid DESC LIMIT 1",
       projectId, candidate.id,
     );
-    const job = jobRow ? JSON.parse(jobRow.record_json) as { id: string; state: string; reason: string } : null;
+    const job = jobRow ? JSON.parse(jobRow.record_json) as { id: string; state: string; reason: string; createdAt: number } : null;
     const base = {
       candidateId: candidate.id, monitorId: candidate.monitorId, pullNumber: candidate.pullNumber,
       baseSha: candidate.baseSha, headSha: candidate.headSha, policyVersion: candidate.policyVersion,
       candidateStatus: candidate.status, jobId: job?.id ?? null, jobState: job?.state ?? null, jobReason: job?.reason ?? null,
     };
     const latest = reportRow ? storedOf(reportRow) : null;
-    // A newer admitted review that has not committed yet reads running, not as its predecessor.
-    if (job && NONTERMINAL_JOB.includes(job.state) && latest?.jobId !== job.id) {
-      return { ...base, observed: "running", reportId: latest?.id ?? null, staleReason: null };
+    // The newest review attempt is projected when it is newer than the newest report's job:
+    // running while nonterminal, failed/stale when it ended without a report. The earlier
+    // report stays only as historical context (previousReportId).
+    const reportJob = latest?.jobId ? tx.get<{ record_json: string }>("SELECT record_json FROM jobs WHERE id = ?", latest.jobId) : null;
+    const reportJobCreatedAt = reportJob ? (JSON.parse(reportJob.record_json) as { createdAt: number }).createdAt : latest?.createdAt ?? -1;
+    if (job && (!latest || (latest.jobId !== job.id && job.createdAt >= reportJobCreatedAt))) {
+      const previousReportId = latest?.id ?? null;
+      if (NONTERMINAL_JOB.includes(job.state)) return { ...base, observed: "running", reportId: null, previousReportId, staleReason: null };
+      if (TERMINAL_CANDIDATE.includes(candidate.status)) return { ...base, observed: "stale", reportId: null, previousReportId, staleReason: candidate.staleReason ?? `candidate_${candidate.status}` };
+      return { ...base, observed: "failed", reportId: null, previousReportId, staleReason: null };
     }
     if (latest) {
       const report = overlay(tx, projectId, latest, options);
-      return { ...base, observed: report.stale ? "stale" : report.status === "running" ? "running" : report.status, reportId: report.id, staleReason: report.staleReason } as PrReviewStateItem;
+      return { ...base, observed: report.stale ? "stale" : report.status === "running" ? "running" : report.status, reportId: report.id, previousReportId: null, staleReason: report.staleReason } as PrReviewStateItem;
     }
-    if (!job) return { ...base, observed: "not_reviewed", reportId: null, staleReason: null };
-    if (NONTERMINAL_JOB.includes(job.state)) return { ...base, observed: "running", reportId: null, staleReason: null };
-    if (TERMINAL_CANDIDATE.includes(candidate.status)) return { ...base, observed: "stale", reportId: null, staleReason: `candidate_${candidate.status}` };
-    return { ...base, observed: "failed", reportId: null, staleReason: null };
+    return { ...base, observed: "not_reviewed", reportId: null, previousReportId: null, staleReason: null };
   });
 }
 
@@ -405,6 +433,8 @@ export interface PersistReportInput {
   mode?: "fixture" | "production" | null;
   /** Current accepted review policy version; a different captured version is fenced. */
   currentReviewPolicyVersion?: number;
+  /** Service-authored disagreement notes (for example specialist results synthesis could not use). */
+  notes?: readonly string[];
   jobId: string | null;
   attemptId: string | null;
   now: number;
@@ -478,10 +508,11 @@ export function persistReport(tx: AppTransaction, input: PersistReportInput): Pr
   const analyzedRoles = input.normalized.analyzedRoles.filter(role => delivered.has(role));
   const skippedScope = [...input.normalized.skippedScope];
   for (const role of input.requiredRoles) if (!analyzedRoles.includes(role) && !skippedScope.includes(role)) skippedScope.push(role);
-  const disagreements = [...input.normalized.disagreements];
+  const notes = [...(input.notes ?? [])];
   for (const role of input.normalized.analyzedRoles) {
-    if (!delivered.has(role)) disagreements.push(`synthesis declared ${role.slice(0, 64)} without a delivered specialist result`);
+    if (!delivered.has(role)) notes.push(`synthesis declared ${role.slice(0, 64)} without a delivered specialist result`);
   }
+  const disagreements = mergeDisagreements(input.normalized, notes);
   const status = decideStatus(input, analyzedRoles);
   const authorityGeneration = owner?.generation ?? 1;
   const report: PrivateReport = {
@@ -506,7 +537,7 @@ export function persistReport(tx: AppTransaction, input: PersistReportInput): Pr
     enumerationComplete: snapshot.coverage.enumerationComplete,
     specialistRuns: input.specialistRuns.map(r => ({ ...r })),
     synthesis: { ...input.synthesis },
-    disagreements: disagreements.slice(0, 24),
+    disagreements,
     findingsOverflow: input.normalized.findingsOverflow ?? 0,
     snapshotId: snapshot.id,
     sourceManifest: structuredClone(snapshot.coverage),

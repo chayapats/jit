@@ -241,8 +241,9 @@ export interface PrivateReport {
 
 /**
  * Observable review state per candidate (`pr.private_report/v1` read model).
- * `not_reviewed`: no review admitted; `running`: admitted nonterminal review job
- * without a report; `failed`: review job ended without committing a report;
+ * `not_reviewed`: no review admitted; `running`: newest review job nonterminal
+ * without a report; `failed`: newest review job ended without committing a report
+ * (jobState says failed/blocked/partial);
  * `stale`: retained report (or fenced work) no longer current.
  */
 export type PrReviewObserved = "not_reviewed" | "running" | "stale" | Exclude<PrReportStatus, "running">;
@@ -256,7 +257,10 @@ export interface PrReviewStateItem {
   policyVersion: number;
   candidateStatus: CandidateStatus;
   observed: PrReviewObserved;
+  /** Report backing `observed`; null when the projected (newest) attempt has no report. */
   reportId: string | null;
+  /** Earlier report kept as historical context while a newer attempt is projected. */
+  previousReportId: string | null;
   staleReason: string | null;
   jobId: string | null;
   jobState: string | null;

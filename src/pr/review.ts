@@ -393,7 +393,7 @@ export function prReviewWork(options: PrReviewWorkOptions): WorkDefinition {
           fields.output || JSON.stringify({ findings: [], analyzedRoles: [], skippedScope: requiredRoles, disagreements: [] }),
           snapshot, requiredRoles, fields.transmitted,
         );
-        const merged = { ...normalized, disagreements: [...normalized.disagreements, ...fields.extraDisagreements].slice(0, 16) };
+        const merged = normalized;
         const evidence = `pr-review:${input.candidateId};policy:v${capture.reviewPolicy.version};route:${capture.layer};roles:${fields.specialistRuns.map(r => `${r.role}=${r.state}`).join(",")};synthesis:${fields.synthesis.state};findings:${merged.findings.length};mode:${fields.mode ?? "none"}`;
         const outcome = { state: "succeeded" as const, evidence: evidence.slice(0, 1024) };
         const at = now();
@@ -411,6 +411,7 @@ export function prReviewWork(options: PrReviewWorkOptions): WorkDefinition {
             capture,
             mode: fields.mode,
             currentReviewPolicyVersion: policy.version,
+            notes: fields.extraDisagreements,
             jobId: job.id,
             attemptId: attempt.id,
             now: at,
