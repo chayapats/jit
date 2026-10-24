@@ -21,6 +21,16 @@ The backup directory is `service.backupDirectory` under `startFullApp`, or
 `<database>.backups` for plain `serve`. Files without a committed manifest are
 orphans.
 
+Existence alone never makes the directory trusted (`backupDirectoryProblem`).
+Service preflight blocks the `config` gate (`restrict-backup-directory`) when the
+backup directory is a symlink, does not resolve to the same inode through its
+canonical path, is owned by another uid, or grants any group/other access. Before
+each write the writer opens the directory without following symlinks, rejects a
+foreign owner and removes group/other bits through that descriptor. Managed files
+are created exclusively (`O_CREAT|O_EXCL|O_NOFOLLOW`, 0600). An existing file or
+planted link at the name fails with `backup_storage_unavailable`. It is never
+overwritten or followed.
+
 ## Commands and reads
 
 | Public entry | Behavior |

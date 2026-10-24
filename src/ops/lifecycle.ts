@@ -7,6 +7,7 @@ import type { JobQueue } from "../jobs/queue";
 import { composeJobQueue } from "../composition";
 import type { ApplicationRunPort } from "../team/run-port";
 import { TransactionStore, schemaVersion } from "../store";
+import { backupDirectoryProblem } from "./backup";
 import { backupNativePortFor } from "./schway-backup";
 import { validateArtifact, type BuildManifest } from "../../ops/package/bun-build";
 import { parseServiceConfig, type ServiceConfig } from "../../ops/package/service-config";
@@ -68,9 +69,13 @@ export function preflightService(input: PreflightInput): PreflightResult {
   const dirReady = (path: string): boolean => {
     try { return statSync(path).isDirectory(); } catch { return false; }
   };
-  gates.push(dirReady(service.stateDirectory) && dirReady(service.backupDirectory) && dirReady(service.workingDirectory)
-    ? { gate: "config", state: "ready", nextAction: "none", detail: "service directories present" }
-    : { gate: "config", state: "blocked", nextAction: "prepare-service-directories", detail: "service directory missing" });
+  // The backup destination holds managed snapshots: it must be a real, service-owned 0700-class directory, never trusted merely for existing.
+  const backupProblem = backupDirectoryProblem(service.backupDirectory);
+  gates.push(!dirReady(service.stateDirectory) || !dirReady(service.workingDirectory) || backupProblem === "backup_directory_missing"
+    ? { gate: "config", state: "blocked", nextAction: "prepare-service-directories", detail: "service directory missing" }
+    : backupProblem !== null
+      ? { gate: "config", state: "blocked", nextAction: "restrict-backup-directory", detail: `backup directory untrusted: ${backupProblem}` }
+      : { gate: "config", state: "ready", nextAction: "none", detail: "service directories present; backup directory restricted" });
   let userVersion: number | null = null;
   try { userVersion = input.store.read(tx => tx.get<{ user_version: number }>("PRAGMA user_version")!).user_version; } catch { /* Stay blocked below. */ }
   gates.push(userVersion !== null && userVersion <= schemaVersion

@@ -516,11 +516,11 @@ test("delete previews conservatively list exports whose bounded coverage was tru
   const s = say(f, a, "ข้อความ coverage-016");
   const receipt = f.rt.app.execute(actor(f), exportCommand(f, a, false));
   expect(receipt.manifest.coverage.truncated).toBe(false);
-  // Without history the message text is not in the artifact, so it is not listed.
+  // Coverage never describes raw task/proposal/decision text, so even a no-history export of the affected project is listed.
   const scope = { kind: "source" as const, projectId: a.id, source: { ...s } };
   const before = asDeletePreview(f.rt.app.execute(actor(f), { kind: "memory.delete.preview" as const, requestId: rid(), projectId: a.id,
     expectedRevision: projectRevision(f, a), payload: { scope } }));
-  expect(before.preview.affected.exports).toEqual([]);
+  expect(before.preview.affected.exports).toEqual([expect.objectContaining({ id: receipt.manifest.id, evidence: "affected_project" })]);
   f.rt.store.transaction(tx => {
     const manifest = { ...receipt.manifest, coverage: { ...receipt.manifest.coverage, truncated: true } };
     tx.run("UPDATE export_artifacts SET record_json = ? WHERE id = ?", JSON.stringify(manifest), manifest.id);
