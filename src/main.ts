@@ -113,6 +113,9 @@ async function main(): Promise<void> {
       const booted = await app.boot();
       if (!booted.reconciled) console.log("Upgrade in progress: job admission stays fenced until the owner activates or rolls back.");
       if (booted.upgrade) console.log(`Upgrade ${booted.upgrade.id} reconciled after activation: ${booted.upgrade.state}.`);
+      if (booted.restore && booted.restore.state !== "complete") {
+        console.log(`Restore ${booted.restore.id} is not complete (${booted.restore.reason ?? booted.restore.state}): only restore status and remediation (/restores) are served.`);
+      }
     }
   } catch (error) { service?.close(); store.close(); throw error; }
   if (command !== "serve") {

@@ -396,7 +396,7 @@ test("ordinary backup image excludes every credential and secret-bearing value",
     expect(image.query("SELECT challenge_nonce FROM telegram_binding").get()).toEqual({ challenge_nonce: null });
     expect((image.query("SELECT count(*) AS n FROM projects").get() as { n: number }).n).toBe(1);
   } finally { image.close(); }
-  expect(receipt.manifest.credentials).toEqual({ included: false, excludedTables: ["delivery_worker", "export_artifacts", "job_scheduler", "login_throttle", "ops_backups", "owner", "sessions"],
+  expect(receipt.manifest.credentials).toEqual({ included: false, excludedTables: ["delivery_worker", "export_artifacts", "job_scheduler", "lifecycle_checkpoint", "lifecycle_ledger", "login_throttle", "ops_backups", "owner", "sessions"],
     scrubbed: ["telegram_binding.challenge_nonce", "command_receipts.result_json"], restore: "owner_credential_setup_required" });
   expect(scanBackupSecrets(receipt.manifest, [passwordHash, tokenHash, f.token, nonce])).toEqual([]);
   // The live installation still holds its credentials.
@@ -730,7 +730,7 @@ test("restore preparation rejects every non-valid backup; owner acknowledgments 
   createProject(f);
   const noNative = await f.app.execute(f.auth.actor, backupCommand(f));
   expect(noNative.manifest.state).toBe("incomplete");
-  expect(() => restorePrepare(f, noNative.manifest.id)).toThrow("backup_incomplete");
+  await expect(restorePrepare(f, noNative.manifest.id)).rejects.toThrow("backup_incomplete");
   // Unverifiable lifecycle ledger: explicit, unavailable, never "no deletions".
   const g = await fixture({ native: scriptedNative() });
   createProject(g); seedLifecycle(g);
@@ -738,16 +738,18 @@ test("restore preparation rejects every non-valid backup; owner acknowledgments 
   const noLedger = await g.app.execute(g.auth.actor, backupCommand(g));
   expect(noLedger.manifest.lifecycle).toEqual({ available: false, checkpoint: null, reason: "ledger_unverifiable", position: null });
   expect(noLedger.manifest).toMatchObject({ state: "incomplete", reason: "ledger_unverifiable" });
-  expect(() => restorePrepare(g, noLedger.manifest.id)).toThrow("backup_incomplete");
+  await expect(restorePrepare(g, noLedger.manifest.id)).rejects.toThrow("backup_incomplete");
   // Even a record forged to say valid is rejected when its lifecycle checkpoint is missing.
   g.store.transaction(tx => tx.run("UPDATE ops_backups SET record_json = json_set(record_json, '$.state', 'valid') WHERE id = ?", noLedger.manifest.id));
-  expect(() => restorePrepare(g, noLedger.manifest.id)).toThrow("backup_incomplete");
-  expect(g.app.restores(g.auth.actor).quarantines).toHaveLength(0);
-  // A complete backup still prepares.
+  await expect(restorePrepare(g, noLedger.manifest.id)).rejects.toThrow("backup_incomplete");
+  // Rejections leave only failed journals with a visible next action; nothing is quarantined.
+  expect(g.app.restores(g.auth.actor).quarantines.every(q => q.state === "failed" && q.nextAction.length > 0)).toBe(true);
+  // A complete, verified backup passes the manifest gate; the fixture engine contract is then refused by the
+  // engine gate (ops.quarantined_restore/v1 needs the supported snapshot contract for native references).
   g.store.transaction(tx => tx.run("UPDATE memory_suppressions SET record_json = json_object('id', id)"));
   const good = await g.app.execute(g.auth.actor, backupCommand(g));
   expect(good.manifest.state).toBe("valid");
-  expect(restorePrepare(g, good.manifest.id).quarantine.state).toBe("quarantining");
+  await expect(restorePrepare(g, good.manifest.id)).rejects.toThrow("unsupported_engine");
 });
 
 test("inspection and restore verify every managed artifact: missing, corrupt, relocated or symlinked files are invalid", async () => {
@@ -762,7 +764,7 @@ test("inspection and restore verify every managed artifact: missing, corrupt, re
   const inspected = f.app.backup(f.auth.actor, missing.id);
   expect(inspected.integrity).toEqual({ state: "invalid", reason: "native_artifact_missing" });
   expect(inspected.manifest.state).toBe("incomplete");
-  expect(() => restorePrepare(f, missing.id)).toThrow("backup_integrity_failed");
+  await expect(restorePrepare(f, missing.id)).rejects.toThrow("backup_integrity_failed");
   // Corrupt native bytes of the same size.
   const corrupt = await make();
   const nativePath = corrupt.native.artifacts[0]!.path;
@@ -774,7 +776,7 @@ test("inspection and restore verify every managed artifact: missing, corrupt, re
   copyFileSync(moved.native.artifacts[0]!.path, outside);
   f.store.transaction(tx => tx.run("UPDATE ops_backups SET record_json = json_set(record_json, '$.native.artifacts[0].path', ?) WHERE id = ?", outside, moved.id));
   expect(f.app.backup(f.auth.actor, moved.id).integrity.reason).toBe("native_artifact_outside_backup_dir");
-  expect(() => restorePrepare(f, moved.id)).toThrow("backup_integrity_failed");
+  await expect(restorePrepare(f, moved.id)).rejects.toThrow("backup_integrity_failed");
   // A symlink in place of the managed image.
   const linked = await make();
   const copy = join(f.root, "image-copy.sqlite");
@@ -789,8 +791,9 @@ test("inspection and restore verify every managed artifact: missing, corrupt, re
   // Missing image keeps the established restore code.
   const noImage = await make();
   rmSync(noImage.artifact.path);
-  expect(() => restorePrepare(f, noImage.id)).toThrow("backup_artifact_missing");
-  expect(f.app.restores(f.auth.actor).quarantines).toHaveLength(0);
+  await expect(restorePrepare(f, noImage.id)).rejects.toThrow("backup_artifact_missing");
+  // Each refusal is a failed journal with a next action; nothing entered quarantine.
+  expect(f.app.restores(f.auth.actor).quarantines.map(q => q.state)).toEqual(["failed", "failed", "failed"]);
 });
 
 test("inventory overflow is not restorable", async () => {
@@ -801,7 +804,7 @@ test("inventory overflow is not restorable", async () => {
   });
   const receipt = await f.app.execute(f.auth.actor, backupCommand(f));
   expect(receipt.manifest.inventory.complete).toBe(false);
-  expect(() => restorePrepare(f, receipt.manifest.id)).toThrow("backup_incomplete");
+  await expect(restorePrepare(f, receipt.manifest.id)).rejects.toThrow("backup_incomplete");
 });
 
 test("non-empty native captures must declare the port's supported contract and format version", () => {
@@ -897,7 +900,9 @@ test("the bounded inventory list verifies every entry and never labels a broken 
 });
 
 test("restore activation keeps the live backup registry: two backups survive restoring the older one", async () => {
-  const f = await fixture({ native: scriptedNative() });
+  const supported: BackupNativePort = { contract: upgradeEngineContract, formatVersion: upgradeNativeFormatVersion, engine: "fixture-engine/1",
+    available: () => true, snapshot: () => ({ refs: [], bytes: 0, engine: "fixture-engine/1", contract: upgradeEngineContract, formatVersion: upgradeNativeFormatVersion, artifacts: [] }) };
+  const f = await fixture({ native: supported });
   createProject(f); seedLifecycle(f);
   const older = (await f.app.execute(f.auth.actor, backupCommand(f))).manifest;
   createProject(f, "after older backup");
@@ -905,25 +910,34 @@ test("restore activation keeps the live backup registry: two backups survive res
   // The registry is installation state: it is not inside any image.
   const image = new Database(older.artifact.path, { readonly: true });
   try { expect((image.query("SELECT count(*) AS n FROM ops_backups").get() as { n: number }).n).toBe(0); } finally { image.close(); }
-  const step = (kind: "restore.migrate" | "restore.validate" | "restore.activate", quarantineId: string) => f.app.execute(f.auth.actor, {
+  const step = (kind: "restore.migrate" | "restore.apply_ledger" | "restore.validate" | "restore.activate", quarantineId: string) => f.app.execute(f.auth.actor, {
     kind, requestId: rid(), projectId: null, expectedRevision: f.app.workspace(f.auth.actor).revision, payload: { quarantineId } });
-  const prepared = restorePrepare(f, older.id).quarantine;
-  step("restore.migrate", prepared.id);
-  f.app.execute(f.auth.actor, { kind: "restore.apply_ledger", requestId: rid(), projectId: null, expectedRevision: f.app.workspace(f.auth.actor).revision,
-    payload: { quarantineId: prepared.id, tombstones: [], source: "live-deletion-ledger", asOf: 1800000000000, acknowledgedEmpty: true } });
-  expect(step("restore.validate", prepared.id).quarantine.state).toBe("validated");
-  expect(step("restore.activate", prepared.id).quarantine.state).toBe("complete");
+  const prepared = (await restorePrepare(f, older.id)).quarantine;
+  await step("restore.migrate", prepared.id);
+  await step("restore.apply_ledger", prepared.id);
+  expect((await step("restore.validate", prepared.id)).quarantine.state).toBe("validated");
+  // Without a service in process, activation swaps but stays fenced until a service boot reconciles.
+  expect((await step("restore.activate", prepared.id)).quarantine).toMatchObject({ state: "activated", reason: "reconcile_pending" });
+  const { ManagedService } = await import("../src/ops/upgrade-service");
+  const { JobQueue } = await import("../src/jobs/queue");
+  const { ScriptedRunPort } = await import("../src/team/scripted-port");
+  const service = new ManagedService(f.store, () => ({ queue: new JobQueue(f.store, f.config.jobs, []), teamPort: new ScriptedRunPort(f.store, f.config.team, f.config.jobs.outputBytes) }));
+  const booted = new Application(f.store, f.config, { now: () => 1800000000000, backupDir: f.backupDir, nativeSnapshot: supported, service });
+  expect((await booted.boot()).restore).toMatchObject({ state: "complete" });
+  service.close();
+  // Activation revoked every session (generation fence); the owner signs in again.
+  const auth = f.app.authenticate(await f.app.login(password));
   // Restored content is the older image; the registry, files and integrity are the live ones.
-  expect(f.app.workspace(f.auth.actor).projects).toHaveLength(1);
-  const listed = f.app.backups(f.auth.actor);
+  expect(f.app.workspace(auth.actor).projects).toHaveLength(1);
+  const listed = f.app.backups(auth.actor);
   expect(listed.manifests.map(m => m.id)).toEqual([older.id, newer.id]);
   expect(Object.values(listed.integrity).every(v => v.state === "verified")).toBe(true);
   // Reconciliation keeps every registered file: nothing is orphaned by the activation.
   const old = new Date(Date.now() - 60 * 60 * 1000);
   for (const name of managedFiles(f.backupDir)) utimesSync(join(f.backupDir, name), old, old);
-  const third = (await f.app.execute(f.auth.actor, backupCommand(f))).manifest;
-  expect(f.app.backups(f.auth.actor).manifests.map(m => m.id)).toEqual([older.id, newer.id, third.id]);
-  for (const id of [older.id, newer.id]) expect(f.app.backup(f.auth.actor, id).integrity.state).toBe("verified");
+  const third = (await f.app.execute(auth.actor, { ...backupCommand({ app: f.app, auth }) })).manifest;
+  expect(f.app.backups(auth.actor).manifests.map(m => m.id)).toEqual([older.id, newer.id, third.id]);
+  for (const id of [older.id, newer.id]) expect(f.app.backup(auth.actor, id).integrity.state).toBe("verified");
 });
 
 test("managed files harden an existing permissive directory, refuse symlinked directories and never overwrite or follow a planted name", () => {

@@ -499,11 +499,13 @@ export function upgradeEvidence(journal: UpgradeJournal): UpgradeEvidence {
  */
 const controlTables = new Set<string>([...installationScopedTables, "job_scheduler", "delivery_worker", "upgrade_journal"]);
 
-interface TableShape { name: string; sql: string; columns: string[] }
+/** One managed table's definition and columns (shared with OPS02 quarantine validation). */
+export interface TableShape { name: string; sql: string; columns: string[] }
 
 function quoteIdent(name: string): string { return `"${name.replaceAll('"', '""')}"`; }
 
-function managedTables(tx: AppTransaction): TableShape[] {
+/** Managed application tables (installation-scoped and control tables excluded), by name. */
+export function managedTables(tx: AppTransaction): TableShape[] {
   return tx.all<{ name: string; sql: string | null }>("SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
     .filter(row => !controlTables.has(row.name))
     .map(row => ({ name: row.name, sql: row.sql ?? "", columns: tx.all<{ name: string }>(`PRAGMA table_info(${quoteIdent(row.name)})`).map(c => c.name) }));
@@ -515,7 +517,7 @@ function canonical(value: unknown): string {
 }
 
 /** Order-independent digest of every row of `table` projected on `columns`; bounded, fail closed. */
-function tableDigest(tx: AppTransaction, table: string, columns: string[]): { rows: number; hash: string } {
+export function tableDigest(tx: AppTransaction, table: string, columns: string[]): { rows: number; hash: string } {
   const count = tx.get<{ n: number }>(`SELECT count(*) AS n FROM ${quoteIdent(table)}`)!.n;
   if (count > upgradeLimits.rowsPerTable) throw new AppError("upgrade_validation_bound_exceeded", 409);
   const rows = tx.all<Record<string, unknown>>(`SELECT ${columns.map(quoteIdent).join(", ")} FROM ${quoteIdent(table)}`);
@@ -646,7 +648,14 @@ export async function prepareUpgrade(ctx: UpgradeContext, input: { request: Upgr
     preflight: { ...base.preflight, compatible: true, plannedSteps: [...plannedSteps] },
     steps: [{ name: "preflight", at: now, ok: true, detail: `schema_${fromSchema}_to_${input.targetSchema}` }],
     nextAction: "wait_for_quiesce_and_recovery_point", requests: [input.request] });
-  writeUpgradeFence(ctx.store.path, id, now);
+  try { writeUpgradeFence(ctx.store.path, id, now); }
+  catch (error) {
+    // Exclusive acquisition lost to a concurrent upgrade or restore: this attempt never held the fence.
+    const code = error instanceof AppError ? error.code : "upgrade_storage_unavailable";
+    saveJournal(ctx.upgradeDir, { ...journal, state: "failed", steps: step(journal, "fence", now, false, code), reason: code,
+      nextAction: "wait_for_the_other_installation_operation_then_prepare_again", updatedAt: now });
+    throw error;
+  }
   journal = saveJournal(ctx.upgradeDir, { ...journal, steps: step(journal, "fence", now, true, "admission_fenced") });
   ctx.fault?.("fenced");
   let phase = "quiesce";
@@ -695,7 +704,7 @@ async function failAfterFence(ctx: UpgradeContext, journal: UpgradeJournal, phas
   const now = ctx.now();
   let failed = saveJournal(ctx.upgradeDir, { ...journal, state: "failed", steps: step(journal, phase, now, false, reason), reason,
     nextAction: journal.snapshotBackupId ? "inspect_failure_then_prepare_again" : "resolve_engine_snapshot_then_prepare_again", updatedAt: now });
-  clearUpgradeFence(ctx.store.path);
+  clearUpgradeFence(ctx.store.path, journal.id);
   const resumed = await safeResume(ctx);
   failed = saveJournal(ctx.upgradeDir, { ...failed, reconcile: { ...resumed, at: ctx.now() } });
   removeStaged(ctx, failed);
@@ -1128,7 +1137,7 @@ export function recoverUpgradesOnOpen(store: TransactionStore, upgradeDir: strin
       saveJournal(upgradeDir, { ...journal, state: "failed", steps: step(journal, "prepare", now, false, "prepare_interrupted"),
         reason: "prepare_interrupted", nextAction: "inspect_failure_then_prepare_again", updatedAt: now });
       const fence = readUpgradeFence(store.path);
-      if (fence?.upgradeId === journal.id) clearUpgradeFence(store.path);
+      if (fence?.upgradeId === journal.id) clearUpgradeFence(store.path, journal.id);
     } else if (journal.state === "activating") {
       resolveActivation(store, upgradeDir, journal, now);
     }
@@ -1142,7 +1151,7 @@ export function recoverUpgradesOnOpen(store: TransactionStore, upgradeDir: strin
     // The fence's journal activated (reconcile at boot needs admission) or ended; release it.
     // A fence of unknown origin is never released automatically.
     const owner = listUpgrades(upgradeDir, 100).find(j => j.id === fence.upgradeId);
-    if (owner && !fencedUpgradeStates.includes(owner.state)) clearUpgradeFence(store.path);
+    if (owner && !fencedUpgradeStates.includes(owner.state)) clearUpgradeFence(store.path, owner.id);
   }
   return active;
 }
@@ -1201,7 +1210,7 @@ export async function activateUpgrade(ctx: UpgradeContext, journal: UpgradeJourn
 async function completeActivation(ctx: UpgradeContext, journal: UpgradeJournal, request: UpgradeRequest | null): Promise<UpgradeJournal> {
   // Reconciliation needs the scheduler admission gate open; workers stay hidden until it succeeds.
   const fence = readUpgradeFence(ctx.store.path);
-  if (fence && fence.upgradeId === journal.id) clearUpgradeFence(ctx.store.path);
+  if (fence && fence.upgradeId === journal.id) clearUpgradeFence(ctx.store.path, journal.id);
   const resumed = await safeResume(ctx);
   ctx.fault?.("reconciled");
   return finishReconcile(ctx, journal, resumed, request);
@@ -1261,7 +1270,7 @@ export async function rollbackUpgrade(ctx: UpgradeContext, journal: UpgradeJourn
     reason: "rolled_back_before_activation", nextAction: "inspect_then_prepare_again",
     requests: withRequest(journal, request), updatedAt: now });
   const fence = readUpgradeFence(ctx.store.path);
-  if (fence && (fence.upgradeId === journal.id || fence.upgradeId === "unknown")) clearUpgradeFence(ctx.store.path);
+  if (fence && (fence.upgradeId === journal.id || fence.upgradeId === "unknown")) clearUpgradeFence(ctx.store.path, fence.upgradeId);
   const resumed = await safeResume(ctx);
   rolled = saveJournal(ctx.upgradeDir, { ...rolled, reconcile: { ...resumed, at: ctx.now() } });
   recordAudit(ctx, rolled);

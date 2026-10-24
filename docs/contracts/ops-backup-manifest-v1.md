@@ -145,25 +145,30 @@ ceiling or streamed snapshot).
 
 Every table is classified in `backupImageTables`; an unclassified table fails
 creation with `backup_schema_unclassified`. The image empties `owner`,
-`sessions`, `login_throttle`, `ops_backups`, `job_scheduler` and `delivery_worker`, nulls
+`sessions`, `login_throttle`, `ops_backups`, `lifecycle_ledger`,
+`lifecycle_checkpoint`, `job_scheduler` and `delivery_worker`, nulls
 pending Telegram challenge nonces, nulls secret-bearing keys inside
 `command_receipts.result_json`, zeroes freed pages (`secure_delete`) and
 vacuums. The manifest records `credentials: { included: false, excludedTables,
 scrubbed, restore: "owner_credential_setup_required" }`. There is no secret
 backup procedure in v1.
 
-The managed backup registry (`ops_backups`) is installation state, likewise
-excluded from images (`installationScopedTables` in `src/store.ts`).
+The managed backup registry (`ops_backups`) and the installation lifecycle
+ledger (`lifecycle_ledger`, `lifecycle_checkpoint`; schema 23,
+app.deletion_ledger/v1) are installation state, likewise excluded from images
+(`installationScopedTables` in `src/store.ts`).
 Activation (`TransactionStore.swapFrom`, used by OPS02 restore and upgrade
 activation) builds the complete replacement image before an atomic rename and
 always keeps the live installation's owner verifier, sessions,
-throttle and backup registry, so restoring one backup never forgets the others
+throttle, backup registry and lifecycle ledger, so restoring a backup can never
+roll back current tombstones or suppressions, and restoring one backup never forgets the others
 or orphans their files; listing re-verifies every preserved row against its
 managed files and orphan reconciliation only removes files with no live row.
 `export_artifact_bodies` is pre-classified `exclude` for #31. Restoring into an installation without an owner therefore requires
 owner credential setup (`bun src/main.ts setup`). Restored images never start
 workers: scheduler and delivery claims are absent and OPS02 quarantine plus
-external-ledger reconciliation gate activation.
+replay of the latest installation ledger gate activation
+([ops-quarantined-restore-v1](ops-quarantined-restore-v1.md)).
 
 ## Evidence
 

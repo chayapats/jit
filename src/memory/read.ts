@@ -75,17 +75,43 @@ export function eligibleMemorySource(tx: AppTransaction, projectId: string, refe
   return source;
 }
 
-/** Generation-fenced suppression: this exact source lineage must never feed automatic memory again. */
+/**
+ * Generation-fenced suppression: this exact source lineage must never feed automatic memory again.
+ * Also honours the installation lifecycle ledger, which outlives any restored image (OPS02).
+ */
 export function suppressedSource(tx: AppTransaction, reference: import("../sources").SourceReference): boolean {
   requireReference(reference);
   return !!tx.get("SELECT 1 FROM memory_suppressed_sources WHERE source_id = ? AND revision = ? AND generation = ?",
-    reference.sourceId, reference.revision, reference.generation);
+    reference.sourceId, reference.revision, reference.generation) ||
+    lifecycleLedgerHas(tx, "suppressed_source", `source:${reference.sourceId}:${reference.revision}:${reference.generation}`);
 }
 
 /** Whether this claim identity was withdrawn by an owner forget; payload stays out of the ledger. */
 export function suppressedClaim(tx: AppTransaction, claimId: string): boolean {
   requireId(claimId);
-  return !!tx.get("SELECT 1 FROM memory_suppressed_claims WHERE claim_id = ?", claimId);
+  return !!tx.get("SELECT 1 FROM memory_suppressed_claims WHERE claim_id = ?", claimId) ||
+    lifecycleLedgerHas(tx, "suppressed_claim", `claim:${claimId}`);
+}
+
+/** Schema version that created the installation lifecycle ledger (`lifecycle_ledger`). */
+export const lifecycleLedgerSchema = 23;
+
+/**
+ * app.deletion_ledger/v1 installation lifecycle ledger lookup. The ledger is
+ * installation-scoped (never restored from an image), so deny checks consult it
+ * in addition to the image's own tables: an entry recorded after a restore point
+ * still denies every consumer once that point is restored. Fails closed like the
+ * deletion ledger; only a store older than schema 23 without the table reads as empty.
+ */
+export function lifecycleLedgerHas(tx: AppTransaction, kind: "deletion" | "suppressed_claim" | "suppressed_source", subject: string): boolean {
+  try {
+    return !!tx.get("SELECT 1 FROM lifecycle_ledger WHERE kind = ? AND subject = ? LIMIT 1", kind, subject);
+  } catch (error) {
+    let version = Number.POSITIVE_INFINITY;
+    try { version = tx.get<{ user_version: number }>("PRAGMA user_version")?.user_version ?? Number.POSITIVE_INFINITY; } catch { /* Unknown schema fails closed. */ }
+    if (error instanceof Error && /no such table/.test(error.message) && version < lifecycleLedgerSchema) return false;
+    throw new AppError("deletion_ledger_unavailable", 503);
+  }
 }
 
 /** Schema version that created `deletion_ledger`; older stores have recorded no deletions yet. */
@@ -107,18 +133,22 @@ export function ledgerQueryFailed(tx: AppTransaction, error: unknown): "pre_migr
 /** Whether this exact source lineage was deleted; payload is never stored in the ledger. Fails closed on ledger errors. */
 export function deletedSource(tx: AppTransaction, reference: import("../sources").SourceReference): boolean {
   requireReference(reference);
+  let found = false;
   try {
-    return !!tx.get("SELECT 1 FROM deletion_ledger WHERE kind = 'source' AND source_id = ? AND revision = ? AND generation = ?",
+    found = !!tx.get("SELECT 1 FROM deletion_ledger WHERE kind = 'source' AND source_id = ? AND revision = ? AND generation = ?",
       reference.sourceId, reference.revision, reference.generation);
-  } catch (error) { ledgerQueryFailed(tx, error); return false; }
+  } catch (error) { ledgerQueryFailed(tx, error); }
+  return found || lifecycleLedgerHas(tx, "deletion", `source:${reference.sourceId}:${reference.revision}:${reference.generation}`);
 }
 
 /** Whether this claim identity was deleted; payload stays out of the ledger. Fails closed on ledger errors. */
 export function deletedClaim(tx: AppTransaction, claimId: string): boolean {
   requireId(claimId);
+  let found = false;
   try {
-    return !!tx.get("SELECT 1 FROM deletion_ledger WHERE kind = 'claim' AND claim_id = ?", claimId);
-  } catch (error) { ledgerQueryFailed(tx, error); return false; }
+    found = !!tx.get("SELECT 1 FROM deletion_ledger WHERE kind = 'claim' AND claim_id = ?", claimId);
+  } catch (error) { ledgerQueryFailed(tx, error); }
+  return found || lifecycleLedgerHas(tx, "deletion", `claim:${claimId}`);
 }
 
 /** app.context_provenance/v1 loop depth: 0 for owner/raw sources, >0 for outputs produced with memory in context. */
