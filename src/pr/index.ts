@@ -97,6 +97,7 @@ export {
 export { PR_REVIEW_SCRIPTED_ROUTE, prReviewWork, resolvePrReviewRoute, type PrReviewWorkOptions } from "./review";
 export { activePrJobIds, fencePrCandidateWork, fencePrReviewJobs, retirePrSnapshot, type PrFenceReason } from "./fence";
 export {
+  ALERT_FIELD_RESERVE_BYTES,
   ALERT_POLICY_VERSION,
   DEFAULT_ALERT_POLICY,
   NOTIFIABLE_CATEGORIES,
