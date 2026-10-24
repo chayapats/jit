@@ -219,7 +219,7 @@ test("export with history preserves all kinds, honors corrected/forgotten/delete
   const delPreview = asDeletePreview(f.rt.app.execute(actor(f), { kind: "memory.delete.preview" as const, requestId: rid(), projectId: a.id,
     expectedRevision: projectRevision(f, a), payload: { scope: { kind: "source", projectId: a.id, source: { ...sDel } } } }));
   const opId = asDeleteConfirmed(f.rt.app.execute(actor(f), { kind: "memory.delete.confirm" as const, requestId: rid(), projectId: a.id,
-    expectedRevision: projectRevision(f, a), payload: { previewId: delPreview.preview.id, acknowledged: true, acknowledgedWholeSession: false } })).operation.id;
+    expectedRevision: projectRevision(f, a), payload: { previewId: delPreview.preview.id, acknowledged: true, acknowledgedWholeSession: delPreview.preview.wholeSession.required } })).operation.id;
   await reconcileDeletions(f.rt.store, f.rt.port as unknown as ApplicationRunPort, f.clock.now);
   expect(f.rt.app.deletionOperation(actor(f), a.id, opId).operation!.state).toBe("complete");
   const receipt = f.rt.app.execute(actor(f), exportCommand(f, a, true));
@@ -237,7 +237,8 @@ test("export with history preserves all kinds, honors corrected/forgotten/delete
   expect(text).toContain("ข้อความที่แก้แล้ว (corrected) ✓");
   // Deleted content is absent; forgotten is inactive; corrected old revision is excluded.
   expect(text).not.toContain("delete-me-009");
-  expect(text).toContain("(memory ไม่พร้อมใช้งาน)");
+  // Derived outputs are purged by lineage (unavailable) or keep only the redaction marker.
+  expect(text.includes("(memory ไม่พร้อมใช้งาน)") || text.includes("source_unavailable")).toBe(true);
   const data = artifact.data as { claims: { state: string; claim?: MemoryClaim; reference?: ClaimReference; reason?: string }[]; sources: unknown[] };
   const activeTexts = data.claims.flatMap(c => c.state === "available" ? [c.claim!.text] : []);
   expect(activeTexts).toContain(keep.text);

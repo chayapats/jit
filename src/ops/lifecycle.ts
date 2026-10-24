@@ -147,8 +147,12 @@ export interface StartInput {
 /**
  * Starts the composed full application after preflight. A blocked preflight
  * returns its gates instead of enabling jobs, memory assembly or deliveries.
+ * Session and deletion reconciliation (jobs.session_reconcile/v1,
+ * app.data_lifecycle/v1) completes through the team lifecycle port before an
+ * active handle is returned, so stale workers and pending native deletions are
+ * reconciled before any serving or pumping.
  */
-export function startFullApp(input: StartInput): { ok: true; handle: FullAppHandle } | { ok: false; gates: PreflightGate[] } {
+export async function startFullApp(input: StartInput): Promise<{ ok: true; handle: FullAppHandle } | { ok: false; gates: PreflightGate[] }> {
   const service = parseServiceConfig(input.service);
   const quarantine = readQuarantine(service);
   if (quarantine.quarantined) {
@@ -165,6 +169,8 @@ export function startFullApp(input: StartInput): { ok: true; handle: FullAppHand
     }
     const composed = composeJobQueue(store, input.config, { now });
     queue = composed.queue;
+    // Reconcile sessions and pending deletions through the composed team port before exposing the app.
+    await queue.reconcile(composed.teamPort);
     // Same selection as serve (backupNativePortFor); managed backups land in
     // the validated service backup directory, never beside the database.
     const nativeSnapshot = backupNativePortFor(input.config, store);
