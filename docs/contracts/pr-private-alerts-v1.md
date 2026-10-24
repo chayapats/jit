@@ -44,7 +44,7 @@ Additive tables created by `ensurePrSchema` (PR tables stay outside the formal `
 
 ## Read model
 
-- `Application.prReports` returns `{project, items, pending, policy}`; `pending` lists candidates without a report as `not_reviewed` or `running` (live `pr.review` job).
+- `Application.prReports` returns `{project, items, reviews, pending, policy}`: `reviews` is every candidate's projected review state (`listReviewStates`, `pr.private_report/v1`); `pending` is the subset whose projected attempt has no report yet, `not_reviewed` or `running` (live `pr.review` job), with `reportId: null` (a running re-review keeps the earlier report only as `previousReportId`).
 - `Application.prReport` returns `{project, report, annotations, evaluation, alerts, policy, decisions, decision}`; `evaluation` previews the current policy, `decisions` is the stored history, `alerts` are the linked intents (with `findingId`).
 - Web shows `data-state` `not_reviewed`/`running`/`no_findings`/`findings`/`partial`/`incomplete`/`failed`/`stale` and per-alert `data-delivery` `waiting`/`queued`/`claimed`/`sent`/`failed`/`unknown`/`cancelled`, stale alerts labelled "ไม่ใช่ผลล่าสุด". `unknown` never reads as delivered and the report stays readable on Telegram outage.
 - Owner dismissal is a revisioned `pr_report_annotations` row (`findingId` optional, `decisionId` = latest decision); it never rewrites findings and never writes memory claims.
