@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { AppError } from "../errors";
 import type { AppTransaction } from "../store";
+import { retirePrAlerts } from "./alert-links";
 import { ensurePrSchema } from "./schema";
 import {
   DEFAULT_PR_LIMITS,
@@ -200,6 +201,8 @@ export function mutateMonitor(
       tx.run("UPDATE pr_candidates SET status = ?, record_json = ? WHERE id = ?",
         "cancelled", JSON.stringify(candidate), row.id);
     }
+    // PR03: revoked monitoring retires pending alerts and marks settled ones visibly stale.
+    retirePrAlerts(tx, { projectId: command.projectId, monitorId: monitor.id }, "monitoring_revoked", now, { markSettledStale: true });
     onRevoke?.(monitor);
   }
   monitor.revision += 1;

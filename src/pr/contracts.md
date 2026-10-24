@@ -41,7 +41,7 @@ Private static review bound to one immutable snapshot and revision tuple. No Git
 | `validateFinding` | Each actionable finding needs location, condition, impact, reasoning and declared evidence type with a valid snapshot citation. Missing/invalid citations stay suspected. Severity never substitutes for evidence. |
 | `normalizeReviewOutput` | Parses untrusted model JSON into validated findings + analyzed/skipped scope + disagreements. Unknown route/task/mutation fields are ignored, never acted on. |
 | `persistReport` / `readReport` / `listReports` | Atomic fenced commit under current attempt/input/authorization generation; report pins repository/PR/base/head/policy/review-policy, source manifest, analyzed/skipped scope, attempts and disagreements. Reads compute a stale overlay for revision/policy/cancel/retire/revoke; history rows are never mutated by reads. |
-| `annotateReport` / `pr.report.dismiss` | Revisioned owner dismissal/feedback as `pr_report_annotations`; findings history immutable, report revision advances, stale replay rejected. |
+| `annotateReport` / `pr.report.dismiss` | Revisioned owner dismissal/feedback as `pr_report_annotations` (optional `findingId`, linked `decisionId`); findings history immutable, report revision advances, stale replay rejected; dismissal retires pending alert intents and feeds admission/send rechecks; never writes memory claims. |
 | `pr.review` work | N bounded specialist invokes + 1 synthesis through `ApplicationRunPort` only, separate contexts and finite budgets. Snapshot capture stays on `TrustedGitHubConnector` + `fixtureFor`, never through the run port. Revoke/supersede fences via `isCurrent` + commit gate before `cancelFenced`. |
 
 ## `pr.private_alerts/v1`
@@ -50,11 +50,12 @@ Private notification for evidence-backed findings only, linked back to the repor
 
 | Entry | Behavior |
 | --- | --- |
-| `DEFAULT_ALERT_POLICY` / `ALERT_POLICY_VERSION` | Allowed categories `correctness,security,behavior`, evidence required, actionable only. Uncertainties and style stay in the report. |
-| `evaluateReport` | Pure policy pass returning qualifying vs held with reasons; owner can inspect why each finding was notified or held. |
-| `alertKey` | Logical dedupe `pr-alert/<reportId>/<findingId>/v<policy>/<head12>/<policyVersion>`; replay returns the existing intent. |
-| `admitReportAlerts` | Rechecks current base/head/policy, report validity, enabled monitoring and owner generation immediately before `commitDeliveryIntent`; old revisions suppress, never label latest. Payload holds repo/PR/revision/location/condition/impact/evidence type/report link plus a partial-scope warning; secrets and PR-supplied destinations never enter. |
-| Read model | `Application.prReport` shows evaluation + linked `delivery_intents`; Web shows no-findings/not-reviewed/partial/stale/failed and queued/sent/failed/unknown separately. Unknown never reads as delivered. |
+| `DEFAULT_ALERT_POLICY` / `ALERT_POLICY_VERSION` / `readAlertPolicy` / `pr.alert_policy.set` | Explicit default v1 (categories `correctness,security,behavior`, evidence + actionable required, no severity threshold, partial notifies with warning) persisted in `pr_alert_policies`; owner writes revisioned versions through the shared command receipt path. Uncertainties and style stay in the report. |
+| `evaluateReport` / `readAlertDecisions` | Pure policy pass returning qualifying vs held with reasons; each admission stores an `AlertDecision` so the owner can inspect why each finding was notified, held or suppressed. |
+| `alertKey` | Logical dedupe `pr-alert/<reportId>/<findingId>/v<policy>/<head12>/<policyVersion>`; replay returns the existing intent; a live alert under another policy version reads `already_notified`. |
+| `admitReportAlerts` / `admitCommittedReportAlerts` | Runs automatically in the `pr.review` report commit transaction (savepointed; failure never loses the report). Rechecks base/head/policy, report validity, enabled monitoring, owner generation and dismissal before `commitDeliveryIntent(guard:"pr-alert")`; old revisions suppress, never label latest. Payload holds repo/PR/revision/location/condition/impact/evidence type/service report path plus a partial-scope warning; secrets and PR-supplied destinations never enter. |
+| `prAlertCurrentness` / `retirePrAlerts` | Outbox send-time guard rechecks the linked report immediately before send; supersede/close/stale/revoke/dismissal/policy change retire pending intents in the same transaction. |
+| Read model | `Application.prReports` adds `pending` (not-reviewed/running) and `policy`; `Application.prReport` shows evaluation, stored decisions, policy and linked `delivery_intents`; Web shows no-findings/not-reviewed/running/partial/stale/failed and queued/sent/failed/unknown separately. Unknown never reads as delivered. |
 
 ## Exact public TypeScript surface
 

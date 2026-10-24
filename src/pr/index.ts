@@ -8,7 +8,11 @@ export {
   TRIGGER_POLICY_VERSION,
 } from "./types";
 export type {
+  AlertDecision,
+  AlertFindingDecision,
+  AlertLink,
   AlertPolicy,
+  AlertPolicyReceipt,
   AllowedResources,
   CandidateStatus,
   CoverageEntry,
@@ -45,6 +49,8 @@ export type {
   ResumeMonitorCommand,
   ReviewCandidate,
   RevokeMonitorCommand,
+  SetAlertPolicyCommand,
+  StoredAlertPolicy,
 } from "./types";
 
 export { ensurePrSchema } from "./schema";
@@ -75,10 +81,21 @@ export { prReviewWork, fencePrReviewJobs, type PrReviewWorkOptions } from "./rev
 export {
   ALERT_POLICY_VERSION,
   DEFAULT_ALERT_POLICY,
+  NOTIFIABLE_CATEGORIES,
+  PR_ALERT_GUARD,
+  admitCommittedReportAlerts,
   admitReportAlerts,
   alertKey,
+  alertPolicyIdentity,
   buildAlertPayload,
+  ensureAlertPolicy,
   evaluateReport,
+  listAlertPolicies,
+  prAlertCurrentness,
+  readAlertDecisions,
+  readAlertPolicy,
+  setAlertPolicy,
   type AdmitAlertResult,
   type AlertEvaluation,
 } from "./alerts";
+export { readAlertLink, readAlertLinks, retirePrAlerts, type AlertScope } from "./alert-links";

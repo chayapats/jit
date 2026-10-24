@@ -1,32 +1,50 @@
 # `pr.private_alerts/v1`
 
-Owner: Jit #24 (PR03). Parent spec #1, blocks on #19 (PR02 report) and #13 (TG03 outbox).
+Owner: Jit #24 (PR03). Parent spec #1, blocks on #19 (PR02 report) and #13 (TG03 outbox). Uses `pr.private_report/v1`, `pr.monitoring_authority/v1`, `delivery.outbox/v1` (including its send-time guard) and `jobs.attempt_fence/v1`.
 
-A committed report creates a private alert only for findings that pass the visible evidence policy, with duplicate/stale suppression and delivery linkage.
+A committed report creates a private alert only for findings that pass the visible evidence policy, with duplicate/stale suppression and delivery linkage. Producing an intent in `waiting` (no Telegram binding yet) is valid; nothing here claims live Telegram delivery.
+
+## Storage
+
+Additive tables created by `ensurePrSchema` (PR tables stay outside the formal `user_version` ladder, as in PR01/PR02):
+
+- `pr_alert_policies(project_id, version, record_json)`: versioned owner policy history; latest version is current.
+- `pr_alert_decisions(sequence, id, project_id, report_id, digest, record_json)`: append-only `AlertDecision` records; an identical re-evaluation returns the latest record instead of appending.
+- `pr_alerts(intent_id, project_id, report_id, finding_id, candidate_id, monitor_id, policy_version, record_json)`: `AlertLink` from each outbox intent to the report/finding/base/head/trigger-policy/owner generation that produced it.
 
 ## Policy
 
-- `DEFAULT_ALERT_POLICY` v1: allowed categories `correctness,security,behavior`; `requireEvidence:true`; `requireActionable:true`. Severity never substitutes for evidence.
-- `evaluateReport`: pure pass over `report.findings`; qualifying vs held with reason (`not_actionable`, `category_not_notifiable`, `evidence_required`, `payload_hygiene`, ...). Uncertainties and style/design stay in the report.
+- `DEFAULT_ALERT_POLICY` (version `ALERT_POLICY_VERSION` = 1): categories `correctness,security,behavior`; `requireEvidence:true`; `requireActionable:true`; `minimumSeverity:"info"` (no threshold); `notifyPartial:true`. The default is explicit and persisted as version 1 on first admission or first owner change.
+- `readAlertPolicy(tx, projectId)` returns the latest `StoredAlertPolicy` (or the default with `persisted:false`; reads never write). `listAlertPolicies` returns history.
+- Owner command `pr.alert_policy.set` (`SetAlertPolicyCommand`, `Application.execute`, shared `command_receipts` + audit, web channel only): `expectedRevision` is the current policy version; payload `{allowedCategories ⊆ correctness/security/behavior, minimumSeverity, notifyPartial}`. Evidence and actionability cannot be disabled; extra fields, `style`/`uncertain` categories and stale revisions are rejected (`invalid_alert_policy`, `stale_revision`). Receipt `AlertPolicyReceipt {policy, previousVersion, retiredIntentIds, decisions}`: pending intents whose finding no longer qualifies are cancelled with `alert_policy_changed` (sent ones untouched) and current non-stale reports are re-evaluated (`trigger:"policy_change"`).
+- `evaluateReport(report, policy)`: pure pass; held reasons include the finding's first validation error / `not_actionable`, `category_not_notifiable`, `evidence_required`, `severity_below_minimum`, `partial_scope_held`. Severity only narrows evidence-backed findings, never substitutes for evidence.
+- HTTP: `GET /api/projects/:projectId/pr/alert-policy`; `POST /projects/:projectId/pr/alert-policy` (session, Origin, CSRF; form fields `cat_<category>=on`, `minimumSeverity`, `notifyPartial=on`; JSON `allowedCategories[]`, `minimumSeverity`, `notifyPartial`).
 
 ## Keys and admission
 
-- `alertKey`: `pr-alert/<reportId>/<findingId>/v<policy>/<head12>/<policyVersion>` (hashed fallback when long). One policy evaluation admits at most one logical intent per qualifying finding; `commitDeliveryIntent` replay dedupe returns the existing intent.
-- `admitReportAlerts(tx, {projectId, reportId}, now)`: inside the caller transaction,
-  1. re-read report + candidate + monitor;
-  2. suppress when report stale/failed/incomplete/running, monitor not active, candidate closed/superseded/cancelled/stale, or base/head/policy drift;
-  3. hold policy-excluded findings;
-  4. hygiene-recheck each qualifying finding (secret-like or `t.me/telegram/chat_id/sendMessage` content held);
-  5. build payload + `commitDeliveryIntent(kind:report)`.
-- Payload: repo `owner/name#number`, base/head short, policy, finding id/category/severity/title, location, condition, impact, evidence type/ref, report id, plus `คำเตือน: ตรวจไม่ครบ…` when coverage not complete. No credentials, token values or PR-supplied destinations.
+- `alertKey`: `pr-alert/<reportId>/<findingId>/v<alertPolicyVersion>/<head12>/<triggerPolicyVersion>` (hashed fallback when long).
+- Report commit: the `pr.review` job's fenced commit calls `admitCommittedReportAlerts` in the same transaction as `persistReport` (`trigger:"report_commit"`). Admission runs inside a savepoint; any failure rolls back only the admission and never loses the report or faults the queue. `prReviewWork({ alertBytes })` bounds payload bytes (service wiring passes `config.messageBytes`).
+- `admitReportAlerts(tx, {projectId, reportId, maxBytes?, trigger?}, now)` (also `Application.admitPrAlerts`, `trigger:"owner_admit"`):
+  1. re-read report (stale overlay incl. owner generation), monitor and candidate; whole-report suppression for stale/failed/incomplete/running, monitor not active/revoked, candidate closed/superseded/cancelled/stale, base/head/trigger-policy drift, or a whole-report owner dismissal (`report_dismissed`);
+  2. evaluate the persisted project policy; finding-level dismissal holds `finding_dismissed`;
+  3. hygiene-recheck each qualifying finding (secret-like or Telegram destination content held as `payload_hygiene`);
+  4. a finding that already has a live (non-cancelled) alert under another policy version is `already_notified` (no duplicate);
+  5. commit one guarded intent (`guard:"pr-alert"`) per remaining finding via `commitDeliveryIntent` replay dedupe; per-finding outbox failure is held `admission_failed`;
+  6. store the `AlertDecision` (per finding: `notified`/`already_notified`/`held`/`suppressed`, reason, intent id) and the `AlertLink`s. Result: `{admitted, suppressed, held, decision}`.
+- Payload (`buildAlertPayload`, ≤ min(maxBytes, 3500) bytes, condition/impact truncated by bytes): repo `owner/name#number`, base/head short, trigger policy, finding id/category/severity/title, location, condition, impact, evidence type/ref, service-owned report path `/projects/<projectId>/pr/reports/<reportId>`, plus `คำเตือน: ตรวจไม่ครบ…` when coverage is not complete. URLs/Telegram links in PR-derived text are redacted; secret-like output throws. No credentials, token values or PR-supplied destinations.
+
+## Send-time recheck and retirement
+
+- `prAlertCurrentness` is registered with `registerDeliveryGuard("pr-alert", …)`. The outbox runs it inside the claim and send transactions immediately before invoking the sender, and again when a result lands. It requires: link present; report not stale (base/head/trigger policy, monitor active, candidate current, owner generation); report status alertable; link base/head/trigger policy equal the report; owner generation equal the link; no report/finding dismissal; the finding still qualifies under the current policy. Paused monitoring holds the intent `waiting` (`wait_for_current_source`); every other failure cancels it before send with `stale:true` and the reason. A result landing after drift keeps the actual outcome and is marked stale.
+- Eager retirement (`retirePrAlerts`) in the same transaction as the change: poll supersede (`candidate_superseded`) and close (`pr_closed`), snapshot stale refs (`candidate_stale`), monitor revoke (`monitoring_revoked`) cancel pending intents and mark already sent/unknown/failed alerts visibly stale; dismissal (`report_dismissed`/`finding_dismissed`) and policy change (`alert_policy_changed`) cancel pending intents only. Retirement never claims a remote message was withdrawn.
 
 ## Read model
 
-- `Application.prReport` returns `{report, annotations, evaluation, alerts}` where `alerts` are `delivery_intents` with `dedupe_key LIKE pr-alert/<reportId>/%`.
-- `Application.admitPrAlerts` runs the transactional admission above.
-- Web `prReportsPage` / `prReportPage` show no-findings, not-reviewed, partial, stale, failed and per-intent queued/sent/failed/unknown separately; `unknown` never reads as delivered and the report stays readable on Telegram outage.
-- Owner dismissal is a revisioned `pr_report_annotations` row; it never rewrites findings and never converts rejected findings into learned facts.
+- `Application.prReports` returns `{project, items, pending, policy}`; `pending` lists candidates without a report as `not_reviewed` or `running` (live `pr.review` job).
+- `Application.prReport` returns `{project, report, annotations, evaluation, alerts, policy, decisions, decision}`; `evaluation` previews the current policy, `decisions` is the stored history, `alerts` are the linked intents (with `findingId`).
+- Web shows `data-state` `not_reviewed`/`running`/`no_findings`/`findings`/`partial`/`incomplete`/`failed`/`stale` and per-alert `data-delivery` `waiting`/`queued`/`claimed`/`sent`/`failed`/`unknown`/`cancelled`, stale alerts labelled "ไม่ใช่ผลล่าสุด". `unknown` never reads as delivered and the report stays readable on Telegram outage.
+- Owner dismissal is a revisioned `pr_report_annotations` row (`findingId` optional, `decisionId` = latest decision); it never rewrites findings and never writes memory claims.
 
 ## Evidence
 
-`tests/pr-alerts.test.ts`: policy gating (evidence required), logical alert keys (replay dedup), recheck-before-send (base/head close/revoke/retire/owner-rotation → suppressed/stale), payload hygiene (no secrets/PR destinations), read-model states incl unknown delivery never delivered on outage, revisioned dismissal never rewriting history.
+`tests/pr-alerts.test.ts`: policy gating; report-commit admission with stored decision and duplicate processing (re-admit, second review job); admission failure keeps the report; send-time recheck for hook-free close, new revision, pause/resume, revoke before/after send, waiting-then-drift-then-bind and drift during an in-flight send; restart with unknown delivery and drift while down; unregistered guard fails closed; versioned owner policy (rejects evidence-disabling, replay, stale revision, severity floor, re-admission without duplicates, web route); whole-report and finding dismissal feeding admission and send without memory writes; payload link/redaction/byte bound; web state separation.

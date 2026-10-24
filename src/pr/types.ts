@@ -181,6 +181,10 @@ export interface ReportAnnotation {
   kind: "dismiss" | "feedback";
   text: string;
   createdAt: number;
+  /** Finding this annotation applies to; null or absent means the whole report. */
+  findingId?: string | null;
+  /** Latest stored alert decision the annotation responds to, when one existed. */
+  decisionId?: string | null;
 }
 
 /** Job input identifying one durable candidate for private review. */
@@ -195,7 +199,8 @@ export interface DismissReportCommand {
   requestId: string;
   projectId: string;
   expectedRevision: number;
-  payload: { reportId: string; reason: string };
+  /** `findingId` narrows the dismissal to one finding; omitted means the whole report. */
+  payload: { reportId: string; reason: string; findingId?: string };
 }
 
 export type PrReportCommand = DismissReportCommand;
@@ -209,10 +214,78 @@ export interface PrReportReceipt {
 
 /** Versioned private alert policy; severity never substitutes for evidence. */
 export interface AlertPolicy {
+  /** Persisted policy revision; the explicit default is version 1. */
   version: number;
   allowedCategories: PrFindingCategory[];
   requireEvidence: boolean;
   requireActionable: boolean;
+  /** Additional owner floor applied after evidence; `info` means no severity threshold. */
+  minimumSeverity: PrFinding["severity"];
+  /** Whether partial/incomplete-scope reports may notify (always with the partial-scope warning). */
+  notifyPartial: boolean;
+}
+
+/** Project-scoped policy as read from `pr_alert_policies`; `persisted:false` is the explicit unwritten default. */
+export interface StoredAlertPolicy extends AlertPolicy {
+  projectId: string;
+  persisted: boolean;
+  createdAt: number | null;
+}
+
+/** Owner command that writes the next alert policy version. `expectedRevision` is the current policy version. */
+export interface SetAlertPolicyCommand {
+  kind: "pr.alert_policy.set";
+  requestId: string;
+  projectId: string;
+  expectedRevision: number;
+  payload: { allowedCategories: PrFindingCategory[]; minimumSeverity: PrFinding["severity"]; notifyPartial: boolean };
+}
+
+/** Per-finding outcome of one stored alert evaluation. */
+export type AlertFindingDecision = "notified" | "already_notified" | "held" | "suppressed";
+
+/** Stored, owner-inspectable record of why each finding of one report was notified, held or suppressed. */
+export interface AlertDecision {
+  id: string;
+  projectId: string;
+  reportId: string;
+  reportRevision: number;
+  candidateId: string;
+  baseSha: string;
+  headSha: string;
+  triggerPolicyVersion: number;
+  policyVersion: number;
+  trigger: "report_commit" | "owner_admit" | "policy_change";
+  /** Whole-report suppression reason (stale, failed, dismissed, ...); null when findings were evaluated. */
+  suppressedReason: string | null;
+  findings: Array<{ findingId: string; decision: AlertFindingDecision; reason: string | null; intentId: string | null }>;
+  createdAt: number;
+}
+
+/** Receipt for `pr.alert_policy.set`; pending intents that no longer qualify are retired, current reports re-evaluated. */
+export interface AlertPolicyReceipt {
+  policy: StoredAlertPolicy;
+  previousVersion: number;
+  retiredIntentIds: string[];
+  decisions: AlertDecision[];
+}
+
+/** Durable link from one outbox intent back to the report/finding/revision that produced it. */
+export interface AlertLink {
+  intentId: string;
+  projectId: string;
+  reportId: string;
+  findingId: string;
+  candidateId: string;
+  monitorId: string;
+  decisionId: string;
+  policyVersion: number;
+  reportRevision: number;
+  baseSha: string;
+  headSha: string;
+  triggerPolicyVersion: number;
+  ownerGeneration: number;
+  createdAt: number;
 }
 
 /** A durable review candidate keyed by repository/PR/base/head/policy. */

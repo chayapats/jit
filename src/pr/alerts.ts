@@ -1,24 +1,42 @@
 import { createHash } from "node:crypto";
 import { AppError } from "../errors";
-import { commitDeliveryIntent, type DeliveryReceipt } from "../delivery";
+import { commitDeliveryIntent, readDeliveryIntent, registerDeliveryGuard, type DeliveryCurrentness, type DeliveryIntent, type DeliveryReceipt } from "../delivery";
+import { requireId } from "../sources";
 import type { AppTransaction } from "../store";
+import { readAlertLink, readAlertLinks, retirePrAlerts } from "./alert-links";
 import { readMonitor } from "./authority";
 import { readCandidate } from "./poll";
 import { ensurePrSchema } from "./schema";
-import { readReport } from "./report";
-import type { AlertPolicy, PrivateReport, PrFinding } from "./types";
+import { listReports, readAnnotations, readReport } from "./report";
+import type {
+  AlertDecision, AlertFindingDecision, AlertLink, AlertPolicy, AlertPolicyReceipt, PrFinding, PrFindingCategory,
+  PrivateReport, ReportAnnotation, SetAlertPolicyCommand, StoredAlertPolicy,
+} from "./types";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
+const requestIdOk = (value: string) => /^[a-zA-Z0-9_-]{8,128}$/.test(value);
+const secretLike = /bearer\s|authorization\s*:|x-telegram|bot[_ -]?token|[0-9]{5,}:[A-Za-z0-9_-]{8,}/i;
+const destinationLike = /t\.me\/|telegram\.me|chat_id|sendMessage/i;
 
-/** Alert policy version; evaluating a report accepts this exact revision. */
+/** Delivery guard name under which PR alert intents are rechecked immediately before send. */
+export const PR_ALERT_GUARD = "pr-alert" as const;
+
+/** Version of the explicit default policy; persisted owner revisions count up from here. */
 export const ALERT_POLICY_VERSION = 1 as const;
 
-/** Visible defaults: actionable evidence-backed correctness/security/behavior only. */
+/** Categories that may ever notify. Style and uncertain findings stay in the private report. */
+export const NOTIFIABLE_CATEGORIES: readonly PrFindingCategory[] = Object.freeze(["correctness", "security", "behavior"]);
+
+const SEVERITIES = ["info", "low", "medium", "high", "critical"] as const;
+
+/** Visible defaults: actionable evidence-backed correctness/security/behavior only, no severity threshold. */
 export const DEFAULT_ALERT_POLICY: AlertPolicy = {
   version: ALERT_POLICY_VERSION,
   allowedCategories: ["correctness", "security", "behavior"],
   requireEvidence: true,
   requireActionable: true,
+  minimumSeverity: "info",
+  notifyPartial: true,
 };
 Object.freeze(DEFAULT_ALERT_POLICY);
 Object.freeze(DEFAULT_ALERT_POLICY.allowedCategories);
@@ -28,13 +46,29 @@ export interface AlertEvaluation {
   held: Array<{ finding: PrFinding; reason: string }>;
 }
 
+function checkPolicy(policy: AlertPolicy): void {
+  if (!policy || typeof policy !== "object"
+      || !Number.isSafeInteger(policy.version) || policy.version < 1
+      || !Array.isArray(policy.allowedCategories)
+      || new Set(policy.allowedCategories).size !== policy.allowedCategories.length
+      || policy.allowedCategories.some(c => !NOTIFIABLE_CATEGORIES.includes(c))
+      || typeof policy.requireEvidence !== "boolean" || typeof policy.requireActionable !== "boolean"
+      || !(SEVERITIES as readonly string[]).includes(policy.minimumSeverity)
+      || typeof policy.notifyPartial !== "boolean") {
+    throw new AppError("invalid_alert_policy");
+  }
+}
+
+const partialScope = (report: Pick<PrivateReport, "status" | "coverageOverall" | "enumerationComplete">) =>
+  report.status === "partial" || report.coverageOverall !== "complete" || !report.enumerationComplete;
+
 /**
  * Applies the versioned notification policy to one committed report.
  * Uncertainties and taste/design suggestions stay in the private report.
- * Severity is never a substitute for evidence.
+ * Severity is never a substitute for evidence: the severity floor only narrows evidence-backed findings.
  */
 export function evaluateReport(report: PrivateReport, policy: AlertPolicy = DEFAULT_ALERT_POLICY): AlertEvaluation {
-  if (policy.version !== ALERT_POLICY_VERSION) throw new AppError("invalid_alert_policy");
+  checkPolicy(policy);
   const qualifying: PrFinding[] = [];
   const held: Array<{ finding: PrFinding; reason: string }> = [];
   for (const finding of report.findings) {
@@ -50,9 +84,52 @@ export function evaluateReport(report: PrivateReport, policy: AlertPolicy = DEFA
       held.push({ finding, reason: finding.validationErrors[0] ?? "evidence_required" });
       continue;
     }
+    if (SEVERITIES.indexOf(finding.severity) < SEVERITIES.indexOf(policy.minimumSeverity)) {
+      held.push({ finding, reason: "severity_below_minimum" });
+      continue;
+    }
+    if (!policy.notifyPartial && partialScope(report)) {
+      held.push({ finding, reason: "partial_scope_held" });
+      continue;
+    }
     qualifying.push(finding);
   }
   return { qualifying, held };
+}
+
+/**
+ * Reads the current project alert policy. Without a persisted row this returns the explicit
+ * default (`persisted:false`); reading never writes.
+ */
+export function readAlertPolicy(tx: AppTransaction, projectId: string): StoredAlertPolicy {
+  ensurePrSchema(tx);
+  requireId(projectId);
+  const row = tx.get<{ record_json: string }>(
+    "SELECT record_json FROM pr_alert_policies WHERE project_id = ? ORDER BY version DESC LIMIT 1", projectId);
+  if (row) return JSON.parse(row.record_json) as StoredAlertPolicy;
+  return { ...DEFAULT_ALERT_POLICY, allowedCategories: [...DEFAULT_ALERT_POLICY.allowedCategories], projectId, persisted: false, createdAt: null };
+}
+
+/** Lists every persisted policy version for a project, oldest first. */
+export function listAlertPolicies(tx: AppTransaction, projectId: string): StoredAlertPolicy[] {
+  ensurePrSchema(tx);
+  requireId(projectId);
+  return tx.all<{ record_json: string }>("SELECT record_json FROM pr_alert_policies WHERE project_id = ? ORDER BY version", projectId)
+    .map(row => JSON.parse(row.record_json) as StoredAlertPolicy);
+}
+
+function insertPolicy(tx: AppTransaction, policy: StoredAlertPolicy): void {
+  tx.run("INSERT INTO pr_alert_policies(project_id, version, record_json) VALUES (?, ?, ?)",
+    policy.projectId, policy.version, JSON.stringify(policy));
+}
+
+/** Persists the explicit default (version 1) the first time a project evaluates alerts, then returns the current policy. */
+export function ensureAlertPolicy(tx: AppTransaction, projectId: string, now: number): StoredAlertPolicy {
+  const current = readAlertPolicy(tx, projectId);
+  if (current.persisted) return current;
+  const stored: StoredAlertPolicy = { ...current, persisted: true, createdAt: now };
+  insertPolicy(tx, stored);
+  return stored;
 }
 
 /** Logical alert key from report/revision/finding revision; replay dedupes to one intent. */
@@ -62,16 +139,33 @@ export function alertKey(report: Pick<PrivateReport, "id" | "headSha" | "policyV
   return base;
 }
 
-function esc(value: string, max: number): string {
-  const clean = value.replace(/[\0\x08\x0B\x0C]/g, "").trim();
-  return clean.length > max ? `${clean.slice(0, max)}…` : clean;
+/** Removes links/handles that could steer the owner to a PR-supplied destination. */
+function redact(value: string): string {
+  return value.replace(/(?:https?:\/\/|www\.|t\.me\/|telegram\.me\/|tg:\/\/|mailto:)\S*/gi, "[ลิงก์ถูกตัด]");
+}
+
+function fitBytes(value: string, max: number): string {
+  if (Buffer.byteLength(value) <= max) return value;
+  const budget = Math.max(0, max - Buffer.byteLength("…"));
+  let out = "", used = 0;
+  for (const ch of value) {
+    const size = Buffer.byteLength(ch);
+    if (used + size > budget) break;
+    out += ch; used += size;
+  }
+  return `${out}…`;
+}
+
+function esc(value: string, maxBytes: number): string {
+  return fitBytes(redact(value.replace(/[\0\x08\x0B\x0C]/g, "").trim()), maxBytes);
 }
 
 /**
- * Builds the private payload for one qualifying finding.
+ * Builds the private payload for one qualifying finding within `maxBytes` (default 3500).
  * Contains only repository/PR/revision, location, condition, impact, evidence type
- * and report link plus a partial-scope warning when applicable.
- * Credentials, provider token values and arbitrary PR-supplied destinations never enter.
+ * and a service-owned report link plus a partial-scope warning when applicable.
+ * Credentials, provider token values and arbitrary PR-supplied destinations never enter;
+ * URLs in PR-derived text are redacted and secret-like output throws instead of leaking.
  */
 export function buildAlertPayload(input: {
   repository: PrivateReport["repository"];
@@ -83,114 +177,326 @@ export function buildAlertPayload(input: {
   finding: PrFinding;
   coverageOverall: PrivateReport["coverageOverall"];
   enumerationComplete: boolean;
+  projectId?: string;
+  maxBytes?: number;
 }): string {
-  const lines = [
+  const maxBytes = Math.max(512, Math.min(input.maxBytes ?? 3500, 3500));
+  const head = [
     `PR ${input.repository.owner}/${input.repository.name}#${input.pullNumber}`,
     `revision ${input.baseSha.slice(0, 12)}...${input.headSha.slice(0, 12)} policy v${input.policyVersion}`,
-    `finding ${input.finding.id} [${input.finding.category}/${input.finding.severity}] ${esc(input.finding.title, 200)}`,
+    `finding ${input.finding.id} [${input.finding.category}/${input.finding.severity}] ${esc(input.finding.title, 300)}`,
     `ที่: ${esc(input.finding.location.path, 256)}${input.finding.location.line ? `:${input.finding.location.line}` : ""}`,
-    `เงื่อนไข: ${esc(input.finding.condition, 800)}`,
-    `ผลกระทบ: ${esc(input.finding.impact, 800)}`,
+  ];
+  const tail = [
     `หลักฐาน: ${input.finding.evidenceType}${input.finding.evidenceRef ? ` ${esc(input.finding.evidenceRef, 256)}` : ""}`,
-    `รายงาน: ${input.reportId}`,
+    input.projectId ? `รายงาน: /projects/${input.projectId}/pr/reports/${input.reportId}` : `รายงาน: ${input.reportId}`,
   ];
   if (input.coverageOverall !== "complete" || !input.enumerationComplete) {
-    lines.push("คำเตือน: ตรวจไม่ครบทุกไฟล์/หลักฐาน รายงานนี้เป็น partial/incomplete");
+    tail.push("คำเตือน: ตรวจไม่ครบทุกไฟล์/หลักฐาน รายงานนี้เป็น partial/incomplete");
   }
-  const text = lines.join("\n").slice(0, 3500);
-  if (/bearer\s|authorization\s*:|x-telegram|bot[_ -]?token|[0-9]{5,}:[A-Za-z0-9_-]{8,}/i.test(text)) {
-    throw new AppError("invalid_delivery_payload");
-  }
-  return text;
+  const fixed = Buffer.byteLength([...head, ...tail].join("\n")) + Buffer.byteLength("\nเงื่อนไข: \nผลกระทบ: ") + 2;
+  const share = Math.max(32, Math.floor((maxBytes - fixed) / 2));
+  const text = [
+    ...head,
+    `เงื่อนไข: ${esc(input.finding.condition, Math.min(share, 1600))}`,
+    `ผลกระทบ: ${esc(input.finding.impact, Math.min(share, 1600))}`,
+    ...tail,
+  ].join("\n");
+  if (secretLike.test(text)) throw new AppError("invalid_delivery_payload");
+  return fitBytes(text, maxBytes);
 }
 
 export interface AdmitAlertResult {
   admitted: DeliveryReceipt[];
   suppressed: Array<{ findingId: string; reason: string }>;
   held: Array<{ findingId: string; reason: string }>;
+  /** Stored owner-inspectable decision; replay with identical outcomes returns the existing record. */
+  decision: AlertDecision;
+}
+
+function withSavepoint<T>(tx: AppTransaction, name: string, run: () => T): T {
+  tx.run(`SAVEPOINT ${name}`);
+  try {
+    const result = run();
+    tx.run(`RELEASE ${name}`);
+    return result;
+  } catch (error) {
+    tx.run(`ROLLBACK TO ${name}`);
+    tx.run(`RELEASE ${name}`);
+    throw error;
+  }
+}
+
+function dismissals(annotations: ReportAnnotation[]): { report: boolean; findings: Set<string> } {
+  const findings = new Set<string>();
+  let report = false;
+  for (const annotation of annotations) {
+    if (annotation.kind !== "dismiss") continue;
+    if (annotation.findingId) findings.add(annotation.findingId);
+    else report = true;
+  }
+  return { report, findings };
+}
+
+/** Reads stored alert decisions for one report, oldest first. */
+export function readAlertDecisions(tx: AppTransaction, reportId: string): AlertDecision[] {
+  ensurePrSchema(tx);
+  requireId(reportId);
+  return tx.all<{ record_json: string }>("SELECT record_json FROM pr_alert_decisions WHERE report_id = ? ORDER BY sequence", reportId)
+    .map(row => JSON.parse(row.record_json) as AlertDecision);
+}
+
+function recordDecision(tx: AppTransaction, draft: Omit<AlertDecision, "id" | "createdAt">, now: number): AlertDecision {
+  const key = digest(JSON.stringify([draft.reportId, draft.reportRevision, draft.policyVersion, draft.baseSha, draft.headSha,
+    draft.triggerPolicyVersion, draft.suppressedReason, draft.findings]));
+  const latest = tx.get<{ digest: string; record_json: string }>(
+    "SELECT digest, record_json FROM pr_alert_decisions WHERE report_id = ? ORDER BY sequence DESC LIMIT 1", draft.reportId);
+  if (latest?.digest === key) return JSON.parse(latest.record_json) as AlertDecision;
+  const decision: AlertDecision = { id: crypto.randomUUID(), ...draft, createdAt: now };
+  tx.run("INSERT INTO pr_alert_decisions(id, project_id, report_id, digest, record_json) VALUES (?, ?, ?, ?, ?)",
+    decision.id, decision.projectId, decision.reportId, key, JSON.stringify(decision));
+  return decision;
+}
+
+function wholeReportSuppression(tx: AppTransaction, projectId: string, report: PrivateReport, annotations: ReportAnnotation[]): string | null {
+  if (report.stale) return report.staleReason ?? "report_stale";
+  if (report.status === "failed" || report.status === "incomplete" || report.status === "running") return `report_${report.status}`;
+  let monitor, candidate;
+  try {
+    monitor = readMonitor(tx, projectId, report.monitorId);
+    candidate = readCandidate(tx, projectId, report.candidateId);
+  } catch { return "authority_unavailable"; }
+  if (monitor.state !== "active") return monitor.state === "revoked" ? "monitoring_revoked" : "monitoring_not_active";
+  if (["superseded", "cancelled", "stale", "closed"].includes(candidate.status)) return candidate.status === "closed" ? "pr_closed" : `candidate_${candidate.status}`;
+  if (candidate.baseSha !== report.baseSha || candidate.headSha !== report.headSha || candidate.policyVersion !== report.policyVersion) return "revision_changed";
+  if (dismissals(annotations).report) return "report_dismissed";
+  return null;
 }
 
 /**
- * Rechecks current base/head/policy, report validity, enabled monitoring and owner
- * generation immediately before outbox admission, then commits at most one logical
- * intent per qualifying finding via `commitDeliveryIntent` replay dedupe.
- * Old revisions are suppressed, never labeled latest.
+ * Rechecks current base/head/policy, report validity, enabled monitoring, owner generation and owner
+ * dismissal immediately before outbox admission, evaluates the persisted project policy, then commits
+ * at most one logical guarded intent per qualifying finding via `commitDeliveryIntent` replay dedupe.
+ * A finding that already has a live alert under an earlier policy version is `already_notified`.
+ * The outcome is stored as an owner-inspectable `AlertDecision`. Old revisions are suppressed, never labeled latest.
+ * Per-finding outbox failures roll back to a savepoint and are held as `admission_failed`.
  */
 export function admitReportAlerts(
   tx: AppTransaction,
-  input: { projectId: string; reportId: string; maxBytes?: number },
+  input: { projectId: string; reportId: string; maxBytes?: number; trigger?: AlertDecision["trigger"] },
   now: number,
-  policy: AlertPolicy = DEFAULT_ALERT_POLICY,
 ): AdmitAlertResult {
   ensurePrSchema(tx);
   if (!Number.isSafeInteger(now) || now < 0) throw new AppError("invalid_commit_time");
   const maxBytes = input.maxBytes ?? 4000;
   const report = readReport(tx, input.projectId, input.reportId);
+  const policy = ensureAlertPolicy(tx, input.projectId, now);
+  const annotations = readAnnotations(tx, report.id);
+  const ownerGeneration = tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'")?.generation ?? 0;
   const admitted: DeliveryReceipt[] = [];
   const suppressed: Array<{ findingId: string; reason: string }> = [];
   const held: Array<{ findingId: string; reason: string }> = [];
+  const decisions: AlertDecision["findings"] = [];
+  const pending: Array<Omit<AlertLink, "decisionId">> = [];
+  const decide = (findingId: string, decision: AlertFindingDecision, reason: string | null, intentId: string | null) =>
+    decisions.push({ findingId, decision, reason, intentId });
 
-  if (report.stale) {
-    for (const finding of report.findings) suppressed.push({ findingId: finding.id, reason: report.staleReason ?? "report_stale" });
-    return { admitted, suppressed, held };
-  }
-  if (report.status === "failed" || report.status === "incomplete" || report.status === "running") {
-    for (const finding of report.findings) suppressed.push({ findingId: finding.id, reason: `report_${report.status}` });
-    return { admitted, suppressed, held };
-  }
-
-  let monitor, candidate;
-  try {
-    monitor = readMonitor(tx, input.projectId, report.monitorId);
-    candidate = readCandidate(tx, input.projectId, report.candidateId);
-  } catch {
-    for (const finding of report.findings) suppressed.push({ findingId: finding.id, reason: "authority_unavailable" });
-    return { admitted, suppressed, held };
-  }
-  if (monitor.state !== "active") {
-    for (const finding of report.findings) suppressed.push({ findingId: finding.id, reason: monitor.state === "revoked" ? "monitoring_revoked" : "monitoring_not_active" });
-    return { admitted, suppressed, held };
-  }
-  if (["superseded", "cancelled", "stale", "closed"].includes(candidate.status)) {
-    for (const finding of report.findings) suppressed.push({ findingId: finding.id, reason: candidate.status === "closed" ? "pr_closed" : `candidate_${candidate.status}` });
-    return { admitted, suppressed, held };
-  }
-  if (candidate.baseSha !== report.baseSha || candidate.headSha !== report.headSha || candidate.policyVersion !== report.policyVersion) {
-    for (const finding of report.findings) suppressed.push({ findingId: finding.id, reason: "revision_changed" });
-    return { admitted, suppressed, held };
-  }
-
-  const evaluation = evaluateReport(report, policy);
-  for (const item of evaluation.held) held.push({ findingId: item.finding.id, reason: item.reason });
-
-  for (const finding of evaluation.qualifying) {
-    // Payload hygiene recheck: secrets or PR-supplied destinations never enter the outbox.
-    const hygiene = `${finding.title}\n${finding.condition}\n${finding.impact}\n${finding.reasoning}\n${finding.evidenceRef ?? ""}`;
-    if (/bearer\s|authorization\s*:|x-telegram|bot[_ -]?token|[0-9]{5,}:[A-Za-z0-9_-]{8,}/i.test(hygiene)
-        || /t\.me\/|telegram\.me|chat_id|sendMessage/i.test(hygiene)) {
-      held.push({ findingId: finding.id, reason: "payload_hygiene" });
-      continue;
+  const suppressedReason = wholeReportSuppression(tx, input.projectId, report, annotations);
+  if (suppressedReason) {
+    for (const finding of report.findings) {
+      suppressed.push({ findingId: finding.id, reason: suppressedReason });
+      decide(finding.id, "suppressed", suppressedReason, null);
     }
-    const text = buildAlertPayload({
-      repository: report.repository,
-      pullNumber: report.pullNumber,
-      baseSha: report.baseSha,
-      headSha: report.headSha,
-      policyVersion: report.policyVersion,
-      reportId: report.id,
-      finding,
-      coverageOverall: report.coverageOverall,
-      enumerationComplete: report.enumerationComplete,
-    });
-    const dedupeKey = alertKey(report, finding, policy.version);
-    const receipt = commitDeliveryIntent(tx, {
-      projectId: input.projectId,
-      kind: "report",
-      text,
-      dedupeKey,
-      maxBytes,
-    }, now);
-    admitted.push(receipt);
+  } else {
+    const evaluation = evaluateReport(report, policy);
+    const dismissed = dismissals(annotations).findings;
+    for (const item of evaluation.held) {
+      held.push({ findingId: item.finding.id, reason: item.reason });
+      decide(item.finding.id, "held", item.reason, null);
+    }
+    const links = readAlertLinks(tx, report.id);
+    for (const finding of evaluation.qualifying) {
+      if (dismissed.has(finding.id)) {
+        held.push({ findingId: finding.id, reason: "finding_dismissed" });
+        decide(finding.id, "held", "finding_dismissed", null);
+        continue;
+      }
+      // Payload hygiene recheck: secrets or PR-supplied destinations never enter the outbox.
+      const hygiene = `${finding.title}\n${finding.condition}\n${finding.impact}\n${finding.reasoning}\n${finding.evidenceRef ?? ""}`;
+      if (secretLike.test(hygiene) || destinationLike.test(hygiene)) {
+        held.push({ findingId: finding.id, reason: "payload_hygiene" });
+        decide(finding.id, "held", "payload_hygiene", null);
+        continue;
+      }
+      const dedupeKey = alertKey(report, finding, policy.version);
+      const earlier = links
+        .filter(link => link.findingId === finding.id)
+        .map(link => { try { return readDeliveryIntent(tx, input.projectId, link.intentId); } catch { return null; } })
+        .find((intent): intent is DeliveryIntent => !!intent && intent.dedupeKey !== dedupeKey && intent.status !== "cancelled");
+      if (earlier) {
+        held.push({ findingId: finding.id, reason: "already_notified" });
+        decide(finding.id, "already_notified", null, earlier.id);
+        continue;
+      }
+      let receipt: DeliveryReceipt;
+      try {
+        receipt = withSavepoint(tx, "pr_alert_intent", () => commitDeliveryIntent(tx, {
+          projectId: input.projectId,
+          kind: "report",
+          text: buildAlertPayload({
+            repository: report.repository, pullNumber: report.pullNumber, baseSha: report.baseSha, headSha: report.headSha,
+            policyVersion: report.policyVersion, reportId: report.id, finding, coverageOverall: report.coverageOverall,
+            enumerationComplete: report.enumerationComplete, projectId: input.projectId, maxBytes,
+          }),
+          dedupeKey,
+          maxBytes,
+          guard: PR_ALERT_GUARD,
+        }, now));
+      } catch {
+        held.push({ findingId: finding.id, reason: "admission_failed" });
+        decide(finding.id, "held", "admission_failed", null);
+        continue;
+      }
+      if (receipt.intent.status === "cancelled") {
+        const reason = receipt.intent.staleReason ?? receipt.intent.failureReason ?? "intent_cancelled";
+        suppressed.push({ findingId: finding.id, reason });
+        decide(finding.id, "suppressed", reason, receipt.intent.id);
+        continue;
+      }
+      admitted.push(receipt);
+      decide(finding.id, "notified", null, receipt.intent.id);
+      if (receipt.created) {
+        pending.push({
+          intentId: receipt.intent.id, projectId: input.projectId, reportId: report.id, findingId: finding.id,
+          candidateId: report.candidateId, monitorId: report.monitorId, policyVersion: policy.version,
+          reportRevision: report.revision, baseSha: report.baseSha, headSha: report.headSha,
+          triggerPolicyVersion: report.policyVersion, ownerGeneration, createdAt: now,
+        });
+      }
+    }
   }
-  return { admitted, suppressed, held };
+  const decision = recordDecision(tx, {
+    projectId: input.projectId, reportId: report.id, reportRevision: report.revision, candidateId: report.candidateId,
+    baseSha: report.baseSha, headSha: report.headSha, triggerPolicyVersion: report.policyVersion, policyVersion: policy.version,
+    trigger: input.trigger ?? "owner_admit", suppressedReason, findings: decisions,
+  }, now);
+  for (const link of pending) {
+    const stored: AlertLink = { ...link, decisionId: decision.id };
+    tx.run(`INSERT OR IGNORE INTO pr_alerts(intent_id, project_id, report_id, finding_id, candidate_id, monitor_id, policy_version, record_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, stored.intentId, stored.projectId, stored.reportId, stored.findingId,
+    stored.candidateId, stored.monitorId, stored.policyVersion, JSON.stringify(stored));
+  }
+  return { admitted, suppressed, held, decision };
+}
+
+/**
+ * Report-commit hook for the `pr.review` job: admits alerts in the same transaction as the report.
+ * Admission failure rolls back only its own savepoint and returns null, so an outbox problem never
+ * loses the committed report or faults the job queue.
+ */
+export function admitCommittedReportAlerts(
+  tx: AppTransaction,
+  input: { projectId: string; reportId: string; maxBytes?: number },
+  now: number,
+): AdmitAlertResult | null {
+  try {
+    return withSavepoint(tx, "pr_alert_commit", () => admitReportAlerts(tx, { ...input, trigger: "report_commit" }, now));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `pr-alert` delivery guard: rechecks the linked report immediately before claim/send and when a
+ * result lands. Stale revisions, closed/superseded candidates, revoked monitoring, owner rotation,
+ * failed/incomplete reports, owner dismissal and a current policy that no longer qualifies the
+ * finding all retire the intent. Paused monitoring holds it waiting.
+ */
+export function prAlertCurrentness(tx: AppTransaction, intent: DeliveryIntent): DeliveryCurrentness {
+  const link = readAlertLink(tx, intent.id);
+  if (!link || link.projectId !== intent.projectId) return { current: false, reason: "alert_link_missing" };
+  let report: PrivateReport;
+  try { report = readReport(tx, link.projectId, link.reportId); }
+  catch { return { current: false, reason: "authority_unavailable" }; }
+  if (report.stale) {
+    const reason = report.staleReason ?? "report_stale";
+    return { current: false, reason, hold: reason === "monitoring_not_active" };
+  }
+  if (report.status === "failed" || report.status === "incomplete" || report.status === "running") return { current: false, reason: `report_${report.status}` };
+  if (report.baseSha !== link.baseSha || report.headSha !== link.headSha || report.policyVersion !== link.triggerPolicyVersion) {
+    return { current: false, reason: "revision_changed" };
+  }
+  const ownerGeneration = tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'")?.generation ?? null;
+  if (ownerGeneration !== link.ownerGeneration) return { current: false, reason: "authorization_changed" };
+  const dismissed = dismissals(readAnnotations(tx, report.id));
+  if (dismissed.report) return { current: false, reason: "report_dismissed" };
+  if (dismissed.findings.has(link.findingId)) return { current: false, reason: "finding_dismissed" };
+  const finding = report.findings.find(item => item.id === link.findingId);
+  if (!finding) return { current: false, reason: "finding_missing" };
+  const evaluation = evaluateReport({ ...report, findings: [finding] }, readAlertPolicy(tx, link.projectId));
+  if (evaluation.qualifying.length !== 1) return { current: false, reason: "alert_policy_changed" };
+  return { current: true };
+}
+
+registerDeliveryGuard(PR_ALERT_GUARD, prAlertCurrentness);
+
+/** Canonical identity for `pr.alert_policy.set`; extra fields and evidence-disabling shapes are rejected. */
+export function alertPolicyIdentity(command: SetAlertPolicyCommand): string {
+  const exact = (value: unknown, keys: string[]): value is Record<string, unknown> =>
+    !!value && typeof value === "object" && !Array.isArray(value)
+    && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null)
+    && Object.keys(value).every(key => keys.includes(key)) && keys.every(key => Object.hasOwn(value as object, key));
+  if (!exact(command, ["kind", "requestId", "projectId", "expectedRevision", "payload"])
+      || command.kind !== "pr.alert_policy.set"
+      || !requestIdOk(command.requestId)
+      || !/^[a-f0-9-]{36}$/.test(command.projectId)
+      || !Number.isSafeInteger(command.expectedRevision) || command.expectedRevision < 1
+      || !exact(command.payload, ["allowedCategories", "minimumSeverity", "notifyPartial"])
+      || !Array.isArray(command.payload.allowedCategories) || command.payload.allowedCategories.length > NOTIFIABLE_CATEGORIES.length
+      || command.payload.allowedCategories.some(c => typeof c !== "string" || !NOTIFIABLE_CATEGORIES.includes(c))
+      || new Set(command.payload.allowedCategories).size !== command.payload.allowedCategories.length
+      || !(SEVERITIES as readonly string[]).includes(command.payload.minimumSeverity)
+      || typeof command.payload.notifyPartial !== "boolean") {
+    throw new AppError("invalid_alert_policy");
+  }
+  const categories = NOTIFIABLE_CATEGORIES.filter(c => command.payload.allowedCategories.includes(c));
+  return digest(JSON.stringify([command.kind, command.projectId, command.expectedRevision, categories, command.payload.minimumSeverity, command.payload.notifyPartial]));
+}
+
+/**
+ * Writes the next owner alert policy version (`expectedRevision` = current version), retires pending
+ * intents whose finding no longer qualifies (`alert_policy_changed`, delivered alerts untouched), and
+ * re-evaluates current non-stale reports so newly qualifying findings get one logical intent.
+ * Evidence and actionability stay mandatory; only categories, severity floor and partial handling adjust.
+ */
+export function setAlertPolicy(tx: AppTransaction, command: SetAlertPolicyCommand, now: number, maxBytes = 4000): AlertPolicyReceipt {
+  ensurePrSchema(tx);
+  alertPolicyIdentity(command);
+  if (!Number.isSafeInteger(now) || now < 0) throw new AppError("invalid_commit_time");
+  if (!tx.get("SELECT 1 FROM projects WHERE id = ?", command.projectId)) throw new AppError("project_not_found", 404);
+  const current = readAlertPolicy(tx, command.projectId);
+  if (current.version !== command.expectedRevision) throw new AppError("stale_revision", 409);
+  if (!current.persisted) insertPolicy(tx, { ...current, persisted: true, createdAt: now });
+  const policy: StoredAlertPolicy = {
+    version: current.version + 1,
+    allowedCategories: NOTIFIABLE_CATEGORIES.filter(c => command.payload.allowedCategories.includes(c)),
+    requireEvidence: true,
+    requireActionable: true,
+    minimumSeverity: command.payload.minimumSeverity,
+    notifyPartial: command.payload.notifyPartial,
+    projectId: command.projectId,
+    persisted: true,
+    createdAt: now,
+  };
+  insertPolicy(tx, policy);
+  const retiredIntentIds: string[] = [];
+  const decisions: AlertDecision[] = [];
+  for (const report of listReports(tx, command.projectId).slice(0, 50)) {
+    const stillQualifies = new Set(evaluateReport(report, policy).qualifying.map(f => f.id));
+    retiredIntentIds.push(...retirePrAlerts(tx, { projectId: command.projectId, reportId: report.id }, "alert_policy_changed", now, {
+      markSettledStale: false, filter: link => !stillQualifies.has(link.findingId),
+    }));
+    if (!report.stale) decisions.push(admitReportAlerts(tx, { projectId: command.projectId, reportId: report.id, maxBytes, trigger: "policy_change" }, now).decision);
+  }
+  return { policy, previousVersion: current.version, retiredIntentIds, decisions };
 }

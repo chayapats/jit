@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { AppError } from "../errors";
 import { requireId } from "../sources";
 import type { AppTransaction } from "../store";
+import { retirePrAlerts } from "./alert-links";
 import { readMonitor } from "./authority";
 import { readCandidate } from "./poll";
 import { ensurePrSchema } from "./schema";
@@ -322,18 +323,24 @@ export function prReportIdentity(command: DismissReportCommand): string {
       || !requestIdOk(command.requestId)
       || !/^[a-f0-9-]{36}$/.test(command.projectId)
       || !Number.isSafeInteger(command.expectedRevision) || command.expectedRevision < 1
-      || !exact(command.payload, ["reportId", "reason"])
+      || !(exact(command.payload, ["reportId", "reason"]) || exact(command.payload, ["reportId", "reason", "findingId"]))
       || !/^[a-f0-9-]{36}$/.test(command.payload.reportId)
+      || (command.payload.findingId !== undefined && (typeof command.payload.findingId !== "string" || !findingIdOk(command.payload.findingId)))
       || typeof command.payload.reason !== "string" || !command.payload.reason.trim()
       || command.payload.reason.length > 2000 || Buffer.byteLength(command.payload.reason) > 2000) {
     throw new AppError("invalid_pr_report_command");
   }
-  return digest(JSON.stringify([command.kind, command.projectId, command.expectedRevision, command.payload.reportId, command.payload.reason]));
+  const identity: unknown[] = [command.kind, command.projectId, command.expectedRevision, command.payload.reportId, command.payload.reason];
+  if (command.payload.findingId !== undefined) identity.push(command.payload.findingId);
+  return digest(JSON.stringify(identity));
 }
 
 /**
  * Appends a revisioned dismissal/feedback annotation without rewriting finding history.
- * The report revision advances; findings and evidence stay immutable.
+ * The report revision advances; findings and evidence stay immutable. The annotation links the
+ * latest stored alert decision; a dismissal (whole report or one `findingId`) retires pending alert
+ * intents in the same transaction and feeds later admission/send rechecks. It never writes memory
+ * claims, so a rejected finding is never learned as a confirmed fact.
  */
 export function annotateReport(tx: AppTransaction, command: DismissReportCommand, now: number, kind: "dismiss" | "feedback" = "dismiss"): PrReportReceipt {
   ensurePrSchema(tx);
@@ -347,6 +354,9 @@ export function annotateReport(tx: AppTransaction, command: DismissReportCommand
   const report = storedOf(row) as PrivateReport;
   if (report.revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
   if (secretLike.test(command.payload.reason)) throw new AppError("invalid_pr_report_command");
+  const findingId = command.payload.findingId ?? null;
+  if (findingId !== null && !report.findings.some(f => f.id === findingId)) throw new AppError("pr_finding_not_found", 404);
+  const decision = tx.get<{ id: string }>("SELECT id FROM pr_alert_decisions WHERE report_id = ? ORDER BY sequence DESC LIMIT 1", report.id);
   const annotation: ReportAnnotation = {
     id: crypto.randomUUID(),
     reportId: report.id,
@@ -355,12 +365,20 @@ export function annotateReport(tx: AppTransaction, command: DismissReportCommand
     kind,
     text: command.payload.reason.trim().slice(0, 2000),
     createdAt: now,
+    findingId,
+    decisionId: decision?.id ?? null,
   };
   tx.run("INSERT INTO pr_report_annotations(id, report_id, revision, record_json) VALUES (?, ?, ?, ?)",
     annotation.id, annotation.reportId, annotation.revision, JSON.stringify(annotation));
   const next: PrivateReport = { ...report, revision: annotation.revision, updatedAt: now };
   tx.run("UPDATE pr_reports SET status = ?, record_json = ? WHERE id = ?",
     next.status, JSON.stringify(next), next.id);
+  if (kind === "dismiss") {
+    retirePrAlerts(tx, findingId === null
+      ? { projectId: command.projectId, reportId: report.id }
+      : { projectId: command.projectId, reportId: report.id, findingId },
+    findingId === null ? "report_dismissed" : "finding_dismissed", now, { markSettledStale: false });
+  }
   const candidate = (() => { try { return readCandidate(tx, command.projectId, next.candidateId); } catch { return null; } })();
   const monitor = (() => { try { return readMonitor(tx, command.projectId, next.monitorId); } catch { return null; } })();
   const ownerGeneration = tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'")?.generation ?? null;

@@ -53,6 +53,7 @@ const messages: Record<string, string> = {
   pr_monitor_not_active: "การตรวจ PR หยุดอยู่ เปิดการตรวจก่อนทำต่อ",
   pr_snapshot_not_found: "ยังไม่มีภาพ snapshot สำหรับ PR นี้",
   invalid_alert_policy: "นโยบายแจ้งเตือนไม่ถูกต้อง",
+  pr_finding_not_found: "ไม่พบประเด็นนี้ในรายงานที่เลือก",
   delivery_worker_unavailable: "ตัวส่งยังไม่พร้อม",
   authorization_changed: "สิทธิ์ที่ใช้บันทึกคำขอเปลี่ยนแล้ว",
   invalid_task_command: "คำสั่งงานไม่ถูกต้อง กรุณาเปิดหน้าใหม่",
@@ -219,6 +220,7 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       const deliveryResendRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/delivery\/([a-f0-9-]{36})\/resend$/.exec(url.pathname);
       const prReportsRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/pr\/reports$/.exec(url.pathname);
       const prReportRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/pr\/reports\/([a-f0-9-]{36})$/.exec(url.pathname);
+      const prAlertPolicyRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/pr\/alert-policy$/.exec(url.pathname);
       const jobsRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/jobs$/.exec(url.pathname);
       const jobRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/jobs\/([a-f0-9-]{36})$/.exec(url.pathname);
       const resumeRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/jobs\/([a-f0-9-]{36})\/(resume|stop)$/.exec(url.pathname);
@@ -600,10 +602,31 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       if (request.method === "POST" && prReportRoute) {
         const body = await payload(request);
         app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
-        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "reason"].includes(key))) throw new AppError("invalid_body");
-        const command = { kind: "pr.report.dismiss" as const, requestId: body.requestId as string, projectId: prReportRoute[2]!, expectedRevision: Number(body.expectedRevision), payload: { reportId: prReportRoute[3]!, reason: body.reason as string } };
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "reason", "findingId"].includes(key))) throw new AppError("invalid_body");
+        const findingId = typeof body.findingId === "string" && body.findingId !== "" ? body.findingId : undefined;
+        const command = { kind: "pr.report.dismiss" as const, requestId: body.requestId as string, projectId: prReportRoute[2]!, expectedRevision: Number(body.expectedRevision),
+          payload: findingId === undefined ? { reportId: prReportRoute[3]!, reason: body.reason as string } : { reportId: prReportRoute[3]!, reason: body.reason as string, findingId } };
         const receipt = app.execute(auth.actor, command);
         return api ? json(receipt) : respond(null, 303, { Location: `/projects/${prReportRoute[2]}/pr/reports/${prReportRoute[3]}` });
+      }
+      if (request.method === "GET" && prAlertPolicyRoute) {
+        const state = app.prAlertPolicy(auth.actor, prAlertPolicyRoute[2]!);
+        return api ? json(state) : respond(null, 303, { Location: `/projects/${prAlertPolicyRoute[2]}/pr/reports` });
+      }
+      if (request.method === "POST" && prAlertPolicyRoute) {
+        const body = await payload(request);
+        app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        const categories = ["correctness", "security", "behavior"];
+        const formKeys = ["csrf", "requestId", "expectedRevision", "minimumSeverity", "notifyPartial", ...categories.map(c => `cat_${c}`)];
+        const jsonKeys = ["csrf", "requestId", "expectedRevision", "minimumSeverity", "notifyPartial", "allowedCategories"];
+        const isJson = Object.hasOwn(body, "allowedCategories");
+        if (Object.keys(body).some(key => !(isJson ? jsonKeys : formKeys).includes(key))) throw new AppError("invalid_body");
+        const allowedCategories = isJson ? body.allowedCategories : categories.filter(c => body[`cat_${c}`] === "on");
+        const notifyPartial = isJson ? body.notifyPartial : body.notifyPartial === "on";
+        const command = { kind: "pr.alert_policy.set" as const, requestId: body.requestId as string, projectId: prAlertPolicyRoute[2]!, expectedRevision: Number(body.expectedRevision),
+          payload: { allowedCategories: allowedCategories as ("correctness" | "security" | "behavior")[], minimumSeverity: body.minimumSeverity as "info", notifyPartial: notifyPartial as boolean } };
+        const receipt = app.execute(auth.actor, command);
+        return api ? json(receipt) : respond(null, 303, { Location: `/projects/${prAlertPolicyRoute[2]}/pr/reports` });
       }
       if (request.method === "GET" && schedulesRoute) {
         const state = app.schedules(auth.actor, schedulesRoute[2]!);

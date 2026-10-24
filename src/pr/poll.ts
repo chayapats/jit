@@ -1,5 +1,6 @@
 import { AppError } from "../errors";
 import type { AppTransaction } from "../store";
+import { retirePrAlerts } from "./alert-links";
 import { readMonitor } from "./authority";
 import type { TrustedGitHubConnector } from "./github";
 import { ensurePrSchema } from "./schema";
@@ -79,6 +80,8 @@ function supersedePrior(
     candidate.status = "superseded";
     candidate.updatedAt = now;
     saveCandidate(tx, candidate);
+    // PR03: alerts for the old revision are retired (pending) or visibly stale (already settled).
+    retirePrAlerts(tx, { projectId: candidate.projectId, candidateId: candidate.id }, "candidate_superseded", now, { markSettledStale: true });
     onSupersede?.(candidate);
   }
 }
@@ -147,6 +150,7 @@ export function pollMonitorPage(
         candidate.state = "closed";
         candidate.updatedAt = now;
         saveCandidate(tx, candidate);
+        retirePrAlerts(tx, { projectId, candidateId: candidate.id }, "pr_closed", now, { markSettledStale: true });
         hooks?.onCancel?.(candidate);
       } else if (pull.state === "open" && candidate.state === "closed" && monitor.policy.reopenReevaluates) {
         // Reopen with same SHAs reevaluates; keep identity, refresh status.

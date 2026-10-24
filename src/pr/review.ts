@@ -5,6 +5,7 @@ import type { AppTransaction } from "../store";
 import { normalizeFixtureResult } from "../team/scripted-port";
 import type { ApplicationRunPort } from "../team/run-port";
 import type { ApplicationRunRequest } from "../team/types";
+import { admitCommittedReportAlerts } from "./alerts";
 import { readMonitor } from "./authority";
 import { readCandidate } from "./poll";
 import { ensurePrSchema } from "./schema";
@@ -29,6 +30,8 @@ export interface PrReviewWorkOptions {
   contextBytes?: number;
   outputBytes?: number;
   requiredRoles?: readonly string[];
+  /** Byte ceiling for alert payloads admitted on report commit (Application uses `config.messageBytes`). */
+  alertBytes?: number;
 }
 
 const FIXTURE_ROUTE = { provider: "grok", model: "scripted-fixture", authRoute: "owner-grok" } as const;
@@ -93,6 +96,8 @@ function buildRequest(input: {
 /**
  * `pr.private_report/v1` review work through `ApplicationRunPort` only.
  * N bounded specialist invokes + 1 synthesis with separate contexts and finite budgets.
+ * The fenced report commit also admits `pr.private_alerts/v1` intents in the same transaction;
+ * an admission failure never rolls back the report.
  * Snapshot capture stays on `TrustedGitHubConnector` + `fixtureFor`, never through this port.
  */
 export function prReviewWork(options: PrReviewWorkOptions): WorkDefinition {
@@ -232,7 +237,7 @@ export function prReviewWork(options: PrReviewWorkOptions): WorkDefinition {
       const outcome = { state: "succeeded" as const, evidence };
       const committedAt = now();
       const ok = commit(outcome, (tx) => {
-        persistReport(tx, {
+        const report = persistReport(tx, {
           projectId: job.projectId,
           monitorId: input.monitorId,
           candidateId: input.candidateId,
@@ -245,6 +250,7 @@ export function prReviewWork(options: PrReviewWorkOptions): WorkDefinition {
           attemptId: attempt.id,
           now: committedAt,
         });
+        admitCommittedReportAlerts(tx, { projectId: job.projectId, reportId: report.id, maxBytes: options.alertBytes ?? 4000 }, committedAt);
         try {
           const live = readCandidate(tx, job.projectId, input.candidateId);
           if (!live.jobId) {

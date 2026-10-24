@@ -102,7 +102,7 @@ async function main(): Promise<void> {
       projectStateWork(store), scriptedPreviewWork(store, config, fixturePort), discussionPlanWork(), specialistAnalysisWork(store, config, teamPort), coordinatorSynthesisWork(store, config, teamPort),
       memoryExtractionWork(store, config, memoryPort), scheduleReminderWork(store, config), scheduleSummaryWork(store, config, fixturePort),
       prSnapshotWork({ store, cacheRoot: ".local/pr-cache", fixtureFor: () => new FakeGitHubFixture() }),
-      prReviewWork({ store, port: fixturePort }),
+      prReviewWork({ store, port: fixturePort, alertBytes: config.messageBytes }),
     ]);
     await queue.reconcile(teamPort);
   } }
