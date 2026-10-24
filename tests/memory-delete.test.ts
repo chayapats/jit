@@ -21,6 +21,7 @@ import { SchwayRunPort } from "../src/team/schway-port";
 import type { Model } from "schway/host";
 import { TransactionStore, type AppTransaction } from "../src/store";
 import { deletedSource } from "../src/memory/read";
+import { commitOutputSource } from "../src/sources";
 import { createWebHandler } from "../src/web";
 
 const roots: string[] = [], stores: TransactionStore[] = [], live: JobQueue[] = [];
@@ -178,7 +179,7 @@ test("preview shows bounded collateral, confirm fences purges and lifecycle deni
   expect(preview.preview.affected.pendingJobs.map(j => j.id)).toContain(discussion.discussion!.jobId);
   expect(preview.preview.affected.nativeSessions.length).toBeGreaterThan(0);
   expect(preview.preview.affected.obligations.map(o => o.id)).toContain(proposed.task.id);
-  expect(preview.preview.truncated).toEqual({ sources: false, claims: false, contexts: false, pendingJobs: false, nativeSessions: false, backups: false, exports: false, obligations: false, taskProposals: false });
+  expect(preview.preview.truncated).toEqual({ sources: false, claims: false, contexts: false, pendingJobs: false, nativeSessions: false, backups: false, exports: false, obligations: false, taskProposals: false, deliveries: false });
   expect(preview.preview.blockers).toEqual([]);
   expect(preview.preview.inventoryDigest).toMatch(/^[a-f0-9]{64}$/);
   expect(preview.preview.wholeSession.required).toBe(false);
@@ -930,4 +931,92 @@ test("legacy operations without export scopes are reconstructed and downgraded u
   await reconcileDeletions(f.rt.store, f.rt.port as unknown as ApplicationRunPort, f.clock.now);
   expect(existsSync(exported.manifest.artifact.path)).toBe(false);
   expect(operation(f, a, confirmed.operation.id).state).toBe("complete");
+});
+
+const commitDelivery = (f: Fixture, p: Project, text: string) => f.rt.app.execute(actor(f), { kind: "delivery.commit" as const, requestId: rid(), projectId: p.id,
+  expectedRevision: projectRevision(f, p), payload: { kind: "report" as const, text, dedupeKey: `delete-${rid()}` } });
+
+test("local delivery copies linked by provenance or quoting the payload are cancelled and redacted", async () => {
+  const f = await fixture();
+  const web = createWebHandler(f.rt.app), req = webRequest(f);
+  const a = project(f, "โครงการส่งต่อ", "หัวข้อส่งต่อ");
+  // Provenance: the owner deletes the delivery report's own source generation.
+  const own = commitDelivery(f, a, "รายงานลับ delivery-canary-221 ห้ามส่ง");
+  const ownPreview = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, { sourceId: own.report.sourceId, revision: own.report.sourceRevision, generation: own.report.sourceGeneration })));
+  expect(ownPreview.preview.affected.deliveries).toEqual([{ intentId: own.intent.id, reportId: own.report.id, projectId: a.id,
+    status: own.intent.status, evidence: "provenance", effect: "cancel_and_redact" }]);
+  asConfirmed(f.rt.app.execute(actor(f), confirmCommand(f, a, ownPreview.preview.id)));
+  // Quoted copy: a delivery repeats a message the owner later deletes.
+  const s1 = say(f, a, "ข้อความ quoted-delivery-231 ต้องลบ");
+  const quoted = commitDelivery(f, a, "สรุปส่งต่อ: ข้อความ quoted-delivery-231 ต้องลบ");
+  const preview = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, s1)));
+  expect(preview.preview.affected.deliveries).toContainEqual(expect.objectContaining({ intentId: quoted.intent.id, evidence: "quoted_text" }));
+  asConfirmed(f.rt.app.execute(actor(f), confirmCommand(f, a, preview.preview.id)));
+  for (const intent of [own.intent, quoted.intent]) {
+    const detail = f.rt.app.delivery(actor(f), a.id, intent.id) as { intent: { status: string; failureReason: string | null } };
+    expect(detail.intent.status).toBe("cancelled");
+    expect(detail.intent.failureReason).toBe("source_deleted");
+    const body = await (await web(req(`/api/projects/${a.id}/delivery/${intent.id}`))).text();
+    expect(body).not.toContain("delivery-canary-221");
+    expect(body).not.toContain("quoted-delivery-231");
+  }
+  const list = JSON.stringify(f.rt.app.deliveries(actor(f), a.id));
+  expect(list).not.toContain("delivery-canary-221");
+  expect(list).not.toContain("quoted-delivery-231");
+  const exported = f.rt.app.execute(actor(f), exportCommand(f, a));
+  const artifact = readFileSync(exported.manifest.artifact.path, "utf8");
+  expect(artifact).not.toContain("delivery-canary-221");
+  expect(artifact).not.toContain("quoted-delivery-231");
+  const raw = f.rt.store.read(tx => [...tx.all<{ t: string }>("SELECT record_json AS t FROM delivery_intents"),
+    ...tx.all<{ t: string }>("SELECT record_json AS t FROM delivery_reports")].map(r => r.t).join("\n"));
+  expect(raw).not.toContain("delivery-canary-221");
+  expect(raw).not.toContain("quoted-delivery-231");
+});
+
+test("quoted-copy cleanup covers the whole payload set and names unsafe short or oversized sets", async () => {
+  const f = await fixture();
+  const a = project(f, "โครงการ scrub", "หัวข้อ scrub");
+  const s1 = say(f, a, "ข้อความ scrub-canary-241 ต้องลบ");
+  const [c1] = await remember(f, a, s1);
+  // 600 distinct affected payloads; an unlinked output quotes the last one in sort order.
+  const last = "zz-scrub-payload-599";
+  f.rt.store.transaction(tx => {
+    const row = tx.get<{ extraction_id: string; record_json: string }>("SELECT extraction_id, record_json FROM memory_claims WHERE id = ?", c1!.claimId)!;
+    const claim = JSON.parse(row.record_json) as MemoryClaim;
+    for (let i = 0; i < 600; i++) {
+      const id = rid(), text = i === 599 ? last : `aa-scrub-payload-${String(i).padStart(3, "0")}`;
+      tx.run("INSERT INTO memory_claims (id, project_id, extraction_id, revision, generation, record_json) VALUES (?, ?, ?, 1, 1, ?)",
+        id, a.id, row.extraction_id, JSON.stringify({ ...claim, claimId: id, text, quote: text }));
+    }
+    commitOutputSource(tx, { projectId: a.id, participantId: "fixture", runId: rid(), text: `unlinked note quoting ${last}`, committedAt: f.clock.now });
+  });
+  const preview = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, s1)));
+  expect(preview.preview.blockers).toEqual([]);
+  asConfirmed(f.rt.app.execute(actor(f), confirmCommand(f, a, preview.preview.id)));
+  const outputs = f.rt.store.read(tx => tx.all<{ t: string | null }>("SELECT content_text AS t FROM source_versions").map(r => r.t ?? "").join("\n"));
+  expect(outputs).not.toContain(last);
+  expect(outputs).toContain("unlinked note quoting");
+  // A short payload with an unlinked copy cannot be scrubbed safely: named blocker.
+  const short = say(f, a, "ลับมาก");
+  commitDelivery(f, a, "แจ้งเตือน ลับมาก วันนี้");
+  const blocked = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, short)));
+  expect(blocked.preview.blockers).toContain("short_payload_unlinked_copy");
+  expect(() => f.rt.app.execute(actor(f), confirmCommand(f, a, blocked.preview.id))).toThrow("memory_delete_blocked");
+  // A short payload with no unlinked copy deletes normally.
+  const alone = say(f, a, "เฉพาะ");
+  const clean = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, alone)));
+  expect(clean.preview.blockers).toEqual([]);
+  // More distinct payloads than the scrub bound is a named blocker, never a silent partial scrub.
+  const s2 = say(f, a, "ข้อความ bound-canary-251 ต้องลบ");
+  f.rt.store.transaction(tx => {
+    const row = tx.get<{ extraction_id: string; record_json: string }>("SELECT extraction_id, record_json FROM memory_claims WHERE id = ?", c1!.claimId)!;
+    const claim = JSON.parse(row.record_json) as MemoryClaim;
+    for (let i = 0; i < 2001; i++) {
+      const id = rid();
+      tx.run("INSERT INTO memory_claims (id, project_id, extraction_id, revision, generation, record_json) VALUES (?, ?, ?, 1, 1, ?)",
+        id, a.id, row.extraction_id, JSON.stringify({ ...claim, claimId: id, status: "active", source: { ...s2 }, text: `bound-text-${i}-xxxxxxxx`, quote: `bound-quote-${i}-xxxxxxxx` }));
+    }
+  });
+  const oversized = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, s2)));
+  expect(oversized.preview.blockers).toContain("scrub_set_exceeds_bound");
 });

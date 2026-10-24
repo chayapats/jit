@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { lstatSync, realpathSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { AppError } from "../errors";
+import { readDeliveryReport, retireDeliveryReport } from "../delivery/outbox";
 import { invalidatePendingJob, jobData } from "../jobs/queue";
 import { exportDirFor } from "../ops/export";
 import { lookupSource, requireId, requireReference, type SourceReference } from "../sources";
@@ -17,10 +18,16 @@ export const deleteOperationContract = "app.data_deletion_operation/v1" as const
 
 /** Bounded preview lists. Truncating any list that confirmation acts on is a named blocker, never silently complete. */
 export const deletePreviewBounds = Object.freeze({
-  sources: 1000, claims: 2000, contexts: 100, pendingJobs: 500, nativeSessions: 100, backups: 50, exports: 50, obligations: 100, taskProposals: 200,
+  sources: 1000, claims: 2000, contexts: 100, pendingJobs: 500, nativeSessions: 100, backups: 50, exports: 50, obligations: 100, taskProposals: 200, deliveries: 500,
 });
 /** Inventory scans page through whole tables; a table past `scanRows` blocks confirmation instead of hiding rows. */
 export const deleteInventoryPolicy = Object.freeze({ scanRows: 200_000, page: 500, closureRounds: 32, chunk: 400 });
+/**
+ * Quoted-copy fallback for copies without durable provenance: payloads of at least `minChars` characters are
+ * scrubbed in deterministic chunks; more than `maxTerms` distinct payloads, or a shorter payload that appears in
+ * an unlinked record, is a named preview blocker rather than a silent skip.
+ */
+export const deleteScrubPolicy = Object.freeze({ minChars: 8, maxTerms: 4000, chunk: 500 });
 /** Preview expiry and the total managed-delete pass budget (owner retry and automatic reconcile share it). */
 export const deletePolicy = Object.freeze({ previewMs: 15 * 60 * 1000, maxAttempts: 5 });
 /** Replaces withdrawn claim payload with its unavailability marker; identity/lineage stay queryable. */
@@ -90,8 +97,15 @@ export interface DeletionPreview {
      */
     taskProposals: { taskId: string; taskState: string; proposalId: string; revision: number; current: boolean;
       effect: "redacted" | "blocked_active_task" }[];
+    /**
+     * Local delivery copies: linked by provenance (the report's own source generation is affected, including
+     * schedule summaries of derived outputs) or holding an exact quoted copy. Confirm deletes the report, cancels
+     * unsent intents and redacts local text; sent/unknown intents keep their delivery-state metadata.
+     */
+    deliveries: { intentId: string; reportId: string; projectId: string; status: string;
+      evidence: "provenance" | "quoted_text"; effect: "cancel_and_redact" | "redact_keep_state" }[];
   };
-  truncated: { sources: boolean; claims: boolean; contexts: boolean; pendingJobs: boolean; nativeSessions: boolean; backups: boolean; exports: boolean; obligations: boolean; taskProposals: boolean };
+  truncated: { sources: boolean; claims: boolean; contexts: boolean; pendingJobs: boolean; nativeSessions: boolean; backups: boolean; exports: boolean; obligations: boolean; taskProposals: boolean; deliveries: boolean };
   /** Required whenever deletion removes a whole native session holding collateral, a shared topic identity or an unresolvable orphan. */
   wholeSession: { required: boolean; reason: string | null; reasons: string[]; sessionScope: string[] };
   /** Named conditions that disable confirmation (truncated/unreadable inventory, scan ceiling). */
@@ -298,6 +312,9 @@ interface Inventory {
   exports: DeletionPreview["affected"]["exports"];
   obligations: DeletionPreview["affected"]["obligations"];
   taskProposals: DeletionPreview["affected"]["taskProposals"];
+  deliveries: DeletionPreview["affected"]["deliveries"];
+  /** Payload texts for the quoted-copy fallback; internal to the transaction, never persisted in a preview. */
+  scrub: { long: string[]; short: string[] };
   blockers: Set<string>;
 }
 
@@ -401,6 +418,16 @@ function buildInventory(tx: AppTransaction, scope: DeleteScope): Inventory {
     } catch { blockers.add("unreadable_record:memory_claims"); }
   }, { blockers });
   const jobs = jobEvidence(tx, blockers);
+  const intents = deliveryIntentRows(tx, blockers);
+  const occurrenceLinks: { output: SourceReference; intentId: string }[] = [];
+  scanTable<{ json: string }>(tx, "job_schedule_occurrences", "record_json AS json", row => {
+    try {
+      const occurrence = JSON.parse(row.json) as { outputSource?: unknown; deliveryIntentId?: unknown };
+      if (validReference(occurrence.outputSource) && typeof occurrence.deliveryIntentId === "string") {
+        occurrenceLinks.push({ output: occurrence.outputSource, intentId: occurrence.deliveryIntentId });
+      }
+    } catch { blockers.add("unreadable_record:job_schedule_occurrences"); }
+  }, { blockers });
   for (let round = 0; ; round++) {
     if (round >= deleteInventoryPolicy.closureRounds) { blockers.add("inventory_closure_ceiling"); break; }
     const before = sources.size + claims.size;
@@ -438,6 +465,11 @@ function buildInventory(tx: AppTransaction, scope: DeleteScope): Inventory {
       for (const row of tx.all<{ sourceId: string; projectId: string; revision: number; generation: number }>(
         `SELECT s.id AS sourceId, s.project_id AS projectId, v.revision, v.generation FROM source_versions v JOIN sources s ON s.id = v.source_id
          WHERE s.kind = 'output' AND json_extract(v.attribution_json, '$.runId') IN (${marks(batch.length)})`, ...batch)) addDerived(tx, sources, row);
+    }
+    // A schedule summary of an affected output was delivered through its own report source: that copy is a descendant.
+    for (const link of occurrenceLinks) {
+      const intent = intents.get(link.intentId);
+      if (intent && sources.has(sourceKey(link.output))) addDerived(tx, sources, { projectId: intent.projectId, ...intent.source });
     }
     if (sources.size + claims.size === before) break;
   }
@@ -483,16 +515,84 @@ function buildInventory(tx: AppTransaction, scope: DeleteScope): Inventory {
     exports: retainedExports(tx, allSources, [...claims.values()], blockers),
     obligations: obligationsFor(tx, scope, allSources, blockers),
     taskProposals: taskProposalsFor(tx, allSources, blockers),
+    deliveries: [],
+    scrub: { long: [], short: [] },
     blockers,
   };
+  inventory.scrub = payloadNeedles(tx, allSources, [...claims.values()], inventory.taskProposals);
+  if (inventory.scrub.long.length > deleteScrubPolicy.maxTerms) blockers.add("scrub_set_exceeds_bound");
+  const keys = new Set(allSources.map(entry => sourceKey(entry.source)));
+  for (const intent of intents.values()) {
+    const linked = keys.has(sourceKey(intent.source));
+    if (!linked && !inventory.scrub.long.some(term => intent.text.includes(term))) continue;
+    inventory.deliveries.push({ intentId: intent.id, reportId: intent.reportId, projectId: intent.projectId, status: intent.status,
+      evidence: linked ? "provenance" : "quoted_text", effect: ["sent", "unknown"].includes(intent.status) ? "redact_keep_state" : "cancel_and_redact" });
+  }
+  if (inventory.scrub.short.length && shortPayloadCopied(tx, inventory.scrub.short, keys, new Set(citing.map(job => job.jobId)),
+    new Set(inventory.deliveries.map(d => d.intentId)), new Set(inventory.deliveries.map(d => d.reportId)))) blockers.add("short_payload_unlinked_copy");
   // Lists confirmation acts on (or the owner must see in full) block when they exceed display bounds; backups are disclosure only.
   const sizes: [string, number, number][] = [["sources", sources.size, deletePreviewBounds.sources], ["claims", claims.size, deletePreviewBounds.claims],
     ["contexts", contexts.size, deletePreviewBounds.contexts], ["pendingJobs", pendingJobs.length, deletePreviewBounds.pendingJobs],
     ["nativeSessions", inventory.sessions.length, deletePreviewBounds.nativeSessions], ["exports", inventory.exports.length, deletePreviewBounds.exports],
     ["obligations", inventory.obligations.length, deletePreviewBounds.obligations],
-    ["taskProposals", inventory.taskProposals.length, deletePreviewBounds.taskProposals]];
+    ["taskProposals", inventory.taskProposals.length, deletePreviewBounds.taskProposals],
+    ["deliveries", inventory.deliveries.length, deletePreviewBounds.deliveries]];
   for (const [name, size, bound] of sizes) if (size > bound) blockers.add(`inventory_truncated:${name}`);
   return inventory;
+}
+
+interface DeliveryIntentRow { id: string; projectId: string; reportId: string; status: string; text: string; source: SourceReference }
+
+function deliveryIntentRows(tx: AppTransaction, blockers: Set<string>): Map<string, DeliveryIntentRow> {
+  const out = new Map<string, DeliveryIntentRow>();
+  scanTable<{ id: string; projectId: string; json: string }>(tx, "delivery_intents", "id, project_id AS projectId, record_json AS json", row => {
+    try {
+      const intent = JSON.parse(row.json) as { status: string; payload: { text: string };
+        provenance: { reportId: string; sourceId: string; sourceRevision: number; sourceGeneration: number } };
+      const source = { sourceId: intent.provenance.sourceId, revision: intent.provenance.sourceRevision, generation: intent.provenance.sourceGeneration };
+      if (!validReference(source) || typeof intent.payload?.text !== "string" || typeof intent.provenance.reportId !== "string") throw new Error("unreadable");
+      out.set(row.id, { id: row.id, projectId: row.projectId, reportId: intent.provenance.reportId, status: intent.status, text: intent.payload.text, source });
+    } catch { blockers.add("unreadable_record:delivery_intents"); }
+  }, { blockers });
+  return out;
+}
+
+/** Every affected payload text (sources, claim text/quote, redacted task proposals), split at the quoted-copy threshold. */
+function payloadNeedles(tx: AppTransaction, sources: SourceEntry[], claims: ClaimRow[], proposals: DeletionPreview["affected"]["taskProposals"]): Inventory["scrub"] {
+  const all = new Set<string>();
+  const add = (value: unknown) => { if (typeof value === "string" && value.length > 0 && value !== redactedText) all.add(value); };
+  for (const entry of sources) add(sourceText(tx, entry.source));
+  for (const entry of claims) { add(entry.claim.text); add(entry.claim.quote); }
+  for (const proposal of proposals.filter(p => p.effect === "redacted")) {
+    const row = tx.get<{ title: string; summary: string }>("SELECT title, summary FROM task_proposals WHERE id = ?", proposal.proposalId);
+    add(row?.title); add(row?.summary);
+  }
+  const sorted = [...all].sort();
+  return { long: sorted.filter(v => Array.from(v).length >= deleteScrubPolicy.minChars), short: sorted.filter(v => Array.from(v).length < deleteScrubPolicy.minChars) };
+}
+
+/**
+ * Whether a short payload (too short to scrub without over-redaction) appears in a record that provenance-based
+ * cleanup does not cover: unrelated outputs, deliveries, proposals or job records of non-citing jobs.
+ */
+function shortPayloadCopied(tx: AppTransaction, short: string[], affected: Set<string>, citingJobs: Set<string>, intents: Set<string>, reports: Set<string>): boolean {
+  const forms = short.flatMap(term => [term, JSON.stringify(term).slice(1, -1)]);
+  const hit = (text: string | null) => !!text && forms.some(term => text.includes(term));
+  let found = false;
+  const visit = <T,>(table: string, columns: string, test: (row: T) => boolean, where = "") => {
+    if (!found) scanTable<T>(tx, table, columns, row => { if (!found && test(row)) found = true; }, null, where);
+  };
+  visit<{ sourceId: string; revision: number; generation: number; text: string }>("source_versions", "source_id AS sourceId, revision, generation, content_text AS text",
+    row => !affected.has(sourceKey(row)) && hit(row.text), "content_text IS NOT NULL AND source_id IN (SELECT id FROM sources WHERE kind = 'output')");
+  visit<{ id: string; json: string }>("delivery_intents", "id, record_json AS json", row => !intents.has(row.id) && hit(row.json));
+  visit<{ id: string; json: string }>("delivery_reports", "id, record_json AS json", row => !reports.has(row.id) && hit(row.json));
+  visit<{ sourceId: string; revision: number; generation: number; json: string }>("decision_proposals",
+    "source_id AS sourceId, source_revision AS revision, source_generation AS generation, record_json AS json", row => !affected.has(sourceKey(row)) && hit(row.json));
+  visit<{ id: string; json: string }>("jobs", "id, record_json AS json", row => !citingJobs.has(row.id) && hit(row.json));
+  for (const table of ["job_attempts", "team_runs", "coordinator_syntheses"]) {
+    visit<{ jobId: string; json: string }>(table, "job_id AS jobId, record_json AS json", row => !citingJobs.has(row.jobId) && hit(row.json));
+  }
+  return found;
 }
 
 function obligationsFor(tx: AppTransaction, scope: DeleteScope, sources: SourceEntry[], blockers: Set<string>): DeletionPreview["affected"]["obligations"] {
@@ -640,6 +740,7 @@ function inventoryDigest(tx: AppTransaction, scope: DeleteScope, inventory: Inve
       `${sorted(s.collateral.sources.map(c => sourceKey(c.source))).join(",")}/${sorted(s.collateral.claims.map(c => c.claimId)).join(",")}`)),
     obligations: sorted(inventory.obligations.map(o => `${o.kind}/${o.id}/${o.revision}`)),
     taskProposals: sorted(inventory.taskProposals.map(p => `${p.taskId}/${p.proposalId}/${p.revision}/${p.taskState}/${p.current}`)),
+    deliveries: sorted(inventory.deliveries.map(d => `${d.intentId}/${d.reportId}/${d.status}/${d.evidence}`)),
     backups: sorted(inventory.backups.map(b => `${b.id}/${b.state}`)),
     exports: sorted(inventory.exports.map(e => e.id)),
     blockers: sorted([...inventory.blockers]),
@@ -688,6 +789,7 @@ export function prepareDeletionPreview(tx: AppTransaction, command: DeletePrevie
   const exports = bounded(inventory.exports, deletePreviewBounds.exports);
   const obligations = bounded(inventory.obligations, deletePreviewBounds.obligations);
   const taskProposals = bounded(inventory.taskProposals, deletePreviewBounds.taskProposals);
+  const deliveries = bounded(inventory.deliveries, deletePreviewBounds.deliveries);
   const wholeSession = wholeSessionFor(tx, scope, inventory.sessions);
   const preview: DeletionPreview = {
     id: crypto.randomUUID(), contract: deletePreviewContract,
@@ -704,10 +806,11 @@ export function prepareDeletionPreview(tx: AppTransaction, command: DeletePrevie
       exports: exports.items,
       obligations: obligations.items,
       taskProposals: taskProposals.items,
+      deliveries: deliveries.items,
     },
     truncated: { sources: sources.truncated, claims: claims.truncated, contexts: contexts.truncated, pendingJobs: pendingJobs.truncated,
       nativeSessions: sessions.truncated, backups: backups.truncated, exports: exports.truncated, obligations: obligations.truncated,
-      taskProposals: taskProposals.truncated },
+      taskProposals: taskProposals.truncated, deliveries: deliveries.truncated },
     wholeSession,
     blockers: [...inventory.blockers].sort(),
     inventoryDigest: inventoryDigest(tx, scope, inventory, wholeSession),
@@ -721,7 +824,7 @@ export function prepareDeletionPreview(tx: AppTransaction, command: DeletePrevie
 /** Replaces quoted copies of just-purged payloads in committed model outputs and delivery
  *  reports (kind `output` lineage). Owner message/topic sources are never rewritten here. */
 export function scrubOutputSources(tx: AppTransaction, needles: string[]): void {
-  const terms = [...new Set(needles.filter(n => n.length > 0))].slice(0, 500);
+  const terms = [...new Set(needles.filter(n => n.length > 0))].sort();
   if (!terms.length) return;
   scanTable<{ sourceId: string; revision: number; generation: number; text: string }>(tx, "source_versions",
     "source_id AS sourceId, revision, generation, content_text AS text", row => {
@@ -737,7 +840,7 @@ export function scrubOutputSources(tx: AppTransaction, needles: string[]): void 
 /** Replaces quoted copies of just-purged payloads in committed model outputs, job/attempt records and model-generated
  *  proposals; owner-authored tasks/decisions/deliveries are never rewritten. */
 export function scrubFreeTextOccurrences(tx: AppTransaction, needles: string[]): void {
-  const terms = [...new Set(needles.filter(n => n.length > 0))].slice(0, 500);
+  const terms = [...new Set(needles.filter(n => n.length > 0))].sort();
   if (!terms.length) return;
   for (const table of ["team_runs", "coordinator_syntheses", "jobs", "job_attempts", "decision_proposals"] as const) {
     try {
@@ -814,6 +917,17 @@ function scrubConversationReceipts(tx: AppTransaction, sources: SourceEntry[], c
       if (changed) tx.run("UPDATE command_receipts SET result_json = ? WHERE request_id = ?", JSON.stringify(scrubbed), row.request_id);
     }, null, "result_json LIKE ?", [`%${entry.source.sourceId}%`]);
   }
+}
+
+/** Replaces the local payload text of one delivery report and its intent; status, attempts and provenance stay. */
+function redactDeliveryText(tx: AppTransaction, intentId: string, reportId: string): void {
+  const intent = tx.get<{ json: string }>("SELECT record_json AS json FROM delivery_intents WHERE id = ?", intentId);
+  if (intent) {
+    const parsed = JSON.parse(intent.json) as { payload: { text: string } };
+    tx.run("UPDATE delivery_intents SET record_json = ? WHERE id = ?", JSON.stringify({ ...parsed, payload: { ...parsed.payload, text: redactedText } }), intentId);
+  }
+  const report = tx.get<{ json: string }>("SELECT record_json AS json FROM delivery_reports WHERE id = ?", reportId);
+  if (report) tx.run("UPDATE delivery_reports SET record_json = ? WHERE id = ?", JSON.stringify({ ...JSON.parse(report.json), text: redactedText }), reportId);
 }
 
 /**
@@ -913,15 +1027,8 @@ export function confirmDeletion(tx: AppTransaction, command: DeleteConfirmComman
   for (const session of sessions) {
     tx.run("UPDATE team_contexts SET state = 'retired' WHERE id = ? AND generation = ? AND state = 'active'", session.id, session.generation);
   }
-  // Collect doomed payload texts before purging so quoted copies elsewhere can be scrubbed precisely;
-  // short needles are skipped to avoid over-redaction.
-  const needles = new Set<string>();
-  const needle = (value: unknown) => {
-    if (typeof value === "string" && Array.from(value).length >= 8) needles.add(value);
-  };
   // Purge app-owned payloads of the scope and every descendant output; identity rows stay so references resolve as unavailable.
   for (const entry of sources) {
-    needle(sourceText(tx, entry.source));
     tx.run("UPDATE source_versions SET content_text = NULL WHERE source_id = ? AND revision = ? AND generation = ?",
       entry.source.sourceId, entry.source.revision, entry.source.generation);
     tx.run("UPDATE sources SET availability = 'unavailable' WHERE id = ? AND project_id = ? AND current_revision = ? AND generation = ?",
@@ -933,7 +1040,6 @@ export function confirmDeletion(tx: AppTransaction, command: DeleteConfirmComman
         entry.claim.claimId, entry.projectId)?.record_json;
       if (stored) {
         const claim = JSON.parse(stored) as MemoryClaim;
-        needle(claim.text); needle(claim.quote);
         if (claim.status !== "deleted" || claim.text !== redactedText) {
           tx.run("UPDATE memory_claims SET record_json = ? WHERE id = ? AND project_id = ?",
             JSON.stringify({ ...claim, status: "deleted", text: redactedText, quote: redactedText }),
@@ -945,16 +1051,27 @@ export function confirmDeletion(tx: AppTransaction, command: DeleteConfirmComman
   // Retained task proposal copies of a deleted source generation lose their payload; inactive tasks whose
   // current proposal it was lose the mirrored title/summary. Active current proposals were blockers above.
   for (const proposal of inventory.taskProposals.filter(p => p.effect === "redacted")) {
-    const row = tx.get<{ title: string; summary: string }>("SELECT title, summary FROM task_proposals WHERE id = ?", proposal.proposalId);
-    needle(row?.title); needle(row?.summary);
     tx.run("UPDATE task_proposals SET title = ?, summary = ? WHERE id = ?", redactedText, redactedText, proposal.proposalId);
     if (proposal.current) tx.run("UPDATE tasks SET title = ?, summary = ? WHERE id = ? AND current_proposal_id = ?", redactedText, redactedText, proposal.taskId, proposal.proposalId);
   }
   redactDerivedRuns(tx, sources);
   scrubStoredManifests(tx, new Set(sources.map(entry => sourceKey(entry.source))), claimIds);
   scrubConversationReceipts(tx, sources, claimIds);
-  scrubFreeTextOccurrences(tx, [...needles].slice(0, 500));
-  scrubOutputSources(tx, [...needles].slice(0, 500));
+  // Local delivery copies: delete the report (cancelling unsent intents), then redact the local payload text
+  // while sent/unknown intents keep their delivery-state metadata.
+  for (const delivery of inventory.deliveries) {
+    try {
+      const report = readDeliveryReport(tx, delivery.projectId, delivery.reportId);
+      if (report.availability === "available") retireDeliveryReport(tx, delivery.projectId, delivery.reportId, "delete", report.revision, now);
+    } catch (error) { if (!(error instanceof AppError) || error.code !== "delivery_report_not_found") throw error; }
+    redactDeliveryText(tx, delivery.intentId, delivery.reportId);
+  }
+  // Quoted-copy fallback: the complete (blocker-bounded) payload set, in deterministic chunks.
+  for (let i = 0; i < inventory.scrub.long.length; i += deleteScrubPolicy.chunk) {
+    const chunk = inventory.scrub.long.slice(i, i + deleteScrubPolicy.chunk);
+    scrubFreeTextOccurrences(tx, chunk);
+    scrubOutputSources(tx, chunk);
+  }
   // Purged sources/claims now fence any remaining automatic context or extraction that cited them.
   fenceStaleContexts(tx, now);
   for (const project of new Set([...sources.map(entry => entry.projectId), ...claimEntries.map(entry => entry.projectId)])) {
