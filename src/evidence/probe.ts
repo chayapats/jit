@@ -149,15 +149,14 @@ export interface ProbePorts {
    * inside the same cross-process serialization, invokes the given starter
    * synchronously so no provider contact starts after cancellation
    * acknowledges, then confirms the completed send. A refused send throws
-   * without forwarding anything. The optional fence reports whether the
-   * attempt is still dispatched, so credential-store mutations refuse to run
-   * after a terminal state even when the transport itself already completed.
-   * Ports that do not forward through the gate (scripted fixtures) leave
-   * accounting to the orchestration. Ports instances are single-flight:
-   * overlapping infer calls on one instance throw instead of silently
-   * swapping counts.
+   * without forwarding anything. Credential-store mutations must go through
+   * the optional fence, which runs them inside the lifecycle serialization
+   * so no write can complete after cancellation acknowledges. Ports that
+   * do not forward through gate/fence (scripted fixtures) leave accounting
+   * to the orchestration. Ports instances are single-flight: overlapping
+   * infer calls on one instance throw instead of silently swapping counts.
    */
-  infer(input: { route: string; model: string; prompt: typeof PROBE_PROMPT; tools: readonly []; discovery: { repository: false; hosted: false }; deadlineMs: number; gate?: <R>(kind: "inference" | "token", start: () => Promise<R>) => Promise<R>; fenced?: () => Promise<boolean> }, signal: AbortSignal): Promise<ProbeEvent>;
+  infer(input: { route: string; model: string; prompt: typeof PROBE_PROMPT; tools: readonly []; discovery: { repository: false; hosted: false }; deadlineMs: number; gate?: <R>(kind: "inference" | "token", start: () => Promise<R>) => Promise<R>; fence?: { write<T>(work: () => Promise<T>): Promise<T> } }, signal: AbortSignal): Promise<ProbeEvent>;
 }
 
 /** Live options demand explicit opt-in: exact route/model plus finite attempts/deadline. */
@@ -500,6 +499,41 @@ async function transitionTerminal(root: string, id: string,
       db.close();
     }
   });
+}
+
+/**
+ * Runs one credential-store mutation inside the lifecycle serialization:
+ * rechecks `started` under the shared in-process mutex and the SQLite
+ * transaction, performs the mutation, then commits. A concurrent
+ * cancellation serializes against the whole mutation, so no credential
+ * write can complete after cancellation acknowledges. Throws `fenced`
+ * when the record is already terminal, and propagates persistence failures
+ * instead of leaving silent half-written state.
+ */
+export async function fencedStoreWrite<T>(root: string, id: string, work: () => Promise<T>): Promise<T> {
+  const dir = await probeDirectory(root, true);
+  const release = await acquireDirLock(dir);
+  const db = await lifecycleDb(dir);
+  try {
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const current = await readProbeAttempt(root, id);
+      if (current.lifecycle !== "started") {
+        db.exec("ROLLBACK");
+        throw new Error("fenced");
+      }
+      const result = await work();
+      db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      try { db.exec("ROLLBACK"); } catch { /* Already rolled back. */ }
+      throw error;
+    } finally {
+      db.close();
+    }
+  } finally {
+    release();
+  }
 }
 
 /**
@@ -957,14 +991,11 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
     return response;
   };
   let attempts = 0, inference: ProbeEvent = "failed";
-  // A fenced check the bridge calls before every credential-store mutation:
-  // post-terminal writes stay refused even when the transport already
-  // completed, so a late token response can never become a credential
-  // write after cancellation acknowledged. Unreadable records fail closed.
-  const fenced = async (): Promise<boolean> => {
-    const current = await readProbeAttempt(root, id).catch(() => null);
-    return current === null || current.lifecycle !== "started";
-  };
+  // A fenced store writer the bridge calls for every credential-store
+  // mutation: the write runs inside the lifecycle serialization, so a
+  // concurrent cancellation serializes against the whole mutation and no
+  // write can complete after cancellation acknowledges.
+  const fence = { write: <T>(work: () => Promise<T>): Promise<T> => fencedStoreWrite(root, id, work) };
   for (let turn = 0; turn < maxAttempts; turn++) {
     if (effective.aborted) break;
     // Reserve the admission durably before any provider contact: the
@@ -983,7 +1014,7 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
     // start provider contact afterward: recheck before invoking the port.
     if (effective.aborted) break;
     try {
-      const outcome = await withDeadline(() => ports.infer({ route, model, prompt: PROBE_PROMPT, tools: PROBE_TOOLS, discovery: { ...PROBE_DISCOVERY }, deadlineMs: bounds.deadlineMs, gate: gateSend, fenced }, effective));
+      const outcome = await withDeadline(() => ports.infer({ route, model, prompt: PROBE_PROMPT, tools: PROBE_TOOLS, discovery: { ...PROBE_DISCOVERY }, deadlineMs: bounds.deadlineMs, gate: gateSend, fence }, effective));
       inference = probeEvents.includes(outcome) ? outcome : "failed";
     } catch {
       inference = "failed";

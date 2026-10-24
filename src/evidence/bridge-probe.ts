@@ -199,16 +199,11 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
       // never become a post-cancellation credential write. Unreadable
       // records fail closed. Reads stay unfenced; only mutations are gated.
       const base = store ?? fencedNativeStore(undefined);
-      const fencedStore: HostCredentialStore = input.fenced ? {
+      const fence = input.fence;
+      const fencedStore: HostCredentialStore = fence ? {
         get: (identity: HostCredentialReference) => base.get(identity),
-        set: async (identity: HostCredentialReference, value: string) => {
-          if (await input.fenced!().catch(() => true)) throw new Error("fenced");
-          await base.set(identity, value);
-        },
-        delete: async (identity: HostCredentialReference) => {
-          if (await input.fenced!().catch(() => true)) throw new Error("fenced");
-          return base.delete(identity);
-        },
+        set: (identity: HostCredentialReference, value: string) => fence.write(() => base.set(identity, value)),
+        delete: (identity: HostCredentialReference) => fence.write(() => base.delete(identity)),
       } : base;
       // Per-call transport: the shared before-send gate durably rechecks
       // `started` and bounds the send before anything is forwarded, so a

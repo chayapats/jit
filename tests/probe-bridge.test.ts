@@ -820,3 +820,58 @@ test("no native credential write happens after cancellation on the default store
   expect(final.observations.find(item => item.observation === "renewal")!.sends).toEqual([{ inference: 0, token: 1, confirmed: false }]);
   expect(final.attempts).toBe(1);
 });
+
+test("cancellation waits for an in-flight credential mutation instead of racing it", async () => {
+  const root = setup();
+  const expired = JSON.stringify({ accessToken: "old-access", refreshToken: "refresh-token", obtainedAt: 0, expiresAt: 1 });
+  let releaseWrite!: () => void;
+  const writeGate = new Promise<void>(resolve => { releaseWrite = resolve; });
+  let writeAt = 0, cancelAt = 0;
+  const backend = new Map<string, string>();
+  const secrets = {
+    get: async ({ name }: { service: string; name: string }) => name.includes("grok") ? expired : (backend.get(name) ?? null),
+    // Hold the OS write until released: cancellation must serialize against
+    // the whole mutation instead of acknowledging past it or failing.
+    set: async ({ name, value }: { service: string; name: string; value: string }) => {
+      await writeGate;
+      writeAt = Date.now();
+      backend.set(name, value);
+    },
+    delete: async ({ name }: { service: string; name: string }) => backend.delete(name),
+  };
+  const fetch: HostAuthFetch = async (input: any) => {
+    const url = String(typeof input === "string" ? input : input.url);
+    if (url.toLowerCase().includes("token")) {
+      return new Response(JSON.stringify({ access_token: "new-access", refresh_token: "r", expires_in: 3600 }), { status: 200 });
+    }
+    return new Response(sseSuccess("late", 1, 1), { status: 200, headers: { "content-type": "text/event-stream" } });
+  };
+  const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, nativeSecrets: secrets, fetch });
+  const pending = liveProbe("fixture-probe-host",
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 8000 },
+    { ...ports, now: () => 1800000000000, id: () => OTHER_ID }, root);
+  // Wait until the credential write is actually in flight (attempt reserved
+  // and the refresh token response received).
+  for (let spin = 0; spin < 200; spin++) {
+    try {
+      const sends = (await readProbeAttempt(root, OTHER_ID)).observations.find(item => item.observation === "renewal")!.sends;
+      if (sends!.length > 0) break;
+    } catch { /* Not persisted yet. */ }
+    await new Promise(r => setTimeout(r, 5));
+  }
+  await new Promise(r => setTimeout(r, 50));
+  // Cancel while the write is in flight: it must wait for safe settlement
+  // instead of acknowledging past the mutation or failing on the lock.
+  const cancelPromise = cancelProbeAttempt(root, OTHER_ID);
+  await new Promise(r => setTimeout(r, 50));
+  releaseWrite();
+  const cancelled = await cancelPromise;
+  cancelAt = Date.now();
+  expect(cancelled.lifecycle).toBe("cancelled");
+  const late = await pending;
+  expect(late.record.lifecycle).toBe("cancelled");
+  // The mutation settled before cancellation acknowledged: no failure and
+  // no post-acknowledgement write.
+  expect(backend.size).toBe(1);
+  expect(writeAt).toBeLessThanOrEqual(cancelAt);
+});
