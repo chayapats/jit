@@ -21,8 +21,7 @@ import { prReviewWork } from "./pr/review";
 import { prSnapshotWork } from "./pr/work";
 import { FakeGitHubFixture } from "./pr/github";
 import { memoryExtractionWork, scriptedMemoryResult } from "./memory/extract";
-import type { BackupNativePort } from "./ops/backup";
-import { createSchwayBackupNativePort } from "./ops/schway-backup";
+import { backupNativePortFor } from "./ops/schway-backup";
 import { scheduleReminderWork, scheduleSummaryWork, tickSchedules } from "./jobs/schedules";
 import { lookupSource } from "./sources";
 
@@ -111,9 +110,7 @@ async function main(): Promise<void> {
   catch (error) { queue?.close(); store.close(); throw error; }
   // Backups ride the concrete native bridge only under explicit schway mode;
   // scripted default stays fail-closed (no native port), exactly like runPort.
-  const nativeSnapshot: BackupNativePort | undefined = config.runPort === "schway"
-    ? createSchwayBackupNativePort(store)
-    : undefined;
+  const nativeSnapshot = backupNativePortFor(config, store);
   const app = new Application(store, config, {
     ...(queue ? { jobs: queue } : {}),
     ...(nativeSnapshot ? { nativeSnapshot } : {}),

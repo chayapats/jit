@@ -7,6 +7,7 @@ import { TransactionStore, type AppTransaction } from "../store";
 import { invalidatePendingJob, readJob } from "../jobs/queue";
 import { fenceStaleContexts } from "../memory/context";
 import { currentSupportedSchema, minSupportedSchema } from "./upgrade";
+import { validateManifestRecord } from "./backup";
 import { redactedText, scrubFreeTextOccurrences, scrubOutputSources } from "../memory/delete";
 
 export const restoreContract = "ops.quarantined_restore/v1" as const;
@@ -175,8 +176,11 @@ export function prepareRestore(tx: AppTransaction, input: {
   }
   const manifestRow = tx.get<{ record_json: string }>("SELECT record_json FROM ops_backups WHERE id = ?", input.backupId);
   if (!manifestRow) throw new AppError("backup_not_found", 404);
-  const manifest = JSON.parse(manifestRow.record_json) as { id: string; appSchema: number; createdAt: number; artifact: { path: string; bytes: number; hash: string } };
-  if (manifest.id !== input.backupId || typeof manifest.appSchema !== "number") throw new AppError("backup_corrupt", 500);
+  let parsed: unknown;
+  try { parsed = JSON.parse(manifestRow.record_json); } catch { throw new AppError("backup_corrupt", 500); }
+  // ops.backup_manifest/v1 structure, including a well-formed producing jitVersion.
+  const manifest = validateManifestRecord(parsed);
+  if (manifest.id !== input.backupId) throw new AppError("backup_corrupt", 500);
   const compat = restoreCompat(manifest.appSchema);
   if (compat.action === "reject") {
     throw new AppError(compat.reason === "newer_backup_unsupported" ? "newer_backup_unsupported" : "backup_unrestorable", 409);

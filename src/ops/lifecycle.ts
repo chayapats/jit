@@ -16,7 +16,7 @@ import { discussionPlanWork, specialistAnalysisWork } from "../team/dispatch";
 import { scriptedMemoryResult } from "../memory/extract";
 import { memoryExtractionWork } from "../memory/extract";
 import { scriptedPreviewWork } from "../team/preview";
-import { createSchwayBackupNativePort } from "./schway-backup";
+import { backupNativePortFor } from "./schway-backup";
 import { validateArtifact, type BuildManifest } from "../../ops/package/bun-build";
 import { parseServiceConfig, type ServiceConfig } from "../../ops/package/service-config";
 
@@ -187,11 +187,12 @@ export function startFullApp(input: StartInput): { ok: true; handle: FullAppHand
       return { ok: false, gates: preflight.gates };
     }
     queue = createFullAppQueue(store, input.config, now);
-    // Same opt-in as the serve path: concrete native snapshots only under
-    // explicit schway mode; scripted default stays fail-closed.
+    // Same selection as serve (backupNativePortFor); managed backups land in
+    // the validated service backup directory, never beside the database.
+    const nativeSnapshot = backupNativePortFor(input.config, store);
     const app = new Application(store, input.config, {
-      jobs: queue, now,
-      ...(input.config.runPort === "schway" ? { nativeSnapshot: createSchwayBackupNativePort(store) } : {}),
+      jobs: queue, now, backupDir: service.backupDirectory,
+      ...(nativeSnapshot ? { nativeSnapshot } : {}),
     });
     return { ok: true, handle: { store, queue, app } };
   } catch (error) {

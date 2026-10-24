@@ -1,30 +1,101 @@
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { Database } from "bun:sqlite";
+import packageManifest from "../../package.json";
 import { AppError } from "../errors";
 import { requireId } from "../sources";
-import type { AppTransaction } from "../store";
+import type { AppTransaction, TransactionStore } from "../store";
 
+/**
+ * ops.backup_manifest/v1 — consistent managed backups (OPS01, issue #18).
+ *
+ * A managed backup is one committed inventory row in `ops_backups` plus the
+ * files it names inside the trusted backup directory: a credential-free
+ * SQLite application image (`<id>.sqlite`) and zero or more opaque native
+ * session artifacts (`<id>.native-<n>.json`) produced by the engine's
+ * supported snapshot contract. Creation is staged: capture, stage files,
+ * then commit the manifest; a manifest never names a file that was not
+ * fully written, and files without a committed manifest are orphans that
+ * reconciliation removes. See docs/contracts/ops-backup-manifest-v1.md.
+ */
 export const backupContract = "ops.backup_manifest/v1" as const;
 export const backupSchemaVersion = 20;
+/** Finite installation-wide retention: count and total stored bytes (app image plus native artifacts). */
 export const backupRetention = Object.freeze({ maxBackups: 10, maxBytes: 64 * 1024 * 1024 });
+/** Bounded reference inventory recorded in one manifest; overflow marks the manifest incomplete. */
+export const backupInventoryLimits = Object.freeze({ projects: 1000, sources: 4000 });
+/** Staged files younger than this are never treated as orphans (another creation may still own them). */
+export const backupOrphanGraceMs = 10 * 60 * 1000;
+
+const VERSION_PATTERN = /^jit\/\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]{1,64})?$/;
+/** Application build identity recorded in every manifest, derived from the shipped package.json. */
+export const jitAppVersion = `jit/${String(packageManifest.version)}`;
+
+/** True for a well-formed application build identity (`jit/<semver>`). */
+export function isJitVersion(value: unknown): value is string {
+  return typeof value === "string" && VERSION_PATTERN.test(value);
+}
+
+/** One opaque native artifact returned by an engine snapshot; Jit hashes and stores it, never parses it. */
+export interface BackupNativeArtifact {
+  /** Short file-safe label, e.g. `session-snapshot-0`. */
+  name: string;
+  bytes: Uint8Array;
+  /** Hex SHA-256 the engine reports for `bytes`; must match the measured hash. */
+  sha256: string;
+}
+
+/**
+ * Exact native reference set resolved inside the application snapshot
+ * transaction. `fingerprint` is compared again at manifest commit; any change
+ * means the native set moved during capture and the backup is not valid.
+ */
+export interface BackupNativePlan {
+  refs: { id: string; generation: number }[];
+  fingerprint: string;
+  /** Port-private detail (for example opaque native session ids); never persisted in a manifest. */
+  detail?: unknown;
+}
 
 export interface BackupNativeSnapshot {
   refs: { id: string; generation: number }[];
+  /**
+   * Declared native size. Informational only: the manifest records the
+   * measured size of persisted artifacts, never this declaration.
+   */
   bytes: number;
   engine: string;
+  /** Supported engine snapshot contract the artifacts conform to. */
+  contract?: string;
+  /** Engine native format version observed at capture. */
+  formatVersion?: number;
+  /** Opaque engine artifacts. Absent or empty is only valid for an empty reference set. */
+  artifacts?: BackupNativeArtifact[];
 }
 
-/** Engine bridge for quiesced native snapshots; production default is unavailable (fail-closed). */
+/**
+ * Engine bridge for quiesced native snapshots. Production default is no port
+ * (fail-closed: every backup is `incomplete` with native `unavailable`).
+ */
 export interface BackupNativePort {
   available(): boolean;
-  snapshot(): BackupNativeSnapshot;
+  /**
+   * Captures the native state for `plan` (or for the port's own resolution
+   * when no plan is given). Ports performing engine I/O return a Promise and
+   * set `staged`; they are only driven by the staged backup command.
+   */
+  snapshot(plan?: BackupNativePlan): BackupNativeSnapshot | Promise<BackupNativeSnapshot>;
+  /** Resolves the exact native reference set inside the app snapshot transaction. */
+  resolve?(tx: AppTransaction): BackupNativePlan;
   /**
    * Pinned engine label for preflight display. The snapshot itself stays
    * authoritative for manifest content; ports without a label read as the
    * scripted fixture for backward-compatible display only.
    */
   readonly engine?: string;
+  /** True when `snapshot` is asynchronous engine I/O; synchronous callers must fail closed instead of invoking it. */
+  readonly staged?: boolean;
 }
 
 export const unavailableNativePort: BackupNativePort = {
@@ -50,25 +121,41 @@ export interface PruneBackupsCommand {
 
 export type BackupCommand = CreateBackupCommand | PruneBackupsCommand;
 
+/** Persisted native artifact inventory entry; `path` is inside the managed backup directory. */
+export interface BackupNativeArtifactRecord { name: string; path: string; bytes: number; hash: string }
+
 export interface BackupManifest {
   contract: typeof backupContract;
   id: string;
   createdAt: number;
   appSchema: number;
+  /** Producing application build (`jit/<package version>`); validated on read and restore. */
   jitVersion: string;
   appRevision: number;
   projects: { projectId: string; revision: number }[];
   sourceGenerations: { projectId: string; sourceId: string; revision: number; generation: number }[];
+  /** Explicit reference-inventory completeness; truncated inventories never present as valid. */
+  inventory: {
+    complete: boolean;
+    projects: { total: number; recorded: number };
+    sources: { total: number; recorded: number };
+  };
   lifecycle: { available: boolean; checkpoint: string | null; reason: string | null };
   native: {
     state: "valid" | "unavailable" | "incomplete";
     refs: { id: string; generation: number }[];
+    /** Measured bytes of persisted native artifacts. */
     bytes: number;
     engine: string | null;
     reason: string | null;
+    contract: string | null;
+    formatVersion: number | null;
+    artifacts: BackupNativeArtifactRecord[];
   };
   content: { bytes: number; hash: string; projects: number; sources: number };
   retention: { maxBackups: number; maxBytes: number; pruned: string[] };
+  /** Credential state is never part of an ordinary backup image. */
+  credentials: { included: false; excludedTables: string[]; scrubbed: string[]; restore: "owner_credential_setup_required" };
   state: "valid" | "incomplete";
   reason: string | null;
   artifact: { path: string; bytes: number; hash: string };
@@ -82,6 +169,8 @@ export interface BackupReceipt {
 const exact = (value: unknown, keys: string[]) =>
   !!value && typeof value === "object" && !Array.isArray(value) &&
   Object.keys(value).sort().join(",") === [...keys].sort().join(",");
+
+const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
 export function backupIdentity(command: BackupCommand, noteBytes = 500): string {
   if (!command || typeof command !== "object" || !exact(command, ["kind", "requestId", "projectId", "expectedRevision", "payload"])) {
@@ -113,6 +202,115 @@ function ensureDir(dir: string): void {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
 }
 
+// ---------------------------------------------------------------------------
+// Credential-free application image
+// ---------------------------------------------------------------------------
+
+/**
+ * Explicit classification of every application table for ordinary backup
+ * images. `exclude` tables are emptied (credential or live-authority state);
+ * everything else is copied. A table missing from this map fails backup
+ * creation closed (`backup_schema_unclassified`): new schema must be
+ * classified before it can enter a backup.
+ */
+export const backupImageTables: Readonly<Record<string, "include" | "exclude" | "scrub">> = Object.freeze({
+  owner: "exclude", sessions: "exclude", login_throttle: "exclude",
+  job_scheduler: "exclude", delivery_worker: "exclude",
+  telegram_binding: "scrub", command_receipts: "scrub",
+  app_state: "include", audit: "include", coordinator_syntheses: "include", decision_proposals: "include",
+  deletion_ledger: "include", deletion_operations: "include", deletion_previews: "include",
+  delivery_attempts: "include", delivery_intents: "include", delivery_reports: "include",
+  export_artifacts: "include", job_attempts: "include", job_authority: "include", job_reconciliation: "include",
+  job_schedule_occurrences: "include", job_schedules: "include", jobs: "include",
+  memory_claims: "include", memory_context_entries: "include", memory_contexts: "include", memory_corrections: "include",
+  memory_decision_sources: "include", memory_derived_sources: "include", memory_extractions: "include",
+  memory_suppressed_claims: "include", memory_suppressed_sources: "include", memory_suppressions: "include",
+  messages: "include", ops_backups: "include", owner_decisions: "include", project_groups: "include",
+  project_team: "include", projects: "include", restore_quarantines: "include", roles: "include",
+  schway_native_refs: "include", source_versions: "include", sources: "include",
+  task_events: "include", task_evidence_artifacts: "include", task_proposals: "include", tasks: "include",
+  team_contexts: "include", team_runs: "include", team_state: "include",
+  telegram_inbox: "include", telegram_poll: "include", topics: "include", upgrade_journal: "include",
+});
+
+/** JSON keys whose values are one-time secrets and are nulled wherever receipts persist them. */
+const SECRET_JSON_KEYS = new Set(["challengeNonce", "password", "passwordHash", "password_hash", "token", "tokenHash", "token_hash", "csrf"]);
+
+function scrubJson(value: unknown): { value: unknown; changed: boolean } {
+  if (Array.isArray(value)) {
+    let changed = false;
+    const out = value.map(item => { const r = scrubJson(item); changed ||= r.changed; return r.value; });
+    return { value: out, changed };
+  }
+  if (value && typeof value === "object") {
+    let changed = false;
+    const out: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (SECRET_JSON_KEYS.has(key) && item !== null) { out[key] = null; changed = true; continue; }
+      const r = scrubJson(item); changed ||= r.changed; out[key] = r.value;
+    }
+    return { value: out, changed };
+  }
+  return { value, changed: false };
+}
+
+export interface BackupImage { bytes: Uint8Array; hash: string; excludedTables: string[]; scrubbed: string[] }
+
+/**
+ * Serializes the caller's consistent transaction view, then removes all
+ * credential and live-authority state from an in-memory copy: owner password
+ * verifier, browser sessions, login throttle, scheduler/delivery claims,
+ * pending Telegram challenge nonces and secret-bearing receipt fields. Deleted
+ * pages are zeroed (`secure_delete`) and the copy is vacuumed, so no residual
+ * credential bytes survive. The live database is never modified.
+ */
+export function captureBackupImage(tx: AppTransaction, store: Pick<TransactionStore, "snapshotBytes">): BackupImage {
+  const tables = tx.all<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").map(r => r.name);
+  const unclassified = tables.filter(name => !name.startsWith("sqlite_") && !(name in backupImageTables));
+  if (unclassified.length) throw new AppError("backup_schema_unclassified", 500);
+  const raw = store.snapshotBytes();
+  const copy = new Uint8Array(raw);
+  // A WAL-mode header cannot be written as an in-memory image; mark the copy
+  // rollback-journal. TransactionStore re-enables WAL when the image is opened.
+  if (copy.length >= 20) { copy[18] = 1; copy[19] = 1; }
+  let image: Database;
+  try { image = Database.deserialize(copy); } catch { throw new AppError("backup_snapshot_failed", 500); }
+  const excludedTables: string[] = [], scrubbed: string[] = [];
+  try {
+    image.exec("PRAGMA foreign_keys = OFF; PRAGMA secure_delete = ON;");
+    for (const name of tables) {
+      if (backupImageTables[name] === "exclude") { image.exec(`DELETE FROM "${name}"`); excludedTables.push(name); }
+    }
+    if (tables.includes("telegram_binding")) {
+      image.exec("UPDATE telegram_binding SET challenge_nonce = NULL, challenge_expires_at = NULL");
+      scrubbed.push("telegram_binding.challenge_nonce");
+    }
+    if (tables.includes("command_receipts")) {
+      const rows = image.query("SELECT rowid AS id, result_json FROM command_receipts").all() as { id: number; result_json: string }[];
+      const update = image.query("UPDATE command_receipts SET result_json = ? WHERE rowid = ?");
+      for (const row of rows) {
+        let parsed: unknown;
+        try { parsed = JSON.parse(row.result_json); } catch { continue; }
+        const result = scrubJson(parsed);
+        if (result.changed) update.run(JSON.stringify(result.value), row.id);
+      }
+      scrubbed.push("command_receipts.result_json");
+    }
+    image.exec("VACUUM");
+    const bytes = image.serialize();
+    return { bytes, hash: sha256(bytes), excludedTables, scrubbed };
+  } catch (error) {
+    if (error instanceof AppError) throw error;
+    throw new AppError("backup_snapshot_failed", 500);
+  } finally {
+    image.close();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Reference inventory
+// ---------------------------------------------------------------------------
+
 function lifecycleCheckpoint(tx: AppTransaction): { available: boolean; checkpoint: string | null; reason: string | null } {
   try {
     const rows = tx.all<{ record_json: string }>("SELECT record_json FROM memory_suppressions ORDER BY rowid DESC LIMIT 1");
@@ -125,13 +323,194 @@ function lifecycleCheckpoint(tx: AppTransaction): { available: boolean; checkpoi
   }
 }
 
-function collectProjects(tx: AppTransaction): { projectId: string; revision: number }[] {
-  return tx.all<{ projectId: string; revision: number }>("SELECT id AS projectId, revision FROM projects ORDER BY created_at, id LIMIT 1000");
+/** Bounded inventory with exact totals: overflow is recorded, never silently dropped. */
+export function collectInventory(tx: AppTransaction, limits: { projects: number; sources: number } = backupInventoryLimits): {
+  projects: BackupManifest["projects"]; sourceGenerations: BackupManifest["sourceGenerations"]; inventory: BackupManifest["inventory"];
+} {
+  const projects = tx.all<{ projectId: string; revision: number }>(
+    "SELECT id AS projectId, revision FROM projects ORDER BY created_at, id LIMIT ?", limits.projects);
+  const sourceGenerations = tx.all<{ projectId: string; sourceId: string; revision: number; generation: number }>(
+    "SELECT project_id AS projectId, id AS sourceId, current_revision AS revision, generation FROM sources ORDER BY project_id, id LIMIT ?", limits.sources);
+  const projectTotal = tx.get<{ n: number }>("SELECT count(*) AS n FROM projects")!.n;
+  const sourceTotal = tx.get<{ n: number }>("SELECT count(*) AS n FROM sources")!.n;
+  return {
+    projects, sourceGenerations,
+    inventory: {
+      complete: projectTotal === projects.length && sourceTotal === sourceGenerations.length,
+      projects: { total: projectTotal, recorded: projects.length },
+      sources: { total: sourceTotal, recorded: sourceGenerations.length },
+    },
+  };
 }
 
-function collectSources(tx: AppTransaction): { projectId: string; sourceId: string; revision: number; generation: number }[] {
-  return tx.all<{ projectId: string; sourceId: string; revision: number; generation: number }>(
-    "SELECT project_id AS projectId, id AS sourceId, current_revision AS revision, generation FROM sources ORDER BY project_id, id LIMIT 4000");
+// ---------------------------------------------------------------------------
+// Native capture normalization
+// ---------------------------------------------------------------------------
+
+/** Normalized native capture: the manifest section (paths filled at staging) plus the bytes to stage. */
+export interface NativeCapture {
+  section: Omit<BackupManifest["native"], "artifacts">;
+  artifacts: BackupNativeArtifact[];
+}
+
+const emptyNative = (state: "unavailable" | "incomplete", reason: string, engine: string | null = null): NativeCapture => ({
+  section: { state, refs: [], bytes: 0, engine, reason, contract: null, formatVersion: null },
+  artifacts: [],
+});
+
+function nativeFailure(error: unknown, engine: string | null): NativeCapture {
+  if (error instanceof AppError) {
+    return emptyNative(error.code === "native_snapshot_unavailable" ? "unavailable" : "incomplete",
+      /^[a-z0-9_]{1,64}$/.test(error.code) ? error.code : "native_snapshot_failed", engine);
+  }
+  // Engine messages never enter a manifest.
+  return emptyNative("incomplete", "native_snapshot_failed", engine);
+}
+
+const ARTIFACT_NAME = /^[a-z0-9][a-z0-9.-]{0,63}$/;
+
+/** Validates a port result fail-closed: refs, artifact hashes and coverage; never inspects artifact content. */
+export function normalizeNativeSnapshot(snap: unknown, plan?: BackupNativePlan): NativeCapture {
+  const s = snap as BackupNativeSnapshot | null;
+  if (!s || typeof s !== "object" || !Array.isArray(s.refs) || typeof s.engine !== "string" || !s.engine || s.engine.length > 200) {
+    return emptyNative("incomplete", "native_snapshot_invalid");
+  }
+  const engine = s.engine;
+  try {
+    for (const ref of s.refs) {
+      requireId(ref.id);
+      if (!Number.isSafeInteger(ref.generation) || ref.generation < 1) return emptyNative("incomplete", "native_snapshot_invalid", engine);
+    }
+  } catch { return emptyNative("incomplete", "native_snapshot_invalid", engine); }
+  if (plan && JSON.stringify(plan.refs) !== JSON.stringify(s.refs.map(r => ({ id: r.id, generation: r.generation })))) {
+    return emptyNative("incomplete", "native_snapshot_mismatch", engine);
+  }
+  const artifacts = s.artifacts ?? [];
+  if (!Array.isArray(artifacts)) return emptyNative("incomplete", "native_snapshot_invalid", engine);
+  const names = new Set<string>();
+  let bytes = 0;
+  for (const artifact of artifacts) {
+    if (!artifact || typeof artifact.name !== "string" || !ARTIFACT_NAME.test(artifact.name) || names.has(artifact.name) ||
+        !(artifact.bytes instanceof Uint8Array) || artifact.bytes.length < 1 || typeof artifact.sha256 !== "string") {
+      return emptyNative("incomplete", "native_snapshot_invalid", engine);
+    }
+    names.add(artifact.name);
+    if (sha256(artifact.bytes) !== artifact.sha256) return emptyNative("incomplete", "native_artifact_hash_mismatch", engine);
+    bytes += artifact.bytes.length;
+  }
+  if (s.refs.length > 0 && artifacts.length === 0) return emptyNative("incomplete", "native_artifacts_missing", engine);
+  return {
+    section: {
+      state: "valid", refs: s.refs.map(r => ({ id: r.id, generation: r.generation })), bytes, engine, reason: null,
+      contract: typeof s.contract === "string" ? s.contract : null,
+      formatVersion: Number.isSafeInteger(s.formatVersion) ? s.formatVersion! : null,
+    },
+    artifacts: artifacts.map(a => ({ name: a.name, bytes: a.bytes, sha256: a.sha256 })),
+  };
+}
+
+/** Staged capture: drives synchronous or asynchronous ports; any failure is an explicit non-valid state. */
+export async function captureNativeSnapshot(port: BackupNativePort | undefined, plan?: BackupNativePlan): Promise<NativeCapture> {
+  if (!port) return emptyNative("unavailable", "native_snapshot_unavailable");
+  let available = false;
+  try { available = port.available(); } catch { available = false; }
+  if (!available) return emptyNative("unavailable", "native_snapshot_unavailable", port.engine ?? null);
+  try {
+    return normalizeNativeSnapshot(await port.snapshot(plan), plan);
+  } catch (error) {
+    return nativeFailure(error, port.engine ?? null);
+  }
+}
+
+/**
+ * Synchronous capture for callers that cannot await (upgrade prepare). Staged
+ * engine ports are never invoked here: they fail closed as unavailable.
+ */
+export function resolveNativeSnapshot(port: BackupNativePort | undefined): BackupManifest["native"] {
+  const capture = resolveNativeCaptureSync(port);
+  return { ...capture.section, artifacts: [] };
+}
+
+/** Synchronous variant returning the bytes to stage; see {@link resolveNativeSnapshot}. */
+export function resolveNativeCaptureSync(port: BackupNativePort | undefined): NativeCapture {
+  if (!port) return emptyNative("unavailable", "native_snapshot_unavailable");
+  let available = false;
+  try { available = port.available(); } catch { available = false; }
+  if (!available) return emptyNative("unavailable", "native_snapshot_unavailable");
+  if (port.staged) return emptyNative("unavailable", "native_snapshot_requires_staged_backup", port.engine ?? null);
+  try {
+    const result = port.snapshot();
+    if (result instanceof Promise) {
+      result.catch(() => { /* Never awaited on the synchronous path. */ });
+      return emptyNative("unavailable", "native_snapshot_requires_staged_backup", port.engine ?? null);
+    }
+    return normalizeNativeSnapshot(result);
+  } catch (error) {
+    return nativeFailure(error, port.engine ?? null);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Manifest
+// ---------------------------------------------------------------------------
+
+/**
+ * Builds a manifest from a consistent capture. State is `valid` only when the
+ * native set, lifecycle checkpoint and reference inventory are all complete;
+ * the first failing component supplies `reason`.
+ */
+export function prepareBackupManifest(tx: AppTransaction, input: {
+  id: string; now: number; appRevision: number; appSchema: number; jitVersion: string;
+  image: BackupImage; native: BackupManifest["native"]; artifactPath: string; pruned: string[];
+  inventory?: ReturnType<typeof collectInventory>;
+  lifecycle?: BackupManifest["lifecycle"];
+}): BackupManifest {
+  if (!isJitVersion(input.jitVersion)) throw new AppError("invalid_jit_version", 500);
+  const collected = input.inventory ?? collectInventory(tx);
+  const lifecycle = input.lifecycle ?? lifecycleCheckpoint(tx);
+  const reason = input.native.state !== "valid" ? input.native.reason ?? "native_snapshot_failed"
+    : !lifecycle.available ? lifecycle.reason ?? "no_ledger_checkpoint"
+      : !collected.inventory.complete ? "inventory_truncated" : null;
+  return {
+    contract: backupContract,
+    id: input.id,
+    createdAt: input.now,
+    appSchema: input.appSchema,
+    jitVersion: input.jitVersion,
+    appRevision: input.appRevision,
+    projects: collected.projects,
+    sourceGenerations: collected.sourceGenerations,
+    inventory: collected.inventory,
+    lifecycle,
+    native: input.native,
+    content: { bytes: input.image.bytes.length, hash: input.image.hash, projects: collected.projects.length, sources: collected.sourceGenerations.length },
+    retention: { maxBackups: backupRetention.maxBackups, maxBytes: backupRetention.maxBytes, pruned: input.pruned },
+    credentials: { included: false, excludedTables: input.image.excludedTables, scrubbed: input.image.scrubbed, restore: "owner_credential_setup_required" },
+    state: reason === null ? "valid" : "incomplete",
+    reason,
+    artifact: { path: input.artifactPath, bytes: input.image.bytes.length, hash: input.image.hash },
+  };
+}
+
+/** Captures the consistent application side of a backup inside the caller transaction. */
+export function captureAppSide(tx: AppTransaction, store: Pick<TransactionStore, "snapshotBytes">) {
+  const appSchema = tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
+  const appRevision = tx.get<{ revision: number }>("SELECT revision FROM app_state WHERE id = 1")!.revision;
+  const inventory = collectInventory(tx);
+  const lifecycle = lifecycleCheckpoint(tx);
+  const image = captureBackupImage(tx, store);
+  return { appSchema, appRevision, inventory, lifecycle, image };
+}
+
+/** Structural validation for manifests read back from inventory or used for restore. */
+export function validateManifestRecord(value: unknown): BackupManifest {
+  const m = value as BackupManifest;
+  if (!m || typeof m !== "object" || m.contract !== backupContract || typeof m.id !== "string" ||
+      !Number.isSafeInteger(m.appSchema) || !Number.isSafeInteger(m.createdAt) || !isJitVersion(m.jitVersion) ||
+      !m.artifact || typeof m.artifact.path !== "string" || typeof m.artifact.hash !== "string" || !Number.isSafeInteger(m.artifact.bytes)) {
+    throw new AppError("backup_corrupt", 500);
+  }
+  return m;
 }
 
 /** Reads one manifest without parsing backup bytes or native private formats. */
@@ -139,121 +518,153 @@ export function readBackupManifest(tx: AppTransaction, id: string): BackupManife
   requireId(id);
   const row = tx.get<{ record_json: string }>("SELECT record_json FROM ops_backups WHERE id = ?", id);
   if (!row) throw new AppError("backup_not_found", 404);
-  const manifest = JSON.parse(row.record_json) as BackupManifest;
-  if (manifest.contract !== backupContract || typeof manifest.id !== "string") throw new AppError("backup_corrupt", 500);
+  let parsed: unknown;
+  try { parsed = JSON.parse(row.record_json); } catch { throw new AppError("backup_corrupt", 500); }
+  const manifest = validateManifestRecord(parsed);
+  if (manifest.id !== id) throw new AppError("backup_corrupt", 500);
   return manifest;
 }
 
 /** Bounded inventory outside ordinary project data, newest last. */
 export function listBackups(tx: AppTransaction, limit = 50): BackupManifest[] {
-  const rows = tx.all<{ record_json: string }>("SELECT record_json FROM ops_backups ORDER BY created_at, id LIMIT ?", Math.min(Math.max(limit, 1), 100));
+  const rows = tx.all<{ record_json: string }>("SELECT record_json FROM ops_backups ORDER BY created_at, rowid LIMIT ?", Math.min(Math.max(limit, 1), 100));
   return rows.map(row => JSON.parse(row.record_json) as BackupManifest);
 }
 
+// ---------------------------------------------------------------------------
+// Retention
+// ---------------------------------------------------------------------------
+
+/** Stored bytes a manifest occupies: app image plus persisted native artifacts. */
+export function manifestStoredBytes(manifest: Pick<BackupManifest, "artifact"> & { native?: { artifacts?: { bytes: number }[] } }): number {
+  const nativeBytes = (manifest.native?.artifacts ?? []).reduce((sum, a) => sum + (Number.isSafeInteger(a.bytes) ? a.bytes : 0), 0);
+  return (Number.isSafeInteger(manifest.artifact?.bytes) ? manifest.artifact.bytes : 0) + nativeBytes;
+}
+
 /**
- * Prepares a consistent manifest inside the caller transaction. The caller writes
- * snapshot bytes to `artifactPath` (chmod 0600) before committing the row; a crash
- * before commit leaves at most an orphan file that inventory never lists.
+ * Pure retention plan over existing backups (oldest first). Rejects an
+ * incoming backup that alone exceeds the byte ceiling before anything is
+ * chosen; otherwise returns the minimal oldest-first victim set so that the
+ * kept count is at most `keep` (including the incoming one when present) and
+ * the cumulative projected total fits the ceiling.
  */
-export function prepareBackupManifest(tx: AppTransaction, input: {
-  id: string; now: number; appRevision: number; appSchema: number; snapshotBytes: Uint8Array; snapshotHash: string;
-  native: BackupManifest["native"]; artifactPath: string; pruned: string[];
-}): BackupManifest {
-  const projects = collectProjects(tx);
-  const sources = collectSources(tx);
-  const lifecycle = lifecycleCheckpoint(tx);
-  const content = {
-    bytes: input.snapshotBytes.length,
-    hash: input.snapshotHash,
-    projects: projects.length,
-    sources: sources.length,
-  };
-  const nativeIncomplete = input.native.state !== "valid";
-  const lifecycleIncomplete = !lifecycle.available;
-  const state = nativeIncomplete || lifecycleIncomplete ? "incomplete" : "valid";
-  const reason = nativeIncomplete ? input.native.reason : lifecycleIncomplete ? lifecycle.reason : null;
-  return {
-    contract: backupContract,
-    id: input.id,
-    createdAt: input.now,
-    appSchema: input.appSchema,
-    jitVersion: "jit-mvp-fixture",
-    appRevision: input.appRevision,
-    projects,
-    sourceGenerations: sources,
-    lifecycle,
-    native: input.native,
-    content,
-    retention: { maxBackups: backupRetention.maxBackups, maxBytes: backupRetention.maxBytes, pruned: input.pruned },
-    state,
-    reason,
-    artifact: { path: input.artifactPath, bytes: input.snapshotBytes.length, hash: input.snapshotHash },
-  };
+export function planRetention(existing: { id: string; bytes: number }[], incomingBytes: number | null, keep: number,
+  maxBytes: number = backupRetention.maxBytes): string[] {
+  if (incomingBytes !== null && incomingBytes > maxBytes) throw new AppError("backup_too_large", 507);
+  const slots = Math.max(0, Math.min(keep, backupRetention.maxBackups) - (incomingBytes === null ? 0 : 1));
+  const victims: string[] = [];
+  const kept = [...existing];
+  while (kept.length > slots) victims.push(kept.shift()!.id);
+  let total = (incomingBytes ?? 0) + kept.reduce((sum, row) => sum + row.bytes, 0);
+  while (total > maxBytes && kept.length) {
+    const row = kept.shift()!;
+    victims.push(row.id);
+    total -= row.bytes;
+  }
+  return victims;
 }
 
-/** Resolves the native snapshot fail-closed: unavailable engine never yields a valid backup. */
-export function resolveNativeSnapshot(port: BackupNativePort | undefined): BackupManifest["native"] {
-  if (!port || !port.available()) {
-    return { state: "unavailable", refs: [], bytes: 0, engine: null, reason: "native_snapshot_unavailable" };
-  }
+/** Files a committed manifest owns inside the managed directory. */
+export function manifestFiles(backupDir: string, id: string, recordJson: string): string[] {
+  const files = [artifactPathFor(backupDir, id)];
   try {
-    const snap = port.snapshot();
-    if (!snap || typeof snap.bytes !== "number" || snap.bytes < 0 || !Array.isArray(snap.refs) || typeof snap.engine !== "string" || !snap.engine) {
-      return { state: "incomplete", refs: [], bytes: 0, engine: null, reason: "native_snapshot_invalid" };
+    const manifest = JSON.parse(recordJson) as Partial<BackupManifest>;
+    for (const artifact of manifest.native?.artifacts ?? []) {
+      if (typeof artifact.path === "string" && dirname(artifact.path) === backupDir && artifact.path.startsWith(join(backupDir, `${id}.native-`))) {
+        files.push(artifact.path);
+      }
     }
-    for (const ref of snap.refs) requireId(ref.id);
-    return { state: "valid", refs: snap.refs.map(r => ({ ...r })), bytes: snap.bytes, engine: snap.engine, reason: null };
-  } catch (error) {
-    if (error instanceof AppError) return { state: "unavailable", refs: [], bytes: 0, engine: null, reason: error.code };
-    return { state: "incomplete", refs: [], bytes: 0, engine: null, reason: "native_snapshot_failed" };
+  } catch { /* Corrupt rows still release their image file. */ }
+  return files;
+}
+
+/**
+ * Removes retention victims' inventory rows inside the caller transaction and
+ * returns their files. Physical deletion is the caller's job AFTER commit:
+ * a rolled-back transaction must leave every previously committed artifact intact.
+ */
+export function selectRetentionVictims(tx: AppTransaction, backupDir: string, incomingBytes: number | null, keep: number = backupRetention.maxBackups): { pruned: string[]; files: string[] } {
+  // Oldest first by commit time, then commit order (rowid) for equal clocks.
+  const rows = tx.all<{ id: string; record_json: string }>("SELECT id, record_json FROM ops_backups ORDER BY created_at, rowid");
+  const sized = rows.map(row => {
+    let bytes = 0;
+    try { bytes = manifestStoredBytes(JSON.parse(row.record_json) as BackupManifest); } catch { /* Corrupt rows count as zero. */ }
+    return { id: row.id, bytes };
+  });
+  const pruned = planRetention(sized, incomingBytes, keep);
+  const files: string[] = [];
+  for (const id of pruned) {
+    const row = rows.find(r => r.id === id)!;
+    tx.run("DELETE FROM ops_backups WHERE id = ?", id);
+    files.push(...manifestFiles(backupDir, id, row.record_json));
+  }
+  return { pruned, files };
+}
+
+/** Best-effort removal of managed files; failures leave orphans for reconciliation. */
+export function removeManagedFiles(files: string[]): void {
+  for (const file of files) {
+    try { if (existsSync(file)) rmSync(file); } catch { /* Reconciliation retries orphans. */ }
   }
 }
 
-/** Retention pruning inside the backup transaction; deletes only managed artifact files. */
-export function enforceRetention(tx: AppTransaction, backupDir: string, incomingBytes: number, keepOverride?: number): string[] {
-  const keep = Math.min(keepOverride ?? backupRetention.maxBackups, backupRetention.maxBackups);
-  const existing = tx.all<{ id: string; created_at: number; record_json: string }>("SELECT id, created_at AS created_at, record_json FROM ops_backups ORDER BY created_at, id");
-  let total = incomingBytes;
-  for (const row of existing) {
-    try { total += (JSON.parse(row.record_json) as BackupManifest).artifact.bytes; } catch { /* Corrupt rows count as zero; validation surfaces them. */ }
-  }
-  const pruned: string[] = [];
-  const excess = existing.length + 1 - keep;
-  const victims = existing.slice(0, Math.max(0, excess));
-  if (total > backupRetention.maxBytes) {
-    for (const row of existing.slice(victims.length)) {
-      const projected = total - artifactBytes(row.record_json);
-      if (projected <= backupRetention.maxBytes) break;
-      victims.push(row);
-    }
-  }
-  for (const row of victims) {
-    tx.run("DELETE FROM ops_backups WHERE id = ?", row.id);
-    pruned.push(row.id);
+const MANAGED_FILE = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.(?:sqlite|native-\d{1,4}\.json)$/;
+
+/**
+ * Orphan reconciliation: removes managed-pattern files whose backup id has no
+ * committed manifest, skipping ids still being created and files younger than
+ * `graceMs` (wall clock). Directories and foreign names are never touched.
+ */
+export function reconcileBackupArtifacts(tx: AppTransaction, backupDir: string, inflight: ReadonlySet<string>, graceMs = backupOrphanGraceMs): string[] {
+  let entries: string[];
+  try { entries = readdirSync(backupDir); } catch { return []; }
+  const committed = new Set(tx.all<{ id: string }>("SELECT id FROM ops_backups").map(r => r.id));
+  const removed: string[] = [];
+  const cutoff = Date.now() - graceMs;
+  for (const entry of entries) {
+    const match = MANAGED_FILE.exec(entry);
+    if (!match || committed.has(match[1]!) || inflight.has(match[1]!)) continue;
+    const path = join(backupDir, entry);
     try {
-      const manifest = JSON.parse(row.record_json) as BackupManifest;
-      const file = join(backupDir, `${row.id}.sqlite`);
-      if (manifest.artifact.path === file && existsSync(file)) rmSync(file);
-    } catch { /* Pruning never fails the new backup; orphan cleanup is best-effort. */ }
+      const stats = statSync(path);
+      if (!stats.isFile() || stats.mtimeMs > cutoff) continue;
+      rmSync(path);
+      removed.push(entry);
+    } catch { /* Changing files are retried next time. */ }
   }
-  return pruned;
+  return removed;
 }
 
-function artifactBytes(recordJson: string): number {
-  try { return (JSON.parse(recordJson) as BackupManifest).artifact.bytes ?? 0; } catch { return 0; }
+// ---------------------------------------------------------------------------
+// Files
+// ---------------------------------------------------------------------------
+
+/** Writes one managed file with restrictive permissions; throws `backup_storage_unavailable` on failure. */
+export function writeManagedFile(dir: string, name: string, bytes: Uint8Array): string {
+  const path = join(dir, name);
+  try {
+    ensureDir(dir);
+    writeFileSync(path, bytes, { mode: 0o600 });
+    chmodSync(path, 0o600);
+  } catch {
+    try { rmSync(path, { force: true }); } catch { /* Partial file becomes an orphan. */ }
+    throw new AppError("backup_storage_unavailable", 503);
+  }
+  return path;
 }
 
 /** Writes snapshot bytes with restrictive permissions; throws `backup_storage_unavailable` on failure. */
 export function writeArtifact(dir: string, id: string, bytes: Uint8Array): string {
-  ensureDir(dir);
-  const path = join(dir, `${id}.sqlite`);
-  try {
-    writeFileSync(path, bytes, { mode: 0o600 });
-    chmodSync(path, 0o600);
-  } catch {
-    throw new AppError("backup_storage_unavailable", 503);
-  }
-  return path;
+  return writeManagedFile(dir, `${id}.sqlite`, bytes);
+}
+
+/** Stages native artifacts beside the image; returns manifest records in capture order. */
+export function writeNativeArtifacts(dir: string, id: string, artifacts: BackupNativeArtifact[], written: string[]): BackupNativeArtifactRecord[] {
+  return artifacts.map((artifact, index) => {
+    const path = writeManagedFile(dir, `${id}.native-${index}.json`, artifact.bytes);
+    written.push(path);
+    return { name: artifact.name, path, bytes: artifact.bytes.length, hash: artifact.sha256 };
+  });
 }
 
 /** Scans a manifest/artifact projection for secret material; returns canary hits (empty when clean). */
@@ -266,7 +677,7 @@ export function backupStorageStats(dir: string): { files: number; bytes: number 
   try {
     let files = 0, bytes = 0;
     for (const entry of readdirSync(dir)) {
-      if (!entry.endsWith(".sqlite")) continue;
+      if (!MANAGED_FILE.test(entry)) continue;
       try { bytes += statSync(join(dir, entry)).size; files++; } catch { /* Missing/changing artifacts stay explicit to callers. */ }
     }
     return { files, bytes };
@@ -280,7 +691,7 @@ export function artifactPathFor(dir: string, id: string): string {
 }
 
 export function ownBackupDir(databasePath: string, override?: string): string {
-  const dir = override ?? backupDirFor(databasePath);
+  const dir = resolve(override ?? backupDirFor(databasePath));
   if (dirname(dir) === dir || dir.length > 1024) throw new AppError("invalid_backup_destination", 500);
   return dir;
 }

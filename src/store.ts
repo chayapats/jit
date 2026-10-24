@@ -619,9 +619,20 @@ export class TransactionStore {
    * Activates a staged image by replacing this database file with validated bytes and
    * reopening the same store handle. Callers record journal intent first; a crash between
    * intent and completion leaves an explicit non-terminal journal entry to resume from.
+   * Credential tables (owner, sessions, login_throttle) are always carried over from the
+   * live store, never taken from the image.
    */
   swapFrom(sourcePath: string): void {
     const bytes = readFileSync(sourcePath);
+    // Credentials never round-trip through images (ops.backup_manifest/v1):
+    // the activated database keeps exactly the live installation's owner
+    // verifier, browser sessions and login throttle. A live store without an
+    // owner activates without one, so the owner runs credential setup.
+    const credentials = {
+      owner: this.#db.query("SELECT id, password_hash, generation FROM owner").all() as { id: string; password_hash: string; generation: number }[],
+      sessions: this.#db.query("SELECT token_hash, owner_id, generation, expires_at FROM sessions").all() as { token_hash: string; owner_id: string; generation: number; expires_at: number }[],
+      throttle: this.#db.query("SELECT id, window_start, attempts FROM login_throttle").all() as { id: number; window_start: number; attempts: number }[],
+    };
     try { this.#db.exec("PRAGMA wal_checkpoint(TRUNCATE);"); } catch { /* Best-effort checkpoint before close. */ }
     this.#db.close();
     writeFileSync(this.path, bytes);
@@ -637,6 +648,12 @@ export class TransactionStore {
       // Scheduler and delivery-worker claims belong to the pre-swap boot; a stale claim
       // must never authorize work after activation. The service reboots and reconciles.
       try { reopened.exec("DELETE FROM job_scheduler; DELETE FROM delivery_worker;"); } catch { /* Ancient images predate these tables. */ }
+      reopened.transaction(() => {
+        reopened.exec("DELETE FROM sessions; DELETE FROM login_throttle; DELETE FROM owner;");
+        for (const row of credentials.owner) reopened.query("INSERT INTO owner (id, password_hash, generation) VALUES (?, ?, ?)").run(row.id, row.password_hash, row.generation);
+        for (const row of credentials.sessions) reopened.query("INSERT INTO sessions (token_hash, owner_id, generation, expires_at) VALUES (?, ?, ?, ?)").run(row.token_hash, row.owner_id, row.generation, row.expires_at);
+        for (const row of credentials.throttle) reopened.query("INSERT INTO login_throttle (id, window_start, attempts) VALUES (?, ?, ?)").run(row.id, row.window_start, row.attempts);
+      }).immediate();
     } catch (error) {
       reopened.close();
       throw error;

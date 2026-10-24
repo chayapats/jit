@@ -130,6 +130,8 @@ const messages: Record<string, string> = {
   backup_not_found: "ไม่พบสำรองข้อมูลที่เลือก",
   backup_corrupt: "สำรองข้อมูลนี้ตรวจสอบไม่ผ่าน",
   backup_storage_unavailable: "พื้นที่สำรองข้อมูลไม่พร้อมใช้งาน",
+  backup_too_large: "สำรองข้อมูลนี้ใหญ่เกินเพดานพื้นที่ที่กำหนด จึงไม่ได้สร้าง",
+  backup_schema_unclassified: "โครงสร้างข้อมูลยังไม่ได้จัดประเภทสำหรับการสำรอง จึงไม่ได้สร้าง",
   native_snapshot_unavailable: "engine ยังไม่รองรับ native snapshot สำรองนี้จึงไม่สมบูรณ์",
   invalid_backup_command: "คำขอสำรองข้อมูลไม่ถูกต้อง กรุณาเปิดหน้าใหม่",
 };
@@ -680,7 +682,7 @@ export function createWebHandler(app: Application): (request: Request) => Promis
           const revision = typeof body.expectedRevision === "string" && /^\d{1,15}$/.test(body.expectedRevision) ? Number(body.expectedRevision) : body.expectedRevision;
           const command = { kind: "backup.create" as const, requestId: body.requestId as string, projectId: null,
             expectedRevision: revision as number, payload: { note: (body.note as string) ?? "manual backup" } };
-          const receipt = app.execute(auth.actor, command);
+          const receipt = await app.execute(auth.actor, command);
           return api ? json(receipt) : respond(null, 303, { Location: `/backups/${receipt.manifest.id}` });
         }
         if (schedulesRoute || scheduleAction) {

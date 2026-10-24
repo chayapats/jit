@@ -134,7 +134,7 @@ test("older backup restores in quarantine, replays latest external tombstones an
   void doomed;
   f.rt.app.execute(actor(f), { kind: "delivery.commit", requestId: rid(), projectId: a.id, expectedRevision: projectRevision(f, a),
     payload: { kind: "report", text: "รายงานก่อนสำรอง", dedupeKey: "pre-backup-1" } });
-  const snap = backupNow(f);
+  const snap = await backupNow(f);
   f.clock.now += 60_000;
   const op = deleteSource(f, a, sDel);
   await reconcileDeletions(f.rt.store, f.rt.port as unknown as ApplicationRunPort, f.clock.now);
@@ -181,7 +181,7 @@ test("missing, corrupt, stale or unverifiable ledgers keep the installation quar
   await remember(f, a, s2);
   const op1 = deleteSource(f, a, s1);
   void op1;
-  const snap = backupNow(f);
+  const snap = await backupNow(f);
   f.clock.now += 60_000;
   const op2 = deleteSource(f, a, s2);
   void op2;
@@ -202,7 +202,7 @@ test("stale or empty external ledgers block activation until resolved", async ()
   const s2 = say(f, a, "stale สอง 002");
   await remember(f, a, s2);
   deleteSource(f, a, s1);
-  const snap = backupNow(f);
+  const snap = await backupNow(f);
   f.clock.now += 60_000;
   deleteSource(f, a, s2);
   await reconcileDeletions(f.rt.store, f.rt.port as unknown as ApplicationRunPort, f.clock.now);
@@ -249,7 +249,7 @@ test("failed session delete keeps the restore quarantined with a recoverable art
   await reconcileDeletions(f.rt.store, f.rt.port as unknown as ApplicationRunPort, f.clock.now);
   const blocked = f.rt.app.deletionOperation(actor(f), a.id, op.operation.id).operation!;
   expect(["pending", "blocked"]).toContain(blocked.state);
-  const snap = backupNow(f);
+  const snap = await backupNow(f);
   f.clock.now += 60_000;
   const prepared = prepareRestore(f, snap.manifest.id);
   f.rt.app.execute(actor(f), { kind: "restore.migrate" as const, requestId: rid(), projectId: null,
@@ -271,7 +271,7 @@ test("crash at every restore boundary leaves a resumable quarantine; reopen pres
   const a = project(f, "โครงการ crash", "หัวข้อ crash");
   const s1 = say(f, a, "crash 001");
   await remember(f, a, s1);
-  const snap = backupNow(f);
+  const snap = await backupNow(f);
   f.clock.now += 60_000;
   let fail = "";
   const fragile = () => new Application(f.rt.store, f.config, { jobs: f.rt.queue, now: () => f.clock.now,
@@ -323,7 +323,7 @@ test("pending jobs and unknown outbox are listed, never replayed; newer backups 
     const intent = JSON.parse(row.record_json) as Record<string, unknown>;
     tx.run("UPDATE delivery_intents SET record_json = ? WHERE id = ?", JSON.stringify({ ...intent, status: "unknown" }), (delivery as { intent: { id: string } }).intent.id);
   });
-  const snap = backupNow(f);
+  const snap = await backupNow(f);
   f.clock.now += 60_000;
   const prepared = prepareRestore(f, snap.manifest.id);
   f.rt.app.execute(actor(f), { kind: "restore.migrate" as const, requestId: rid(), projectId: null,
@@ -344,7 +344,7 @@ test("pending jobs and unknown outbox are listed, never replayed; newer backups 
   const fakeId = crypto.randomUUID();
   f.rt.store.transaction(tx => {
     tx.run("INSERT INTO ops_backups VALUES (?, ?, ?)", fakeId, f.clock.now,
-      JSON.stringify({ id: fakeId, appSchema: 99, createdAt: f.clock.now, artifact: { path: join(f.root, "x"), bytes: 1, hash: "00" } }));
+      JSON.stringify({ contract: "ops.backup_manifest/v1", jitVersion: "jit/9.0.0", id: fakeId, appSchema: 99, createdAt: f.clock.now, artifact: { path: join(f.root, "x"), bytes: 1, hash: "00" } }));
   });
   expect(() => prepareRestore(f, fakeId)).toThrow("newer_backup_unsupported");
   expect(f.rt.app.restores(actor(f)).quarantines.filter(q => q.state === "complete")).toHaveLength(1);
@@ -354,7 +354,7 @@ test("web quarantine inventory and detail render without secrets", async () => {
   const f = await fixture();
   const a = project(f, "โครงการ web restore", "หัวข้อ web");
   say(f, a, "web-canary-restore-007");
-  const snap = backupNow(f);
+  const snap = await backupNow(f);
   f.clock.now += 60_000;
   const web = createWebHandler(f.rt.app);
   const req = (path: string, method = "GET", body?: unknown) => new Request(`http://localhost:3000${path}`, { method,
