@@ -231,6 +231,25 @@ test("stale preview, duplicate confirm, request conflicts and forged actors are 
   expect(f.rt.app.source(actor(f), a.id, other).state).toBe("available");
 });
 
+test("duplicate confirmation returns the existing operation after the preview expired or the project advanced", async () => {
+  const f = await fixture();
+  const a = project(f, "โครงการ duplicate", "หัวข้อ duplicate");
+  const s1 = say(f, a, "ข้อความ duplicate-canary-301 ต้องลบ");
+  await remember(f, a, s1);
+  const preview = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, s1)));
+  const first = asConfirmed(f.rt.app.execute(actor(f), confirmCommand(f, a, preview.preview.id)));
+  expect(first.duplicate).toBe(false);
+  // The project advances: a duplicate (new request id) still resolves to the same logical operation.
+  f.rt.app.execute(actor(f), { kind: "topic.create", requestId: rid(), projectId: a.id, expectedRevision: projectRevision(f, a), payload: { title: "หัวข้อหลังยืนยัน" } });
+  const advanced = asConfirmed(f.rt.app.execute(actor(f), confirmCommand(f, a, preview.preview.id)));
+  expect(advanced).toMatchObject({ duplicate: true, operation: { id: first.operation.id } });
+  // The preview expires: still the same operation, never stale.
+  f.clock.now = preview.preview.expiresAt + 1;
+  const expired = asConfirmed(f.rt.app.execute(actor(f), confirmCommand(f, a, preview.preview.id, false)));
+  expect(expired).toMatchObject({ duplicate: true, operation: { id: first.operation.id } });
+  expect(f.rt.store.read(tx => tx.all("SELECT id FROM deletion_operations WHERE preview_id = ?", preview.preview.id))).toHaveLength(1);
+});
+
 test("interrupted fence/purge commits roll back; reopen keeps deny state and honest pending status", async () => {
   const f = await fixture();
   const a = project(f, "โครงการ crash", "หัวข้อ crash");

@@ -1034,13 +1034,15 @@ export function confirmDeletion(tx: AppTransaction, command: DeleteConfirmComman
   deleteCommandIdentity(command, 65536);
   const preview = readDeletionPreview(tx, command.projectId, command.payload.previewId);
   if (!preview || preview.projectId !== command.projectId) throw new AppError("memory_delete_stale_preview", 409);
+  // A duplicate confirmation is the same logical operation: it is answered before expiry, revision,
+  // acknowledgement and scope checks, which only gate creating a new operation.
+  const existing = tx.get<{ record_json: string }>("SELECT record_json FROM deletion_operations WHERE preview_id = ? AND project_id = ?",
+    preview.id, command.projectId);
+  if (existing) return { operation: normalizeOperation(JSON.parse(existing.record_json) as DeletionOperation), duplicate: true };
   if (now > preview.expiresAt) throw new AppError("memory_delete_stale_preview", 409);
   if (projectRevision !== command.expectedRevision || projectRevision !== preview.projectRevision) {
     throw new AppError("memory_delete_stale_preview", 409);
   }
-  const existing = tx.get<{ record_json: string }>("SELECT record_json FROM deletion_operations WHERE preview_id = ? AND project_id = ?",
-    preview.id, command.projectId);
-  if (existing) return { operation: normalizeOperation(JSON.parse(existing.record_json) as DeletionOperation), duplicate: true };
   if (!command.payload.acknowledged) throw new AppError("memory_delete_ambiguous", 409);
   if (preview.wholeSession.required && !command.payload.acknowledgedWholeSession) throw new AppError("memory_delete_ambiguous", 409);
   const lineage = preview.scope.source;
