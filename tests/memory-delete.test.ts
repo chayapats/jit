@@ -911,7 +911,7 @@ test("historical task proposals citing the deleted generation are disclosed and 
   expect(current.preview.blockers).toContain(`active_task_current_proposal:${proposed.task.id}`);
   const preview = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, proposed.proposal.source)));
   expect(preview.preview.affected.taskProposals).toEqual([{ taskId: proposed.task.id, taskState: "proposed", proposalId: proposed.proposal.id,
-    revision: 1, current: false, effect: "redacted" }]);
+    revision: 1, current: false, evidence: "provenance", effect: "redacted" }]);
   expect(preview.preview.blockers).toEqual([]);
   asConfirmed(f.rt.app.execute(actor(f), confirmCommand(f, a, preview.preview.id, true, preview.preview.wholeSession.required)));
   const task = f.rt.app.task(actor(f), a.id, proposed.task.id);
@@ -958,6 +958,68 @@ test("deleting the evidence an active ready-for-review task depends on is a name
   expect(f.rt.app.task(actor(f), a.id, taskId).task.state).toBe("completed");
 });
 
+test("an active task quoting the deleted payload blocks until the owner edits it; previews never persist its title", async () => {
+  const f = await fixture();
+  const a = project(f, "โครงการสำเนาเจ้าของ", "หัวข้อสำเนาเจ้าของ");
+  const text = "ข้อความ owner-copy-canary-341 ลับเฉพาะ";
+  const m = say(f, a, text);
+  const proposed = f.rt.app.execute(actor(f), { kind: "task.propose", requestId: rid(), projectId: a.id, expectedRevision: topicRevision(f, a),
+    payload: { topicId: a.topic.id, title: `งาน ${text}`, summary: "ติดตามต่อ" } });
+  const taskId = proposed.task.id as string;
+  const blocked = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, m)));
+  expect(blocked.preview.blockers).toContain(`active_task_current_proposal:${taskId}`);
+  expect(blocked.preview.affected.obligations).toContainEqual({ kind: "task", id: taskId, revision: proposed.task.revision, evidence: "quoted_copy", effect: "blocked_owner_copy" });
+  expect(blocked.preview.affected.obligations.every(o => !("title" in o))).toBe(true);
+  const persisted = f.rt.store.read(tx => tx.get<{ j: string }>("SELECT record_json AS j FROM deletion_previews WHERE id = ?", blocked.preview.id)!.j);
+  expect(persisted).not.toContain("owner-copy-canary-341");
+  expect(() => f.rt.app.execute(actor(f), confirmCommand(f, a, blocked.preview.id))).toThrow("memory_delete_blocked");
+  // The owner edits the copy away; the historical revision and its text source are then redacted/deleted with M.
+  f.rt.app.execute(actor(f), { kind: "task.edit", requestId: rid(), projectId: a.id, expectedRevision: proposed.task.revision,
+    payload: { taskId, title: "งานฉบับแก้ไม่มีสำเนา", summary: "ติดตามต่อ" } });
+  const preview = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, m)));
+  expect(preview.preview.blockers).toEqual([]);
+  expect(preview.preview.affected.taskProposals).toEqual([expect.objectContaining({ proposalId: proposed.proposal.id, current: false, effect: "redacted" })]);
+  asConfirmed(f.rt.app.execute(actor(f), confirmCommand(f, a, preview.preview.id, true, preview.preview.wholeSession.required)));
+  const task = f.rt.app.task(actor(f), a.id, taskId).task;
+  expect(task).toMatchObject({ state: "proposed", title: "งานฉบับแก้ไม่มีสำเนา" });
+  const raw = f.rt.store.read(tx => [
+    ...tx.all<{ t: string }>("SELECT title || summary AS t FROM task_proposals"), ...tx.all<{ t: string }>("SELECT title || summary AS t FROM tasks"),
+    ...tx.all<{ t: string }>("SELECT result_json AS t FROM command_receipts"), ...tx.all<{ t: string | null }>("SELECT content_text AS t FROM source_versions"),
+    ...tx.all<{ t: string }>("SELECT record_json AS t FROM deletion_previews")].map(r => r.t ?? "").join("\n"));
+  expect(raw).not.toContain("owner-copy-canary-341");
+});
+
+test("a current owner decision quoting the deleted payload blocks until superseded; the superseded copy is redacted", async () => {
+  const f = await fixture();
+  const a = project(f, "โครงการมติสำเนา", "หัวข้อมติสำเนา");
+  const text = "ข้อความ decision-copy-canary-351 ลับเฉพาะ";
+  const m = say(f, a, text);
+  f.rt.app.execute(actor(f), dispatch(f, a, "เตรียมข้อเสนอให้เจ้าของตัดสิน"));
+  await drain(f);
+  const discussion = f.rt.app.discussions(actor(f), a.id, a.topic.id)[0]!;
+  f.rt.app.execute(actor(f), { kind: "decision.synthesize", requestId: rid(), projectId: a.id, expectedRevision: discussion.revision,
+    payload: { discussionId: discussion.id, limits: { ...f.config.jobs.maximum } } });
+  await drain(f);
+  const proposal = f.rt.app.decision(actor(f), a.id, a.topic.id).proposal!;
+  const decided = f.rt.app.execute(actor(f), { kind: "decision.accept", requestId: rid(), projectId: a.id, expectedRevision: proposal.revision,
+    payload: { proposalId: proposal.id, optionId: null, conclusion: `ตัดสินตาม ${text}`, rationale: "เจ้าของตัดสินเอง" } }).decision!;
+  const blocked = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, m)));
+  expect(blocked.preview.blockers).toContain(`owner_decision_copy:${decided.id}`);
+  expect(blocked.preview.affected.obligations).toContainEqual(expect.objectContaining({ kind: "decision", id: decided.id, evidence: "quoted_copy", effect: "blocked_owner_copy" }));
+  expect(() => f.rt.app.execute(actor(f), confirmCommand(f, a, blocked.preview.id, true, blocked.preview.wholeSession.required))).toThrow("memory_delete_blocked");
+  const current = f.rt.app.decision(actor(f), a.id, a.topic.id).proposal!;
+  f.rt.app.execute(actor(f), { kind: "decision.supersede", requestId: rid(), projectId: a.id, expectedRevision: current.revision,
+    payload: { decisionId: decided.id, proposalId: current.id, optionId: null, conclusion: "มติใหม่ไม่มีสำเนา", rationale: "เจ้าของเปลี่ยนมติ" } });
+  const preview = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, m)));
+  expect(preview.preview.blockers).toEqual([]);
+  expect(preview.preview.affected.obligations).toContainEqual(expect.objectContaining({ kind: "decision", id: decided.id, effect: "redacted" }));
+  asConfirmed(f.rt.app.execute(actor(f), confirmCommand(f, a, preview.preview.id, true, preview.preview.wholeSession.required)));
+  const raw = f.rt.store.read(tx => [...tx.all<{ t: string }>("SELECT conclusion || rationale AS t FROM owner_decisions"),
+    ...tx.all<{ t: string }>("SELECT result_json AS t FROM command_receipts")].map(r => r.t).join("\n"));
+  expect(raw).not.toContain("decision-copy-canary-351");
+  expect(raw).toContain("มติใหม่ไม่มีสำเนา");
+});
+
 test("backups and incomplete-coverage exports are listed without trusting wall-clock order", async () => {
   const f = await fixture();
   const a = project(f, "โครงการนาฬิกา", "หัวข้อนาฬิกา");
@@ -995,11 +1057,18 @@ test("a complete no-history export holding a task copy of the deleted message is
   expect(stored.completeness.complete).toBe(true);
   expect(JSON.stringify(stored.coverage)).not.toContain(m.sourceId);
   const preview = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, m)));
-  expect(preview.preview.affected.exports).toEqual([expect.objectContaining({ id: exported.manifest.id, evidence: "affected_project" })]);
+  expect(preview.preview.affected.exports.map(e => e.id)).toEqual([exported.manifest.id]);
+  // The task's own text source quotes M verbatim: it is a copy deleted with M, and the inactive task's text is redacted.
+  expect(preview.preview.affected.sources).toContainEqual({ projectId: a.id, source: proposed.proposal.source, relation: "quoted_copy" });
+  expect(preview.preview.affected.taskProposals).toEqual([expect.objectContaining({ proposalId: proposed.proposal.id, evidence: "provenance", effect: "redacted" })]);
+  expect(preview.preview.blockers).toEqual([]);
   const confirmed = asConfirmed(f.rt.app.execute(actor(f), confirmCommand(f, a, preview.preview.id, true, preview.preview.wholeSession.required)));
   expect(confirmed.operation.exports).toEqual([expect.objectContaining({ id: exported.manifest.id, storage: "sqlite", state: "purged" })]);
   expect(() => exportBody(f, a, exported.manifest.id)).toThrow("export_not_found");
   expect(exportBody(f, other, unrelated.manifest.id).length).toBeGreaterThan(0);
+  expect(f.rt.app.source(actor(f), a.id, proposed.proposal.source).state).toBe("unavailable");
+  const fresh = f.rt.app.execute(actor(f), { ...exportCommand(f, a), payload: { includeHistory: true, note: "after delete" } });
+  expect(exportBody(f, a, fresh.manifest.id)).not.toContain("task-copy-canary-321");
 });
 
 test("legacy operations without export scopes are reconstructed and downgraded until exports are purged", async () => {
