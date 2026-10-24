@@ -223,7 +223,7 @@ test("a refreshable 401 admits exactly one retry inside the single attempt budge
   const renewal = record.observations.find(item => item.observation === "renewal")!;
   expect(renewal.event).toBe("unobserved");
   expect(renewal.attempts).toBe(0);
-  expect(renewal.sends).toEqual([{ inference: 0, token: 1, confirmed: true }, { inference: 1, token: 0, confirmed: true }, { inference: 1, token: 0, confirmed: true }]);
+  expect(renewal.sends).toEqual([{ inference: 0, token: 1, confirmed: true, admission: 1 }, { inference: 1, token: 0, confirmed: true, admission: 1 }, { inference: 1, token: 0, confirmed: true, admission: 1 }]);
   expect(self.providerSends).toEqual({ inference: 2, token: 1 });
 });
 
@@ -474,7 +474,7 @@ test("codex success reports exact counts with no renewal claim", async () => {
   expect(record.observations.find(item => item.observation === "renewal")).toMatchObject({ event: "unobserved", attempts: 0 });
   expect(self.providerSends).toEqual({ inference: 1, token: 0 });
   const renewal = record.observations.find(item => item.observation === "renewal")!;
-  expect(renewal.sends).toEqual([{ inference: 1, token: 0, confirmed: true }]);
+  expect(renewal.sends).toEqual([{ inference: 1, token: 0, confirmed: true, admission: 1 }]);
   const live = record.observations.find(item => item.observation === "live-request")!;
   expect(live.sends).toEqual([]);
 });
@@ -556,7 +556,7 @@ test("no replay send starts after cancellation acknowledges", async () => {
   expect(inferenceFetches).toBe(0);
   const final = await readProbeAttempt(root, ID);
   expect(final.attempts).toBe(1);
-  expect(final.observations.find(item => item.observation === "renewal")!.sends).toEqual([{ inference: 0, token: 1, confirmed: false }]);
+  expect(final.observations.find(item => item.observation === "renewal")!.sends).toEqual([{ inference: 0, token: 1, confirmed: false, admission: 1 }]);
 });
 
 test("ledger placement is validated: non-renewal sends and length mismatch reject", async () => {
@@ -569,7 +569,7 @@ test("ledger placement is validated: non-renewal sends and length mismatch rejec
     ...record,
     id: OTHER_ID,
     observations: record.observations.map(item => item.observation === "service-start"
-      ? { ...item, sends: [{ inference: 1, token: 0, confirmed: true }] }
+      ? { ...item, sends: [{ inference: 1, token: 0, confirmed: true, admission: 1 }] }
       : item.observation === "renewal" ? { ...item, sends: [] } : item),
   };
   writeFileSync(join(root, ".local", "host-probe", `${OTHER_ID}.json`), JSON.stringify(polluted) + "\n");
@@ -579,7 +579,7 @@ test("ledger placement is validated: non-renewal sends and length mismatch rejec
     ...record,
     id: OTHER_ID,
     observations: record.observations.map(item => item.observation === "renewal"
-      ? { ...item, sends: [{ inference: 1, token: 0, confirmed: true }, { inference: 1, token: 0, confirmed: true }, { inference: 0, token: 1, confirmed: true }, { inference: 0, token: 1, confirmed: true }, { inference: 1, token: 0, confirmed: true }] } : item),
+      ? { ...item, sends: [{ inference: 1, token: 0, confirmed: true, admission: 1 }, { inference: 1, token: 0, confirmed: true, admission: 1 }, { inference: 0, token: 1, confirmed: true, admission: 1 }, { inference: 0, token: 1, confirmed: true, admission: 1 }, { inference: 1, token: 0, confirmed: true, admission: 1 }] } : item),
   };
   writeFileSync(join(root, ".local", "host-probe", `${OTHER_ID}.json`), JSON.stringify(stretched) + "\n");
   await expect(readProbeAttempt(root, OTHER_ID)).rejects.toThrow();
@@ -632,7 +632,7 @@ test("a send that completes after cancellation stays unconfirmed and unwritten",
   }
   // The admission (and its unconfirmed intent) is durable before cancel wins.
   expect((await readProbeAttempt(root, OTHER_ID)).observations.find(item => item.observation === "renewal")!.sends)
-    .toEqual([{ inference: 1, token: 0, confirmed: false }]);
+    .toEqual([{ inference: 1, token: 0, confirmed: false, admission: 1 }]);
   const cancelled = await cancelProbeAttempt(root, OTHER_ID);
   expect(cancelled.lifecycle).toBe("cancelled");
   // The transport completes only after cancellation acknowledged: the
@@ -642,9 +642,9 @@ test("a send that completes after cancellation stays unconfirmed and unwritten",
   const late = await pending;
   expect(late.record.lifecycle).toBe("cancelled");
   const final = await readProbeAttempt(root, OTHER_ID);
-  expect(final.observations.find(item => item.observation === "renewal")!.sends).toEqual([{ inference: 1, token: 0, confirmed: false }]);
+  expect(final.observations.find(item => item.observation === "renewal")!.sends).toEqual([{ inference: 1, token: 0, confirmed: false, admission: 1 }]);
   const exported = exportProbeSummary(final);
-  expect(exported.observations.find(item => item.observation === "renewal")!.sends).toEqual([{ inference: 1, token: 0, confirmed: false }]);
+  expect(exported.observations.find(item => item.observation === "renewal")!.sends).toEqual([{ inference: 1, token: 0, confirmed: false, admission: 1 }]);
 });
 
 test("no credential write happens after cancellation acknowledges", async () => {
@@ -694,7 +694,7 @@ test("no credential write happens after cancellation acknowledges", async () => 
   const final = await readProbeAttempt(root, OTHER_ID);
   // The token send was initiated before cancellation, so the ledger keeps
   // it explicitly unconfirmed (uncertain) rather than confirmed or erased.
-  expect(final.observations.find(item => item.observation === "renewal")!.sends).toEqual([{ inference: 0, token: 1, confirmed: false }]);
+  expect(final.observations.find(item => item.observation === "renewal")!.sends).toEqual([{ inference: 0, token: 1, confirmed: false, admission: 1 }]);
 });
 
 test("concurrent probes on distinct records settle without lock errors", async () => {
@@ -765,20 +765,27 @@ test("a refused late token write stays unconfirmed with zero credential writes",
   // The token transport completed, but confirmation was refused after
   // cancellation: the entry stays explicitly unconfirmed.
   const final = await readProbeAttempt(root, OTHER_ID);
-  expect(final.observations.find(item => item.observation === "renewal")!.sends).toEqual([{ inference: 0, token: 1, confirmed: false }]);
+  expect(final.observations.find(item => item.observation === "renewal")!.sends).toEqual([{ inference: 0, token: 1, confirmed: false, admission: 1 }]);
   expect(final.attempts).toBe(1);
 });
 
-test("cancellation acks promptly while a credential mutation hangs", async () => {
+test("cancellation waits for an in-flight credential mutation to settle", async () => {
   const root = setup();
   const expired = JSON.stringify({ accessToken: "old-access", refreshToken: "refresh-token", obtainedAt: 0, expiresAt: 1 });
-  const writeGate = new Promise<void>(() => {});
-  let writes = 0;
+  let releaseWrite!: () => void;
+  const writeGate = new Promise<void>(resolve => { releaseWrite = resolve; });
+  let writeAt = 0, cancelAt = 0;
+  const backend = new Map<string, string>();
   const store: HostCredentialStore = {
     // Expired login forces a proactive refresh through the supported guard.
     get: async () => expired,
-    // Never-settling backend write: cancellation must ack without waiting.
-    set: async () => { writes++; await writeGate; },
+    // Gated backend write: cancellation serializes against the whole
+    // mutation instead of acknowledging past it, bounded by the deadline.
+    set: async (_identity, value) => {
+      await writeGate;
+      writeAt = Date.now();
+      backend.set("grok", value);
+    },
     delete: async () => false,
   };
   const fetch: HostAuthFetch = async (input: any) => {
@@ -802,17 +809,20 @@ test("cancellation acks promptly while a credential mutation hangs", async () =>
     await new Promise(r => setTimeout(r, 5));
   }
   await new Promise(r => setTimeout(r, 50));
-  // Cancel acks promptly even though the OS write never settles: the fence
-  // races the live signal outside every lock instead of holding the
-  // lifecycle serialization across the unbounded backend.
-  const startedAt = Date.now();
-  const cancelled = await cancelProbeAttempt(root, OTHER_ID);
-  expect(Date.now() - startedAt).toBeLessThan(5000);
+  // Cancel while the write is in flight: acknowledgement waits for safe
+  // settlement instead of racing past the mutation.
+  const cancelPromise = cancelProbeAttempt(root, OTHER_ID);
+  await new Promise(r => setTimeout(r, 50));
+  releaseWrite();
+  const cancelled = await cancelPromise;
+  cancelAt = Date.now();
   expect(cancelled.lifecycle).toBe("cancelled");
   const late = await pending;
   expect(late.record.lifecycle).toBe("cancelled");
-  // The hung write never completed; nothing was recorded as a success.
-  expect(writes).toBe(1);
+  // The mutation settled before acknowledgement: exactly one write, no
+  // post-acknowledgement mutation.
+  expect(backend.size).toBe(1);
+  expect(writeAt).toBeLessThanOrEqual(cancelAt);
 });
 
 test("a hanging credential mutation cannot wedge the probe past its deadline", async () => {
@@ -867,7 +877,7 @@ test("a crash between initiation and confirmation leaves explicitly unconfirmed 
     }
     const crashed = await readProbeAttempt(root, childId);
     expect(crashed.lifecycle).toBe("started");
-    expect(crashed.observations.find(item => item.observation === "renewal")!.sends).toEqual([{ inference: 0, token: 1, confirmed: false }]);
+    expect(crashed.observations.find(item => item.observation === "renewal")!.sends).toEqual([{ inference: 0, token: 1, confirmed: false, admission: 1 }]);
     child.kill(9);
     await child.exited;
   } finally {
@@ -877,7 +887,7 @@ test("a crash between initiation and confirmation leaves explicitly unconfirmed 
   const updated = await reconcileProbeAttempts(root);
   expect(updated).toHaveLength(1);
   expect(updated[0]!.lifecycle).toBe("interrupted");
-  expect(updated[0]!.observations.find(item => item.observation === "renewal")!.sends).toEqual([{ inference: 0, token: 1, confirmed: false }]);
+  expect(updated[0]!.observations.find(item => item.observation === "renewal")!.sends).toEqual([{ inference: 0, token: 1, confirmed: false, admission: 1 }]);
 });
 
 test("a throwing store maps to store-unavailable, not a missing login", async () => {
@@ -913,4 +923,57 @@ test("a hanging credential write does not wedge the probe past its deadline", as
   expect(Date.now() - startedAt).toBeLessThan(5000);
   expect(["cancelled", "failed"].includes(record.lifecycle)).toBe(true);
   expect((await readProbeAttempt(root, OTHER_ID)).lifecycle).toBe(record.lifecycle);
+});
+
+test("ledger entries beyond admitted attempts or over the per-ordinal bound reject", async () => {
+  const root = setup();
+  const { ports } = bridgePorts({ fetch: successFetch() });
+  const { record } = await liveProbe("fixture-probe-host",
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 8000 }, ports, root);
+  expect(record.attempts).toBe(1);
+  const base = record.observations.find(item => item.observation === "renewal")!.sends!;
+  expect(base).toHaveLength(1);
+  // An entry stamped for an admission that never happened fails closed,
+  // even though it fits the overall budget.
+  const future = {
+    ...record,
+    id: OTHER_ID,
+    observations: record.observations.map(item => item.observation === "renewal"
+      ? { ...item, sends: [{ ...base[0]!, admission: 2 }] } : item),
+  };
+  writeFileSync(join(root, ".local", "host-probe", `${OTHER_ID}.json`), JSON.stringify(future) + "\n");
+  await expect(readProbeAttempt(root, OTHER_ID)).rejects.toThrow();
+  // Three inference sends on one ordinal exceed the pinned per-ordinal
+  // ceiling of two, even within the overall four-send budget.
+  const over = {
+    ...record,
+    id: OTHER_ID,
+    observations: record.observations.map(item => item.observation === "renewal"
+      ? { ...item, sends: [
+        { inference: 1, token: 0, confirmed: true, admission: 1 },
+        { inference: 1, token: 0, confirmed: true, admission: 1 },
+        { inference: 1, token: 0, confirmed: true, admission: 1 },
+      ] } : item),
+  };
+  writeFileSync(join(root, ".local", "host-probe", `${OTHER_ID}.json`), JSON.stringify(over) + "\n");
+  await expect(readProbeAttempt(root, OTHER_ID)).rejects.toThrow();
+});
+
+test("renewal success or nonzero attempts fail validation and never export", async () => {
+  const root = setup();
+  const { ports } = bridgePorts({ fetch: successFetch() });
+  const { record } = await liveProbe("fixture-probe-host",
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 8000 }, ports, root);
+  const tampered = {
+    ...record,
+    id: OTHER_ID,
+    observations: record.observations.map(item => item.observation === "renewal"
+      ? { ...item, event: "success", attempts: 1 } : item),
+  };
+  writeFileSync(join(root, ".local", "host-probe", `${OTHER_ID}.json`), JSON.stringify(tampered) + "\n");
+  await expect(readProbeAttempt(root, OTHER_ID)).rejects.toThrow();
+  // Valid records export renewal as not-success: the claim can never
+  // become positive evidence, even if a future reader skips validation.
+  const exported = exportProbeSummary(record);
+  expect(exported.observations.find(item => item.observation === "renewal")!.event).toBe("not-success");
 });

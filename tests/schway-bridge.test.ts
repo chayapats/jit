@@ -101,6 +101,13 @@ test("vendored tarball matches the pinned sha256", () => {
   expect(createHash("sha256").update(bytes).digest("hex")).toBe(SCHWAY_PINNED_TARBALL_SHA256);
 });
 
+test("contract docs publish the pinned source constants", () => {
+  const doc = readFileSync(join(import.meta.dir, "../docs/contracts/schway-bridge-v1.md"), "utf8");
+  expect(doc).toContain(SCHWAY_PINNED_REVISION);
+  expect(doc).toContain(SCHWAY_PINNED_TARBALL_SHA256);
+  expect(doc).toContain(SCHWAY_RELEASE_CONTRACT);
+});
+
 test("effective run maps strict context, exact tools and the selected route without secrets", () => {
   const { config } = setup();
   const run = request(config);

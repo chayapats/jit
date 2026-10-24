@@ -50,7 +50,7 @@ export interface ProbeObservationEntry {
    * transport-confirmed sends: false means authorized but completion
    * unobserved (crash or abort window) — uncertainty, never exact evidence.
    */
-  sends?: { inference: number; token: number; confirmed: boolean }[];
+  sends?: { inference: number; token: number; confirmed: boolean; admission: number }[];
 }
 
 /** Persisted probe attempt; terminal route states never overwrite an interrupted/cancelled lifecycle. */
@@ -194,18 +194,32 @@ const exactKeys = (value: unknown, keys: string[]): value is Record<string, unkn
 
 /**
  * Validates a per-send ledger: one entry per transport send, each entry
- * exactly one send of one kind, bounded in total by the pinned structural
- * ceiling (four sends per admitted attempt: two inference plus two token).
- * Anything wider fails closed.
+ * exactly one send of one kind stamped with its 1-based admission ordinal.
+ * Every ordinal stays within the attempt budget and carries at most two
+ * inference plus two token sends on the pinned release. Anything wider,
+ * unshaped or ordinal-less fails closed.
  */
-function validSendLedger(value: unknown, maxAttempts: number): value is { inference: number; token: number; confirmed: boolean }[] {
+type SendLedgerEntry = { inference: number; token: number; confirmed: boolean; admission: number };
+function validSendLedger(value: unknown, maxAttempts: number, attempts: number): value is SendLedgerEntry[] {
   if (!Array.isArray(value) || value.length > 4 * maxAttempts) return false;
-  return value.every(item => !!item && typeof item === "object" && !Array.isArray(item) &&
-    Object.keys(item).sort().join(",") === "confirmed,inference,token" &&
-    ((item as { inference: unknown }).inference === 0 || (item as { inference: unknown }).inference === 1) &&
-    ((item as { token: unknown }).token === 0 || (item as { token: unknown }).token === 1) &&
-    ((item as { inference: number }).inference + (item as { token: number }).token === 1) &&
-    typeof (item as { confirmed: unknown }).confirmed === "boolean");
+  const perAdmission = new Map<number, { inference: number; token: number }>();
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+    if (Object.keys(item).sort().join(",") !== "admission,confirmed,inference,token") return false;
+    const entry = item as SendLedgerEntry;
+    if ((entry.inference !== 0 && entry.inference !== 1) || (entry.token !== 0 && entry.token !== 1)) return false;
+    if (entry.inference + entry.token !== 1) return false;
+    if (typeof entry.confirmed !== "boolean") return false;
+    // Ordinals are bounded by admitted attempts, never just the budget: an
+    // entry for an admission that never happened fails closed.
+    if (!Number.isSafeInteger(entry.admission) || entry.admission < 1 || entry.admission > attempts) return false;
+    const totals = perAdmission.get(entry.admission) ?? { inference: 0, token: 0 };
+    totals.inference += entry.inference;
+    totals.token += entry.token;
+    if (totals.inference > 2 || totals.token > 2) return false;
+    perAdmission.set(entry.admission, totals);
+  }
+  return true;
 }
 
 /** Rejects malformed or unknown-field probe records before any read, write or export. */
@@ -230,12 +244,15 @@ export function validateProbeAttempt(value: unknown): asserts value is ProbeAtte
     const itemEntry = item as ProbeObservationEntry;
     const { sends, ...rest } = itemEntry as ProbeObservationEntry & { sends?: unknown };
     if (!exactKeys(rest, ["observation", "probeClass", "event", "state", "nextAction", "attempts", "elapsedMs"]) ||
-        (sends !== undefined && !validSendLedger(sends, record.maxAttempts)) ||
+        (sends !== undefined && !validSendLedger(sends, record.maxAttempts, record.attempts)) ||
         // The renewal observation carries the sole send ledger; any send
         // array on another observation fails validation. The ledger holds
         // one entry per transport send (see validSendLedger for the shape
         // and structural ceiling).
         (sends !== undefined && itemEntry.observation !== "renewal" && (sends as unknown[]).length !== 0) ||
+        // Renewal is measured counts only, never an evidence claim: a
+        // renewal success or nonzero attempts fails validation outright.
+        (itemEntry.observation === "renewal" && (itemEntry.event !== "unobserved" || itemEntry.attempts !== 0)) ||
         !probeObservations.includes(itemEntry.observation) || seen.has(itemEntry.observation) ||
         (itemEntry.observation === "live-request" ? itemEntry.probeClass !== "inference"
           : itemEntry.observation === "renewal" ? itemEntry.probeClass !== "renewal" : itemEntry.probeClass !== "preflight") ||
@@ -261,7 +278,7 @@ export function validateProbeAttempt(value: unknown): asserts value is ProbeAtte
 
 function entry(route: string, model: string | null, bounds: { maxAttempts: number; deadlineMs: number },
   observation: ProbeObservation, event: ProbeEvent, attempts: number, elapsedMs: number,
-  sends: { inference: number; token: number; confirmed: boolean }[] = []): ProbeObservationEntry {
+  sends: SendLedgerEntry[] = []): ProbeObservationEntry {
   const probeClass = observation === "live-request" ? "inference" as const : observation === "renewal" ? "renewal" as const : "preflight" as const;
   const classified = routeEvidence({ route, model, observation: observation === "service-start" ? "service-start" : observation,
     probeClass, maxAttempts: bounds.maxAttempts, attempts, deadlineMs: bounds.deadlineMs, elapsedMs, configured: true, event });
@@ -358,6 +375,36 @@ async function acquireDirLock(dir: string): Promise<() => void> {
     release();
     if (dirLocks.get(dir) === mine) dirLocks.delete(dir);
   };
+}
+
+/**
+ * In-flight credential mutations per attempt, tracked so owner-stop
+ * acknowledgement can wait for safe settlement instead of racing past it.
+ * The fence itself holds no lock across the backend; this registry only
+ * lets cancellation observe what is still running.
+ */
+const inflightWrites = new Map<string, Set<Promise<unknown>>>();
+/** Live deadline per dispatched attempt, bounding any acknowledgement wait. */
+const probeDeadlines = new Map<string, { startedAt: number; deadlineMs: number }>();
+
+/**
+ * Waits for in-flight credential mutations to settle before acknowledgement,
+ * bounded by the attempt's remaining live deadline. A hung backend therefore
+ * delays acknowledgement at most until the deadline the owner already set;
+ * with no known deadline (or none remaining) there is nothing bounded to
+ * wait for and cancellation proceeds immediately.
+ */
+async function settleInflightWrites(id: string): Promise<void> {
+  const pending = inflightWrites.get(id);
+  if (!pending || pending.size === 0) return;
+  const budget = probeDeadlines.get(id);
+  if (!budget) return;
+  const remaining = budget.deadlineMs - (Date.now() - budget.startedAt);
+  if (!(remaining > 0)) return;
+  await Promise.race([
+    Promise.allSettled([...pending]),
+    new Promise(resolve => setTimeout(resolve, remaining)),
+  ]);
 }
 
 async function withDirLock<T>(dir: string, work: () => Promise<T>): Promise<T> {
@@ -759,6 +806,10 @@ export async function reconcileProbeAttempts(root: string): Promise<ProbeAttempt
  * terminal state byte-for-byte across CLI invocations.
  */
 export async function cancelProbeAttempt(root: string, id: string): Promise<ProbeAttempt> {
+  // Delay acknowledgement until in-flight mutations settle (bounded by the
+  // remaining live deadline), so a started write cannot complete after the
+  // stop is acknowledged while a hung backend cannot wedge the owner stop.
+  await settleInflightWrites(id);
   const { record } = await transitionTerminal(root, id, current => ({
     ...current, lifecycle: "cancelled", nextAction: "inspect-sanitized-failure",
   }));
@@ -885,6 +936,10 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
       ...(await selfResources(root)) };
   };
   const abortTo = async (credentialEvent: ProbeEvent, liveEvent: ProbeEvent) => {
+    // Settle first (bounded by the remaining deadline, usually zero here so
+    // this is a no-op), then terminalize: the deadline stays absolute while
+    // a settling backend is still given its last chance to land in order.
+    await settleInflightWrites(id);
     const { record } = await transitionTerminal(root, id, current => {
       const renewal = current.observations.find(item => item.observation === "renewal")!;
       return { ...current, lifecycle: "cancelled",
@@ -973,7 +1028,7 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
             db.exec("ROLLBACK");
             throw new Error("provider_budget_exceeded");
           }
-          ledger.push({ inference: kind === "inference" ? 1 : 0, token: kind === "token" ? 1 : 0, confirmed: false });
+          ledger.push({ inference: kind === "inference" ? 1 : 0, token: kind === "token" ? 1 : 0, confirmed: false, admission: current.attempts });
           const updated: ProbeAttempt = { ...current, observations: current.observations.map(item =>
             item.observation === "renewal" ? { ...item, sends: ledger } : item) };
           validateProbeAttempt(updated);
@@ -1025,7 +1080,19 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
   // backend can never wedge the probe or block cancellation. An abort
   // fails the write closed; a late settlement of an unabortable backend
   // remains Schway-owned residual refused at the supported guard seam.
-  const fence = { write: <T>(work: () => Promise<T>): Promise<T> => fencedStoreWrite(root, id, effective, work) };
+  // Mutations are tracked so owner-stop acknowledgement waits for safe
+  // settlement (bounded by the remaining live deadline) instead of
+  // racing past an in-flight write.
+  const inflight = new Set<Promise<unknown>>();
+  inflightWrites.set(id, inflight);
+  probeDeadlines.set(id, { startedAt: Date.now(), deadlineMs: bounds.deadlineMs });
+  const fence = { write: <T>(work: () => Promise<T>): Promise<T> => {
+      const pending = fencedStoreWrite(root, id, effective, work);
+      inflight.add(pending);
+      pending.then(() => inflight.delete(pending), () => inflight.delete(pending));
+      return pending;
+    } };
+  try {
   for (let turn = 0; turn < maxAttempts; turn++) {
     if (effective.aborted) break;
     // Reserve the admission durably before any provider contact: the
@@ -1086,7 +1153,12 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
     }
     return terminalFor(current, inference);
   }, { signal: effective, abortBuild: current => ({ ...terminalFor(current, "failed"), lifecycle: "cancelled", nextAction: "inspect-sanitized-failure" }) });
-  return { record: await readProbeAttempt(root, id), self: await finishSelf(await readProbeAttempt(root, id)) };
+  const outcome = { record: await readProbeAttempt(root, id), self: await finishSelf(await readProbeAttempt(root, id)) };
+  return outcome;
+  } finally {
+    inflightWrites.delete(id);
+    probeDeadlines.delete(id);
+  }
 }
 
 /** Projects only allowlisted readiness facts; aliases, timing and identifiers never carry secrets. */
@@ -1097,8 +1169,10 @@ export function exportProbeSummary(record: ProbeAttempt) {
     lifecycle: record.lifecycle, maxAttempts: record.maxAttempts, attempts: record.attempts,
     deadlineMs: record.deadlineMs, elapsedMs: record.elapsedMs,
     observations: record.observations.map(item => ({ observation: item.observation, probeClass: item.probeClass,
-      event: item.event === "success" ? "success" : "not-success", state: item.state, nextAction: item.nextAction,
+      // Renewal never carries a success claim, even under tampering: the
+      // export pins it to not-success while validation rejects it outright.
+      event: item.observation === "renewal" ? "not-success" : (item.event === "success" ? "success" : "not-success"), state: item.state, nextAction: item.nextAction,
       attempts: item.attempts, elapsedMs: item.elapsedMs,
-      sends: (item.sends ?? []).map(call => ({ inference: call.inference, token: call.token, confirmed: call.confirmed })) })),
+      sends: (item.sends ?? []).map(call => ({ inference: call.inference, token: call.token, confirmed: call.confirmed, admission: call.admission })) })),
     promptBytes: record.promptBytes, nextAction: record.nextAction };
 }

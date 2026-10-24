@@ -28,7 +28,7 @@ SCHWAY_RELEASE_CONTRACT: "schway.host.release/v1";
 SCHWAY_SNAPSHOT_CONTRACT: "schway.host.session-snapshot/v1";
 SCHWAY_PINNED_REVISION: "3c11d58...";
 SCHWAY_PINNED_VERSION: "1.0.0-rc.2";
-SCHWAY_PINNED_TARBALL_SHA256: "4579a059...";
+SCHWAY_PINNED_TARBALL_SHA256: "a9edd297...";
 SCHWAY_NEXT_ACTION: "pin_supported_schway_host_release";
 SCHWAY_SNAPSHOT_NEXT_ACTION: "await_supported_schway_snapshot_api";
 SCHWAY_SYSTEM_PROMPT: string;
