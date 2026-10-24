@@ -104,6 +104,7 @@ export {
   admitCommittedReportAlerts,
   admitReportAlerts,
   alertKey,
+  findingFingerprint,
   alertPolicyIdentity,
   buildAlertPayload,
   ensureAlertPolicy,
