@@ -33,7 +33,12 @@ export type {
   PrReportObserved,
   PrReportReceipt,
   PrReportStatus,
+  PrReviewCapture,
   PrReviewInput,
+  PrReviewObserved,
+  PrReviewPolicy,
+  PrReviewRouteLayer,
+  PrReviewStateItem,
   PrivateReport,
   ProtocolCheck,
   ProtocolFile,
@@ -45,6 +50,9 @@ export type {
   ResumeMonitorCommand,
   ReviewCandidate,
   RevokeMonitorCommand,
+  TransmissionState,
+  TransmittedEntry,
+  TransmittedManifest,
 } from "./types";
 
 export { ensurePrSchema } from "./schema";
@@ -62,16 +70,21 @@ export { fencePrCandidateJobs, prSnapshotWork, type PrSnapshotInput } from "./wo
 export {
   annotateReport,
   listReports,
+  listReviewStates,
   normalizeReviewOutput,
+  patchRanges,
   persistReport,
   prReportIdentity,
   readAnnotations,
   readReport,
+  reportRunEvidence,
   validateFinding,
   type NormalizedReview,
   type PersistReportInput,
+  type ReportReadOptions,
+  type ReportRunEvidence,
 } from "./report";
-export { prReviewWork, fencePrReviewJobs, type PrReviewWorkOptions } from "./review";
+export { PR_REVIEW_SCRIPTED_ROUTE, prReviewWork, fencePrReviewJobs, resolvePrReviewRoute, type PrReviewWorkOptions } from "./review";
 export {
   ALERT_POLICY_VERSION,
   DEFAULT_ALERT_POLICY,

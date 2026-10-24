@@ -96,6 +96,63 @@ export const DEFAULT_REVIEW_POLICY = Object.freeze({
   requireCompleteEnumeration: true as const,
 } as const);
 
+/**
+ * Review scope policy one `pr.review` worker enforces. The installation's
+ * accepted policy is `DEFAULT_REVIEW_POLICY`; a different version models an
+ * upgraded policy and fences work and reports captured under the old one.
+ */
+export interface PrReviewPolicy {
+  version: number;
+  requiredRoles: readonly string[];
+}
+
+/** Configuration layer that supplied the captured PR review route. */
+export type PrReviewRouteLayer = "project_default" | "owner_default" | "scripted_fixture";
+
+/**
+ * Immutable `pr.review` admission capture stored as attempt data. Retries reuse
+ * the first capture exactly (no route fallback); a changed review policy fences it.
+ */
+export interface PrReviewCapture {
+  version: 1;
+  adapter: string;
+  route: { provider: "grok" | "codex"; model: string; authRoute: string };
+  layer: PrReviewRouteLayer;
+  configuration: { ownerRevision: number; projectRevision: number; roleRevision: number };
+  reviewPolicy: { version: number; requiredRoles: string[] };
+}
+
+/** What happened to one snapshot item or specialist result on its way into a run. */
+export type TransmissionState = "sent" | "truncated" | "omitted" | "unavailable";
+
+/**
+ * One bounded item delivered (or not) to the specialists or the synthesizer.
+ * `required` items gate completeness: omission forces incomplete, truncation or
+ * unavailability forces partial. `chunk` is the manifest source index, if sent.
+ */
+export interface TransmittedEntry {
+  kind: "pr" | "diff" | "ci" | "issue" | "spec" | "specialist";
+  ref: string;
+  required: boolean;
+  state: TransmissionState;
+  bytes: number;
+  sentBytes: number;
+  chunk: number | null;
+}
+
+/**
+ * Exact transmitted manifest: what every specialist received (identical across
+ * specialists) and what the synthesizer received. Completion derives from this,
+ * never from snapshot coverage alone or from model-declared roles.
+ */
+export interface TransmittedManifest {
+  version: 1;
+  sourceLimit: number;
+  contextBytes: number;
+  specialist: TransmittedEntry[];
+  synthesis: TransmittedEntry[];
+}
+
 /** Finding category; only evidence-backed correctness/security/behavior qualify for alerts. */
 export type PrFindingCategory = "correctness" | "security" | "behavior" | "style" | "uncertain";
 
@@ -160,16 +217,48 @@ export interface PrivateReport {
   skippedScope: string[];
   coverageOverall: CoverageManifest["overall"];
   enumerationComplete: boolean;
-  specialistRuns: Array<{ role: string; state: string; reason: string | null }>;
+  specialistRuns: Array<{ role: string; state: string; reason: string | null; mode?: "fixture" | "production" }>;
   synthesis: { state: string; reason: string | null };
   disagreements: string[];
   snapshotId: string;
+  /** Immutable snapshot coverage (source manifest) the report was decided against. */
+  sourceManifest: CoverageManifest;
+  /** Exactly what the runs received; null only for reports persisted without runs. */
+  transmitted: TransmittedManifest | null;
+  /** Route, layer and configuration revisions captured at admission; null without runs. */
+  capture: PrReviewCapture | null;
+  /** Evidence mode of the synthesis run; fixture output never claims live inference. */
+  mode: "fixture" | "production" | null;
   jobId: string | null;
   attemptId: string | null;
   authorityGeneration: number;
   revision: number;
   createdAt: number;
   updatedAt: number;
+}
+
+/**
+ * Observable review state per candidate (`pr.private_report/v1` read model).
+ * `not_reviewed`: no review admitted; `running`: admitted nonterminal review job
+ * without a report; `failed`: review job ended without committing a report;
+ * `stale`: retained report (or fenced work) no longer current.
+ */
+export type PrReviewObserved = "not_reviewed" | "running" | "stale" | Exclude<PrReportStatus, "running">;
+
+export interface PrReviewStateItem {
+  candidateId: string;
+  monitorId: string;
+  pullNumber: number;
+  baseSha: string;
+  headSha: string;
+  policyVersion: number;
+  candidateStatus: CandidateStatus;
+  observed: PrReviewObserved;
+  reportId: string | null;
+  staleReason: string | null;
+  jobId: string | null;
+  jobState: string | null;
+  jobReason: string | null;
 }
 
 /** A revisioned owner annotation on a report; history rows are never rewritten. */

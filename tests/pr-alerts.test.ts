@@ -151,7 +151,7 @@ function prepareReport(f: F, monitor?: PrMonitor) {
   const mon = monitor ?? enable(f);
   const base = sha(1), head = sha(2);
   f.github.pulls = [fixturePull({ number: 1, base: { sha: base, ref: "main" }, head: { sha: head, ref: "feat" } })];
-  f.github.files.set(f.github.key(1, base, head), [{ filename: "a.ts", status: "modified", patch: "@@\n+a" }]);
+  f.github.files.set(f.github.key(1, base, head), [{ filename: "a.ts", status: "modified", patch: "@@ -1,1 +1,40 @@\n+a" }]);
   f.github.checks.set(head, []);
   const conn = connector(f, mon);
   f.store.transaction(tx => pollMonitorCatchUp(tx, f.project.id, mon.id, conn, f.clock.now));
@@ -359,7 +359,7 @@ test("partial report still alerts with warning; web shows partial scope", async 
   const monitor = enable(f);
   const base = sha(1), head = sha(2);
   f.github.pulls = [fixturePull({ number: 5, base: { sha: base, ref: "main" }, head: { sha: head, ref: "x" } })];
-  f.github.files.set(f.github.key(5, base, head), [{ filename: "only.ts", status: "modified", patch: "@@\n+ok", truncated: true }]);
+  f.github.files.set(f.github.key(5, base, head), [{ filename: "only.ts", status: "modified", patch: "@@ -1,1 +1,40 @@\n+ok", truncated: true }]);
   f.github.checks.set(head, []);
   const conn = connector(f, monitor);
   f.store.transaction(tx => pollMonitorCatchUp(tx, f.project.id, monitor.id, conn, f.clock.now));
