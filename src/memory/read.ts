@@ -88,21 +88,37 @@ export function suppressedClaim(tx: AppTransaction, claimId: string): boolean {
   return !!tx.get("SELECT 1 FROM memory_suppressed_claims WHERE claim_id = ?", claimId);
 }
 
-/** Whether this exact source lineage was deleted; payload is never stored in the ledger. */
+/** Schema version that created `deletion_ledger`; older stores have recorded no deletions yet. */
+export const deletionLedgerSchema = 17;
+
+/**
+ * app.deletion_ledger/v1 failure policy: a ledger query error fails closed with
+ * `deletion_ledger_unavailable`. Only the explicit pre-migration compatibility path (schema older
+ * than the ledger and the table genuinely absent) reads as "no deletions recorded".
+ */
+export function ledgerQueryFailed(tx: AppTransaction, error: unknown): "pre_migration" {
+  let version = Number.POSITIVE_INFINITY;
+  try { version = tx.get<{ user_version: number }>("PRAGMA user_version")?.user_version ?? Number.POSITIVE_INFINITY; } catch { /* Unknown schema fails closed. */ }
+  const missing = error instanceof Error && /no such table: deletion_ledger/.test(error.message);
+  if (missing && version < deletionLedgerSchema) return "pre_migration";
+  throw new AppError("deletion_ledger_unavailable", 503);
+}
+
+/** Whether this exact source lineage was deleted; payload is never stored in the ledger. Fails closed on ledger errors. */
 export function deletedSource(tx: AppTransaction, reference: import("../sources").SourceReference): boolean {
   requireReference(reference);
   try {
     return !!tx.get("SELECT 1 FROM deletion_ledger WHERE kind = 'source' AND source_id = ? AND revision = ? AND generation = ?",
       reference.sourceId, reference.revision, reference.generation);
-  } catch { return false; }
+  } catch (error) { ledgerQueryFailed(tx, error); return false; }
 }
 
-/** Whether this claim identity was deleted; payload stays out of the ledger. */
+/** Whether this claim identity was deleted; payload stays out of the ledger. Fails closed on ledger errors. */
 export function deletedClaim(tx: AppTransaction, claimId: string): boolean {
   requireId(claimId);
   try {
     return !!tx.get("SELECT 1 FROM deletion_ledger WHERE kind = 'claim' AND claim_id = ?", claimId);
-  } catch { return false; }
+  } catch (error) { ledgerQueryFailed(tx, error); return false; }
 }
 
 /** app.context_provenance/v1 loop depth: 0 for owner/raw sources, >0 for outputs produced with memory in context. */

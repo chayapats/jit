@@ -1,4 +1,5 @@
 import { reconcileContext, reconcileSessions } from "./reconcile";
+import { reconcileDeletions } from "../memory/delete";
 import type { ApplicationRunPort } from "../team/run-port";
 import type { ManagedContextReference } from "../team/types";
 import { attemptAuthority, invalidateJob, readAttempt, readAttempts, saveAttempt, stopFullyObserved, unsettledTransportAttempts, type JobAttempt } from "./attempts";
@@ -134,6 +135,7 @@ export class JobQueue {
   #timers: NonNullable<SchedulerOptions["timers"]>;
   #active = new Map<string, { attemptId: string; abort: AbortController; timer: unknown; promise: Promise<unknown> }>();
   #closing = false; #fault = false; #leaseMs: number;
+  #lifecyclePort: ApplicationRunPort | null = null; #deletions: Promise<void> = Promise.resolve();
 
   constructor(readonly store: TransactionStore, policy: JobPolicy, definitions: WorkDefinition[], options: SchedulerOptions = {}) {
     this.policy = structuredClone(policy);
@@ -312,7 +314,7 @@ export class JobQueue {
   }
 
   /** Waits for currently admitted scripted steps; callers must not await a deliberately stalled adapter. */
-  async idle(): Promise<void> { await Promise.all([...this.#active.values()].map(item => item.promise)); }
+  async idle(): Promise<void> { await Promise.all([...this.#active.values()].map(item => item.promise)); await this.#deletions; }
 
   /** Stops admission and requests cancellation, retaining ownership while any adapter is still running. */
   close(): void {
@@ -330,10 +332,37 @@ export class JobQueue {
     if (!this.#active.size) this.#release();
   }
 
-  /** Reconciles persisted references without dispatching or accepting native output. */
+  /**
+   * Reconciles persisted references without dispatching or accepting native output, then runs one
+   * budgeted managed-delete pass for pending deletion operations through the same lifecycle port.
+   * The port is retained so later owner confirm/retry commands can request further passes.
+   */
   async reconcile(port: ApplicationRunPort) {
     this.store.read(tx => this.assertOwner(tx));
-    return reconcileSessions(this.store, port, this.#time(), () => this.cancelFenced());
+    const sessions = await reconcileSessions(this.store, port, this.#time(), () => this.cancelFenced());
+    // Pending deletions converge through the same team port: the concrete
+    // bridge retires-then-deletes owned native sessions through its supported
+    // lifecycle, never native byte edits. Scripted ports fence the same
+    // contexts through their managed lifecycle; payloads stay purged.
+    this.#lifecyclePort = port;
+    await this.reconcilePendingDeletions();
+    return sessions;
+  }
+
+  /**
+   * app.data_lifecycle/v1: requests one serialized, budgeted managed-delete pass through the port
+   * last passed to `reconcile`. Without a reconciled port (or while closing) nothing is dispatched;
+   * operations stay pending until the next startup reconciliation. Failures persist in the operation.
+   */
+  reconcilePendingDeletions(): Promise<void> {
+    const port = this.#lifecyclePort;
+    if (!port || this.#closing || this.#fault) return this.#deletions;
+    const next = this.#deletions.then(async () => {
+      if (this.#closing || !this.store.read(tx => this.#owns(tx))) return;
+      await reconcileDeletions(this.store, port, this.#time());
+    }).catch(() => { /* Operation records keep the honest pending/blocked state. */ });
+    this.#deletions = next;
+    return next;
   }
 
   /** Service lifecycle port: fence first, then await retirement/deletion acknowledgment before replacement. */

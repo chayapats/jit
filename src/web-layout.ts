@@ -618,7 +618,7 @@ export function backupDetailPage(state: ReturnType<Application["backup"]>, works
 export function deletionsPage(state: { project: Project; operations: import("./memory/delete").DeletionOperation[] }, workspace: Workspace, csrf: string, sources: { reference: import("./sources").SourceReference; label: string }[]): string {
   const { project, operations } = state;
   const items = operations.map(op => `<article class="team-card" id="deletion-${op.id}"><header><h3><a href="/projects/${project.id}/memory/deletions/${op.id}">${escape(op.id)}</a></h3><span class="job-status" data-state="${op.state}">${escape(op.state)}</span></header>
-    <p>scope ${escape(op.scope.source.sourceId)} r${op.scope.source.revision} g${op.scope.source.generation} · tombstones ${op.tombstones.length} · attempts ${op.attempts}/${op.maxAttempts}</p>
+    <p>scope ${escape(op.scope.source.sourceId)} r${op.scope.source.revision} g${op.scope.source.generation} · tombstones ${op.tombstones.length} · attempts ${op.attempts}/${op.maxAttempts} · native sessions ลบแล้ว ${op.contexts.filter(c => c.state === "deleted").length}/${op.contexts.length}</p>
     <p>สำรองที่ยังเก็บข้อมูลนี้ ${op.backupsRetained.length ? escape(op.backupsRetained.join(", ")) : "ไม่มี"} · ${escape(op.nextAction)}</p>
     ${op.reason ? `<p>เหตุผล: ${escape(op.reason)}</p>` : ""}</article>`).join("");
   return shell("ลบข้อมูล", { project, workspace, csrf, section: "memory" }, `<div class="content"><section class="hero"><p class="eyebrow">app.data_lifecycle/v1</p><h2>ลบ source ต้นฉบับ ${escape(project.name)}</h2><p>ดูผลกระทบแบบผูก revision ก่อนยืนยัน งานที่รับรองและมติไม่ถูกเปลี่ยนโดยปริยาย สำรองเดิมและสำเนา Telegram/provider ไม่ได้ถูกลบโดยคำสั่งนี้</p></section>
@@ -628,24 +628,37 @@ export function deletionsPage(state: { project: Project; operations: import("./m
     <section aria-label="การลบ">${items || '<p class="empty-list">ยังไม่มีการลบในโครงการนี้</p>'}</section></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
 }
 
-/** One deletion preview or operation: collateral, truncation flags and honest pending state. */
+/** One deletion preview or operation: complete collateral, named blockers, whole-session scope and per-scope state. */
 export function deletionDetailPage(state: { project: Project; preview: import("./memory/delete").DeletionPreview | null; operation: import("./memory/delete").DeletionOperation | null }, workspace: Workspace, csrf: string): string {
   const { project, preview, operation } = state;
-  const previewCard = preview ? `<article class="team-card"><h3>ผลกระทบของ ${escape(preview.scope.source.sourceId)} r${preview.scope.source.revision} g${preview.scope.source.generation}</h3>
-    <p>หมดอายุ ${time(preview.expiresAt)} · claims ${preview.affected.claims.length}${preview.truncated.claims ? "+" : ""} · contexts ${preview.affected.contexts.length}${preview.truncated.contexts ? "+" : ""} · งานที่ต้อง fence ${preview.affected.pendingJobs.length}${preview.truncated.pendingJobs ? "+" : ""}</p>
-    <p>native sessions ${preview.affected.nativeSessions.length} · สำรองที่ยังเก็บข้อมูลนี้ ${preview.affected.backups.length}${preview.truncated.backups ? "+" : ""} · ข้อผูกพันที่คาบเกี่ยว ${preview.affected.obligations.length}</p>
-    ${preview.wholeSession.required ? `<p>ต้องลบทั้ง session (${escape(preview.wholeSession.reason ?? "")}) ให้ติ๊กยืนยันทั้ง session ก่อน</p>` : ""}
+  const ref = (s: { sourceId: string; revision: number; generation: number }) => `${escape(s.sourceId)} r${s.revision} g${s.generation}`;
+  const plus = (flag: boolean | undefined) => flag ? "+" : "";
+  const blockers = preview?.blockers ?? [];
+  const sessionRows = (preview?.affected.nativeSessions ?? []).map(session => `<li>${escape(session.id)} g${session.generation} · ${escape(session.appState)} · ${session.dispatched ? "มีข้อมูลใน session แล้ว" : "ยังไม่เริ่มทำงาน"} · ลบได้ทั้ง session เท่านั้น${session.collateral?.sources.length || session.collateral?.claims.length ? ` · ลบรวมด้วย: sources ${session.collateral.sources.map(c => ref(c.source)).join(", ") || "-"} · claims ${session.collateral.claims.map(c => escape(c.claimId)).join(", ") || "-"}` : ""}</li>`).join("");
+  const previewCard = preview ? `<article class="team-card"><h3>ผลกระทบของ ${ref(preview.scope.source)}</h3>
+    <p>หมดอายุ ${time(preview.expiresAt)} · inventory ${escape((preview.inventoryDigest ?? "").slice(0, 12))} · claims ${preview.affected.claims.length}${plus(preview.truncated.claims)} · contexts ${preview.affected.contexts.length}${plus(preview.truncated.contexts)} · งานที่ต้อง fence ${preview.affected.pendingJobs.length}${plus(preview.truncated.pendingJobs)}</p>
+    <p>sources ที่ถูกลบ: ${preview.affected.sources.map(s => `${ref(s.source)} (${s.relation === "scope" ? "ต้นฉบับ" : "output ที่สืบทอด"})`).join(" · ")}${plus(preview.truncated.sources)}</p>
+    <p>native sessions ${preview.affected.nativeSessions.length}${plus(preview.truncated.nativeSessions)} · สำรองที่อาจยังเก็บข้อมูลนี้ ${preview.affected.backups.length}${plus(preview.truncated.backups)} · export ในเครื่องที่จะถูกลบ ${preview.affected.exports.length}${plus(preview.truncated.exports)} · ข้อผูกพันที่คงไว้ไม่เปลี่ยน ${preview.affected.obligations.length}${plus(preview.truncated.obligations)}</p>
+    ${sessionRows ? `<ul aria-label="native sessions">${sessionRows}</ul>` : ""}
+    ${preview.wholeSession.required ? `<p>ต้องลบทั้ง session (${escape((preview.wholeSession.reasons ?? [preview.wholeSession.reason ?? ""]).join(", "))}) ขอบเขต: ${escape(preview.wholeSession.sessionScope.join(", "))} ให้ติ๊กยืนยันทั้ง session ก่อน</p>` : ""}
+    ${blockers.length ? `<p class="error" role="alert">ยืนยันไม่ได้: ${escape(blockers.join(", "))} · ตรวจสอบข้อมูลแล้วขอดูผลกระทบใหม่</p>` : ""}
     <p><small>${escape(preview.note)}</small></p>
-    <form class="team-form" method="post" action="/projects/${project.id}/memory/deletions">${hiddenCommand(csrf, project.revision)}
+    ${blockers.length ? "" : `<form class="team-form" method="post" action="/projects/${project.id}/memory/deletions">${hiddenCommand(csrf, project.revision)}
       <input type="hidden" name="mode" value="confirm"><input type="hidden" name="previewId" value="${preview.id}">
       <label><input type="checkbox" name="acknowledged" value="on"> ยืนยันขอบเขต (ไม่ยกเลิกงาน ไม่ถอนมติ)</label>
       ${preview.wholeSession.required ? `<label><input type="checkbox" name="acknowledgedWholeSession" value="on"> ยืนยันขอบเขตทั้ง session</label>` : ""}
-      <button class="danger">ยืนยันการลบ</button></form></article>` : "";
-  const operationCard = operation ? `<article class="team-card"><h3>การลบ ${escape(operation.id)}</h3><p>สถานะ ${escape(operation.state)} · attempts ${operation.attempts}/${operation.maxAttempts} · tombstones ${operation.tombstones.length}</p>
+      <button class="danger">ยืนยันการลบ</button></form>`}</article>` : "";
+  const contextRows = (operation?.contexts ?? []).map(context => `<li data-state="${escape(context.state)}">${escape(context.id)} g${context.generation} · ${escape(context.state)} · attempts ${context.attempts}${context.reason ? ` · ${escape(context.reason)}` : ""} · ${escape(context.nextAction)}</li>`).join("");
+  const exportRows = (operation?.exports ?? []).map(entry => `<li data-state="${escape(entry.state)}">export ${escape(entry.id)} · ${escape(entry.state)} · attempts ${entry.attempts}${entry.reason ? ` · ${escape(entry.reason)}` : ""}</li>`).join("");
+  const scopeRows = (operation?.scopes ?? []).map(scope => `<li data-state="${escape(scope.state)}">${escape(scope.scope)} · ${escape(scope.state)} · ${escape(scope.detail)}</li>`).join("");
+  const operationCard = operation ? `<article class="team-card"><h3>การลบ ${escape(operation.id)}</h3><p>สถานะ ${escape(operation.state)}${operation.state === "complete" ? " (เฉพาะ local serving และ native sessions ที่จัดการ ไม่ใช่สำรอง/สำเนาภายนอก)" : ""} · attempts ${operation.attempts}/${operation.maxAttempts} · tombstones ${operation.tombstones.length}</p>
     <p>${escape(operation.nextAction)}${operation.reason ? ` · ${escape(operation.reason)}` : ""}</p>
+    ${contextRows ? `<ul aria-label="native session scopes">${contextRows}</ul>` : "<p>ไม่มี native session ที่ต้องลบ</p>"}
+    ${exportRows ? `<ul aria-label="local export artifacts">${exportRows}</ul>` : ""}
+    ${scopeRows ? `<ul aria-label="local scopes">${scopeRows}</ul>` : ""}
     <p>สำรองที่ยังเก็บข้อมูลนี้: ${operation.backupsRetained.length ? escape(operation.backupsRetained.join(", ")) : "ไม่มี"}</p>
     <p>สำเนาที่ไม่ได้ลบ: ${escape(operation.residuals.join(", "))}</p>
-    ${operation.state !== "complete" ? `<form class="team-form" method="post" action="/projects/${project.id}/memory/deletions">${hiddenCommand(csrf, project.revision)}
+    ${operation.state === "pending" || operation.state === "blocked" ? `<form class="team-form" method="post" action="/projects/${project.id}/memory/deletions">${hiddenCommand(csrf, project.revision)}
       <input type="hidden" name="mode" value="retry"><input type="hidden" name="operationId" value="${operation.id}"><button>ลองจัดการ native sessions อีกครั้ง</button></form>` : ""}</article>` : "";
   return shell("ผลการลบ", { project, workspace, csrf, section: "memory" }, `<div class="content">${previewCard}${operationCard || (!preview ? '<p class="empty-list">ไม่พบบันทึกนี้</p>' : "")}
     <p><a href="/projects/${project.id}/memory/deletions">กลับไปรายการลบ</a></p></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });

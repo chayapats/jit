@@ -39,7 +39,7 @@ import {
 import { fenceUnavailableExtractions, memoryIdentity, prepareExtraction } from "./memory/extract";
 import { correctionIdentity, correctionImpact, prepareCorrection, readCorrection } from "./memory/correct";
 import {
-  confirmDeletion, deleteCommandIdentity, listDeletionOperations, prepareDeletionPreview, readDeletionLedger,
+  confirmDeletion, deleteCommandIdentity, lifecycleSafeManifests, listDeletionOperations, prepareDeletionPreview, purgeDeletedExports, readDeletionLedger,
   readDeletionOperation, readDeletionPreview, retryDeletion, type DeleteCommand, type DeletionConfirmReceipt,
   type DeletionOperation, type DeletionPreview, type DeletionReceipt,
 } from "./memory/delete";
@@ -780,25 +780,40 @@ export class Application {
 
   #deleteCommand(actor: OwnerActor, command: DeleteCommand): DeletionReceipt | DeletionConfirmReceipt | DeletionOperation {
     const payloadHash = digest(deleteCommandIdentity(command, this.config.team.contextBytes));
-    const result = this.store.transaction(tx => {
+    // Private commit metadata: only a newly created or re-armed operation earns post-commit work. Receipt
+    // replays and duplicate confirmations never queue a pass (the replayed receipt keeps duplicate:false).
+    const { result, operationId } = this.store.transaction(tx => {
       this.#requireOwner(tx, actor); const project = this.#project(tx, command.projectId);
       const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
       if (prior) {
         if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409);
-        return JSON.parse(prior.result_json) as DeletionReceipt | DeletionConfirmReceipt | DeletionOperation;
+        return { result: JSON.parse(prior.result_json) as DeletionReceipt | DeletionConfirmReceipt | DeletionOperation, operationId: null };
       }
       const now = this.#now();
-      const result = command.kind === "memory.delete.preview"
-        ? { preview: prepareDeletionPreview(tx, command, project.revision, now), duplicate: false } satisfies DeletionReceipt
-        : command.kind === "memory.delete.confirm"
-          ? confirmDeletion(tx, command, project.revision, now)
-          : retryDeletion(tx, command, now);
+      let operationId: string | null = null;
+      let result: DeletionReceipt | DeletionConfirmReceipt | DeletionOperation;
+      if (command.kind === "memory.delete.preview") {
+        result = { preview: prepareDeletionPreview(tx, command, project.revision, now, { backupDir: this.#backupDir }), duplicate: false } satisfies DeletionReceipt;
+      } else if (command.kind === "memory.delete.confirm") {
+        const confirmed = confirmDeletion(tx, command, project.revision, now, { backupDir: this.#backupDir });
+        if (!confirmed.duplicate) operationId = confirmed.operation.id;
+        result = confirmed;
+      } else {
+        const retried = retryDeletion(tx, command, now);
+        if (retried.state === "pending" && retried.reason === "retry_requested") operationId = retried.id;
+        result = retried;
+      }
       this.#beforeCommit?.("memory");
       tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
       tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);
-      this.#beforeCommit?.("receipt"); return result;
+      this.#beforeCommit?.("receipt"); return { result, operationId };
     });
     this.#jobs?.cancelFenced();
+    if (operationId) {
+      // Committed: purge app-owned export files now, then hand native contexts to one budgeted pass.
+      try { purgeDeletedExports(this.store, this.#now(), operationId); } catch { /* Per-file state stays pending for reconcile. */ }
+      void this.#jobs?.reconcilePendingDeletions();
+    }
     return result;
   }
 
@@ -1203,7 +1218,8 @@ export class Application {
       for (const context of tx.all<{ id: string; generation: number }>("SELECT c.id, c.generation FROM team_contexts c JOIN team_runs r ON r.context_id = c.id WHERE r.project_id = ? AND r.job_id = ?", projectId, jobId)) contexts.add(`${context.id}:${context.generation}`);
       const reconciliations = tx.all<{ record_json: string }>("SELECT record_json FROM job_reconciliation").map(row => JSON.parse(row.record_json) as SessionReconciliation)
         .filter(record => contexts.has(`${record.context.id}:${record.context.generation}`));
-      return { ...projectJob(readJob(tx, projectId, jobId), this.#now()), attempts, reconciliations,
+      // Attempts keep their request manifests; owner reads project them lifecycle-safely.
+      return { ...projectJob(readJob(tx, projectId, jobId), this.#now()), attempts: lifecycleSafeManifests(tx, attempts), reconciliations,
         stop: authority?.stop_json ? JSON.parse(authority.stop_json) as JobStopOutcome : null }; });
   }
 
