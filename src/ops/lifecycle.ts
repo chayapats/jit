@@ -12,6 +12,8 @@ import { TransactionStore, schemaVersion } from "../store";
 import { createWebHandler } from "../web";
 import { backupDirectoryProblem } from "./backup";
 import { backupNativePortFor } from "./schway-backup";
+import { ledgerCheckpointPathFor, syncLedgerCheckpoint } from "./lifecycle-ledger";
+import { openReadOnlyStore, unavailableReadOnlyStore } from "./readonly-store";
 import { ServiceChannels, channelReadiness, type ChannelTransportFactory } from "./service-channels";
 import { ManagedService } from "./upgrade-service";
 import { upgradeFenced } from "./upgrade-fence";
@@ -62,37 +64,31 @@ export interface LedgerGateInput {
  */
 export type LedgerGate = (input: LedgerGateInput) => LedgerVerdict;
 
-/** Next action while the installation ledger writer is not integrated. */
-export const ledgerWriterPendingAction = "integrate-ops02-ledger-checkpoint";
-
 /**
- * Default ledger gate. An installed profile (configured `ledgerPath`) is
- * BLOCKED: this build has no trusted writer for the installation
- * deletion/suppression ledger checkpoint, and an installer placeholder or a
- * file that merely exists proves nothing about current deletion state, so the
- * service stays quarantined (`integrate-ops02-ledger-checkpoint`). The
- * development profile (no installation ledger configured) is trusted.
- * Deterministic tests inject fixture gates; production never does.
- *
- * TODO(#33): OPS02 ships the writer (`src/ops/lifecycle-ledger.ts`,
- * `syncLedgerCheckpoint`). When it lands, replace this default with a gate
- * that returns `trusted` only for `syncLedgerCheckpoint(store, ledgerPath ??
- * ledgerCheckpointPathFor(store.path), now, { write: mode === "boot" })
- * .state === "trusted"` (inspect mode only reads, so the read-only store
- * adapter suffices), so a missing, diverged or unverifiable checkpoint keeps
- * the installation quarantined. Callers already pass the store, path, clock
- * and mode; nothing else in the lifecycle changes.
+ * Default ledger gate: the OPS02 installation lifecycle ledger checkpoint
+ * (app.deletion_ledger/v1, `syncLedgerCheckpoint`). The installed profile
+ * checks the configured `ledgerPath`; the development profile checks the
+ * default `<db>.lifecycle-ledger.json`. `inspect` never writes (read-only
+ * stores suffice); `boot` may establish the checkpoint from a fresh
+ * installation or the install seed `{ledger, revision}` (accepted once), or
+ * extend a lagging one. Untrusted — missing after establishment, diverged,
+ * stale, unverifiable, incompatible, or relocated without a verified copy
+ * of the previously established checkpoint — keeps activation quarantined.
  */
-export const defaultLedgerGate: LedgerGate = ({ ledgerPath }) => {
-  if (ledgerPath === null) return { trusted: true, detail: "development profile: no installation ledger configured" };
-  return { trusted: false, reason: "installation ledger checkpoint writer not integrated (OPS02 #33); activation stays quarantined",
-    nextAction: ledgerWriterPendingAction };
+export const defaultLedgerGate: LedgerGate = ({ store, ledgerPath, now, mode }) => {
+  const path = ledgerPath ?? ledgerCheckpointPathFor(store.path);
+  // With `write: false` the checkpoint resolution only reads, so the read-only adapter is sufficient.
+  const verdict = syncLedgerCheckpoint(store as TransactionStore, path, now, { write: mode === "boot" });
+  return verdict.state === "trusted"
+    ? { trusted: true, detail: `lifecycle ledger trusted (head ${verdict.head}, ${verdict.count} entries${verdict.established ? ", established" : ""})` }
+    : { trusted: false, reason: `lifecycle ledger ${verdict.reason}`, nextAction: verdict.nextAction };
 };
 
 /** Reads quarantine state through a ledger gate (inspect mode) without starting anything. */
 export function readQuarantine(service: ServiceConfig, store: ReadableStore | null = null, gate: LedgerGate = defaultLedgerGate): { quarantined: boolean; reason: string } {
   try {
-    const verdict = gate({ store: store ?? { path: serviceDatabasePath(service), read: () => { throw new Error("store_unavailable"); } }, ledgerPath: service.ledgerPath, now: Date.now(), mode: "inspect" });
+    const readable = store ?? openReadOnlyStore(serviceDatabasePath(service)) ?? unavailableReadOnlyStore(serviceDatabasePath(service));
+    const verdict = gate({ store: readable, ledgerPath: service.ledgerPath, now: Date.now(), mode: "inspect" });
     return verdict.trusted ? { quarantined: false, reason: verdict.detail } : { quarantined: true, reason: verdict.reason };
   } catch { return { quarantined: true, reason: "ledger check failed" }; }
 }
@@ -283,7 +279,8 @@ export interface FullAppHandle {
   /** Trusted installation configuration, or null under the development profile. */
   serviceConfig: ServiceConfig | null;
   /** Boot reconciliation outcome; `reconciled: false` while an upgrade/restore fence holds. */
-  boot: { reconciled: boolean; detail: string; upgrade: { id: string; state: string } | null };
+  boot: { reconciled: boolean; detail: string; upgrade: { id: string; state: string } | null;
+    restore: { id: string; state: string; reason: string | null } | null };
 }
 
 export interface StartInput {
@@ -358,7 +355,7 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
     const nativeSnapshot = backupNativePortFor(config, store);
     // Constructing the Application first resolves durable upgrade intent left by a crash.
     const app = new Application(store, config, {
-      service: managed, now, ...(service ? { backupDir: service.backupDirectory } : {}),
+      service: managed, now, ...(service ? { backupDir: service.backupDirectory, ledgerPath: service.ledgerPath } : {}),
       ...(nativeSnapshot ? { nativeSnapshot } : {}),
     });
     const ledger = ledgerGate({ store, ledgerPath: service?.ledgerPath ?? null, now: now(), mode: "boot" });
@@ -373,7 +370,8 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
     }
     const handle: FullAppHandle = {
       store, app, service: managed, channels, config, serviceConfig: service,
-      boot: { reconciled: booted.reconciled, detail: booted.detail, upgrade: booted.upgrade ? { id: booted.upgrade.id, state: booted.upgrade.state } : null },
+      boot: { reconciled: booted.reconciled, detail: booted.detail, upgrade: booted.upgrade ? { id: booted.upgrade.id, state: booted.upgrade.state } : null,
+        restore: booted.restore ? { id: booted.restore.id, state: booted.restore.state, reason: booted.restore.reason ?? null } : null },
       get queue() { return managed!.queue ?? composed.queue; },
       get teamPort() { return managed!.composed?.teamPort ?? composed.teamPort; },
     };

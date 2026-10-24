@@ -1,5 +1,4 @@
 import { afterEach, expect, test } from "bun:test";
-import { fixtureLedgerGate } from "./fixtures/ledger-gate";
 import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -61,7 +60,7 @@ function runRequest(config: ReturnType<typeof readConfig>): ApplicationRunReques
 
 test("startFullApp in schway mode backs up real native sessions into the configured backup directory", async () => {
   const { service, config, backup, state } = setup("schway");
-  const started = await startFullApp({ config, service, ledgerGate: fixtureLedgerGate });
+  const started = await startFullApp({ config, service });
   if (!started.ok) throw new Error(JSON.stringify(started.gates));
   const { app, store } = started.handle;
   try {
@@ -91,7 +90,7 @@ test("startFullApp in schway mode backs up real native sessions into the configu
 
 test("startFullApp in scripted mode has no native port and stays explicitly incomplete", async () => {
   const { service, config, backup } = setup("scripted");
-  const started = await startFullApp({ config, service, ledgerGate: fixtureLedgerGate });
+  const started = await startFullApp({ config, service });
   if (!started.ok) throw new Error(JSON.stringify(started.gates));
   const { app, store } = started.handle;
   try {
@@ -112,7 +111,7 @@ test("startFullApp in schway mode fails closed when the bridge gate does not hol
   const { service, config, state } = setup("schway");
   writeFileSync(join(state, ".jit-host"), "blocker");
   // The shared start path verifies the pinned bridge before composing anything and reports the blocked engine gate.
-  const refused = await startFullApp({ config, service, ledgerGate: fixtureLedgerGate });
+  const refused = await startFullApp({ config, service });
   expect(refused.ok).toBe(false);
   if (refused.ok) throw new Error("unreachable");
   expect(refused.gates).toMatchObject([{ gate: "engine", state: "blocked" }]);

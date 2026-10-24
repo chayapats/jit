@@ -762,25 +762,48 @@ export function upgradeDetailPage(state: { journal: UpgradeView }, workspace: Wo
     <p><a href="/upgrades">กลับไปรายการอัปเกรด</a></p></div>`, { breadcrumb: { title: "อัปเกรด", href: "/upgrades" } });
 }
 
-/** ops.quarantined_restore/v1: quarantined restores with external ledger reconciliation. */
-export function restoresPage(state: { quarantines: import("./ops/restore").RestoreQuarantine[]; backups: import("./ops/backup").BackupManifest[] }, workspace: Workspace, csrf: string, revision: number): string {
+type RestoreView = import("./ops/restore").RestoreEvidence;
+type LedgerView = { state: "trusted"; head: number; count: number; writtenAt: number; established: boolean }
+  | { state: "untrusted"; reason: string; nextAction: string; head: number | null; count: number | null };
+
+/** ops.quarantined_restore/v1: restore journals, installation ledger trust and the prepare form. */
+export function restoresPage(state: { quarantines: RestoreView[]; ledger: LedgerView; backups: import("./ops/backup").BackupManifest[] }, workspace: Workspace, csrf: string, revision: number): string {
   const items = state.quarantines.map(q => `<article class="team-card" id="restore-${q.id}"><header><h3><a href="/restores/${q.id}">${escape(q.id)}</a></h3><span class="job-status" data-state="${q.state}">${escape(q.state)}</span></header>
-    <p>backup ${escape(q.backupId)} · schema ${q.fromSchema} → ${q.stagedSchema ?? "?"} · ledger ${q.ledger ? `${q.ledger.count} จาก ${escape(q.ledger.source ?? "")}` : "ยังไม่ใช้"} · ${escape(q.nextAction)}</p>
+    <p>backup ${escape(q.backupId)} · schema ${q.compat.backupSchema} → ${q.stagedSchema ?? "?"} · ledger ${q.ledger ? `head ${q.ledger.head} (${q.ledger.deletions} tombstones, ${q.ledger.suppressions} suppressions)` : "ยังไม่ใช้"} · ${escape(q.nextAction)}</p>
     ${q.reason ? `<p>เหตุผล: ${escape(q.reason)}</p>` : ""}</article>`).join("");
   const options = state.backups.map(m => `<option value="${m.id}">${escape(m.id)} · schema ${m.appSchema} · ${escape(m.state)}</option>`).join("");
-  return shell("กู้คืน", { workspace, csrf, section: "home" }, `<div class="content"><section class="hero"><p class="eyebrow">ops.quarantined_restore/v1</p><h2>กู้คืนแบบ quarantine</h2><p>ตรวจ manifest, แยกข้อมูลใน quarantine, ใช้ ledger ภายนอกล่าสุด, ตรวจสอบแล้วค่อย activate ไม่มี worker เริ่มเองก่อน reconcile</p></section>
-    <form class="team-form" method="post" action="/restores">${hiddenCommand(csrf, revision)}<label>สำรองข้อมูล<select name="backupId">${options}</select></label><input type="hidden" name="note" value="manual restore"><button class="primary">เตรียม quarantine</button></form>
+  const ledger = state.ledger.state === "trusted"
+    ? `ledger ของ installation เชื่อถือได้ · head ${state.ledger.head} · ${state.ledger.count} รายการ`
+    : `ledger ของ installation เชื่อถือไม่ได้: ${escape(state.ledger.reason)} · ${escape(state.ledger.nextAction)}`;
+  const active = state.quarantines.find(q => !["complete", "failed", "discarded"].includes(q.state));
+  const form = active ? `<p>มีการกู้คืนค้างอยู่ <a href="/restores/${active.id}">ดำเนินการต่อ</a></p>`
+    : `<form class="team-form" method="post" action="/restores">${hiddenCommand(csrf, revision)}<label>สำรองข้อมูล<select name="backupId">${options}</select></label><input type="hidden" name="note" value="manual restore"><button class="primary">เตรียม quarantine</button></form>`;
+  return shell("กู้คืน", { workspace, csrf, section: "home" }, `<div class="content"><section class="hero"><p class="eyebrow">ops.quarantined_restore/v1</p><h2>กู้คืนแบบ quarantine</h2><p>ตรวจ manifest, schema และ engine, หยุดรับงาน, แยกข้อมูลใน quarantine, ใช้ ledger ล่าสุดของ installation, ตรวจสอบแล้วค่อย activate ไม่มี worker หรือการแจ้งเตือนเริ่มเองก่อน reconcile</p></section>
+    <article class="team-card"><h3>ledger</h3><p>${ledger}</p></article>
+    ${form}
     <section aria-label="quarantine">${items || '<p class="empty-list">ยังไม่มี quarantine</p>'}</section></div>`);
 }
 
-/** One quarantine: validation report, ledger coverage, pending items and activation decision. */
-export function restoreDetailPage(state: { quarantine: import("./ops/restore").RestoreQuarantine }, workspace: Workspace, csrf: string, revision: number): string {
-  const q = state.quarantine;
+const restoreActionLabels: Record<import("./ops/restore").RestoreAction, string> = {
+  migrate: "migrate/ตรวจ schema ของ quarantine", apply_ledger: "ใช้ ledger ล่าสุดของ installation", validate: "ตรวจสอบ quarantine",
+  activate: "activate และ reconcile", discard: "ทิ้ง quarantine (คงข้อมูลจริงเดิม)",
+};
+
+/** One restore: compatibility, steps, validation checks, owner report and the actions valid for its phase. */
+export function restoreDetailPage(state: { quarantine: RestoreView }, workspace: Workspace, csrf: string, revision: number): string {
+  const q = state.quarantine, r = q.report;
   const checks = q.validation ? q.validation.checks.map(c => `<li>${escape(c.name)}: ${c.pass ? "ผ่าน" : "ไม่ผ่าน"} <small>${escape(c.detail)}</small></li>`).join("") : "<li>ยังไม่ตรวจสอบ</li>";
-  const action = (name: string, label: string, extra = "") => `<form class="team-form" method="post" action="/restores/${q.id}">${hiddenCommand(csrf, revision)}<input type="hidden" name="action" value="${name}">${extra}<button>${label}</button></form>`;
+  const action = (name: import("./ops/restore").RestoreAction) => `<form class="team-form" method="post" action="/restores/${q.id}">${hiddenCommand(csrf, revision)}<input type="hidden" name="action" value="${name}"><button>${restoreActionLabels[name]}</button></form>`;
+  const inv = r.invalidated;
   return shell(`กู้คืน ${q.id.slice(0, 8)}`, { workspace, csrf, section: "home" }, `<div class="content"><section class="hero"><p class="eyebrow">${escape(q.contract)} · ${escape(q.state)}</p><h2>quarantine ${escape(q.id)}</h2><p>backup ${escape(q.backupId)} · ${escape(q.nextAction)}${q.reason ? ` · ${escape(q.reason)}` : ""}</p></section>
-    <article class="team-card"><h3>validation</h3><ul>${checks}</ul>
-    <p>ledger ${q.ledger ? `${q.ledger.count} tombstones จาก ${escape(q.ledger.source ?? "")} (asOf ${q.ledger.asOf})` : "ยังไม่ใช้"} · pending native ${q.validation ? q.validation.pendingNative.length : "?"} · pending jobs ${q.validation ? q.validation.pendingJobs.length : "?"} · unknown outbox ${q.validation ? q.validation.unknownOutbox : "?"}</p>
-    <div>${q.state === "quarantining" ? action("migrate", "migrate quarantine") : ""}${["quarantining", "migrated", "ledger_applied", "blocked"].includes(q.state) ? action("apply_ledger", "ใช้ ledger ภายนอก", '<label>ledger (JSON)<input name="tombstones" value="[]"></label><label>ที่มา<input name="source" value="owner-attested"></label><label>asOf<input name="asOf" value="0"></label>') : ""}${q.state === "ledger_applied" || q.state === "blocked" ? action("validate", "ตรวจสอบ quarantine") : ""}${q.state === "validated" ? `${action("activate", "activate", "")} ${action("discard", "ทิ้ง quarantine")}` : ""}${["quarantining", "migrated", "ledger_applied", "blocked"].includes(q.state) ? action("discard", "ทิ้ง quarantine") : ""}</div></article>
+    <article class="team-card"><h3>versions</h3><p>backup ${escape(r.versions.backupJit)} schema ${r.versions.backupSchema} → build ${escape(r.versions.currentJit)} schema ${r.versions.currentSchema} · quarantine ${r.versions.quarantineSchema ?? "?"} · native refs ${r.versions.engine.nativeRefs} · engine ${r.versions.engine.compatible ? "รองรับ" : `ไม่รองรับ (${escape(r.versions.engine.reason ?? "")})`}</p>
+    <h3>steps</h3><ul>${q.steps.map(s => `<li>${escape(s.name)}: ${s.ok ? "ผ่าน" : "ล้มเหลว"} <small>${escape(s.detail)}</small></li>`).join("")}</ul>
+    <h3>validation</h3><ul>${checks}</ul>
+    <h3>ledger</h3><p>${r.ledger ? `installation lifecycle ledger head ${r.ledger.head} · tombstones ${r.ledger.deletions} · suppressions ${r.ledger.suppressions} · backup checkpoint ${escape(r.ledger.backup.checkpoint ?? "ไม่มี")}` : "ยังไม่ใช้"}</p>
+    <h3>ข้อมูลที่ถูก invalidate</h3><p>${inv ? `sources ${inv.sourcesPurged} · claims ลบ ${inv.claimsPurged} · claims ลืม ${inv.claimsForgotten} · suppressions ${inv.suppressionsApplied} (+${inv.ledgerOnlySuppressions} บังคับจาก ledger) · context retire ${inv.contextsRetired} · ลบแล้วใน live ${inv.contextsAlreadyDeleted} · รอลบ ${inv.contextsScheduledForDeletion} · jobs fence ${inv.jobsFenced} · attempts ${inv.attemptsFenced} · การแจ้งเตือนถูกพัก ${inv.deliveriesHeld}` : "ยังไม่ใช้ ledger"}</p>
+    <h3>ค้าง/ถูกระงับ</h3><p>jobs รอเจ้าของ resume ${r.pending.jobsAwaitingOwnerResume} · การแจ้งเตือนสถานะ unknown ${r.pending.unknownDeliveries} · native รอลบ ${r.pending.nativeDeletesPending} · ข้อมูล live หลัง backup ที่จะถูกทิ้ง: projects ${r.discarded.liveOnlyProjects}, sources ${r.discarded.liveOnlySources}, contexts ${r.discarded.liveOnlyContexts}</p>
+    <h3>ข้อจำกัดการเก็บรักษา</h3><ul>${r.retention.map(item => `<li>${escape(item)}</li>`).join("")}</ul>
+    <h3>การตัดสินใจ activate</h3><p>${r.activation.allowed ? "พร้อม activate" : `ยัง activate ไม่ได้: ${escape(r.activation.blockers.join(", ") || q.nextAction)}`} · revision live ${r.generation.liveRevision ?? "?"} → ${r.generation.restoredRevision ?? "?"}${r.generation.sessionsRevoked ? " · session เดิมถูกเพิกถอนแล้ว" : ""}</p>
+    <div>${q.actions.map(action).join(" ")}</div></article>
     <p><a href="/restores">กลับไปรายการกู้คืน</a></p></div>`, { breadcrumb: { title: "กู้คืน", href: "/restores" } });
 }

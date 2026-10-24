@@ -1,5 +1,4 @@
 import { afterEach, expect, test } from "bun:test";
-import { fixtureLedgerGate } from "./fixtures/ledger-gate";
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -133,7 +132,7 @@ test("rendered unit pins the service identity with bounded restart, memory cap a
 
 test("full app boots with the composed workers, persists owner state and restarts with one scheduler", async () => {
   const { service, config } = setup();
-  const first = await startFullApp({ config, service, ledgerGate: fixtureLedgerGate });
+  const first = await startFullApp({ config, service });
   expect(first.ok).toBe(true);
   if (!first.ok) throw new Error("unreachable");
   const ids = first.handle.queue.choices().map(c => c.id).sort();
@@ -145,14 +144,14 @@ test("full app boots with the composed workers, persists owner state and restart
   const actor = app.authenticate(await app.login("service-owner-password")).actor;
   const project = app.execute(actor, { kind: "project.create", requestId: "service-boot-01", projectId: null,
     expectedRevision: 0, payload: { name: "Service project" } }).project;
-  const second = await startFullApp({ config, service, ledgerGate: fixtureLedgerGate });
+  const second = await startFullApp({ config, service });
   expect(second.ok).toBe(false);
   if (second.ok) throw new Error("unreachable");
   expect(second.gates.find(g => g.gate === "scheduler")?.state).toBe("blocked");
   const drained = await stopDrain(first.handle, { timeoutMs: 5000 });
   expect(drained.outcome).toBe("stopped");
   first.handle.store.close();
-  const third = await startFullApp({ config, service, ledgerGate: fixtureLedgerGate });
+  const third = await startFullApp({ config, service });
   expect(third.ok).toBe(true);
   if (!third.ok) throw new Error("unreachable");
   const thirdActor = third.handle.app.authenticate(await third.handle.app.login("service-owner-password")).actor;
@@ -164,7 +163,7 @@ test("full app boots with the composed workers, persists owner state and restart
 
 test("full app startup reconciles pending native deletions before returning an active handle", async () => {
   const { service, config } = setup();
-  const first = await startFullApp({ config, service, ledgerGate: fixtureLedgerGate });
+  const first = await startFullApp({ config, service });
   if (!first.ok) throw new Error("unreachable");
   const app = first.handle.app;
   await app.setupOwner("service-owner-password");
@@ -188,7 +187,7 @@ test("full app startup reconciles pending native deletions before returning an a
   expect(confirmed.operation.state).toBe("pending");
   expect(confirmed.operation.contexts.length).toBeGreaterThan(0);
   first.handle.store.close();
-  const second = await startFullApp({ config, service, ledgerGate: fixtureLedgerGate });
+  const second = await startFullApp({ config, service });
   if (!second.ok) throw new Error("unreachable");
   // No explicit reconcile call: startup itself drove the managed delete before exposing the app.
   const secondActor = second.handle.app.authenticate(await second.handle.app.login("service-owner-password")).actor;
@@ -249,7 +248,7 @@ test("crash and stop-timeout fence unsettled work without claiming success", asy
 test("preflight rejects a permissive, symlinked or foreign-owned backup destination instead of trusting existence", async () => {
   const { root, service, config, backup } = setup();
   const store = new TransactionStore(config.databasePath);
-  const configGate = (candidate: ServiceConfig) => preflightService({ store, config, service: candidate, requiredEngine: "jit.schway.bridge/v1", ledgerGate: fixtureLedgerGate })
+  const configGate = (candidate: ServiceConfig) => preflightService({ store, config, service: candidate, requiredEngine: "jit.schway.bridge/v1" })
     .gates.find(g => g.gate === "config")!;
   try {
     expect(configGate(service)).toMatchObject({ state: "ready" });
@@ -266,25 +265,55 @@ test("preflight rejects a permissive, symlinked or foreign-owned backup destinat
     expect(backupDirectoryProblem(backup)).toBeNull();
     expect(backupDirectoryProblem(backup, (process.getuid?.() ?? 0) + 1)).toBe("backup_directory_foreign_owner");
   } finally { store.close(); }
-  const refused = await startFullApp({ config, service: { ...service, backupDirectory: join(root, "backup-link") }, ledgerGate: fixtureLedgerGate });
+  const refused = await startFullApp({ config, service: { ...service, backupDirectory: join(root, "backup-link") } });
   expect(refused.ok).toBe(false);
 });
 
 test("quarantine boot refuses activation while read-only status stays available", async () => {
   const { service, config } = setup();
-  const quarantined = { ...service, ledgerPath: join(service.stateDirectory, "missing-ledger.json") };
-  expect(readQuarantine(quarantined, null, fixtureLedgerGate).quarantined).toBe(true);
-  const refused = await startFullApp({ config, service: quarantined, ledgerGate: fixtureLedgerGate });
-  expect(refused.ok).toBe(false);
-  if (refused.ok) throw new Error("unreachable");
-  expect(refused.gates.filter(g => g.state === "blocked")).toMatchObject([{ gate: "quarantine", state: "blocked" }]);
+  // First installed boot accepts the install seed once and establishes the real OPS02 checkpoint at ledgerPath.
+  const first = await startFullApp({ config, service });
+  if (!first.ok) throw new Error(JSON.stringify(first.gates));
+  await stopDrain(first.handle, { timeoutMs: 5000 });
+  first.handle.service.close();
+  first.handle.store.close();
+  const established = readFileSync(service.ledgerPath);
+  expect(JSON.parse(established.toString())).toMatchObject({ ledger: "jit.deletion.ledger/v1", contract: "app.deletion_ledger/v1" });
+  const blockedAt = async (candidate: ServiceConfig) => {
+    const refused = await startFullApp({ config, service: candidate });
+    expect(refused.ok).toBe(false);
+    if (refused.ok) throw new Error("unreachable");
+    return refused.gates.filter(g => g.state === "blocked").map(g => [g.gate, g.detail]);
+  };
+  // Missing after establishment.
+  rmSync(service.ledgerPath);
+  expect(readQuarantine(service).quarantined).toBe(true);
+  expect(await blockedAt(service)).toEqual([["quarantine", "lifecycle ledger ledger_checkpoint_missing"]]);
+  // A seed is accepted only once: it cannot re-establish authority.
+  writeFileSync(service.ledgerPath, JSON.stringify({ ledger: "jit.deletion.ledger/v1", revision: 1 }), { mode: 0o600 });
+  expect(await blockedAt(service)).toEqual([["quarantine", "lifecycle ledger ledger_checkpoint_unverifiable"]]);
+  // Diverged / tampered checkpoint.
+  writeFileSync(service.ledgerPath, JSON.stringify({ ...JSON.parse(established.toString()), digest: "0".repeat(64) }), { mode: 0o600 });
+  expect(await blockedAt(service)).toEqual([["quarantine", "lifecycle ledger ledger_checkpoint_unverifiable"]]);
+  // Relocated without a verified copy of the established checkpoint.
+  writeFileSync(service.ledgerPath, established, { mode: 0o600 });
+  const relocated = { ...service, ledgerPath: join(service.stateDirectory, "moved-ledger.json") };
+  expect(await blockedAt(relocated)).toEqual([["quarantine", "lifecycle ledger ledger_checkpoint_relocation_unverified"]]);
   const store = new TransactionStore(config.databasePath);
   try {
-    const preflight = preflightService({ store, config, service: quarantined, requiredEngine: "jit.schway.bridge/v1", ledgerGate: fixtureLedgerGate });
-    expect(preflight.ok).toBe(false);
-    expect(preflight.gates.find(g => g.gate === "quarantine")?.state).toBe("blocked");
-    expect(gatherServiceStatus(config, quarantined, { ledgerGate: fixtureLedgerGate })).toMatchObject({ service: "blocked", quarantined: true });
+    const preflight = preflightService({ store, config, service: relocated, requiredEngine: "jit.schway.bridge/v1" });
+    expect(preflight.gates.find(g => g.gate === "quarantine")).toMatchObject({ state: "blocked",
+      nextAction: "copy_the_verified_checkpoint_from_the_previous_ledger_location_then_retry" });
+    expect(gatherServiceStatus(config, relocated)).toMatchObject({ service: "blocked", quarantined: true });
+    // Restart keeps one ledger location: the established path is still the marker.
+    expect(store.read(tx => tx.get<{ path: string }>("SELECT path FROM lifecycle_checkpoint WHERE id = 1"))?.path).toBe(service.ledgerPath);
   } finally { store.close(); }
+  expect(existsSync(relocated.ledgerPath)).toBe(false);
+  const restarted = await startFullApp({ config, service });
+  if (!restarted.ok) throw new Error(JSON.stringify(restarted.gates));
+  await stopDrain(restarted.handle, { timeoutMs: 5000 });
+  restarted.handle.service.close();
+  restarted.handle.store.close();
   expect(serviceStatus({ now: 1800000000000, scheduler: "owned", worker: "free", quarantined: false,
     evidenceReady: false, blockedGates: [] })).toMatchObject({ service: "running", nextAction: "none" });
   expect(serviceStatus({ now: 1800000000000, scheduler: "owned", worker: "free", quarantined: false,
@@ -314,8 +343,8 @@ test("main preflight and status stay read-only without claiming the scheduler", 
   expect(gates.find(g => g.gate === "scheduler")?.state).toBe("ready");
   // Read-only: a missing installation database is reported, never created.
   expect(gates.find(g => g.gate === "schema")).toMatchObject({ state: "blocked", nextAction: "start-service-to-initialize-installation" });
-  // Production default ledger gate: installed profiles stay quarantined until the OPS02 checkpoint writer is integrated.
-  expect(gates.find(g => g.gate === "quarantine")).toMatchObject({ state: "blocked", nextAction: "integrate-ops02-ledger-checkpoint" });
+  // Without an installation database the OPS02 ledger cannot be read, so the installation stays quarantined.
+  expect(gates.find(g => g.gate === "quarantine")).toMatchObject({ state: "blocked", nextAction: "inspect_installation_lifecycle_ledger" });
   const status = await run(["status"]);
   expect(status.exit).toBe(0);
   expect(JSON.parse(status.stdout)).toMatchObject({ schema: "jit.ops.status/v1", service: "blocked", scheduler: "free", quarantined: true });
@@ -325,7 +354,11 @@ test("main preflight and status stay read-only without claiming the scheduler", 
   try { expect(store.read(tx => tx.get("SELECT * FROM job_scheduler"))).toBeNull(); }
   finally { store.close(); }
   const existing = await run(["preflight"]);
-  expect((JSON.parse(existing.stdout).gates as Array<{ gate: string; state: string }>).find(g => g.gate === "schema")?.state).toBe("ready");
+  const existingGates = JSON.parse(existing.stdout).gates as Array<{ gate: string; state: string }>;
+  expect(existingGates.find(g => g.gate === "schema")?.state).toBe("ready");
+  // The install seed is acceptable (once) to the read-only inspection; nothing is written by preflight.
+  expect(existingGates.find(g => g.gate === "quarantine")?.state).toBe("ready");
+  expect(JSON.parse(readFileSync(service.ledgerPath, "utf8"))).toEqual({ ledger: "jit.deletion.ledger/v1", revision: 1 });
 });
 
 test("operator config rejects wildcard binds by default", () => {

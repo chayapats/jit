@@ -105,12 +105,14 @@ import {
   type UpgradeCommand, type UpgradeContext, type UpgradeFaultPoint, type UpgradeJournal, type UpgradeReceipt, type UpgradeRequest,
   type UpgradeResumeResult, type UpgradeServiceControl, type UpgradeStatus,
 } from "./ops/upgrade";
-import { upgradeFenced } from "./ops/upgrade-fence";
+import { readUpgradeFence, upgradeFenced } from "./ops/upgrade-fence";
 import {
-  activateRestore, applyLedger, discardRestore, listQuarantines, migrateQuarantine, prepareRestore, readQuarantine,
-  restoreIdentity, validateQuarantine, restoreEvidence, ownRestoreDirFor,
-  type ExternalTombstone, type RestoreCommand, type RestoreQuarantine, type RestoreReceipt,
+  activateRestore, activeRestore, applyRestoreLedger, readRestoreGate, completeRestoreOnBoot, discardRestore, findRestoreRequest, listRestores, migrateRestore,
+  ownRestoreDirFor, prepareRestore, readRestore, recoverRestoresOnOpen, restoreEvidence, restoreIdentity, validateRestore,
+  type RestoreCommand, type RestoreContext, type RestoreEvidence, type RestoreFaultPoint, type RestoreJournal, type RestoreReceipt,
+  type RestoreRequest, type RestoreServiceControl,
 } from "./ops/restore";
+import { ledgerCheckpointPathFor, syncLedgerCheckpoint, type TrustedLedger } from "./ops/lifecycle-ledger";
 
 /** Injectable clock and transaction fault seam for deterministic persistence checks. */
 export interface ApplicationOptions {
@@ -134,9 +136,16 @@ export interface ApplicationOptions {
    * upgrade can quiesce a supplied `jobs` queue but leaves reconciliation to
    * the next service boot (journal `activated`).
    */
-  service?: UpgradeServiceControl & { readonly queue?: JobQueue | undefined; start?(): Promise<UpgradeResumeResult> };
+  service?: RestoreServiceControl & { readonly queue?: JobQueue | undefined; start?(): Promise<UpgradeResumeResult> };
   /** Deterministic fault seam at upgrade journal boundaries (tests only). */
   upgradeFault?(point: UpgradeFaultPoint): void;
+  /** Deterministic fault seam at restore journal boundaries (tests only). */
+  restoreFault?(point: RestoreFaultPoint): void;
+  /**
+   * Lifecycle ledger checkpoint file (app.deletion_ledger/v1). Defaults to
+   * `<db>.lifecycle-ledger.json`; the service package passes its `ledgerPath`.
+   */
+  ledgerPath?: string;
 }
 
 /** Owns identity validation and revisioned app commands independently of Web or model transports. */
@@ -147,7 +156,9 @@ export class Application {
   #jobsOption: JobQueue | undefined;
   #service: ApplicationOptions["service"];
   #upgradeFault: ApplicationOptions["upgradeFault"];
-  /** True while an asynchronous upgrade command runs; other mutating commands are refused. */
+  #restoreFault: ApplicationOptions["restoreFault"];
+  #ledgerPath: string;
+  /** True while an asynchronous upgrade or restore command runs; other mutating commands are refused. */
   #upgradeBusy = false;
   #backupDir: string;
   #exportLimits: ExportLimits;
@@ -165,6 +176,8 @@ export class Application {
     this.#jobsOption = options.jobs;
     this.#service = options.service;
     this.#upgradeFault = options.upgradeFault;
+    this.#restoreFault = options.restoreFault;
+    this.#ledgerPath = options.ledgerPath ?? ledgerCheckpointPathFor(store.path);
     this.#backupDir = ownBackupDir(store.path, options.backupDir);
     this.#exportLimits = {
       maxExports: Math.min(exportRetention.maxExports, Math.max(1, options.exportLimits?.maxExports ?? exportRetention.maxExports)),
@@ -177,6 +190,8 @@ export class Application {
     if (!isJitVersion(this.#jitVersion)) throw new AppError("invalid_jit_version", 500);
     // ops.schema_migrations/v1: reconcile durable upgrade intent left by a crash before serving anything.
     recoverUpgradesOnOpen(store, this.#upgradeDir, this.#now());
+    // ops.quarantined_restore/v1: same for restore intent (prepare interrupted, activation intent, lost fence).
+    recoverRestoresOnOpen(store, this.#restoreDir, this.#now());
   }
 
   /** Current scheduler: the managed service's queue when one owns the lifecycle. */
@@ -187,11 +202,19 @@ export class Application {
    * native sessions unless an upgrade fence holds — and completes an
    * activated upgrade once that reconciliation succeeded.
    */
-  async boot(): Promise<{ reconciled: boolean; detail: string; upgrade: UpgradeJournal | null }> {
+  async boot(): Promise<{ reconciled: boolean; detail: string; upgrade: UpgradeJournal | null; restore: RestoreJournal | null }> {
     if (!this.#service?.start) throw new AppError("scheduler_unavailable", 503);
+    // An activated restore finishes native deletion under its fence, then resumes the service, before normal boot.
+    const restore = await completeRestoreOnBoot(this.#restoreContext(null));
+    this.#syncLedger();
     const started = await this.#service.start();
     const upgrade = started.reconciled ? completeAfterBootReconcile(this.#upgradeContext(null), started) : null;
-    return { ...started, upgrade };
+    return { ...started, upgrade, restore };
+  }
+
+  /** Best-effort checkpoint refresh after lifecycle commits; a lagging checkpoint is extended on the next sync. */
+  #syncLedger(): void {
+    try { syncLedgerCheckpoint(this.store, this.#ledgerPath, this.#now()); } catch { /* Restore resolves trust itself and fails closed. */ }
   }
 
   /** Provisions exactly one owner through trusted local setup; no HTTP route exposes this method. */
@@ -275,7 +298,7 @@ export class Application {
 
   /** Revokes this browser session, including actors issued before logout. */
   logout(actor: OwnerActor): void {
-    this.store.transaction(tx => { const key = this.#requireOwner(tx, actor); tx.run("DELETE FROM sessions WHERE token_hash = ?", key); });
+    this.store.transaction(tx => { const key = this.#requireOwner(tx, actor, ["web", "telegram"], false); tx.run("DELETE FROM sessions WHERE token_hash = ?", key); });
   }
 
   /** Returns one bounded owner projection; project names never select authorization identities. */
@@ -361,17 +384,18 @@ export class Application {
   execute(actor: OwnerActor, command: DeleteCommand): DeletionReceipt | DeletionConfirmReceipt | DeletionOperation;
   execute(actor: OwnerActor, command: ExportCommand): ExportReceipt;
   execute(actor: OwnerActor, command: UpgradeCommand): Promise<UpgradeReceipt>;
-  execute(actor: OwnerActor, command: RestoreCommand): RestoreReceipt;
-  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | RestoreReceipt;
-  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | RestoreReceipt {
+  execute(actor: OwnerActor, command: RestoreCommand): Promise<RestoreReceipt>;
+  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt>;
+  execute(actor: OwnerActor, command: CreateProjectCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt> {
     if (command?.kind?.startsWith("upgrade.")) return this.#upgradeCommand(actor, command as UpgradeCommand);
-    // ops.schema_migrations/v1 admission fence: while an upgrade holds it, no managed write is admitted.
+    if (command?.kind?.startsWith("restore.")) return this.#restoreCommand(actor, command as RestoreCommand);
+    // ops.schema_migrations/v1 admission fence (held by an upgrade or, ops.quarantined_restore/v1, a restore):
+    // while it is present, no managed write is admitted.
     if (this.#upgradeBusy || upgradeFenced(this.store.path)) {
       this.store.read(tx => this.#requireOwner(tx, actor, ["web", "telegram"]));
-      throw new AppError("upgrade_in_progress", 409);
+      throw new AppError(readUpgradeFence(this.store.path)?.holder === "restore" ? "restore_in_progress" : "upgrade_in_progress", 409);
     }
     if (command?.kind === "export.create") return this.#exportCommand(actor, command);
-    if (command?.kind.startsWith("restore.")) return this.#restoreCommand(actor, command as RestoreCommand);
     if (command?.kind === "backup.create") return this.#createBackup(actor, command);
     if (command?.kind === "backup.prune") return this.#pruneBackups(actor, command);
     if (command?.kind === "memory.delete.preview" || command?.kind === "memory.delete.confirm" || command?.kind === "memory.delete.retry") return this.#deleteCommand(actor, command);
@@ -700,6 +724,8 @@ export class Application {
     if (checked.receipt) throw new AppError("request_id_conflict", 409);
     if (checked.revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
     if (this.#upgradeBusy) throw new AppError("upgrade_in_progress", 409);
+    // ops.quarantined_restore/v1: a restore attempt owns the installation until it ends.
+    if (command.kind === "upgrade.prepare" && activeRestore(this.#restoreDir)) throw new AppError("restore_in_progress", 409);
     this.#upgradeBusy = true;
     try {
       const ctx = this.#upgradeContext(actor);
@@ -721,107 +747,90 @@ export class Application {
     }
   }
 
-  /** ops.quarantined_restore/v1: reads one quarantine with its validation report. */
-  restore(actor: OwnerActor, id: string): { quarantine: RestoreQuarantine } {
+  /** ops.quarantined_restore/v1: one restore journal with its owner report and valid next actions. */
+  restore(actor: OwnerActor, id: string): { quarantine: RestoreEvidence } {
     requireId(id);
+    this.store.read(tx => this.#requireOwner(tx, actor, ["web"], false));
+    return { quarantine: restoreEvidence(readRestore(this.#restoreDir, id)) };
+  }
+
+  /**
+   * ops.quarantined_restore/v1 console: the installation revision restore commands expect and the
+   * restore holding the read gate (null once normal service is allowed). Never gated.
+   */
+  restoreConsole(actor: OwnerActor): { revision: number; gatedBy: string | null } {
     return this.store.read(tx => {
-      this.#requireOwner(tx, actor);
-      return { quarantine: restoreEvidence(readQuarantine(tx, id)) };
+      this.#requireOwner(tx, actor, ["web"], false);
+      return { revision: tx.get<{ revision: number }>("SELECT revision FROM app_state WHERE id = 1")!.revision, gatedBy: readRestoreGate(this.store.path) };
     });
   }
 
-  /** ops.quarantined_restore/v1: bounded quarantine list for the installation. */
-  restores(actor: OwnerActor): { quarantines: RestoreQuarantine[] } {
-    return this.store.read(tx => {
-      this.#requireOwner(tx, actor);
-      return { quarantines: listQuarantines(tx).map(restoreEvidence) };
-    });
+  /**
+   * ops.quarantined_restore/v1: bounded restore journals plus the current
+   * trust state of the installation lifecycle ledger (read-only; never writes
+   * the checkpoint).
+   */
+  restores(actor: OwnerActor): { quarantines: RestoreEvidence[]; ledger: Omit<Extract<TrustedLedger, { state: "trusted" }>, "entries"> | Extract<TrustedLedger, { state: "untrusted" }> } {
+    this.store.read(tx => this.#requireOwner(tx, actor, ["web"], false));
+    const ledger = syncLedgerCheckpoint(this.store, this.#ledgerPath, this.#now(), { write: false });
+    const summary = ledger.state === "trusted" ? (({ entries: _entries, ...rest }) => rest)(ledger) : ledger;
+    return { quarantines: listRestores(this.#restoreDir).map(restoreEvidence), ledger: summary };
   }
 
-  #restoreCommand(actor: OwnerActor, command: RestoreCommand): RestoreReceipt {
+  #restoreContext(actor: OwnerActor | null): RestoreContext {
+    return {
+      store: this.store, restoreDir: this.#restoreDir, backupDir: this.#backupDir, ledgerPath: this.#ledgerPath,
+      port: this.#nativeSnapshot, jitVersion: this.#jitVersion, now: this.#now, service: this.#upgradeService(),
+      authorize: tx => { if (actor) this.#requireOwner(tx, actor, ["web"], false); },
+      ...(this.#restoreFault ? { fault: this.#restoreFault } : {}),
+    };
+  }
+
+  /**
+   * ops.quarantined_restore/v1 commands. Shape, owner session, request
+   * identity and revision are checked first and never write evidence.
+   * Accepted requests are receipts in the control-plane journal (outside the
+   * swapped database), mirrored into ordinary receipts/audit when the attempt
+   * ends. Restore and upgrade share one busy flag and one durable fence.
+   */
+  async #restoreCommand(actor: OwnerActor, command: RestoreCommand): Promise<RestoreReceipt> {
     const payloadHash = digest(restoreIdentity(command));
-    if (command.kind === "restore.prepare") {
-      const id = crypto.randomUUID();
-      try {
-        return this.store.transaction(tx => {
-          this.#requireOwner(tx, actor);
-          const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
-          if (prior) {
-            if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409);
-            return JSON.parse(prior.result_json) as RestoreReceipt;
-          }
-          const now = this.#now();
-          const revision = tx.get<{ revision: number }>("SELECT revision FROM app_state WHERE id = 1")!.revision;
-          if (revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
-          const quarantine = prepareRestore(tx, { id, now, liveRevision: revision, backupId: command.payload.backupId, restoreDir: this.#restoreDir, backupDir: this.#backupDir });
-          this.#beforeCommit?.("ops");
-          const result: RestoreReceipt = { quarantine, duplicate: false };
-          tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
-          tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, 'owner', ?)", command.kind, command.requestId, now);
-          this.#beforeCommit?.("receipt");
-          return result;
-        });
-      } catch (error) {
-        // Prepare rolls back wholly; quarantine files are orphaned and re-prepare is clean.
-        throw error;
-      }
-    }
-    // Later steps run outside a single outer transaction: each step is idempotent, and
-    // quarantine files plus journal rows make a crash resumable at the same boundary.
-    const checked = this.store.transaction(tx => {
-      this.#requireOwner(tx, actor);
-      const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
-      if (prior) {
-        if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409);
-        return { receipt: JSON.parse(prior.result_json) as RestoreReceipt, quarantine: null as RestoreQuarantine | null };
-      }
-      const revision = tx.get<{ revision: number }>("SELECT revision FROM app_state WHERE id = 1")!.revision;
-      if (revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
-      return { receipt: null as RestoreReceipt | null, quarantine: readQuarantine(tx, command.payload.quarantineId) };
+    const checked = this.store.read(tx => {
+      this.#requireOwner(tx, actor, ["web"], false);
+      return {
+        receipt: tx.get<{ payload_hash: string }>("SELECT payload_hash FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId),
+        revision: tx.get<{ revision: number }>("SELECT revision FROM app_state WHERE id = 1")!.revision,
+      };
     });
-    if (checked.receipt) return checked.receipt;
-    const now = this.#now();
-    let quarantine: RestoreQuarantine;
-    if (command.kind === "restore.migrate") {
-      this.store.transaction(tx => {
-        quarantine = migrateQuarantine(tx, readQuarantine(tx, command.payload.quarantineId), now);
-      });
-      quarantine = this.restore(actor, command.payload.quarantineId).quarantine;
-    } else if (command.kind === "restore.apply_ledger") {
-      const payload = command.payload as { quarantineId: string; tombstones: ExternalTombstone[]; source: string; asOf: number; acknowledgedEmpty?: boolean };
-      this.store.transaction(tx => {
-        quarantine = applyLedger(tx, readQuarantine(tx, command.payload.quarantineId),
-          { tombstones: payload.tombstones, source: payload.source, asOf: payload.asOf,
-            acknowledgedEmpty: payload.acknowledgedEmpty ?? false, now, liveNow: now });
-      });
-      quarantine = this.restore(actor, command.payload.quarantineId).quarantine;
-    } else if (command.kind === "restore.validate") {
-      const current = checked.quarantine!;
-      const backupCreatedAt = this.store.read(tx => {
-        const row = tx.get<{ record_json: string }>("SELECT record_json FROM ops_backups WHERE id = ?", current.backupId);
-        if (!row) throw new AppError("backup_not_found", 404);
-        return (JSON.parse(row.record_json) as { createdAt: number }).createdAt;
-      });
-      quarantine = validateQuarantine(this.store, current, now, backupCreatedAt);
-    } else if (command.kind === "restore.activate") {
-      const revision = this.store.read(tx => tx.get<{ revision: number }>("SELECT revision FROM app_state WHERE id = 1")!.revision);
-      quarantine = activateRestore(this.store, checked.quarantine!, now, revision);
-    } else {
-      this.store.transaction(tx => {
-        quarantine = discardRestore(tx, readQuarantine(tx, command.payload.quarantineId), now);
-      });
-      quarantine = this.restore(actor, command.payload.quarantineId).quarantine;
+    const prior = findRestoreRequest(this.#restoreDir, command.requestId);
+    if (prior) {
+      if (prior.request.payloadHash !== payloadHash || prior.request.kind !== command.kind) throw new AppError("request_id_conflict", 409);
+      return { quarantine: restoreEvidence(prior.journal), duplicate: true };
     }
-    this.#beforeCommit?.("ops");
-    const result: RestoreReceipt = { quarantine: quarantine!, duplicate: false };
-    this.store.transaction(tx => {
-      this.#requireOwner(tx, actor);
-      tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
-      tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, 'owner', ?)", command.kind, command.requestId, now);
-    });
-    this.#beforeCommit?.("receipt");
-    this.#jobs?.cancelFenced();
-    return result;
+    if (checked.receipt) throw new AppError("request_id_conflict", 409);
+    if (checked.revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
+    if (this.#upgradeBusy) throw new AppError("restore_in_progress", 409);
+    this.#upgradeBusy = true;
+    try {
+      const ctx = this.#restoreContext(actor);
+      const request: RestoreRequest = { requestId: command.requestId, kind: command.kind, payloadHash, at: this.#now() };
+      let journal: RestoreJournal;
+      if (command.kind === "restore.prepare") {
+        const upgradeActive = listUpgrades(this.#upgradeDir, 100).some(j => ["preparing", "prepared", "staged", "ready", "activating", "activated", "blocked"].includes(j.state));
+        journal = await prepareRestore(ctx, { request, backupId: command.payload.backupId, note: command.payload.note, upgradeActive });
+      } else {
+        const current = readRestore(this.#restoreDir, command.payload.quarantineId);
+        journal = command.kind === "restore.migrate" ? migrateRestore(ctx, current, request)
+          : command.kind === "restore.apply_ledger" ? applyRestoreLedger(ctx, current, request)
+            : command.kind === "restore.validate" ? validateRestore(ctx, current, request)
+              : command.kind === "restore.activate" ? await activateRestore(ctx, current, request)
+                : await discardRestore(ctx, current, request);
+      }
+      return { quarantine: restoreEvidence(journal), duplicate: false };
+    } finally {
+      this.#upgradeBusy = false;
+      this.#jobs?.cancelFenced();
+    }
   }
 
   #deleteCommand(actor: OwnerActor, command: DeleteCommand): DeletionReceipt | DeletionConfirmReceipt | DeletionOperation {
@@ -856,6 +865,8 @@ export class Application {
     });
     this.#jobs?.cancelFenced();
     if (operationId) {
+      // app.deletion_ledger/v1: the committed tombstones are in the installation ledger; refresh its checkpoint.
+      this.#syncLedger();
       // Committed: purge app-owned export files now, then hand native contexts to one budgeted pass.
       try { purgeDeletedExports(this.store, this.#now(), operationId); } catch { /* Per-file state stays pending for reconcile. */ }
       void this.#jobs?.reconcilePendingDeletions();
@@ -877,6 +888,7 @@ export class Application {
       this.#beforeCommit?.("receipt"); return result;
     });
     this.#jobs?.cancelFenced();
+    this.#syncLedger();
     return result;
   }
 
@@ -1358,7 +1370,8 @@ export class Application {
   /** ops.backup_manifest/v1 reads: bounded inventory outside ordinary project data. */
   backups(actor: OwnerActor): { manifests: BackupManifest[]; integrity: Record<string, BackupIntegrity> } {
     const listed = this.store.read(tx => {
-      this.#requireOwner(tx, actor);
+      // Identity-only inventory of recoverable source artifacts: part of restore remediation, so not read-gated.
+      this.#requireOwner(tx, actor, ["web"], false);
       return listBackups(tx);
     });
     // The inventory is installation-bounded (retention: 10 backups, 64 MiB), so every
@@ -1510,11 +1523,14 @@ export class Application {
     return project;
   }
 
-  #requireOwner(tx: AppTransaction, actor: OwnerActor, channels: readonly TaskChannel[] = ["web"]): string {
+  #requireOwner(tx: AppTransaction, actor: OwnerActor, channels: readonly TaskChannel[] = ["web"], restoreGate = true): string {
     const key = actor && this.#actors.get(actor);
     if (!key) throw new AppError("authentication_required", 401);
     this.#session(tx, key);
     if (!channels.includes(actor.channel)) throw new AppError("channel_not_authorized", 403);
+    // ops.quarantined_restore/v1: from activation intent until the restore is complete, every read model and
+    // command except restore status/remediation is refused (one durable predicate, `<db>.restore-pending`).
+    if (restoreGate && readRestoreGate(this.store.path)) throw new AppError("restore_incomplete", 423);
     return key;
   }
 }

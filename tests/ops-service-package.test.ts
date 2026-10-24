@@ -1,5 +1,4 @@
 import { afterEach, expect, test } from "bun:test";
-import { fixtureLedgerGate } from "./fixtures/ledger-gate";
 import { Database } from "bun:sqlite";
 import { accessSync, chmodSync, constants as fsConstants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -98,7 +97,6 @@ async function artifact(root: string, name: string, options: { runnable?: boolea
   return out;
 }
 
-const harness = join(import.meta.dir, "fixtures", "serve-fixture-ledger.ts");
 
 interface FakeSupervisor {
   run: CommandRunner;
@@ -122,8 +120,8 @@ interface RunningRelease { handle: any; web: (request: Request) => Promise<Respo
  * (`<release>/src/main.ts serve --service-config <path>`), Environment and
  * TimeoutStopSec, and boots that release's real start path in-process:
  * `readConfig(Environment)`, `readServiceConfigFile(<path>)` and
- * `startFullApp` imported from the release directory, with the fixture
- * ledger gate standing in for the OPS02 writer. HTTP goes through the
+ * `startFullApp` imported from the release directory, including the real
+ * OPS02 ledger checkpoint gate. HTTP goes through the
  * release's `createWebHandler` — no listener or socket. `stop` drains with
  * the unit's stop budget, like SIGTERM handling in serve.
  */
@@ -162,7 +160,7 @@ function fakeSupervisor(unitDir: string, options: { spawnService?: boolean } = {
         const { readServiceConfigFile } = await import(join(release, "src", "ops", "service-package.ts"));
         const lifecycle = await import(join(release, "src", "ops", "lifecycle.ts"));
         const { createWebHandler } = await import(join(release, "src", "web.ts"));
-        const started = await lifecycle.startFullApp({ config: releaseConfig(env), service: readServiceConfigFile(configPath!), ledgerGate: fixtureLedgerGate });
+        const started = await lifecycle.startFullApp({ config: releaseConfig(env), service: readServiceConfigFile(configPath!) });
         if (!started.ok) return done(1, JSON.stringify(started.gates));
         running = { handle: started.handle, web: createWebHandler(started.handle.app), stopDrain: lifecycle.stopDrain };
         return done(0);
@@ -187,7 +185,7 @@ function fakeSupervisor(unitDir: string, options: { spawnService?: boolean } = {
 
 function cli(args: string[], fake: FakeSupervisor, l: ReturnType<typeof layout>, extra: { health?: () => Promise<boolean> } = {}) {
   return runServiceCommand([...args, "--unit-dir", l.dirs.unit, "--journald-dir", l.dirs.journald, "--config-dir", l.dirs.configDir],
-    { cwd: l.root, run: fake.run, readPassword: async () => password, bunPath: process.execPath, ledgerGate: fixtureLedgerGate, chown: recordChown, ...extra });
+    { cwd: l.root, run: fake.run, readPassword: async () => password, bunPath: process.execPath, chown: recordChown, ...extra });
 }
 
 test("plan prints the exact unit, journald and config files with modes and no secret values, and writes nothing", async () => {
@@ -222,7 +220,7 @@ test("configuration negatives reject before any install or background activation
   const l = layout();
   const art = await artifact(l.root, "artifact");
   const fake = fakeSupervisor(l.dirs.unit);
-  const host = (): OperatorHost => ({ run: fake.run, unitDir: l.dirs.unit, journaldDir: l.dirs.journald, configDir: l.dirs.configDir, bunPath: process.execPath, ledgerGate: fixtureLedgerGate });
+  const host = (): OperatorHost => ({ run: fake.run, unitDir: l.dirs.unit, journaldDir: l.dirs.journald, configDir: l.dirs.configDir, bunPath: process.execPath });
   const failing = async (service: ServiceConfig, artifactDir = art, h = host()) =>
     (await planInstall({ service, artifactDir, host: h })).checks.filter(c => !c.ok).map(c => [c.check, c.nextAction]);
   expect(await failing(l.service)).toEqual([]);
@@ -326,7 +324,7 @@ test("fresh artifact → plan → install → supervised full app → owner stat
   const status = await cli(["status"], fake, l);
   expect(status.output).toMatchObject({ supervisor: { active: "active" }, service: { service: "running", scheduler: "owned", routes: { total: 2, configured: 1, verified: 0 }, channels: "disabled" } });
   // A duplicate writer started outside the supervisor is refused before any background activation.
-  const duplicate = Bun.spawn([process.execPath, harness, l.service.executablePath, "serve", "--service-config", join(l.dirs.configDir, "service-config.json")],
+  const duplicate = Bun.spawn([process.execPath, join(l.service.executablePath, "src", "main.ts"), "serve", "--service-config", join(l.dirs.configDir, "service-config.json")],
     { cwd: l.dirs.work, env: { ...env, PATH: process.env.PATH ?? "" }, stdout: "pipe", stderr: "pipe" });
   children.push(duplicate);
   expect(await duplicate.exited).toBe(1);
@@ -360,8 +358,8 @@ test("serve in the packaged release refuses a modified release before any backgr
   expect(await serve.exited).toBe(1);
   const stderr = await new Response(serve.stderr).text();
   expect(stderr).toContain("Service blocked at artifact: release failed validation: content-pin (next: reinstall-validated-artifact)");
-  // The unmodified production entry uses the default ledger gate: installed profiles stay quarantined until OPS02's writer lands.
-  expect(stderr).toContain("Service blocked at quarantine: installation ledger checkpoint writer not integrated (OPS02 #33); activation stays quarantined (next: integrate-ops02-ledger-checkpoint)");
+  // Only the artifact blocks: the fresh install seed is acceptable to the real OPS02 ledger gate.
+  expect(stderr).not.toContain("Service blocked at quarantine");
   const store = new TransactionStore(join(l.dirs.state, "app.sqlite"), { migrateExisting: false });
   try { expect(store.read(tx => tx.all("SELECT * FROM job_scheduler"))).toEqual([]); } finally { store.close(); }
 }, 60_000);
@@ -378,7 +376,7 @@ async function installedForUpgrade() {
   new TransactionStore(serviceDatabasePath(l.service)).close();
   await fake.run(["systemctl", "start", "jit.service"], { timeoutMs: 1000 });
   const second = await artifact(l.root, "artifact-b");
-  const host: OperatorHost = { run: fake.run, unitDir: l.dirs.unit, journaldDir: l.dirs.journald, configDir: l.dirs.configDir, bunPath: process.execPath, ledgerGate: fixtureLedgerGate };
+  const host: OperatorHost = { run: fake.run, unitDir: l.dirs.unit, journaldDir: l.dirs.journald, configDir: l.dirs.configDir, bunPath: process.execPath };
   return { l, fake, host, a: readManifest(first), b: readManifest(second), second };
 }
 
@@ -438,10 +436,14 @@ test("failed health rolls back only to a compatible prior release; after a schem
 test("upgrade blocks before stopping on a quarantined ledger, a modified artifact or a service that will not stop", async () => {
   const u = await installedForUpgrade();
   u.fake.upgrade = async () => { throw new Error("must not run"); };
+  // Establish the OPS02 checkpoint (as the first boot does), then lose it: newer ledger state cannot be proven.
+  const { syncLedgerCheckpoint } = await import("../src/ops/lifecycle-ledger");
+  const established = new TransactionStore(serviceDatabasePath(u.l.service));
+  try { expect(syncLedgerCheckpoint(established, u.l.service.ledgerPath, Date.now()).state).toBe("trusted"); } finally { established.close(); }
   const ledger = readFileSync(u.l.service.ledgerPath);
   rmSync(u.l.service.ledgerPath);
   expect(await upgradePackage({ service: u.l.service, artifactDir: u.second, host: u.host, ownerPassword: password, health: async () => true }))
-    .toMatchObject({ outcome: "blocked", nextAction: "inspect-quarantine-and-ledger", activeArtifactId: u.a.artifactId });
+    .toMatchObject({ outcome: "blocked", nextAction: "restore_the_ledger_checkpoint_file_from_its_configured_location_then_retry", activeArtifactId: u.a.artifactId });
   writeFileSync(u.l.service.ledgerPath, ledger, { mode: 0o600 });
   const tampered = await artifact(u.l.root, "artifact-c");
   writeFileSync(join(tampered, "package.json"), readFileSync(join(tampered, "package.json"), "utf8") + " ");
@@ -476,7 +478,7 @@ function fixtureTransports(sender: ScriptedTelegramSender, polls: number[]): Cha
 test("an enabled Telegram channel fails closed without a supported transport or with an unsafe token file", async () => {
   const { l, service, config } = channelSetup();
   const blockedAt = async (transports?: ChannelTransportFactory) => {
-    const started = await startFullApp({ config, service, ledgerGate: fixtureLedgerGate, ...(transports ? { transports } : {}) });
+    const started = await startFullApp({ config, service, ...(transports ? { transports } : {}) });
     expect(started.ok).toBe(false);
     if (started.ok) throw new Error("unreachable");
     return started.gates.filter(g => g.state === "blocked").map(g => [g.gate, g.nextAction]);
@@ -484,7 +486,7 @@ test("an enabled Telegram channel fails closed without a supported transport or 
   expect(await blockedAt()).toEqual([["channels", "install-supported-telegram-transport"]]);
   chmodSync(l.credential, 0o644);
   expect(await blockedAt(fixtureTransports(new ScriptedTelegramSender(), []))).toEqual([["channels", "restrict-telegram-token-file"], ["secrets", "verify-secret-store"]]);
-  expect(gatherServiceStatus(config, service, { ledgerGate: fixtureLedgerGate })).toMatchObject({ service: "blocked", channels: "blocked" });
+  expect(gatherServiceStatus(config, service)).toMatchObject({ service: "blocked", channels: "blocked" });
   const store = new TransactionStore(serviceDatabasePath(service), { migrateExisting: false });
   try {
     expect(store.read(tx => tx.all("SELECT * FROM job_scheduler"))).toEqual([]);
@@ -492,15 +494,18 @@ test("an enabled Telegram channel fails closed without a supported transport or 
   } finally { store.close(); }
   // A quarantined installation starts neither the scheduler nor delivery, even with a working transport.
   chmodSync(l.credential, 0o600);
+  const { syncLedgerCheckpoint } = await import("../src/ops/lifecycle-ledger");
+  const established = new TransactionStore(serviceDatabasePath(service));
+  try { expect(syncLedgerCheckpoint(established, service.ledgerPath, Date.now()).state).toBe("trusted"); } finally { established.close(); }
   rmSync(service.ledgerPath);
-  expect(await blockedAt(fixtureTransports(new ScriptedTelegramSender(), []))).toEqual([["quarantine", "inspect-quarantine-and-ledger"]]);
+  expect(await blockedAt(fixtureTransports(new ScriptedTelegramSender(), []))).toEqual([["quarantine", "restore_the_ledger_checkpoint_file_from_its_configured_location_then_retry"]]);
 });
 
 test("boot starts the delivery worker and Telegram poller after reconciliation; unknown sends stay unknown across restart", async () => {
   const { service, config } = channelSetup();
   const sender = new ScriptedTelegramSender();
   const polls: number[] = [];
-  const started = await startFullApp({ config, service, ledgerGate: fixtureLedgerGate, transports: fixtureTransports(sender, polls) });
+  const started = await startFullApp({ config, service, transports: fixtureTransports(sender, polls) });
   if (!started.ok) throw new Error(JSON.stringify(started.gates));
   const { app, store, channels } = started.handle;
   expect(channels).not.toBeNull();
@@ -534,7 +539,7 @@ test("boot starts the delivery worker and Telegram poller after reconciliation; 
   started.handle.service.close();
   store.close();
   const restartedSender = new ScriptedTelegramSender();
-  const restarted = await startFullApp({ config, service, ledgerGate: fixtureLedgerGate, transports: fixtureTransports(restartedSender, []) });
+  const restarted = await startFullApp({ config, service, transports: fixtureTransports(restartedSender, []) });
   if (!restarted.ok) throw new Error(JSON.stringify(restarted.gates));
   restarted.handle.channels!.tick();
   await restarted.handle.channels!.settled();
@@ -610,7 +615,7 @@ test("install assigns the ledger to the service identity and the config to root:
   fake.identity = `jit-service:x:${uid}:4242::/var/lib/jit:/usr/sbin/nologin`;
   fake.group = "jit-service:x:4242:";
   const failing = await runServiceCommand(["install", "--config", l.source, "--artifact", art, "--unit-dir", l.dirs.unit, "--journald-dir", l.dirs.journald,
-    "--config-dir", l.dirs.configDir], { cwd: l.root, run: fake.run, bunPath: process.execPath, ledgerGate: fixtureLedgerGate,
+    "--config-dir", l.dirs.configDir], { cwd: l.root, run: fake.run, bunPath: process.execPath,
     chown: () => { throw new Error("EPERM"); } });
   expect(failing).toMatchObject({ exitCode: 1, output: { ok: false, nextAction: "run-install-as-root" } });
   expect(existsSync(l.service.executablePath)).toBe(false);
@@ -633,7 +638,7 @@ test("status and preflight are read-only: a missing database is reported blocked
   const l = layout();
   const config = readConfig({ JIT_DATABASE: serviceDatabasePath(l.service) });
   const db = serviceDatabasePath(l.service);
-  const status = gatherServiceStatus(config, l.service, { ledgerGate: fixtureLedgerGate });
+  const status = gatherServiceStatus(config, l.service);
   expect(status).toMatchObject({ service: "blocked", blockedGates: expect.arrayContaining(["schema"]) });
   expect(existsSync(db)).toBe(false);
   new TransactionStore(db).close();
@@ -641,7 +646,7 @@ test("status and preflight are read-only: a missing database is reported blocked
   const before = { bytes: readFileSync(db), mode: lstatSync(db).mode, mtime: lstatSync(db).mtimeMs };
   const siblings = () => ["-wal", "-shm", "-journal"].filter(suffix => existsSync(db + suffix));
   const existingSiblings = siblings();
-  expect(gatherServiceStatus(config, l.service, { ledgerGate: fixtureLedgerGate }).blockedGates).not.toContain("schema");
+  expect(gatherServiceStatus(config, l.service).blockedGates).not.toContain("schema");
   expect({ bytes: readFileSync(db), mode: lstatSync(db).mode, mtime: lstatSync(db).mtimeMs }).toEqual(before);
   expect(siblings()).toEqual(existingSiblings);
 });
@@ -722,7 +727,7 @@ test("plan validates access as the service identity and rejects inaccessible dir
   const l = layout();
   const art = await artifact(l.root, "artifact");
   const fake = fakeSupervisor(l.dirs.unit);
-  const host = (): OperatorHost => ({ run: fake.run, unitDir: l.dirs.unit, journaldDir: l.dirs.journald, configDir: l.dirs.configDir, bunPath: process.execPath, ledgerGate: fixtureLedgerGate });
+  const host = (): OperatorHost => ({ run: fake.run, unitDir: l.dirs.unit, journaldDir: l.dirs.journald, configDir: l.dirs.configDir, bunPath: process.execPath });
   const failing = async () => (await planInstall({ service: l.service, artifactDir: art, host: host() })).checks.filter(c => !c.ok).map(c => [c.check, c.nextAction]);
   expect(await failing()).toEqual([]);
   chmodSync(l.dirs.work, 0o000);
@@ -752,7 +757,7 @@ test("a failed ledger chown removes the new seed, so a retry re-seeds and re-ass
   const l = layout();
   const art = await artifact(l.root, "artifact");
   const fake = fakeSupervisor(l.dirs.unit, { spawnService: false });
-  const deps = (chown: (path: string, owner: number, group: number) => void) => ({ cwd: l.root, run: fake.run, bunPath: process.execPath, ledgerGate: fixtureLedgerGate, chown });
+  const deps = (chown: (path: string, owner: number, group: number) => void) => ({ cwd: l.root, run: fake.run, bunPath: process.execPath, chown });
   const args = ["install", "--config", l.source, "--artifact", art, "--unit-dir", l.dirs.unit, "--journald-dir", l.dirs.journald, "--config-dir", l.dirs.configDir];
   const first = await runServiceCommand(args, deps((path) => { if (path === l.service.ledgerPath) throw new Error("EPERM"); }));
   expect(first).toMatchObject({ exitCode: 1, output: { ok: false } });

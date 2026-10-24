@@ -4,14 +4,17 @@ import { dirname } from "node:path";
 import { commitDecisionMemorySource, retireDecisionMemorySource } from "./memory/decision-sources";
 
 /** Current application schema revision. Service packaging pins and checks this value. */
-export const schemaVersion = 22;
+export const schemaVersion = 23;
 
 /**
  * Installation-scoped state that never round-trips through backup images and
  * is preserved from the live store on every activation (`swapFrom`). Order is
  * parent-first for inserts. ops.backup_manifest/v1 excludes these from images.
+ * `lifecycle_ledger`/`lifecycle_checkpoint` (schema 23, app.deletion_ledger/v1)
+ * are the installation lifecycle ledger: a restore or upgrade activation can
+ * therefore never roll back current tombstones or suppressions.
  */
-export const installationScopedTables = Object.freeze(["owner", "sessions", "login_throttle", "ops_backups"] as const);
+export const installationScopedTables = Object.freeze(["owner", "sessions", "login_throttle", "ops_backups", "lifecycle_ledger", "lifecycle_checkpoint"] as const);
 
 /** Synchronous SQL operations scoped to an application transaction. */
 export interface AppTransaction {
@@ -69,7 +72,7 @@ export class TransactionStore {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
           if (current === schemaVersion) return;
-          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21].includes(current)) throw new Error("Unsupported migration source");
+          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22].includes(current)) throw new Error("Unsupported migration source");
           if (existing) {
             const snapshot = `${path}.pre-v${current}-${crypto.randomUUID()}.sqlite`;
             const fd = openSync(snapshot, "wx", 0o600);
@@ -630,6 +633,80 @@ export class TransactionStore {
             `);
             this.#db.exec("PRAGMA user_version = 22;");
           }
+          if (current < 23) this.#db.exec(`
+            -- app.deletion_ledger/v1 installation lifecycle ledger (OPS02): append-only, identity-only
+            -- deletion and suppression entries written by triggers in the same transaction as every
+            -- deletion/forget commit. Installation-scoped: excluded from backup images and preserved
+            -- from live on every activation, so a restore point can never roll it back.
+            CREATE TABLE IF NOT EXISTS lifecycle_ledger (
+              sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+              kind TEXT NOT NULL CHECK (kind IN ('deletion', 'suppression', 'suppressed_claim', 'suppressed_source')),
+              entry_key TEXT NOT NULL UNIQUE,
+              subject TEXT NOT NULL,
+              project_id TEXT NOT NULL,
+              record_json TEXT NOT NULL,
+              recorded_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS lifecycle_ledger_subject ON lifecycle_ledger(kind, subject);
+            CREATE TABLE IF NOT EXISTS lifecycle_checkpoint (
+              id INTEGER PRIMARY KEY CHECK (id = 1), head INTEGER NOT NULL, count INTEGER NOT NULL,
+              digest TEXT NOT NULL, written_at INTEGER NOT NULL, path TEXT NOT NULL
+            );
+            CREATE TRIGGER IF NOT EXISTS lifecycle_ledger_deletion AFTER INSERT ON deletion_ledger BEGIN
+              INSERT OR IGNORE INTO lifecycle_ledger (kind, entry_key, subject, project_id, record_json, recorded_at) VALUES ('deletion', 'deletion:' || NEW.id,
+                CASE NEW.kind WHEN 'source' THEN 'source:' || NEW.source_id || ':' || NEW.revision || ':' || NEW.generation ELSE 'claim:' || NEW.claim_id END,
+                NEW.project_id,
+                json_object('id', NEW.id, 'operationId', NEW.operation_id, 'projectId', NEW.project_id, 'kind', NEW.kind, 'sourceId', NEW.source_id,
+                  'claimId', NEW.claim_id, 'revision', NEW.revision, 'generation', NEW.generation, 'deletedAt', NEW.deleted_at),
+                NEW.deleted_at);
+            END;
+            CREATE TRIGGER IF NOT EXISTS lifecycle_ledger_suppression AFTER INSERT ON memory_suppressions BEGIN
+              INSERT OR IGNORE INTO lifecycle_ledger (kind, entry_key, subject, project_id, record_json, recorded_at) VALUES ('suppression', 'suppression:' || NEW.id,
+                'claim:' || NEW.claim_id, NEW.project_id,
+                json_object('id', NEW.id, 'projectId', NEW.project_id, 'claimId', NEW.claim_id,
+                  'fromRevision', json_extract(NEW.record_json, '$.fromRevision'), 'fromGeneration', json_extract(NEW.record_json, '$.fromGeneration'),
+                  'createdAt', coalesce(json_extract(NEW.record_json, '$.createdAt'), 0)),
+                coalesce(json_extract(NEW.record_json, '$.createdAt'), 0));
+            END;
+            CREATE TRIGGER IF NOT EXISTS lifecycle_ledger_suppressed_claim AFTER INSERT ON memory_suppressed_claims BEGIN
+              INSERT OR IGNORE INTO lifecycle_ledger (kind, entry_key, subject, project_id, record_json, recorded_at) VALUES ('suppressed_claim',
+                'suppressed_claim:' || NEW.suppression_id || ':' || NEW.claim_id, 'claim:' || NEW.claim_id, NEW.project_id,
+                json_object('suppressionId', NEW.suppression_id, 'projectId', NEW.project_id, 'claimId', NEW.claim_id),
+                coalesce((SELECT json_extract(record_json, '$.createdAt') FROM memory_suppressions WHERE id = NEW.suppression_id), 0));
+            END;
+            CREATE TRIGGER IF NOT EXISTS lifecycle_ledger_suppressed_source AFTER INSERT ON memory_suppressed_sources BEGIN
+              INSERT OR IGNORE INTO lifecycle_ledger (kind, entry_key, subject, project_id, record_json, recorded_at) VALUES ('suppressed_source',
+                'suppressed_source:' || NEW.suppression_id || ':' || NEW.source_id || ':' || NEW.revision || ':' || NEW.generation,
+                'source:' || NEW.source_id || ':' || NEW.revision || ':' || NEW.generation, NEW.project_id,
+                json_object('suppressionId', NEW.suppression_id, 'projectId', NEW.project_id, 'sourceId', NEW.source_id, 'revision', NEW.revision, 'generation', NEW.generation),
+                coalesce((SELECT json_extract(record_json, '$.createdAt') FROM memory_suppressions WHERE id = NEW.suppression_id), 0));
+            END;
+            -- Backfill existing history in commit order so an upgraded installation's ledger covers it.
+            INSERT OR IGNORE INTO lifecycle_ledger (kind, entry_key, subject, project_id, record_json, recorded_at)
+              SELECT 'deletion', 'deletion:' || id,
+                CASE kind WHEN 'source' THEN 'source:' || source_id || ':' || revision || ':' || generation ELSE 'claim:' || claim_id END, project_id,
+                json_object('id', id, 'operationId', operation_id, 'projectId', project_id, 'kind', kind, 'sourceId', source_id,
+                  'claimId', claim_id, 'revision', revision, 'generation', generation, 'deletedAt', deleted_at), deleted_at
+              FROM deletion_ledger ORDER BY rowid;
+            INSERT OR IGNORE INTO lifecycle_ledger (kind, entry_key, subject, project_id, record_json, recorded_at)
+              SELECT 'suppression', 'suppression:' || id, 'claim:' || claim_id, project_id,
+                json_object('id', id, 'projectId', project_id, 'claimId', claim_id,
+                  'fromRevision', json_extract(record_json, '$.fromRevision'), 'fromGeneration', json_extract(record_json, '$.fromGeneration'),
+                  'createdAt', coalesce(json_extract(record_json, '$.createdAt'), 0)), coalesce(json_extract(record_json, '$.createdAt'), 0)
+              FROM memory_suppressions ORDER BY rowid;
+            INSERT OR IGNORE INTO lifecycle_ledger (kind, entry_key, subject, project_id, record_json, recorded_at)
+              SELECT 'suppressed_claim', 'suppressed_claim:' || c.suppression_id || ':' || c.claim_id, 'claim:' || c.claim_id, c.project_id,
+                json_object('suppressionId', c.suppression_id, 'projectId', c.project_id, 'claimId', c.claim_id),
+                coalesce(json_extract(s.record_json, '$.createdAt'), 0)
+              FROM memory_suppressed_claims c LEFT JOIN memory_suppressions s ON s.id = c.suppression_id ORDER BY c.rowid;
+            INSERT OR IGNORE INTO lifecycle_ledger (kind, entry_key, subject, project_id, record_json, recorded_at)
+              SELECT 'suppressed_source', 'suppressed_source:' || c.suppression_id || ':' || c.source_id || ':' || c.revision || ':' || c.generation,
+                'source:' || c.source_id || ':' || c.revision || ':' || c.generation, c.project_id,
+                json_object('suppressionId', c.suppression_id, 'projectId', c.project_id, 'sourceId', c.source_id, 'revision', c.revision, 'generation', c.generation),
+                coalesce(json_extract(s.record_json, '$.createdAt'), 0)
+              FROM memory_suppressed_sources c LEFT JOIN memory_suppressions s ON s.id = c.suppression_id ORDER BY c.rowid;
+            PRAGMA user_version = 23;
+          `);
           // A populated rebuilt graph must retain every reference; empty legacy fixture stores have no task graph to check.
           if (this.#tx.get("SELECT 1 FROM tasks LIMIT 1") && this.#tx.all("PRAGMA foreign_key_check").length) throw new Error("Migration foreign key check failed");
         }).immediate();

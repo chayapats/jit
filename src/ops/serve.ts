@@ -43,6 +43,9 @@ export async function serveCommand(config: AppConfig, args: string[], options: S
   if (handle.config.runPort === "schway") console.log("Schway bridge ready: pinned bridge verified before admission.");
   if (!handle.boot.reconciled) console.log("Upgrade in progress: job admission stays fenced until the owner activates or rolls back.");
   if (handle.boot.upgrade) console.log(`Upgrade ${handle.boot.upgrade.id} reconciled after activation: ${handle.boot.upgrade.state}.`);
+  if (handle.boot.restore && handle.boot.restore.state !== "complete") {
+    console.log(`Restore ${handle.boot.restore.id} is not complete (${handle.boot.restore.reason ?? handle.boot.restore.state}): only restore status and remediation (/restores) are served.`);
+  }
   let running: ReturnType<typeof serveFullApp>;
   try { running = serveFullApp(handle); }
   catch (error) { await stopDrain(handle, { timeoutMs: 0 }).catch(() => {}); handle.service.close(); handle.store.close(); throw error; }

@@ -51,7 +51,7 @@ sudo bun src/main.ts service stop
 journalctl --namespace=jit -u jit.service                # bounded by journald@jit.conf
 ```
 
-- **Until the OPS02 (#33) ledger checkpoint writer is integrated, an installed service refuses to activate** (`Service blocked at quarantine: ... (next: integrate-ops02-ledger-checkpoint)`). This is intended: a placeholder ledger proves nothing about current deletion/suppression state. Do not edit the ledger file to get past it.
+- The first start turns the install seed into the real OPS02 ledger checkpoint at `ledgerPath`. From then on, a missing, replaced, tampered or relocated checkpoint blocks activation (`Service blocked at quarantine: lifecycle ledger ...`). Restore the file from its configured location or copy the verified checkpoint to a new location; never hand-edit it or reseed it.
 - Start runs `serve --service-config`: preflight, quarantine/ledger, schema/upgrade, engine and artifact gates, reconciliation, then listening. A blocked gate exits with `Service blocked at <gate>: ... (next: ...)`; resolve it, never bypass it. `bun src/main.ts preflight --service-config /etc/jit/service-config.json` shows all gates read-only.
 - Status: `running` needs the scheduler owned by the supervised process; `observed-ready` appears only with explicit live evidence. `channels: blocked` means Telegram is enabled but its secret or transport is unavailable; `routes.verified` is always 0 here.
 - Stop drains cooperatively within `stopTimeoutSeconds`; systemd kills after `TimeoutStopSec`. Interrupted work and uncertain sends are recorded as interrupted/`unknown` and reconciled on the next start; never treat them as stopped or sent.

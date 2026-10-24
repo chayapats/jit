@@ -1,5 +1,4 @@
 import { afterEach, expect, test } from "bun:test";
-import { fixtureLedgerGate } from "./fixtures/ledger-gate";
 import { Database } from "bun:sqlite";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -225,7 +224,7 @@ async function fullUpgrade(f: Fixture) {
 
 test("preflight matrix: one supported target, sequential sources, downgrade/forward/newer/too-old rejection, exact engine contract", () => {
   expect(planUpgrade(schemaVersion, schemaVersion, upgradeEngineContract)).toMatchObject({ compatible: true, reason: null });
-  expect(planSchema(17, schemaVersion)).toEqual({ compatible: true, reason: null, migrations: [18, 19, 20, 21, 22].filter(v => v <= schemaVersion) });
+  expect(planSchema(17, schemaVersion)).toEqual({ compatible: true, reason: null, migrations: [18, 19, 20, 21, 22, 23].filter(v => v <= schemaVersion) });
   expect(planSchema(schemaVersion, 99)).toMatchObject({ compatible: false, reason: "forward_upgrade_unsupported" });
   expect(planSchema(schemaVersion, schemaVersion - 1)).toMatchObject({ compatible: false, reason: "downgrade_rejected" });
   expect(planSchema(99, 99)).toMatchObject({ compatible: false, reason: "newer_schema_unsupported" });
@@ -628,14 +627,18 @@ function serviceFor(root: string): ServiceConfig {
 /** Rewinds a fresh current store to a historical fixture schema by removing tables later migrations add. */
 function historical(path: string, version: number) {
   const db = new Database(path);
-  const drops: Record<number, string[]> = { 22: [], 21: ["schway_native_refs"], 20: ["restore_quarantines"], 19: ["upgrade_journal"], 18: ["export_artifacts"] };
-  for (let v = schemaVersion; v > version; v--) for (const table of drops[v] ?? []) db.exec(`DROP TABLE IF EXISTS ${table}`);
+  const drops: Record<number, string[]> = { 23: ["lifecycle_ledger", "lifecycle_checkpoint"], 22: [], 21: ["schway_native_refs"], 20: ["restore_quarantines"], 19: ["upgrade_journal"], 18: ["export_artifacts"] };
+  const triggers: Record<number, string[]> = { 23: ["lifecycle_ledger_deletion", "lifecycle_ledger_suppression", "lifecycle_ledger_suppressed_claim", "lifecycle_ledger_suppressed_source"] };
+  for (let v = schemaVersion; v > version; v--) {
+    for (const trigger of triggers[v] ?? []) db.exec(`DROP TRIGGER IF EXISTS ${trigger}`);
+    for (const table of drops[v] ?? []) db.exec(`DROP TABLE IF EXISTS ${table}`);
+  }
   db.exec(`PRAGMA user_version = ${version};`);
   db.close();
 }
 
 test("boot never migrates an older installation; the owner upgrade migrates staged copies from every supported schema", async () => {
-  for (const version of [17, 18, 19, 20, 21]) {
+  for (const version of [17, 18, 19, 20, 21, 22]) {
     const root = mkdtempSync(join(tmpdir(), "jit-ops-upgrade-legacy-")); roots.push(root);
     const path = join(root, "state.sqlite");
     const config = readConfig({ JIT_DATABASE: path });
@@ -656,7 +659,7 @@ test("boot never migrates an older installation; the owner upgrade migrates stag
     const store = new TransactionStore(path, { migrateExisting: false }); stores.push(store);
     expect(store.read(tx => tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version)).toBe(version);
     const service = serviceFor(root);
-    expect(preflightService({ store, config, service, requiredEngine: "jit.schway.bridge/v1", ledgerGate: fixtureLedgerGate }).gates.find(g => g.gate === "schema"))
+    expect(preflightService({ store, config, service, requiredEngine: "jit.schway.bridge/v1" }).gates.find(g => g.gate === "schema"))
       .toMatchObject({ state: "blocked", nextAction: "run-owner-upgrade" });
     expect(readFileSync(path).subarray(100)).toEqual(bytes.subarray(100));
     // Owner-authorized staged upgrade on the old installation.
@@ -718,7 +721,7 @@ test("startFullApp blocks an older installation at the schema gate without migra
   new TransactionStore(path).close();
   historical(path, 21);
   const config = readConfig({ JIT_DATABASE: path });
-  const started = await startFullApp({ config, service, ledgerGate: fixtureLedgerGate });
+  const started = await startFullApp({ config, service });
   expect(started.ok).toBe(false);
   if (!started.ok) expect(started.gates.find(g => g.gate === "schema")).toMatchObject({ state: "blocked", nextAction: "run-owner-upgrade" });
   expect(inspectStoreSchema(path)).toBe(21);
@@ -834,7 +837,7 @@ test("startFullApp in schway mode upgrades over real native sessions and rebuild
   const root = mkdtempSync(join(tmpdir(), "jit-ops-upgrade-schway-")); roots.push(root);
   const service = serviceFor(root);
   const config = readConfig({ JIT_DATABASE: join(root, "state", "app.sqlite"), JIT_RUN_PORT: "schway" });
-  const started = await startFullApp({ config, service, ledgerGate: fixtureLedgerGate });
+  const started = await startFullApp({ config, service });
   if (!started.ok) throw new Error(JSON.stringify(started.gates));
   const { app, store } = started.handle;
   stores.push(store); services.push(started.handle.service);

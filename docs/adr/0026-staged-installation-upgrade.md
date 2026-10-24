@@ -66,10 +66,8 @@ current-ledger replay. Upgrade rollback therefore never swaps an image.
 
 ## Follow-ups
 
-- OPS02 (#33) quarantine state still lives in `restore_quarantines` inside the
-  swapped database and restore activation does not reconcile under service
-  ownership; it can adopt this contract's file journal, fence and
-  `ManagedService.resume`.
+- OPS02 (#33) adopted this contract's file journal, fence (holder `restore`)
+  and `ManagedService` quiesce/resume; see ADR 0027.
 - OPS07 (#35) resolved: the package flow (`upgradePackage`, `service
   upgrade`) stops the unit and runs the new build's `upgrade` before switching
   the release and health-checking; see docs/contracts/ops-service-package-v1.md.
