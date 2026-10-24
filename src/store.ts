@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { commitDecisionMemorySource, retireDecisionMemorySource } from "./memory/decision-sources";
 
 /** Current application schema revision. Service packaging pins and checks this value. */
-export const schemaVersion = 21;
+export const schemaVersion = 22;
 
 /** Synchronous SQL operations scoped to an application transaction. */
 export interface AppTransaction {
@@ -38,7 +38,7 @@ export class TransactionStore {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
           if (current === schemaVersion) return;
-          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20].includes(current)) throw new Error("Unsupported migration source");
+          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21].includes(current)) throw new Error("Unsupported migration source");
           if (existing) {
             const snapshot = `${path}.pre-v${current}-${crypto.randomUUID()}.sqlite`;
             const fd = openSync(snapshot, "wx", 0o600);
@@ -578,6 +578,27 @@ export class TransactionStore {
             CREATE INDEX IF NOT EXISTS schway_native_ref_context ON schway_native_refs(context_id, generation);
             PRAGMA user_version = 21;
           `);
+          if (current < 22) {
+            // PR02 report history: a candidate keeps every committed review (rerun, policy upgrade),
+            // so the lazily created pr_reports table drops its candidate uniqueness, preserving rows.
+            if (this.#tx.get("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'pr_reports'")) this.#db.exec(`
+              CREATE TABLE pr_reports_v22 (
+                id TEXT PRIMARY KEY,
+                candidate_id TEXT NOT NULL REFERENCES pr_candidates(id),
+                project_id TEXT NOT NULL REFERENCES projects(id),
+                monitor_id TEXT NOT NULL REFERENCES pr_monitors(id),
+                status TEXT NOT NULL CHECK (status IN ('running', 'complete_clean', 'complete_findings', 'partial', 'incomplete', 'failed')),
+                record_json TEXT NOT NULL
+              );
+              INSERT INTO pr_reports_v22 (rowid, id, candidate_id, project_id, monitor_id, status, record_json)
+                SELECT rowid, id, candidate_id, project_id, monitor_id, status, record_json FROM pr_reports;
+              DROP TABLE pr_reports;
+              ALTER TABLE pr_reports_v22 RENAME TO pr_reports;
+              CREATE INDEX IF NOT EXISTS pr_report_monitor ON pr_reports(project_id, monitor_id);
+              CREATE INDEX IF NOT EXISTS pr_report_candidate ON pr_reports(candidate_id);
+            `);
+            this.#db.exec("PRAGMA user_version = 22;");
+          }
           // A populated rebuilt graph must retain every reference; empty legacy fixture stores have no task graph to check.
           if (this.#tx.get("SELECT 1 FROM tasks LIMIT 1") && this.#tx.all("PRAGMA foreign_key_check").length) throw new Error("Migration foreign key check failed");
         }).immediate();

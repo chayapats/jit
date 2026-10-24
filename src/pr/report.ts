@@ -169,40 +169,58 @@ export interface NormalizedReview {
   analyzedRoles: string[];
   skippedScope: string[];
   disagreements: string[];
+  /** Proposed findings beyond `MAX_REVIEW_FINDINGS` that were not validated; nonzero forces incomplete. */
+  findingsOverflow: number;
   valid: boolean;
 }
 
+/** Maximum proposed findings validated per synthesis; more are counted, never silently dropped. */
+export const MAX_REVIEW_FINDINGS = 32;
+
+const ENVELOPE_KEYS = ["findings", "analyzedRoles", "skippedScope", "disagreements"] as const;
+
+const stringList = (value: unknown, maxItems: number, maxLength: number): value is string[] =>
+  Array.isArray(value) && value.length <= maxItems
+  && value.every(item => typeof item === "string" && item.length <= maxLength && item.isWellFormed());
+
 /**
  * Normalizes untrusted model review output into validated findings.
+ * The synthesis envelope is required exactly: `findings` (array),
+ * `analyzedRoles` (≤8 strings), `skippedScope` (≤16 strings) and
+ * `disagreements` (strings); a missing or mistyped member is invalid (failed),
+ * never an empty clean list. Findings beyond `MAX_REVIEW_FINDINGS` are counted
+ * in `findingsOverflow`; extra disagreements are summarized, not dropped.
  * Unknown model fields (route/task/mutation/comment instructions) are ignored, never acted on.
  */
 export function normalizeReviewOutput(output: string, snapshot: ImmutableSnapshot, allowedRoles: readonly string[] = DEFAULT_REVIEW_POLICY.requiredRoles, transmitted: TransmittedManifest | null = null): NormalizedReview {
+  const invalid = (): NormalizedReview => ({ findings: [], analyzedRoles: [], skippedScope: [...allowedRoles], disagreements: [], findingsOverflow: 0, valid: false });
   let parsed: unknown;
   try {
     parsed = JSON.parse(output);
   } catch {
-    return { findings: [], analyzedRoles: [], skippedScope: [...allowedRoles], disagreements: [], valid: false };
+    return invalid();
   }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return { findings: [], analyzedRoles: [], skippedScope: [...allowedRoles], disagreements: [], valid: false };
-  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return invalid();
   const raw = parsed as Record<string, unknown>;
-  const list = Array.isArray(raw.findings) ? raw.findings.slice(0, 32) : [];
+  if (!ENVELOPE_KEYS.every(key => Object.hasOwn(raw, key))) return invalid();
+  if (!Array.isArray(raw.findings) || !stringList(raw.analyzedRoles, 8, 64) || !stringList(raw.skippedScope, 16, 256)
+      || !stringList(raw.disagreements, 256, 2000)) return invalid();
+  const list = raw.findings.slice(0, MAX_REVIEW_FINDINGS);
+  const findingsOverflow = raw.findings.length - list.length;
   const findings = list.map(item => {
     try { return validateFinding(item, snapshot, transmitted); }
     catch { return validateFinding({}, snapshot, transmitted); }
   });
-  const analyzedRaw = Array.isArray(raw.analyzedRoles) ? raw.analyzedRoles.filter((r): r is string => typeof r === "string" && r.length <= 64) : [];
-  const analyzedRoles = [...new Set(analyzedRaw)].slice(0, 8);
-  const skippedRaw = Array.isArray(raw.skippedScope) ? raw.skippedScope.filter((s): s is string => typeof s === "string" && s.length <= 256) : [];
-  const skippedScope = [...new Set(skippedRaw)].slice(0, 16);
-  const disagRaw = Array.isArray(raw.disagreements) ? raw.disagreements.filter((d): d is string => typeof d === "string" && d.length <= 2000) : [];
-  const disagreements = disagRaw.map(d => d.slice(0, 2000)).slice(0, 16);
+  const analyzedRoles = [...new Set(raw.analyzedRoles)];
+  const skippedScope = [...new Set(raw.skippedScope)];
+  const disagreements = raw.disagreements.slice(0, 16);
+  if (raw.disagreements.length > 16) disagreements.push(`${raw.disagreements.length - 16} more disagreements not shown`);
+  if (findingsOverflow > 0) disagreements.push(`${findingsOverflow} proposed findings exceeded the validation bound and were not reviewed`);
   // Explicit scope policy: roles never analyzed are skipped, never silently complete.
   for (const required of allowedRoles) {
     if (!analyzedRoles.includes(required) && !skippedScope.includes(required)) skippedScope.push(required);
   }
-  return { findings, analyzedRoles, skippedScope, disagreements, valid: true };
+  return { findings, analyzedRoles, skippedScope, disagreements, findingsOverflow, valid: true };
 }
 
 function storedOf(row: { record_json: string }): PrivateReport {
@@ -216,13 +234,16 @@ export interface ReportReadOptions {
 
 const TERMINAL_CANDIDATE = ["superseded", "cancelled", "stale", "closed"];
 
-function isStale(report: PrivateReport, candidate: { baseSha: string; headSha: string; policyVersion: number; status: string }, monitor: { state: string; policy: { version: number } }, ownerGeneration: number | null, reviewPolicyVersion: number): { stale: boolean; reason: string | null } {
+type CandidateView = { baseSha: string; headSha: string; policyVersion: number; status: string; staleReason?: string | null };
+
+function isStale(report: PrivateReport, candidate: CandidateView, monitor: { state: string; policy: { version: number } }, ownerGeneration: number | null, reviewPolicyVersion: number): { stale: boolean; reason: string | null } {
   if (ownerGeneration !== null && report.authorityGeneration !== undefined && ownerGeneration !== report.authorityGeneration) {
     return { stale: true, reason: "authorization_changed" };
   }
   if (monitor.state !== "active") return { stale: true, reason: monitor.state === "revoked" ? "monitoring_revoked" : "monitoring_not_active" };
   if (TERMINAL_CANDIDATE.includes(candidate.status)) {
-    return { stale: true, reason: candidate.status === "closed" ? "pr_closed" : `candidate_${candidate.status}` };
+    // A durable lifecycle reason (for example source_retired) wins over the generic status.
+    return { stale: true, reason: candidate.staleReason ?? (candidate.status === "closed" ? "pr_closed" : `candidate_${candidate.status}`) };
   }
   if (candidate.baseSha !== report.baseSha || candidate.headSha !== report.headSha) return { stale: true, reason: "revision_changed" };
   if (candidate.policyVersion !== report.policyVersion || monitor.policy.version !== report.policyVersion) return { stale: true, reason: "policy_changed" };
@@ -230,7 +251,7 @@ function isStale(report: PrivateReport, candidate: { baseSha: string; headSha: s
   return { stale: false, reason: null };
 }
 
-function withStale(report: PrivateReport, candidate: { baseSha: string; headSha: string; policyVersion: number; status: string }, monitor: { state: string; policy: { version: number } }, ownerGeneration: number | null = null, reviewPolicyVersion: number = REVIEW_POLICY_VERSION): PrivateReport {
+function withStale(report: PrivateReport, candidate: CandidateView, monitor: { state: string; policy: { version: number } }, ownerGeneration: number | null = null, reviewPolicyVersion: number = REVIEW_POLICY_VERSION): PrivateReport {
   const { stale, reason } = isStale(report, candidate, monitor, ownerGeneration, reviewPolicyVersion);
   return stale ? { ...report, stale: true, staleReason: reason } : { ...report, stale: false, staleReason: null };
 }
@@ -240,10 +261,19 @@ function overlay(tx: AppTransaction, projectId: string, report: PrivateReport, o
     const candidate = readCandidate(tx, projectId, report.candidateId);
     const monitor = readMonitor(tx, projectId, report.monitorId);
     const ownerGeneration = tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'")?.generation ?? null;
-    return withStale(report, candidate, monitor, ownerGeneration, options.reviewPolicyVersion ?? REVIEW_POLICY_VERSION);
+    const projected = withStale(report, candidate, monitor, ownerGeneration, options.reviewPolicyVersion ?? REVIEW_POLICY_VERSION);
+    // Retained history: only the newest committed review of a candidate can be current.
+    if (!projected.stale && newestReportId(tx, projectId, report.candidateId) !== report.id) {
+      return { ...projected, stale: true, staleReason: "superseded_by_newer_review" };
+    }
+    return projected;
   } catch {
     return { ...report, stale: true, staleReason: "authority_unavailable" };
   }
+}
+
+function newestReportId(tx: AppTransaction, projectId: string, candidateId: string): string | null {
+  return tx.get<{ id: string }>("SELECT id FROM pr_reports WHERE candidate_id = ? AND project_id = ? ORDER BY rowid DESC LIMIT 1", candidateId, projectId)?.id ?? null;
 }
 
 /**
@@ -285,7 +315,7 @@ export function listReviewStates(tx: AppTransaction, projectId: string, monitorI
     : tx.all<{ record_json: string }>("SELECT record_json FROM pr_candidates WHERE project_id = ? ORDER BY rowid DESC LIMIT ?", projectId, limit))
     .map(row => JSON.parse(row.record_json) as ReviewCandidate);
   return candidates.map(candidate => {
-    const reportRow = tx.get<{ record_json: string }>("SELECT record_json FROM pr_reports WHERE candidate_id = ? AND project_id = ?", candidate.id, projectId);
+    const reportRow = tx.get<{ record_json: string }>("SELECT record_json FROM pr_reports WHERE candidate_id = ? AND project_id = ? ORDER BY rowid DESC LIMIT 1", candidate.id, projectId);
     const jobRow = tx.get<{ record_json: string }>(
       "SELECT record_json FROM jobs WHERE project_id = ? AND json_extract(record_json, '$.type') = 'pr.review' AND json_extract(record_json, '$.input.candidateId') = ? ORDER BY rowid DESC LIMIT 1",
       projectId, candidate.id,
@@ -296,8 +326,13 @@ export function listReviewStates(tx: AppTransaction, projectId: string, monitorI
       baseSha: candidate.baseSha, headSha: candidate.headSha, policyVersion: candidate.policyVersion,
       candidateStatus: candidate.status, jobId: job?.id ?? null, jobState: job?.state ?? null, jobReason: job?.reason ?? null,
     };
-    if (reportRow) {
-      const report = overlay(tx, projectId, storedOf(reportRow), options);
+    const latest = reportRow ? storedOf(reportRow) : null;
+    // A newer admitted review that has not committed yet reads running, not as its predecessor.
+    if (job && NONTERMINAL_JOB.includes(job.state) && latest?.jobId !== job.id) {
+      return { ...base, observed: "running", reportId: latest?.id ?? null, staleReason: null };
+    }
+    if (latest) {
+      const report = overlay(tx, projectId, latest, options);
       return { ...base, observed: report.stale ? "stale" : report.status === "running" ? "running" : report.status, reportId: report.id, staleReason: report.staleReason } as PrReviewStateItem;
     }
     if (!job) return { ...base, observed: "not_reviewed", reportId: null, staleReason: null };
@@ -391,6 +426,8 @@ function decideStatus(input: PersistReportInput, analyzedRoles: readonly string[
   if (!normalized.valid) return "failed";
   if (specialistRuns.some(r => r.state === "failed" || r.state === "error")) return "failed";
   if (specialistRuns.some(r => r.state === "incomplete" || r.state === "blocked") || synthesis.state === "incomplete" || synthesis.state === "blocked") return "incomplete";
+  // Proposed findings that were never validated keep the review incomplete.
+  if ((normalized.findingsOverflow ?? 0) > 0) return "incomplete";
   // Model-declared roles count only when their specialist result was delivered.
   if (requiredRoles.some(r => !analyzedRoles.includes(r))) return "incomplete";
   if (!snapshot.coverage.enumerationComplete || snapshot.coverage.overall === "incomplete") return "incomplete";
@@ -406,6 +443,8 @@ function decideStatus(input: PersistReportInput, analyzedRoles: readonly string[
 
 /**
  * Commits one private report atomically for the current candidate/monitor generation.
+ * Every committing attempt adds a row (replay of the same attempt returns it); older
+ * reports of the candidate are retained and read stale (`superseded_by_newer_review`).
  * New revisions, trigger/review policy bumps, cancel/retire/revoke fence late publication via throw.
  * The report embeds the immutable snapshot coverage, the transmitted manifest and the admission capture.
  */
@@ -429,7 +468,10 @@ export function persistReport(tx: AppTransaction, input: PersistReportInput): Pr
   if (snapshot.id !== input.snapshot.id) throw new AppError("pr_snapshot_not_found", 404);
 
   const owner = tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'");
-  const existing = tx.get<{ record_json: string }>("SELECT record_json FROM pr_reports WHERE candidate_id = ?", candidate.id);
+  // One report per committing attempt; earlier reviews of the candidate stay as history.
+  const existing = input.attemptId
+    ? tx.get<{ record_json: string }>("SELECT record_json FROM pr_reports WHERE candidate_id = ? AND json_extract(record_json, '$.attemptId') = ?", candidate.id, input.attemptId)
+    : null;
   if (existing) return withStale(storedOf(existing), candidate, monitor, owner?.generation ?? null, currentReviewPolicy);
 
   const delivered = deliveredRoles(input);
@@ -465,6 +507,7 @@ export function persistReport(tx: AppTransaction, input: PersistReportInput): Pr
     specialistRuns: input.specialistRuns.map(r => ({ ...r })),
     synthesis: { ...input.synthesis },
     disagreements: disagreements.slice(0, 24),
+    findingsOverflow: input.normalized.findingsOverflow ?? 0,
     snapshotId: snapshot.id,
     sourceManifest: structuredClone(snapshot.coverage),
     transmitted: input.transmitted ? structuredClone(input.transmitted) : null,
@@ -530,9 +573,6 @@ export function annotateReport(tx: AppTransaction, command: DismissReportCommand
   const next: PrivateReport = { ...report, revision: annotation.revision, updatedAt: now };
   tx.run("UPDATE pr_reports SET status = ?, record_json = ? WHERE id = ?",
     next.status, JSON.stringify(next), next.id);
-  const candidate = (() => { try { return readCandidate(tx, command.projectId, next.candidateId); } catch { return null; } })();
-  const monitor = (() => { try { return readMonitor(tx, command.projectId, next.monitorId); } catch { return null; } })();
-  const ownerGeneration = tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'")?.generation ?? null;
-  const projected = candidate && monitor ? withStale(next, candidate, monitor, ownerGeneration) : { ...next, stale: true, staleReason: "authority_unavailable" };
+  const projected = overlay(tx, command.projectId, next, {});
   return { report: projected, annotation, projectRevision: project.revision };
 }

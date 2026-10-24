@@ -28,6 +28,8 @@ import {
   validateFinding,
   DEFAULT_REVIEW_POLICY,
   PR_REVIEW_SCRIPTED_ROUTE,
+  MAX_REVIEW_FINDINGS,
+  retirePrSnapshot,
   type EnableMonitorCommand,
   type PrMonitor,
 } from "../src/pr";
@@ -1102,4 +1104,180 @@ test("retries reuse the admitted route capture exactly, even after the owner cha
   for (const r of f.port.requests as any[]) expect(r.route).toEqual(first);
   const report = f.store.read(tx => listReports(tx, f.project.id)[0]!);
   expect(report.capture).toMatchObject({ route: first, layer: "project_default", configuration: { projectRevision: 1 } });
+});
+
+// ---- Second-eye round 2: envelope, report history, candidate-scoped fencing ----
+
+test("synthesis envelope: missing or mistyped members fail; overflowing findings keep the review incomplete", async () => {
+  const f0 = await fixture();
+  const m0 = enable(f0);
+  const { snapshot } = prepareSnapshot(f0, m0);
+  for (const bad of [
+    { analyzedRoles: ["correctness", "security"], skippedScope: [], disagreements: [] },
+    { findings: {}, analyzedRoles: ["correctness", "security"], skippedScope: [], disagreements: [] },
+    { findings: [], analyzedRoles: ["correctness", 7], skippedScope: [], disagreements: [] },
+    { findings: [], analyzedRoles: ["correctness", "security"], skippedScope: [] },
+    { findings: [], analyzedRoles: ["correctness", "security"], skippedScope: "none", disagreements: [] },
+  ]) expect(normalizeReviewOutput(JSON.stringify(bad), snapshot).valid).toBe(false);
+  // End to end: a synthesis without `findings` is a failed report, never complete_clean.
+  {
+    const f = await fixture(() => ({ ...fixtureOutcome("complete", JSON.stringify({ analyzedRoles: ["correctness", "security"], skippedScope: [], disagreements: [] })), usage: okUsage, session: null }));
+    const monitor = enable(f);
+    const { candidate } = prepareSnapshot(f, monitor);
+    enqueueReview(f, monitor.id, candidate.id);
+    f.queue.pump(); await f.queue.idle();
+    expect(f.store.read(tx => listReports(tx, f.project.id)[0]!.status)).toBe("failed");
+  }
+  // More proposed findings than the bound: counted, disclosed and incomplete.
+  {
+    // Minimal proposals keep the synthesis inside the port output bound.
+    const overflowing = JSON.stringify({ findings: Array(MAX_REVIEW_FINDINGS + 1).fill({}), analyzedRoles: ["correctness", "security"], skippedScope: [], disagreements: [] });
+    const f = await fixture(() => ({ ...fixtureOutcome("complete", overflowing), usage: okUsage, session: null }));
+    const monitor = enable(f);
+    const { candidate } = prepareSnapshot(f, monitor);
+    enqueueReview(f, monitor.id, candidate.id);
+    f.queue.pump(); await f.queue.idle();
+    const report = f.store.read(tx => listReports(tx, f.project.id)[0]!);
+    expect(report.findings).toHaveLength(MAX_REVIEW_FINDINGS);
+    expect(report.findingsOverflow).toBe(1);
+    expect(report.status).toBe("incomplete");
+    expect(report.disagreements.some(d => d.includes("exceeded the validation bound"))).toBe(true);
+  }
+});
+
+test("report history: reruns and review-policy upgrades add current reports; older ones stay as stale history", async () => {
+  let securityFails = true;
+  const f = await fixture((request: any) => request.purpose.startsWith("specialist:security") && securityFails
+    ? { ...fixtureOutcome("max_rounds"), usage: okUsage, session: null }
+    : { ...fixtureOutcome("complete", request.purpose.startsWith("specialist:") ? "analysis" : findingsJson(["a.ts"])), usage: okUsage, session: null });
+  const monitor = enable(f);
+  const { candidate } = prepareSnapshot(f, monitor);
+  const snapshotJobId = f.store.read(tx => readCandidate(tx, f.project.id, candidate.id).jobId);
+  const firstJob = enqueueReview(f, monitor.id, candidate.id);
+  f.queue.pump(); await f.queue.idle();
+  const first = f.store.read(tx => listReports(tx, f.project.id)[0]!);
+  expect(first.status).toBe("incomplete");
+  // Rerun: while queued the newest review reads running; after commit the new report is current.
+  securityFails = false;
+  const secondJob = enqueueReview(f, monitor.id, candidate.id);
+  expect(f.app.prReports(f.auth.actor, f.project.id).reviews[0]).toMatchObject({ observed: "running", jobId: secondJob.id, reportId: first.id });
+  f.queue.pump(); await f.queue.idle();
+  const listed = f.store.read(tx => listReports(tx, f.project.id));
+  expect(listed).toHaveLength(2);
+  expect(listed[0]).toMatchObject({ status: "complete_findings", stale: false, jobId: secondJob.id });
+  expect(listed[1]).toMatchObject({ id: first.id, jobId: firstJob.id, stale: true, staleReason: "superseded_by_newer_review" });
+  expect(f.app.prReports(f.auth.actor, f.project.id).reviews[0]).toMatchObject({ observed: "complete_findings", reportId: listed[0]!.id });
+  // Review commits never repoint candidate.jobId away from the snapshot job.
+  expect(f.store.read(tx => readCandidate(tx, f.project.id, candidate.id).jobId)).toBe(snapshotJobId);
+  // Review-policy upgrade: a v2 worker produces a current v2 report beside the retained v1 history.
+  f.queue.close(); await f.queue.idle(); queues.pop();
+  const v2 = { version: 2, requiredRoles: ["correctness", "security"] };
+  const port2 = new ScriptedRunPort(f.store, f.config.team, f.config.jobs.outputBytes, () => ({ ...fixtureOutcome("complete", findingsJson(["a.ts"])), usage: okUsage, session: null }));
+  const queue2 = new JobQueue(f.store, f.config.jobs, [prReviewWork({ store: f.store, port: port2, now: () => f.clock.now, reviewPolicy: v2 })], { now: () => f.clock.now, timers: f.clock.timers });
+  queues.push(queue2);
+  const app2 = new Application(f.store, f.config, { jobs: queue2, now: () => f.clock.now });
+  const actor2 = app2.authenticate(await app2.login(password)).actor;
+  const revision = f.store.read(tx => tx.get<{ revision: number }>("SELECT revision FROM projects WHERE id = ?", f.project.id)!.revision);
+  app2.execute(actor2, { kind: "job.enqueue", requestId: crypto.randomUUID(), projectId: f.project.id, expectedRevision: revision,
+    payload: { type: "pr.review", configurationRevision: 1, policyRevision: 1, purpose: "review", inputRevision: revision,
+      input: { monitorId: monitor.id, candidateId: candidate.id }, priority: "background", limits: structuredClone(limits) } });
+  queue2.pump(); await queue2.idle();
+  const upgraded = f.store.read(tx => listReports(tx, f.project.id, undefined, { reviewPolicyVersion: 2 }));
+  expect(upgraded).toHaveLength(3);
+  expect(upgraded[0]).toMatchObject({ reviewPolicyVersion: 2, stale: false });
+  expect(upgraded.slice(1).every(r => r.stale)).toBe(true);
+});
+
+test("store v22 migration keeps existing reports and allows report history per candidate", async () => {
+  const f = await fixture();
+  const monitor = enable(f);
+  const { candidate } = prepareSnapshot(f, monitor);
+  enqueueReview(f, monitor.id, candidate.id);
+  f.queue.pump(); await f.queue.idle();
+  const reportId = f.store.read(tx => listReports(tx, f.project.id)[0]!.id);
+  const path = f.store.path;
+  f.queue.close(); await f.queue.idle(); queues.pop();
+  f.store.close(); stores.pop();
+  // Recreate the v21 shape (candidate-unique pr_reports) with the committed row.
+  const { Database } = await import("bun:sqlite");
+  const db = new Database(path);
+  db.exec(`PRAGMA foreign_keys = OFF;
+    CREATE TABLE legacy AS SELECT * FROM pr_reports; DROP TABLE pr_reports;
+    CREATE TABLE pr_reports (id TEXT PRIMARY KEY, candidate_id TEXT NOT NULL UNIQUE REFERENCES pr_candidates(id),
+      project_id TEXT NOT NULL REFERENCES projects(id), monitor_id TEXT NOT NULL REFERENCES pr_monitors(id),
+      status TEXT NOT NULL CHECK (status IN ('running', 'complete_clean', 'complete_findings', 'partial', 'incomplete', 'failed')), record_json TEXT NOT NULL);
+    INSERT INTO pr_reports SELECT * FROM legacy; DROP TABLE legacy; PRAGMA user_version = 21;`);
+  db.close();
+  const reopened = new TransactionStore(path); stores.push(reopened);
+  expect(reopened.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 22 });
+  expect(reopened.read(tx => tx.get<{ sql: string }>("SELECT sql FROM sqlite_master WHERE name = 'pr_reports'")!.sql)).not.toContain("UNIQUE");
+  expect(reopened.read(tx => readReport(tx, f.project.id, reportId).id)).toBe(reportId);
+  reopened.transaction(tx => persistReport(tx, {
+    projectId: f.project.id, monitorId: monitor.id, candidateId: candidate.id, snapshot: readSnapshot(tx, candidate.id),
+    normalized: normalizeReviewOutput(findingsJson(["a.ts"]), readSnapshot(tx, candidate.id)), requiredRoles: ["correctness", "security"],
+    specialistRuns: [], synthesis: { state: "complete", reason: null }, jobId: null, attemptId: null, now: f.clock.now,
+  }));
+  expect(reopened.read(tx => listReports(tx, f.project.id))).toHaveLength(2);
+  expect(reopened.read(tx => tx.all("PRAGMA foreign_key_check"))).toEqual([]);
+});
+
+test("candidate fencing: supersede, revoke and source retirement fence the active review job, not the snapshot job", async () => {
+  // Supersede while a review is queued: the review job itself is fenced in the poll transaction.
+  {
+    const f = await fixture();
+    const monitor = enable(f);
+    const { candidate } = prepareSnapshot(f, monitor);
+    const job = enqueueReview(f, monitor.id, candidate.id);
+    f.github.pulls = [fixturePull({ number: 1, base: { sha: sha(1), ref: "main" }, head: { sha: sha(99), ref: "feat" } })];
+    const conn = connector(f, monitor);
+    f.store.transaction(tx => {
+      tx.run("UPDATE pr_poll_checkpoints SET record_json = ? WHERE monitor_id = ?",
+        JSON.stringify({ monitorId: monitor.id, updatedAt: f.clock.now, complete: false, nextPage: 1, etag: null, lastSeenUpdatedAt: null, reason: null }), monitor.id);
+      pollMonitorCatchUp(tx, f.project.id, monitor.id, conn, f.clock.now);
+    });
+    expect(f.app.job(f.auth.actor, f.project.id, job.id)).toMatchObject({ state: "blocked", reason: "superseded" });
+  }
+  // Revoke while a review is queued.
+  {
+    const f = await fixture();
+    const monitor = enable(f);
+    const { candidate } = prepareSnapshot(f, monitor);
+    const job = enqueueReview(f, monitor.id, candidate.id);
+    const revision = f.store.read(tx => tx.get<{ revision: number }>("SELECT revision FROM projects WHERE id = ?", f.project.id)!.revision);
+    f.store.transaction(tx => mutateMonitor(tx, { kind: "pr.monitor.revoke", requestId: crypto.randomUUID(), projectId: f.project.id, expectedRevision: revision, payload: { monitorId: monitor.id } }, f.clock.now));
+    expect(f.app.job(f.auth.actor, f.project.id, job.id)).toMatchObject({ state: "blocked", reason: "revoked" });
+  }
+  // Source retirement during an in-flight review: fenced, no late report, durable stale reason on history.
+  {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    let stall = false;
+    const f = await fixture(async () => {
+      if (stall) { entered(); await gate; }
+      return { ...fixtureOutcome("complete", findingsJson(["a.ts"])), usage: okUsage, session: null };
+    });
+    const monitor = enable(f);
+    const { candidate } = prepareSnapshot(f, monitor);
+    enqueueReview(f, monitor.id, candidate.id);
+    f.queue.pump(); await f.queue.idle();
+    const committed = f.store.read(tx => listReports(tx, f.project.id)[0]!);
+    stall = true;
+    const job = enqueueReview(f, monitor.id, candidate.id);
+    f.queue.pump();
+    await started;
+    const retired = f.store.transaction(tx => retirePrSnapshot(tx, f.project.id, candidate.id, f.clock.now));
+    expect(retired.fencedJobs).toEqual([job.id]);
+    f.queue.cancelFenced();
+    release();
+    await f.queue.idle();
+    expect(f.app.job(f.auth.actor, f.project.id, job.id)).toMatchObject({ state: "blocked", reason: "source_retired" });
+    expect(f.store.read(tx => listReports(tx, f.project.id))).toHaveLength(1);
+    const path = f.store.path;
+    f.queue.close(); await f.queue.idle(); queues.pop();
+    f.store.close(); stores.pop();
+    const reopened = new TransactionStore(path); stores.push(reopened);
+    expect(reopened.read(tx => readReport(tx, f.project.id, committed.id))).toMatchObject({ stale: true, staleReason: "source_retired" });
+  }
 });

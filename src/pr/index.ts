@@ -71,6 +71,7 @@ export {
   annotateReport,
   listReports,
   listReviewStates,
+  MAX_REVIEW_FINDINGS,
   normalizeReviewOutput,
   patchRanges,
   persistReport,
@@ -84,7 +85,8 @@ export {
   type ReportReadOptions,
   type ReportRunEvidence,
 } from "./report";
-export { PR_REVIEW_SCRIPTED_ROUTE, prReviewWork, fencePrReviewJobs, resolvePrReviewRoute, type PrReviewWorkOptions } from "./review";
+export { PR_REVIEW_SCRIPTED_ROUTE, prReviewWork, resolvePrReviewRoute, type PrReviewWorkOptions } from "./review";
+export { activePrJobIds, fencePrCandidateWork, fencePrReviewJobs, retirePrSnapshot, type PrFenceReason } from "./fence";
 export {
   ALERT_POLICY_VERSION,
   DEFAULT_ALERT_POLICY,

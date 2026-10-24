@@ -220,6 +220,8 @@ export interface PrivateReport {
   specialistRuns: Array<{ role: string; state: string; reason: string | null; mode?: "fixture" | "production" }>;
   synthesis: { state: string; reason: string | null };
   disagreements: string[];
+  /** Proposed findings beyond the validation bound; nonzero means incomplete. */
+  findingsOverflow: number;
   snapshotId: string;
   /** Immutable snapshot coverage (source manifest) the report was decided against. */
   sourceManifest: CoverageManifest;
@@ -322,6 +324,8 @@ export interface ReviewCandidate {
   status: CandidateStatus;
   jobId: string | null;
   snapshotId: string | null;
+  /** Durable lifecycle reason recorded when the candidate became stale (for example `source_retired`). */
+  staleReason?: string | null;
   createdAt: number;
   updatedAt: number;
 }

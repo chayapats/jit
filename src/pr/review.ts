@@ -390,7 +390,7 @@ export function prReviewWork(options: PrReviewWorkOptions): WorkDefinition {
         extraDisagreements: string[];
       }) => {
         const normalized = normalizeReviewOutput(
-          fields.output || JSON.stringify({ findings: [], analyzedRoles: [], skippedScope: requiredRoles }),
+          fields.output || JSON.stringify({ findings: [], analyzedRoles: [], skippedScope: requiredRoles, disagreements: [] }),
           snapshot, requiredRoles, fields.transmitted,
         );
         const merged = { ...normalized, disagreements: [...normalized.disagreements, ...fields.extraDisagreements].slice(0, 16) };
@@ -415,13 +415,6 @@ export function prReviewWork(options: PrReviewWorkOptions): WorkDefinition {
             attemptId: attempt.id,
             now: at,
           });
-          try {
-            const live = readCandidate(tx, job.projectId, input.candidateId);
-            if (!live.jobId) {
-              live.jobId = job.id;
-              tx.run("UPDATE pr_candidates SET record_json = ? WHERE id = ?", JSON.stringify(live), live.id);
-            }
-          } catch { /* candidate may have been fenced concurrently */ }
         });
         return ok ? outcome : { state: "failed" as const, reason: "worker_failed" as const };
       };
@@ -503,18 +496,4 @@ export function prReviewWork(options: PrReviewWorkOptions): WorkDefinition {
       });
     },
   };
-}
-
-/**
- * Invalidates fenced PR review jobs for a revoked/superseded candidate inside the same tx.
- * Callers must invoke `queue.cancelFenced()` after the transaction commits.
- */
-export async function fencePrReviewJobs(
-  tx: AppTransaction,
-  invalidate: (projectId: string, jobId: string, reason: "revoked" | "superseded" | "source_retired" | "context_retired") => void,
-  projectId: string,
-  candidate: { jobId: string | null },
-  reason: "revoked" | "superseded" | "source_retired" | "context_retired",
-): Promise<void> {
-  if (candidate.jobId) invalidate(projectId, candidate.jobId, reason);
 }

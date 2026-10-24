@@ -117,9 +117,9 @@ const backupNow = (f: Fixture) => f.rt.app.execute(actor(f), { kind: "backup.cre
   expectedRevision: appRevision(f), payload: { note: "restore fixture backup" } });
 
 test("compat matrix routes direct, migrate and reject paths before touching data", () => {
-  expect(restoreCompat(21)).toEqual({ action: "direct", reason: null });
+  expect(restoreCompat(22)).toEqual({ action: "direct", reason: null });
   expect(restoreCompat(15)).toEqual({ action: "migrate", reason: null });
-  expect(restoreCompat(20)).toEqual({ action: "migrate", reason: null });
+  expect(restoreCompat(21)).toEqual({ action: "migrate", reason: null });
   expect(restoreCompat(99)).toEqual({ action: "reject", reason: "newer_backup_unsupported" });
   expect(restoreCompat(3)).toEqual({ action: "reject", reason: "manual_recovery_required" });
 });
@@ -143,7 +143,7 @@ test("older backup restores in quarantine, replays latest external tombstones an
   const sNew = say(f, a, "ข้อความใหม่หลังสำรอง restore-new-003");
   const prepared = prepareRestore(f, snap.manifest.id);
   expect(prepared.quarantine.state).toBe("quarantining");
-  expect(prepared.quarantine.fromSchema).toBe(21);
+  expect(prepared.quarantine.fromSchema).toBe(22);
   const migrated = f.rt.app.execute(actor(f), { kind: "restore.migrate" as const, requestId: rid(), projectId: null,
     expectedRevision: appRevision(f), payload: { quarantineId: prepared.quarantine.id } });
   expect(migrated.quarantine.state).toBe("migrated");
