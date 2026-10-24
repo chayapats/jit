@@ -962,9 +962,13 @@ test("a hanging credential write does not wedge the probe past its deadline", as
   const { record } = await liveProbe("fixture-probe-host",
     { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 100 },
     { ...ports, now: () => 1800000000000, id: () => OTHER_ID }, root);
-  // Bounded by the deadline even though the store write never settles.
+  // Bounded by the deadline even though the store write never settles. The
+  // write is unresolved at terminalization, so the record reports
+  // uncertainty instead of a clean cancelled/failed claim: the value could
+  // still land after the record is immutable.
   expect(Date.now() - startedAt).toBeLessThan(5000);
-  expect(["cancelled", "failed"].includes(record.lifecycle)).toBe(true);
+  expect(record.lifecycle).toBe("store-unavailable");
+  expect(record.nextAction).toBe("check-secure-store");
   expect((await readProbeAttempt(root, OTHER_ID)).lifecycle).toBe(record.lifecycle);
 });
 
@@ -1144,18 +1148,18 @@ test("a write completing after the deadline leaves no credential visible", async
   const { record } = await liveProbe("fixture-probe-host",
     { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 100 },
     { ...ports, now: () => 1800000000000, id: () => OTHER_ID }, root);
-  // Bounded by the deadline even though the write settles later. The
-  // terminal state is deadline-driven (cancelled wins the owned timer;
-  // a Schway-internal timeout firing first reports failed instead) — both
-  // are terminal non-success, and the guarantee under test is boundedness
-  // plus no visible credential.
+  // Bounded by the deadline even though the write settles later. The write
+  // is unresolved when the deadline terminalizes, so the record reports
+  // uncertainty (never a clean cancelled/failed claim it cannot verify).
   expect(Date.now() - startedAt).toBeLessThan(5000);
-  expect(["cancelled", "failed"].includes(record.lifecycle)).toBe(true);
+  expect(record.lifecycle).toBe("store-unavailable");
+  expect(record.nextAction).toBe("check-secure-store");
   await new Promise(r => setTimeout(r, 700));
-  // The late settlement was removed again: final visibility is fenced, and
-  // the terminal record is stable regardless of which timeout won.
+  // The late settlement was removed again: final visibility is fenced. The
+  // published uncertainty stays conservative — a later clean-up cannot
+  // downgrade an immutable terminal record.
   expect(backend.size).toBe(0);
-  expect((await readProbeAttempt(root, OTHER_ID)).lifecycle).toBe(record.lifecycle);
+  expect((await readProbeAttempt(root, OTHER_ID)).lifecycle).toBe("store-unavailable");
 });
 
 test("invalidation never removes a concurrent legitimate credential", async () => {
@@ -1319,4 +1323,37 @@ test("class-backed stores keep their prototype methods through the seam", async 
   expect(record.lifecycle).toBe("observed-ready");
   // The refresh reached the class store's own set (not a failed-closed write).
   expect(JSON.parse(backend.get("grok-subscription:xai")!).accessToken).toBe("new-access");
+});
+
+test("a post-deadline landing whose cleanup fails never publishes a clean cancelled", async () => {
+  const root = setup();
+  const expired = JSON.stringify({ accessToken: "old-access", refreshToken: "refresh-token", obtainedAt: 0, expiresAt: 1 });
+  const backend = new Map<string, string>();
+  // The write outlives the 100ms deadline, then lands; its cleanup fails.
+  // The record is immutable by then, so it must already state uncertainty.
+  const store: HostCredentialStore & { compareAndDelete(identity: { account: string }, expected: string): Promise<boolean> } = {
+    get: async () => expired,
+    set: async (identity, value) => {
+      await new Promise(r => setTimeout(r, 300));
+      backend.set(identity.account, value);
+    },
+    delete: async identity => backend.delete(identity.account),
+    compareAndDelete: async () => { throw new Error("backend down"); },
+  };
+  const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, store, fetch: async (input: any, init?: any) => {
+    const url = String(typeof input === "string" ? input : input.url);
+    if (url.toLowerCase().includes("token")) {
+      return new Response(JSON.stringify({ access_token: "new-access", refresh_token: "refresh-token", expires_in: 3600 }), { status: 200 });
+    }
+    return successFetch("late")(input, init);
+  } });
+  const { record } = await liveProbe("fixture-probe-host",
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 100 },
+    { ...ports, now: () => 1800000000000, id: () => OTHER_ID }, root);
+  expect(record.lifecycle).toBe("store-unavailable");
+  expect(record.nextAction).toBe("check-secure-store");
+  await new Promise(r => setTimeout(r, 500));
+  // The late value stayed visible and the durable record says so.
+  expect(backend.size).toBe(1);
+  expect((await readProbeAttempt(root, OTHER_ID)).lifecycle).toBe("store-unavailable");
 });

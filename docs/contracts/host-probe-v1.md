@@ -75,7 +75,11 @@ Each record carries four labeled entries that cannot stand in for each other:
   instead of wedging the deadline. Production uses the supported Schway
   guard seam (schway#416, landed): post-terminal writes are refused on
   Schway's own default native store, so no late settlement becomes
-  credential evidence.
+  credential evidence. A terminal record written while a credential write
+  is still unresolved, or after a cleanup failed to verify, reports
+  `store-unavailable` / `check-secure-store`, never a clean
+  cancelled/failed claim. This is conservative: a later successful cleanup
+  cannot downgrade the immutable record.
 - `renewal` / `renewal`: always `unobserved` with zero attempts — never a
   readiness or success claim. The renewal observation carries a validated
   per-send ledger (one `{inference, token, confirmed, admission}` entry per
@@ -114,6 +118,25 @@ counted per send with confirmation, fail-closed on violation). The exact
 per-send counts persist in the renewal observation ledger (confirmed entries
 only) and surface in the self sample;
 a successful login alone never becomes renewal evidence.
+
+## Declared residuals
+
+These are bounded and tracked. The probe never claims them as guaranteed.
+
+- **Cross-process cancel during an unresolved write.** Unresolved-write
+  tracking is process-local. A `cancel <id>` or `reconcile` from another
+  process can publish `cancelled`/`interrupted` while the probing process
+  still has a backend write in flight. The probing process still removes a
+  late landing via atomic compare-and-delete. A credential stays visible
+  behind a clean `cancelled` only if that compare-and-delete also fails.
+  Durable cleanup-pending state is deferred.
+- **Probing-process crash during an unresolved write.** Restart
+  reconciliation records `interrupted` (outcome unknown), never success.
+  This is the crash-orphan class already preserved as evidence.
+- **Schway lock stale recovery.** The pinned release's directory lock can,
+  after a crashed holder, admit two Schway-mediated holders under a
+  three-way stale-breaker interleave. Crash-safe locking, plus a lock-root
+  override for embedder lock tests, is tracked by schway#428.
 
 ## Evidence
 

@@ -49,6 +49,11 @@ every lock — so a hung backend fails closed instead of wedging the deadline.
 Production uses the supported Schway guard seam (schway#416, landed in the
 pinned release): post-terminal writes are refused on Schway's own default
 native store, so no key-scheme mirroring or unwrapped path remains.
+Uncertainty is never understated in-process: a record terminalized while a
+credential write is unresolved, or after its cleanup failed, reports
+`store-unavailable`. Cross-process cancel during an unresolved write and
+crash-recovery overlap in the pinned Schway lock (schway#428) remain bounded,
+declared residuals (see the contract).
 
 ## Evidence stays installation-local and bounded
 

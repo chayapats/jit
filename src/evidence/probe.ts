@@ -399,6 +399,29 @@ const probeDeadlines = new Map<string, { startedAt: number; deadlineMs: number }
  */
 const cleanupUncertainIds = new Set<string>();
 
+/**
+ * Backend credential writes per attempt that were initiated but whose final
+ * visibility is not yet verified (not landed-and-kept while started, not
+ * cleaned, not rejected). A terminal record written while any remain
+ * reports store-unavailable: the late value may still land after the
+ * record is immutable, so a clean cancelled/failed claim would understate
+ * visibility. Conservative by design: a later successful cleanup cannot
+ * downgrade the already-published uncertainty.
+ */
+const unresolvedWrites = new Map<string, number>();
+
+function resolveWrite(id: string): void {
+  const count = unresolvedWrites.get(id);
+  if (count === undefined) return;
+  if (count <= 1) unresolvedWrites.delete(id);
+  else unresolvedWrites.set(id, count - 1);
+}
+
+/** True when the attempt cannot claim clean final credential visibility. */
+function cleanupUnverified(id: string): boolean {
+  return cleanupUncertainIds.has(id) || (unresolvedWrites.get(id) ?? 0) > 0;
+}
+
 /** Marker for a credential-cleanup outcome that could not be verified; never carries secret material.
  * Sets the same `cleanupUncertain` flag Schway's guarded wrapper uses, so the
  * pinned release preserves it through `preserveRefusal` instead of
@@ -849,7 +872,7 @@ export async function cancelProbeAttempt(root: string, id: string): Promise<Prob
   // A failed settlement-attached cleanup marks the attempt uncertain, so
   // the record reports store-unavailable instead of a clean cancelled claim.
   await settleInflightWrites(id);
-  const uncertain = cleanupUncertainIds.has(id);
+  const uncertain = cleanupUnverified(id);
   const { record } = await transitionTerminal(root, id, current => ({
     ...current, lifecycle: uncertain ? "store-unavailable" as const : "cancelled",
     nextAction: uncertain ? "check-secure-store" as const : "inspect-sanitized-failure",
@@ -984,7 +1007,7 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
     // the record reports store-unavailable instead of a clean cancelled
     // claim over a possibly visible credential.
     await settleInflightWrites(id);
-    const uncertain = cleanupUncertainIds.has(id);
+    const uncertain = cleanupUnverified(id);
     const { record } = await transitionTerminal(root, id, current => {
       const renewal = current.observations.find(item => item.observation === "renewal")!;
       const event = uncertain ? "store" as const : liveEvent;
@@ -1161,6 +1184,7 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
         const slot: { raw: Promise<void> | null } = { raw: null };
         const outcome = await (async () => {
           const pending = fencedStoreWrite(root, id, effective, () => {
+            unresolvedWrites.set(id, (unresolvedWrites.get(id) ?? 0) + 1);
             slot.raw = store.set(identity, value);
             return slot.raw;
           });
@@ -1184,7 +1208,11 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
             } catch (error) {
               cleanupUncertainIds.add(id);
               throw cleanupUncertainError(error);
+            } finally {
+              resolveWrite(id);
             }
+          } else {
+            resolveWrite(id);
           }
           return;
         }
@@ -1200,28 +1228,38 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
           const remaining = budget === undefined
             ? 0
             : budget.deadlineMs - (Date.now() - budget.startedAt);
-          const landed = remaining > 0 && await Promise.race([
-            raw.then(() => true, () => false),
-            new Promise<false>(resolve => setTimeout(() => resolve(false), remaining)),
-          ]);
-          if (landed) {
+          const settlement = remaining > 0
+            ? await Promise.race([
+              raw.then(() => "landed" as const, () => "rejected" as const),
+              new Promise<"pending">(resolve => setTimeout(() => resolve("pending"), remaining)),
+            ])
+            : "pending" as const;
+          if (settlement === "landed") {
             try {
               await store.compareAndDelete(identity, value);
             } catch (error) {
               cleanupUncertainIds.add(id);
               throw cleanupUncertainError(error);
+            } finally {
+              resolveWrite(id);
             }
+          } else if (settlement === "rejected") {
+            // Nothing landed: no value can be visible.
+            resolveWrite(id);
           } else {
-            // Still in flight past the bound: best-effort tracked cleanup
-            // on eventual settlement; failure marks the attempt uncertain
-            // instead of being swallowed.
+            // Still in flight past the bound: the write stays unresolved,
+            // so terminalization reports store-unavailable rather than a
+            // clean claim. Cleanup on eventual settlement stays best-effort
+            // and tracked; it cannot downgrade a published record.
             const late = raw.then(async () => {
               try {
                 await store.compareAndDelete(identity, value);
               } catch {
-                cleanupUncertainIds.add(id);
+                // After the run released its tracking the record is
+                // immutable; adding then would only leak the id.
+                if (inflightWrites.has(id)) cleanupUncertainIds.add(id);
               }
-            }, () => {});
+            }, () => {}).finally(() => resolveWrite(id));
             inflight.add(late);
             late.then(() => inflight.delete(late), () => inflight.delete(late));
           }
@@ -1270,8 +1308,11 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
     // The inference result arrived too late: record that inference was
     // attempted but keep the cancelled lifecycle so it can never read success.
     // The live-request observation stays non-success; the durable send ledger
-    // is retained for audit either way.
-    return abortTo(credential, "unobserved");
+    // is retained for audit either way. Awaited so the tracking cleanup in
+    // `finally` cannot run while abortTo still settles in-flight writes:
+    // releasing it early dropped the settlement budget and the uncertainty
+    // flags, publishing a clean cancelled over a possibly visible credential.
+    return await abortTo(credential, "unobserved");
   }
   const terminalFor = (current: ProbeAttempt, liveEvent: ProbeEvent) => {
     const renewal = current.observations.find(item => item.observation === "renewal")!;
@@ -1293,7 +1334,7 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
     // every other terminal claim, so the record reports store-unavailable
     // instead of success, cancelled, or a clean failure over a possibly
     // visible credential.
-    if (cleanupUncertainIds.has(id)) return terminalFor(current, "store");
+    if (cleanupUnverified(id)) return terminalFor(current, "store");
     if (effective.aborted) {
       return { ...terminalFor(current, "failed"), lifecycle: "cancelled", nextAction: "inspect-sanitized-failure" };
     }
@@ -1305,6 +1346,7 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
     inflightWrites.delete(id);
     probeDeadlines.delete(id);
     cleanupUncertainIds.delete(id);
+    unresolvedWrites.delete(id);
   }
 }
 
