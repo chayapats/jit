@@ -1,4 +1,5 @@
-import { safeAlias } from "../evidence/contract";
+import { safeAlias, safeVersion } from "../evidence/contract";
+import type { TestedRevisions } from "./revisions";
 
 /** Versioned ops record kinds. None of these grant authority to login, bill, reboot or publish. */
 export const opsSchemas = ["jit.ops.drill/v1", "jit.ops.profile/v1", "jit.ops.release/v1"] as const;
@@ -8,7 +9,7 @@ export type OpsSchema = typeof opsSchemas[number];
 export interface LoadDrillConfig {
   /** Representative project groups (one project + topic each). */
   groups: number;
-  /** Scripted PR-snapshot fixture jobs spread across the groups. */
+  /** Static PR candidates (snapshot → review → alert admission) spread across the groups. */
   prSnapshots: number;
   /** Read-only memory queries against committed state. */
   memoryQueries: number;
@@ -48,14 +49,26 @@ export interface DrillMeasurements {
   sentDeliveries: number;
   unknownDeliveries: number;
   failedDeliveries: number;
+  /** Succeeded `pr.snapshot` plus `pr.review` jobs. */
   succeededJobs: number;
   waitingJobs: number;
   cancelledJobs: number;
+  /** Committed private PR reports and the alert intents admitted from them. */
+  prReports: number;
+  alertIntents: number;
+  /** Bytes of the verified project export artifact and of the verified managed backup image (0 when not produced). */
+  exportBytes: number;
+  backupBytes: number;
+  /** Owner command acknowledgment (receipt returned) and read-request duration maxima, wall milliseconds. */
+  commandAckMaxMs: number;
+  requestMaxMs: number;
+  /** Owner commands issued through the Application boundary during the drill. */
+  commands: number;
 }
 
 /** Bounded drill outcome with fixed safe next actions. */
 export const drillActions = ["none", "inspect-sanitized-drill", "relieve-disk-pressure", "check-local-drill-configuration",
-  "retry-bounded-drill", "resolve-blocked-work"] as const;
+  "retry-bounded-drill", "resolve-blocked-work", "restore-engine", "integrate-pending-contract"] as const;
 export type DrillAction = typeof drillActions[number];
 
 /** Versioned drill record persisted under private `.local/ops-evidence`. */
@@ -64,7 +77,8 @@ export interface LoadDrillRecord {
   id: string;
   observedAt: string;
   installationLabel: string;
-  versions: { app: string; bun: string | null; schema: number };
+  /** Tested revisions: app version, Bun, drilled schema, git commit, source content hash and engine contracts. */
+  versions: TestedRevisions;
   config: LoadDrillConfig;
   legs: DrillLeg[];
   measurements: DrillMeasurements;
@@ -155,6 +169,29 @@ export function safeEvidenceId(value: unknown): string {
 const exact = (o: unknown, keys: string[]): o is Record<string, unknown> => !!o && typeof o === "object" && !Array.isArray(o) &&
   Object.keys(o).length === keys.length && keys.every(k => Object.hasOwn(o, k));
 
+/** Exact measurement field set, shared by drill and profile validation. */
+export const measurementKeys = ["peakRssBytes", "stateBytesBefore", "stateBytesAfter", "stateGrowthBytes", "diskPressure", "queueWaitMs",
+  "stopAckMs", "fetchCalls", "sentDeliveries", "unknownDeliveries", "failedDeliveries", "succeededJobs", "waitingJobs", "cancelledJobs",
+  "prReports", "alertIntents", "exportBytes", "backupBytes", "commandAckMaxMs", "requestMaxMs", "commands"];
+
+const contractId = /^[a-z][a-z0-9_.-]{0,63}\/v[0-9]{1,3}$/;
+
+/** Rejects revisions that are not plain identity values (versions, hex digests, contract IDs). */
+export function validateRevisions(value: unknown): asserts value is TestedRevisions {
+  const fail = (): never => { throw new Error("invalid_ops_record"); };
+  if (!exact(value, ["app", "bun", "schema", "git", "contentHash", "engine"])) fail();
+  const v = value as TestedRevisions;
+  if (safeVersion(v.app) !== v.app || (v.bun !== null && safeVersion(v.bun) !== v.bun) ||
+      !Number.isSafeInteger(v.schema) || v.schema < 1 || v.schema > 100000 ||
+      (v.git !== null && (typeof v.git !== "string" || !/^[a-f0-9]{40}$/.test(v.git))) ||
+      (v.contentHash !== null && (typeof v.contentHash !== "string" || !/^[a-f0-9]{64}$/.test(v.contentHash)))) fail();
+  const e = v.engine;
+  if (!exact(e, ["package", "release", "bridge", "snapshot", "snapshotFormat"]) ||
+      (e.package !== null && safeVersion(e.package) !== e.package) ||
+      [e.release, e.bridge, e.snapshot].some(c => typeof c !== "string" || !contractId.test(c)) ||
+      !Number.isSafeInteger(e.snapshotFormat) || e.snapshotFormat < 1 || e.snapshotFormat > 1000) fail();
+}
+
 const finitePositive = (v: unknown, max: number): v is number => Number.isSafeInteger(v) && (v as number) >= 1 && (v as number) <= max;
 
 /** Rejects malformed, unknown-field or oversized drill records before persistence or export. */
@@ -165,9 +202,7 @@ export function validateDrillRecord(value: unknown): asserts value is LoadDrillR
   if (r.schema !== "jit.ops.drill/v1" || !uuidPattern.test(r.id) ||
       typeof r.observedAt !== "string" || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(r.observedAt) || !Number.isFinite(Date.parse(r.observedAt)) ||
       safeOpsAlias(r.installationLabel) !== r.installationLabel || !["passed", "blocked", "failed"].includes(r.outcome) || !drillActions.includes(r.nextAction)) fail();
-  if (!exact(r.versions, ["app", "bun", "schema"]) || typeof r.versions.app !== "string" || r.versions.app.length > 64 ||
-      (r.versions.bun !== null && (typeof r.versions.bun !== "string" || r.versions.bun.length > 64)) ||
-      !Number.isSafeInteger(r.versions.schema) || r.versions.schema < 1) fail();
+  validateRevisions(r.versions);
   const c = r.config;
   if (!exact(c, ["groups", "prSnapshots", "memoryQueries", "deliveries", "schedules", "diskWatermarkBytes", "deadlineMs"]) ||
       !finitePositive(c.groups, 8) || !finitePositive(c.prSnapshots, 64) || !finitePositive(c.memoryQueries, 256) ||
@@ -180,8 +215,7 @@ export function validateDrillRecord(value: unknown): asserts value is LoadDrillR
         safeNote(leg.detail) !== leg.detail || safeNote(leg.sampleLimit) !== leg.sampleLimit) fail();
   }
   const m = r.measurements;
-  if (!exact(m, ["peakRssBytes", "stateBytesBefore", "stateBytesAfter", "stateGrowthBytes", "diskPressure", "queueWaitMs",
-      "stopAckMs", "fetchCalls", "sentDeliveries", "unknownDeliveries", "failedDeliveries", "succeededJobs", "waitingJobs", "cancelledJobs"])) fail();
+  if (!exact(m, measurementKeys)) fail();
   for (const [key, v] of Object.entries(m)) {
     if (key === "diskPressure") { if (typeof v !== "boolean") fail(); continue; }
     if (key === "stopAckMs") { if (v !== null && (!Number.isSafeInteger(v) || v < 0 || v > 3600000)) fail(); continue; }
