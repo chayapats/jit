@@ -637,7 +637,7 @@ export function exportsPage(state: { project: Project; manifests: import("./ops/
   const { project, manifests, preview } = state;
   const items = manifests.map(m => `<article class="team-card" id="export-${m.id}"><header><h3><a href="/projects/${project.id}/exports/${m.id}">${escape(m.id)}</a></h3><span class="job-status" data-state="${m.state}">${escape(m.state)}</span></header>
     <p>${time(m.createdAt)} · ประวัติ ${m.scope.includeHistory ? "รวมข้อความดิบ" : "เฉพาะ metadata"} · claims ${m.counts.claims} · งาน ${m.counts.jobs} · exclusions ${m.exclusions.length}</p>
-    <p><small>hash ${escape(m.artifact.hash.slice(0, 16))}… · ${m.artifact.bytes} bytes · tombstones ${m.lifecycle.tombstonesApplied}</small></p></article>`).join("");
+    <p><small>${m.artifact ? `hash ${escape(m.artifact.hash.slice(0, 16))}… · ${m.artifact.bytes} bytes` : `ไม่สำเร็จ ${escape(m.failure?.reason ?? "export_failed")} · ไม่มีไฟล์`} · tombstones ${m.lifecycle.tombstonesApplied}</small></p></article>`).join("");
   return shell("ส่งออกข้อมูล", { project, workspace, csrf, section: "memory" }, `<div class="content"><section class="hero"><p class="eyebrow">ops.project_export/v1</p><h2>ส่งออก ${escape(project.name)}</h2><p>ไฟล์ JSON ที่ตรวจซ้ำได้ ไม่มีความลับ ไม่ปลุกข้อมูลที่ลบ/ลืม ประวัติข้อความดิบรวมเฉพาะเมื่อติ๊กเลือก</p></section>
     <details class="team-card" open><summary>ดูตัวอย่างก่อนส่งออก</summary><p>topics ${preview.counts.topics} · messages ${preview.counts.messages} · tasks ${preview.counts.tasks} · decisions ${preview.counts.decisions} · claims ${preview.counts.claims} · exclusions ${preview.manifest.exclusions.length} · missing ${preview.manifest.missingRefs.length}</p>
     <p><small>${escape(preview.manifest.lifecycle.note)}</small></p>
@@ -655,7 +655,8 @@ export function exportDetailPage(state: { project: Project; manifest: import("./
     <article class="team-card"><h3>ขอบเขตและความครบถ้วน</h3><p>topics ${m.counts.topics} · messages ${m.counts.messages} · tasks ${m.counts.tasks} · decisions ${m.counts.decisions} · claims ${m.counts.claims} · jobs ${m.counts.jobs} · deliveries ${m.counts.deliveries}</p>
     <p>exclusions ${m.exclusions.length} · missing ${m.missingRefs.length} · การลบที่ค้าง ${m.pendingDeletions.length} · tombstones ${m.lifecycle.tombstonesApplied}</p>
     <p>สำรองที่ยังเก็บข้อมูลนี้: ${m.residuals.backups.length ? escape(m.residuals.backups.join(", ")) : "ไม่มี"} · ภายนอก: ${escape(m.residuals.external.join(", "))}</p>
-    <p><small>hash ${escape(m.artifact.hash)} · ${m.artifact.bytes} bytes · ${escape(m.artifact.path)}</small></p></article>
+    <p>รูปแบบ ${m.formatVersion} · schema ${m.appSchema} · ไม่ใช่สำเนาสำรองที่กู้คืนได้ และไม่ได้ลบสำเนาภายนอก · ไม่มีความลับหรือ native session · ข้อความดิบ ${m.disclosure.rawHistory === "included" ? "รวม" : "เฉพาะ metadata"}</p>
+    <p><small>${m.artifact ? `hash ${escape(m.artifact.hash)} · ${m.artifact.bytes} bytes · ${m.artifact.storage === "sqlite" ? `<a href="${escape(m.artifact.downloadPath)}" download>ดาวน์โหลด JSON</a>` : `ไฟล์รูปแบบเดิม ${escape(m.artifact.path)} (ไม่ได้ยืนยัน fsync)`}` : `ส่งออกไม่สำเร็จ: ${escape(m.failure?.reason ?? "export_failed")} (ขั้น ${escape(m.failure?.stage ?? "stage")}) · ไม่มีไฟล์ถูกเผยแพร่`}</small></p></article>
     <p><a href="/projects/${project.id}/exports">กลับไปรายการส่งออก</a></p></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
 }
 
