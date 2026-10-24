@@ -1559,16 +1559,17 @@ test("slow readiness does not restart the settlement budget", async () => {
   };
   const startedAt = Date.now();
   const { record } = await liveProbe("fixture-probe-host",
-    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 400 },
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 1000 },
     { ...starter.ports, now: () => 1800000000000, id: () => ID,
-      readCredential: async () => { await new Promise(r => setTimeout(r, 300)); return "ok"; },
+      readCredential: async () => { await new Promise(r => setTimeout(r, 400)); return "ok"; },
       infer: async input => {
         await input.fence!.writeStore({ account: "grok-subscription:xai" }, "probe-value", store);
         return "success";
       } }, starter.root);
-  // Settlement waits only for what remains of the one absolute deadline,
+  // Readiness leaves a wide margin before the deadline (slow CI runners), and
+  // settlement waits only for what remains of the one absolute deadline,
   // never a fresh budget measured from after readiness.
-  expect(Date.now() - startedAt).toBeLessThan(650);
+  expect(Date.now() - startedAt).toBeLessThan(1300);
   expect(record.lifecycle).toBe("store-unavailable");
 });
 

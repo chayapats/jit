@@ -56,6 +56,8 @@ const MAX_TITLE_BYTES = 500;
  * on code-point boundaries ({@link truncateUtf8}); identities (paths, names) are never stored cut and
  * are dropped instead. Every cut or drop is a `truncated` coverage entry (`max_payload_bytes`,
  * `max_diff_bytes`, `max_evidence_bytes`, ...), so the snapshot reads partial/incomplete, never complete.
+ * Coverage reasons are service-owned codes only: the connector normalizes adapter denials
+ * (`prDenialReason` in ./github.ts), so no adapter text bypasses the budget through coverage.
  */
 export function collectSnapshotMaterials(
   candidate: ReviewCandidate,
@@ -163,6 +165,14 @@ export function collectSnapshotMaterials(
       files.push({ path: file.filename, status: file.status, patch, truncated: false });
       diffBytes += kept?.bytes ?? 0;
       collected += 1;
+    }
+    // Reaching maxFiles exactly at a page boundary is still a cap when the provider reports more pages.
+    if (collected >= monitorLimits.maxFiles && enumerationComplete && listed.incomplete) {
+      enumerationComplete = false;
+      entries.push({
+        kind: "files", path: null, state: "truncated",
+        immutableRef: range, limit: monitorLimits.maxFiles, bytes: collected, reason: "max_files",
+      });
     }
     if (collected >= monitorLimits.maxFiles || payloadExhausted) break;
     if (listed.incomplete) {

@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Application } from "../src/application";
+import { AppError } from "../src/errors";
 import { readConfig } from "../src/config";
 import { TransactionStore } from "../src/store";
 import { JobQueue } from "../src/jobs/queue";
@@ -13,7 +14,9 @@ import {
   FakeGitHubFixture,
   TrustedGitHubConnector,
   captureSnapshot,
+  collectSnapshotMaterials,
   ensurePrSchema,
+  prDenialReason,
   fencePrCandidateJobs,
   fixturePull,
   mutateMonitor,
@@ -527,6 +530,59 @@ test("maxPayloadBytes is one cumulative UTF-8 budget across every snapshot field
     expect(snapshot.coverage.overall).toBe("partial");
     expect(f.store.read(tx => readCandidate(tx, f.project.id, candidate.id).status)).toBe("partial");
   }
+});
+
+test("adapter denial reasons become bounded service codes; huge or credential-bearing text never reaches the snapshot", async () => {
+  const f = await fixture();
+  const maxPayloadBytes = 300;
+  const monitor = enable(f, { limits: { maxPayloadBytes } });
+  const base = sha(1), head = sha(2);
+  const canary = "ghp_CanaryDenialToken0123456789abcdef";
+  const huge = `${canary} ${"ปฏิเสธ".repeat(5_000)}`;
+  f.github.pulls = [fixturePull({ number: 19, body: "Fixes #12 refs docs/spec/a.md docs/spec/b.md", base: { sha: base, ref: "main" }, head: { sha: head, ref: "x" } })];
+  setFiles(f, 19, base, head, [{ filename: "a.ts", patch: "@@\n+a" }]);
+  f.github.issues.set(12, { denied: true, reason: huge });
+  f.github.specs.set(`${head}:spec/a.md`, { denied: true, reason: `forbidden ${canary}` });
+  const port = f.github as FakeGitHubFixture & { readSpec: FakeGitHubFixture["readSpec"] };
+  const readSpec = port.readSpec.bind(port);
+  port.readSpec = (path, ref) => { if (path === "spec/b.md") throw new AppError(`pr_${canary}`); return readSpec(path, ref); };
+  f.github.checks.set(head, { denied: true, reason: "rate limited (429)" });
+  const conn = connector(f, monitor);
+  f.store.transaction(tx => pollMonitorCatchUp(tx, f.project.id, monitor.id, conn, f.clock.now));
+  const candidate = f.store.read(tx => readCandidates(tx, f.project.id, monitor.id)[0]!);
+  const snapshot = f.store.transaction(tx => captureSnapshot(tx, f.project.id, candidate.id, conn, f.clock.now))!;
+  const reasons = Object.fromEntries(snapshot.coverage.entries.filter(e => e.state === "unavailable" && e.kind !== "enumeration").map(e => [`${e.kind}:${e.path ?? ""}`, e.reason]));
+  expect(reasons).toEqual({ "issue:#12": "issue_unavailable", "spec:spec/a.md": "spec_forbidden", "spec:spec/b.md": "spec_unavailable", "ci:": "ci_rate_limited" });
+  expect(snapshot.ci).toEqual([{ name: "checks", conclusion: null, available: false, reason: "ci_rate_limited" }]);
+  const stored = f.store.read(tx => tx.get<{ record_json: string }>("SELECT record_json FROM pr_snapshots WHERE candidate_id = ?", candidate.id)!.record_json);
+  expect(stored).not.toContain("Canary");
+  expect(stored).not.toContain("ปฏิเสธ");
+  expect(Buffer.byteLength(stored)).toBeLessThan(maxPayloadBytes + 4_000);
+  expect(contentBytes(snapshot)).toBeLessThanOrEqual(maxPayloadBytes);
+  expect(prDenialReason("issue", "x".repeat(65) + "not_found")).toBe("issue_unavailable");
+  expect(prDenialReason("ci", "not_allowed")).toBe("ci_not_allowed");
+});
+
+test("maxFiles reached exactly at a provider page boundary leaves enumeration incomplete", async () => {
+  const f = await fixture();
+  const monitor = enable(f, { limits: { pageSize: 1, maxFiles: 1 } });
+  f.github.pageSize = 1;
+  const base = sha(1), head = sha(2);
+  f.github.pulls = [fixturePull({ number: 20, base: { sha: base, ref: "main" }, head: { sha: head, ref: "x" } })];
+  setFiles(f, 20, base, head, [{ filename: "a.ts", patch: "@@\n+a" }, { filename: "b.ts", patch: "@@\n+b" }]);
+  f.github.checks.set(head, []);
+  const conn = connector(f, monitor);
+  f.store.transaction(tx => pollMonitorCatchUp(tx, f.project.id, monitor.id, conn, f.clock.now));
+  const candidate = f.store.read(tx => readCandidates(tx, f.project.id, monitor.id)[0]!);
+  const snapshot = f.store.transaction(tx => captureSnapshot(tx, f.project.id, candidate.id, conn, f.clock.now))!;
+  expect(snapshot.files.map(file => file.path)).toEqual(["a.ts"]);
+  expect(snapshot.coverage.enumerationComplete).toBe(false);
+  expect(snapshot.coverage.overall).toBe("incomplete");
+  expect(snapshot.coverage.entries.some(e => e.kind === "files" && e.reason === "max_files" && e.state === "truncated")).toBe(true);
+  // Exactly maxFiles files with no further page stays complete.
+  setFiles(f, 20, base, head, [{ filename: "a.ts", patch: "@@\n+a" }]);
+  const exact = collectSnapshotMaterials(candidate, monitor.limits, conn).snapshot;
+  expect(exact.coverage).toMatchObject({ enumerationComplete: true, overall: "complete" });
 });
 
 test("store reopen preserves monitors checkpoints and candidates", async () => {
