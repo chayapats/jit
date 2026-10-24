@@ -24,6 +24,7 @@ import { deletedSource } from "../src/memory/read";
 import { commitOutputSource } from "../src/sources";
 import { readExportArtifact } from "../src/ops/export";
 import { createWebHandler } from "../src/web";
+import { registerTaskEvidenceArtifact } from "../src/tasks";
 
 const roots: string[] = [], stores: TransactionStore[] = [], live: JobQueue[] = [];
 afterEach(async () => {
@@ -180,7 +181,7 @@ test("preview shows bounded collateral, confirm fences purges and lifecycle deni
   expect(preview.preview.affected.pendingJobs.map(j => j.id)).toContain(discussion.discussion!.jobId);
   expect(preview.preview.affected.nativeSessions.length).toBeGreaterThan(0);
   expect(preview.preview.affected.obligations.map(o => o.id)).toContain(proposed.task.id);
-  expect(preview.preview.truncated).toEqual({ sources: false, claims: false, contexts: false, pendingJobs: false, nativeSessions: false, backups: false, exports: false, obligations: false, taskProposals: false, deliveries: false });
+  expect(preview.preview.truncated).toEqual({ sources: false, claims: false, contexts: false, pendingJobs: false, nativeSessions: false, backups: false, exports: false, obligations: false, taskProposals: false, taskEvidence: false, deliveries: false });
   expect(preview.preview.blockers).toEqual([]);
   expect(preview.preview.inventoryDigest).toMatch(/^[a-f0-9]{64}$/);
   expect(preview.preview.wholeSession.required).toBe(false);
@@ -921,6 +922,40 @@ test("historical task proposals citing the deleted generation are disclosed and 
   const raw = f.rt.store.read(tx => [...tx.all<{ t: string }>("SELECT title || summary AS t FROM task_proposals"),
     ...tx.all<{ t: string }>("SELECT result_json AS t FROM command_receipts")].map(r => r.t).join("\n"));
   expect(raw).not.toContain("history-canary-191");
+});
+
+test("deleting the evidence an active ready-for-review task depends on is a named blocker, not a silent downgrade", async () => {
+  const f = await fixture();
+  const a = project(f, "โครงการหลักฐาน", "หัวข้อหลักฐาน");
+  const proposed = f.rt.app.execute(actor(f), { kind: "task.propose", requestId: rid(), projectId: a.id, expectedRevision: topicRevision(f, a),
+    payload: { topicId: a.topic.id, title: "ตรวจงานด้วยหลักฐาน", summary: "รอผลตรวจที่ครบ" } });
+  const taskId = proposed.task.id as string;
+  const accepted = f.rt.app.execute(actor(f), { kind: "task.accept", requestId: rid(), projectId: a.id, expectedRevision: proposed.task.revision,
+    payload: { taskId, proposalId: proposed.proposal.id } });
+  const evidence = f.rt.store.transaction(tx => {
+    const source = commitOutputSource(tx, { projectId: a.id, participantId: "review", runId: rid(), text: "รายงานหลักฐาน evidence-canary-331 ครบถ้วน", committedAt: f.clock.now });
+    return registerTaskEvidenceArtifact(tx, { projectId: a.id, taskId, source, outcome: "complete", workType: "review", deliveryState: null, now: f.clock.now });
+  });
+  f.rt.app.execute(actor(f), { kind: "task.set_policy", requestId: rid(), projectId: a.id, expectedRevision: f.rt.app.task(actor(f), a.id, taskId).task.revision,
+    payload: { taskId, policyKind: "evidence_satisfied" } });
+  void accepted;
+  const ready = f.rt.app.task(actor(f), a.id, taskId).task;
+  expect(ready.state).toBe("ready_for_review");
+  const preview = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, evidence.source)));
+  expect(preview.preview.affected.taskEvidence).toEqual([{ taskId, taskState: "ready_for_review", taskRevision: ready.revision,
+    artifactId: evidence.id, revision: 1, latest: true, effect: "blocked_active_task" }]);
+  expect(preview.preview.blockers).toContain(`active_task_evidence:${taskId}`);
+  expect(() => f.rt.app.execute(actor(f), confirmCommand(f, a, preview.preview.id))).toThrow("memory_delete_blocked");
+  expect(f.rt.app.source(actor(f), a.id, evidence.source).state).toBe("available");
+  expect(f.rt.app.task(actor(f), a.id, taskId).task.state).toBe("ready_for_review");
+  // The owner-visible remedy: complete the task on that evidence. A closed task's artifact keeps its identity and reads unavailable.
+  f.rt.app.execute(actor(f), { kind: "task.complete", requestId: rid(), projectId: a.id, expectedRevision: f.rt.app.task(actor(f), a.id, taskId).task.revision,
+    payload: { taskId } });
+  const after = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, evidence.source)));
+  expect(after.preview.affected.taskEvidence).toEqual([expect.objectContaining({ artifactId: evidence.id, taskState: "completed", effect: "reference_unavailable" })]);
+  expect(after.preview.blockers).toEqual([]);
+  asConfirmed(f.rt.app.execute(actor(f), confirmCommand(f, a, after.preview.id, true, after.preview.wholeSession.required)));
+  expect(f.rt.app.task(actor(f), a.id, taskId).task.state).toBe("completed");
 });
 
 test("backups and incomplete-coverage exports are listed without trusting wall-clock order", async () => {

@@ -19,7 +19,7 @@ export const deleteOperationContract = "app.data_deletion_operation/v1" as const
 
 /** Bounded preview lists. Truncating any list that confirmation acts on is a named blocker, never silently complete. */
 export const deletePreviewBounds = Object.freeze({
-  sources: 1000, claims: 2000, contexts: 100, pendingJobs: 500, nativeSessions: 100, backups: 50, exports: 50, obligations: 100, taskProposals: 200, deliveries: 500,
+  sources: 1000, claims: 2000, contexts: 100, pendingJobs: 500, nativeSessions: 100, backups: 50, exports: 50, obligations: 100, taskProposals: 200, taskEvidence: 200, deliveries: 500,
 });
 /** Inventory scans page through whole tables; a table past `scanRows` blocks confirmation instead of hiding rows. */
 export const deleteInventoryPolicy = Object.freeze({ scanRows: 200_000, page: 500, closureRounds: 32, chunk: 400 });
@@ -102,6 +102,13 @@ export interface DeletionPreview {
     taskProposals: { taskId: string; taskState: string; proposalId: string; revision: number; current: boolean;
       effect: "redacted" | "blocked_active_task" }[];
     /**
+     * Task completion evidence artifacts whose exact source generation is affected. The latest artifact of an active
+     * task decides its readiness, so deleting it would silently downgrade the task: a named blocker until the owner
+     * completes, cancels or supersedes the task. Older or closed-task artifacts keep their identity and read unavailable.
+     */
+    taskEvidence: { taskId: string; taskState: string; taskRevision: number; artifactId: string; revision: number; latest: boolean;
+      effect: "blocked_active_task" | "reference_unavailable" }[];
+    /**
      * Local delivery copies: linked by provenance (the report's own source generation is affected, including
      * schedule summaries of derived outputs) or holding an exact quoted copy. Confirm deletes the report, cancels
      * unsent intents and redacts local text; sent/unknown intents keep their delivery-state metadata.
@@ -109,7 +116,7 @@ export interface DeletionPreview {
     deliveries: { intentId: string; reportId: string; projectId: string; status: string;
       evidence: "provenance" | "quoted_text"; effect: "cancel_and_redact" | "redact_keep_state" }[];
   };
-  truncated: { sources: boolean; claims: boolean; contexts: boolean; pendingJobs: boolean; nativeSessions: boolean; backups: boolean; exports: boolean; obligations: boolean; taskProposals: boolean; deliveries: boolean };
+  truncated: { sources: boolean; claims: boolean; contexts: boolean; pendingJobs: boolean; nativeSessions: boolean; backups: boolean; exports: boolean; obligations: boolean; taskProposals: boolean; taskEvidence: boolean; deliveries: boolean };
   /** Required whenever deletion removes a whole native session holding collateral, a shared topic identity or an unresolvable orphan. */
   wholeSession: { required: boolean; reason: string | null; reasons: string[]; sessionScope: string[] };
   /** Named conditions that disable confirmation (truncated/unreadable inventory, scan ceiling). */
@@ -322,6 +329,7 @@ interface Inventory {
   exports: DeletionPreview["affected"]["exports"];
   obligations: DeletionPreview["affected"]["obligations"];
   taskProposals: DeletionPreview["affected"]["taskProposals"];
+  taskEvidence: DeletionPreview["affected"]["taskEvidence"];
   deliveries: DeletionPreview["affected"]["deliveries"];
   /** Payload texts for the quoted-copy fallback; internal to the transaction, never persisted in a preview. */
   scrub: { long: string[]; short: string[] };
@@ -525,6 +533,7 @@ function buildInventory(tx: AppTransaction, scope: DeleteScope, env: DeletionEnv
     exports: retainedExports(tx, allSources, [...claims.values()], blockers),
     obligations: obligationsFor(tx, scope, allSources, blockers),
     taskProposals: taskProposalsFor(tx, allSources, blockers),
+    taskEvidence: taskEvidenceFor(tx, allSources, blockers),
     deliveries: [],
     scrub: { long: [], short: [] },
     blockers,
@@ -546,6 +555,7 @@ function buildInventory(tx: AppTransaction, scope: DeleteScope, env: DeletionEnv
     ["nativeSessions", inventory.sessions.length, deletePreviewBounds.nativeSessions], ["exports", inventory.exports.length, deletePreviewBounds.exports],
     ["obligations", inventory.obligations.length, deletePreviewBounds.obligations],
     ["taskProposals", inventory.taskProposals.length, deletePreviewBounds.taskProposals],
+    ["taskEvidence", inventory.taskEvidence.length, deletePreviewBounds.taskEvidence],
     ["deliveries", inventory.deliveries.length, deletePreviewBounds.deliveries]];
   for (const [name, size, bound] of sizes) if (size > bound) blockers.add(`inventory_truncated:${name}`);
   return inventory;
@@ -645,6 +655,30 @@ function taskProposalsFor(tx: AppTransaction, sources: SourceEntry[], blockers: 
       const effect = current && active ? "blocked_active_task" as const : "redacted" as const;
       if (effect === "blocked_active_task") blockers.add(`active_task_current_proposal:${row.taskId}`);
       out.push({ taskId: row.taskId, taskState: row.state ?? "missing", proposalId: row.id, revision: row.revision, current, effect });
+    }
+  }
+  return out;
+}
+
+/** Every task evidence artifact citing an affected exact source generation; the latest one of an active task blocks. */
+function taskEvidenceFor(tx: AppTransaction, sources: SourceEntry[], blockers: Set<string>): DeletionPreview["affected"]["taskEvidence"] {
+  const keys = new Set(sources.map(entry => sourceKey(entry.source)));
+  const out: DeletionPreview["affected"]["taskEvidence"] = [];
+  for (const batch of chunks([...new Set(sources.map(entry => entry.source.sourceId))])) {
+    for (const row of tx.all<{ id: string; taskId: string; revision: number; sourceId: string; sourceRevision: number; sourceGeneration: number;
+      state: string | null; taskRevision: number | null; latestRevision: number }>(
+      `SELECT e.id, e.task_id AS taskId, e.revision, e.source_id AS sourceId, e.source_revision AS sourceRevision, e.source_generation AS sourceGeneration,
+         t.state, t.task_revision AS taskRevision,
+         (SELECT max(l.revision) FROM task_evidence_artifacts l WHERE l.task_id = e.task_id) AS latestRevision
+       FROM task_evidence_artifacts e LEFT JOIN tasks t ON t.id = e.task_id
+       WHERE e.source_id IN (${marks(batch.length)})`, ...batch)) {
+      if (!keys.has(sourceKey({ sourceId: row.sourceId, revision: row.sourceRevision, generation: row.sourceGeneration }))) continue;
+      const latest = row.revision === row.latestRevision;
+      const active = ["proposed", "accepted", "ready_for_review"].includes(row.state ?? "");
+      const effect = latest && active ? "blocked_active_task" as const : "reference_unavailable" as const;
+      if (effect === "blocked_active_task") blockers.add(`active_task_evidence:${row.taskId}`);
+      out.push({ taskId: row.taskId, taskState: row.state ?? "missing", taskRevision: row.taskRevision ?? 0, artifactId: row.id,
+        revision: row.revision, latest, effect });
     }
   }
   return out;
@@ -767,6 +801,7 @@ function inventoryDigest(tx: AppTransaction, scope: DeleteScope, inventory: Inve
       `${sorted(s.collateral.sources.map(c => sourceKey(c.source))).join(",")}/${sorted(s.collateral.claims.map(c => c.claimId)).join(",")}`)),
     obligations: sorted(inventory.obligations.map(o => `${o.kind}/${o.id}/${o.revision}`)),
     taskProposals: sorted(inventory.taskProposals.map(p => `${p.taskId}/${p.proposalId}/${p.revision}/${p.taskState}/${p.current}`)),
+    taskEvidence: sorted(inventory.taskEvidence.map(e => `${e.taskId}/${e.taskRevision}/${e.taskState}/${e.artifactId}/${e.revision}/${e.latest}/${e.effect}`)),
     deliveries: sorted(inventory.deliveries.map(d => `${d.intentId}/${d.reportId}/${d.status}/${d.evidence}`)),
     backups: sorted(inventory.backups.map(b => `${b.id}/${b.state}`)),
     exports: sorted(inventory.exports.map(e => e.id)),
@@ -816,6 +851,7 @@ export function prepareDeletionPreview(tx: AppTransaction, command: DeletePrevie
   const exports = bounded(inventory.exports, deletePreviewBounds.exports);
   const obligations = bounded(inventory.obligations, deletePreviewBounds.obligations);
   const taskProposals = bounded(inventory.taskProposals, deletePreviewBounds.taskProposals);
+  const taskEvidence = bounded(inventory.taskEvidence, deletePreviewBounds.taskEvidence);
   const deliveries = bounded(inventory.deliveries, deletePreviewBounds.deliveries);
   const wholeSession = wholeSessionFor(tx, scope, inventory.sessions);
   const preview: DeletionPreview = {
@@ -833,11 +869,12 @@ export function prepareDeletionPreview(tx: AppTransaction, command: DeletePrevie
       exports: exports.items,
       obligations: obligations.items,
       taskProposals: taskProposals.items,
+      taskEvidence: taskEvidence.items,
       deliveries: deliveries.items,
     },
     truncated: { sources: sources.truncated, claims: claims.truncated, contexts: contexts.truncated, pendingJobs: pendingJobs.truncated,
       nativeSessions: sessions.truncated, backups: backups.truncated, exports: exports.truncated, obligations: obligations.truncated,
-      taskProposals: taskProposals.truncated, deliveries: deliveries.truncated },
+      taskProposals: taskProposals.truncated, taskEvidence: taskEvidence.truncated, deliveries: deliveries.truncated },
     wholeSession,
     blockers: [...inventory.blockers].sort(),
     inventoryDigest: inventoryDigest(tx, scope, inventory, wholeSession),
