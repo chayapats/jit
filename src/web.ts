@@ -135,11 +135,22 @@ const messages: Record<string, string> = {
   restore_in_progress: "มี quarantine ที่ยังไม่จบอยู่ ดำเนินการต่อหรือทิ้งก่อน",
   restore_bad_state: "สถานะ quarantine ไม่ตรงกับขั้นตอนนี้",
   restore_stale_live: "ข้อมูลปัจจุบันเปลี่ยนหลังเตรียม quarantine ให้เตรียมใหม่",
+  restore_quiesce_incomplete: "งานที่กำลังทำยังไม่หยุด รอให้ settle แล้วลองใหม่",
+  restore_ledger_moved: "ledger ล่าสุดเปลี่ยนหลังตรวจสอบ ให้ใช้ ledger และตรวจสอบใหม่",
+  restore_quarantine_changed: "สำเนา quarantine เปลี่ยนหลังตรวจสอบ ให้ใช้ ledger และตรวจสอบใหม่",
+  restore_activation_failed: "activate ไม่สำเร็จ ตรวจบันทึกกู้คืนก่อนดำเนินการต่อ",
+  restore_bound_exceeded: "ข้อมูลเกินขอบเขตที่ตรวจสอบได้ quarantine ถูกระงับไว้อย่างปลอดภัย",
+  quarantine_migration_failed: "migrate สำเนา quarantine ไม่สำเร็จ ข้อมูลจริงไม่ถูกแตะ สำรองข้อมูลยังอยู่",
+  ledger_checkpoint_missing: "ไม่พบ checkpoint ของ ledger ล่าสุด quarantine ถูกระงับไว้จนกว่าจะนำ checkpoint กลับมา",
+  ledger_checkpoint_unverifiable: "checkpoint ของ ledger ตรวจสอบไม่ผ่าน quarantine ถูกระงับไว้",
+  ledger_checkpoint_mismatch: "ledger ของ installation ไม่ตรงกับ checkpoint (อาจมีการแทนฐานข้อมูลนอกขั้นตอนกู้คืน)",
+  ledger_checkpoint_incompatible: "checkpoint ของ ledger เป็นเวอร์ชันที่ไม่รองรับ",
+  ledger_checkpoint_unavailable: "บันทึก checkpoint ของ ledger ไม่ได้ ตรวจพื้นที่จัดเก็บก่อน",
+  ledger_unreadable: "อ่าน ledger ของ installation ไม่ได้ quarantine ถูกระงับไว้",
   backup_artifact_missing: "ไฟล์สำรองข้อมูลหายไป กู้คืนไม่ได้",
   backup_integrity_failed: "สำรองข้อมูลนี้ตรวจสอบ hash ไม่ผ่าน",
   backup_unrestorable: "สำรองข้อมูลนี้ย้ายมาเวอร์ชันปัจจุบันไม่ได้",
   newer_backup_unsupported: "สำรองข้อมูลจากเวอร์ชันใหม่กว่าไม่รองรับ",
-  ledger_unverifiable: "ledger ภายนอกรับรองไม่ได้ ให้ระบุ ledger ล่าสุดที่เชื่อถือได้",
   invalid_restore_command: "ข้อมูลคำขอกู้คืนไม่ถูกต้อง กรุณาเปิดหน้าใหม่",
   memory_source_suppressed: "ต้นฉบับนี้ถูกแยกออกจาก memory อัตโนมัติแล้ว สกัดใหม่ไม่ได้ ใช้ต้นฉบับข้อความใหม่แทน",
   backup_not_found: "ไม่พบสำรองข้อมูลที่เลือก",
@@ -459,30 +470,24 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       }
       if (request.method === "POST" && (restoresRoute || restoreRoute)) {
         const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
-        const revision = app.workspace(auth.actor).revision;
-        void revision;
         const number = (value: unknown) => typeof value === "string" && /^\d{1,15}$/.test(value) ? Number(value) : value;
-        const form = request.headers.get("content-type")?.split(";")[0]?.trim() === "application/x-www-form-urlencoded";
-        const data = (value: unknown) => { if (!form) return value; try { return JSON.parse(value as string); } catch { throw new AppError("invalid_body"); } };
         if (restoresRoute) {
           if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "backupId", "note"].includes(key))) throw new AppError("invalid_body");
           const command = { kind: "restore.prepare" as const, requestId: body.requestId as string, projectId: null,
             expectedRevision: number(body.expectedRevision) as number,
             payload: { backupId: body.backupId as string, note: (body.note as string) ?? "manual restore" } };
-          const result = app.execute(auth.actor, command) as { quarantine: { id: string } };
+          const result = await app.execute(auth.actor, command);
           return api ? json(result) : respond(null, 303, { Location: `/restores/${result.quarantine.id}` });
         }
-        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "action", "tombstones", "source", "asOf", "acknowledgedEmpty"].includes(key))) throw new AppError("invalid_body");
+        // ops.quarantined_restore/v1: steps name only the quarantine; ledger content is never accepted from a request.
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "action"].includes(key))) throw new AppError("invalid_body");
         const action = body.action as "migrate" | "apply_ledger" | "validate" | "activate" | "discard";
         if (!["migrate", "apply_ledger", "validate", "activate", "discard"].includes(action)) throw new AppError("invalid_body");
-        const ledgerPayload = action === "apply_ledger"
-          ? { quarantineId: restoreRoute![2]!, tombstones: data(body.tombstones) as import("./ops/restore").ExternalTombstone[],
-            source: body.source as string, asOf: number(body.asOf) as number,
-            ...(form ? (body.acknowledgedEmpty === "on" ? { acknowledgedEmpty: true as const } : {}) : { acknowledgedEmpty: data(body.acknowledgedEmpty) === true }) }
-          : { quarantineId: restoreRoute![2]! };
         const command = { kind: `restore.${action}` as const, requestId: body.requestId as string, projectId: null,
-          expectedRevision: number(body.expectedRevision) as number, payload: ledgerPayload };
-        const result = app.execute(auth.actor, command) as { quarantine: { id: string } };
+          expectedRevision: number(body.expectedRevision) as number, payload: { quarantineId: restoreRoute![2]! } };
+        const result = await app.execute(auth.actor, command);
+        // Activation revokes every session (generation fence): the browser signs in again.
+        if (!api && result.quarantine.activation.sessionsRevoked) return respond(null, 303, { Location: "/login" });
         return api ? json(result) : respond(null, 303, { Location: `/restores/${result.quarantine.id}` });
       }
       if (request.method === "GET" && teamRoute) {

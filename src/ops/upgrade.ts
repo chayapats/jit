@@ -382,11 +382,13 @@ export function upgradeEvidence(journal: UpgradeJournal): UpgradeEvidence {
  */
 const controlTables = new Set<string>([...installationScopedTables, "job_scheduler", "delivery_worker", "upgrade_journal"]);
 
-interface TableShape { name: string; sql: string; columns: string[] }
+/** One managed table's definition and columns (shared with OPS02 quarantine validation). */
+export interface TableShape { name: string; sql: string; columns: string[] }
 
 function quoteIdent(name: string): string { return `"${name.replaceAll('"', '""')}"`; }
 
-function managedTables(tx: AppTransaction): TableShape[] {
+/** Managed application tables (installation-scoped and control tables excluded), by name. */
+export function managedTables(tx: AppTransaction): TableShape[] {
   return tx.all<{ name: string; sql: string | null }>("SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
     .filter(row => !controlTables.has(row.name))
     .map(row => ({ name: row.name, sql: row.sql ?? "", columns: tx.all<{ name: string }>(`PRAGMA table_info(${quoteIdent(row.name)})`).map(c => c.name) }));
@@ -398,7 +400,7 @@ function canonical(value: unknown): string {
 }
 
 /** Order-independent digest of every row of `table` projected on `columns`; bounded, fail closed. */
-function tableDigest(tx: AppTransaction, table: string, columns: string[]): { rows: number; hash: string } {
+export function tableDigest(tx: AppTransaction, table: string, columns: string[]): { rows: number; hash: string } {
   const count = tx.get<{ n: number }>(`SELECT count(*) AS n FROM ${quoteIdent(table)}`)!.n;
   if (count > upgradeLimits.rowsPerTable) throw new AppError("upgrade_validation_bound_exceeded", 409);
   const rows = tx.all<Record<string, unknown>>(`SELECT ${columns.map(quoteIdent).join(", ")} FROM ${quoteIdent(table)}`);

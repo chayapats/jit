@@ -1404,3 +1404,16 @@ export function pruneExpiredPreviews(tx: AppTransaction, now: number): number {
   for (const row of rows) tx.run("DELETE FROM deletion_previews WHERE id = ?", row.id);
   return rows.length;
 }
+
+/**
+ * ops.quarantined_restore/v1 replay hook: applies the lineage-bound copy redaction a confirm performs
+ * (producing-run outputs, stored manifests and conversation receipts) to tombstones replayed from the
+ * installation lifecycle ledger into a quarantined image. Identity-only input; dispatches nothing.
+ */
+export function redactReplayedLineage(tx: AppTransaction, sources: { projectId: string; source: SourceReference }[], claimIds: Set<string>): void {
+  // Ledger tombstones do not record their relation; derived-run lookup is a no-op for sources without a producing run.
+  const entries: SourceEntry[] = sources.map(entry => ({ projectId: entry.projectId, source: { ...entry.source }, relation: "derived_output" }));
+  redactDerivedRuns(tx, entries);
+  scrubStoredManifests(tx, new Set(entries.map(entry => sourceKey(entry.source))), claimIds);
+  scrubConversationReceipts(tx, entries, claimIds);
+}

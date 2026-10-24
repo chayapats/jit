@@ -226,6 +226,9 @@ export const backupImageTables: Readonly<Record<string, "include" | "exclude" | 
   job_scheduler: "exclude", delivery_worker: "exclude",
   // Installation-scoped registry: preserved from live on activation, never restored from an image.
   ops_backups: "exclude",
+  // Installation lifecycle ledger (app.deletion_ledger/v1, schema 23): preserved from live on activation,
+  // never restored from an image, so a restore point can never roll back current tombstones.
+  lifecycle_ledger: "exclude", lifecycle_checkpoint: "exclude",
   // Export artifacts (registry + bytes) never enter images, so a restore cannot resurrect
   // content deleted after an export; restored request ids replay as export_expired.
   export_artifact_bodies: "exclude",

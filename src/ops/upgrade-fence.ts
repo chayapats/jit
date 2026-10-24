@@ -16,7 +16,16 @@ import { AppError } from "../errors";
  * additionally bound to a digest of all managed state, so a writer that
  * ignored the fence makes activation fail instead of losing its write.
  */
-export interface UpgradeFence { contract: "ops.schema_migrations/v1"; upgradeId: string; since: number }
+export interface UpgradeFence {
+  contract: "ops.schema_migrations/v1"; upgradeId: string; since: number;
+  /**
+   * Which owner-authorized installation operation holds the fence. Absent means
+   * an upgrade (OPS06). `restore` (ops.quarantined_restore/v1) holds the same
+   * fence, so restore and upgrade exclude each other; `upgradeId` is then the
+   * restore id.
+   */
+  holder?: "upgrade" | "restore";
+}
 
 /** Fence file location for one installation database. */
 export function upgradeFencePath(databasePath: string): string {
@@ -29,7 +38,8 @@ export function readUpgradeFence(databasePath: string): UpgradeFence | null {
   if (!existsSync(path)) return null;
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8")) as UpgradeFence;
-    if (parsed?.contract === "ops.schema_migrations/v1" && typeof parsed.upgradeId === "string" && Number.isSafeInteger(parsed.since)) return parsed;
+    if (parsed?.contract === "ops.schema_migrations/v1" && typeof parsed.upgradeId === "string" && Number.isSafeInteger(parsed.since) &&
+        (parsed.holder === undefined || parsed.holder === "upgrade" || parsed.holder === "restore")) return parsed;
   } catch { /* Fall through: unreadable fence still fences. */ }
   return { contract: "ops.schema_migrations/v1", upgradeId: "unknown", since: 0 };
 }
@@ -44,9 +54,10 @@ export function assertNotUpgradeFenced(databasePath: string): void {
   if (upgradeFenced(databasePath)) throw new AppError("upgrade_in_progress", 409);
 }
 
-/** Durably establishes the fence for `upgradeId`. */
-export function writeUpgradeFence(databasePath: string, upgradeId: string, since: number): void {
-  writeFileAtomic(upgradeFencePath(databasePath), JSON.stringify({ contract: "ops.schema_migrations/v1", upgradeId, since } satisfies UpgradeFence));
+/** Durably establishes the fence for `upgradeId` (or, with `holder: "restore"`, for a restore id). */
+export function writeUpgradeFence(databasePath: string, upgradeId: string, since: number, holder: "upgrade" | "restore" = "upgrade"): void {
+  writeFileAtomic(upgradeFencePath(databasePath), JSON.stringify({ contract: "ops.schema_migrations/v1", upgradeId, since,
+    ...(holder === "restore" ? { holder } : {}) } satisfies UpgradeFence));
 }
 
 /** Releases the fence (idempotent). */
