@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import type { JobPolicy } from "./jobs/types";
 import type { TeamPolicy } from "./team/types";
+import { opsBounds } from "./ops/limits";
 
 /**
  * Smallest accepted `JIT_MESSAGE_BYTES`. Message ceilings also bound PR alert payloads, so this must
@@ -25,7 +26,7 @@ export interface TelegramPolicy {  /** Path to the bot token file inside the tru
 export interface OpsPolicy {
   /** Managed-state growth ceiling that turns drill disk pressure into a blocked result. */
   diskWatermarkBytes: number;
-  /** Local ops-evidence retention ceiling in days; pruning follows the ops runbook. */
+  /** Ops-evidence retention age in days, enforced whenever an ops record is written (`writeOpsRecord`). */
   retentionDays: number;
   /** Default wall-clock budget for one fixture drill invocation. */
   drillDeadlineMs: number;
@@ -131,10 +132,11 @@ export function readConfig(env: Record<string, string | undefined> = process.env
       processAttempts: positive("JIT_TELEGRAM_PROCESS_ATTEMPTS", 3, 20),
       inboxBytes: positive("JIT_TELEGRAM_INBOX_BYTES", 16_384, 65_536),
     },
+    // One bound definition (src/ops/limits.ts) shared with drill fallbacks and record validation.
     ops: {
-      diskWatermarkBytes: positive("JIT_OPS_DISK_WATERMARK_BYTES", 104_857_600, 10_737_418_240),
-      retentionDays: positive("JIT_OPS_RETENTION_DAYS", 30, 3650),
-      drillDeadlineMs: positive("JIT_OPS_DRILL_DEADLINE_MS", 120_000, 600_000),
+      diskWatermarkBytes: atLeast("JIT_OPS_DISK_WATERMARK_BYTES", positive("JIT_OPS_DISK_WATERMARK_BYTES", 104_857_600, opsBounds.diskWatermarkBytes.max), opsBounds.diskWatermarkBytes.min),
+      retentionDays: atLeast("JIT_OPS_RETENTION_DAYS", positive("JIT_OPS_RETENTION_DAYS", 30, opsBounds.retentionDays.max), opsBounds.retentionDays.min),
+      drillDeadlineMs: atLeast("JIT_OPS_DRILL_DEADLINE_MS", positive("JIT_OPS_DRILL_DEADLINE_MS", 120_000, opsBounds.drillDeadlineMs.max), opsBounds.drillDeadlineMs.min),
     },
   };
 }

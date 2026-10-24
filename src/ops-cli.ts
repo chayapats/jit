@@ -29,7 +29,8 @@ export async function runOpsCommand(args: string[], root: string, ports: OpsPort
       const drillConfig = parseDrillConfig(raw, { diskWatermarkBytes: config.ops.diskWatermarkBytes, drillDeadlineMs: config.ops.drillDeadlineMs });
       const { record } = await (ports.drill ?? runLoadDrill)(drillConfig,
         args.length === 5 ? { installationLabel: args[4]! } : {});
-      try { await writeOpsRecord(root, record); }
+      const retention = { retentionDays: config.ops.retentionDays };
+      try { await writeOpsRecord(root, record, retention); }
       catch { return { exitCode: 2, output: { ...exportOpsSummary(record), stored: false, nextAction: "check-local-ops-evidence-directory" } }; }
       return { exitCode: 0, output: { ...exportOpsSummary(record), stored: true } };
     }
@@ -41,19 +42,22 @@ export async function runOpsCommand(args: string[], root: string, ports: OpsPort
       validateDrillRecord(stored);
       const drill = stored as LoadDrillRecord;
       const checklistRaw = await readLocalDrillConfig(root, args[4]!) as Record<string, unknown>;
+      // Deterministic rows are derived from the drill's executed legs; the file only links human gates.
       if (!checklistRaw || typeof checklistRaw !== "object" || Array.isArray(checklistRaw) ||
-          Object.keys(checklistRaw).sort().join(",") !== "deterministic,human") {
+          Object.keys(checklistRaw).join(",") !== "human") {
         throw new Error("invalid_release_checklist");
       }
+      // Exhausted limits are the drill's typed limit events; blocked/failed legs are not relabelled as limits.
       const profile = composeProfile({ installationLabel: drill.installationLabel, drill,
-        exhaustedLimits: drill.legs.filter(l => l.state === "blocked" || l.state === "failed").map(l => l.leg),
-        sampleLimitations: [...drill.fixtureHonesty], nextAction: drill.nextAction });
-      const checklist = composeReleaseChecklist({ installationLabel: drill.installationLabel, drillId: drill.id,
-        deterministic: checklistRaw.deterministic as never, human: checklistRaw.human as never });
-      try { await writeOpsRecord(root, profile); await writeOpsRecord(root, checklist); }
+        sampleLimitations: [...drill.fixtureHonesty] });
+      const checklist = composeReleaseChecklist({ installationLabel: drill.installationLabel, drill,
+        human: checklistRaw.human as never });
+      const retention = { retentionDays: readConfig().ops.retentionDays };
+      try { await writeOpsRecord(root, profile, retention); await writeOpsRecord(root, checklist, retention); }
       catch { return { exitCode: 2, output: { error: "ops-report-not-stored", nextAction: "check-local-ops-evidence-directory" } }; }
-      return { exitCode: 0, output: { stored: true, drill: exportOpsSummary(drill),
-        profile: exportOpsSummary(profile), checklist: exportOpsSummary(checklist) } };
+      // Tested revisions are identity-only (versions, commit SHA, content hash, contract IDs) and validated on read.
+      return { exitCode: 0, output: { stored: true, revisions: profile.versions, drill: exportOpsSummary(drill),
+        profile: exportOpsSummary(profile, drill), checklist: exportOpsSummary(checklist, drill) } };
     }
     return invalid("use-diagnose-drill-or-report");
   } catch { return { exitCode: 2, output: { error: "ops-unavailable", nextAction: "check-local-ops-configuration" } }; }
