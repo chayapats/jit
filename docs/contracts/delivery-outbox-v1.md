@@ -14,6 +14,8 @@ listDeliveryIntents(tx, projectId, after, limit): DeliveryPage
 listDeliveryAttempts(tx, intentId): DeliveryAttempt[]
 resendDeliveryIntent(tx, projectId, intentId, expectedRevision, now): DeliveryResendReceipt
 retireDeliveryReport(tx, projectId, reportId, action, expectedRevision, now): DeliveryRetireReceipt
+retireDeliveryIntent(tx, projectId, intentId, reason, now, { markSettledStale }): "cancelled" | "marked_stale" | "unchanged"
+registerDeliveryGuard(name, check: DeliveryGuard): void
 recordDeliveryResult(tx, attemptId, result, now): DeliveryIntent
 deliveryCommandIdentity(command, maxBytes): string
 
@@ -34,6 +36,8 @@ Application.execute(actor, RetireDeliveryCommand): DeliveryRetireReceipt
 Application.deliveries(actor, projectId, after?): { project } & DeliveryPage
 Application.delivery(actor, projectId, intentId): { project; intent; report; attempts; sourceAvailable }
 ```
+
+`commitDeliveryIntent` input may carry `guard` (a registered guard name, for example `pr-alert` from `pr.private_alerts/v1`), stored as `DeliveryIntent.guard` (absent/null on unguarded and legacy intents). `DeliveryGuard = (tx, intent) => DeliveryCurrentness` runs in the claim and send transactions after the owner/source checks and before the channel check, and again in `recordDeliveryResult`. `{ current: false, hold: true }` keeps the intent `waiting` with `nextAction` `wait_for_current_source`; any other non-current verdict cancels unsent work with `stale: true` and the verdict reason; a result landing after drift is kept and marked stale. An unregistered guard or a throwing check holds the intent (`currentness_unavailable`) instead of sending. `retireDeliveryIntent` lets a domain cancel one unsent intent (stale + reason) or, with `markSettledStale`, mark an already sent/unknown/failed intent stale without claiming withdrawal.
 
 `DeliveryIntent.guarantee` is `"local_dedupe_only"`. `remote` is `none`, `accepted`, `rejected` or `uncertain`, separate from `status` (`waiting`, `queued`, `claimed`, `sent`, `failed`, `unknown`, `cancelled`). `DeliveryReport` has no delivered flag. `DeliveryResendReceipt.warning` is `"duplicates_possible"`.
 

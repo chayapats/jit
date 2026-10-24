@@ -45,6 +45,12 @@ export interface DeliveryIntent {
   inputGeneration: number;
   /** Binding revision observed at commit, or null when the channel was not bound yet. */
   bindingRevision: number | null;
+  /**
+   * Registered send-time currentness guard (for example `pr-alert`), or null/absent for unguarded intents.
+   * A guarded intent is rechecked immediately before claim/send and when a result lands; when the guard
+   * is not registered in this process the intent waits instead of sending (fail closed).
+   */
+  guard?: string | null;
   payload: DeliveryPayload;
   provenance: DeliveryProvenance;
   status: DeliveryStatus;

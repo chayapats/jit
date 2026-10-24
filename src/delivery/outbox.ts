@@ -38,6 +38,45 @@ interface CommitInput {
   maxBytes: number;
   maxSafeRetries?: number;
   expectedProjectRevision?: number;
+  /** Registered send-time currentness guard name; absent for unguarded report/reminder intents. */
+  guard?: string;
+}
+
+/**
+ * Verdict of a send-time currentness guard. `hold` keeps the intent waiting (for example while
+ * monitoring is paused); otherwise a non-current intent is cancelled before send and marked stale.
+ */
+export type DeliveryCurrentness = { current: true } | { current: false; reason: string; hold?: boolean };
+
+/** Domain recheck run inside the claim/send transaction immediately before the sender is invoked. */
+export type DeliveryGuard = (tx: AppTransaction, intent: DeliveryIntent) => DeliveryCurrentness;
+
+const guardName = /^[a-z][a-z0-9-]{0,31}$/;
+const guards = new Map<string, DeliveryGuard>();
+
+/**
+ * Registers the process-wide send-time currentness guard for intents committed with `guard: name`.
+ * Owning domains (for example `pr.private_alerts/v1`) register at module load. Re-registering a name
+ * replaces the previous check. An intent whose guard is not registered waits rather than sends.
+ */
+export function registerDeliveryGuard(name: string, check: DeliveryGuard): void {
+  if (!guardName.test(name) || typeof check !== "function") throw new AppError("invalid_delivery_command");
+  guards.set(name, check);
+}
+
+function guardVerdict(tx: AppTransaction, intent: DeliveryIntent): DeliveryCurrentness {
+  const name = intent.guard ?? null;
+  if (name === null) return { current: true };
+  const check = guards.get(name);
+  if (!check) return { current: false, reason: "currentness_unavailable", hold: true };
+  try {
+    const verdict = check(tx, intent);
+    if (verdict?.current === true) return verdict;
+    if (verdict?.current === false && typeof verdict.reason === "string" && /^[a-z0-9_]{1,64}$/.test(verdict.reason)) return verdict;
+    return { current: false, reason: "currentness_unavailable", hold: true };
+  } catch {
+    return { current: false, reason: "currentness_unavailable", hold: true };
+  }
 }
 
 function exact(value: unknown, keys: string[]): value is Record<string, unknown> {
@@ -111,6 +150,7 @@ export function commitDeliveryIntent(tx: AppTransaction, input: CommitInput, now
   if (!dedupeOk(input.dedupeKey)) throw new AppError("invalid_delivery_command");
   requireText(input.text, input.maxBytes);
   if (secretLike.test(input.text) || secretLike.test(input.dedupeKey)) throw new AppError("invalid_delivery_payload");
+  if (input.guard !== undefined && !guardName.test(input.guard)) throw new AppError("invalid_delivery_command");
   const retries = input.maxSafeRetries ?? DEFAULT_SAFE_RETRIES;
   if (!Number.isSafeInteger(retries) || retries < 0 || retries > 5) throw new AppError("invalid_delivery_command");
   const project = tx.get<{ revision: number }>("SELECT revision FROM projects WHERE id = ?", input.projectId);
@@ -142,6 +182,7 @@ export function commitDeliveryIntent(tx: AppTransaction, input: CommitInput, now
   const intent: DeliveryIntent = {
     id: crypto.randomUUID(), dedupeKey: input.dedupeKey, projectId: input.projectId, ownerId: "owner", channel: "telegram",
     authorityGeneration: owner.generation, inputGeneration: 1, bindingRevision: bound ? binding.revision : null,
+    guard: input.guard ?? null,
     payload, provenance: {
       reportId, reportRevision: 1, reportGeneration: 1, sourceId: source.sourceId, sourceRevision: source.revision,
       sourceGeneration: source.generation, committedAt: now, authorityGeneration: owner.generation, inputGeneration: 1,
@@ -155,7 +196,7 @@ export function commitDeliveryIntent(tx: AppTransaction, input: CommitInput, now
   return { intent, report, created: true };
 }
 
-function cancelUnsent(tx: AppTransaction, intent: DeliveryIntent, reason: string, now: number): boolean {
+function cancelUnsent(tx: AppTransaction, intent: DeliveryIntent, reason: string, now: number, stale = false): boolean {
   if (intent.status === "sent" || intent.status === "unknown") return false;
   const attempts = listDeliveryAttempts(tx, intent.id);
   if (attempts.some(attempt => attempt.senderInvoked && attempt.outcome === "none")) return false;
@@ -166,8 +207,32 @@ function cancelUnsent(tx: AppTransaction, intent: DeliveryIntent, reason: string
   }
   intent.status = "cancelled"; intent.failureReason = reason; intent.nextAction = "inspect_cancelled_intent";
   intent.retryable = false; intent.remote = "none"; intent.revision += 1; intent.updatedAt = now;
+  if (stale) { intent.stale = true; intent.staleReason = reason; }
   saveIntent(tx, intent);
   return true;
+}
+
+/**
+ * Retires one logical intent because its domain source is no longer current.
+ * Unsent work is cancelled and marked stale with `reason`. With `markSettledStale`, an intent that
+ * already has a sent/unknown/failed outcome stays recorded but is marked visibly stale; an in-flight
+ * send is left for `recordDeliveryResult`, whose guard recheck marks the landed result stale.
+ * This never claims a remote message was withdrawn.
+ */
+export function retireDeliveryIntent(
+  tx: AppTransaction, projectId: string, intentId: string, reason: string, now: number,
+  options: { markSettledStale: boolean },
+): "cancelled" | "marked_stale" | "unchanged" {
+  if (!Number.isSafeInteger(now) || now < 0) throw new AppError("invalid_commit_time");
+  if (!/^[a-z0-9_]{1,64}$/.test(reason)) throw new AppError("invalid_delivery_command");
+  const intent = readDeliveryIntent(tx, projectId, intentId);
+  if (intent.status === "cancelled") return "unchanged";
+  if (cancelUnsent(tx, intent, reason, now, true)) return "cancelled";
+  if (!options.markSettledStale || intent.stale) return "unchanged";
+  if (!["sent", "unknown", "failed"].includes(intent.status)) return "unchanged";
+  intent.stale = true; intent.staleReason = reason; intent.revision += 1; intent.updatedAt = now;
+  saveIntent(tx, intent);
+  return "marked_stale";
 }
 
 /**
@@ -262,7 +327,9 @@ export function deliveryCommandIdentity(command: DeliveryCommand, maxBytes: numb
   throw new AppError("invalid_delivery_command");
 }
 
-function gate(tx: AppTransaction, intent: DeliveryIntent): { ok: true; chatId: number; bindingRevision: number } | { ok: false; reason: string; wait: boolean } {
+type GateDecision = { ok: true; chatId: number; bindingRevision: number } | { ok: false; reason: string; wait: boolean; stale?: boolean; nextAction?: string };
+
+function gate(tx: AppTransaction, intent: DeliveryIntent): GateDecision {
   const owner = tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'")?.generation ?? null;
   if (owner !== intent.authorityGeneration) return { ok: false, reason: "authorization_changed", wait: false };
   let report: DeliveryReport;
@@ -272,6 +339,13 @@ function gate(tx: AppTransaction, intent: DeliveryIntent): { ok: true; chatId: n
   if (report.availability !== "available") return { ok: false, reason: "source_deleted", wait: false };
   const source = tx.get<{ availability: string }>("SELECT availability FROM sources WHERE id = ? AND project_id = ?", report.sourceId, intent.projectId);
   if (source?.availability !== "available") return { ok: false, reason: "source_deleted", wait: false };
+  // Domain currentness runs before the channel check so a stale intent is retired even while unbound.
+  const verdict = guardVerdict(tx, intent);
+  if (!verdict.current) {
+    return verdict.hold
+      ? { ok: false, reason: verdict.reason, wait: true, nextAction: "wait_for_current_source" }
+      : { ok: false, reason: verdict.reason, wait: false, stale: true };
+  }
   const binding = readBinding(tx);
   if (binding.state !== "bound" || binding.telegramChatId === null) {
     return intent.bindingRevision === null
@@ -292,6 +366,8 @@ function staleReason(tx: AppTransaction, intent: DeliveryIntent, attempt: Delive
   } catch { return "source_deleted"; }
   const binding = readBinding(tx);
   if (attempt.bindingRevision !== null && (binding.state !== "bound" || binding.revision !== attempt.bindingRevision)) return "binding_revoked";
+  const verdict = guardVerdict(tx, intent);
+  if (!verdict.current) return verdict.reason;
   return null;
 }
 
@@ -406,8 +482,9 @@ export class DeliveryWorker {
       if (attempt.senderInvoked || attempt.state !== "claimed" || attempt.scheduler !== this.#token) throw new AppError("delivery_attempt_not_claimed", 409);
       const decision = gate(tx, intent);
       if (!decision.ok) {
-        if (decision.wait) { intent.status = "waiting"; intent.nextAction = "wait_for_channel_binding"; intent.updatedAt = this.#time(); saveIntent(tx, intent); }
-        else cancelUnsent(tx, intent, decision.reason, this.#time());
+        if (decision.wait) {
+          intent.status = "waiting"; intent.nextAction = decision.nextAction ?? "wait_for_channel_binding"; intent.updatedAt = this.#time(); saveIntent(tx, intent);
+        } else cancelUnsent(tx, intent, decision.reason, this.#time(), decision.stale === true);
         return null;
       }
       attempt.senderInvoked = true; attempt.state = "sending"; attempt.bindingRevision = decision.bindingRevision; attempt.chatId = decision.chatId;
@@ -470,12 +547,13 @@ export class DeliveryWorker {
       const decision = gate(tx, intent);
       if (!decision.ok) {
         if (decision.wait) {
-          if (intent.status !== "waiting" || intent.nextAction !== "wait_for_channel_binding") {
-            intent.status = "waiting"; intent.nextAction = "wait_for_channel_binding"; intent.updatedAt = now; saveIntent(tx, intent);
+          const nextAction = decision.nextAction ?? "wait_for_channel_binding";
+          if (intent.status !== "waiting" || intent.nextAction !== nextAction) {
+            intent.status = "waiting"; intent.nextAction = nextAction; intent.updatedAt = now; saveIntent(tx, intent);
           }
           continue;
         }
-        cancelUnsent(tx, intent, decision.reason, now);
+        cancelUnsent(tx, intent, decision.reason, now, decision.stale === true);
         continue;
       }
       const ownerGeneration = tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'")!.generation;
