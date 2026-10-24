@@ -40,6 +40,8 @@ import { TelegramChannel } from "../src/telegram";
 import { createWebHandler } from "../src/web";
 import { containsCredential, redactCredentials } from "../src/security/credentials";
 import { neutralizeDestinations } from "../src/security/destinations";
+import { prepareServiceState } from "../src/bootstrap";
+import { readFileSync } from "node:fs";
 
 const password = "fixture-pr-alerts-owner-password";
 const epoch = 1_800_000_000_000;
@@ -921,11 +923,13 @@ test("repeated finding IDs are canonicalized before persistence and never cancel
   bindTelegram(f);
   const { report } = await prepareReport(f);
   expect(report.findings.map(x => x.id)).toEqual(["dup-1", "dup-1-dup2", "dup-1-dup3"]);
-  expect(report.findings[1]).toMatchObject({ status: "suspected" });
-  expect(report.findings[1]!.validationErrors).toContain("duplicate_finding_id");
+  // Each copy keeps its own validated status; the group identity is persisted.
+  expect(report.findings.map(x => x.status)).toEqual(["actionable", "actionable", "suspected"]);
+  expect(report.findings.every(x => x.duplicateGroup === "dup-1")).toBe(true);
   const decision = f.store.read(tx => readAlertDecisions(tx, report.id)).at(-1)!;
   expect(new Set(decision.findings.map(d => d.findingId)).size).toBe(decision.findings.length);
   expect(decision.findings.find(d => d.findingId === "dup-1")!.decision).toBe("notified");
+  expect(decision.findings.find(d => d.findingId === "dup-1-dup2")).toMatchObject({ decision: "held", reason: "duplicate_finding_id" });
   // Raising the floor above the duplicate's severity does not affect the canonical alert.
   setPolicy(f, 1, { allowedCategories: ["correctness", "security", "behavior"], minimumSeverity: "medium", notifyPartial: true });
   expect(intentsOf(f)).toHaveLength(1);
@@ -1059,15 +1063,15 @@ test("duplicate-ID repair picks the evidence-backed representative in either ord
     const f = await fixture(scripted(JSON.stringify({ findings: order, analyzedRoles: ["correctness", "security"], skippedScope: [], disagreements: [] })));
     bindTelegram(f);
     const { report } = await prepareReport(f);
-    const canonical = report.findings.find(x => x.id === "dup-1")!;
-    expect(canonical).toMatchObject({ status: "actionable", title: "real bug" });
-    const copy = report.findings.find(x => x.id === "dup-1-dup2")!;
-    expect(copy).toMatchObject({ status: "suspected", title: "maybe" });
-    expect(copy.validationErrors).toContain("duplicate_finding_id");
+    const real = report.findings.find(x => x.title === "real bug")!;
+    const maybe = report.findings.find(x => x.title === "maybe")!;
+    expect(real).toMatchObject({ status: "actionable", duplicateGroup: "dup-1" });
+    expect(maybe).toMatchObject({ status: "suspected", duplicateGroup: "dup-1" });
+    expect(new Set(report.findings.map(x => x.id)).size).toBe(2);
     expect(report.findings.map(x => x.title)).toEqual(order.map(x => x.title));
     const decision = f.store.read(tx => readAlertDecisions(tx, report.id)).at(-1)!;
-    expect(decision.findings.find(d => d.findingId === "dup-1")!.decision).toBe("notified");
-    expect(decision.findings.find(d => d.findingId === "dup-1-dup2")!.decision).toBe("held");
+    expect(decision.findings.find(d => d.findingId === real.id)!.decision).toBe("notified");
+    expect(decision.findings.find(d => d.findingId === maybe.id)!.decision).toBe("held");
     expect(worker(f).pump().map(i => i.status)).toEqual(["sent"]);
     expect(f.sender.external[0]!.text).toContain("real bug");
   }
@@ -1119,4 +1123,72 @@ test("quarantined legacy credential-bearing intent no longer stores the credenti
     expect(intentsOf(f)[0]).toMatchObject({ status: "failed", remote: "rejected", failureReason: "telegram_rejected", stale: true, staleReason: "legacy_alert_unverifiable" });
     expect(leaks(f)).toBe(0);
   }
+});
+
+test("duplicate group picks its representative under the current policy and never alerts twice", async () => {
+  const copy = (title: string, severity: string, category = "correctness") => ({ id: "dup-1", title, category, severity, location: { path: "a.ts", line: 1 }, condition: `c ${title}`, impact: `i ${title}`, reasoning: "r", evidenceType: "diff", evidenceRef: "a.ts" });
+  const cases = [
+    { name: "low-first/critical-second", findings: [copy("low copy", "low"), copy("critical copy", "critical")], policy: { allowedCategories: ["correctness", "security", "behavior"] as ("correctness" | "security" | "behavior")[], minimumSeverity: "high" as const, notifyPartial: true }, winner: "critical copy" },
+    { name: "disallowed-first/allowed-second", findings: [copy("behavior copy", "high", "behavior"), copy("security copy", "high", "security")], policy: { allowedCategories: ["security"] as ("correctness" | "security" | "behavior")[], minimumSeverity: "info" as const, notifyPartial: true }, winner: "security copy" },
+  ];
+  for (const c of cases) {
+    const f = await fixture(scripted(JSON.stringify({ findings: c.findings, analyzedRoles: ["correctness", "security"], skippedScope: [], disagreements: [] })));
+    bindTelegram(f);
+    setPolicy(f, 1, c.policy);
+    const { report } = await prepareReport(f);
+    expect(report.findings.map(x => x.status)).toEqual(["actionable", "actionable"]);
+    expect(intentsOf(f)).toHaveLength(1);
+    const winner = report.findings.find(x => x.title === c.winner)!;
+    const loser = report.findings.find(x => x.title !== c.winner)!;
+    let decision = f.store.read(tx => readAlertDecisions(tx, report.id)).at(-1)!;
+    expect(decision.findings.find(d => d.findingId === winner.id)!.decision).toBe("notified");
+    expect(decision.findings.find(d => d.findingId === loser.id)!.decision).toBe("held");
+    const w = worker(f);
+    expect(w.pump().map(i => i.status)).toEqual(["sent"]);
+    expect(f.sender.external[0]!.text).toContain(c.winner);
+    // Policy change to defaults makes both copies pass: the live copy stays the representative, no second alert.
+    const receipt = setPolicy(f, 2, { allowedCategories: ["correctness", "security", "behavior"], minimumSeverity: "info", notifyPartial: true });
+    decision = receipt.decisions[0]!;
+    expect(decision.findings.find(d => d.findingId === winner.id)).toMatchObject({ decision: "already_notified", intentId: intentsOf(f)[0]!.id });
+    expect(decision.findings.find(d => d.findingId === loser.id)).toMatchObject({ decision: "held", reason: "duplicate_finding_id" });
+    expect(receipt.retiredIntentIds).toEqual([]);
+    expect(intentsOf(f)).toHaveLength(1);
+    w.pump();
+    expect(f.sender.calls).toBe(1);
+  }
+  // Pending (unsent) representative also survives a policy change without churn or a second intent.
+  const f = await fixture(scripted(JSON.stringify({ findings: [copy("low copy", "low"), copy("critical copy", "critical")], analyzedRoles: ["correctness", "security"], skippedScope: [], disagreements: [] })));
+  setPolicy(f, 1, cases[0]!.policy);
+  await prepareReport(f);
+  const pending = intentsOf(f)[0]!;
+  const receipt = setPolicy(f, 2, { allowedCategories: ["correctness", "security", "behavior"], minimumSeverity: "info", notifyPartial: true });
+  expect(receipt.retiredIntentIds).toEqual([]);
+  expect(intentsOf(f).map(i => [i.id, i.status])).toEqual([[pending.id, "waiting"]]);
+});
+
+test("service bootstrap quarantines legacy alerts before the queue or server is constructed", async () => {
+  const f = await fixture();
+  bindTelegram(f);
+  await prepareReport(f);
+  f.sender.scripts = ["reject"];
+  worker(f).pump();
+  const id = intentsOf(f)[0]!.id;
+  f.store.transaction(tx => {
+    tx.run("DELETE FROM pr_alerts WHERE intent_id = ?", id);
+    const row = JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM delivery_intents WHERE id = ?", id)!.record_json);
+    delete row.guard;
+    row.payload.text = `${row.payload.text}\nkey sk-proj-AbCdEfGhIjKlMnOpQrStUvWx0123456789`;
+    tx.run("UPDATE delivery_intents SET record_json = ? WHERE id = ?", JSON.stringify(row), id);
+  });
+  expect(prepareServiceState(f.store, f.clock.now).quarantinedLegacyAlerts).toEqual([id]);
+  expect(intentsOf(f)[0]).toMatchObject({ status: "failed", stale: true, staleReason: "legacy_alert_unverifiable" });
+  expect(intentsOf(f)[0]!.payload.text).not.toContain("sk-proj");
+  expect(prepareServiceState(f.store, f.clock.now).quarantinedLegacyAlerts).toEqual([]);
+  // main.ts composition: serve prepares state first, before the job queue, delivery or HTTP server exist.
+  const main = readFileSync(join(import.meta.dir, "../src/main.ts"), "utf8");
+  const serveStart = main.indexOf('if (command === "serve") {');
+  const prepared = main.indexOf("prepareServiceState(store, Date.now());");
+  expect(serveStart).toBeGreaterThan(-1);
+  expect(prepared).toBeGreaterThan(serveStart);
+  for (const later of ["new JobQueue(", "Bun.serve(", "setInterval("]) expect(main.indexOf(later)).toBeGreaterThan(prepared);
 });

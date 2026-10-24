@@ -91,6 +91,7 @@ export {
   buildAlertPayload,
   ensureAlertPolicy,
   evaluateReport,
+  findingQualifies,
   listAlertPolicies,
   prAlertCurrentness,
   quarantineLegacyPrAlerts,

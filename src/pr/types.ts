@@ -125,6 +125,11 @@ export interface PrFinding {
   evidenceRef: string | null;
   status: PrFindingStatus;
   validationErrors: string[];
+  /**
+   * Raw model-supplied ID shared by copies that repeated it; absent for unique findings. Each copy
+   * keeps its own validated status; alert evaluation notifies at most one copy per group.
+   */
+  duplicateGroup?: string;
 }
 
 /** Persisted review outcome; `stale` is a computed overlay, never a stored status. */

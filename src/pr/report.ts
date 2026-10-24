@@ -116,30 +116,24 @@ export function validateFinding(input: unknown, snapshot: ImmutableSnapshot): Pr
 }
 
 /**
- * Makes finding IDs unique before a report is persisted. Copies sharing a model-supplied ID are
- * grouped first; the representative that keeps the canonical ID is the first evidence-backed
- * actionable copy (or the first copy when none is actionable), independent of order. Every other
- * copy is renamed `<id>-dup<n>`, demoted to `suspected` and tagged `duplicate_finding_id`, so it
- * stays visible in the private report but can never notify or shadow the representative.
+ * Makes finding IDs unique before a report is persisted without choosing a winner. Copies that
+ * repeat a model-supplied ID all record it as `duplicateGroup`; the first keeps the ID and later
+ * copies are renamed `<id>-dup<n>`. Each copy keeps its own validated status and errors. Which copy
+ * (if any) notifies is decided per policy evaluation (`evaluateReport`), at most one per group.
  */
 export function canonicalizeFindingIds(findings: readonly PrFinding[]): PrFinding[] {
-  const groups = new Map<string, number[]>();
-  findings.forEach((finding, index) => groups.set(finding.id, [...(groups.get(finding.id) ?? []), index]));
-  const representative = new Map<string, number>();
-  for (const [id, indexes] of groups) {
-    const actionable = indexes.find(i => findings[i]!.status === "actionable" && findings[i]!.validationErrors.length === 0);
-    representative.set(id, actionable ?? indexes[0]!);
-  }
-  const taken = new Set(groups.keys());
-  return findings.map((finding, index) => {
-    if (representative.get(finding.id) === index) return finding;
+  const counts = new Map<string, number>();
+  for (const finding of findings) counts.set(finding.id, (counts.get(finding.id) ?? 0) + 1);
+  const taken = new Set(counts.keys());
+  const seen = new Set<string>();
+  return findings.map(finding => {
+    if ((counts.get(finding.id) ?? 0) < 2) return finding;
+    const group = finding.duplicateGroup ?? finding.id;
+    if (!seen.has(finding.id)) { seen.add(finding.id); return { ...finding, duplicateGroup: group }; }
     let n = 2, id = "";
     do { id = `${finding.id.slice(0, 56)}-dup${n++}`; } while (taken.has(id));
     taken.add(id);
-    return {
-      ...finding, id, status: "suspected" as const,
-      validationErrors: [...new Set(["duplicate_finding_id", ...finding.validationErrors])],
-    };
+    return { ...finding, id, duplicateGroup: group };
   });
 }
 

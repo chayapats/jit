@@ -229,7 +229,7 @@ function cancelUnsent(tx: AppTransaction, intent: DeliveryIntent, reason: string
 }
 
 /**
- * Rewrites the stored text of one intent with `scrub` (for example `redactCredentials`) across the
+ * Quarantine-only: rewrites the stored text of one legacy `pr-alert/` intent with `scrub` (`redactCredentials`) across the
  * intent payload, its delivery report and the report's source version, inside the caller's
  * transaction. Status, remote outcome, attempts and failure reasons are left untouched. The passed
  * `intent` object is updated in place so a caller holding it saves the scrubbed text. Returns
@@ -248,6 +248,7 @@ export function scrubDeliveryIntentText(tx: AppTransaction, intent: DeliveryInte
   if (report) {
     const reportText = scrub(report.text);
     if (reportText !== report.text) { report.text = reportText; saveReport(tx, report); changed = true; }
+    // In-place source rewrite applies only to quarantined legacy pr-alert intents (PR03); no other caller may use it.
     const version = tx.get<{ text: string | null }>("SELECT content_text AS text FROM source_versions WHERE source_id = ? AND revision = ? AND generation = ?",
       report.sourceId, report.sourceRevision, report.sourceGeneration);
     if (version?.text) {

@@ -67,10 +67,13 @@ const partialScope = (report: Pick<PrivateReport, "status" | "coverageOverall" |
  * Applies the versioned notification policy to one committed report.
  * Uncertainties and taste/design suggestions stay in the private report.
  * Severity is never a substitute for evidence: the severity floor only narrows evidence-backed findings.
+ * Copies sharing a `duplicateGroup` notify at most once: among copies that pass this policy the
+ * representative is the first one in `preferred` (copies that already hold a live alert), else the
+ * first in report order; other passing copies are held as `duplicate_finding_id`.
  */
-export function evaluateReport(report: PrivateReport, policy: AlertPolicy = DEFAULT_ALERT_POLICY): AlertEvaluation {
+export function evaluateReport(report: PrivateReport, policy: AlertPolicy = DEFAULT_ALERT_POLICY, preferred: ReadonlySet<string> = new Set()): AlertEvaluation {
   checkPolicy(policy);
-  const qualifying: PrFinding[] = [];
+  const passing: PrFinding[] = [];
   const held: Array<{ finding: PrFinding; reason: string }> = [];
   for (const finding of report.findings) {
     if (policy.requireActionable && finding.status !== "actionable") {
@@ -93,9 +96,25 @@ export function evaluateReport(report: PrivateReport, policy: AlertPolicy = DEFA
       held.push({ finding, reason: "partial_scope_held" });
       continue;
     }
-    qualifying.push(finding);
+    passing.push(finding);
+  }
+  const chosen = new Map<string, string>();
+  for (const finding of passing) {
+    if (!finding.duplicateGroup) continue;
+    const current = chosen.get(finding.duplicateGroup);
+    if (current === undefined || (!preferred.has(current) && preferred.has(finding.id))) chosen.set(finding.duplicateGroup, finding.id);
+  }
+  const qualifying: PrFinding[] = [];
+  for (const finding of passing) {
+    if (finding.duplicateGroup && chosen.get(finding.duplicateGroup) !== finding.id) held.push({ finding, reason: "duplicate_finding_id" });
+    else qualifying.push(finding);
   }
   return { qualifying, held };
+}
+
+/** Whether one finding passes `policy` on its own, ignoring duplicate-group selection. */
+export function findingQualifies(report: PrivateReport, finding: PrFinding, policy: AlertPolicy): boolean {
+  return evaluateReport({ ...report, findings: [finding] }, policy).qualifying.length === 1;
 }
 
 /**
@@ -317,13 +336,19 @@ export function admitReportAlerts(
       held.push({ findingId: finding.id, reason: "duplicate_finding_id" });
       decide(finding.id, "held", "duplicate_finding_id", null);
     }
-    const evaluation = evaluateReport({ ...report, findings: report.findings.filter(f => !repeated.has(f.id)) }, policy);
+    const links = readAlertLinks(tx, report.id);
+    const liveIntent = (findingId: string) => links
+      .filter(link => link.findingId === findingId)
+      .map(link => { try { return readDeliveryIntent(tx, input.projectId, link.intentId); } catch { return null; } })
+      .find((intent): intent is DeliveryIntent => !!intent && intent.status !== "cancelled") ?? null;
+    // Copies already holding a live alert stay the group representative, so a policy change never re-alerts the group.
+    const preferred = new Set(report.findings.filter(f => f.duplicateGroup && liveIntent(f.id)).map(f => f.id));
+    const evaluation = evaluateReport({ ...report, findings: report.findings.filter(f => !repeated.has(f.id)) }, policy, preferred);
     const dismissed = dismissals(annotations).findings;
     for (const item of evaluation.held) {
       held.push({ findingId: item.finding.id, reason: item.reason });
       decide(item.finding.id, "held", item.reason, null);
     }
-    const links = readAlertLinks(tx, report.id);
     for (const finding of evaluation.qualifying) {
       if (dismissed.has(finding.id)) {
         held.push({ findingId: finding.id, reason: "finding_dismissed" });
@@ -338,8 +363,9 @@ export function admitReportAlerts(
         continue;
       }
       const dedupeKey = alertKey(report, finding, policy.version);
-      const earlier = links
-        .filter(link => link.findingId === finding.id)
+      const siblings = finding.duplicateGroup ? report.findings.filter(f => f.duplicateGroup === finding.duplicateGroup && f.id !== finding.id) : [];
+      const earlier = [finding, ...siblings]
+        .flatMap(member => links.filter(link => link.findingId === member.id))
         .map(link => { try { return readDeliveryIntent(tx, input.projectId, link.intentId); } catch { return null; } })
         .find((intent): intent is DeliveryIntent => !!intent && intent.dedupeKey !== dedupeKey && intent.status !== "cancelled");
       if (earlier) {
@@ -449,8 +475,7 @@ export function prAlertCurrentness(tx: AppTransaction, intent: DeliveryIntent): 
   if (matches.length > 1) return { current: false, reason: "duplicate_finding_id" };
   const finding = matches[0];
   if (!finding) return { current: false, reason: "finding_missing" };
-  const evaluation = evaluateReport({ ...report, findings: [finding] }, readAlertPolicy(tx, link.projectId));
-  if (evaluation.qualifying.length !== 1) return { current: false, reason: "alert_policy_changed" };
+  if (!findingQualifies(report, finding, readAlertPolicy(tx, link.projectId))) return { current: false, reason: "alert_policy_changed" };
   return { current: true };
 }
 
@@ -508,6 +533,7 @@ export function quarantineLegacyPrAlerts(tx: AppTransaction, now: number): strin
     "SELECT id, project_id FROM delivery_intents WHERE dedupe_key LIKE 'pr-alert/%' AND id NOT IN (SELECT intent_id FROM pr_alerts) ORDER BY sequence",
   )) {
     const intent = readDeliveryIntent(tx, row.project_id, row.id);
+    if (intent.staleReason === "legacy_alert_unverifiable") continue; // already quarantined; the sweep is idempotent
     if (backfillLegacyAlertLink(tx, intent)) continue;
     scrubDeliveryIntentText(tx, intent, redactCredentials);
     retireDeliveryIntent(tx, row.project_id, row.id, "legacy_alert_unverifiable", now, { markSettledStale: true });
@@ -571,7 +597,8 @@ export function setAlertPolicy(tx: AppTransaction, command: SetAlertPolicyComman
   const decisions: AlertDecision[] = [];
   // Every report of the project is processed in this transaction; there is no silent cap.
   for (const report of listReports(tx, command.projectId)) {
-    const stillQualifies = new Set(evaluateReport(report, policy).qualifying.map(f => f.id));
+    // Per-copy qualification: a live duplicate-group alert that still passes is kept, not churned.
+    const stillQualifies = new Set(report.findings.filter(f => findingQualifies(report, f, policy)).map(f => f.id));
     retiredIntentIds.push(...retirePrAlerts(tx, { projectId: command.projectId, reportId: report.id }, "alert_policy_changed", now, {
       markSettledStale: false, filter: link => !stillQualifies.has(link.findingId),
     }));
