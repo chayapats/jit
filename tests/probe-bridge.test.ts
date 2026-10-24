@@ -645,3 +645,53 @@ test("a send that completes after cancellation stays unconfirmed and unwritten",
   const exported = exportProbeSummary(final);
   expect(exported.observations.find(item => item.observation === "renewal")!.sends).toEqual([{ inference: 1, token: 0, confirmed: false }]);
 });
+
+test("no credential write happens after cancellation acknowledges", async () => {
+  const root = setup();
+  const expired = JSON.stringify({ accessToken: "old-access", refreshToken: "refresh-token", obtainedAt: 0, expiresAt: 1 });
+  let setCalls = 0, tokenFetches = 0;
+  let releaseToken!: (response: Response) => void;
+  const tokenGate = new Promise<Response>(resolve => { releaseToken = resolve; });
+  const store: HostCredentialStore = {
+    get: async () => expired,
+    set: async () => { setCalls++; },
+    delete: async () => true,
+  };
+  const fetch: HostAuthFetch = async (input: any, init?: any) => {
+    const url = String(typeof input === "string" ? input : input.url);
+    if (!url.toLowerCase().includes("token")) {
+      throw new Error("unexpected inference request before refresh");
+    }
+    tokenFetches++;
+    if (init?.signal?.aborted) throw new Error("aborted");
+    return await Promise.race([
+      tokenGate,
+      new Promise<never>((_, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true })),
+    ]);
+  };
+  const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, store, fetch });
+  const pending = liveProbe("fixture-probe-host",
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 8000 },
+    { ...ports, now: () => 1800000000000, id: () => OTHER_ID }, root);
+  for (let spin = 0; spin < 200 && tokenFetches === 0; spin++) {
+    await new Promise(r => setTimeout(r, 5));
+  }
+  expect(tokenFetches).toBe(1);
+  // Cancellation acknowledges while the refresh transport is still pending.
+  const cancelled = await cancelProbeAttempt(root, OTHER_ID);
+  expect(cancelled.lifecycle).toBe("cancelled");
+  // The late token response must not become a credential write: the fenced
+  // store refuses it even though the transport itself completed.
+  releaseToken(new Response(JSON.stringify({ access_token: "late-access", refresh_token: "r", expires_in: 3600 }), { status: 200 }));
+  const late = await pending;
+  expect(late.record.lifecycle).toBe("cancelled");
+  await new Promise(r => setTimeout(r, 50));
+  expect(setCalls).toBe(0);
+  // The self sample counts only confirmed sends: the unconfirmed token
+  // send is uncertainty, never exact evidence.
+  expect(late.self.providerSends).toEqual({ inference: 0, token: 0 });
+  const final = await readProbeAttempt(root, OTHER_ID);
+  // The token send was initiated before cancellation, so the ledger keeps
+  // it explicitly unconfirmed (uncertain) rather than confirmed or erased.
+  expect(final.observations.find(item => item.observation === "renewal")!.sends).toEqual([{ inference: 0, token: 1, confirmed: false }]);
+});

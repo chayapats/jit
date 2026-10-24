@@ -149,12 +149,15 @@ export interface ProbePorts {
    * inside the same cross-process serialization, invokes the given starter
    * synchronously so no provider contact starts after cancellation
    * acknowledges, then confirms the completed send. A refused send throws
-   * without forwarding anything. Ports that do not forward through the gate
-   * (scripted fixtures) leave accounting to the orchestration. Ports
-   * instances are single-flight: overlapping infer calls on one instance
-   * throw instead of silently swapping counts.
+   * without forwarding anything. The optional fence reports whether the
+   * attempt is still dispatched, so credential-store mutations refuse to run
+   * after a terminal state even when the transport itself already completed.
+   * Ports that do not forward through the gate (scripted fixtures) leave
+   * accounting to the orchestration. Ports instances are single-flight:
+   * overlapping infer calls on one instance throw instead of silently
+   * swapping counts.
    */
-  infer(input: { route: string; model: string; prompt: typeof PROBE_PROMPT; tools: readonly []; discovery: { repository: false; hosted: false }; deadlineMs: number; gate?: <R>(kind: "inference" | "token", start: () => Promise<R>) => Promise<R> }, signal: AbortSignal): Promise<ProbeEvent>;
+  infer(input: { route: string; model: string; prompt: typeof PROBE_PROMPT; tools: readonly []; discovery: { repository: false; hosted: false }; deadlineMs: number; gate?: <R>(kind: "inference" | "token", start: () => Promise<R>) => Promise<R>; fenced?: () => Promise<boolean> }, signal: AbortSignal): Promise<ProbeEvent>;
 }
 
 /** Live options demand explicit opt-in: exact route/model plus finite attempts/deadline. */
@@ -815,8 +818,11 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
   // in-memory copies.
   const finishSelf = async (record: ProbeAttempt) => {
     const ledger = record.observations.find(item => item.observation === "renewal")?.sends ?? [];
+    // Only transport-confirmed sends count as exact evidence; unconfirmed
+    // entries are uncertainty, never exact counts.
+    const confirmed = ledger.filter(call => call.confirmed);
     return { elapsedMs: elapsed(), attemptsUsed: record.attempts, maxAttempts,
-      providerSends: { inference: ledger.reduce((n, call) => n + call.inference, 0), token: ledger.reduce((n, call) => n + call.token, 0) },
+      providerSends: { inference: confirmed.reduce((n, call) => n + call.inference, 0), token: confirmed.reduce((n, call) => n + call.token, 0) },
       ...(await selfResources(root)) };
   };
   const abortTo = async (credentialEvent: ProbeEvent, liveEvent: ProbeEvent) => {
@@ -911,9 +917,30 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
           const updated: ProbeAttempt = { ...current, observations: current.observations.map(item =>
             item.observation === "renewal" ? { ...item, sends: ledger } : item) };
           validateProbeAttempt(updated);
-          await atomicWriteFile(dir, `${id}.json`, JSON.stringify(updated) + "\n", () => {
-            if (effective.aborted) throw new PublishAborted();
-          });
+          try {
+            await atomicWriteFile(dir, `${id}.json`, JSON.stringify(updated) + "\n", () => {
+              if (effective.aborted) throw new PublishAborted();
+            });
+          } catch (error) {
+            // Pre-start persistence failure: the intent may already be
+            // renamed into the record even though transport never ran.
+            // Repair it best-effort back to a zeroed entry so a directory
+            // failure can never leave a false exact count behind; an
+            // unrepairable intent stays explicitly unconfirmed (uncertain).
+            try { db.exec("ROLLBACK"); } catch { /* Already rolled back. */ }
+            if (pending === null) {
+              await updateStartedRecord(root, id, current => {
+                const renewal = current.observations.find(item => item.observation === "renewal")!;
+                const ledger = [...(renewal.sends ?? [])];
+                const last = ledger[ledger.length - 1];
+                if (!last || last.confirmed) return null;
+                ledger[ledger.length - 1] = { inference: 0, token: 0, confirmed: true };
+                return { ...current, observations: current.observations.map(item =>
+                  item.observation === "renewal" ? { ...item, sends: ledger } : item) };
+              }).catch(() => ({ updated: false as const, record: null as never }));
+            }
+            throw error;
+          }
           pending = start();
           db.exec("COMMIT");
         } catch (error) {
@@ -948,6 +975,14 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
     return response;
   };
   let attempts = 0, inference: ProbeEvent = "failed";
+  // A fenced check the bridge calls before every credential-store mutation:
+  // post-terminal writes stay refused even when the transport already
+  // completed, so a late token response can never become a credential
+  // write after cancellation acknowledged. Unreadable records fail closed.
+  const fenced = async (): Promise<boolean> => {
+    const current = await readProbeAttempt(root, id).catch(() => null);
+    return current === null || current.lifecycle !== "started";
+  };
   for (let turn = 0; turn < maxAttempts; turn++) {
     if (effective.aborted) break;
     // Reserve the admission durably before any provider contact: the
@@ -965,7 +1000,7 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
     // start provider contact afterward: recheck before invoking the port.
     if (effective.aborted) break;
     try {
-      const outcome = await withDeadline(() => ports.infer({ route, model, prompt: PROBE_PROMPT, tools: PROBE_TOOLS, discovery: { ...PROBE_DISCOVERY }, deadlineMs: bounds.deadlineMs, gate: gateSend }, effective));
+      const outcome = await withDeadline(() => ports.infer({ route, model, prompt: PROBE_PROMPT, tools: PROBE_TOOLS, discovery: { ...PROBE_DISCOVERY }, deadlineMs: bounds.deadlineMs, gate: gateSend, fenced }, effective));
       inference = probeEvents.includes(outcome) ? outcome : "failed";
     } catch {
       inference = "failed";

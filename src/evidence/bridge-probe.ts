@@ -4,6 +4,7 @@ import {
   checkAuthReadiness,
   createHost,
   type HostAuthFetch,
+  type HostCredentialReference,
   type HostCredentialStore,
   type HostRunOptions,
   type HostRuntime,
@@ -97,7 +98,7 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
   // swapping per-call send counts.
   let inflight = false;
 
-  const openHost = async (deadlineMs: number, fetch: HostAuthFetch) => {
+  const openHost = async (deadlineMs: number, fetch: HostAuthFetch, effectiveStore?: HostCredentialStore) => {
     const dirs = probeHostDirs(options.root);
     ensureServiceDir(dirs.base);
     ensureServiceDir(dirs.workspaceRoot);
@@ -121,7 +122,7 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
         deadlineMs: Math.min(Math.max(1, deadlineMs), 86_400_000),
         maxAttempts: BRIDGE_PROBE_MAX_ATTEMPTS,
       },
-      auth: { ...selection, ...(store ? { store } : null), fetch },
+      auth: { ...selection, ...(effectiveStore ? { store: effectiveStore } : null), fetch },
     });
   };
 
@@ -153,6 +154,21 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
       }
       if (inflight) throw new Error("invalid_probe_input");
       inflight = true;
+      // Credential-store mutations are fenced: every write rechecks the
+      // attempt is still dispatched first, so a late token response can
+      // never become a post-cancellation credential write. Unreadable
+      // records fail closed. Reads stay unfenced; only mutations are gated.
+      const fencedStore: HostCredentialStore | undefined = store && input.fenced ? {
+        get: (identity: HostCredentialReference) => store.get(identity),
+        set: async (identity: HostCredentialReference, value: string) => {
+          if (await input.fenced!().catch(() => true)) throw new Error("fenced");
+          await store.set(identity, value);
+        },
+        delete: async (identity: HostCredentialReference) => {
+          if (await input.fenced!().catch(() => true)) throw new Error("fenced");
+          return store.delete(identity);
+        },
+      } : undefined;
       // Per-call transport: the shared before-send gate durably rechecks
       // `started` and bounds the send before anything is forwarded, so a
       // send after cancellation acknowledges — or beyond the pinned
@@ -189,7 +205,7 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
       let host: HostRuntime | null = null;
       let session: HostSession | null = null;
       try {
-        host = await openHost(input.deadlineMs, countingFetch);
+        host = await openHost(input.deadlineMs, countingFetch, fencedStore ?? store);
         session = await host.createSession();
         const options: HostRunOptions = { signal };
         const result = await session.submitWithRoute({ text: BRIDGE_PROBE_PROMPT }, options);
