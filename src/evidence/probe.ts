@@ -1,5 +1,6 @@
-import { constants } from "node:fs";
-import { lstat, mkdir, open, readdir, realpath, unlink } from "node:fs/promises";
+import { Database } from "bun:sqlite";
+import { constants, renameSync } from "node:fs";
+import { lstat, mkdir, open, opendir, readdir, realpath, unlink } from "node:fs/promises";
 import { resolve } from "node:path";
 import { routeEvidence, safeAlias, type NextAction, type RouteState } from "./contract";
 
@@ -40,6 +41,17 @@ export interface ProbeObservationEntry {
   nextAction: NextAction;
   attempts: number;
   elapsedMs: number;
+  /**
+   * Per-send provider-send ledger, auditable evidence for the pinned
+   * transport bound. Only the renewal observation carries it (one entry per
+   * transport send, stamped with its 1-based admission ordinal, each
+   * ordinal bounded by the pinned 2+2 ceiling); every other observation
+   * carries an empty array. Absent on pre-bridge records, which predate
+   * provider-send accounting. `confirmed` marks transport-confirmed sends:
+   * false means authorized but completion unobserved (crash or abort
+   * window) — uncertainty, never exact evidence.
+   */
+  sends?: { inference: number; token: number; confirmed: boolean; admission: number }[];
 }
 
 /** Persisted probe attempt; terminal route states never overwrite an interrupted/cancelled lifecycle. */
@@ -62,7 +74,68 @@ export interface ProbeAttempt {
 }
 
 /** Bounded self-process sample for the probe command itself; never environment, tokens or paths. */
-export interface ProbeSelfSample { elapsedMs: number; attemptsUsed: number; maxAttempts: number }
+export interface ProbeSelfSample {
+  elapsedMs: number; attemptsUsed: number; maxAttempts: number;
+  /** Own-process heap at completion; a resource sample, never a capacity claim. */
+  peakMemoryBytes: number;
+  /** Bounded scan of managed probe artifacts; file count caps the walk. */
+  managedBytes: number; managedFiles: number;
+  /**
+   * Exact provider-send counts observed on the counting transport for this
+   * probe (inference plus token-endpoint sends). The pinned per-admission
+   * structural bound is two of each; a counter-validation failure
+   * terminalizes the attempt as failed, never as success.
+   */
+  providerSends: { inference: number; token: number };
+}
+
+/** Best-effort self resource sample; failures report zeros rather than failing the probe. */
+async function selfResources(root: string): Promise<Pick<ProbeSelfSample, "peakMemoryBytes" | "managedBytes" | "managedFiles">> {
+  let peakMemoryBytes = 0;
+  try { peakMemoryBytes = process.memoryUsage().heapUsed; } catch { /* Own-process sample only. */ }
+  let managedBytes = 0, managedFiles = 0;
+  // One entry budget shared across every managed root: each directory entry
+  // is debited before filtering, symlink checks or stats, so skipped entries
+  // cannot widen the walk. Streaming directory reads never materialize an
+  // unbounded listing, and symlinks are never followed.
+  let seen = 0;
+  const scan = async (top: string): Promise<void> => {
+    const stack: string[] = [top];
+    while (stack.length > 0) {
+      if (seen >= MAX_SELF_SCAN_FILES) return;
+      const current = stack.pop()!;
+      let dir;
+      try {
+        dir = await opendir(current);
+      } catch { continue; }
+      try {
+        for await (const entry of dir) {
+          if (seen >= MAX_SELF_SCAN_FILES) return;
+          seen++;
+          if (entry.name.startsWith(".tmp-")) continue;
+          if (entry.isSymbolicLink()) continue;
+          const full = resolve(current, entry.name);
+          if (entry.isDirectory()) {
+            stack.push(full);
+            continue;
+          }
+          if (!entry.isFile()) continue;
+          try {
+            const stats = await lstat(full);
+            if (stats.isFile() && !stats.isSymbolicLink()) { managedFiles++; managedBytes += stats.size; }
+          } catch { /* One unreadable artifact does not fail the sample. */ }
+        }
+      } finally {
+        await dir.close().catch(() => {});
+      }
+    }
+  };
+  try {
+    await scan(resolve(root, ".local", "host-probe"));
+    await scan(resolve(root, ".local", "host-probe-host"));
+  } catch { /* Missing directories read as empty. */ }
+  return { peakMemoryBytes, managedBytes, managedFiles };
+}
 
 /** Scriptable live boundary; production implementations use Schway credential renewal and native transport. */
 export interface ProbePorts {
@@ -70,8 +143,23 @@ export interface ProbePorts {
   id(): string;
   /** Reports local credential-boundary readability only; it never returns secret material. */
   readCredential(signal: AbortSignal): Promise<"ok" | "missing" | "locked">;
-  /** One bounded inference attempt with the fixed prompt, empty tools and strict discovery off. */
-  infer(input: { route: string; model: string; prompt: typeof PROBE_PROMPT; tools: readonly []; discovery: { repository: false; hosted: false }; deadlineMs: number }, signal: AbortSignal): Promise<ProbeEvent>;
+  /**
+   * One bounded inference attempt with the fixed prompt, empty tools and
+   * strict discovery off. The optional gate runs inside the transport around
+   * every provider send: it durably rechecks `started` and bounds the send
+   * inside the same cross-process serialization, invokes the given starter
+   * synchronously so no provider contact starts after cancellation
+   * acknowledges, then confirms the completed send. A refused send throws
+   * without forwarding anything. Credential-store mutations must go through
+   * the optional fence: `write` runs them with a dispatch check bounded by
+   * the live signal, and `writeStore` additionally removes exactly the
+   * written value when the attempt already terminalized, so no
+   * post-terminal credential stays visible. Ports that do not forward
+   * through gate/fence (scripted fixtures) leave accounting to the
+   * orchestration. Ports instances are single-flight: overlapping infer
+   * calls on one instance throw instead of silently swapping counts.
+   */
+  infer(input: { route: string; model: string; prompt: typeof PROBE_PROMPT; tools: readonly []; discovery: { repository: false; hosted: false }; deadlineMs: number; gate?: <R>(kind: "inference" | "token", start: () => Promise<R>) => Promise<R>; fence?: { write<T>(work: () => Promise<T>): Promise<T>; guard?(): Promise<void>; writeStore(identity: { account: string }, value: string, store: { get(identity: { account: string }): Promise<string | null>; set(identity: { account: string }, value: string): Promise<void>; delete(identity: { account: string }): Promise<boolean>; compareAndDelete(identity: { account: string }, expectedValue: string): Promise<boolean> }): Promise<void> } }, signal: AbortSignal): Promise<ProbeEvent>;
 }
 
 /** Live options demand explicit opt-in: exact route/model plus finite attempts/deadline. */
@@ -79,6 +167,8 @@ export interface LiveProbeOptions { route: string; model: string; maxAttempts: n
 
 const uuidPattern = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/;
 const instantPattern = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/;
+/** Cap for every managed-artifact scan; the walk never grows with installation size. */
+const MAX_SELF_SCAN_FILES = 4096;
 
 function fail(): never { throw new Error("invalid_probe_record"); }
 
@@ -105,6 +195,36 @@ export function parseProbeConfig(raw: unknown): { installationLabel: string } {
 const exactKeys = (value: unknown, keys: string[]): value is Record<string, unknown> =>
   !!value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === keys.length && keys.every(key => Object.hasOwn(value, key));
 
+/**
+ * Validates a per-send ledger: one entry per transport send, each entry
+ * exactly one send of one kind stamped with its 1-based admission ordinal.
+ * Every ordinal stays within the attempt budget and carries at most two
+ * inference plus two token sends on the pinned release. Anything wider,
+ * unshaped or ordinal-less fails closed.
+ */
+type SendLedgerEntry = { inference: number; token: number; confirmed: boolean; admission: number };
+function validSendLedger(value: unknown, maxAttempts: number, attempts: number): value is SendLedgerEntry[] {
+  if (!Array.isArray(value) || value.length > 4 * maxAttempts) return false;
+  const perAdmission = new Map<number, { inference: number; token: number }>();
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+    if (Object.keys(item).sort().join(",") !== "admission,confirmed,inference,token") return false;
+    const entry = item as SendLedgerEntry;
+    if ((entry.inference !== 0 && entry.inference !== 1) || (entry.token !== 0 && entry.token !== 1)) return false;
+    if (entry.inference + entry.token !== 1) return false;
+    if (typeof entry.confirmed !== "boolean") return false;
+    // Ordinals are bounded by admitted attempts, never just the budget: an
+    // entry for an admission that never happened fails closed.
+    if (!Number.isSafeInteger(entry.admission) || entry.admission < 1 || entry.admission > attempts) return false;
+    const totals = perAdmission.get(entry.admission) ?? { inference: 0, token: 0 };
+    totals.inference += entry.inference;
+    totals.token += entry.token;
+    if (totals.inference > 2 || totals.token > 2) return false;
+    perAdmission.set(entry.admission, totals);
+  }
+  return true;
+}
+
 /** Rejects malformed or unknown-field probe records before any read, write or export. */
 export function validateProbeAttempt(value: unknown): asserts value is ProbeAttempt {
   if (!exactKeys(value, ["schema", "id", "observedAt", "installationLabel", "mode", "route", "model", "lifecycle",
@@ -125,7 +245,17 @@ export function validateProbeAttempt(value: unknown): asserts value is ProbeAtte
   const seen = new Set<string>();
   for (const item of record.observations) {
     const itemEntry = item as ProbeObservationEntry;
-    if (!exactKeys(itemEntry, ["observation", "probeClass", "event", "state", "nextAction", "attempts", "elapsedMs"]) ||
+    const { sends, ...rest } = itemEntry as ProbeObservationEntry & { sends?: unknown };
+    if (!exactKeys(rest, ["observation", "probeClass", "event", "state", "nextAction", "attempts", "elapsedMs"]) ||
+        (sends !== undefined && !validSendLedger(sends, record.maxAttempts, record.attempts)) ||
+        // The renewal observation carries the sole send ledger; any send
+        // array on another observation fails validation. The ledger holds
+        // one entry per transport send (see validSendLedger for the shape
+        // and structural ceiling).
+        (sends !== undefined && itemEntry.observation !== "renewal" && (sends as unknown[]).length !== 0) ||
+        // Renewal is measured counts only, never an evidence claim: a
+        // renewal success or nonzero attempts fails validation outright.
+        (itemEntry.observation === "renewal" && (itemEntry.event !== "unobserved" || itemEntry.attempts !== 0)) ||
         !probeObservations.includes(itemEntry.observation) || seen.has(itemEntry.observation) ||
         (itemEntry.observation === "live-request" ? itemEntry.probeClass !== "inference"
           : itemEntry.observation === "renewal" ? itemEntry.probeClass !== "renewal" : itemEntry.probeClass !== "preflight") ||
@@ -150,11 +280,12 @@ export function validateProbeAttempt(value: unknown): asserts value is ProbeAtte
 }
 
 function entry(route: string, model: string | null, bounds: { maxAttempts: number; deadlineMs: number },
-  observation: ProbeObservation, event: ProbeEvent, attempts: number, elapsedMs: number): ProbeObservationEntry {
+  observation: ProbeObservation, event: ProbeEvent, attempts: number, elapsedMs: number,
+  sends: SendLedgerEntry[] = []): ProbeObservationEntry {
   const probeClass = observation === "live-request" ? "inference" as const : observation === "renewal" ? "renewal" as const : "preflight" as const;
   const classified = routeEvidence({ route, model, observation: observation === "service-start" ? "service-start" : observation,
     probeClass, maxAttempts: bounds.maxAttempts, attempts, deadlineMs: bounds.deadlineMs, elapsedMs, configured: true, event });
-  return { observation, probeClass, event, state: classified.state, nextAction: classified.nextAction, attempts, elapsedMs };
+  return { observation, probeClass, event, state: classified.state, nextAction: classified.nextAction, attempts, elapsedMs, sends };
 }
 
 /** A credential read is one observation; only an actual read outcome counts as an attempt. */
@@ -171,43 +302,576 @@ function summarize(observations: ProbeObservationEntry[], lifecycle: ProbeAttemp
   return { state: inference.state, nextAction: inference.nextAction };
 }
 
-async function probeDirectory(root: string, create: boolean): Promise<string> {
-  const local = resolve(root, ".local");
+function serviceUid(): number | null {
+  try {
+    const getuid = (process as unknown as { getuid?: () => number }).getuid;
+    return typeof getuid === "function" ? getuid() : null;
+  } catch { return null; }
+}
+
+/**
+ * Canonical installation-local directory: the convention path itself must
+ * resolve to a real directory with restrictive mode and service ownership.
+ * An ancestor or self symlink would redirect managed state outside the
+ * installation, so canonical identity is checked, not just the final link.
+ */
+function missingProbeDirectory(): NodeJS.ErrnoException {
+  const missing = new Error("missing_probe_directory") as NodeJS.ErrnoException;
+  missing.code = "ENOENT";
+  return missing;
+}
+
+async function canonicalLocal(root: string, create: boolean): Promise<string> {
+  const canonRoot = await realpath(root);
+  const local = resolve(canonRoot, ".local");
   if (create) { try { await mkdir(local, { mode: 0o700 }); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; } }
-  const info = await lstat(local);
-  if (!info.isDirectory() || info.isSymbolicLink() || info.mode & 0o077) throw new Error("unsafe_local_directory");
-  const dir = resolve(await realpath(local), "host-probe");
+  // The convention directory itself must be a real directory: an ancestor or
+  // self symlink would redirect managed state outside the installation.
+  const present = await lstat(local).catch(() => null);
+  if (present === null) {
+    if (create) throw new Error("unsafe_local_directory");
+    throw missingProbeDirectory();
+  }
+  if (await realpath(local) !== local) throw new Error("unsafe_local_directory");
+  const uid = serviceUid();
+  if (!present.isDirectory() || present.isSymbolicLink() || (present.mode & 0o077) !== 0 || (uid !== null && present.uid !== uid)) {
+    throw new Error("unsafe_local_directory");
+  }
+  return local;
+}
+
+async function probeDirectory(root: string, create: boolean): Promise<string> {
+  const local = await canonicalLocal(root, create);
+  const dir = resolve(local, "host-probe");
   if (create) { try { await mkdir(dir, { mode: 0o700 }); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; } }
-  const stats = await lstat(dir);
-  if (!stats.isDirectory() || stats.isSymbolicLink() || stats.mode & 0o077) throw new Error("unsafe_probe_directory");
+  const present = await lstat(dir).catch(() => null);
+  if (present === null) {
+    if (create) throw new Error("unsafe_probe_directory");
+    throw missingProbeDirectory();
+  }
+  if (await realpath(dir) !== dir) throw new Error("unsafe_probe_directory");
+  const uid = serviceUid();
+  if (!present.isDirectory() || present.isSymbolicLink() || (present.mode & 0o077) !== 0 || (uid !== null && present.uid !== uid)) {
+    throw new Error("unsafe_probe_directory");
+  }
   return dir;
+}
+
+/** One in-process mutex per installation lifecycle directory. Every SQLite
+ * lifecycle transaction in this process serializes through it: per-record
+ * locks are not sufficient, because two records share one database file and
+ * a second BEGIN IMMEDIATE would block the event loop on a SQLite busy-wait
+ * while the first transaction awaits file I/O. The lock is always released
+ * before awaiting transport, so cancellation never deadlocks on it. */
+const dirLocks = new Map<string, Promise<void>>();
+
+async function acquireDirLock(dir: string): Promise<() => void> {
+  const prior = dirLocks.get(dir);
+  let release!: () => void;
+  const mine = new Promise<void>(resolve => { release = resolve; });
+  dirLocks.set(dir, mine);
+  if (prior) await prior.catch(() => {});
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    release();
+    if (dirLocks.get(dir) === mine) dirLocks.delete(dir);
+  };
+}
+
+/**
+ * In-flight credential mutations per attempt, tracked so owner-stop
+ * acknowledgement can wait for safe settlement instead of racing past it.
+ * The fence itself holds no lock across the backend; this registry only
+ * lets cancellation observe what is still running.
+ */
+const inflightWrites = new Map<string, Set<Promise<unknown>>>();
+/** Live deadline per dispatched attempt, bounding any acknowledgement wait. */
+const probeDeadlines = new Map<string, { startedAt: number; deadlineMs: number }>();
+
+/**
+ * Attempt ids whose post-terminal credential cleanup failed to verify.
+ * Set when a supervised or settlement-attached compare-and-delete rejects;
+ * consulted at terminalization so the record reports store-unavailable
+ * instead of a clean cancelled/failed claim. Cleared when the run releases
+ * its tracking state.
+ */
+const cleanupUncertainIds = new Set<string>();
+
+/**
+ * Backend credential writes per attempt that were initiated but whose final
+ * visibility is not yet verified (not landed-and-kept while started, not
+ * cleaned, not rejected). A terminal record written while any remain
+ * reports store-unavailable: the late value may still land after the
+ * record is immutable, so a clean cancelled/failed claim would understate
+ * visibility. Conservative by design: a later successful cleanup cannot
+ * downgrade the already-published uncertainty.
+ */
+const unresolvedWrites = new Map<string, number>();
+
+function resolveWrite(id: string): void {
+  const count = unresolvedWrites.get(id);
+  if (count === undefined) return;
+  if (count <= 1) unresolvedWrites.delete(id);
+  else unresolvedWrites.set(id, count - 1);
+}
+
+/**
+ * Open Schway-owned mutation windows per attempt. The supported guard seam
+ * cannot tell a pre-write from a post-write call, so any admitted guard
+ * call opens a window for the infer call that issued it, closed only when
+ * that infer call actually settles (Schway awaits its own write and
+ * cleanup inside it). Conservative: a terminal record written while a
+ * window is open reports uncertainty even if the write had already landed
+ * legitimately.
+ */
+const schwayWindows = new Map<string, Set<object>>();
+
+function openWindow(id: string, token: object): void {
+  const open = schwayWindows.get(id) ?? new Set<object>();
+  open.add(token);
+  schwayWindows.set(id, open);
+}
+
+function closeWindow(id: string, token: object): void {
+  const open = schwayWindows.get(id);
+  if (!open) return;
+  open.delete(token);
+  if (open.size === 0) schwayWindows.delete(id);
+}
+
+/**
+ * Releases process-local tracking once a terminal record is committed or
+ * observed: the record is then immutable, so uncertainty can no longer be
+ * published. Never released on a failed publication, so a later
+ * same-process cancel/reconcile still sees unresolved writes.
+ */
+function releaseTracking(id: string): void {
+  inflightWrites.delete(id);
+  probeDeadlines.delete(id);
+  cleanupUncertainIds.delete(id);
+  unresolvedWrites.delete(id);
+  schwayWindows.delete(id);
+}
+
+/**
+ * Marks unverified cleanup only while the run is still tracked. After the
+ * terminal CAS released tracking the record is immutable, so a late mark
+ * would only leak the id (and taint any later attempt reusing it).
+ */
+function markUncertain(id: string): void {
+  if (inflightWrites.has(id)) cleanupUncertainIds.add(id);
+}
+
+/** True when the attempt cannot claim clean final credential visibility. */
+function cleanupUnverified(id: string): boolean {
+  return cleanupUncertainIds.has(id) || (unresolvedWrites.get(id) ?? 0) > 0 || (schwayWindows.get(id)?.size ?? 0) > 0;
+}
+
+/**
+ * Rewrites a terminal record to store-unavailable when credential visibility
+ * cannot be verified. Applied inside the terminal CAS for every writer
+ * (commit, cancel, reconcile, abort, final publication), under the same
+ * serialization that admits credential writes, so no writer can publish a
+ * clean claim over an unresolved in-process write.
+ */
+function uncertainTerminal(next: ProbeAttempt): ProbeAttempt {
+  if (next.lifecycle === "store-unavailable" || next.route === null) return next;
+  const bounds = { maxAttempts: next.maxAttempts, deadlineMs: next.deadlineMs };
+  // Writes are only admitted inside an admitted attempt, so the live entry
+  // carries the durable count; with none admitted the store state belongs
+  // to the credential observation instead. The uncertainty observation is
+  // classified at most at the deadline instant (past it the classifier
+  // would read a plain timeout); the record's top-level elapsedMs stays
+  // the truthful wall time.
+  const atDeadline = (elapsedMs: number) => Math.min(elapsedMs, next.deadlineMs);
+  return { ...next, lifecycle: "store-unavailable", nextAction: "check-secure-store",
+    observations: next.observations.map(item => next.attempts > 0
+      ? item.observation === "live-request"
+        ? entry(next.route!, next.model, bounds, "live-request", "store", next.attempts, atDeadline(item.elapsedMs))
+        : item
+      : item.observation === "credential-read"
+        ? credentialEntry(next.route!, next.model, bounds, "store")
+        : item.observation === "live-request"
+          ? entry(next.route!, next.model, bounds, "live-request", "unobserved", 0, atDeadline(item.elapsedMs))
+          : item) };
+}
+
+/** Marker for a credential-cleanup outcome that could not be verified; never carries secret material.
+ * Sets the same `cleanupUncertain` flag Schway's guarded wrapper uses, so the
+ * pinned release preserves it through `preserveRefusal` instead of
+ * sanitizing it into a clean refusal; the message fallback survives the
+ * agent loop, which rethrows provider failures as sanitized plain messages.
+ */
+export function cleanupUncertainError(cause?: unknown): Error {
+  const error = new Error("Credential cleanup could not be verified; a late credential may still be visible.",
+    cause === undefined ? undefined : { cause });
+  (error as { code?: unknown }).code = "credential-cleanup-uncertain";
+  (error as { cleanupUncertain?: unknown }).cleanupUncertain = true;
+  return error;
+}
+
+/** True when an error marks an unverified credential cleanup rather than a clean fence.
+ * Brand-first for direct callers; flag- and message-fallbacks survive the
+ * pinned Schway layers, which preserve the flag through `preserveRefusal`
+ * but rethrow provider failures as sanitized plain messages. */
+export function isCleanupUncertain(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  if ((error as { cleanupUncertain?: unknown }).cleanupUncertain === true) return true;
+  if ((error as { code?: unknown }).code === "credential-cleanup-uncertain") return true;
+  return /credential cleanup (could not be verified|uncertain)/i.test(error.message);
+}
+
+/**
+ * Waits for in-flight credential mutations to settle before acknowledgement,
+ * bounded by the attempt's remaining live deadline. A hung backend therefore
+ * delays acknowledgement at most until the deadline the owner already set;
+ * with no known deadline (or none remaining) there is nothing bounded to
+ * wait for and cancellation proceeds immediately.
+ */
+async function settleInflightWrites(id: string): Promise<void> {
+  const pending = inflightWrites.get(id);
+  if (!pending || pending.size === 0) return;
+  const budget = probeDeadlines.get(id);
+  if (!budget) return;
+  const remaining = budget.deadlineMs - (Date.now() - budget.startedAt);
+  if (!(remaining > 0)) return;
+  await Promise.race([
+    Promise.allSettled([...pending]),
+    new Promise(resolve => setTimeout(resolve, remaining)),
+  ]);
+}
+
+async function withDirLock<T>(dir: string, work: () => Promise<T>): Promise<T> {
+  const release = await acquireDirLock(dir);
+  try {
+    return await work();
+  } finally {
+    release();
+  }
+}
+
+/**
+ * Cross-process terminal compare-and-set. Every lifecycle transition runs
+ * inside one SQLite `BEGIN IMMEDIATE` transaction: the record is re-read
+ * under the lock, a non-started record is returned byte-for-byte unchanged,
+ * and only the first claimant writes its terminal record. The file write
+ * happens inside the same critical section, so no stale-takeover race or
+ * owner-age rule exists: a crashed holder's transaction rolls back and the
+ * next contender re-reads authoritative state. Losers never acknowledge.
+ */
+/**
+ * Opens the installation-local lifecycle ledger without following planted
+ * symlinks or foreign files. An existing ledger must be a service-owned
+ * regular mode-0600 file; a missing ledger is created exclusively before
+ * SQLite touches the path, so terminalization can never create or modify a
+ * database outside the managed directory. A lost exclusive-create race
+ * (EEXIST) reopens through the same validation instead of failing: the
+ * winner's file is verified, never trusted blindly.
+ */
+async function lifecycleDb(dir: string): Promise<Database> {
+  const path = await ensureLedgerFile(dir);
+  const db = new Database(path, { create: true });
+  db.exec("PRAGMA busy_timeout = 5000;");
+  db.exec("PRAGMA synchronous = FULL;");
+  db.exec("CREATE TABLE IF NOT EXISTS probe_terminal(id TEXT PRIMARY KEY, lifecycle TEXT NOT NULL)");
+  return db;
+}
+
+/** Thrown when the deadline fires between payload build and publication. */
+class PublishAborted extends Error {
+  constructor() { super("publish_aborted"); }
+}
+
+/**
+ * In-process serialization for first-use ledger creation. The cross-process
+ * EEXIST retry below remains the correctness mechanism; this gate only
+ * avoids redundant creation races inside one process.
+ */
+const ledgerInit = new Map<string, Promise<void>>();
+
+async function ensureLedgerFile(dir: string): Promise<string> {
+  const path = resolve(dir, "lifecycle.db");
+  let init = ledgerInit.get(dir);
+  if (!init) {
+    init = (async () => {
+      const present = await lstat(path).catch(() => null);
+      if (present !== null) {
+        assertLedgerFile(dir, path, present);
+      } else {
+        try {
+          const handle = await open(path, "wx", 0o600);
+          await handle.close();
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException)?.code !== "EEXIST") throw error;
+          const raced = await lstat(path).catch(() => null);
+          if (raced === null) throw error;
+          assertLedgerFile(dir, path, raced);
+        }
+      }
+    })();
+    ledgerInit.set(dir, init);
+    init.then(
+      () => { if (ledgerInit.get(dir) === init) ledgerInit.delete(dir); },
+      () => { if (ledgerInit.get(dir) === init) ledgerInit.delete(dir); },
+    );
+  }
+  await init;
+  return path;
+}
+
+function assertLedgerFile(dir: string, path: string, present: { isFile(): boolean; isSymbolicLink(): boolean; mode: number; uid: number }): void {
+  if (!present.isFile() || present.isSymbolicLink()) throw new Error("unsafe_probe_ledger");
+  // The parent directory is canonical-checked by probeDirectory, so a
+  // non-symlink regular file here cannot escape the managed directory; a
+  // hardlink to outside content would still require write access to this
+  // service-owned mode-0700 directory, which already owns the evidence.
+  void dir; void path;
+  const uid = serviceUid();
+  if ((present.mode & 0o077) !== 0 || (uid !== null && present.uid !== uid)) throw new Error("unsafe_probe_ledger");
+}
+
+async function transitionTerminal(root: string, id: string,
+  build: (current: ProbeAttempt) => ProbeAttempt | null,
+  opts: { signal?: AbortSignal; abortBuild?: (current: ProbeAttempt) => ProbeAttempt | null } = {},
+): Promise<{ committed: boolean; record: ProbeAttempt }> {
+  const dir = await probeDirectory(root, true);
+  return withDirLock(dir, async () => {
+    const db = await lifecycleDb(dir);
+    try {
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const current = await readProbeAttempt(root, id);
+        if (current.lifecycle !== "started") {
+          db.exec("ROLLBACK");
+          releaseTracking(id);
+          return { committed: false, record: current };
+        }
+        let next = build(current);
+        if (next === null) {
+          db.exec("ROLLBACK");
+          return { committed: false, record: current };
+        }
+        if (cleanupUnverified(id)) next = uncertainTerminal(next);
+        validateProbeAttempt(next);
+        try {
+          await atomicWriteFile(dir, `${id}.json`, JSON.stringify(next) + "\n", () => {
+            if (opts.signal?.aborted) throw new PublishAborted();
+          });
+        } catch (error) {
+          if (!(error instanceof PublishAborted)) throw error;
+          // The deadline fired during publication: publish cancelled with
+          // non-success evidence in this same winning transaction instead of
+          // the success payload that was already built.
+          let fallback = opts.abortBuild?.(current) ?? null;
+          if (fallback === null) {
+            db.exec("ROLLBACK");
+            return { committed: false, record: current };
+          }
+          if (cleanupUnverified(id)) fallback = uncertainTerminal(fallback);
+          validateProbeAttempt(fallback);
+          await atomicWriteFile(dir, `${id}.json`, JSON.stringify(fallback) + "\n");
+          next = fallback;
+        }
+        db.query("INSERT OR IGNORE INTO probe_terminal(id, lifecycle) VALUES (?, ?)").run(id, next.lifecycle);
+        db.exec("COMMIT");
+        releaseTracking(id);
+        return { committed: true, record: next };
+      } catch (error) {
+        try { db.exec("ROLLBACK"); } catch { /* Already rolled back. */ }
+        throw error;
+      }
+    } finally {
+      db.close();
+    }
+  });
+}
+
+/**
+ * Runs one credential-store mutation with a pre-start dispatch check. The
+ * `started` recheck runs inside the shared lifecycle serialization and is
+ * released before the mutation starts, so a hung backend can never wedge
+ * the probe past its deadline or block cancellation: the mutation races
+ * the caller's signal outside every lock and transaction. An abort fails
+ * the write closed without waiting for the backend. The backend itself is
+ * unabortable, so a late settlement may land after acknowledgement — that
+ * residual is refused at Schway's supported guard seam (schway#416,
+ * landed), so no late token response becomes credential evidence.
+ * Throws `fenced`
+ * when the record is already terminal or the signal is already aborted.
+ */
+export async function fencedStoreWrite<T>(root: string, id: string, signal: AbortSignal | null, work: () => Promise<T>, onAdmit?: () => void): Promise<T> {
+  if (signal?.aborted) throw new Error("fenced");
+  const dir = await probeDirectory(root, true);
+  // Phase 1: quick dispatch check under the shared serialization. The lock
+  // and database are always released before the mutation starts, even when
+  // opening or validating the ledger fails.
+  const release = await acquireDirLock(dir);
+  let db: Database | null = null;
+  try {
+    db = await lifecycleDb(dir);
+    try {
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const current = await readProbeAttempt(root, id);
+        if (current.lifecycle !== "started") {
+          db.exec("ROLLBACK");
+          throw new Error("fenced");
+        }
+        // Admission is recorded inside the same serialization the terminal
+        // CAS uses: a terminal writer either runs first (and this write is
+        // refused) or observes the admission and reports uncertainty.
+        onAdmit?.();
+        db.exec("ROLLBACK");
+      } catch (error) {
+        try { db.exec("ROLLBACK"); } catch { /* Already rolled back. */ }
+        throw error;
+      }
+    } finally {
+      db.close();
+    }
+  } finally {
+    release();
+  }
+  // Phase 2: run the mutation outside every lock/transaction, bounded by
+  // the caller's signal. No await runs between the abort check and the
+  // invocation, so a pre-fired abort never starts unbounded work.
+  if (signal?.aborted) throw new Error("fenced");
+  if (!signal) return work();
+  return await Promise.race([
+    work(),
+    new Promise<never>((_, reject) => {
+      if (signal.aborted) {
+        reject(new Error("fenced"));
+        return;
+      }
+      const onAbort = () => {
+        signal.removeEventListener("abort", onAbort);
+        reject(new Error("fenced"));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+    }),
+  ]);
+}
+
+/**
+ * Non-terminal compare-and-set on a dispatched attempt. Re-reads the record
+ * inside the cross-process transaction and applies the mutation only while
+ * the lifecycle is still `started`; losers report the settled record.
+ */
+async function updateStartedRecord(root: string, id: string,
+  mutate: (current: ProbeAttempt) => ProbeAttempt | null,
+): Promise<{ updated: boolean; record: ProbeAttempt }> {
+  const dir = await probeDirectory(root, true);
+  return withDirLock(dir, async () => {
+    const db = await lifecycleDb(dir);
+    try {
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const current = await readProbeAttempt(root, id);
+        if (current.lifecycle !== "started") {
+          db.exec("ROLLBACK");
+          return { updated: false, record: current };
+        }
+        const next = mutate(current);
+        if (next === null) {
+          db.exec("ROLLBACK");
+          return { updated: false, record: current };
+        }
+        validateProbeAttempt(next);
+        await atomicWriteFile(dir, `${id}.json`, JSON.stringify(next) + "\n");
+        db.exec("COMMIT");
+        return { updated: true, record: next };
+      } catch (error) {
+        try { db.exec("ROLLBACK"); } catch { /* Already rolled back. */ }
+        throw error;
+      }
+    } finally {
+      db.close();
+    }
+  });
+}
+
+/**
+ * Durably reserves one admission before any provider contact. The
+ * reservation appends a zeroed per-admission ledger entry together with the
+ * persisted attempt count inside the cross-process transaction, so a
+ * concurrent cancel serializes against it (no new request starts after
+ * cancellation acknowledges) and a crash preserves the admitted count and
+ * its ledger slot instead of recording zero.
+ */
+async function reserveAttempt(root: string, id: string): Promise<{ admitted: boolean; attempts: number }> {
+  const { updated, record } = await updateStartedRecord(root, id, current => {
+    if (current.attempts >= current.maxAttempts) return null;
+    return { ...current, attempts: current.attempts + 1 };
+  });
+  return { admitted: updated, attempts: record.attempts };
+}
+
+let tmpCounter = 0;
+
+/**
+ * Publishes one record atomically: exclusive temp file, fsync, atomic rename
+ * and a required directory sync. Directory-open/sync failures are persistence
+ * failures, never best-effort skips: acknowledging them would let dispatch
+ * proceed on evidence a restart cannot see. Failed temp files are removed.
+ * The optional pre-rename hook runs immediately before the rename — the
+ * linearization point — and may throw PublishAborted to cancel publication.
+ */
+async function atomicWriteFile(dir: string, name: string, data: string, preRename?: () => void): Promise<void> {
+  const tmp = resolve(dir, `${name}.tmp-${process.pid}-${(tmpCounter = (tmpCounter + 1) % 1000000)}.json`);
+  const file = await open(tmp, "wx", 0o600);
+  try {
+    await file.writeFile(data);
+    await file.sync();
+  } catch (error) {
+    try { await unlink(tmp); } catch { /* Best-effort temp cleanup. */ }
+    throw error;
+  } finally {
+    await file.close();
+  }
+  try {
+    preRename?.();
+  } catch (error) {
+    try { await unlink(tmp); } catch { /* Best-effort temp cleanup. */ }
+    throw error;
+  }
+  // The rename is synchronous: no await yields between the pre-rename abort
+  // check and the linearization point, so a deadline firing in that window
+  // cannot publish success after the check. Directory durability follows.
+  try {
+    renameSync(tmp, resolve(dir, name));
+  } catch (error) {
+    try { await unlink(tmp); } catch { /* Best-effort temp cleanup. */ }
+    throw error;
+  }
+  const dirFd = await open(dir, "r");
+  try {
+    await dirFd.sync();
+  } finally {
+    await dirFd.close();
+  }
 }
 
 async function writeAttempt(root: string, record: ProbeAttempt): Promise<void> {
   validateProbeAttempt(record);
-  const dir = await probeDirectory(root, true), path = resolve(dir, `${record.id}.json`);
-  const file = await open(path, "wx", 0o600);
-  let complete = false;
+  const dir = await probeDirectory(root, true);
+  // Create-only: a terminal record is never replaced by a fresh dispatch.
   try {
-    await file.writeFile(JSON.stringify(record) + "\n");
-    await file.sync();
-    complete = true;
-  } finally {
-    await file.close();
-    if (!complete) await unlink(path);
+    await lstat(resolve(dir, `${record.id}.json`));
+    throw new Error("invalid_probe_record");
+  } catch (error) {
+    if (error instanceof Error && error.message === "invalid_probe_record") throw error;
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
+  await atomicWriteFile(dir, `${record.id}.json`, JSON.stringify(record) + "\n");
 }
 
 async function overwriteAttempt(root: string, record: ProbeAttempt): Promise<void> {
   validateProbeAttempt(record);
-  const dir = await probeDirectory(root, true), path = resolve(dir, `${record.id}.json`);
-  const file = await open(path, "w", 0o600);
-  try {
-    await file.writeFile(JSON.stringify(record) + "\n");
-    await file.sync();
-  } finally {
-    await file.close();
-  }
+  const dir = await probeDirectory(root, true);
+  await atomicWriteFile(dir, `${record.id}.json`, JSON.stringify(record) + "\n");
 }
 
 /** Reads one named probe attempt; malformed records cannot be exported. */
@@ -231,62 +895,101 @@ export async function readProbeAttempt(root: string, id: string): Promise<ProbeA
 
 /** Lists persisted attempts in bounded filename order for restart reconciliation. */
 export async function listProbeAttempts(root: string): Promise<ProbeAttempt[]> {
+  return (await listProbeKeys(root)).map(({ id, record }) => record);
+}
+
+const MAX_RECONCILE_FILES = 4096;
+
+async function listProbeKeys(root: string): Promise<{ id: string; record: ProbeAttempt }[]> {
   let dir: string;
   try {
     dir = await probeDirectory(root, false);
-  } catch {
-    return [];
+  } catch (error) {
+    // A missing probe directory means no attempts; anything else fails closed.
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
   }
-  const names = (await readdir(dir)).filter(name => uuidPattern.test(name.replace(/\.json$/, ""))).slice(0, 64).sort();
-  const records: ProbeAttempt[] = [];
+  const names = (await readdir(dir)).filter(name => uuidPattern.test(name.replace(/\.json$/, ""))).sort();
+  if (names.length > MAX_RECONCILE_FILES) throw new Error("reconciliation_overflow");
+  const records: { id: string; record: ProbeAttempt }[] = [];
+  const failures: string[] = [];
   for (const name of names) {
+    const id = name.replace(/\.json$/, "");
     try {
-      records.push(await readProbeAttempt(root, name.replace(/\.json$/, "")));
+      records.push({ id, record: await readProbeAttempt(root, id) });
     } catch {
-      /* Corrupt probe records stay unreadable; reconciliation never invents success. */
+      failures.push(id);
     }
   }
+  if (failures.length > 0) throw new Error(`reconcile-unreadable: ${failures.slice(0, 8).join(",")}`);
   return records;
 }
 
 /** Marks attempts orphaned by a restart as interrupted; terminal records are never rewritten. */
 export async function reconcileProbeAttempts(root: string): Promise<ProbeAttempt[]> {
   const updated: ProbeAttempt[] = [];
-  for (const record of await listProbeAttempts(root)) {
-    if (record.lifecycle !== "started") continue;
-    const next: ProbeAttempt = { ...record, lifecycle: "interrupted", nextAction: "inspect-sanitized-failure" };
-    await overwriteAttempt(root, next);
-    updated.push(next);
+  const failures: string[] = [];
+  for (const { id } of await listProbeKeys(root)) {
+    try {
+      const { committed, record } = await transitionTerminal(root, id, current => ({
+        ...current, lifecycle: "interrupted", nextAction: "inspect-sanitized-failure",
+      }));
+      if (committed) updated.push(record);
+      else if (record.lifecycle === "started") failures.push(`${id}:contended`);
+    } catch {
+      failures.push(id);
+    }
   }
+  if (failures.length > 0) throw new Error(`reconcile-unreadable: ${failures.slice(0, 8).join(",")}`);
   return updated;
 }
 
 /**
  * Cancels a dispatched attempt after an owner stop. Later completions can no
- * longer promote it to success; the file compare keeps the first terminal state.
+ * longer promote it to success; the transactional CAS keeps the first
+ * terminal state byte-for-byte across CLI invocations.
  */
 export async function cancelProbeAttempt(root: string, id: string): Promise<ProbeAttempt> {
-  const record = await readProbeAttempt(root, id);
-  if (record.lifecycle !== "started") return record;
-  const next: ProbeAttempt = { ...record, lifecycle: "cancelled", nextAction: "inspect-sanitized-failure" };
-  await overwriteAttempt(root, next);
-  return next;
+  // Delay acknowledgement until in-flight mutations settle (bounded by the
+  // remaining live deadline), so a started write cannot complete after the
+  // stop is acknowledged while a hung backend cannot wedge the owner stop.
+  // A failed settlement-attached cleanup marks the attempt uncertain, so
+  // the record reports store-unavailable instead of a clean cancelled claim.
+  await settleInflightWrites(id);
+  const { record } = await transitionTerminal(root, id, current => ({
+    ...current, lifecycle: "cancelled", nextAction: "inspect-sanitized-failure",
+  }));
+  return record;
 }
 
 /**
  * Commits a terminal outcome only when the attempt is still dispatched.
- * Late completions after cancel/restart return false and change nothing.
+ * Late completions after cancel/restart change nothing and report the
+ * settled record instead of success.
+ */
+/**
+ * Commits a terminal outcome only when the attempt is still dispatched.
+ * Late completions after cancel/restart change nothing and report the
+ * settled record. The caller supplies only terminal event evidence; counts
+ * and the send ledger always come from the durable record, so a stale
+ * caller can never erase a persisted admission.
  */
 export async function commitProbeOutcome(root: string, id: string, observations: ProbeObservationEntry[], attempts: number, elapsedMs: number): Promise<boolean> {
-  const record = await readProbeAttempt(root, id);
-  if (record.lifecycle !== "started") return false;
-  const inference = observations.find(item => item.observation === "live-request")!;
-  const credential = observations.find(item => item.observation === "credential-read")!;
-  const terminal = inference.event === "unobserved"
-    ? { state: credential.state, nextAction: credential.nextAction }
-    : { state: inference.state, nextAction: inference.nextAction };
-  await overwriteAttempt(root, { ...record, lifecycle: terminal.state, observations, attempts, elapsedMs, nextAction: terminal.nextAction });
-  return true;
+  void attempts;
+  const { committed } = await transitionTerminal(root, id, current => {
+    const live = observations.find(item => item.observation === "live-request")!;
+    const credential = observations.find(item => item.observation === "credential-read")!;
+    const renewal = current.observations.find(item => item.observation === "renewal")!;
+    const liveEntry = entry(current.route, current.model, { maxAttempts: current.maxAttempts, deadlineMs: current.deadlineMs }, "live-request", live.event, current.attempts, elapsedMs);
+    const credentialEntryItem = credentialEntry(current.route, current.model, { maxAttempts: current.maxAttempts, deadlineMs: current.deadlineMs }, credential.event);
+    const terminal = live.event === "unobserved"
+      ? { state: credentialEntryItem.state, nextAction: credentialEntryItem.nextAction }
+      : { state: liveEntry.state, nextAction: liveEntry.nextAction };
+    return { ...current, lifecycle: terminal.state,
+      observations: [current.observations[0]!, credentialEntryItem, liveEntry, renewal],
+      attempts: current.attempts, elapsedMs, nextAction: terminal.nextAction };
+  });
+  return committed;
 }
 
 /** Default preflight: reports configured-unverified with zero credential/inference invocations. */
@@ -310,24 +1013,12 @@ export async function preflightProbe(installationLabel: string, route: string, m
     mode: "preflight", route, model, lifecycle: summary.state, maxAttempts: bounds.maxAttempts, attempts: 0,
     deadlineMs: bounds.deadlineMs, elapsedMs: 0, observations, promptBytes: Buffer.byteLength(PROBE_PROMPT), nextAction: summary.nextAction };
   // A preflight commits atomically: create the file directly in its terminal
-  // state so no restart can mistake it for a dispatched live attempt.
-  const file = await (async () => {
-    validateProbeAttempt(record);
-    const dir = await probeDirectory(root, true), path = resolve(dir, `${record.id}.json`);
-    const handle = await open(path, "wx", 0o600);
-    let complete = false;
-    try {
-      await handle.writeFile(JSON.stringify(record) + "\n");
-      await handle.sync();
-      complete = true;
-    } finally {
-      await handle.close();
-      if (!complete) await unlink(path);
-    }
-    return record;
-  })();
-  void file;
-  return { record, self: { elapsedMs: 0, attemptsUsed: 0, maxAttempts: record.maxAttempts } };
+  // state through the durable writer (file fsync plus required
+  // parent-directory sync), so no restart can mistake it for a dispatched
+  // live attempt and no power loss can erase the acknowledged filename.
+  await writeAttempt(root, record);
+  return { record, self: { elapsedMs: 0, attemptsUsed: 0, maxAttempts: record.maxAttempts,
+    providerSends: { inference: 0, token: 0 }, ...(await selfResources(root)) } };
 }
 
 /**
@@ -350,54 +1041,454 @@ export async function liveProbe(installationLabel: string, options: LiveProbeOpt
   const dispatched: ProbeAttempt = { schema: PROBE_SCHEMA, id, observedAt: new Date(started).toISOString(), installationLabel,
     mode: "live", route, model, lifecycle: "started", maxAttempts, attempts: 0, deadlineMs, elapsedMs: 0,
     observations: base, promptBytes: Buffer.byteLength(PROBE_PROMPT), nextAction: "run-opt-in-probe" };
-  // Persist the attempt before any account request so a crash leaves explicit started evidence.
-  await writeAttempt(root, dispatched);
   const elapsed = () => Math.max(0, Math.min(120000, ports.now() - started));
-  if (signal.aborted) {
-    await overwriteAttempt(root, { ...dispatched, lifecycle: "cancelled", nextAction: "inspect-sanitized-failure" });
-    return { record: await readProbeAttempt(root, id), self: { elapsedMs: elapsed(), attemptsUsed: 0, maxAttempts } };
+  // One absolute deadline, captured before the first persistence await:
+  // every timer, dispatch check, host budget and settlement wait derives
+  // from its remaining time, so slow persistence or readiness can neither
+  // start inference late nor restart the budget. Composed with the caller
+  // signal so the public orchestration enforces its configured bound even
+  // when invoked directly; a blocked store fails closed at the deadline.
+  const deadlineAt = Date.now() + deadlineMs;
+  const owned = new AbortController();
+  const timer = setTimeout(() => owned.abort(), deadlineMs);
+  const onCallerAbort = () => owned.abort();
+  if (signal.aborted) owned.abort();
+  else signal.addEventListener("abort", onCallerAbort, { once: true });
+  const effective = owned.signal;
+  try {
+    // Persist the attempt before any account request so a crash leaves explicit started evidence.
+    await writeAttempt(root, dispatched);
+    return await runLive(root, id, dispatched, base, bounds, route, model, maxAttempts, ports, effective, elapsed, deadlineAt, () => owned.abort());
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener("abort", onCallerAbort);
   }
+}
+
+/** Live probe body running under the composed deadline signal. */
+async function runLive(root: string, id: string, dispatched: ProbeAttempt, base: ProbeObservationEntry[],
+  bounds: { maxAttempts: number; deadlineMs: number }, route: string, model: string, maxAttempts: number,
+  ports: ProbePorts, effective: AbortSignal, elapsed: () => number, deadlineAt: number, expire: () => void,
+): Promise<{ record: ProbeAttempt; self: ProbeSelfSample }> {
+  // Past the absolute deadline nothing new may start, even if the owned
+  // timer has not fired yet (a busy event loop delays it): the signal is
+  // aborted synchronously so every abort path applies unchanged.
+  const expired = (): boolean => {
+    if (!effective.aborted && Date.now() >= deadlineAt) expire();
+    return effective.aborted;
+  };
+  // Every terminal write below goes through the transactional CAS: a
+  // concurrent cancel/reconcile/commit wins exactly once, and losers report
+  // the settled record byte-for-byte instead of overwriting it. Attempts and
+  // the send ledger always come from the durable record, never from stale
+  // in-memory copies.
+  const finishSelf = async (record: ProbeAttempt) => {
+    const ledger = record.observations.find(item => item.observation === "renewal")?.sends ?? [];
+    // Only transport-confirmed sends count as exact evidence; unconfirmed
+    // entries are uncertainty, never exact counts.
+    const confirmed = ledger.filter(call => call.confirmed);
+    return { elapsedMs: elapsed(), attemptsUsed: record.attempts, maxAttempts,
+      providerSends: { inference: confirmed.reduce((n, call) => n + call.inference, 0), token: confirmed.reduce((n, call) => n + call.token, 0) },
+      ...(await selfResources(root)) };
+  };
+  const abortTo = async (credentialEvent: ProbeEvent, liveEvent: ProbeEvent) => {
+    // Settle first (bounded by the remaining deadline, usually zero here so
+    // this is a no-op), then terminalize: the deadline stays absolute while
+    // a settling backend is still given its last chance to land in order.
+    // A failed settlement-attached cleanup marks the attempt uncertain, so
+    // the record reports store-unavailable instead of a clean cancelled
+    // claim over a possibly visible credential.
+    await settleInflightWrites(id);
+    const { record } = await transitionTerminal(root, id, current => {
+      const renewal = current.observations.find(item => item.observation === "renewal")!;
+      return { ...current, lifecycle: "cancelled",
+        observations: [current.observations[0]!,
+          credentialEntry(route, model, bounds, credentialEvent),
+          entry(route, model, bounds, "live-request", liveEvent, current.attempts, elapsed()),
+          renewal],
+        attempts: current.attempts, elapsedMs: elapsed(), nextAction: "inspect-sanitized-failure" };
+    });
+    return { record, self: await finishSelf(record) };
+  };
+  if (expired()) {
+    return abortTo("unobserved", "unobserved");
+  }
+  // Ports are not trusted to honor cancellation: every port call runs
+  // through a deadline race, and the port is invoked only after the race's
+  // abort check (thunk factory), so even a deadline that fires while a
+  // durable admission is being written starts no provider contact afterward.
+  // Late settlements are ignored; they never touch the record.
+  const withDeadline = async <T>(work: () => Promise<T>): Promise<T> => {
+    if (expired()) throw new Error("aborted");
+    return await Promise.race([
+      work(),
+      new Promise<never>((_, reject) => effective.addEventListener("abort", () => reject(new Error("aborted")), { once: true })),
+    ]);
+  };
   let credential: ProbeEvent = "unobserved";
   try {
-    const read = await ports.readCredential(signal);
+    const read = await withDeadline(() => ports.readCredential(effective));
     credential = read === "ok" ? "unobserved" : read === "missing" ? "store" : "login";
   } catch {
     credential = "failed";
   }
-  if (signal.aborted) {
-    const observations: ProbeObservationEntry[] = [base[0]!, credentialEntry(route, model, bounds, credential), base[2]!, base[3]!];
-    await overwriteAttempt(root, { ...dispatched, lifecycle: "cancelled", observations, nextAction: "inspect-sanitized-failure" });
-    return { record: await readProbeAttempt(root, id), self: { elapsedMs: elapsed(), attemptsUsed: 0, maxAttempts } };
+  if (expired()) {
+    return abortTo(credential, "unobserved");
   }
-  let attempts = 0, inference: ProbeEvent = "failed";
-  for (let turn = 0; turn < maxAttempts; turn++) {
-    if (signal.aborted) break;
-    attempts++;
+  // Before-send gate shared with the transport: the lifecycle check, the
+  // durable intent record and the synchronous transport initiation happen
+  // inside one cross-process serialization, so cancellation cannot
+  // acknowledge between permission and dispatch and no over-budget send is
+  // ever forwarded. A completed send is confirmed in a second transaction;
+  // a crash between initiation and confirmation leaves the entry explicitly
+  // unconfirmed (uncertain) instead of false exact evidence. The in-process
+  // record lock is held only across the synchronous section and released
+  // before awaiting transport, so a same-process cancellation waits on the
+  // mutex instead of timing out on the SQLite lock.
+  // Before-send gate shared with the transport: the lifecycle check, the
+  // durable intent record and the synchronous transport initiation happen
+  // inside one cross-process serialization (plus the shared in-process
+  // record lock, released before awaiting transport), so cancellation
+  // cannot acknowledge between permission and dispatch and no over-budget
+  // send is ever forwarded. A completed send is confirmed in a second
+  // transaction; a crash between initiation and confirmation leaves the
+  // entry explicitly unconfirmed (uncertain) instead of false exact
+  // evidence. Confirmation runs only while the record is still dispatched:
+  // a terminal record keeps the entry unconfirmed, and a response is
+  // returned to the transport only when confirmation commits — so a late
+  // token response can never be processed into a credential write after
+  // cancellation.
+  // Strict per-admission send budget, reset on every admitted attempt.
+  // The durable cumulative bound below is the crash-safe backstop; this
+  // counter enforces the pinned 2+2 shape exactly in the normal path.
+  let admissionSends = { inference: 0, token: 0 };
+  const gateSend = async <R>(kind: "inference" | "token", start: () => Promise<R>): Promise<R> => {
+    if (admissionSends[kind] + 1 > 2) throw new Error("provider_budget_exceeded");
+    const dir = await probeDirectory(root, true);
+    const release = await acquireDirLock(dir);
+    let pending: Promise<R> | null = null;
     try {
-      const outcome = await ports.infer({ route, model, prompt: PROBE_PROMPT, tools: PROBE_TOOLS, discovery: { ...PROBE_DISCOVERY }, deadlineMs }, signal);
+      const db = await lifecycleDb(dir);
+      try {
+        db.exec("BEGIN IMMEDIATE");
+        try {
+          const current = await readProbeAttempt(root, id);
+          // No provider send starts past the absolute deadline.
+          if (current.lifecycle !== "started" || expired()) {
+            db.exec("ROLLBACK");
+            throw new Error("fenced");
+          }
+          const renewal = current.observations.find(item => item.observation === "renewal")!;
+          const ledger = [...(renewal.sends ?? [])];
+          // Crash-safe cumulative bound: one ledger entry per transport
+          // send, at most four per admitted attempt (two inference plus
+          // two token sends on the pinned release; schway#415 tracks exact
+          // accounting beyond this bound).
+          if (ledger.length + 1 > 4 * current.attempts) {
+            db.exec("ROLLBACK");
+            throw new Error("provider_budget_exceeded");
+          }
+          ledger.push({ inference: kind === "inference" ? 1 : 0, token: kind === "token" ? 1 : 0, confirmed: false, admission: current.attempts });
+          const updated: ProbeAttempt = { ...current, observations: current.observations.map(item =>
+            item.observation === "renewal" ? { ...item, sends: ledger } : item) };
+          validateProbeAttempt(updated);
+          // No repair on pre-start persistence failure: the stranded intent
+          // entry stays explicitly unconfirmed, which the self sample
+          // excludes and validation reports as uncertainty rather than a
+          // false exact count.
+          await atomicWriteFile(dir, `${id}.json`, JSON.stringify(updated) + "\n", () => {
+            if (expired()) throw new PublishAborted();
+          });
+          // Rechecked at the start boundary itself: the clock may cross the
+          // deadline during publication. The intent entry then stays
+          // unconfirmed (honest uncertainty), and nothing is transmitted.
+          if (expired()) throw new Error("fenced");
+          pending = start();
+          db.exec("COMMIT");
+          admissionSends[kind]++;
+        } catch (error) {
+          try { db.exec("ROLLBACK"); } catch { /* Already rolled back. */ }
+          throw error;
+        } finally {
+          db.close();
+        }
+      } finally {
+        release();
+      }
+    } catch (error) {
+      release();
+      throw error;
+    }
+    let response: R;
+    try {
+      response = await pending!;
+    } catch (error) {
+      throw error;
+    }
+    const { updated } = await updateStartedRecord(root, id, current => {
+      const renewal = current.observations.find(item => item.observation === "renewal")!;
+      const ledger = [...(renewal.sends ?? [])];
+      const last = ledger[ledger.length - 1];
+      if (!last || last.confirmed) return null;
+      ledger[ledger.length - 1] = { ...last, confirmed: true };
+      return { ...current, observations: current.observations.map(item =>
+        item.observation === "renewal" ? { ...item, sends: ledger } : item) };
+    });
+    if (!updated) throw new Error("fenced");
+    return response;
+  };
+  let attempts = 0, inference: ProbeEvent = "failed";
+  // A fenced store writer the bridge calls for every credential-store
+  // mutation: the dispatch check runs inside the lifecycle serialization
+  // and the mutation races the live signal outside every lock, so a hung
+  // backend can never wedge the probe or block cancellation. An abort
+  // fails the write closed; a late settlement of an unabortable backend
+  // remains Schway-owned residual refused at the supported guard seam.
+  // Mutations are tracked so owner-stop acknowledgement waits for safe
+  // settlement (bounded by the remaining live deadline) instead of
+  // racing past an in-flight write.
+  const inflight = new Set<Promise<unknown>>();
+  inflightWrites.set(id, inflight);
+  probeDeadlines.set(id, { startedAt: deadlineAt - bounds.deadlineMs, deadlineMs: bounds.deadlineMs });
+  // The infer call currently in flight; guard admissions open a window
+  // bound to it, closed when that call settles (not when the deadline race
+  // abandons it).
+  let currentInfer: object | null = null;
+  const fence = {
+    write: <T>(work: () => Promise<T>): Promise<T> => {
+      const pending = fencedStoreWrite(root, id, effective, work);
+      inflight.add(pending);
+      pending.then(() => inflight.delete(pending), () => inflight.delete(pending));
+      return pending;
+    },
+    // Supported Schway guard seam for Schway's own native store: the guard
+    // only sees the dispatch decision, never the mutation itself, so an
+    // admitted call opens a mutation window until the issuing infer call
+    // settles. Terminalizing inside the window reports store-unavailable.
+    guard: (): Promise<void> => {
+      const token = currentInfer;
+      const pending = fencedStoreWrite(root, id, effective, async () => {}, () => {
+        if (token !== null) openWindow(id, token);
+      });
+      inflight.add(pending);
+      pending.then(() => inflight.delete(pending), () => inflight.delete(pending));
+      return pending;
+    },
+    // Generation-fenced final visibility for explicit stores: the check runs
+    // when the backend actually settles — not when the bounded race above
+    // decides — because a late settlement is exactly what must be fenced.
+    // Requires the store's atomic compare-and-delete: without it there is
+    // no safe cleanup, so the write is refused before any backend contact
+    // instead of falling back to a racy read-then-delete. Removes exactly
+    // the written value and never touches a concurrent legitimate write.
+    // Runs unfenced on purpose: it is the fence's own compensation, and
+    // fencing it would refuse the cleanup. Cleanup runs supervised and
+    // awaited inside writeStore whenever the write landed. A fenced race
+    // whose backend still settles carries the same supervised cleanup,
+    // bounded by the remaining live deadline; a cleanup failure throws
+    // uncertain instead of being swallowed or claiming final visibility.
+    writeStore: async (identity: { account: string }, value: string,
+      store: { get(identity: { account: string }): Promise<string | null>; set(identity: { account: string }, value: string): Promise<void>; delete(identity: { account: string }): Promise<boolean>; compareAndDelete(identity: { account: string }, expectedValue: string): Promise<boolean> }): Promise<void> => {
+      // Fail closed before any backend contact: a store without an atomic
+      // primitive cannot be cleaned, so it cannot be fenced.
+      if (typeof store.compareAndDelete !== "function") throw new Error("fenced");
+      const op = (async () => {
+        const slot: { raw: Promise<void> | null; admitted: boolean } = { raw: null, admitted: false };
+        const outcome = await (async () => {
+          const pending = fencedStoreWrite(root, id, effective, () => {
+            slot.raw = store.set(identity, value);
+            return slot.raw;
+          }, () => {
+            slot.admitted = true;
+            unresolvedWrites.set(id, (unresolvedWrites.get(id) ?? 0) + 1);
+          });
+          try {
+            await pending;
+            return "written" as const;
+          } catch {
+            return "fenced" as const;
+          }
+        })();
+        if (outcome === "written") {
+          // Supervised final visibility: the write landed, so a terminal
+          // record must not keep our value visible. A cleanup failure
+          // throws uncertain instead of claiming a clean fence; a mismatch
+          // (already removed or legitimately replaced) is a clean no-op,
+          // never an error.
+          const settled = await readProbeAttempt(root, id).catch(() => null);
+          if (settled === null) {
+            // Unverifiable: the record could not be read, so neither keeping
+            // nor removing the value is proven safe. Removing could destroy a
+            // legitimate credential of a still-running attempt; instead the
+            // write stays unresolved and marked uncertain, so terminalization
+            // reports store-unavailable.
+            markUncertain(id);
+            return;
+          }
+          if (settled.lifecycle !== "started") {
+            try {
+              await store.compareAndDelete(identity, value);
+            } catch (error) {
+              markUncertain(id);
+              throw cleanupUncertainError(error);
+            } finally {
+              resolveWrite(id);
+            }
+          } else {
+            resolveWrite(id);
+          }
+          return;
+        }
+        // The abort won the race but the unabortable backend may still
+        // land: the landing is doomed evidence either way (a fenced race
+        // never becomes success), so clean it up unconditionally when it
+        // lands — the atomic compare removes only our value, never a
+        // concurrent legitimate write. Wait for settlement bounded by the
+        // remaining live deadline so acknowledgement observes the outcome.
+        const raw = slot.raw;
+        // Admitted but aborted before the backend was invoked: nothing ran.
+        if (raw === null && slot.admitted) resolveWrite(id);
+        if (raw !== null) {
+          const budget = probeDeadlines.get(id);
+          const remaining = budget === undefined
+            ? 0
+            : budget.deadlineMs - (Date.now() - budget.startedAt);
+          const settlement = remaining > 0
+            ? await Promise.race([
+              raw.then(() => "landed" as const, () => "rejected" as const),
+              new Promise<"pending">(resolve => setTimeout(() => resolve("pending"), remaining)),
+            ])
+            : "pending" as const;
+          if (settlement === "landed") {
+            try {
+              await store.compareAndDelete(identity, value);
+            } catch (error) {
+              markUncertain(id);
+              throw cleanupUncertainError(error);
+            } finally {
+              resolveWrite(id);
+            }
+          } else if (settlement === "rejected") {
+            // Nothing landed: no value can be visible.
+            resolveWrite(id);
+          } else {
+            // Still in flight past the bound: the write stays unresolved,
+            // so terminalization reports store-unavailable rather than a
+            // clean claim. Cleanup on eventual settlement stays best-effort
+            // and tracked; it cannot downgrade a published record.
+            const late = raw.then(async () => {
+              try {
+                await store.compareAndDelete(identity, value);
+              } catch {
+                // After the run released its tracking the record is
+                // immutable; adding then would only leak the id.
+                markUncertain(id);
+              }
+            }, () => {}).finally(() => resolveWrite(id));
+            inflight.add(late);
+            late.then(() => inflight.delete(late), () => inflight.delete(late));
+          }
+        }
+        throw new Error("fenced");
+      })();
+      inflight.add(op);
+      op.then(() => inflight.delete(op), () => inflight.delete(op));
+      return op;
+    },
+  };
+  try {
+  for (let turn = 0; turn < maxAttempts; turn++) {
+    if (expired()) break;
+    // Reserve the admission durably before any provider contact: the
+    // reservation rechecks `started` inside the cross-process transaction, so
+    // a concurrent cancel serializes against it (no new request starts after
+    // cancellation acknowledges) and a crash preserves the admitted count
+    // instead of recording zero.
+    const reservation = await reserveAttempt(root, id);
+    if (!reservation.admitted) break;
+    // Copy the durable count immediately: a deadline that fires while the
+    // reservation was being written must not start provider contact
+    // afterward, and the admitted count is never written back lowered.
+    attempts = reservation.attempts;
+    admissionSends = { inference: 0, token: 0 };
+    // A deadline that fires while the reservation was being written must not
+    // start provider contact afterward: recheck before invoking the port.
+    if (expired()) break;
+    try {
+      const token = {};
+      const outcome = await withDeadline(() => {
+        // One clock read decides both whether to dispatch and the budget:
+        // an expired budget aborts here instead of being clamped positive.
+        const remaining = deadlineAt - Date.now();
+        if (remaining <= 0) {
+          expire();
+          throw new Error("aborted");
+        }
+        currentInfer = token;
+        const call = ports.infer({ route, model, prompt: PROBE_PROMPT, tools: PROBE_TOOLS, discovery: { ...PROBE_DISCOVERY }, deadlineMs: remaining, gate: gateSend, fence }, effective);
+        // A call that settles under abort may have left an unabortable
+        // native write detached (Schway races its refresh against the
+        // signal), so its window stays open through terminalization; only
+        // a normally settled call proves its writes finished.
+        const close = () => { if (!effective.aborted) closeWindow(id, token); };
+        call.then(close, close);
+        return call;
+      });
       inference = probeEvents.includes(outcome) ? outcome : "failed";
     } catch {
       inference = "failed";
     }
+    // A fenced or over-budget send fails the attempt closed inside the gate;
+    // the bound is enforced durably per admission, so no cumulative guard
+    // is needed here. Transient failures consume the next bounded attempt.
     // A late completion after cancellation is never success evidence.
-    if (signal.aborted) { inference = "failed"; break; }
+    if (effective.aborted) { inference = "failed"; break; }
     // Terminal classifications stop immediately; transient store/transport
     // failures consume the next bounded attempt instead of an outer retry.
     if (inference === "success" || inference === "login" || inference === "quota" || inference === "rejected") break;
   }
-  if (signal.aborted) {
+  if (effective.aborted) {
     // The inference result arrived too late: record that inference was
     // attempted but keep the cancelled lifecycle so it can never read success.
-    const observations: ProbeObservationEntry[] = [base[0]!, credentialEntry(route, model, bounds, credential),
-      entry(route, model, bounds, "live-request", "unobserved", attempts, elapsed()), base[3]!];
-    await overwriteAttempt(root, { ...dispatched, lifecycle: "cancelled", observations, attempts, elapsedMs: elapsed(), nextAction: "inspect-sanitized-failure" });
-    return { record: await readProbeAttempt(root, id), self: { elapsedMs: elapsed(), attemptsUsed: attempts, maxAttempts } };
+    // The live-request observation stays non-success; the durable send ledger
+    // is retained for audit either way. Awaited so the tracking cleanup in
+    // `finally` cannot run while abortTo still settles in-flight writes:
+    // releasing it early dropped the settlement budget and the uncertainty
+    // flags, publishing a clean cancelled over a possibly visible credential.
+    return await abortTo(credential, "unobserved");
   }
-  const observations: ProbeObservationEntry[] = [base[0]!, credentialEntry(route, model, bounds, credential),
-    entry(route, model, bounds, "live-request", inference, attempts, elapsed()), base[3]!];
-  const committed = await commitProbeOutcome(root, id, observations, attempts, elapsed());
-  void committed;
-  return { record: await readProbeAttempt(root, id), self: { elapsedMs: elapsed(), attemptsUsed: attempts, maxAttempts } };
+  const terminalFor = (current: ProbeAttempt, liveEvent: ProbeEvent) => {
+    const renewal = current.observations.find(item => item.observation === "renewal")!;
+    const liveEntry = entry(route, model, bounds, "live-request", liveEvent, current.attempts, elapsed());
+    const credentialEntryItem = credentialEntry(route, model, bounds, credential);
+    const terminal = liveEvent === "unobserved"
+      ? { state: credentialEntryItem.state, nextAction: credentialEntryItem.nextAction }
+      : { state: liveEntry.state, nextAction: liveEntry.nextAction };
+    return { ...current, lifecycle: terminal.state,
+      observations: [current.observations[0]!, credentialEntryItem, liveEntry, renewal],
+      attempts: current.attempts, elapsedMs: elapsed(), nextAction: terminal.nextAction };
+  };
+  // The signal is rechecked inside the winning transaction, immediately
+  // before publication: an abort that fires during the terminal file write
+  // publishes cancelled with non-success evidence in that same transaction
+  // instead of leaving aborted success behind.
+  await transitionTerminal(root, id, current => {
+    // Unverified credential visibility is applied inside the CAS itself
+    // (uncertainTerminal), so it wins over every claim built here.
+    if (effective.aborted) {
+      return { ...terminalFor(current, "failed"), lifecycle: "cancelled", nextAction: "inspect-sanitized-failure" };
+    }
+    return terminalFor(current, inference);
+  }, { signal: effective, abortBuild: current => ({ ...terminalFor(current, "failed"), lifecycle: "cancelled", nextAction: "inspect-sanitized-failure" }) });
+  const outcome = { record: await readProbeAttempt(root, id), self: await finishSelf(await readProbeAttempt(root, id)) };
+  return outcome;
+  } finally {
+    // Tracking is released by the terminal CAS itself once a record is
+    // committed or observed terminal. A run that ends without one (failed
+    // publication) keeps it for a later same-process cancel/reconcile.
+    const settled = await readProbeAttempt(root, id).catch(() => null);
+    if (settled !== null && settled.lifecycle !== "started") releaseTracking(id);
+  }
 }
 
 /** Projects only allowlisted readiness facts; aliases, timing and identifiers never carry secrets. */
@@ -408,7 +1499,10 @@ export function exportProbeSummary(record: ProbeAttempt) {
     lifecycle: record.lifecycle, maxAttempts: record.maxAttempts, attempts: record.attempts,
     deadlineMs: record.deadlineMs, elapsedMs: record.elapsedMs,
     observations: record.observations.map(item => ({ observation: item.observation, probeClass: item.probeClass,
-      event: item.event === "success" ? "success" : "not-success", state: item.state, nextAction: item.nextAction,
-      attempts: item.attempts, elapsedMs: item.elapsedMs })),
+      // Renewal never carries a success claim, even under tampering: the
+      // export pins it to not-success while validation rejects it outright.
+      event: item.observation === "renewal" ? "not-success" : (item.event === "success" ? "success" : "not-success"), state: item.state, nextAction: item.nextAction,
+      attempts: item.attempts, elapsedMs: item.elapsedMs,
+      sends: (item.sends ?? []).map(call => ({ inference: call.inference, token: call.token, confirmed: call.confirmed, admission: call.admission })) })),
     promptBytes: record.promptBytes, nextAction: record.nextAction };
 }
