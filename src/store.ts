@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { commitDecisionMemorySource, retireDecisionMemorySource } from "./memory/decision-sources";
 
 /** Current application schema revision. Service packaging pins and checks this value. */
-export const schemaVersion = 20;
+export const schemaVersion = 21;
 
 /** Synchronous SQL operations scoped to an application transaction. */
 export interface AppTransaction {
@@ -38,7 +38,7 @@ export class TransactionStore {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
           if (current === schemaVersion) return;
-          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19].includes(current)) throw new Error("Unsupported migration source");
+          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20].includes(current)) throw new Error("Unsupported migration source");
           if (existing) {
             const snapshot = `${path}.pre-v${current}-${crypto.randomUUID()}.sqlite`;
             const fd = openSync(snapshot, "wx", 0o600);
@@ -562,6 +562,21 @@ export class TransactionStore {
             );
             CREATE INDEX IF NOT EXISTS restore_quarantine_state ON restore_quarantines(state, created_at);
             PRAGMA user_version = 20;
+          `);
+          if (current < 21) this.#db.exec(`
+            CREATE TABLE IF NOT EXISTS schway_native_refs (
+              sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+              run_id TEXT NOT NULL UNIQUE,
+              context_id TEXT NOT NULL,
+              generation INTEGER NOT NULL CHECK (generation > 0),
+              session_id TEXT NOT NULL,
+              branch_id TEXT NOT NULL,
+              state TEXT NOT NULL CHECK (state IN ('running', 'finished')),
+              created_at INTEGER NOT NULL,
+              updated_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS schway_native_ref_context ON schway_native_refs(context_id, generation);
+            PRAGMA user_version = 21;
           `);
           // A populated rebuilt graph must retain every reference; empty legacy fixture stores have no task graph to check.
           if (this.#tx.get("SELECT 1 FROM tasks LIMIT 1") && this.#tx.all("PRAGMA foreign_key_check").length) throw new Error("Migration foreign key check failed");

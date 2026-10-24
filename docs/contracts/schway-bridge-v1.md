@@ -1,87 +1,182 @@
-# Schway bridge skeleton, v1
-
-> SKELETON — `jit.schway.bridge/v1` is a behavior boundary, not a working
-> adapter. Schway ENG03/05/06/07/08/09 are OPEN, so no pinned
-> `schway.host.release/v1` artifact exists in the integration base and this
-> contract cannot close JBR01 (#15). The implementation
-> (`src/team/schway-port.ts`) validates at the application seam and then
-> fails closed. It stays on issue #15 without a close.
+# Schway bridge, v1 (concrete)
 
 Owner: Jit #15 (JBR01). Implementation: `src/team/schway-port.ts` — `SchwayRunPort`
-implements `ApplicationRunPort` (`app.run_port/v1`, see [run-port-v1](run-port-v1.md)).
-It imports nothing from Schway, spawns no process, performs no fetch and reads
-no environment. Eligibility for real dispatch requires the tested artifact in
-the integration base; this skeleton records that the gate is closed.
+implements `ApplicationRunPort` (`app.run_port/v1`, see [run-port-v1](run-port-v1.md))
+on the pinned supported Schway public host artifact. It imports only the
+`schway/host` entry point, never deep `schway/src` paths, provider SDKs,
+the TUI, or ambient processes. Eligibility for real dispatch is the tested
+artifact in the integration base plus a passing startup gate; anything else
+fails closed before any native session exists.
+
+Pinned artifact (verified, deterministic):
+
+- npm `schway@1.0.0-rc.2`, git revision
+  `6fe38083ded9fb8015ac97ed2aab4e9187179836` (Schway main, ENG09 merged).
+- Vendored tarball `vendor/schway-1.0.0-rc.2-6fe3808.tgz`,
+  SHA-256 `4579a059dc2ee844cf4a78b87874800a012dd3c5edfdcde6d52566bbf415d8a5`.
+- Behavior set `schway.host.release/v1` (composes `base`, `context-policy`,
+  `tool-policy`, `durable-sessions`, `auth-routes`, `run-control`,
+  `managed-session-data`, `session-snapshot`).
+- Upgrade path: replace the vendored tarball with `schway@^1.0.0-rc.3` once
+  published under repository authorization; the runtime `releaseContract`
+  gate rejects any other behavior set.
 
 ## Exact public surface
 
 ```ts
 SCHWAY_RELEASE_CONTRACT: "schway.host.release/v1";
 SCHWAY_SNAPSHOT_CONTRACT: "schway.host.session-snapshot/v1";
+SCHWAY_PINNED_REVISION: "6fe3808...";
+SCHWAY_PINNED_VERSION: "1.0.0-rc.2";
+SCHWAY_PINNED_TARBALL_SHA256: "4579a059...";
 SCHWAY_NEXT_ACTION: "pin_supported_schway_host_release";
 SCHWAY_SNAPSHOT_NEXT_ACTION: "await_supported_schway_snapshot_api";
+SCHWAY_SYSTEM_PROMPT: string;
 
-classifyBridgeOutcome(reason: RunReason | "unknown"): ApplicationRunOutcome;
+describeEffectiveRun(request: ApplicationRunRequest): EffectiveSchwayRun;
+classifyBridgeReason(reason: RunReason | "unknown"): ApplicationRunOutcome;
+mapAuthStatus(status: HostAuthStatusCode): RunReason;
+schwayHostDirs(storePath: string): { workspaceRoot; homeDirectory; sessionDirectory };
+verifySchwayBridge(store: TransactionStore): Promise<{ ok: true; detail } | { ok: false; detail; nextAction }>;
 
 class SchwayRunPort implements ApplicationRunPort {
-  constructor(store: TransactionStore, policy: TeamPolicy, outputBytes: number);
-  status(): { available: false; contract: "schway.host.release/v1"; release: null; nextAction: "pin_supported_schway_host_release" };
+  readonly adapter: "schway";
+  constructor(store: TransactionStore, policy: TeamPolicy, outputBytes: number, options?: SchwayPortOptions);
+  status(): { available: true; contract; release: { version; revision; tarballSha256 }; nextAction: "none" };
   readonly requests: readonly ApplicationRunRequest[];
   invoke(request, signal, observe): Promise<ApplicationRunOutcome>;
-  inspectRuns(after?: number): Promise<{ items: []; nextAfter: null }>;
+  inspectRuns(after?: number): Promise<{ items: NativeRunInspection[]; nextAfter: number | null }>;
   retire(context): Promise<ManagedContextOutcome>;
   delete(context): Promise<ManagedContextOutcome>;
-  snapshot(context): Promise<{ supported: false; contract: "schway.host.session-snapshot/v1"; nextAction: "await_supported_schway_snapshot_api" }>;
+  snapshot(context): Promise<SchwaySnapshotResult>;
+  openLifecycleHost(): Promise<HostRuntime>;
 }
 ```
+
+`SchwayPortOptions` carries test seams only (`model`, `authFetch`, `authStore`,
+`now`). Production sets none: route runs use the default OS credential store
+and fixture-free protocol transport.
 
 ## Behavior
 
 - Pre-admission validation runs first through the existing `validateRunRequest`:
-  unbounded, permissive or malformed requests throw before any observation or
-  request logging, exactly as the scripted port rejects them.
-- Valid requests check the application context fence (`team_contexts`) and the
-  abort signal, then fail closed with `blocked` / `route_unavailable`,
-  `mode: "fixture"`, zeroed usage and no session. Progress text names the
-  missing `schway.host.release/v1` artifact. No fallback route, billing change
-  or native dispatch is possible.
-- Fencing rechecks after the gate: a concurrent retirement yields
-  `context_retired`, a concurrent abort yields `cancelled`. Late results can
-  never become success evidence because no result is ever produced.
-- `retire` persists the application fence first (mirroring the scripted port),
-  then reports `retire_failed` + `retry_managed_retire`. `delete` retires first,
-  then reports `delete_failed` + `retry_managed_delete`. Unknown references
-  throw `context_not_found`; malformed references throw
-  `invalid_context_reference`. No native bytes are edited.
-- `inspectRuns` validates the cursor and returns an empty page: no native run
-  references exist without a pinned host artifact.
-- `snapshot` is not on `ApplicationRunPort`; it returns an explicit
-  unsupported diagnostic naming `schway.host.session-snapshot/v1` instead of
-  native bytes.
-- `status()` reports the closed gate for inspection surfaces; it never probes
-  credentials or infers readiness.
-- `classifyBridgeOutcome` documents the future blocked/waiting mapping for a
-  pinned artifact; only `route_unavailable` is reachable now, and unknown
-  future events normalize to `invalid_result`.
-
-## Schway gap table
-
-| Required host capability | Schway contract | Status |
-| --- | --- | --- |
-| Pinned public host release/version | `schway.host.release/v1` | OPEN — chayapats/schway#403 (ENG09) |
-| Base host lifecycle | `schway.host.base/v1` | OPEN — chayapats/schway#395 |
-| Context policy | `schway.host.context-policy/v1` | OPEN — chayapats/schway#396 |
-| Tool policy | `schway.host.tool-policy/v1` | OPEN — chayapats/schway#399 |
-| Durable sessions | `schway.host.durable-sessions/v1` | OPEN — chayapats/schway#397 |
-| Auth routes | `schway.host.auth-routes/v1` | OPEN — chayapats/schway#398 |
-| Run control (cancel/deadline) | `schway.host.run-control/v1` | OPEN — chayapats/schway#400 |
-| Managed session data (retire/delete) | `schway.host.managed-session-data/v1` | OPEN — chayapats/schway#401 |
-| Session snapshot | `schway.host.session-snapshot/v1` | OPEN — chayapats/schway#402 |
+  unbounded, permissive or malformed requests throw before any observation,
+  request logging, directory creation or host contact, exactly as the scripted
+  port rejects them. Oversized fixed evidence beyond host bounds throws
+  `invalid_run_request` instead of silent truncation.
+- Every dispatch verifies `hostCapabilities().releaseContract` and the
+  runtime's own capabilities against `schway.host.release/v1`. A mismatch
+  throws before any native session exists; serve refuses to start in
+  `schway` mode when `verifySchwayBridge` reports a blocked gate.
+- Service-owned host directories (`<store-dir>/.jit-host/{workspace,home,sessions}`,
+  mode 0700, symlink/permission-checked) keep native state out of developer
+  checkouts and unrelated owner secrets. No developer cwd, TUI, global installs
+  or environment credentials are read.
+- One native Schway session backs one application run. The durable
+  `schway_native_refs` table (schema 21) correlates each run with its opaque
+  native session id/branch; the session id never leaves the store and native
+  bytes are never parsed or rewritten. The intent row is reserved before
+  native creation, so a crash in that window still leaves a fenced,
+  discoverable row (unaddressable lifecycle stays explicitly retryable);
+  full atomicity awaits the Schway correlation/enumeration contract
+  (chayapats/schway#414). Attempt ledgers record `adapter: "schway"` so
+  JOB02 reconciliation matches durable native refs across restart;
+  interrupted rows stay `running` for explicit reconcile. Only fenced-active,
+  live-signal progress is stored provisionally and it is cleared at commit;
+  revoked participations clear retained progress and project null;
+  transient progress never becomes committed evidence.
+- Strict context mapping: fixed trusted system prompt plus responsibility,
+  purpose and operator sections (mode-neutral wording: nothing tells the
+  model it is scripted or live); manifest sources/claims become untrusted
+  source documents with bounded ids, unique per project and kind before any
+  observation or logging. Exact empty tool registry, hosted lookup
+  off. Finite limits map from the request budgets (context/input windows,
+  deadline, attempts); the bridge executes bounded single-turn runs
+  (`maxTurns: 1`), so anything needing more turns surfaces as `max_turns`
+  instead of silently spending unreserved calls. Schway mode pins route
+  concurrency to one until a process-stable public credential-store handle
+  exists, keeping the shared renewal lifecycle single-flight. Committed
+  coordinator summaries label the actual evidence mode.
+- Route runs use `submitWithRoute` on the exact selected Grok/Codex
+  route/model with the shared route-scoped credential lifecycle. Jit supplies
+  no credential client, renewal loop, billing fallback or model retry of its
+  own. The owner credential alias (`authRoute`) is
+  preserved end to end in the effective configuration, request history and
+  committed evidence; the pinned host resolves one subscription identity per
+  provider, so two aliases on one provider share that identity without any
+  silent provider, model, billing or credential switch. Per-alias credential
+  binding is proposed to Schway (see ADR 0023); until that contract exists
+  the limitation is explicit and auditable rather than hidden. Fixture model
+  runs (tests) use `submit` with a scripted model and no auth binding.
+- Auth outcomes map to waiting/failed states without changing provider, model
+  or billing: `needs-login` → `needs_login`, `quota-exceeded` → `quota`,
+  `model-unavailable` → `unknown_model`, store/rejected/integration failures →
+  `route_unavailable`. Control outcomes map to `cancelled`/`max_rounds`/
+  `budget_exceeded`; empty output never becomes committed evidence.
+  Production adapter exceptions normalize to a production `invalid_result`
+  that never claims fixture evidence or an unchecked live route.
+- Cancellation/deadline and Jit's attempt/deletion generations prevent late
+  publication: fencing rechecks before admission, after host construction
+  (before any intent is reserved, with no await in between), after native
+  creation, and after the native settle; late results become
+  `context_retired`/`cancelled` instead of success. A fence that closes
+  between session creation and dispatch retires the orphan natively instead
+  of running it; only a verified native retirement closes the row, otherwise
+  the running intent stays visible for explicit reconciliation. Attempt
+  ledgers record `adapter: "schway"` so JOB02 reconciliation matches durable
+  native refs across restart; interrupted rows stay `running` for explicit
+  reconcile. Only fenced-active, live-signal progress is stored provisionally
+  and it is cleared at commit; revoked participations clear retained progress
+  and project null; transient progress never becomes committed evidence.
+- Worst-case retry admissions are pre-reserved (`calls`/`rounds` for
+  `maxAttempts = retries + 1`); retry budgets above the pinned host ceiling
+  of ten attempts fail before any native work instead of being silently
+  capped. Single-output token accounting stays as committed with measured
+  overrun in usage evidence (see ADR 0023). Usage
+  records whether any token counter was unreported (`tokensUnknown`, absent
+  only on pre-bridge fixture records which carry exact accounting) instead of
+  persisting unknown consumption as measured zero, including on
+  non-completed runs that consumed attempts. Outcome validation is
+  mode- and reason-aware: fixture usage stays bounded by the request limits
+  with exact token accounting, production completions require the worst-case
+  admission shape (`rounds === calls`, `retries === calls - 1`, zero hops on
+  the empty registry) with measured overrun, and pre-model blocked/error
+  outcomes accept coherent zero-attempt usage. Malformed production results
+  normalize to production `invalid_result`, never fixture evidence.
+- `retire` fences the application generation first, then retires owned native
+  sessions through `retireSession` (idempotent; only live-holder conflicts
+  retry). A pending intent with no addressable session never reports success:
+  unaddressable retirement stays `retire_failed` until the correlation
+  contract lands. `delete` retires first, then removes owned native artifacts
+  through `deleteSession`, converging to `deleted` only when the native call
+  acknowledges; partial/blocked stays `delete_failed` with retry.
+- `snapshot` captures a quiesced per-context snapshot through
+  `snapshotSessions`. Empty backing resolves to the explicit unsupported
+  diagnostic; backup integration stays a later slice.
+- `status()` reports the pinned release for inspection surfaces; it never
+  probes credentials or infers readiness. Serve wiring (`JIT_RUN_PORT`,
+  default `scripted`) selects the concrete port for specialist/coordinator
+  runs only; role preview, schedule/PR summaries and memory extraction stay
+  scripted under their fixture authorizations. Queue construction asserts the
+  synchronous startup gate (service-owned `.jit-host` dirs plus pinned
+  release) before any admission owner exists; `serve` additionally runs the
+  full asynchronous gate before starting. Model identifiers outside the pinned
+  host grammar fail pre-native with a clear diagnostic.
 
 ## Evidence
 
-`tests/schway-bridge.test.ts`: artifact gate, pre-admission validation,
-independent ancestry, strict tool policy, outcome mapping, cancel/generation
-fencing including the crash/reopen matrix, retire/delete mapping, a
-scripted-port swap scenario, and import-hygiene (no Schway/SDK/IO imports).
-`bun test`, `bun run typecheck`. No network, accounts or Pi.
+`tests/schway-bridge.test.ts`: pinned gate (including symlinked-base rejection),
+tarball SHA, effective-run mapping with alias preservation and host-grammar
+rejection, hostile-input neutrality, empty-output rejection, auth mapping over
+fixture stores/transports (needs_login/quota/route_unavailable, no fallback, no
+secret leakage), cancel/generation fencing across reopen, native
+retire/delete/snapshot through the real host, fence-race orphan retirement
+with no submit, startup gate blocking on unsafe host dirs, retry reservation
+accounting with exact-budget coordinator coverage, stop-clears-progress,
+unaddressable-intent lifecycle (never retired/deleted), mode-aware
+normalization (zero-attempt production, malformed stays production, skewed
+usage rejected), multi-attempt usage mapping, cursor pagination, shared
+normalizer round-trip, and a full application scenario where dispatch commits
+production specialist evidence while preview stays fixture, reopens after
+restart, and keeps reads working while provider access is blocked.
+`bun test`, `bun run typecheck`. No live accounts, no network, no Pi.

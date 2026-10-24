@@ -9,7 +9,8 @@ import { TransactionStore, type AppTransaction } from "../store";
 import { readTeam } from "./configuration";
 import { projectDiscussion, readDiscussion } from "./dispatch";
 import type { ApplicationRunPort } from "./run-port";
-import { fixtureOutcome, normalizeFixtureResult, validateRunRequest } from "./scripted-port";
+import { fixtureOutcome, normalizePortResult, validateRunRequest } from "./scripted-port";
+import { portFailureOutcome, schwayMaxAttempts } from "./schway-port";
 import { assembleMemoryContext, contextByteRoom, contextCurrent, markMemoryDerived, memoryContextOperator } from "../memory/context";
 import type {
   ApplicationRunOutcome, ApplicationRunRequest, CoordinatorSynthesis, DecisionCommand, DecisionHistoryEntry,
@@ -18,7 +19,7 @@ import type {
 } from "./types";
 import { coordinatorSynthesisWorkId } from "./types";
 /** Trusted operator line that identifies a coordinator invocation. It is not an owner decision. */
-export const coordinatorSynthesisMarker = "This is an explicitly authorized scripted coordinator synthesis, not live inference.";
+export const coordinatorSynthesisMarker = "Synthesize only the cited specialist results under the exact route and finite budgets; a synthesis is a recommendation, never an owner decision.";
 
 interface StoredSynthesis { request: ApplicationRunRequest; allowed: SynthesisCitation[]; gaps: SynthesisGap[]; outcome: ApplicationRunOutcome | null }
 interface LoadedSynthesis { public: CoordinatorSynthesis; record: StoredSynthesis }
@@ -262,9 +263,9 @@ export function readDecisionModel(tx: AppTransaction, projectId: string, topicId
   };
 }
 
-function renderSummary(artifact: SynthesisArtifact): string {
+function renderSummary(artifact: SynthesisArtifact, mode: "fixture" | "production"): string {
   const lines = [
-    "สรุปผู้ประสานงาน (fixture)",
+    `สรุปผู้ประสานงาน (${mode})`,
     "ข้อเสนอนี้ไม่ใช่การตัดสินของเจ้าของ",
     artifact.disagreement || artifact.missing.length ? "ยังไม่มีความเห็นตรงกัน" : "ผู้ประสานงานเห็นว่าตัวเลือกสอดคล้องกัน แต่ยังไม่ใช่การตัดสินของเจ้าของ",
     `คำถาม: ${artifact.question}`,
@@ -490,7 +491,7 @@ export function coordinatorSynthesisWork(
       loaded.public.updatedAt = now();
       saveStored(tx, loaded);
       return {
-        native: { adapter: "scripted", runId: request.runId, sessionId: request.runId, context: request.context },
+        native: { adapter: port.adapter, runId: request.runId, sessionId: request.runId, context: request.context },
         data: JSON.parse(jobData(request, config.team.contextBytes)),
       };
     },
@@ -507,11 +508,17 @@ export function coordinatorSynthesisWork(
       const opened = store.read(tx => readStored(tx, job.projectId, input.synthesisId));
       if (opened.public.jobId !== job.id || opened.public.discussionId !== input.discussionId) return { state: "failed", reason: "worker_failed" };
       const request = structuredClone(attempt.data) as unknown as ApplicationRunRequest;
-      reserve({ calls: 1, outputTokens: 1 });
+      reserve({ outputTokens: 1 });
+      if (port.adapter === "schway") {
+        // Admission already spent the definition's single call; pre-reserve
+        // only the worst-case additional retry calls/rounds before dispatch.
+        const extra = schwayMaxAttempts(request) - 1;
+        if (extra > 0) reserve({ calls: extra, rounds: extra });
+      }
       let outcome: ApplicationRunOutcome;
       try {
-        outcome = normalizeFixtureResult(await port.invoke(request, signal, () => {}), request, Math.min(config.jobs.outputBytes, job.limits.outputTokens * 4, 65000));
-      } catch { outcome = fixtureOutcome("invalid_result"); }
+        outcome = normalizePortResult(await port.invoke(request, signal, () => {}), request, Math.min(config.jobs.outputBytes, job.limits.outputTokens * 4, 65000));
+      } catch { outcome = portFailureOutcome(port); }
       if (outcome.reason === "quota" || outcome.reason === "needs_login" || outcome.reason === "route_unavailable") return { state: "waiting", reason: outcome.reason };
       const parsed = outcome.state === "complete" && outcome.output
         ? normalizeCoordinatorSynthesis(outcome.output, opened.record.allowed, opened.record.gaps) : null;
@@ -520,7 +527,7 @@ export function coordinatorSynthesisWork(
         : outcome.reason === "cancelled" ? { state: "cancelled", reason: "cancelled" }
         : outcome.state === "incomplete" ? { state: "incomplete", reason: outcome.reason }
         : { state: "failed", reason: outcome.reason };
-      const evidence = `ตรวจ fixture สรุปแล้ว · ${normalized.state}${normalized.reason ? ` / ${normalized.reason}` : ""} · ไม่ได้บันทึกการตัดสินของเจ้าของ · run ${opened.public.id}`;
+      const evidence = `${outcome.mode === "production" ? "ตรวจผ่าน Schway สรุปแล้ว" : "ตรวจ fixture สรุปแล้ว"} · ${normalized.state}${normalized.reason ? ` / ${normalized.reason}` : ""} · ไม่ได้บันทึกการตัดสินของเจ้าของ · run ${opened.public.id}`;
       const committed = commit({ state: "succeeded", evidence }, tx => {
         const current = readStored(tx, job.projectId, opened.public.id);
         if (current.public.state === "complete" || current.public.state === "cancelled") return;
@@ -543,7 +550,7 @@ export function coordinatorSynthesisWork(
         }
         const artifact = normalized.artifact;
         const source = commitOutputSource(tx, {
-          projectId: current.public.projectId, participantId: request.roleId, runId: request.runId, text: renderSummary(artifact), committedAt: now(),
+          projectId: current.public.projectId, participantId: request.roleId, runId: request.runId, text: renderSummary(artifact, outcome.mode), committedAt: now(),
         });
         markMemoryDerived(tx, current.public.projectId, source, request.manifest);
         const proposal: DecisionProposal = {

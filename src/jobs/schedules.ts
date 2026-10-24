@@ -581,7 +581,7 @@ export function scheduleSummaryWork(store: TransactionStore, config: AppConfig, 
       };
       validateRunRequest(request, config.team);
       tx.run("INSERT INTO team_contexts VALUES (?, 1, 'active')", request.context.id);
-      return { native: { adapter: "scripted", runId: request.runId, sessionId: request.runId, context: request.context },
+      return { native: { adapter: port.adapter, runId: request.runId, sessionId: request.runId, context: request.context },
         data: JSON.parse(jobData(request, config.team.contextBytes)) };
     },
     isCurrent: (tx, job, attempt) => {

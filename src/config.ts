@@ -36,6 +36,8 @@ export interface AppConfig {
   origin: string;
   hostname: string;
   port: number;
+  /** Application run adapter: scripted fixture (default) or the pinned Schway host bridge. */
+  runPort: "scripted" | "schway";
   bodyBytes: number;
   queryBytes: number;
   pageSize: number;
@@ -60,17 +62,25 @@ export function readConfig(env: Record<string, string | undefined> = process.env
   const origin = new URL(env.JIT_ORIGIN ?? "http://localhost:3000");
   if (!["http:", "https:"].includes(origin.protocol) || origin.username || origin.password ||
       origin.pathname !== "/" || origin.search || origin.hash) throw new Error("Invalid JIT_ORIGIN");
+  const runPort = env.JIT_RUN_PORT ?? "scripted";
+  if (runPort !== "scripted" && runPort !== "schway") throw new Error("Invalid JIT_RUN_PORT");
   // Unencrypted credentials are permitted only for loopback development.
   if (origin.protocol === "http:" && !["localhost", "127.0.0.1", "[::1]"].includes(origin.hostname)) {
     throw new Error("JIT_ORIGIN requires HTTPS outside loopback development");
   }
   const jobConcurrency = positive("JIT_JOB_CONCURRENCY", 2, 32), jobRouteConcurrency = positive("JIT_JOB_ROUTE_CONCURRENCY", 1, 32);
   if (jobRouteConcurrency > jobConcurrency) throw new Error("Invalid JIT_JOB_ROUTE_CONCURRENCY");
+  // The pinned Schway host keys credential-renewal single-flight per store
+  // handle and Jit opens one runtime per run, so concurrent same-route runs
+  // could race refresh-token rotation. Schway mode stays single-route until
+  // a process-stable public store handle exists.
+  if (runPort === "schway" && jobRouteConcurrency !== 1) throw new Error("Invalid JIT_JOB_ROUTE_CONCURRENCY");
   const pollBackoffMs = positive("JIT_TELEGRAM_POLL_BACKOFF_MS", 1_000, 60_000);
   const maxPollBackoffMs = positive("JIT_TELEGRAM_MAX_POLL_BACKOFF_MS", 30_000, 300_000);
   if (maxPollBackoffMs < pollBackoffMs) throw new Error("Invalid JIT_TELEGRAM_MAX_POLL_BACKOFF_MS");
   return {
     databasePath: resolve(env.JIT_DATABASE ?? ".local/jit.sqlite"),
+    runPort,
     origin: origin.origin,
     hostname: validatedHostname(env.JIT_HOST),
     port: positive("JIT_PORT", 3000, 65535),

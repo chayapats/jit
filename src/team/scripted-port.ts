@@ -1,6 +1,7 @@
 import { ScriptedNativeLedger } from "../jobs/scripted-ledger";
 import { AppError } from "../errors";
 import { jobData, validateJobLimits } from "../jobs/queue";
+import type { JobLimits } from "../jobs/types";
 import { requireId, requireReference, requireText } from "../sources";
 import type { TransactionStore } from "../store";
 import type { ApplicationRunPort, ManagedContextOutcome } from "./run-port";
@@ -9,7 +10,7 @@ import { requireRoleRoute } from "./configuration";
 import { renderContextAnswer } from "../memory/context-answer";
 
 const reasons: RunReason[] = ["complete", "unknown_model", "route_unavailable", "quota", "needs_login", "cancelled", "max_rounds", "budget_exhausted", "invalid_result", "context_retired"];
-const emptyUsage = () => ({ calls: 0, rounds: 0, hops: 0, contextTokens: 0, outputTokens: 0, retries: 0, wallMs: 0 });
+const emptyUsage = () => ({ calls: 0, rounds: 0, hops: 0, contextTokens: 0, outputTokens: 0, retries: 0, wallMs: 0, tokensUnknown: false });
 /** Constructs finite, safe fixture outcomes without raw provider errors or live-readiness claims. */
 export function fixtureOutcome(reason: RunReason, output: string | null = null): ApplicationRunOutcome {
   return { state: reason === "complete" ? "complete" : ["max_rounds", "budget_exhausted", "cancelled"].includes(reason) ? "incomplete" : reason === "invalid_result" ? "error" : "blocked",
@@ -32,9 +33,21 @@ export function validateRunRequest(request: ApplicationRunRequest, policy: TeamP
       !request.policy || Object.keys(request.policy).sort().join(",") !== "arbitraryFetch,genericExecution,hostedLookup,repositoryDiscovery" || Object.values(request.policy).some(value => value !== false) ||
       !Array.isArray(request.manifest?.sources) || !Array.isArray(request.manifest.claims) || request.manifest.sources.length + request.manifest.claims.length > policy.sourceLimit) throw new AppError("invalid_run_request");
   for (const source of request.manifest.sources) { requireId(source.projectId); requireReference(source.reference); requireText(source.text, policy.contextBytes); }
+  const sourceIds = new Set<string>();
+  for (const source of request.manifest.sources) {
+    const key = `${source.projectId}/${source.reference.sourceId}`;
+    if (sourceIds.has(key)) throw new AppError("invalid_run_request");
+    sourceIds.add(key);
+  }
   for (const claim of request.manifest.claims) {
     requireId(claim.projectId); requireId(claim.claimId); requireText(claim.text, policy.contextBytes);
     if (![claim.revision, claim.generation].every(value => Number.isSafeInteger(value) && value > 0)) throw new AppError("invalid_run_request");
+  }
+  const claimIds = new Set<string>();
+  for (const claim of request.manifest.claims) {
+    const key = `${claim.projectId}/${claim.claimId}`;
+    if (claimIds.has(key)) throw new AppError("invalid_run_request");
+    claimIds.add(key);
   }
   if (request.manifest.context !== undefined) validateContextLayout(request, policy);
   validateJobLimits(request.limits, { roles: 10000, calls: 10000, rounds: 10000, hops: 10000, contextTokens: 1e9, outputTokens: 1e9, retries: 100, wallMs: 3600000 });
@@ -69,22 +82,69 @@ function validateContextLayout(request: ApplicationRunRequest, policy: TeamPolic
 
 /** Validates result coherence and ceilings, replacing invalid/raw adapter data with a safe error. */
 export function normalizeFixtureResult(value: unknown, request: ApplicationRunRequest, outputBytes: number): ApplicationRunOutcome {
+  const outcome = normalizePortResult(value, request, outputBytes);
+  return outcome.mode === "fixture" ? outcome : fixtureOutcome("invalid_result");
+}
+
+/**
+ * Validates one port outcome (fixture or production) against the request and
+ * ceilings. Fixture scripts stay fixture-strict through normalizeFixtureResult;
+ * work executors accept either mode so the concrete bridge can commit.
+ *
+ * Fixture usage is authoritatively bounded by the request limits. Production
+ * usage is measured by the trusted host across bounded retries, so call/round
+ * counts are checked against the worst-case admission while token overrun is
+ * preserved as measured evidence instead of rejected.
+ */
+export function normalizePortResult(value: unknown, request: ApplicationRunRequest, outputBytes: number): ApplicationRunOutcome {
+  let mode: ApplicationRunOutcome["mode"] | null = null;
+  const invalidFor = (recognized: ApplicationRunOutcome["mode"]): ApplicationRunOutcome =>
+    recognized === "production"
+      ? { state: "error", reason: "invalid_result", mode: "production", output: null,
+          usage: { calls: 0, rounds: 0, hops: 0, contextTokens: 0, outputTokens: 0, retries: 0, wallMs: 0, tokensUnknown: false }, session: null }
+      : fixtureOutcome("invalid_result");
   try {
     const result = JSON.parse(jobData(value, outputBytes + 2048)) as ApplicationRunOutcome;
+    if (result.mode !== "fixture" && result.mode !== "production") return fixtureOutcome("invalid_result");
+    mode = result.mode;
     const expected = fixtureOutcome(result.reason);
-    if (!reasons.includes(result.reason) || result.mode !== "fixture" || result.state !== expected.state ||
+    if (!reasons.includes(result.reason) || result.state !== expected.state ||
         (result.reason === "complete" ? typeof result.output !== "string" || !result.output.trim() : result.output !== null) ||
         (typeof result.output === "string" && Buffer.byteLength(result.output) > outputBytes) || !result.usage ||
-        Object.keys(result.usage).sort().join(",") !== "calls,contextTokens,hops,outputTokens,retries,rounds,wallMs") return fixtureOutcome("invalid_result");
+        Object.keys(result.usage).sort().join(",") !== "calls,contextTokens,hops,outputTokens,retries,rounds,tokensUnknown,wallMs" ||
+        typeof result.usage.tokensUnknown !== "boolean") return invalidFor(mode);
     if (result.output !== null) requireText(result.output, outputBytes);
-    for (const [key, value] of Object.entries(result.usage)) {
-      if (!Number.isSafeInteger(value) || value < 0 || value > request.limits[key as keyof typeof result.usage]) return fixtureOutcome("invalid_result");
-    }
-    if (result.session !== null && (result.session.adapter !== "scripted" || result.session.id !== request.runId ||
-        result.session.context.id !== request.context.id || result.session.context.generation !== request.context.generation)) return fixtureOutcome("invalid_result");
+    if (!validUsage(result, request)) return invalidFor(mode);
+    const adapter = mode === "production" ? "schway" : "scripted";
+    if (result.session !== null && (result.session.adapter !== adapter || result.session.id !== request.runId ||
+        result.session.context.id !== request.context.id || result.session.context.generation !== request.context.generation)) return invalidFor(mode);
     // Return only declared fields, never raw SDK objects or extra model-authored fields.
-    return { ...expected, output: result.output, usage: result.usage, session: result.session === null ? null : { adapter: "scripted", id: request.runId, context: { ...request.context } } };
-  } catch { return fixtureOutcome("invalid_result"); }
+    return { ...expected, mode, output: result.output, usage: result.usage, session: result.session === null ? null : { adapter, id: request.runId, context: { ...request.context } } };
+  } catch { return invalidFor(mode ?? "fixture"); }
+}
+
+/**
+ * Usage validation by mode and reason. Fixture usage stays authoritatively
+ * bounded by the request limits. Production usage is host-measured: completed
+ * runs carry the worst-case admission shape with measured token overrun, while
+ * pre-model blocked/error outcomes carry coherent zero-attempt usage.
+ */
+function validUsage(result: ApplicationRunOutcome, request: ApplicationRunRequest): boolean {
+  const usage = result.usage;
+  const integers = [usage.calls, usage.rounds, usage.hops, usage.retries, usage.contextTokens, usage.outputTokens, usage.wallMs]
+    .every(value => Number.isSafeInteger(value) && value >= 0);
+  if (!integers) return false;
+  if (result.mode === "fixture") {
+    if (usage.tokensUnknown !== false) return false;
+    return Object.entries(usage).every(([key, value]) => key === "tokensUnknown" || (value as number) <= request.limits[key as keyof JobLimits]);
+  }
+  const maxCalls = Math.min(Math.max(1, Math.ceil(request.limits.retries + 1)), 10);
+  const attempted = usage.calls >= 1 && usage.calls <= maxCalls &&
+    usage.rounds === usage.calls && usage.retries === usage.calls - 1 && usage.hops === 0;
+  if (result.reason === "complete") return attempted;
+  const zeroAttempt = usage.calls === 0 && usage.rounds === 0 && usage.retries === 0 &&
+    usage.hops === 0 && usage.contextTokens === 0 && usage.outputTokens === 0;
+  return zeroAttempt || attempted;
 }
 
 /** Appends the deterministic app.memory_context/v1 fixture answer within the run's output ceiling. */
@@ -95,6 +155,7 @@ export function withContextAnswer(prefix: string, request: ApplicationRunRequest
 
 /** Deterministic in-process fixture; it contains no network, SDK, discovery or model protocol loop. */
 export class ScriptedRunPort implements ApplicationRunPort {
+  readonly adapter = "scripted" as const;
   readonly #requests: ApplicationRunRequest[] = [];
   readonly #native: ScriptedNativeLedger;
   constructor(readonly store: TransactionStore, readonly policy: TeamPolicy, readonly outputBytes: number,

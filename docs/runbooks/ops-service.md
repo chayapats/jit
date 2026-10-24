@@ -34,6 +34,7 @@ bun src/main.ts status
 - Preflight gates activation on config, schema, engine, quarantine ledger, scheduler, delivery worker, secret files and artifact pins. Resolve each blocked gate; do not bypass.
 - Status stays available while blocked. `observed-ready` appears only with explicit live evidence.
 - Stop drains cooperatively within its timeout. `unknown` means the supervisor must terminate and reconciliation runs on next start; never treat it as stopped or sent.
+- Run-port selection is operator configuration, not code: `JIT_RUN_PORT=schway` switches team dispatch from the scripted fixture to the concrete Schway bridge (JBR01 #15). Default `scripted` preserves fixture behavior. In `schway` mode `serve` verifies the pinned `schway.host.release/v1` artifact and service-owned `.jit-host` directories before admitting work; a blocked gate refuses startup with a next action instead of falling back to another route or billing path. Memory extraction stays scripted.
 
 ## 5. Upgrade and rollback
 

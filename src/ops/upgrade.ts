@@ -12,7 +12,7 @@ import {
 export const upgradeContract = "ops.schema_migrations/v1" as const;
 /** Oldest live schema this code migrates forward; anything older needs manual recovery. */
 export const minSupportedSchema = 15;
-export const currentSupportedSchema = 20;
+export const currentSupportedSchema = 21;
 
 export type UpgradeState = "prepared" | "staged" | "ready" | "complete" | "failed" | "rolled_back";
 

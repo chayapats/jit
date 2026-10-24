@@ -67,7 +67,7 @@ export function scriptedPreviewWork(store: TransactionStore, config: AppConfig, 
       }
       request.fence = { jobId: job.id, generation, ownerGeneration: job.authorization.generation };
 
-      return { native: { adapter: "scripted", runId: request.runId, sessionId: request.runId, context: request.context }, data: JSON.parse(jobData(request, config.team.contextBytes)) };
+      return { native: { adapter: port.adapter, runId: request.runId, sessionId: request.runId, context: request.context }, data: JSON.parse(jobData(request, config.team.contextBytes)) };
     },
     isCurrent: (tx, job, attempt) => {
       const request = attempt.data as unknown as ApplicationRunRequest;

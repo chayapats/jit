@@ -10,10 +10,12 @@ import { parseServiceConfig } from "../ops/package/service-config";
 import { readHiddenPassword } from "./terminal-password";
 import { JobQueue } from "./jobs/queue";
 import { projectStateWork } from "./jobs/project-state";
+import type { ApplicationRunPort } from "./team/run-port";
 import { AppError } from "./errors";
 import { coordinatorSynthesisWork } from "./team/decisions";
 import { discussionPlanWork, specialistAnalysisWork } from "./team/dispatch";
 import { ScriptedRunPort } from "./team/scripted-port";
+import { SchwayRunPort, verifySchwayBridge } from "./team/schway-port";
 import { scriptedPreviewWork } from "./team/preview";
 import { prReviewWork } from "./pr/review";
 import { prSnapshotWork } from "./pr/work";
@@ -74,18 +76,35 @@ async function main(): Promise<void> {
   const store = new TransactionStore(config.databasePath);
   let queue: JobQueue | undefined;
   try { if (command === "serve") {
-    const port = new ScriptedRunPort(store, config.team, config.jobs.outputBytes);
+    if (config.runPort === "schway") {
+      const gate = await verifySchwayBridge(store);
+      if (!gate.ok) {
+        console.error(`Schway bridge unavailable: ${gate.detail} (next: ${gate.nextAction})`);
+        process.exitCode = 1;
+        return;
+      }
+      console.log(`Schway bridge ready: ${gate.detail}`);
+    }
+    const teamPort: ApplicationRunPort = config.runPort === "schway"
+      ? new SchwayRunPort(store, config.team, config.jobs.outputBytes)
+      : new ScriptedRunPort(store, config.team, config.jobs.outputBytes);
+    // Fixture-authorized work never routes through live inference: role preview
+    // explicitly authorizes one scripted invocation, and schedules/PR summaries
+    // keep their scripted profiles until their own slices switch them.
+    const fixturePort: ApplicationRunPort = config.runPort === "schway"
+      ? new ScriptedRunPort(store, config.team, config.jobs.outputBytes)
+      : teamPort;
     const memoryPort = new ScriptedRunPort(store, config.team, config.jobs.outputBytes, request => {
       const source = store.read(tx => lookupSource(tx, request.projectId, request.manifest.sources[0]!.reference));
       return scriptedMemoryResult(request, source.state === "available" && source.attribution.kind === "owner", config.jobs.outputBytes);
     });
     queue = new JobQueue(store, config.jobs, [
-      projectStateWork(store), scriptedPreviewWork(store, config, port), discussionPlanWork(), specialistAnalysisWork(store, config, port), coordinatorSynthesisWork(store, config, port),
-      memoryExtractionWork(store, config, memoryPort), scheduleReminderWork(store, config), scheduleSummaryWork(store, config, port),
+      projectStateWork(store), scriptedPreviewWork(store, config, fixturePort), discussionPlanWork(), specialistAnalysisWork(store, config, teamPort), coordinatorSynthesisWork(store, config, teamPort),
+      memoryExtractionWork(store, config, memoryPort), scheduleReminderWork(store, config), scheduleSummaryWork(store, config, fixturePort),
       prSnapshotWork({ store, cacheRoot: ".local/pr-cache", fixtureFor: () => new FakeGitHubFixture() }),
-      prReviewWork({ store, port }),
+      prReviewWork({ store, port: fixturePort }),
     ]);
-    await queue.reconcile(port);
+    await queue.reconcile(teamPort);
   } }
   catch (error) { queue?.close(); store.close(); throw error; }
   const app = new Application(store, config, queue ? { jobs: queue } : {});
