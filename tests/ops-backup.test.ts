@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Model, ModelRequest } from "schway/host";
@@ -10,7 +10,7 @@ import { Application } from "../src/application";
 import { readConfig } from "../src/config";
 import {
   backupImageTables, backupRetention, captureNativeSnapshot, jitAppVersion, normalizeNativeSnapshot, planRetention, resolveNativeSnapshot, scanBackupSecrets,
-  type BackupNativePort,
+  writeManagedFile, type BackupNativePort,
 } from "../src/ops/backup";
 import { SchwayBackupNativePort, createSchwayBackupNativePort, schwayBackupEngine } from "../src/ops/schway-backup";
 import { currentSupportedSchema, upgradeEngineContract, upgradeNativeFormatVersion } from "../src/ops/upgrade";
@@ -924,4 +924,28 @@ test("restore activation keeps the live backup registry: two backups survive res
   const third = (await f.app.execute(f.auth.actor, backupCommand(f))).manifest;
   expect(f.app.backups(f.auth.actor).manifests.map(m => m.id)).toEqual([older.id, newer.id, third.id]);
   for (const id of [older.id, newer.id]) expect(f.app.backup(f.auth.actor, id).integrity.state).toBe("verified");
+});
+
+test("managed files harden an existing permissive directory, refuse symlinked directories and never overwrite or follow a planted name", () => {
+  const root = mkdtempSync(join(tmpdir(), "jit-backup-dir-")); roots.push(root);
+  const open = join(root, "open");
+  mkdirSync(open); chmodSync(open, 0o777);
+  const written = writeManagedFile(open, "artifact.sqlite", new Uint8Array([1, 2, 3]));
+  expect((statSync(open).mode & 0o777).toString(8)).toBe("700");
+  expect((statSync(written).mode & 0o777).toString(8)).toBe("600");
+  expect([...readFileSync(written)]).toEqual([1, 2, 3]);
+  // An existing file is never truncated or replaced.
+  expect(() => writeManagedFile(open, "artifact.sqlite", new Uint8Array([9]))).toThrow("backup_storage_unavailable");
+  expect([...readFileSync(written)]).toEqual([1, 2, 3]);
+  // A planted symlink at the managed name is neither followed nor removed.
+  const victim = join(root, "victim.txt"); writeFileSync(victim, "keep");
+  symlinkSync(victim, join(open, "planted.sqlite"));
+  expect(() => writeManagedFile(open, "planted.sqlite", new Uint8Array([7]))).toThrow("backup_storage_unavailable");
+  expect(readFileSync(victim, "utf8")).toBe("keep");
+  expect(lstatSync(join(open, "planted.sqlite")).isSymbolicLink()).toBe(true);
+  // A symlinked destination directory is rejected before any write.
+  const real = join(root, "real"); mkdirSync(real, { mode: 0o700 });
+  const linked = join(root, "linked"); symlinkSync(real, linked);
+  expect(() => writeManagedFile(linked, "artifact.sqlite", new Uint8Array([1]))).toThrow("backup_storage_unavailable");
+  expect(readdirSync(real)).toEqual([]);
 });

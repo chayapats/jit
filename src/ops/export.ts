@@ -119,14 +119,29 @@ export function exportSecretLike(value: string): boolean {
 }
 const redacted = "(redacted: payload_hygiene_secret)";
 
-/** Deep-copies a JSON projection, replacing every credential-shaped string with a redaction marker. */
+/**
+ * Deep-copies a JSON projection, replacing every credential-shaped string (and object key) with a
+ * redaction marker. The whole string is replaced, never just the matched span.
+ */
 export function sanitizeExportStrings<T>(value: T): T {
   if (typeof value === "string") return (exportSecretLike(value) ? redacted : value) as T;
   if (Array.isArray(value)) return value.map(item => sanitizeExportStrings(item)) as T;
   if (value && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, sanitizeExportStrings(item)])) as T;
+    return Object.fromEntries(Object.entries(value).map(([key, item], index) =>
+      [exportSecretLike(key) ? `${redacted} #${index}` : key, sanitizeExportStrings(item)])) as T;
   }
   return value;
+}
+
+/**
+ * Serializes the final artifact envelope: every string of the note and every data collection passes
+ * {@link sanitizeExportStrings}, then the complete serialized artifact is re-scanned and any remaining
+ * credential shape (for example one only formed by a key/value pair) fails closed as `export_failed`.
+ */
+export function serializeExportEnvelope(envelope: Record<string, unknown>): string {
+  const json = JSON.stringify(sanitizeExportStrings(envelope));
+  if (exportSecretLike(json)) throw new AppError("export_failed", 500);
+  return json;
 }
 
 /** Owner-authenticated download path serving one artifact from its committed row. */
@@ -232,7 +247,8 @@ type ResolvedText =
  * active-generation lookup. Deleted payload is absent, forgotten/corrected claims are
  * inactive, forget-retained raw history and owner message text appear only with
  * `scope.includeHistory`. Every collection is bounded and reported in `completeness`.
- * PR-derived strings are sanitized for credential shapes. Format 2 adds `prReports`.
+ * PR-derived strings are sanitized here; {@link buildExport} sanitizes the whole envelope again
+ * before serialization. Format 2 adds `prReports`.
  */
 export function assembleExport(tx: AppTransaction, projectId: string, scope: ExportScope): Assembled {
   requireId(projectId);
@@ -561,8 +577,9 @@ export interface BuiltExport {
 
 /**
  * Builds one export inside the caller transaction: takes the lifecycle mark, assembles and
- * lifecycle-checks every included ref, and rejects artifacts above `limits.maxBytes`
- * (`export_too_large`). Writes nothing.
+ * lifecycle-checks every included ref, sanitizes and re-scans the whole envelope
+ * ({@link serializeExportEnvelope}, `export_failed` on a residual credential shape), and rejects
+ * artifacts above `limits.maxBytes` (`export_too_large`). Writes nothing.
  */
 export function buildExport(tx: AppTransaction, input: {
   id: string; now: number; projectId: string; projectRevision: number; scope: ExportScope; note: string; limits?: ExportLimits;
@@ -571,7 +588,7 @@ export function buildExport(tx: AppTransaction, input: {
   const limits = input.limits ?? exportRetention;
   const lifecycleMark = exportLifecycleMark(tx, input.projectId);
   const assembled = assembleExport(tx, input.projectId, input.scope);
-  const body = Buffer.from(JSON.stringify({ contract: exportContract, formatVersion: exportFormatVersion, exportId: input.id, projectId: input.projectId,
+  const body = Buffer.from(serializeExportEnvelope({ contract: exportContract, formatVersion: exportFormatVersion, exportId: input.id, projectId: input.projectId,
     exportedAt: input.now, scope: input.scope, disclosure: disclosureFor(input.scope), note: input.note, data: assembled.data }));
   if (body.length > limits.maxBytes) throw new AppError("export_too_large", 413);
   return { input: { id: input.id, now: input.now, projectId: input.projectId, projectRevision: input.projectRevision, scope: { ...input.scope } },

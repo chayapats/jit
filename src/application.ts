@@ -1172,7 +1172,10 @@ export class Application {
 
   /**
    * Lists private PR review reports and per-candidate review states for one project.
-   * `pr.private_report/v1` inspection; reading never admits work or sends.
+   * `pr.private_report/v1` + `pr.private_alerts/v1` inspection; reading never admits work or sends.
+   * Returns `{project, items, reviews, pending, policy}`: `reviews` is every candidate's projected
+   * state (`listReviewStates`); `pending` is the subset still awaiting a report for that projection
+   * (`not_reviewed` or `running`, always `reportId: null`).
    */
   prReports(actor: OwnerActor, projectId: string, monitorId?: string) {
     requireId(projectId);
@@ -1181,7 +1184,9 @@ export class Application {
       this.#requireOwner(tx, actor);
       const project = this.#project(tx, projectId);
       // Per-candidate states keep not-reviewed, running, failed and stale distinguishable.
-      return { project, items: listReports(tx, projectId, monitorId), reviews: listReviewStates(tx, projectId, monitorId), policy: readAlertPolicy(tx, projectId) };
+      const reviews = listReviewStates(tx, projectId, monitorId);
+      const pending = reviews.filter(review => review.observed === "not_reviewed" || review.observed === "running");
+      return { project, items: listReports(tx, projectId, monitorId), reviews, pending, policy: readAlertPolicy(tx, projectId) };
     });
   }
 

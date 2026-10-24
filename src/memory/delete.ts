@@ -19,7 +19,7 @@ export const deleteOperationContract = "app.data_deletion_operation/v1" as const
 
 /** Bounded preview lists. Truncating any list that confirmation acts on is a named blocker, never silently complete. */
 export const deletePreviewBounds = Object.freeze({
-  sources: 1000, claims: 2000, contexts: 100, pendingJobs: 500, nativeSessions: 100, backups: 50, exports: 50, obligations: 100, taskProposals: 200, deliveries: 500,
+  sources: 1000, claims: 2000, contexts: 100, pendingJobs: 500, nativeSessions: 100, backups: 50, exports: 50, obligations: 100, taskProposals: 200, taskEvidence: 200, deliveries: 500,
 });
 /** Inventory scans page through whole tables; a table past `scanRows` blocks confirmation instead of hiding rows. */
 export const deleteInventoryPolicy = Object.freeze({ scanRows: 200_000, page: 500, closureRounds: 32, chunk: 400 });
@@ -81,7 +81,7 @@ export interface DeletionPreview {
   expiresAt: number; createdAt: number;
   affected: {
     /** The scope lineage plus every descendant output (recorded memory derivation or run output). */
-    sources: { projectId: string; source: SourceReference; relation: "scope" | "derived_output" }[];
+    sources: { projectId: string; source: SourceReference; relation: "scope" | "derived_output" | "quoted_copy" }[];
     claims: { projectId: string; reference: ClaimReference }[];
     contexts: { id: string; generation: number; projectId: string; ownerKind: string; ownerId: string }[];
     pendingJobs: { id: string; projectId: string }[];
@@ -91,16 +91,29 @@ export interface DeletionPreview {
      * `state` is the verified artifact integrity (never the persisted manifest state), or `unchecked` without a backup dir.
      */
     backups: { id: string; createdAt: number; state: "verified" | "incomplete" | "unchecked"; reason: string | null; evidence: "coverage" | "whole_store_snapshot" }[];
-    /** App-owned export artifacts confirmation purges (coverage match, or any artifact of an affected project without complete coverage). */
-    exports: { id: string; projectId: string; createdAt: number; evidence: "coverage" | "incomplete_coverage" }[];
-    /** Owner-authored tasks/decisions are disclosed and retained unchanged; deletion never completes or cancels them. */
-    obligations: { kind: "task" | "decision"; id: string; title: string; revision: number; effect: "retained_unchanged" }[];
+    /** App-owned export artifacts confirmation purges: every non-failed export of an affected project, or a coverage match elsewhere. */
+    exports: { id: string; projectId: string; createdAt: number; evidence: "coverage" | "affected_project" }[];
+    /**
+     * Owner tasks/decisions linked by lineage, lexical overlap or an exact quoted copy of an affected payload, by identity
+     * and revision only (no title or other payload is persisted). Deletion never completes or cancels them. An active
+     * task or current decision holding a copy is `blocked_owner_copy` (a named blocker until the owner edits, closes or
+     * supersedes it); a superseded decision's copy is `redacted`; everything else is `retained_unchanged`.
+     */
+    obligations: { kind: "task" | "decision"; id: string; revision: number; evidence: "lineage" | "lexical" | "quoted_copy";
+      effect: "retained_unchanged" | "blocked_owner_copy" | "redacted" }[];
     /**
      * Task proposal revisions whose exact source generation is affected. Historical (or inactive-task) proposal
      * payloads are redacted; the current proposal of an active task is a named blocker (edit or close the task first).
      */
     taskProposals: { taskId: string; taskState: string; proposalId: string; revision: number; current: boolean;
-      effect: "redacted" | "blocked_active_task" }[];
+      evidence: "provenance" | "quoted_text"; effect: "redacted" | "blocked_active_task" }[];
+    /**
+     * Task completion evidence artifacts whose exact source generation is affected. The latest artifact of an active
+     * task decides its readiness, so deleting it would silently downgrade the task: a named blocker until the owner
+     * completes, cancels or supersedes the task. Older or closed-task artifacts keep their identity and read unavailable.
+     */
+    taskEvidence: { taskId: string; taskState: string; taskRevision: number; artifactId: string; revision: number; latest: boolean;
+      effect: "blocked_active_task" | "reference_unavailable" }[];
     /**
      * Local delivery copies: linked by provenance (the report's own source generation is affected, including
      * schedule summaries of derived outputs) or holding an exact quoted copy. Confirm deletes the report, cancels
@@ -109,7 +122,7 @@ export interface DeletionPreview {
     deliveries: { intentId: string; reportId: string; projectId: string; status: string;
       evidence: "provenance" | "quoted_text"; effect: "cancel_and_redact" | "redact_keep_state" }[];
   };
-  truncated: { sources: boolean; claims: boolean; contexts: boolean; pendingJobs: boolean; nativeSessions: boolean; backups: boolean; exports: boolean; obligations: boolean; taskProposals: boolean; deliveries: boolean };
+  truncated: { sources: boolean; claims: boolean; contexts: boolean; pendingJobs: boolean; nativeSessions: boolean; backups: boolean; exports: boolean; obligations: boolean; taskProposals: boolean; taskEvidence: boolean; deliveries: boolean };
   /** Required whenever deletion removes a whole native session holding collateral, a shared topic identity or an unresolvable orphan. */
   wholeSession: { required: boolean; reason: string | null; reasons: string[]; sessionScope: string[] };
   /** Named conditions that disable confirmation (truncated/unreadable inventory, scan ceiling). */
@@ -309,7 +322,7 @@ interface JobEvidence {
 }
 
 interface ClaimRow { projectId: string; claim: MemoryClaim }
-interface SourceEntry { projectId: string; source: SourceReference; relation: "scope" | "derived_output" }
+interface SourceEntry { projectId: string; source: SourceReference; relation: "scope" | "derived_output" | "quoted_copy" }
 interface ContextRow { id: string; generation: number; projectId: string; ownerKind: string; ownerId: string }
 
 interface Inventory {
@@ -322,6 +335,7 @@ interface Inventory {
   exports: DeletionPreview["affected"]["exports"];
   obligations: DeletionPreview["affected"]["obligations"];
   taskProposals: DeletionPreview["affected"]["taskProposals"];
+  taskEvidence: DeletionPreview["affected"]["taskEvidence"];
   deliveries: DeletionPreview["affected"]["deliveries"];
   /** Payload texts for the quoted-copy fallback; internal to the transaction, never persisted in a preview. */
   scrub: { long: string[]; short: string[] };
@@ -438,6 +452,8 @@ function buildInventory(tx: AppTransaction, scope: DeleteScope, env: DeletionEnv
       }
     } catch { blockers.add("unreadable_record:job_schedule_occurrences"); }
   }, { blockers });
+  const ownerTaskTexts = ownerTaskTextSources(tx);
+  const payloadTexts: string[] = [], textSeen = new Set<string>();
   for (let round = 0; ; round++) {
     if (round >= deleteInventoryPolicy.closureRounds) { blockers.add("inventory_closure_ceiling"); break; }
     const before = sources.size + claims.size;
@@ -480,6 +496,26 @@ function buildInventory(tx: AppTransaction, scope: DeleteScope, env: DeletionEnv
     for (const link of occurrenceLinks) {
       const intent = intents.get(link.intentId);
       if (intent && sources.has(sourceKey(link.output))) addDerived(tx, sources, { projectId: intent.projectId, ...intent.source });
+    }
+    // An owner task's text source (the mirror of its proposal) quoting an affected payload verbatim is a copy of it.
+    if (ownerTaskTexts.length) {
+      const long = (value: unknown) => typeof value === "string" && value !== redactedText && Array.from(value).length >= deleteScrubPolicy.minChars;
+      for (const entry of sources.values()) {
+        if (textSeen.has(`s:${sourceKey(entry.source)}`)) continue;
+        textSeen.add(`s:${sourceKey(entry.source)}`);
+        const text = sourceText(tx, entry.source);
+        if (long(text)) payloadTexts.push(text);
+      }
+      for (const entry of claims.values()) {
+        if (textSeen.has(`c:${entry.claim.claimId}`)) continue;
+        textSeen.add(`c:${entry.claim.claimId}`);
+        for (const value of [entry.claim.text, entry.claim.quote]) if (long(value)) payloadTexts.push(value as string);
+      }
+      for (const owned of ownerTaskTexts) {
+        const key = sourceKey(owned.source);
+        if (sources.has(key) || deletedSource(tx, owned.source) || !payloadTexts.some(text => owned.text.includes(text))) continue;
+        sources.set(key, { projectId: owned.projectId, source: owned.source, relation: "quoted_copy" });
+      }
     }
     if (sources.size + claims.size === before) break;
   }
@@ -525,6 +561,7 @@ function buildInventory(tx: AppTransaction, scope: DeleteScope, env: DeletionEnv
     exports: retainedExports(tx, allSources, [...claims.values()], blockers),
     obligations: obligationsFor(tx, scope, allSources, blockers),
     taskProposals: taskProposalsFor(tx, allSources, blockers),
+    taskEvidence: taskEvidenceFor(tx, allSources, blockers),
     deliveries: [],
     scrub: { long: [], short: [] },
     blockers,
@@ -536,20 +573,25 @@ function buildInventory(tx: AppTransaction, scope: DeleteScope, env: DeletionEnv
     const linked = keys.has(sourceKey(intent.source));
     if (!linked && !inventory.scrub.long.some(term => intent.text.includes(term))) continue;
     inventory.deliveries.push({ intentId: intent.id, reportId: intent.reportId, projectId: intent.projectId, status: intent.status,
-      evidence: linked ? "provenance" : "quoted_text", effect: ["sent", "unknown"].includes(intent.status) ? "redact_keep_state" : "cancel_and_redact" });
+      evidence: linked ? "provenance" : "quoted_text", effect: TERMINAL_DELIVERY.has(intent.status) ? "redact_keep_state" : "cancel_and_redact" });
   }
   if (inventory.scrub.short.length && shortPayloadCopied(tx, inventory.scrub.short, keys, new Set(citing.map(job => job.jobId)),
     new Set(inventory.deliveries.map(d => d.intentId)), new Set(inventory.deliveries.map(d => d.reportId)))) blockers.add("short_payload_unlinked_copy");
+  ownerCopies(tx, inventory);
   // Lists confirmation acts on (or the owner must see in full) block when they exceed display bounds; backups are disclosure only.
   const sizes: [string, number, number][] = [["sources", sources.size, deletePreviewBounds.sources], ["claims", claims.size, deletePreviewBounds.claims],
     ["contexts", contexts.size, deletePreviewBounds.contexts], ["pendingJobs", pendingJobs.length, deletePreviewBounds.pendingJobs],
     ["nativeSessions", inventory.sessions.length, deletePreviewBounds.nativeSessions], ["exports", inventory.exports.length, deletePreviewBounds.exports],
     ["obligations", inventory.obligations.length, deletePreviewBounds.obligations],
     ["taskProposals", inventory.taskProposals.length, deletePreviewBounds.taskProposals],
+    ["taskEvidence", inventory.taskEvidence.length, deletePreviewBounds.taskEvidence],
     ["deliveries", inventory.deliveries.length, deletePreviewBounds.deliveries]];
   for (const [name, size, bound] of sizes) if (size > bound) blockers.add(`inventory_truncated:${name}`);
   return inventory;
 }
+
+/** Settled transport outcomes the outbox never cancels (`cancelUnsent`); deletion only redacts their text. */
+const TERMINAL_DELIVERY: ReadonlySet<string> = new Set(["sent", "unknown", "failed"]);
 
 interface DeliveryIntentRow { id: string; projectId: string; reportId: string; status: string; text: string; source: SourceReference }
 
@@ -602,31 +644,116 @@ function shortPayloadCopied(tx: AppTransaction, short: string[], affected: Set<s
   for (const table of ["job_attempts", "team_runs", "coordinator_syntheses"]) {
     visit<{ jobId: string; json: string }>(table, "job_id AS jobId, record_json AS json", row => !citingJobs.has(row.jobId) && hit(row.json));
   }
+  // Owner task/decision text is never partially scrubbed for a short payload: an unlinked copy there blocks too.
+  visit<{ sourceId: string; revision: number; generation: number; text: string }>("task_proposals",
+    "source_id AS sourceId, source_revision AS revision, source_generation AS generation, title || char(10) || summary AS text", row => !affected.has(sourceKey(row)) && hit(row.text));
+  visit<{ text: string }>("owner_decisions", "conclusion || char(10) || rationale AS text", row => hit(row.text));
   return found;
 }
 
 function obligationsFor(tx: AppTransaction, scope: DeleteScope, sources: SourceEntry[], blockers: Set<string>): DeletionPreview["affected"]["obligations"] {
   const out = new Map<string, DeletionPreview["affected"]["obligations"][number]>();
-  const clip = (value: string) => Array.from(value).slice(0, 120).join("");
-  const add = (kind: "task" | "decision", id: string, title: string, revision: number) =>
-    out.set(`${kind}:${id}`, { kind, id, title: clip(title), revision, effect: "retained_unchanged" });
+  const add = (kind: "task" | "decision", id: string, revision: number, evidence: "lineage" | "lexical") => {
+    if (!out.has(`${kind}:${id}`) || evidence === "lineage") out.set(`${kind}:${id}`, { kind, id, revision, evidence, effect: "retained_unchanged" });
+  };
   const active = "state IN ('proposed', 'accepted', 'ready_for_review')";
   for (const batch of chunks([...new Set(sources.map(s => s.source.sourceId))])) {
-    for (const row of tx.all<{ id: string; title: string; revision: number }>(
-      `SELECT id, title, task_revision AS revision FROM tasks WHERE ${active} AND source_id IN (${marks(batch.length)})`, ...batch)) add("task", row.id, row.title, row.revision);
-    for (const row of tx.all<{ id: string; conclusion: string; revision: number }>(
-      `SELECT d.id, d.conclusion, d.revision FROM owner_decisions d JOIN decision_proposals p ON p.id = d.proposal_id
-       WHERE d.superseded_by IS NULL AND p.source_id IN (${marks(batch.length)})`, ...batch)) add("decision", row.id, row.conclusion, row.revision);
+    for (const row of tx.all<{ id: string; revision: number }>(
+      `SELECT id, task_revision AS revision FROM tasks WHERE ${active} AND source_id IN (${marks(batch.length)})`, ...batch)) add("task", row.id, row.revision, "lineage");
+    for (const row of tx.all<{ id: string; revision: number }>(
+      `SELECT d.id, d.revision FROM owner_decisions d JOIN decision_proposals p ON p.id = d.proposal_id
+       WHERE d.superseded_by IS NULL AND p.source_id IN (${marks(batch.length)})`, ...batch)) add("decision", row.id, row.revision, "lineage");
   }
-  // Lexical overlap is disclosure (owner-authored text is never rewritten); every active row is checked, not a prefix.
+  // Lexical overlap is disclosure only; every active row is checked, not a prefix.
   const query = lexicalTerms(sourceText(tx, scope.source));
   scanTable<{ id: string; title: string; summary: string; revision: number }>(tx, "tasks", "id, title, summary, task_revision AS revision", row => {
-    if (lexicalScore(query, `${row.title}\n${row.summary}`) >= 3) add("task", row.id, row.title, row.revision);
+    if (lexicalScore(query, `${row.title}\n${row.summary}`) >= 3) add("task", row.id, row.revision, "lexical");
   }, { blockers }, `project_id = ? AND ${active}`, [scope.projectId]);
   scanTable<{ id: string; conclusion: string; rationale: string; revision: number }>(tx, "owner_decisions", "id, conclusion, rationale, revision", row => {
-    if (lexicalScore(query, `${row.conclusion}\n${row.rationale}`) >= 3) add("decision", row.id, row.conclusion, row.revision);
+    if (lexicalScore(query, `${row.conclusion}\n${row.rationale}`) >= 3) add("decision", row.id, row.revision, "lexical");
   }, { blockers }, "project_id = ? AND superseded_by IS NULL", [scope.projectId]);
   return [...out.values()];
+}
+
+/** Owner topic sources committed as a task proposal's own text (origin `owner`), current and available, in any project. */
+function ownerTaskTextSources(tx: AppTransaction): { projectId: string; source: SourceReference; text: string }[] {
+  const out = new Map<string, { projectId: string; source: SourceReference; text: string }>();
+  for (const row of tx.all<{ sourceId: string; projectId: string; revision: number; generation: number; text: string }>(
+    `SELECT p.source_id AS sourceId, s.project_id AS projectId, p.source_revision AS revision, p.source_generation AS generation, v.content_text AS text
+     FROM task_proposals p JOIN sources s ON s.id = p.source_id AND s.current_revision = p.source_revision AND s.generation = p.source_generation
+     JOIN source_versions v ON v.source_id = p.source_id AND v.revision = p.source_revision AND v.generation = p.source_generation
+     WHERE p.origin = 'owner' AND s.availability = 'available' AND v.content_text IS NOT NULL`)) {
+    const source = { sourceId: row.sourceId, revision: row.revision, generation: row.generation };
+    out.set(sourceKey(source), { projectId: row.projectId, source, text: row.text });
+  }
+  return [...out.values()];
+}
+
+const activeTaskStates = ["proposed", "accepted", "ready_for_review"];
+/** Whether owner text holds an exact copy of any long affected payload (also across the joined fields). */
+const holdsCopy = (terms: string[], fields: string[]) => terms.some(term => fields.join("\n").includes(term));
+/** Replaces every long payload copy in owner text; a copy spanning fields redacts all of them. */
+function replaceTerms(terms: string[], fields: string[]): string[] {
+  const next = fields.map(field => terms.reduce((text, term) => text.includes(term) ? text.split(term).join(redactedText) : text, field));
+  return holdsCopy(terms, next) ? next.map(() => redactedText) : next;
+}
+
+/**
+ * Long payload texts of affected sources and claims. Unlike the scrub set it excludes redacted proposal text, so an
+ * owner's current task wording that merely survives from an older revision is not mistaken for a deleted copy.
+ */
+function ownerCopyTerms(tx: AppTransaction, inventory: Pick<Inventory, "sources" | "claims">): string[] {
+  const all = new Set<string>();
+  const add = (value: unknown) => {
+    if (typeof value === "string" && value !== redactedText && Array.from(value).length >= deleteScrubPolicy.minChars) all.add(value);
+  };
+  for (const entry of inventory.sources.values()) add(sourceText(tx, entry.source));
+  for (const entry of inventory.claims.values()) { add(entry.claim.text); add(entry.claim.quote); }
+  return [...all].sort();
+}
+
+/**
+ * Owner task/decision copies of the affected payload set (exact, at least `minChars`), in any project. A task
+ * proposal is a copy when its title/summary quote a payload; the current proposal of an active task is the existing
+ * `active_task_current_proposal` blocker, any other is redacted at confirm. A current decision quoting a payload adds
+ * `owner_decision_copy:<id>`; a superseded one is redacted. Nothing payload-bearing enters the preview.
+ */
+function ownerCopies(tx: AppTransaction, inventory: Inventory): void {
+  const terms = ownerCopyTerms(tx, inventory);
+  const linked = new Set(inventory.taskProposals.map(p => p.proposalId));
+  const mark = (kind: "task" | "decision", id: string, revision: number, effect: "blocked_owner_copy" | "redacted",
+    evidence: "lineage" | "quoted_copy" = "quoted_copy") => {
+    const at = inventory.obligations.findIndex(o => o.kind === kind && o.id === id);
+    const entry = { kind, id, revision, evidence, effect };
+    if (at >= 0) inventory.obligations[at] = entry; else inventory.obligations.push(entry);
+  };
+  // A blocked current proposal (linked by provenance) is an owner task copy too: disclose its obligation as blocked.
+  for (const proposal of inventory.taskProposals.filter(p => p.effect === "blocked_active_task")) {
+    const row = tx.get<{ title: string; summary: string; revision: number }>(
+      "SELECT p.title, p.summary, t.task_revision AS revision FROM task_proposals p JOIN tasks t ON t.id = p.task_id WHERE p.id = ?", proposal.proposalId);
+    if (row) mark("task", proposal.taskId, row.revision, "blocked_owner_copy", holdsCopy(terms, [row.title, row.summary]) ? "quoted_copy" : "lineage");
+  }
+  if (!terms.length) return;
+  scanTable<{ id: string; taskId: string; revision: number; title: string; summary: string }>(tx, "task_proposals",
+    "id, task_id AS taskId, revision, title, summary", row => {
+      if (linked.has(row.id) || !holdsCopy(terms, [row.title, row.summary])) return;
+      const task = tx.get<{ state: string; currentId: string; revision: number }>(
+        "SELECT state, current_proposal_id AS currentId, task_revision AS revision FROM tasks WHERE id = ?", row.taskId);
+      const current = task?.currentId === row.id, active = activeTaskStates.includes(task?.state ?? "");
+      const effect = current && active ? "blocked_active_task" as const : "redacted" as const;
+      if (effect === "blocked_active_task") {
+        inventory.blockers.add(`active_task_current_proposal:${row.taskId}`);
+        mark("task", row.taskId, task!.revision, "blocked_owner_copy");
+      }
+      inventory.taskProposals.push({ taskId: row.taskId, taskState: task?.state ?? "missing", proposalId: row.id, revision: row.revision,
+        current, evidence: "quoted_text", effect });
+    }, { blockers: inventory.blockers });
+  scanTable<{ id: string; revision: number; conclusion: string; rationale: string; supersededBy: string | null }>(tx, "owner_decisions",
+    "id, revision, conclusion, rationale, superseded_by AS supersededBy", row => {
+      if (!holdsCopy(terms, [row.conclusion, row.rationale])) return;
+      if (row.supersededBy === null) inventory.blockers.add(`owner_decision_copy:${row.id}`);
+      mark("decision", row.id, row.revision, row.supersededBy === null ? "blocked_owner_copy" : "redacted");
+    }, { blockers: inventory.blockers });
 }
 
 /** Every task proposal revision (current or historical) citing an affected exact source generation. */
@@ -644,7 +771,31 @@ function taskProposalsFor(tx: AppTransaction, sources: SourceEntry[], blockers: 
       const active = ["proposed", "accepted", "ready_for_review"].includes(row.state ?? "");
       const effect = current && active ? "blocked_active_task" as const : "redacted" as const;
       if (effect === "blocked_active_task") blockers.add(`active_task_current_proposal:${row.taskId}`);
-      out.push({ taskId: row.taskId, taskState: row.state ?? "missing", proposalId: row.id, revision: row.revision, current, effect });
+      out.push({ taskId: row.taskId, taskState: row.state ?? "missing", proposalId: row.id, revision: row.revision, current, evidence: "provenance", effect });
+    }
+  }
+  return out;
+}
+
+/** Every task evidence artifact citing an affected exact source generation; the latest one of an active task blocks. */
+function taskEvidenceFor(tx: AppTransaction, sources: SourceEntry[], blockers: Set<string>): DeletionPreview["affected"]["taskEvidence"] {
+  const keys = new Set(sources.map(entry => sourceKey(entry.source)));
+  const out: DeletionPreview["affected"]["taskEvidence"] = [];
+  for (const batch of chunks([...new Set(sources.map(entry => entry.source.sourceId))])) {
+    for (const row of tx.all<{ id: string; taskId: string; revision: number; sourceId: string; sourceRevision: number; sourceGeneration: number;
+      state: string | null; taskRevision: number | null; latestRevision: number }>(
+      `SELECT e.id, e.task_id AS taskId, e.revision, e.source_id AS sourceId, e.source_revision AS sourceRevision, e.source_generation AS sourceGeneration,
+         t.state, t.task_revision AS taskRevision,
+         (SELECT max(l.revision) FROM task_evidence_artifacts l WHERE l.task_id = e.task_id) AS latestRevision
+       FROM task_evidence_artifacts e LEFT JOIN tasks t ON t.id = e.task_id
+       WHERE e.source_id IN (${marks(batch.length)})`, ...batch)) {
+      if (!keys.has(sourceKey({ sourceId: row.sourceId, revision: row.sourceRevision, generation: row.sourceGeneration }))) continue;
+      const latest = row.revision === row.latestRevision;
+      const active = ["proposed", "accepted", "ready_for_review"].includes(row.state ?? "");
+      const effect = latest && active ? "blocked_active_task" as const : "reference_unavailable" as const;
+      if (effect === "blocked_active_task") blockers.add(`active_task_evidence:${row.taskId}`);
+      out.push({ taskId: row.taskId, taskState: row.state ?? "missing", taskRevision: row.taskRevision ?? 0, artifactId: row.id,
+        revision: row.revision, latest, effect });
     }
   }
   return out;
@@ -677,21 +828,10 @@ function retainedBackups(tx: AppTransaction, sources: SourceEntry[], blockers: S
 }
 
 /**
- * Export coverage is trusted as complete only when the manifest's `completeness` section says so for every
- * collection (and coverage itself is not truncated); missing/unknown completeness metadata is incomplete.
- */
-function exportCoverageComplete(manifest: { completeness?: unknown; coverage?: unknown }): boolean {
-  const completeness = manifest.completeness as { complete?: unknown; collections?: Record<string, { included?: unknown; total?: unknown; truncated?: unknown }> } | undefined;
-  if (!completeness || completeness.complete !== true || !completeness.collections || typeof completeness.collections !== "object") return false;
-  // Scope exclusions (e.g. no history) make included < total legitimately; only truncation is incompleteness.
-  if (Object.values(completeness.collections).some(c => c?.truncated !== false)) return false;
-  const coverage = manifest.coverage as { truncated?: unknown; sources?: unknown; claims?: unknown } | undefined;
-  return !!coverage && coverage.truncated !== true && Array.isArray(coverage.sources) && Array.isArray(coverage.claims);
-}
-
-/**
- * App-owned export artifacts holding affected data: a coverage match, or any export of an affected project
- * whose completeness is not proven. Failed exports published no artifact. Confirmation purges them.
+ * App-owned export artifacts confirmation purges: every non-failed export of an affected project, plus any other
+ * export whose coverage names affected data. Export coverage describes resolver-emitted sources only, while raw
+ * task/proposal/decision text is serialized too, so complete-but-nonmatching coverage is never proof of absence;
+ * exports are regenerable and retention-bounded. Failed exports published no artifact.
  */
 function retainedExports(tx: AppTransaction, sources: SourceEntry[], claims: ClaimRow[], blockers: Set<string>): DeletionPreview["affected"]["exports"] {
   const keys = new Set(sources.map(s => sourceKey(s.source)));
@@ -699,17 +839,16 @@ function retainedExports(tx: AppTransaction, sources: SourceEntry[], claims: Cla
   const projects = new Set([...sources.map(entry => entry.projectId), ...claims.map(entry => entry.projectId)]);
   const items: DeletionPreview["affected"]["exports"] = [];
   try {
-    scanTable<{ id: string; projectId: string; json: string }>(tx, "export_artifacts", "id, project_id AS projectId, record_json AS json", row => {
-      let manifest, raw: { completeness?: unknown; coverage?: unknown };
-      try { manifest = readExportManifest(tx, row.projectId, row.id); raw = JSON.parse(row.json) as typeof raw; }
+    scanTable<{ id: string; projectId: string }>(tx, "export_artifacts", "id, project_id AS projectId", row => {
+      let manifest;
+      try { manifest = readExportManifest(tx, row.projectId, row.id); }
       catch { blockers.add("unreadable_record:export_artifacts"); return; }
       if (manifest.state === "failed") return;
       const coverage = manifest.coverage as { sources?: SourceReference[]; claims?: { claimId: string }[] } | undefined;
       const listed = (Array.isArray(coverage?.sources) && coverage.sources.some(s => validReference(s) && keys.has(sourceKey(s)))) ||
         (Array.isArray(coverage?.claims) && coverage.claims.some(c => claimIds.has(c?.claimId)));
-      // Completeness is judged on the stored record: a missing section (older writers) is incomplete.
-      if (listed || (!exportCoverageComplete(raw) && projects.has(row.projectId))) {
-        items.push({ id: row.id, projectId: row.projectId, createdAt: manifest.createdAt, evidence: listed ? "coverage" : "incomplete_coverage" });
+      if (listed || projects.has(row.projectId)) {
+        items.push({ id: row.id, projectId: row.projectId, createdAt: manifest.createdAt, evidence: listed ? "coverage" : "affected_project" });
       }
     }, { blockers });
   } catch (error) { if (!(error instanceof Error) || !/no such table/.test(error.message)) throw error; }
@@ -777,8 +916,9 @@ function inventoryDigest(tx: AppTransaction, scope: DeleteScope, inventory: Inve
     pendingJobs: sorted(inventory.pendingJobs.map(j => `${j.id}/${j.state}`)),
     sessions: sorted(inventory.sessions.map(s => `${contextKey(s)}/${s.appState}/${s.dispatched}/${sorted(s.jobIds).join(",")}/` +
       `${sorted(s.collateral.sources.map(c => sourceKey(c.source))).join(",")}/${sorted(s.collateral.claims.map(c => c.claimId)).join(",")}`)),
-    obligations: sorted(inventory.obligations.map(o => `${o.kind}/${o.id}/${o.revision}`)),
-    taskProposals: sorted(inventory.taskProposals.map(p => `${p.taskId}/${p.proposalId}/${p.revision}/${p.taskState}/${p.current}`)),
+    obligations: sorted(inventory.obligations.map(o => `${o.kind}/${o.id}/${o.revision}/${o.evidence}/${o.effect}`)),
+    taskProposals: sorted(inventory.taskProposals.map(p => `${p.taskId}/${p.proposalId}/${p.revision}/${p.taskState}/${p.current}/${p.evidence}/${p.effect}`)),
+    taskEvidence: sorted(inventory.taskEvidence.map(e => `${e.taskId}/${e.taskRevision}/${e.taskState}/${e.artifactId}/${e.revision}/${e.latest}/${e.effect}`)),
     deliveries: sorted(inventory.deliveries.map(d => `${d.intentId}/${d.reportId}/${d.status}/${d.evidence}`)),
     backups: sorted(inventory.backups.map(b => `${b.id}/${b.state}`)),
     exports: sorted(inventory.exports.map(e => e.id)),
@@ -828,6 +968,7 @@ export function prepareDeletionPreview(tx: AppTransaction, command: DeletePrevie
   const exports = bounded(inventory.exports, deletePreviewBounds.exports);
   const obligations = bounded(inventory.obligations, deletePreviewBounds.obligations);
   const taskProposals = bounded(inventory.taskProposals, deletePreviewBounds.taskProposals);
+  const taskEvidence = bounded(inventory.taskEvidence, deletePreviewBounds.taskEvidence);
   const deliveries = bounded(inventory.deliveries, deletePreviewBounds.deliveries);
   const wholeSession = wholeSessionFor(tx, scope, inventory.sessions);
   const preview: DeletionPreview = {
@@ -845,11 +986,12 @@ export function prepareDeletionPreview(tx: AppTransaction, command: DeletePrevie
       exports: exports.items,
       obligations: obligations.items,
       taskProposals: taskProposals.items,
+      taskEvidence: taskEvidence.items,
       deliveries: deliveries.items,
     },
     truncated: { sources: sources.truncated, claims: claims.truncated, contexts: contexts.truncated, pendingJobs: pendingJobs.truncated,
       nativeSessions: sessions.truncated, backups: backups.truncated, exports: exports.truncated, obligations: obligations.truncated,
-      taskProposals: taskProposals.truncated, deliveries: deliveries.truncated },
+      taskProposals: taskProposals.truncated, taskEvidence: taskEvidence.truncated, deliveries: deliveries.truncated },
     wholeSession,
     blockers: [...inventory.blockers].sort(),
     inventoryDigest: inventoryDigest(tx, scope, inventory, wholeSession),
@@ -876,17 +1018,18 @@ export function scrubOutputSources(tx: AppTransaction, needles: string[]): void 
     }, null, "content_text IS NOT NULL AND source_id IN (SELECT id FROM sources WHERE kind = 'output')");
 }
 
-/** Replaces quoted copies of just-purged payloads in committed model outputs, job/attempt records and model-generated
- *  proposals; owner-authored tasks/decisions/deliveries are never rewritten. */
+/** Replaces quoted copies of just-purged payloads in committed model outputs, job/attempt records, model-generated
+ *  proposals and command receipts (raw and JSON-escaped forms); owner tasks/decisions are handled by the inventory. */
 export function scrubFreeTextOccurrences(tx: AppTransaction, needles: string[]): void {
-  const terms = [...new Set(needles.filter(n => n.length > 0))].sort();
+  const terms = [...new Set(needles.filter(n => n.length > 0).flatMap(n => [n, JSON.stringify(n).slice(1, -1)]))].sort();
   if (!terms.length) return;
-  for (const table of ["team_runs", "coordinator_syntheses", "jobs", "job_attempts", "decision_proposals"] as const) {
+  for (const [table, column] of [["team_runs", "record_json"], ["coordinator_syntheses", "record_json"], ["jobs", "record_json"],
+    ["job_attempts", "record_json"], ["decision_proposals", "record_json"], ["command_receipts", "result_json"]] as const) {
     try {
-      scanTable<{ json: string }>(tx, table, "record_json AS json", row => {
+      scanTable<{ json: string }>(tx, table, `${column} AS json`, row => {
         let next = row.json;
         for (const term of terms) if (next.includes(term)) next = next.split(term).join(redactedText);
-        if (next !== row.json) tx.run(`UPDATE ${table} SET record_json = ? WHERE rowid = ?`, next, (row as unknown as { rowid_: number }).rowid_);
+        if (next !== row.json) tx.run(`UPDATE ${table} SET ${column} = ? WHERE rowid = ?`, next, (row as unknown as { rowid_: number }).rowid_);
       }, null);
     } catch (error) {
       // Older quarantined schemas may predate a table; a missing table holds no copy.
@@ -1034,13 +1177,15 @@ export function confirmDeletion(tx: AppTransaction, command: DeleteConfirmComman
   deleteCommandIdentity(command, 65536);
   const preview = readDeletionPreview(tx, command.projectId, command.payload.previewId);
   if (!preview || preview.projectId !== command.projectId) throw new AppError("memory_delete_stale_preview", 409);
+  // A duplicate confirmation is the same logical operation: it is answered before expiry, revision,
+  // acknowledgement and scope checks, which only gate creating a new operation.
+  const existing = tx.get<{ record_json: string }>("SELECT record_json FROM deletion_operations WHERE preview_id = ? AND project_id = ?",
+    preview.id, command.projectId);
+  if (existing) return { operation: normalizeOperation(JSON.parse(existing.record_json) as DeletionOperation), duplicate: true };
   if (now > preview.expiresAt) throw new AppError("memory_delete_stale_preview", 409);
   if (projectRevision !== command.expectedRevision || projectRevision !== preview.projectRevision) {
     throw new AppError("memory_delete_stale_preview", 409);
   }
-  const existing = tx.get<{ record_json: string }>("SELECT record_json FROM deletion_operations WHERE preview_id = ? AND project_id = ?",
-    preview.id, command.projectId);
-  if (existing) return { operation: normalizeOperation(JSON.parse(existing.record_json) as DeletionOperation), duplicate: true };
   if (!command.payload.acknowledged) throw new AppError("memory_delete_ambiguous", 409);
   if (preview.wholeSession.required && !command.payload.acknowledgedWholeSession) throw new AppError("memory_delete_ambiguous", 409);
   const lineage = preview.scope.source;
@@ -1060,6 +1205,8 @@ export function confirmDeletion(tx: AppTransaction, command: DeleteConfirmComman
   const sources = [...inventory.sources.values()];
   const claimEntries = [...inventory.claims.values()];
   const claimIds = new Set(inventory.claims.keys());
+  // Owner copy terms are read before any payload is purged.
+  const ownerTerms = ownerCopyTerms(tx, inventory);
   // Fence first: pending/in-flight attempts lose commit authority and native contexts stop accepting replay.
   for (const job of inventory.pendingJobs) invalidatePendingJob(tx, job.projectId, job.id, "source_retired", now);
   const sessions = inventory.sessions.filter(session => session.appState !== "deleted");
@@ -1090,14 +1237,26 @@ export function confirmDeletion(tx: AppTransaction, command: DeleteConfirmComman
   // Retained task proposal copies of a deleted source generation lose their payload; inactive tasks whose
   // current proposal it was lose the mirrored title/summary. Active current proposals were blockers above.
   for (const proposal of inventory.taskProposals.filter(p => p.effect === "redacted")) {
-    tx.run("UPDATE task_proposals SET title = ?, summary = ? WHERE id = ?", redactedText, redactedText, proposal.proposalId);
-    if (proposal.current) tx.run("UPDATE tasks SET title = ?, summary = ? WHERE id = ? AND current_proposal_id = ?", redactedText, redactedText, proposal.taskId, proposal.proposalId);
+    let title = redactedText, summary = redactedText;
+    if (proposal.evidence === "quoted_text") {
+      const row = tx.get<{ title: string; summary: string }>("SELECT title, summary FROM task_proposals WHERE id = ?", proposal.proposalId);
+      if (row) [title, summary] = replaceTerms(ownerTerms, [row.title, row.summary]) as [string, string];
+    }
+    tx.run("UPDATE task_proposals SET title = ?, summary = ? WHERE id = ?", title, summary, proposal.proposalId);
+    if (proposal.current) tx.run("UPDATE tasks SET title = ?, summary = ? WHERE id = ? AND current_proposal_id = ?", title, summary, proposal.taskId, proposal.proposalId);
+  }
+  // Superseded owner decisions quoting the payload lose the copy; current ones were blockers above.
+  for (const decision of inventory.obligations.filter(o => o.kind === "decision" && o.effect === "redacted")) {
+    const row = tx.get<{ conclusion: string; rationale: string }>("SELECT conclusion, rationale FROM owner_decisions WHERE id = ?", decision.id);
+    if (!row) continue;
+    const [conclusion, rationale] = replaceTerms(ownerTerms, [row.conclusion, row.rationale]) as [string, string];
+    tx.run("UPDATE owner_decisions SET conclusion = ?, rationale = ? WHERE id = ?", conclusion, rationale, decision.id);
   }
   redactDerivedRuns(tx, sources);
   scrubStoredManifests(tx, new Set(sources.map(entry => sourceKey(entry.source))), claimIds);
   scrubConversationReceipts(tx, sources, claimIds);
   // Local delivery copies: delete the report (cancelling unsent intents), then redact the local payload text
-  // while sent/unknown intents keep their delivery-state metadata.
+  // while sent/unknown/failed intents keep their delivery-state metadata.
   for (const delivery of inventory.deliveries) {
     try {
       const report = readDeliveryReport(tx, delivery.projectId, delivery.reportId);
