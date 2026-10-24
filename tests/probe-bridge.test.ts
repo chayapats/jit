@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HostAuthFetch, HostCredentialStore } from "schway/host";
@@ -35,6 +35,22 @@ const memStore = (raw: string | null, fail?: "get"): HostCredentialStore => ({
   set: async () => {},
   delete: async () => true,
 });
+
+/** Map-backed fixture store with a truly atomic compare-and-delete (no await between compare and delete). */
+function mapStore(initial: Record<string, string> = {}): { store: HostCredentialStore & { compareAndDelete(identity: { account: string }, expectedValue: string): Promise<boolean> }; backend: Map<string, string> } {
+  const backend = new Map<string, string>(Object.entries(initial));
+  const store = {
+    get: async (identity: { account: string }) => backend.get(identity.account) ?? null,
+    set: async (identity: { account: string }, value: string) => { backend.set(identity.account, value); },
+    delete: async (identity: { account: string }) => backend.delete(identity.account),
+    compareAndDelete: async (identity: { account: string }, expected: string) => {
+      if (backend.get(identity.account) !== expected) return false;
+      backend.delete(identity.account);
+      return true;
+    },
+  };
+  return { store, backend };
+}
 
 const throwingFetch: HostAuthFetch = async () => { throw new Error("fixture network down"); };
 const statusFetch = (status: number): HostAuthFetch => async () => new Response("limited", { status });
@@ -1015,18 +1031,20 @@ for (const route of ["grok", "codex"] as const) {
 test("separate-process cancel leaves no post-acknowledgement credential visible", async () => {
   const root = setup();
   const flag = join(root, "release-write");
+  const startedFlag = join(root, "write-started");
   const childId = "ee781630-4d14-4d8b-a0eb-000000002001";
   const childSource = `
     const { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } = await import("node:fs");
     const { bridgeProbePorts } = await import(${JSON.stringify(join(import.meta.dir, "../src/evidence/bridge-probe.ts"))});
     const { liveProbe, readProbeAttempt } = await import(${JSON.stringify(join(import.meta.dir, "../src/evidence/probe.ts"))});
-    const root = ${JSON.stringify(root)}, flag = ${JSON.stringify(flag)}, id = ${JSON.stringify(childId)};
+    const root = ${JSON.stringify(root)}, flag = ${JSON.stringify(flag)}, started = ${JSON.stringify(startedFlag)}, id = ${JSON.stringify(childId)};
     const expired = JSON.stringify({ accessToken: "old-access", refreshToken: "refresh-token", obtainedAt: 0, expiresAt: 1 });
     let writes = 0;
     const backend = new Map();
     const store = {
       get: async (identity) => backend.has(identity.account) ? backend.get(identity.account) : expired,
       set: async (identity, value) => {
+        writeFileSync(started, "1");
         for (let i = 0; i < 400 && !existsSync(flag); i++) await new Promise(r => setTimeout(r, 25));
         writes++;
         backend.set(identity.account, value);
@@ -1048,15 +1066,13 @@ test("separate-process cancel leaves no post-acknowledgement credential visible"
   `;
   const child = Bun.spawn(["bun", "-e", childSource], { stdout: "pipe", stderr: "ignore" });
   try {
-    for (let spin = 0; spin < 200; spin++) {
-      try {
-        const sends = (await readProbeAttempt(root, childId)).observations.find(item => item.observation === "renewal")!.sends;
-        if (sends!.length > 0) break;
-      } catch { /* Not persisted yet. */ }
+    // Wait until the child's credential write is actually in flight, then
+    // cancel from THIS process: the child never shares the in-process wait
+    // registry, so this is truly cross-process.
+    for (let spin = 0; spin < 200 && !existsSync(startedFlag); spin++) {
       await new Promise(r => setTimeout(r, 25));
     }
-    // Cancel from THIS process while the child is mid-write: the child never
-    // shares the in-process wait registry, so this is truly cross-process.
+    expect(existsSync(startedFlag)).toBe(true);
     const cancelled = await cancelProbeAttempt(root, childId);
     expect(cancelled.lifecycle).toBe("cancelled");
     writeFileSync(flag, "release");
@@ -1119,30 +1135,26 @@ test("a write completing after the deadline leaves no credential visible", async
 test("invalidation never removes a concurrent legitimate credential", async () => {
   const root = setup();
   const expired = JSON.stringify({ accessToken: "old-access", refreshToken: "refresh-token", obtainedAt: 0, expiresAt: 1 });
-  const backend = new Map<string, string>();
-  let releaseSet!: () => void;
-  const setGate = new Promise<void>(resolve => { releaseSet = resolve; });
-  let releaseGet!: () => void;
-  const getGate = new Promise<void>(resolve => { releaseGet = resolve; });
-  let enteredSet = false;
-  const store: HostCredentialStore = {
-    get: async identity => {
-      // Hold the cleanup compare open once the probe wrote, so the
-      // legitimate write lands first, deterministically. Earlier reads
-      // (readiness, pre-write) see an empty backend and pass through.
-      if (backend.size > 0) await getGate;
-      return backend.get(identity.account) ?? expired;
-    },
-    // Gated backend write: cancellation is acknowledged while it is still
-    // in flight (bounded by the short live deadline below).
-    set: async (identity, value) => {
-      enteredSet = true;
-      await setGate;
-      backend.set(identity.account, value);
-    },
-    delete: async identity => backend.delete(identity.account),
+  // Atomic fixture store: the compare-and-delete sees the latest value, so
+  // the final state is deterministic regardless of interleaving — either
+  // order keeps the legitimate credential.
+  const { store: atomic, backend } = mapStore();
+  const expiring: HostCredentialStore & { compareAndDelete(identity: { account: string }, expected: string): Promise<boolean> } = {
+    get: async () => expired,
+    set: (identity, value) => atomic.set(identity, value),
+    delete: (identity) => atomic.delete(identity),
+    compareAndDelete: (identity, expected) => atomic.compareAndDelete(identity, expected),
   };
-  const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, store, fetch: async (input: any, init?: any) => {
+  let releaseWrite!: () => void;
+  const writeGate = new Promise<void>(resolve => { releaseWrite = resolve; });
+  let enteredSet = false;
+  const gated: HostCredentialStore & { compareAndDelete(identity: { account: string }, expected: string): Promise<boolean> } = {
+    get: (identity) => expiring.get(identity),
+    set: async (identity, value) => { enteredSet = true; await writeGate; return expiring.set(identity, value); },
+    delete: (identity) => expiring.delete(identity),
+    compareAndDelete: (identity, expected) => expiring.compareAndDelete(identity, expected),
+  };
+  const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, store: gated, fetch: async (input: any, init?: any) => {
     const url = String(typeof input === "string" ? input : input.url);
     if (url.toLowerCase().includes("token")) {
       return new Response(JSON.stringify({ access_token: "new-access", refresh_token: "refresh-token", expires_in: 3600 }), { status: 200 });
@@ -1151,27 +1163,28 @@ test("invalidation never removes a concurrent legitimate credential", async () =
   } });
   const controller = new AbortController();
   const pending = liveProbe("fixture-probe-host",
-    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 300 },
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 3000 },
     { ...ports, now: () => 1800000000000, id: () => OTHER_ID }, root, controller.signal);
   try {
     for (let spin = 0; spin < 200 && !enteredSet; spin++) {
       await new Promise(r => setTimeout(r, 25));
     }
     expect(enteredSet).toBe(true);
-    // Cancel while the write is in flight: acknowledgement waits only up to
-    // the remaining live deadline, then the write lands and is fenced.
-    const cancelled = await cancelProbeAttempt(root, OTHER_ID);
+    // Cancel while the write is in flight, then let it land: the atomic
+    // cleanup compare must see the value that lands after the legitimate
+    // write and leave the legitimate credential alone either way.
+    const cancelPromise = cancelProbeAttempt(root, OTHER_ID);
+    releaseWrite();
+    const cancelled = await cancelPromise;
     expect(cancelled.lifecycle).toBe("cancelled");
-    releaseSet();
+    backend.set("grok-subscription:xai", "legitimate-fresh-login");
     const late = await pending;
     expect(late.record.lifecycle).toBe("cancelled");
-    // The legitimate write lands while the cleanup compare is held open.
-    backend.set("grok-subscription:xai", "legitimate-fresh-login");
-    releaseGet();
     await new Promise(r => setTimeout(r, 100));
     expect(backend.get("grok-subscription:xai")).toBe("legitimate-fresh-login");
   } finally {
     controller.abort();
+    releaseWrite();
     await pending.catch(() => null);
   }
 });

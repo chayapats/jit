@@ -159,7 +159,7 @@ export interface ProbePorts {
    * orchestration. Ports instances are single-flight: overlapping infer
    * calls on one instance throw instead of silently swapping counts.
    */
-  infer(input: { route: string; model: string; prompt: typeof PROBE_PROMPT; tools: readonly []; discovery: { repository: false; hosted: false }; deadlineMs: number; gate?: <R>(kind: "inference" | "token", start: () => Promise<R>) => Promise<R>; fence?: { write<T>(work: () => Promise<T>): Promise<T>; writeStore(identity: { account: string }, value: string, store: { get(identity: { account: string }): Promise<string | null>; set(identity: { account: string }, value: string): Promise<void>; delete(identity: { account: string }): Promise<boolean> }): Promise<void> } }, signal: AbortSignal): Promise<ProbeEvent>;
+  infer(input: { route: string; model: string; prompt: typeof PROBE_PROMPT; tools: readonly []; discovery: { repository: false; hosted: false }; deadlineMs: number; gate?: <R>(kind: "inference" | "token", start: () => Promise<R>) => Promise<R>; fence?: { write<T>(work: () => Promise<T>): Promise<T>; writeStore(identity: { account: string }, value: string, store: { get(identity: { account: string }): Promise<string | null>; set(identity: { account: string }, value: string): Promise<void>; delete(identity: { account: string }): Promise<boolean>; compareAndDelete?(identity: { account: string }, expectedValue: string): Promise<boolean> }): Promise<void> } }, signal: AbortSignal): Promise<ProbeEvent>;
 }
 
 /** Live options demand explicit opt-in: exact route/model plus finite attempts/deadline. */
@@ -1099,21 +1099,27 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
     // Generation-fenced final visibility for explicit stores: the check runs
     // when the backend actually settles — not when the bounded race above
     // decides — because a late settlement is exactly what must be fenced.
-    // The recheck and compare-and-delete run inside the shared in-process
-    // lifecycle serialization, so they are atomic against every other
-    // fenced writer in this process; unfenced external writers stay outside
-    // any in-process guarantee (same class of residual as crash orphans).
-    // Removes exactly the written value and never touches a concurrent
-    // legitimate write. Runs unfenced on purpose: it is the fence's own
-    // compensation, and fencing it would refuse the cleanup. It only runs
-    // after the backend already proved responsive (the write just
-    // settled), so it cannot wedge the lock behind a hung backend.
+    // Prefers the store's atomic compare-and-delete (no await between
+    // compare and delete, so even lock-bypassing same-process writers
+    // cannot slip in); without it, falls back to a serialized
+    // read-then-delete under the shared in-process lock. Removes exactly
+    // the written value and never touches a concurrent legitimate write.
+    // Runs unfenced on purpose: it is the fence's own compensation, and
+    // fencing it would refuse the cleanup. It only runs after the backend
+    // already proved responsive (the write just settled), so it cannot
+    // wedge the lock behind a hung backend.
     writeStore: async (identity: { account: string }, value: string,
-      store: { get(identity: { account: string }): Promise<string | null>; set(identity: { account: string }, value: string): Promise<void>; delete(identity: { account: string }): Promise<boolean> }): Promise<void> => {
+      store: { get(identity: { account: string }): Promise<string | null>; set(identity: { account: string }, value: string): Promise<void>; delete(identity: { account: string }): Promise<boolean>; compareAndDelete?(identity: { account: string }, expectedValue: string): Promise<boolean> }): Promise<void> => {
       const outcome = await (async () => {
         const pending = fencedStoreWrite(root, id, effective, () => {
           const raw = store.set(identity, value);
           raw.then(async () => {
+            const settled = await readProbeAttempt(root, id).catch(() => null);
+            if (settled === null || settled.lifecycle === "started") return;
+            if (typeof store.compareAndDelete === "function") {
+              await store.compareAndDelete(identity, value).catch(() => false);
+              return;
+            }
             let release: (() => void) | null = null;
             try {
               const dir = await probeDirectory(root, true);
@@ -1122,11 +1128,8 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
               return;
             }
             try {
-              const settled = await readProbeAttempt(root, id).catch(() => null);
-              if (settled !== null && settled.lifecycle !== "started") {
-                const current = await store.get(identity).catch(() => null);
-                if (current === value) await store.delete(identity).catch(() => {});
-              }
+              const current = await store.get(identity).catch(() => null);
+              if (current === value) await store.delete(identity).catch(() => {});
             } finally {
               release();
             }
