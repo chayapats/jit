@@ -242,16 +242,16 @@ test("cancel and generation fencing win, including across reopen", async () => {
   const port = new SchwayRunPort(store, config.team, config.jobs.outputBytes, { model: scripted("late") });
   const run = request(config); activate(store, run.context);
   const aborted = new AbortController(); aborted.abort();
-  expect(await port.invoke(run, aborted.signal, () => {})).toEqual(fixtureOutcome("cancelled"));
+  expect(await port.invoke(run, aborted.signal, () => {})).toMatchObject({ state: "incomplete", reason: "cancelled", mode: "production", output: null });
   expect(port.requests).toHaveLength(0);
   expect(await port.retire(run.context)).toMatchObject({ state: "retired" });
   expect(store.read(tx => tx.get<{ state: string }>("SELECT state FROM team_contexts WHERE id = ?", run.context.id))).toEqual({ state: "retired" });
   const reopenedStore = new TransactionStore((store as unknown as { path: string }).path); stores.push(reopenedStore);
   const same = new SchwayRunPort(reopenedStore, config.team, config.jobs.outputBytes, { model: scripted("late") });
-  expect(await same.invoke(run, new AbortController().signal, () => {})).toEqual(fixtureOutcome("context_retired"));
+  expect(await same.invoke(run, new AbortController().signal, () => {})).toMatchObject({ state: "blocked", reason: "context_retired", mode: "production", output: null });
   expect(await same.inspectRuns()).toMatchObject({ items: [], nextAfter: null });
   expect(await port.delete(run.context)).toMatchObject({ state: "deleted" });
-  expect(await port.invoke(run, new AbortController().signal, () => {})).toEqual(fixtureOutcome("context_retired"));
+  expect(await port.invoke(run, new AbortController().signal, () => {})).toMatchObject({ state: "blocked", reason: "context_retired", mode: "production", output: null });
   await expect(port.retire({ id: rid(), generation: 1 })).rejects.toThrow("context_not_found");
   await expect(port.retire({ id: "not-a-uuid", generation: 1 })).rejects.toThrow("invalid_identity");
   await expect(port.delete({ ...run.context, generation: 0 })).rejects.toThrow("invalid_context_reference");
@@ -879,4 +879,56 @@ test("fencing during host construction creates no session and claims nothing liv
   expect(await port.inspectRuns()).toEqual({ items: [], nextAfter: null });
   // The earlier retirement stands; a later delete converges without orphans.
   expect(await port.delete(run.context)).toMatchObject({ state: "deleted" });
+});
+
+test("retry budgets above the pinned host ceiling fail before any native session", async () => {
+  const { config, store } = setup();
+  const port = new SchwayRunPort(store, config.team, config.jobs.outputBytes, { model: scripted("ok") });
+  const run = request(config, { limits: { ...config.jobs.maximum, retries: 9 } });
+  activate(store, run.context);
+  expect(schwayMaxAttempts(run)).toBe(10);
+  const over = request(config, { limits: { ...config.jobs.maximum, retries: 10 } });
+  activate(store, over.context);
+  await expect(port.invoke(over, new AbortController().signal, () => {})).rejects.toThrow("unsupported_retry_budget");
+  expect(port.requests).toHaveLength(0);
+});
+
+test("duplicate manifest identities fail shared validation before any observation", async () => {
+  const { config, store } = setup();
+  const port = new SchwayRunPort(store, config.team, config.jobs.outputBytes, { model: scripted("ok") });
+  const base = request(config);
+  const shared = { sourceId: rid(), revision: 1, generation: 1 };
+  const duplicateSources = request(config, {
+    manifest: {
+      sources: [
+        { projectId: base.projectId, reference: shared, text: "first" },
+        { projectId: base.projectId, reference: { ...shared }, text: "second" },
+      ],
+      claims: [],
+    },
+  });
+  activate(store, duplicateSources.context);
+  const events: ApplicationRunEvent[] = [];
+  await expect(port.invoke(duplicateSources, new AbortController().signal, event => events.push(event))).rejects.toThrow("invalid_run_request");
+  expect(events).toHaveLength(0);
+  expect(port.requests).toHaveLength(0);
+  const claimId = rid();
+  const duplicateClaims = request(config, {
+    manifest: {
+      sources: [],
+      claims: [
+        { projectId: base.projectId, claimId, revision: 1, generation: 1, text: "first" },
+        { projectId: base.projectId, claimId, revision: 2, generation: 1, text: "second" },
+      ],
+    },
+  });
+  activate(store, duplicateClaims.context);
+  await expect(port.invoke(duplicateClaims, new AbortController().signal, () => {})).rejects.toThrow("invalid_run_request");
+  expect(port.requests).toHaveLength(0);
+});
+
+test("schway mode requires single route concurrency", () => {
+  expect(readConfig({ JIT_RUN_PORT: "schway", JIT_JOB_ROUTE_CONCURRENCY: "1" }).runPort).toBe("schway");
+  expect(() => readConfig({ JIT_RUN_PORT: "schway", JIT_JOB_ROUTE_CONCURRENCY: "2" })).toThrow("Invalid JIT_JOB_ROUTE_CONCURRENCY");
+  expect(readConfig({ JIT_JOB_ROUTE_CONCURRENCY: "2" }).runPort).toBe("scripted");
 });

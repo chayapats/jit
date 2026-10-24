@@ -33,9 +33,21 @@ export function validateRunRequest(request: ApplicationRunRequest, policy: TeamP
       !request.policy || Object.keys(request.policy).sort().join(",") !== "arbitraryFetch,genericExecution,hostedLookup,repositoryDiscovery" || Object.values(request.policy).some(value => value !== false) ||
       !Array.isArray(request.manifest?.sources) || !Array.isArray(request.manifest.claims) || request.manifest.sources.length + request.manifest.claims.length > policy.sourceLimit) throw new AppError("invalid_run_request");
   for (const source of request.manifest.sources) { requireId(source.projectId); requireReference(source.reference); requireText(source.text, policy.contextBytes); }
+  const sourceIds = new Set<string>();
+  for (const source of request.manifest.sources) {
+    const key = `${source.projectId}/${source.reference.sourceId}`;
+    if (sourceIds.has(key)) throw new AppError("invalid_run_request");
+    sourceIds.add(key);
+  }
   for (const claim of request.manifest.claims) {
     requireId(claim.projectId); requireId(claim.claimId); requireText(claim.text, policy.contextBytes);
     if (![claim.revision, claim.generation].every(value => Number.isSafeInteger(value) && value > 0)) throw new AppError("invalid_run_request");
+  }
+  const claimIds = new Set<string>();
+  for (const claim of request.manifest.claims) {
+    const key = `${claim.projectId}/${claim.claimId}`;
+    if (claimIds.has(key)) throw new AppError("invalid_run_request");
+    claimIds.add(key);
   }
   if (request.manifest.context !== undefined) validateContextLayout(request, policy);
   validateJobLimits(request.limits, { roles: 10000, calls: 10000, rounds: 10000, hops: 10000, contextTokens: 1e9, outputTokens: 1e9, retries: 100, wallMs: 3600000 });

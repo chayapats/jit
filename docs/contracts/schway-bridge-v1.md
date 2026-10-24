@@ -88,12 +88,15 @@ and fixture-free protocol transport.
 - Strict context mapping: fixed trusted system prompt plus responsibility,
   purpose and operator sections (mode-neutral wording: nothing tells the
   model it is scripted or live); manifest sources/claims become untrusted
-  source documents with bounded ids. Exact empty tool registry, hosted lookup
+  source documents with bounded ids, unique per project and kind before any
+  observation or logging. Exact empty tool registry, hosted lookup
   off. Finite limits map from the request budgets (context/input windows,
   deadline, attempts); the bridge executes bounded single-turn runs
   (`maxTurns: 1`), so anything needing more turns surfaces as `max_turns`
-  instead of silently spending unreserved calls. Committed coordinator
-  summaries label the actual evidence mode.
+  instead of silently spending unreserved calls. Schway mode pins route
+  concurrency to one until a process-stable public credential-store handle
+  exists, keeping the shared renewal lifecycle single-flight. Committed
+  coordinator summaries label the actual evidence mode.
 - Route runs use `submitWithRoute` on the exact selected Grok/Codex
   route/model with the shared route-scoped credential lifecycle. Jit supplies
   no credential client, renewal loop, billing fallback or model retry of its
@@ -126,8 +129,10 @@ and fixture-free protocol transport.
   and it is cleared at commit; revoked participations clear retained progress
   and project null; transient progress never becomes committed evidence.
 - Worst-case retry admissions are pre-reserved (`calls`/`rounds` for
-  `maxAttempts = retries + 1`); single-output token accounting stays as
-  committed with measured overrun in usage evidence (see ADR 0023). Usage
+  `maxAttempts = retries + 1`); retry budgets above the pinned host ceiling
+  of ten attempts fail before any native work instead of being silently
+  capped. Single-output token accounting stays as committed with measured
+  overrun in usage evidence (see ADR 0023). Usage
   records whether any token counter was unreported (`tokensUnknown`, absent
   only on pre-bridge fixture records which carry exact accounting) instead of
   persisting unknown consumption as measured zero, including on

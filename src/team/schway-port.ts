@@ -116,7 +116,11 @@ function clampInt(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
 }
 
-/** Worst-case Schway admission attempts for one bounded request: first try plus finite retries. */
+/**
+ * Worst-case Schway admission attempts for one bounded request: first try plus
+ * finite retries. The pinned host admits at most ten attempts; larger retry
+ * budgets are rejected in describeEffectiveRun instead of being silently capped.
+ */
 export function schwayMaxAttempts(request: Pick<ApplicationRunRequest, "limits">): number {
   return clampInt(request.limits.retries + 1, 1, 10);
 }
@@ -129,6 +133,9 @@ export function schwayMaxAttempts(request: Pick<ApplicationRunRequest, "limits">
  */
 export function describeEffectiveRun(request: ApplicationRunRequest): EffectiveSchwayRun {
   if (!MODEL_PATTERN.test(request.route.model)) throw new AppError("invalid_run_request");
+  if (!Number.isSafeInteger(request.limits.retries) || request.limits.retries < 0 || request.limits.retries > 9) {
+    throw new AppError("unsupported_retry_budget");
+  }
   const sections = [
     { name: "responsibility", content: request.instructions.responsibility },
     { name: "purpose", content: request.purpose },
@@ -398,8 +405,8 @@ export class SchwayRunPort implements ApplicationRunPort {
     const snapshot = structuredClone(request);
     const fenced = () => this.store.read(tx =>
       tx.get<{ state: string }>("SELECT state FROM team_contexts WHERE id = ? AND generation = ?", snapshot.context.id, snapshot.context.generation)?.state !== "active");
-    if (fenced()) return fixtureOutcome("context_retired");
-    if (signal.aborted) return fixtureOutcome("cancelled");
+    if (fenced()) return { ...classifyBridgeReason("context_retired"), session: null };
+    if (signal.aborted) return { ...classifyBridgeReason("cancelled"), session: null };
     const effective = describeEffectiveRun(snapshot);
     this.#requests.push(structuredClone(snapshot));
     if (this.#requests.length > 32) this.#requests.shift();
@@ -420,8 +427,8 @@ export class SchwayRunPort implements ApplicationRunPort {
       // contains no await, so no fence can interleave once it passes.
       if (fenced() || signal.aborted) {
         try { await host.close(); } catch { /* Best effort before returning. */ }
-        if (fenced()) return finish(fixtureOutcome("context_retired"));
-        return finish(fixtureOutcome("cancelled"));
+        if (fenced()) return finish({ ...classifyBridgeReason("context_retired"), session: null });
+        return finish({ ...classifyBridgeReason("cancelled"), session: null });
       }
       // Reserve the intent first: a crash between native creation and the
       // id update below still leaves a fenced, discoverable row.
@@ -444,8 +451,8 @@ export class SchwayRunPort implements ApplicationRunPort {
         // Only a verified native retirement closes the row; otherwise the
         // running intent stays visible for explicit reconciliation.
         if (cleaned) this.recordRef(snapshot, session.reference, "finished");
-        if (fenced()) return finish(fixtureOutcome("context_retired"));
-        return finish(fixtureOutcome("cancelled"));
+        if (fenced()) return finish({ ...classifyBridgeReason("context_retired"), session: null });
+        return finish({ ...classifyBridgeReason("cancelled"), session: null });
       }
       const onProgress = (event: { transient: true; text?: string; name?: string; message?: string; stage?: string }) => {
         try {
@@ -462,12 +469,12 @@ export class SchwayRunPort implements ApplicationRunPort {
         outcome = this.mapRouteResult(await session.submitWithRoute({ text: effective.inputText }, { signal, onProgress }), snapshot);
       }
       this.recordRef(snapshot, session.reference, "finished");
-      if (fenced()) return finish(fixtureOutcome("context_retired"));
-      if (signal.aborted) return finish(fixtureOutcome("cancelled"));
+      if (fenced()) return finish({ ...classifyBridgeReason("context_retired"), session: null });
+      if (signal.aborted) return finish({ ...classifyBridgeReason("cancelled"), session: null });
       return finish(outcome);
     } catch (error) {
-      if (fenced()) return finish(fixtureOutcome("context_retired"));
-      if (signal.aborted || (error instanceof Error && error.name === "AbortError")) return finish(fixtureOutcome("cancelled"));
+      if (fenced()) return finish({ ...classifyBridgeReason("context_retired"), session: null });
+      if (signal.aborted || (error instanceof Error && error.name === "AbortError")) return finish({ ...classifyBridgeReason("cancelled"), session: null });
       throw error;
     } finally {
       try { session?.cancel(); } catch { /* Idle or already settled. */ }
