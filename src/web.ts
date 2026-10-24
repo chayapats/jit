@@ -120,6 +120,13 @@ const messages: Record<string, string> = {
   upgrade_in_progress: "มีอัปเกรดที่ยังไม่จบอยู่ ดำเนินการต่อหรือย้อนกลับก่อน",
   upgrade_bad_state: "สถานะอัปเกรดไม่ตรงกับขั้นตอนนี้",
   upgrade_stale_live: "ข้อมูลเปลี่ยนหลังตรวจสอบ ให้ migrate/validate ใหม่",
+  upgrade_staged_changed: "สำเนา staged เปลี่ยนหลังตรวจสอบ ให้ migrate/validate ใหม่",
+  upgrade_quiesce_incomplete: "งานที่กำลังทำยังไม่หยุด รอให้ settle แล้วลองใหม่",
+  upgrade_rollback_requires_restore: "อัปเกรดนี้ activate แล้ว การกลับรุ่นเดิมต้องกู้คืนผ่าน quarantine (OPS02)",
+  upgrade_activation_failed: "activate ไม่สำเร็จ ตรวจบันทึกอัปเกรดก่อนดำเนินการต่อ",
+  upgrade_validation_bound_exceeded: "ข้อมูลเกินขอบเขตที่ตรวจสอบได้ อัปเกรดถูกระงับไว้อย่างปลอดภัย",
+  unsupported_engine: "engine นี้ไม่รองรับสัญญา snapshot ที่อัปเกรดต้องใช้",
+  staged_migration_failed: "migrate สำเนา staged ไม่สำเร็จ ข้อมูลจริงไม่ถูกแตะ",
   engine_unavailable: "engine ยังไม่พร้อมสำหรับขั้นตอนนี้",
   invalid_upgrade_command: "ข้อมูลคำขออัปเกรดไม่ถูกต้อง กรุณาเปิดหน้าใหม่",
   restore_not_found: "ไม่พบบันทึกกู้คืนที่เลือก",
@@ -340,7 +347,7 @@ export function createWebHandler(app: Application): (request: Request) => Promis
         return api ? json(state) : respond(exportDetailPage(state, app.workspace(auth.actor), auth.csrf));
       }
       if (request.method === "GET" && upgradesRoute) {
-        const state = app.upgrades(auth.actor);
+        const state = { ...app.upgrades(auth.actor), status: app.upgradeStatus(auth.actor) };
         const revision = app.workspace(auth.actor).revision;
         return api ? json(state) : respond(upgradesPage(state, app.workspace(auth.actor), auth.csrf, revision));
       }
@@ -439,7 +446,7 @@ export function createWebHandler(app: Application): (request: Request) => Promis
           const command = { kind: "upgrade.prepare" as const, requestId: body.requestId as string, projectId: null,
             expectedRevision: number(body.expectedRevision) as number,
             payload: { targetSchema: number(body.targetSchema) as number, note: (body.note as string) ?? "manual upgrade" } };
-          const result = app.execute(auth.actor, command) as { journal: { id: string } };
+          const result = await app.execute(auth.actor, command);
           return api ? json(result) : respond(null, 303, { Location: `/upgrades/${result.journal.id}` });
         }
         if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "action"].includes(key))) throw new AppError("invalid_body");
@@ -447,7 +454,7 @@ export function createWebHandler(app: Application): (request: Request) => Promis
         if (!["migrate", "validate", "activate", "rollback"].includes(action)) throw new AppError("invalid_body");
         const command = { kind: `upgrade.${action}` as const, requestId: body.requestId as string, projectId: null,
           expectedRevision: number(body.expectedRevision) as number, payload: { upgradeId: upgradeRoute![2]! } };
-        const result = app.execute(auth.actor, command) as { journal: { id: string } };
+        const result = await app.execute(auth.actor, command);
         return api ? json(result) : respond(null, 303, { Location: `/upgrades/${result.journal.id}` });
       }
       if (request.method === "POST" && (restoresRoute || restoreRoute)) {

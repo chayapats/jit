@@ -1018,6 +1018,18 @@ test("a current owner decision quoting the deleted payload blocks until supersed
     ...tx.all<{ t: string }>("SELECT result_json AS t FROM command_receipts")].map(r => r.t).join("\n"));
   expect(raw).not.toContain("decision-copy-canary-351");
   expect(raw).toContain("มติใหม่ไม่มีสำเนา");
+  // The decision's own memory source (committed from the same wording, fenced on supersession) is a copy deleted with M.
+  const decisionSource = f.rt.store.read(tx => tx.get<{ sourceId: string; revision: number; generation: number }>(
+    "SELECT source_id AS sourceId, source_revision AS revision, source_generation AS generation FROM memory_decision_sources WHERE decision_id = ?", decided.id)!);
+  expect(preview.preview.affected.sources).toContainEqual({ projectId: a.id, source: decisionSource, relation: "quoted_copy" });
+  expect(f.rt.store.read(tx => tx.get<{ t: string | null }>("SELECT content_text AS t FROM source_versions WHERE source_id = ? AND revision = ? AND generation = ?",
+    decisionSource.sourceId, decisionSource.revision, decisionSource.generation)!.t)).toBeNull();
+  expect(f.rt.app.deletionLedger(actor(f)).tombstones).toContainEqual(expect.objectContaining({ kind: "source", ...decisionSource }));
+  const allText = f.rt.store.read(tx => tx.all<{ t: string | null }>("SELECT content_text AS t FROM source_versions").map(r => r.t ?? "").join("\n"));
+  expect(allText).not.toContain("decision-copy-canary-351");
+  const backup = await f.rt.app.execute(actor(f), { kind: "backup.create" as const, requestId: rid(), projectId: null,
+    expectedRevision: f.rt.app.workspace(actor(f)).revision, payload: { note: "after decision copy delete" } });
+  expect(Buffer.from(readFileSync(backup.manifest.artifact.path)).includes(Buffer.from("decision-copy-canary-351"))).toBe(false);
 });
 
 test("backups and incomplete-coverage exports are listed without trusting wall-clock order", async () => {

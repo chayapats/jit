@@ -452,7 +452,7 @@ function buildInventory(tx: AppTransaction, scope: DeleteScope, env: DeletionEnv
       }
     } catch { blockers.add("unreadable_record:job_schedule_occurrences"); }
   }, { blockers });
-  const ownerTaskTexts = ownerTaskTextSources(tx);
+  const ownerTaskTexts = ownerTextCopySources(tx);
   const payloadTexts: string[] = [], textSeen = new Set<string>();
   for (let round = 0; ; round++) {
     if (round >= deleteInventoryPolicy.closureRounds) { blockers.add("inventory_closure_ceiling"); break; }
@@ -497,7 +497,7 @@ function buildInventory(tx: AppTransaction, scope: DeleteScope, env: DeletionEnv
       const intent = intents.get(link.intentId);
       if (intent && sources.has(sourceKey(link.output))) addDerived(tx, sources, { projectId: intent.projectId, ...intent.source });
     }
-    // An owner task's text source (the mirror of its proposal) quoting an affected payload verbatim is a copy of it.
+    // A source committed from owner task/decision wording that quotes an affected payload verbatim is a copy of it.
     if (ownerTaskTexts.length) {
       const long = (value: unknown) => typeof value === "string" && value !== redactedText && Array.from(value).length >= deleteScrubPolicy.minChars;
       for (const entry of sources.values()) {
@@ -676,17 +676,29 @@ function obligationsFor(tx: AppTransaction, scope: DeleteScope, sources: SourceE
   return [...out.values()];
 }
 
-/** Owner topic sources committed as a task proposal's own text (origin `owner`), current and available, in any project. */
-function ownerTaskTextSources(tx: AppTransaction): { projectId: string; source: SourceReference; text: string }[] {
+/**
+ * Owner topic sources committed from owner task/decision wording, in any project, by exact reference and whatever
+ * their availability (supersession only fences a decision source; its payload stays until deleted): the text source
+ * of an `origin: "owner"` task proposal, and the `memory_decision_sources` source of an owner decision.
+ */
+function ownerTextCopySources(tx: AppTransaction): { projectId: string; source: SourceReference; text: string }[] {
   const out = new Map<string, { projectId: string; source: SourceReference; text: string }>();
-  for (const row of tx.all<{ sourceId: string; projectId: string; revision: number; generation: number; text: string }>(
-    `SELECT p.source_id AS sourceId, s.project_id AS projectId, p.source_revision AS revision, p.source_generation AS generation, v.content_text AS text
-     FROM task_proposals p JOIN sources s ON s.id = p.source_id AND s.current_revision = p.source_revision AND s.generation = p.source_generation
+  const collect = (sql: string) => {
+    for (const row of tx.all<{ sourceId: string; projectId: string; revision: number; generation: number; text: string }>(sql)) {
+      const source = { sourceId: row.sourceId, revision: row.revision, generation: row.generation };
+      out.set(sourceKey(source), { projectId: row.projectId, source, text: row.text });
+    }
+  };
+  collect(`SELECT p.source_id AS sourceId, s.project_id AS projectId, p.source_revision AS revision, p.source_generation AS generation, v.content_text AS text
+     FROM task_proposals p JOIN sources s ON s.id = p.source_id
      JOIN source_versions v ON v.source_id = p.source_id AND v.revision = p.source_revision AND v.generation = p.source_generation
-     WHERE p.origin = 'owner' AND s.availability = 'available' AND v.content_text IS NOT NULL`)) {
-    const source = { sourceId: row.sourceId, revision: row.revision, generation: row.generation };
-    out.set(sourceKey(source), { projectId: row.projectId, source, text: row.text });
-  }
+     WHERE p.origin = 'owner' AND v.content_text IS NOT NULL`);
+  try {
+    collect(`SELECT d.source_id AS sourceId, d.project_id AS projectId, d.source_revision AS revision, d.source_generation AS generation, v.content_text AS text
+       FROM memory_decision_sources d
+       JOIN source_versions v ON v.source_id = d.source_id AND v.revision = d.source_revision AND v.generation = d.source_generation
+       WHERE v.content_text IS NOT NULL`);
+  } catch (error) { if (!(error instanceof Error) || !/no such table/.test(error.message)) throw error; }
   return [...out.values()];
 }
 

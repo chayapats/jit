@@ -1348,7 +1348,8 @@ test("service bootstrap quarantines legacy alerts before the queue or server is 
   const prepared = main.indexOf("prepareServiceState(store, Date.now());");
   expect(serveStart).toBeGreaterThan(-1);
   expect(prepared).toBeGreaterThan(serveStart);
-  for (const later of ["composeJobQueue(store", "Bun.serve(", "setInterval("]) expect(main.indexOf(later)).toBeGreaterThan(prepared);
+  // The queue is composed through the managed service lifecycle (ops.schema_migrations/v1).
+  for (const later of ["ManagedService.forConfig(store", "Bun.serve(", "setInterval("]) expect(main.indexOf(later)).toBeGreaterThan(prepared);
 });
 
 test("snapshot retirement retires alerts; backup images classify the alert tables", async () => {
