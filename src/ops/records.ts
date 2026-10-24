@@ -1,8 +1,9 @@
-import { lstat, mkdir, open, readdir, realpath, unlink } from "node:fs/promises";
+import { lstat, mkdir, open, opendir, realpath, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { validateDrillRecord, validateProfileRecord, validateReleaseRecord,
   type LoadDrillRecord, type OpsProfile, type ReleaseChecklist } from "./contracts";
 import { opsBounds, opsEvidenceRetention, withinBound } from "./limits";
+import { bindToDrill } from "./report";
 import { readBoundedJson } from "../evidence/records";
 
 /** Exact deep validation for every ops record kind; used on compose, write, read and export. */
@@ -28,14 +29,26 @@ const recordName = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}\.json$/;
  * Prunes `.local/ops-evidence`: regular record files older than the retention
  * age go first, then the oldest beyond `maxRecords` or `maxBytes` (counting the
  * record about to be written). Symlinks and foreign names are never touched.
- * Returns the number of removed records.
+ * The pass sees the complete directory or nothing: more than
+ * `maxDirectoryEntries` entries fails closed (`ops_evidence_overflow`) before
+ * anything is removed or written, so unscanned records can never break the
+ * count/byte ceilings. Returns the number of removed records.
  */
 async function pruneOpsRecords(dir: string, retention: OpsRetention, incomingBytes: number): Promise<number> {
   if (!withinBound(retention.retentionDays, opsBounds.retentionDays)) throw new Error("invalid_ops_retention");
   const now = retention.now ?? Date.now();
   const cutoff = now - retention.retentionDays * 86_400_000;
   const entries: { path: string; mtime: number; bytes: number }[] = [];
-  for (const name of (await readdir(dir)).filter(n => recordName.test(n)).slice(0, 4096)) {
+  const names: string[] = [];
+  let seen = 0;
+  const handle = await opendir(dir);
+  try {
+    for await (const entry of handle) {
+      if (++seen > opsEvidenceRetention.maxDirectoryEntries) throw new Error("ops_evidence_overflow");
+      if (recordName.test(entry.name)) names.push(entry.name);
+    }
+  } finally { try { await handle.close(); } catch { /* Already closed by iteration. */ } }
+  for (const name of names) {
     const path = join(dir, name);
     const stats = await lstat(path);
     if (!stats.isFile() || stats.isSymbolicLink()) continue;
@@ -85,6 +98,8 @@ async function recordsDirectory(root: string, create: boolean): Promise<string> 
  */
 export async function writeOpsRecord(root: string, value: unknown, retention: OpsRetention = { retentionDays: 30 }): Promise<void> {
   validateOpsRecord(value);
+  // Profiles and releases are bound to the stored drill they reference before anything is written.
+  await bindStored(root, value);
   const dir = await recordsDirectory(root, true), path = join(dir, `${(value as { id: string }).id}.json`);
   const body = JSON.stringify(value) + "\n";
   try { await lstat(path); throw new Error("ops_record_exists"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
@@ -108,18 +123,38 @@ export async function readOpsRecord(root: string, id: string): Promise<unknown> 
   if (!/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(id)) throw new Error("invalid_ops_record_id");
   const dir = await recordsDirectory(root, false), value = await readBoundedJson(join(dir, `${id}.json`), 32769);
   validateOpsRecord(value);
+  await bindStored(root, value);
   return value;
 }
 
+/** Loads the referenced drill (exact read, no recursion) and binds a profile/release to it; drills need no binding. */
+async function bindStored(root: string, value: unknown): Promise<void> {
+  const record = value as OpsProfile | ReleaseChecklist | LoadDrillRecord;
+  if (record.schema === "jit.ops.drill/v1") return;
+  let drill: LoadDrillRecord | null = null;
+  if (record.drillId !== null) {
+    try {
+      const dir = await recordsDirectory(root, false);
+      const raw = await readBoundedJson(join(dir, `${record.drillId}.json`), 32769);
+      validateDrillRecord(raw);
+      drill = raw;
+    } catch { throw new Error("invalid_ops_record"); }
+  }
+  bindToDrill(record, drill);
+}
+
 /**
- * Rebuilds the schema-specific allowlisted export. Every field is re-validated
+ * Rebuilds the schema-specific allowlisted export. Profiles and releases need
+ * their referenced drill (`drill`) and are bound to it. Every field is re-validated
  * first; route/model detail never leaves local records. Profiles print every
  * field a reviewer needs (revisions, config/workload, measurements, typed
  * exhausted limits, sample limitations and the fixed Pi-readiness disclaimer).
  */
-export function exportOpsSummary(value: unknown): Record<string, unknown> {
+export function exportOpsSummary(value: unknown, drill: LoadDrillRecord | null = null): Record<string, unknown> {
   validateOpsRecord(value);
   const schema = (value as { schema: string }).schema;
+  // Profiles and releases export only together with the drill they are bound to.
+  if (schema !== "jit.ops.drill/v1") bindToDrill(value as OpsProfile | ReleaseChecklist, drill);
   if (schema === "jit.ops.profile/v1") {
     const p = value as OpsProfile;
     return { schema: p.schema, recordId: p.id, observedAt: p.observedAt, drillId: p.drillId, versions: structuredClone(p.versions),

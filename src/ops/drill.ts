@@ -21,7 +21,7 @@ import { containsCredential } from "../security/credentials";
 import { TransactionStore } from "../store";
 import { ScriptedRunPort, fixtureOutcome } from "../team/scripted-port";
 import type { BackupNativePort } from "./backup";
-import { drillLegStates, exhaustedLimitKinds, safeNote, safeOpsAlias, type DrillAction, type ExhaustedLimit, type DrillLeg, type DrillLegState, type DrillMeasurements,
+import { deriveDrillVerdict, drillLegStates, safeInstallationLabel, validateDrillConfig, exhaustedLimitKinds, safeNote, safeOpsAlias, type DrillAction, type ExhaustedLimit, type DrillLeg, type DrillLegState, type DrillMeasurements,
   type LoadDrillConfig, type LoadDrillRecord } from "./contracts";
 import { testedRevisions } from "./revisions";
 import { upgradeEngineContract, upgradeNativeFormatVersion } from "./upgrade";
@@ -225,6 +225,9 @@ class DrillSender implements DeliverySender {
  * blocking contract, never skipped.
  */
 export async function runLoadDrill(config: LoadDrillConfig, ports: DrillPorts = {}): Promise<DrillResult> {
+  // The public boundary validates the exact config (shared bounds, schedules >= 1) before any global state or files.
+  try { validateDrillConfig(config); } catch { throw new Error("invalid_drill_config"); }
+  config = { ...config };
   if (drillInFlight) throw new Error("drill_in_progress");
   drillInFlight = true;
   try { return await drillOnce(config, ports); } finally { drillInFlight = false; }
@@ -236,7 +239,7 @@ async function drillOnce(config: LoadDrillConfig, ports: DrillPorts): Promise<Dr
   let fakeNow = 1800000000000;
   const now = ports.now ?? (() => fakeNow);
   const advance = (ms: number): void => { fakeNow += ms; };
-  const label = safeOpsAlias(ports.installationLabel ?? "drill-fixture");
+  const label = safeInstallationLabel(ports.installationLabel ?? "drill-fixture");
   const created = !ports.root;
   const root = ports.root ?? mkdtempSync(join(tmpdir(), "jit-ops-drill-"));
   const realFetch = globalThis.fetch;
@@ -282,6 +285,12 @@ async function drillOnce(config: LoadDrillConfig, ports: DrillPorts): Promise<Dr
     } finally {
       clearTimeout(timer);
       ports.signal?.removeEventListener("abort", onOwner);
+    }
+    // A leg that blocked the event loop past the deadline cannot be preempted by the timer; its late result never counts.
+    if (!halted && performance.now() > deadlineAt) {
+      halted = "deadline";
+      limits.add("drill-deadline");
+      result = { state: "blocked", detail: "stopped: drill deadline reached during leg" };
     }
     legs.push({ leg, state: result.state, elapsedMs: Math.min(Math.round(performance.now() - t0), 3600000), detail: result.detail, sampleLimit });
   };
@@ -640,18 +649,8 @@ async function drillOnce(config: LoadDrillConfig, ports: DrillPorts): Promise<Dr
     if (jobLimitEvents.budget > 0) limits.add("job-budget");
     if (jobLimitEvents.deadline > 0) limits.add("job-deadline");
     const waits = [...enqueuedAt].flatMap(([id, at]) => admittedAt.has(id) ? [Math.max(0, Math.round(admittedAt.get(id)! - at))] : []);
-    const failedLegs = legs.filter(l => l.state === "failed").length;
-    const blocked = legs.filter(l => l.state === "blocked");
-    const skipped = halted !== null;
-    const engineBlocked = blocked.some(l => /native_snapshot_unavailable|engine_unavailable|unsupported_engine/.test(l.detail));
-    const pendingOnly = blocked.length > 0 && blocked.every(l => l.detail.startsWith("pending "));
-    const outcome = failedLegs > 0 ? "failed" : blocked.length > 0 || skipped ? "blocked" : "passed";
-    const nextAction: DrillAction = diskPressure ? "relieve-disk-pressure"
-      : failedLegs > 0 ? "inspect-sanitized-drill"
-      : engineBlocked ? "restore-engine"
-      : skipped ? "retry-bounded-drill"
-      : pendingOnly ? "integrate-pending-contract"
-      : blocked.length > 0 ? "resolve-blocked-work" : "none";
+    // The same derivation the record validator recomputes.
+    const { outcome, nextAction } = deriveDrillVerdict(legs, diskPressure);
     const measurements: DrillMeasurements = { peakRssBytes: peakRss(), stateBytesBefore,
       stateBytesAfter, stateGrowthBytes, diskPressure,
       queueWaitMaxMs: waits.length ? Math.max(...waits) : 0, queueWaitP95Ms: percentile(waits, 0.95), queueWaitSamples: waits.length,

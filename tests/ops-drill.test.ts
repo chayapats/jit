@@ -15,8 +15,8 @@ import { opsBounds, opsEvidenceRetention } from "../src/ops/limits";
 import { writeUpgradeFence } from "../src/ops/upgrade-fence";
 import { quarantineRestorePort, runLoadDrill } from "../src/ops/drill";
 import { exportOpsSummary, readOpsRecord, validateOpsRecord, writeOpsRecord } from "../src/ops/records";
-import { composeProfile, composeReleaseChecklist, deriveDeterministicRows } from "../src/ops/report";
-import { safeNote, validateDrillRecord } from "../src/ops/contracts";
+import { bindToDrill, composeProfile, composeReleaseChecklist, deriveDeterministicRows } from "../src/ops/report";
+import { safeInstallationLabel, safeNote, validateDrillRecord } from "../src/ops/contracts";
 import { TransactionStore, schemaVersion } from "../src/store";
 
 const roots: string[] = [];
@@ -36,7 +36,8 @@ function healthy(overrides: Partial<DiagnosticsInput> = {}): DiagnosticsInput {
   const queue = overrides.queue ?? { available: true, queued: 0, admitted: 0, waiting: 0 };
   return { now: 1800000000000,
     store: { state: "readable", queried: true },
-    coverage: { activeJobs: queue.queued + queue.admitted + queue.waiting, omittedRouteGroups: 0, omittedActiveJobs: 0, countsCapped: false },
+    coverage: { activeJobs: queue.queued + queue.admitted + queue.waiting, omittedRouteGroups: 0,
+      omittedActiveJobs: queue.queued + queue.admitted + queue.waiting - (overrides.routes ?? []).reduce((sum, r) => sum + r.jobs, 0), countsCapped: false },
     queue: { available: true, queued: 0, admitted: 0, waiting: 0 },
     routes: [], budgets: { exhausted: 0, deadlineFailed: 0 },
     waits: { quota: 0, needsLogin: 0, routeUnavailable: 0, authorizationChanged: 0 },
@@ -54,13 +55,13 @@ test("diagnostics redacts identifiers and never carries secrets, paths or raw er
   const sentinel = "Authorization: Bearer TOKEN_SENTINEL ssh://user@192.0.2.44 /private/credential";
   const snapshot = inspectDiagnostics(healthy({
     queue: { available: true, queued: 1, admitted: 0, waiting: 0 },
-    routes: [{ route: "codex-subscription", model: "gpt-6.1-sol", state: "queued", attempts: 2 }],
+    routes: [{ route: "codex-subscription", model: "gpt-6.1-sol", state: "queued", jobs: 1, attempts: 2 }],
     telegram: { configured: false, binding: "unbound", pendingIntents: 0, unknownDeliveries: 0 },
     artifacts: [id] }));
-  expect(snapshot.routes).toEqual([{ reference: "route-1", model: "redacted", state: "queued", attempts: 2 }]);
+  expect(snapshot.routes).toEqual([{ reference: "route-1", model: "redacted", state: "queued", jobs: 1, attempts: 2 }]);
   expect(snapshot.connections.telegram).toBe("unconfigured");
   expect(JSON.stringify(snapshot)).not.toMatch(/codex-subscription|gpt-6\.1-sol|TOKEN_SENTINEL|192\.0\.2\.44|Authorization/);
-  expect(() => inspectDiagnostics(healthy({ routes: [{ route: sentinel, model: null, state: "queued", attempts: 0 }] }))).toThrow();
+  expect(() => inspectDiagnostics(healthy({ routes: [{ route: sentinel, model: null, state: "queued", jobs: 0, attempts: 0 }] }))).toThrow();
   expect(() => inspectDiagnostics({ now: NaN } as never)).toThrow();
   // Every field is required and bounded; unknown or missing keys fail closed.
   const { restore: _restore, ...missing } = healthy();
@@ -235,12 +236,21 @@ test("diagnose reads user_version first through the read-only adapter: missing, 
   const current = inspectDiagnostics(gatherDiagnostics(root, cfg("current.sqlite"), 1800000000000));
   expect(current).toMatchObject({ store: { state: "readable", queried: true }, schemaVersion: { state: "current" }, queue: { available: true } });
   expect({ bytes: readFileSync(join(root, "current.sqlite")), mode: statSync(join(root, "current.sqlite")).mode, sidecars: sidecars("current.sqlite") }).toEqual(before);
-  // A live (open, WAL) store is read without changing its sidecars' presence; a lone sidecar reads as unreadable.
+  // A live (open, WAL) store: diagnose and the shared adapter (used by status/preflight) read a disposable copy, so the
+  // main file, -wal and -shm keep identical bytes, size, mode and mtime — even with committed data still only in the WAL.
   const live = new TransactionStore(join(root, "live.sqlite"));
   try {
-    const liveSidecars = sidecars("live.sqlite");
+    live.transaction(tx => { tx.run("UPDATE app_state SET revision = revision + 7 WHERE id = 1"); });
+    const fingerprint = () => ["", "-wal", "-shm"].map(suffix => {
+      const file = join(root, "live.sqlite") + suffix, stats = statSync(file);
+      return { suffix, sha: new Bun.CryptoHasher("sha256").update(readFileSync(file)).digest("hex"), size: stats.size, mode: stats.mode, mtimeMs: stats.mtimeMs };
+    });
+    const liveBefore = fingerprint();
+    expect(liveBefore.find(f => f.suffix === "-wal")!.size).toBeGreaterThan(0);
     expect(inspectDiagnostics(gatherDiagnostics(root, cfg("live.sqlite"), 1800000000000)).store).toEqual({ state: "readable", queried: true });
-    expect(sidecars("live.sqlite")).toEqual(liveSidecars);
+    const { openReadOnlyStore } = await import("../src/ops/readonly-store");
+    expect(openReadOnlyStore(join(root, "live.sqlite"))!.read(tx => tx.get<{ revision: number }>("SELECT revision FROM app_state WHERE id = 1")!.revision)).toBe(7);
+    expect(fingerprint()).toEqual(liveBefore);
   } finally { live.close(); }
   writeFileSync(join(root, "current.sqlite-wal"), "");
   const torn = inspectDiagnostics(gatherDiagnostics(root, cfg("current.sqlite"), 1800000000000));
@@ -354,7 +364,7 @@ test("engine-unavailable drill blocks backup and upgrade preflight and names the
   expect(record.fixtureHonesty.join("\n")).toMatch(/injected native port/);
   // Blocked legs are not limits: only typed limit events reach exhaustedLimits (here the scripted delivery retry ceiling).
   expect(record.exhaustedLimits).toEqual(["delivery-retry"]);
-  const profile = composeProfile({ installationLabel: record.installationLabel, drill: record, sampleLimitations: [], nextAction: record.nextAction });
+  const profile = composeProfile({ installationLabel: record.installationLabel, drill: record, sampleLimitations: [] });
   expect(profile.exhaustedLimits).toEqual(["delivery-retry"]);
 });
 
@@ -481,7 +491,7 @@ test("composed profile carries versions, limits and sample bounds but never Pi r
   const { record, root } = await runLoadDrill({ ...drillConfig });
   roots.push(root);
   const profile = composeProfile({ installationLabel: record.installationLabel, drill: record,
-    sampleLimitations: [...record.fixtureHonesty], nextAction: record.nextAction });
+    sampleLimitations: [...record.fixtureHonesty] });
   // Exhausted limits are the drill's typed limit events (scripted safe-failure retries hit the delivery retry ceiling).
   expect(profile.exhaustedLimits).toEqual(record.exhaustedLimits);
   expect(record.exhaustedLimits).toEqual(["delivery-retry"]);
@@ -490,9 +500,9 @@ test("composed profile carries versions, limits and sample bounds but never Pi r
   expect(profile.versions.schema).toBe(schemaVersion);
   expect(profile.config).toEqual(record.config);
   expect(() => composeProfile({ installationLabel: "drill-fixture", drill: { ...record, schema: "jit.host.evidence/v1" } as never,
-    sampleLimitations: [], nextAction: "none" })).toThrow();
+    sampleLimitations: [] })).toThrow();
   expect(() => composeProfile({ installationLabel: "drill-fixture", drill: { ...record, exhaustedLimits: ["quarantine"] } as never,
-    sampleLimitations: [], nextAction: "none" })).toThrow();
+    sampleLimitations: [] })).toThrow();
 });
 
 test("diagnostics count active work with whole-table aggregates, so history beyond any row bound cannot hide it", async () => {
@@ -513,10 +523,15 @@ test("diagnostics count active work with whole-table aggregates, so history beyo
       }
       tx.run("INSERT INTO jobs (id, project_id, queue_order, priority, state, occupies, route_key, record_json) VALUES (?, ?, ?, 0, 'queued', 0, 'r', ?)",
         crypto.randomUUID(), project.id, 10002, record("queued", "queued", "fresh-route"));
-      // Ten more active route groups than the sample holds, plus one unlabelled provider.
+      // Ten more active route groups than the sample holds, plus one unlabelled provider. Group 0 has one persisted
+      // attempt, group 1 has three, every other group none.
       for (let n = 0; n < 10; n++) {
+        const jobId = crypto.randomUUID();
         tx.run("INSERT INTO jobs (id, project_id, queue_order, priority, state, occupies, route_key, record_json) VALUES (?, ?, ?, 0, 'waiting', 0, 'r', ?)",
-          crypto.randomUUID(), project.id, 10003 + n, record("waiting", "quota", `route-group-${n}`));
+          jobId, project.id, 10003 + n, record("waiting", "quota", `route-group-${n}`));
+        for (let a = 0; a < (n === 0 ? 1 : n === 1 ? 3 : 0); a++) {
+          tx.run("INSERT INTO job_attempts (id, job_id, record_json) VALUES (?, ?, '{}')", crypto.randomUUID(), jobId);
+        }
       }
       tx.run("INSERT INTO jobs (id, project_id, queue_order, priority, state, occupies, route_key, record_json) VALUES (?, ?, ?, 0, 'waiting', 0, 'r', ?)",
         crypto.randomUUID(), project.id, 20000, record("waiting", "quota", "Authorization: Bearer TOKEN_SENTINEL"));
@@ -528,9 +543,33 @@ test("diagnostics count active work with whole-table aggregates, so history beyo
   expect(snapshot.nextActions).toContain("drain-queue");
   expect(snapshot.routes).toHaveLength(8);
   // Oldest active work first: the fresh queued job's route is sampled even behind 10001 historic rows.
-  expect(snapshot.routes[0]).toMatchObject({ reference: "route-1", state: "queued", attempts: 1 });
+  expect(snapshot.routes[0]).toMatchObject({ reference: "route-1", state: "queued", jobs: 1, attempts: 0 });
+  // `attempts` is persisted job_attempts rows per sampled route, not a job count: 1 and 3 for the next two groups.
+  expect(snapshot.routes.slice(1, 4).map(r => [r.jobs, r.attempts])).toEqual([[1, 1], [1, 3], [1, 0]]);
   expect(snapshot.coverage).toEqual({ activeJobs: 12, omittedRouteGroups: 4, omittedActiveJobs: 4, countsCapped: false });
   expect(JSON.stringify(snapshot)).not.toMatch(/TOKEN_SENTINEL|fresh-route|route-group|historic/);
+});
+
+test("route-sample omissions come from whole-table totals, not from the bounded group scan", async () => {
+  const root = setup();
+  const database = join(root, "groups.sqlite");
+  const config = readConfig({ JIT_DATABASE: database, JIT_TELEGRAM_BOT_TOKEN_PATH: join(root, "missing.token"), JIT_JOB_QUEUE_LIMIT: "10000" });
+  const store = new TransactionStore(database);
+  try {
+    const app = new Application(store, config, { now: () => 1800000000000 });
+    await app.setupOwner("ops-drill-owner-password");
+    const actor = app.authenticate(await app.login("ops-drill-owner-password")).actor;
+    const project = app.execute(actor, { kind: "project.create", requestId: crypto.randomUUID(), projectId: null, expectedRevision: 0, payload: { name: "Groups" } }).project;
+    store.transaction(tx => {
+      for (let n = 0; n < 4100; n++) {
+        tx.run("INSERT INTO jobs (id, project_id, queue_order, priority, state, occupies, route_key, record_json) VALUES (?, ?, ?, 0, 'queued', 0, 'r', ?)",
+          crypto.randomUUID(), project.id, n + 1, JSON.stringify({ state: "queued", reason: "queued", route: { provider: `group-${n}`, model: null, authRoute: "internal" } }));
+      }
+    });
+  } finally { store.close(); }
+  const snapshot = inspectDiagnostics(gatherDiagnostics(root, config, 1800000000000));
+  expect(snapshot.routes).toHaveLength(8);
+  expect(snapshot.coverage).toEqual({ activeJobs: 4100, omittedRouteGroups: 4092, omittedActiveJobs: 4092, countsCapped: false });
 });
 
 test("ops notes reject the shared credential forms, paths and addresses", () => {
@@ -552,7 +591,7 @@ test("profile and release records are deep-validated on compose, write, read and
   const root = setup();
   const { record, root: drillRoot } = await runLoadDrill({ ...drillConfig });
   roots.push(drillRoot);
-  const profile = composeProfile({ installationLabel: record.installationLabel, drill: record, sampleLimitations: [...record.fixtureHonesty], nextAction: record.nextAction });
+  const profile = composeProfile({ installationLabel: record.installationLabel, drill: record, sampleLimitations: [...record.fixtureHonesty] });
   const release = composeReleaseChecklist({ installationLabel: "drill-fixture", drill: record, human: {} });
   validateOpsRecord(profile);
   validateOpsRecord(release);
@@ -570,11 +609,14 @@ test("profile and release records are deep-validated on compose, write, read and
     expect(() => exportOpsSummary(bad)).toThrow();
     await expect(writeOpsRecord(root, bad.id === "not-a-uuid" ? bad : { ...bad, id: crypto.randomUUID() })).rejects.toThrow();
   }
+  // Profiles and releases bind to their stored drill: without it they cannot be written.
+  await expect(writeOpsRecord(root, profile)).rejects.toThrow("invalid_ops_record");
+  await writeOpsRecord(root, record);
   await writeOpsRecord(root, profile);
   const file = join(root, ".local/ops-evidence", `${profile.id}.json`);
   writeFileSync(file, JSON.stringify({ ...profile, piReadiness: "claimed-ready" }));
   await expect(readOpsRecord(root, profile.id)).rejects.toThrow();
-  expect(readdirSync(join(root, ".local/ops-evidence"))).toHaveLength(1);
+  expect(readdirSync(join(root, ".local/ops-evidence"))).toHaveLength(2);
 });
 
 test("ops-evidence retention prunes by age, count and bytes whenever a record is created", async () => {
@@ -693,6 +735,125 @@ test("the fetch guard is single-flight and compare-and-restore", async () => {
     expect(globalThis.fetch).toBe(foreign);
   } finally { globalThis.fetch = original; }
 });
+
+test("installation labels and human notes reject credential, address and local-host shapes through the CLI", async () => {
+  const root = setup();
+  for (const label of ["ghp_aaaaaaaaaaaaaaaaaaaa", "pi.local", "drill.fixture", "localhost", "a".repeat(40)]) {
+    expect(() => safeInstallationLabel(label)).toThrow("invalid_ops_label");
+  }
+  expect(safeInstallationLabel("drill-fixture")).toBe("drill-fixture");
+  for (const note of ["service at pi.local", "reach jit.home.arpa", "node pi.tailnet-1.ts.net", "see localhost"]) expect(() => safeNote(note)).toThrow();
+  writeFileSync(join(root, ".local/drill.json"), JSON.stringify(drillConfig));
+  const fake = async () => { throw new Error("drill must not run for an invalid label"); };
+  for (const label of ["ghp_aaaaaaaaaaaaaaaaaaaa", "pi.local"]) {
+    expect((await runOpsCommand(["drill", "--config", ".local/drill.json", "--label", label], root, { drill: fake as never })).exitCode).toBe(2);
+  }
+  expect(existsSync(join(root, ".local/ops-evidence"))).toBe(false);
+  // A human note naming an installation host is rejected before any profile or checklist record is written.
+  const { record, root: drillRoot } = await runLoadDrill({ ...drillConfig });
+  roots.push(drillRoot);
+  await writeOpsRecord(root, record);
+  writeFileSync(join(root, ".local/checklist.json"), JSON.stringify({ human: { FEAS: { state: "blocked", evidenceId: id, note: "service at pi.local" } } }));
+  expect((await runOpsCommand(["report", "--id", record.id, "--checklist", ".local/checklist.json"], root)).exitCode).toBe(2);
+  expect(readdirSync(join(root, ".local/ops-evidence"))).toEqual([`${record.id}.json`]);
+});
+
+test("runLoadDrill validates its exact config before touching global state or files", async () => {
+  const original = globalThis.fetch;
+  const root = setup();
+  for (const bad of [{ ...drillConfig, schedules: 0 }, { ...drillConfig, groups: 9 }, { ...drillConfig, extra: 1 }, { ...drillConfig, deadlineMs: 600001 }]) {
+    await expect(runLoadDrill(bad as never, { root })).rejects.toThrow("invalid_drill_config");
+  }
+  expect(globalThis.fetch).toBe(original);
+  expect(readdirSync(root)).toEqual([".local"]);
+});
+
+test("a leg that blocks the event loop past the deadline is overridden to blocked", async () => {
+  const { record, root } = await runLoadDrill({ ...drillConfig, deadlineMs: 1000 }, { restore: async () => {
+    const until = performance.now() + 1500;
+    while (performance.now() < until) { /* Synchronous work no timer can preempt. */ }
+    return { state: "passed", detail: "late synchronous result" };
+  } });
+  roots.push(root);
+  expect(record.legs.find(l => l.leg === "quarantine")).toMatchObject({ state: "blocked", detail: "stopped: drill deadline reached during leg" });
+  expect(record.legs.find(l => l.leg === "network")!.state).toBe("not-run");
+  expect(record.exhaustedLimits).toContain("drill-deadline");
+  expect(record.outcome).toBe("blocked");
+  validateDrillRecord(record);
+}, 15000);
+
+test("drill and profile validation recompute legs, verdict, limits and measurement invariants", async () => {
+  const { record, root } = await runLoadDrill({ ...drillConfig });
+  roots.push(root);
+  const m = record.measurements;
+  const mutated = [
+    { ...record, legs: [] }, { ...record, legs: [...record.legs.slice(0, -1), record.legs[0]!] }, { ...record, legs: [...record.legs].reverse() },
+    { ...record, legs: record.legs.map(l => l.leg === "export" ? { ...l, state: "blocked" as const } : l) },
+    { ...record, outcome: "failed" as const }, { ...record, nextAction: "retry-bounded-drill" as const },
+    { ...record, measurements: { ...m, stateGrowthBytes: record.config.diskWatermarkBytes + 1, stateBytesAfter: m.stateBytesBefore + record.config.diskWatermarkBytes + 1 } },
+    { ...record, measurements: { ...m, queueWaitP95Ms: m.queueWaitMaxMs + 1 } },
+    { ...record, measurements: { ...m, queueWaitSamples: 0 } },
+    { ...record, measurements: { ...m, sentDeliveries: 99 } },
+    { ...record, measurements: { ...m, fetchCalls: 1 } },
+    { ...record, exhaustedLimits: ["disk-watermark", "delivery-retry"] as never }, { ...record, exhaustedLimits: ["delivery-retry", "drill-deadline"] as never },
+    { ...record, exhaustedLimits: ["drill-deadline", "delivery-retry"] as never },
+  ];
+  for (const bad of mutated) expect(() => validateDrillRecord(bad)).toThrow("invalid_ops_record");
+  // composeProfile derives its next action from the drill; a profile that disagrees with its drill cannot bind.
+  const profile = composeProfile({ installationLabel: record.installationLabel, drill: record, sampleLimitations: [] });
+  expect(profile.nextAction).toBe(record.nextAction);
+  expect(() => composeProfile({ installationLabel: record.installationLabel, drill: record, sampleLimitations: [], nextAction: "none" } as never)).toThrow();
+  expect(() => bindToDrill({ ...profile, nextAction: "relieve-disk-pressure" }, record)).toThrow("invalid_ops_record");
+  expect(() => bindToDrill({ ...profile, measurements: { ...m, commands: m.commands + 1 } }, record)).toThrow("invalid_ops_record");
+  expect(() => validateOpsRecord({ ...profile, measurements: { ...m, queueWaitP95Ms: m.queueWaitMaxMs + 1 } })).toThrow("invalid_ops_record");
+});
+
+test("release rows bind to the referenced drill on write, read and export", async () => {
+  const root = setup();
+  const { record, root: drillRoot } = await runLoadDrill({ ...drillConfig });
+  roots.push(drillRoot);
+  await writeOpsRecord(root, record);
+  const empty = composeReleaseChecklist({ installationLabel: "drill-fixture", drill: null, human: {} });
+  // Fabricated: a drill-less release re-pointed at a real drill with a passed J03 row.
+  const fabricated = { ...empty, id: crypto.randomUUID(), drillId: record.id,
+    deterministic: empty.deterministic.map(r => r.id === "J03" ? { ...r, state: "passed" as const, evidenceId: record.id, note: "drill legs pr-snapshots=passed pr-alerts=passed" } : r) };
+  validateOpsRecord(fabricated);
+  expect(() => exportOpsSummary(fabricated, record)).toThrow("invalid_ops_record");
+  expect(() => exportOpsSummary(fabricated)).toThrow("invalid_ops_record");
+  await expect(writeOpsRecord(root, fabricated)).rejects.toThrow("invalid_ops_record");
+  // An executed row must cite the drill itself.
+  const real = composeReleaseChecklist({ installationLabel: "drill-fixture", drill: record, human: {} });
+  expect(() => validateOpsRecord({ ...real, deterministic: real.deterministic.map(r => r.state !== "not-run" ? { ...r, evidenceId: id } : r) })).toThrow("invalid_ops_record");
+  await writeOpsRecord(root, real);
+  expect(exportOpsSummary(await readOpsRecord(root, real.id), record)).toMatchObject({ drillId: record.id });
+  // Tampering with a stored row after write fails the read.
+  const file = join(root, ".local/ops-evidence", `${real.id}.json`);
+  writeFileSync(file, JSON.stringify({ ...real, deterministic: real.deterministic.map(r => r.id === "J01" ? { ...r, state: "passed" } : r),
+    outcome: real.outcome }));
+  await expect(readOpsRecord(root, real.id)).rejects.toThrow();
+});
+
+test("retention sees the whole evidence directory or fails closed before writing", async () => {
+  const root = setup();
+  const { record, root: drillRoot } = await runLoadDrill({ ...drillConfig });
+  roots.push(drillRoot);
+  const dir = join(root, ".local/ops-evidence");
+  await writeOpsRecord(root, record);
+  const body = readFileSync(join(dir, `${record.id}.json`));
+  for (let n = 0; n < 5000; n++) writeFileSync(join(dir, `${crypto.randomUUID()}.json`), body, { mode: 0o600 });
+  const next = { ...record, id: crypto.randomUUID() };
+  await writeOpsRecord(root, next);
+  const records = readdirSync(dir).filter(n => n.endsWith(".json"));
+  expect(records.length).toBeLessThanOrEqual(opsEvidenceRetention.maxRecords);
+  expect(records).toContain(`${next.id}.json`);
+  // Beyond the directory-entry ceiling the pass cannot see everything: nothing is removed and nothing is written.
+  for (let n = readdirSync(dir).length; n <= opsEvidenceRetention.maxDirectoryEntries; n++) writeFileSync(join(dir, `junk-${n}.txt`), "");
+  const before = readdirSync(dir).length;
+  const blocked = { ...record, id: crypto.randomUUID() };
+  await expect(writeOpsRecord(root, blocked)).rejects.toThrow("ops_evidence_overflow");
+  expect(readdirSync(dir).length).toBe(before);
+  expect(existsSync(join(dir, `${blocked.id}.json`))).toBe(false);
+}, 30000);
 
 test("oversized records, symlinked storage and sentinel configs fail safely without partial writes", async () => {
   const root = setup();

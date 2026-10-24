@@ -28,7 +28,9 @@ export const drillWorkloadBounds = Object.freeze({
  * than `JIT_OPS_RETENTION_DAYS` are removed, then the oldest beyond the count
  * or byte ceiling. The record being written is never a victim.
  */
-export const opsEvidenceRetention = Object.freeze({ maxRecords: 256, maxBytes: 8 * 1024 * 1024 });
+export const opsEvidenceRetention = Object.freeze({ maxRecords: 256, maxBytes: 8 * 1024 * 1024,
+  /** Directory entries a retention pass may scan; beyond it the write fails closed (`ops_evidence_overflow`). */
+  maxDirectoryEntries: 16384 });
 
 /** True when `value` is a safe integer within `bound`. */
 export function withinBound(value: unknown, bound: { min: number; max: number }): value is number {

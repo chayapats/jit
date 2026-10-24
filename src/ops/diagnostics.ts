@@ -45,7 +45,8 @@ export interface DiagnosticsInput {
    * Up to 8 active (queued/admitted/waiting) route groups, oldest active work
    * first. Raw route aliases are validated, then redacted in the output.
    */
-  routes: { route: string; model: string | null; state: DiagnosticRouteState; attempts: number }[];
+  /** `jobs`: active jobs in the group; `attempts`: persisted `job_attempts` rows of those jobs. */
+  routes: { route: string; model: string | null; state: DiagnosticRouteState; jobs: number; attempts: number }[];
   /** How much active work the route sample leaves out; counts are whole-table SQL aggregates, never row-bounded. */
   coverage: { activeJobs: number; omittedRouteGroups: number; omittedActiveJobs: number; countsCapped: boolean };
   budgets: { exhausted: number; deadlineFailed: number };
@@ -80,7 +81,7 @@ export interface Diagnostics {
   observedAt: string;
   store: { state: "readable" | "missing" | "unreadable"; queried: boolean };
   queue: { available: boolean; queued: number; admitted: number; waiting: number };
-  routes: { reference: string; model: "redacted" | "unselected"; state: DiagnosticRouteState; attempts: number }[];
+  routes: { reference: string; model: "redacted" | "unselected"; state: DiagnosticRouteState; jobs: number; attempts: number }[];
   coverage: { activeJobs: number; omittedRouteGroups: number; omittedActiveJobs: number; countsCapped: boolean };
   budgets: { exhausted: number; deadlineFailed: number };
   waits: { quota: number; needsLogin: number; routeUnavailable: number; authorizationChanged: number };
@@ -135,8 +136,9 @@ export function inspectDiagnostics(input: DiagnosticsInput): Diagnostics {
     if (!r || typeof r !== "object" || safeOpsAlias((r as { route: unknown }).route) !== (r as { route: string }).route ||
         ((r as { model: unknown }).model !== null && safeOpsAlias((r as { model: unknown }).model) !== (r as { model: string }).model) ||
         !diagnosticRouteStates.includes((r as { state: DiagnosticRouteState }).state)) fail();
-    const row = r as { route: string; model: string | null; state: DiagnosticRouteState; attempts: number };
-    return { reference: redactRouteId(index), model: redactModel(row.model), state: row.state, attempts: count(row.attempts, 1000000) };
+    const row = r as { route: string; model: string | null; state: DiagnosticRouteState; jobs: number; attempts: number };
+    if (Object.keys(row).sort().join(",") !== "attempts,jobs,model,route,state") fail();
+    return { reference: redactRouteId(index), model: redactModel(row.model), state: row.state, jobs: count(row.jobs, countCap), attempts: count(row.attempts, countCap) };
   });
   const cv = input.coverage;
   object(cv);
@@ -144,6 +146,8 @@ export function inspectDiagnostics(input: DiagnosticsInput): Diagnostics {
   const coverage = { activeJobs: count(cv.activeJobs, countCap), omittedRouteGroups: count(cv.omittedRouteGroups, countCap),
     omittedActiveJobs: count(cv.omittedActiveJobs, countCap), countsCapped: cv.countsCapped };
   if (coverage.activeJobs !== queue.queued + queue.admitted + queue.waiting || coverage.omittedActiveJobs > coverage.activeJobs) fail();
+  // Unless counts were capped, sampled jobs plus omitted jobs account for every active job.
+  if (!coverage.countsCapped && routes.reduce((sum, r) => sum + r.jobs, 0) + coverage.omittedActiveJobs !== coverage.activeJobs) fail();
   const b = input.budgets;
   object(b);
   const budgets = { exhausted: count(b.exhausted, countCap), deadlineFailed: count(b.deadlineFailed, countCap) };
@@ -304,13 +308,18 @@ function restoreState(databasePath: string): { open: number; blocked: number; ga
 interface StoreReads {
   tally: { state: string; reason: string | null; n: number }[];
   available: boolean;
-  groups: { provider: unknown; model: unknown; state: string; n: number }[];
+  groups: { provider: unknown; model: unknown; state: string; n: number; attempts: number }[];
+  /** Distinct active (provider, model, state) groups in the whole table, independent of the sample limit. */
+  groupTotal: number;
   delivery: { pendingIntents: number; unknownDeliveries: number };
   binding: "unbound" | "pending" | "bound";
   configuredRoutes: number;
 }
 
-const emptyReads: StoreReads = { tally: [], available: false, groups: [], delivery: { pendingIntents: 0, unknownDeliveries: 0 },
+/** Groups scanned for the 8-route sample (unusable aliases are skipped); totals never depend on this bound. */
+const routeSampleScan = 64;
+
+const emptyReads: StoreReads = { tally: [], available: false, groups: [], groupTotal: 0, delivery: { pendingIntents: 0, unknownDeliveries: 0 },
   binding: "unbound", configuredRoutes: 0 };
 
 /** Schema-specific queries; each one fails soft so an older schema still yields a bounded snapshot. */
@@ -323,14 +332,24 @@ function readStore(tx: AppTransaction): StoreReads {
   })();
   let available = false;
   try { available = tx.get<{ token: string }>("SELECT token FROM job_scheduler WHERE id = 1") === null; } catch { available = false; }
-  // Active route sample: distinct (provider, model, state) groups over all active jobs, oldest active work first.
+  // Active route sample: distinct (provider, model, state) groups over all active jobs, oldest active work first,
+  // with each group's job count and the persisted job_attempts rows of those jobs. The sample is bounded; the
+  // group total is counted separately so omissions never depend on the sample limit.
   const groups = (() => {
     try {
-      return tx.all<{ provider: unknown; model: unknown; state: string; n: number }>(
-        `SELECT json_extract(record_json, '$.route.provider') AS provider, json_extract(record_json, '$.route.model') AS model, state, count(*) AS n
-         FROM jobs WHERE state IN ('queued', 'admitted', 'waiting') GROUP BY provider, model, state ORDER BY min(queue_order) LIMIT 4096`);
+      return tx.all<{ provider: unknown; model: unknown; state: string; n: number; attempts: number }>(
+        `SELECT provider, model, state, count(*) AS n, coalesce(sum(attempts), 0) AS attempts FROM (
+           SELECT json_extract(j.record_json, '$.route.provider') AS provider, json_extract(j.record_json, '$.route.model') AS model,
+             j.state AS state, j.queue_order AS queue_order, (SELECT count(*) FROM job_attempts a WHERE a.job_id = j.id) AS attempts
+           FROM jobs j WHERE j.state IN ('queued', 'admitted', 'waiting'))
+         GROUP BY provider, model, state ORDER BY min(queue_order) LIMIT ${routeSampleScan}`);
     } catch { return []; }
   })();
+  let groupTotal = 0;
+  try {
+    groupTotal = tx.get<{ n: number }>(`SELECT count(*) AS n FROM (SELECT 1 FROM jobs WHERE state IN ('queued', 'admitted', 'waiting')
+      GROUP BY json_extract(record_json, '$.route.provider'), json_extract(record_json, '$.route.model'), state)`)!.n;
+  } catch { groupTotal = groups.length; }
   let delivery = { pendingIntents: 0, unknownDeliveries: 0 };
   try {
     delivery = {
@@ -343,7 +362,7 @@ function readStore(tx: AppTransaction): StoreReads {
     const state = tx.get<{ state: string }>("SELECT state FROM telegram_binding WHERE id = 1")?.state;
     binding = state === "bound" || state === "pending" ? state : "unbound";
   } catch { /* Pre-Telegram schema. */ }
-  return { tally, available, groups, delivery, binding, configuredRoutes: configuredRouteCount(tx) };
+  return { tally, available, groups, groupTotal, delivery, binding, configuredRoutes: configuredRouteCount(tx) };
 }
 
 /**
@@ -378,15 +397,21 @@ export function gatherDiagnostics(root: string, config: AppConfig, now: number =
     cap(reads.tally.filter(t => t.state === state && (reason === undefined || t.reason === reason)).reduce((sum, t) => sum + t.n, 0));
   const queued = total("queued"), admitted = total("admitted"), waiting = total("waiting");
   const routes: DiagnosticsInput["routes"] = [];
-  let omittedGroups = 0, omittedJobs = 0;
   for (const group of reads.groups) {
-    let usable = routes.length < 8 && typeof group.provider === "string" && (group.model === null || typeof group.model === "string");
+    if (routes.length >= 8) break;
+    let usable = typeof group.provider === "string" && (group.model === null || typeof group.model === "string");
     if (usable) {
       try { safeOpsAlias(group.provider); if (group.model !== null) safeOpsAlias(group.model); } catch { usable = false; }
     }
-    if (!usable) { omittedGroups++; omittedJobs += group.n; continue; }
-    routes.push({ route: group.provider as string, model: group.model as string | null, state: group.state as DiagnosticRouteState, attempts: cap(group.n) });
+    if (!usable) continue;
+    routes.push({ route: group.provider as string, model: group.model as string | null, state: group.state as DiagnosticRouteState,
+      jobs: cap(group.n), attempts: cap(group.attempts) });
   }
+  const activeJobs = queued + admitted + waiting;
+  const includedJobs = routes.reduce((sum, r) => sum + r.jobs, 0);
+  // Omissions are whole-table totals minus what the sample included.
+  const omittedGroups = Math.max(0, reads.groupTotal - routes.length);
+  const omittedJobs = Math.max(0, activeJobs - includedJobs);
   const fence = readUpgradeFence(config.databasePath);
   let activeState: UpgradeState | null = null;
   try { activeState = activeUpgrade(upgradeDirFor(config.databasePath))?.state ?? null; } catch { activeState = "blocked"; }
@@ -400,8 +425,7 @@ export function gatherDiagnostics(root: string, config: AppConfig, now: number =
     store: { state: storeState, queried },
     queue: { available: reads.available, queued, admitted, waiting },
     routes,
-    coverage: { activeJobs: queued + admitted + waiting, omittedRouteGroups: cap(omittedGroups),
-      omittedActiveJobs: Math.min(cap(omittedJobs), queued + admitted + waiting), countsCapped: capped },
+    coverage: { activeJobs, omittedRouteGroups: cap(omittedGroups), omittedActiveJobs: cap(omittedJobs), countsCapped: capped },
     budgets: { exhausted: total("blocked", "budget_exhausted"), deadlineFailed: total("failed", "deadline") },
     waits: { quota: total("waiting", "quota"), needsLogin: total("waiting", "needs_login"), routeUnavailable: total("waiting", "route_unavailable"),
       authorizationChanged: total("blocked", "authorization_changed") },

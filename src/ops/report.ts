@@ -1,4 +1,4 @@
-import { deterministicChecklistIds, humanChecklistIds, safeEvidenceId, safeNote, safeOpsAlias, validateDrillRecord, validateProfileRecord, validateReleaseRecord,
+import { deterministicChecklistIds, safeInstallationLabel, humanChecklistIds, safeEvidenceId, safeNote, safeOpsAlias, validateDrillRecord, validateProfileRecord, validateReleaseRecord,
   type ChecklistItem, type ChecklistState, type DeterministicChecklistId, type DrillAction,
   type HumanChecklistId, type LoadDrillRecord, type OpsProfile, type ReleaseChecklist } from "./contracts";
 
@@ -7,7 +7,6 @@ export interface ProfileInput {
   installationLabel: string;
   drill: LoadDrillRecord;
   sampleLimitations: string[];
-  nextAction: DrillAction;
 }
 
 /**
@@ -18,10 +17,10 @@ export interface ProfileInput {
  */
 export function composeProfile(input: ProfileInput): OpsProfile {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("invalid_ops_profile");
-  if (Object.keys(input).some(k => !["installationLabel", "drill", "sampleLimitations", "nextAction"].includes(k))) {
+  if (Object.keys(input).some(k => !["installationLabel", "drill", "sampleLimitations"].includes(k))) {
     throw new Error("invalid_ops_profile");
   }
-  const label = safeOpsAlias(input.installationLabel);
+  const label = safeInstallationLabel(input.installationLabel);
   try { validateDrillRecord(input.drill); } catch { throw new Error("invalid_ops_profile"); }
   if (!Array.isArray(input.sampleLimitations) || input.sampleLimitations.length > 32 ||
       input.sampleLimitations.some(l => safeNote(l) !== l)) throw new Error("invalid_ops_profile");
@@ -30,7 +29,8 @@ export function composeProfile(input: ProfileInput): OpsProfile {
     installationLabel: label, drillId: safeEvidenceId(drill.id), versions: structuredClone(drill.versions),
     config: { ...drill.config }, measurements: { ...drill.measurements },
     exhaustedLimits: [...drill.exhaustedLimits], sampleLimitations: [...input.sampleLimitations],
-    piReadiness: "not-claimed", nextAction: input.nextAction };
+    // The next action is the drill's own derived action; callers cannot override it.
+    piReadiness: "not-claimed", nextAction: drill.nextAction };
   try { validateProfileRecord(profile); } catch { throw new Error("invalid_ops_profile"); }
   return profile;
 }
@@ -113,7 +113,7 @@ export function composeReleaseChecklist(input: ChecklistInput): ReleaseChecklist
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("invalid_release_checklist");
   const keys = Object.keys(input);
   if (keys.length !== 3 || !["installationLabel", "drill", "human"].every(k => keys.includes(k))) throw new Error("invalid_release_checklist");
-  const label = safeOpsAlias(input.installationLabel);
+  const label = safeInstallationLabel(input.installationLabel);
   if (input.drill !== null) {
     try { validateDrillRecord(input.drill); } catch { throw new Error("invalid_release_checklist"); }
   }
@@ -129,4 +129,29 @@ export function composeReleaseChecklist(input: ChecklistInput): ReleaseChecklist
     outcome, nextAction: outcome === "passed" ? "none" : nextAction };
   try { validateReleaseRecord(checklist); } catch { throw new Error("invalid_release_checklist"); }
   return checklist;
+}
+
+/**
+ * Binds a profile or release record to the drill it references: the drill ID
+ * and label must match, a profile must carry exactly the drill's revisions,
+ * config, measurements, typed limits and next action, and a release's
+ * deterministic rows must equal {@link deriveDeterministicRows} of that drill.
+ * Throws `invalid_ops_record` otherwise. Used on write, read and export.
+ */
+export function bindToDrill(record: OpsProfile | ReleaseChecklist, drill: LoadDrillRecord | null): void {
+  const fail = (): never => { throw new Error("invalid_ops_record"); };
+  const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
+  if (record.schema === "jit.ops.release/v1") {
+    if (record.drillId === null) { if (!same(record.deterministic, deriveDeterministicRows(null))) fail(); return; }
+    if (!drill) fail();
+  } else if (!drill) fail();
+  try { validateDrillRecord(drill); } catch { fail(); }
+  const d = drill as LoadDrillRecord;
+  if (record.drillId !== d.id || record.installationLabel !== d.installationLabel) fail();
+  if (record.schema === "jit.ops.profile/v1") {
+    if (!same(record.versions, d.versions) || !same(record.config, d.config) || !same(record.measurements, d.measurements) ||
+        !same(record.exhaustedLimits, d.exhaustedLimits) || record.nextAction !== d.nextAction) fail();
+    return;
+  }
+  if (!same(record.deterministic, deriveDeterministicRows(d))) fail();
 }

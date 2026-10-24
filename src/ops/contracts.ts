@@ -168,9 +168,25 @@ const pathLike = /(?:^|[\s(=:,'"])(?:\/[A-Za-z0-9._-]|~\/|\.{1,2}\/)|\b[A-Za-z]:
  */
 export function safeNote(value: unknown): string {
   if (typeof value !== "string" || !value.length || value.length > 500 || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value)) throw new Error("invalid_ops_note");
-  if (secretLike.test(value) || containsCredential(value) || addressLike.test(value) || pathLike.test(value)) throw new Error("invalid_ops_note");
+  if (secretLike.test(value) || containsCredential(value) || addressLike.test(value) || localHostLike.test(value) || pathLike.test(value)) throw new Error("invalid_ops_note");
   return value;
 }
+
+/** Bare local/internal hostnames (mDNS, LAN, VPN tailnets) and loopback names. */
+const localHostLike = /\blocalhost\b|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:local|lan|home|internal|intranet|corp|localdomain|home\.arpa|ts\.net)\b/i;
+
+/**
+ * Installation labels persist in every ops record, so they follow the note
+ * policy too: a short lowercase slug (`[a-z][a-z0-9-]{0,63}`, no dots or
+ * underscores, so no hostnames), never a credential shape, address or path.
+ */
+export function safeInstallationLabel(value: unknown): string {
+  if (typeof value !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(value) || containsCredential(value) || secretLike.test(value) ||
+      addressLike.test(value) || localHostLike.test(value) || /[a-z0-9]{32}/i.test(value)) throw new Error("invalid_ops_label");
+  return value;
+}
+
+const labelOk = (v: unknown): boolean => { try { return safeInstallationLabel(v) === v; } catch { return false; } };
 
 /** Admits only allowlisted non-sensitive identifier aliases; the export layer still redacts them. */
 export function safeOpsAlias(value: unknown): string {
@@ -251,13 +267,56 @@ function validateExhaustedLimits(value: unknown): asserts value is ExhaustedLimi
       value.some(v => !exhaustedLimitKinds.includes(v))) throw new Error("invalid_ops_record");
 }
 
+/** The exact, ordered leg set every drill record carries. */
+export const drillLegOrder = ["groups", "pr-snapshots", "pr-alerts", "memory-queries", "deliveries", "schedules", "quota-wait", "cancel",
+  "export", "backup", "upgrade-preflight", "quarantine", "network", "disk-watermark"] as const;
+
+const haltedDetail = /^(?:skipped|stopped): drill (?:deadline|cancelled)/;
+const deadlineDetail = /^(?:skipped: drill deadline exceeded|stopped: drill deadline reached during leg)$/;
+
+/**
+ * Outcome and next action from leg states: failed if any leg failed; blocked
+ * if any leg is blocked or the drill halted (cancelled/deadline); else passed.
+ * Shared by the drill and the record validator, which recomputes it.
+ */
+export function deriveDrillVerdict(legs: Pick<DrillLeg, "state" | "detail">[], diskPressure: boolean): { outcome: LoadDrillRecord["outcome"]; nextAction: DrillAction } {
+  const failed = legs.some(l => l.state === "failed");
+  const blocked = legs.filter(l => l.state === "blocked");
+  const halted = legs.some(l => haltedDetail.test(l.detail));
+  const engineBlocked = blocked.some(l => /native_snapshot_unavailable|engine_unavailable|unsupported_engine/.test(l.detail));
+  const pendingOnly = blocked.length > 0 && blocked.every(l => l.detail.startsWith("pending "));
+  const outcome = failed ? "failed" : blocked.length > 0 || halted ? "blocked" : "passed";
+  const nextAction: DrillAction = diskPressure ? "relieve-disk-pressure"
+    : failed ? "inspect-sanitized-drill"
+    : engineBlocked ? "restore-engine"
+    : halted ? "retry-bounded-drill"
+    : pendingOnly ? "integrate-pending-contract"
+    : blocked.length > 0 ? "resolve-blocked-work" : "none";
+  return { outcome, nextAction };
+}
+
+/** Cross-field measurement invariants against the drill config and typed limits; shared by drill and profile validation. */
+function checkMeasurementInvariants(m: DrillMeasurements, c: LoadDrillConfig, limits: ExhaustedLimit[]): boolean {
+  const settled = m.sentDeliveries + m.unknownDeliveries + m.failedDeliveries;
+  return m.stateGrowthBytes === Math.max(0, m.stateBytesAfter - m.stateBytesBefore) &&
+    m.diskPressure === m.stateGrowthBytes > c.diskWatermarkBytes &&
+    limits.includes("disk-watermark") === m.diskPressure &&
+    m.queueWaitP95Ms <= m.queueWaitMaxMs && (m.queueWaitSamples > 0 || (m.queueWaitMaxMs === 0 && m.queueWaitP95Ms === 0)) &&
+    m.queueWaitSamples <= c.prSnapshots * 2 + 2 &&
+    settled <= c.deliveries && m.deliveryAttempts >= settled &&
+    (!limits.includes("delivery-retry") || m.failedDeliveries > 0) &&
+    m.prReports <= c.prSnapshots && m.alertIntents <= m.prReports && m.succeededJobs <= c.prSnapshots * 2 &&
+    m.waitingJobs <= 1 && m.cancelledJobs <= 1 && m.peakRssBytes > 0 &&
+    (m.stopAckMs === null || m.cancelledJobs <= 1);
+}
+
 /** Rejects malformed, unknown-field or oversized drill records before persistence or export. */
 export function validateDrillRecord(value: unknown): asserts value is LoadDrillRecord {
   const fail = (): never => { throw new Error("invalid_ops_record"); };
   if (!exact(value, ["schema", "id", "observedAt", "installationLabel", "versions", "config", "legs", "measurements", "exhaustedLimits", "fixtureHonesty", "outcome", "nextAction"])) fail();
   const r = value as LoadDrillRecord;
   if (r.schema !== "jit.ops.drill/v1" || !uuidPattern.test(r.id) || !isoTime(r.observedAt) ||
-      safeOpsAlias(r.installationLabel) !== r.installationLabel || !["passed", "blocked", "failed"].includes(r.outcome) || !drillActions.includes(r.nextAction)) fail();
+      !labelOk(r.installationLabel) || !["passed", "blocked", "failed"].includes(r.outcome) || !drillActions.includes(r.nextAction)) fail();
   validateRevisions(r.versions);
   validateDrillConfig(r.config);
   if (!Array.isArray(r.legs) || r.legs.length > 16) fail();
@@ -269,6 +328,15 @@ export function validateDrillRecord(value: unknown): asserts value is LoadDrillR
   validateMeasurements(r.measurements);
   validateExhaustedLimits(r.exhaustedLimits);
   if (!Array.isArray(r.fixtureHonesty) || r.fixtureHonesty.length > 16 || r.fixtureHonesty.some(n => !noteOk(n))) fail();
+  // Semantics, not only structure: the exact ordered leg set, recomputed verdict, typed limits and measurement invariants.
+  if (r.legs.length !== drillLegOrder.length || r.legs.some((l, i) => l.leg !== drillLegOrder[i])) fail();
+  const verdict = deriveDrillVerdict(r.legs, r.measurements.diskPressure);
+  if (r.outcome !== verdict.outcome || r.nextAction !== verdict.nextAction) fail();
+  if (r.exhaustedLimits.includes("drill-deadline") !== r.legs.some(l => deadlineDetail.test(l.detail))) fail();
+  if (JSON.stringify(r.exhaustedLimits) !== JSON.stringify(exhaustedLimitKinds.filter(k => r.exhaustedLimits.includes(k)))) fail();
+  if (!checkMeasurementInvariants(r.measurements, r.config, r.exhaustedLimits)) fail();
+  const network = r.legs[drillLegOrder.indexOf("network")]!;
+  if (r.measurements.fetchCalls > 0 && network.state === "passed") fail();
   if (Buffer.byteLength(JSON.stringify(r)) > 32768) fail();
 }
 
@@ -278,12 +346,13 @@ export function validateProfileRecord(value: unknown): asserts value is OpsProfi
   if (!exact(value, ["schema", "id", "observedAt", "installationLabel", "drillId", "versions", "config", "measurements", "exhaustedLimits", "sampleLimitations", "piReadiness", "nextAction"])) fail();
   const r = value as OpsProfile;
   if (r.schema !== "jit.ops.profile/v1" || !uuidPattern.test(r.id) || !isoTime(r.observedAt) ||
-      safeOpsAlias(r.installationLabel) !== r.installationLabel || typeof r.drillId !== "string" || !uuidPattern.test(r.drillId) ||
+      !labelOk(r.installationLabel) || typeof r.drillId !== "string" || !uuidPattern.test(r.drillId) ||
       r.piReadiness !== "not-claimed" || !drillActions.includes(r.nextAction)) fail();
   validateRevisions(r.versions);
   validateDrillConfig(r.config);
   validateMeasurements(r.measurements);
   validateExhaustedLimits(r.exhaustedLimits);
+  if (!checkMeasurementInvariants(r.measurements, r.config, r.exhaustedLimits)) fail();
   if (!Array.isArray(r.sampleLimitations) || r.sampleLimitations.length > 32 || r.sampleLimitations.some(n => !noteOk(n))) fail();
   if (Buffer.byteLength(JSON.stringify(r)) > 32768) fail();
 }
@@ -308,10 +377,12 @@ export function validateReleaseRecord(value: unknown): asserts value is ReleaseC
   if (!exact(value, ["schema", "id", "observedAt", "installationLabel", "drillId", "deterministic", "human", "outcome", "nextAction"])) fail();
   const r = value as ReleaseChecklist;
   if (r.schema !== "jit.ops.release/v1" || !uuidPattern.test(r.id) || !isoTime(r.observedAt) ||
-      safeOpsAlias(r.installationLabel) !== r.installationLabel ||
+      !labelOk(r.installationLabel) ||
       (r.drillId !== null && (typeof r.drillId !== "string" || !uuidPattern.test(r.drillId)))) fail();
   const states = [...validateRows(r.deterministic, deterministicChecklistIds, false), ...validateRows(r.human, humanChecklistIds, true)].map(i => i.state);
   if (r.drillId === null && r.deterministic.some(i => i.state !== "not-run")) fail();
+  // An executed deterministic row's evidence is the referenced drill itself; binding to its legs happens with the drill loaded.
+  if (r.deterministic.some(i => i.state !== "not-run" && i.evidenceId !== r.drillId)) fail();
   const outcome = states.includes("failed") ? "failed" : states.includes("blocked") || states.includes("not-run") ? "blocked" : "passed";
   const nextAction = outcome === "passed" ? "none" : outcome === "failed" ? "inspect-sanitized-drill" : "resolve-blocked-work";
   if (r.outcome !== outcome || r.nextAction !== nextAction) fail();

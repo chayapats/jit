@@ -1,5 +1,7 @@
 import { Database, type SQLQueryBindings } from "bun:sqlite";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AppTransaction } from "../store";
 import type { ReadableStore } from "./lifecycle";
 
@@ -25,7 +27,12 @@ export function unavailableReadOnlyStore(path: string, reason = "store_unavailab
  *   read-only open of a WAL-mode file without `-shm` fails everywhere. The
  *   snapshot is discarded when the file or its sidecars change during the
  *   read.
- * - Both sidecars: a plain `readonly` connection that reads committed WAL data.
+ * - Both sidecars: the installation's live WAL set is never opened (even a
+ *   read-only SQLite connection writes reader marks into `-shm`). The main
+ *   file and `-wal` are copied into a private disposable directory, the
+ *   originals' size/mtime/inode must be unchanged across the copy (else the
+ *   read is retried, at most 3 times, then fails `store_changed_during_read`),
+ *   and the copy is opened; SQLite rebuilds the WAL index for the copy only.
  * - Exactly one sidecar: committed WAL data could be ignored or unreadable,
  *   so every query fails (`store_sidecars_incomplete`) and the store reads as
  *   unavailable rather than stale.
@@ -48,6 +55,36 @@ function snapshot(path: string): Database | null {
   return Database.deserialize(bytes, { readonly: true, strict: true });
 }
 
+type Identity = { size: number; mtimeMs: number; ino: number };
+const identity = (path: string): Identity => { const s = statSync(path); return { size: s.size, mtimeMs: s.mtimeMs, ino: s.ino }; };
+const same = (a: Identity, b: Identity): boolean => a.size === b.size && a.mtimeMs === b.mtimeMs && a.ino === b.ino;
+
+/**
+ * Disposable copy of a live WAL set (main + `-wal`), consistency-checked
+ * against the originals. Returns the open copy and its cleanup, or null when
+ * the originals kept changing.
+ */
+function walSnapshot(path: string): { db: Database; dispose: () => void } | null {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const before = { main: identity(path), wal: identity(`${path}-wal`) };
+    if (before.main.size + before.wal.size > snapshotLimitBytes) throw new Error("store_too_large_for_snapshot");
+    const dir = mkdtempSync(join(tmpdir(), "jit-ro-store-"));
+    const dispose = (): void => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* Best-effort temp cleanup. */ } };
+    try {
+      const copy = join(dir, "snapshot.sqlite");
+      copyFileSync(path, copy);
+      copyFileSync(`${path}-wal`, `${copy}-wal`);
+      const after = { main: identity(path), wal: identity(`${path}-wal`) };
+      if (!same(before.main, after.main) || !same(before.wal, after.wal) ||
+          statSync(copy).size !== before.main.size || statSync(`${copy}-wal`).size !== before.wal.size) { dispose(); continue; }
+      // The copy is private: a read-write connection may build its own WAL index there; queries stay read-only (`run` throws).
+      const db = new Database(copy, { create: false, strict: true });
+      return { db, dispose: () => { try { db.close(); } finally { dispose(); } } };
+    } catch (error) { dispose(); throw error; }
+  }
+  return null;
+}
+
 export function openReadOnlyStore(path: string): ReadableStore | null {
   try { if (!existsSync(path) || !statSync(path).isFile() || statSync(path).size === 0) return null; } catch { return null; }
   return {
@@ -55,8 +92,9 @@ export function openReadOnlyStore(path: string): ReadableStore | null {
     read<T>(fn: (tx: AppTransaction) => T): T {
       const wal = existsSync(`${path}-wal`), shm = existsSync(`${path}-shm`);
       if (wal !== shm) return unavailableReadOnlyStore(path, "store_sidecars_incomplete").read(fn);
-      const db = wal ? new Database(path, { readonly: true, create: false, strict: true }) : snapshot(path);
-      if (!db) return unavailableReadOnlyStore(path, "store_changed_during_read").read(fn);
+      const opened = wal ? walSnapshot(path) : (() => { const db = snapshot(path); return db ? { db, dispose: () => db.close() } : null; })();
+      if (!opened) return unavailableReadOnlyStore(path, "store_changed_during_read").read(fn);
+      const db = opened.db;
       try {
         const tx: AppTransaction = {
           get: <R>(sql: string, ...bindings: SQLQueryBindings[]) => db.query(sql).get(...bindings) as R | null,
@@ -64,7 +102,7 @@ export function openReadOnlyStore(path: string): ReadableStore | null {
           run: () => { throw new Error("read_only_store"); },
         };
         return fn(tx);
-      } finally { db.close(); }
+      } finally { opened.dispose(); }
     },
   } as ReadableStore;
 }
