@@ -1,10 +1,13 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Application } from "../src/application";
 import { readConfig } from "../src/config";
-import { backupRetention, scanBackupSecrets, type BackupNativePort } from "../src/ops/backup";
+import { backupRetention, resolveNativeSnapshot, scanBackupSecrets, type BackupNativePort } from "../src/ops/backup";
+import { createSchwayBackupNativePort, schwayBackupEngine } from "../src/ops/schway-backup";
+import { currentSupportedSchema, prepareUpgrade } from "../src/ops/upgrade";
+import { schwayHostDirs } from "../src/team/schway-port";
 import { TransactionStore } from "../src/store";
 import { createWebHandler } from "../src/web";
 
@@ -229,4 +232,107 @@ test("web inventory and detail render without secrets or worker activation", asy
   const api = await f.web(req("/api/backups", f.token));
   expect(api.status).toBe(200);
   expect((await api.json() as { manifests: unknown[] }).manifests).toHaveLength(1);
+});
+
+async function concreteFixture() {
+  const root = mkdtempSync(join(tmpdir(), "jit-ops-backup-concrete-")); roots.push(root);
+  const dbPath = join(root, "state.sqlite");
+  const config = readConfig({ JIT_DATABASE: dbPath });
+  const backupDir = join(root, "backups");
+  const store = new TransactionStore(dbPath); stores.push(store);
+  const port = createSchwayBackupNativePort(store);
+  // Gate holds on a fresh installation directory: no credentials, no network.
+  expect(port.available()).toBe(true);
+  const app = new Application(store, config, { now: () => 1800000000000, backupDir, nativeSnapshot: port });
+  await app.setupOwner(password);
+  const token = await app.login(password);
+  const auth = app.authenticate(token);
+  return { root, dbPath, config, store, app, auth, token, backupDir, web: createWebHandler(app), port };
+}
+
+function seedNativeRef(f: Awaited<ReturnType<typeof concreteFixture>>, runId = crypto.randomUUID()) {
+  const contextId = crypto.randomUUID();
+  f.store.transaction(tx => tx.run(
+    "INSERT INTO schway_native_refs (run_id, context_id, generation, session_id, branch_id, state, created_at, updated_at) VALUES (?, ?, 1, ?, ?, 'finished', ?, ?)",
+    runId, contextId, `native-session-opaque-${runId}`, `branch-${runId}`, 1800000000000, 1800000000000));
+  return { runId, contextId };
+}
+
+test("concrete port stays unavailable when the service gate fails and never yields a valid backup", async () => {
+  const root = mkdtempSync(join(tmpdir(), "jit-ops-backup-gate-")); roots.push(root);
+  const dbPath = join(root, "state.sqlite");
+  const config = readConfig({ JIT_DATABASE: dbPath });
+  const store = new TransactionStore(dbPath); stores.push(store);
+  // A file where the service-owned base must be blocks the pinned gate.
+  writeFileSync(join(root, ".jit-host"), "blocker");
+  const port = createSchwayBackupNativePort(store);
+  expect(port.available()).toBe(false);
+  expect(resolveNativeSnapshot(port).state).toBe("unavailable");
+  const app = new Application(store, config, { now: () => 1800000000000, backupDir: join(root, "backups"), nativeSnapshot: port });
+  await app.setupOwner(password);
+  const token = await app.login(password);
+  const auth = app.authenticate(token);
+  const project = app.execute(auth.actor, {
+    kind: "project.create", projectId: null, requestId: rid(),
+    expectedRevision: app.workspace(auth.actor).revision, payload: { name: "gate project" },
+  }).project;
+  void project;
+  const receipt = app.execute(auth.actor, {
+    kind: "backup.create", requestId: rid(), projectId: null,
+    expectedRevision: app.workspace(auth.actor).revision, payload: { note: "gated backup" },
+  });
+  expect(receipt.manifest.native.state).toBe("unavailable");
+  expect(receipt.manifest.state).toBe("incomplete");
+});
+
+test("concrete port captures durable native refs under the pinned engine label", async () => {
+  const f = await concreteFixture();
+  const { runId } = seedNativeRef(f);
+  // One measured session-dir file proves bytes reflect service-owned state.
+  writeFileSync(join(schwayHostDirs(f.dbPath).sessionDirectory, "probe.bin"), Buffer.alloc(100));
+  const snap = f.port.snapshot();
+  expect(snap.engine).toBe(schwayBackupEngine);
+  expect(snap.refs).toEqual([{ id: runId, generation: 1 }]);
+  expect(snap.bytes).toBeGreaterThanOrEqual(100);
+  createProject(f);
+  seedLifecycle(f);
+  const receipt = f.app.execute(f.auth.actor, backupCommand(f));
+  expect(receipt.manifest.state).toBe("valid");
+  expect(receipt.manifest.native.state).toBe("valid");
+  expect(receipt.manifest.native.engine).toBe(schwayBackupEngine);
+  expect(receipt.manifest.native.refs).toEqual([{ id: runId, generation: 1 }]);
+  // Opaque native session/branch ids never leave the store; manifest stays secret-free.
+  expect(JSON.stringify(receipt.manifest)).not.toContain("native-session-opaque-");
+  expect(JSON.stringify(receipt.manifest)).not.toContain(`branch-${runId}`);
+  const hits = scanBackupSecrets(receipt.manifest, [password, f.token, "gho_", "xoxb-"]);
+  expect(hits).toEqual([]);
+});
+
+test("concrete port fails closed when correlated sessions lose their directory", async () => {
+  const f = await concreteFixture();
+  seedNativeRef(f);
+  rmSync(schwayHostDirs(f.dbPath).sessionDirectory, { recursive: true, force: true });
+  const native = resolveNativeSnapshot(f.port);
+  expect(native.state).not.toBe("valid");
+  expect(native.reason).toBe("native_snapshot_unavailable");
+  createProject(f);
+  seedLifecycle(f);
+  const receipt = f.app.execute(f.auth.actor, backupCommand(f));
+  expect(receipt.manifest.native.state).not.toBe("valid");
+  expect(receipt.manifest.state).toBe("incomplete");
+});
+
+test("upgrade prepare records the concrete engine label with a usable recovery point", async () => {
+  const f = await concreteFixture();
+  createProject(f);
+  seedLifecycle(f);
+  const revision = f.app.workspace(f.auth.actor).revision;
+  const upgradeDir = join(f.root, "upgrades");
+  const journal = f.store.transaction(tx => prepareUpgrade(tx, f.store, {
+    id: crypto.randomUUID(), now: 1800000000000, appRevision: revision,
+    targetSchema: currentSupportedSchema, note: "concrete engine",
+    upgradeDir, backupDir: f.backupDir, engine: f.port,
+  }));
+  expect(journal.preflight.engine).toBe(schwayBackupEngine);
+  expect(typeof journal.snapshotBackupId).toBe("string");
 });

@@ -163,7 +163,7 @@ export function prepareUpgrade(tx: AppTransaction, store: TransactionStore, inpu
     throw new AppError("upgrade_in_progress", 409);
   }
   const fromSchema = currentSchema(tx);
-  const engineName = input.engine?.available() ? "scripted-fixture-v1" : null;
+  const engineName = input.engine?.available() ? (input.engine.engine ?? "scripted-fixture-v1") : null;
   const plan = planUpgrade(fromSchema, input.targetSchema, engineName);
   // Failed preflights throw before mutating; the caller persists the failed journal
   // outside this rolled-back transaction so the rejection stays inspectable.
@@ -221,7 +221,7 @@ export function recordFailedUpgrade(tx: AppTransaction, input: {
   id: string; now: number; targetSchema: number; engine: BackupNativePort | undefined; reason: string;
 }): UpgradeJournal {
   const fromSchema = currentSchema(tx);
-  const engineName = input.engine?.available() ? "scripted-fixture-v1" : null;
+  const engineName = input.engine?.available() ? (input.engine.engine ?? "scripted-fixture-v1") : null;
   const plan = planUpgrade(fromSchema, input.targetSchema, engineName);
   const preflightFailed = !plan.compatible;
   const snapshotDetail = preflightFailed ? "preflight_failed" : input.reason;

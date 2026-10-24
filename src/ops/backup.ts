@@ -19,6 +19,12 @@ export interface BackupNativeSnapshot {
 export interface BackupNativePort {
   available(): boolean;
   snapshot(): BackupNativeSnapshot;
+  /**
+   * Pinned engine label for preflight display. The snapshot itself stays
+   * authoritative for manifest content; ports without a label read as the
+   * scripted fixture for backward-compatible display only.
+   */
+  readonly engine?: string;
 }
 
 export const unavailableNativePort: BackupNativePort = {
