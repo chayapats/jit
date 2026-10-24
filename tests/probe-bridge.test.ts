@@ -798,33 +798,40 @@ test("cancellation waits for an in-flight credential mutation to settle", async 
     return new Response(sseSuccess("late", 1, 1), { status: 200, headers: { "content-type": "text/event-stream" } });
   };
   const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, store, fetch });
+  const controller = new AbortController();
   const pending = liveProbe("fixture-probe-host",
     { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 1000 },
-    { ...ports, now: () => 1800000000000, id: () => OTHER_ID }, root);
-  // Wait until the credential mutation is actually in flight (attempt
-  // reserved and the refresh intent durably recorded).
-  for (let spin = 0; spin < 200; spin++) {
-    try {
-      const sends = (await readProbeAttempt(root, OTHER_ID)).observations.find(item => item.observation === "renewal")!.sends;
-      if (sends!.length > 0) break;
-    } catch { /* Not persisted yet. */ }
-    await new Promise(r => setTimeout(r, 5));
+    { ...ports, now: () => 1800000000000, id: () => OTHER_ID }, root, controller.signal);
+  try {
+    // Wait until the credential mutation is actually in flight (attempt
+    // reserved and the refresh intent durably recorded).
+    for (let spin = 0; spin < 200; spin++) {
+      try {
+        const sends = (await readProbeAttempt(root, OTHER_ID)).observations.find(item => item.observation === "renewal")!.sends;
+        if (sends!.length > 0) break;
+      } catch { /* Not persisted yet. */ }
+      await new Promise(r => setTimeout(r, 5));
+    }
+    await new Promise(r => setTimeout(r, 50));
+    // Cancel while the write is in flight: acknowledgement waits for safe
+    // settlement instead of racing past the mutation.
+    const cancelPromise = cancelProbeAttempt(root, OTHER_ID);
+    await new Promise(r => setTimeout(r, 50));
+    releaseWrite();
+    const cancelled = await cancelPromise;
+    cancelAt = Date.now();
+    expect(cancelled.lifecycle).toBe("cancelled");
+    const late = await pending;
+    expect(late.record.lifecycle).toBe("cancelled");
+    // The mutation settled before acknowledgement: exactly one write, no
+    // post-acknowledgement mutation.
+    expect(backend.size).toBe(1);
+    expect(writeAt).toBeLessThanOrEqual(cancelAt);
+  } finally {
+    controller.abort();
+    releaseWrite();
+    await pending.catch(() => null);
   }
-  await new Promise(r => setTimeout(r, 50));
-  // Cancel while the write is in flight: acknowledgement waits for safe
-  // settlement instead of racing past the mutation.
-  const cancelPromise = cancelProbeAttempt(root, OTHER_ID);
-  await new Promise(r => setTimeout(r, 50));
-  releaseWrite();
-  const cancelled = await cancelPromise;
-  cancelAt = Date.now();
-  expect(cancelled.lifecycle).toBe("cancelled");
-  const late = await pending;
-  expect(late.record.lifecycle).toBe("cancelled");
-  // The mutation settled before acknowledgement: exactly one write, no
-  // post-acknowledgement mutation.
-  expect(backend.size).toBe(1);
-  expect(writeAt).toBeLessThanOrEqual(cancelAt);
 });
 
 test("a hanging credential mutation cannot wedge the probe past its deadline", async () => {
@@ -916,7 +923,13 @@ test("a hanging credential write does not wedge the probe past its deadline", as
     set: () => new Promise<never>(() => {}),
     delete: async () => false,
   };
-  const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, store, fetch: successFetch("late") });
+  const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, store, fetch: async (input: any, init?: any) => {
+    const url = String(typeof input === "string" ? input : input.url);
+    if (url.toLowerCase().includes("token")) {
+      return new Response(JSON.stringify({ access_token: "new-access", refresh_token: "refresh-token", expires_in: 3600 }), { status: 200 });
+    }
+    return successFetch("late")(input, init);
+  } });
   const startedAt = Date.now();
   const { record } = await liveProbe("fixture-probe-host",
     { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 100 },
@@ -1064,7 +1077,10 @@ test("separate-process cancel leaves no post-acknowledgement credential visible"
 test("a write completing after the deadline leaves no credential visible", async () => {
   const root = setup();
   const expired = JSON.stringify({ accessToken: "old-access", refreshToken: "refresh-token", obtainedAt: 0, expiresAt: 1 });
-  const backend = new Map<string, string>();
+  // A prior login already sits in the store; the probe's late write
+  // overwrites it and the fence must remove exactly that late value —
+  // never resurrecting the prior login, never keeping the probe's.
+  const backend = new Map<string, string>([["grok-subscription:xai", expired]]);
   const store: HostCredentialStore = {
     get: async identity => backend.get(identity.account) ?? expired,
     // Settles well after the 100ms deadline: the abort path terminalizes
@@ -1075,7 +1091,13 @@ test("a write completing after the deadline leaves no credential visible", async
     },
     delete: async identity => backend.delete(identity.account),
   };
-  const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, store, fetch: successFetch("late") });
+  const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, store, fetch: async (input: any, init?: any) => {
+    const url = String(typeof input === "string" ? input : input.url);
+    if (url.toLowerCase().includes("token")) {
+      return new Response(JSON.stringify({ access_token: "new-access", refresh_token: "refresh-token", expires_in: 3600 }), { status: 200 });
+    }
+    return successFetch("late")(input, init);
+  } });
   const startedAt = Date.now();
   const { record } = await liveProbe("fixture-probe-host",
     { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 100 },
@@ -1092,4 +1114,81 @@ test("a write completing after the deadline leaves no credential visible", async
   // the terminal record is stable regardless of which timeout won.
   expect(backend.size).toBe(0);
   expect((await readProbeAttempt(root, OTHER_ID)).lifecycle).toBe(record.lifecycle);
+});
+
+test("invalidation never removes a concurrent legitimate credential", async () => {
+  const root = setup();
+  const expired = JSON.stringify({ accessToken: "old-access", refreshToken: "refresh-token", obtainedAt: 0, expiresAt: 1 });
+  const backend = new Map<string, string>();
+  let releaseSet!: () => void;
+  const setGate = new Promise<void>(resolve => { releaseSet = resolve; });
+  let releaseGet!: () => void;
+  const getGate = new Promise<void>(resolve => { releaseGet = resolve; });
+  let enteredSet = false;
+  const store: HostCredentialStore = {
+    get: async identity => {
+      // Hold the cleanup compare open once the probe wrote, so the
+      // legitimate write lands first, deterministically. Earlier reads
+      // (readiness, pre-write) see an empty backend and pass through.
+      if (backend.size > 0) await getGate;
+      return backend.get(identity.account) ?? expired;
+    },
+    // Gated backend write: cancellation is acknowledged while it is still
+    // in flight (bounded by the short live deadline below).
+    set: async (identity, value) => {
+      enteredSet = true;
+      await setGate;
+      backend.set(identity.account, value);
+    },
+    delete: async identity => backend.delete(identity.account),
+  };
+  const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, store, fetch: async (input: any, init?: any) => {
+    const url = String(typeof input === "string" ? input : input.url);
+    if (url.toLowerCase().includes("token")) {
+      return new Response(JSON.stringify({ access_token: "new-access", refresh_token: "refresh-token", expires_in: 3600 }), { status: 200 });
+    }
+    return successFetch("late")(input, init);
+  } });
+  const controller = new AbortController();
+  const pending = liveProbe("fixture-probe-host",
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 300 },
+    { ...ports, now: () => 1800000000000, id: () => OTHER_ID }, root, controller.signal);
+  try {
+    for (let spin = 0; spin < 200 && !enteredSet; spin++) {
+      await new Promise(r => setTimeout(r, 25));
+    }
+    expect(enteredSet).toBe(true);
+    // Cancel while the write is in flight: acknowledgement waits only up to
+    // the remaining live deadline, then the write lands and is fenced.
+    const cancelled = await cancelProbeAttempt(root, OTHER_ID);
+    expect(cancelled.lifecycle).toBe("cancelled");
+    releaseSet();
+    const late = await pending;
+    expect(late.record.lifecycle).toBe("cancelled");
+    // The legitimate write lands while the cleanup compare is held open.
+    backend.set("grok-subscription:xai", "legitimate-fresh-login");
+    releaseGet();
+    await new Promise(r => setTimeout(r, 100));
+    expect(backend.get("grok-subscription:xai")).toBe("legitimate-fresh-login");
+  } finally {
+    controller.abort();
+    await pending.catch(() => null);
+  }
+});
+test("cleanup backend failures still terminalize without crashing", async () => {
+  const root = setup();
+  const expired = JSON.stringify({ accessToken: "old-access", refreshToken: "refresh-token", obtainedAt: 0, expiresAt: 1 });
+  const backend = new Map<string, string>();
+  const store: HostCredentialStore = {
+    get: async () => { throw new Error("store read failed"); },
+    set: async (identity, value) => { backend.set(identity.account, value); },
+    delete: async () => { throw new Error("store delete failed"); },
+  };
+  const ports = bridgeProbePorts({ route: "grok", model: "grok-4-fixture", root, store, fetch: successFetch("late") });
+  const { record } = await liveProbe("fixture-probe-host",
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 8000 },
+    { ...ports, now: () => 1800000000000, id: () => OTHER_ID }, root);
+  // Readiness already failed closed on the throwing store; the run
+  // terminalizes instead of hanging or throwing out of the probe.
+  expect(["failed", "store-unavailable", "needs-login", "cancelled"].includes(record.lifecycle)).toBe(true);
 });

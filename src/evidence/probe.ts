@@ -1099,19 +1099,36 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
     // Generation-fenced final visibility for explicit stores: the check runs
     // when the backend actually settles — not when the bounded race above
     // decides — because a late settlement is exactly what must be fenced.
+    // The recheck and compare-and-delete run inside the shared in-process
+    // lifecycle serialization, so they are atomic against every other
+    // fenced writer in this process; unfenced external writers stay outside
+    // any in-process guarantee (same class of residual as crash orphans).
     // Removes exactly the written value and never touches a concurrent
     // legitimate write. Runs unfenced on purpose: it is the fence's own
-    // compensation, and fencing it would refuse the cleanup.
+    // compensation, and fencing it would refuse the cleanup. It only runs
+    // after the backend already proved responsive (the write just
+    // settled), so it cannot wedge the lock behind a hung backend.
     writeStore: async (identity: { account: string }, value: string,
       store: { get(identity: { account: string }): Promise<string | null>; set(identity: { account: string }, value: string): Promise<void>; delete(identity: { account: string }): Promise<boolean> }): Promise<void> => {
       const outcome = await (async () => {
         const pending = fencedStoreWrite(root, id, effective, () => {
           const raw = store.set(identity, value);
           raw.then(async () => {
-            const settled = await readProbeAttempt(root, id).catch(() => null);
-            if (settled !== null && settled.lifecycle !== "started") {
-              const current = await store.get(identity).catch(() => null);
-              if (current === value) await store.delete(identity).catch(() => {});
+            let release: (() => void) | null = null;
+            try {
+              const dir = await probeDirectory(root, true);
+              release = await acquireDirLock(dir);
+            } catch {
+              return;
+            }
+            try {
+              const settled = await readProbeAttempt(root, id).catch(() => null);
+              if (settled !== null && settled.lifecycle !== "started") {
+                const current = await store.get(identity).catch(() => null);
+                if (current === value) await store.delete(identity).catch(() => {});
+              }
+            } finally {
+              release();
             }
           }, () => {});
           return raw;
