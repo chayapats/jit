@@ -1140,6 +1140,28 @@ test("local delivery copies linked by provenance or quoting the payload are canc
   expect(raw).not.toContain("quoted-delivery-231");
 });
 
+test("a definitively failed delivery previews redact_keep_state and confirm keeps that state while redacting", async () => {
+  const f = await fixture();
+  const a = project(f, "โครงการส่งล้มเหลว", "หัวข้อส่งล้มเหลว");
+  const own = commitDelivery(f, a, "รายงานลับ failed-canary-251 ห้ามส่ง");
+  // A definitive provider rejection: the outbox treats this as terminal and never cancels it.
+  f.rt.store.transaction(tx => {
+    const row = JSON.parse(tx.get<{ j: string }>("SELECT record_json AS j FROM delivery_intents WHERE id = ?", own.intent.id)!.j);
+    Object.assign(row, { status: "failed", remote: "rejected", failureReason: "provider_rejected", nextAction: "inspect_failure", revision: row.revision + 1 });
+    tx.run("UPDATE delivery_intents SET record_json = ? WHERE id = ?", JSON.stringify(row), own.intent.id);
+  });
+  const preview = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, { sourceId: own.report.sourceId, revision: own.report.sourceRevision, generation: own.report.sourceGeneration })));
+  expect(preview.preview.affected.deliveries).toEqual([{ intentId: own.intent.id, reportId: own.report.id, projectId: a.id,
+    status: "failed", evidence: "provenance", effect: "redact_keep_state" }]);
+  asConfirmed(f.rt.app.execute(actor(f), confirmCommand(f, a, preview.preview.id)));
+  const detail = f.rt.app.delivery(actor(f), a.id, own.intent.id) as { intent: { status: string; failureReason: string | null } };
+  // The advertised effect matches the final state: status and failure reason kept, text redacted.
+  expect(detail.intent).toMatchObject({ status: "failed", failureReason: "provider_rejected" });
+  const raw = f.rt.store.read(tx => [...tx.all<{ t: string }>("SELECT record_json AS t FROM delivery_intents"),
+    ...tx.all<{ t: string }>("SELECT record_json AS t FROM delivery_reports")].map(r => r.t).join("\n"));
+  expect(raw).not.toContain("failed-canary-251");
+});
+
 test("quoted-copy cleanup covers the whole payload set and names unsafe short or oversized sets", async () => {
   const f = await fixture();
   const a = project(f, "โครงการ scrub", "หัวข้อ scrub");

@@ -4,12 +4,15 @@ import { readMonitor } from "./authority";
 import type { TrustedGitHubConnector } from "./github";
 import { readCandidate } from "./poll";
 import { ensurePrSchema } from "./schema";
+import { DEFAULT_PR_LIMITS } from "./types";
 import type {
   CoverageEntry,
   CoverageManifest,
   ImmutableSnapshot,
+  PrReadLimits,
   ReviewCandidate,
 } from "./types";
+import { Utf8Budget, utf8Bytes } from "../utf8";
 
 const ISSUE_REF = /(?:closes|fixes|refs)\s+#(\d+)/gi;
 const SPEC_REF = /(?:spec|docs)[/:]([\w./-]+\.md)/gi;
@@ -35,13 +38,28 @@ export interface SnapshotMaterials {
   markStale?: boolean;
 }
 
+/** Snapshot read limits; every connector-supplied string counts against `maxPayloadBytes`. */
+export type SnapshotLimits = Pick<PrReadLimits, "maxPages" | "maxFiles" | "maxDiffBytes" | "maxEvidenceBytes" | "pageSize">
+  & Partial<Pick<PrReadLimits, "maxPayloadBytes">>;
+
+/** Per-field ceiling for the PR and issue titles, in UTF-8 bytes. */
+const MAX_TITLE_BYTES = 500;
+
 /**
  * Reads connector-bound inputs for a candidate without writing.
  * Does not checkout, install, execute, or autoload AGENTS/skills/config.
+ *
+ * Every connector-supplied string retained in the snapshot (PR title/body, file paths/statuses and
+ * patches, issue titles/bodies, spec paths/texts, CI names/conclusions/reasons) draws from one
+ * cumulative UTF-8 budget of `maxPayloadBytes` (default {@link DEFAULT_PR_LIMITS}), on top of the
+ * per-field `maxDiffBytes`/`maxEvidenceBytes` ceilings, which are also UTF-8 bytes. Text is cut only
+ * on code-point boundaries ({@link truncateUtf8}); identities (paths, names) are never stored cut and
+ * are dropped instead. Every cut or drop is a `truncated` coverage entry (`max_payload_bytes`,
+ * `max_diff_bytes`, `max_evidence_bytes`, ...), so the snapshot reads partial/incomplete, never complete.
  */
 export function collectSnapshotMaterials(
   candidate: ReviewCandidate,
-  monitorLimits: { maxPages: number; maxFiles: number; maxDiffBytes: number; maxEvidenceBytes: number; pageSize: number },
+  monitorLimits: SnapshotLimits,
   connector: TrustedGitHubConnector,
 ): SnapshotMaterials {
   const pull = connector.resolvePull(candidate.pullNumber);
@@ -62,27 +80,40 @@ export function collectSnapshotMaterials(
     };
   }
 
+  const maxPayloadBytes = monitorLimits.maxPayloadBytes ?? DEFAULT_PR_LIMITS.maxPayloadBytes;
+  const budget = new Utf8Budget(maxPayloadBytes);
   const entries: CoverageEntry[] = [];
   const files: ImmutableSnapshot["files"] = [];
   let enumerationComplete = true;
   let page = 1;
   let collected = 0;
   let diffBytes = 0;
+  const range = `${candidate.baseSha}...${candidate.headSha}`;
+  const payloadCut = (kind: CoverageEntry["kind"], path: string | null, immutableRef: string | null, bytes: number | null): CoverageEntry => ({
+    kind, path, state: "truncated", immutableRef, limit: maxPayloadBytes, bytes, reason: "max_payload_bytes",
+  });
 
   entries.push({
     kind: "enumeration", path: null, state: "requested",
-    immutableRef: `${candidate.baseSha}...${candidate.headSha}`,
-    limit: monitorLimits.maxFiles, bytes: null, reason: null,
+    immutableRef: range, limit: monitorLimits.maxFiles, bytes: null, reason: null,
   });
 
-  while (page <= monitorLimits.maxPages) {
+  // The title comes first so later reads cannot starve it; it is optional context, so a cut is disclosed.
+  const title = budget.take(pull.title, MAX_TITLE_BYTES);
+  if (title.truncated) {
+    entries.push(title.cutBy === "budget"
+      ? payloadCut("pr", "title", candidate.headSha, title.bytes)
+      : { kind: "pr", path: "title", state: "truncated", immutableRef: candidate.headSha, limit: MAX_TITLE_BYTES, bytes: title.bytes, reason: "max_title_bytes" });
+  }
+
+  let payloadExhausted = false;
+  while (page <= monitorLimits.maxPages && !payloadExhausted) {
     const listed = connector.listFiles(candidate.pullNumber, candidate.baseSha, candidate.headSha, page);
     if (listed.reason === "rate_limited" || listed.reason === "pagination_failed") {
       enumerationComplete = false;
       entries.push({
         kind: "files", path: null, state: "unavailable",
-        immutableRef: `${candidate.baseSha}...${candidate.headSha}`,
-        limit: monitorLimits.pageSize, bytes: null, reason: listed.reason,
+        immutableRef: range, limit: monitorLimits.pageSize, bytes: null, reason: listed.reason,
       });
       break;
     }
@@ -95,8 +126,14 @@ export function collectSnapshotMaterials(
         });
         break;
       }
+      // A file identity is stored whole or not at all; running out of budget ends enumeration.
+      if (!budget.fits(file.filename) || !budget.fits(file.status)) {
+        enumerationComplete = false;
+        payloadExhausted = true;
+        entries.push(payloadCut("files", null, range, collected));
+        break;
+      }
       const patch = file.patch;
-      const patchBytes = patch ? Buffer.byteLength(patch) : 0;
       if (patch === null && file.status !== "removed") {
         entries.push({
           kind: "file", path: file.filename, state: "unavailable",
@@ -106,36 +143,34 @@ export function collectSnapshotMaterials(
         collected += 1;
         continue;
       }
-      if (file.truncated || diffBytes + patchBytes > monitorLimits.maxDiffBytes) {
-        const kept = patch
-          ? patch.slice(0, Math.max(0, monitorLimits.maxDiffBytes - diffBytes))
-          : null;
+      const kept = patch === null ? null : budget.take(patch, monitorLimits.maxDiffBytes - diffBytes);
+      if (file.truncated || kept?.truncated) {
+        const reason = file.truncated ? "provider_truncated" : kept!.cutBy === "budget" ? "max_payload_bytes" : "max_diff_bytes";
         entries.push({
           kind: "file", path: file.filename, state: "truncated",
-          immutableRef: candidate.headSha, limit: monitorLimits.maxDiffBytes,
-          bytes: kept ? Buffer.byteLength(kept) : 0, reason: file.truncated ? "provider_truncated" : "max_diff_bytes",
+          immutableRef: candidate.headSha, limit: reason === "max_payload_bytes" ? maxPayloadBytes : monitorLimits.maxDiffBytes,
+          bytes: kept?.bytes ?? 0, reason,
         });
-        files.push({ path: file.filename, status: file.status, patch: kept, truncated: true });
-        diffBytes += kept ? Buffer.byteLength(kept) : 0;
+        files.push({ path: file.filename, status: file.status, patch: kept?.text ?? null, truncated: true });
+        diffBytes += kept?.bytes ?? 0;
         collected += 1;
         continue;
       }
       entries.push({
         kind: "file", path: file.filename, state: "read",
-        immutableRef: candidate.headSha, limit: monitorLimits.maxDiffBytes, bytes: patchBytes, reason: null,
+        immutableRef: candidate.headSha, limit: monitorLimits.maxDiffBytes, bytes: kept?.bytes ?? 0, reason: null,
       });
       files.push({ path: file.filename, status: file.status, patch, truncated: false });
-      diffBytes += patchBytes;
+      diffBytes += kept?.bytes ?? 0;
       collected += 1;
     }
-    if (collected >= monitorLimits.maxFiles) break;
+    if (collected >= monitorLimits.maxFiles || payloadExhausted) break;
     if (listed.incomplete) {
       if (page >= monitorLimits.maxPages) {
         enumerationComplete = false;
         entries.push({
           kind: "files", path: null, state: "truncated",
-          immutableRef: `${candidate.baseSha}...${candidate.headSha}`,
-          limit: monitorLimits.maxPages, bytes: collected, reason: "max_pages",
+          immutableRef: range, limit: monitorLimits.maxPages, bytes: collected, reason: "max_pages",
         });
         break;
       }
@@ -149,26 +184,30 @@ export function collectSnapshotMaterials(
   entries[0] = enumerationComplete
     ? {
       kind: "enumeration", path: null, state: "read",
-      immutableRef: `${candidate.baseSha}...${candidate.headSha}`,
-      limit: monitorLimits.maxFiles, bytes: collected, reason: null,
+      immutableRef: range, limit: monitorLimits.maxFiles, bytes: collected, reason: null,
     }
     : {
       kind: "enumeration", path: null, state: "unavailable",
-      immutableRef: `${candidate.baseSha}...${candidate.headSha}`,
-      limit: monitorLimits.maxFiles, bytes: collected, reason: "enumeration_incomplete",
+      immutableRef: range, limit: monitorLimits.maxFiles, bytes: collected, reason: "enumeration_incomplete",
     };
 
   entries.push({
     kind: "diff", path: null,
     state: enumerationComplete && !entries.some(e => e.kind === "file" && e.state !== "read") ? "read" : "truncated",
-    immutableRef: `${candidate.baseSha}...${candidate.headSha}`,
-    limit: monitorLimits.maxDiffBytes, bytes: diffBytes, reason: null,
+    immutableRef: range, limit: monitorLimits.maxDiffBytes, bytes: diffBytes, reason: null,
   });
 
   const issues: ImmutableSnapshot["issues"] = [];
   const specs: ImmutableSnapshot["specs"] = [];
   const ci: ImmutableSnapshot["ci"] = [];
-  const body = pull.body.slice(0, monitorLimits.maxEvidenceBytes);
+  const bodyRead = budget.take(pull.body, monitorLimits.maxEvidenceBytes);
+  const body = bodyRead.text;
+  if (bodyRead.truncated) {
+    // Issue/spec references beyond the cut are never discovered, so the cut is disclosed.
+    entries.push(bodyRead.cutBy === "budget"
+      ? payloadCut("pr", "body", candidate.headSha, bodyRead.bytes)
+      : { kind: "pr", path: "body", state: "truncated", immutableRef: candidate.headSha, limit: monitorLimits.maxEvidenceBytes, bytes: bodyRead.bytes, reason: "max_evidence_bytes" });
+  }
 
   for (const match of body.matchAll(ISSUE_REF)) {
     const number = Number(match[1]);
@@ -182,15 +221,15 @@ export function collectSnapshotMaterials(
       entries[idx]!.state = "unavailable";
       entries[idx]!.reason = issue.reason;
     } else {
-      const text = `${issue.title}\n${issue.body}`;
-      const truncated = Buffer.byteLength(text) > monitorLimits.maxEvidenceBytes;
-      entries[idx]!.state = truncated ? "truncated" : "read";
-      entries[idx]!.bytes = Math.min(Buffer.byteLength(text), monitorLimits.maxEvidenceBytes);
-      entries[idx]!.reason = truncated ? "max_evidence_bytes" : null;
-      issues.push({
-        number: issue.number, title: issue.title.slice(0, 500),
-        body: issue.body.slice(0, monitorLimits.maxEvidenceBytes),
-      });
+      // Title and body share one per-issue evidence ceiling and the cumulative payload budget.
+      const issueTitle = budget.take(issue.title, Math.min(MAX_TITLE_BYTES, monitorLimits.maxEvidenceBytes));
+      const issueBody = budget.take(issue.body, monitorLimits.maxEvidenceBytes - issueTitle.bytes);
+      const cut = [issueTitle, issueBody].find(part => part.truncated);
+      entries[idx]!.state = cut ? "truncated" : "read";
+      entries[idx]!.bytes = issueTitle.bytes + issueBody.bytes;
+      entries[idx]!.reason = !cut ? null : cut.cutBy === "budget" ? "max_payload_bytes" : "max_evidence_bytes";
+      if (cut?.cutBy === "budget") entries[idx]!.limit = maxPayloadBytes;
+      issues.push({ number: issue.number, title: issueTitle.text, body: issueBody.text });
     }
   }
 
@@ -206,21 +245,18 @@ export function collectSnapshotMaterials(
       if ("denied" in spec) {
         entries[idx]!.state = "unavailable";
         entries[idx]!.reason = spec.reason;
-      } else if ("truncated" in spec) {
-        entries[idx]!.state = "truncated";
-        entries[idx]!.bytes = Buffer.byteLength(spec.text);
-        entries[idx]!.reason = "provider_truncated";
-        specs.push({ path: spec.path, text: spec.text, truncated: true });
+      } else if (!budget.fits(spec.path)) {
+        entries[idx] = payloadCut("spec", path, candidate.headSha, 0);
       } else {
-        const truncated = Buffer.byteLength(spec.text) > monitorLimits.maxEvidenceBytes;
+        const text = budget.take(spec.text, monitorLimits.maxEvidenceBytes);
+        const providerTruncated = "truncated" in spec;
+        const truncated = providerTruncated || text.truncated;
         entries[idx]!.state = truncated ? "truncated" : "read";
-        entries[idx]!.bytes = Math.min(Buffer.byteLength(spec.text), monitorLimits.maxEvidenceBytes);
-        entries[idx]!.reason = truncated ? "max_evidence_bytes" : null;
-        specs.push({
-          path: spec.path,
-          text: truncated ? spec.text.slice(0, monitorLimits.maxEvidenceBytes) : spec.text,
-          truncated,
-        });
+        entries[idx]!.bytes = text.bytes;
+        entries[idx]!.reason = providerTruncated ? "provider_truncated"
+          : !text.truncated ? null : text.cutBy === "budget" ? "max_payload_bytes" : "max_evidence_bytes";
+        if (!providerTruncated && text.cutBy === "budget") entries[idx]!.limit = maxPayloadBytes;
+        specs.push({ path: spec.path, text: text.text, truncated });
       }
     } catch (error) {
       entries[idx]!.state = "unavailable";
@@ -236,10 +272,16 @@ export function collectSnapshotMaterials(
   if ("denied" in checks) {
     entries.at(-1)!.state = "unavailable";
     entries.at(-1)!.reason = checks.reason;
-    ci.push({ name: "checks", conclusion: null, available: false, reason: checks.reason });
+    if (budget.fits("checks") && budget.fits(checks.reason)) ci.push({ name: "checks", conclusion: null, available: false, reason: checks.reason });
   } else {
     entries.at(-1)!.state = "read";
-    for (const check of checks) ci.push({ name: check.name, conclusion: check.conclusion, available: true, reason: null });
+    for (const check of checks) {
+      if (!budget.fits(check.name) || (check.conclusion !== null && !budget.fits(check.conclusion))) {
+        entries[entries.length - 1] = payloadCut("ci", null, candidate.headSha, ci.length);
+        break;
+      }
+      ci.push({ name: check.name, conclusion: check.conclusion, available: true, reason: null });
+    }
   }
 
   // Adversarial AGENTS/skills content may appear in files; it remains untrusted data only.
@@ -247,7 +289,7 @@ export function collectSnapshotMaterials(
     if (/(^|\/)(AGENTS\.md|skills\/|\.cursor\/)/.test(file.path)) {
       entries.push({
         kind: "file", path: file.path, state: "read",
-        immutableRef: candidate.headSha, limit: null, bytes: file.patch ? Buffer.byteLength(file.patch) : 0,
+        immutableRef: candidate.headSha, limit: null, bytes: file.patch ? utf8Bytes(file.patch) : 0,
         reason: "untrusted_instruction_data_not_autoload",
       });
     }
@@ -263,7 +305,7 @@ export function collectSnapshotMaterials(
     snapshot: {
       candidateId: candidate.id, repository: { ...candidate.repository }, pullNumber: candidate.pullNumber,
       baseSha: candidate.baseSha, headSha: candidate.headSha, policyVersion: candidate.policyVersion,
-      title: pull.title.slice(0, 500), body, files, issues, specs, ci, coverage,
+      title: title.text, body, files, issues, specs, ci, coverage,
     },
   };
 }

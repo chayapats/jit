@@ -22,6 +22,7 @@ exportFailureReason(error): ExportFailureReason
 ensureExportBodies(tx): void
 stripExportsFromSnapshot(bytes): Uint8Array               // used by backup.create and the upgrade recovery backup
 sanitizeExportStrings<T>(value: T): T
+serializeExportEnvelope(envelope): string                // whole-envelope sanitize + full-artifact re-scan
 downloadPath(projectId, id): string
 
 Application.execute(actor, CreateExportCommand): ExportReceipt      // { manifest: ValidExportManifest; duplicate }
@@ -44,7 +45,7 @@ Format-2 artifact bytes are stored in SQLite (`export_artifact_bodies`, keyed by
 2. Rejections before building (`authentication_required`, `invalid_export_command`, `request_id_conflict`, `stale_revision`, `project_not_found`) are plain rejections and record nothing.
 3. **One immediate transaction** does all of the following in order:
    1. Takes the project lifecycle mark.
-   2. Assembles the artifact. An artifact above `maxBytes` is rejected as `export_too_large` before anything is written.
+   2. Assembles the artifact and serializes it through `serializeExportEnvelope` (see *Credential hygiene*). An artifact above `maxBytes` is rejected as `export_too_large` before anything is written.
    3. Re-checks the mark immediately before publication: project revision, deletion ledger and operations, suppressed sources, source availability and generations, claim revisions and statuses. Any change throws `export_fenced_by_lifecycle`.
    4. Inserts the `valid` registration and its bytes.
    5. Applies retention computed from that final outcome: the oldest valid exports beyond `maxExports` or `maxBytes`, never the new one. Their bytes are removed in the same transaction.
@@ -59,7 +60,7 @@ Failure reasons are a closed set:
 - `export_too_large` (413)
 - `export_fenced_by_lifecycle` (409)
 - `export_storage_unavailable` (503; `SQLITE_FULL`/`SQLITE_IOERR`)
-- `export_failed` (500; any other error, whose text is never stored)
+- `export_failed` (500; any other error, whose text is never stored, including a credential shape left in the serialized artifact)
 
 Stages are `stage` (build), `publish` (fence, registration and bytes) and `commit` (receipt and commit).
 
@@ -95,7 +96,11 @@ Fields:
 - `jobs`: `id`, `type`, `state`, `reason`, `evidence` reference.
 - `deliveries` and `reports` (delivery outbox): text only when the shared resolver releases the delivery's own committed source. The resolver applies deletion, forget suppression and history scope. Otherwise `text: null` and an exclusion.
 - `pr`: monitors (`id`, `repository`, `state`, `revision`) and candidates (`id`, `monitorId`, `pullNumber`, base/head SHA, `status`, `generation`).
-- `prReports` (`pr.private_report/v1`): `id`, `monitorId`, `candidateId`, `repository`, `pullNumber`, base/head SHA, policy and review-policy versions, `revision`, `status`, computed `stale`/`staleReason`, `scope` (`requiredRoles`, `analyzedRoles`, `skippedScope`, `coverageOverall`, `enumerationComplete`), validated `findings`, `specialistRuns`, `synthesis`, `disagreements`, `evidence` (`snapshotId`, `jobId`, `attemptId`), owner `annotations`, timestamps. Every field is an explicit allowlist projection. A finding flagged `payload_hygiene_secret` loses all of its free text: title, condition, impact, reasoning, location path and evidenceRef. Every string of the PR projection (monitors, candidates, reports, findings, scope lists, disagreements, annotations) then passes `sanitizeExportStrings`. Any credential shape (`exportSecretLike`: auth headers, `x-api-key`, Telegram, GitHub and `sk-` tokens, private keys) becomes `(redacted: payload_hygiene_secret)`. The serialized projection is re-scanned, and a hit fails the export. Snapshot blobs, `apiBase` and authority generations are never exported.
+- `prReports` (`pr.private_report/v1`): `id`, `monitorId`, `candidateId`, `repository`, `pullNumber`, base/head SHA, policy and review-policy versions, `revision`, `status`, computed `stale`/`staleReason`, `scope` (`requiredRoles`, `analyzedRoles`, `skippedScope`, `coverageOverall`, `enumerationComplete`), validated `findings`, `specialistRuns`, `synthesis`, `disagreements`, `evidence` (`snapshotId`, `jobId`, `attemptId`), owner `annotations`, timestamps. Every field is an explicit allowlist projection. A finding flagged `payload_hygiene_secret` loses all of its free text: title, condition, impact, reasoning, location path and evidenceRef. Every string of the PR projection (monitors, candidates, reports, findings, scope lists, disagreements, annotations) then passes `sanitizeExportStrings`, and the serialized projection is re-scanned (a hit fails the export) before the whole-envelope pass below. Snapshot blobs, `apiBase` and authority generations are never exported.
+
+## Credential hygiene
+
+The complete final envelope, including `note` and every `data` collection (project name, topic titles, messages, tasks, proposals, events, decision artifacts, owner decisions, claims, sources, job reasons/evidence, deliveries, delivery reports and the PR projection), passes `sanitizeExportStrings` immediately before serialization. Any string or object key with a credential shape (`exportSecretLike`: the shared `containsCredential` detector in `src/security/credentials.ts` plus `x-api-key`) is replaced whole by `(redacted: payload_hygiene_secret)` (keys get a `#<index>` suffix); the field itself stays in the artifact. The complete serialized artifact is then scanned once more, and any remaining match (for example a credential formed only by a key/value pair) fails the export closed as `export_failed` at stage `stage`, recorded as a durable failed export with no artifact.
 
 ## Lifecycle policy
 

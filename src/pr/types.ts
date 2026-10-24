@@ -376,6 +376,8 @@ export interface AlertLink {
   projectId: string;
   reportId: string;
   findingId: string;
+  /** `findingFingerprint` of the linked finding; absent on links written before cross-attempt fingerprints. */
+  fingerprint?: string;
   candidateId: string;
   monitorId: string;
   decisionId: string;
@@ -416,7 +418,8 @@ export interface ReviewCandidate {
 export type CoverageState = "requested" | "read" | "unavailable" | "truncated";
 
 export interface CoverageEntry {
-  kind: "diff" | "files" | "file" | "issue" | "spec" | "ci" | "enumeration";
+  /** `pr` covers the PR title/body (path `title` or `body`) when a byte ceiling cut it. */
+  kind: "diff" | "files" | "file" | "issue" | "spec" | "ci" | "enumeration" | "pr";
   path: string | null;
   state: CoverageState;
   immutableRef: string | null;
