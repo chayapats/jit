@@ -1571,3 +1571,31 @@ test("slow readiness does not restart the settlement budget", async () => {
   expect(Date.now() - startedAt).toBeLessThan(650);
   expect(record.lifecycle).toBe("store-unavailable");
 });
+
+test("no clock crossing at any dispatch boundary starts inference past the deadline", async () => {
+  // Sweep the deadline crossing across every clock read in the run: at no
+  // boundary may inference start with the clock already past the deadline
+  // or with a clamped budget.
+  const realNow = Date.now;
+  try {
+    for (let crossAt = 1; crossAt <= 40; crossAt++) {
+      const root = setup();
+      const starter = bridgePorts({ root, fetch: successFetch() });
+      const base = realNow();
+      // The first read is the deadline capture; the deadline is anchored to it.
+      let reads = 0, current = base, first: number | null = null;
+      Date.now = () => { reads++; current = base + (reads < crossAt ? 0 : 10_000); first ??= current; return current; };
+      let late = false;
+      await liveProbe("fixture-probe-host",
+        { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 5000 },
+        { ...starter.ports, now: () => 1800000000000, id: () => ID, infer: async input => {
+          if (first === null || current >= first + 5000 || input.deadlineMs <= 0 || input.deadlineMs > 5000) late = true;
+          return "success";
+        } }, starter.root);
+      Date.now = realNow;
+      expect({ crossAt, late }).toEqual({ crossAt, late: false });
+    }
+  } finally {
+    Date.now = realNow;
+  }
+});

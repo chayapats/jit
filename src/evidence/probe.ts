@@ -1197,8 +1197,12 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
           // excludes and validation reports as uncertainty rather than a
           // false exact count.
           await atomicWriteFile(dir, `${id}.json`, JSON.stringify(updated) + "\n", () => {
-            if (effective.aborted) throw new PublishAborted();
+            if (expired()) throw new PublishAborted();
           });
+          // Rechecked at the start boundary itself: the clock may cross the
+          // deadline during publication. The intent entry then stays
+          // unconfirmed (honest uncertainty), and nothing is transmitted.
+          if (expired()) throw new Error("fenced");
           pending = start();
           db.exec("COMMIT");
           admissionSends[kind]++;
@@ -1413,8 +1417,15 @@ async function runLive(root: string, id: string, dispatched: ProbeAttempt, base:
     try {
       const token = {};
       const outcome = await withDeadline(() => {
+        // One clock read decides both whether to dispatch and the budget:
+        // an expired budget aborts here instead of being clamped positive.
+        const remaining = deadlineAt - Date.now();
+        if (remaining <= 0) {
+          expire();
+          throw new Error("aborted");
+        }
         currentInfer = token;
-        const call = ports.infer({ route, model, prompt: PROBE_PROMPT, tools: PROBE_TOOLS, discovery: { ...PROBE_DISCOVERY }, deadlineMs: Math.max(1, deadlineAt - Date.now()), gate: gateSend, fence }, effective);
+        const call = ports.infer({ route, model, prompt: PROBE_PROMPT, tools: PROBE_TOOLS, discovery: { ...PROBE_DISCOVERY }, deadlineMs: remaining, gate: gateSend, fence }, effective);
         // A call that settles under abort may have left an unabortable
         // native write detached (Schway races its refresh against the
         // signal), so its window stays open through terminalization; only
