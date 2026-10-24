@@ -39,7 +39,7 @@ import {
 import { fenceUnavailableExtractions, memoryIdentity, prepareExtraction } from "./memory/extract";
 import { correctionIdentity, correctionImpact, prepareCorrection, readCorrection } from "./memory/correct";
 import {
-  confirmDeletion, deleteCommandIdentity, listDeletionOperations, prepareDeletionPreview, readDeletionLedger,
+  confirmDeletion, deleteCommandIdentity, lifecycleSafeManifests, listDeletionOperations, prepareDeletionPreview, readDeletionLedger,
   readDeletionOperation, readDeletionPreview, retryDeletion, type DeleteCommand, type DeletionConfirmReceipt,
   type DeletionOperation, type DeletionPreview, type DeletionReceipt,
 } from "./memory/delete";
@@ -726,6 +726,8 @@ export class Application {
       this.#beforeCommit?.("receipt"); return result;
     });
     this.#jobs?.cancelFenced();
+    // Confirm/retry hand pending native contexts to one budgeted managed-delete pass after commit.
+    if (command.kind !== "memory.delete.preview") void this.#jobs?.reconcilePendingDeletions();
     return result;
   }
 
@@ -1127,7 +1129,8 @@ export class Application {
       for (const context of tx.all<{ id: string; generation: number }>("SELECT c.id, c.generation FROM team_contexts c JOIN team_runs r ON r.context_id = c.id WHERE r.project_id = ? AND r.job_id = ?", projectId, jobId)) contexts.add(`${context.id}:${context.generation}`);
       const reconciliations = tx.all<{ record_json: string }>("SELECT record_json FROM job_reconciliation").map(row => JSON.parse(row.record_json) as SessionReconciliation)
         .filter(record => contexts.has(`${record.context.id}:${record.context.generation}`));
-      return { ...projectJob(readJob(tx, projectId, jobId), this.#now()), attempts, reconciliations,
+      // Attempts keep their request manifests; owner reads project them lifecycle-safely.
+      return { ...projectJob(readJob(tx, projectId, jobId), this.#now()), attempts: lifecycleSafeManifests(tx, attempts), reconciliations,
         stop: authority?.stop_json ? JSON.parse(authority.stop_json) as JobStopOutcome : null }; });
   }
 
