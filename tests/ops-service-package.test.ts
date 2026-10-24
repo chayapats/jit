@@ -803,6 +803,14 @@ test("read-only stores read committed WAL data with both sidecars and fail close
   // Clean close removes both sidecars; the immutable read then sees everything that was checkpointed.
   expect(openReadOnlyStore(db)!.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM probe")!.n)).toBe(1);
   expect(openReadOnlyStore(join(l.dirs.state, "absent.sqlite"))).toBeNull();
+  // Platform-independent: no SQLite URI is involved (macOS system SQLite honours `file:` URIs, Linux's
+  // bundled SQLite treats them as literal names), so a name that looks like a URI still reads as a file.
+  const odd = join(l.dirs.state, "odd?immutable=0#x.sqlite");
+  new TransactionStore(odd).close();
+  const bytes = readFileSync(odd);
+  expect(openReadOnlyStore(odd)!.read(tx => tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version)).toBe(schemaVersion);
+  expect(readFileSync(odd)).toEqual(bytes);
+  expect(["-wal", "-shm", "-journal"].filter(suffix => existsSync(odd + suffix))).toEqual([]);
 });
 
 // ---------------------------------------------------------------------------
