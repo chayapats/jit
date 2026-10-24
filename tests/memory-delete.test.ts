@@ -1,11 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Application, type OwnerActor } from "../src/application";
 import { readConfig } from "../src/config";
 import {
-  readDeletionLedger, reconcileDeletions,
+  readDeletionLedger, reconcileDeletions, reconstructLegacyExportScopes,
   type DeleteScope, type DeletionConfirmReceipt, type DeletionOperation, type DeletionReceipt,
 } from "../src/memory/delete";
 import { memoryExtractionMarker, memoryExtractionWork, scriptedMemoryResult } from "../src/memory/extract";
@@ -178,7 +178,7 @@ test("preview shows bounded collateral, confirm fences purges and lifecycle deni
   expect(preview.preview.affected.pendingJobs.map(j => j.id)).toContain(discussion.discussion!.jobId);
   expect(preview.preview.affected.nativeSessions.length).toBeGreaterThan(0);
   expect(preview.preview.affected.obligations.map(o => o.id)).toContain(proposed.task.id);
-  expect(preview.preview.truncated).toEqual({ sources: false, claims: false, contexts: false, pendingJobs: false, nativeSessions: false, backups: false, exports: false, obligations: false });
+  expect(preview.preview.truncated).toEqual({ sources: false, claims: false, contexts: false, pendingJobs: false, nativeSessions: false, backups: false, exports: false, obligations: false, taskProposals: false });
   expect(preview.preview.blockers).toEqual([]);
   expect(preview.preview.inventoryDigest).toMatch(/^[a-f0-9]{64}$/);
   expect(preview.preview.wholeSession.required).toBe(false);
@@ -758,7 +758,7 @@ test("retained backups and exports are found despite truncated or unknown covera
     tx.run("UPDATE export_artifacts SET record_json = ? WHERE id = ?", JSON.stringify({ ...e, coverage: { sources: [], claims: [] } }), exported.manifest.id);
   });
   const preview = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, s1)));
-  expect(preview.preview.affected.backups).toContainEqual(expect.objectContaining({ id: backup.manifest.id, evidence: "snapshot_time" }));
+  expect(preview.preview.affected.backups).toContainEqual(expect.objectContaining({ id: backup.manifest.id, evidence: "whole_store_snapshot" }));
   expect(preview.preview.affected.exports).toContainEqual(expect.objectContaining({ id: exported.manifest.id, evidence: "incomplete_coverage" }));
   expect(preview.preview.blockers).toEqual([]);
   f.rt.store.transaction(tx => { tx.run("UPDATE ops_backups SET record_json = '{broken' WHERE id = ?", backup.manifest.id); });
@@ -813,4 +813,121 @@ test("the deletion ledger fails closed on storage errors except the explicit pre
   expect(readDeletionLedger(preMigration(16))).toEqual([]);
   expect(() => deletedSource(preMigration(21), s1)).toThrow("deletion_ledger_unavailable");
   expect(() => readDeletionLedger(preMigration(21))).toThrow("deletion_ledger_unavailable");
+});
+
+test("export purge only removes <authorized root>/<id>.json regular files, never a forged or symlinked path", async () => {
+  const f = await fixture();
+  const a = project(f, "โครงการ export root", "หัวข้อ export root");
+  const s1 = say(f, a, "ข้อความ root-canary-171 ต้องลบ");
+  await remember(f, a, s1);
+  const forged = f.rt.app.execute(actor(f), exportCommand(f, a));
+  const linked = f.rt.app.execute(actor(f), exportCommand(f, a));
+  const outside = join(f.root, "outside"); mkdirSync(outside);
+  const victim = join(outside, `${forged.manifest.id}.json`); writeFileSync(victim, "unrelated owner file");
+  const linkVictim = join(outside, "link-target.json"); writeFileSync(linkVictim, "symlink target must survive");
+  // Persisted JSON is mutable: point one registration outside the root, and swap the other file for a symlink.
+  f.rt.store.transaction(tx => {
+    const row = JSON.parse(tx.get<{ j: string }>("SELECT record_json AS j FROM export_artifacts WHERE id = ?", forged.manifest.id)!.j);
+    tx.run("UPDATE export_artifacts SET record_json = ? WHERE id = ?", JSON.stringify({ ...row, artifact: { ...row.artifact, path: victim } }), forged.manifest.id);
+  });
+  rmSync(linked.manifest.artifact.path); symlinkSync(linkVictim, linked.manifest.artifact.path);
+  const preview = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, s1)));
+  const confirmed = asConfirmed(f.rt.app.execute(actor(f), confirmCommand(f, a, preview.preview.id)));
+  await reconcileDeletions(f.rt.store, f.rt.port as unknown as ApplicationRunPort, f.clock.now);
+  const op = operation(f, a, confirmed.operation.id);
+  expect(readFileSync(victim, "utf8")).toBe("unrelated owner file");
+  expect(readFileSync(linkVictim, "utf8")).toBe("symlink target must survive");
+  expect(op.exports.find(e => e.id === forged.manifest.id)).toMatchObject({ state: "pending", reason: "export_outside_authorized_root" });
+  expect(op.exports.find(e => e.id === linked.manifest.id)).toMatchObject({ state: "pending", reason: "export_path_untrusted" });
+  expect(existsSync(forged.manifest.artifact.path)).toBe(true);
+  expect(op.state).not.toBe("complete");
+  // Relative export roots are refused up front, so no artifact can become undeletable later.
+  expect(() => new Application(f.rt.store, f.config, { jobs: f.rt.queue, now: () => f.clock.now, exportDir: "relative-exports" })).toThrow("invalid_export_destination");
+});
+
+test("an absolute export override root purges through the application's authorized root", async () => {
+  const f = await fixture();
+  const root = join(f.root, "custom-exports");
+  const app = new Application(f.rt.store, f.config, { jobs: f.rt.queue, now: () => f.clock.now, exportDir: root, backupDir: join(f.root, "backups") });
+  const owner = app.authenticate(f.token).actor;
+  const a = project(f, "โครงการ override", "หัวข้อ override");
+  const s1 = say(f, a, "ข้อความ override-canary-181 ต้องลบ");
+  await remember(f, a, s1);
+  const exported = app.execute(owner, exportCommand(f, a));
+  expect(exported.manifest.artifact.path.startsWith(root)).toBe(true);
+  const preview = asPreview(app.execute(owner, previewCommand(f, a, s1)));
+  const confirmed = asConfirmed(app.execute(owner, confirmCommand(f, a, preview.preview.id)));
+  expect(existsSync(exported.manifest.artifact.path)).toBe(false);
+  expect(operation(f, a, confirmed.operation.id).exports).toMatchObject([{ id: exported.manifest.id, state: "purged" }]);
+});
+
+test("historical task proposals citing the deleted generation are disclosed and redacted; active current proposals block", async () => {
+  const f = await fixture();
+  const a = project(f, "โครงการประวัติงาน", "หัวข้อประวัติงาน");
+  const proposed = f.rt.app.execute(actor(f), { kind: "task.propose", requestId: rid(), projectId: a.id, expectedRevision: topicRevision(f, a),
+    payload: { topicId: a.topic.id, title: "งานเดิม history-canary-191", summary: "สรุปเดิม history-canary-191 ละเอียด" } });
+  const edited = f.rt.app.execute(actor(f), { kind: "task.edit", requestId: rid(), projectId: a.id, expectedRevision: proposed.task.revision,
+    payload: { taskId: proposed.task.id, title: "งานฉบับแก้", summary: "สรุปฉบับแก้" } });
+  expect(edited.proposal.revision).toBe(2);
+  const current = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, edited.proposal.source)));
+  expect(current.preview.blockers).toContain(`active_task_current_proposal:${proposed.task.id}`);
+  const preview = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, proposed.proposal.source)));
+  expect(preview.preview.affected.taskProposals).toEqual([{ taskId: proposed.task.id, taskState: "proposed", proposalId: proposed.proposal.id,
+    revision: 1, current: false, effect: "redacted" }]);
+  expect(preview.preview.blockers).toEqual([]);
+  asConfirmed(f.rt.app.execute(actor(f), confirmCommand(f, a, preview.preview.id, true, preview.preview.wholeSession.required)));
+  const task = f.rt.app.task(actor(f), a.id, proposed.task.id);
+  expect(task.task.state).toBe("proposed");
+  expect(task.task.title).toBe("งานฉบับแก้");
+  const exported = f.rt.app.execute(actor(f), exportCommand(f, a));
+  expect(readFileSync(exported.manifest.artifact.path, "utf8")).not.toContain("history-canary-191");
+  const raw = f.rt.store.read(tx => [...tx.all<{ t: string }>("SELECT title || summary AS t FROM task_proposals"),
+    ...tx.all<{ t: string }>("SELECT result_json AS t FROM command_receipts")].map(r => r.t).join("\n"));
+  expect(raw).not.toContain("history-canary-191");
+});
+
+test("backups and incomplete-coverage exports are listed without trusting wall-clock order", async () => {
+  const f = await fixture();
+  const a = project(f, "โครงการนาฬิกา", "หัวข้อนาฬิกา");
+  const backup = f.rt.app.execute(actor(f), { kind: "backup.create" as const, requestId: rid(), projectId: null,
+    expectedRevision: f.rt.app.workspace(actor(f)).revision, payload: { note: "clock backup" } });
+  const exported = f.rt.app.execute(actor(f), exportCommand(f, a));
+  f.rt.store.transaction(tx => {
+    const e = JSON.parse(tx.get<{ j: string }>("SELECT record_json AS j FROM export_artifacts WHERE id = ?", exported.manifest.id)!.j);
+    tx.run("UPDATE export_artifacts SET record_json = ? WHERE id = ?", JSON.stringify({ ...e, coverage: { sources: [], claims: [], truncated: true } }), exported.manifest.id);
+  });
+  // The clock moves backwards: the source commits "before" artifacts that were made earlier.
+  f.clock.now -= 3_600_000;
+  const s1 = say(f, a, "ข้อความ clock-canary-201 ต้องลบ");
+  const preview = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, s1)));
+  expect(preview.preview.affected.backups).toContainEqual(expect.objectContaining({ id: backup.manifest.id, evidence: "whole_store_snapshot" }));
+  expect(preview.preview.affected.exports).toContainEqual(expect.objectContaining({ id: exported.manifest.id, evidence: "incomplete_coverage" }));
+});
+
+test("legacy operations without export scopes are reconstructed and downgraded until exports are purged", async () => {
+  const f = await fixture();
+  const a = project(f, "โครงการ legacy", "หัวข้อ legacy");
+  const s1 = say(f, a, "ข้อความ legacy-canary-211 ต้องลบ");
+  await remember(f, a, s1);
+  const exported = f.rt.app.execute(actor(f), exportCommand(f, a));
+  const preview = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, s1)));
+  const confirmed = asConfirmed(f.rt.app.execute(actor(f), confirmCommand(f, a, preview.preview.id)));
+  await reconcileDeletions(f.rt.store, f.rt.port as unknown as ApplicationRunPort, f.clock.now);
+  expect(existsSync(exported.manifest.artifact.path)).toBe(false);
+  // Simulate main's persisted shape: complete, no export scopes, registration and file still present.
+  writeFileSync(exported.manifest.artifact.path, "legacy-canary-211 retained");
+  f.rt.store.transaction(tx => {
+    tx.run("INSERT INTO export_artifacts VALUES (?, ?, ?, ?)", exported.manifest.id, a.id, exported.manifest.createdAt, JSON.stringify(exported.manifest));
+    const op = JSON.parse(tx.get<{ j: string }>("SELECT record_json AS j FROM deletion_operations WHERE id = ?", confirmed.operation.id)!.j);
+    delete op.exports; delete op.scopes;
+    tx.run("UPDATE deletion_operations SET state = 'complete', record_json = ? WHERE id = ?", JSON.stringify({ ...op, state: "complete" }), confirmed.operation.id);
+  });
+  expect(reconstructLegacyExportScopes(f.rt.store, f.clock.now)).toBe(1);
+  expect(reconstructLegacyExportScopes(f.rt.store, f.clock.now)).toBe(0);
+  const rebuilt = operation(f, a, confirmed.operation.id);
+  expect(rebuilt.state).toBe("pending");
+  expect(rebuilt.exports).toMatchObject([{ id: exported.manifest.id, state: "pending" }]);
+  await reconcileDeletions(f.rt.store, f.rt.port as unknown as ApplicationRunPort, f.clock.now);
+  expect(existsSync(exported.manifest.artifact.path)).toBe(false);
+  expect(operation(f, a, confirmed.operation.id).state).toBe("complete");
 });

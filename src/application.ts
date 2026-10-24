@@ -1,3 +1,4 @@
+import { isAbsolute, resolve } from "node:path";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { AppError } from "./errors";
 import type { AppConfig } from "./config";
@@ -133,7 +134,9 @@ export class Application {
     if (options.jobs && options.jobs.store !== store) throw new AppError("invalid_job_store");
     this.#jobs = options.jobs;
     this.#backupDir = ownBackupDir(store.path, options.backupDir);
-    this.#exportDir = ownExportDir(store.path, options.exportDir);
+    // Export roots are canonical absolute paths so artifacts stay deletable under the same authorized root.
+    if (options.exportDir !== undefined && !isAbsolute(options.exportDir)) throw new AppError("invalid_export_destination", 500);
+    this.#exportDir = resolve(ownExportDir(store.path, options.exportDir));
     this.#restoreDir = ownRestoreDirFor(store.path, options.restoreDir);
     this.#upgradeDir = ownUpgradeDirFor(store.path, options.upgradeDir);
     this.#nativeSnapshot = options.nativeSnapshot;
@@ -738,7 +741,7 @@ export class Application {
     this.#jobs?.cancelFenced();
     if (operationId) {
       // Committed: purge app-owned export files now, then hand native contexts to one budgeted pass.
-      try { purgeDeletedExports(this.store, this.#now(), operationId); } catch { /* Per-file state stays pending for reconcile. */ }
+      try { purgeDeletedExports(this.store, this.#now(), this.#exportDir, operationId); } catch { /* Per-file state stays pending for reconcile. */ }
       void this.#jobs?.reconcilePendingDeletions();
     }
     return result;
