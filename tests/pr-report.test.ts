@@ -31,6 +31,8 @@ import {
   type PrMonitor,
 } from "../src/pr";
 import { ScriptedRunPort, fixtureOutcome } from "../src/team/scripted-port";
+import { SchwayRunPort } from "../src/team/schway-port";
+import type { HostAuthFetch, HostCredentialStore, Model } from "schway/host";
 
 const password = "fixture-pr-report-owner-password";
 const epoch = 1_800_000_000_000;
@@ -116,8 +118,9 @@ async function fixture(script?: (request: any, signal: AbortSignal, observe: (e:
 }
 
 type F = Awaited<ReturnType<typeof fixture>>;
+type AnyFixture = F | { root: string; store: F["store"]; clock: F["clock"]; queue: F["queue"]; app: F["app"]; project: F["project"]; auth: F["auth"]; github: F["github"]; fixtures: F["fixtures"] };
 
-function enable(f: F, overrides: Partial<EnableMonitorCommand["payload"]> = {}): PrMonitor {
+function enable(f: AnyFixture, overrides: Partial<EnableMonitorCommand["payload"]> = {}): PrMonitor {
   const command: EnableMonitorCommand = {
     kind: "pr.monitor.enable",
     requestId: crypto.randomUUID(),
@@ -137,13 +140,13 @@ function enable(f: F, overrides: Partial<EnableMonitorCommand["payload"]> = {}):
   });
 }
 
-function connector(f: F, monitor: PrMonitor) {
+function connector(f: AnyFixture, monitor: PrMonitor) {
   const port = f.fixtures.get(monitor.id) ?? f.github;
   f.fixtures.set(monitor.id, port);
   return new TrustedGitHubConnector(port, monitor, join(f.root, "cache"));
 }
 
-function setFiles(f: F, number: number, base: string, head: string, files: Array<{ filename: string; status?: string; patch: string | null; truncated?: boolean }>) {
+function setFiles(f: AnyFixture, number: number, base: string, head: string, files: Array<{ filename: string; status?: string; patch: string | null; truncated?: boolean }>) {
   f.github.files.set(f.github.key(number, base, head), files.map(file => {
     const row: { filename: string; status: string; patch: string | null; truncated?: boolean } = {
       filename: file.filename, status: file.status ?? "modified", patch: file.patch,
@@ -153,7 +156,7 @@ function setFiles(f: F, number: number, base: string, head: string, files: Array
   }));
 }
 
-function prepareSnapshot(f: F, monitor: PrMonitor, pullNumber = 1) {
+function prepareSnapshot(f: AnyFixture, monitor: PrMonitor, pullNumber = 1) {
   const base = sha(1), head = sha(2);
   f.github.pulls = [fixturePull({ number: pullNumber, base: { sha: base, ref: "main" }, head: { sha: head, ref: "feat" } })];
   setFiles(f, pullNumber, base, head, [{ filename: "a.ts", patch: "@@\n+a" }]);
@@ -165,7 +168,7 @@ function prepareSnapshot(f: F, monitor: PrMonitor, pullNumber = 1) {
   return { base, head, candidate, snapshot: snapshot!, conn };
 }
 
-function enqueueReview(f: F, monitorId: string, candidateId: string) {
+function enqueueReview(f: AnyFixture, monitorId: string, candidateId: string) {
   const revision = f.store.read(tx => tx.get<{ revision: number }>("SELECT revision FROM projects WHERE id = ?", f.project.id)!.revision);
   const cmd: EnqueueJobCommand = {
     kind: "job.enqueue", requestId: crypto.randomUUID(), projectId: f.project.id,
@@ -495,4 +498,193 @@ test("normalize keeps unparsable output failed and records skipped scope", async
   const bad = normalizeReviewOutput("{{{", snapshot!, DEFAULT_REVIEW_POLICY.requiredRoles);
   expect(bad.valid).toBe(false);
   expect(bad.skippedScope).toContain("correctness");
+});
+
+// ---- Concrete Schway wiring (#19): deterministic fixture stores/transports, no network/Pi ----
+
+function schwayModel(text: string): Model {
+  return {
+    provider: "scripted", id: "report-fixture",
+    async *stream() {
+      yield {
+        type: "message_complete",
+        message: { type: "assistant", id: crypto.randomUUID(), content: [{ type: "text", text }] },
+      };
+    },
+  };
+}
+
+const memStore = (raw: string | null): HostCredentialStore => ({
+  get: async () => raw,
+  set: async () => {},
+  delete: async () => true,
+});
+
+async function concreteSetup(portOptions: ConstructorParameters<typeof SchwayRunPort>[3], route?: { provider: "grok" | "codex"; model: string; authRoute: string }) {
+  const root = mkdtempSync(join(tmpdir(), "jit-pr-report-"));
+  roots.push(root);
+  const path = join(root, "app.sqlite");
+  const config = readConfig({ JIT_DATABASE: path });
+  const store = new TransactionStore(path);
+  stores.push(store);
+  const clock = new Clock();
+  const github = new FakeGitHubFixture();
+  const fixtures = new Map<string, FakeGitHubFixture>();
+  const port = new SchwayRunPort(store, config.team, config.jobs.outputBytes, portOptions);
+  const review = prReviewWork({ store, port, now: () => clock.now, ...(route ? { route } : {}) });
+  const snapshot = prSnapshotWork({ store, cacheRoot: join(root, "cache"), fixtureFor: (m) => fixtures.get(m.id) ?? github });
+  const queue = new JobQueue(store, config.jobs, [snapshot, review], { now: () => clock.now, timers: clock.timers });
+  queues.push(queue);
+  const app = new Application(store, config, { jobs: queue, now: () => clock.now });
+  await app.setupOwner(password);
+  const token = await app.login(password);
+  const auth = app.authenticate(token);
+  const project = app.execute(auth.actor, {
+    kind: "project.create", requestId: crypto.randomUUID(), projectId: null,
+    expectedRevision: 0, payload: { name: "โครงการ PR report" },
+  }).project;
+  return { root, store, clock, queue, app, project, token, auth, github, fixtures, port, config };
+}
+
+type C = Awaited<ReturnType<typeof concreteSetup>>;
+
+async function concrete(output: string, route?: { provider: "grok" | "codex"; model: string; authRoute: string }) {
+  return concreteSetup({ model: schwayModel(output) }, route);
+}
+
+async function concreteAuth(authStore: HostCredentialStore, authFetch?: HostAuthFetch) {
+  return concreteSetup({ authStore, ...(authFetch ? { authFetch } : {}) });
+}
+
+test("concrete bridge: production complete commits with mode evidence", async () => {
+  const f = await concrete(findingsJson(["a.ts"]));
+  const monitor = enable(f);
+  const { candidate } = prepareSnapshot(f, monitor);
+  const job = enqueueReview(f, monitor.id, candidate.id);
+  f.queue.pump();
+  await f.queue.idle();
+  const finished = f.app.job(f.auth.actor, f.project.id, job.id);
+  expect(finished.state).toBe("succeeded");
+  expect(finished.evidence).toContain("pr-review");
+  expect(finished.evidence).toContain("mode:production");
+  const requests = f.port.requests as any[];
+  expect(requests).toHaveLength(3);
+  const contexts = new Set(requests.map(r => `${r.context.id}:${r.context.generation}`));
+  expect(contexts.size).toBe(3);
+  for (const r of requests) {
+    expect(r.route).toEqual({ provider: "grok", model: "scripted-fixture", authRoute: "owner-grok" });
+    expect(r.tools).toEqual([]);
+    expect(r.policy).toEqual({ genericExecution: false, arbitraryFetch: false, hostedLookup: false, repositoryDiscovery: false });
+  }
+  expect(f.github.mutateCalls).toBe(0);
+  const report = f.store.read(tx => listReports(tx, f.project.id)[0]!);
+  expect(report.status).toBe("complete_findings");
+  expect(report.findings).toHaveLength(1);
+  expect(report.findings[0]!.status).toBe("actionable");
+});
+
+test("concrete bridge: classifier states across evidence types stay suspected vs actionable", async () => {
+  const output = JSON.stringify({
+    findings: [
+      { id: "diff-ok", title: "null deref", category: "correctness", severity: "high", location: { path: "a.ts", line: 3 }, condition: "when x null", impact: "crash", reasoning: "unchecked", evidenceType: "diff", evidenceRef: "a.ts" },
+      { id: "issue-ok", title: "repro", category: "behavior", severity: "medium", location: { path: "a.ts", line: 1 }, condition: "steps", impact: "wrong result", reasoning: "trace", evidenceType: "issue", evidenceRef: "#7" },
+      { id: "spec-ok", title: "drift", category: "correctness", severity: "low", location: { path: "a.ts", line: 2 }, condition: "spec says x", impact: "drift", reasoning: "compare", evidenceType: "spec", evidenceRef: "docs/policy.md" },
+      { id: "ci-ok", title: "flaky", category: "correctness", severity: "medium", location: { path: "a.ts", line: 4 }, condition: "on retry", impact: "red build", reasoning: "log", evidenceType: "ci", evidenceRef: "unit" },
+      { id: "none-no", title: "hunch", category: "correctness", severity: "high", location: { path: "a.ts", line: 5 }, condition: "maybe", impact: "maybe", reasoning: "gut", evidenceType: "none", evidenceRef: null },
+      { id: "style-no", title: "nit", category: "style", severity: "low", location: { path: "a.ts", line: 6 }, condition: "spacing", impact: "readability", reasoning: "look", evidenceType: "diff", evidenceRef: "a.ts" },
+      { id: "badref-no", title: "ghost", category: "security", severity: "critical", location: { path: "missing.ts", line: 1 }, condition: "c", impact: "i", reasoning: "r", evidenceType: "diff", evidenceRef: "missing.ts" },
+    ],
+    analyzedRoles: ["correctness", "security"], skippedScope: [], disagreements: [],
+  });
+  const f = await concrete(output);
+  const monitor = enable(f);
+  const base = sha(1), head = sha(2);
+  f.github.pulls = [fixturePull({ number: 1, body: "fixes #7\nspec:docs/policy.md", base: { sha: base, ref: "main" }, head: { sha: head, ref: "feat" } })];
+  setFiles(f, 1, base, head, [{ filename: "a.ts", patch: "@@\n+a" }]);
+  f.github.issues.set(7, { number: 7, title: "crash", body: "repro steps" });
+  f.github.specs.set(`${head}:docs/policy.md`, { path: "docs/policy.md", text: "policy text" });
+  f.github.checks.set(head, [{ name: "unit", conclusion: "failure" }]);
+  const conn = connector(f, monitor);
+  f.store.transaction(tx => pollMonitorCatchUp(tx, f.project.id, monitor.id, conn, f.clock.now));
+  const candidate = f.store.read(tx => readCandidates(tx, f.project.id, monitor.id)[0]!);
+  f.store.transaction(tx => captureSnapshot(tx, f.project.id, candidate.id, conn, f.clock.now));
+  const job = enqueueReview(f, monitor.id, candidate.id);
+  f.queue.pump();
+  await f.queue.idle();
+  expect(f.app.job(f.auth.actor, f.project.id, job.id).state).toBe("succeeded");
+  const report = f.store.read(tx => listReports(tx, f.project.id)[0]!);
+  expect(report.status).toBe("complete_findings");
+  const byId = new Map(report.findings.map(item => [item.id, item]));
+  for (const id of ["diff-ok", "issue-ok", "spec-ok", "ci-ok"]) {
+    expect(byId.get(id)!.status).toBe("actionable");
+    expect(byId.get(id)!.validationErrors).toEqual([]);
+  }
+  for (const id of ["none-no", "style-no", "badref-no"]) {
+    expect(byId.get(id)!.status).toBe("suspected");
+    expect(byId.get(id)!.validationErrors.length).toBeGreaterThan(0);
+  }
+  expect(f.github.mutateCalls).toBe(0);
+});
+
+test("concrete bridge: blank production output fails the report, never clean", async () => {
+  const f = await concrete("   ");
+  const monitor = enable(f);
+  const { candidate } = prepareSnapshot(f, monitor);
+  const job = enqueueReview(f, monitor.id, candidate.id);
+  f.queue.pump();
+  await f.queue.idle();
+  expect(f.app.job(f.auth.actor, f.project.id, job.id).state).toBe("succeeded");
+  const report = f.store.read(tx => listReports(tx, f.project.id)[0]!);
+  expect(report.status).toBe("failed");
+  expect(report.findings).toHaveLength(0);
+});
+
+test("concrete bridge: auth failures wait without fallback or report", async () => {
+  // Invalid fixture store: route_unavailable without touching the network.
+  {
+    const f = await concreteAuth(memStore("garbage"));
+    const monitor = enable(f);
+    const { candidate } = prepareSnapshot(f, monitor);
+    const job = enqueueReview(f, monitor.id, candidate.id);
+    f.queue.pump();
+    await f.queue.idle();
+    const finished = f.app.job(f.auth.actor, f.project.id, job.id);
+    expect(finished.state).toBe("waiting");
+    expect(finished.reason).toBe("route_unavailable");
+    expect(f.store.read(tx => listReports(tx, f.project.id))).toHaveLength(0);
+    expect(f.github.mutateCalls).toBe(0);
+  }
+  // Rejected fixture credentials: needs_login without fallback.
+  {
+    const f = await concreteAuth(
+      memStore(JSON.stringify({ accessToken: "fixture-access", obtainedAt: Date.now(), expiresAt: Date.now() + 3_600_000 })),
+      async () => new Response("no", { status: 401 }),
+    );
+    const monitor = enable(f);
+    const { candidate } = prepareSnapshot(f, monitor);
+    const job = enqueueReview(f, monitor.id, candidate.id);
+    f.queue.pump();
+    await f.queue.idle();
+    const finished = f.app.job(f.auth.actor, f.project.id, job.id);
+    expect(finished.state).toBe("waiting");
+    expect(finished.reason).toBe("needs_login");
+    expect(f.store.read(tx => listReports(tx, f.project.id))).toHaveLength(0);
+  }
+});
+
+test("explicit route config overrides the default; invalid route rejected", async () => {
+  const f = await concrete(findingsJson(["a.ts"]), { provider: "codex", model: "fixture-codex", authRoute: "owner-codex" });
+  const monitor = enable(f);
+  const { candidate } = prepareSnapshot(f, monitor);
+  const job = enqueueReview(f, monitor.id, candidate.id);
+  f.queue.pump();
+  await f.queue.idle();
+  expect(f.app.job(f.auth.actor, f.project.id, job.id).state).toBe("succeeded");
+  for (const r of f.port.requests as any[]) {
+    expect(r.route).toEqual({ provider: "codex", model: "fixture-codex", authRoute: "owner-codex" });
+  }
+  expect(() => prReviewWork({
+    store: f.store, port: f.port,
+    route: { provider: "evil", model: "x", authRoute: "y" } as any,
+  })).toThrow("invalid_role_route");
 });

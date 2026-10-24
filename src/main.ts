@@ -89,8 +89,10 @@ async function main(): Promise<void> {
       ? new SchwayRunPort(store, config.team, config.jobs.outputBytes)
       : new ScriptedRunPort(store, config.team, config.jobs.outputBytes);
     // Fixture-authorized work never routes through live inference: role preview
-    // explicitly authorizes one scripted invocation, and schedules/PR summaries
-    // keep their scripted profiles until their own slices switch them.
+    // explicitly authorizes one scripted invocation, and schedules summaries
+    // keep their scripted profile until their own slice switches them.
+    // PR review (#19) rides the configured team port: scripted by default,
+    // concrete Schway when JIT_RUN_PORT=schway.
     const fixturePort: ApplicationRunPort = config.runPort === "schway"
       ? new ScriptedRunPort(store, config.team, config.jobs.outputBytes)
       : teamPort;
@@ -102,7 +104,7 @@ async function main(): Promise<void> {
       projectStateWork(store), scriptedPreviewWork(store, config, fixturePort), discussionPlanWork(), specialistAnalysisWork(store, config, teamPort), coordinatorSynthesisWork(store, config, teamPort),
       memoryExtractionWork(store, config, memoryPort), scheduleReminderWork(store, config), scheduleSummaryWork(store, config, fixturePort),
       prSnapshotWork({ store, cacheRoot: ".local/pr-cache", fixtureFor: () => new FakeGitHubFixture() }),
-      prReviewWork({ store, port: fixturePort }),
+      prReviewWork({ store, port: teamPort }),
     ]);
     await queue.reconcile(teamPort);
   } }

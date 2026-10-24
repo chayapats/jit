@@ -2,7 +2,7 @@
 
 Owner: Jit #19 (PR02). Parent spec #1, blocks on #15 (JBR01 bridge), #10 (PR01), #14 (TEAM03).
 
-Static snapshot produces a private inspectable report from independent bounded analyses and synthesis. Scripted run-port slice only; production integration requires the supported bridge (`jit.schway.bridge/v1`).
+Static snapshot produces a private inspectable report from independent bounded analyses and synthesis. Scripted fixture is the default; concrete production runs go through the supported bridge (`jit.schway.bridge/v1`, JBR01 #15).
 
 ## Actors and scope
 
@@ -26,7 +26,7 @@ Static snapshot produces a private inspectable report from independent bounded a
 ## Fencing
 
 - `pr.review` work `isCurrent` gates on active monitor and non-terminal candidate; `commit` rechecks inside the transaction. New revision, policy bump, cancel, retire and revoke fence late publication; `fencePrReviewJobs` + `queue.cancelFenced()` invalidate.
-- Strict port: review imports only `ApplicationRunPort`; separate `team_contexts` per specialist/synthesis; finite `reserve` per invoke; snapshot bytes travel as manifest sources, never as instructions; `mutateCalls===0` always (no GitHub mutation surface).
+- Strict port: review imports only `ApplicationRunPort`; separate `team_contexts` per specialist/synthesis; finite `reserve` per invoke (worst-case retry calls pre-reserved on the schway adapter); snapshot bytes travel as manifest sources, never as instructions; `mutateCalls===0` always (no GitHub mutation surface). Both fixture and production outcomes normalize through `normalizePortResult`; production failures never wear fixture claims. The run route is explicit config (`PrReviewWorkOptions.route`, scripted fixture default); committed evidence records the outcome mode.
 
 ## State matrix (observable)
 
@@ -34,4 +34,4 @@ Static snapshot produces a private inspectable report from independent bounded a
 
 ## Evidence
 
-`tests/pr-report.test.ts`: strict port/separate contexts/budgets, untrusted-input neutrality, finding validation (suspected vs actionable), atomic fenced commit + crash matrix, 7-state matrix, new-revision/policy-bump/cancel/retire/revoke fencing to stale, scope-policy partial completeness.
+`tests/pr-report.test.ts`: strict port/separate contexts/budgets (worst-case retry pre-reserve on schway), untrusted-input neutrality, finding validation (suspected vs actionable), atomic fenced commit + crash matrix, 7-state matrix, new-revision/policy-bump/cancel/retire/revoke fencing to stale, scope-policy partial completeness. Concrete coverage through deterministic `SchwayRunPort` fixture stores/transports: production complete with mode evidence, classifier states across diff/issue/spec/ci/none evidence, blank-output failure, auth-failure waiting without fallback, explicit route override.

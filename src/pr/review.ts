@@ -2,9 +2,11 @@ import { AppError } from "../errors";
 import { jobData } from "../jobs/queue";
 import type { JobLimits, WorkDefinition } from "../jobs/types";
 import type { AppTransaction } from "../store";
-import { normalizeFixtureResult } from "../team/scripted-port";
+import { requireRoleRoute } from "../team/configuration";
+import { normalizePortResult } from "../team/scripted-port";
+import { portFailureOutcome, schwayMaxAttempts } from "../team/schway-port";
 import type { ApplicationRunPort } from "../team/run-port";
-import type { ApplicationRunRequest } from "../team/types";
+import type { ApplicationRunRequest, RoleRoute } from "../team/types";
 import { readMonitor } from "./authority";
 import { readCandidate } from "./poll";
 import { ensurePrSchema } from "./schema";
@@ -25,13 +27,19 @@ function isInput(value: unknown): value is PrReviewInput {
 export interface PrReviewWorkOptions {
   store: { read: <T>(query: (tx: AppTransaction) => T) => T };
   port: ApplicationRunPort;
+  /**
+   * Explicit run route. The scripted fixture default is preserved; concrete
+   * runs select the exact configured route (provider/model/authRoute alias).
+   */
+  route?: RoleRoute;
   now?: () => number;
   contextBytes?: number;
   outputBytes?: number;
   requiredRoles?: readonly string[];
 }
 
-const FIXTURE_ROUTE = { provider: "grok", model: "scripted-fixture", authRoute: "owner-grok" } as const;
+/** Scripted default route; explicit config overrides it for concrete runs. */
+export const PR_REVIEW_SCRIPTED_ROUTE = { provider: "grok", model: "scripted-fixture", authRoute: "owner-grok" } as const;
 
 function manifestSources(snapshot: ImmutableSnapshot, contextBytes: number): Array<{ projectId: string; reference: { sourceId: string; revision: number; generation: number }; text: string }> {
   const sources: Array<{ projectId: string; reference: { sourceId: string; revision: number; generation: number }; text: string }> = [];
@@ -63,6 +71,7 @@ function buildRequest(input: {
   roleId: string;
   purpose: string;
   responsibility: string;
+  route: RoleRoute;
   manifestSources: ApplicationRunRequest["manifest"]["sources"];
   job: { id: string; authorization: { generation: number }; limits: JobLimits };
   generation: number;
@@ -75,7 +84,7 @@ function buildRequest(input: {
     topicId: input.topicId,
     roleId: input.roleId,
     purpose: input.purpose.slice(0, 300),
-    route: { ...FIXTURE_ROUTE },
+    route: { ...input.route },
     configuration: { ownerRevision: 1, projectRevision: 1, roleRevision: 1 },
     context: { id: input.contextId, generation: 1 },
     fence: { jobId: input.job.id, generation: input.generation, ownerGeneration: input.job.authorization.generation },
@@ -94,11 +103,15 @@ function buildRequest(input: {
  * `pr.private_report/v1` review work through `ApplicationRunPort` only.
  * N bounded specialist invokes + 1 synthesis with separate contexts and finite budgets.
  * Snapshot capture stays on `TrustedGitHubConnector` + `fixtureFor`, never through this port.
+ * Fixture and concrete (schway) outcomes both normalize through `normalizePortResult`;
+ * production failures normalize to production evidence and never wear fixture claims.
  */
 export function prReviewWork(options: PrReviewWorkOptions): WorkDefinition {
   const contextBytes = options.contextBytes ?? 65536;
   const outputBytes = options.outputBytes ?? 16384;
   const requiredRoles = options.requiredRoles ?? [...DEFAULT_REVIEW_POLICY.requiredRoles];
+  const route: RoleRoute = options.route ? { ...options.route } : { ...PR_REVIEW_SCRIPTED_ROUTE };
+  requireRoleRoute(route);
   const now = options.now ?? Date.now;
   void REVIEW_POLICY_VERSION;
   return {
@@ -154,6 +167,7 @@ export function prReviewWork(options: PrReviewWorkOptions): WorkDefinition {
           roleId: crypto.randomUUID(),
           purpose: `specialist:${role} review PR #${snapshot.pullNumber} ${snapshot.headSha.slice(0, 8)}`,
           responsibility: `วิเคราะห์ ${role} จาก snapshot แบบ static เท่านั้น`,
+          route,
           manifestSources: sources,
           job: { id: job.id, authorization: job.authorization, limits: job.limits },
           generation: attempt.generation,
@@ -162,10 +176,15 @@ export function prReviewWork(options: PrReviewWorkOptions): WorkDefinition {
         });
         try { void jobData(request, contextBytes); } catch { return { state: "failed", reason: "worker_failed" }; }
         try { reserve({ calls: 1, rounds: 1, hops: 1 }); } catch { return { state: "failed", reason: "worker_failed" }; }
+        if (options.port.adapter === "schway") {
+          // Worst-case retry calls pre-reserved before dispatch, mirroring specialist/coordinator runs.
+          const extra = schwayMaxAttempts(request) - 1;
+          if (extra > 0) { try { reserve({ calls: extra, rounds: extra }); } catch { return { state: "failed", reason: "worker_failed" }; } }
+        }
         let outcome;
         try {
-          outcome = normalizeFixtureResult(await options.port.invoke(request, signal, () => {}), request, Math.min(outputBytes, job.limits.outputTokens * 4, 65000));
-        } catch { outcome = { state: "error" as const, reason: "invalid_result" as const, mode: "fixture" as const, output: null, usage: { calls: 0, rounds: 0, hops: 0, contextTokens: 0, outputTokens: 0, retries: 0, wallMs: 0, tokensUnknown: false }, session: null }; }
+          outcome = normalizePortResult(await options.port.invoke(request, signal, () => {}), request, Math.min(outputBytes, job.limits.outputTokens * 4, 65000));
+        } catch { outcome = portFailureOutcome(options.port); }
         if (outcome.reason === "quota" || outcome.reason === "needs_login" || outcome.reason === "route_unavailable") {
           return { state: "waiting", reason: outcome.reason };
         }
@@ -202,6 +221,7 @@ export function prReviewWork(options: PrReviewWorkOptions): WorkDefinition {
         roleId: crypto.randomUUID(),
         purpose: `synthesis review PR #${snapshot.pullNumber} ${snapshot.headSha.slice(0, 8)}`,
         responsibility: "สังเคราะห์ผล specialist ที่อ้างอิงได้เท่านั้น",
+        route,
         manifestSources: synthesisSources,
         job: { id: job.id, authorization: job.authorization, limits: job.limits },
         generation: attempt.generation,
@@ -209,10 +229,14 @@ export function prReviewWork(options: PrReviewWorkOptions): WorkDefinition {
         contextId: synthesisContextId,
       });
       try { reserve({ calls: 1, rounds: 1, hops: 1 }); } catch { return { state: "failed", reason: "worker_failed" }; }
+      if (options.port.adapter === "schway") {
+        const extra = schwayMaxAttempts(synthesisRequest) - 1;
+        if (extra > 0) { try { reserve({ calls: extra, rounds: extra }); } catch { return { state: "failed", reason: "worker_failed" }; } }
+      }
       let synthesisOutcome;
       try {
-        synthesisOutcome = normalizeFixtureResult(await options.port.invoke(synthesisRequest, signal, () => {}), synthesisRequest, Math.min(outputBytes, job.limits.outputTokens * 4, 65000));
-      } catch { synthesisOutcome = { state: "error" as const, reason: "invalid_result" as const, mode: "fixture" as const, output: null, usage: { calls: 0, rounds: 0, hops: 0, contextTokens: 0, outputTokens: 0, retries: 0, wallMs: 0, tokensUnknown: false }, session: null }; }
+        synthesisOutcome = normalizePortResult(await options.port.invoke(synthesisRequest, signal, () => {}), synthesisRequest, Math.min(outputBytes, job.limits.outputTokens * 4, 65000));
+      } catch { synthesisOutcome = portFailureOutcome(options.port); }
       if (synthesisOutcome.reason === "quota" || synthesisOutcome.reason === "needs_login" || synthesisOutcome.reason === "route_unavailable") {
         return { state: "waiting", reason: synthesisOutcome.reason };
       }
@@ -228,7 +252,7 @@ export function prReviewWork(options: PrReviewWorkOptions): WorkDefinition {
       const merged = { ...normalized, disagreements: mergedDisagreements.slice(0, 16) };
       const synthesisState = synthesisOutcome.state === "complete" && merged.valid ? "complete" : synthesisOutcome.state;
 
-      const evidence = `pr-review:${input.candidateId};roles:${specialistRuns.map(r => `${r.role}=${r.state}`).join(",")};synthesis:${synthesisState};findings:${merged.findings.length}`;
+      const evidence = `pr-review:${input.candidateId};roles:${specialistRuns.map(r => `${r.role}=${r.state}`).join(",")};synthesis:${synthesisState};findings:${merged.findings.length};mode:${synthesisOutcome.mode}`;
       const outcome = { state: "succeeded" as const, evidence };
       const committedAt = now();
       const ok = commit(outcome, (tx) => {
