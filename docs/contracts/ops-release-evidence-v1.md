@@ -1,24 +1,38 @@
 # OPS release evidence contract, v1
 
-Owner: Jit #34. `ops.release_evidence/v1` is implemented on the `jit/34-load-drill` branch, based on MVP merge `52c1736`. It composes deterministic drill results with human gate states; it never fabricates a human pass.
+Owner: Jit #34 (OPS04). Contract: `ops.release_evidence/v1`, record schemas `jit.ops.profile/v1` and `jit.ops.release/v1`. Implementation: `src/ops/report.ts`, `src/ops-cli.ts`. It composes the deterministic results a drill actually executed with human gate states; it never fabricates a pass.
 
 | Public entry | Behavior |
 | --- | --- |
-| `composeProfile(input)` in `src/ops/report.ts` | Builds `jit.ops.profile/v1` from a validated drill record: versions, config, measurements, caller-reviewed exhausted limits and sample limitations. `piReadiness` is fixed to `not-claimed`. Secret-like text is rejected. |
-| `composeReleaseChecklist(input)` in `src/ops/report.ts` | Builds `jit.ops.release/v1` with deterministic rows `J01 J02 J03 J04 J05 crash trust` and human rows `FEAS OPS`. A human row in any state other than `not-run` requires an explicit sanitized evidence ID; a passing human row without one throws instead of auto-completing. Unknown IDs, unknown states and secret-like notes throw. |
-| `report --id <drill> --checklist <local file>` | Reads the stored drill record, writes one profile record and one checklist record under `.local/ops-evidence`, and prints both allowlisted summaries. `--checklist` files contain exactly `{deterministic,human}` row maps. |
+| `composeProfile(input)` | Builds `jit.ops.profile/v1` from a validated drill record: tested revisions (`versions`, see `ops.load_drill/v1`), config, measurements, exhausted limits and sample limitations. `piReadiness` is fixed to `not-claimed`. Secret-like text is rejected. |
+| `deriveDeterministicRows(drill)` | Derives the rows `J01 J02 J03 J04 J05 crash trust` from the drill's executed legs using `deterministicCoverage` (below). Callers cannot type these states. |
+| `composeReleaseChecklist({ installationLabel, drill, human })` | Builds `jit.ops.release/v1`: deterministic rows from `deriveDeterministicRows`, human rows `FEAS OPS` from the owner. The drill record is re-validated; `null` leaves every deterministic row `not-run`. Unknown keys (including a caller-supplied `deterministic` map), unknown IDs, unknown states and secret-like notes throw. |
+| `report --id <drill> --checklist <local file>` | Reads the stored drill record, writes one profile record and one checklist record under `.local/ops-evidence`, and prints the tested `revisions`, the allowlisted summaries and checklist `rows` (`id`, `state`, `evidenceId` only). The `--checklist` file contains exactly `{ "human": { … } }`. |
+
+## Deterministic coverage
+
+| Row | Drill legs | Not covered by the drill |
+| --- | --- | --- |
+| J01 | `groups`, `memory-queries` | team dispatch and coordinator synthesis (bun test evidence) |
+| J02 | `memory-queries`, `schedules` | task acceptance and memory correction (bun test evidence) |
+| J03 | `pr-snapshots`, `pr-alerts` | — (fully drilled) |
+| J04 | `deliveries` | Telegram project commands (bun test evidence); no Bot API traffic |
+| J05 | `quota-wait`, `cancel` | service restart and reboot reconciliation (OPS05 human evidence) |
+| crash | `backup`, `quarantine`, `upgrade-preflight` | crash-at-every-boundary matrices (bun test evidence) |
+| trust | `network`, `export` | GitHub-write, shell and forged-command refusals (bun test evidence) |
+
+Derivation: the worst mapped leg wins (`failed` > `blocked` > `not-run`); a leg absent from the record is `not-run`; `scripted` legs count as executed fixtures. If every mapped leg executed but the row has uncovered scope, the row is `blocked` and its note names the scope. Only a fully covered row whose legs all executed is `passed`. Rows that ran link the drill record ID as `evidenceId`; `not-run` rows link nothing. Notes are fixed text plus `leg=state` pairs.
+
+## Human rows
+
+`FEAS` and `OPS` stay `not-run` unless the owner supplies an explicit state plus a sanitized ops-evidence UUID. A human row in any state other than `not-run` without an evidence ID throws instead of auto-completing; a `not-run` row with an evidence ID also throws. They link human Pi/route/service evidence (S01, OPS05) and are never derived from desktop fixture runs.
 
 Checklist outcome: `failed` if any row failed, `blocked` if any row is blocked or not run, `passed` only when every row passed. A fully passing checklist still requires owner review of the linked evidence before any pilot claim; the checklist is a gate record, not an approval.
 
-The checklist input file shape:
-
 ```json
 {
-  "deterministic": { "J01": { "state": "passed", "evidenceId": "<uuid>", "note": "job admission evidence" } },
   "human": { "FEAS": { "state": "blocked", "evidenceId": "<uuid>", "note": "service identity inventory recorded" } }
 }
 ```
-
-Omitted rows stay `not-run` with a fixed disclosure note. `evidenceId` values must be sanitized ops-evidence UUIDs; rows never carry tokens, addresses or raw diagnostics.
 
 Deterministic checks: `bun test tests/ops-drill.test.ts`, `bun test`, `bun run typecheck`.
