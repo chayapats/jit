@@ -6,7 +6,7 @@ Description=Jit personal application
 Documentation=https://github.com/chayapats/jit
 After=network-online.target
 Wants=network-online.target
-StartLimitIntervalSec={{RESTART_WINDOW}}
+{{UNIT_ORDERING}}StartLimitIntervalSec={{RESTART_WINDOW}}
 StartLimitBurst={{RESTART_BURST}}
 
 [Service]
@@ -28,7 +28,7 @@ LimitNOFILE=4096
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=true
+{{HOME_PROTECTION}}
 ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true

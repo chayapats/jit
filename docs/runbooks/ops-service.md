@@ -9,6 +9,7 @@ Owner-executable checklist for the packaged service (`ops.service_package/v1`, d
 - The pinned Bun at an absolute path (`bun --version` must equal the manifest pin).
 - Private access: bind loopback behind configured private ingress (for example a VPN `serve`/reverse proxy terminating HTTPS), or an address on the VPN interface with an explicit HTTPS `network.origin` (required for any non-loopback bind). No public ingress is installed or exposed by the package.
 - Credentials: the Telegram bot token, when used, is a 0600 file owned by the identity. Keyring-backed references stay `verify-secret-store` until OPS05 proves service-context access.
+- `runPort: "schway"`: Schway reads Grok/Codex logins from the identity's own Secret Service. The identity needs a lingering user manager (`loginctl enable-linger <identity>`), a Secret Service on its session bus (for example a `gnome-keyring-daemon` user service), a collection unlocked at user-session start, and its own `/login` per route (Pi runbook Round B). The unit then binds only `/run/user/<uid>/bus` and starts after `user@<uid>.service`; plan blocks with `enable-service-user-session-bus` while that socket is missing. Never copy another user's keyring or CLI credentials.
 
 ## 1. Build and prepare the artifact
 

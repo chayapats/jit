@@ -107,6 +107,8 @@ interface FakeSupervisor {
   group: string | null;
   /** Simulates a path the service identity cannot read inside a staged release. */
   unreadable?: string;
+  /** Whether the service identity's user session bus socket exists (`test -S`); absent by default. */
+  sessionBus?: boolean;
 }
 
 /**
@@ -139,6 +141,7 @@ function fakeSupervisor(unitDir: string, options: { spawnService?: boolean } = {
       const done = (exitCode: number, stdout = ""): CommandResult => ({ exitCode, stdout, timedOut: false });
       if (argv[0] === "getent" && argv[1] === "group") return fake.group ? done(0, fake.group + "\n") : done(2);
       if (argv[0] === "getent") return fake.identity ? done(0, fake.identity + "\n") : done(2);
+      if (argv[0] === "runuser" && argv[4] === "test" && argv[5] === "-S") return done(fake.sessionBus ? 0 : 1);
       if (argv[0] === "runuser" && argv[4] === "test") {
         // The test process plays the service identity: the kernel decides access exactly as for that user.
         const mode = { "-r": fsConstants.R_OK, "-w": fsConstants.W_OK, "-x": fsConstants.X_OK }[argv[5]!];
@@ -571,6 +574,40 @@ test("the rendered unit sets the bot token reference path, never the token, when
   expect(unit).toContain(`Environment=JIT_TELEGRAM_BOT_TOKEN_PATH=${service.secretRefs[0]!.key}`);
   expect(unit).not.toContain("FIXTURE_TOKEN_VALUE");
 });
+
+test("schway mode renders only the identity's session bus for its Secret Service; plan blocks without that bus; scripted mode is unchanged", async () => {
+  const l = layout();
+  const art = await artifact(l.root, "artifact");
+  const scripted = await renderServiceUnit(l.service, { bunPath: process.execPath, configPath: "/etc/jit/service-config.json", gid, uid });
+  expect(scripted).toContain("ProtectHome=true\n");
+  expect(scripted).not.toContain("DBUS_SESSION_BUS_ADDRESS");
+  expect(scripted).not.toContain("BindPaths=");
+  expect(scripted).not.toContain("user@");
+
+  const schway = { ...l.service, runPort: "schway" as const };
+  writeFileSync(l.source, JSON.stringify(schway), { mode: 0o600 });
+  const fake = fakeSupervisor(l.dirs.unit);
+  const blockedPlan = (await cli(["plan", "--config", l.source, "--artifact", art], fake, l)).output as Awaited<ReturnType<typeof planInstall>>;
+  expect(blockedPlan.ok).toBe(false);
+  expect(blockedPlan.checks.filter(c => !c.ok)).toEqual([{ check: "session-bus", ok: false, nextAction: "enable-service-user-session-bus",
+    detail: "service identity has no user session bus for its Secret Service" }]);
+  expect(fake.calls).toContainEqual(["runuser", "-u", l.service.serviceUser, "--", "test", "-S", `/run/user/${uid}/bus`]);
+
+  fake.sessionBus = true;
+  const plan = (await cli(["plan", "--config", l.source, "--artifact", art], fake, l)).output as Awaited<ReturnType<typeof planInstall>>;
+  expect(plan.checks.filter(c => !c.ok)).toEqual([]);
+  expect(plan.checks.find(c => c.check === "session-bus")!.detail).toContain("unverified");
+  const unit = plan.files.find(f => f.path.endsWith("jit.service"))!.content!;
+  expect(unit).toContain(`Wants=network-online.target\nAfter=user@${uid}.service\nWants=user@${uid}.service\n`);
+  expect(unit).toContain(`ProtectHome=tmpfs\nBindPaths=/run/user/${uid}/bus\n`);
+  expect(unit).not.toContain("ProtectHome=true");
+  expect(unit).toContain(`Environment=XDG_RUNTIME_DIR=/run/user/${uid}\n`);
+  expect(unit).toContain(`Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${uid}/bus\n`);
+  expect(unit).toContain("Environment=JIT_RUN_PORT=schway");
+  // The rest of the hardening stays as in scripted mode.
+  for (const line of ["NoNewPrivileges=true", "PrivateTmp=true", "ProtectSystem=strict", `ReadWritePaths=${l.dirs.state} ${l.dirs.backup}`]) expect(unit).toContain(line);
+  await expect(renderServiceUnit(schway, { bunPath: process.execPath, uid: 0 })).rejects.toThrow("invalid_service_config");
+}, 30_000);
 
 test("the Linux ARM64 package smoke is opt-in and refuses desktop hosts", () => {
   expect(smokeRefusal({ optIn: undefined, platform: "linux", arch: "arm64" })).toContain("JIT_OPS_SMOKE=1");
