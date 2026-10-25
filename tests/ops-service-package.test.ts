@@ -621,6 +621,62 @@ test("the installed dependency tree is sealed: a modified, added or symlinked de
   expect(validateArtifact(art, { runtime: true }).ok).toBe(false);
 });
 
+test("dependency install keeps Bun's cache outside the artifact with a minimal environment and never seals an in-artifact cache", async () => {
+  const l = layout();
+  const install = async (name: string, env: Record<string, string | undefined>, writeCache?: "symlink" | "plain") => {
+    const out = join(l.root, name);
+    buildPackage({ srcDir: repoRoot, outDir: out, engineContract: "jit.schway.bridge/v1", engineRevision: null });
+    const seen: Record<string, string>[] = [];
+    const run: CommandRunner = async (argv, opts) => {
+      if (argv[1] !== "install") return { exitCode: 0, stdout: `${Bun.version}\n`, timedOut: false };
+      seen.push(opts.env!);
+      const modules = join(opts.cwd!, "node_modules");
+      mkdirSync(join(modules, "fixture-dep"), { recursive: true });
+      writeFileSync(join(modules, "fixture-dep", "index.js"), "export const pinned = 1;\n");
+      // Bun's fallback when no cache location is given: a cache inside the artifact.
+      if (writeCache) {
+        mkdirSync(join(modules, ".bun-cache", "fixture-dep@1"), { recursive: true });
+        if (writeCache === "symlink") symlinkSync(join(modules, ".bun-cache", "fixture-dep@1"), join(modules, ".bun-cache", "fixture-dep-1"));
+      }
+      return { exitCode: 0, stdout: "", timedOut: false };
+    };
+    const result = installArtifactDependencies(out, { bunPath: process.execPath, run, env });
+    return { out, seen, result };
+  };
+
+  const home = join(l.root, "service-home");
+  const viaHome = await install("via-home", { PATH: "/usr/bin:/bin", HOME: home, OPENAI_API_KEY: "sk-must-not-pass" });
+  await viaHome.result;
+  expect(viaHome.seen).toEqual([{ PATH: "/usr/bin:/bin", HOME: home, BUN_INSTALL_CACHE_DIR: join(home, ".bun", "install", "cache") }]);
+  expect(validateArtifact(viaHome.out, { runtime: true }).ok).toBe(true);
+
+  const cacheDir = join(l.root, "operator-cache");
+  const viaOperator = await install("via-operator", { PATH: "/usr/bin:/bin", HOME: home, BUN_INSTALL_CACHE_DIR: cacheDir });
+  await viaOperator.result;
+  expect(viaOperator.seen[0]!.BUN_INSTALL_CACHE_DIR).toBe(cacheDir);
+
+  // No HOME: a temporary cache outside the artifact, removed afterwards.
+  const noHome = await install("no-home", { PATH: "/usr/bin:/bin" });
+  await noHome.result;
+  const temporary = noHome.seen[0]!.BUN_INSTALL_CACHE_DIR!;
+  expect(Object.keys(noHome.seen[0]!).sort()).toEqual(["BUN_INSTALL_CACHE_DIR", "PATH"]);
+  expect(temporary.startsWith(noHome.out)).toBe(false);
+  expect(existsSync(temporary)).toBe(false);
+
+  // A cache configured inside the artifact is refused before bun runs.
+  const inside = join(l.root, "inside");
+  const refused = await install("inside", { PATH: "/usr/bin:/bin", BUN_INSTALL_CACHE_DIR: join(inside, "node_modules", ".bun-cache") });
+  await expect(refused.result).rejects.toThrow("dependency_cache_in_artifact");
+  expect(refused.seen).toEqual([]);
+
+  // An install that still leaves a cache in the artifact never seals, with or without symlinks.
+  for (const kind of ["symlink", "plain"] as const) {
+    const leaked = await install(`leaked-${kind}`, { PATH: "/usr/bin:/bin", HOME: home }, kind);
+    await expect(leaked.result).rejects.toThrow("dependency_cache_in_artifact");
+    expect(existsSync(join(leaked.out, "dependencies.json"))).toBe(false);
+  }
+});
+
 test("install assigns the ledger to the service identity and the config to root:<gid>, renders the real GID, and fails closed on ownership errors", async () => {
   const l = layout();
   const art = await artifact(l.root, "artifact");

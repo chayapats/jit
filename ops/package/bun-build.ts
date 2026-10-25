@@ -1,6 +1,7 @@
-import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { join, relative, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { safeVersion } from "../../src/evidence/contract";
 import { schemaVersion } from "../../src/store";
 import type { CommandRunner } from "../../src/ops/supervisor";
@@ -319,23 +320,62 @@ export function validateArtifact(outDir: string, options: { runtime?: boolean } 
   return { ok: checks.every(c => c.ok), manifest, checks };
 }
 
+/** True when `child` is `parent` or lies beneath it. */
+function within(parent: string, child: string): boolean {
+  const rel = relative(parent, child);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+/**
+ * Bun install cache for the explicit dependency step, always outside the
+ * artifact: the operator's `BUN_INSTALL_CACHE_DIR`, else the invoking
+ * identity's default cache under `HOME`, else a temporary directory removed
+ * afterwards. Without one, Bun falls back to `node_modules/.bun-cache` inside
+ * the artifact, whose version symlinks can never be sealed.
+ */
+function installCache(root: string, env: Record<string, string | undefined>): { dir: string; temporary: boolean } {
+  const configured = env.BUN_INSTALL_CACHE_DIR, home = env.HOME;
+  const dir = configured && isAbsolute(configured) ? resolve(configured)
+    : home && isAbsolute(home) ? join(resolve(home), ".bun", "install", "cache")
+    : null;
+  if (dir === null) return { dir: mkdtempSync(join(tmpdir(), "jit-bun-cache-")), temporary: true };
+  if (within(root, dir)) throw new Error("dependency_cache_in_artifact");
+  return { dir, temporary: false };
+}
+
 /**
  * Installs the artifact's pinned dependencies on the host that will run it:
  * `bun install --frozen-lockfile --production --ignore-scripts --linker=hoisted`
- * inside the artifact, removes the bin-link directory (unused at runtime),
- * then seals the symlink-free tree into a strict record bound to the
- * artifact's content pin and this platform/arch. Explicit operator step only — the
- * service unit and boot never install or download anything. Registry access
- * (or a pre-populated Bun cache) is the operator's responsibility.
+ * inside the artifact with a Bun cache outside it (see `installCache`) and an
+ * environment of only `PATH`, `HOME` (when set) and that cache, removes the
+ * bin-link directory (unused at runtime), then seals the symlink-free tree
+ * into a strict record bound to the artifact's content pin and this
+ * platform/arch. Explicit operator step only — the service unit and boot
+ * never install or download anything. Registry access (or a pre-populated Bun
+ * cache) is the operator's responsibility. `env` is a test seam (default
+ * `process.env`).
  */
-export async function installArtifactDependencies(dir: string, input: { bunPath: string; run: CommandRunner; timeoutMs?: number }): Promise<DependencyRecord> {
+export async function installArtifactDependencies(dir: string, input: { bunPath: string; run: CommandRunner; timeoutMs?: number; env?: Record<string, string | undefined> }): Promise<DependencyRecord> {
   const root = resolve(dir);
   const valid = validateArtifact(root);
   if (!valid.ok || !valid.manifest) throw new Error("invalid_artifact");
   if (existsSync(join(root, "dependencies.json"))) throw new Error("dependencies_already_installed");
-  const result = await input.run([input.bunPath, "install", "--frozen-lockfile", "--production", "--ignore-scripts", "--linker=hoisted"],
-    { cwd: root, timeoutMs: input.timeoutMs ?? 600_000, env: { PATH: process.env.PATH ?? "/usr/bin:/bin" } });
+  const env = input.env ?? process.env;
+  const cache = installCache(root, env);
+  let result: Awaited<ReturnType<CommandRunner>>;
+  try {
+    result = await input.run([input.bunPath, "install", "--frozen-lockfile", "--production", "--ignore-scripts", "--linker=hoisted"],
+      { cwd: root, timeoutMs: input.timeoutMs ?? 600_000, env: {
+        PATH: env.PATH ?? "/usr/bin:/bin",
+        ...(env.HOME && isAbsolute(env.HOME) ? { HOME: env.HOME } : {}),
+        BUN_INSTALL_CACHE_DIR: cache.dir,
+      } });
+  } finally {
+    if (cache.temporary) rmSync(cache.dir, { recursive: true, force: true });
+  }
   if (result.exitCode !== 0) throw new Error("dependency_install_failed");
+  // Defense in depth: an in-artifact cache is never sealed, even symlink-free.
+  if (existsSync(join(root, "node_modules", ".bun-cache"))) throw new Error("dependency_cache_in_artifact");
   const version = await input.run([input.bunPath, "--version"], { timeoutMs: 30_000 });
   const bunVersion = version.stdout.trim();
   if (version.exitCode !== 0 || safeVersion(bunVersion) !== bunVersion || bunVersion !== valid.manifest.bunVersion) throw new Error("runtime_mismatch");
