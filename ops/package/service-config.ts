@@ -319,29 +319,59 @@ export function serviceWritablePaths(config: ServiceConfig): string[] {
   return [...new Set([parsed.stateDirectory, parsed.backupDirectory, dirname(parsed.ledgerPath)])];
 }
 
+/** The service identity's user-session bus socket (Secret Service for Schway's native credential store). */
+export function serviceSessionBusPath(uid: number): string {
+  return `/run/user/${uid}/bus`;
+}
+
+/**
+ * Unit lines that let a `schway` run port reach the service identity's own
+ * Secret Service: `ProtectHome=true` hides `/run/user`, so the unit instead
+ * empties the home trees (`ProtectHome=tmpfs`), binds back only that
+ * identity's session bus socket, names it in the environment and orders
+ * after the identity's lingering user manager (which unlocks its keyring at
+ * session start). Scripted mode keeps `ProtectHome=true` and no bus.
+ */
+function sessionBusUnit(parsed: ServiceConfig, uid: number | undefined): { ordering: string; protection: string; environment: [string, string][] } {
+  if (parsed.runPort !== "schway" || uid === undefined) return { ordering: "", protection: "ProtectHome=true", environment: [] };
+  const bus = serviceSessionBusPath(uid);
+  return {
+    ordering: `After=user@${uid}.service\nWants=user@${uid}.service\n`,
+    protection: `ProtectHome=tmpfs\nBindPaths=${bus}`,
+    environment: [["XDG_RUNTIME_DIR", `/run/user/${uid}`], ["DBUS_SESSION_BUS_ADDRESS", `unix:path=${bus}`]],
+  };
+}
+
 /**
  * Renders the supervised unit from the checked-in template. Rejects wildcard
  * binds again at render time; the unit carries opaque secret references only
  * as file paths, never values. `appDir` defaults to the active-release path so
- * an upgrade switches releases without rewriting the unit.
+ * an upgrade switches releases without rewriting the unit. Install resolves
+ * the identity's numeric UID and primary GID; a `schway` run port needs the
+ * UID for the session bus lines (`sessionBusUnit`). Without a resolved UID (a
+ * plan already blocked on identity) the scripted hardening is rendered.
  */
-export async function renderServiceUnit(config: ServiceConfig, exec: { bunPath: string; appDir?: string; configPath?: string; gid?: number }): Promise<string> {
+export async function renderServiceUnit(config: ServiceConfig, exec: { bunPath: string; appDir?: string; configPath?: string; gid?: number; uid?: number }): Promise<string> {
   const parsed = parseServiceConfig(config);
   const appDir = exec?.appDir ?? parsed.executablePath;
   const configPath = exec?.configPath ?? join(parsed.stateDirectory, "service-config.json");
   for (const path of [exec?.bunPath, appDir, configPath]) absolutePath(path);
-  // Install resolves and validates the identity's primary group and renders its numeric GID.
-  if (exec.gid !== undefined && (!Number.isSafeInteger(exec.gid) || exec.gid < 1 || exec.gid > 4294967294)) throw new Error("invalid_service_config");
+  for (const id of [exec.gid, exec.uid]) {
+    if (id !== undefined && (!Number.isSafeInteger(id) || id < 1 || id > 4294967294)) throw new Error("invalid_service_config");
+  }
   const template = await Bun.file(templateUrl).text();
   const stopSeconds = serviceDrainTimeoutMs(parsed) / 1000;
+  const bus = sessionBusUnit(parsed, exec.uid);
   return template
+    .replaceAll("{{UNIT_ORDERING}}", bus.ordering)
+    .replaceAll("{{HOME_PROTECTION}}", bus.protection)
     .replaceAll("{{SERVICE_USER}}", parsed.serviceUser)
     .replaceAll("{{SERVICE_GROUP}}", exec.gid !== undefined ? String(exec.gid) : parsed.serviceUser)
     .replaceAll("{{BUN_PATH}}", exec.bunPath)
     .replaceAll("{{APP_DIR}}", appDir)
     .replaceAll("{{CONFIG_PATH}}", configPath)
     .replaceAll("{{WORKING_DIR}}", parsed.workingDirectory)
-    .replaceAll("{{ENVIRONMENT}}", serviceEnvironment(parsed).map(([k, v]) => `Environment=${k}=${v}`).join("\n"))
+    .replaceAll("{{ENVIRONMENT}}", [...serviceEnvironment(parsed), ...bus.environment].map(([k, v]) => `Environment=${k}=${v}`).join("\n"))
     .replaceAll("{{WRITABLE_PATHS}}", serviceWritablePaths(parsed).join(" "))
     .replaceAll("{{MEMORY_MAX}}", memoryMax(parsed.resources.memoryMaxBytes))
     .replaceAll("{{STOP_TIMEOUT}}", String(stopSeconds + 15))

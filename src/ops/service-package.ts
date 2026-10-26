@@ -9,7 +9,7 @@ import { writeFileAtomic } from "./upgrade-fence";
 import { readManifest, validateArtifact, type BuildManifest } from "../../ops/package/bun-build";
 import {
   assertNoSecretValues, parseServiceConfig, planServiceConfig, renderJournaldConfig, renderServiceUnit, serviceDatabasePath,
-  serviceEnvironment, serviceLogNamespace, serviceOrigin, serviceReleasesDirectory, serviceUnitName,
+  serviceEnvironment, serviceLogNamespace, serviceOrigin, serviceReleasesDirectory, serviceSessionBusPath, serviceUnitName,
   type ServiceConfig, type ServicePlanChange,
 } from "../../ops/package/service-config";
 
@@ -157,6 +157,23 @@ async function serviceCan(run: CommandRunner, user: string, path: string, flags:
 
 const flagNames: Record<AccessFlag, string> = { "-r": "read", "-w": "write", "-x": "traverse" };
 
+/**
+ * A `schway` run port reads route credentials through Schway's native store,
+ * which on Linux is the service identity's own Secret Service on its user
+ * session bus. The plan checks, as the identity, that the bus socket exists
+ * (lingering user manager); it never reads the store, and an existing bus
+ * still proves neither an unlocked keyring nor any route readiness.
+ */
+async function sessionBusCheck(run: CommandRunner, service: ServiceConfig, uid: number | null): Promise<OperatorCheck | null> {
+  if (service.runPort !== "schway") return null;
+  // An unresolved identity is already a blocked `identity` check.
+  if (uid === null) return null;
+  const result = await run(["runuser", "-u", service.serviceUser, "--", "test", "-S", serviceSessionBusPath(uid)], { timeoutMs: 10_000 });
+  return result.exitCode === 0
+    ? ok("session-bus", "service identity session bus present; Secret Service unlock and route readiness unverified")
+    : blocked("session-bus", "enable-service-user-session-bus", "service identity has no user session bus for its Secret Service");
+}
+
 /** Access checks for every path the unit needs, evaluated as the service identity. */
 async function accessChecks(run: CommandRunner, service: ServiceConfig, host: OperatorHost, resolved: boolean): Promise<OperatorCheck[]> {
   const required: [string, string, AccessFlag[]][] = [
@@ -261,6 +278,8 @@ export async function planInstall(input: { service: unknown; artifactDir: string
   checks.push(configDirectoryCheck(host));
   checks.push(...secretChecks(service, who.uid));
   checks.push(...await accessChecks(host.run, service, host, who.uid !== null && who.gid !== null));
+  const bus = await sessionBusCheck(host.run, service, who.uid);
+  if (bus) checks.push(bus);
   checks.push(await privateBind(host.run, service));
   checks.push(activeReleaseCheck(service));
   const supervisor = new SystemdSupervisor(host.run);
@@ -270,7 +289,7 @@ export async function planInstall(input: { service: unknown; artifactDir: string
     ? blocked("instance", "stop-service-before-reinstall", `installed unit is ${state.active}`)
     : ok("instance", state ? "installed unit inactive" : "no installed unit"));
   const configPath = installedConfigPath(host);
-  const unit = await renderServiceUnit(service, { bunPath: host.bunPath, configPath, ...(who.gid !== null ? { gid: who.gid } : {}) });
+  const unit = await renderServiceUnit(service, { bunPath: host.bunPath, configPath, ...(who.gid !== null ? { gid: who.gid } : {}), ...(who.uid !== null ? { uid: who.uid } : {}) });
   const journald = await renderJournaldConfig(service);
   const configText = JSON.stringify(service, null, 2) + "\n";
   for (const text of [unit, journald, configText]) assertNoSecretValues(text);
