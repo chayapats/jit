@@ -21,7 +21,8 @@ if (app && sidebar && menuButton) {
   };
   // The drawer may already be open through the no-script #sidebar target (refresh, direct link, early tap).
   setOpen(location.hash === "#sidebar", false);
-  window.addEventListener("hashchange", () => { if (location.hash === "#sidebar") setOpen(true); });
+  // Back/forward and in-page links change the fragment; follow it in both directions.
+  window.addEventListener("hashchange", () => setOpen(location.hash === "#sidebar", location.hash === "#sidebar"));
   menuButton.addEventListener("click", event => { event.preventDefault(); setOpen(app.dataset.drawer !== "open"); });
   for (const close of document.querySelectorAll(".drawer-close, .drawer-scrim")) {
     close.addEventListener("click", event => { event.preventDefault(); setOpen(false); });

@@ -112,7 +112,8 @@ test("Accept-Language negotiation picks a supported language by weight and falls
   expect(negotiateLocale("en;q=0")).toBe("th");
   expect(negotiateLocale("x".repeat(600))).toBe("th");
   // Malformed or out-of-range qvalues disqualify the range instead of counting as q=1.
-  for (const header of ["en;q=1.5", "en;q=1.001", "en;q=bogus", "en;q=", "en;q=0.5;q=1"]) expect(negotiateLocale(header)).toBe("th");
+  for (const header of ["en;q=1.5", "en;q=1.001", "en;q=bogus", "en;q=", "en;q=0.5;q=1", "en;q =0", "en;q", "en;foo=bar", "en; q=1; x=y"]) expect(negotiateLocale(header)).toBe("th");
+  expect(negotiateLocale("en; q=0.8")).toBe("en");
   expect(negotiateLocale("en;q=1.000")).toBe("en");
   expect(negotiateLocale("en;q=bogus, th;q=0.1")).toBe("th");
 });
@@ -202,6 +203,8 @@ test("layout templates contain no hard-coded English or Thai text nodes", async 
   const literals = [...new Set(nodes)].filter(node => !/^[a-z_.]+\/v\d+$/.test(node) && !node.includes("(value)")).sort();
   expect(literals).toEqual(["Inter", "JetBrains Mono", "Noto Sans Thai", "quarantine (OPS02)"]);
   expect(source).not.toMatch(/[\u0E00-\u0E7F]/);
+  // Capitalised word literals in expressions are product names only, never labels.
+  expect([...new Set(source.match(/"[A-Z][a-z]+(?: [a-zA-Z]+)*"/g))].sort()).toEqual(['"Codex"', '"Grok"', '"Jit"']);
 });
 
 test("CSP is exactly ADR 0028 on pages, API, assets, redirects and errors", async () => {
@@ -417,4 +420,89 @@ test("logo is one-colour hand-built SVG: mark, lockup with drawn wordmark, favic
   expect(lockup).toContain('aria-label="Jit"');
   expect(faviconSvg).toStartWith('<svg xmlns="http://www.w3.org/2000/svg"');
   expect(staticAssets.get("favicon.svg")!.contentType).toBe("image/svg+xml");
+});
+
+/** Minimal DOM stand-in for the enhancement module: just the nodes and events app.js touches. */
+function fakeDom(hash: string) {
+  const listeners: Record<string, ((event: any) => void)[]> = {};
+  const on = (target: string) => (type: string, fn: (event: any) => void) => { (listeners[`${target}:${type}`] ??= []).push(fn); };
+  const fire = (target: string, type: string, event: any = {}) => { for (const fn of listeners[`${target}:${type}`] ?? []) fn({ preventDefault() { event.prevented = true; }, ...event }); return event; };
+  const focused: string[] = [];
+  const attributes: Record<string, string> = {};
+  const app = { dataset: {} as Record<string, string> };
+  const menuButton = { setAttribute: (k: string, v: string) => { attributes[k] = v; }, addEventListener: on("menu"), focus: () => focused.push("menu") };
+  const closers = [{ addEventListener: on("close") }, { addEventListener: on("scrim") }];
+  const submitted: string[] = [];
+  const form = { reportValidity: () => true, requestSubmit: () => submitted.push("composer") };
+  const textarea = { form, addEventListener: on("textarea"), style: {} as Record<string, string>, scrollHeight: 40 };
+  const location = { hash, pathname: "/projects/p/topics/t", search: "" };
+  const replaced: string[] = [];
+  const globals = {
+    document: {
+      documentElement: { dataset: {} as Record<string, string> },
+      querySelector: (selector: string) => selector === ".app" ? app : selector === ".menu-button" ? menuButton : null,
+      getElementById: (id: string) => id === "sidebar" ? { querySelector: () => ({ focus: () => focused.push("sidebar") }) } : null,
+      querySelectorAll: (selector: string) => selector === ".drawer-close, .drawer-scrim" ? closers : selector === ".composer textarea" ? [textarea] : [],
+      addEventListener: on("document"),
+    },
+    window: { addEventListener: on("window") },
+    location,
+    history: { replaceState: (_s: unknown, _t: string, url: string) => { replaced.push(url); location.hash = ""; } },
+    CSS: { supports: () => true },
+  };
+  return { app, attributes, focused, submitted, replaced, location, fire, globals };
+}
+/** Installs the fake globals, loads a fresh copy of app.js and returns a function that restores the globals. */
+async function runAppScript(dom: ReturnType<typeof fakeDom>): Promise<() => void> {
+  const saved = new Map(Object.keys(dom.globals).map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  const restore = () => {
+    for (const [key, descriptor] of saved) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete (globalThis as Record<string, unknown>)[key];
+    }
+  };
+  for (const [key, value] of Object.entries(dom.globals)) Object.defineProperty(globalThis, key, { value, configurable: true, writable: true });
+  try { await import(`../src/web-assets/app.js?case=${crypto.randomUUID()}`); } catch (error) { restore(); throw error; }
+  return restore;
+}
+
+test("app.js contract: drawer follows the no-script #sidebar target both ways; Escape, close controls and ⌘Enter behave", async () => {
+  const dom = fakeDom("#sidebar");
+  const restore = await runAppScript(dom);
+  try {
+  // Opened before the module loaded (refresh / direct link): script state agrees with CSS :target.
+  expect(dom.app.dataset.drawer).toBe("open");
+  expect(dom.attributes["aria-expanded"]).toBe("true");
+  dom.fire("document", "keydown", { key: "Escape" });
+  expect(dom.app.dataset.drawer).toBe("closed");
+  expect(dom.attributes["aria-expanded"]).toBe("false");
+  expect(dom.location.hash).toBe("");
+  expect(dom.replaced).toEqual(["/projects/p/topics/t"]);
+  expect(dom.focused.at(-1)).toBe("menu");
+  // Back/forward navigation to and away from #sidebar.
+  dom.location.hash = "#sidebar"; dom.fire("window", "hashchange");
+  expect(dom.app.dataset.drawer).toBe("open");
+  dom.location.hash = ""; dom.fire("window", "hashchange");
+  expect(dom.app.dataset.drawer).toBe("closed");
+  expect(dom.attributes["aria-expanded"]).toBe("false");
+  // Menu button toggles without touching history; close and scrim links close.
+  const click = dom.fire("menu", "click", {});
+  expect(click.prevented).toBe(true);
+  expect(dom.app.dataset.drawer).toBe("open");
+  expect(dom.focused.at(-1)).toBe("sidebar");
+  dom.fire("scrim", "click");
+  expect(dom.app.dataset.drawer).toBe("closed");
+  dom.fire("menu", "click"); dom.fire("close", "click");
+  expect(dom.app.dataset.drawer).toBe("closed");
+  // ⌘/Ctrl+Enter submits through the form's own post; plain Enter does not.
+  dom.fire("textarea", "keydown", { key: "Enter" });
+  expect(dom.submitted).toEqual([]);
+  dom.fire("textarea", "keydown", { key: "Enter", metaKey: true });
+  dom.fire("textarea", "keydown", { key: "Enter", ctrlKey: true });
+  expect(dom.submitted).toEqual(["composer", "composer"]);
+  } finally { restore(); }
+
+  const closedStart = fakeDom("");
+  (await runAppScript(closedStart))();
+  expect(closedStart.app.dataset.drawer).toBe("closed");
+  expect(closedStart.replaced).toEqual([]);
 });
