@@ -103,14 +103,15 @@ function ownerPid(store: ReadableStore | null, table: "job_scheduler" | "deliver
  * readiness stays false here; only explicit OPS05 evidence may set it
  * through `serviceStatus` directly.
  */
-export function gatherServiceStatus(config: AppConfig, service: ServiceConfig, options: { ledgerGate?: LedgerGate; transports?: ChannelTransportFactory; requiredEngine?: string } = {}): ServiceStatus {
+export function gatherServiceStatus(config: AppConfig, service: ServiceConfig, options: { ledgerGate?: LedgerGate; transports?: ChannelTransportFactory; requiredEngine?: string; stateOwnerUid?: number } = {}): ServiceStatus {
   const effective = serviceAppConfig(config, service);
   // Read-only connection: status never creates, migrates, journals or chmods the installation.
   const store = openReadOnlyStore(effective.databasePath);
   {
     const scheduler = ownerPid(store, "job_scheduler"), worker = ownerPid(store, "delivery_worker");
     const preflight = preflightService({ store, config: effective, service, requiredEngine: options.requiredEngine ?? "jit.schway.bridge/v1",
-      ...(options.ledgerGate ? { ledgerGate: options.ledgerGate } : {}), ...(options.transports ? { transports: options.transports } : {}) });
+      ...(options.ledgerGate ? { ledgerGate: options.ledgerGate } : {}), ...(options.transports ? { transports: options.transports } : {}),
+      ...(options.stateOwnerUid !== undefined ? { stateOwnerUid: options.stateOwnerUid } : {}) });
     const blockedGates = preflight.gates.filter(g => g.state === "blocked" && g.gate !== "scheduler" && g.gate !== "deliveries").map(g => g.gate);
     const channelGate = preflight.gates.find(g => g.gate === "channels");
     const status = serviceStatus({ now: Date.now(), scheduler: scheduler.state,

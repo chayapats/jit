@@ -22,6 +22,20 @@ export interface ServiceCliDeps {
   ledgerGate?: LedgerGate;
   /** Ownership operation for install (tests inject a recorder). */
   chown?: OperatorHost["chown"];
+  /** Effective uid of the caller (tests); production reads `process.getuid()`. */
+  uid?: number;
+}
+
+/**
+ * Resolves the configured identity's uid through `getent passwd` for a
+ * root-run status. Unresolvable or root identities return root's own uid,
+ * so the state check stays blocked instead of trusting an unknown owner.
+ */
+async function serviceIdentityUid(run: CommandRunner, user: string): Promise<number> {
+  const result = await run(["getent", "passwd", user], { timeoutMs: 10_000 });
+  const fields = result.exitCode === 0 ? result.stdout.trim().split("\n")[0]?.split(":") ?? [] : [];
+  const uid = fields[0] === user && /^\d{1,10}$/.test(fields[2] ?? "") ? Number(fields[2]) : 0;
+  return uid > 0 ? uid : 0;
 }
 
 const usage = "Use: service <plan|install|start|stop|restart|status|upgrade|disable|uninstall> [--config <path>] [--artifact <dir>] " +
@@ -86,7 +100,10 @@ export async function runServiceCommand(args: string[], deps: ServiceCliDeps): P
     }
     const service = readServiceConfigFile(configPath);
     const supervisor = new SystemdSupervisor(run);
-    const status = async () => ({ supervisor: await supervisor.state(), service: gatherServiceStatus(readConfig({}), service, deps.ledgerGate ? { ledgerGate: deps.ledgerGate } : {}) });
+    // As root, directory ownership is judged against the configured identity, never root itself.
+    const stateOwnerUid = (deps.uid ?? process.getuid?.()) === 0 ? await serviceIdentityUid(run, service.serviceUser) : undefined;
+    const status = async () => ({ supervisor: await supervisor.state(), service: gatherServiceStatus(readConfig({}), service, {
+      ...(deps.ledgerGate ? { ledgerGate: deps.ledgerGate } : {}), ...(stateOwnerUid !== undefined ? { stateOwnerUid } : {}) }) });
     if (command === "status") return { exitCode: 0, output: sanitized(await status()) };
     if (command === "start" || command === "stop" || command === "restart") {
       const done = command === "start" ? await supervisor.start()
