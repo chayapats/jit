@@ -177,9 +177,11 @@ test("stop and cleanup: owner cancel wins over a late success, with bounded self
   expect(exported.output).toMatchObject({ route: "redacted-local-alias", model: "redacted", lifecycle: "cancelled" });
   const full = JSON.stringify(late.record);
   expect(full).not.toContain(SECRET);
-  // Deadlines past the classifier bound fail honestly instead of recording readiness.
+  // Deadlines past the classifier bound fail honestly instead of recording readiness. The fake
+  // clock reports 5000 ms elapsed; the real budget stays generous so slow hosts never abort
+  // the stub first (#84).
   const slow = ports({ id: () => OTHER_ID, nowValue: 1800000000000, infer: async () => "success" });
-  const expired = await liveProbe("fixture-probe-host", { route: "probe-route", model: "probe-model", maxAttempts: 1, deadlineMs: 100 },
+  const expired = await liveProbe("fixture-probe-host", { route: "probe-route", model: "probe-model", maxAttempts: 1, deadlineMs: 2000 },
     { ...slow, now: (() => { let calls = 0; return () => 1800000000000 + (++calls === 1 ? 0 : 5000); })() }, root);
   expect(expired.record.lifecycle).toBe("failed");
   expect(expired.self.elapsedMs).toBe(5000);

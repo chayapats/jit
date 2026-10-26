@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -36,6 +36,10 @@ import {
 import { ScriptedRunPort, fixtureOutcome } from "../src/team/scripted-port";
 import { SchwayRunPort } from "../src/team/schway-port";
 import type { HostAuthFetch, HostCredentialStore, Model } from "schway/host";
+
+// Full-app fixtures here take several seconds each on Pi-class hosts (#84); a
+// timeout would also leave single-flight state held for the following tests.
+setDefaultTimeout(30_000);
 
 const password = "fixture-pr-report-owner-password";
 const epoch = 1_800_000_000_000;

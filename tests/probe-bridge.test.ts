@@ -961,18 +961,20 @@ test("a hanging credential write does not wedge the probe past its deadline", as
     return successFetch("late")(input, init);
   } });
   const startedAt = Date.now();
+  // The write never settles, so a budget generous enough for slow hosts to
+  // reach it still always expires during the write (#84).
   const { record } = await liveProbe("fixture-probe-host",
-    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 100 },
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 2000 },
     { ...ports, now: () => 1800000000000, id: () => OTHER_ID }, root);
   // Bounded by the deadline even though the store write never settles. The
   // write is unresolved at terminalization, so the record reports
   // uncertainty instead of a clean cancelled/failed claim: the value could
   // still land after the record is immutable.
-  expect(Date.now() - startedAt).toBeLessThan(5000);
+  expect(Date.now() - startedAt).toBeLessThan(8000);
   expect(record.lifecycle).toBe("store-unavailable");
   expect(record.nextAction).toBe("check-secure-store");
   expect((await readProbeAttempt(root, OTHER_ID)).lifecycle).toBe(record.lifecycle);
-});
+}, 15_000);
 
 test("ledger entries beyond admitted attempts or over the per-ordinal bound reject", async () => {
   const root = setup();
@@ -1124,10 +1126,11 @@ test("a write completing after the deadline leaves no credential visible", async
   const backend = new Map<string, string>([["grok-subscription:xai", expired]]);
   const store: HostCredentialStore = {
     get: async identity => backend.get(identity.account) ?? expired,
-    // Settles well after the 100ms deadline: the abort path terminalizes
-    // without waiting, then the fence removes the late value.
+    // Settles well after the 2 s deadline: the abort path terminalizes
+    // without waiting, then the fence removes the late value. The deadline is
+    // generous enough for slow hosts to reach the write first (#84).
     set: async (identity, value) => {
-      await new Promise(r => setTimeout(r, 500));
+      await new Promise(r => setTimeout(r, 3000));
       backend.set(identity.account, value);
     },
     delete: async identity => backend.delete(identity.account),
@@ -1148,7 +1151,7 @@ test("a write completing after the deadline leaves no credential visible", async
   } });
   const startedAt = Date.now();
   const { record } = await liveProbe("fixture-probe-host",
-    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 100 },
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 2000 },
     { ...ports, now: () => 1800000000000, id: () => OTHER_ID }, root);
   // Bounded by the deadline even though the write settles later. The write
   // is unresolved when the deadline terminalizes, so the record reports
@@ -1156,13 +1159,13 @@ test("a write completing after the deadline leaves no credential visible", async
   expect(Date.now() - startedAt).toBeLessThan(5000);
   expect(record.lifecycle).toBe("store-unavailable");
   expect(record.nextAction).toBe("check-secure-store");
-  await new Promise(r => setTimeout(r, 700));
+  await new Promise(r => setTimeout(r, 3500));
   // The late settlement was removed again: final visibility is fenced. The
   // published uncertainty stays conservative — a later clean-up cannot
   // downgrade an immutable terminal record.
   expect(backend.size).toBe(0);
   expect((await readProbeAttempt(root, OTHER_ID)).lifecycle).toBe("store-unavailable");
-});
+}, 15_000);
 
 test("invalidation never removes a concurrent legitimate credential", async () => {
   const root = setup();

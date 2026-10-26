@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, setDefaultTimeout, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,6 +18,10 @@ import { exportOpsSummary, readOpsRecord, validateOpsRecord, writeOpsRecord } fr
 import { bindToDrill, composeProfile, composeReleaseChecklist, deriveDeterministicRows } from "../src/ops/report";
 import { safeInstallationLabel, safeNote, validateDrillRecord } from "../src/ops/contracts";
 import { TransactionStore, schemaVersion } from "../src/store";
+
+// Full-app fixtures here take several seconds each on Pi-class hosts (#84); a
+// timeout would also leave single-flight state held for the following tests.
+setDefaultTimeout(30_000);
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -695,8 +699,16 @@ test("queue wait is per-job admission latency and peak RSS is the process high-w
   expect(record.fixtureHonesty.join("\n")).toMatch(/high-water RSS/);
 });
 
+/**
+ * Deadline drills give the legs before quarantine a budget several times what
+ * a loaded Pi needs (#84), and the stubs outlast the deadline measured from
+ * the drill's own start, so the target leg is past the deadline because of
+ * the stub, never because of host speed.
+ */
+const deadlineDrill = { ...drillConfig, deadlineMs: 5000 };
+
 test("the drill deadline bounds a running leg, fails closed and skips the rest", async () => {
-  const cooperative = await runLoadDrill({ ...drillConfig, deadlineMs: 1000 }, { restore: async ({ signal }) => {
+  const cooperative = await runLoadDrill(deadlineDrill, { restore: async ({ signal }) => {
     await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
     return { state: "passed", detail: "should not be recorded" };
   } });
@@ -708,15 +720,16 @@ test("the drill deadline bounds a running leg, fails closed and skips the rest",
   expect(cooperative.record.nextAction).toBe("retry-bounded-drill");
   // A leg that ignores its signal is abandoned after a bounded grace instead of extending the drill.
   const t0 = performance.now();
-  const stubborn = await runLoadDrill({ ...drillConfig, deadlineMs: 1000 }, { restore: async () => {
-    await Bun.sleep(4000);
+  const stubborn = await runLoadDrill(deadlineDrill, { restore: async () => {
+    await Bun.sleep(t0 + deadlineDrill.deadlineMs + 3000 - performance.now());
     return { state: "passed", detail: "late" };
   } });
   roots.push(stubborn.root);
-  expect(performance.now() - t0).toBeLessThan(3500);
+  // Deadline plus the 1 s abort grace plus scheduling margin; the stub alone would run 3 s longer.
+  expect(performance.now() - t0).toBeLessThan(deadlineDrill.deadlineMs + 2500);
   expect(stubborn.record.legs.find(l => l.leg === "quarantine")!.state).toBe("blocked");
   validateDrillRecord(stubborn.record);
-}, 15000);
+}, 30000);
 
 test("the fetch guard is single-flight and compare-and-restore", async () => {
   const original = globalThis.fetch;
@@ -769,8 +782,9 @@ test("runLoadDrill validates its exact config before touching global state or fi
 });
 
 test("a leg that blocks the event loop past the deadline is overridden to blocked", async () => {
-  const { record, root } = await runLoadDrill({ ...drillConfig, deadlineMs: 1000 }, { restore: async () => {
-    const until = performance.now() + 1500;
+  const t0 = performance.now();
+  const { record, root } = await runLoadDrill(deadlineDrill, { restore: async () => {
+    const until = t0 + deadlineDrill.deadlineMs + 500;
     while (performance.now() < until) { /* Synchronous work no timer can preempt. */ }
     return { state: "passed", detail: "late synchronous result" };
   } });
@@ -780,7 +794,7 @@ test("a leg that blocks the event loop past the deadline is overridden to blocke
   expect(record.exhaustedLimits).toContain("drill-deadline");
   expect(record.outcome).toBe("blocked");
   validateDrillRecord(record);
-}, 15000);
+}, 30000);
 
 test("drill and profile validation recompute legs, verdict, limits and measurement invariants", async () => {
   const { record, root } = await runLoadDrill({ ...drillConfig });

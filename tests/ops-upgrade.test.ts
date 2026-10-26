@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, setDefaultTimeout, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -29,6 +29,10 @@ import { discussionPlanWork, specialistAnalysisWork } from "../src/team/dispatch
 import { TransactionStore, inspectStoreSchema, schemaVersion } from "../src/store";
 import { createWebHandler } from "../src/web";
 import type { ServiceConfig } from "../ops/package/service-config";
+
+// Full-app fixtures here take several seconds each on Pi-class hosts (#84); a
+// timeout would also leave single-flight state held for the following tests.
+setDefaultTimeout(30_000);
 
 /**
  * OPS06 ops.schema_migrations/v1. Scripted models and fixture ports only; the
