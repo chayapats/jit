@@ -117,6 +117,13 @@ test("Accept-Language negotiation picks a supported language by weight and falls
   for (const header of ["en-", "en--US", "en-@", "en-123456789", "e n", "*"]) expect(negotiateLocale(header)).toBe("th");
   expect(negotiateLocale("en-GB, th;q=0.5")).toBe("en");
   expect(negotiateLocale("TH-th")).toBe("th");
+  // Wildcards weigh every supported language without its own range.
+  expect(negotiateLocale("*;q=1,en;q=0.5")).toBe("th");
+  expect(negotiateLocale("th;q=0,*;q=1")).toBe("en");
+  expect(negotiateLocale("en;q=0.5,*;q=1")).toBe("th");
+  expect(negotiateLocale("en, *;q=0.5")).toBe("en");
+  expect(negotiateLocale("th;q=0, en;q=0")).toBe("th");
+  expect(negotiateLocale("en;q=0.5, en-GB;q=0.9, th;q=0.8")).toBe("en");
   expect(negotiateLocale("en;q=1.000")).toBe("en");
   expect(negotiateLocale("en;q=bogus, th;q=0.1")).toBe("th");
 });

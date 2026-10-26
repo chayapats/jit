@@ -61,7 +61,8 @@ export function systemText(value: string): string {
  */
 export function negotiateLocale(header: string | null): Locale {
   if (!header || header.length > 512) return defaultLocale;
-  let best: Locale = defaultLocale, weight = 0;
+  const explicit = new Map<Locale, number>();
+  let wildcard: number | null = null;
   for (const part of header.split(",").slice(0, 16)) {
     const [range = "", ...params] = part.trim().toLowerCase().split(";");
     // RFC 9110: the only parameter is one weight, a qvalue from 0 to 1 with at most three decimals.
@@ -72,9 +73,16 @@ export function negotiateLocale(header: string | null): Locale {
     // RFC 4647 basic language range; a malformed range never matches a supported language.
     const tag = range.trim();
     if (!/^(?:\*|[a-z]{1,8}(?:-[a-z0-9]{1,8})*)$/.test(tag)) continue;
-    const primary = tag.split("-")[0];
-    const locale = locales.find(l => l === primary);
-    if (locale && value > weight) { best = locale; weight = value; }
+    if (tag === "*") { wildcard = Math.max(wildcard ?? 0, value); continue; }
+    const locale = locales.find(l => l === tag.split("-")[0]);
+    if (locale) explicit.set(locale, Math.max(explicit.get(locale) ?? 0, value));
+  }
+  // A supported language takes its own range's quality, otherwise the wildcard's; q=0 means unacceptable.
+  // The highest quality wins, Thai on ties and when nothing acceptable remains.
+  let best: Locale = defaultLocale, quality = 0;
+  for (const locale of locales) {
+    const q = explicit.get(locale) ?? wildcard ?? 0;
+    if (q > quality) { best = locale; quality = q; }
   }
   return best;
 }
