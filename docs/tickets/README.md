@@ -176,3 +176,18 @@ Dependency graph ตรวจแล้วไม่มีวงจร มี nati
 ## การดูแล backlog
 
 GitHub issues/comments/native dependency state เป็นสถานะทำงานปัจจุบัน เอกสารและ JSON นี้เป็น snapshot ของการแตกงาน หากแก้ scope/contract/blocker ให้ปรับ ticket ที่เกี่ยวข้องและ snapshot ให้สอดคล้องกัน รักษา FR/NFR IDs และไม่ถือ label/assignee อย่างเดียวเป็น atomic implementation ownership
+
+## S09 — Jit main bot and chat-first interface
+
+Parent: [S09 / Jit #90](https://github.com/chayapats/jit/issues/90) ([spec](../specs/S09-main-bot-and-chat-first-ui.md)). Created 2026-10-26. These are 8 vertical slices, linked as sub-issues of #90 with native blocking relations. Every ticket also waits for the S09 docs PR to merge.
+
+| Ticket | Outcome | Direct blockers | Done by |
+| --- | --- | --- | --- |
+| [UX01](https://github.com/chayapats/jit/issues/91) | Every page uses the new monochrome bilingual design system and shell, and still works without scripts | None | Agent |
+| [BOT01](https://github.com/chayapats/jit/issues/92) | Jit replies to every topic message with the owner's persona, streaming without duplicate replies | [UX01](https://github.com/chayapats/jit/issues/91) | Agent |
+| [BOT02](https://github.com/chayapats/jit/issues/93) | A new installation starts at the "ตั้งจิต" setup and gets a General space | [BOT01](https://github.com/chayapats/jit/issues/92) | Agent |
+| [BOT03](https://github.com/chayapats/jit/issues/94) | Role proposals create a role only when the owner accepts the current revision | [BOT01](https://github.com/chayapats/jit/issues/92) | Agent |
+| [BOT04](https://github.com/chayapats/jit/issues/95) | Jit calls specialists within the dispatch allowance and answers with one voice | [BOT01](https://github.com/chayapats/jit/issues/92) | Agent |
+| [BOT05](https://github.com/chayapats/jit/issues/96) | Chat-first home, General space and topic promotion that keeps provenance | [BOT02](https://github.com/chayapats/jit/issues/93) | Agent |
+| [UX02](https://github.com/chayapats/jit/issues/97) | Ops pages consolidated under settings, topic right panel and ⌘K | [UX01](https://github.com/chayapats/jit/issues/91) | Agent |
+| [UX03](https://github.com/chayapats/jit/issues/98) | Static-only PWA, mobile polish and accessibility | [UX02](https://github.com/chayapats/jit/issues/97), [BOT05](https://github.com/chayapats/jit/issues/96) | Agent |
