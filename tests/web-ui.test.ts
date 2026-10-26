@@ -111,6 +111,10 @@ test("Accept-Language negotiation picks a supported language by weight and falls
   expect(negotiateLocale("de, fr")).toBe("th");
   expect(negotiateLocale("en;q=0")).toBe("th");
   expect(negotiateLocale("x".repeat(600))).toBe("th");
+  // Malformed or out-of-range qvalues disqualify the range instead of counting as q=1.
+  for (const header of ["en;q=1.5", "en;q=1.001", "en;q=bogus", "en;q=", "en;q=0.5;q=1"]) expect(negotiateLocale(header)).toBe("th");
+  expect(negotiateLocale("en;q=1.000")).toBe("en");
+  expect(negotiateLocale("en;q=bogus, th;q=0.1")).toBe("th");
 });
 
 test("ui.design_tokens/v1: text and status pairs meet WCAG AA in both themes and both themes define every token", () => {
@@ -172,6 +176,34 @@ test("web.static_assets/v1: hashed, immutable, self-hosted assets with font lice
   expect(lookupAsset("/assets/app.css")).toBeNull();
 });
 
+test("the generated stylesheet has only valid property names and keeps literal text layout", () => {
+  const css = new TextDecoder().decode(staticAssets.get("app.css")!.body).replace(/\/\*[\s\S]*?\*\//g, "");
+  const blocks = [...css.matchAll(/\{([^{}]*)\}/g)].map(m => m[1]!);
+  expect(blocks.length).toBeGreaterThan(100);
+  const properties = new Set<string>();
+  for (const block of blocks) {
+    for (const declaration of block.split(";").map(d => d.trim()).filter(Boolean)) {
+      const property = declaration.slice(0, declaration.indexOf(":")).trim();
+      if (!/^(?:--[a-z0-9-]+|-?[a-z][a-z-]*)$/.test(property)) throw new Error(`invalid declaration: ${declaration}`);
+      properties.add(property);
+    }
+  }
+  expect(properties.has("white-space")).toBe(true);
+  expect(css).toMatch(/\.literal \{ white-space: pre-wrap;/);
+  expect(css).toMatch(/\bcode \{[^}]*white-space: pre;/);
+  // Semantic status text never sits on a tinted background (all status pairs are covered by contrastPairs).
+  for (const tone of ["ok", "warn", "danger"]) expect(css).toContain(`--${tone}-bg: transparent;`);
+});
+
+test("layout templates contain no hard-coded English or Thai text nodes", async () => {
+  const source = await Bun.file(join(import.meta.dir, "../src/web-layout.ts")).text();
+  const nodes = [...source.matchAll(/>([^<>$`{}\n=;'"]*[A-Za-z\u0E00-\u0E7F]{2,}[^<>$`{}\n=;'"]*)</g)].map(m => m[1]!.trim()).filter(Boolean);
+  // Allowed literals: vendored font names and contract identifiers, which are the same in every language.
+  const literals = [...new Set(nodes)].filter(node => !/^[a-z_.]+\/v\d+$/.test(node) && !node.includes("(value)")).sort();
+  expect(literals).toEqual(["Inter", "JetBrains Mono", "Noto Sans Thai", "quarantine (OPS02)"]);
+  expect(source).not.toMatch(/[\u0E00-\u0E7F]/);
+});
+
 test("CSP is exactly ADR 0028 on pages, API, assets, redirects and errors", async () => {
   const f = await fixture();
   expect(contentSecurityPolicy).toBe("default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'");
@@ -215,7 +247,7 @@ test("every existing page renders through the shell in Thai and English, dark an
         expect(html).not.toContain(hostile);
         if (language === "en") {
           // Owner content in this fixture is ASCII, so any Thai left on an English page is an untranslated label.
-          const text = html.replace(/<[^>]+>/g, " ").replace(/ไทย/g, "");
+          const text = html.replace(/<[^>]+>/g, " ");
           const leaked = text.split(/\s{2,}|\n/).filter(part => thaiPattern.test(part));
           if (leaked.length) throw new Error(`${route}: untranslated ${JSON.stringify(leaked.slice(0, 5))}`);
         }

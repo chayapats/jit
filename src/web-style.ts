@@ -35,11 +35,11 @@ export function styleSheet(fonts: { inter: string; thai: string; mono: string })
   --accent: var(--fg);
   --accent-press: var(--fg);
   --accent-hover: color-mix(in srgb, var(--fg) 86%, var(--bg));
-  --ok-bg: color-mix(in srgb, var(--ok) 10%, var(--bg));
+  --ok-bg: transparent;
   --ok-line: color-mix(in srgb, var(--ok) 38%, var(--bg));
-  --warn-bg: color-mix(in srgb, var(--warn) 10%, var(--bg));
+  --warn-bg: transparent;
   --warn-line: color-mix(in srgb, var(--warn) 38%, var(--bg));
-  --danger-bg: color-mix(in srgb, var(--danger) 10%, var(--bg));
+  --danger-bg: transparent;
   --danger-line: color-mix(in srgb, var(--danger) 38%, var(--bg));
   --info-bg: var(--surface-2);
   --info-line: var(--line);
@@ -255,7 +255,7 @@ button.danger:hover { background: var(--danger-bg); color: var(--danger); }
 .topic-row-main h3 { font-size: 14px; font-weight: 600; line-height: 1.45; overflow-wrap: anywhere; }
 .topic-row-main h3 a:hover, .job-card h3 a:hover, .team-card h3 a:hover { text-decoration: underline; text-underline-offset: 3px; }
 .topic-row time, .topic-row-main p { font-size: 12px; color: var(--muted); display: block; margin-top: 4px; }
-.source-link { font-size: 12px; font-weight: 600; color: var(--muted); var(--on-fg)-space: nowrap; display: inline-flex; align-items: center; gap: 5px; text-decoration: none; }
+.source-link { font-size: 12px; font-weight: 600; color: var(--muted); white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; text-decoration: none; }
 .source-link svg { width: 14px; height: 14px; }
 .source-link:hover { color: var(--text); }
 .content p a, .team-card li a {
@@ -291,10 +291,10 @@ button.danger:hover { background: var(--danger-bg); color: var(--danger); }
 .message--owner { align-items: flex-end; }
 .message-body { max-width: min(100%, 68ch); min-width: 0; font-size: 15px; line-height: 1.7; }
 .message--owner .message-body { background: var(--surface-2); border: 1px solid var(--line); border-radius: 14px 12px 4px 12px; padding: 10px 14px; }
-.literal { var(--on-fg)-space: pre-wrap; overflow-wrap: anywhere; color: inherit; }
+.literal { white-space: pre-wrap; overflow-wrap: anywhere; color: inherit; }
 .literal + .literal { margin-top: 10px; }
 pre { margin: 10px 0; background: var(--canvas); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; overflow-x: auto; max-width: 100%; line-height: 1.6; tab-size: 2; }
-code { font: 12px/1.6 var(--font-mono); var(--on-fg)-space: pre; overflow-wrap: normal; }
+code { font: 12px/1.6 var(--font-mono); white-space: pre; overflow-wrap: normal; }
 pre:first-child { margin-top: 0; }
 pre:last-child { margin-bottom: 0; }
 .message-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; color: var(--muted); font-size: 12px; max-width: min(100%, 68ch); }
@@ -312,7 +312,7 @@ pre:last-child { margin-bottom: 0; }
 .composer { width: min(100%, var(--chat-width)); margin: 0 auto; padding: 12px 14px 10px; border: 1px solid var(--line-strong); border-radius: var(--radius-composer); background: var(--surface); }
 .composer textarea { display: block; width: 100%; resize: none; field-sizing: content; min-height: 52px; max-height: 180px; color: var(--text); border: 0; background: transparent; line-height: 1.6; font-size: 14px; padding: 0; }
 .composer-bottom { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 8px; }
-.composer-topic { font-size: 12px; color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; var(--on-fg)-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }
+.composer-topic { font-size: 12px; color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }
 .composer-topic svg { width: 14px; height: 14px; }
 .composer-note { text-align: left; color: var(--muted); font-size: 12px; margin: 8px auto 0; width: min(100%, var(--chat-width)); }
 
@@ -377,7 +377,7 @@ pre:last-child { margin-bottom: 0; }
 .job-status {
   display: inline-flex; align-items: center; flex-shrink: 0; max-width: 100%;
   font-size: 12px; font-weight: 600; line-height: 1.3; border: 1px solid var(--line-strong); border-radius: 999px;
-  padding: 3px 8px; color: var(--muted); background: var(--surface-2); var(--on-fg)-space: nowrap;
+  padding: 3px 8px; color: var(--muted); background: var(--surface-2); white-space: nowrap;
 }
 .job-status[data-state="succeeded"], .job-status[data-state="accepted"], .job-status[data-state="completed"] { color: var(--ok); background: var(--ok-bg); border-color: var(--ok-line); }
 .job-status[data-state="failed"], .job-status[data-state="dismissed"], .job-status[data-state="cancelled"], .job-status[data-state="stopped"] { color: var(--danger); background: var(--danger-bg); border-color: var(--danger-line); }
@@ -463,7 +463,7 @@ details.team-card[open] > summary { margin-bottom: 8px; }
 .team-preview { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 4px; }
 .team-effective { font-size: 13px; color: var(--text); background: var(--canvas); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
 .team-effective small { color: var(--muted); }
-.team-card pre { var(--on-fg)-space: pre-wrap; overflow-wrap: anywhere; }
+.team-card pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .team-content > p { margin: 4px 0 12px; }
 
 .memory-content { overflow-wrap: anywhere; }

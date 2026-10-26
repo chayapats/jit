@@ -10,13 +10,18 @@ const app = document.querySelector(".app");
 const sidebar = document.getElementById("sidebar");
 const menuButton = document.querySelector(".menu-button");
 if (app && sidebar && menuButton) {
-  const setOpen = open => {
+  const setOpen = (open, focus = true) => {
     app.dataset.drawer = open ? "open" : "closed";
     menuButton.setAttribute("aria-expanded", String(open));
+    // Drop a #sidebar fragment so the CSS :target fallback cannot reopen or contradict the script state.
+    if (!open && location.hash === "#sidebar") history.replaceState(null, "", location.pathname + location.search);
+    if (!focus) return;
     if (open) sidebar.querySelector("a, button")?.focus();
     else menuButton.focus();
   };
-  menuButton.setAttribute("aria-expanded", "false");
+  // The drawer may already be open through the no-script #sidebar target (refresh, direct link, early tap).
+  setOpen(location.hash === "#sidebar", false);
+  window.addEventListener("hashchange", () => { if (location.hash === "#sidebar") setOpen(true); });
   menuButton.addEventListener("click", event => { event.preventDefault(); setOpen(app.dataset.drawer !== "open"); });
   for (const close of document.querySelectorAll(".drawer-close, .drawer-scrim")) {
     close.addEventListener("click", event => { event.preventDefault(); setOpen(false); });

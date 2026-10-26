@@ -18,7 +18,7 @@ export const colorTokens: Readonly<Record<Theme, Readonly<Record<ColorToken, str
   light: Object.freeze({
     "bg": "#fafaf9", "surface-1": "#ffffff", "surface-2": "#f4f4f3", "surface-3": "#ebebea", "line": "#e7e7e5",
     "fg": "#0a0a0a", "fg-2": "#525252", "fg-3": "#6b6b6b", "on-fg": "#fafaf9",
-    "ok": "#15803d", "warn": "#a16207", "danger": "#b91c1c",
+    "ok": "#15803d", "warn": "#8f5706", "danger": "#b91c1c",
   }),
 });
 
@@ -40,7 +40,8 @@ export const contrastPairs: readonly (readonly [ColorToken, ColorToken])[] = Obj
   ["fg-2", "bg"], ["fg-2", "surface-1"], ["fg-2", "surface-2"],
   ["fg-3", "bg"], ["fg-3", "surface-1"], ["fg-3", "surface-2"],
   ["on-fg", "fg"],
-  ["ok", "bg"], ["ok", "surface-1"], ["warn", "bg"], ["warn", "surface-1"], ["danger", "bg"], ["danger", "surface-1"],
+  ["ok", "bg"], ["ok", "surface-1"], ["ok", "surface-2"], ["warn", "bg"], ["warn", "surface-1"], ["warn", "surface-2"],
+  ["danger", "bg"], ["danger", "surface-1"], ["danger", "surface-2"],
 ]);
 
 const channel = (value: number) => { const c = value / 255; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };

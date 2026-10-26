@@ -64,8 +64,10 @@ export function negotiateLocale(header: string | null): Locale {
   let best: Locale = defaultLocale, weight = 0;
   for (const part of header.split(",").slice(0, 16)) {
     const [range = "", ...params] = part.trim().toLowerCase().split(";");
-    const q = params.map(p => /^\s*q=([01](?:\.\d{0,3})?)\s*$/.exec(p)?.[1]).find(Boolean);
-    const value = q === undefined ? 1 : Number(q);
+    const weights = params.map(p => p.trim()).filter(p => p.startsWith("q="));
+    // RFC 9110 qvalue: 0 to 1 with at most three decimals; a malformed or repeated weight disqualifies the range.
+    if (weights.length > 1 || (weights.length === 1 && !/^q=(?:0(?:\.\d{0,3})?|1(?:\.0{0,3})?)$/.test(weights[0]!))) continue;
+    const value = weights.length ? Number(weights[0]!.slice(2)) : 1;
     const primary = range.trim().split("-")[0];
     const locale = locales.find(l => l === primary);
     if (locale && value > weight) { best = locale; weight = value; }

@@ -1,6 +1,6 @@
 # Jit visual system
 
-Status: confirmed direction for [S09](../specs/S09-main-bot-and-chat-first-ui.md) (owner decisions S09-D05, D06, D08, D10–D13). UX01 checked the token values below against contrast tests and kept them unchanged. They are now implemented in `src/web-design.ts` (`ui.design_tokens/v1`, see [the contract](../contracts/web-design-system-v1.md)). Change values there and here together.
+Status: confirmed direction for [S09](../specs/S09-main-bot-and-chat-first-ui.md) (owner decisions S09-D05, D06, D08, D10–D13). UX01 checked the token values below against contrast tests. One value changed: light `--warn` went from `#a16207` to `#8f5706`, because the original was 4.47:1 on `--surface-2`. They are now implemented in `src/web-design.ts` (`ui.design_tokens/v1`, see [the contract](../contracts/web-design-system-v1.md)). Change values there and here together.
 
 ## Principles
 
@@ -42,7 +42,7 @@ The UX01 drawing lives in `src/web-logo.ts`: `logoMark` (24-unit grid, halo only
 | `--fg-2` | `#a3a3a3` | `#525252` | Secondary text |
 | `--fg-3` | `#8a8a8a` | `#6b6b6b` | Meta text (AA on `--bg`) |
 | `--on-fg` | `#0a0a0a` | `#fafaf9` | Text on primary button |
-| `--ok` / `--warn` / `--danger` | `#86efac` / `#fde047` / `#fca5a5` | `#15803d` / `#a16207` / `#b91c1c` | Semantic text and icons only |
+| `--ok` / `--warn` / `--danger` | `#86efac` / `#fde047` / `#fca5a5` | `#15803d` / `#8f5706` / `#b91c1c` | Semantic text and icons only |
 
 There is no brand accent colour. Focus rings use `--fg` at 2 px with a 2 px offset.
 
@@ -54,9 +54,9 @@ UX01 contrast results (WCAG 2.x, tested in `tests/web-ui.test.ts`). The lowest r
 | `--fg-2` on `--surface-2` | 6.8 | 7.1 |
 | `--fg-3` on `--surface-2` (lowest meta pair) | 4.9 | 4.8 |
 | `--on-fg` on `--fg` (primary button) | 16.9 | 19.0 |
-| `--ok` / `--warn` / `--danger` on `--bg` | 14.1 / 15.0 / 10.4 | 4.8 / 4.7 / 6.2 |
+| `--ok` / `--warn` / `--danger` on `--surface-2` (lowest semantic pair) | 12.1 / 12.9 / 9.0 | 4.6 / 5.4 / 5.9 |
 
-Derived non-text tones (`--line-strong`, the tinted status backgrounds and lines) are `color-mix` values of the tokens above and carry no text.
+Derived tones (`--line-strong` and the tinted status borders) are `color-mix` values of the tokens above and carry no text. Status pills and error boxes have transparent backgrounds, so semantic text always sits on a tested surface.
 
 ## Type
 
