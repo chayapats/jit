@@ -110,6 +110,12 @@ export interface PreflightInput {
   ledgerGate?: LedgerGate;
   /** Telegram transport factory; absent means no supported transport is installed. */
   transports?: ChannelTransportFactory;
+  /**
+   * Expected owner of the state and backup directories. Defaults to the
+   * running uid (`serve` runs as the service identity); an operator status
+   * run as root passes the configured identity's resolved uid instead.
+   */
+  stateOwnerUid?: number;
 }
 
 function alive(pid: unknown): boolean {
@@ -158,16 +164,17 @@ export function preflightService(input: PreflightInput): PreflightResult {
     const dirReady = (path: string): boolean => {
       try { return statSync(path).isDirectory(); } catch { return false; }
     };
+    const owner = input.stateOwnerUid ?? (typeof process.getuid === "function" ? process.getuid() : undefined);
     const stateProblem = (() => {
       try {
         const stats = statSync(service.stateDirectory);
         if ((stats.mode & 0o022) !== 0) return "state_directory_writable_by_others";
-        if (typeof process.getuid === "function" && stats.uid !== process.getuid()) return "state_directory_foreign_owner";
+        if (owner !== undefined && stats.uid !== owner) return "state_directory_foreign_owner";
         return null;
       } catch { return "state_directory_missing"; }
     })();
     // The backup destination holds managed snapshots: it must be a real, service-owned 0700-class directory, never trusted merely for existing.
-    const backupProblem = backupDirectoryProblem(service.backupDirectory);
+    const backupProblem = backupDirectoryProblem(service.backupDirectory, owner);
     gates.push(!dirReady(service.stateDirectory) || !dirReady(service.workingDirectory) || backupProblem === "backup_directory_missing"
       ? { gate: "config", state: "blocked", nextAction: "prepare-service-directories", detail: "service directory missing" }
       : stateProblem !== null

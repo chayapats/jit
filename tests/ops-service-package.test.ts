@@ -757,6 +757,27 @@ test("status and preflight are read-only: a missing database is reported blocked
   expect(siblings()).toEqual(existingSiblings);
 });
 
+test("a root-run status judges state ownership against the configured identity, never root", async () => {
+  const l = layout();
+  new TransactionStore(serviceDatabasePath(l.service)).close();
+  const fake = fakeSupervisor(l.dirs.unit);
+  const status = async (caller: number) => (await runServiceCommand(["status", "--config", l.source, "--unit-dir", l.dirs.unit, "--journald-dir", l.dirs.journald, "--config-dir", l.dirs.configDir],
+    { cwd: l.root, run: fake.run, bunPath: process.execPath, uid: caller })).output as { service: { blockedGates: string[] } };
+  // The test process owns the state, playing the service identity resolved through getent.
+  expect((await status(0)).service.blockedGates).not.toContain("config");
+  expect(fake.calls).toContainEqual(["getent", "passwd", l.service.serviceUser]);
+  // A non-root caller keeps the running-uid check and never resolves the identity.
+  fake.calls.length = 0;
+  expect((await status(uid)).service.blockedGates).not.toContain("config");
+  expect(fake.calls.some(c => c[0] === "getent")).toBe(false);
+  // State owned by someone other than the identity stays blocked under root.
+  fake.identity = `${l.service.serviceUser}:x:${uid + 1}:${gid}::/var/lib/jit:/usr/sbin/nologin`;
+  expect((await status(0)).service.blockedGates).toContain("config");
+  // An unresolvable identity is never trusted.
+  fake.identity = null;
+  expect((await status(0)).service.blockedGates).toContain("config");
+});
+
 test("the command runner enforces a wall-clock timeout and kills the whole process group, including descendants holding the pipe", async () => {
   const { spawnRunner } = await import("../src/ops/supervisor");
   const grandchild = `const g = Bun.spawn([process.execPath, "-e", "await Bun.sleep(20000)"], { stdout: "inherit", stderr: "ignore" }); console.log(g.pid); await Bun.sleep(20000);`;
