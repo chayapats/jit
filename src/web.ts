@@ -10,163 +10,13 @@ import type { EnqueueJobCommand, JobLimits, ResumeJobCommand, StopJobCommand } f
 import type { ScheduleCommand, ScheduleRecurrence } from "./jobs/schedules";
 import type { DecisionCommand, TeamCommand, RoleRoute } from "./team/types";
 import type { TaskCommand } from "./tasks";
-import { styleSheet } from "./web-style";
+import { negotiateLocale, tr, trMaybe, type Locale } from "./i18n";
+import { lookupAsset } from "./web-assets";
+import { renderWith, settingsPage, type ThemePreference } from "./web-layout";
+import type { SetPreferencesCommand } from "./preferences";
 
-const messages: Record<string, string> = {
-  authentication_required: "กรุณาเข้าสู่ระบบ", login_failed: "เข้าสู่ระบบไม่สำเร็จ กรุณาตรวจรหัสผ่าน",
-  login_limited_try_later: "ลองเข้าสู่ระบบหลายครั้งแล้ว กรุณารอแล้วลองใหม่",
-  owner_setup_required: "ต้องตั้ง owner จากเครื่องที่ติดตั้งก่อนเปิดใช้งาน",
-  stale_revision: "ข้อมูลโครงการเปลี่ยนแล้ว เปิดหน้าโครงการใหม่ก่อนลองอีกครั้ง",
-  request_id_conflict: "คำสั่งนี้เคยส่งด้วยข้อมูลอื่นแล้ว กรุณาเปิดหน้าโครงการใหม่",
-  csrf_rejected: "ยืนยันคำสั่งไม่สำเร็จ กรุณาเปิดหน้าโครงการใหม่",
-  origin_rejected: "ไม่อนุญาตคำสั่งจากที่อยู่นี้", request_too_large: "คำสั่งมีขนาดใหญ่เกินกำหนด",
-  storage_unavailable: "ยังบันทึกข้อมูลไม่สำเร็จ กรุณาลองใหม่ภายหลัง",
-  topic_not_found: "ไม่พบหัวข้อในโครงการที่เลือก", project_not_found: "ไม่พบโครงการที่เลือก",
-  text_too_large_or_invalid: "ข้อความยาวเกินกำหนดหรือมีอักขระที่ไม่รองรับ", empty_text: "กรุณาใส่ข้อความก่อนบันทึก",
-  scheduler_unavailable: "คิวยังไม่พร้อมรับงานใหม่ ดูงานเดิมได้แล้วลองใหม่ภายหลัง",
-  job_queue_full: "คิวงานเต็มแล้ว รอให้งานเดิมเสร็จก่อนเริ่มงานใหม่",
-  job_not_found: "ไม่พบงานในโครงการที่เลือก", invalid_job_input: "ข้อมูลสำหรับงานนี้เปลี่ยนแล้ว เปิดหน้าโครงการใหม่ก่อนลองอีกครั้ง",
-  job_configuration_changed: "การตั้งค่างานเปลี่ยนแล้ว กรุณาตรวจแล้วเริ่มงานใหม่", job_budget_exhausted: "งบหรือเวลาของงานครบแล้ว กรุณาตรวจแล้วเริ่มงานใหม่",
-  role_not_found: "ไม่พบบทบาทที่เลือก", role_preview_blocked: "เปิดใช้บทบาทและกำหนด route ก่อนเริ่มตัวอย่างจำลอง",
-  invalid_role_route: "ตรวจ model ID และชื่ออ้างอิงการเชื่อมต่อ อย่าใส่ข้อมูลลับ", role_limit: "จำนวนบทบาทครบขีดจำกัดของบริการแล้ว",
-  preview_source_unavailable: "แหล่งข้อมูลเปลี่ยนหรือไม่พร้อมใช้งาน กรุณาเลือกใหม่", preview_not_found: "ไม่พบตัวอย่างในโครงการนี้",
-  discussion_not_found: "ไม่พบการหารือในโครงการนี้", unknown_role: "ไม่พบบทบาทที่ระบุ", role_dispatch_blocked: "เปิดใช้บทบาท specialist และกำหนด route ก่อนเรียกทีม",
-  dispatch_source_unavailable: "แหล่งข้อมูลเปลี่ยนหรือไม่พร้อมใช้งาน กรุณาเลือกใหม่", invalid_router_output: "ผลเลือกทีมไม่ถูกต้อง จึงยังไม่เริ่มวิเคราะห์",
-  role_already_participating: "บทบาทนี้อยู่ในการหารือแล้ว", role_budget_exhausted: "จำนวนบทบาทครบขีดจำกัดของการหารือนี้แล้ว",
-  participation_not_found: "ไม่พบบทบาทนี้ในการหารือ", run_not_found: "ไม่พบผลการวิเคราะห์ที่เลือก",
-  invalid_decision_command: "คำสั่งตัดสินไม่ถูกต้อง กรุณาเปิดหน้าใหม่",
-  decision_already_recorded: "มีการตัดสินของหัวข้อนี้แล้ว ใช้การแทนที่ถ้าต้องการเปลี่ยน",
-  decision_not_found: "ไม่พบการตัดสินที่เลือก", proposal_not_found: "ไม่พบข้อเสนอที่เลือก",
-  synthesis_not_found: "ไม่พบสรุปของผู้ประสานงาน", synthesis_not_ready: "ยังไม่มีผลที่อ้างอิงได้พอสำหรับสรุป",
-  synthesis_in_progress: "กำลังสรุปอยู่แล้ว รอให้รอบนี้จบก่อน",
-  coordinator_unavailable: "เปิดใช้ผู้ประสานงานและกำหนด route ก่อนสรุป",
-  option_not_found: "ไม่พบทางเลือกในข้อเสนอนี้",
-  delivery_not_found: "ไม่พบรายการแจ้งเตือนในโครงการที่เลือก",
-  delivery_dedupe_conflict: "รายการนี้เคยบันทึกด้วยข้อความอื่นแล้ว",
-  delivery_not_resendable: "สถานะนี้ยังส่งซ้ำไม่ได้",
-  delivery_report_not_found: "ไม่พบรายงานของการแจ้งเตือนนี้",
-  delivery_report_not_current: "รายงานนี้ถูกแทนที่หรือลบแล้ว",
-  invalid_delivery_payload: "ข้อความมีข้อมูลที่ไม่ควรส่ง",
-  pr_report_not_found: "ไม่พบรายงานตรวจ PR ในโครงการที่เลือก",
-  invalid_pr_report_command: "คำสั่งรายงาน PR ไม่ถูกต้อง กรุณาเปิดหน้าใหม่",
-  pr_candidate_not_current: "PR เปลี่ยนรุ่นแล้ว เปิดรายงานล่าสุดก่อนทำต่อ",
-  pr_monitor_not_active: "การตรวจ PR หยุดอยู่ เปิดการตรวจก่อนทำต่อ",
-  pr_snapshot_not_found: "ยังไม่มีภาพ snapshot สำหรับ PR นี้",
-  invalid_alert_policy: "นโยบายแจ้งเตือนไม่ถูกต้อง",
-  pr_finding_not_found: "ไม่พบประเด็นนี้ในรายงานที่เลือก",
-  delivery_worker_unavailable: "ตัวส่งยังไม่พร้อม",
-  authorization_changed: "สิทธิ์ที่ใช้บันทึกคำขอเปลี่ยนแล้ว",
-  invalid_task_command: "คำสั่งงานไม่ถูกต้อง กรุณาเปิดหน้าใหม่",
-  task_not_found: "ไม่พบงานในโครงการที่เลือก",
-  task_not_proposed: "งานนี้ไม่ได้อยู่ในสถานะข้อเสนอแล้ว",
-  task_not_accepted: "ยกเลิกได้เฉพาะงานที่รับรองแล้ว",
-  task_already_accepted: "งานนี้รับรองไปแล้ว",
-  task_already_closed: "งานนี้ปิดแล้ว และจะไม่ถูกเปิดใหม่จากข้อความของโมเดล",
-  task_already_completed: "งานนี้ปิดเรียบร้อยแล้ว",
-  task_not_completed: "เปิดใหม่ได้เฉพาะงานที่ปิดเรียบร้อยแล้ว",
-  completion_evidence_required: "นโยบายนี้ต้องมีหลักฐานที่ครบก่อนปิดงาน",
-  completion_evidence_partial: "หลักฐานยังไม่ครบ จึงอ้างเป็นผลสำเร็จไม่ได้",
-  completion_evidence_failed: "หลักฐานจากงานที่ล้มเหลวอ้างเป็นผลสำเร็จไม่ได้",
-  completion_evidence_unknown: "สถานะหลักฐานยังไม่ชัดเจน จึงปิดงานไม่ได้",
-  completion_evidence_stale: "หลักฐานไม่ตรงกับ revision ปัจจุบัน",
-  completion_evidence_invalid: "หลักฐานนี้ยังไม่ผ่านเกณฑ์ปิดงาน",
-  completion_policy_unsupported: "นโยบายนี้ใช้ได้เมื่อมีหลักฐานที่ครบจริงเท่านั้น",
-  source_not_validated: "ใช้ได้เฉพาะผล specialist หรือผู้ประสานงานที่บันทึกแล้วในหัวข้อนี้",
-  project_mismatch: "แหล่งข้อมูลไม่ได้อยู่ในโครงการนี้",
-  coding_execution_unsupported: "การรับรองงานยังไม่เริ่มแก้โค้ดหรือรันคำสั่ง การเริ่มลงมือยังไม่รองรับในรุ่นนี้",
-  channel_not_authorized: "ช่องทางนี้ยังใช้คำสั่งนี้ไม่ได้",
-  title_too_long: "ชื่อยาวเกินกำหนด",
-  memory_source_unavailable: "แหล่งข้อมูลเปลี่ยนหรือไม่พร้อมใช้งาน เลือก revision ปัจจุบันก่อนสกัด memory",
-  memory_source_derived: "ต้นฉบับนี้เป็นคำตอบที่ใช้ memory แล้ว จึงไม่สกัดกลับเป็น memory เพื่อกันการวนซ้ำ",
-  memory_context_not_found: "ไม่พบบริบทของ run นี้ในโครงการที่เลือก",
-  memory_context_stale: "งาน มติ หรือ memory ที่การหารือนี้ใช้เปลี่ยนแล้ว เริ่มการหารือใหม่เพื่อใช้สถานะปัจจุบัน",
-  invalid_schedule_command: "คำสั่งกำหนดการไม่ถูกต้อง กรุณาเปิดหน้าใหม่",
-  invalid_schedule_timezone: "เขตเวลาไม่ถูกต้อง กรุณาใช้ชื่อเขตเวลา IANA เช่น Asia/Bangkok",
-  schedule_not_found: "ไม่พบกำหนดการในโครงการที่เลือก",
-  schedule_not_active: "กำหนดการนี้หยุดชั่วคราวหรือถูกยกเลิกแล้ว ตรวจสถานะก่อนสั่งอีกครั้ง",
-  memory_role_unavailable: "เปิดใช้บทบาทและกำหนด route ก่อนสกัด memory",
-  memory_dependency_unavailable: "Memory ที่อ้างอิงเปลี่ยนหรือไม่พร้อมใช้งาน กรุณาเลือกใหม่",
-  invalid_memory_command: "ข้อมูลคำขอสกัด memory ไม่ถูกต้อง กรุณาเปิดหน้าใหม่",
-  memory_correction_unavailable: "Memory ข้อนี้แก้ไม่ได้แล้ว หรือต้นฉบับที่เลือกไม่รองรับการแก้ กรุณาเปิดหน้าใหม่",
-  memory_already_corrected: "Memory ข้อนี้ถูกแก้ไปแล้ว เปิดข้อความที่แก้แทน",
-  invalid_memory_correction: "ข้อมูลคำขอแก้ memory ไม่ถูกต้อง กรุณาเปิดหน้าใหม่",
-  memory_forget_unavailable: "Memory ข้อนี้ลืมไม่ได้แล้ว (ถูกแก้หรือลืมไปแล้ว หรือต้นฉบับไม่พร้อมใช้) กรุณาเปิดหน้าใหม่",
-  memory_already_forgotten: "Memory ข้อนี้ถูกลืมไปแล้ว ดูบันทึกการลืมด้านล่าง",
-  invalid_memory_forget: "ข้อมูลคำขอลืม memory ไม่ถูกต้อง กรุณาเปิดหน้าใหม่",
-  memory_forget_ambiguous: "การลืมไม่ยกเลิกงานและไม่ถอนมติ ถ้าข้อความคาบเกี่ยวกับงานหรือมติ ให้ติ๊กยืนยันขอบเขตก่อนยืนยันการลืม",
-  memory_delete_unavailable: "ต้นฉบับนี้ลบไม่ได้แล้ว หรือถูกเปลี่ยนไปแล้ว กรุณาเปิดหน้าใหม่",
-  memory_delete_stale_scope: "ขอบเขตที่เลือกเปลี่ยนไปแล้ว ขอดูผลกระทบใหม่ก่อนยืนยัน",
-  memory_delete_stale_preview: "ภาพผลกระทบนี้หมดอายุหรือไม่ตรงกับสถานะปัจจุบัน ขอดูใหม่ก่อนยืนยัน",
-  memory_delete_blocked: "ยังยืนยันการลบไม่ได้ เพราะรายการผลกระทบไม่ครบหรืออ่านข้อมูลบางส่วนไม่ได้ ดูรายการที่ติดค้างในหน้าผลกระทบ",
-  memory_delete_ambiguous: "การลบไม่ยกเลิกงานและไม่ถอนมติ ถ้ามีขอบเขตคาบเกี่ยวหรือทั้ง session ให้ติ๊กยืนยันก่อน",
-  memory_already_deleted: "ขอบเขตนี้ถูกลบไปแล้ว ดูบันทึกการลบด้านล่าง",
-  memory_source_deleted: "ต้นฉบับนี้ถูกลบไปแล้ว ใช้ต้นฉบับข้อความใหม่แทน",
-  deletion_not_found: "ไม่พบบันทึกการลบในโครงการที่เลือก",
-  invalid_memory_delete: "ข้อมูลคำขอลบ memory ไม่ถูกต้อง กรุณาเปิดหน้าใหม่",
-  export_not_found: "ไม่พบไฟล์ส่งออกในโครงการที่เลือก",
-  export_corrupt: "ไฟล์ส่งออกนี้ตรวจสอบไม่ผ่าน",
-  export_storage_unavailable: "พื้นที่ส่งออกไม่พร้อมใช้งาน",
-  export_fenced_by_lifecycle: "ข้อมูลโครงการเปลี่ยน (ลบ/ลืม/แก้) ระหว่างส่งออก จึงยกเลิกไฟล์นี้ กรุณาส่งออกใหม่",
-  export_failed: "ส่งออกไม่สำเร็จ บันทึกความล้มเหลวไว้แล้ว",
-  export_too_large: "ไฟล์ส่งออกใหญ่เกินเพดานที่กำหนด ลองส่งออกโดยไม่รวมประวัติข้อความ",
-  export_expired: "ไฟล์ส่งออกนี้ถูกลบตาม retention หรือการลบข้อมูลแล้ว กรุณาส่งออกใหม่",
-  export_failed_no_artifact: "การส่งออกนี้ไม่สำเร็จจึงไม่มีไฟล์",
-  export_artifact_unavailable: "ไฟล์ส่งออกรูปแบบเดิมไม่พบแล้ว",
-  invalid_export_command: "ข้อมูลคำขอส่งออกไม่ถูกต้อง กรุณาเปิดหน้าใหม่",
-  upgrade_not_found: "ไม่พบบันทึกอัปเกรดที่เลือก",
-  upgrade_corrupt: "บันทึกอัปเกรดนี้ตรวจสอบไม่ผ่าน",
-  upgrade_storage_unavailable: "พื้นที่อัปเกรดไม่พร้อมใช้งาน",
-  unsupported_upgrade: "เป้าหมายอัปเกรดนี้ไม่รองรับ กรุณาตรวจสอบรุ่นก่อน",
-  upgrade_in_progress: "มีอัปเกรดที่ยังไม่จบอยู่ ดำเนินการต่อหรือย้อนกลับก่อน",
-  upgrade_bad_state: "สถานะอัปเกรดไม่ตรงกับขั้นตอนนี้",
-  upgrade_stale_live: "ข้อมูลเปลี่ยนหลังตรวจสอบ ให้ migrate/validate ใหม่",
-  upgrade_staged_changed: "สำเนา staged เปลี่ยนหลังตรวจสอบ ให้ migrate/validate ใหม่",
-  upgrade_quiesce_incomplete: "งานที่กำลังทำยังไม่หยุด รอให้ settle แล้วลองใหม่",
-  upgrade_rollback_requires_restore: "อัปเกรดนี้ activate แล้ว การกลับรุ่นเดิมต้องกู้คืนผ่าน quarantine (OPS02)",
-  upgrade_activation_failed: "activate ไม่สำเร็จ ตรวจบันทึกอัปเกรดก่อนดำเนินการต่อ",
-  upgrade_validation_bound_exceeded: "ข้อมูลเกินขอบเขตที่ตรวจสอบได้ อัปเกรดถูกระงับไว้อย่างปลอดภัย",
-  unsupported_engine: "engine นี้ไม่รองรับสัญญา snapshot ที่อัปเกรดต้องใช้",
-  staged_migration_failed: "migrate สำเนา staged ไม่สำเร็จ ข้อมูลจริงไม่ถูกแตะ",
-  engine_unavailable: "engine ยังไม่พร้อมสำหรับขั้นตอนนี้",
-  invalid_upgrade_command: "ข้อมูลคำขออัปเกรดไม่ถูกต้อง กรุณาเปิดหน้าใหม่",
-  restore_not_found: "ไม่พบบันทึกกู้คืนที่เลือก",
-  restore_corrupt: "บันทึกกู้คืนนี้ตรวจสอบไม่ผ่าน",
-  restore_storage_unavailable: "พื้นที่กู้คืนไม่พร้อมใช้งาน",
-  restore_in_progress: "มี quarantine ที่ยังไม่จบอยู่ ดำเนินการต่อหรือทิ้งก่อน",
-  restore_bad_state: "สถานะ quarantine ไม่ตรงกับขั้นตอนนี้",
-  restore_stale_live: "ข้อมูลปัจจุบันเปลี่ยนหลังเตรียม quarantine ให้เตรียมใหม่",
-  restore_incomplete: "การกู้คืนยังไม่เสร็จ ระบบแสดงได้เฉพาะสถานะและขั้นตอนแก้ไขการกู้คืน",
-  ledger_checkpoint_relocation_unverified: "ตำแหน่ง checkpoint ของ ledger เปลี่ยน ให้คัดลอก checkpoint ที่ตรวจสอบแล้วจากตำแหน่งเดิมมาก่อน",
-  newer_app_unsupported: "สำรองข้อมูลนี้สร้างจาก Jit รุ่นที่ใหม่กว่า กู้คืนด้วยรุ่นนี้ไม่ได้",
-  unsupported_app_version: "รุ่นของ Jit ที่สร้างสำรองข้อมูลนี้ไม่รองรับ",
-  restore_context_inventory_blocked: "ตรวจรายการ context ใน quarantine ไม่ครบ quarantine ถูกระงับไว้",
-  restore_quiesce_incomplete: "งานที่กำลังทำยังไม่หยุด รอให้ settle แล้วลองใหม่",
-  restore_ledger_moved: "ledger ล่าสุดเปลี่ยนหลังตรวจสอบ ให้ใช้ ledger และตรวจสอบใหม่",
-  restore_quarantine_changed: "สำเนา quarantine เปลี่ยนหลังตรวจสอบ ให้ใช้ ledger และตรวจสอบใหม่",
-  restore_activation_failed: "activate ไม่สำเร็จ ตรวจบันทึกกู้คืนก่อนดำเนินการต่อ",
-  restore_bound_exceeded: "ข้อมูลเกินขอบเขตที่ตรวจสอบได้ quarantine ถูกระงับไว้อย่างปลอดภัย",
-  quarantine_migration_failed: "migrate สำเนา quarantine ไม่สำเร็จ ข้อมูลจริงไม่ถูกแตะ สำรองข้อมูลยังอยู่",
-  ledger_checkpoint_missing: "ไม่พบ checkpoint ของ ledger ล่าสุด quarantine ถูกระงับไว้จนกว่าจะนำ checkpoint กลับมา",
-  ledger_checkpoint_unverifiable: "checkpoint ของ ledger ตรวจสอบไม่ผ่าน quarantine ถูกระงับไว้",
-  ledger_checkpoint_mismatch: "ledger ของ installation ไม่ตรงกับ checkpoint (อาจมีการแทนฐานข้อมูลนอกขั้นตอนกู้คืน)",
-  ledger_checkpoint_incompatible: "checkpoint ของ ledger เป็นเวอร์ชันที่ไม่รองรับ",
-  ledger_checkpoint_unavailable: "บันทึก checkpoint ของ ledger ไม่ได้ ตรวจพื้นที่จัดเก็บก่อน",
-  ledger_unreadable: "อ่าน ledger ของ installation ไม่ได้ quarantine ถูกระงับไว้",
-  backup_artifact_missing: "ไฟล์สำรองข้อมูลหายไป กู้คืนไม่ได้",
-  backup_integrity_failed: "สำรองข้อมูลนี้ตรวจสอบ hash ไม่ผ่าน",
-  backup_unrestorable: "สำรองข้อมูลนี้ย้ายมาเวอร์ชันปัจจุบันไม่ได้",
-  newer_backup_unsupported: "สำรองข้อมูลจากเวอร์ชันใหม่กว่าไม่รองรับ",
-  invalid_restore_command: "ข้อมูลคำขอกู้คืนไม่ถูกต้อง กรุณาเปิดหน้าใหม่",
-  memory_source_suppressed: "ต้นฉบับนี้ถูกแยกออกจาก memory อัตโนมัติแล้ว สกัดใหม่ไม่ได้ ใช้ต้นฉบับข้อความใหม่แทน",
-  backup_not_found: "ไม่พบสำรองข้อมูลที่เลือก",
-  backup_corrupt: "สำรองข้อมูลนี้ตรวจสอบไม่ผ่าน",
-  backup_storage_unavailable: "พื้นที่สำรองข้อมูลไม่พร้อมใช้งาน",
-  backup_incomplete: "สำรองข้อมูลนี้ไม่สมบูรณ์ จึงกู้คืนไม่ได้",
-  backup_too_large: "สำรองข้อมูลนี้ใหญ่เกินเพดานพื้นที่ที่กำหนด จึงไม่ได้สร้าง",
-  backup_schema_unclassified: "โครงสร้างข้อมูลยังไม่ได้จัดประเภทสำหรับการสำรอง จึงไม่ได้สร้าง",
-  native_snapshot_unavailable: "engine ยังไม่รองรับ native snapshot สำรองนี้จึงไม่สมบูรณ์",
-  invalid_backup_command: "คำขอสำรองข้อมูลไม่ถูกต้อง กรุณาเปิดหน้าใหม่",
-};
+/** ADR 0028 Content-Security-Policy: every page, asset and API response allows only this origin, and no inline script or eval. */
+export const contentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
 
 /** Creates a server-rendered owner workspace; all mutations use the shared application boundary. */
 export function createWebHandler(app: Application): (request: Request) => Promise<Response> {
@@ -177,7 +27,7 @@ export function createWebHandler(app: Application): (request: Request) => Promis
   const cookie = (value: string, maxAge: number) => `${cookieName}=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}${secure ? "; Secure" : ""}`;
   const headers = {
     "Cache-Control": "no-store",
-    "Content-Security-Policy": "default-src 'none'; style-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+    "Content-Security-Policy": contentSecurityPolicy,
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "same-origin",
     ...(secure ? { "Strict-Transport-Security": "max-age=31536000" } : {}),
@@ -222,6 +72,18 @@ export function createWebHandler(app: Application): (request: Request) => Promis
   return async request => {
     const url = new URL(request.url);
     const api = url.pathname.startsWith("/api/");
+    // Before sign-in (and if preferences cannot be read) Accept-Language and prefers-color-scheme decide.
+    const negotiated = negotiateLocale(request.headers.get("accept-language"));
+    let ui: { locale: Locale; theme: ThemePreference } = { locale: negotiated, theme: "system" };
+    const uiFor = (actor: ReturnType<Application["authenticate"]>["actor"]) => {
+      try {
+        const saved = app.preferences(actor);
+        return { locale: saved.language === "auto" ? negotiated : saved.language, theme: saved.theme };
+      } catch { return ui; }
+    };
+    /** Renders an HTML page in the request's language and theme. */
+    const page = (render: () => string, status = 200) =>
+      respond(renderWith(ui, render), status, { "Content-Language": ui.locale, "Vary": "Accept-Language, Cookie" });
     try {
       if (url.host !== expectedHost || (request.headers.has("host") && request.headers.get("host") !== expectedHost)) {
         throw new AppError("origin_rejected", 403);
@@ -230,9 +92,14 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       if (request.method !== "GET" && request.method !== "POST") throw new AppError("method_not_allowed", 405);
       if (request.method === "POST" && (request.headers.get("origin") !== config.origin ||
           request.headers.get("sec-fetch-site") === "cross-site")) throw new AppError("origin_rejected", 403);
-      if (request.method === "GET" && url.pathname === "/assets/app.css") return respond(styleSheet, 200, { "Content-Type": "text/css" });
+      if (request.method === "GET" && url.pathname.startsWith("/assets/")) {
+        // web.static_assets/v1: exact content-hashed paths only; the body behind a path never changes.
+        const asset = lookupAsset(url.pathname);
+        if (!asset) throw new AppError("not_found", 404);
+        return new Response(asset.body, { status: 200, headers: { ...headers, "Content-Type": asset.contentType, "Cache-Control": "public, max-age=31536000, immutable" } });
+      }
       if (request.method === "GET" && url.pathname === "/login") {
-        return respond(loginPage());
+        return page(() => loginPage());
       }
       if (request.method === "POST" && url.pathname === "/login") {
         const body = await payload(request);
@@ -243,6 +110,7 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       const matches = (request.headers.get("cookie") ?? "").split(";").map(part => part.trim()).filter(part => part.startsWith(`${cookieName}=`));
       const token = matches.length === 1 ? matches[0]!.slice(cookieName.length + 1) : "";
       const auth = app.authenticate(token);
+      ui = uiFor(auth.actor);
       const projectRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})$/.exec(url.pathname);
       const topicCollection = /^\/(api\/)?projects\/([a-f0-9-]{36})\/topics$/.exec(url.pathname);
       const topicRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})$/.exec(url.pathname);
@@ -306,7 +174,7 @@ export function createWebHandler(app: Application): (request: Request) => Promis
         const extra = { correction, impact, suppression, forgetImpact, ledger, revision: project.revision,
           sources: inspector.sources.flatMap(({ source }) => source.state === "available"
             ? [{ reference: source.reference, label: `${source.descriptor.kind} · ${Array.from(source.text).slice(0, 80).join("")}` }] : []) };
-        return api ? json({ ...state, correction, impact, suppression, forgetImpact, ledger }) : respond(memoryClaimPage(state, extra, project, app.workspace(auth.actor), auth.csrf));
+        return api ? json({ ...state, correction, impact, suppression, forgetImpact, ledger }) : page(() => memoryClaimPage(state, extra, project, app.workspace(auth.actor), auth.csrf));
       }
       if (request.method === "POST" && claimRoute) {
         const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
@@ -332,25 +200,25 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       }
       if (request.method === "GET" && contextRoute) {
         const state = app.memoryContext(auth.actor, contextRoute[1]!, contextRoute[2]!);
-        return api ? json(state) : respond(memoryContextPage(state, app.workspace(auth.actor), auth.csrf));
+        return api ? json(state) : page(() => memoryContextPage(state, app.workspace(auth.actor), auth.csrf));
       }
       if (request.method === "GET" && deletionsRoute) {
         const { project, operations } = app.deletionOperations(auth.actor, deletionsRoute[2]!);
         const inspector = app.memory(auth.actor, deletionsRoute[2]!);
         const sources = inspector.sources.flatMap(({ source }) => source.state === "available"
           ? [{ reference: source.reference, label: `${source.descriptor.kind} · ${Array.from(source.text).slice(0, 80).join("")}` }] : []);
-        return api ? json({ project, operations }) : respond(deletionsPage({ project, operations }, app.workspace(auth.actor), auth.csrf, sources));
+        return api ? json({ project, operations }) : page(() => deletionsPage({ project, operations }, app.workspace(auth.actor), auth.csrf, sources));
       }
       if (request.method === "GET" && deletionRoute) {
         const { project, preview } = app.deletionPreview(auth.actor, deletionRoute[2]!, deletionRoute[3]!);
         const { operation } = app.deletionOperation(auth.actor, deletionRoute[2]!, deletionRoute[3]!);
         if (!preview && !operation) throw new AppError("deletion_not_found", 404);
-        return api ? json({ project, preview, operation }) : respond(deletionDetailPage({ project, preview, operation }, app.workspace(auth.actor), auth.csrf));
+        return api ? json({ project, preview, operation }) : page(() => deletionDetailPage({ project, preview, operation }, app.workspace(auth.actor), auth.csrf));
       }
       if (request.method === "GET" && exportsRoute) {
         const state = app.exports(auth.actor, exportsRoute[2]!);
         const { preview } = app.exportPreview(auth.actor, exportsRoute[2]!, url.searchParams.get("history") === "1");
-        return api ? json({ ...state, preview }) : respond(exportsPage({ ...state, preview }, app.workspace(auth.actor), auth.csrf));
+        return api ? json({ ...state, preview }) : page(() => exportsPage({ ...state, preview }, app.workspace(auth.actor), auth.csrf));
       }
       if (request.method === "GET" && exportArtifactRoute) {
         // Owner-authenticated only; bytes come from the committed valid row, never a filesystem path.
@@ -360,16 +228,16 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       }
       if (request.method === "GET" && exportRoute) {
         const state = app.export(auth.actor, exportRoute[2]!, exportRoute[3]!);
-        return api ? json(state) : respond(exportDetailPage(state, app.workspace(auth.actor), auth.csrf));
+        return api ? json(state) : page(() => exportDetailPage(state, app.workspace(auth.actor), auth.csrf));
       }
       if (request.method === "GET" && upgradesRoute) {
         const state = { ...app.upgrades(auth.actor), status: app.upgradeStatus(auth.actor) };
         const revision = app.workspace(auth.actor).revision;
-        return api ? json(state) : respond(upgradesPage(state, app.workspace(auth.actor), auth.csrf, revision));
+        return api ? json(state) : page(() => upgradesPage(state, app.workspace(auth.actor), auth.csrf, revision));
       }
       if (request.method === "GET" && upgradeRoute) {
         const state = app.upgrade(auth.actor, upgradeRoute[2]!);
-        return api ? json(state) : respond(upgradeDetailPage(state, app.workspace(auth.actor), auth.csrf, app.workspace(auth.actor).revision));
+        return api ? json(state) : page(() => upgradeDetailPage(state, app.workspace(auth.actor), auth.csrf, app.workspace(auth.actor).revision));
       }
       if (request.method === "GET" && (restoresRoute || restoreRoute)) {
         // ops.quarantined_restore/v1: restore status and remediation stay available while the read gate holds;
@@ -380,24 +248,24 @@ export function createWebHandler(app: Application): (request: Request) => Promis
           const state = app.restores(auth.actor);
           const backups = app.backups(auth.actor);
           return api ? json({ ...state, backups, gatedBy: consoleState.gatedBy })
-            : respond(restoresPage({ ...state, backups: backups.manifests }, workspace, auth.csrf, consoleState.revision));
+            : page(() => restoresPage({ ...state, backups: backups.manifests }, workspace, auth.csrf, consoleState.revision));
         }
         const state = app.restore(auth.actor, restoreRoute![2]!);
-        return api ? json(state) : respond(restoreDetailPage(state, workspace, auth.csrf, consoleState.revision));
+        return api ? json(state) : page(() => restoreDetailPage(state, workspace, auth.csrf, consoleState.revision));
       }
       if (request.method === "GET" && backupsRoute) {
         const state = app.backups(auth.actor);
         const revision = app.workspace(auth.actor).revision;
-        return api ? json(state) : respond(backupsPage(state, app.workspace(auth.actor), auth.csrf, revision));
+        return api ? json(state) : page(() => backupsPage(state, app.workspace(auth.actor), auth.csrf, revision));
       }
       if (request.method === "GET" && backupRoute) {
         const state = app.backup(auth.actor, backupRoute[2]!);
-        return api ? json(state) : respond(backupDetailPage(state, app.workspace(auth.actor), auth.csrf));
+        return api ? json(state) : page(() => backupDetailPage(state, app.workspace(auth.actor), auth.csrf));
       }
       if (request.method === "GET" && memoryRoute) {
         const sourceAfter = Number(url.searchParams.get("sourceAfter") ?? 0), extractionAfter = Number(url.searchParams.get("extractionAfter") ?? 0);
         const state = app.memory(auth.actor, memoryRoute[1]!, after(), sourceAfter, extractionAfter, url.searchParams.get("q") ?? "");
-        return api ? json(state) : respond(memoryPage(state, app.workspace(auth.actor), auth.csrf, config.jobs.maximum, { after: after(), sourceAfter, extractionAfter }));
+        return api ? json(state) : page(() => memoryPage(state, app.workspace(auth.actor), auth.csrf, config.jobs.maximum, { after: after(), sourceAfter, extractionAfter }));
       }
       if (request.method === "POST" && memoryRoute) {
         const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
@@ -499,17 +367,28 @@ export function createWebHandler(app: Application): (request: Request) => Promis
         if (!api && result.quarantine.activation.sessionsRevoked) return respond(null, 303, { Location: "/login" });
         return api ? json(result) : respond(null, 303, { Location: `/restores/${result.quarantine.id}` });
       }
+      if (url.pathname === "/settings" && request.method === "GET") return page(() => settingsPage(app.preferences(auth.actor), app.workspace(auth.actor), auth.csrf));
+      if (["/settings/preferences", "/api/settings/preferences"].includes(url.pathname)) {
+        if (request.method === "GET") return api ? json(app.preferences(auth.actor)) : respond(null, 303, { Location: "/settings#appearance" });
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "theme", "language"].includes(key))) throw new AppError("invalid_body");
+        const revision = typeof body.expectedRevision === "string" && /^\d{1,15}$/.test(body.expectedRevision) ? Number(body.expectedRevision) : body.expectedRevision;
+        const command = { kind: "ui.preferences.set", requestId: body.requestId, projectId: null, expectedRevision: revision,
+          payload: { theme: body.theme, language: body.language } } as SetPreferencesCommand;
+        const receipt = app.execute(auth.actor, command);
+        return api ? json(receipt) : respond(null, 303, { Location: "/settings#appearance" });
+      }
       if (request.method === "GET" && teamRoute) {
         const state = app.team(auth.actor, teamRoute[1] ?? null);
-        return api ? json(state) : respond(teamPage(state, app.workspace(auth.actor), auth.csrf, config.jobs.maximum, url.searchParams.get("preset") ?? undefined));
+        return api ? json(state) : page(() => teamPage(state, app.workspace(auth.actor), auth.csrf, config.jobs.maximum, url.searchParams.get("preset") ?? undefined));
       }
       if (request.method === "GET" && previewRoute) {
         const state = app.preview(auth.actor, previewRoute[1]!, previewRoute[2]!);
-        return api ? json(state) : respond(previewPage(state, app.workspace(auth.actor), auth.csrf));
+        return api ? json(state) : page(() => previewPage(state, app.workspace(auth.actor), auth.csrf));
       }
       if (request.method === "GET" && discussionRoute) {
         const state = app.discussion(auth.actor, discussionRoute[1]!, discussionRoute[2]!);
-        return api ? json(state) : respond(discussionPage(state, app.workspace(auth.actor), auth.csrf, config.jobs.maximum));
+        return api ? json(state) : page(() => discussionPage(state, app.workspace(auth.actor), auth.csrf, config.jobs.maximum));
       }
       if (request.method === "GET" && continuityRoute) {
         const state = app.continuity(auth.actor, continuityRoute[2]!);
@@ -517,11 +396,11 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       }
       if (request.method === "GET" && tasksRoute) {
         const state = app.tasks(auth.actor, tasksRoute[2]!);
-        return api ? json(state) : respond(tasksPage(state, app.workspace(auth.actor), auth.csrf, url.searchParams.get("topic")));
+        return api ? json(state) : page(() => tasksPage(state, app.workspace(auth.actor), auth.csrf, url.searchParams.get("topic")));
       }
       if (request.method === "GET" && taskRoute) {
         const state = app.task(auth.actor, taskRoute[2]!, taskRoute[3]!);
-        return api ? json(state) : respond(taskPage(state, app.workspace(auth.actor), auth.csrf, config.messageBytes));
+        return api ? json(state) : page(() => taskPage(state, app.workspace(auth.actor), auth.csrf, config.messageBytes));
       }
       if (request.method === "POST" && (tasksRoute || taskRoute)) {
         const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
@@ -623,19 +502,19 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       }
       if (request.method === "GET" && deliveryRoute) {
         const state = app.deliveries(auth.actor, deliveryRoute[2]!, after());
-        return api ? json(state) : respond(deliveryPage(state, app.workspace(auth.actor), auth.csrf, after()));
+        return api ? json(state) : page(() => deliveryPage(state, app.workspace(auth.actor), auth.csrf, after()));
       }
       if (request.method === "GET" && deliveryIntentRoute) {
         const state = app.delivery(auth.actor, deliveryIntentRoute[2]!, deliveryIntentRoute[3]!);
-        return api ? json(state) : respond(deliveryDetailPage(state, app.workspace(auth.actor), auth.csrf));
+        return api ? json(state) : page(() => deliveryDetailPage(state, app.workspace(auth.actor), auth.csrf));
       }
       if (request.method === "GET" && prReportsRoute) {
         const state = app.prReports(auth.actor, prReportsRoute[2]!);
-        return api ? json(state) : respond(prReportsPage(state, app.workspace(auth.actor), auth.csrf));
+        return api ? json(state) : page(() => prReportsPage(state, app.workspace(auth.actor), auth.csrf));
       }
       if (request.method === "GET" && prReportRoute) {
         const state = app.prReport(auth.actor, prReportRoute[2]!, prReportRoute[3]!);
-        return api ? json(state) : respond(prReportPage(state, app.workspace(auth.actor), auth.csrf));
+        return api ? json(state) : page(() => prReportPage(state, app.workspace(auth.actor), auth.csrf));
       }
       if (request.method === "POST" && prReportRoute) {
         const body = await payload(request);
@@ -668,12 +547,12 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       }
       if (request.method === "GET" && schedulesRoute) {
         const state = app.schedules(auth.actor, schedulesRoute[2]!);
-        return api ? json(state) : respond(schedulesPage(state, app.workspace(auth.actor), auth.csrf,
+        return api ? json(state) : page(() => schedulesPage(state, app.workspace(auth.actor), auth.csrf,
           app.topics(auth.actor, state.project.id).items, config.jobs.maximum));
       }
       if (request.method === "GET" && scheduleRoute) {
         const state = app.schedule(auth.actor, scheduleRoute[2]!, scheduleRoute[3]!);
-        return api ? json(state) : respond(scheduleDetailPage(state, app.workspace(auth.actor), auth.csrf));
+        return api ? json(state) : page(() => scheduleDetailPage(state, app.workspace(auth.actor), auth.csrf));
       }
       if (request.method === "POST" && (deliveryRoute || deliveryResendRoute)) {
         const body = await payload(request);
@@ -692,11 +571,11 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       }
       if (request.method === "GET" && jobsRoute) {
         const state = app.jobs(auth.actor, jobsRoute[2]!, after());
-        return api ? json(state) : respond(jobsPage(state, app.workspace(auth.actor), auth.csrf, after(), config.jobs));
+        return api ? json(state) : page(() => jobsPage(state, app.workspace(auth.actor), auth.csrf, after(), config.jobs));
       }
       if (request.method === "GET" && jobRoute) {
         const job = app.job(auth.actor, jobRoute[2]!, jobRoute[3]!);
-        return api ? json(job) : respond(jobsPage({ ...app.jobs(auth.actor, job.projectId), items: [job], hasMore: false, nextAfter: 0 }, app.workspace(auth.actor), auth.csrf, 0, config.jobs, false));
+        return api ? json(job) : page(() => jobsPage({ ...app.jobs(auth.actor, job.projectId), items: [job], hasMore: false, nextAfter: 0 }, app.workspace(auth.actor), auth.csrf, 0, config.jobs, false));
       }
       if (request.method === "GET" && sourceRoute) {
         const positive = (key: string) => {
@@ -706,32 +585,32 @@ export function createWebHandler(app: Application): (request: Request) => Promis
         };
         const source = app.source(auth.actor, sourceRoute[2]!, { sourceId: sourceRoute[3]!, revision: positive("revision"), generation: positive("generation") });
         const suppressed = app.sourceSuppressed(auth.actor, sourceRoute[2]!, { sourceId: sourceRoute[3]!, revision: positive("revision"), generation: positive("generation") });
-        return api ? json({ ...source, suppressed }) : respond(sourcePage(source, suppressed, app.project(auth.actor, source.projectId), app.workspace(auth.actor), auth.csrf));
+        return api ? json({ ...source, suppressed }) : page(() => sourcePage(source, suppressed, app.project(auth.actor, source.projectId), app.workspace(auth.actor), auth.csrf));
       }
       if (request.method === "GET" && topicRoute) {
         const state = app.conversation(auth.actor, topicRoute[2]!, topicRoute[3]!, after());
         if (api) return json(state);
         const team = app.team(auth.actor, state.project.id);
         const discussions = app.discussions(auth.actor, state.project.id, state.topic.id);
-        return respond(conversationPage(state, app.workspace(auth.actor), app.topics(auth.actor, state.project.id).items, auth.csrf, after(), config.messageBytes, {
+        return page(() => conversationPage(state, app.workspace(auth.actor), app.topics(auth.actor, state.project.id).items, auth.csrf, after(), config.messageBytes, {
           team, discussions, limits: config.jobs.maximum, dispatchAvailable: team.previewAvailable,
           decision: app.decision(auth.actor, state.project.id, state.topic.id),
         }));
       }
       if (request.method === "GET" && topicCollection) {
         const state = app.topics(auth.actor, topicCollection[2]!, after());
-        return api ? json(state) : respond(projectPage(state, app.workspace(auth.actor), auth.csrf, after()));
+        return api ? json(state) : page(() => projectPage(state, app.workspace(auth.actor), auth.csrf, after()));
       }
       if (request.method === "GET" && projectRoute) {
         const project = app.project(auth.actor, projectRoute[2]!);
-        return api ? json(project) : respond(projectPage(app.topics(auth.actor, project.id, after()), app.workspace(auth.actor), auth.csrf, after()));
+        return api ? json(project) : page(() => projectPage(app.topics(auth.actor, project.id, after()), app.workspace(auth.actor), auth.csrf, after()));
       }
       if (request.method === "GET" && ["/", "/api/projects"].includes(url.pathname)) {
         const raw = url.searchParams.get("offset") ?? "0";
         if (!/^\d{1,7}$/.test(raw)) throw new AppError("invalid_offset");
         const offset = Number(raw);
         const state = app.workspace(auth.actor, offset);
-        return api ? json(state) : respond(workspacePage(state, auth.csrf, offset, config.pageSize));
+        return api ? json(state) : page(() => workspacePage(state, auth.csrf, offset, config.pageSize));
       }
       if (request.method === "POST" && (["/projects", "/api/projects", "/logout"].includes(url.pathname) || backupsRoute || upgradesRoute || upgradeRoute || restoresRoute || restoreRoute || topicCollection || messageRoute || jobsRoute || resumeRoute || schedulesRoute || scheduleAction)) {
         const body = await payload(request);
@@ -825,11 +704,12 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       if (!api && rejection.code === "authentication_required") return respond(null, 303, { "Location": "/login" });
       // Until an activated restore completes, every ordinary page leads to the restore console.
       if (!api && rejection.code === "restore_incomplete" && request.method === "GET") return respond(null, 303, { "Location": "/restores" });
-      const text = messages[rejection.code] ?? "คำสั่งไม่ถูกต้อง กรุณาลองใหม่";
       const detail = rejection.detail;
       const recovery = detail && typeof detail.projectId === "string" && /^[a-f0-9-]{36}$/.test(detail.projectId) && typeof detail.path === "string" && detail.path.startsWith(`/projects/${detail.projectId}/`)
-        ? { href: detail.path, label: typeof detail.taskId === "string" ? "เปิดข้อเสนอล่าสุด" : "เปิดรายการล่าสุด" } : undefined;
-      return api ? json({ error: rejection.code, ...(detail ? { detail } : {}) }, rejection.status) : respond(errorPage(text, recovery), rejection.status);
+        ? { href: detail.path, proposal: typeof detail.taskId === "string" } : undefined;
+      // Error text comes only from the dictionaries, keyed by the fixed error code; unknown codes get the generic message.
+      return api ? json({ error: rejection.code, ...(detail ? { detail } : {}) }, rejection.status) : page(() => errorPage(trMaybe(`error.${rejection.code}`) ?? tr("error.default"),
+        recovery && { href: recovery.href, label: tr(recovery.proposal ? "error.recovery_open_proposal" : "error.recovery_open_list") }), rejection.status);
     }
   };
 }

@@ -43,6 +43,18 @@ export function trMaybe(key: string): string | null {
   return Object.hasOwn(th, key) ? tr(key as MessageKey) : null;
 }
 
+const systemKeys = new Map((Object.keys(th) as MessageKey[]).filter(key => key.startsWith("system.")).map(key => [th[key] as string, key]));
+
+/**
+ * Localizes a fixed explanatory note that a domain read model returns in Thai (for example a schedule's
+ * next-run note or a task's pending reason). Only exact matches of a `system.*` entry are translated;
+ * anything else, including owner and model text, is returned unchanged. Callers still escape the result.
+ */
+export function systemText(value: string): string {
+  const key = systemKeys.get(value);
+  return key ? tr(key) : value;
+}
+
 /**
  * Chooses a supported language from an `Accept-Language` header (RFC 9110 weights).
  * Used only before an owner preference exists; unsupported or malformed input yields Thai.

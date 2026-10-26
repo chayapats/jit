@@ -3,60 +3,98 @@ import type { Topic } from "./conversation";
 import type { JobSchedule, ScheduleOccurrence } from "./jobs/schedules";
 import type { Attribution, SourceLookup, SourceReference } from "./sources";
 import type { Job, JobLimits, JobPolicy } from "./jobs/types";
-import { tr } from "./i18n";
+import { currentLocale, systemText, tr, withLocale, type Locale } from "./i18n";
+import { assetUrl } from "./web-assets";
+import { logoLockup } from "./web-logo";
 import type { DecisionReadModel, Discussion, RoleRoute } from "./team/types";
 
 /** Escapes literal untrusted content before it enters HTML text or attributes. */
 export const escape = (value: unknown) => String(value).replace(/[&<>"']/g, char =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
 const paths = {
-  brand: '<path d="M7 4h10M12 4v11a5 5 0 0 1-5 5H4"/><path d="M17 9v6a5 5 0 0 1-5 5"/>',
   folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10H3Z"/>',
   chat: '<path d="M20 11.5a8 8 0 0 1-8 8H5l-3 2 1.5-5A8 8 0 1 1 20 11.5Z"/>',
   plus: '<path d="M12 5v14M5 12h14"/>', arrow: '<path d="M12 19V5m-6 6 6-6 6 6"/>',
   link: '<path d="m10 13 4-4m-7 6-1 1a3 3 0 0 0 4 4l4-4m-4-8 4-4a3 3 0 0 1 4 4l-1 1"/>',
   logout: '<path d="M9 4H4v16h5m5-12 4 4-4 4m-6-4h10"/>',
   menu: '<path d="M4 7h16M4 12h16M4 17h16"/>', check: '<path d="m5 12 4 4L19 6"/>',
+  close: '<path d="M6 6l12 12M18 6 6 18"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v1"/>',
   user: '<circle cx="12" cy="8" r="3"/><path d="M5 21v-2a7 7 0 0 1 14 0v2"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/>',
 };
 const icon = (name: keyof typeof paths) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name]}</svg>`;
-const brand = () => `<a class="brand" href="/" aria-label="${tr("common.jit_all_projects")}">${icon("brand")}<span>Jit</span></a>`;
+const brand = (height = 36) => `<a class="brand" href="/" aria-label="${tr("common.jit_all_projects")}">${logoLockup({ height, label: "Jit" })}</a>`;
 const sourceUrl = (projectId: string, ref: SourceReference) => `/projects/${projectId}/sources/${ref.sourceId}?revision=${ref.revision}&generation=${ref.generation}`;
 const sourceLink = (projectId: string, ref: SourceReference, label: string) => `<a class="source-link" href="${sourceUrl(projectId, ref)}">${icon("link")}${escape(label)}</a>`;
 const attributionLabel = (attribution: Attribution) => attribution.kind === "owner" ? tr("common.you") : attribution.kind === "participant"
   ? `${tr("common.teammate")} ${attribution.participantId} · run ${attribution.runId}` : tr("common.source_registry_service");
 function time(value: number): string {
   const date = new Date(value); if (!Number.isFinite(date.valueOf())) return tr("common.unknown_time");
-  return `<time datetime="${date.toISOString()}" title="${date.toISOString()}">${escape(new Intl.DateTimeFormat("th-TH", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "UTC" }).format(date))} UTC</time>`;
+  const format = new Intl.DateTimeFormat(currentLocale() === "en" ? "en-GB" : "th-TH", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
+  return `<time datetime="${date.toISOString()}" title="${date.toISOString()}">${escape(format.format(date))} UTC</time>`;
 }
+
+/** Owner appearance choice: `system` follows `prefers-color-scheme`. */
+export type ThemePreference = "system" | "dark" | "light";
+let activeTheme: ThemePreference = "system";
+/**
+ * Renders synchronously in the given language and theme. Page renderers read both from this scope,
+ * so every page, including errors and sign-in, uses the same shell and dictionaries.
+ */
+export function renderWith<T>(ui: { locale: Locale; theme: ThemePreference }, render: () => T): T {
+  const previous = activeTheme;
+  activeTheme = ui.theme;
+  try { return withLocale(ui.locale, render); } finally { activeTheme = previous; }
+}
+
 function documentPage(title: string, content: string): string {
-  return `<!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-    <meta name="color-scheme" content="dark"><title>${escape(title)} · Jit</title><link rel="stylesheet" href="/assets/app.css"></head><body>
+  const theme = activeTheme === "system" ? "" : ` data-theme="${activeTheme}"`;
+  return `<!doctype html><html lang="${currentLocale()}"${theme}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="color-scheme" content="${activeTheme === "system" ? "dark light" : activeTheme}"><title>${escape(title)} · Jit</title>
+    <link rel="stylesheet" href="${assetUrl("app.css")}"><link rel="icon" type="image/svg+xml" href="${assetUrl("favicon.svg")}">
+    <link rel="preload" href="${assetUrl("inter.woff2")}" as="font" type="font/woff2" crossorigin><link rel="preload" href="${assetUrl("noto-sans-thai.woff2")}" as="font" type="font/woff2" crossorigin>
+    <script type="module" src="${assetUrl("app.js")}"></script></head><body>
     <a class="skip" href="#main-content">${tr("common.skip_to_main_content")}</a>${content}</body></html>`;
 }
-interface Navigation { workspace: Workspace; csrf: string; project?: Project; topics?: Topic[]; topic?: Topic; section?: "home" | "project" | "topic" | "team" | "tasks" | "jobs" | "delivery" | "memory" }
+interface Navigation { workspace: Workspace; csrf: string; project?: Project; topics?: Topic[]; topic?: Topic; section?: "home" | "project" | "topic" | "team" | "tasks" | "jobs" | "delivery" | "memory" | "settings" }
+/** Sidebar navigation: projects with the selected project's tools and topics nested under it. */
 function navigation(n: Navigation): string {
   const selected = n.project, topics = n.topic ? [n.topic, ...(n.topics ?? []).filter(t => t.id !== n.topic!.id)] : n.topics ?? [];
   const here = (section: NonNullable<Navigation["section"]>) => n.section === section ? ' aria-current="page"' : "";
-  return `<nav aria-label="${tr("common.projects_and_topics")}"><a class="nav-main" href="/"${here("home")}>${icon("folder")}<span>${tr("common.all_projects")}</span></a>
-    <a class="nav-main" href="${selected ? `/projects/${selected.id}/team` : "/team"}"${here("team")}>${icon("user")}<span>${tr("common.team_and_models")}</span></a>
-    <a class="nav-main" href="${selected ? `/projects/${selected.id}#new-topic` : "/#new-project"}">${icon("plus")}<span>${selected ? tr("common.new_topic") : tr("common.new_project")}</span></a>
-    ${selected ? `<a class="nav-main" href="/projects/${selected.id}/memory"${here("memory")}>${icon("info")}<span>${tr("label.memory")}</span></a><a class="nav-main" href="/projects/${selected.id}/tasks"${here("tasks")}>${icon("check")}<span>${tr("common.tasks")}</span></a><a class="nav-main" href="/projects/${selected.id}/jobs"${here("jobs")}>${icon("clock")}<span>${tr("common.project_jobs")}</span></a><a class="nav-main" href="/projects/${selected.id}/delivery"${here("delivery")}>${icon("info")}<span>${tr("common.notifications")}</span></a><p class="nav-heading">${tr("common.topics_in_project")}</p><p class="nav-project">${escape(selected.name)}</p>
-      <ul>${topics.slice(0, 12).map(t => `<li><a class="nav-link" href="/projects/${selected.id}/topics/${t.id}"${t.id === n.topic?.id && n.section === "topic" ? ' aria-current="page"' : ""}>${icon("chat")}<span>${escape(t.title ?? tr("common.topic_unavailable"))}</span></a></li>`).join("")}</ul>
-      <a class="nav-subtle" href="/projects/${selected.id}">${tr("common.view_all_topics")}</a>` : ""}
-    <p class="nav-heading">${tr("common.your_projects")}</p><ul>${n.workspace.projects.slice(0, 8).map(p => `<li><a class="nav-link" href="/projects/${p.id}"${p.id === selected?.id && n.section === "project" ? ' aria-current="page"' : ""}>${icon("folder")}<span>${escape(p.name)}</span></a></li>`).join("")}</ul>
-    ${n.workspace.hasMore || n.workspace.projects.length > 8 ? `<a class="nav-subtle" href="/">${tr("common.view_all_projects")}</a>` : ""}</nav>`;
+  const listed = n.workspace.projects.slice(0, 8);
+  const projects = selected && !listed.some(p => p.id === selected.id) ? [selected, ...listed] : listed;
+  const nested = (p: Project) => p.id !== selected?.id ? "" : `<ul class="nav-tools" aria-label="${escape(p.name)}">
+      <li><a class="nav-link" href="/projects/${p.id}/memory"${here("memory")}>${icon("info")}<span>${tr("label.memory")}</span></a></li>
+      <li><a class="nav-link" href="/projects/${p.id}/tasks"${here("tasks")}>${icon("check")}<span>${tr("common.tasks")}</span></a></li>
+      <li><a class="nav-link" href="/projects/${p.id}/jobs"${here("jobs")}>${icon("clock")}<span>${tr("common.project_jobs")}</span></a></li>
+      <li><a class="nav-link" href="/projects/${p.id}/delivery"${here("delivery")}>${icon("info")}<span>${tr("common.notifications")}</span></a></li>
+      <li><a class="nav-link" href="/projects/${p.id}/team"${here("team")}>${icon("user")}<span>${tr("common.team_and_models")}</span></a></li></ul>
+    <ul class="nav-topics" aria-label="${tr("common.topics_in_project")}">${topics.slice(0, 12).map(t => `<li><a class="nav-link" href="/projects/${p.id}/topics/${t.id}"${t.id === n.topic?.id && n.section === "topic" ? ' aria-current="page"' : ""}>${icon("chat")}<span>${escape(t.title ?? tr("common.topic_unavailable"))}</span></a></li>`).join("")}
+      <li><a class="nav-subtle" href="/projects/${p.id}#new-topic">${tr("common.new_topic")}</a></li>${topics.length > 12 ? `<li><a class="nav-subtle" href="/projects/${p.id}">${tr("common.view_all_topics")}</a></li>` : ""}</ul>`;
+  return `<nav class="nav-scroll" aria-label="${tr("common.projects_and_topics")}"><p class="nav-heading">${tr("common.your_projects")}</p>
+    <ul class="nav-projects">${projects.map(p => `<li class="nav-project"${p.id === selected?.id ? " data-selected" : ""}><a class="nav-link" href="/projects/${p.id}"${p.id === selected?.id && n.section === "project" ? ' aria-current="page"' : ""}>${icon("folder")}<span>${escape(p.name)}</span></a>${nested(p)}</li>`).join("")}</ul>
+    <a class="nav-subtle" href="/#new-project">${tr("common.new_project")}</a>${n.workspace.hasMore || n.workspace.projects.length > 8 ? `<a class="nav-subtle" href="/"${here("home")}>${tr("common.view_all_projects")}</a>` : ""}</nav>`;
 }
 function ownerMenu(csrf: string): string {
-  return `<div class="owner-menu"><span class="avatar" aria-hidden="true">${icon("user")}</span><div class="owner-name">${tr("common.your_space")}<small>${tr("common.personal_projects")}</small></div>
+  return `<div class="owner-menu"><div class="owner-name">${tr("common.your_space")}</div>
     <form method="post" action="/logout"><input type="hidden" name="csrf" value="${csrf}"><button class="icon-button" aria-label="${tr("common.sign_out")}" title="${tr("common.sign_out")}">${icon("logout")}</button></form></div>`;
 }
+/**
+ * The application shell used by every signed-in page: sidebar (new chat, projects → topics, settings at the
+ * bottom) and the main pane. Below 680 px the sidebar becomes a drawer: CSS `:target` opens it without
+ * script, and the enhancement script adds Escape, focus return and no history entry.
+ * Later S09 tickets fill the main pane (chat home, right panel, ⌘K) without changing this frame.
+ */
 function shell(title: string, n: Navigation, content: string, options: { breadcrumb?: { title: string; href: string }; action?: string; composer?: string } = {}): string {
-  const nav = navigation(n);
-  return documentPage(title, `<div class="app"><aside class="sidebar">${brand()}<div class="nav-scroll">${nav}</div>${ownerMenu(n.csrf)}</aside>
-    <main class="main-pane" id="main-content"><header class="app-header"><details class="mobile-menu"><summary aria-label="${tr("common.open_project_menu")}">${icon("menu")}</summary><div class="mobile-menu-content">${nav}${ownerMenu(n.csrf)}</div></details>
+  return documentPage(title, `<div class="app"><aside class="sidebar" id="sidebar" aria-label="${tr("shell.sidebar")}">
+    <div class="sidebar-top">${brand()}<a class="drawer-close" href="#main-content" aria-label="${tr("shell.close_menu")}">${icon("close")}</a></div>
+    <a class="new-chat" href="/"${n.section === "home" ? ' aria-current="page"' : ""}>${icon("plus")}<span>${tr("shell.new_chat")}</span></a>
+    ${navigation(n)}
+    <div class="sidebar-foot"><a class="nav-main" href="/settings"${n.section === "settings" ? ' aria-current="page"' : ""}>${icon("settings")}<span>${tr("shell.settings")}</span></a>${ownerMenu(n.csrf)}</div></aside>
+    <a class="drawer-scrim" href="#main-content" tabindex="-1" aria-hidden="true"></a>
+    <main class="main-pane" id="main-content"><header class="app-header"><a class="menu-button" href="#sidebar" aria-controls="sidebar" aria-label="${tr("common.open_project_menu")}">${icon("menu")}</a>
     <div class="header-title">${options.breadcrumb ? `<a class="breadcrumb" href="${options.breadcrumb.href}">${escape(options.breadcrumb.title)}</a>` : ""}<h1>${escape(title)}</h1></div>${options.action ?? ""}</header>
     <div class="scroll-region">${content}</div>${options.composer ?? ""}</main></div>`);
 }
@@ -329,7 +367,7 @@ const policyLabels = (): Record<string, string> => ({
 function taskStatusText(task: { state: string; pendingReason?: { detail: string } | null; completionPolicy: { kind: string } }): string {
   const base = taskLabels()[task.state] ?? task.state;
   const policy = `${tr("tasks.policy")} ${policyLabels()[task.completionPolicy.kind] ?? task.completionPolicy.kind}`;
-  const pending = task.pendingReason ? ` ${tr("tasks.pending")} ${task.pendingReason.detail}` : "";
+  const pending = task.pendingReason ? ` ${tr("tasks.pending")} ${escape(systemText(task.pendingReason.detail))}` : "";
   return `${base} · ${policy}${pending}`;
 }
 
@@ -445,7 +483,7 @@ export function memoryClaimPage(state: import("./memory/types").ClaimLookup, ext
 function suppressionPanel(item: import("./memory/types").ClaimLookup, extra: ClaimCorrectionView, projectId: string, csrf: string): string {
   if (extra.suppression) {
     const s = extra.suppression, ledger = extra.ledger;
-    const retire = ledger ? `<p>${tr("memory_claim.context_retirement")} <strong>${ledger.retire.state === "complete" ? tr("memory_claim.complete") : tr("memory_claim.incomplete")}</strong> ${tr("memory_claim.tracked_contexts")} ${ledger.retire.contexts.length} ${tr("common.items")}${ledger.retire.contexts.filter(c => c.lifecycle !== "retired" && c.lifecycle !== "deleted").map(c => ` · ${escape(c.id)} (${escape(c.lifecycle)})`).join("")}</p><p>${escape(ledger.note)}</p>` : "";
+    const retire = ledger ? `<p>${tr("memory_claim.context_retirement")} <strong>${ledger.retire.state === "complete" ? tr("memory_claim.complete") : tr("memory_claim.incomplete")}</strong> ${tr("memory_claim.tracked_contexts")} ${ledger.retire.contexts.length} ${tr("common.items")}${ledger.retire.contexts.filter(c => c.lifecycle !== "retired" && c.lifecycle !== "deleted").map(c => ` · ${escape(c.id)} (${escape(c.lifecycle)})`).join("")}</p><p>${escape(systemText(ledger.note))}</p>` : "";
     return `<section class="team-card" id="memory-suppression"><h2>${tr("memory_claim.this_memory_has_been_forgotten")}</h2><p>${tr("memory_claim.withdraw_memory")} ${s.withdrawn.length} ${tr("memory_claim.items_linked_to_the_original")} ${s.sources.length} ${tr("memory_claim.sets_reason")} ${escape(s.reason)}</p>${retire}<p>${tr("memory_claim.future_answers_and_context_wont")}</p></section>`;
   }
   if (item.state !== "available" || !extra.forgetImpact) return "";
@@ -560,8 +598,8 @@ function wallClock(instant: number, timezone: string): string {
   } catch { return tr("schedules.invalid_time_zone"); }
 }
 function nextRunLine(schedule: JobSchedule): string {
-  if (schedule.nextRun === null) return `<p>${tr("schedules.next_run")} ${escape(schedule.nextRunNote ?? tr("schedules.not_scheduled"))}</p>`;
-  return `<p>${tr("schedules.next_run")} ${time(schedule.nextRun)} ${tr("schedules.local_time")} ${wallClock(schedule.nextRun, schedule.timezone)}</p>${schedule.nextRunNote ? `<p>${escape(schedule.nextRunNote)}</p>` : ""}`;
+  if (schedule.nextRun === null) return `<p>${tr("schedules.next_run")} ${escape(schedule.nextRunNote ? systemText(schedule.nextRunNote) : tr("schedules.not_scheduled"))}</p>`;
+  return `<p>${tr("schedules.next_run")} ${time(schedule.nextRun)} ${tr("schedules.local_time")} ${wallClock(schedule.nextRun, schedule.timezone)}</p>${schedule.nextRunNote ? `<p>${escape(systemText(schedule.nextRunNote))}</p>` : ""}`;
 }
 function lastResultLine(projectId: string, schedule: JobSchedule): string {
   const last = schedule.lastResult;
@@ -586,7 +624,7 @@ export function schedulesPage(state: ReturnType<Application["schedules"]>, works
       <label>${tr("schedules.time_zone")}<input name="timezone" required maxlength="128" value="${escape(schedule.timezone)}"><small>${tr("schedules.iana_name_only_e_g")}</small></label>
       <label>${tr("schedules.recurrence_json")}<input name="recurrence" required value="${escape(JSON.stringify(schedule.recurrence))}"><small>{"kind":"daily","time":"08:00"} · {"kind":"interval","everyMs":3600000} · {"kind":"once","at":1735689600000}</small></label>
       <label>${tr("common.status")}<select name="enabled"><option value="true"${schedule.state === "active" ? " selected" : ""}>${tr("schedules.active")}</option><option value="false"${schedule.state !== "active" ? " selected" : ""}>${tr("schedules.paused")}</option></select></label>
-      <label>${tr("schedules.summary_route_json_or_null")}<input name="route" required value="${escape(JSON.stringify(schedule.route))}"><small>${tr("schedules.reminders_use_null_summaries_need")}</small></label>
+      <label>${tr("schedules.summary_route_json_or_null")}<input name="route" required value="${escape(JSON.stringify(schedule.route))}"><small>${tr("schedules.reminders_use_null_summaries_need")} <code>{"provider":"grok","model":"...","authRoute":"..."}</code></small></label>
       <label>${tr("schedules.remaining_budget")}<input name="occurrenceBudget" required value="${schedule.occurrencesRemaining}"></label>
       <label>${tr("common.message")}<textarea name="text" required rows="3" maxlength="2048">${escape(schedule.payload.text)}</textarea></label>
       <input type="hidden" name="limits" value="${escape(JSON.stringify(schedule.limits))}"><button class="primary">${tr("schedules.save_new_revision")}</button></form></details>` : ""}</article>`;
@@ -598,7 +636,7 @@ export function schedulesPage(state: ReturnType<Application["schedules"]>, works
       <label>${tr("schedules.time_zone")}<input name="timezone" required maxlength="128" value="Asia/Bangkok"><small>${tr("schedules.iana_name_only_device_time")}</small></label>
       <label>${tr("schedules.recurrence_json")}<input name="recurrence" required value="${escape(JSON.stringify({ kind: "daily", time: "08:00" }))}"><small>{"kind":"daily","time":"08:00"} · {"kind":"interval","everyMs":3600000} · {"kind":"once","at":1735689600000}</small></label>
       <label>${tr("common.status")}<select name="enabled"><option value="true">${tr("schedules.active")}</option><option value="false">${tr("schedules.paused")}</option></select></label>
-      <label>${tr("schedules.summary_route_json_or_null")}<input name="route" required value="null"><small>${tr("schedules.reminders_use_null_summaries_need")}</small></label>
+      <label>${tr("schedules.summary_route_json_or_null")}<input name="route" required value="null"><small>${tr("schedules.reminders_use_null_summaries_need")} <code>{"provider":"grok","model":"...","authRoute":"..."}</code></small></label>
       <label>${tr("schedules.total_runs")}<input name="occurrenceBudget" required value="30"></label>
       <input type="hidden" name="misfire" value="coalesce"><input type="hidden" name="limits" value="${escape(JSON.stringify(limits))}">
       <label>${tr("common.message")}<textarea name="text" required rows="3" maxlength="2048" placeholder="${tr("schedules.reminder_text_or_a_note")}"></textarea></label>
@@ -669,7 +707,7 @@ export function deletionDetailPage(state: { project: Project; preview: import(".
     ${sessionRows ? `<ul aria-label="${tr("label.native_sessions")}">${sessionRows}</ul>` : ""}
     ${preview.wholeSession.required ? `<p>${tr("deletions.the_whole_session_must_be")}${escape((preview.wholeSession.reasons ?? [preview.wholeSession.reason ?? ""]).join(", "))}${tr("deletions.scope")} ${escape(preview.wholeSession.sessionScope.join(", "))} ${tr("deletions.confirm_the_whole_session_first")}</p>` : ""}
     ${blockers.length ? `<p class="error" role="alert">${tr("deletions.cannot_confirm")} ${escape(blockers.join(", "))} ${tr("deletions.review_the_data_and_request")}</p>` : ""}
-    <p><small>${escape(preview.note)}</small></p>
+    <p><small>${escape(systemText(preview.note))}</small></p>
     ${blockers.length ? "" : `<form class="team-form" method="post" action="/projects/${project.id}/memory/deletions">${hiddenCommand(csrf, project.revision)}
       <input type="hidden" name="mode" value="confirm"><input type="hidden" name="previewId" value="${preview.id}">
       <label><input type="checkbox" name="acknowledged" value="on"> ${tr("deletions.confirm_scope_does_not_cancel")}</label>
@@ -699,7 +737,7 @@ export function exportsPage(state: { project: Project; manifests: import("./ops/
     <p><small>${m.artifact ? `hash ${escape(m.artifact.hash.slice(0, 16))}… · ${m.artifact.bytes} bytes` : `${tr("exports.failed")} ${escape(m.failure?.reason ?? "export_failed")} ${tr("exports.no_file")}`} · tombstones ${m.lifecycle.tombstonesApplied}</small></p></article>`).join("");
   return shell(tr("exports.export_data"), { project, workspace, csrf, section: "memory" }, `<div class="content"><section class="hero"><p class="eyebrow">ops.project_export/v1</p><h2>${tr("exports.export")} ${escape(project.name)}</h2><p>${tr("exports.a_re_verifiable_json_file")}</p></section>
     <details class="team-card" open><summary>${tr("exports.preview_before_export")}</summary><p>topics ${preview.counts.topics} · messages ${preview.counts.messages} · tasks ${preview.counts.tasks} · decisions ${preview.counts.decisions} · claims ${preview.counts.claims} · exclusions ${preview.manifest.exclusions.length} · missing ${preview.manifest.missingRefs.length}</p>
-    <p><small>${escape(preview.manifest.lifecycle.note)}</small></p>
+    <p><small>${escape(systemText(preview.manifest.lifecycle.note))}</small></p>
     <form class="team-form" method="post" action="/projects/${project.id}/exports">${hiddenCommand(csrf, project.revision)}
       <label><input type="checkbox" name="includeHistory" value="on"> ${tr("exports.include_raw_message_history_includes")}</label>
       <label>${tr("exports.note")}<input name="note" maxlength="500" value="manual export"></label>
@@ -807,4 +845,21 @@ export function restoreDetailPage(state: { quarantine: RestoreView }, workspace:
     <h3>${tr("restores.activation_decision")}</h3><p>${r.activation.allowed ? tr("restores.ready_to_activate") : `${tr("restores.cannot_activate_yet")} ${escape(r.activation.blockers.join(", ") || q.nextAction)}`} · revision live ${r.generation.liveRevision ?? "?"} → ${r.generation.restoredRevision ?? "?"}${r.generation.sessionsRevoked ? tr("restores.previous_sessions_revoked") : ""}</p>
     <div>${q.actions.map(action).join(" ")}</div></article>
     <p><a href="/restores">${tr("restores.back_to_restores")}</a></p></div>`, { breadcrumb: { title: tr("restores.restore"), href: "/restores" } });
+}
+
+/** Owner settings: persisted appearance and language (ui.preferences/v1), plus entries to installation operations. */
+export function settingsPage(preferences: { theme: ThemePreference; language: "auto" | Locale; revision: number }, workspace: Workspace, csrf: string): string {
+  const choice = (name: string, value: string, label: string, current: string) =>
+    `<label class="choice"><input type="radio" name="${name}" value="${value}"${value === current ? " checked" : ""}>${label}</label>`;
+  return shell(tr("shell.settings"), { workspace, csrf, section: "settings" }, `<div class="content settings-content">
+    <section class="settings-section" id="appearance" aria-labelledby="appearance-title"><h2 id="appearance-title">${tr("settings.appearance")}</h2><p>${tr("settings.appearance_note")}</p>
+    <form method="post" action="/settings/preferences">${hiddenCommand(csrf, preferences.revision)}
+      <fieldset class="choice-group"><legend>${tr("settings.theme")}</legend>${choice("theme", "system", tr("settings.theme_system"), preferences.theme)}${choice("theme", "dark", tr("settings.theme_dark"), preferences.theme)}${choice("theme", "light", tr("settings.theme_light"), preferences.theme)}</fieldset>
+      <fieldset class="choice-group"><legend>${tr("settings.language")}</legend>${choice("language", "auto", tr("settings.language_auto"), preferences.language)}${choice("language", "th", "ไทย", preferences.language)}${choice("language", "en", "English", preferences.language)}</fieldset>
+      <button class="primary">${tr("settings.save")}</button></form></section>
+    <section class="settings-section" aria-labelledby="operations-title"><h2 id="operations-title">${tr("settings.operations")}</h2><p>${tr("settings.operations_note")}</p>
+    <nav class="settings-links" aria-labelledby="operations-title"><a href="/team">${icon("user")}<span>${tr("common.team_and_models")}</span></a><a href="/backups">${icon("clock")}<span>${tr("settings.backups")}</span></a>
+      <a href="/upgrades">${icon("arrow")}<span>${tr("settings.upgrades")}</span></a><a href="/restores">${icon("info")}<span>${tr("settings.restores")}</span></a></nav></section>
+    <section class="settings-section" aria-labelledby="about-title"><h2 id="about-title">${tr("settings.about")}</h2><p class="licenses">${tr("settings.fonts_note")}
+      <a href="${assetUrl("OFL-Inter.txt")}">Inter</a> · <a href="${assetUrl("OFL-NotoSansThai.txt")}">Noto Sans Thai</a> · <a href="${assetUrl("OFL-JetBrainsMono.txt")}">JetBrains Mono</a></p></section></div>`);
 }

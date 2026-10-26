@@ -89,13 +89,13 @@ test("proposing, editing, and accepting keep one obligation; chat and a conflict
   const page = await (await f.web(request(f, `/projects/${f.project.id}/tasks/${visible.task.id}`))).text();
   expect(page).toContain("ข้อเสนอ");
   expect(page).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
-  expect(page).not.toContain("<script");
+  expect(page.replace(/<script type="module" src="\/assets\/app\.[0-9a-f]{16}\.js"><\/script>/, "")).not.toContain("<script");
   const list = await (await f.web(request(f, `/projects/${f.project.id}/tasks`))).text();
   expect(list).toContain("ข้อเสนอที่ยังไม่รับรอง");
   expect(list).toContain("ข้อผูกพันที่รับรองแล้ว");
   expect(list).toContain("ชื่องานที่แก้");
   expect(list).toContain("&lt;script&gt;");
-  expect(list).not.toContain("<script");
+  expect(list.replace(/<script type="module" src="\/assets\/app\.[0-9a-f]{16}\.js"><\/script>/, "")).not.toContain("<script");
   const reopenedStore = new TransactionStore(f.path); stores.push(reopenedStore);
   const reopened = new Application(reopenedStore, f.config, { now: () => epoch }), actor = reopened.authenticate(f.token).actor;
   const model = reopened.task(actor, f.project.id, proposed.task.id);
@@ -234,7 +234,7 @@ test("schema v8 migrates to v9, keeps the previous project, and snapshots the ol
     PRAGMA user_version = 8;`);
   old.close();
   const store = new TransactionStore(path); stores.push(store);
-  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 23 });
+  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 24 });
   expect(store.read(tx => tx.get("SELECT name, revision FROM projects WHERE id = ?", projectId))).toEqual({ name: "kept-task", revision: 4 });
   expect(store.read(tx => tx.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tasks'"))).toEqual({ name: "tasks" });
   const snapshotName = readdirSync(root).find(name => name.includes(".pre-v8-"))!;

@@ -157,6 +157,8 @@ The managed backup registry (`ops_backups`) and the installation lifecycle
 ledger (`lifecycle_ledger`, `lifecycle_checkpoint`; schema 23,
 app.deletion_ledger/v1) are installation state, likewise excluded from images
 (`installationScopedTables` in `src/store.ts`).
+Owner interface preferences (`owner_preferences`; schema 24, ui.preferences/v1)
+hold no credentials and are included in images like other owner configuration.
 Activation (`TransactionStore.swapFrom`, used by OPS02 restore and upgrade
 activation) builds the complete replacement image before an atomic rename and
 always keeps the live installation's owner verifier, sessions,

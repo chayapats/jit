@@ -282,6 +282,8 @@ export const backupImageTables: Readonly<Record<string, "include" | "exclude" | 
   memory_decision_sources: "include", memory_derived_sources: "include", memory_extractions: "include",
   memory_suppressed_claims: "include", memory_suppressed_sources: "include", memory_suppressions: "include",
   messages: "include", owner_decisions: "include", project_groups: "include",
+  // ui.preferences/v1 (schema 24): owner theme/language, configuration without credentials.
+  owner_preferences: "include",
   project_team: "include", projects: "include", restore_quarantines: "include", roles: "include",
   schway_native_refs: "include", source_versions: "include", sources: "include",
   task_events: "include", task_evidence_artifacts: "include", task_proposals: "include", tasks: "include",
