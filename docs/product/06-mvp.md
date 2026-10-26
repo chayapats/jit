@@ -23,7 +23,7 @@
 | Background | user-configured reminders/summaries, interactive priority, finite budgets | FR-12, FR-14 |
 | Operations | reboot/recovery, stop/pause, durable state, backup/restore, corrections/forget/delete | FR-15–FR-18 |
 
-ทีมเทค ดีไซน์ และมาร์เก็ตติ้งเป็น role presets ที่เสนอ ไม่ใช่ข้อกำหนดให้เรียกสามทีมพร้อมกันทุกข้อความ ตัวเลือก role/model defaults ต้องตั้งค่าได้โดยเจ้าของ
+ทีมเทค ดีไซน์ และมาร์เก็ตติ้งเป็น role presets ที่เสนอ ไม่ใช่ข้อกำหนดให้เรียกสามทีมพร้อมกันทุกข้อความ ตัวเลือก role/model defaults ต้องตั้งค่าได้โดยเจ้าของ ตาม [S09](../specs/S09-main-bot-and-chat-first-ui.md) ทางหลักในการได้ role คือยอมรับ role proposal ที่ Jit เสนอในบทสนทนา ส่วน presets เป็นทางเลือกเสริม
 
 ## Explicit exclusions
 

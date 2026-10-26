@@ -123,7 +123,7 @@ MVP ปิด provider-hosted web search/lookup และไม่มี arbitra
 
 ## Channels และ delivery
 
-เสนอ HTTP command/query API และ resumable event stream สำหรับ Web โดย transport/library ยังเลือกได้ API mutations มี request ID และ expected revision ส่วน live stream ใช้แสดง progress จาก durable state ไม่ใช้แทน persistence
+เสนอ HTTP command/query API และ resumable event stream สำหรับ Web; S09 เลือก Server-Sent Events ที่ replay จาก cursor ตาม [ADR 0028](../adr/0028-progressive-enhancement-browser-assets.md) API mutations มี request ID และ expected revision ส่วน live stream ใช้แสดง progress จาก durable state ไม่ใช้แทน persistence
 
 เสนอ Telegram bot เดียวแบบ private companion channel ใน MVP; เป็น implementation preference ไม่ใช่ข้อจำกัดว่าต้องมี bot account ต่อ specialist ผูก user/chat IDs ผ่าน setup บน Web แล้วทุก command resolve project/topic ชัดเจน
 

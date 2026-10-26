@@ -16,4 +16,4 @@ FR-22 asks for chat without choosing a project, and for promoting a conversation
 
 ## Alternatives and consequences
 
-Physically moving the topic would break project identity, memory lineage and deletion-ledger assumptions. A project-less chat would put the model in charge of scope. Owner-visible difference: the history is linked and quoted rather than relocated.
+The owner confirmed this linked-continuation behavior on 2026-10-26 (S09-D09). Physically moving the topic would break project identity, memory lineage and deletion-ledger assumptions. A project-less chat would put the model in charge of scope. Owner-visible difference: the history is linked and quoted rather than relocated.
