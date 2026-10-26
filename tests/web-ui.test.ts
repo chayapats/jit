@@ -114,6 +114,9 @@ test("Accept-Language negotiation picks a supported language by weight and falls
   // Malformed or out-of-range qvalues disqualify the range instead of counting as q=1.
   for (const header of ["en;q=1.5", "en;q=1.001", "en;q=bogus", "en;q=", "en;q=0.5;q=1", "en;q =0", "en;q", "en;foo=bar", "en; q=1; x=y"]) expect(negotiateLocale(header)).toBe("th");
   expect(negotiateLocale("en; q=0.8")).toBe("en");
+  for (const header of ["en-", "en--US", "en-@", "en-123456789", "e n", "*"]) expect(negotiateLocale(header)).toBe("th");
+  expect(negotiateLocale("en-GB, th;q=0.5")).toBe("en");
+  expect(negotiateLocale("TH-th")).toBe("th");
   expect(negotiateLocale("en;q=1.000")).toBe("en");
   expect(negotiateLocale("en;q=bogus, th;q=0.1")).toBe("th");
 });

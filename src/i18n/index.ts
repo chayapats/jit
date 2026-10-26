@@ -69,7 +69,10 @@ export function negotiateLocale(header: string | null): Locale {
     const qualifiers = params.map(p => p.trim());
     if (qualifiers.length > 1 || (qualifiers.length === 1 && !/^q=(?:0(?:\.\d{0,3})?|1(?:\.0{0,3})?)$/.test(qualifiers[0]!))) continue;
     const value = qualifiers.length ? Number(qualifiers[0]!.slice(2)) : 1;
-    const primary = range.trim().split("-")[0];
+    // RFC 4647 basic language range; a malformed range never matches a supported language.
+    const tag = range.trim();
+    if (!/^(?:\*|[a-z]{1,8}(?:-[a-z0-9]{1,8})*)$/.test(tag)) continue;
+    const primary = tag.split("-")[0];
     const locale = locales.find(l => l === primary);
     if (locale && value > weight) { best = locale; weight = value; }
   }
