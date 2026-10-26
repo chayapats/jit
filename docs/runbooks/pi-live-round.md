@@ -76,6 +76,21 @@ bun run ops:drill report --id <drill-uuid> --checklist .local/release-checklist.
 6. Produce the release gate checklist with evidence references, known limits, residual privacy/external-copy risks, recovery/rollback instructions and the owner handoff. Missing latest deletion ledger, unready routes or failed trust invariants block pilot readiness.
 7. Collect owner feedback without imposing any fixed project-count or value benchmark. The product-value verdict, pilot repository and next priorities remain the owner's choice.
 
+## Field notes from the first round (2026-10, `pi-lab-1`)
+
+Practical details the steps above depend on. Evidence lives in #7, #22, #25 and #36.
+
+- **Shell as the service identity.** The identity's login shell is `nologin`. Run commands with `sudo -u <identity> -H bash -c '…'`. Its home directory is not traversable by the owner, so root-side steps use `sudo bash -c 'cd <checkout> && …'`.
+- **Secret Service environment.** Every command that touches credentials as the identity needs `XDG_RUNTIME_DIR=/run/user/<uid>` and `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/<uid>/bus`. The host prerequisites are linger, a Secret Service user service, and an unlock at session start (#7).
+- **Login (Round B).** Login is interactive Schway, `/login grok --device` and `/login chatgpt --device`, run as the identity. With a `nologin` shell, start it inside `tmux` with `SHELL=/bin/bash`, otherwise the tmux server exits immediately. The owner approves the displayed device codes in a browser. Close the session without sending a task, then list models with `schway models list --provider xai --xai-auth grok` and `--provider openai --openai-auth chatgpt`. Both are catalog reads with no inference.
+- **Probe configs.** Write one config per route, `{"installationLabel", "routes": [{route, model, configured}]}`, with exactly one `configured: true`. Preflight is local and uses no quota.
+- **Cancellation (Round B step 6).** Start `probe live` in the background, wait for its new record in `.local/host-probe/`, then `probe cancel --id <id>`. For the reboot exercise in Round C, kill a second probe with SIGKILL instead and leave it `started`, then `probe reconcile` it after boot. The send ledger on the record shows whether the provider was reached; an unconfirmed send is honest evidence.
+- **Reading exports.** `credential-read` stays `configured-unverified` even after a successful request, because a local read is never live proof. Per-admission send counts live on the `renewal` row. A token send there before the inference send is an observed live renewal.
+- **Package on the Pi (Round D).** `install-deps` must keep Bun's cache outside the artifact (#79). `runPort: "schway"` needs the unit to reach the identity's session bus (#81); `service plan` reports this as the `session-bus` check. `sudo … service status` judges ownership against the identity (#83).
+- **Owner setup.** Generate the password into an owner-private 0600 file with no trailing newline, and feed it with `setup --password-stdin < file`. Never pass it as an argument. Repeated `POST /login` attempts are rate-limited, so reuse one session cookie for scripted owner checks.
+- **Real-state trust drill (Round D step 4).** Take a backup → create and delete a disposable source (preview, then confirm) → restore the *older* backup: prepare, `migrate`, `apply_ledger`, `validate`, `activate`. The deleted text must stay absent from the database and WAL bytes after activation. Activation revokes owner sessions, so sign in again.
+- **Kernel updates.** A reboot may apply a pending kernel. Record the kernel before and after the reboot, and tie the evidence to the new one.
+
 ## After the round
 
 - File per-round evidence IDs back to #7, #22, #25 and #36 with sanitized summaries only.
