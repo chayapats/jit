@@ -28,6 +28,34 @@ _Avoid_: Model, provider, separate bot account.
 The participant responsible for selecting relevant specialists and synthesizing conclusions for the owner.
 _Avoid_: Final decision maker, replacement agent loop.
 
+**Jit (main bot)**:
+The coordinator as the owner meets it in conversation: it replies to every owner message with the owner-configured persona and speaks for the team with one voice.
+_Avoid_: Separate agent loop, authority holder, a specialist.
+
+**Persona**:
+Owner-authored configuration of how Jit addresses the owner, which language it uses and its personality, treated as trusted instruction and changed only by owner commands.
+_Avoid_: Model memory, self-description written by the model.
+
+**Role proposal**:
+A revisioned specialist draft suggested by Jit that creates or changes a role only when the owner accepts that exact revision.
+_Avoid_: Created role, model-granted configuration.
+
+**Dispatch allowance**:
+An owner-set, finite number of existing specialists Jit may call per owner message without asking, admitted as standing owner authorization for read-only analysis only.
+_Avoid_: Model permission, unlimited auto-dispatch.
+
+**General space**:
+The single system project where conversations land when the owner has not chosen a project.
+_Avoid_: Project-less chat, inbox outside project rules.
+
+**Topic promotion**:
+An owner-accepted continuation of a General space topic in a new project that links the origin at an exact revision without moving its project identity.
+_Avoid_: Moving a topic, relabeling history.
+
+**Setup (ตั้งจิต)**:
+The first-run flow that connects a model route and records the persona before the owner starts chatting.
+_Avoid_: Project creation wizard, team setup.
+
 **Task**:
 A proposed or owner-accepted obligation within a project, with an explicit status and completion rule.
 _Avoid_: Agent run, suggestion treated as a commitment.
