@@ -14,3 +14,5 @@ The alternatives were a client framework plus a separate API service, and JSON f
 Deterministic evidence in `tests/foundation.test.ts` covers duplicate commands, independent concurrent-process writes, SIGKILL between project/receipt writes, actual SQLite deferred-constraint failure at COMMIT, fresh reopen, pre-migration snapshots, future-schema rejection, origin/CSRF/identity rejection and Thai/English project labels. See [the public application contracts](../contracts/app-foundation-v1.md).
 
 This accepts the HTTP/UI choice and the first local SQLite slice. [ADR 0006](0006-local-transactional-state.md) stays **proposed**: Pi power-loss/restore evidence and memory/search/retention decisions are later milestones. Development limits are finite initial settings, not measured pilot capacity. No provider, host activation, live quota or full-app support is certified by these tests.
+
+The "no browser JavaScript" clause is amended by [ADR 0028](0028-progressive-enhancement-browser-assets.md): server-rendered forms remain the baseline and local scripts only enhance them.

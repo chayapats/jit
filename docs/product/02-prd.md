@@ -214,6 +214,66 @@ MVP ไม่มี model-driven repository mutation หรือ shell executio
 - export project data และสร้าง/restore backup ด้วย version information ได้; secrets ไม่รวมใน export ทั่วไป
 - กำหนด app records สำหรับ audit แยกจาก transient Schway runtime events
 
+### FR-19 — Jit conversational replies
+
+ที่มา S09-D02, S09-D08; MUST — [S09](../specs/S09-main-bot-and-chat-first-ui.md)
+
+- ทุกข้อความ owner ใน topic ได้คำตอบจาก Jit (coordinator ในบทสนทนา) หนึ่งคำตอบผ่าน bounded interactive job ไม่ใช่แค่บันทึกข้อความ
+- คำตอบใช้ Jit persona ที่ owner ตั้ง; persona เป็น trusted owner configuration ไม่ใช่สิ่งที่ model จำหรือแก้เอง
+- streaming เป็น provisional จน outcome และ app commit ยืนยัน; refresh/reconnect อ่าน persisted state ไม่ launch คำตอบซ้ำ
+- เมื่อมี specialist ร่วม Jit ตอบเป็นเสียงเดียวที่อ้าง specialist results; ผลดิบของแต่ละ role เปิดดูได้และ coverage gap แสดงตามจริง
+- route ใช้ไม่ได้/quota/auth ล้มเหลวแสดง blocked พร้อม next action ไม่เปลี่ยน route หรือ billing
+
+### FR-20 — Role proposals
+
+ที่มา S09-D03; MUST
+
+- Jit เสนอ specialist ใหม่เป็น role proposal revision (ชื่อ, responsibility, route ที่เลือกจาก configured routes) ได้จากบทสนทนา
+- role ถูกสร้างหรือแก้เฉพาะเมื่อ owner ยอมรับ proposal revision นั้น ผ่าน owner command เดียวกับ role configuration
+- owner แก้ไขก่อนยอมรับ หรือปฏิเสธได้; proposal ที่ stale หรือถูกแทนแล้วยอมรับไม่ได้
+- proposal ไม่ให้ tools, routes, budgets หรือ authority นอกที่ owner configuration อนุญาต; ข้อความใน source/memory ที่อ้างว่าเป็นคำสั่ง owner สร้าง role ไม่ได้
+
+### FR-21 — Owner dispatch allowance
+
+ที่มา S09-D04; MUST
+
+- owner ตั้ง allowance ต่อโครงการว่า Jit เรียก enabled specialists เองได้กี่ role ต่อข้อความ owner (ค่าเริ่มต้น 3, finite, ปิดได้)
+- dispatch ภายใน allowance ใช้ admission, budgets และ fencing เดิม; เกิน allowance ต้องผ่าน confirmation card ของ owner
+- owner หยุดทั้งหมดหรือข้ามราย role ได้ระหว่างทำงาน; การกระทำที่มีผลถาวร (role, task, decision) ยังต้องยืนยันทุกครั้ง
+
+### FR-22 — General space and topic promotion
+
+ที่มา S09-D09; MUST
+
+- installation มีพื้นที่ "ทั่วไป" ที่ระบบสร้างเป็นโครงการพิเศษ แชทใหม่ที่ไม่ได้เลือกโครงการไปอยู่ที่นั่น
+- Jit เสนอการยกหัวข้อเป็นโครงการใหม่ได้; โครงการถูกสร้างเฉพาะเมื่อ owner ยอมรับ
+- การยกระดับรักษา project identity และ provenance ของ sources/memory เดิม; ไม่ย้าย obligations ข้ามโครงการเงียบ ๆ
+
+### FR-23 — First-run setup (ตั้งจิต)
+
+ที่มา S09-D07; MUST
+
+- installation ที่ยังไม่ตั้งค่าเริ่มที่ setup ไม่ใช่หน้า workspace: ตื่น → เชื่อมจิต (route และการตรวจว่าเรียกได้) → รู้จักกัน (การเรียกขาน, ภาษา) → นิสัยของจิต (ข้ามได้) → ตั้งจิต
+- ทุกขั้น idempotent และกลับมาทำต่อได้หลัง refresh/restart; ผลเป็น owner configuration ที่แก้ได้ในตั้งค่า
+- route ที่ยังไม่ผ่านการตรวจแสดง configured/unverified/blocked ตามหลักฐาน; setup ไม่สร้าง specialists หรือโครงการให้เอง
+
+### FR-24 — Chat-first Web experience
+
+ที่มา S09-D01, S09-D05, S09-D06, S09-D10, S09-D11, S09-D13; MUST
+
+- หน้าแรกเป็นช่องพิมพ์หลัก; sidebar แสดงโครงการ → หัวข้อ; memory/tasks/jobs/PR อยู่ใน panel ของหัวข้อและ command palette; งาน ops อยู่ในตั้งค่า
+- dark และ light theme ใช้ design tokens ชุดเดียว; ทำตาม `prefers-color-scheme` และ owner เลือกเองได้
+- ทุก form และ command ใช้งานได้เมื่อไม่มี browser script; script เป็น local static asset เท่านั้น
+- ติดตั้งเป็น PWA ได้; service worker cache เฉพาะ static assets ไม่ cache project data หรือ authenticated responses
+
+### FR-25 — Bilingual interface
+
+ที่มา S09-D12; MUST
+
+- ป้าย UI ทั้งหมดมาจาก dictionary ไทยและอังกฤษ; ไทยเป็นค่าเริ่มต้น
+- ภาษาที่เลือกใน setup ใช้กับ UI และภาษาที่ Jit พูด และแยกตั้งค่าได้
+- ไม่มีป้ายที่ขาดคำแปลใน release; test ตรวจ key ครบทั้งสองภาษา
+
 ## Non-functional requirements
 
 | ID | ข้อกำหนดและการตรวจรับ |
@@ -228,7 +288,7 @@ MVP ไม่มี model-driven repository mutation หรือ shell executio
 | NFR-08 | backup/restore ทดสอบกับ state, Schway sessions, deletion ledger และ schema versions; งานจาก backup ไม่รันก่อน reconciliation |
 | NFR-09 | ไม่มี outbound telemetry โดยปริยาย; model/Telegram/GitHub เป็น external recipients ที่ระบุ; retention และ data volume ควบคุมได้ |
 | NFR-10 | deterministic tests ใช้ scripted model, protocol fixtures และ fake clock ไม่ใช้ paid inference; live validation opt-in แยกจาก release tests |
-| NFR-11 | ไทย/อังกฤษและ Unicode content ถูกเก็บ ค้น และแสดงไม่เสีย; UI สถานะมีข้อความไม่พึ่งสีอย่างเดียว; ภาษาป้าย UI ยังไม่ล็อก |
+| NFR-11 | ไทย/อังกฤษและ Unicode content ถูกเก็บ ค้น และแสดงไม่เสีย; UI สถานะมีข้อความไม่พึ่งสีอย่างเดียว; ป้าย UI รองรับไทยและอังกฤษตาม FR-25 (S09) |
 | NFR-12 | migrations/version compatibility มี backup และ recovery path; Jit ไม่แก้หรือ rewrite Schway session format เอง |
 
 ## Quality gates และสิ่งที่ยังไม่กำหนด
