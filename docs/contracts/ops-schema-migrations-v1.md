@@ -15,10 +15,11 @@ reconciliation), `delivery.outbox/v1` (unknown outcomes stay unknown),
 ## Versions
 
 - Target: exactly the schema this build migrates to
-  (`currentSupportedSchema` = `schemaVersion`, 24 at this revision; 23 adds
+  (`currentSupportedSchema` = `schemaVersion`, 25 at this revision; 23 adds
   the installation lifecycle ledger of app.deletion_ledger/v1, backfilled from
   existing tombstones and suppressions; 24 adds the empty `owner_preferences`
-  table of ui.preferences/v1).
+  table of ui.preferences/v1; 25 adds the empty `persona_revisions` and
+  `jit_replies` tables of app.persona/v1 and app.jit_reply/v1).
 - Sources: `minUpgradeSourceSchema` (17) through the target. A recovery point
   needs the managed backup registry (schema 16) and the deletion ledger
   (schema 17); older installations are `manual_recovery_required`.
@@ -29,8 +30,8 @@ reconciliation), `delivery.outbox/v1` (unknown outcomes stay unknown),
   `SNAPSHOT_NATIVE_FORMAT_VERSION` (4) exactly. Anything else is
   `engine_unavailable` or `unsupported_engine`. The scripted default has no
   native port, so it cannot upgrade (fail closed, like backups).
-- Tested from/to: fixture installations at 17, 18, 19, 20, 21, 22 and 23 → 24, and
-  24 → 24 (no schema change; recovery point, validation and reconciliation
+- Tested from/to: fixture installations at 17, 18, 19, 20, 21, 22, 23 and 24 → 25, and
+  25 → 25 (no schema change; recovery point, validation and reconciliation
   still run). No production historical release exists yet; fixtures are the
   evidence.
 

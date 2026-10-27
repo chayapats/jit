@@ -3,6 +3,7 @@ import { invalidatePendingJob, jobData } from "../jobs/queue";
 import { requireId, requireText } from "../sources";
 import type { AppTransaction } from "../store";
 import type { Discussion } from "../team/types";
+import { replyLineage } from "../team/reply-lineage";
 import { fenceStaleContexts, lexicalScore, lexicalTerms } from "./context";
 import { fenceUnavailableExtractions } from "./extract";
 import { lookupActiveClaim, requireClaimReference, suppressedClaim, suppressedSource } from "./read";
@@ -121,10 +122,13 @@ export function suppressionImpact(tx: AppTransaction, projectId: string, referen
     siblings: siblings.map(entry => ({ projectId: entry.projectId,
       reference: { claimId: entry.claim.claimId, revision: entry.claim.revision, generation: entry.claim.generation } })),
     contexts: contexts.map(row => ({ id: row.id, generation: row.generation ?? 1, projectId: row.projectId, ownerKind: row.ownerKind, ownerId: row.ownerId })),
-    pendingJobs: pendingReferencing(tx, ids),
+    pendingJobs: dedupeJobs([...pendingReferencing(tx, ids),
+      ...replyLineage(tx, [...withdrawn.values()].map(entry => entry.claim.source)).pendingJobs]),
     overlaps: overlapTitles(tx, projectId, claim.claim.text),
     note: forgetNote };
 }
+
+const dedupeJobs = (jobs: { id: string; projectId: string }[]) => [...new Map(jobs.map(job => [job.id, job])).values()];
 
 /** Pending work that admitted a soon-withdrawn claim or a soon-suppressed source, across projects. */
 function pendingReferencing(tx: AppTransaction, ids: Set<string>): { id: string; projectId: string }[] {
@@ -228,7 +232,14 @@ export function prepareSuppression(tx: AppTransaction, command: ForgetMemoryComm
     seenSources.add(key);
     sources.push({ projectId: entry.projectId, source: { ...entry.claim.source } });
   }
-  const fenced = pendingReferencing(tx, ids);
+  // app.jit_reply/v1: Jit replies that were given a forgotten source, directly or through an earlier reply, may
+  // copy it. Their outputs join the suppressed lineage and replies still pending lose their authority.
+  const lineage = replyLineage(tx, sources.map(entry => entry.source));
+  for (const output of lineage.outputs) {
+    const key = `${output.source.sourceId}:${output.source.revision}:${output.source.generation}`;
+    if (!seenSources.has(key)) { seenSources.add(key); sources.push(output); }
+  }
+  const fenced = dedupeJobs([...pendingReferencing(tx, ids), ...lineage.pendingJobs]);
   const fencedJobs = new Set(fenced.map(job => job.id));
   for (const job of fenced) invalidatePendingJob(tx, job.projectId, job.id, "source_retired", now);
   fenceSuppressedDiscussions(tx, ids, now);

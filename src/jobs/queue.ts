@@ -197,6 +197,9 @@ export class JobQueue {
   /** Lists inert registered choices and limits; discovery does not start work or verify a real provider. */
   choices() { return [...this.#definitions.values()].map(({ definition: d }) => ({ id: d.id, title: d.title, revision: d.revision, policyRevision: this.policy.revision, route: structuredClone(d.route) })); }
 
+  /** Whether this process registered a work type; automatic admissions skip unregistered types instead of failing. */
+  registered(type: string): boolean { return this.#definitions.has(type); }
+
   /** Requires the still-owned scheduler before a new command can be acknowledged. */
   assertOwner(tx: AppTransaction): void {
     if (!this.available(tx)) throw new AppError("scheduler_unavailable", 503);

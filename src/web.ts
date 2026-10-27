@@ -12,14 +12,28 @@ import type { DecisionCommand, TeamCommand, RoleRoute } from "./team/types";
 import type { TaskCommand } from "./tasks";
 import { negotiateLocale, tr, trMaybe, type Locale } from "./i18n";
 import { lookupAsset } from "./web-assets";
-import { renderWith, settingsPage, type ThemePreference } from "./web-layout";
+import { renderWith, replyLabels, replyTone, settingsPage, type ThemePreference } from "./web-layout";
 import type { SetPreferencesCommand } from "./preferences";
+import type { SetPersonaCommand } from "./persona";
+import type { JitReplyView, StopReplyCommand } from "./team/jit-reply";
 
 /** ADR 0028 Content-Security-Policy: every page, asset and API response allows only this origin, and no inline script or eval. */
 export const contentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
 
+/**
+ * Topic event stream pacing (ADR 0028). The stream polls persisted reply state; it never starts work.
+ * It closes after `polls` ticks so the browser reconnects with `Last-Event-ID` and the session is rechecked.
+ */
+export interface ReplyStreamOptions {
+  intervalMs: number; polls: number;
+  timers?: { set(callback: () => void, ms: number): unknown; clear(handle: unknown): void };
+}
+const defaultStream: ReplyStreamOptions = { intervalMs: 1000, polls: 120 };
+
 /** Creates a server-rendered owner workspace; all mutations use the shared application boundary. */
-export function createWebHandler(app: Application): (request: Request) => Promise<Response> {
+export function createWebHandler(app: Application, options: { stream?: ReplyStreamOptions } = {}): (request: Request) => Promise<Response> {
+  const streamOptions = options.stream ?? defaultStream;
+  const streamTimers = streamOptions.timers ?? { set: (fn: () => void, ms: number) => setTimeout(fn, ms), clear: (handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>) };
   const { config } = app;
   const expectedHost = new URL(config.origin).host;
   const secure = config.origin.startsWith("https:");
@@ -157,6 +171,65 @@ export function createWebHandler(app: Application): (request: Request) => Promis
         if (!/^\d{1,16}$/.test(raw)) throw new AppError("invalid_cursor");
         return Number(raw);
       };
+      const streamRoute = /^\/projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})\/events$/.exec(url.pathname);
+      const replyStopRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})\/replies\/([a-f0-9-]{36})\/stop$/.exec(url.pathname);
+      /** One app.jit_reply/v1 event: persisted state plus localised labels, so the script holds no strings. */
+      const replyEvent = (view: JitReplyView) => {
+        const labels = renderWith(ui, () => replyLabels(view));
+        const found = view.state === "answered" && view.source ? app.source(auth.actor, view.projectId, view.source) : null;
+        return { id: view.id, messageId: view.messageId, state: view.state, reason: view.reason, revision: view.revision, progress: view.progress,
+          replyMessageId: view.replyMessageId, text: found?.state === "available" ? found.text : null, tone: replyTone[view.state], label: labels.state, next: labels.next };
+      };
+      if (request.method === "GET" && streamRoute) {
+        // ADR 0028: one authenticated SSE stream per open topic, fed only from persisted reply state. Every
+        // reply-affecting change (record, progress, job transition) moves the reply cursor; each event carries the
+        // cursor of its own change, so a reconnect with Last-Event-ID resumes right after the last delivered one.
+        const projectId = streamRoute[1]!, topicId = streamRoute[2]!;
+        const raw = request.headers.get("last-event-id") ?? url.searchParams.get("cursor") ?? "0";
+        if (!/^\d{1,16}$/.test(raw)) throw new AppError("invalid_cursor");
+        let cursor = Number(raw);
+        app.replyStream(auth.actor, projectId, topicId, cursor);
+        const encoder = new TextEncoder(), seen = new Map<string, string>();
+        let handle: unknown = null, closed = false, ticks = 0, quiet = 0;
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            const finish = () => { if (closed) return; closed = true; try { controller.close(); } catch { /* Already closed by the client. */ } };
+            const tick = () => {
+              if (closed) return;
+              let chunk = ticks === 0 ? `retry: ${Math.max(1000, streamOptions.intervalMs * 2)}\n\n` : "";
+              try {
+                // A page holds at most pageSize changes; the next tick continues from the advanced cursor.
+                for (const view of app.replyStream(auth.actor, projectId, topicId, cursor)) {
+                  cursor = Math.max(cursor, view.cursor);
+                  const data = JSON.stringify(replyEvent(view));
+                  if (seen.get(view.id) === data) continue;
+                  seen.set(view.id, data);
+                  chunk += `id: ${cursor}\nevent: reply\ndata: ${data}\n\n`;
+                }
+              } catch { finish(); return; }
+              quiet = chunk ? 0 : quiet + 1;
+              // A comment keeps idle proxies and the server's idle timeout from closing a quiet stream.
+              if (quiet >= 5) { chunk = ": keep-alive\n\n"; quiet = 0; }
+              if (chunk) controller.enqueue(encoder.encode(chunk));
+              ticks += 1;
+              if (ticks >= streamOptions.polls) finish();
+              else handle = streamTimers.set(tick, streamOptions.intervalMs);
+            };
+            tick();
+          },
+          cancel() { closed = true; if (handle !== null) streamTimers.clear(handle); },
+        });
+        return new Response(body, { status: 200, headers: { ...headers, "Content-Type": "text/event-stream; charset=utf-8", "X-Accel-Buffering": "no" } });
+      }
+      if (request.method === "POST" && replyStopRoute) {
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision"].includes(key))) throw new AppError("invalid_body");
+        const revision = typeof body.expectedRevision === "string" && /^\d{1,15}$/.test(body.expectedRevision) ? Number(body.expectedRevision) : body.expectedRevision;
+        const command = { kind: "jit.reply.stop", requestId: body.requestId, projectId: replyStopRoute[2], expectedRevision: revision,
+          payload: { replyId: replyStopRoute[4] } } as StopReplyCommand;
+        const receipt = app.execute(auth.actor, command);
+        return api ? json(receipt) : respond(null, 303, { Location: `/projects/${receipt.reply.projectId}/topics/${receipt.reply.topicId}?after=${Math.max(0, receipt.reply.messageSequence - 1)}#reply-${receipt.reply.id}` });
+      }
       if (request.method === "GET" && claimRoute) {
         const revision = Number(url.searchParams.get("revision")), generation = Number(url.searchParams.get("generation"));
         const state = app.memoryClaim(auth.actor, claimRoute[1]!, { claimId: claimRoute[2]!, revision, generation });
@@ -367,7 +440,20 @@ export function createWebHandler(app: Application): (request: Request) => Promis
         if (!api && result.quarantine.activation.sessionsRevoked) return respond(null, 303, { Location: "/login" });
         return api ? json(result) : respond(null, 303, { Location: `/restores/${result.quarantine.id}` });
       }
-      if (url.pathname === "/settings" && request.method === "GET") return page(() => settingsPage(app.preferences(auth.actor), app.workspace(auth.actor), auth.csrf));
+      if (url.pathname === "/settings" && request.method === "GET") return page(() => settingsPage(app.preferences(auth.actor), app.workspace(auth.actor), auth.csrf, app.persona(auth.actor)));
+      if (["/settings/persona", "/api/settings/persona"].includes(url.pathname)) {
+        if (request.method === "GET") return api ? json(app.persona(auth.actor)) : respond(null, 303, { Location: "/settings#persona" });
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        const fields = ["addressAs", "language", "selfReference", "particle", "personality", "aboutMe"];
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", ...fields].includes(key))) throw new AppError("invalid_body");
+        const revision = typeof body.expectedRevision === "string" && /^\d{1,15}$/.test(body.expectedRevision) ? Number(body.expectedRevision) : body.expectedRevision;
+        // Browsers send CRLF line breaks in a textarea; the persona stores LF.
+        const text = (value: unknown) => typeof value === "string" ? value.replace(/\r\n?/g, "\n") : value;
+        const command = { kind: "persona.set", requestId: body.requestId, projectId: null, expectedRevision: revision,
+          payload: Object.fromEntries(fields.map(key => [key, text(body[key])])) } as unknown as SetPersonaCommand;
+        const receipt = app.execute(auth.actor, command);
+        return api ? json(receipt) : respond(null, 303, { Location: "/settings#persona" });
+      }
       if (["/settings/preferences", "/api/settings/preferences"].includes(url.pathname)) {
         if (request.method === "GET") return api ? json(app.preferences(auth.actor)) : respond(null, 303, { Location: "/settings#appearance" });
         const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
@@ -589,11 +675,12 @@ export function createWebHandler(app: Application): (request: Request) => Promis
       }
       if (request.method === "GET" && topicRoute) {
         const state = app.conversation(auth.actor, topicRoute[2]!, topicRoute[3]!, after());
-        if (api) return json(state);
+        const replies = app.replies(auth.actor, state.project.id, state.topic.id, state.items.map(item => item.id));
+        if (api) return json({ ...state, replies: [...replies.values()] });
         const team = app.team(auth.actor, state.project.id);
         const discussions = app.discussions(auth.actor, state.project.id, state.topic.id);
         return page(() => conversationPage(state, app.workspace(auth.actor), app.topics(auth.actor, state.project.id).items, auth.csrf, after(), config.messageBytes, {
-          team, discussions, limits: config.jobs.maximum, dispatchAvailable: team.previewAvailable,
+          team, discussions, limits: config.jobs.maximum, dispatchAvailable: team.previewAvailable, replies,
           decision: app.decision(auth.actor, state.project.id, state.topic.id),
         }));
       }

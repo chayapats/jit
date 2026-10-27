@@ -44,8 +44,10 @@ export function readSpecialist(tx: AppTransaction, projectId: string, runId: str
 
 /** Bounded topic-scoped discussion list from retained team_runs JSON, newest first. */
 export function listDiscussions(tx: AppTransaction, projectId: string, topicId: string, limit: number): Discussion[] {
+  // Filter kind and topic before the limit: other run kinds (one Jit reply per chat message) must not crowd discussions out.
   const rows = tx.all<{ record_json: string }>(
-    "SELECT record_json FROM team_runs WHERE project_id = ? ORDER BY sequence DESC LIMIT ?", projectId, Math.min(limit * 4, 200));
+    `SELECT record_json FROM team_runs WHERE project_id = ? AND json_extract(record_json, '$.kind') = 'discussion'
+     AND json_extract(record_json, '$.topicId') = ? ORDER BY sequence DESC LIMIT ?`, projectId, topicId, Math.min(limit * 4, 200));
   const items: Discussion[] = [];
   for (const row of rows) {
     const record = JSON.parse(row.record_json) as { kind?: string; topicId?: string };

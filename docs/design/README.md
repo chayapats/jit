@@ -97,3 +97,21 @@ These show the fixture installation used for review. Columns are dark Thai, dark
 The next image shows the mobile topic page, the drawer opened with `#sidebar` (no script needed) and the settings page.
 
 ![UX01 mobile and settings](assets/ux01-mobile-settings.png)
+
+## BOT01 screenshots
+
+These show a scripted fixture installation ([app.jit_reply/v1](../contracts/jit-reply-v1.md)). The first is dark Thai. A fixture reply is committed, and a second reply is still thinking: the mark's dot breathes, the provisional text is marked as not saved, and stop and refresh links are shown.
+
+![BOT01 thinking, dark Thai](assets/bot01-thinking-dark-th.png)
+
+The same topic in light English:
+
+![BOT01 thinking, light English](assets/bot01-thinking-light-en.png)
+
+A reply blocked on quota names the next action and keeps the same route:
+
+![BOT01 quota blocked, dark Thai](assets/bot01-blocked-dark-th.png)
+
+The persona form in settings:
+
+![BOT01 persona settings, light English](assets/bot01-persona-light-en.png)

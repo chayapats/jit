@@ -299,7 +299,7 @@ test("theme and language follow the browser until the owner saves a preference, 
 test("ui.preferences.set is an owner command: revisioned, idempotent, validated and persisted in schema 24", async () => {
   const f = await fixture();
   const { actor } = f.auth;
-  expect(schemaVersion).toBe(24);
+  expect(schemaVersion).toBeGreaterThanOrEqual(24);
   expect(backupImageTables.owner_preferences).toBe("include");
   const command = { kind: "ui.preferences.set" as const, requestId: "prefs-request-01", projectId: null, expectedRevision: 0, payload: { theme: "light" as const, language: "en" as const } };
   const first = f.app.execute(actor, command);
@@ -480,7 +480,7 @@ async function runAppScript(dom: ReturnType<typeof fakeDom>): Promise<() => void
   return restore;
 }
 
-test("app.js contract: drawer follows the no-script #sidebar target both ways; Escape, close controls and ⌘Enter behave", async () => {
+test("app.js contract: drawer follows the no-script #sidebar target both ways; Escape, close controls and Enter behave", async () => {
   const dom = fakeDom("#sidebar");
   const restore = await runAppScript(dom);
   try {
@@ -508,12 +508,16 @@ test("app.js contract: drawer follows the no-script #sidebar target both ways; E
   expect(dom.app.dataset.drawer).toBe("closed");
   dom.fire("menu", "click"); dom.fire("close", "click");
   expect(dom.app.dataset.drawer).toBe("closed");
-  // ⌘/Ctrl+Enter submits through the form's own post; plain Enter does not.
-  dom.fire("textarea", "keydown", { key: "Enter" });
+  // BOT01: Enter (and ⌘/Ctrl+Enter) submits through the form's own post; Shift+Enter and an IME composition do not.
+  expect(dom.fire("textarea", "keydown", { key: "Enter", shiftKey: true }).prevented).toBeUndefined();
+  dom.fire("textarea", "keydown", { key: "Enter", isComposing: true });
+  dom.fire("textarea", "keydown", { key: "Enter", keyCode: 229 });
+  dom.fire("textarea", "keydown", { key: "a" });
   expect(dom.submitted).toEqual([]);
+  expect(dom.fire("textarea", "keydown", { key: "Enter" }).prevented).toBe(true);
   dom.fire("textarea", "keydown", { key: "Enter", metaKey: true });
-  dom.fire("textarea", "keydown", { key: "Enter", ctrlKey: true });
-  expect(dom.submitted).toEqual(["composer", "composer"]);
+  dom.fire("textarea", "keydown", { key: "Enter", ctrlKey: true, shiftKey: true });
+  expect(dom.submitted).toEqual(["composer", "composer", "composer"]);
   } finally { restore(); }
 
   const closedStart = fakeDom("");

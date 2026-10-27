@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { commitDecisionMemorySource, retireDecisionMemorySource } from "./memory/decision-sources";
 
 /** Current application schema revision. Service packaging pins and checks this value. */
-export const schemaVersion = 24;
+export const schemaVersion = 25;
 
 /**
  * Installation-scoped state that never round-trips through backup images and
@@ -72,7 +72,7 @@ export class TransactionStore {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
           if (current === schemaVersion) return;
-          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23].includes(current)) throw new Error("Unsupported migration source");
+          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24].includes(current)) throw new Error("Unsupported migration source");
           if (existing) {
             const snapshot = `${path}.pre-v${current}-${crypto.randomUUID()}.sqlite`;
             const fd = openSync(snapshot, "wx", 0o600);
@@ -720,6 +720,54 @@ export class TransactionStore {
               updated_at INTEGER NOT NULL
             );
             PRAGMA user_version = 24;
+          `);
+          if (current < 25) this.#db.exec(`
+            -- app.persona/v1 (BOT01): immutable owner-authored persona revisions; the highest is current.
+            CREATE TABLE IF NOT EXISTS persona_revisions (
+              revision INTEGER PRIMARY KEY CHECK (revision > 0),
+              record_json TEXT NOT NULL,
+              created_at INTEGER NOT NULL
+            );
+            -- app.jit_reply/v1 (BOT01): one identity-only row per owner message. An admitted reply names its
+            -- team_runs record (kind jit_reply); otherwise reason says why no job was admitted. cursor is the
+            -- installation-wide change order the topic event stream replays from.
+            CREATE TABLE IF NOT EXISTS jit_replies (
+              id TEXT PRIMARY KEY,
+              project_id TEXT NOT NULL REFERENCES projects(id),
+              topic_id TEXT NOT NULL REFERENCES topics(id),
+              message_id TEXT NOT NULL UNIQUE REFERENCES messages(id),
+              run_id TEXT UNIQUE REFERENCES team_runs(id),
+              -- The committed reply message, set when the reply commits; lets a page resolve replies by either message.
+              reply_message_id TEXT UNIQUE REFERENCES messages(id),
+              -- The committed reply's output source, the start of its lineage for later replies and forgets.
+              reply_source_id TEXT UNIQUE REFERENCES sources(id),
+              reason TEXT CHECK (reason IN ('no_route', 'scheduler_unavailable', 'queue_full', 'context_too_large')),
+              cursor INTEGER NOT NULL UNIQUE,
+              created_at INTEGER NOT NULL,
+              CHECK ((run_id IS NULL) = (reason IS NOT NULL))
+            );
+            CREATE INDEX IF NOT EXISTS jit_reply_topic ON jit_replies(project_id, topic_id, cursor);
+            -- Identity-only manifest citations of each reply (app.memory_suppression/v1 lineage); never text.
+            CREATE TABLE IF NOT EXISTS jit_reply_sources (
+              reply_id TEXT NOT NULL REFERENCES jit_replies(id),
+              project_id TEXT NOT NULL REFERENCES projects(id),
+              source_id TEXT NOT NULL,
+              revision INTEGER NOT NULL CHECK (revision > 0),
+              generation INTEGER NOT NULL CHECK (generation > 0),
+              PRIMARY KEY (reply_id, source_id, revision, generation)
+            );
+            CREATE INDEX IF NOT EXISTS jit_reply_source_lineage ON jit_reply_sources(source_id, revision, generation);
+            PRAGMA user_version = 25;
+          `);
+          // Every change to a reply's job (admission, reservation, wait, stop, deadline, commit) moves the reply to
+          // the end of the change order, so the event stream replays transitions the queue makes alone. Every real
+          // store has jobs (schema 3); partial legacy fixtures without it have no jobs to watch.
+          if (current < 25 && this.#tx.get("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'jobs'")) this.#db.exec(`
+            CREATE TRIGGER IF NOT EXISTS jit_reply_job_change AFTER UPDATE OF state, record_json ON jobs
+            WHEN json_extract(NEW.record_json, '$.type') = 'team.jit-reply' AND NEW.record_json IS NOT OLD.record_json BEGIN
+              UPDATE jit_replies SET cursor = (SELECT coalesce(max(cursor), 0) + 1 FROM jit_replies)
+              WHERE run_id = (SELECT id FROM team_runs WHERE job_id = NEW.id);
+            END;
           `);
         }).immediate();
         this.#db.exec("PRAGMA foreign_keys = ON;");

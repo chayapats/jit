@@ -53,3 +53,8 @@ The checkpoint file (`ledger: "jit.deletion.ledger/v1"`, `contract`, `revision` 
 ## Deterministic evidence
 
 `tests/memory-delete.test.ts` covers cross-project collateral, stale/duplicate/forged commands, digest-bound confirmation, crash/reopen at preview and confirm, budget exhaustion across restarts, per-scope partial failure in API/UI, direct-source sessions, whole-store relevance and unreadable-record blockers, lineage purge of paraphrased derived outputs and job-attempt redaction, whole-session acknowledgement and an end-to-end Schway worker session deleted by `queue.reconcile` alone and still deleted after reopen. `tests/ops-service.test.ts` proves `startFullApp` completes a pending deletion before returning. Fixtures use scripted models and in-process Schway hosts; real native erasure on a host still needs JBR01 evidence.
+
+### Jit reply lineage (app.jit_reply/v1, schema 25)
+
+A forget also binds every Jit reply output that was given a forgotten source, directly or through an earlier reply, into `memory_suppressed_sources`, and therefore into the lifecycle ledger. It also fences pending replies that cite any of them. The lineage is identity-only (`jit_reply_sources`, `jit_replies.reply_source_id`). Jit reply records live in `team_runs` (`kind: "jit_reply"`) and follow the same deletion scrubbing as other runs.
+
