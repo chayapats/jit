@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { commitDecisionMemorySource, retireDecisionMemorySource } from "./memory/decision-sources";
 
 /** Current application schema revision. Service packaging pins and checks this value. */
-export const schemaVersion = 23;
+export const schemaVersion = 24;
 
 /**
  * Installation-scoped state that never round-trips through backup images and
@@ -72,7 +72,7 @@ export class TransactionStore {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
           if (current === schemaVersion) return;
-          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22].includes(current)) throw new Error("Unsupported migration source");
+          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23].includes(current)) throw new Error("Unsupported migration source");
           if (existing) {
             const snapshot = `${path}.pre-v${current}-${crypto.randomUUID()}.sqlite`;
             const fd = openSync(snapshot, "wx", 0o600);
@@ -709,6 +709,18 @@ export class TransactionStore {
           `);
           // A populated rebuilt graph must retain every reference; empty legacy fixture stores have no task graph to check.
           if (this.#tx.get("SELECT 1 FROM tasks LIMIT 1") && this.#tx.all("PRAGMA foreign_key_check").length) throw new Error("Migration foreign key check failed");
+          if (current < 24) this.#db.exec(`
+            -- ui.preferences/v1 (UX01): the owner's interface theme and language. One row, owner
+            -- configuration without credentials; absent until the owner first saves a choice.
+            CREATE TABLE IF NOT EXISTS owner_preferences (
+              id INTEGER PRIMARY KEY CHECK (id = 1),
+              revision INTEGER NOT NULL CHECK (revision > 0),
+              theme TEXT NOT NULL CHECK (theme IN ('system', 'dark', 'light')),
+              language TEXT NOT NULL CHECK (language IN ('auto', 'th', 'en')),
+              updated_at INTEGER NOT NULL
+            );
+            PRAGMA user_version = 24;
+          `);
         }).immediate();
         this.#db.exec("PRAGMA foreign_keys = ON;");
       }
