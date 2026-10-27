@@ -12,4 +12,4 @@ Jit owns project groups, specialist coordination, memory, tasks, durable jobs an
 - When creating or splitting issues, follow docs/agents/workflow.md. A spec parent is not an implementation ticket; ready-for-agent is reserved for scoped tickets with acceptance criteria and verified blockers.
 - Before implementing a tracked issue, check ownership, existing branches/PRs and prerequisites. Use an issue-specific branch/worktree and the available atomic ownership protocol; a label or shared assignee is not ownership.
 - Keep domain definitions in root CONTEXT.md and architecture decisions in docs/adr. Use exported function/type TSDoc to state contracts when code exists.
-- Explain and report to the owner in Thai. Keep technical terms in English as they are (commit, schema, migration, CSP, PR, ...); do not force-translate them.
+- Write every reply to the owner in Thai: explanations, reports, progress updates, summaries and questions, even when the owner or the task text is in English. Keep technical terms in English as they are (commit, schema, migration, CSP, PR, ...); do not force-translate them, and quote identifiers, commands and error codes exactly.
