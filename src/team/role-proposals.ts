@@ -26,6 +26,8 @@ export interface RoleProposalRevision {
   /** What was dropped from the model's suggestion, as safe codes (`field:tools`, `route:unconfigured`). */
   dropped: string[]; droppedTotal: number;
   createdAt: number; decidedAt: number | null;
+  /** Set when a deletion redacted Jit's text while this revision was open; the card can no longer be accepted. */
+  closedBy?: "deletion";
 }
 /** Persisted with the reply record. Revisions are append-only; only the last one can be open. */
 export interface RoleProposal { id: string; revisions: RoleProposalRevision[]; roleId: string | null }
@@ -39,6 +41,8 @@ export interface RoleProposalView {
   roleId: string | null;
   /** Topic message sequence of the reply that carries the card, for page links. */
   replySequence: number | null;
+  /** True when a deletion closed the current revision (its Jit text was redacted). */
+  closedByDeletion: boolean;
   history: { revision: number; author: "jit" | "owner"; state: RoleProposalState }[];
   updatedAt: number;
 }
@@ -62,13 +66,19 @@ export const roleProposalLimit = 2;
 const droppedLimit = 8;
 /** Name bound in characters. Role names are single-line. */
 export const roleProposalNameChars = 80;
+/** The `role.save` name bound in UTF-8 bytes; a proposal that passes here can always be saved. */
+const roleNameBytes = 200;
 const proposalKeys = ["kind", "name", "responsibility", "route"];
 
-const sameRoute = (a: RoleRoute, b: RoleRoute) => a.provider === b.provider && a.model === b.model && a.authRoute === b.authRoute;
+/** Field-wise route equality; key order never matters. */
+export const sameRoute = (a: RoleRoute, b: RoleRoute) => a.provider === b.provider && a.model === b.model && a.authRoute === b.authRoute;
 const singleLine = (value: string) => !/[\u0000-\u001f\u007f\u2028\u2029]/.test(value);
 /** Responsibility is plain text: line breaks and tabs only. */
 const plainText = (value: string) => !/[\u0000-\u0008\u000b-\u001f\u007f]/.test(value);
-const validName = (value: string) => value.length > 0 && value.length <= roleProposalNameChars && value.isWellFormed() && singleLine(value);
+const validName = (value: string) => value.length > 0 && value.length <= roleProposalNameChars && value.isWellFormed() && singleLine(value) &&
+  Buffer.byteLength(value) <= roleNameBytes;
+/** One route object in canonical key order, so stored and rendered routes compare and serialize the same way. */
+const canonicalRoute = (route: RoleRoute): RoleRoute => ({ provider: route.provider, model: route.model, authRoute: route.authRoute });
 const validResponsibility = (value: string, policy: TeamPolicy) => value.length > 0 && value.isWellFormed() && plainText(value) &&
   Buffer.byteLength(value) <= policy.responsibilityBytes;
 
@@ -83,7 +93,7 @@ export function configuredRoutes(tx: AppTransaction, projectId: string, policy: 
 export function routesOf(team: Pick<ReturnType<typeof readTeam>, "ownerDefault" | "roles" | "projectDefault" | "overrides">): RoleRoute[] {
   const found: RoleRoute[] = [];
   for (const route of [team.ownerDefault, ...team.roles.map(role => role.route), team.projectDefault, ...Object.values(team.overrides)]) {
-    if (route && !found.some(known => sameRoute(known, route))) found.push(structuredClone(route));
+    if (route && !found.some(known => sameRoute(known, route))) found.push(canonicalRoute(route));
   }
   return found;
 }
@@ -116,7 +126,7 @@ export function parseRoleProposal(item: unknown, routes: readonly RoleRoute[], p
     try {
       requireRoleRoute(value.route);
       const match = routes.find(known => sameRoute(known, value.route as RoleRoute));
-      if (match) route = structuredClone(match); else dropped.push("route:unconfigured");
+      if (match) route = canonicalRoute(match); else dropped.push("route:unconfigured");
     } catch { dropped.push("route:invalid"); }
   }
   for (const key of Object.keys(value)) if (!proposalKeys.includes(key)) dropped.push(`field:${safeIdentifier(key)}`);
@@ -130,7 +140,7 @@ export function roleProposalViews(reply: { id: string; projectId: string; topicI
     const head = proposal.revisions.at(-1)!, first = proposal.revisions[0]!;
     return { id: proposal.id, replyId: reply.id, projectId: reply.projectId, topicId: reply.topicId,
       revision: head.revision, state: head.state, author: head.author, name: head.name, responsibility: head.responsibility, route: head.route,
-      dropped: first.dropped, droppedTotal: first.droppedTotal, roleId: proposal.roleId, replySequence,
+      dropped: first.dropped, droppedTotal: first.droppedTotal, roleId: proposal.roleId, replySequence, closedByDeletion: head.closedBy === "deletion",
       history: proposal.revisions.map(item => ({ revision: item.revision, author: item.author, state: item.state })),
       updatedAt: head.decidedAt ?? head.createdAt };
   });
@@ -174,13 +184,16 @@ export function executeRoleProposal(tx: AppTransaction, command: RoleProposalCom
   const head = proposal.revisions.at(-1)!;
   if (head.state !== "proposed") throw new AppError("role_proposal_closed", 409);
   if (head.revision !== command.expectedRevision) throw new AppError("role_proposal_stale", 409);
-  const routes = configuredRoutes(tx, command.projectId, policy);
+  const team = readTeam(tx, command.projectId, policy);
+  const routes = routesOf(team);
   const configured = (route: RoleRoute | null) => !route || routes.some(known => sameRoute(known, route));
   let accepted: { role: Role; teamRevision: number } | null = null;
   if (command.kind === "role.proposal.accept") {
     if (!configured(head.route)) throw new AppError("route_not_configured", 409);
+    // A role without its own route inherits a default; without one it could not join a discussion.
+    if (!head.route && !team.projectDefault && !team.ownerDefault) throw new AppError("role_proposal_route_missing", 409);
     const save: Extract<TeamCommand, { kind: "role.save" }> = { kind: "role.save", requestId: command.requestId, projectId: null,
-      expectedRevision: readTeam(tx, null, policy).ownerRevision,
+      expectedRevision: team.ownerRevision,
       payload: { roleId: null, name: head.name, kind: "specialist", responsibility: head.responsibility, enabled: true, route: head.route } };
     teamIdentity(save, policy);
     const saved = mutateTeamConfiguration(tx, save, policy, now);
@@ -193,7 +206,7 @@ export function executeRoleProposal(tx: AppTransaction, command: RoleProposalCom
     if (!configured(p.route)) throw new AppError("route_not_configured", 409);
     head.state = "superseded"; head.decidedAt = now;
     proposal.revisions.push({ revision: head.revision + 1, author: "owner", state: "proposed", name: p.name.trim(), responsibility: p.responsibility.trim(),
-      route: p.route ? structuredClone(p.route) : null, dropped: [], droppedTotal: 0, createdAt: now, decidedAt: null });
+      route: p.route ? canonicalRoute(p.route) : null, dropped: [], droppedTotal: 0, createdAt: now, decidedAt: null });
   }
   record.updatedAt = now;
   saveReplyRecord(tx, record);
@@ -201,4 +214,30 @@ export function executeRoleProposal(tx: AppTransaction, command: RoleProposalCom
     ? tx.get<{ sequence: number }>("SELECT sequence FROM messages WHERE id = ?", record.replyMessageId)?.sequence ?? null : null;
   const view = roleProposalViews(record, [proposal], sequence)[0]!;
   return { proposal: view, ...accepted };
+}
+
+/**
+ * app.role_proposals/v1 data-lifecycle rule, used by deletion, the quoted-copy scrub and restore replay instead of
+ * their generic string rewrite. `rewrite` maps one text to its redacted form. Only Jit-authored revisions are
+ * rewritten: owner-authored revisions are owner configuration, and routes are opaque configured references, so
+ * neither is touched. A rewritten revision that is still open is closed (`superseded`, `closedBy: "deletion"`), so a
+ * card rendered before the deletion can never create a role from text the owner did not see.
+ */
+export function redactRoleProposals(value: unknown, rewrite: (text: string) => string): { value: unknown; changed: boolean } {
+  if (!Array.isArray(value)) return { value, changed: false };
+  let changed = false;
+  const next = value.map(proposal => {
+    const revisions = (proposal as { revisions?: unknown })?.revisions;
+    if (!Array.isArray(revisions)) return proposal;
+    return { ...proposal, revisions: revisions.map((item: Record<string, unknown>, index) => {
+      if (item?.author !== "jit") return item;
+      const name = typeof item.name === "string" ? rewrite(item.name) : item.name;
+      const responsibility = typeof item.responsibility === "string" ? rewrite(item.responsibility) : item.responsibility;
+      if (name === item.name && responsibility === item.responsibility) return item;
+      changed = true;
+      const open = index === revisions.length - 1 && item.state === "proposed";
+      return { ...item, name, responsibility, ...(open ? { state: "superseded", closedBy: "deletion" } : {}) };
+    }) };
+  });
+  return { value: changed ? next : value, changed };
 }

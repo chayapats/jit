@@ -1,3 +1,4 @@
+import { redactRoleProposals } from "../team/role-proposals";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -858,6 +859,12 @@ function replayLedger(staged: TransactionStore, entries: LifecycleLedgerEntry[],
           if (Array.isArray(node)) return node.map(redact);
           if (!node || typeof node !== "object") return node;
           return Object.fromEntries(Object.entries(node as Record<string, unknown>).map(([key, item]) => {
+            // app.role_proposals/v1: the typed rule (Jit text only; owner revisions and routes stay) closes open cards.
+            if (key === "roleProposals") {
+              const proposals = redactRoleProposals(item, text => needles.has(text) ? redactedText : text);
+              if (proposals.changed) changed = true;
+              return [key, proposals.value];
+            }
             if (typeof item === "string" && needles.has(item)) { changed = true; return [key, redactedText]; }
             return [key, redact(item)];
           }));

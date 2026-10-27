@@ -221,7 +221,7 @@ export function conversationPage(state: ReturnType<Application["conversation"]>,
   const roles = dispatch?.team.roles.filter(role => role.kind === "specialist" && role.enabled && role.effective.route) ?? [];
   // app.role_proposals/v1 cards follow the Jit reply that carries them; the edit form lists configured routes only.
   const routes = dispatch ? routesOf(dispatch.team) : [];
-  const proposals = (view: JitReplyView | undefined) => view?.roleProposals.map(item => roleProposalCard(item, { topicBase: base, csrf, routes })).join("") ?? "";
+  const proposals = (view: JitReplyView | undefined) => view?.roleProposals.map(item => roleProposalCard(item, { topicBase: base, csrf, routes, defaultRoute: dispatch?.team.projectDefault ?? dispatch?.team.ownerDefault ?? null })).join("") ?? "";
   const dispatchPanel = dispatch ? `<details class="team-card" id="team-dispatch"><summary>${tr("topic.ask_the_team_to_analyze")}</summary>
     ${dispatch.dispatchAvailable && roles.length ? `<form class="team-form" method="post" action="/projects/${project.id}/team/discussions">${hiddenCommand(csrf, project.revision)}
       <input type="hidden" name="topicId" value="${topic.id}"><input type="hidden" name="sources" value="${escape(JSON.stringify(topic.availability === "available" ? [topic.source] : []))}">

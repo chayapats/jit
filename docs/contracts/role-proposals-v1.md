@@ -18,7 +18,7 @@ Jit is told the shape and the configured routes in two trusted operator lines:
 
 `normalizeJitReply` offers each `proposals` entry to the handler registered for its `kind`. A declined or unhandled entry is discarded as `proposal:<kind>`, as in BOT01. The `role` handler applies these rules to untrusted model output:
 
-- `name` must be one line of at most 80 characters, and `responsibility` must be plain text within `TeamPolicy.responsibilityBytes`. Both are trimmed and must not be empty. Otherwise the whole entry is discarded (`proposal:role`). So are entries after the second, and entries with no content, such as one that only names an existing card's id and a state.
+- `name` must be one line of at most 80 characters and 200 UTF-8 bytes (the `role.save` bound), and `responsibility` must be plain text within `TeamPolicy.responsibilityBytes`. Both are trimmed and must not be empty. Otherwise the whole entry is discarded (`proposal:role`). So are entries after the second, and entries with no content, such as one that only names an existing card's id and a state.
 - `route` is optional. It is kept only when it equals, field for field, a route the owner has configured: the owner default, a role's own route, the project default or a project override. A well-formed route that is not configured is dropped as `route:unconfigured`. A malformed one, for example with extra keys, is dropped as `route:invalid`. In both cases the proposal inherits the default route.
 - Every other key is dropped as `field:<safe identifier>`. Examples are `tools`, `budgets`, `state`, `approvedBy`, `author` and `revision`. At most 8 codes are kept, and the total is counted. Key names are reduced to safe identifiers, so model text is never copied into the list.
 - The service sets the author (`jit`), the revision (1), the state (`proposed`) and the id. Nothing in the output can set them.
@@ -31,7 +31,7 @@ All three use the shared receipt boundary: owner actor, global request-id receip
 
 | Command | Payload | Effect |
 | --- | --- | --- |
-| `role.proposal.accept` | `{ topicId, replyId, proposalId }` | Re-checks that the route is still configured (`route_not_configured`). Saves `{ roleId: null, kind: "specialist", enabled: true, name, responsibility, route }` through `role.save` under the owner team revision read in the same transaction. Marks the revision `accepted` with the new `roleId`. Receipt: `{ proposal, role, teamRevision }`. |
+| `role.proposal.accept` | `{ topicId, replyId, proposalId }` | Re-checks that the route is still configured (`route_not_configured`). A revision without its own route needs a project or owner default at that moment (`role_proposal_route_missing`), so the new role can always join a discussion. Saves `{ roleId: null, kind: "specialist", enabled: true, name, responsibility, route }` through `role.save` under the owner team revision read in the same transaction. Marks the revision `accepted` with the new `roleId`. Receipt: `{ proposal, role, teamRevision }`. |
 | `role.proposal.revise` | `{ topicId, replyId, proposalId, name, responsibility, route }` | Validates like the parser, but rejects the command instead of dropping: `invalid_role_proposal_command` or `route_not_configured`. Marks the current revision `superseded` and appends an `owner` revision. |
 | `role.proposal.reject` | `{ topicId, replyId, proposalId }` | Marks the current revision `rejected`. No role is created. |
 
@@ -39,13 +39,22 @@ Rejections:
 
 - `role_proposal_not_found` (404): an unknown id, or a reply in another topic.
 - `role_proposal_closed` (409): the current revision is accepted or rejected. Accepting again therefore never creates a second role.
+- `role_proposal_route_missing` (409): no own route and no default route to inherit.
 - `role_proposal_stale` (409): `expectedRevision` is not the current revision, for example a card rendered before an edit.
 
 A model-produced object is never a command. Topic or source text that claims owner approval is untrusted manifest data (BOT01) and cannot reach these commands.
 
 ## Storage
 
-Proposals are stored in the reply's own `team_runs` record (`kind: "jit_reply"`, field `roleProposals`). No schema change is needed. Each change moves the reply's stream cursor. Like the reply itself, proposals are covered by backups, by restore ledger replay and by quoted-copy redaction (`team_runs` is a free-text table). When a deletion purges the reply's output as a derived output, the name and responsibility of Jit-authored revisions are redacted too (`redactDerivedRuns`). Owner-authored revisions are kept. A role created by an accept is owner configuration in `roles`, like any `role.save`.
+Proposals are stored in the reply's own `team_runs` record (`kind: "jit_reply"`, field `roleProposals`). No schema change is needed. Each change moves the reply's stream cursor. Backups and restores carry them with the record. Routes are stored in canonical key order and compared field by field.
+
+Data deletion follows one typed rule, `redactRoleProposals`, which is shared by every path:
+
+- **Lineage.** The reply output is purged in any relation: the owner deleted the reply itself, or deleted a message the reply copied.
+- **Quoted-copy scrub.** The generic string scrub skips `roleProposals` and applies this rule instead.
+- **Restore ledger replay.**
+
+The rule rewrites only Jit-authored revisions. If the rewritten revision was still open, it is closed (`superseded`, `closedBy: "deletion"`), so a card rendered before the deletion cannot create a role from text the owner never saw. Owner-authored revisions are owner configuration and are kept. Routes are opaque configured references and are never rewritten. A role created by an accept is owner configuration in `roles`, like any `role.save`.
 
 ## Web
 
@@ -56,6 +65,8 @@ Proposals are stored in the reply's own `team_runs` record (`kind: "jit_reply"`,
   - the responsibility and the route ("default route" when inherited);
   - what was dropped from Jit's revision, in dictionary words (tools, budget, unconfigured or invalid route, unsupported field `<id>`);
   - a note that no role exists until the owner presses Create.
+
+  When the route is inherited, the card names the default it would use. Without any default, the card hides Create and asks the owner to pick a route in Edit. A card closed by a deletion says so.
 
   While the proposal is open, it offers Create, Dismiss and an Edit form. The Edit form's route list holds only configured routes.
 - **Without script.** Every action is a form post to `POST /projects/:p/topics/:t/replies/:r/proposals/:id/(accept|revise|reject)`. Each returns 303 to `?after=<reply sequence − 1>#proposal-<id>`. The JSON variant under `/api/` takes the same fields (the route as an object or null), requires the CSRF header and rejects unknown fields. The form sends the route as `""` (default) or as one configured route in JSON. Textarea CRLF becomes LF.
@@ -74,6 +85,11 @@ All labels are dictionary keys (`proposal.*` and the new `error.*` codes) in Tha
 - Injection: forged owner approval in the owner message and in output fields, a shell tool and budget request, an unconfigured and a malformed route, a third proposal, and a forged state on an existing card id. None changes configuration, and the card lists what was dropped without echoing the route values.
 - A no-script form flow (edit, stale re-post, create) in Thai and English, and the JSON path with CSRF and unknown-field rejection.
 - The `app.js` link contract.
-- Deletion lineage that redacts Jit's proposal text and keeps the owner's edit.
+- Deletion lineage that redacts Jit's proposal text, closes the open card (an accept captured before the deletion is refused) and keeps the owner's edit.
+- Direct deletion of the reply.
+- A quoted-copy scrub whose term matches the owner's text and a configured model id; both are kept.
+- A missing, added and withdrawn default route.
+- A 67-character Thai name (201 bytes).
+- Reordered route keys in an API edit, then the form.
 
 `tests/jit-reply.test.ts` (BOT01) still passes unchanged. Role entries without a responsibility are discarded as `proposal:role` there.

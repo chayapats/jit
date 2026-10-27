@@ -68,6 +68,16 @@ const command = (f: Fixture, kind: "accept" | "reject", view: RoleProposalView, 
 const revise = (f: Fixture, view: RoleProposalView, edit: { name: string; responsibility: string; route: RoleRoute | null }, revision = view.revision): RoleProposalCommand =>
   ({ kind: "role.proposal.revise", requestId: rid(), projectId: f.project.id, expectedRevision: revision, payload: { topicId: view.topicId, replyId: view.replyId, proposalId: view.id, ...edit } });
 const current = (f: Fixture, reply: JitReplyView) => f.app.replies(f.auth.actor, f.project.id, f.topic.id, [reply.messageId]).get(reply.messageId)!.roleProposals;
+const setOwnerDefault = (f: Fixture, route: RoleRoute | null) => f.app.execute(f.auth.actor,
+  { kind: "route.save", requestId: rid(), projectId: null, expectedRevision: f.app.team(f.auth.actor).ownerRevision, payload: { roleId: null, route } });
+const deleteSource = (f: Fixture, source: { sourceId: string; revision: number; generation: number }) => {
+  const revision = () => f.app.project(f.auth.actor, f.project.id).revision;
+  const preview = f.app.execute(f.auth.actor, { kind: "memory.delete.preview", requestId: rid(), projectId: f.project.id, expectedRevision: revision(),
+    payload: { scope: { kind: "source", projectId: f.project.id, source: { ...source } } } }) as { preview: { id: string; affected: { sources: { relation: string }[] } } };
+  f.app.execute(f.auth.actor, { kind: "memory.delete.confirm", requestId: rid(), projectId: f.project.id, expectedRevision: revision(),
+    payload: { previewId: preview.preview.id, acknowledged: true, acknowledgedWholeSession: true } });
+  return preview.preview;
+};
 const specialists = (f: Fixture) => f.app.team(f.auth.actor).roles.filter(role => role.kind === "specialist");
 function rejects(run: () => unknown, code: string) {
   try { run(); } catch (error) { expect(error).toBeInstanceOf(AppError); expect((error as AppError).code).toBe(code); return; }
@@ -220,7 +230,9 @@ test("injection fixtures: forged owner approval, a shell tool request and an unc
   expect(page).toContain("ช่องที่ไม่รองรับ: approvedBy");
   expect(page).not.toContain("attacker");
   expect(page).not.toContain("evil-model");
-  // Accepting creates exactly what the card shows: no tools field, default route.
+  // Accepting creates exactly what the card shows: no tools field, default route (once the owner has one).
+  rejects(() => f.app.execute(f.auth.actor, command(f, "accept", rootAdmin!)), "role_proposal_route_missing");
+  setOwnerDefault(f, codex);
   const receipt = f.app.execute(f.auth.actor, command(f, "accept", rootAdmin!));
   expect(Object.keys(receipt.role!).sort()).toEqual(["createdAt", "enabled", "id", "kind", "name", "responsibility", "revision", "route", "sequence", "updatedAt"]);
   expect(receipt.role).toMatchObject({ route: null, kind: "specialist" });
@@ -317,17 +329,87 @@ test("deleting the owner message a reply copied also redacts Jit's proposal text
   const [secret, kept] = reply.roleProposals;
   const edited = f.app.execute(f.auth.actor, revise(f, kept!, { name: "ความปลอดภัยของเจ้าของ", responsibility: "ตรวจความเสี่ยงที่เจ้าของเขียนเอง", route: null })).proposal;
   const owner = f.app.conversation(f.auth.actor, f.project.id, f.topic.id).items[0]!;
-  const revision = () => f.app.project(f.auth.actor, f.project.id).revision;
-  const preview = f.app.execute(f.auth.actor, { kind: "memory.delete.preview", requestId: rid(), projectId: f.project.id, expectedRevision: revision(),
-    payload: { scope: { kind: "source", projectId: f.project.id, source: { ...owner.source } } } }) as { preview: { id: string; affected: { sources: { relation: string }[] } } };
-  expect(preview.preview.affected.sources.some(item => item.relation === "derived_output")).toBe(true);
-  f.app.execute(f.auth.actor, { kind: "memory.delete.confirm", requestId: rid(), projectId: f.project.id, expectedRevision: revision(),
-    payload: { previewId: preview.preview.id, acknowledged: true, acknowledgedWholeSession: true } });
+  // The owner opened the card before the deletion; that command must not create a role afterwards.
+  const stale = command(f, "accept", secret!);
+  expect(deleteSource(f, owner.source).affected.sources.some(item => item.relation === "derived_output")).toBe(true);
   const after = current(f, reply);
-  expect(after[0]).toMatchObject({ id: secret!.id, author: "jit" });
+  expect(after[0]).toMatchObject({ id: secret!.id, author: "jit", state: "superseded", closedByDeletion: true });
+  rejects(() => f.app.execute(f.auth.actor, stale), "role_proposal_closed");
+  expect(specialists(f)).toEqual([]);
+  const page = await (await get(f, topicPath(f))).text();
+  expect(page).toContain("ข้อความที่จิตเสนอถูกลบตามคำสั่งลบข้อมูล");
+  expect(page).not.toContain(`action="${proposalPath(f, secret!, "accept")}"`);
   expect(after[0]!.name).not.toContain("7731");
   expect(after[0]!.responsibility).not.toContain("7731");
   expect(after[1]).toMatchObject({ id: edited.id, author: "owner", name: "ความปลอดภัยของเจ้าของ", revision: 2 });
   const stored = f.store.read(tx => tx.get<{ json: string }>("SELECT record_json AS json FROM team_runs WHERE id = ?", reply.id)!.json);
   expect(stored).not.toContain("7731");
+});
+
+test("deleting the Jit reply itself takes its proposals with it and closes the open card", async () => {
+  const f = await fixture([{ reply: "จิตเสนอผู้เชี่ยวชาญด้านความปลอดภัยหนึ่งคนครับ", proposals: [security] }]);
+  const reply = await send(f, "หาคนดูความปลอดภัย");
+  const proposal = reply.roleProposals[0]!;
+  expect(deleteSource(f, reply.source!).affected.sources.map(item => item.relation)).toContain("scope");
+  expect(current(f, reply)[0]).toMatchObject({ state: "superseded", closedByDeletion: true, author: "jit" });
+  expect(current(f, reply)[0]!.name).not.toBe(security.name);
+  expect(f.store.read(tx => tx.get<{ json: string }>("SELECT record_json AS json FROM team_runs WHERE id = ?", reply.id)!.json)).not.toContain(security.responsibility);
+  rejects(() => f.app.execute(f.auth.actor, command(f, "accept", proposal)), "role_proposal_closed");
+  expect(specialists(f)).toEqual([]);
+});
+
+test("the quoted-copy scrub keeps the owner's revision text and every configured route", async () => {
+  // The owner's message equals the configured model id, so the deletion's scrub term matches route values too.
+  const f = await fixture([{ reply: "เสนอ", proposals: [security] }]);
+  const reply = await send(f, grok.model);
+  const edited = f.app.execute(f.auth.actor, revise(f, reply.roleProposals[0]!, { name: "ตรวจโมเดล", responsibility: `ดูการใช้ ${grok.model} ของทีม`, route: grok })).proposal;
+  const owner = f.app.conversation(f.auth.actor, f.project.id, f.topic.id).items[0]!;
+  deleteSource(f, owner.source);
+  const [after] = current(f, reply);
+  expect(after).toMatchObject({ revision: 2, author: "owner", state: "proposed", responsibility: `ดูการใช้ ${grok.model} ของทีม`, route: grok, closedByDeletion: false });
+  const stored = f.store.read(tx => JSON.parse(tx.get<{ json: string }>("SELECT record_json AS json FROM team_runs WHERE id = ?", reply.id)!.json) as { roleProposals: { revisions: { route: RoleRoute | null }[] }[] });
+  expect(stored.roleProposals[0]!.revisions.map(item => item.route)).toEqual([grok, grok]);
+  expect(f.app.execute(f.auth.actor, command(f, "accept", edited)).role).toMatchObject({ route: grok, name: "ตรวจโมเดล" });
+});
+
+test("a role without its own route needs a default: the card asks for a route and accept refuses until one exists", async () => {
+  const f = await fixture([{ reply: "เสนอ", proposals: [{ kind: "role", name: "ไม่มี route", responsibility: "ทดสอบ route เริ่มต้น" }] }]);
+  const reply = await send(f, "จัดทีม");
+  const proposal = reply.roleProposals[0]!;
+  let page = await (await get(f, topicPath(f))).text();
+  expect(page).toContain("ยังไม่มี route เริ่มต้น — กดแก้ไขแล้วเลือก route ที่ตั้งไว้ก่อน");
+  expect(page).not.toContain(`action="${proposalPath(f, proposal, "accept")}"`);
+  rejects(() => f.app.execute(f.auth.actor, command(f, "accept", proposal)), "role_proposal_route_missing");
+  // A default set later is named on the card and lets the same revision through; withdrawing it blocks again.
+  setOwnerDefault(f, codex);
+  page = await (await get(f, topicPath(f))).text();
+  expect(page).toContain(`route เริ่มต้น (${codex.provider} / ${codex.model} · ${codex.authRoute})`);
+  const accept = form(page, proposalPath(f, proposal, "accept"));
+  setOwnerDefault(f, null);
+  const refused = await postForm(f, proposalPath(f, proposal, "accept"), accept);
+  expect(refused.status).toBe(409);
+  expect(await refused.text()).toContain("ยังไม่มี route เริ่มต้นให้ role นี้");
+  setOwnerDefault(f, codex);
+  expect(f.app.execute(f.auth.actor, command(f, "accept", proposal)).role).toMatchObject({ route: null, name: "ไม่มี route" });
+  expect(f.app.team(f.auth.actor, f.project.id).roles.find(role => role.name === "ไม่มี route")!.effective).toMatchObject({ layer: "owner_default", route: codex });
+});
+
+test("route identity is field-wise and names fit role.save in bytes", async () => {
+  const thai = "ก".repeat(67);
+  const f = await fixture([{ reply: "เสนอ", proposals: [{ kind: "role", name: thai, responsibility: "ชื่อยาวเกิน 200 bytes" }, security] }]);
+  const reply = await send(f, "จัดทีม");
+  // 67 Thai characters are 201 UTF-8 bytes: within 80 characters but not a savable role name, so the entry is discarded.
+  expect(reply.discarded).toEqual(["proposal:role"]);
+  const proposal = reply.roleProposals[0]!;
+  rejects(() => f.app.execute(f.auth.actor, revise(f, proposal, { name: thai, responsibility: "x", route: null })), "invalid_role_proposal_command");
+  expect(f.app.execute(f.auth.actor, revise(f, proposal, { name: "ก".repeat(66), responsibility: "x", route: null })).proposal.name).toHaveLength(66);
+  // A JSON client may order route keys differently; the card still selects that configured route.
+  const reordered = { authRoute: grok.authRoute, model: grok.model, provider: grok.provider } as RoleRoute;
+  const edited = f.app.execute(f.auth.actor, revise(f, current(f, reply)[0]!, { name: "ลำดับ key", responsibility: "x", route: reordered })).proposal;
+  expect(Object.keys(edited.route!)).toEqual(["provider", "model", "authRoute"]);
+  const page = await (await get(f, topicPath(f))).text();
+  const select = /<select name="route">([\s\S]*?)<\/select>/.exec(page)![1]!;
+  expect(select.match(/ selected/g)).toHaveLength(1);
+  expect(select).toContain(`value="${JSON.stringify(grok).replaceAll("\"", "&quot;")}" selected`);
+  expect(f.app.execute(f.auth.actor, command(f, "accept", edited)).role!.name).toBe("ลำดับ key");
 });
