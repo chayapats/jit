@@ -15,6 +15,8 @@ import { lookupAsset } from "./web-assets";
 import { renderWith, replyLabels, replyTone, settingsPage, type NavigationWorkspace, type ThemePreference } from "./web-layout";
 import type { SetPreferencesCommand } from "./preferences";
 import type { SetPersonaCommand } from "./persona";
+import type { SetupCommand } from "./setup";
+import { setupPage, visibleStep } from "./web-setup";
 import type { JitReplyView, StopReplyCommand } from "./team/jit-reply";
 import type { RoleProposalCommand } from "./team/role-proposals";
 import { defaultPanelTab, legacyRedirect, panelRows, panelTabs, searchLimits, settingsPageHandler, type PanelTab } from "./web-settings";
@@ -481,6 +483,47 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         if (!api && result.quarantine.activation.sessionsRevoked) return respond(null, 303, { Location: "/login" });
         return api ? json(result) : respond(null, 303, { Location: `/settings/restores/${result.quarantine.id}` });
       }
+      // app.setup/v1 ("ตั้งจิต"): one page per step and one form post per step. A finished setup is never shown again.
+      const setupAction = /^\/(api\/)?setup\/(wake|connect|check|connect-continue|know|personality|personality-skip|complete)$/.exec(url.pathname);
+      if (request.method === "GET" && (url.pathname === "/setup" || url.pathname === "/api/setup")) {
+        const setup = app.setup(auth.actor);
+        if (api) return json(setup);
+        if (setup.complete) return respond(null, 303, { Location: "/" });
+        const shown = visibleStep(setup, url.searchParams.get("step"));
+        // The wake step previews the other language without saving anything; its form saves the choice.
+        const lang = url.searchParams.get("lang");
+        const locale: Locale = shown === "wake" && (lang === "th" || lang === "en") ? lang : ui.locale;
+        return respond(renderWith({ ...ui, locale }, () => setupPage(setup, auth.csrf, shown)), 200, { "Content-Language": locale, "Vary": "Accept-Language, Cookie" });
+      }
+      if (request.method === "POST" && setupAction) {
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        const step = setupAction[2]!, form = request.headers.get("content-type")?.split(";")[0]?.trim() === "application/x-www-form-urlencoded";
+        const fields: Record<string, readonly string[]> = {
+          wake: ["language"], connect: form ? ["provider", "model", "authRoute"] : ["route"], check: [], "connect-continue": [],
+          know: ["addressAs", "selfReference", "language", "particle"], personality: ["personality", "aboutMe"], "personality-skip": [], complete: [],
+        };
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", ...fields[step]!].includes(key))) throw new AppError("invalid_body");
+        const revision = typeof body.expectedRevision === "string" && /^\d{1,15}$/.test(body.expectedRevision) ? Number(body.expectedRevision) : body.expectedRevision;
+        // Browsers send CRLF line breaks in a textarea; the persona stores LF.
+        const text = (value: unknown) => typeof value === "string" ? value.replace(/\r\n?/g, "\n") : value;
+        const kind = step === "connect-continue" ? "setup.connect.continue" : step === "personality-skip" ? "setup.personality.skip" : `setup.${step}`;
+        const data = step === "connect" ? { route: form ? { provider: body.provider, model: body.model, authRoute: body.authRoute } : body.route }
+          : Object.fromEntries(fields[step]!.map(key => [key, text(body[key])]));
+        const command = { kind, requestId: body.requestId, projectId: null, expectedRevision: revision, payload: data } as SetupCommand;
+        let receipt: ReturnType<Application["setup"]>;
+        try { receipt = app.execute(auth.actor, command).setup; }
+        catch (error) {
+          // A stale or repeated form (another tab, back button, refresh) resumes where the installation actually is.
+          if (!api && error instanceof AppError && error.code === "stale_revision") return respond(null, 303, { Location: "/setup" });
+          if (!api && error instanceof AppError && error.code === "setup_complete") return respond(null, 303, { Location: "/" });
+          throw error;
+        }
+        if (api) return json({ setup: receipt });
+        const general = receipt.general;
+        const location = receipt.complete && general ? `/projects/${general.projectId}/topics/${general.topicId}${general.greetingMessageId ? `#message-${general.greetingMessageId}` : ""}`
+          : step === "connect" || step === "check" ? "/setup?step=connect#connection" : "/setup";
+        return respond(null, 303, { Location: location });
+      }
       if (url.pathname === "/settings" && request.method === "GET") return page(() => settingsPage(app.preferences(auth.actor), nav(), auth.csrf, app.persona(auth.actor)));
       if (url.pathname === "/settings/telegram" && request.method === "GET") return page(() => settingsTelegramPage(app.telegramStatus(auth.actor), nav(), auth.csrf));
       if (url.pathname === "/settings/data" && request.method === "GET") {
@@ -760,6 +803,8 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         return api ? json(project) : page(() => projectPage(app.topics(auth.actor, project.id, after()), nav(), auth.csrf, after()));
       }
       if (request.method === "GET" && ["/", "/api/projects"].includes(url.pathname)) {
+        // FR-23: an installation that has not finished setup starts at setup, not at the workspace. The JSON list is unchanged.
+        if (!api && !app.setup(auth.actor).complete) return respond(null, 303, { Location: "/setup" });
         const raw = url.searchParams.get("offset") ?? "0";
         if (!/^\d{1,7}$/.test(raw)) throw new AppError("invalid_offset");
         const offset = Number(raw);

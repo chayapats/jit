@@ -130,3 +130,23 @@ These show a scripted fixture installation ([app.role_proposals/v1](../contracts
 The same cards in dark English:
 
 ![BOT03 role proposal cards, dark English](assets/bot03-proposal-dark-en.png)
+
+## BOT02 setup ("ตั้งจิต")
+
+Setup is one calm card per step, outside the workspace shell ([app.setup/v1](../contracts/setup-v1.md)). A step list across the top labels every step as done, current or later in words. The steps are ตื่น, เชื่อมจิต, รู้จักกัน, นิสัยของจิต (which can be skipped) and ตั้งจิต. Every step is a plain form post. The script only plays the ceremony: the halo draws in, then the dot rises and settles, in one 1.6 s sequence (`--motion-ceremony`). Under reduced motion or without script the final form posts at once. These images use a scripted fixture installation.
+
+The wake step in dark Thai, with the TH/EN toggle:
+
+![BOT02 wake, dark Thai](assets/bot02-wake-dark-th.png)
+
+The connect step after a scripted-host check. A fixture answer is "unverified", never "verified", and the next action is named:
+
+![BOT02 connect, dark Thai](assets/bot02-connect-dark-th.png)
+
+The ceremony with its summary, in light English:
+
+![BOT02 ceremony, light English](assets/bot02-ceremony-light-en.png)
+
+Jit's greeting is the first message of the General space, in the persona's language:
+
+![BOT02 greeting, dark Thai interface](assets/bot02-greeting-dark-th.png)

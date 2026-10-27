@@ -22,6 +22,7 @@ export function styleSheet(fonts: { inter: string; thai: string; mono: string })
   --motion-ui: ${scaleTokens.motion.ui}ms;
   --motion-panel: ${scaleTokens.motion.panel}ms;
   --motion-breath: ${scaleTokens.motion.breath}ms;
+  --motion-ceremony: ${scaleTokens.motion.ceremony}ms;
   --chat-width: ${scaleTokens.chatWidth}px;
   /* Derived, non-text tones and the component aliases kept from the first web slice. */
   --line-strong: color-mix(in srgb, var(--fg) 20%, var(--bg));
@@ -417,6 +418,63 @@ pre:last-child { margin-bottom: 0; }
 .auth-card label { display: block; color: var(--muted); font-size: 12px; font-weight: 600; margin: 0 0 8px; }
 .auth-card input { width: 100%; background: var(--canvas); color: var(--text); border: 1px solid var(--line-strong); border-radius: 8px; min-height: 42px; padding: 10px 12px; }
 .auth-card .primary { width: 100%; margin-top: 16px; min-height: 42px; }
+/* Setup ("ตั้งจิต", app.setup/v1): one calm card per step, outside the workspace shell. */
+.setup { min-height: 100dvh; display: grid; place-items: start center; padding: 40px 16px; background: var(--canvas); }
+.setup-card { width: min(100%, 560px); display: grid; gap: 20px; }
+.setup-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.setup-eyebrow { font-size: 12px; color: var(--fg-3); }
+.setup-top .jit-lockup { height: 28px; width: auto; }
+.setup-hero .jit-mark { width: 72px; height: 72px; }
+.setup-steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+.setup-steps li { border-top: 2px solid var(--line); padding-top: 8px; display: grid; gap: 2px; min-width: 0; }
+.setup-steps li[data-state="done"], .setup-steps li[data-state="current"] { border-top-color: var(--fg); }
+.setup-step-name { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.setup-step-state { font-size: 12px; color: var(--fg-3); display: inline-flex; align-items: center; gap: 4px; }
+.setup-step-state svg { width: 12px; height: 12px; }
+.setup-steps li[aria-current="step"] .setup-step-name { font-weight: 600; }
+.setup-hero { display: grid; justify-items: center; text-align: center; gap: 12px; padding: 12px 0; }
+.setup-hero h1, .setup-head h1 { font-size: 24px; letter-spacing: -0.015em; }
+.setup-hero p, .setup-head p { color: var(--fg-2); font-size: 15px; line-height: 1.7; max-width: 46ch; }
+.setup-head { display: grid; gap: 8px; }
+.setup-card > form:not(.setup-form) .primary, .setup-continue .primary { min-height: 42px; padding-inline: 22px; }
+.setup-card > form:not(.setup-form) { display: flex; justify-content: center; }
+.setup-language { display: flex; justify-content: center; gap: 8px; }
+.setup-language a { min-height: 36px; padding: 6px 16px; border: 1px solid var(--line-strong); border-radius: 999px; font-size: 13px; display: inline-flex; align-items: center; }
+.setup-language a[aria-current="true"] { background: var(--fg); color: var(--on-fg); border-color: transparent; }
+.setup-form { background: var(--surface-1); border: 1px solid var(--line); border-radius: var(--radius-card); padding: 18px; display: grid; gap: 14px; }
+.setup-form small { font-weight: 400; color: var(--fg-3); }
+.setup-connection { border: 1px solid var(--line); border-radius: var(--radius-card); padding: 16px 18px; display: grid; gap: 8px; }
+.setup-connection h2 { font-size: 13px; color: var(--fg-2); font-weight: 500; }
+.setup-connection-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.setup-route { font-family: var(--font-mono); font-size: 13px; overflow-wrap: anywhere; }
+.setup-note, .setup-next { font-size: 14px; line-height: 1.7; }
+.setup-next { color: var(--fg-2); }
+.setup-meta { font-size: 12px; color: var(--fg-3); line-height: 1.6; }
+.setup-actions, .setup-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; }
+.setup-foot { justify-content: space-between; }
+.setup-continue { display: grid; justify-items: end; gap: 6px; margin-left: auto; }
+.setup-actions button, .setup-foot button:not(.primary) { min-height: 32px; padding: 4px 14px; border: 1px solid var(--line-strong); border-radius: 999px; background: transparent; color: var(--fg); font: inherit; cursor: pointer; }
+.setup-back, .setup-refresh { color: var(--fg-2); font-size: 13px; }
+.setup-back:hover, .setup-refresh:hover { color: var(--fg); }
+.setup-summary { margin: 0; border: 1px solid var(--line); border-radius: var(--radius-card); padding: 6px 18px; }
+.setup-summary div { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.setup-summary div:last-child { border-bottom: 0; }
+.setup-summary dt { color: var(--fg-2); font-size: 13px; }
+.setup-summary dd { margin: 0; font-size: 14px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; overflow-wrap: anywhere; }
+/* The ceremony: one ${scaleTokens.motion.ceremony} ms sequence, played by the script before the final form posts. The halo
+   draws in, then the dot rises and settles. Reduced motion turns it off (see the media query below). */
+.ceremony .jit-mark { width: 120px; height: 120px; }
+.ceremony .jit-halo { stroke-dasharray: 62; stroke-dashoffset: 0; }
+.ceremony .jit-dot { transform-box: fill-box; transform-origin: center; }
+.ceremony[data-ceremony="playing"] .jit-halo { animation: ceremony-halo calc(var(--motion-ceremony) / 2) ease-out both; }
+.ceremony[data-ceremony="playing"] .jit-dot { animation: ceremony-dot calc(var(--motion-ceremony) / 2) ease-out calc(var(--motion-ceremony) / 2) both; }
+@keyframes ceremony-halo { from { stroke-dashoffset: 62; opacity: .2; } to { stroke-dashoffset: 0; opacity: 1; } }
+@keyframes ceremony-dot { 0% { opacity: 0; transform: translateY(3px); } 70% { opacity: 1; transform: translateY(-.5px); } 100% { opacity: 1; transform: translateY(0); } }
+@media (max-width: 520px) {
+  .setup { padding-top: 24px; }
+  .setup-steps { grid-template-columns: repeat(5, minmax(56px, 1fr)); overflow-x: auto; }
+  .setup-summary div { grid-template-columns: 1fr; gap: 2px; }
+}
 .auth-footer { margin-top: 18px; text-align: left; font-size: 12px; color: var(--faint); }
 .error { border: 1px solid var(--danger-line); background: var(--danger-bg); color: var(--danger); border-radius: 10px; padding: 12px 14px; margin: 12px 0; }
 .error-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }

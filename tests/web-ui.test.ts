@@ -13,6 +13,7 @@ import { colorTokens, contrastPairs, contrastRatio } from "../src/web-design";
 import { assetUrl, lookupAsset, staticAssets } from "../src/web-assets";
 import { faviconSvg, logoLockup, logoMark } from "../src/web-logo";
 import { contentSecurityPolicy, createWebHandler } from "../src/web";
+import { markSetupComplete } from "./fixtures/setup";
 
 const password = "fixture-owner-password";
 const origin = "http://localhost:3000";
@@ -26,6 +27,7 @@ async function fixture() {
   const store = new TransactionStore(path); stores.push(store);
   const app = new Application(store, readConfig({ JIT_DATABASE: path }), { now: () => Date.UTC(2027, 0, 15, 8) });
   await app.setupOwner(password);
+  markSetupComplete(store);
   const token = await app.login(password);
   return { app, store, token, auth: app.authenticate(token), web: createWebHandler(app) };
 }
@@ -212,7 +214,7 @@ test("the generated stylesheet has only valid property names and keeps literal t
 });
 
 test("layout templates contain no hard-coded English or Thai text nodes", async () => {
-  const source = (await Promise.all(["web-layout.ts", "web-navigation.ts", "web-settings.ts"].map(file => Bun.file(join(import.meta.dir, "../src", file)).text()))).join("\n");
+  const source = (await Promise.all(["web-layout.ts", "web-navigation.ts", "web-settings.ts", "web-setup.ts"].map(file => Bun.file(join(import.meta.dir, "../src", file)).text()))).join("\n");
   const nodes = [...source.matchAll(/>([^<>$`{}\n=;'"]*[A-Za-z\u0E00-\u0E7F]{2,}[^<>$`{}\n=;'"]*)</g)].map(m => m[1]!.trim()).filter(Boolean);
   // Allowed literals: vendored font names and contract identifiers, which are the same in every language.
   const literals = [...new Set(nodes)].filter(node => !/^[a-z_.]+\/v\d+$/.test(node) && !node.includes("(value)")).sort();

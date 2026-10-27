@@ -8,6 +8,7 @@ import { dictionaries } from "../src/i18n";
 import { TransactionStore } from "../src/store";
 import { createWebHandler } from "../src/web";
 import { legacyRedirect, panelTabs, paletteCommands, routeInventory, searchLimits, settingsPageHandler, settingsSections } from "../src/web-settings";
+import { markSetupComplete } from "./fixtures/setup";
 
 const password = "fixture-owner-password";
 const origin = "http://localhost:3000";
@@ -21,6 +22,7 @@ async function fixture() {
   const store = new TransactionStore(path); stores.push(store);
   const app = new Application(store, readConfig({ JIT_DATABASE: path }), { now: () => Date.UTC(2027, 0, 15, 8) });
   await app.setupOwner(password);
+  markSetupComplete(store);
   const token = await app.login(password);
   return { app, store, token, auth: app.authenticate(token), web: createWebHandler(app) };
 }

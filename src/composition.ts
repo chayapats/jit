@@ -11,6 +11,7 @@ import type { TransactionStore } from "./store";
 import { coordinatorSynthesisWork } from "./team/decisions";
 import { discussionPlanWork, specialistAnalysisWork } from "./team/dispatch";
 import { jitReplyWork } from "./team/jit-reply";
+import { setupCheckWork } from "./setup";
 import { scriptedPreviewWork } from "./team/preview";
 import type { ApplicationRunPort } from "./team/run-port";
 import { ScriptedRunPort } from "./team/scripted-port";
@@ -37,7 +38,7 @@ export interface ComposedQueue {
  * The one import-safe queue/worker composition shared by `serve` (src/main.ts)
  * and `startFullApp` (src/ops/lifecycle.ts). It asserts the synchronous Schway
  * gate before claiming admission, then registers every worker with one port
- * policy: specialist, coordinator, Jit reply and PR review runs use the team port
+ * policy: specialist, coordinator, Jit reply, setup route check and PR review runs use the team port
  * (scripted by default, concrete with `JIT_RUN_PORT=schway`); fixture-authorized
  * work (role preview, schedule summaries, memory extraction) stays scripted.
  * PR review routes come from owner/project configuration captured at admission;
@@ -59,6 +60,7 @@ export function composeJobQueue(store: TransactionStore, config: AppConfig, opti
   const queue = new JobQueue(store, config.jobs, [
     projectStateWork(store), scriptedPreviewWork(store, config, fixturePort), discussionPlanWork(),
     specialistAnalysisWork(store, config, teamPort), coordinatorSynthesisWork(store, config, teamPort), jitReplyWork(store, config, teamPort),
+    setupCheckWork(store, config, teamPort),
     memoryExtractionWork(store, config, memoryPort), scheduleReminderWork(store, config), scheduleSummaryWork(store, config, fixturePort),
     prSnapshotWork({ store, cacheRoot: options.prCacheRoot ?? ".local/pr-cache", fixtureFor: () => new FakeGitHubFixture() }),
     prReviewWork({

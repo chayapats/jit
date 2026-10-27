@@ -1,6 +1,7 @@
 // Jit browser enhancements (ADR 0028). Hand-written ES module, no dependencies, no build step.
 // Every page is complete without this file. It adds behaviour only: it never posts data itself and
-// never stores owner content. Forms still submit through the normal form post. The only reads it makes
+// never stores owner content. Forms still submit through the normal form post (the setup ceremony only delays its
+// own form's submit to play the animation). The only reads it makes
 // are two same-origin GETs that already work as pages: the topic panel page and the bounded ⌘K query.
 
 const root = document.documentElement;
@@ -51,6 +52,22 @@ for (const textarea of document.querySelectorAll(".composer textarea")) {
     textarea.addEventListener("input", grow);
     grow();
   }
+}
+
+// ตั้งจิต ceremony (app.setup/v1): the halo draws in, then the dot rises and settles, then the final setup form posts
+// as usual. Without script, or under prefers-reduced-motion, the form simply submits with no animation.
+const ceremony = document.querySelector("[data-ceremony]");
+const ceremonyForm = document.querySelector("form[data-ceremony-form]");
+if (ceremony && ceremonyForm) {
+  ceremonyForm.addEventListener("submit", event => {
+    if (ceremony.dataset.ceremony === "playing" || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+    event.preventDefault();
+    ceremony.dataset.ceremony = "playing";
+    ceremonyForm.querySelector("button")?.setAttribute("aria-disabled", "true");
+    const ms = Number(ceremony.dataset.ceremonyMs);
+    // HTMLFormElement.submit() posts the same fields without firing this handler again.
+    window.setTimeout(() => ceremonyForm.submit(), Number.isFinite(ms) && ms > 0 && ms <= 5000 ? ms : 1600);
+  });
 }
 
 // Jit replies (app.jit_reply/v1): follow the topic's event stream and update each reply placeholder in place.
