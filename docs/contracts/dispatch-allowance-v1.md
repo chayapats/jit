@@ -6,7 +6,7 @@ Uses `app.jit_reply/v1`, `app.team_dispatch/v1`, `app.specialist_results/v1`, `a
 
 ## `app.dispatch_allowance/v1`
 
-`src/team/allowance.ts`, schema 26 `dispatch_allowance_revisions`.
+`src/team/allowance.ts`, schema 27 `dispatch_allowance_revisions`.
 
 ```ts
 interface DispatchAllowance {
@@ -29,7 +29,7 @@ HTTP: `GET /settings/dispatch` (one form per project, paged like Project data), 
 
 ## Dispatch proposals
 
-`src/team/jit-dispatch.ts`, schema 26 `dispatch_proposals`.
+`src/team/jit-dispatch.ts`, schema 27 `dispatch_proposals`.
 
 A Jit reply to an owner message may return one `{"kind": "dispatch", "roles": [names]}` entry (see [jit-reply-v1](jit-reply-v1.md)). When that reply's result commits through the attempt fence, `admitJitDispatch` runs in the same transaction:
 
@@ -84,7 +84,7 @@ All labels are dictionary keys (`dispatch.*`, `team_card.*`, `team_reply.*`, `se
 
 ## Schema
 
-Schema 26 adds `dispatch_allowance_revisions` (project_id, revision, enabled, max_roles 1–100, created_at) and `dispatch_proposals` (id, project_id, topic_id, reply_id unique, revision, state, admission, allowance_revision, discussion_id unique or NULL, team_reply_id unique or NULL, record_json, timestamps; `discussion_id` is set exactly when `admission` is). Both are classified `include` for backups. Existing installations need the owner-authorized staged upgrade.
+Schema 27 adds `dispatch_allowance_revisions` (project_id, revision, enabled, max_roles 1–100, created_at) and `dispatch_proposals` (id, project_id, topic_id, reply_id unique, revision, state, admission, allowance_revision, discussion_id unique or NULL, team_reply_id unique or NULL, record_json, timestamps; `discussion_id` is set exactly when `admission` is). Both are classified `include` for backups. Existing installations need the owner-authorized staged upgrade.
 
 ## Evidence
 

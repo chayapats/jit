@@ -543,7 +543,8 @@ test("allowance settings: owner form without script, JSON with CSRF, revisions, 
 
 test("with script, nothing intercepts the cards: app.js adds no submit handling and never touches proposal or team cards", async () => {
   const script = await Bun.file(join(import.meta.dir, "../src/web-assets/app.js")).text();
-  expect(script).not.toMatch(/addEventListener\(\s*"submit"/);
+  // The only submit handling belongs to the setup ceremony form (BOT02); it never selects a card form.
+  for (const match of script.matchAll(/addEventListener\(\s*"submit"/g)) expect(script.slice(Math.max(0, match.index! - 400), match.index!)).toMatch(/ceremony/i);
   expect(script).not.toMatch(/team-card|team-run|proposal-card|data-dispatch|dispatch\//);
   // The team reply's status card uses the reply hooks the script already updates by textContent.
   const gate = deferred<ApplicationRunOutcome>();
