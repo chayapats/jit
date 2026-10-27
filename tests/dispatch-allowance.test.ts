@@ -213,7 +213,8 @@ test("over the allowance or with it off, the proposal waits for the owner's card
   // No script: the shared proposal card with role checkboxes, accept and dismiss.
   const html = await page(f);
   expectNoInlineScript(html);
-  expect(html).toContain(`<article class="proposal-card" id="dispatch-${card.id}" data-proposal-kind="dispatch"`);
+  // The shared proposal card (app.role_proposals/v1 frame) inside the stable dispatch anchor.
+  expect(html).toContain(`<div id="dispatch-${card.id}"><article class="team-card proposal-card" id="proposal-${card.id}" data-proposal-kind="dispatch" data-proposal-state="proposed">`);
   expect(html).toContain("เกินงบเรียกทีม จึงรอให้คุณยืนยัน");
   expect(html).toContain("ไม่มีอะไรทำงานจนกว่าคุณจะยืนยัน");
   const accept = form(html, `/projects/${f.project.id}/dispatch/${card.id}/accept`);
@@ -248,7 +249,7 @@ test("over the allowance or with it off, the proposal waits for the owner's card
   const dismissed = await postJson(f, `/api/projects/${f.project.id}/dispatch/${secondCard.id}/dismiss`, { requestId: rid(), expectedRevision: 1 });
   expect(dismissed.status).toBe(200);
   expect((await dismissed.json()).proposal).toMatchObject({ state: "dismissed", revision: 2 });
-  expect((await page(f)).toString()).toContain("ไม่เอาแล้ว");
+  expect(await page(f)).toContain(`id="proposal-${secondCard.id}" data-proposal-kind="dispatch" data-proposal-state="rejected"`);
   const late = await postJson(f, `/api/projects/${f.project.id}/dispatch/${secondCard.id}/accept`, { requestId: rid(), expectedRevision: 2, roleIds: [f.techId] });
   expect(late.status).toBe(409);
   // JSON commands need the CSRF header.
