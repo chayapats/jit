@@ -428,6 +428,11 @@ test("logo is one-colour hand-built SVG: mark, lockup with drawn wordmark, favic
     expect(svg).not.toMatch(/<text|<image|href=|url\(/);
   }
   expect(lockup).toContain('aria-label="Jit"');
+  // The wordmark is the drawn Latin "Jit" (S09-D10 amended 2026-10-27): J hook, i, t; no Thai lettering line.
+  expect(lockup).toContain('viewBox="0 0 46 24"');
+  expect(lockup).toContain('<path d="M5 0V7A2.5 2.5 0 0 1 0 7"/>');
+  expect(lockup.match(/<path\b/g)).toHaveLength(7); // body, head+eyes, five wordmark strokes
+  expect(logoMark({ size: 16 })).toContain('transform="translate(0 -1.1)"');
   expect(faviconSvg).toStartWith('<svg xmlns="http://www.w3.org/2000/svg"');
   expect(staticAssets.get("favicon.svg")!.contentType).toBe("image/svg+xml");
 });
