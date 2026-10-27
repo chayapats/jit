@@ -1,0 +1,80 @@
+# BOT01 Jit reply and persona contracts, v1
+
+Owner: Jit #92 (S09 BOT01). Status: implemented on the issue branch. Spec: [S09](../specs/S09-main-bot-and-chat-first-ui.md) (S09-D01, D02, D07, S09-AC01). Decisions: [ADR 0029](../adr/0029-jit-conversation-and-role-proposals.md) for replies, persona and structured output, and [ADR 0028](../adr/0028-progressive-enhancement-browser-assets.md) for the script, SSE and CSP. Requirements: FR-10, FR-13, FR-15, FR-17, FR-19, NFR-05, NFR-07, NFR-10.
+
+Uses `app.conversation/v1`, `jobs.queue_admission/v1`, `jobs.attempt_fence/v1` and `app.run_port/v1` without changing them.
+
+| Contract | Public entry and behavior |
+| --- | --- |
+| `app.jit_reply/v1` | `src/team/jit-reply.ts`. Inside the owner's `message.send` transaction, `admitJitReply` writes exactly one `jit_replies` row per owner message (`message_id` is unique). It either admits one `team.jit-reply` interactive job through the queue, or records why not: `no_route`, `scheduler_unavailable`, `queue_full` or `context_too_large`. The message commits in both cases. A replayed request id returns the original receipt and never reaches admission, so a duplicate request, a refresh or a stream reconnect cannot admit another reply. The run gets trusted operator lines (product policy plus the persona), the Jit role's responsibility, and an untrusted manifest of recent topic messages that ends with the owner's message. It gets no tools. A result commits only through the attempt fence: one output source attributed to the coordinator role and run, plus one topic message. A stopped, superseded or expired attempt cannot commit. Read models: `Application.replies(actor, projectId, topicId, messageIds)` returns a map keyed by owner message id, and `Application.replyStream(actor, projectId, topicId, cursor)` returns `{ changes, pending }`. Command: `{ kind: "jit.reply.stop", requestId, projectId, expectedRevision, payload: { replyId } }` returns `{ reply }`. |
+| `app.persona/v1` | `src/persona.ts`, schema 25 `persona_revisions`. `Application.persona(actor)` returns `{ addressAs, language: "th" \| "en", selfReference, particle: "khrap" \| "kha" \| "none", personality: "calm" \| "direct" \| "friendly", aboutMe, revision, updatedAt }`. The defaults are revision 0. `{ kind: "persona.set", requestId, projectId: null, expectedRevision, payload }` appends one immutable revision and returns `{ persona }`. It is revisioned (`stale_revision`), idempotent by request id (`request_id_conflict`), validated (`invalid_persona`: exact keys, enums, length bounds, and single-line `addressAs`/`selfReference`), audited and refused during upgrade or restore fences. HTTP: `GET /settings` (section `#persona`), `POST /settings/persona` (form → 303 `/settings#persona`), and `GET`/`POST /api/settings/persona` (JSON, CSRF header). No work definition, adapter or result path writes the persona. |
+
+## Reply states
+
+`JitReplyView.state` is derived from the persisted record and its job, never from adapter memory.
+
+| State | Meaning | `nextAction` |
+| --- | --- | --- |
+| `thinking` | The job is queued or running. `progress` is the latest provisional adapter text, labelled unsaved. | — |
+| `answered` | The fenced result committed. `replyMessageId` and `source` name the reply. | — |
+| `blocked` | The job waits on the same route (`quota`, `needs_login`, `route_unavailable`) or was interrupted. The route, budget and billing stay the same. | `wait_for_quota_then_resume`, `sign_in_to_route_then_resume`, `check_route_then_resume`, `resume_or_send_again` |
+| `stopped` | The owner stopped it. A late result is rejected. | `send_again` |
+| `failed` | The output was malformed or empty, or the adapter failed. No reply message exists. | `send_again` |
+| `not_admitted` | No job was admitted, for the recorded reason. | `configure_jit_route`, `start_service_then_send_again`, `wait_then_send_again`, `send_a_shorter_message` |
+
+Stop expects the reply `revision`: 1 from admission until a result commits, then 2. Only `thinking` and `blocked` replies can be stopped (`reply_not_stoppable`). Stop runs the job's own `job.stop`, so authority is fenced before cancellation is requested.
+
+Resuming a blocked reply uses the existing `job.resume` from the job page. It follows the shared contract: the waiting attempt's managed context must be reconciled first. It gets a fresh run id and context on the same route. Reply limits cover the first attempt and two retries; every attempt reserves its own token share.
+
+## Structured output
+
+`normalizeJitReply` applies these rules to untrusted model text:
+
+- A JSON object, optionally inside one fenced json block, must carry a non-empty string `reply`.
+- Every other field, and every entry of `proposals`, is discarded. BOT01 supports no proposal kinds. Each discarded item is recorded as evidence, `field:<name>` or `proposal:<kind>`. Names are reduced to safe identifiers, so model text is never copied, and at most 8 are kept, with the total counted.
+- Text that does not start with `{` or `[` is prose.
+- Anything else is `malformed` or `empty` and produces no message.
+
+The discarded list appears in the job evidence and in the reply's message details.
+
+## Topic history and trust
+
+The manifest holds up to `TeamPolicy.sourceLimit` recent available messages in the topic, oldest first, inside the run's byte budget. One trusted operator line lists the service-recorded speakers (`owner` or `assistant`). Topic text never enters operator lines. A Jit reply is appended with the next message sequence but does not change the topic revision. The topic revision counts owner changes, so a composer rendered while Jit was thinking stays valid.
+
+Records live in `team_runs.record_json` with `kind: "jit_reply"`. Like specialist and synthesis runs, they are therefore covered by data deletion (manifest scrubbing and output redaction), by memory correction and suppression fencing (`request.manifest`), by restore ledger replay and by backups. `jit_replies` holds identities and a reason code only, never text.
+
+## Web
+
+- **Topic page.** Owner messages that have no committed reply are followed by a reply card. The card has the Jit mark (its dot breathes only under `data-state="thinking"`), a status pill with text, provisional progress labelled unsaved, the next action, a stop form when the reply is stoppable, a job link when blocked, and a refresh link. Committed replies render as `message--jit` with the label "จิต"/"Jit", plus "ตัวอย่างจำลอง"/"Fixture" for scripted runs. The composer sends with the normal form post.
+- **Stream.** `GET /projects/:p/topics/:t/events` returns `text/event-stream`, authenticated and project-scoped like every read. The cursor comes from `Last-Event-ID`, or `?cursor`, or 0. Each tick sends a `reply` event for every reply whose persisted state changed after the cursor, and for every reply whose job can still change, but only when its data changed since the last send. Event data holds persisted state, the committed text when answered, and labels already localised by the server. The stream closes after a bounded number of ticks; `EventSource` then reconnects with `Last-Event-ID`. It never admits, resumes or reconnects work. A keep-alive comment covers the 15 s server idle timeout.
+- **`app.js`.** The script adds three things:
+  - Enter submits the composer through its own form. Shift+Enter inserts a new line, and an IME composition such as Thai input is never interrupted.
+  - On a topic with a live reply, it opens the stream and updates the reply card with `textContent` only. It drops the stop form when the reply finishes and closes the stream when no reply is live.
+  - Without the script, the card and its refresh link show the same persisted state.
+- **Stop.** `POST /projects/:p/topics/:t/replies/:r/stop` (form → 303 back to `#reply-:r`; JSON under `/api/`).
+- **Settings.** The persona form is in `/settings#persona`.
+
+All labels are dictionary keys (`jit.*`, `reply.*`, `topic.send_message`, `topic.jit_replies_note`, `topic.composer_keys`, `settings.persona*`, and the new `error.*` codes) in Thai and English.
+
+## Schema
+
+Schema 25 adds `persona_revisions` (revision, record_json, created_at) and `jit_replies` (id, project_id, topic_id, message_id unique, run_id unique or NULL, reason, cursor unique, created_at; exactly one of run_id and reason). Both tables are classified `include` for backups. Existing installations need the owner-authorized staged upgrade (`ops.schema_migrations/v1`).
+
+## Evidence
+
+`tests/jit-reply.test.ts` uses a scripted host and a fake clock. No test calls paid inference. It covers:
+
+- **Normal reply.** One message gets one reply, committed as an attributed output source, with the persona in operator lines, history in the manifest only and no tools. A duplicate request, a page refresh and stream reconnects admit nothing new.
+- **Stream cut midway.** Progress stays provisional, the failure is shown and no reply is written.
+- **Structured output.** Malformed output, discarded fields and proposals, and nothing reaching configuration.
+- **Quota.** A quota block shows the next action on the same route and budget, and resume continues on that route.
+- **Stop.** A no-script stop and a late complete result from an adapter that ignores cancellation: the result is fenced.
+- **Injection.** Topic history that claims to change the persona or role has no effect.
+- **Persona command.** Validation, replay, stale revisions, audit, form and JSON with CSRF, and revision history.
+- **No script.** A form-post flow in Thai and English, including a queue that is not available.
+- **No coordinator route.**
+- **SSE.** Cursor replay, reconnect after the answer, authentication and scope.
+- **Reopen.** Reopening the store gives identical reply views and page HTML.
+- **`app.js` contract.** Fake `EventSource`, `textContent` only, and stream close.
+
+`tests/web-ui.test.ts` checks Enter, Shift+Enter and IME composition.

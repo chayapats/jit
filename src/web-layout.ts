@@ -3,9 +3,11 @@ import type { Topic } from "./conversation";
 import type { JobSchedule, ScheduleOccurrence } from "./jobs/schedules";
 import type { Attribution, SourceLookup, SourceReference } from "./sources";
 import type { Job, JobLimits, JobPolicy } from "./jobs/types";
-import { currentLocale, systemText, tr, withLocale, type Locale } from "./i18n";
+import { currentLocale, systemText, tr, withLocale, type Locale, type MessageKey } from "./i18n";
 import { assetUrl } from "./web-assets";
-import { logoLockup } from "./web-logo";
+import { logoLockup, logoMark } from "./web-logo";
+import type { JitReplyView } from "./team/jit-reply";
+import type { Persona } from "./persona";
 import type { DecisionReadModel, Discussion, RoleRoute } from "./team/types";
 
 /** Escapes literal untrusted content before it enters HTML text or attributes. */
@@ -124,11 +126,40 @@ export function projectPage(state: ReturnType<Application["topics"]>, workspace:
     <h2 class="section-heading">${tr("project.topics_in_project_group")}</h2>${state.items.length ? `<ul>${state.items.map(t => `<li class="topic-row">${icon("chat")}<div class="topic-row-main"><h3><a href="/projects/${p.id}/topics/${t.id}">${escape(t.title ?? tr("common.topic_unavailable"))}</a></h3>${time(t.createdAt)}</div>${sourceLink(p.id, t.source, tr("project.topic_origin"))}</li>`).join("")}</ul>` : `<p class="empty-list">${tr("project.no_topics_yet_start_the")}</p>`}
     <nav class="pagination" aria-label="${tr("project.topic_pages")}">${after > 0 ? `<a href="/projects/${p.id}">${tr("common.first_page")}</a>` : ""}${state.hasMore ? `<a href="/projects/${p.id}?after=${state.nextAfter}">${tr("project.next_topics")}</a>` : ""}</nav></div>`, { breadcrumb: { title: tr("common.all_projects"), href: "/" } });
 }
+/** Pill tone for each reply state; the label text always comes with it. */
+export const replyTone: Record<JitReplyView["state"], string> = { thinking: "running", answered: "succeeded", blocked: "blocked", stopped: "stopped", failed: "failed", not_admitted: "waiting" };
+/** Localised app.jit_reply/v1 state label and next action. Shared by the page and the event stream. */
+export function replyLabels(view: Pick<JitReplyView, "state" | "nextAction">): { state: string; next: string | null } {
+  return { state: tr(`reply.state.${view.state}` as MessageKey), next: view.nextAction ? tr(`reply.next.${view.nextAction}` as MessageKey) : null };
+}
+/**
+ * The reply placeholder under an owner message until Jit's committed reply exists. Without script it is a
+ * complete status with a refresh link and a stop form; the script only updates its text from the event stream.
+ * Provisional progress is labelled as unsaved and never rendered as a message.
+ */
+function replyStatus(view: JitReplyView, base: string, projectId: string, csrf: string): string {
+  const labels = replyLabels(view), stoppable = view.state === "thinking" || view.state === "blocked";
+  return `<article class="message message--jit reply-status" id="reply-${view.id}" data-reply-id="${view.id}" data-reply-state="${view.state}">
+    <div class="reply-head"><span class="jit-avatar"${view.state === "thinking" ? ' data-state="thinking"' : ""} data-reply-avatar>${logoMark({ size: 20 })}</span><span class="reply-name">${tr("jit.name")}</span><span class="job-status" data-state="${replyTone[view.state]}" data-reply-label>${escape(labels.state)}</span></div>
+    <div class="message-body" aria-live="polite"><p class="literal reply-progress" data-reply-progress${view.progress ? "" : " hidden"}>${escape(view.progress?.text ?? "")}</p><p class="reply-provisional" data-reply-provisional${view.progress ? "" : " hidden"}>${tr("reply.provisional")}</p><p class="literal reply-text" data-reply-text hidden></p>
+    <p class="reply-next" data-reply-next${labels.next ? "" : " hidden"}>${escape(labels.next ?? "")}</p></div>
+    <div class="reply-actions">${stoppable ? `<form method="post" action="${base}/replies/${view.id}/stop" data-reply-stop>${hiddenCommand(csrf, view.revision)}<button>${tr("reply.stop")}</button></form>` : ""}${view.jobId && view.state !== "thinking" ? `<a href="/projects/${projectId}/jobs/${view.jobId}#job-${view.jobId}">${tr("reply.view_job")}</a>` : ""}<a class="reply-refresh" href="${base}#reply-${view.id}" data-reply-refresh>${tr("reply.refresh")}</a></div></article>`;
+}
 /** Presents committed attributed messages separately from a persistent, revision-bound composer. */
 export function conversationPage(state: ReturnType<Application["conversation"]>, workspace: Workspace, topics: Topic[], csrf: string, after: number, messageBytes: number, dispatch?: {
   team: ReturnType<Application["team"]>; discussions: Discussion[]; limits: JobPolicy["maximum"]; dispatchAvailable: boolean; decision?: DecisionReadModel;
+  /** app.jit_reply/v1 views keyed by owner message id. */
+  replies?: Map<string, JitReplyView>;
 }): string {
   const { project, topic } = state, title = topic.title ?? tr("common.topic_unavailable"), base = `/projects/${project.id}/topics/${topic.id}`;
+  const replies = dispatch?.replies ?? new Map<string, JitReplyView>();
+  const committedReplies = new Map([...replies.values()].filter(view => view.replyMessageId).map(view => [view.replyMessageId!, view]));
+  const live = [...replies.values()].filter(view => view.state === "thinking" || view.state === "blocked");
+  const cursor = Math.max(0, ...[...replies.values()].map(view => view.cursor));
+  const label = (m: (typeof state.items)[number]) => {
+    const reply = committedReplies.get(m.id);
+    return reply ? `${tr("jit.name")}${reply.mode === "fixture" ? ` · ${tr("reply.fixture")}` : ""}` : attributionLabel(m.attribution);
+  };
   const roles = dispatch?.team.roles.filter(role => role.kind === "specialist" && role.enabled && role.effective.route) ?? [];
   const dispatchPanel = dispatch ? `<details class="team-card" id="team-dispatch"><summary>${tr("topic.ask_the_team_to_analyze")}</summary>
     ${dispatch.dispatchAvailable && roles.length ? `<form class="team-form" method="post" action="/projects/${project.id}/team/discussions">${hiddenCommand(csrf, project.revision)}
@@ -139,11 +170,11 @@ export function conversationPage(state: ReturnType<Application["conversation"]>,
     ${dispatch.discussions.length ? `<ul>${dispatch.discussions.map(item => `<li><a href="/projects/${project.id}/team/discussions/${item.id}">${escape(item.purpose)}</a> · ${item.participations.filter(p => p.state === "completed").length}/${item.participations.length} ${tr("topic.done_gaps")} ${item.coverageGap.length}</li>`).join("")}</ul>` : ""}</details>` : "";
   const decision = dispatch?.decision ? decisionPanel({ projectId: project.id, topicId: topic.id, topicRevision: topic.revision, csrf, model: dispatch.decision }) : "";
   const proposeTask = `<details class="team-card" id="task-proposal"><summary>${tr("topic.propose_as_task")}</summary><form class="team-form" method="post" action="/projects/${project.id}/tasks">${hiddenCommand(csrf, topic.revision)}<input type="hidden" name="topicId" value="${topic.id}"><label>${tr("common.task_title")}<input name="title" required maxlength="200"></label><label>${tr("common.summary")}<textarea name="summary" required maxlength="${messageBytes}"></textarea></label><button class="primary">${tr("common.save_as_proposal")}</button><small>${tr("topic.conversation_messages_are_not_accepted")}</small></form><p><a href="/projects/${project.id}/tasks?topic=${topic.id}">${tr("topic.view_project_tasks")}</a></p></details>`;
-  return shell(title, { workspace, csrf, project, topics, topic, section: "topic" }, `<div class="content chat-content">${dispatchPanel}${decision}${proposeTask}<section aria-label="${tr("topic.message_history")}">${state.items.length ? state.items.map(m => `<article id="message-${m.id}" class="message${m.attribution.kind === "owner" ? " message--owner" : ""}" data-message-id="${m.id}"><div class="message-body">${m.text === null ? `<p class="literal">${tr("common.source_unavailable")}</p>` : literalContent(m.text)}</div>
-      <div class="message-meta"><span>${escape(attributionLabel(m.attribution))}</span><span class="committed">${icon("check")}${tr("common.saved")}</span><details><summary aria-label="${tr("topic.message_details_and_origin")}">${icon("info")}${tr("topic.details")}</summary><div class="message-detail">${time(m.committedAt)}<br>${sourceLink(project.id, m.source, tr("common.message_origin"))}</div></details></div></article>`).join("") : `<div class="empty-chat"><div>${icon("chat")}<h2>${tr("topic.start_this_conversation")}</h2><p>${tr("topic.keep_ideas_questions_and_things")}</p></div></div>`}</section>
+  return shell(title, { workspace, csrf, project, topics, topic, section: "topic" }, `<div class="content chat-content"${live.length ? ` data-reply-stream="${base}/events" data-reply-cursor="${cursor}"` : ""}>${dispatchPanel}${decision}${proposeTask}<section aria-label="${tr("topic.message_history")}">${state.items.length ? state.items.map(m => { const jit = committedReplies.get(m.id), reply = replies.get(m.id); return `<article id="message-${m.id}" class="message${m.attribution.kind === "owner" ? " message--owner" : jit ? " message--jit" : ""}" data-message-id="${m.id}">${jit ? `<div class="reply-head"><span class="jit-avatar">${logoMark({ size: 20 })}</span><span class="reply-name">${tr("jit.name")}</span></div>` : ""}<div class="message-body">${m.text === null ? `<p class="literal">${tr("common.source_unavailable")}</p>` : literalContent(m.text)}</div>
+      <div class="message-meta"><span>${escape(label(m))}</span><span class="committed">${icon("check")}${tr("common.saved")}</span><details><summary aria-label="${tr("topic.message_details_and_origin")}">${icon("info")}${tr("topic.details")}</summary><div class="message-detail">${time(m.committedAt)}<br>${sourceLink(project.id, m.source, tr("common.message_origin"))}${jit?.discardedTotal ? `<br>${tr("reply.discarded")}: ${jit.discardedTotal} · ${escape(jit.discarded.join(", "))}` : ""}</div></details></div></article>${reply && reply.state !== "answered" ? replyStatus(reply, base, project.id, csrf) : ""}`; }).join("") : `<div class="empty-chat"><div>${icon("chat")}<h2>${tr("topic.start_this_conversation")}</h2><p>${tr("topic.keep_ideas_questions_and_things")}</p></div></div>`}</section>
       <nav class="pagination" aria-label="${tr("topic.message_history_pages")}">${after > 0 ? `<a href="${base}">${tr("common.first_page")}</a>` : ""}${state.hasMore ? `<a href="${base}?after=${state.nextAfter}">${tr("topic.next_messages")}</a>` : ""}</nav></div>`, {
     breadcrumb: { title: project.name, href: `/projects/${project.id}` }, action: `<a class="header-action" href="/projects/${project.id}#new-topic" aria-label="${tr("common.new_topic")}">${icon("plus")}${tr("common.new_topic")}</a>`,
-    composer: `<div class="composer-wrap"><form class="composer" method="post" action="${base}/messages">${hiddenCommand(csrf, topic.revision)}<label class="sr-only" for="text">${tr("topic.your_message")}</label><textarea id="text" name="text" rows="2" maxlength="${messageBytes}" placeholder="${tr("topic.write_a_message_in_this")}" required aria-describedby="composer-note"></textarea><div class="composer-bottom"><span class="composer-topic">${icon("chat")} ${escape(title)}</span><button class="send-button" aria-label="${tr("topic.save_message")}" title="${tr("topic.save_message")}">${icon("arrow")}</button></div></form><p class="composer-note" id="composer-note">${tr("topic.save_a_message_in_this")}</p></div>`,
+    composer: `<div class="composer-wrap"><form class="composer" method="post" action="${base}/messages">${hiddenCommand(csrf, topic.revision)}<label class="sr-only" for="text">${tr("topic.your_message")}</label><textarea id="text" name="text" rows="2" maxlength="${messageBytes}" placeholder="${tr("topic.write_a_message_in_this")}" required aria-describedby="composer-note"></textarea><div class="composer-bottom"><span class="composer-topic">${icon("chat")} ${escape(title)}</span><button class="send-button" aria-label="${tr("topic.send_message")}" title="${tr("topic.send_message")}">${icon("arrow")}</button></div></form><p class="composer-note" id="composer-note">${tr("topic.jit_replies_note")}<span class="composer-keys"> · ${tr("topic.composer_keys")}</span></p></div>`,
   });
 }
 /** Shows exact committed source content with scope/version metadata available for inspection. */
@@ -848,10 +879,20 @@ export function restoreDetailPage(state: { quarantine: RestoreView }, workspace:
 }
 
 /** Owner settings: persisted appearance and language (ui.preferences/v1), plus entries to installation operations. */
-export function settingsPage(preferences: { theme: ThemePreference; language: "auto" | Locale; revision: number }, workspace: Workspace, csrf: string): string {
+export function settingsPage(preferences: { theme: ThemePreference; language: "auto" | Locale; revision: number }, workspace: Workspace, csrf: string, persona?: Persona): string {
   const choice = (name: string, value: string, label: string, current: string) =>
     `<label class="choice"><input type="radio" name="${name}" value="${value}"${value === current ? " checked" : ""}>${label}</label>`;
-  return shell(tr("shell.settings"), { workspace, csrf, section: "settings" }, `<div class="content settings-content">
+  // app.persona/v1: the only Web writer of the persona is this owner form (setup reuses the same command).
+  const personaSection = persona ? `<section class="settings-section" id="persona" aria-labelledby="persona-title"><h2 id="persona-title">${tr("settings.persona")}</h2><p>${tr("settings.persona_note")}</p>
+    <form class="team-form persona-form" method="post" action="/settings/persona">${hiddenCommand(csrf, persona.revision)}
+      <label>${tr("settings.persona_address")}<input name="addressAs" maxlength="60" value="${escape(persona.addressAs)}" autocomplete="off"></label>
+      <label>${tr("settings.persona_self")}<input name="selfReference" maxlength="30" value="${escape(persona.selfReference)}" autocomplete="off"></label>
+      <fieldset class="choice-group"><legend>${tr("settings.persona_language")}</legend>${choice("language", "th", tr("settings.language_th"), persona.language)}${choice("language", "en", tr("settings.language_en"), persona.language)}</fieldset>
+      <fieldset class="choice-group"><legend>${tr("settings.persona_particle")}</legend>${choice("particle", "khrap", tr("settings.persona_particle_khrap"), persona.particle)}${choice("particle", "kha", tr("settings.persona_particle_kha"), persona.particle)}${choice("particle", "none", tr("settings.persona_particle_none"), persona.particle)}</fieldset>
+      <fieldset class="choice-group"><legend>${tr("settings.persona_personality")}</legend>${choice("personality", "calm", tr("settings.persona_calm"), persona.personality)}${choice("personality", "direct", tr("settings.persona_direct"), persona.personality)}${choice("personality", "friendly", tr("settings.persona_friendly"), persona.personality)}</fieldset>
+      <label>${tr("settings.persona_about")}<textarea name="aboutMe" maxlength="600" rows="3">${escape(persona.aboutMe)}</textarea></label>
+      <small>${tr("settings.persona_revision")} ${persona.revision}</small><button class="primary">${tr("settings.persona_save")}</button></form></section>` : "";
+  return shell(tr("shell.settings"), { workspace, csrf, section: "settings" }, `<div class="content settings-content">${personaSection}
     <section class="settings-section" id="appearance" aria-labelledby="appearance-title"><h2 id="appearance-title">${tr("settings.appearance")}</h2><p>${tr("settings.appearance_note")}</p>
     <form method="post" action="/settings/preferences">${hiddenCommand(csrf, preferences.revision)}
       <fieldset class="choice-group"><legend>${tr("settings.theme")}</legend>${choice("theme", "system", tr("settings.theme_system"), preferences.theme)}${choice("theme", "dark", tr("settings.theme_dark"), preferences.theme)}${choice("theme", "light", tr("settings.theme_light"), preferences.theme)}</fieldset>

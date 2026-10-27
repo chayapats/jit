@@ -159,6 +159,9 @@ app.deletion_ledger/v1) are installation state, likewise excluded from images
 (`installationScopedTables` in `src/store.ts`).
 Owner interface preferences (`owner_preferences`; schema 24, ui.preferences/v1)
 hold no credentials and are included in images like other owner configuration.
+Owner persona revisions (`persona_revisions`; schema 25, app.persona/v1) and the
+identity-only Jit reply index (`jit_replies`; schema 25, app.jit_reply/v1) are
+included likewise; reply records themselves live in `team_runs`.
 Activation (`TransactionStore.swapFrom`, used by OPS02 restore and upgrade
 activation) builds the complete replacement image before an atomic rename and
 always keeps the live installation's owner verifier, sessions,

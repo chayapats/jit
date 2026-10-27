@@ -284,6 +284,8 @@ export const backupImageTables: Readonly<Record<string, "include" | "exclude" | 
   messages: "include", owner_decisions: "include", project_groups: "include",
   // ui.preferences/v1 (schema 24): owner theme/language, configuration without credentials.
   owner_preferences: "include",
+  // app.persona/v1 and app.jit_reply/v1 (schema 25): owner persona revisions and identity-only reply index.
+  persona_revisions: "include", jit_replies: "include",
   project_team: "include", projects: "include", restore_quarantines: "include", roles: "include",
   schway_native_refs: "include", source_versions: "include", sources: "include",
   task_events: "include", task_evidence_artifacts: "include", task_proposals: "include", tasks: "include",

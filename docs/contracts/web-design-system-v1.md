@@ -22,7 +22,7 @@ Below 680 px the sidebar becomes a drawer. The menu link targets `#sidebar` and 
 
 ## Scripts
 
-`app.js` is one hand-written ES module loaded with `<script type="module" src>` from the asset table. Pages contain no inline scripts, inline handlers or `javascript:` URLs, and the CSP forbids them. The script only enhances: the drawer, ⌘/Ctrl+Enter submitting the composer through its own form post, and textarea growth where `field-sizing` is unsupported. It sends no requests and stores nothing. Script-initiated mutations added by later tickets must use the existing session cookie, exact `Origin`, `X-CSRF-Token` and idempotent `requestId`, as the JSON API already requires.
+`app.js` is one hand-written ES module loaded with `<script type="module" src>` from the asset table. Pages contain no inline scripts, inline handlers or `javascript:` URLs, and the CSP forbids them. The script only enhances: the drawer, Enter (BOT01; ⌘/Ctrl+Enter in UX01) submitting the composer through its own form post, and textarea growth where `field-sizing` is unsupported. It stores nothing. Since BOT01 it opens one read-only `EventSource` on a topic with a live Jit reply ([app.jit_reply/v1](jit-reply-v1.md)); it still posts nothing itself. Script-initiated mutations added by later tickets must use the existing session cookie, exact `Origin`, `X-CSRF-Token` and idempotent `requestId`, as the JSON API already requires.
 
 ## Evidence
 

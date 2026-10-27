@@ -228,7 +228,7 @@ async function fullUpgrade(f: Fixture) {
 
 test("preflight matrix: one supported target, sequential sources, downgrade/forward/newer/too-old rejection, exact engine contract", () => {
   expect(planUpgrade(schemaVersion, schemaVersion, upgradeEngineContract)).toMatchObject({ compatible: true, reason: null });
-  expect(planSchema(17, schemaVersion)).toEqual({ compatible: true, reason: null, migrations: [18, 19, 20, 21, 22, 23, 24].filter(v => v <= schemaVersion) });
+  expect(planSchema(17, schemaVersion)).toEqual({ compatible: true, reason: null, migrations: [18, 19, 20, 21, 22, 23, 24, 25].filter(v => v <= schemaVersion) });
   expect(planSchema(schemaVersion, 99)).toMatchObject({ compatible: false, reason: "forward_upgrade_unsupported" });
   expect(planSchema(schemaVersion, schemaVersion - 1)).toMatchObject({ compatible: false, reason: "downgrade_rejected" });
   expect(planSchema(99, 99)).toMatchObject({ compatible: false, reason: "newer_schema_unsupported" });
@@ -631,7 +631,7 @@ function serviceFor(root: string): ServiceConfig {
 /** Rewinds a fresh current store to a historical fixture schema by removing tables later migrations add. */
 function historical(path: string, version: number) {
   const db = new Database(path);
-  const drops: Record<number, string[]> = { 24: ["owner_preferences"], 23: ["lifecycle_ledger", "lifecycle_checkpoint"], 22: [], 21: ["schway_native_refs"], 20: ["restore_quarantines"], 19: ["upgrade_journal"], 18: ["export_artifacts"] };
+  const drops: Record<number, string[]> = { 25: ["jit_replies", "persona_revisions"], 24: ["owner_preferences"], 23: ["lifecycle_ledger", "lifecycle_checkpoint"], 22: [], 21: ["schway_native_refs"], 20: ["restore_quarantines"], 19: ["upgrade_journal"], 18: ["export_artifacts"] };
   const triggers: Record<number, string[]> = { 23: ["lifecycle_ledger_deletion", "lifecycle_ledger_suppression", "lifecycle_ledger_suppressed_claim", "lifecycle_ledger_suppressed_source"] };
   for (let v = schemaVersion; v > version; v--) {
     for (const trigger of triggers[v] ?? []) db.exec(`DROP TRIGGER IF EXISTS ${trigger}`);
@@ -642,7 +642,7 @@ function historical(path: string, version: number) {
 }
 
 test("boot never migrates an older installation; the owner upgrade migrates staged copies from every supported schema", async () => {
-  for (const version of [17, 18, 19, 20, 21, 22, 23]) {
+  for (const version of [17, 18, 19, 20, 21, 22, 23, 24]) {
     const root = mkdtempSync(join(tmpdir(), "jit-ops-upgrade-legacy-")); roots.push(root);
     const path = join(root, "state.sqlite");
     const config = readConfig({ JIT_DATABASE: path });

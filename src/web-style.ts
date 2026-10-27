@@ -291,6 +291,21 @@ button.danger:hover { background: var(--danger-bg); color: var(--danger); }
 .message--owner { align-items: flex-end; }
 .message-body { max-width: min(100%, 68ch); min-width: 0; font-size: 15px; line-height: 1.7; }
 .message--owner .message-body { background: var(--surface-2); border: 1px solid var(--line); border-radius: 14px 12px 4px 12px; padding: 10px 14px; }
+/* Jit replies (BOT01): plain text on the page, a small mark, and a status card until the reply commits. */
+.reply-head { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--muted); }
+.jit-avatar { display: inline-flex; color: var(--fg); }
+.reply-status .message-body { color: var(--muted); }
+.reply-progress { font-size: 14px; }
+.reply-provisional, .reply-next { font-size: 12px; color: var(--faint); margin-top: 4px; }
+.reply-next { color: var(--muted); }
+.reply-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 12px; }
+.reply-actions form { display: inline; }
+.reply-actions button { min-height: 32px; padding: 4px 14px; border: 1px solid var(--line-strong); border-radius: 999px; background: transparent; color: var(--fg); font: inherit; cursor: pointer; }
+.reply-actions button:hover { background: var(--surface-3); }
+.reply-actions a { color: var(--muted); }
+[hidden] { display: none !important; }
+.composer-keys { display: none; }
+[data-enhanced] .composer-keys { display: inline; }
 .literal { white-space: pre-wrap; overflow-wrap: anywhere; color: inherit; }
 .literal + .literal { margin-top: 10px; }
 pre { margin: 10px 0; background: var(--canvas); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; overflow-x: auto; max-width: 100%; line-height: 1.6; tab-size: 2; }
@@ -365,6 +380,11 @@ pre:last-child { margin-bottom: 0; }
   padding: 8px 12px;
 }
 .team-form textarea { resize: vertical; min-height: 96px; line-height: 1.55; }
+/* Choice pills (persona form) keep their own look inside a team form. */
+.team-form .choice { display: inline-flex; color: var(--fg); font-size: 13px; font-weight: 400; }
+.team-form .choice:has(input:checked) { color: var(--on-fg); }
+.team-form .choice input { width: auto; min-height: 0; padding: 0; border: 0; border-radius: 0; background: none; color: inherit; }
+.persona-form .choice-group { margin: 0; }
 .job-create input[type=hidden], .team-form input[type=hidden] { display: none; }
 .job-create p, .job-card p, .team-card p { font-size: 14px; color: var(--muted); margin-block: 8px; }
 .job-card > p:first-of-type, .team-card > p:first-of-type { color: var(--text); }
