@@ -16,7 +16,7 @@ import { renderWith, replyLabels, replyTone, settingsPage, type NavigationWorksp
 import type { SetPreferencesCommand } from "./preferences";
 import type { SetPersonaCommand } from "./persona";
 import type { JitReplyView, StopReplyCommand } from "./team/jit-reply";
-import { defaultPanelTab, legacyRedirect, panelTabs, searchLimits, settingsPageHandler, type PanelTab } from "./web-settings";
+import { defaultPanelTab, legacyRedirect, panelRows, panelTabs, searchLimits, settingsPageHandler, type PanelTab } from "./web-settings";
 import { searchItems, searchPage, settingsDataPage, settingsTelegramPage, topicPanelPage, type PanelData } from "./web-navigation";
 
 /** ADR 0028 Content-Security-Policy: every page, asset and API response allows only this origin, and no inline script or eval. */
@@ -319,12 +319,14 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       }
       if (request.method === "GET" && upgradesRoute) {
         const state = { ...app.upgrades(auth.actor), status: app.upgradeStatus(auth.actor) };
-        const revision = nav().revision;
+        const revision = app.workspace(auth.actor).revision;
         return api ? json(state) : page(() => upgradesPage(state, nav(), auth.csrf, revision));
       }
       if (request.method === "GET" && upgradeRoute) {
         const state = app.upgrade(auth.actor, upgradeRoute[2]!);
-        return api ? json(state) : page(() => upgradeDetailPage(state, nav(), auth.csrf, nav().revision));
+        if (api) return json(state);
+        const workspace = nav();
+        return page(() => upgradeDetailPage(state, workspace, auth.csrf, workspace.revision));
       }
       if (request.method === "GET" && (restoresRoute || restoreRoute)) {
         // ops.quarantined_restore/v1: restore status and remediation stay available while the read gate holds;
@@ -342,7 +344,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       }
       if (request.method === "GET" && backupsRoute) {
         const state = app.backups(auth.actor);
-        const revision = nav().revision;
+        const revision = app.workspace(auth.actor).revision;
         return api ? json(state) : page(() => backupsPage(state, nav(), auth.csrf, revision));
       }
       if (request.method === "GET" && backupRoute) {
@@ -414,7 +416,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       }
       if (request.method === "POST" && (upgradesRoute || upgradeRoute)) {
         const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
-        const revision = nav().revision;
+        const revision = app.workspace(auth.actor).revision;
         const number = (value: unknown) => typeof value === "string" && /^\d{1,15}$/.test(value) ? Number(value) : value;
         if (upgradesRoute) {
           if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "targetSchema", "note"].includes(key))) throw new AppError("invalid_body");
@@ -708,9 +710,9 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const tabs = url.searchParams.getAll("tab");
         const tab = (tabs.length === 0 ? defaultPanelTab : tabs.length === 1 && (panelTabs as readonly string[]).includes(tabs[0]!) ? tabs[0] : null) as PanelTab | null;
         if (!tab) throw new AppError("invalid_panel_tab");
-        const { project, topic } = app.conversation(auth.actor, projectId!, topicId!);
-        const data: PanelData = tab === "memory" ? { tab, state: app.memory(auth.actor, project.id) } : tab === "tasks" ? { tab, state: app.tasks(auth.actor, project.id) }
-          : tab === "jobs" ? { tab, state: app.jobs(auth.actor, project.id) } : tab === "pr" ? { tab, state: app.prReports(auth.actor, project.id) } : { tab, state: app.team(auth.actor, project.id) };
+        const { project, topic } = app.topic(auth.actor, projectId!, topicId!);
+        const data: PanelData = tab === "memory" ? { tab, state: app.memory(auth.actor, project.id) } : tab === "tasks" ? { tab, state: app.topicTasks(auth.actor, project.id, topic.id, panelRows * 3) }
+          : tab === "jobs" ? { tab, state: app.recentJobs(auth.actor, project.id, panelRows) } : tab === "pr" ? { tab, state: app.prReports(auth.actor, project.id) } : { tab, state: app.team(auth.actor, project.id) };
         return page(() => topicPanelPage(project, topic, app.topics(auth.actor, project.id).items, data, nav(), auth.csrf));
       }
       if (request.method === "GET" && topicRoute) {

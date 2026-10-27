@@ -11,7 +11,7 @@ import { lookupSource, requireId, requireReference, type SourceReference, type S
 import { readTelegramStatus } from "./telegram/channel";
 import type { TelegramStatus } from "./telegram/types";
 import type { SessionReconciliation } from "./jobs/reconcile";
-import type { JobStopOutcome } from "./jobs/types";
+import type { Job, JobStopOutcome } from "./jobs/types";
 import { readAttempts } from "./jobs/attempts";
 import { JobQueue, jobCommandIdentity, projectJob, readJob, readJobs } from "./jobs/queue";
 import type { EnqueueJobCommand, ResumeJobCommand, JobCommand, JobReceipt } from "./jobs/types";
@@ -40,7 +40,7 @@ import type {
   DeliveryResendReceipt, DeliveryRetireReceipt, ResendDeliveryCommand, RetireDeliveryCommand,
 } from "./delivery";
 import {
-  applyTask, isTaskCommand, readProjectContinuity, readTaskCompletionPolicy, readTaskList, readTaskModel, taskIdentity,
+  applyTask, countOwnerTaskQueue, isTaskCommand, readProjectContinuity, readTaskCompletionPolicy, readTaskList, readTaskModel, readTopicTasks, taskIdentity,
   type ProjectContinuity, type TaskChannel, type TaskCommand, type TaskList, type TaskReadModel, type TaskReceipt,
 } from "./tasks";
 
@@ -351,13 +351,11 @@ export class Application {
     for (const id of projectIds) requireId(id);
     return this.store.read(tx => {
       this.#requireOwner(tx, actor, ["web", "telegram"]);
-      const result: Record<string, ProjectAttention> = Object.fromEntries(projectIds.map(id => [id, { proposals: 0, reviews: 0, resumes: 0 }]));
+      // Close reviews use the task list's current-evidence projection, so badge and task page agree.
+      const tasks = countOwnerTaskQueue(tx, projectIds, 500);
+      const result: Record<string, ProjectAttention> = Object.fromEntries(projectIds.map(id => [id, { ...tasks[id]!, resumes: 0 }]));
       if (!projectIds.length) return result;
       const marks = projectIds.map(() => "?").join(", ");
-      for (const row of tx.all<{ projectId: string; state: string; count: number }>(`SELECT project_id AS projectId, state, count(*) AS count FROM tasks
-          WHERE project_id IN (${marks}) AND state IN ('proposed', 'ready_for_review') GROUP BY project_id, state`, ...projectIds)) {
-        result[row.projectId]![row.state === "proposed" ? "proposals" : "reviews"] = row.count;
-      }
       for (const row of tx.all<{ projectId: string; count: number }>(`SELECT project_id AS projectId, count(*) AS count FROM jobs
           WHERE project_id IN (${marks}) AND state = 'waiting' GROUP BY project_id`, ...projectIds)) result[row.projectId]!.resumes = row.count;
       return result;
@@ -378,16 +376,44 @@ export class Application {
       const projects = tx.all<Project>(`SELECT p.id, p.name, p.revision, g.id AS groupId, p.created_at AS createdAt
         FROM projects p JOIN project_groups g ON g.project_id = p.id WHERE instr(lower(p.name), lower(?)) > 0
         ORDER BY p.created_at DESC, p.id LIMIT ?`, needle, limits.projects + 1);
+      // Candidates are bounded (4× the topic limit) and projected through the normal topic read, so an unavailable
+      // title is never returned and does not use up a result slot.
+      const scan = limits.topics * 4;
       const rows = tx.all<{ id: string; projectId: string; projectName: string }>(`SELECT t.id, t.project_id AS projectId, p.name AS projectName
         FROM topics t JOIN projects p ON p.id = t.project_id JOIN sources s ON s.id = t.source_id
         JOIN source_versions v ON v.source_id = t.source_id AND v.revision = t.source_revision AND v.generation = t.source_generation
         WHERE s.availability = 'available' AND v.content_text IS NOT NULL AND instr(lower(v.content_text), lower(?)) > 0
-        ORDER BY t.created_at DESC, t.id LIMIT ?`, needle, limits.topics + 1);
-      // Each candidate is projected through the normal topic read, so an unavailable title is never returned.
-      const topics = rows.slice(0, limits.topics).map(row => ({ project: { id: row.projectId, name: row.projectName }, topic: readTopic(tx, row.projectId, row.id) }))
+        ORDER BY t.created_at DESC, t.id LIMIT ?`, needle, scan);
+      const visible = rows.map(row => ({ project: { id: row.projectId, name: row.projectName }, topic: readTopic(tx, row.projectId, row.id) }))
         .filter(item => item.topic.title !== null);
-      return { query: needle, projects: projects.slice(0, limits.projects), topics,
-        more: { projects: projects.length > limits.projects, topics: rows.length > limits.topics } };
+      return { query: needle, projects: projects.slice(0, limits.projects), topics: visible.slice(0, limits.topics),
+        more: { projects: projects.length > limits.projects, topics: visible.length > limits.topics || rows.length === scan } };
+    });
+  }
+
+  /** Resolves one topic and its project without reading messages (topic panel). */
+  topic(actor: OwnerActor, projectId: string, topicId: string): { project: Project; topic: Topic } {
+    requireId(projectId); requireId(topicId);
+    return this.store.read(tx => { this.#requireOwner(tx, actor); return { project: this.#project(tx, projectId), topic: readTopic(tx, projectId, topicId) }; });
+  }
+
+  /** Topic panel tasks: the topic's open tasks under the task list's current-evidence projection, newest first. */
+  topicTasks(actor: OwnerActor, projectId: string, topicId: string, limit: number) {
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor);
+      const project = this.#project(tx, projectId); readTopic(tx, projectId, topicId);
+      return { project, ...readTopicTasks(tx, projectId, topicId, limit) };
+    });
+  }
+
+  /** Topic panel jobs: jobs waiting on the owner first, then the newest, at most `limit`; a read only. */
+  recentJobs(actor: OwnerActor, projectId: string, limit: number) {
+    requireId(projectId);
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor);
+      const project = this.#project(tx, projectId), now = this.#now();
+      const rows = tx.all<{ record_json: string }>("SELECT record_json FROM jobs WHERE project_id = ? ORDER BY (state = 'waiting') DESC, sequence DESC LIMIT ?", projectId, limit);
+      return { project, items: rows.map(row => projectJob(JSON.parse(row.record_json) as Job, now)) };
     });
   }
 

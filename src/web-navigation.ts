@@ -35,11 +35,10 @@ export function searchPage(response: SearchResponse, workspace: NavigationWorksp
     return rows.length ? `<section aria-labelledby="search-${kind}"><h2 class="section-heading" id="search-${kind}">${heading}</h2><ul class="search-results">${rows.map(item =>
       `<li><a href="${escape(item.href)}"><span class="search-kind">${kinds[item.kind]}</span><span class="search-label">${escape(item.label)}</span>${item.detail ? `<span class="search-detail">${escape(item.detail)}</span>` : ""}</a></li>`).join("")}</ul></section>` : "";
   };
-  const found = response.items.some(item => item.kind !== "command");
   return shell(tr("search.title"), { workspace, csrf, section: "search" }, `<div class="content search-content">
     <form class="create-form search-form" method="get" action="/search" role="search"><label class="sr-only" for="search-query">${tr("search.query")}</label><input id="search-query" name="q" type="search" maxlength="${searchLimits.query}" value="${escape(response.query)}" placeholder="${tr("search.placeholder")}" autocomplete="off"><button class="primary">${tr("search.submit")}${icon("search")}</button></form>
     <p class="search-note">${tr("search.scope_note")}</p>
-    ${response.query && !found ? `<p class="empty-list" role="status">${tr("search.no_results")}</p>` : ""}
+    ${response.query && !response.items.length ? `<p class="empty-list" role="status">${tr("search.no_results")}</p>` : ""}
     ${group("project", tr("search.projects"))}${group("topic", tr("search.topics"))}${group("command", tr("search.commands"))}
     ${response.more ? `<p role="status">${tr("search.refine")}</p>` : ""}</div>`);
 }
@@ -47,8 +46,8 @@ export function searchPage(response: SearchResponse, workspace: NavigationWorksp
 /** Read models for one topic panel tab; only the open tab is read. */
 export type PanelData =
   | { tab: "memory"; state: ReturnType<Application["memory"]> }
-  | { tab: "tasks"; state: ReturnType<Application["tasks"]> }
-  | { tab: "jobs"; state: ReturnType<Application["jobs"]> }
+  | { tab: "tasks"; state: ReturnType<Application["topicTasks"]> }
+  | { tab: "jobs"; state: ReturnType<Application["recentJobs"]> }
   | { tab: "pr"; state: ReturnType<Application["prReports"]> }
   | { tab: "team"; state: ReturnType<Application["team"]> };
 
@@ -63,8 +62,7 @@ function panelContent(project: Project, topic: Topic, data: PanelData): string {
     return `${list(rows, tr("panel.no_memory"))}${more(`${base}/memory`, tr("panel.open_memory"))}`;
   }
   if (data.tab === "tasks") {
-    const mine = (tasks: typeof data.state.proposed) => tasks.filter(task => task.topicId === topic.id);
-    const waiting = [...mine(data.state.proposed), ...mine(data.state.readyForReview)], accepted = mine(data.state.accepted);
+    const waiting = [...data.state.proposed, ...data.state.readyForReview], accepted = data.state.accepted;
     const row = (task: (typeof waiting)[number]) => `<a href="${base}/tasks/${task.id}">${escape(task.title)}</a>${pill(task.state, taskStatusText(task))}`;
     return `<h3 class="panel-heading">${tr("panel.waiting_on_you")} <span class="panel-count">${waiting.length}</span></h3>${list(waiting.map(row), tr("panel.nothing_waiting"))}
       <h3 class="panel-heading">${tr("tasks.accepted_tasks")}</h3>${list(accepted.map(row), tr("tasks.no_accepted_tasks_yet"))}

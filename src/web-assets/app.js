@@ -147,8 +147,9 @@ if (palette && typeof palette.showModal === "function") {
   const status = palette.querySelector(".palette-status");
   let options = [], active = -1, timer = 0, ticket = 0, controller = null, opener = null;
   const kindLabel = kind => palette.dataset[`kind${kind.charAt(0).toUpperCase()}${kind.slice(1)}`] ?? "";
+  // index < 0 or no rows clears the active row; otherwise the index wraps around the list.
   const setActive = index => {
-    active = options.length ? (index + options.length) % options.length : -1;
+    active = options.length && index >= 0 ? index % options.length : -1;
     options.forEach((option, i) => option.setAttribute("aria-selected", String(i === active)));
     if (active < 0) return input.removeAttribute("aria-activedescendant");
     input.setAttribute("aria-activedescendant", options[active].id);
@@ -216,20 +217,24 @@ if (palette && typeof palette.showModal === "function") {
     back?.focus?.();
   });
   input.addEventListener("input", () => {
+    // Rows on screen belong to the previous query: Enter must not open them while the new one is pending.
+    ticket++;
+    setActive(-1);
     window.clearTimeout(timer);
     timer = window.setTimeout(search, 120);
   });
   input.addEventListener("keydown", event => {
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
-      setActive(active + (event.key === "ArrowDown" ? 1 : -1));
+      setActive(event.key === "ArrowDown" ? active + 1 : (active < 0 ? 0 : active) - 1 + options.length);
     } else if (event.key === "Enter" && active >= 0) {
       event.preventDefault();
       go(options[active].dataset.href);
     }
   });
   document.addEventListener("keydown", event => {
-    if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key?.toLowerCase() === "k") {
+    // event.code keeps the shortcut on the physical K key under non-Latin layouts such as Thai Kedmanee.
+    if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && (event.code === "KeyK" || event.key?.toLowerCase() === "k")) {
       event.preventDefault();
       if (palette.open) palette.close();
       else open();

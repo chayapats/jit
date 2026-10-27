@@ -9,7 +9,7 @@ import { logoLockup, logoMark } from "./web-logo";
 import type { JitReplyView } from "./team/jit-reply";
 import type { Persona } from "./persona";
 import type { DecisionReadModel, Discussion, RoleRoute } from "./team/types";
-import { panelTabLabels, panelTabs, settingsSections, type PanelTab, type SettingsSectionId } from "./web-settings";
+import { panelTabLabels, panelTabs, searchLimits, settingsSections, type PanelTab, type SettingsSectionId } from "./web-settings";
 
 /** Escapes literal untrusted content before it enters HTML text or attributes. */
 export const escape = (value: unknown) => String(value).replace(/[&<>"']/g, char =>
@@ -116,7 +116,7 @@ function palette(): string {
     data-empty="${tr("search.no_results")}" data-loading="${tr("search.searching")}" data-error="${tr("search.unavailable")}" data-more="${tr("search.more_on_page")}">
     <h2 class="sr-only" id="palette-title">${tr("search.title")}</h2>
     <form class="palette-form" method="get" action="/search" role="search">${icon("search")}<label class="sr-only" for="palette-query">${tr("search.query")}</label>
-    <input id="palette-query" name="q" type="search" maxlength="100" autocomplete="off" spellcheck="false" placeholder="${tr("search.placeholder")}" role="combobox" aria-expanded="false" aria-controls="palette-results" aria-autocomplete="list"></form>
+    <input id="palette-query" name="q" type="search" maxlength="${searchLimits.query}" autocomplete="off" spellcheck="false" placeholder="${tr("search.placeholder")}" role="combobox" aria-expanded="false" aria-controls="palette-results" aria-autocomplete="list"></form>
     <ul class="palette-results" id="palette-results" role="listbox" aria-label="${tr("search.results")}"></ul>
     <p class="palette-status" role="status" aria-live="polite"></p>
     <p class="palette-hint"><kbd>↑</kbd><kbd>↓</kbd> ${tr("search.hint_move")} · <kbd>${tr("search.key_enter")}</kbd> ${tr("search.hint_open")} · <kbd>${tr("search.key_escape")}</kbd> ${tr("search.hint_close")}</p></dialog>`;

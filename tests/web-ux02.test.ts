@@ -184,6 +184,15 @@ test("topic right panel: closed by default, a separate page without script, one 
   expect((await get(f, `/projects/${other.id}/topics/${t.id}/panel`)).status).toBe(404);
   expect((await get(f, `/api${base}/panel`)).status).toBe(404);
   expect((await get(f, `${base}/panel`, {}, false)).headers.get("location")).toBe("/login");
+  // The tasks tab reads this topic's tasks directly, not a project page filtered afterwards.
+  const busy = topic(f, p.id, "Busy");
+  for (let i = 0; i < f.app.config.pageSize + 1; i++) propose(f, p.id, busy.id, `Busy ${i}`);
+  const fresh = topic(f, p.id, "Fresh");
+  propose(f, p.id, fresh.id, "Fresh proposal");
+  const freshPanel = await (await get(f, `/projects/${p.id}/topics/${fresh.id}/panel?tab=tasks`)).text();
+  expect(freshPanel).toContain("Fresh proposal");
+  expect(freshPanel).toContain('<span class="panel-count">1</span>');
+  expect(freshPanel).not.toContain("Busy 0");
   // Reading the panel never changes state.
   const audit = f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM audit"))!.n;
   for (const tab of panelTabs) await get(f, `${base}/panel?tab=${tab}`);
@@ -229,6 +238,11 @@ test("⌘K query is bounded, read only, scoped to names and titles, and requires
     expect(await response.json()).toEqual({ error: "invalid_query" });
   }
   expect((await get(f, `/search?q=${"a".repeat(searchLimits.query + 1)}`)).status).toBe(400);
+  // A query that matches only navigation commands lists them without claiming there are no results.
+  const commandsOnly = await (await get(f, `/search?q=${encodeURIComponent("Telegram")}`)).text();
+  expect(commandsOnly).toContain('href="/settings/telegram"');
+  expect(commandsOnly).not.toContain(`role="status">${dictionaries.en["search.no_results"]}`);
+  expect(await (await get(f, "/search?q=nothing-matches-this")).text()).toContain(`<p class="empty-list" role="status">${dictionaries.en["search.no_results"]}</p>`);
   // Authorization: no session, no results; a forged cookie is refused the same way.
   let response = await get(f, "/api/search?q=alpha", {}, false);
   expect(response.status).toBe(401);
@@ -356,7 +370,8 @@ function page() {
   const fetched: { url: string; init: any }[] = [];
   const assigned: string[] = [];
   let searchItems: unknown[] = [];
-  let failNext = false;
+  let failNext = false, holdTimers = false;
+  const held: (() => void)[] = [];
   const globals = {
     document: {
       documentElement: { dataset: {} as Record<string, string> },
@@ -368,7 +383,7 @@ function page() {
       adoptNode: (node: FakeElement) => node,
       addEventListener: (type: string, fn: (event: any) => unknown) => { (dom.listeners[type] ??= []).push(fn); },
     },
-    window: { addEventListener() {}, setTimeout: (fn: () => void) => { fn(); return 1; }, clearTimeout() {} },
+    window: { addEventListener() {}, setTimeout: (fn: () => void) => { if (holdTimers) held.push(fn); else fn(); return 1; }, clearTimeout() { held.length = 0; } },
     location: { hash: "", pathname: "/projects/p/topics/t", search: "", assign: (url: string) => assigned.push(url) },
     history: { replaceState() {} },
     CSS: { supports: () => true },
@@ -381,7 +396,7 @@ function page() {
     },
   };
   return { dom, app, toggle, aside, search, palette, input, list, status, fetched, assigned, globals,
-    setResults: (items: unknown[]) => { searchItems = items; }, failNextFetch: () => { failNext = true; } };
+    setResults: (items: unknown[]) => { searchItems = items; }, failNextFetch: () => { failNext = true; }, holdTimers: (hold: boolean) => { holdTimers = hold; } };
 }
 async function load(globals: Record<string, unknown>): Promise<() => void> {
   const saved = new Map(Object.keys(globals).map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
@@ -494,5 +509,23 @@ test("app.js palette contract: ⌘K/Ctrl+K opens on the query field, arrows move
     await Promise.resolve();
     expect(dom.status.textContent).toBe("Unavailable");
     expect(dom.list.children).toEqual([]);
+    dom.palette.close();
+    // Typing clears the previous query's active row, so Enter before the new results submits to /search instead.
+    dom.setResults([{ kind: "command", label: "New chat", detail: null, href: "/" }]);
+    await dom.input.dispatch("keydown", { key: "k", ctrlKey: true });
+    await Promise.resolve();
+    expect(dom.input.getAttribute("aria-activedescendant")).toBe("palette-option-0");
+    dom.holdTimers(true);
+    dom.input.value = "budget";
+    await dom.input.dispatch("input");
+    expect(dom.input.getAttribute("aria-activedescendant")).toBeNull();
+    const pending = await dom.input.dispatch("keydown", { key: "Enter" });
+    expect(pending.defaultPrevented).toBe(false);
+    expect(dom.assigned).toEqual(["/projects/a/topics/b"]);
+    dom.holdTimers(false);
+    dom.palette.close();
+    // The shortcut follows the physical K key under the Thai Kedmanee layout.
+    await dom.input.dispatch("keydown", { key: "า", code: "KeyK", ctrlKey: true });
+    expect(dom.palette.open).toBe(true);
   } finally { restore(); }
 });
