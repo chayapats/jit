@@ -78,6 +78,9 @@ if (chat && typeof EventSource === "function") {
     if (provisional) provisional.hidden = !data.progress;
     show(card.querySelector("[data-reply-next]"), data.next);
     show(card.querySelector("[data-reply-text]"), data.state === "answered" ? data.text : "");
+    // app.role_proposals/v1: cards render on the page itself; an answered reply that carries one shows the link to it.
+    const proposals = card.querySelector("[data-reply-proposals]");
+    if (proposals) proposals.hidden = !(data.state === "answered" && Number.isSafeInteger(data.proposals) && data.proposals > 0);
     if (!live.has(data.state)) card.querySelector("[data-reply-stop]")?.remove();
     if (![...document.querySelectorAll("[data-reply-id]")].some(node => live.has(node.dataset.replyState))) stream.close();
   });

@@ -16,6 +16,7 @@ import { readAttempts } from "./jobs/attempts";
 import { JobQueue, jobCommandIdentity, projectJob, readJob, readJobs } from "./jobs/queue";
 import type { EnqueueJobCommand, ResumeJobCommand, JobCommand, JobReceipt } from "./jobs/types";
 import { mutateTeamConfiguration, readTeam, teamIdentity } from "./team/configuration";
+import { executeRoleProposal, roleProposalIdentity, type RoleProposalCommand, type RoleProposalReceipt } from "./team/role-proposals";
 import { listDiscussions, prepareControl, prepareDispatch, projectDiscussion, readDiscussion } from "./team/dispatch";
 import { acceptDecision, decisionIdentity, prepareSynthesis, readDecisionModel, supersedeDecision } from "./team/decisions";
 import { preparePreview, readPreview } from "./team/preview";
@@ -506,6 +507,7 @@ export class Application {
   execute(actor: OwnerActor, command: SetPreferencesCommand): PreferencesReceipt;
   execute(actor: OwnerActor, command: SetPersonaCommand): PersonaReceipt;
   execute(actor: OwnerActor, command: StopReplyCommand): ReplyReceipt;
+  execute(actor: OwnerActor, command: RoleProposalCommand): RoleProposalReceipt;
   execute(actor: OwnerActor, command: CreateTopicCommand): TopicReceipt;
   execute(actor: OwnerActor, command: SendMessageCommand): MessageReceipt;
   execute(actor: OwnerActor, command: TeamCommand): TeamReceipt;
@@ -525,8 +527,8 @@ export class Application {
   execute(actor: OwnerActor, command: ExportCommand): ExportReceipt;
   execute(actor: OwnerActor, command: UpgradeCommand): Promise<UpgradeReceipt>;
   execute(actor: OwnerActor, command: RestoreCommand): Promise<RestoreReceipt>;
-  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetPersonaCommand | StopReplyCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | PersonaReceipt | ReplyReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt>;
-  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetPersonaCommand | StopReplyCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | PersonaReceipt | ReplyReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt> {
+  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetPersonaCommand | StopReplyCommand | RoleProposalCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | PersonaReceipt | ReplyReceipt | RoleProposalReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt>;
+  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetPersonaCommand | StopReplyCommand | RoleProposalCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | PersonaReceipt | ReplyReceipt | RoleProposalReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt> {
     if (command?.kind?.startsWith("upgrade.")) return this.#upgradeCommand(actor, command as UpgradeCommand);
     if (command?.kind?.startsWith("restore.")) return this.#restoreCommand(actor, command as RestoreCommand);
     // ops.schema_migrations/v1 admission fence (held by an upgrade or, ops.quarantined_restore/v1, a restore):
@@ -552,6 +554,7 @@ export class Application {
     if (command?.kind === "ui.preferences.set") return this.#setPreferences(actor, command);
     if (command?.kind === "persona.set") return this.#setPersona(actor, command);
     if (command?.kind === "jit.reply.stop") return this.#stopReply(actor, command);
+    if (command?.kind === "role.proposal.accept" || command?.kind === "role.proposal.reject" || command?.kind === "role.proposal.revise") return this.#roleProposalCommand(actor, command);
     if (command?.kind === "job.enqueue" || command?.kind === "job.resume" || command?.kind === "job.stop") return this.#jobCommand(actor, command);
     if (command?.kind === "role.save" || command?.kind === "route.save" || command?.kind === "role.preview" ||
         command?.kind === "team.dispatch" || command?.kind === "team.control") return this.#teamCommand(actor, command);
@@ -1678,6 +1681,26 @@ export class Application {
     });
     this.#jobs?.cancelFenced();
     return result;
+  }
+
+  /**
+   * app.role_proposals/v1: the owner's accept, edit or dismiss of one Jit role proposal. Accept writes the role
+   * through `role.save` in this transaction, under this command's single receipt and audit entry.
+   */
+  #roleProposalCommand(actor: OwnerActor, command: RoleProposalCommand): RoleProposalReceipt {
+    const payloadHash = digest(roleProposalIdentity(command, this.config.team));
+    return this.store.transaction(tx => {
+      this.#requireOwner(tx, actor); this.#project(tx, command.projectId);
+      const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
+      if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as RoleProposalReceipt; }
+      const now = this.#now();
+      const receipt = executeRoleProposal(tx, command, this.config.team, now);
+      this.#beforeCommit?.("team");
+      tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(receipt), now);
+      tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);
+      this.#beforeCommit?.("receipt");
+      return receipt;
+    });
   }
 
   #createProject(actor: OwnerActor, command: CreateProjectCommand): ProjectReceipt {

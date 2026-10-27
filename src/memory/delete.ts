@@ -1216,8 +1216,12 @@ function redactDerivedRuns(tx: AppTransaction, sources: SourceEntry[]): void {
       const runId = (parsed.request as { runId?: unknown } | undefined)?.runId;
       if (!runIds.has(parsed.id as string) && !(typeof runId === "string" && runIds.has(runId))) return;
       const outcome = parsed.outcome as { output?: unknown } | null | undefined;
+      // app.role_proposals/v1: Jit's proposal revisions were parsed from that output; owner-authored revisions stay.
+      const proposals = Array.isArray(parsed.roleProposals) ? { roleProposals: (parsed.roleProposals as { revisions?: unknown }[]).map(proposal => ({ ...proposal,
+        revisions: Array.isArray(proposal.revisions) ? proposal.revisions.map((item: Record<string, unknown>) => item?.author === "jit"
+          ? { ...item, name: redactedText, responsibility: redactedText } : item) : proposal.revisions })) } : {};
       const next = { ...parsed, ...(outcome && typeof outcome.output === "string" ? { outcome: { ...outcome, output: redactedText } } : {}),
-        ...("progress" in parsed ? { progress: null } : {}) };
+        ...("progress" in parsed ? { progress: null } : {}), ...proposals };
       if (JSON.stringify(next) !== JSON.stringify(parsed)) tx.run(`UPDATE ${table} SET record_json = ? WHERE rowid = ?`, JSON.stringify(next), row.rowid_);
     }, null);
   }

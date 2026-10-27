@@ -365,6 +365,22 @@ kbd { font: 500 11px/1.6 var(--font-sans); color: var(--fg-2); border: 1px solid
 .reply-actions button { min-height: 32px; padding: 4px 14px; border: 1px solid var(--line-strong); border-radius: 999px; background: transparent; color: var(--fg); font: inherit; cursor: pointer; }
 .reply-actions button:hover { background: var(--surface-3); }
 .reply-actions a { color: var(--muted); }
+/* Proposal card (BOT03 role; shared by later proposal kinds): a team card under the Jit reply that carries it. */
+.proposal-card { margin: -8px 0 22px; max-width: min(100%, 68ch); }
+.proposal-card > header .eyebrow { margin-bottom: 2px; font-size: 12px; }
+.team-card .proposal-meta { font-size: 12px; color: var(--faint); margin-block: 0 8px; }
+.proposal-fields { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 0; font-size: 14px; }
+.proposal-fields dt { color: var(--muted); font-size: 12px; font-weight: 600; line-height: 1.9; }
+.proposal-fields dd { margin: 0; min-width: 0; color: var(--text); overflow-wrap: anywhere; }
+.proposal-dropped { margin-top: 12px; padding-left: 10px; border-left: 2px solid var(--warn-line); font-size: 13px; }
+.team-card .proposal-dropped p { color: var(--warn); font-size: 12px; font-weight: 600; margin-block: 0 4px; }
+.team-card .proposal-dropped ul { margin: 0; gap: 2px; }
+.team-card .proposal-dropped li { border: 0; padding: 0; font-size: 13px; color: var(--muted); }
+.team-card .proposal-note, .team-card .proposal-outcome { font-size: 12px; color: var(--muted); }
+.proposal-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.proposal-actions form { display: inline; }
+.proposal-actions button { border-radius: 999px; }
+@media (max-width: 560px) { .proposal-fields { grid-template-columns: 1fr; gap: 2px; } .proposal-fields dd { margin-bottom: 6px; } }
 [hidden] { display: none !important; }
 .composer-keys { display: none; }
 [data-enhanced] .composer-keys { display: inline; }
