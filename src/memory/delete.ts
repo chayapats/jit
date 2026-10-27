@@ -8,6 +8,7 @@ import { validateManifestRecord, verifyBackupArtifacts } from "../ops/backup";
 import { readExportManifest } from "../ops/export";
 import { lookupSource, requireId, requireReference, type SourceReference } from "../sources";
 import type { AppTransaction, TransactionStore } from "../store";
+import { isRoleProposalView, redactRoleProposals, redactRoleProposalView } from "../team/role-proposals";
 import type { ApplicationRunPort } from "../team/run-port";
 import { fenceStaleContexts, lexicalScore, lexicalTerms } from "./context";
 import { fenceUnavailableExtractions } from "./extract";
@@ -1063,6 +1064,11 @@ const scrubForms = (needles: string[]) =>
  * key such as `projectId` can never corrupt a record's structure.
  */
 function redactStringValues(value: unknown, terms: string[], key: string | null = null): unknown {
+  // app.role_proposals/v1 records follow their typed rule: Jit text only, routes and owner revisions untouched.
+  const rewrite = (text: string) => terms.reduce((next, term) => next.includes(term) ? next.split(term).join(redactedText) : next, text);
+  if (key === "roleProposals") return redactRoleProposals(value, rewrite).value;
+  // A role.proposal.* receipt snapshot: owner revisions stay exact so a replay matches what accept would save.
+  if (key === "proposal" && isRoleProposalView(value)) return redactRoleProposalView(value, rewrite).value;
   if (typeof value === "string") {
     if (key !== null && STRUCTURAL_KEY.test(key)) return value;
     let next = value;
@@ -1200,26 +1206,44 @@ function redactDeliveryText(tx: AppTransaction, intentId: string, reportId: stri
  * structured proposal artifact rendered from a synthesis output), matched by lineage rather than text.
  */
 function redactDerivedRuns(tx: AppTransaction, sources: SourceEntry[]): void {
+  const runOf = (entry: SourceEntry) => tx.get<{ runId: string | null }>(
+    "SELECT json_extract(attribution_json, '$.runId') AS runId FROM source_versions WHERE source_id = ? AND revision = ? AND generation = ?",
+    entry.source.sourceId, entry.source.revision, entry.source.generation)?.runId;
   const derived = sources.filter(entry => entry.relation === "derived_output");
-  if (!derived.length) return;
-  const runIds = new Set<string>();
-  for (const entry of derived) {
-    const row = tx.get<{ runId: string | null }>(
-      "SELECT json_extract(attribution_json, '$.runId') AS runId FROM source_versions WHERE source_id = ? AND revision = ? AND generation = ?",
-      entry.source.sourceId, entry.source.revision, entry.source.generation);
-    if (typeof row?.runId === "string") runIds.add(row.runId);
+  const runIds = new Set<string>(), replyRunIds = new Set<string>(), purgedReplies = new Set<string>();
+  for (const entry of sources) {
+    const runId = runOf(entry);
+    if (typeof runId !== "string") continue;
+    if (entry.relation === "derived_output") runIds.add(runId);
+    // app.role_proposals/v1: a Jit reply output purged in any relation (also the owner's own scope) takes the
+    // proposals parsed from it, so its cards cannot outlive the deleted reply.
+    replyRunIds.add(runId);
   }
-  for (const table of ["team_runs", "coordinator_syntheses"] as const) {
+  for (const table of runIds.size || replyRunIds.size ? ["team_runs", "coordinator_syntheses"] as const : []) {
     scanTable<{ json: string; rowid_: number }>(tx, table, "record_json AS json", row => {
       let parsed: Record<string, unknown>;
       try { parsed = JSON.parse(row.json) as Record<string, unknown>; } catch { return; }
       const runId = (parsed.request as { runId?: unknown } | undefined)?.runId;
-      if (!runIds.has(parsed.id as string) && !(typeof runId === "string" && runIds.has(runId))) return;
+      const matches = (ids: Set<string>) => ids.has(parsed.id as string) || (typeof runId === "string" && ids.has(runId));
+      if (!matches(runIds) && !(table === "team_runs" && parsed.kind === "jit_reply" && matches(replyRunIds))) return;
+      if (parsed.kind === "jit_reply" && Array.isArray(parsed.roleProposals) && parsed.roleProposals.length) purgedReplies.add(parsed.id as string);
       const outcome = parsed.outcome as { output?: unknown } | null | undefined;
+      const proposals = redactRoleProposals(parsed.roleProposals, () => redactedText);
       const next = { ...parsed, ...(outcome && typeof outcome.output === "string" ? { outcome: { ...outcome, output: redactedText } } : {}),
-        ...("progress" in parsed ? { progress: null } : {}) };
+        ...("progress" in parsed ? { progress: null } : {}), ...(proposals.changed ? { roleProposals: proposals.value } : {}) };
       if (JSON.stringify(next) !== JSON.stringify(parsed)) tx.run(`UPDATE ${table} SET record_json = ? WHERE rowid = ?`, JSON.stringify(next), row.rowid_);
     }, null);
+  }
+  // The `proposal` snapshots in role.proposal.* receipts of those replies take the same lineage rule, so a replay
+  // cannot return text the record no longer holds; owner revisions and routes stay exact.
+  for (const replyId of purgedReplies) {
+    scanTable<{ json: string; rowid_: number }>(tx, "command_receipts", "result_json AS json", row => {
+      let parsed: Record<string, unknown>;
+      try { parsed = JSON.parse(row.json) as Record<string, unknown>; } catch { return; }
+      if (!isRoleProposalView(parsed.proposal) || parsed.proposal.replyId !== replyId) return;
+      const view = redactRoleProposalView(parsed.proposal, () => redactedText);
+      if (view.changed) tx.run("UPDATE command_receipts SET result_json = ? WHERE rowid = ?", JSON.stringify({ ...parsed, proposal: view.value }), row.rowid_);
+    }, null, "result_json LIKE ?", [`%${replyId}%`]);
   }
   for (const entry of derived) {
     for (const row of tx.all<{ id: string; json: string }>("SELECT id, record_json AS json FROM decision_proposals WHERE source_id = ? AND source_revision = ? AND source_generation = ?",

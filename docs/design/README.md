@@ -85,6 +85,8 @@ Derived tones (`--line-strong` and the tinted status borders) are `color-mix` va
 
 Composer, message (owner bubble or Jit plain text), team card (collapsible, per-role state with stop and skip), proposal card (role, dispatch or promotion, with accept, edit and dismiss), decision chip, status pill with text, command palette, drawer, right panel, setup steps, toast. Each component exists in dark, light, Thai and English.
 
+The proposal card is `proposalCard` in `src/web-proposal-card.ts` (BOT03). It sits under the Jit reply that carries it. It shows a kind line, the title, a status pill in words, the revision and its author, the fields, a warning-ruled list of what was dropped from Jit's suggestion and an authority note. Actions are plain form posts. BOT03 renders role proposals with it ([app.role_proposals/v1](../contracts/role-proposals-v1.md)), and later kinds pass their own fields and actions.
+
 ## Voice
 
 - Thai is the default. Write short, calm, direct sentences.
@@ -118,3 +120,13 @@ A reply blocked on quota names the next action and keeps the same route:
 The persona form in settings:
 
 ![BOT01 persona settings, light English](assets/bot01-persona-light-en.png)
+
+## BOT03 screenshots
+
+These show a scripted fixture installation ([app.role_proposals/v1](../contracts/role-proposals-v1.md)). Jit's reply carries two role proposals. The first uses a configured route. The second asked for a shell tool, a budget and a route that is not configured; the card lists what was dropped, and the role would use the default route. Both are waiting on the owner: Create, Dismiss or Edit.
+
+![BOT03 role proposal cards, light Thai](assets/bot03-proposal-light-th.png)
+
+The same cards in dark English:
+
+![BOT03 role proposal cards, dark English](assets/bot03-proposal-dark-en.png)

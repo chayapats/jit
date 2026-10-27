@@ -16,6 +16,7 @@ import { renderWith, replyLabels, replyTone, settingsPage, type NavigationWorksp
 import type { SetPreferencesCommand } from "./preferences";
 import type { SetPersonaCommand } from "./persona";
 import type { JitReplyView, StopReplyCommand } from "./team/jit-reply";
+import type { RoleProposalCommand } from "./team/role-proposals";
 import { defaultPanelTab, legacyRedirect, panelRows, panelTabs, searchLimits, settingsPageHandler, type PanelTab } from "./web-settings";
 import { searchItems, searchPage, settingsDataPage, settingsTelegramPage, topicPanelPage, type PanelData } from "./web-navigation";
 
@@ -187,12 +188,14 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       };
       const streamRoute = /^\/projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})\/events$/.exec(pathname);
       const replyStopRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})\/replies\/([a-f0-9-]{36})\/stop$/.exec(pathname);
+      const roleProposalRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})\/replies\/([a-f0-9-]{36})\/proposals\/([a-f0-9-]{36})\/(accept|reject|revise)$/.exec(pathname);
       /** One app.jit_reply/v1 event: persisted state plus localised labels, so the script holds no strings. */
       const replyEvent = (view: JitReplyView) => {
         const labels = renderWith(ui, () => replyLabels(view));
         const found = view.state === "answered" && view.source ? app.source(auth.actor, view.projectId, view.source) : null;
         return { id: view.id, messageId: view.messageId, state: view.state, reason: view.reason, revision: view.revision, progress: view.progress,
-          replyMessageId: view.replyMessageId, text: found?.state === "available" ? found.text : null, tone: replyTone[view.state], label: labels.state, next: labels.next };
+          replyMessageId: view.replyMessageId, text: found?.state === "available" ? found.text : null, tone: replyTone[view.state], label: labels.state, next: labels.next,
+          proposals: view.roleProposals.length };
       };
       if (request.method === "GET" && streamRoute) {
         // ADR 0028: one authenticated SSE stream per open topic, fed only from persisted reply state. Every
@@ -243,6 +246,28 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
           payload: { replyId: replyStopRoute[4] } } as StopReplyCommand;
         const receipt = app.execute(auth.actor, command);
         return api ? json(receipt) : respond(null, 303, { Location: `/projects/${receipt.reply.projectId}/topics/${receipt.reply.topicId}?after=${Math.max(0, receipt.reply.messageSequence - 1)}#reply-${receipt.reply.id}` });
+      }
+      if (request.method === "POST" && roleProposalRoute) {
+        // app.role_proposals/v1: create, edit or dismiss one proposal revision. The form path and the JSON path build
+        // the same command; the service checks the revision, the state and the configured routes.
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        const verb = roleProposalRoute[6] as "accept" | "reject" | "revise";
+        const fields = verb === "revise" ? ["name", "responsibility", "route"] : [];
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", ...fields].includes(key))) throw new AppError("invalid_body");
+        const revision = typeof body.expectedRevision === "string" && /^\d{1,15}$/.test(body.expectedRevision) ? Number(body.expectedRevision) : body.expectedRevision;
+        const target = { topicId: roleProposalRoute[3]!, replyId: roleProposalRoute[4]!, proposalId: roleProposalRoute[5]! };
+        let route = body.route;
+        if (!api && verb === "revise") {
+          // The form's select holds "" for the default route or one configured route as JSON.
+          if (typeof route !== "string") throw new AppError("invalid_body");
+          try { route = route === "" ? null : JSON.parse(route); } catch { throw new AppError("invalid_role_proposal_command"); }
+        }
+        const command = { kind: `role.proposal.${verb}`, requestId: body.requestId, projectId: roleProposalRoute[2], expectedRevision: revision,
+          // Browsers send CRLF line breaks in a textarea; proposals store LF.
+          payload: verb === "revise" ? { ...target, name: body.name, responsibility: typeof body.responsibility === "string" ? body.responsibility.replace(/\r\n?/g, "\n") : body.responsibility, route } : target } as RoleProposalCommand;
+        const receipt = app.execute(auth.actor, command);
+        const p = receipt.proposal;
+        return api ? json(receipt) : respond(null, 303, { Location: `/projects/${p.projectId}/topics/${p.topicId}?after=${Math.max(0, (p.replySequence ?? 1) - 1)}#proposal-${p.id}` });
       }
       if (request.method === "GET" && claimRoute) {
         const revision = Number(url.searchParams.get("revision")), generation = Number(url.searchParams.get("generation"));

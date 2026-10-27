@@ -56,5 +56,7 @@ The checkpoint file (`ledger: "jit.deletion.ledger/v1"`, `contract`, `revision` 
 
 ### Jit reply lineage (app.jit_reply/v1, schema 25)
 
+Role proposals (app.role_proposals/v1) live in the same reply record. When a deletion purges a reply output as a derived output, the name and responsibility of Jit-authored proposal revisions are redacted with it; owner-authored revisions and roles created by acceptance are owner configuration and stay.
+
 A forget also binds every Jit reply output that was given a forgotten source, directly or through an earlier reply, into `memory_suppressed_sources`, and therefore into the lifecycle ledger. It also fences pending replies that cite any of them. The lineage is identity-only (`jit_reply_sources`, `jit_replies.reply_source_id`). Jit reply records live in `team_runs` (`kind: "jit_reply"`) and follow the same deletion scrubbing as other runs.
 
