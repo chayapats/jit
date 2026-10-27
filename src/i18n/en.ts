@@ -1105,6 +1105,7 @@ export const en: Record<MessageKey, string> = {
   "proposal.dropped.route_unconfigured": "A route that is not configured — the default route is used",
   "proposal.dropped.route_invalid": "An invalid route — the default route is used",
   "proposal.dropped.field": "Unsupported field:",
+  "proposal.dropped.redacted": "A field removed by a data deletion",
   "proposal.route_default": "Default route",
   "proposal.route_default_missing": "No default route yet",
   "proposal.closed_by_deletion": "Jit’s suggested text was removed by a data deletion, so this card is closed. It cannot create a role.",

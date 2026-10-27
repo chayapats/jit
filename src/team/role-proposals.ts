@@ -216,12 +216,19 @@ export function executeRoleProposal(tx: AppTransaction, command: RoleProposalCom
   return { proposal: view, ...accepted };
 }
 
+/** Dropped codes the card translates from the dictionary; they never hold model text. */
+const fixedDropped = new Set(["field:tools", "field:tool", "field:budgets", "field:budget", "field:limits", "route:unconfigured", "route:invalid", "field:redacted"]);
+/** Model-named dropped codes that a rewrite touches become `field:redacted`; fixed codes and the count stay. */
+const redactDropped = (codes: unknown, rewrite: (text: string) => string) => Array.isArray(codes)
+  ? codes.map(code => typeof code === "string" && !fixedDropped.has(code) && rewrite(code) !== code ? "field:redacted" : code) : codes;
+
 /**
  * app.role_proposals/v1 data-lifecycle rule, used by deletion, the quoted-copy scrub and restore replay instead of
  * their generic string rewrite. `rewrite` maps one text to its redacted form. Only Jit-authored revisions are
- * rewritten: owner-authored revisions are owner configuration, and routes are opaque configured references, so
- * neither is touched. A rewritten revision that is still open is closed (`superseded`, `closedBy: "deletion"`), so a
- * card rendered before the deletion can never create a role from text the owner did not see.
+ * rewritten (name, responsibility and model-named dropped codes): owner-authored revisions are owner configuration,
+ * and routes are opaque configured references, so neither is touched. A revision whose text is rewritten while it is
+ * still open is closed (`superseded`, `closedBy: "deletion"`), so a card rendered before the deletion can never
+ * create a role from text the owner did not see.
  */
 export function redactRoleProposals(value: unknown, rewrite: (text: string) => string): { value: unknown; changed: boolean } {
   if (!Array.isArray(value)) return { value, changed: false };
@@ -231,13 +238,47 @@ export function redactRoleProposals(value: unknown, rewrite: (text: string) => s
     if (!Array.isArray(revisions)) return proposal;
     return { ...proposal, revisions: revisions.map((item: Record<string, unknown>, index) => {
       if (item?.author !== "jit") return item;
-      const name = typeof item.name === "string" ? rewrite(item.name) : item.name;
-      const responsibility = typeof item.responsibility === "string" ? rewrite(item.responsibility) : item.responsibility;
-      if (name === item.name && responsibility === item.responsibility) return item;
+      const result = redactJitText(item, rewrite);
+      if (result === item) return item;
       changed = true;
-      const open = index === revisions.length - 1 && item.state === "proposed";
-      return { ...item, name, responsibility, ...(open ? { state: "superseded", closedBy: "deletion" } : {}) };
+      return closeIfOpen(result, item, index === revisions.length - 1);
     }) };
   });
   return { value: changed ? next : value, changed };
+}
+
+/**
+ * The same rule for a {@link RoleProposalView} snapshot (the `proposal` of a `role.proposal.*` receipt). An owner
+ * revision stays exact, so a replayed receipt always matches the revision accept would save. A Jit revision is
+ * rewritten and, when open, reported closed, so a replay can never present redacted text as acceptable.
+ */
+export function redactRoleProposalView(value: unknown, rewrite: (text: string) => string): { value: unknown; changed: boolean } {
+  const view = value as Record<string, unknown>;
+  if (!isRoleProposalView(view)) return { value, changed: false };
+  const dropped = redactDropped(view.dropped, rewrite);
+  const head = view.author === "jit" ? redactJitText(view, rewrite) : view;
+  const changedDropped = JSON.stringify(dropped) !== JSON.stringify(view.dropped);
+  if (head === view && !changedDropped) return { value, changed: false };
+  const closing = head !== view && head.textRedacted === true && view.state === "proposed";
+  const { closedBy: _closedBy, ...rest } = head === view ? view : closeIfOpen(head, view, true);
+  return { value: { ...rest, dropped, ...(closing ? { closedByDeletion: true } : {}) }, changed: true };
+}
+
+/** A receipt or record value shaped like a role proposal view (identity fields of app.role_proposals/v1). */
+export const isRoleProposalView = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value) &&
+  typeof (value as Record<string, unknown>).replyId === "string" && Array.isArray((value as Record<string, unknown>).history) &&
+  ((value as Record<string, unknown>).author === "jit" || (value as Record<string, unknown>).author === "owner");
+
+function redactJitText(item: Record<string, unknown>, rewrite: (text: string) => string): Record<string, unknown> {
+  const name = typeof item.name === "string" ? rewrite(item.name) : item.name;
+  const responsibility = typeof item.responsibility === "string" ? rewrite(item.responsibility) : item.responsibility;
+  const dropped = redactDropped(item.dropped, rewrite);
+  const textChanged = name !== item.name || responsibility !== item.responsibility;
+  if (!textChanged && JSON.stringify(dropped) === JSON.stringify(item.dropped)) return item;
+  return { ...item, name, responsibility, dropped, ...(textChanged ? { textRedacted: true } : {}) };
+}
+/** Closes the open head revision whose text a deletion rewrote; a dropped-code-only change leaves the card open. */
+function closeIfOpen(next: Record<string, unknown>, before: Record<string, unknown>, head: boolean): Record<string, unknown> {
+  const { textRedacted, ...rest } = next;
+  return head && textRedacted && before.state === "proposed" ? { ...rest, state: "superseded", closedBy: "deletion" } : rest;
 }

@@ -413,3 +413,42 @@ test("route identity is field-wise and names fit role.save in bytes", async () =
   expect(select).toContain(`value="${JSON.stringify(grok).replaceAll("\"", "&quot;")}" selected`);
   expect(f.app.execute(f.auth.actor, command(f, "accept", edited)).role!.name).toBe("ลำดับ key");
 });
+
+test("a deletion also removes model-named dropped fields from every card state, and keeps fixed codes and the count", async () => {
+  const leaky = (name: string) => ({ kind: "role", name, responsibility: "ตรวจไฟล์ลูกค้า", tools: ["shell"], CustomerSecret_7731: true });
+  const f = await fixture([{ reply: "จิตเสนอผู้เชี่ยวชาญสี่แบบจากข้อความนี้ครับ", proposals: [leaky("รอ"), leaky("แก้แล้ว")] },
+    { reply: "จิตเสนอผู้เชี่ยวชาญอีกสองแบบจากข้อความนี้ครับ", proposals: [leaky("สร้างแล้ว"), leaky("ไม่เอา")] }]);
+  setOwnerDefault(f, codex);
+  const first = await send(f, "ไฟล์ของ CustomerSecret_7731 ต้องมีคนดูแล");
+  const second = await send(f, "อีกชุดสำหรับไฟล์ CustomerSecret_7731");
+  expect(first.roleProposals[0]!.dropped).toEqual(["field:tools", "field:CustomerSecret_7731"]);
+  f.app.execute(f.auth.actor, revise(f, first.roleProposals[1]!, { name: "แก้แล้ว", responsibility: "ตรวจไฟล์ลูกค้า", route: null }));
+  f.app.execute(f.auth.actor, command(f, "accept", second.roleProposals[0]!));
+  f.app.execute(f.auth.actor, command(f, "reject", second.roleProposals[1]!));
+  for (const message of f.app.conversation(f.auth.actor, f.project.id, f.topic.id).items.filter(item => item.attribution.kind === "owner")) deleteSource(f, message.source);
+  for (const view of [...current(f, first), ...current(f, second)]) {
+    expect(view.dropped).toEqual(["field:tools", "field:redacted"]);
+    expect(view.droppedTotal).toBe(2);
+  }
+  expect(current(f, first).map(view => view.state)).toEqual(["superseded", "proposed"]);
+  expect(current(f, second).map(view => view.state)).toEqual(["accepted", "rejected"]);
+  const page = await (await get(f, topicPath(f))).text();
+  expect(page).not.toContain("CustomerSecret_7731");
+  expect(page).toContain("ช่องที่ถูกลบตามคำสั่งลบข้อมูล");
+  expect(f.store.read(tx => tx.all<{ json: string }>("SELECT record_json AS json FROM team_runs").map(row => row.json).join("\n"))).not.toContain("CustomerSecret_7731");
+});
+
+test("a replayed role.proposal.* receipt after a deletion still shows the owner's exact revision", async () => {
+  const phrase = "Confidential phrase review-94-99185";
+  const f = await fixture([{ reply: "จิตเสนอผู้เชี่ยวชาญด้านความปลอดภัยหนึ่งคนครับ", proposals: [security] }]);
+  const reply = await send(f, phrase);
+  const body = { requestId: rid(), expectedRevision: 1, name: "ทบทวนวลี", responsibility: `ดูแล ${phrase}`, route: grok };
+  const path = `/api${proposalPath(f, reply.roleProposals[0]!, "revise")}`;
+  const before = await (await postJson(f, path, body)).json();
+  expect(before.proposal).toMatchObject({ revision: 2, author: "owner", responsibility: `ดูแล ${phrase}`, route: grok });
+  deleteSource(f, f.app.conversation(f.auth.actor, f.project.id, f.topic.id).items[0]!.source);
+  const replay = await (await postJson(f, path, body)).json();
+  expect(replay.proposal).toEqual(before.proposal);
+  const accepted = await postJson(f, `/api${proposalPath(f, reply.roleProposals[0]!, "accept")}`, { requestId: rid(), expectedRevision: replay.proposal.revision });
+  expect((await accepted.json()).role).toMatchObject({ name: replay.proposal.name, responsibility: replay.proposal.responsibility, route: grok });
+});

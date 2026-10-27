@@ -50,6 +50,7 @@ const droppedKeys: Record<string, MessageKey> = {
   "field:tools": "proposal.dropped.tools", "field:tool": "proposal.dropped.tools",
   "field:budgets": "proposal.dropped.budgets", "field:budget": "proposal.dropped.budgets", "field:limits": "proposal.dropped.budgets",
   "route:unconfigured": "proposal.dropped.route_unconfigured", "route:invalid": "proposal.dropped.route_invalid",
+  "field:redacted": "proposal.dropped.redacted",
 };
 /** Dictionary label of one dropped code; other fields show their safe identifier after a generic label. */
 export function droppedLabel(code: string): string {

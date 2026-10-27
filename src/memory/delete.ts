@@ -8,7 +8,7 @@ import { validateManifestRecord, verifyBackupArtifacts } from "../ops/backup";
 import { readExportManifest } from "../ops/export";
 import { lookupSource, requireId, requireReference, type SourceReference } from "../sources";
 import type { AppTransaction, TransactionStore } from "../store";
-import { redactRoleProposals } from "../team/role-proposals";
+import { isRoleProposalView, redactRoleProposals, redactRoleProposalView } from "../team/role-proposals";
 import type { ApplicationRunPort } from "../team/run-port";
 import { fenceStaleContexts, lexicalScore, lexicalTerms } from "./context";
 import { fenceUnavailableExtractions } from "./extract";
@@ -1065,7 +1065,10 @@ const scrubForms = (needles: string[]) =>
  */
 function redactStringValues(value: unknown, terms: string[], key: string | null = null): unknown {
   // app.role_proposals/v1 records follow their typed rule: Jit text only, routes and owner revisions untouched.
-  if (key === "roleProposals") return redactRoleProposals(value, text => terms.reduce((next, term) => next.includes(term) ? next.split(term).join(redactedText) : next, text)).value;
+  const rewrite = (text: string) => terms.reduce((next, term) => next.includes(term) ? next.split(term).join(redactedText) : next, text);
+  if (key === "roleProposals") return redactRoleProposals(value, rewrite).value;
+  // A role.proposal.* receipt snapshot: owner revisions stay exact so a replay matches what accept would save.
+  if (key === "proposal" && isRoleProposalView(value)) return redactRoleProposalView(value, rewrite).value;
   if (typeof value === "string") {
     if (key !== null && STRUCTURAL_KEY.test(key)) return value;
     let next = value;

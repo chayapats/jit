@@ -1107,6 +1107,7 @@ export const th = {
   "proposal.dropped.route_unconfigured": "route ที่ยังไม่ได้ตั้งค่า — ใช้ route เริ่มต้นแทน",
   "proposal.dropped.route_invalid": "route ที่ไม่ถูกต้อง — ใช้ route เริ่มต้นแทน",
   "proposal.dropped.field": "ช่องที่ไม่รองรับ:",
+  "proposal.dropped.redacted": "ช่องที่ถูกลบตามคำสั่งลบข้อมูล",
   "proposal.route_default": "route เริ่มต้น",
   "proposal.route_default_missing": "ยังไม่มี route เริ่มต้น",
   "proposal.closed_by_deletion": "ข้อความที่จิตเสนอถูกลบตามคำสั่งลบข้อมูล การ์ดนี้จึงปิด สร้าง role จากการ์ดนี้ไม่ได้",
