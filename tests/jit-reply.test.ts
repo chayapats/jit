@@ -171,7 +171,7 @@ test("progress is persisted as provisional until commit; a stream cut midway sho
   const page = await (await get(f, `/projects/${f.project.id}/topics/${f.topic.id}`)).text();
   expect(page).toContain("กำลังร่างคำตอบ…");
   expect(page).toContain("ข้อความระหว่างคิด ยังไม่บันทึก");
-  expect(page).toContain(`data-reply-stream="/projects/${f.project.id}/topics/${f.topic.id}/events?watch=${live.id}"`);
+  expect(page).toContain(`data-reply-stream="/projects/${f.project.id}/topics/${f.topic.id}/events"`);
   expect(page).toContain('data-state="thinking"');
   const streamed = events(await (await get(f, `/projects/${f.project.id}/topics/${f.topic.id}/events`)).text());
   expect(streamed.at(-1)!.data).toMatchObject({ id: live.id, state: "thinking", progress: { text: "กำลังร่างคำตอบ…", provisional: true }, text: null, label: "จิตกำลังคิด…" });
@@ -499,7 +499,7 @@ test("app.js contract: the event stream updates reply text with textContent and 
   }
 });
 
-test("the stream reports queue-only transitions to watched replies and acknowledges each change with its own cursor", async () => {
+test("the stream reports queue-only transitions and acknowledges each change with its own cursor", async () => {
   const gates = [deferred<void>(), deferred<void>()];
   let calls = 0;
   const f = await fixture({ script: async request => { await gates[calls++]?.promise; return answer(request, JSON.stringify({ reply: `ตอบ ${calls}` })); } });
@@ -509,13 +509,14 @@ test("the stream reports queue-only transitions to watched replies and acknowled
   const page = await (await get(f, url)).text();
   const stream = /data-reply-stream="([^"]+)" data-reply-cursor="(\d+)"/.exec(page)!;
   const view = replyFor(f, first.message.id);
-  expect(stream[1]).toBe(`${url}/events?watch=${view.id}`);
-  const opened = events(await (await get(f, `${stream[1]}&cursor=${stream[2]}`)).text());
-  expect(opened.map(e => e.data.state)).toEqual(["thinking"]);
-  // A stop from the job page changes only the job; the reply cursor does not move.
+  expect(stream[1]).toBe(`${url}/events`);
+  // The page already shows "thinking" at its cursor; a stream from there has nothing new until something changes.
+  expect(events(await (await get(f, `${stream[1]}?cursor=${stream[2]}`)).text())).toEqual([]);
+  const opened = [{ id: Number(stream[2]) }];
+  // A stop from the job page changes only the job; the job-change trigger still moves the reply cursor.
   const job = f.app.job(f.auth.actor, f.project.id, view.jobId!);
   f.app.execute(f.auth.actor, { kind: "job.stop", requestId: rid(), projectId: f.project.id, expectedRevision: job.revision, payload: { jobId: job.id } });
-  expect(f.app.replyStream(f.auth.actor, f.project.id, f.topic.id, opened[0]!.id).changes).toEqual([]);
+  expect(f.app.replyStream(f.auth.actor, f.project.id, f.topic.id, opened[0]!.id).map(v => v.state)).toEqual(["stopped"]);
   const resumed = events(await (await get(f, stream[1]!, { "last-event-id": String(opened[0]!.id) })).text());
   expect(resumed.map(e => e.data)).toEqual([expect.objectContaining({ id: view.id, state: "stopped", next: "ส่งข้อความอีกครั้งเพื่อให้จิตตอบใหม่" })]);
   gates[0]!.resolve(); await f.queue.idle();
@@ -530,7 +531,27 @@ test("the stream reports queue-only transitions to watched replies and acknowled
   const after = events(await (await get(f, `${url}/events`, { "last-event-id": String(all[0]!.id) })).text());
   expect(after.map(e => e.data.messageId)).toContain(b.message.id);
   expect(after.map(e => e.data.messageId)).not.toContain(a.message.id);
-  expect((await get(f, `${url}/events?watch=not-a-uuid`)).status).toBe(400);
+  // A queued reply that reaches its deadline before admission is reported the same way.
+  const late = send(f, "สี่");
+  const before = Math.max(...events(await (await get(f, `${url}/events`)).text()).map(e => e.id));
+  f.advance(61_000); f.queue.pump(); await f.queue.idle();
+  expect(replyFor(f, late.message.id)).toMatchObject({ state: "failed", reason: "deadline" });
+  expect(events(await (await get(f, `${url}/events`, { "last-event-id": String(before) })).text()).map(e => [e.data.messageId, e.data.state]))
+    .toEqual([[late.message.id, "failed"]]);
+});
+
+test("many live replies stream without a growing URL, across more than one page of changes", async () => {
+  const f = await fixture({ env: { JIT_PAGE_SIZE: "10" } });
+  const url = `/projects/${f.project.id}/topics/${f.topic.id}`;
+  const sent = Array.from({ length: 25 }, (_, index) => send(f, `ข้อความที่ ${index}`));
+  const page = await (await get(f, `${url}?after=15`)).text();
+  expect(page).toContain(`data-reply-stream="${url}/events"`);
+  const first = events(await (await get(f, `${url}/events`)).text());
+  expect(first.map(e => e.data.messageId)).toEqual(sent.map(s => s.message.id));
+  expect(new Set(first.map(e => e.id)).size).toBe(25);
+  while (f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM jobs WHERE state IN ('queued', 'admitted')")!.n)) await settle(f);
+  const done = events(await (await get(f, `${url}/events`, { "last-event-id": String(first.at(-1)!.id) })).text());
+  expect(new Set(done.filter(e => e.data.state === "answered").map(e => e.data.messageId)).size).toBe(25);
 });
 
 test("replies keep their context across message pages without script", async () => {

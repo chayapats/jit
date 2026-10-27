@@ -747,6 +747,16 @@ export class TransactionStore {
             CREATE INDEX IF NOT EXISTS jit_reply_topic ON jit_replies(project_id, topic_id, cursor);
             PRAGMA user_version = 25;
           `);
+          // Every change to a reply's job (admission, reservation, wait, stop, deadline, commit) moves the reply to
+          // the end of the change order, so the event stream replays transitions the queue makes alone. Every real
+          // store has jobs (schema 3); partial legacy fixtures without it have no jobs to watch.
+          if (current < 25 && this.#tx.get("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'jobs'")) this.#db.exec(`
+            CREATE TRIGGER IF NOT EXISTS jit_reply_job_change AFTER UPDATE OF state, record_json ON jobs
+            WHEN json_extract(NEW.record_json, '$.type') = 'team.jit-reply' AND NEW.record_json IS NOT OLD.record_json BEGIN
+              UPDATE jit_replies SET cursor = (SELECT coalesce(max(cursor), 0) + 1 FROM jit_replies)
+              WHERE run_id = (SELECT id FROM team_runs WHERE job_id = NEW.id);
+            END;
+          `);
         }).immediate();
         this.#db.exec("PRAGMA foreign_keys = ON;");
       }

@@ -297,21 +297,15 @@ export function readRepliesFor(tx: AppTransaction, projectId: string, topicId: s
   return new Map([...found.values()].sort((a, b) => a.messageSequence - b.messageSequence).map(view => [view.messageId, view] as const));
 }
 
-/** app.jit_reply/v1: replies of one topic whose persisted state changed after `cursor`, in change order (SSE replay). */
+/**
+ * app.jit_reply/v1: replies of one topic whose persisted state changed after `cursor`, in change order (SSE replay).
+ * The reply record, the reply row and (through the schema 25 `jit_reply_job_change` trigger) every update of the
+ * reply's job move the cursor, so this covers transitions the queue makes alone: a stop from the job page, a
+ * deadline, a budget rejection.
+ */
 export function readReplyChanges(tx: AppTransaction, projectId: string, topicId: string, cursor: number, limit: number): JitReplyView[] {
   return tx.all<Parameters<typeof project>[1]>(`SELECT ${replyColumns} FROM jit_replies WHERE project_id = ? AND topic_id = ? AND cursor > ? ORDER BY cursor LIMIT ?`,
     projectId, topicId, cursor, limit).map(row => project(tx, row));
-}
-
-/**
- * app.jit_reply/v1: replies of one topic whose job can still change state (queued, admitted or waiting).
- * Job transitions do not move the reply cursor, so the SSE stream re-reads these on every poll.
- */
-export function readPendingReplies(tx: AppTransaction, projectId: string, topicId: string, limit: number): JitReplyView[] {
-  return tx.all<Parameters<typeof project>[1]>(`SELECT ${replyColumns.split(", ").map(column => `r.${column}`).join(", ")} FROM jit_replies r
-    JOIN team_runs t ON t.id = r.run_id JOIN jobs j ON j.id = t.job_id
-    WHERE r.project_id = ? AND r.topic_id = ? AND j.state IN ('queued', 'admitted', 'waiting') ORDER BY r.cursor LIMIT ?`,
-  projectId, topicId, limit).map(row => project(tx, row));
 }
 
 /** app.jit_reply/v1: one reply by id within its project. */

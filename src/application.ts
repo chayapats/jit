@@ -4,7 +4,7 @@ import type { AppConfig } from "./config";
 import { TransactionStore, type AppTransaction } from "./store";
 import { preferencesIdentity, readPreferences, writePreferences, type PreferencesReceipt, type SetPreferencesCommand, type UiPreferences } from "./preferences";
 import { personaIdentity, readPersona, writePersona, type Persona, type PersonaReceipt, type SetPersonaCommand } from "./persona";
-import { jitReplyWorkId, admitJitReply, readPendingReplies, readRepliesFor, readReply, readReplyChanges, stopReply, stopReplyIdentity, type JitReplyView, type ReplyReceipt, type StopReplyCommand } from "./team/jit-reply";
+import { jitReplyWorkId, admitJitReply, readRepliesFor, readReplyChanges, stopReply, stopReplyIdentity, type JitReplyView, type ReplyReceipt, type StopReplyCommand } from "./team/jit-reply";
 import { conversationIdentity, mutateConversation, readMessages, readTopic, readTopics, requireCursor,
   type ConversationCommand, type CreateTopicCommand, type SendMessageCommand, type TopicReceipt, type MessageReceipt } from "./conversation";
 import { lookupSource, requireId, requireReference, type SourceReference, type SourceLookup } from "./sources";
@@ -362,22 +362,14 @@ export class Application {
   }
 
   /**
-   * app.jit_reply/v1 event replay: replies whose persisted state changed after `cursor` (in cursor order), every
-   * reply whose job can still change, and the current view of each watched reply of this topic. Watching covers
-   * transitions made by the queue alone (a stop from the job page, a deadline), which move no reply cursor.
-   * The topic event stream is built only from this read, so reconnecting never starts work.
+   * app.jit_reply/v1 event replay: replies of one topic whose persisted state changed after `cursor`, in cursor
+   * order. The topic event stream is built only from this read, so reconnecting never starts work.
    */
-  replyStream(actor: OwnerActor, projectId: string, topicId: string, cursor: number, watch: readonly string[] = []): { changes: JitReplyView[]; pending: JitReplyView[]; watched: JitReplyView[] } {
+  replyStream(actor: OwnerActor, projectId: string, topicId: string, cursor: number): JitReplyView[] {
     requireId(projectId); requireId(topicId); requireCursor(cursor);
-    if (watch.length > 20) throw new AppError("invalid_reply_command");
-    for (const id of watch) requireId(id);
     return this.store.read(tx => {
       this.#requireOwner(tx, actor); this.#project(tx, projectId); readTopic(tx, projectId, topicId);
-      const watched = watch.flatMap(id => {
-        try { const view = readReply(tx, projectId, id); return view.topicId === topicId ? [view] : []; }
-        catch (error) { if (error instanceof AppError && error.code === "reply_not_found") return []; throw error; }
-      });
-      return { changes: readReplyChanges(tx, projectId, topicId, cursor, this.config.pageSize), pending: readPendingReplies(tx, projectId, topicId, 20), watched };
+      return readReplyChanges(tx, projectId, topicId, cursor, this.config.pageSize);
     });
   }
 
