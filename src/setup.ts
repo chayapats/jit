@@ -212,26 +212,27 @@ function savePersona(tx: AppTransaction, requestId: string, changes: Partial<Per
  */
 function saveRoute(tx: AppTransaction, requestId: string, route: RoleRoute, config: AppConfig, now: number): void {
   const generalId = readGeneralSpace(tx)?.projectId ?? null;
-  const team = readTeam(tx, generalId, config.team);
-  const routed = jitCoordinator(team.roles);
-  const coordinator = routed ?? team.roles.find(role => role.kind === "coordinator" && role.enabled);
-  const layer = routed?.effective.layer ?? "owner_default";
-  if (!routed || !sameRoute(routed.effective.route, route)) {
-    if (layer === "project_role" || layer === "project_default") {
-      mutateTeamConfiguration(tx, { kind: "route.save", requestId, projectId: generalId!, expectedRevision: team.projectRevision,
-        payload: { roleId: layer === "project_role" ? routed!.id : null, route } }, config.team, now);
-    } else if (layer === "owner_role") {
-      mutateTeamConfiguration(tx, { kind: "role.save", requestId, projectId: null, expectedRevision: team.ownerRevision, payload: {
-        roleId: routed!.id, name: routed!.name, kind: routed!.kind, responsibility: routed!.responsibility, enabled: true, route } }, config.team, now);
-    } else {
-      mutateTeamConfiguration(tx, { kind: "route.save", requestId, projectId: null, expectedRevision: team.ownerRevision, payload: { roleId: null, route } }, config.team, now);
-    }
-  }
-  if (!coordinator) {
-    const language = uiLanguage(tx), ownerRevision = readTeam(tx, null, config.team).ownerRevision;
-    mutateTeamConfiguration(tx, { kind: "role.save", requestId, projectId: null, expectedRevision: ownerRevision, payload: {
+  // The coordinator comes first, so the layer chosen below is the one that wins for the role that will answer.
+  if (!readTeam(tx, null, config.team).roles.some(role => role.kind === "coordinator" && role.enabled)) {
+    const language = uiLanguage(tx);
+    mutateTeamConfiguration(tx, { kind: "role.save", requestId, projectId: null, expectedRevision: readTeam(tx, null, config.team).ownerRevision, payload: {
       roleId: null, name: dictionaries[language]["setup.coordinator_name"], kind: "coordinator",
       responsibility: dictionaries[language]["setup.coordinator_responsibility"], enabled: true, route: null } }, config.team, now);
+  }
+  const team = readTeam(tx, generalId, config.team);
+  const target = jitCoordinator(team.roles) ?? team.roles.find(role => role.kind === "coordinator" && role.enabled)!;
+  if (!sameRoute(target.effective.route, route)) {
+    const layer = target.effective.layer;
+    if (layer === "project_role" || layer === "project_default") {
+      mutateTeamConfiguration(tx, { kind: "route.save", requestId, projectId: generalId!, expectedRevision: team.projectRevision,
+        payload: { roleId: layer === "project_role" ? target.id : null, route } }, config.team, now);
+    } else if (layer === "owner_role") {
+      mutateTeamConfiguration(tx, { kind: "role.save", requestId, projectId: null, expectedRevision: team.ownerRevision, payload: {
+        roleId: target.id, name: target.name, kind: target.kind, responsibility: target.responsibility, enabled: true, route } }, config.team, now);
+    } else {
+      // owner_default, or nothing resolves yet: the owner default is the layer the coordinator inherits.
+      mutateTeamConfiguration(tx, { kind: "route.save", requestId, projectId: null, expectedRevision: team.ownerRevision, payload: { roleId: null, route } }, config.team, now);
+    }
   }
   if (!sameRoute(jitRole(tx, config)?.effective.route ?? null, route)) throw new AppError("setup_route_not_effective", 409);
 }

@@ -649,3 +649,30 @@ test("the greeting inserts owner text literally: no replacement sequences or nes
   ] as const) expect(setupGreeting({ ...base, addressAs, selfReference })).toBe(expected);
   expect(setupGreeting({ ...base, language: "th", particle: "khrap", addressAs: "พี่ {p} $&" })).toBe("สวัสดีครับ พี่ {p} $& จิตพร้อมแล้ว เรื่องที่ยังไม่อยู่ในโครงการไหน คุยกันตรงนี้ในพื้นที่ทั่วไปได้เลยครับ");
 });
+
+test("connect succeeds for every coordinator state × General project default, and the check uses the chosen route", async () => {
+  for (const coordinator of ["none", "disabled", "enabled"] as const) {
+    const f = await fixture();
+    if (coordinator !== "none") f.app.execute(f.auth.actor, { kind: "role.save", projectId: null, requestId: rid(), expectedRevision: 0,
+      payload: { roleId: null, name: "เดิม", kind: "coordinator", responsibility: "เดิม", enabled: coordinator === "enabled", route: null } });
+    command(f, "setup.wake", { language: "th" });
+    command(f, "setup.connect", { route: grok });
+    await settle(f);
+    const general = f.app.generalSpace(f.auth.actor)!;
+    // A restored image whose General space carries its own default, and (for "disabled") no enabled coordinator any more.
+    f.store.transaction(tx => {
+      tx.run("INSERT OR REPLACE INTO project_team VALUES (?, 1, ?, '{}')", general.projectId, JSON.stringify(codex));
+      if (coordinator !== "enabled") for (const row of tx.all<{ id: string; record_json: string }>("SELECT id, record_json FROM roles")) {
+        tx.run("UPDATE roles SET record_json = ? WHERE id = ?", JSON.stringify({ ...JSON.parse(row.record_json), enabled: false }), row.id);
+      }
+    });
+    const chosen = { ...grok, model: "fixture-grok-chosen" };
+    command(f, "setup.connect", { route: chosen });
+    await settle(f);
+    const enabled = f.app.team(f.auth.actor, general.projectId).roles.filter(role => role.kind === "coordinator" && role.enabled);
+    expect([coordinator, enabled.length, enabled[0]!.effective.route]).toEqual([coordinator, 1, chosen]);
+    expect(f.app.team(f.auth.actor).roles.every(role => role.kind === "coordinator")).toBe(true);
+    expect(f.app.setup(f.auth.actor).connection).toMatchObject({ status: "unverified", route: chosen, roleId: enabled[0]!.id });
+    expect(f.requests.filter(r => r.instructions.operator.includes(setupCheckMarker)).at(-1)!.route).toEqual(chosen);
+  }
+});
