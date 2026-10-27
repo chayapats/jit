@@ -4,7 +4,7 @@ import type { AppConfig } from "./config";
 import { TransactionStore, type AppTransaction } from "./store";
 import { preferencesIdentity, readPreferences, writePreferences, type PreferencesReceipt, type SetPreferencesCommand, type UiPreferences } from "./preferences";
 import { personaIdentity, readPersona, writePersona, type Persona, type PersonaReceipt, type SetPersonaCommand } from "./persona";
-import { applySetup, isSetupCommand, readGeneralSpace, readSetup, setupCheckWorkId, setupIdentity, type GeneralSpace, type SetupCommand, type SetupReceipt, type SetupView } from "./setup";
+import { applySetup, isSetupCommand, readGeneralSpace, readSetup, setupCheckWorkId, setupComplete, setupIdentity, type GeneralSpace, type SetupCommand, type SetupReceipt, type SetupView } from "./setup";
 import { jitReplyWorkId, admitJitReply, readRepliesFor, readReplyChanges, stopReply, stopReplyIdentity, type JitReplyView, type ReplyReceipt, type StopReplyCommand } from "./team/jit-reply";
 import { conversationIdentity, mutateConversation, readMessages, readTopic, readTopics, requireCursor,
   type ConversationCommand, type CreateTopicCommand, type SendMessageCommand, type Topic, type TopicReceipt, type MessageReceipt } from "./conversation";
@@ -548,6 +548,16 @@ export class Application {
     if (this.#upgradeBusy || upgradeFenced(this.store.path)) {
       this.store.read(tx => this.#requireOwner(tx, actor, ["web", "telegram"]));
       throw new AppError(readUpgradeFence(this.store.path)?.holder === "restore" ? "restore_in_progress" : "upgrade_in_progress", 409);
+    }
+    // app.general_space/v1: until the ceremony commits Jit's greeting, the General space takes no project command
+    // from any ingress, so the greeting is always its first message. Stopping or resuming the route check stays open.
+    const scope = (command as { projectId?: unknown } | null)?.projectId;
+    if (typeof scope === "string" && command.kind !== "job.stop" && command.kind !== "job.resume") {
+      this.store.read(tx => {
+        this.#requireOwner(tx, actor, ["web", "telegram"]);
+        // Completion is monotonic, so this check cannot go stale before the command's own transaction.
+        if (readGeneralSpace(tx)?.projectId === scope && !setupComplete(tx)) throw new AppError("setup_incomplete", 409);
+      });
     }
     if (command?.kind === "export.create") return this.#exportCommand(actor, command);
     if (command?.kind === "backup.create") return this.#createBackup(actor, command);

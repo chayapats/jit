@@ -10,6 +10,7 @@ import { readPreferences, writePreferences } from "./preferences";
 import { commitServiceOutput, requireId } from "./sources";
 import type { AppTransaction, TransactionStore } from "./store";
 import { mutateTeamConfiguration, readTeam, requireRoleRoute } from "./team/configuration";
+import { jitCoordinator } from "./team/jit-reply";
 import type { ApplicationRunPort } from "./team/run-port";
 import { normalizePortResult, validateRunRequest } from "./team/scripted-port";
 import { portFailureOutcome, schwayMaxAttempts } from "./team/schway-port";
@@ -115,9 +116,8 @@ export function setupComplete(tx: AppTransaction): boolean {
 }
 
 const sameRoute = (a: RoleRoute | null, b: RoleRoute | null) => !!a && !!b && a.provider === b.provider && a.model === b.model && a.authRoute === b.authRoute;
-/** The enabled coordinator that answers as Jit, as BOT01 admission selects it. */
-const jitRole = (tx: AppTransaction, projectId: string | null, config: AppConfig) =>
-  readTeam(tx, projectId, config.team).roles.find(role => role.kind === "coordinator" && role.enabled) ?? null;
+/** The coordinator that answers as Jit in the General space (or owner scope before it exists), by the app.jit_reply/v1 rule. */
+const jitRole = (tx: AppTransaction, config: AppConfig) => jitCoordinator(readTeam(tx, readGeneralSpace(tx)?.projectId ?? null, config.team).roles) ?? null;
 const uiLanguage = (tx: AppTransaction): Locale => readPreferences(tx).language === "en" ? "en" : "th";
 
 const blockedNext: Record<string, string> = {
@@ -125,9 +125,9 @@ const blockedNext: Record<string, string> = {
 };
 
 function connection(tx: AppTransaction, record: SetupRecord, config: AppConfig): SetupConnection {
-  const general = readGeneralSpace(tx);
-  const jit = jitRole(tx, general?.projectId ?? null, config);
-  const route = jit?.effective.route ?? readTeam(tx, null, config.team).ownerDefault;
+  // Only a route a coordinator actually resolves counts; an owner default with no coordinator cannot answer.
+  const jit = jitRole(tx, config);
+  const route = jit?.effective.route ?? null;
   const base = { route, roleId: jit?.id ?? null, mode: null, check: null };
   if (!route) return { ...base, status: "missing", reason: null, nextAction: "configure_route" };
   const check = record.check;
@@ -146,8 +146,9 @@ function connection(tx: AppTransaction, record: SetupRecord, config: AppConfig):
     return { ...known, status: "unverified", nextAction: "check_again" };
   }
   const job = check.jobId ? readJob(tx, check.projectId, check.jobId) : null;
-  if (job && (job.state === "queued" || job.state === "admitted" || job.state === "waiting")) return { ...base, check: summary, status: "checking", reason: job.reason, nextAction: null };
-  // The job ended without a committed result: stopped, past its deadline or interrupted by a restart.
+  if (job && (job.state === "queued" || job.state === "admitted")) return { ...base, check: summary, status: "checking", reason: job.reason, nextAction: null };
+  // No committed result and nothing running: stopped, past its deadline, or waiting after a restart interrupted it
+  // (the queue never resumes a waiting job by itself, so the owner checks again).
   return { ...base, check: summary, status: "unverified", reason: job?.reason ?? "interrupted", nextAction: "check_again" };
 }
 
@@ -203,31 +204,36 @@ function savePersona(tx: AppTransaction, requestId: string, changes: Partial<Per
 }
 
 /**
- * Saves Jit's route through app.role_configuration/v1. An existing coordinator with its own route gets the new
- * route on that role only, so other roles keep resolving as before. Otherwise the route becomes the owner default
- * and, when no coordinator is enabled, setup creates one (the role that answers as Jit) inheriting it. Setup never
- * creates specialists.
+ * Saves Jit's route through app.role_configuration/v1, on the layer that wins for Jit (app.jit_reply/v1 resolution
+ * in the General space): its project-role override, the General project default, its own role route, or the owner
+ * default. Other roles keep resolving as before. When no coordinator is enabled, setup creates one (the role that
+ * answers as Jit) inheriting the owner default. Setup never creates specialists. Afterwards Jit's effective route
+ * is exactly the submitted route, so the check that follows tests what the owner chose.
  */
 function saveRoute(tx: AppTransaction, requestId: string, route: RoleRoute, config: AppConfig, now: number): void {
-  let team = readTeam(tx, null, config.team);
-  const jit = team.roles.find(role => role.kind === "coordinator" && role.enabled);
-  if (jit?.route) {
-    if (!sameRoute(jit.route, route)) {
+  const generalId = readGeneralSpace(tx)?.projectId ?? null;
+  const team = readTeam(tx, generalId, config.team);
+  const routed = jitCoordinator(team.roles);
+  const coordinator = routed ?? team.roles.find(role => role.kind === "coordinator" && role.enabled);
+  const layer = routed?.effective.layer ?? "owner_default";
+  if (!routed || !sameRoute(routed.effective.route, route)) {
+    if (layer === "project_role" || layer === "project_default") {
+      mutateTeamConfiguration(tx, { kind: "route.save", requestId, projectId: generalId!, expectedRevision: team.projectRevision,
+        payload: { roleId: layer === "project_role" ? routed!.id : null, route } }, config.team, now);
+    } else if (layer === "owner_role") {
       mutateTeamConfiguration(tx, { kind: "role.save", requestId, projectId: null, expectedRevision: team.ownerRevision, payload: {
-        roleId: jit.id, name: jit.name, kind: jit.kind, responsibility: jit.responsibility, enabled: true, route } }, config.team, now);
+        roleId: routed!.id, name: routed!.name, kind: routed!.kind, responsibility: routed!.responsibility, enabled: true, route } }, config.team, now);
+    } else {
+      mutateTeamConfiguration(tx, { kind: "route.save", requestId, projectId: null, expectedRevision: team.ownerRevision, payload: { roleId: null, route } }, config.team, now);
     }
-    return;
   }
-  if (!sameRoute(team.ownerDefault, route)) {
-    mutateTeamConfiguration(tx, { kind: "route.save", requestId, projectId: null, expectedRevision: team.ownerRevision, payload: { roleId: null, route } }, config.team, now);
-    team = readTeam(tx, null, config.team);
-  }
-  if (!jit) {
-    const language = uiLanguage(tx);
-    mutateTeamConfiguration(tx, { kind: "role.save", requestId, projectId: null, expectedRevision: team.ownerRevision, payload: {
+  if (!coordinator) {
+    const language = uiLanguage(tx), ownerRevision = readTeam(tx, null, config.team).ownerRevision;
+    mutateTeamConfiguration(tx, { kind: "role.save", requestId, projectId: null, expectedRevision: ownerRevision, payload: {
       roleId: null, name: dictionaries[language]["setup.coordinator_name"], kind: "coordinator",
       responsibility: dictionaries[language]["setup.coordinator_responsibility"], enabled: true, route: null } }, config.team, now);
   }
+  if (!sameRoute(jitRole(tx, config)?.effective.route ?? null, route)) throw new AppError("setup_route_not_effective", 409);
 }
 
 /**
@@ -249,13 +255,17 @@ export function ensureGeneralSpace(tx: AppTransaction, requestId: string, now: n
   return readGeneralSpace(tx)!;
 }
 
+/** Replaces `{name}` placeholders of a trusted template in one pass; owner text is inserted literally, never re-scanned. */
+const fill = (template: string, values: Readonly<Record<string, string>>) =>
+  template.replace(/\{([a-z]+)\}/g, (token, name: string) => Object.hasOwn(values, name) ? values[name]! : token);
+
 /** Jit's first message in the General space, built from the owner's persona. Fixed product text, never model output. */
 export function setupGreeting(persona: Persona): string {
   const words = dictionaries[persona.language];
   const particle = persona.language === "th" ? persona.particle === "khrap" ? "ครับ" : persona.particle === "kha" ? "ค่ะ" : "" : "";
   const self = persona.selfReference || words["setup.coordinator_name"];
-  const hello = words["setup.greeting_hello"].replaceAll("{p}", particle) + (persona.addressAs ? ` ${persona.addressAs}` : "");
-  return words["setup.greeting"].replaceAll("{hello}", hello).replaceAll("{self}", self).replaceAll("{p}", particle);
+  const hello = fill(words["setup.greeting_hello"], { p: particle }) + (persona.addressAs ? ` ${persona.addressAs}` : "");
+  return fill(words["setup.greeting"], { hello, self, p: particle });
 }
 
 function postGreeting(tx: AppTransaction, general: GeneralSpace, now: number): void {
@@ -288,7 +298,7 @@ function startCheck(tx: AppTransaction, record: SetupRecord, input: SetupContext
     queue.execute(tx, { kind: "job.stop", requestId, projectId: previous.projectId, expectedRevision: previous.revision, payload: { jobId: previous.id } }, generation, now);
   }
   const general = ensureGeneralSpace(tx, requestId, now);
-  const jit = jitRole(tx, general.projectId, config);
+  const jit = jitRole(tx, config);
   if (!jit?.effective.route) throw new AppError("setup_route_required", 409);
   const check: CheckRecord = { id: crypto.randomUUID(), route: structuredClone(jit.effective.route), roleId: jit.id, projectId: general.projectId,
     jobId: null, createdAt: now, notAdmitted: null, result: null };

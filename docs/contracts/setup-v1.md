@@ -14,7 +14,7 @@ Uses `app.persona/v1`, `app.role_configuration/v1`, `app.jit_reply/v1` (coordina
 | Step | Command | Effect, all through existing owner configuration paths |
 | --- | --- | --- |
 | ตื่น (wake) | `setup.wake { language: "th" \| "en" }` | Saves the interface language (`ui.preferences.set` semantics; the theme is kept). The wake page has a TH/EN toggle (`/setup?lang=en`) that previews the other language without saving anything. |
-| เชื่อมจิต (connect) | `setup.connect { route }` | Saves Jit's route. If an enabled coordinator has its own route, only that role's route changes. Otherwise the route becomes the owner default, and a coordinator is created when none is enabled. The coordinator is named "จิต"/"Jit", has a fixed responsibility, and inherits the route. Setup never creates specialists. The same command starts one route check (below). |
+| เชื่อมจิต (connect) | `setup.connect { route }` | Saves Jit's route on the layer that wins for Jit in the General space: its project-role override, the General project default, its own role route, or the owner default. Other roles keep resolving as before. When no coordinator is enabled, setup creates one named "จิต"/"Jit", with a fixed responsibility, inheriting the owner default. Afterwards Jit's effective route is exactly the submitted route (`setup_route_not_effective` otherwise). Setup never creates specialists. The same command starts one route check (below). |
 | | `setup.check {}` | Starts a new check of the current route. No second job is admitted while a check is queued or running. |
 | | `setup.connect.continue {}` | Ends the connect step. It needs a route (`setup_route_required`), but not a verified one: the step shows the evidence, and the owner decides. |
 | รู้จักกัน (know) | `setup.know { addressAs, selfReference, language, particle }` | Writes a persona revision through `app.persona/v1`. The other persona fields are kept. Jit's language defaults to the interface language and can be set separately (FR-25). |
@@ -31,7 +31,7 @@ Each step commits its configuration writes, the setup row, the receipt and the a
 
 ## Route state (FR-13)
 
-`connection` reports Jit's effective route (the enabled coordinator's, resolved as `app.jit_reply/v1` resolves it) and the latest check of exactly that route and role. Saved configuration and found tokens are never evidence.
+`connection` reports Jit's effective route and the latest check of exactly that route and role. Jit is resolved by the same rule replies use (`jitCoordinator` in `src/team/jit-reply.ts`): the first enabled coordinator whose effective route resolves, in the General space. An owner default with no coordinator is `missing`, because nothing can answer with it. Saved configuration and found tokens are never evidence.
 
 | `status` | Meaning | `nextAction` |
 | --- | --- | --- |
@@ -39,21 +39,25 @@ Each step commits its configuration writes, the setup row, the receipt and the a
 | `configured` | A route is saved, but no check covers this exact route, for example after a change in settings. | `check_route` |
 | `checking` | The check job is queued or running. | — |
 | `verified` | The check completed with a non-empty answer in `production` mode on this route. | — |
-| `unverified` | The answer came from the scripted host (`fixture`), the check was inconclusive (an invalid result, a stop, a deadline or an interrupted job), or no job was admitted (`scheduler_unavailable`, `queue_full`). | `connect_live_host_then_check`, `check_again`, `start_service_then_check_again`, `wait_then_check_again` |
+| `unverified` | The answer came from the scripted host (`fixture`), the check was inconclusive (an invalid result, a stop, a deadline, or a job left waiting after a restart, which the queue never resumes alone), or no job was admitted (`scheduler_unavailable`, `queue_full`). | `connect_live_host_then_check`, `check_again`, `start_service_then_check_again`, `wait_then_check_again` |
 | `blocked` | The host reported `needs_login`, `quota`, `route_unavailable` or `unknown_model`. | `sign_in_then_check`, `wait_for_quota_then_check`, `check_route_then_check`, `fix_model_then_check` |
 
 ## Route check
 
-- **Admission.** The check is a `setup.route-check` interactive job admitted through `jobs.queue_admission/v1` inside the owner's connect or check command. A job always belongs to a project, so the first check creates the General space; otherwise the ceremony creates it. A check of an earlier route that is still running is stopped through `job.stop`.
+- **Admission.** The check is a `setup.route-check` interactive job admitted through `jobs.queue_admission/v1` inside the owner's connect or check command. A job always belongs to a project, so the first check creates the General space; otherwise the ceremony creates it. A check that is still queued, running or waiting is stopped through `job.stop` when a new one starts.
 - **Request.** It makes one bounded call through `app.run_port/v1` on the coordinator's exact route. The request has one fixed operator line (`setupCheckMarker`, which names no owner, project or credential), an empty manifest and no tools. Its limits allow one admitted attempt, so a host may replay once after a refresh. The context allows 1024 tokens, the output 256 tokens, and the wall clock 30 s.
 - **Result.** A result commits only through the attempt fence, and only while it is still the current check. Only the outcome's reason code and adapter mode are stored. The model's text is discarded: it reaches neither the setup record nor job evidence, and it writes no configuration. Evidence is a code line, for example `setup-check · fixture · fixture/complete · tools none · check <id>`.
 - **Blocked outcomes.** Quota, sign-in, route and model problems end the check as `blocked`. There is no waiting, retry loop or fallback route.
 - **Job list.** The worker is internal and never offered as a generic start form. Its stored purpose equals `system.setup_check_purpose`, so job pages translate it.
 - **Revision.** A background result never moves the setup revision, so a form the owner is looking at stays valid.
 
+## General space before the ceremony
+
+The General space can exist before the ceremony, because the first check creates it. Until setup is complete, `Application.execute` refuses every project command scoped to it, from every ingress, with `setup_incomplete`. The only exceptions are `job.stop` and `job.resume`, so the check job stays controllable. This covers messages, topics, routes, jobs and tasks, and it guarantees that Jit's greeting is the first message. Reads stay open.
+
 ## Greeting
 
-`setupGreeting(persona)` builds the first message of the General topic from dictionary templates in the persona's language, with the owner's `addressAs`, `selfReference` and particle. It is fixed product text, never model output. It is stored as an output source with `{ kind: "service", service: "jit-setup" }` attribution (`commitServiceOutput`). The topic page shows it as Jit's message, labelled "ข้อความต้อนรับจากการตั้งจิต"/"Welcome message from setup". It is not owner or Jit-reply history, so `app.jit_reply/v1` leaves it out of reply manifests.
+`setupGreeting(persona)` builds the first message of the General topic from dictionary templates in the persona's language, with the owner's `addressAs`, `selfReference` and particle. Placeholders are filled in one pass, and owner text is inserted literally: `$&`, `{self}` and similar sequences are never interpreted. It is fixed product text, never model output. It is stored as an output source with `{ kind: "service", service: "jit-setup" }` attribution (`commitServiceOutput`). The topic page shows it as Jit's message, labelled "ข้อความต้อนรับจากการตั้งจิต"/"Welcome message from setup". It is not owner or Jit-reply history, so `app.jit_reply/v1` leaves it out of reply manifests.
 
 ## Web
 

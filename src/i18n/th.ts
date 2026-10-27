@@ -1304,4 +1304,6 @@ export const th = {
   "error.setup_step_unavailable": "ยังไปขั้นนี้ไม่ได้ ทำขั้นก่อนหน้าให้เสร็จก่อน",
   "error.setup_route_required": "ต้องเลือก model route ให้จิตก่อน",
   "system.setup_check_purpose": "ตรวจการเชื่อมจิต",
+  "error.setup_incomplete": "พื้นที่ทั่วไปเปิดใช้ได้หลังตั้งจิตเสร็จ กลับไปทำขั้นตอนตั้งจิตให้เสร็จก่อน",
+  "error.setup_route_not_effective": "บันทึก route แล้วแต่จิตยังไม่ใช้ route นี้ ตรวจ route ของจิตในตั้งค่าทีมแล้วลองอีกครั้ง",
 } as const;

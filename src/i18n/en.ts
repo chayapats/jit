@@ -1302,4 +1302,6 @@ export const en: Record<MessageKey, string> = {
   "error.setup_step_unavailable": "This step is not available yet. Finish the earlier steps first.",
   "error.setup_route_required": "Choose a model route for Jit first.",
   "system.setup_check_purpose": "Jit connection check",
+  "error.setup_incomplete": "The General space opens once setup is complete. Finish setup first.",
+  "error.setup_route_not_effective": "The route was saved, but Jit does not use it yet. Check Jit’s route in team settings, then try again.",
 };

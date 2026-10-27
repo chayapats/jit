@@ -541,3 +541,111 @@ test("setup tables are owner configuration in backups and the check worker is re
   const { queue } = composeJobQueue(store, config); queues.push(queue);
   expect(queue.registered(setupCheckWorkId)).toBe(true);
 });
+
+test("the General space takes no project command from any ingress until the ceremony, so the greeting is always first", async () => {
+  const f = await fixture();
+  command(f, "setup.wake", { language: "th" });
+  command(f, "setup.connect", { route: grok });
+  await settle(f);
+  const general = f.app.generalSpace(f.auth.actor)!;
+  const topic = f.app.conversation(f.auth.actor, general.projectId, general.topicId).topic;
+  // Reachable from the check-job link, but every write is refused until setup is complete.
+  expect(() => f.app.execute(f.auth.actor, { kind: "message.send", projectId: general.projectId, requestId: rid(), expectedRevision: topic.revision, payload: { topicId: general.topicId, text: "ก่อนตั้งจิต" } })).toThrow("setup_incomplete");
+  expect(() => f.app.execute(f.auth.actor, { kind: "topic.create", projectId: general.projectId, requestId: rid(), expectedRevision: f.app.project(f.auth.actor, general.projectId).revision, payload: { title: "อีกหัวข้อ" } })).toThrow("setup_incomplete");
+  const web = await postForm(f, `/projects/${general.projectId}/topics/${general.topicId}/messages`, { csrf: f.auth.csrf, requestId: rid(), expectedRevision: String(topic.revision), text: "จากฟอร์ม" });
+  expect(web.status).toBe(409);
+  expect(await web.text()).toContain(dictionaries.th["error.setup_incomplete"]);
+  const api = await postJson(f, "/api/projects", { requestId: rid(), expectedRevision: f.app.workspace(f.auth.actor).revision, name: "อื่น" });
+  // Other projects are unaffected.
+  expect(api.status).toBe(200);
+  expect(count(f, "messages")).toBe(0);
+  command(f, "setup.connect.continue", {}); command(f, "setup.know", { addressAs: "", selfReference: "", language: "th", particle: "none" }); command(f, "setup.personality.skip", {});
+  command(f, "setup.complete", {});
+  f.app.execute(f.auth.actor, { kind: "message.send", projectId: general.projectId, requestId: rid(), expectedRevision: topic.revision, payload: { topicId: general.topicId, text: "หลังตั้งจิต" } });
+  const items = f.app.conversation(f.auth.actor, general.projectId, general.topicId).items;
+  expect(items.map(m => [m.sequence, m.attribution.kind])).toEqual([[1, "service"], [2, "owner"]]);
+});
+
+test("setup resolves Jit exactly as replies do: no coordinator, a disabled one, or an unrouted first coordinator", async () => {
+  // An owner default without any coordinator cannot answer, so it is not a connection.
+  const f = await fixture();
+  f.app.execute(f.auth.actor, { kind: "route.save", requestId: rid(), projectId: null, expectedRevision: 0, payload: { roleId: null, route: grok } });
+  const disabled = f.app.execute(f.auth.actor, { kind: "role.save", projectId: null, requestId: rid(), expectedRevision: f.app.team(f.auth.actor).ownerRevision,
+    payload: { roleId: null, name: "ปิดอยู่", kind: "coordinator", responsibility: "ไม่ใช้", enabled: false, route: codex } }).role!;
+  command(f, "setup.wake", { language: "th" });
+  expect(f.app.setup(f.auth.actor).connection).toMatchObject({ status: "missing", route: null, roleId: null });
+  expect(() => command(f, "setup.connect.continue", {})).toThrow("setup_route_required");
+  command(f, "setup.connect", { route: grok });
+  const roles = f.app.team(f.auth.actor).roles;
+  expect(roles.map(role => [role.id === disabled.id, role.kind, role.enabled])).toEqual([[true, "coordinator", false], [false, "coordinator", true]]);
+  expect(f.app.setup(f.auth.actor).connection).toMatchObject({ status: "checking", route: grok, roleId: roles[1]!.id });
+
+  // The first enabled coordinator has no route and the second does: Jit (and setup) is the second one.
+  const g = await fixture();
+  const first = g.app.execute(g.auth.actor, { kind: "role.save", projectId: null, requestId: rid(), expectedRevision: 0,
+    payload: { roleId: null, name: "First without route", kind: "coordinator", responsibility: "a", enabled: true, route: null } }).role!;
+  const second = g.app.execute(g.auth.actor, { kind: "role.save", projectId: null, requestId: rid(), expectedRevision: 1,
+    payload: { roleId: null, name: "Second with route", kind: "coordinator", responsibility: "b", enabled: true, route: codex } }).role!;
+  command(g, "setup.wake", { language: "en" });
+  expect(g.app.setup(g.auth.actor).connection).toMatchObject({ status: "configured", route: codex, roleId: second.id });
+  command(g, "setup.connect", { route: grok });
+  await settle(g);
+  expect(g.app.team(g.auth.actor).roles.map(role => [role.id, role.route])).toEqual([[first.id, null], [second.id, grok]]);
+  expect(g.app.setup(g.auth.actor).connection).toMatchObject({ status: "unverified", route: grok, roleId: second.id });
+  expect(g.requests.filter(r => r.instructions.operator.includes(setupCheckMarker)).map(r => [r.roleId, r.route])).toEqual([[second.id, grok]]);
+});
+
+test("connect writes the layer that wins for Jit in the General space, so the check tests the submitted route", async () => {
+  for (const layer of ["project_default", "project_role"] as const) {
+    const f = await fixture();
+    command(f, "setup.wake", { language: "th" });
+    command(f, "setup.connect", { route: grok });
+    await settle(f);
+    const general = f.app.generalSpace(f.auth.actor)!, jitId = f.app.setup(f.auth.actor).connection.roleId!;
+    // Settings cannot set a General-only route while setup is open (the General space takes no project command yet)…
+    expect(() => f.app.execute(f.auth.actor, { kind: "route.save", requestId: rid(), projectId: general.projectId, expectedRevision: f.app.team(f.auth.actor, general.projectId).projectRevision,
+      payload: { roleId: layer === "project_role" ? jitId : null, route: codex } })).toThrow("setup_incomplete");
+    // …but a restored image can carry one; setup still writes the layer that wins.
+    f.store.transaction(tx => tx.run("INSERT OR REPLACE INTO project_team VALUES (?, 1, ?, ?)", general.projectId,
+      layer === "project_default" ? JSON.stringify(codex) : null, JSON.stringify(layer === "project_role" ? { [jitId]: codex } : {})));
+    expect(f.app.setup(f.auth.actor).connection).toMatchObject({ status: "configured", route: codex });
+    command(f, "setup.connect", { route: { ...grok, model: "fixture-grok-next" } });
+    await settle(f);
+    const team = f.app.team(f.auth.actor, general.projectId);
+    expect([layer, team.roles.find(role => role.id === jitId)!.effective]).toMatchObject([layer, { layer, route: { ...grok, model: "fixture-grok-next" } }]);
+    expect(f.app.setup(f.auth.actor).connection).toMatchObject({ status: "unverified", route: { ...grok, model: "fixture-grok-next" } });
+    expect(f.requests.filter(r => r.instructions.operator.includes(setupCheckMarker)).at(-1)!.route).toEqual({ ...grok, model: "fixture-grok-next" });
+  }
+});
+
+test("a check left waiting after a restart is unverified, and checking again replaces it at once", async () => {
+  const f = await fixture();
+  command(f, "setup.wake", { language: "th" });
+  command(f, "setup.connect", { route: grok });
+  const old = f.app.setup(f.auth.actor).connection.check!;
+  // What restart reconciliation leaves for a call that was in flight: the job waits, interrupted, and is never resumed alone.
+  f.store.transaction(tx => {
+    const row = tx.get<{ record_json: string }>("SELECT record_json FROM jobs WHERE id = ?", old.jobId!)!;
+    tx.run("UPDATE jobs SET state = 'waiting', record_json = ? WHERE id = ?", JSON.stringify({ ...JSON.parse(row.record_json), state: "waiting", reason: "interrupted" }), old.jobId!);
+  });
+  expect(f.app.setup(f.auth.actor).connection).toMatchObject({ status: "unverified", reason: "interrupted", nextAction: "check_again" });
+  command(f, "setup.check", {});
+  const fresh = f.app.setup(f.auth.actor).connection;
+  expect(fresh.status).toBe("checking");
+  expect(fresh.check!.jobId).not.toBe(old.jobId);
+  expect(f.app.job(f.auth.actor, old.projectId!, old.jobId!)).toMatchObject({ state: "blocked", reason: "cancelled" });
+  await settle(f);
+  expect(f.app.setup(f.auth.actor).connection).toMatchObject({ status: "unverified", nextAction: "connect_live_host_then_check" });
+});
+
+test("the greeting inserts owner text literally: no replacement sequences or nested placeholders", () => {
+  const base = { addressAs: "", language: "en" as const, selfReference: "", particle: "none" as const, personality: "calm" as const, aboutMe: "", revision: 1, updatedAt: 1 };
+  const rest = "is ready. Anything that does not belong to a project yet can start right here in General.";
+  for (const [addressAs, selfReference, expected] of [
+    ["Bill $& Ted", "", `Hi Bill $& Ted, Jit ${rest}`],
+    ["$` $' $$ $1", "", `Hi $\` $' $$ $1, Jit ${rest}`],
+    ["Owner {self}", "Self {p}", `Hi Owner {self}, Self {p} ${rest}`],
+    ["{hello}", "{hello}", `Hi {hello}, {hello} ${rest}`],
+  ] as const) expect(setupGreeting({ ...base, addressAs, selfReference })).toBe(expected);
+  expect(setupGreeting({ ...base, language: "th", particle: "khrap", addressAs: "พี่ {p} $&" })).toBe("สวัสดีครับ พี่ {p} $& จิตพร้อมแล้ว เรื่องที่ยังไม่อยู่ในโครงการไหน คุยกันตรงนี้ในพื้นที่ทั่วไปได้เลยครับ");
+});
