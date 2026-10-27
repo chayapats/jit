@@ -6,8 +6,10 @@ import { preferencesIdentity, readPreferences, writePreferences, type Preference
 import { personaIdentity, readPersona, writePersona, type Persona, type PersonaReceipt, type SetPersonaCommand } from "./persona";
 import { jitReplyWorkId, admitJitReply, readRepliesFor, readReplyChanges, stopReply, stopReplyIdentity, type JitReplyView, type ReplyReceipt, type StopReplyCommand } from "./team/jit-reply";
 import { conversationIdentity, mutateConversation, readMessages, readTopic, readTopics, requireCursor,
-  type ConversationCommand, type CreateTopicCommand, type SendMessageCommand, type TopicReceipt, type MessageReceipt } from "./conversation";
+  type ConversationCommand, type CreateTopicCommand, type SendMessageCommand, type Topic, type TopicReceipt, type MessageReceipt } from "./conversation";
 import { lookupSource, requireId, requireReference, type SourceReference, type SourceLookup } from "./sources";
+import { readTelegramStatus } from "./telegram/channel";
+import type { TelegramStatus } from "./telegram/types";
 import type { SessionReconciliation } from "./jobs/reconcile";
 import type { JobStopOutcome } from "./jobs/types";
 import { readAttempts } from "./jobs/attempts";
@@ -89,6 +91,24 @@ export interface ProjectReceipt { project: Project; workspaceRevision: number }
 
 /** Owner-scoped, paginated workspace state with the revision required by create commands. */
 export interface Workspace { revision: number; projects: Project[]; hasMore: boolean }
+
+/** Items in one project that wait on the owner (web.settings_ia/v1 sidebar badges). */
+export interface ProjectAttention {
+  /** Task proposals awaiting accept or dismiss. */
+  proposals: number;
+  /** Accepted tasks ready for the owner's close review. */
+  reviews: number;
+  /** Jobs paused until the owner allows a resume. */
+  resumes: number;
+}
+
+/** One bounded ⌘K query result. Topics match their title only; message bodies are never searched or returned. */
+export interface SearchResults {
+  query: string;
+  projects: Project[];
+  topics: { project: Pick<Project, "id" | "name">; topic: Topic }[];
+  more: { projects: boolean; topics: boolean };
+}
 
 import {
   backupIdentity, backupRetention, isJitVersion, jitAppVersion, listBackups, ownBackupDir,
@@ -320,6 +340,60 @@ export class Application {
   /** ui.preferences/v1: the owner's saved theme and language, or the defaults. Readable while a restore is pending, like the restore console. */
   preferences(actor: OwnerActor): UiPreferences {
     return this.store.read(tx => { this.#requireOwner(tx, actor, ["web"], false); return readPreferences(tx); });
+  }
+
+  /**
+   * web.settings_ia/v1 sidebar badges: counts of items waiting on the owner for at most 50 named projects.
+   * Unknown identifiers count as zero; nothing is created, started or acknowledged.
+   */
+  attention(actor: OwnerActor, projectIds: readonly string[]): Record<string, ProjectAttention> {
+    if (!Array.isArray(projectIds) || projectIds.length > 50) throw new AppError("invalid_project_list");
+    for (const id of projectIds) requireId(id);
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor, ["web", "telegram"]);
+      const result: Record<string, ProjectAttention> = Object.fromEntries(projectIds.map(id => [id, { proposals: 0, reviews: 0, resumes: 0 }]));
+      if (!projectIds.length) return result;
+      const marks = projectIds.map(() => "?").join(", ");
+      for (const row of tx.all<{ projectId: string; state: string; count: number }>(`SELECT project_id AS projectId, state, count(*) AS count FROM tasks
+          WHERE project_id IN (${marks}) AND state IN ('proposed', 'ready_for_review') GROUP BY project_id, state`, ...projectIds)) {
+        result[row.projectId]![row.state === "proposed" ? "proposals" : "reviews"] = row.count;
+      }
+      for (const row of tx.all<{ projectId: string; count: number }>(`SELECT project_id AS projectId, count(*) AS count FROM jobs
+          WHERE project_id IN (${marks}) AND state = 'waiting' GROUP BY project_id`, ...projectIds)) result[row.projectId]!.resumes = row.count;
+      return result;
+    });
+  }
+
+  /**
+   * web.settings_ia/v1 ⌘K query: a bounded, read-only match on project names and topic titles. The query is at
+   * most `limits.query` code points; each kind returns at most its limit, newest first, with a flag when more
+   * matched. An empty query reads nothing. Message bodies, sources and memory are never searched.
+   */
+  search(actor: OwnerActor, query: unknown, limits: { query: number; projects: number; topics: number }): SearchResults {
+    if (typeof query !== "string" || Array.from(query).length > limits.query || /[\u0000-\u001f\u007f]/.test(query)) throw new AppError("invalid_query");
+    const needle = query.trim();
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor);
+      if (!needle) return { query: needle, projects: [], topics: [], more: { projects: false, topics: false } };
+      const projects = tx.all<Project>(`SELECT p.id, p.name, p.revision, g.id AS groupId, p.created_at AS createdAt
+        FROM projects p JOIN project_groups g ON g.project_id = p.id WHERE instr(lower(p.name), lower(?)) > 0
+        ORDER BY p.created_at DESC, p.id LIMIT ?`, needle, limits.projects + 1);
+      const rows = tx.all<{ id: string; projectId: string; projectName: string }>(`SELECT t.id, t.project_id AS projectId, p.name AS projectName
+        FROM topics t JOIN projects p ON p.id = t.project_id JOIN sources s ON s.id = t.source_id
+        JOIN source_versions v ON v.source_id = t.source_id AND v.revision = t.source_revision AND v.generation = t.source_generation
+        WHERE s.availability = 'available' AND v.content_text IS NOT NULL AND instr(lower(v.content_text), lower(?)) > 0
+        ORDER BY t.created_at DESC, t.id LIMIT ?`, needle, limits.topics + 1);
+      // Each candidate is projected through the normal topic read, so an unavailable title is never returned.
+      const topics = rows.slice(0, limits.topics).map(row => ({ project: { id: row.projectId, name: row.projectName }, topic: readTopic(tx, row.projectId, row.id) }))
+        .filter(item => item.topic.title !== null);
+      return { query: needle, projects: projects.slice(0, limits.projects), topics,
+        more: { projects: projects.length > limits.projects, topics: rows.length > limits.topics } };
+    });
+  }
+
+  /** telegram.owner_binding/v1 status for the settings page: a read only; binding and revocation keep their own commands. */
+  telegramStatus(actor: OwnerActor): TelegramStatus {
+    return this.store.read(tx => { this.#requireOwner(tx, actor); return readTelegramStatus(tx, this.config); });
   }
 
   /** Resolves a project by stable identity under the authenticated owner, never by its name. */

@@ -466,12 +466,12 @@ test("web inventory, detail and API creation render without secrets or worker ac
   const receipt = await f.app.execute(f.auth.actor, backupCommand(f));
   const req = (path: string, token?: string) => new Request(`http://localhost:3000${path}`,
     { headers: token ? { cookie: `jit_session=${f.token}` } : {} });
-  const list = await f.web(req("/backups", f.token));
+  const list = await f.web(req("/settings/backups", f.token));
   expect(list.status).toBe(200);
   const listHtml = await list.text();
   expect(listHtml).toContain(receipt.manifest.id);
   expect(listHtml).not.toContain(f.token);
-  const detail = await f.web(req(`/backups/${receipt.manifest.id}`, f.token));
+  const detail = await f.web(req(`/settings/backups/${receipt.manifest.id}`, f.token));
   expect(detail.status).toBe(200);
   expect(await detail.text()).toContain(receipt.manifest.content.hash.slice(0, 16));
   const api = await f.web(req("/api/backups", f.token));
@@ -895,8 +895,8 @@ test("the bounded inventory list verifies every entry and never labels a broken 
   const body = await api.json() as { manifests: { id: string; state: string }[]; integrity: Record<string, { state: string }> };
   expect(body.manifests.find(m => m.id === broken.id)!.state).toBe("incomplete");
   expect(body.integrity[broken.id]!.state).toBe("invalid");
-  const html = await (await f.web(new Request("http://localhost:3000/backups", { headers: { cookie: `jit_session=${f.token}` } }))).text();
-  expect(html).toContain(`id="backup-${broken.id}"><header><h3><a href="/backups/${broken.id}">${broken.id}</a></h3><span class="job-status" data-state="incomplete"`);
+  const html = await (await f.web(new Request("http://localhost:3000/settings/backups", { headers: { cookie: `jit_session=${f.token}` } }))).text();
+  expect(html).toContain(`id="backup-${broken.id}"><header><h3><a href="/settings/backups/${broken.id}">${broken.id}</a></h3><span class="job-status" data-state="incomplete"`);
 });
 
 test("restore activation keeps the live backup registry: two backups survive restoring the older one", async () => {

@@ -156,7 +156,7 @@ test("native form commands require owner Origin/CSRF, reject extra authority, es
   const f = await fixture();
   const body = { csrf: f.auth.csrf, requestId: rid(), expectedRevision: "0", roleId: "", name: '<img src=x onerror="alert(1)">', kind: "specialist", responsibility: "วิเคราะห์เท่านั้น", enabled: "true", provider: "grok", model: grok.model, authRoute: grok.authRoute };
   expect((await f.web(request(f, "/team/roles", body, true))).status).toBe(303);
-  const html = await (await f.web(request(f, "/team"))).text(); expect(html).toContain("&lt;img"); expect(html).not.toContain('<img src=x');
+  const html = await (await f.web(request(f, "/settings/team"))).text(); expect(html).toContain("&lt;img"); expect(html).not.toContain('<img src=x');
   expect((await f.web(request(f, "/api/team/roles", { ...save(f).payload, requestId: rid(), expectedRevision: 1, authority: "owner" }))).status).toBe(400);
   const denied = request(f, "/team/roles", { ...body, requestId: rid() }, true); denied.headers.set("origin", "https://other.invalid"); expect((await f.web(denied)).status).toBe(403);
   const csrf = request(f, "/api/team/routes", { requestId: rid(), expectedRevision: 1, roleId: null, route: grok }); csrf.headers.delete("x-csrf-token"); expect((await f.web(csrf)).status).toBe(403);

@@ -76,7 +76,10 @@ Derived tones (`--line-strong` and the tinted status borders) are `color-mix` va
 - **Home:** greeting, a large composer with a project chip (default "ทั่วไป"), and a quiet strip of items waiting on the owner.
 - **Sidebar:** new chat, search (⌘K), projects with nested topics, badges for pending items, and settings at the bottom. On mobile it becomes a drawer.
 - **Topic:** a single chat column. The right panel, closed by default, holds memory, tasks, jobs, PR reports and the team.
-- **Settings:** persona, models and routes, dispatch allowance, appearance and language, Telegram, backups, upgrades, restores, exports and deletions. UX01 ships appearance and language (owner-persisted, `ui.preferences/v1`) and links to team, backups, upgrades and restores. Until the right panel exists, a project's memory, tasks, jobs, notifications and team links sit under the selected project in the sidebar.
+- **Settings:** persona, models and routes, dispatch allowance, appearance and language, Telegram, backups, upgrades, restores, exports and deletions. UX01 shipped appearance and language (owner-persisted, `ui.preferences/v1`). UX02 moved team and models, Telegram status, backups, upgrades, restores and project data (exports and deletions) under `/settings/*`, with a sub-navigation of section pills on every settings page. Old page URLs redirect there. Persona and dispatch allowance join in their own tickets. See [web.settings_ia/v1](../contracts/web-settings-ia-v1.md).
+- **Right panel (UX02):** a header toggle on the topic page opens an aside with five tabs: memory, tasks (filtered to the topic, with "waiting on you" first), jobs, PR reports and team. It is closed by default. Without script the toggle opens the panel as its own page. Project pages outside a topic show the same five destinations as a project tools strip.
+- **⌘K (UX02):** a centred dialog with one query field, rows labelled by kind (project, topic, go to) and a hint line. It is keyboard-first (↑ ↓ Enter Esc). Without script the sidebar search link opens a search page.
+- **Badges (UX02):** an outlined pill after the project name, "รอคุณ 2" / "Waiting 2", counting proposals, close reviews and jobs awaiting resume. It always uses words, not colour alone.
 
 ## Components
 
