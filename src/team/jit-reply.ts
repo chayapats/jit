@@ -24,6 +24,8 @@ export const jitReplyPolicy: readonly string[] = Object.freeze([
 ]);
 /** Most discarded structured-output entries recorded per reply; the rest are counted. */
 const discardLimit = 8;
+/** Stored job purpose and work title. It equals the `system.jit_reply_purpose` entry, so pages translate it. */
+export const jitReplyPurpose = "จิตตอบข้อความ";
 
 /** Why a reply was not admitted. The owner message is committed regardless. */
 export type ReplyNotAdmitted = "no_route" | "scheduler_unavailable" | "queue_full" | "context_too_large";
@@ -57,6 +59,8 @@ export interface JitReplyView {
   cursor: number; revision: number; state: ReplyState; reason: string | null; nextAction: string | null;
   progress: { text: string; provisional: true } | null;
   replyMessageId: string | null; source: SourceReference | null;
+  /** Topic message sequences of the owner message and of the committed reply, for page links. */
+  messageSequence: number; replySequence: number | null;
   mode: "fixture" | "production" | null; route: RoleRoute | null; personaRevision: number | null;
   discarded: string[]; discardedTotal: number; createdAt: number;
 }
@@ -220,7 +224,7 @@ export function admitJitReply(tx: AppTransaction, input: {
   try {
     ({ job } = queue.execute(tx, {
       kind: "job.enqueue", requestId: input.requestId, projectId: message.projectId, expectedRevision: projectRevision,
-      payload: { type: jitReplyWorkId, configurationRevision: 1, policyRevision: config.jobs.revision, purpose: "จิตตอบข้อความ",
+      payload: { type: jitReplyWorkId, configurationRevision: 1, policyRevision: config.jobs.revision, purpose: jitReplyPurpose,
         inputRevision: message.sequence, input: { replyId, messageId: message.id }, priority: "interactive", limits },
     }, input.generation, now));
   } catch (error) {
@@ -249,8 +253,12 @@ const notAdmittedNext: Record<ReplyNotAdmitted, string> = {
   context_too_large: "send_a_shorter_message",
 };
 
+const sequenceOf = (tx: AppTransaction, messageId: string | null) => messageId
+  ? tx.get<{ sequence: number }>("SELECT sequence FROM messages WHERE id = ?", messageId)?.sequence ?? null : null;
+
 function project(tx: AppTransaction, row: { id: string; projectId: string; topicId: string; messageId: string; runId: string | null; reason: string | null; cursor: number; createdAt: number }): JitReplyView {
-  const base = { id: row.id, projectId: row.projectId, topicId: row.topicId, messageId: row.messageId, cursor: row.cursor, createdAt: row.createdAt };
+  const base = { id: row.id, projectId: row.projectId, topicId: row.topicId, messageId: row.messageId, cursor: row.cursor, createdAt: row.createdAt,
+    messageSequence: sequenceOf(tx, row.messageId) ?? 0, replySequence: null as number | null };
   if (!row.runId) {
     return { ...base, jobId: null, revision: 1, state: "not_admitted", reason: row.reason, nextAction: notAdmittedNext[row.reason as ReplyNotAdmitted] ?? "send_again",
       progress: null, replyMessageId: null, source: null, mode: null, route: null, personaRevision: null, discarded: [], discardedTotal: 0 };
@@ -259,7 +267,8 @@ function project(tx: AppTransaction, row: { id: string; projectId: string; topic
   const common = { ...base, jobId: record.jobId, revision: record.revision, route: record.request.route, personaRevision: record.personaRevision,
     mode: record.outcome?.mode ?? null, discarded: record.result?.discarded ?? [], discardedTotal: record.result?.discardedTotal ?? 0 };
   if (record.result?.state === "answered") {
-    return { ...common, state: "answered", reason: null, nextAction: null, progress: null, replyMessageId: record.replyMessageId, source: record.source };
+    return { ...common, state: "answered", reason: null, nextAction: null, progress: null, replyMessageId: record.replyMessageId, source: record.source,
+      replySequence: sequenceOf(tx, record.replyMessageId) };
   }
   if (record.result) return { ...common, state: "failed", reason: record.result.reason, nextAction: "send_again", progress: null, replyMessageId: null, source: null };
   const job = readJob(tx, row.projectId, record.jobId);
@@ -272,17 +281,20 @@ function project(tx: AppTransaction, row: { id: string; projectId: string; topic
 
 const replyColumns = `id, project_id AS projectId, topic_id AS topicId, message_id AS messageId, run_id AS runId, reason, cursor, created_at AS createdAt`;
 
-/** app.jit_reply/v1: the replies to the given owner messages of one topic, keyed by owner message id. */
+/**
+ * app.jit_reply/v1: replies of one topic that answer, or were committed as, any of the given messages, keyed by
+ * owner message id. A page therefore labels a Jit reply even when the owner message is on an earlier page.
+ */
 export function readRepliesFor(tx: AppTransaction, projectId: string, topicId: string, messageIds: readonly string[]): Map<string, JitReplyView> {
   const found = new Map<string, JitReplyView>();
   for (let index = 0; index < messageIds.length; index += 200) {
     const batch = messageIds.slice(index, index + 200);
     if (!batch.length) continue;
-    for (const row of tx.all<Parameters<typeof project>[1]>(`SELECT ${replyColumns} FROM jit_replies WHERE project_id = ? AND topic_id = ? AND message_id IN (${batch.map(() => "?").join(",")})`,
-      projectId, topicId, ...batch)) found.set(row.messageId, project(tx, row));
+    const marks = batch.map(() => "?").join(",");
+    for (const row of tx.all<Parameters<typeof project>[1]>(`SELECT ${replyColumns} FROM jit_replies WHERE project_id = ? AND topic_id = ? AND (message_id IN (${marks}) OR reply_message_id IN (${marks}))`,
+      projectId, topicId, ...batch, ...batch)) found.set(row.messageId, project(tx, row));
   }
-  // Keep the caller's message order.
-  return new Map(messageIds.flatMap(id => found.has(id) ? [[id, found.get(id)!] as const] : []));
+  return new Map([...found.values()].sort((a, b) => a.messageSequence - b.messageSequence).map(view => [view.messageId, view] as const));
 }
 
 /** app.jit_reply/v1: replies of one topic whose persisted state changed after `cursor`, in change order (SSE replay). */
@@ -349,7 +361,7 @@ export function jitReplyWork(store: TransactionStore, config: AppConfig, port: A
     } catch { return false; }
   };
   return {
-    id: jitReplyWorkId, title: "จิตตอบข้อความ", revision: 1, replay: "read",
+    id: jitReplyWorkId, title: jitReplyPurpose, revision: 1, replay: "read",
     route: { provider: "jit-fixture", model: "scripted", authRoute: "internal" },
     cost: { roles: 1, calls: 1, rounds: 1, hops: 1 },
     // A reply belongs to its message, not to the project revision: new topics elsewhere do not fence it.
@@ -422,7 +434,8 @@ export function jitReplyWork(store: TransactionStore, config: AppConfig, port: A
       const result: NonNullable<JitReplyRecord["result"]> = parsed?.state === "complete"
         ? { state: "answered", reason: null, structured: parsed.structured, discarded: parsed.discarded, discardedTotal: parsed.discardedTotal }
         : { state: "failed", reason: parsed?.state === "failed" ? parsed.reason : outcome.reason, structured: false, discarded: [], discardedTotal: 0 };
-      const evidence = `${outcome.mode === "production" ? "จิตตอบผ่าน Schway" : "จิตตอบจำลอง (fixture)"} · ${result.state}${result.reason ? ` / ${result.reason}` : ""} · ทิ้ง ${result.discardedTotal} รายการ${result.discarded.length ? ` (${result.discarded.join(", ")})` : ""} · ไม่มี tools · reply ${opened.id}`;
+      // Language-neutral technical evidence (codes only), the same on Thai and English pages.
+      const evidence = `jit-reply · ${outcome.mode} · ${result.state}${result.reason ? `/${result.reason}` : ""} · discarded ${result.discardedTotal}${result.discarded.length ? ` (${result.discarded.join(", ")})` : ""} · tools none · reply ${opened.id}`;
       const outcomeState = result.state === "answered" ? { state: "succeeded" as const, evidence } : { state: "partial" as const, evidence };
       const committed = commit(outcomeState, tx => {
         const current = readRecord(tx, job.projectId, opened.id);
@@ -441,6 +454,7 @@ export function jitReplyWork(store: TransactionStore, config: AppConfig, port: A
           // composer rendered while Jit was thinking stays valid.
           tx.run("UPDATE topics SET message_sequence = message_sequence + 1 WHERE project_id = ? AND id = ?", current.projectId, current.topicId);
           current.source = source; current.replyMessageId = messageId;
+          tx.run("UPDATE jit_replies SET reply_message_id = ? WHERE id = ?", messageId, current.id);
         }
         saveRecord(tx, current);
       });

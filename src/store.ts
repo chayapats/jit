@@ -737,6 +737,8 @@ export class TransactionStore {
               topic_id TEXT NOT NULL REFERENCES topics(id),
               message_id TEXT NOT NULL UNIQUE REFERENCES messages(id),
               run_id TEXT UNIQUE REFERENCES team_runs(id),
+              -- The committed reply message, set when the reply commits; lets a page resolve replies by either message.
+              reply_message_id TEXT UNIQUE REFERENCES messages(id),
               reason TEXT CHECK (reason IN ('no_route', 'scheduler_unavailable', 'queue_full', 'context_too_large')),
               cursor INTEGER NOT NULL UNIQUE,
               created_at INTEGER NOT NULL,

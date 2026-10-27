@@ -1094,4 +1094,6 @@ export const en: Record<MessageKey, string> = {
   "error.reply_not_found": "This reply was not found.",
   "error.reply_not_stoppable": "This reply has already finished and can’t be stopped.",
   "error.invalid_reply_command": "The reply command is invalid.",
+  "reply.view_answer": "See Jit’s answer",
+  "system.jit_reply_purpose": "Jit reply",
 };

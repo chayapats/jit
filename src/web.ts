@@ -182,12 +182,18 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       };
       if (request.method === "GET" && streamRoute) {
         // ADR 0028: one authenticated SSE stream per open topic, fed only from persisted reply state.
-        // Reconnecting replays from the Last-Event-ID cursor and re-sends replies whose job can still change.
+        // Each change event carries its own cursor, so a reconnect with Last-Event-ID resumes after the last
+        // delivered change. Replies whose job can still change, and the replies the page watches (?watch=), are
+        // re-read every tick, which also reports transitions the queue makes without touching the reply record.
         const projectId = streamRoute[1]!, topicId = streamRoute[2]!;
         const raw = request.headers.get("last-event-id") ?? url.searchParams.get("cursor") ?? "0";
         if (!/^\d{1,16}$/.test(raw)) throw new AppError("invalid_cursor");
         let cursor = Number(raw);
-        app.replyStream(auth.actor, projectId, topicId, cursor);
+        const watchParam = url.searchParams.get("watch") ?? "";
+        const watch = new Set(watchParam ? watchParam.split(",") : []);
+        if (watch.size > 20 || [...watch].some(id => !/^[a-f0-9-]{36}$/.test(id))) throw new AppError("invalid_cursor");
+        app.replyStream(auth.actor, projectId, topicId, cursor, [...watch]);
+        const live = (view: JitReplyView) => view.state === "thinking" || view.state === "blocked";
         const encoder = new TextEncoder(), seen = new Map<string, string>();
         let handle: unknown = null, closed = false, ticks = 0, quiet = 0;
         const body = new ReadableStream<Uint8Array>({
@@ -197,14 +203,17 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
               if (closed) return;
               let chunk = ticks === 0 ? `retry: ${Math.max(1000, streamOptions.intervalMs * 2)}\n\n` : "";
               try {
-                const batch = app.replyStream(auth.actor, projectId, topicId, cursor);
-                for (const change of batch.changes) cursor = Math.max(cursor, change.cursor);
-                for (const view of [...batch.changes, ...batch.pending]) {
+                const batch = app.replyStream(auth.actor, projectId, topicId, cursor, [...watch].slice(-20));
+                const emit = (view: JitReplyView) => {
+                  if (live(view)) { watch.delete(view.id); watch.add(view.id); }
                   const data = JSON.stringify(replyEvent(view));
-                  if (seen.get(view.id) === data) continue;
+                  if (seen.get(view.id) === data) return;
                   seen.set(view.id, data);
                   chunk += `id: ${cursor}\nevent: reply\ndata: ${data}\n\n`;
-                }
+                };
+                // Changes arrive in cursor order; each event acknowledges only itself and the changes before it.
+                for (const change of batch.changes) { cursor = Math.max(cursor, change.cursor); emit(change); }
+                for (const view of [...batch.pending, ...batch.watched]) emit(view);
               } catch { finish(); return; }
               quiet = chunk ? 0 : quiet + 1;
               // A comment keeps idle proxies and the server's idle timeout from closing a quiet stream.
@@ -227,7 +236,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const command = { kind: "jit.reply.stop", requestId: body.requestId, projectId: replyStopRoute[2], expectedRevision: revision,
           payload: { replyId: replyStopRoute[4] } } as StopReplyCommand;
         const receipt = app.execute(auth.actor, command);
-        return api ? json(receipt) : respond(null, 303, { Location: `/projects/${receipt.reply.projectId}/topics/${receipt.reply.topicId}#reply-${receipt.reply.id}` });
+        return api ? json(receipt) : respond(null, 303, { Location: `/projects/${receipt.reply.projectId}/topics/${receipt.reply.topicId}?after=${Math.max(0, receipt.reply.messageSequence - 1)}#reply-${receipt.reply.id}` });
       }
       if (request.method === "GET" && claimRoute) {
         const revision = Number(url.searchParams.get("revision")), generation = Number(url.searchParams.get("generation"));

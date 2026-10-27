@@ -55,7 +55,8 @@ for (const textarea of document.querySelectorAll(".composer textarea")) {
 const chat = document.querySelector("[data-reply-stream]");
 if (chat && typeof EventSource === "function") {
   const live = new Set(["thinking", "blocked"]);
-  const stream = new EventSource(`${chat.dataset.replyStream}?cursor=${encodeURIComponent(chat.dataset.replyCursor ?? "0")}`);
+  const base = chat.dataset.replyStream;
+  const stream = new EventSource(`${base}${base.includes("?") ? "&" : "?"}cursor=${encodeURIComponent(chat.dataset.replyCursor ?? "0")}`);
   const show = (node, text) => { if (!node) return; node.textContent = text ?? ""; node.hidden = !text; };
   stream.addEventListener("reply", event => {
     let data;

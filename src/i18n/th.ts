@@ -1096,4 +1096,6 @@ export const th = {
   "error.reply_not_found": "ไม่พบคำตอบนี้",
   "error.reply_not_stoppable": "คำตอบนี้จบไปแล้ว หยุดไม่ได้",
   "error.invalid_reply_command": "คำสั่งของคำตอบไม่ถูกต้อง",
+  "reply.view_answer": "ดูคำตอบของจิต",
+  "system.jit_reply_purpose": "จิตตอบข้อความ",
 } as const;

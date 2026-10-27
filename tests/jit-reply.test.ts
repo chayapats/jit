@@ -7,6 +7,7 @@ import { readConfig } from "../src/config";
 import { JobQueue } from "../src/jobs/queue";
 import { backupImageTables } from "../src/ops/backup";
 import { TransactionStore } from "../src/store";
+import { listDiscussions } from "../src/team/dispatch";
 import { jitReplyMarker, jitReplyWork, jitReplyWorkId, normalizeJitReply, type JitReplyView } from "../src/team/jit-reply";
 import type { ApplicationRunPort } from "../src/team/run-port";
 import { ScriptedRunPort, fixtureOutcome } from "../src/team/scripted-port";
@@ -33,11 +34,11 @@ const answer = (request: ApplicationRunRequest, output: string): ApplicationRunO
 const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(r => { resolve = r; }); return { promise, resolve }; };
 
 const stream: ReplyStreamOptions = { intervalMs: 1, polls: 3 };
-interface Options { script?: Script; wrap?: (port: ScriptedRunPort) => ApplicationRunPort; coordinator?: boolean; path?: string }
+interface Options { script?: Script; wrap?: (port: ScriptedRunPort) => ApplicationRunPort; coordinator?: boolean; path?: string; env?: Record<string, string> }
 async function fixture(options: Options = {}) {
   const root = options.path ? join(options.path, "..") : mkdtempSync(join(tmpdir(), "jit-bot01-"));
   if (!options.path) roots.push(root);
-  const path = options.path ?? join(root, "state.sqlite"), config = readConfig({ JIT_DATABASE: path }), store = new TransactionStore(path); stores.push(store);
+  const path = options.path ?? join(root, "state.sqlite"), config = readConfig({ JIT_DATABASE: path, ...options.env }), store = new TransactionStore(path); stores.push(store);
   let now = epoch;
   const scripted = new ScriptedRunPort(store, config.team, config.jobs.outputBytes, options.script ?? (request => answer(request, JSON.stringify({ reply: "สวัสดีครับ จิตพร้อมช่วย" }))));
   const port = options.wrap?.(scripted) ?? scripted;
@@ -170,7 +171,7 @@ test("progress is persisted as provisional until commit; a stream cut midway sho
   const page = await (await get(f, `/projects/${f.project.id}/topics/${f.topic.id}`)).text();
   expect(page).toContain("กำลังร่างคำตอบ…");
   expect(page).toContain("ข้อความระหว่างคิด ยังไม่บันทึก");
-  expect(page).toContain(`data-reply-stream="/projects/${f.project.id}/topics/${f.topic.id}/events"`);
+  expect(page).toContain(`data-reply-stream="/projects/${f.project.id}/topics/${f.topic.id}/events?watch=${live.id}"`);
   expect(page).toContain('data-state="thinking"');
   const streamed = events(await (await get(f, `/projects/${f.project.id}/topics/${f.topic.id}/events`)).text());
   expect(streamed.at(-1)!.data).toMatchObject({ id: live.id, state: "thinking", progress: { text: "กำลังร่างคำตอบ…", provisional: true }, text: null, label: "จิตกำลังคิด…" });
@@ -201,7 +202,7 @@ test("structured output: unknown fields and unsupported proposals are discarded 
   const view = replyFor(f, first.message.id);
   expect(view).toMatchObject({ state: "answered", discarded: ["field:persona", "proposal:role", "proposal:invalid", "proposal:invalid", "field:invalid"], discardedTotal: 5 });
   expect(messages(f).at(-1)!.text).toBe("ได้เลยครับ");
-  expect(f.app.job(f.auth.actor, f.project.id, view.jobId!).evidence).toContain("ทิ้ง 5 รายการ (field:persona, proposal:role");
+  expect(f.app.job(f.auth.actor, f.project.id, view.jobId!).evidence).toContain("jit-reply · fixture · answered · discarded 5 (field:persona, proposal:role");
   const page = await (await get(f, `/projects/${f.project.id}/topics/${f.topic.id}`)).text();
   expect(page).toContain("ส่วนที่ไม่รองรับถูกทิ้ง: 5 · field:persona, proposal:role");
   expect(page).not.toContain("Captain");
@@ -257,7 +258,7 @@ test("stop during a reply (plain form post) fences a late complete result from a
   const stop = form(page, `/projects/${f.project.id}/topics/${f.topic.id}/replies/${reply.id}/stop`);
   const response = await postForm(f, stop.action, stop.fields);
   expect(response.status).toBe(303);
-  expect(response.headers.get("location")).toBe(`/projects/${f.project.id}/topics/${f.topic.id}#reply-${reply.id}`);
+  expect(response.headers.get("location")).toBe(`/projects/${f.project.id}/topics/${f.topic.id}?after=0#reply-${reply.id}`);
   // A replayed stop returns the same receipt.
   expect((await postForm(f, stop.action, stop.fields)).status).toBe(303);
   expect(replyFor(f, sent.message.id)).toMatchObject({ state: "stopped", progress: null });
@@ -496,4 +497,89 @@ test("app.js contract: the event stream updates reply text with textContent and 
   } finally {
     for (const [key, descriptor] of saved) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete (globalThis as Record<string, unknown>)[key]; }
   }
+});
+
+test("the stream reports queue-only transitions to watched replies and acknowledges each change with its own cursor", async () => {
+  const gates = [deferred<void>(), deferred<void>()];
+  let calls = 0;
+  const f = await fixture({ script: async request => { await gates[calls++]?.promise; return answer(request, JSON.stringify({ reply: `ตอบ ${calls}` })); } });
+  const url = `/projects/${f.project.id}/topics/${f.topic.id}`;
+  const first = send(f, "หนึ่ง");
+  f.queue.pump(); await Bun.sleep(5);
+  const page = await (await get(f, url)).text();
+  const stream = /data-reply-stream="([^"]+)" data-reply-cursor="(\d+)"/.exec(page)!;
+  const view = replyFor(f, first.message.id);
+  expect(stream[1]).toBe(`${url}/events?watch=${view.id}`);
+  const opened = events(await (await get(f, `${stream[1]}&cursor=${stream[2]}`)).text());
+  expect(opened.map(e => e.data.state)).toEqual(["thinking"]);
+  // A stop from the job page changes only the job; the reply cursor does not move.
+  const job = f.app.job(f.auth.actor, f.project.id, view.jobId!);
+  f.app.execute(f.auth.actor, { kind: "job.stop", requestId: rid(), projectId: f.project.id, expectedRevision: job.revision, payload: { jobId: job.id } });
+  expect(f.app.replyStream(f.auth.actor, f.project.id, f.topic.id, opened[0]!.id).changes).toEqual([]);
+  const resumed = events(await (await get(f, stream[1]!, { "last-event-id": String(opened[0]!.id) })).text());
+  expect(resumed.map(e => e.data)).toEqual([expect.objectContaining({ id: view.id, state: "stopped", next: "ส่งข้อความอีกครั้งเพื่อให้จิตตอบใหม่" })]);
+  gates[0]!.resolve(); await f.queue.idle();
+  expect(replyFor(f, first.message.id).state).toBe("stopped");
+  // Two answers committed in one batch carry ascending ids; resuming after the first still delivers the second.
+  calls = 1; gates[1]!.resolve();
+  const a = send(f, "สอง"); await settle(f);
+  const b = send(f, "สาม"); await settle(f);
+  const all = events(await (await get(f, `${url}/events`)).text()).filter(e => [a.message.id, b.message.id].includes(e.data.messageId));
+  expect(all.map(e => e.data.state)).toEqual(["answered", "answered"]);
+  expect(all[0]!.id).toBeLessThan(all[1]!.id);
+  const after = events(await (await get(f, `${url}/events`, { "last-event-id": String(all[0]!.id) })).text());
+  expect(after.map(e => e.data.messageId)).toContain(b.message.id);
+  expect(after.map(e => e.data.messageId)).not.toContain(a.message.id);
+  expect((await get(f, `${url}/events?watch=not-a-uuid`)).status).toBe(400);
+});
+
+test("replies keep their context across message pages without script", async () => {
+  const gate = deferred<void>();
+  const f = await fixture({ env: { JIT_PAGE_SIZE: "2" }, script: async request => { await gate.promise; return answer(request, JSON.stringify({ reply: `คำตอบของ ${request.manifest.sources.at(-1)!.text}` })); } });
+  const url = `/projects/${f.project.id}/topics/${f.topic.id}`;
+  const one = send(f, "หนึ่ง"), two = send(f, "สอง");
+  f.queue.pump(); await Bun.sleep(5);
+  const thinking = await (await get(f, url)).text();
+  expect(thinking).toContain(`href="${url}?after=1#reply-${replyFor(f, two.message.id).id}"`);
+  gate.resolve(); await f.queue.idle(); await settle(f);
+  expect(messages(f).map(m => m.sequence)).toEqual([1, 2]);
+  const views = f.app.replies(f.auth.actor, f.project.id, f.topic.id, [one.message.id, two.message.id]);
+  expect([...views.values()].map(v => [v.state, v.messageSequence, v.replySequence])).toEqual([["answered", 1, 3], ["answered", 2, 4]]);
+  // Page 1 holds both owner messages; their answers are on page 2, so the page links to them.
+  const first = await (await get(f, url)).text();
+  expect(first).toContain(`href="${url}?after=2#message-${views.get(one.message.id)!.replyMessageId}"`);
+  expect(first).toContain(`href="${url}?after=3#message-${views.get(two.message.id)!.replyMessageId}"`);
+  expect(first).toContain("ดูคำตอบของจิต");
+  // Page 2 holds the answers; they still render as Jit's replies with their fixture label.
+  const second = await (await get(f, `${url}?after=2`)).text();
+  expect(second.match(/class="message message--jit"/g)).toHaveLength(2);
+  expect(second).toContain("คำตอบของ หนึ่ง");
+  expect(second.match(/จิต · ตัวอย่างจำลอง/g)).toHaveLength(2);
+});
+
+test("the reply worker is internal: no generic start form, and its job reads in the page language", async () => {
+  const f = await fixture();
+  send(f, "สวัสดี"); await settle(f);
+  expect(f.app.jobs(f.auth.actor, f.project.id).choices.map(c => c.id)).not.toContain(jitReplyWorkId);
+  const jobs = `/projects/${f.project.id}/jobs`;
+  expect(await (await get(f, jobs)).text()).toContain("จิตตอบข้อความ");
+  f.app.execute(f.auth.actor, { kind: "ui.preferences.set", requestId: rid(), projectId: null, expectedRevision: 0, payload: { theme: "dark", language: "en" } });
+  const english = await (await get(f, jobs)).text();
+  expect(english).toContain("Jit reply");
+  expect(english).not.toContain("จิตตอบ");
+  expect(english).not.toContain(`value="${jitReplyWorkId}"`);
+});
+
+test("discussion discovery is not crowded out by Jit reply runs", async () => {
+  const f = await fixture();
+  const discussionId = rid(), jobId = rid(), contextId = rid();
+  f.store.transaction(tx => {
+    tx.run("INSERT INTO jobs (id, project_id, queue_order, priority, state, occupies, route_key, record_json) VALUES (?, ?, 999, 0, 'succeeded', 0, 'x', ?)", jobId, f.project.id, JSON.stringify({ id: jobId, type: "team.discussion" }));
+    tx.run("INSERT INTO team_contexts VALUES (?, 1, 'active')", contextId);
+    tx.run("INSERT INTO team_runs (id, project_id, job_id, context_id, record_json) VALUES (?, ?, ?, ?, ?)", discussionId, f.project.id, jobId, contextId,
+      JSON.stringify({ kind: "discussion", id: discussionId, topicId: f.topic.id }));
+  });
+  for (let index = 0; index < 10; index++) send(f, `ข้อความ ${index}`);
+  expect(f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM team_runs")!.n)).toBe(11);
+  expect(f.store.read(tx => listDiscussions(tx, f.project.id, f.topic.id, 1)).map(d => d.id)).toEqual([discussionId]);
 });
