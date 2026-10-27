@@ -84,7 +84,7 @@ Both tables are classified `include` for backups. Existing installations need th
 
 ## Boundaries
 
-BOT05 owns the chat-first home, new chats landing in the General space, refusing deletion or a kind change of the General space, and promotion. This slice only creates the General space and exposes `Application.generalSpace`. Setup creates no specialists, no other projects and no tasks or decisions.
+BOT05 owns the chat-first home, new chats landing in the General space, refusing deletion or a kind change of the General space, and promotion ([app.topic_promotion/v1](topic-promotion-v1.md); schema 28 adds triggers that refuse deleting or re-pointing `general_space` and deleting its project). This slice only creates the General space and exposes `Application.generalSpace`. Setup creates no specialists, no other projects and no tasks or decisions.
 
 ## Evidence
 

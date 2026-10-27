@@ -1,4 +1,5 @@
 import { redactRoleProposals } from "../team/role-proposals";
+import { redactPromotionProposal } from "../promotion";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -864,6 +865,11 @@ function replayLedger(staged: TransactionStore, entries: LifecycleLedgerEntry[],
               const proposals = redactRoleProposals(item, text => needles.has(text) ? redactedText : text);
               if (proposals.changed) changed = true;
               return [key, proposals.value];
+            }
+            if (key === "promotionProposal") {
+              const proposal = redactPromotionProposal(item, text => needles.has(text) ? redactedText : text);
+              if (proposal.changed) changed = true;
+              return [key, proposal.value];
             }
             if (typeof item === "string" && needles.has(item)) { changed = true; return [key, redactedText]; }
             return [key, redact(item)];

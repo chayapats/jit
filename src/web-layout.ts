@@ -8,7 +8,8 @@ import { assetUrl } from "./web-assets";
 import { logoLockup, logoMark } from "./web-logo";
 import type { JitReplyView } from "./team/jit-reply";
 import { routesOf } from "./team/role-proposals";
-import { proposalCard, roleProposalCard } from "./web-proposal-card";
+import { fillText, promotionProposalCard, proposalCard, roleProposalCard } from "./web-proposal-card";
+import type { TopicPromotionView } from "./promotion";
 import type { Persona } from "./persona";
 import type { DecisionReadModel, Discussion, RoleRoute } from "./team/types";
 import type { DispatchCardView, TeamCardRole } from "./team/jit-dispatch";
@@ -38,7 +39,8 @@ const brand = (height = 36) => `<a class="brand" href="/" aria-label="${tr("comm
 const sourceUrl = (projectId: string, ref: SourceReference) => `/projects/${projectId}/sources/${ref.sourceId}?revision=${ref.revision}&generation=${ref.generation}`;
 const sourceLink = (projectId: string, ref: SourceReference, label: string) => `<a class="source-link" href="${sourceUrl(projectId, ref)}">${icon("link")}${escape(label)}</a>`;
 const attributionLabel = (attribution: Attribution) => attribution.kind === "owner" ? tr("common.you") : attribution.kind === "participant"
-  ? `${tr("common.teammate")} ${attribution.participantId} · run ${attribution.runId}` : attribution.service === "jit-setup" ? tr("setup.greeting_label") : tr("common.source_registry_service");
+  ? `${tr("common.teammate")} ${attribution.participantId} · run ${attribution.runId}` : attribution.service === "jit-setup" ? tr("setup.greeting_label")
+  : attribution.service === "jit-promotion" ? tr("promotion.link_label") : tr("common.source_registry_service");
 /** app.setup/v1 greeting: fixed product text in the owner's persona, shown as Jit's (never model output). */
 const setupGreeting = (attribution: Attribution) => attribution.kind === "service" && attribution.service === "jit-setup";
 export function time(value: number): string {
@@ -158,10 +160,39 @@ function literalContent(text: string): string {
 }
 export const hiddenCommand = (csrf: string, revision: number) => `<input type="hidden" name="csrf" value="${csrf}"><input type="hidden" name="requestId" value="${crypto.randomUUID()}"><input type="hidden" name="expectedRevision" value="${revision}">`;
 
-/** Renders a bounded project workspace using only supported owner actions. */
-export function workspacePage(state: NavigationWorkspace, csrf: string, offset: number, pageSize: number): string {
-  return shell(tr("common.your_projects"), { workspace: state, csrf, section: "home" }, `<div class="content"><section class="hero"><p class="eyebrow">${tr("home.a_space_for_your_ideas")}</p><h2>${tr("home.which_project_do_you_want")}</h2><p>${tr("home.pick_up_where_you_left")}</p></section>
-    <form class="create-form" id="new-project" method="post" action="/projects">${hiddenCommand(csrf, state.revision)}<label class="sr-only" for="name">${tr("home.project_name")}</label><input id="name" name="name" maxlength="200" placeholder="${tr("home.name_your_new_project")}" required autocomplete="off"><button class="primary" aria-label="${tr("home.create_project")}">${tr("home.create_project")}${icon("plus")}</button></form>
+/** Home data beyond the workspace page: who to greet, the General space, the chip's choice and what waits on the owner. */
+export interface HomeView {
+  /** The persona's way of addressing the owner (owner text), or empty. */
+  addressAs: string;
+  /** The General space project (app.general_space/v1), the chip's default; null before setup creates it. */
+  general: Pick<Project, "id" | "name"> | null;
+  /** Project preselected on the chip (`/?project=<id>`), when it is one of the chip's options. */
+  selected: string | null;
+  messageBytes: number;
+  /** Projects with items waiting on the owner, with their counts (web.settings_ia/v1 attention). */
+  waiting: { project: Project; attention: ProjectAttention }[];
+}
+/**
+ * The chat-first home (S09-D05, D09): a greeting, a large composer whose project chip defaults to the General space,
+ * and a quiet strip of items waiting on the owner. The composer posts `chat.start` as a plain form: the new topic and
+ * its first message commit together, and Jit answers it like any message. Projects and project creation follow.
+ */
+export function workspacePage(state: NavigationWorkspace, csrf: string, offset: number, pageSize: number, home?: HomeView): string {
+  const options = home ? [...home.general ? [home.general] : [], ...state.projects.filter(p => p.id !== home.general?.id)] : [];
+  const chosen = home && options.some(p => p.id === home.selected) ? home.selected : options[0]?.id;
+  const composer = !home ? "" : options.length ? `<form class="composer home-composer" id="new-chat" method="post" action="/chats">${hiddenCommand(csrf, state.revision)}
+      <label class="sr-only" for="chat-text">${tr("home.composer_label")}</label><textarea id="chat-text" name="text" rows="3" maxlength="${home.messageBytes}" placeholder="${tr("home.composer_placeholder")}" required aria-describedby="home-composer-note"></textarea>
+      <div class="composer-bottom"><label class="project-chip">${icon("folder")}<span class="sr-only">${tr("home.project_chip")}</span><select name="projectId" aria-label="${tr("home.project_chip")}">${options.map(p => `<option value="${p.id}"${p.id === chosen ? " selected" : ""}>${escape(p.name)}</option>`).join("")}</select></label>
+      <button class="send-button" aria-label="${tr("home.send")}" title="${tr("home.send")}">${icon("arrow")}</button></div></form>
+    <p class="composer-note home-note" id="home-composer-note">${tr("home.composer_note")}<span class="composer-keys"> · ${tr("topic.composer_keys")}</span></p>`
+    : `<p class="empty-list">${tr("home.no_project_yet")}</p>`;
+  const waiting = !home ? "" : `<section class="waiting-strip" aria-labelledby="waiting-title"><h2 class="waiting-title" id="waiting-title">${tr("home.waiting_title")}</h2>${home.waiting.length
+    ? `<ul>${home.waiting.map(({ project: p, attention: a }) => `<li><a href="/projects/${p.id}/tasks">${icon("folder")}<span>${escape(p.name)}</span>${attentionBadge(a)}</a></li>`).join("")}</ul>`
+    : `<p>${tr("home.nothing_waiting")}</p>`}</section>`;
+  const hero = home ? `<section class="home-hero"><span class="home-mark">${logoMark({ size: 48 })}</span><h2 class="home-greeting">${tr("home.greeting")}${home.addressAs ? ` ${escape(home.addressAs)}` : ""}</h2><p>${tr("home.prompt")}</p></section>`
+    : `<section class="hero"><p class="eyebrow">${tr("home.a_space_for_your_ideas")}</p><h2>${tr("home.which_project_do_you_want")}</h2><p>${tr("home.pick_up_where_you_left")}</p></section>`;
+  return shell(home ? tr("home.title") : tr("common.your_projects"), { workspace: state, csrf, section: "home" }, `<div class="content${home ? " home" : ""}">${hero}${composer}${waiting}
+    ${home ? `<h2 class="section-heading">${tr("home.new_project_heading")}</h2>` : ""}<form class="create-form" id="new-project" method="post" action="/projects">${hiddenCommand(csrf, state.revision)}<label class="sr-only" for="name">${tr("home.project_name")}</label><input id="name" name="name" maxlength="200" placeholder="${tr("home.name_your_new_project")}" required autocomplete="off"><button class="primary" aria-label="${tr("home.create_project")}">${tr("home.create_project")}${icon("plus")}</button></form>
     <h2 class="section-heading">${tr("common.your_projects")}</h2>${state.projects.length ? `<div class="project-grid">${state.projects.map(p => `<a class="project-card" href="/projects/${p.id}">${icon("folder")}<h2>${escape(p.name)}</h2><p>${tr("home.open_topics_and_conversations")}</p></a>`).join("")}</div>` : `<p class="empty-list">${tr("home.start_with_your_first_project")}</p>`}
     <nav class="pagination" aria-label="${tr("home.project_pages")}">${offset > 0 ? `<a href="/?offset=${Math.max(0, offset - pageSize)}">${tr("home.previous")}</a>` : ""}${state.hasMore ? `<a href="/?offset=${offset + pageSize}">${tr("common.next")}</a>` : ""}</nav></div>`);
 }
@@ -304,6 +335,8 @@ export function conversationPage(state: ReturnType<Application["conversation"]>,
   cards?: Map<string, DispatchCardView>;
   /** Limits for "save as a decision" (decision.synthesize). */
   synthesisLimits?: JobLimits;
+  /** app.topic_promotion/v1: whether this topic was promoted, or continues a promoted General topic. */
+  promotion?: TopicPromotionView;
 }): string {
   const { project, topic } = state, title = topic.title ?? tr("common.topic_unavailable"), base = `/projects/${project.id}/topics/${topic.id}`;
   const replies = dispatch?.replies ?? new Map<string, JitReplyView>();
@@ -328,8 +361,22 @@ export function conversationPage(state: ReturnType<Application["conversation"]>,
   const roles = dispatch?.team.roles.filter(role => role.kind === "specialist" && role.enabled && role.effective.route) ?? [];
   // app.role_proposals/v1 cards follow the Jit reply that carries them; the edit form lists configured routes only.
   const routes = dispatch ? routesOf(dispatch.team) : [];
-  const proposals = (view: JitReplyView | undefined) => view?.roleProposals.map(item => roleProposalCard(item, { topicBase: base, csrf, routes, defaultRoute: dispatch?.team.projectDefault ?? dispatch?.team.ownerDefault ?? null })).join("") ?? "";
-  const dispatchPanel = dispatch ? `<details class="team-card" id="team-dispatch"><summary>${tr("topic.ask_the_team_to_analyze")}</summary>
+  const proposals = (view: JitReplyView | undefined) => (view?.roleProposals.map(item => roleProposalCard(item, { topicBase: base, csrf, routes, defaultRoute: dispatch?.team.projectDefault ?? dispatch?.team.ownerDefault ?? null })).join("") ?? "") +
+    (view?.promotionProposals.map(item => promotionProposalCard(item, { topicBase: base, csrf, originTitle: topic.title })).join("") ?? "");
+  // app.topic_promotion/v1: a promoted origin is read-only and points to its continuation.
+  const promotedTo = dispatch?.promotion?.promotedTo ?? null, continuedFrom = dispatch?.promotion?.continuedFrom ?? null;
+  const continuation = promotedTo ? `/projects/${promotedTo.target.projectId}/topics/${promotedTo.target.topicId}` : "";
+  const promotedBanner = promotedTo ? `<section class="promotion-banner" id="promoted" role="note"><p><strong>${tr("promotion.promoted_title")}</strong> ${escape(fillText(tr("promotion.promoted_body"), { project: promotedTo.project.name }))}</p>
+    <a class="promotion-link" href="${continuation}">${tr("promotion.continue_here")}</a></section>` : "";
+  const continuedBlock = (m: (typeof state.items)[number]) => {
+    if (!continuedFrom || continuedFrom.link.messageId !== m.id) return `<article id="message-${m.id}" class="message continued-from" data-message-id="${m.id}"><p class="literal">${tr("promotion.origin_unavailable")}</p></article>`;
+    const origin = continuedFrom.origin;
+    return `<section id="message-${m.id}" class="continued-from" data-message-id="${m.id}" data-promotion-id="${continuedFrom.id}"><details open><summary>${escape(fillText(tr("promotion.continued_from"), { project: origin.project.name }))} · ${escape(origin.topicTitle ?? tr("common.topic_unavailable"))}</summary>
+      <p class="continued-meta">${escape(fillText(tr("promotion.linked_at"), { revision: String(origin.topicRevision), count: String(origin.messageSequence) }))} · ${time(continuedFrom.createdAt)}</p>
+      <ol class="continued-messages">${origin.messages.map(item => `<li class="continued-message${item.attribution.kind === "owner" ? " continued-message--owner" : ""}"><span class="continued-speaker">${item.attribution.kind === "owner" ? tr("common.you") : item.jit ? tr("jit.name") : escape(attributionLabel(item.attribution))}</span><div class="message-body">${item.text === null ? `<p class="literal">${tr("common.source_unavailable")}</p>` : literalContent(item.text)}</div></li>`).join("")}</ol>
+      ${origin.hasMore ? `<p class="continued-meta">${tr("promotion.more_in_origin")}</p>` : ""}<a href="/projects/${origin.projectId}/topics/${origin.topicId}">${tr("promotion.open_origin")}</a></details></section>`;
+  };
+  const dispatchPanel = dispatch && !promotedTo ? `<details class="team-card" id="team-dispatch"><summary>${tr("topic.ask_the_team_to_analyze")}</summary>
     ${dispatch.dispatchAvailable && roles.length ? `<form class="team-form" method="post" action="/projects/${project.id}/team/discussions">${hiddenCommand(csrf, project.revision)}
       <input type="hidden" name="topicId" value="${topic.id}"><input type="hidden" name="sources" value="${escape(JSON.stringify(topic.availability === "available" ? [topic.source] : []))}">
       <input type="hidden" name="include" value="[]"><input type="hidden" name="exclude" value="[]"><input type="hidden" name="limits" value="${escape(JSON.stringify(dispatch.limits))}">
@@ -338,14 +385,16 @@ export function conversationPage(state: ReturnType<Application["conversation"]>,
     ${dispatch.discussions.length ? `<ul>${dispatch.discussions.map(item => `<li><a href="/projects/${project.id}/team/discussions/${item.id}">${escape(item.purpose)}</a> · ${item.participations.filter(p => p.state === "completed").length}/${item.participations.length} ${tr("topic.done_gaps")} ${item.coverageGap.length}</li>`).join("")}</ul>` : ""}</details>` : "";
   const decision = dispatch?.decision ? decisionPanel({ projectId: project.id, topicId: topic.id, topicRevision: topic.revision, csrf, model: dispatch.decision }) : "";
   const proposeTask = `<details class="team-card" id="task-proposal"><summary>${tr("topic.propose_as_task")}</summary><form class="team-form" method="post" action="/projects/${project.id}/tasks">${hiddenCommand(csrf, topic.revision)}<input type="hidden" name="topicId" value="${topic.id}"><label>${tr("common.task_title")}<input name="title" required maxlength="200"></label><label>${tr("common.summary")}<textarea name="summary" required maxlength="${messageBytes}"></textarea></label><button class="primary">${tr("common.save_as_proposal")}</button><small>${tr("topic.conversation_messages_are_not_accepted")}</small></form><p><a href="/projects/${project.id}/tasks?topic=${topic.id}">${tr("topic.view_project_tasks")}</a></p></details>`;
-  return shell(title, { workspace, csrf, project, topics, topic, section: "topic" }, `<div class="content chat-content"${live.length ? ` data-reply-stream="${base}/events" data-reply-cursor="${cursor}"` : ""}>${dispatchPanel}${decision}${proposeTask}<section aria-label="${tr("topic.message_history")}">${state.items.length ? state.items.map(m => { const jit = committedReplies.get(m.id), reply = replies.get(m.id), card = cards.get(m.id);
+  return shell(title, { workspace, csrf, project, topics, topic, section: "topic" }, `<div class="content chat-content"${live.length ? ` data-reply-stream="${base}/events" data-reply-cursor="${cursor}"` : ""}>${promotedBanner}${dispatchPanel}${decision}${proposeTask}<section aria-label="${tr("topic.message_history")}">${state.items.length ? state.items.map(m => { const jit = committedReplies.get(m.id), reply = replies.get(m.id), card = cards.get(m.id);
       if (m.attribution.kind === "participant" && !jit && folded.has(m.attribution.runId)) return "";
+      if (m.attribution.kind === "service" && m.attribution.service === "jit-promotion") return continuedBlock(m);
       return `<article id="message-${m.id}" class="message${m.attribution.kind === "owner" ? " message--owner" : jit || setupGreeting(m.attribution) ? " message--jit" : ""}" data-message-id="${m.id}">${jit || setupGreeting(m.attribution) ? `<div class="reply-head"><span class="jit-avatar">${logoMark({ size: 20 })}</span><span class="reply-name">${tr("jit.name")}</span></div>` : ""}<div class="message-body">${m.text === null ? `<p class="literal">${tr("common.source_unavailable")}</p>` : literalContent(m.text)}</div>
       <div class="message-meta"><span>${escape(label(m))}</span><span class="committed">${icon("check")}${tr("common.saved")}</span><details><summary aria-label="${tr("topic.message_details_and_origin")}">${icon("info")}${tr("topic.details")}</summary><div class="message-detail">${time(m.committedAt)}<br>${sourceLink(project.id, m.source, tr("common.message_origin"))}${jit?.discardedTotal ? `<br>${tr("reply.discarded")}: ${jit.discardedTotal} · ${escape(jit.discarded.join(", "))}` : ""}</div></details></div>${jit?.team ? teamReplyMeta(jit, cardsById.get(jit.team.proposalId), project.id, csrf, dispatch?.synthesisLimits) : ""}</article>${proposals(jit)}${card ? dispatchCard(card, base, csrf) : ""}${reply && (m.attribution.kind === "owner" || reply.team) ? reply.state !== "answered" ? replyStatus(reply, base, project.id, csrf) : !onPage.has(reply.replyMessageId!) ? answeredElsewhere(reply) : "" : ""}`; }).join("") : `<div class="empty-chat"><div>${icon("chat")}<h2>${tr("topic.start_this_conversation")}</h2><p>${tr("topic.keep_ideas_questions_and_things")}</p></div></div>`}</section>
       <nav class="pagination" aria-label="${tr("topic.message_history_pages")}">${after > 0 ? `<a href="${base}">${tr("common.first_page")}</a>` : ""}${state.hasMore ? `<a href="${base}?after=${state.nextAfter}">${tr("topic.next_messages")}</a>` : ""}</nav></div>`, {
     breadcrumb: { title: project.name, href: `/projects/${project.id}` }, action: `<a class="header-action" href="/projects/${project.id}#new-topic" aria-label="${tr("common.new_topic")}">${icon("plus")}${tr("common.new_topic")}</a>${panelToggle(base)}`,
     panel: topicPanelSlot(),
-    composer: `<div class="composer-wrap"><form class="composer" method="post" action="${base}/messages">${hiddenCommand(csrf, topic.revision)}<label class="sr-only" for="text">${tr("topic.your_message")}</label><textarea id="text" name="text" rows="2" maxlength="${messageBytes}" placeholder="${tr("topic.write_a_message_in_this")}" required aria-describedby="composer-note"></textarea><div class="composer-bottom"><span class="composer-topic">${icon("chat")} ${escape(title)}</span><button class="send-button" aria-label="${tr("topic.send_message")}" title="${tr("topic.send_message")}">${icon("arrow")}</button></div></form><p class="composer-note" id="composer-note">${tr("topic.jit_replies_note")}<span class="composer-keys"> · ${tr("topic.composer_keys")}</span></p></div>`,
+    composer: promotedTo ? `<div class="composer-wrap"><div class="composer composer--closed" role="note"><p>${tr("promotion.read_only")}</p><a class="promotion-link" href="${continuation}">${tr("promotion.continue_here")}</a></div></div>`
+      : `<div class="composer-wrap"><form class="composer" method="post" action="${base}/messages">${hiddenCommand(csrf, topic.revision)}<label class="sr-only" for="text">${tr("topic.your_message")}</label><textarea id="text" name="text" rows="2" maxlength="${messageBytes}" placeholder="${tr("topic.write_a_message_in_this")}" required aria-describedby="composer-note"></textarea><div class="composer-bottom"><span class="composer-topic">${icon("chat")} ${escape(title)}</span><button class="send-button" aria-label="${tr("topic.send_message")}" title="${tr("topic.send_message")}">${icon("arrow")}</button></div></form><p class="composer-note" id="composer-note">${tr("topic.jit_replies_note")}<span class="composer-keys"> · ${tr("topic.composer_keys")}</span></p></div>`,
   });
 }
 /** Shows exact committed source content with scope/version metadata available for inspection. */

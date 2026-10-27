@@ -1,6 +1,7 @@
 import { Application, type CreateProjectCommand } from "./application";
 import { AppError } from "./errors";
-import type { CreateTopicCommand, SendMessageCommand } from "./conversation";
+import type { CreateTopicCommand, SendMessageCommand, StartChatCommand } from "./conversation";
+import type { PromotionCommand } from "./promotion";
 import { workspacePage, projectPage, conversationPage, sourcePage, jobsPage, teamPage, previewPage, discussionPage, deliveryPage, deliveryDetailPage, prReportsPage, prReportPage, tasksPage, taskPage, memoryPage, memoryClaimPage, memoryContextPage, schedulesPage, scheduleDetailPage, backupsPage, backupDetailPage, deletionsPage, deletionDetailPage, exportsPage, exportDetailPage, upgradesPage, upgradeDetailPage, restoresPage, restoreDetailPage, loginPage, errorPage } from "./web-layout";
 import type { ExtractMemoryCommand } from "./memory/types";
 import type { CorrectMemoryCommand } from "./memory/types";
@@ -193,6 +194,8 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       const streamRoute = /^\/projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})\/events$/.exec(pathname);
       const replyStopRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})\/replies\/([a-f0-9-]{36})\/stop$/.exec(pathname);
       const roleProposalRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})\/replies\/([a-f0-9-]{36})\/proposals\/([a-f0-9-]{36})\/(accept|reject|revise)$/.exec(pathname);
+      // app.topic_promotion/v1: accept, edit or dismiss one promotion proposal revision.
+      const promotionRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})\/replies\/([a-f0-9-]{36})\/promotions\/([a-f0-9-]{36})\/(accept|dismiss|revise)$/.exec(pathname);
       // app.dispatch_allowance/v1 routes.
       const dispatchActionRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/dispatch\/([a-f0-9-]{36})\/(accept|dismiss|answer)$/.exec(pathname);
       const stopAllRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/team\/discussions\/([a-f0-9-]{36})\/stop-all$/.exec(pathname);
@@ -207,7 +210,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const found = view.state === "answered" && view.source ? app.source(auth.actor, view.projectId, view.source) : null;
         return { id: view.id, messageId: view.messageId, state: view.state, reason: view.reason, revision: view.revision, progress: view.progress,
           replyMessageId: view.replyMessageId, text: found?.state === "available" ? found.text : null, tone: replyTone[view.state], label: labels.state, next: labels.next,
-          proposals: view.roleProposals.length };
+          proposals: view.roleProposals.length + view.promotionProposals.length };
       };
       if (request.method === "GET" && streamRoute) {
         // ADR 0028: one authenticated SSE stream per open topic, fed only from persisted reply state. Every
@@ -280,6 +283,32 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const receipt = app.execute(auth.actor, command);
         const p = receipt.proposal;
         return api ? json(receipt) : respond(null, 303, { Location: `/projects/${p.projectId}/topics/${p.topicId}?after=${Math.max(0, (p.replySequence ?? 1) - 1)}#proposal-${p.id}` });
+      }
+      if (request.method === "POST" && promotionRoute) {
+        // app.topic_promotion/v1: the form path and the JSON path build the same command; the service checks that the
+        // proposal belongs to a committed Jit reply in this General topic, its revision and its state.
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        const verb = promotionRoute[6] as "accept" | "dismiss" | "revise";
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", ...(verb === "revise" ? ["name"] : [])].includes(key))) throw new AppError("invalid_body");
+        const revision = typeof body.expectedRevision === "string" && /^\d{1,15}$/.test(body.expectedRevision) ? Number(body.expectedRevision) : body.expectedRevision;
+        const target = { topicId: promotionRoute[3]!, replyId: promotionRoute[4]!, proposalId: promotionRoute[5]! };
+        const command = { kind: `topic.promote.${verb}`, requestId: body.requestId, projectId: promotionRoute[2], expectedRevision: revision,
+          payload: verb === "revise" ? { ...target, name: body.name } : target } as PromotionCommand;
+        const receipt = app.execute(auth.actor, command);
+        if (api) return json(receipt);
+        const p = receipt.proposal, promoted = receipt.promotion;
+        return respond(null, 303, { Location: promoted ? `/projects/${promoted.target.projectId}/topics/${promoted.target.topicId}#message-${promoted.link.messageId}`
+          : `/projects/${p.projectId}/topics/${p.topicId}?after=${Math.max(0, (p.replySequence ?? 1) - 1)}#proposal-${p.id}` });
+      }
+      if (request.method === "POST" && ["/chats", "/api/chats"].includes(url.pathname)) {
+        // Chat-first home: the composer starts one topic in the chosen project (the General space by default) with the
+        // owner's first message, and Jit answers it. A plain form post; the chip is an ordinary select.
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "projectId", "text"].includes(key))) throw new AppError("invalid_body");
+        const revision = typeof body.expectedRevision === "string" && /^\d{1,15}$/.test(body.expectedRevision) ? Number(body.expectedRevision) : body.expectedRevision;
+        const command = { kind: "chat.start", requestId: body.requestId, projectId: body.projectId, expectedRevision: revision, payload: { text: body.text } } as StartChatCommand;
+        const receipt = app.execute(auth.actor, command);
+        return api ? json(receipt) : respond(null, 303, { Location: `/projects/${receipt.topic.projectId}/topics/${receipt.topic.id}#message-${receipt.message.id}` });
       }
       if (request.method === "POST" && dispatchActionRoute) {
         const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
@@ -849,13 +878,14 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       if (request.method === "GET" && topicRoute) {
         const state = app.conversation(auth.actor, topicRoute[2]!, topicRoute[3]!, after());
         const replies = app.replies(auth.actor, state.project.id, state.topic.id, state.items.map(item => item.id));
-        if (api) return json({ ...state, replies: [...replies.values()] });
+        const promotion = app.promotion(auth.actor, state.project.id, state.topic.id);
+        if (api) return json({ ...state, replies: [...replies.values()], promotion });
         const team = app.team(auth.actor, state.project.id);
         const discussions = app.discussions(auth.actor, state.project.id, state.topic.id);
         const cards = app.dispatchCards(auth.actor, state.project.id, state.topic.id, state.items.map(item => item.id));
         return page(() => conversationPage(state, nav(), app.topics(auth.actor, state.project.id).items, auth.csrf, after(), config.messageBytes, {
           team, discussions, limits: config.jobs.maximum, dispatchAvailable: team.previewAvailable, replies, cards,
-          synthesisLimits: dispatchLimits(config, 1),
+          synthesisLimits: dispatchLimits(config, 1), promotion,
           decision: app.decision(auth.actor, state.project.id, state.topic.id),
         }));
       }
@@ -874,7 +904,19 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         if (!/^\d{1,7}$/.test(raw)) throw new AppError("invalid_offset");
         const offset = Number(raw);
         const state = app.workspace(auth.actor, offset);
-        return api ? json(state) : page(() => workspacePage(nav(state), auth.csrf, offset, config.pageSize));
+        if (api) return json(state);
+        // Chat-first home: the chip defaults to the General space; `?project=<id>` preselects another project.
+        const general = app.generalSpace(auth.actor), selected = url.searchParams.get("project");
+        const generalProject = general ? app.project(auth.actor, general.projectId) : null;
+        const ids = [...new Set([...generalProject ? [generalProject.id] : [], ...state.projects.map(p => p.id)])].slice(0, 50);
+        const attention = app.attention(auth.actor, ids);
+        const known = new Map([...generalProject ? [generalProject] : [], ...state.projects].map(p => [p.id, p]));
+        const waiting = ids.map(id => ({ project: known.get(id)!, attention: attention[id]! }))
+          .filter(item => item.attention.proposals + item.attention.reviews + item.attention.resumes > 0);
+        return page(() => workspacePage(nav(state), auth.csrf, offset, config.pageSize, {
+          addressAs: app.persona(auth.actor).addressAs, general: generalProject ? { id: generalProject.id, name: generalProject.name } : null,
+          selected: selected && /^[a-f0-9-]{36}$/.test(selected) ? selected : null, messageBytes: config.messageBytes, waiting,
+        }));
       }
       if (request.method === "POST" && (["/projects", "/api/projects", "/logout"].includes(url.pathname) || backupsRoute || upgradesRoute || upgradeRoute || restoresRoute || restoreRoute || topicCollection || messageRoute || jobsRoute || resumeRoute || schedulesRoute || scheduleAction)) {
         const body = await payload(request);
@@ -970,10 +1012,10 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       if (!api && rejection.code === "restore_incomplete" && request.method === "GET") return respond(null, 303, { "Location": "/settings/restores" });
       const detail = rejection.detail;
       const recovery = detail && typeof detail.projectId === "string" && /^[a-f0-9-]{36}$/.test(detail.projectId) && typeof detail.path === "string" && detail.path.startsWith(`/projects/${detail.projectId}/`)
-        ? { href: detail.path, proposal: typeof detail.taskId === "string" } : undefined;
+        ? { href: detail.path, proposal: typeof detail.taskId === "string", topic: rejection.code === "topic_promoted" } : undefined;
       // Error text comes only from the dictionaries, keyed by the fixed error code; unknown codes get the generic message.
       return api ? json({ error: rejection.code, ...(detail ? { detail } : {}) }, rejection.status) : page(() => errorPage(trMaybe(`error.${rejection.code}`) ?? tr("error.default"),
-        recovery && { href: recovery.href, label: tr(recovery.proposal ? "error.recovery_open_proposal" : "error.recovery_open_list") }), rejection.status);
+        recovery && { href: recovery.href, label: tr(recovery.proposal ? "error.recovery_open_proposal" : recovery.topic ? "error.recovery_open_topic" : "error.recovery_open_list") }), rejection.status);
     }
   };
 }

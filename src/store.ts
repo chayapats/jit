@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { commitDecisionMemorySource, retireDecisionMemorySource } from "./memory/decision-sources";
 
 /** Current application schema revision. Service packaging pins and checks this value. */
-export const schemaVersion = 27;
+export const schemaVersion = 28;
 
 /**
  * Installation-scoped state that never round-trips through backup images and
@@ -72,7 +72,7 @@ export class TransactionStore {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
           if (current === schemaVersion) return;
-          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26].includes(current)) throw new Error("Unsupported migration source");
+          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27].includes(current)) throw new Error("Unsupported migration source");
           if (existing) {
             const snapshot = `${path}.pre-v${current}-${crypto.randomUUID()}.sqlite`;
             const fd = openSync(snapshot, "wx", 0o600);
@@ -820,6 +820,43 @@ export class TransactionStore {
             );
             CREATE INDEX IF NOT EXISTS dispatch_proposal_topic ON dispatch_proposals(project_id, topic_id, created_at);
             PRAGMA user_version = 27;
+          `);
+          if (current < 28) this.#db.exec(`
+            -- app.topic_promotion/v1 (BOT05, ADR 0031): one row per promoted General space topic. Identities only: the
+            -- origin topic at its exact revision, the continuation project and topic, and the continuation's first
+            -- record (an identity-only external source and its message). An origin is promoted at most once.
+            CREATE TABLE IF NOT EXISTS topic_promotions (
+              id TEXT PRIMARY KEY,
+              origin_project_id TEXT NOT NULL REFERENCES projects(id),
+              origin_topic_id TEXT NOT NULL UNIQUE REFERENCES topics(id),
+              origin_topic_revision INTEGER NOT NULL CHECK (origin_topic_revision > 0),
+              origin_message_sequence INTEGER NOT NULL CHECK (origin_message_sequence >= 0),
+              project_id TEXT NOT NULL UNIQUE REFERENCES projects(id),
+              topic_id TEXT NOT NULL UNIQUE REFERENCES topics(id),
+              link_message_id TEXT NOT NULL UNIQUE REFERENCES messages(id),
+              link_source_id TEXT NOT NULL UNIQUE REFERENCES sources(id),
+              link_source_revision INTEGER NOT NULL CHECK (link_source_revision > 0),
+              link_source_generation INTEGER NOT NULL CHECK (link_source_generation > 0),
+              reply_id TEXT NOT NULL REFERENCES jit_replies(id),
+              proposal_id TEXT NOT NULL UNIQUE,
+              proposal_revision INTEGER NOT NULL CHECK (proposal_revision > 0),
+              created_at INTEGER NOT NULL,
+              CHECK (project_id != origin_project_id)
+            );
+            -- app.general_space/v1: the General space is never deleted or pointed at another project or topic, and its
+            -- project is never deleted, whatever path writes.
+            CREATE TRIGGER IF NOT EXISTS general_space_keep BEFORE DELETE ON general_space BEGIN
+              SELECT RAISE(ABORT, 'general_space_protected');
+            END;
+            CREATE TRIGGER IF NOT EXISTS general_space_fixed BEFORE UPDATE OF id, project_id, topic_id ON general_space
+            WHEN NEW.id IS NOT OLD.id OR NEW.project_id IS NOT OLD.project_id OR NEW.topic_id IS NOT OLD.topic_id BEGIN
+              SELECT RAISE(ABORT, 'general_space_protected');
+            END;
+            CREATE TRIGGER IF NOT EXISTS general_project_keep BEFORE DELETE ON projects
+            WHEN EXISTS (SELECT 1 FROM general_space WHERE project_id = OLD.id) BEGIN
+              SELECT RAISE(ABORT, 'general_space_protected');
+            END;
+            PRAGMA user_version = 28;
           `);
         }).immediate();
         this.#db.exec("PRAGMA foreign_keys = ON;");

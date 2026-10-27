@@ -6,7 +6,7 @@ export interface SourceReference { sourceId: string; revision: number; generatio
 /** Attributes content to a verified ingress identity or a trusted service producer, never its text. */
 export type Attribution = { kind: "owner"; ownerId: "owner" }
   | { kind: "participant"; participantId: string; runId: string }
-  | { kind: "service"; service: "source-registry" | "jit-setup" };
+  | { kind: "service"; service: "source-registry" | "jit-setup" | "jit-promotion" };
 /** Describes application data or an external identity without provider wire objects or fetch authority. */
 export type SourceDescriptor = { kind: "topic"; topicId: string }
   | { kind: "message"; topicId: string; messageId: string }
