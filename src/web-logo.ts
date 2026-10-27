@@ -1,54 +1,57 @@
 /**
  * Jit logo, concept D "บอทนั่งสมาธิ" (S09-D10, docs/design/README.md), hand-built on a 24-unit grid.
  *
- * One colour only (`currentColor`, i.e. `--fg`). The head is a rounded square whose closed-eye arcs are
- * negative space (even-odd fill). The body is a wide, low seated base without limbs. A thin halo sits
- * behind the figure, and the floating dot (จุดตั้งจิต) is the only part that animates. There is no
- * religious iconography: no ushnisha, lotus, unalome, flames or gold.
+ * The geometry is measured from the owner-chosen concept image (docs/design/assets/logo-concept-d.png)
+ * so the drawing keeps its proportions: a big rounded-square head with two closed-eye arcs cut out as
+ * negative space, a small gap at the neck, and a soft seated body that flares into a cloud-like base.
+ * One colour only (`currentColor`, i.e. `--fg`). A thin halo sits behind the figure, and the floating
+ * dot is the only part that animates. There is no religious iconography: no ushnisha, lotus, unalome,
+ * flames or gold.
  */
 
-const head = "M10.25 6.6h3.5a2.25 2.25 0 0 1 2.25 2.25v2.6a2.25 2.25 0 0 1-2.25 2.25h-3.5A2.25 2.25 0 0 1 8 10.85v-2.6A2.25 2.25 0 0 1 10.25 6.6Z";
-/** Tapered closed-eye arcs, cut out of the head. `bold` thickens them so they survive at favicon size. */
+const head = "M9.68 6.78h4.64a2.1 2.1 0 0 1 2.1 2.1v3.81a2.1 2.1 0 0 1-2.1 2.1H9.68a2.1 2.1 0 0 1-2.1-2.1V8.88a2.1 2.1 0 0 1 2.1-2.1Z";
+/** Closed-eye arcs, cut out of the head. `bold` thickens them so they survive at favicon size. */
 const eyes = (bold: boolean) => bold
-  ? "M9.3 9.65Q10.35 11.55 11.4 9.65Q10.35 10.55 9.3 9.65ZM12.6 9.65Q13.65 11.55 14.7 9.65Q13.65 10.55 12.6 9.65Z"
-  : "M9.45 9.85Q10.4 11.2 11.35 9.85Q10.4 10.65 9.45 9.85ZM12.65 9.85Q13.6 11.2 14.55 9.85Q13.6 10.65 12.65 9.85Z";
-const body = "M7.75 14.4C8.05 13.65 8.9 13.25 10 13.25h4c1.1 0 1.95.4 2.25 1.15.5 1.55 2.1 2.35 3.55 2.9 1.1.42 1.7 1.1 1.7 1.95 0 1-.7 1.6-1.8 1.6H4.3c-1.1 0-1.8-.6-1.8-1.6 0-.85.6-1.53 1.7-1.95 1.45-.55 3.05-1.35 3.55-2.9Z";
-const dot = (cls = "jit-dot") => `<circle class="${cls}" cx="12" cy="4.6" r=".95"/>`;
-const halo = `<circle class="jit-halo" cx="12" cy="11.6" r="8.9" fill="none" stroke="currentColor" stroke-width=".7"/>`;
+  ? "M8.7 10.75Q10.07 11.5 11.44 10.75L11.34 11.05Q10.07 12.25 8.8 11.05ZM12.56 10.75Q13.93 11.5 15.3 10.75L15.2 11.05Q13.93 12.25 12.66 11.05Z"
+  : "M8.72 10.76Q10.07 11.6 11.42 10.76L11.32 11.06Q10.07 12.1 8.82 11.06ZM12.58 10.76Q13.93 11.6 15.28 10.76L15.18 11.06Q13.93 12.1 12.68 11.06Z";
+/** Rounded shoulders just under the head, a gentle slope, then the base flares into two soft lobes. */
+const body = "M9.1 14.72C8.3 14.72 7.9 14.95 7.6 15.36C7.15 15.95 6.3 17 5.72 17.75C5.3 18.25 4.2 19.1 3.13 19.35"
+  + "C2.75 19.45 2.43 20.1 2.43 20.74C2.43 21.9 3.2 23 5 23H19C20.8 23 21.57 21.9 21.57 20.74"
+  + "C21.57 20.1 21.25 19.45 20.87 19.35C19.8 19.1 18.7 18.25 18.28 17.75C17.7 17 16.85 15.95 16.4 15.36"
+  + "C16.1 14.95 15.7 14.72 14.9 14.72Z";
+const dot = (cls = "jit-dot") => `<circle class="${cls}" cx="12" cy="4.42" r="1.13"/>`;
+const halo = `<circle class="jit-halo" cx="12" cy="11.04" r="9.85" fill="none" stroke="currentColor" stroke-width=".45"/>`;
+const figure = (bold: boolean, cls?: string) => `<path d="${body}"/><path fill-rule="evenodd" d="${head}${eyes(bold)}"/>${dot(cls)}`;
 
 /**
- * The mark alone. Drop the halo below 24 px (`halo: false`). `label` names it for assistive technology;
- * without a label the mark is decorative.
+ * The mark alone. Drop the halo below 24 px (`halo: false`); without it the figure moves up to stay
+ * centred. `label` names it for assistive technology; without a label the mark is decorative.
  */
 export function logoMark(options: { size?: number; halo?: boolean; label?: string; className?: string } = {}): string {
   const { size = 24, label, className = "jit-mark" } = options;
   const showHalo = options.halo ?? size >= 24;
   const a11y = label ? `role="img" aria-label="${label}"` : `aria-hidden="true" focusable="false"`;
   return `<svg class="${className}" viewBox="0 0 24 24" width="${size}" height="${size}" fill="currentColor" ${a11y}>`
-    + `${showHalo ? halo : ""}<path d="${body}"/><path fill-rule="evenodd" d="${head}${eyes(size < 24)}"/>${dot()}</svg>`;
+    + (showHalo ? `${halo}${figure(size < 24)}` : `<g transform="translate(0 -1.1)">${figure(size < 24)}</g>`) + `</svg>`;
 }
 
 /**
- * Custom "จิต" lettering: loopless, geometric strokes on a 10-unit x-height (not font text).
- * จ: an arch over the top, a right stem to the baseline and a back-stroke into the counter.
- * ิ: a low dome above จ. ต: two shoulders with a centre notch over two stems.
+ * Custom "Jit" lettering: geometric round-capped strokes on a 10-unit cap height (not font text).
+ * J: a stem with a round hook. i: a stem and a round dot. t: a stem curving into a short foot, and a bar.
  */
 const wordmarkStrokes = [
-  "M1 4.6C1 2.3 2.55 1 4.5 1S8 2.3 8 4.5V10L4.7 6.7", // จ
-  "M2.4 -1.3C2.9 -3.2 7.4 -3.4 8.1 -1", // ิ
-  "M11.5 10V3.4C11.5 1.9 12.4 1 13.6 1S15.3 1.8 15.3 2.9C15.3 1.8 16.05 1 17.2 1S19 1.9 19 3.4V10", // ต
+  "M5 0V7A2.5 2.5 0 0 1 0 7", // J
+  "M8.6 3.4V10", "M8.6 .4h0", // i
+  "M12.2 .8V8.2A1.8 1.8 0 0 0 14 10H14.9", "M10.6 3.4H14.6", // t
 ];
-/** "JIT" in small geometric caps for the line under the Thai wordmark. */
-const latinStrokes = ["M2.2 0V2.1A1 1 0 0 1 .2 2.2", "M4.6 0V3", "M6.9 0H9.9M8.4 0V3"];
 
-/** The lockup: mark, the custom "จิต" wordmark and "JIT" small caps beneath it. */
+/** The lockup: the mark with its halo and the custom "Jit" wordmark beside it. */
 export function logoLockup(options: { height?: number; label?: string } = {}): string {
   const { height = 32, label = "Jit" } = options;
-  const width = Math.round(height * 56 / 24);
-  return `<svg class="jit-lockup" viewBox="0 0 56 24" width="${width}" height="${height}" role="img" aria-label="${label}">`
-    + `<g fill="currentColor">${halo}<path d="${body}"/><path fill-rule="evenodd" d="${head}${eyes(false)}"/>${dot()}</g>`
-    + `<g transform="translate(30 5.2) scale(1.12)" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${wordmarkStrokes.map(d => `<path d="${d}"/>`).join("")}</g>`
-    + `<g transform="translate(36.4 18.6)" fill="none" stroke="currentColor" stroke-width=".55" stroke-linecap="round" stroke-linejoin="round">${latinStrokes.map(d => `<path d="${d}"/>`).join("")}</g></svg>`;
+  const width = Math.round(height * 46 / 24);
+  return `<svg class="jit-lockup" viewBox="0 0 46 24" width="${width}" height="${height}" role="img" aria-label="${label}">`
+    + `<g fill="currentColor">${halo}${figure(false)}</g>`
+    + `<g transform="translate(28 6.5) scale(1.1)" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round">${wordmarkStrokes.map(d => `<path d="${d}"/>`).join("")}</g></svg>`;
 }
 
 /**
@@ -56,4 +59,4 @@ export function logoLockup(options: { height?: number; label?: string } = {}): s
  * because an icon file cannot read page tokens (dark `--bg` and `--fg`).
  */
 export const faviconSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="5.5" fill="#0a0a0a"/>`
-  + `<g fill="#ededed" transform="translate(12 12.4) scale(.86) translate(-12 -12)"><path d="${body}"/><path fill-rule="evenodd" d="${head}${eyes(true)}"/>${dot("d")}</g></svg>`;
+  + `<g fill="#ededed" transform="translate(12 12) scale(.84) translate(-12 -13.15)">${figure(true, "d")}</g></svg>`;

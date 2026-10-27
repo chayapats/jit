@@ -6,17 +6,18 @@ Status: confirmed direction for [S09](../specs/S09-main-bot-and-chat-first-ui.md
 
 1. **Quiet like Grok.** Use monochrome surfaces, few lines and no decoration, so the conversation stays the hero.
 2. **Calm but powerful.** Use stable shapes, generous spacing and slow motion. Nothing bounces.
-3. **Thai only in the mark.** The logo and the "จิต" wordmark carry the Thai identity. The interface itself stays neutral.
+3. **Identity only in the mark.** The meditating-bot logo and the "Jit" wordmark carry the identity. The interface itself stays neutral.
 4. **Every state has words.** Status is never shown by colour or animation alone (NFR-11).
 
 ## Logo — "บอทนั่งสมาธิ" (concept D)
 
 ![Concept D](assets/logo-concept-d.png)
 
-This raster image is the AI-generated concept the owner chose. UX01 redraws it as hand-built SVG on a 24-unit grid:
+This raster image is the AI-generated concept the owner chose. The SVG is hand-built on a 24-unit grid with its geometry measured from this image, so it keeps the concept's proportions:
 
-- **Head:** a rounded square with two thin closed-eye arcs cut out as negative space.
-- **Body:** a wide, low, rounded seated base. The width gives stability and power. No limbs.
+- **Head:** a big rounded square (corner radius about a quarter of its width) with two closed-eye arcs cut out as negative space, set a little below the middle.
+- **Neck:** a small gap where the head's rounded corners meet the shoulders, so the head reads as a separate shape.
+- **Body:** rounded shoulders just under the head, a gentle slope, then a base that flares into two soft cloud-like lobes. No limbs.
 - **จุดตั้งจิต:** a small solid dot floating above the head. It is the only animated part. It breathes on a 4.8 s cycle while Jit is thinking, and stays static when `prefers-reduced-motion` is set.
 - **Halo:** one thin ring behind the figure. Drop it below 24 px.
 
@@ -24,10 +25,10 @@ Rules:
 
 - Use one colour only, `--fg` on `--bg`.
 - Do not add Buddhist iconography: no ushnisha, lotus throne, unalome, flames or gold leaf.
-- Tone down cuteness compared with the concept image: smaller eyes, a heavier base and no blush or smile.
-- Lockup: mark plus the "จิต" wordmark (custom SVG lettering, not font text) with "JIT" small caps under it. Use the mark alone for the favicon, PWA icon and avatar.
+- Keep the concept's cuteness: its head-to-body proportions, eye size and soft base. Do not add a blush, a smile or other features. (Owner decision, 2026-10-27; it replaces the earlier rule to tone the cuteness down.)
+- Lockup: mark plus the "Jit" wordmark (custom SVG lettering, not font text). No Thai wordmark. Use the mark alone for the favicon, PWA icon and avatar.
 
-The UX01 drawing lives in `src/web-logo.ts`: `logoMark` (24-unit grid, halo only at 24 px and above, thicker eye cuts below 24 px), `logoLockup` (loopless stroked จ, ิ and ต; drawn "JIT" caps) and `faviconSvg` (mark without halo on a dark tile). The dot breathes only inside `[data-state="thinking"]`, which BOT01 sets while Jit is replying.
+The UX01 drawing lives in `src/web-logo.ts`: `logoMark` (24-unit grid, halo only at 24 px and above; below that the figure moves up to stay centred and the eye cuts get thicker), `logoLockup` (round-capped stroked "Jit") and `faviconSvg` (mark without halo on a dark tile). The dot breathes only inside `[data-state="thinking"]`, which BOT01 sets while Jit is replying.
 
 ## Colour tokens
 
