@@ -843,6 +843,15 @@ export class TransactionStore {
               created_at INTEGER NOT NULL,
               CHECK (project_id != origin_project_id)
             );
+            -- Chat-first home (BOT05): a topic title derived from a chat's first message is a separate owner source;
+            -- this lineage makes deleting that message delete the derived title too (app.data_lifecycle/v1).
+            CREATE TABLE IF NOT EXISTS chat_title_sources (
+              title_source_id TEXT PRIMARY KEY REFERENCES sources(id),
+              project_id TEXT NOT NULL REFERENCES projects(id),
+              topic_id TEXT NOT NULL UNIQUE REFERENCES topics(id),
+              message_source_id TEXT NOT NULL REFERENCES sources(id)
+            );
+            CREATE INDEX IF NOT EXISTS chat_title_message ON chat_title_sources(message_source_id);
             -- app.general_space/v1: the General space is never deleted or pointed at another project or topic, and its
             -- project is never deleted, whatever path writes.
             CREATE TRIGGER IF NOT EXISTS general_space_keep BEFORE DELETE ON general_space BEGIN

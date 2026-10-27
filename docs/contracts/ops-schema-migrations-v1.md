@@ -23,7 +23,7 @@ reconciliation), `delivery.outbox/v1` (unknown outcomes stay unknown),
   empty `setup_state` and `general_space` tables of app.setup/v1 and
   app.general_space/v1, so an upgraded installation goes through setup once; 27 adds the empty
   `dispatch_allowance_revisions` and `dispatch_proposals` tables of
-  app.dispatch_allowance/v1; 28 adds the empty `topic_promotions` table of
+  app.dispatch_allowance/v1; 28 adds the empty `topic_promotions` and `chat_title_sources` tables of
   app.topic_promotion/v1 and the triggers that keep the General space from
   being deleted or re-pointed).
 - Sources: `minUpgradeSourceSchema` (17) through the target. A recovery point

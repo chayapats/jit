@@ -21,7 +21,7 @@ Uses `app.general_space/v1`, `app.jit_reply/v1` and `app.memory_context/v1`. It 
 `chat.start` command: `{ kind: "chat.start", requestId, projectId, expectedRevision, payload: { text } }`.
 
 - `expectedRevision` is the workspace revision the chip was rendered from. A home page from before a project was created is `stale_revision`.
-- The topic title is the text's first non-empty line, with whitespace collapsed, at most 60 characters (`…` when cut).
+- The topic title is the text's first non-empty line, with whitespace collapsed, at most 60 characters (`…` when cut). It is a copy of owner text, so `chat_title_sources` (schema 28) records its lineage to the first message's source. Deleting that message (app.data_lifecycle/v1) treats the title as a derived copy: the title source and its receipt copies are purged with it.
 - The topic, the message, Jit's reply admission (`app.jit_reply/v1`), the receipt and the audit row commit together. A replay returns the original receipt `{ topic, message, projectRevision, topicRevision }`.
 - Commands to the General space are still refused with `setup_incomplete` until setup is done (app.setup/v1).
 
@@ -72,6 +72,7 @@ A promoted origin is read-only. These commands are refused with `topic_promoted`
 
 - `message.send` (from every ingress);
 - `team.dispatch` and `role.preview` for that topic;
+- `team.control` `include` on a discussion of that topic (exclude, skip and stop still work). A discussion of a promoted topic that settles never admits a team reply;
 - `dispatch.proposal.accept` and `dispatch.answer` on its dispatch cards.
 
 The error carries the continuation's path, and the error page links to it as "open the new topic". Dismissing a dispatch card, role proposal commands, task commands and reads stay available.
@@ -131,4 +132,5 @@ All labels are dictionary keys (`home.*`, `promotion.*` and the new `error.*` co
 - **Provenance.** Claim, source and task identity after promotion. Cross-project memory with the original provenance, and a forget in General withdrawing it from the new project.
 - **Deletion.** Deleting origin content after promotion: the continuation shows it unavailable, no copy exists anywhere, and the link stays. Deleting Jit's text closes an open card.
 - **General space.** It cannot be deleted or re-pointed, promotion leaves it unchanged, and new chats still land there.
+- **Self-review fixes.** A discussion started before promotion cannot bring a specialist back into the origin. Deleting a chat's first message also deletes its derived title, in the origin, the continuation, pages and receipts.
 - **Rendering.** Thai and English pages with no raw keys and no inline script.

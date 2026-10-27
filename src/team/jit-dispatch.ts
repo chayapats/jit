@@ -10,6 +10,7 @@ import { readDecisionModel } from "./decisions";
 import { prepareDispatch, projectDiscussion, readDiscussion, readSpecialist } from "./dispatch";
 import { admitTeamReply, readReply, replyLimits, type JitReplyView, type ReplyNotAdmitted, type TeamReplyGap, type TeamReplyResult } from "./jit-reply";
 import type { Discussion, DiscussionOrigin, DiscussionParticipation, SynthesisState } from "./types";
+import { promotionFrom } from "../promotion";
 
 /** Lifecycle of one dispatch proposal. Only `admitted` (standing allowance) and `accepted` (owner) start work. */
 export type DispatchProposalState = "admitted" | "proposed" | "accepted" | "dismissed" | "empty";
@@ -310,6 +311,8 @@ export function settleDispatch(tx: AppTransaction, input: { projectId: string; d
     withSavepoint(tx, "jit_team_reply", () => {
       const discussion = readDiscussion(tx, input.projectId, input.discussionId);
       if (discussion.stoppedAll) return;
+      // app.topic_promotion/v1: a promoted origin is read-only; stopping or skipping there never starts a team reply.
+      if (promotionFrom(tx, input.projectId, discussion.topicId)) return;
       const projected = projectDiscussion(tx, discussion);
       if (projected.participations.some(item => activity(tx, input.projectId, item) !== "settled")) return;
       // The team reply carries the authority of the discussion it speaks for.

@@ -143,6 +143,9 @@ export function mutateConversation(tx: AppTransaction, command: ConversationComm
       expectedRevision: project.revision, payload: { title: chatTitle(command.payload.text) } }, now) as TopicReceipt;
     const { message, topicRevision } = mutateConversation(tx, { kind: "message.send", requestId: command.requestId, projectId: command.projectId,
       expectedRevision: topic.revision, payload: { topicId: topic.id, text: command.payload.text } }, now) as MessageReceipt;
+    // The title is a copy of the message's first line: record the lineage, so deleting the message deletes the title.
+    tx.run("INSERT INTO chat_title_sources (title_source_id, project_id, topic_id, message_source_id) VALUES (?, ?, ?, ?)",
+      topic.source.sourceId, command.projectId, topic.id, message.source.sourceId);
     return { topic: readTopic(tx, command.projectId, topic.id), message, projectRevision, topicRevision };
   }
   if (command.kind === "topic.create") {

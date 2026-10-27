@@ -521,3 +521,48 @@ test("home, card, read-only origin and continuation render in Thai and English w
     for (const s of stores.splice(0)) s.close();
   }
 });
+
+test("a discussion started before promotion cannot bring a specialist back into the read-only origin", async () => {
+  const f = await fixture();
+  const g = general(f);
+  f.outputs.push(proposal("ทีมวิเคราะห์"));
+  const started = await chat(f, "วิเคราะห์ฐานข้อมูลของแอปจดรายจ่าย");
+  const discussion = f.app.execute(f.auth.actor, { kind: "team.dispatch", requestId: rid(), projectId: g.projectId, expectedRevision: f.app.project(f.auth.actor, g.projectId).revision,
+    payload: { topicId: started.topic.id, purpose: "วิเคราะห์ฐานข้อมูล", sources: [started.topic.source], include: [f.tech], exclude: [], limits: { ...f.config.jobs.maximum } } }).discussion!;
+  await settle(f);
+  const view = reply(f, g.projectId, started.topic.id, started.message.id).promotionProposals[0]!;
+  f.app.execute(f.auth.actor, promote(f, "accept", view));
+  const before = f.app.conversation(f.auth.actor, g.projectId, started.topic.id).items.length;
+  const control = (action: "exclude" | "include") => ({ kind: "team.control" as const, requestId: rid(), projectId: g.projectId,
+    expectedRevision: f.app.discussion(f.auth.actor, g.projectId, discussion.id).discussion.revision, payload: { discussionId: discussion.id, action, roleId: f.tech } });
+  // Controls that stop work stay available; starting a specialist again does not.
+  f.app.execute(f.auth.actor, control("exclude"));
+  rejects(() => f.app.execute(f.auth.actor, control("include")), "topic_promoted");
+  await settle(f);
+  expect(f.app.conversation(f.auth.actor, g.projectId, started.topic.id).items).toHaveLength(before);
+});
+
+test("deleting a chat's first message also deletes the topic title derived from it, in the origin and the continuation", async () => {
+  const f = await fixture();
+  const g = general(f);
+  f.outputs.push(proposal("บัญชีบ้าน"));
+  const started = await chat(f, "เลขบัญชีลับ ZX-4417 ใช้จ่ายค่าไฟ\nช่วยวางแผนหน่อย");
+  expect(started.topic.title).toBe("เลขบัญชีลับ ZX-4417 ใช้จ่ายค่าไฟ");
+  const view = reply(f, g.projectId, started.topic.id, started.message.id).promotionProposals[0]!;
+  const { promotion } = f.app.execute(f.auth.actor, promote(f, "accept", view));
+  expect(f.app.promotion(f.auth.actor, promotion!.target.projectId, promotion!.target.topicId).continuedFrom!.origin.topicTitle).toBe(started.topic.title);
+  deleteSource(f, g.projectId, started.message.source);
+  expect(f.app.source(f.auth.actor, g.projectId, started.topic.source)).toMatchObject({ state: "unavailable" });
+  expect(f.app.topic(f.auth.actor, g.projectId, started.topic.id).topic.title).toBeNull();
+  const origin = f.app.promotion(f.auth.actor, promotion!.target.projectId, promotion!.target.topicId).continuedFrom!.origin;
+  expect(origin.topicTitle).toBeNull();
+  expect(origin.messages[0]!.text).toBeNull();
+  for (const path of ["/", topicPath(g.projectId, started.topic.id), topicPath(promotion!.target.projectId, promotion!.target.topicId)]) {
+    expect(await (await get(f, path)).text()).not.toContain("ZX-4417");
+  }
+  const copies = f.store.read(tx => tx.get<{ n: number }>(`SELECT (SELECT count(*) FROM source_versions WHERE content_text LIKE '%ZX-4417%') +
+    (SELECT count(*) FROM command_receipts WHERE result_json LIKE '%ZX-4417%') AS n`)!.n);
+  expect(copies).toBe(0);
+  // A title the owner typed in the project form is owner text with no such lineage.
+  expect(f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM chat_title_sources WHERE topic_id = ?", g.topicId)!.n)).toBe(0);
+});

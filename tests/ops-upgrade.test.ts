@@ -631,7 +631,7 @@ function serviceFor(root: string): ServiceConfig {
 /** Rewinds a fresh current store to a historical fixture schema by removing tables later migrations add. */
 function historical(path: string, version: number) {
   const db = new Database(path);
-  const drops: Record<number, string[]> = { 28: ["topic_promotions"], 27: ["dispatch_proposals", "dispatch_allowance_revisions"], 26: ["general_space", "setup_state"], 25: ["jit_reply_sources", "jit_replies", "persona_revisions"], 24: ["owner_preferences"], 23: ["lifecycle_ledger", "lifecycle_checkpoint"], 22: [], 21: ["schway_native_refs"], 20: ["restore_quarantines"], 19: ["upgrade_journal"], 18: ["export_artifacts"] };
+  const drops: Record<number, string[]> = { 28: ["topic_promotions", "chat_title_sources"], 27: ["dispatch_proposals", "dispatch_allowance_revisions"], 26: ["general_space", "setup_state"], 25: ["jit_reply_sources", "jit_replies", "persona_revisions"], 24: ["owner_preferences"], 23: ["lifecycle_ledger", "lifecycle_checkpoint"], 22: [], 21: ["schway_native_refs"], 20: ["restore_quarantines"], 19: ["upgrade_journal"], 18: ["export_artifacts"] };
   const triggers: Record<number, string[]> = { 28: ["general_space_keep", "general_space_fixed", "general_project_keep"], 25: ["jit_reply_job_change"], 23: ["lifecycle_ledger_deletion", "lifecycle_ledger_suppression", "lifecycle_ledger_suppressed_claim", "lifecycle_ledger_suppressed_source"] };
   for (let v = schemaVersion; v > version; v--) {
     for (const trigger of triggers[v] ?? []) db.exec(`DROP TRIGGER IF EXISTS ${trigger}`);

@@ -503,6 +503,12 @@ function buildInventory(tx: AppTransaction, scope: DeleteScope, env: DeletionEnv
         `SELECT d.source_id AS sourceId, d.project_id AS projectId, s.current_revision AS revision, s.generation
          FROM memory_derived_sources d JOIN sources s ON s.id = d.source_id WHERE d.context_id IN (${marks(batch.length)})`, ...batch)) addDerived(tx, sources, row);
     }
+    // A chat title derived from an affected first message (chat-first home) is a copy of it.
+    for (const batch of chunks([...sourceIds.keys()])) {
+      for (const row of tx.all<{ sourceId: string; projectId: string; revision: number; generation: number }>(
+        `SELECT s.id AS sourceId, s.project_id AS projectId, s.current_revision AS revision, s.generation FROM chat_title_sources c
+         JOIN sources s ON s.id = c.title_source_id WHERE c.message_source_id IN (${marks(batch.length)})`, ...batch)) addDerived(tx, sources, row);
+    }
     const runIds = new Set<string>();
     for (const job of jobs.values()) if (jobCites(job, sources, claims)) for (const runId of job.runIds) runIds.add(runId);
     for (const batch of chunks([...runIds])) {
