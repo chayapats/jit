@@ -1,6 +1,6 @@
 import { AppError } from "../errors";
 import { invalidatePendingJob, jobData } from "../jobs/queue";
-import { requireId, requireText } from "../sources";
+import { requireId, requireText, type SourceReference } from "../sources";
 import type { AppTransaction } from "../store";
 import type { Discussion } from "../team/types";
 import { replyLineage } from "../team/reply-lineage";
@@ -46,10 +46,23 @@ interface Withdrawn { projectId: string; claim: MemoryClaim }
  * projects, and sibling claims from the same exact source revision. Raw sources
  * are never deleted; their lineage is bound in memory_suppressed_sources instead.
  */
+/**
+ * Sources that copy the same owner text as `source` by recorded lineage: a chat title derived from a chat's first
+ * message (chat-first home, `chat_title_sources`) and that message are twins, in either direction. A forget of one
+ * suppresses both, so automatic memory can never rebuild the forgotten text from the other copy.
+ */
+export function chatTitleTwins(tx: AppTransaction, source: SourceReference): { projectId: string; source: SourceReference }[] {
+  return tx.all<{ projectId: string; sourceId: string; revision: number; generation: number }>(
+    `SELECT s.project_id AS projectId, s.id AS sourceId, s.current_revision AS revision, s.generation FROM chat_title_sources c
+     JOIN sources s ON s.id = CASE WHEN c.title_source_id = ? THEN c.message_source_id ELSE c.title_source_id END
+     WHERE c.title_source_id = ? OR c.message_source_id = ?`, source.sourceId, source.sourceId, source.sourceId)
+    .map(row => ({ projectId: row.projectId, source: { sourceId: row.sourceId, revision: row.revision, generation: row.generation } }));
+}
+
 function withdrawnSet(tx: AppTransaction, projectId: string, claim: MemoryClaim): Map<string, Withdrawn> {
   const found = new Map<string, Withdrawn>();
   found.set(claim.claimId, { projectId, claim });
-  const triples = [{ ...claim.source }];
+  const triples = [{ ...claim.source }, ...chatTitleTwins(tx, claim.source).map(twin => twin.source)];
   for (let round = 0; round < 10; round++) {
     let added = false;
     for (const row of tx.all<{ project_id: string; record_json: string }>("SELECT project_id, record_json FROM memory_claims LIMIT 4000")) {
@@ -60,7 +73,9 @@ function withdrawnSet(tx: AppTransaction, projectId: string, claim: MemoryClaim)
       const sibling = triples.some(triple => sameSource(triple, candidate.source));
       if (!linked && !sibling) continue;
       found.set(candidate.claimId, { projectId: row.project_id, claim: candidate });
-      if (!triples.some(triple => sameSource(triple, candidate.source))) triples.push({ ...candidate.source });
+      for (const source of [candidate.source, ...chatTitleTwins(tx, candidate.source).map(twin => twin.source)]) {
+        if (!triples.some(triple => sameSource(triple, source))) triples.push({ ...source });
+      }
       added = true;
     }
     if (!added) break;
@@ -231,6 +246,13 @@ export function prepareSuppression(tx: AppTransaction, command: ForgetMemoryComm
     if (seenSources.has(key)) continue;
     seenSources.add(key);
     sources.push({ projectId: entry.projectId, source: { ...entry.claim.source } });
+  }
+  // A chat title and the first message it was derived from are one lineage: forgetting either suppresses both.
+  for (const entry of [...sources]) {
+    for (const twin of chatTitleTwins(tx, entry.source)) {
+      const key = `${twin.source.sourceId}:${twin.source.revision}:${twin.source.generation}`;
+      if (!seenSources.has(key)) { seenSources.add(key); sources.push(twin); }
+    }
   }
   // app.jit_reply/v1: Jit replies that were given a forgotten source, directly or through an earlier reply, may
   // copy it. Their outputs join the suppressed lineage and replies still pending lose their authority.

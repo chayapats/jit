@@ -566,3 +566,51 @@ test("deleting a chat's first message also deletes the topic title derived from 
   // A title the owner typed in the project form is owner text with no such lineage.
   expect(f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM chat_title_sources WHERE topic_id = ?", g.topicId)!.n)).toBe(0);
 });
+
+for (const when of ["before", "after"] as const) test(`forgetting a chat's first message also suppresses its derived title (title extracted ${when} the forget)`, async () => {
+  const f = await fixture();
+  const g = general(f);
+  f.outputs.push(proposal("New project"));
+  const started = await chat(f, "ใช้ PostgreSQL สำหรับระบบบัญชีบ้าน\nโปรดจำไว้");
+  const extract = (source: SourceReference) => f.app.execute(f.auth.actor, { kind: "memory.extract", requestId: rid(), projectId: g.projectId,
+    expectedRevision: f.app.project(f.auth.actor, g.projectId).revision, payload: { topicId: started.topic.id, roleId: f.tech, source, dependencies: [], limits: { ...f.config.jobs.maximum } } });
+  extract(started.message.source);
+  await settle(f);
+  const activeClaims = () => f.app.memory(f.auth.actor, g.projectId).items.flatMap(item => item.state === "available" ? [item.claim] : []);
+  const claim = activeClaims().find(c => c.source.sourceId === started.message.source.sourceId)!;
+  if (when === "before") { extract(started.topic.source); await settle(f); }
+  const promotion = f.app.execute(f.auth.actor, promote(f, "accept", reply(f, g.projectId, started.topic.id, started.message.id).promotionProposals[0]!)).promotion!;
+  f.app.execute(f.auth.actor, { kind: "memory.forget", requestId: rid(), projectId: g.projectId, expectedRevision: f.app.project(f.auth.actor, g.projectId).revision,
+    payload: { claim: { claimId: claim.claimId, revision: claim.revision, generation: claim.generation }, reason: "Please forget", acknowledged: true } });
+  rejects(() => extract(started.message.source), "memory_source_suppressed");
+  // The derived title shares the forgotten lineage, so it cannot be extracted again either.
+  if (when === "after") rejects(() => extract(started.topic.source), "memory_source_suppressed");
+  expect(activeClaims()).toEqual([]);
+  const discussion = f.app.execute(f.auth.actor, { kind: "team.dispatch", requestId: rid(), projectId: promotion.target.projectId,
+    expectedRevision: f.app.project(f.auth.actor, promotion.target.projectId).revision, payload: { topicId: promotion.target.topicId, purpose: "ใช้ PostgreSQL สำหรับระบบบัญชีบ้าน",
+      sources: [f.app.topic(f.auth.actor, promotion.target.projectId, promotion.target.topicId).topic.source], include: [f.tech], exclude: [], limits: { ...f.config.jobs.maximum } } }).discussion!;
+  expect(discussion.manifest.claims).toHaveLength(0);
+});
+
+test("stopping, skipping or excluding a role on a promoted topic never admits the held team reply", async () => {
+  const f = await fixture(), g = general(f);
+  const second = f.app.execute(f.auth.actor, { kind: "role.save", requestId: rid(), projectId: null,
+    expectedRevision: f.app.team(f.auth.actor).ownerRevision, payload: { roleId: null, name: "Second", kind: "specialist", responsibility: "Analyze", enabled: true, route: grok } }).role!.id;
+  f.outputs.push({ reply: "Promote and review", proposals: [{kind: "promotion", name: "New project"}, {kind: "dispatch", roles: ["เทคโนโลยี", "Second"]}] });
+  const started = await chat(f, "วิเคราะห์ฐานข้อมูล");
+  const dispatch = [...f.app.dispatchCards(f.auth.actor, g.projectId, started.topic.id, [started.reply.replyMessageId!]).values()][0]!;
+  const accepted = f.app.execute(f.auth.actor, { kind: "dispatch.proposal.accept", requestId: rid(), projectId: g.projectId, expectedRevision: dispatch.revision,
+    payload: { proposalId: dispatch.id, roleIds: [f.tech, second] } });
+  await settle(f);
+  const discussionId = accepted.proposal.discussion!.id;
+  const held = f.app.dispatchCard(f.auth.actor, g.projectId, dispatch.id);
+  expect(held.teamReply).toBeNull();
+  f.app.execute(f.auth.actor, promote(f, "accept", started.reply.promotionProposals[0]!));
+  const before = count(f, "jit_replies");
+  for (const action of ["exclude", "skip", "stop"] as const) {
+    const revision = f.app.discussion(f.auth.actor, g.projectId, discussionId).discussion.revision;
+    f.app.execute(f.auth.actor, { kind: "team.control", requestId: rid(), projectId: g.projectId, expectedRevision: revision, payload: { discussionId, action, roleId: second } });
+  }
+  await settle(f);
+  expect(count(f, "jit_replies")).toBe(before);
+});
