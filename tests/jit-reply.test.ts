@@ -8,6 +8,8 @@ import { JobQueue } from "../src/jobs/queue";
 import { backupImageTables } from "../src/ops/backup";
 import { TransactionStore } from "../src/store";
 import { listDiscussions } from "../src/team/dispatch";
+import { memoryExtractionMarker, memoryExtractionWork, scriptedMemoryResult } from "../src/memory/extract";
+import { commitOutputSource } from "../src/sources";
 import { jitReplyMarker, jitReplyWork, jitReplyWorkId, normalizeJitReply, type JitReplyView } from "../src/team/jit-reply";
 import type { ApplicationRunPort } from "../src/team/run-port";
 import { ScriptedRunPort, fixtureOutcome } from "../src/team/scripted-port";
@@ -40,9 +42,11 @@ async function fixture(options: Options = {}) {
   if (!options.path) roots.push(root);
   const path = options.path ?? join(root, "state.sqlite"), config = readConfig({ JIT_DATABASE: path, ...options.env }), store = new TransactionStore(path); stores.push(store);
   let now = epoch;
-  const scripted = new ScriptedRunPort(store, config.team, config.jobs.outputBytes, options.script ?? (request => answer(request, JSON.stringify({ reply: "สวัสดีครับ จิตพร้อมช่วย" }))));
+  const reply: Script = options.script ?? (request => answer(request, JSON.stringify({ reply: "สวัสดีครับ จิตพร้อมช่วย" })));
+  const scripted = new ScriptedRunPort(store, config.team, config.jobs.outputBytes, (request, signal, observe) =>
+    request.instructions.operator.includes(memoryExtractionMarker) ? scriptedMemoryResult(request, true) : reply(request, signal, observe));
   const port = options.wrap?.(scripted) ?? scripted;
-  const queue = new JobQueue(store, config.jobs, [jitReplyWork(store, config, port, () => now)], { now: () => now }); queues.push(queue);
+  const queue = new JobQueue(store, config.jobs, [jitReplyWork(store, config, port, () => now), memoryExtractionWork(store, config, scripted, () => now)], { now: () => now }); queues.push(queue);
   const app = new Application(store, config, { now: () => now, jobs: queue });
   const web = createWebHandler(app, { stream });
   if (options.path) {
@@ -603,4 +607,74 @@ test("discussion discovery is not crowded out by Jit reply runs", async () => {
   for (let index = 0; index < 10; index++) send(f, `ข้อความ ${index}`);
   expect(f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM team_runs")!.n)).toBe(11);
   expect(f.store.read(tx => listDiscussions(tx, f.project.id, f.topic.id, 1)).map(d => d.id)).toEqual([discussionId]);
+});
+
+/** Extracts one memory claim from an owner message and returns its reference. */
+async function remember(f: Fixture, source: { sourceId: string; revision: number; generation: number }) {
+  f.app.execute(f.auth.actor, { kind: "memory.extract", requestId: rid(), projectId: f.project.id, expectedRevision: f.app.project(f.auth.actor, f.project.id).revision,
+    payload: { topicId: f.topic.id, roleId: f.coordinatorId, source, dependencies: [], limits: { ...f.config.jobs.maximum } } });
+  await settle(f);
+  const claim = f.app.memory(f.auth.actor, f.project.id).items.flatMap(item => item.state === "available" ? [item.claim] : [])
+    .find(item => item.source.sourceId === source.sourceId)!;
+  return { claimId: claim.claimId, revision: claim.revision, generation: claim.generation };
+}
+const forget = (f: Fixture, claim: { claimId: string; revision: number; generation: number }) =>
+  f.app.execute(f.auth.actor, { kind: "memory.forget", requestId: rid(), projectId: f.project.id, expectedRevision: f.app.project(f.auth.actor, f.project.id).revision,
+    payload: { claim, reason: "เจ้าของขอให้ลืม", acknowledged: true } });
+
+test("a forget keeps the forgotten message and every Jit reply that copied it out of later history", async () => {
+  const f = await fixture({ script: request => answer(request, JSON.stringify({ reply: `ทวนว่า: ${request.manifest.sources.map(s => s.text).join(" | ")}` })) });
+  const secret = send(f, "รหัสลับคือ ม่วง-42"); await settle(f);
+  const echoed = replyFor(f, secret.message.id);
+  const follow = send(f, "จำได้ไหม"); await settle(f);
+  const chained = replyFor(f, follow.message.id);
+  expect(f.port.requests.at(-1)!.manifest.sources.map(s => s.text)).toContain("ทวนว่า: รหัสลับคือ ม่วง-42");
+  const claim = await remember(f, secret.message.source);
+  const receipt = forget(f, claim);
+  // The forgotten source, the reply that copied it and the later reply that copied that reply are all bound.
+  const bound = receipt.suppression.sources.map(entry => entry.source.sourceId);
+  expect(bound).toEqual(expect.arrayContaining([secret.message.source.sourceId, echoed.source!.sourceId, chained.source!.sourceId]));
+  const next = send(f, "เรื่องใหม่"); await settle(f);
+  const history = f.port.requests.at(-1)!.manifest.sources.map(s => s.text);
+  expect(history.some(text => text.includes("ม่วง-42"))).toBe(false);
+  expect(history).toContain("จำได้ไหม");
+  expect(history.at(-1)).toBe("เรื่องใหม่");
+  expect(replyFor(f, next.message.id).state).toBe("answered");
+  // Raw history stays readable to the owner; only automatic reuse is withheld.
+  expect(messages(f).some(m => m.text === "รหัสลับคือ ม่วง-42")).toBe(true);
+});
+
+test("a forget while a reply is running fences it: the late result never commits", async () => {
+  const gate = deferred<void>();
+  let held = false;
+  const f = await fixture({ script: async request => {
+    if (request.manifest.sources.at(-1)!.text === "ถามต่อ") { held = true; await gate.promise; }
+    return answer(request, JSON.stringify({ reply: `ตอบ: ${request.manifest.sources.map(s => s.text).join(" | ")}` }));
+  } });
+  const secret = send(f, "เลขบัญชี 123-456"); await settle(f);
+  const claim = await remember(f, secret.message.source);
+  const pending = send(f, "ถามต่อ");
+  f.queue.pump(); await Bun.sleep(5);
+  expect(held).toBe(true);
+  const receipt = forget(f, claim);
+  expect(receipt.suppression.sources.map(entry => entry.source.sourceId)).toContain(secret.message.source.sourceId);
+  gate.resolve(); await f.queue.idle();
+  const view = replyFor(f, pending.message.id);
+  expect(view).toMatchObject({ state: "failed", reason: "source_retired", replyMessageId: null });
+  expect(messages(f).map(m => m.text).filter(text => text?.startsWith("ตอบ:") && text.includes("ถามต่อ"))).toEqual([]);
+});
+
+test("specialist outputs stay out of Jit's automatic history", async () => {
+  const f = await fixture();
+  send(f, "ก่อนหน้า"); await settle(f);
+  f.store.transaction(tx => {
+    const source = commitOutputSource(tx, { projectId: f.project.id, participantId: f.coordinatorId, runId: rid(), text: "ผลวิเคราะห์ของผู้เชี่ยวชาญ", committedAt: epoch });
+    const topic = tx.get<{ sequence: number }>("SELECT message_sequence AS sequence FROM topics WHERE id = ?", f.topic.id)!;
+    tx.run("INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", rid(), f.project.id, f.topic.id, topic.sequence + 1, epoch,
+      JSON.stringify({ kind: "participant", participantId: rid(), runId: rid() }), source.sourceId, source.revision, source.generation);
+    tx.run("UPDATE topics SET message_sequence = message_sequence + 1 WHERE id = ?", f.topic.id);
+  });
+  send(f, "แล้วไง"); await settle(f);
+  const history = f.port.requests.at(-1)!.manifest.sources.map(s => s.text);
+  expect(history).toEqual(["ก่อนหน้า", "สวัสดีครับ จิตพร้อมช่วย", "แล้วไง"]);
 });

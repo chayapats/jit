@@ -1098,4 +1098,5 @@ export const th = {
   "error.invalid_reply_command": "คำสั่งของคำตอบไม่ถูกต้อง",
   "reply.view_answer": "ดูคำตอบของจิต",
   "system.jit_reply_purpose": "จิตตอบข้อความ",
+  "error.memory_forget_too_broad": "การลืมครั้งนี้กระทบคำตอบมากเกินไป ติดต่อผู้ดูแลก่อนลองอีกครั้ง",
 } as const;

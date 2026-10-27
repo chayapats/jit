@@ -739,12 +739,24 @@ export class TransactionStore {
               run_id TEXT UNIQUE REFERENCES team_runs(id),
               -- The committed reply message, set when the reply commits; lets a page resolve replies by either message.
               reply_message_id TEXT UNIQUE REFERENCES messages(id),
+              -- The committed reply's output source, the start of its lineage for later replies and forgets.
+              reply_source_id TEXT UNIQUE REFERENCES sources(id),
               reason TEXT CHECK (reason IN ('no_route', 'scheduler_unavailable', 'queue_full', 'context_too_large')),
               cursor INTEGER NOT NULL UNIQUE,
               created_at INTEGER NOT NULL,
               CHECK ((run_id IS NULL) = (reason IS NOT NULL))
             );
             CREATE INDEX IF NOT EXISTS jit_reply_topic ON jit_replies(project_id, topic_id, cursor);
+            -- Identity-only manifest citations of each reply (app.memory_suppression/v1 lineage); never text.
+            CREATE TABLE IF NOT EXISTS jit_reply_sources (
+              reply_id TEXT NOT NULL REFERENCES jit_replies(id),
+              project_id TEXT NOT NULL REFERENCES projects(id),
+              source_id TEXT NOT NULL,
+              revision INTEGER NOT NULL CHECK (revision > 0),
+              generation INTEGER NOT NULL CHECK (generation > 0),
+              PRIMARY KEY (reply_id, source_id, revision, generation)
+            );
+            CREATE INDEX IF NOT EXISTS jit_reply_source_lineage ON jit_reply_sources(source_id, revision, generation);
             PRAGMA user_version = 25;
           `);
           // Every change to a reply's job (admission, reservation, wait, stop, deadline, commit) moves the reply to

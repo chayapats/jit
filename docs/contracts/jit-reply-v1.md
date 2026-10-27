@@ -39,7 +39,14 @@ The discarded list appears in the job evidence and in the reply's message detail
 
 ## Topic history and trust
 
-The manifest holds up to `TeamPolicy.sourceLimit` recent available messages in the topic, oldest first, inside the run's byte budget. One trusted operator line lists the service-recorded speakers (`owner` or `assistant`). Topic text never enters operator lines. A Jit reply is appended with the next message sequence but does not change the topic revision. The topic revision counts owner changes, so a composer rendered while Jit was thinking stays valid.
+The manifest holds up to `TeamPolicy.sourceLimit` recent messages in the topic, oldest first, inside the run's byte budget. Only the owner's own messages and Jit's committed replies are history. The manifest leaves out:
+- specialist outputs, which BOT04 cites separately;
+- unavailable sources;
+- every source whose lineage an owner forget suppressed.
+
+Jit replies never receive memory claims, so their outputs are never memory-derived.
+
+Each reply records the sources its manifest cites (`jit_reply_sources`, identities only) and its output source (`jit_replies.reply_source_id`). When the owner forgets a claim, `app.memory_suppression/v1` follows this lineage forward. Every Jit reply output that was given the forgotten source, directly or through an earlier reply, joins the suppressed lineage (`memory_suppressed_sources`, and through its trigger the lifecycle ledger). Pending replies that cite any of them are fenced in the same transaction, and their contexts are listed for retirement. A walk beyond 20,000 replies fails closed (`memory_forget_too_broad`). A reply's currentness check also rejects suppressed sources, so a result that races a forget cannot commit. One trusted operator line lists the service-recorded speakers (`owner` or `assistant`). Topic text never enters operator lines. A Jit reply is appended with the next message sequence but does not change the topic revision. The topic revision counts owner changes, so a composer rendered while Jit was thinking stays valid.
 
 Records live in `team_runs.record_json` with `kind: "jit_reply"`. Like specialist and synthesis runs, they are therefore covered by data deletion (manifest scrubbing and output redaction), by memory correction and suppression fencing (`request.manifest`), by restore ledger replay and by backups. `jit_replies` holds identities and a reason code only, never text.
 
@@ -58,7 +65,7 @@ All labels are dictionary keys (`jit.*`, `reply.*`, `topic.send_message`, `topic
 
 ## Schema
 
-Schema 25 adds the `jit_reply_job_change` trigger on `jobs`, `persona_revisions` (revision, record_json, created_at) and `jit_replies` (id, project_id, topic_id, message_id unique, run_id unique or NULL, reply_message_id unique or NULL, set when the reply commits, reason, cursor unique, created_at; exactly one of run_id and reason). Both tables are classified `include` for backups. Existing installations need the owner-authorized staged upgrade (`ops.schema_migrations/v1`).
+Schema 25 adds the `jit_reply_job_change` trigger on `jobs`, `jit_reply_sources` (reply_id, project_id, source_id, revision, generation; indexed by source), `persona_revisions` (revision, record_json, created_at) and `jit_replies` (id, project_id, topic_id, message_id unique, run_id unique or NULL, reply_message_id and reply_source_id unique or NULL, set when the reply commits, reason, cursor unique, created_at; exactly one of run_id and reason). Both tables are classified `include` for backups. Existing installations need the owner-authorized staged upgrade (`ops.schema_migrations/v1`).
 
 ## Evidence
 
@@ -79,6 +86,7 @@ Schema 25 adds the `jit_reply_job_change` trigger on `jobs`, `persona_revisions`
 - **Pagination.** Page-boundary links and Jit labels work without script.
 - **Internal worker.** It has no generic start form, and English job pages show an English purpose.
 - **Discussion discovery.** Discussions are still found after many reply runs (`listDiscussions` filters kind and topic before its limit).
+- **Forget lineage.** A forget suppresses the source, the reply that copied it and a later reply that copied that reply, and keeps all of them out of later history. A forget during a running reply fences it, so its late result never commits. Specialist outputs stay out of history.
 - **`app.js` contract.** Fake `EventSource`, `textContent` only, and stream close.
 
 `tests/web-ui.test.ts` checks Enter, Shift+Enter and IME composition.

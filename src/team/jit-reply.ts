@@ -4,6 +4,7 @@ import type { CommittedMessage } from "../conversation";
 import { JobQueue, jobData, readJob } from "../jobs/queue";
 import type { Job, JobLimits, WorkDefinition } from "../jobs/types";
 import { contextCurrent, markMemoryDerived } from "../memory/context";
+import { suppressedSource } from "../memory/read";
 import { personaInstructions, readPersona } from "../persona";
 import { commitOutputSource, lookupSource, requireId, type Attribution, type SourceReference } from "../sources";
 import type { AppTransaction, TransactionStore } from "../store";
@@ -159,22 +160,31 @@ function bumpCursor(tx: AppTransaction, replyId: string): void {
 }
 const nextCursor = (tx: AppTransaction) => tx.get<{ cursor: number }>("SELECT coalesce(max(cursor), 0) + 1 AS cursor FROM jit_replies")!.cursor;
 
-/** Recent available topic messages (oldest first), always ending with `message`, inside the byte budget. */
+/**
+ * Recent topic history (oldest first), always ending with `message`, inside the byte budget. Only the owner's own
+ * messages and Jit's committed replies are history. Specialist outputs (BOT04 cites them separately) and every
+ * source whose lineage an owner forget suppressed are left out, so automatic history never reuses forgotten or
+ * memory-derived material; app.memory_suppression/v1 extends suppression to Jit replies that copied it.
+ */
 function topicHistory(tx: AppTransaction, projectId: string, topicId: string, message: CommittedMessage, slots: number, bytes: number) {
-  const rows = tx.all<{ id: string; sequence: number; attribution: string; sourceId: string; revision: number; generation: number }>(
-    `SELECT id, sequence, attribution_json AS attribution, source_id AS sourceId, source_revision AS revision, source_generation AS generation
-     FROM messages WHERE project_id = ? AND topic_id = ? AND sequence <= ? ORDER BY sequence DESC LIMIT ?`, projectId, topicId, message.sequence, slots * 2);
+  const rows = tx.all<{ id: string; sequence: number; attribution: string; sourceId: string; revision: number; generation: number; jit: number }>(
+    `SELECT m.id, m.sequence, m.attribution_json AS attribution, m.source_id AS sourceId, m.source_revision AS revision, m.source_generation AS generation,
+       EXISTS (SELECT 1 FROM jit_replies r WHERE r.reply_message_id = m.id) AS jit
+     FROM messages m WHERE m.project_id = ? AND m.topic_id = ? AND m.sequence <= ? ORDER BY m.sequence DESC LIMIT ?`, projectId, topicId, message.sequence, slots * 4);
   const picked: { source: { projectId: string; reference: SourceReference; text: string }; speaker: string }[] = [];
   let used = 0;
   for (const row of rows) {
     if (picked.length >= slots) break;
-    const found = lookupSource(tx, projectId, { sourceId: row.sourceId, revision: row.revision, generation: row.generation });
+    const owner = (JSON.parse(row.attribution) as Attribution).kind === "owner";
+    if (!owner && !row.jit) continue;
+    const reference = { sourceId: row.sourceId, revision: row.revision, generation: row.generation };
+    if (suppressedSource(tx, reference)) { if (row.id === message.id) return null; continue; }
+    const found = lookupSource(tx, projectId, reference);
     if (found.state !== "available") continue;
     const cost = Buffer.byteLength(JSON.stringify(found.text)) + 160;
     if (used + cost > bytes) { if (row.id === message.id) return null; break; }
     used += cost;
-    const attribution = JSON.parse(row.attribution) as Attribution;
-    picked.push({ source: { projectId, reference: found.reference, text: found.text }, speaker: attribution.kind === "owner" ? "owner" : "assistant" });
+    picked.push({ source: { projectId, reference: found.reference, text: found.text }, speaker: owner ? "owner" : "assistant" });
   }
   if (picked[0]?.source.reference.sourceId !== message.source.sourceId) return null;
   return picked.reverse();
@@ -242,6 +252,10 @@ export function admitJitReply(tx: AppTransaction, input: {
   tx.run("INSERT INTO team_runs (id, project_id, job_id, context_id, record_json) VALUES (?, ?, ?, ?, ?)", replyId, message.projectId, job.id, context.id, JSON.stringify(record));
   tx.run("INSERT INTO jit_replies (id, project_id, topic_id, message_id, run_id, reason, cursor, created_at) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)",
     replyId, message.projectId, message.topicId, message.id, replyId, nextCursor(tx), now);
+  for (const source of request.manifest.sources) {
+    tx.run("INSERT INTO jit_reply_sources (reply_id, project_id, source_id, revision, generation) VALUES (?, ?, ?, ?, ?)",
+      replyId, message.projectId, source.reference.sourceId, source.reference.revision, source.reference.generation);
+  }
 }
 
 const blockedNext: Record<string, string> = {
@@ -336,7 +350,8 @@ export function stopReply(tx: AppTransaction, command: StopReplyCommand, queue: 
 function sourcesCurrent(tx: AppTransaction, request: ApplicationRunRequest): boolean {
   return request.manifest.sources.every(source => {
     const current = lookupSource(tx, source.projectId, source.reference);
-    return current.state === "available" && current.current.revision === source.reference.revision && current.text === source.text;
+    return current.state === "available" && current.current.revision === source.reference.revision && current.text === source.text &&
+      !suppressedSource(tx, source.reference);
   });
 }
 
@@ -448,7 +463,7 @@ export function jitReplyWork(store: TransactionStore, config: AppConfig, port: A
           // composer rendered while Jit was thinking stays valid.
           tx.run("UPDATE topics SET message_sequence = message_sequence + 1 WHERE project_id = ? AND id = ?", current.projectId, current.topicId);
           current.source = source; current.replyMessageId = messageId;
-          tx.run("UPDATE jit_replies SET reply_message_id = ? WHERE id = ?", messageId, current.id);
+          tx.run("UPDATE jit_replies SET reply_message_id = ?, reply_source_id = ? WHERE id = ?", messageId, source.sourceId, current.id);
         }
         saveRecord(tx, current);
       });

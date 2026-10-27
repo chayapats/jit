@@ -1096,4 +1096,5 @@ export const en: Record<MessageKey, string> = {
   "error.invalid_reply_command": "The reply command is invalid.",
   "reply.view_answer": "See Jit’s answer",
   "system.jit_reply_purpose": "Jit reply",
+  "error.memory_forget_too_broad": "This forget reaches too many replies. Contact the maintainer before trying again.",
 };

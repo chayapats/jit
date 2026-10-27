@@ -631,7 +631,7 @@ function serviceFor(root: string): ServiceConfig {
 /** Rewinds a fresh current store to a historical fixture schema by removing tables later migrations add. */
 function historical(path: string, version: number) {
   const db = new Database(path);
-  const drops: Record<number, string[]> = { 25: ["jit_replies", "persona_revisions"], 24: ["owner_preferences"], 23: ["lifecycle_ledger", "lifecycle_checkpoint"], 22: [], 21: ["schway_native_refs"], 20: ["restore_quarantines"], 19: ["upgrade_journal"], 18: ["export_artifacts"] };
+  const drops: Record<number, string[]> = { 25: ["jit_reply_sources", "jit_replies", "persona_revisions"], 24: ["owner_preferences"], 23: ["lifecycle_ledger", "lifecycle_checkpoint"], 22: [], 21: ["schway_native_refs"], 20: ["restore_quarantines"], 19: ["upgrade_journal"], 18: ["export_artifacts"] };
   const triggers: Record<number, string[]> = { 25: ["jit_reply_job_change"], 23: ["lifecycle_ledger_deletion", "lifecycle_ledger_suppression", "lifecycle_ledger_suppressed_claim", "lifecycle_ledger_suppressed_source"] };
   for (let v = schemaVersion; v > version; v--) {
     for (const trigger of triggers[v] ?? []) db.exec(`DROP TRIGGER IF EXISTS ${trigger}`);
