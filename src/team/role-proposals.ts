@@ -217,10 +217,10 @@ export function executeRoleProposal(tx: AppTransaction, command: RoleProposalCom
 }
 
 /** Dropped codes the card translates from the dictionary; they never hold model text. */
-const fixedDropped = new Set(["field:tools", "field:tool", "field:budgets", "field:budget", "field:limits", "route:unconfigured", "route:invalid", "field:redacted"]);
-/** Model-named dropped codes that a rewrite touches become `field:redacted`; fixed codes and the count stay. */
+const fixedDropped = new Set(["field:tools", "field:tool", "field:budgets", "field:budget", "field:limits", "route:unconfigured", "route:invalid", "redaction:field"]);
+/** Model-named dropped codes that a rewrite touches become `redaction:field`; fixed codes and the count stay. */
 const redactDropped = (codes: unknown, rewrite: (text: string) => string) => Array.isArray(codes)
-  ? codes.map(code => typeof code === "string" && !fixedDropped.has(code) && rewrite(code) !== code ? "field:redacted" : code) : codes;
+  ? codes.map(code => typeof code === "string" && !fixedDropped.has(code) && rewrite(code) !== code ? "redaction:field" : code) : codes;
 
 /**
  * app.role_proposals/v1 data-lifecycle rule, used by deletion, the quoted-copy scrub and restore replay instead of

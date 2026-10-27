@@ -1210,7 +1210,7 @@ function redactDerivedRuns(tx: AppTransaction, sources: SourceEntry[]): void {
     "SELECT json_extract(attribution_json, '$.runId') AS runId FROM source_versions WHERE source_id = ? AND revision = ? AND generation = ?",
     entry.source.sourceId, entry.source.revision, entry.source.generation)?.runId;
   const derived = sources.filter(entry => entry.relation === "derived_output");
-  const runIds = new Set<string>(), replyRunIds = new Set<string>();
+  const runIds = new Set<string>(), replyRunIds = new Set<string>(), purgedReplies = new Set<string>();
   for (const entry of sources) {
     const runId = runOf(entry);
     if (typeof runId !== "string") continue;
@@ -1226,12 +1226,24 @@ function redactDerivedRuns(tx: AppTransaction, sources: SourceEntry[]): void {
       const runId = (parsed.request as { runId?: unknown } | undefined)?.runId;
       const matches = (ids: Set<string>) => ids.has(parsed.id as string) || (typeof runId === "string" && ids.has(runId));
       if (!matches(runIds) && !(table === "team_runs" && parsed.kind === "jit_reply" && matches(replyRunIds))) return;
+      if (parsed.kind === "jit_reply" && Array.isArray(parsed.roleProposals) && parsed.roleProposals.length) purgedReplies.add(parsed.id as string);
       const outcome = parsed.outcome as { output?: unknown } | null | undefined;
       const proposals = redactRoleProposals(parsed.roleProposals, () => redactedText);
       const next = { ...parsed, ...(outcome && typeof outcome.output === "string" ? { outcome: { ...outcome, output: redactedText } } : {}),
         ...("progress" in parsed ? { progress: null } : {}), ...(proposals.changed ? { roleProposals: proposals.value } : {}) };
       if (JSON.stringify(next) !== JSON.stringify(parsed)) tx.run(`UPDATE ${table} SET record_json = ? WHERE rowid = ?`, JSON.stringify(next), row.rowid_);
     }, null);
+  }
+  // The `proposal` snapshots in role.proposal.* receipts of those replies take the same lineage rule, so a replay
+  // cannot return text the record no longer holds; owner revisions and routes stay exact.
+  for (const replyId of purgedReplies) {
+    scanTable<{ json: string; rowid_: number }>(tx, "command_receipts", "result_json AS json", row => {
+      let parsed: Record<string, unknown>;
+      try { parsed = JSON.parse(row.json) as Record<string, unknown>; } catch { return; }
+      if (!isRoleProposalView(parsed.proposal) || parsed.proposal.replyId !== replyId) return;
+      const view = redactRoleProposalView(parsed.proposal, () => redactedText);
+      if (view.changed) tx.run("UPDATE command_receipts SET result_json = ? WHERE rowid = ?", JSON.stringify({ ...parsed, proposal: view.value }), row.rowid_);
+    }, null, "result_json LIKE ?", [`%${replyId}%`]);
   }
   for (const entry of derived) {
     for (const row of tx.all<{ id: string; json: string }>("SELECT id, record_json AS json FROM decision_proposals WHERE source_id = ? AND source_revision = ? AND source_generation = ?",

@@ -427,7 +427,7 @@ test("a deletion also removes model-named dropped fields from every card state, 
   f.app.execute(f.auth.actor, command(f, "reject", second.roleProposals[1]!));
   for (const message of f.app.conversation(f.auth.actor, f.project.id, f.topic.id).items.filter(item => item.attribution.kind === "owner")) deleteSource(f, message.source);
   for (const view of [...current(f, first), ...current(f, second)]) {
-    expect(view.dropped).toEqual(["field:tools", "field:redacted"]);
+    expect(view.dropped).toEqual(["field:tools", "redaction:field"]);
     expect(view.droppedTotal).toBe(2);
   }
   expect(current(f, first).map(view => view.state)).toEqual(["superseded", "proposed"]);
@@ -451,4 +451,33 @@ test("a replayed role.proposal.* receipt after a deletion still shows the owner'
   expect(replay.proposal).toEqual(before.proposal);
   const accepted = await postJson(f, `/api${proposalPath(f, reply.roleProposals[0]!, "accept")}`, { requestId: rid(), expectedRevision: replay.proposal.revision });
   expect((await accepted.json()).role).toMatchObject({ name: replay.proposal.name, responsibility: replay.proposal.responsibility, route: grok });
+});
+
+test("receipts of a deleted reply's proposals replay without its text or model-named fields; owner fields stay exact", async () => {
+  const f = await fixture([{ reply: "จิตเสนอผู้เชี่ยวชาญสองคนสำหรับไฟล์นี้ครับ", proposals: [
+    { kind: "role", name: "RejectedSecret_7731", responsibility: "Confidential rejected proposal description", Leak_7731: 1 },
+    { kind: "role", name: "จะแก้", responsibility: "Confidential edited proposal description", Leak_7731: 1 },
+  ] }]);
+  const reply = await send(f, "จัดทีมดูไฟล์ลับให้หน่อย");
+  const [rejected, edited] = reply.roleProposals;
+  const reject = { requestId: rid(), expectedRevision: 1 };
+  const revision = { requestId: rid(), expectedRevision: 1, name: "ชื่อของเจ้าของ", responsibility: "หน้าที่ของเจ้าของ", route: grok };
+  const rejectPath = `/api${proposalPath(f, rejected!, "reject")}`, revisePath = `/api${proposalPath(f, edited!, "revise")}`;
+  await postJson(f, rejectPath, reject); await postJson(f, revisePath, revision);
+  deleteSource(f, reply.source!);
+  const replayedReject = (await (await postJson(f, rejectPath, reject)).json()).proposal;
+  expect(replayedReject).toMatchObject({ state: "rejected", dropped: ["redaction:field"] });
+  expect(JSON.stringify(replayedReject)).not.toMatch(/7731|Confidential/);
+  const replayedRevise = (await (await postJson(f, revisePath, revision)).json()).proposal;
+  expect(replayedRevise).toMatchObject({ revision: 2, author: "owner", state: "proposed", name: "ชื่อของเจ้าของ", responsibility: "หน้าที่ของเจ้าของ", route: grok, dropped: ["redaction:field"] });
+  expect(f.store.read(tx => tx.all<{ json: string }>("SELECT result_json AS json FROM command_receipts").map(row => row.json).join("\n"))).not.toMatch(/7731|Confidential/);
+});
+
+test("a model field named like the deletion marker is only an unsupported field", async () => {
+  const f = await fixture([{ reply: "เสนอ", proposals: [{ ...security, redacted: true, "redaction:field": 1 }] }]);
+  const reply = await send(f, "จัดทีม");
+  expect(reply.roleProposals[0]!.dropped).toEqual(["field:redacted", "field:invalid"]);
+  const page = await (await get(f, topicPath(f))).text();
+  expect(page).toContain("ช่องที่ไม่รองรับ: redacted");
+  expect(page).not.toContain("ช่องที่ถูกลบตามคำสั่งลบข้อมูล");
 });
