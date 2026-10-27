@@ -11,12 +11,13 @@ import type { MessageKey } from "./i18n";
  *   inside the settings frame. Memory, tasks, jobs, PR reports and the team stay at their project URLs too; the
  *   topic right panel links to them.
  */
-export type SettingsSectionId = "general" | "team" | "telegram" | "backups" | "upgrades" | "restores" | "data";
+export type SettingsSectionId = "general" | "team" | "dispatch" | "telegram" | "backups" | "upgrades" | "restores" | "data";
 
 /** Settings sections in display order. `href` is the canonical page; `label` is a dictionary key. */
 export const settingsSections: readonly { readonly id: SettingsSectionId; readonly href: string; readonly label: MessageKey }[] = Object.freeze([
   { id: "general", href: "/settings", label: "settings.general" },
   { id: "team", href: "/settings/team", label: "common.team_and_models" },
+  { id: "dispatch", href: "/settings/dispatch", label: "settings.dispatch" },
   { id: "telegram", href: "/settings/telegram", label: "settings.telegram" },
   { id: "backups", href: "/settings/backups", label: "settings.backups" },
   { id: "upgrades", href: "/settings/upgrades", label: "settings.upgrades" },

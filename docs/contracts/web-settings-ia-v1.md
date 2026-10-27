@@ -10,13 +10,14 @@ Owner: Jit #97 (S09 UX02). Status: implemented on the issue branch. Spec: [S09](
 | --- | --- | --- |
 | General | `/settings` | Persona (`app.persona/v1`, from BOT01), appearance and language (`ui.preferences/v1`, unchanged) and font licences |
 | Team and models | `/settings/team` | Installation roles, default route and role routes |
+| Team dispatch | `/settings/dispatch` | Each project's dispatch allowance (`app.dispatch_allowance/v1`, from BOT04): one owner form per project |
 | Telegram | `/settings/telegram` | Binding and inbox status (read only), each project's notification requests |
 | Backups | `/settings/backups`, `/settings/backups/:id` | `ops.backup_manifest/v1` inventory and detail |
 | Upgrades | `/settings/upgrades`, `/settings/upgrades/:id` | `ops.schema_migrations/v1` journals |
 | Restores | `/settings/restores`, `/settings/restores/:id` | `ops.quarantined_restore/v1` console |
 | Project data | `/settings/data` | Each project's export and deletion pages |
 
-Every settings page shows the settings sub-navigation. Dispatch allowance joins this list in its own ticket.
+Every settings page shows the settings sub-navigation.
 
 - **Settings shortcuts.** `GET /settings/preferences` and `GET /settings/persona` keep answering `303` to their section of `/settings`.
 - **Moved pages.** `GET /team`, `/backups[/:id]`, `/upgrades[/:id]` and `/restores[/:id]` answer `308` to the same path under `/settings`, keeping the query string. The redirect is static and runs before sign-in, so it reveals nothing.

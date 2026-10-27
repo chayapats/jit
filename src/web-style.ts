@@ -382,6 +382,28 @@ kbd { font: 500 11px/1.6 var(--font-sans); color: var(--fg-2); border: 1px solid
 .proposal-actions form { display: inline; }
 .proposal-actions button { border-radius: 999px; }
 @media (max-width: 560px) { .proposal-fields { grid-template-columns: 1fr; gap: 2px; } .proposal-fields dd { margin-bottom: 6px; } }
+/* Collapsible team card (BOT04, S09-D08); dispatch proposals use the shared proposal card above. */
+.chat-content .team-run { margin: -8px 0 22px; max-width: min(100%, 68ch); padding: 12px 16px; }
+.team-run > summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; cursor: pointer; font-size: 13px; font-weight: 600; list-style: none; }
+.team-run > summary::-webkit-details-marker { display: none; }
+.team-run > summary::before { content: "▸"; color: var(--muted); }
+.team-run[open] > summary::before { content: "▾"; }
+.team-run-title { flex: 1; }
+.team-run .team-run-origin, .team-role-note { font-size: 12px; color: var(--muted); }
+.team-roles { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 8px; }
+.team-role { border-top: 1px solid var(--line); padding-top: 8px; }
+.team-role-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; }
+.team-role-name { font-weight: 600; }
+.team-role-head form { display: inline; margin-left: auto; }
+.team-role-head button { min-height: 28px; padding: 2px 12px; border: 1px solid var(--line-strong); border-radius: 999px; background: transparent; color: var(--fg); font: inherit; font-size: 12px; cursor: pointer; }
+.team-opinion { margin-top: 6px; font-size: 13px; }
+.team-opinion > summary { cursor: pointer; color: var(--muted); }
+.team-opinion .message-body { font-size: 14px; margin-top: 6px; }
+.team-reply-meta { font-size: 12px; color: var(--muted); display: grid; gap: 4px; }
+.team-reply-meta .source-link { margin-right: 8px; }
+.team-reply-meta small { display: block; color: var(--faint); }
+.allowance-form .choice { display: inline-flex; gap: 8px; align-items: center; }
+.proposal-card .choice-group { margin: 8px 0 0; }
 [hidden] { display: none !important; }
 .composer-keys { display: none; }
 [data-enhanced] .composer-keys { display: inline; }

@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { commitDecisionMemorySource, retireDecisionMemorySource } from "./memory/decision-sources";
 
 /** Current application schema revision. Service packaging pins and checks this value. */
-export const schemaVersion = 26;
+export const schemaVersion = 27;
 
 /**
  * Installation-scoped state that never round-trips through backup images and
@@ -72,7 +72,7 @@ export class TransactionStore {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
           if (current === schemaVersion) return;
-          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25].includes(current)) throw new Error("Unsupported migration source");
+          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26].includes(current)) throw new Error("Unsupported migration source");
           if (existing) {
             const snapshot = `${path}.pre-v${current}-${crypto.randomUUID()}.sqlite`;
             const fd = openSync(snapshot, "wx", 0o600);
@@ -788,6 +788,38 @@ export class TransactionStore {
               UPDATE jit_replies SET cursor = (SELECT coalesce(max(cursor), 0) + 1 FROM jit_replies)
               WHERE run_id = (SELECT id FROM team_runs WHERE job_id = NEW.id);
             END;
+          `);
+          if (current < 27) this.#db.exec(`
+            -- app.dispatch_allowance/v1 (BOT04): immutable owner-set allowance revisions per project; the highest is
+            -- current. No row means the product default (revision 0).
+            CREATE TABLE IF NOT EXISTS dispatch_allowance_revisions (
+              project_id TEXT NOT NULL REFERENCES projects(id),
+              revision INTEGER NOT NULL CHECK (revision > 0),
+              enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+              max_roles INTEGER NOT NULL CHECK (max_roles BETWEEN 1 AND 100),
+              created_at INTEGER NOT NULL,
+              PRIMARY KEY (project_id, revision)
+            );
+            -- One dispatch proposal per Jit reply that named specialists. Identities, state and validated role ids
+            -- only; model text is never stored here. admitted rows name the allowance revision that admitted them.
+            CREATE TABLE IF NOT EXISTS dispatch_proposals (
+              id TEXT PRIMARY KEY,
+              project_id TEXT NOT NULL REFERENCES projects(id),
+              topic_id TEXT NOT NULL REFERENCES topics(id),
+              reply_id TEXT NOT NULL UNIQUE REFERENCES jit_replies(id),
+              revision INTEGER NOT NULL CHECK (revision > 0),
+              state TEXT NOT NULL CHECK (state IN ('admitted', 'proposed', 'accepted', 'dismissed', 'empty')),
+              admission TEXT CHECK (admission IN ('standing_allowance', 'owner')),
+              allowance_revision INTEGER NOT NULL CHECK (allowance_revision >= 0),
+              discussion_id TEXT UNIQUE REFERENCES team_runs(id),
+              team_reply_id TEXT UNIQUE REFERENCES jit_replies(id),
+              record_json TEXT NOT NULL,
+              created_at INTEGER NOT NULL,
+              updated_at INTEGER NOT NULL,
+              CHECK ((discussion_id IS NULL) = (admission IS NULL))
+            );
+            CREATE INDEX IF NOT EXISTS dispatch_proposal_topic ON dispatch_proposals(project_id, topic_id, created_at);
+            PRAGMA user_version = 27;
           `);
         }).immediate();
         this.#db.exec("PRAGMA foreign_keys = ON;");

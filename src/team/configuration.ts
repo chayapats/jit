@@ -50,6 +50,9 @@ export function teamIdentity(command: TeamCommand, policy: TeamPolicy): string {
     if (command.projectId === null || !exact(p, ["discussionId", "action", "roleId"])) throw new AppError("invalid_team_command");
     requireId(p.discussionId); requireId(p.roleId);
     if (!["include", "exclude", "skip", "stop"].includes(p.action)) throw new AppError("invalid_team_command");
+  } else if (command.kind === "team.stop_all") {
+    if (command.projectId === null || !exact(command.payload, ["discussionId"])) throw new AppError("invalid_team_command");
+    requireId(command.payload.discussionId);
   } else throw new AppError("invalid_team_command");
   return createHash("sha256").update(encoded).digest("hex");
 }

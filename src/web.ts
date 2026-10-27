@@ -20,7 +20,9 @@ import { setupPage, visibleStep } from "./web-setup";
 import type { JitReplyView, StopReplyCommand } from "./team/jit-reply";
 import type { RoleProposalCommand } from "./team/role-proposals";
 import { defaultPanelTab, legacyRedirect, panelRows, panelTabs, searchLimits, settingsPageHandler, type PanelTab } from "./web-settings";
-import { searchItems, searchPage, settingsDataPage, settingsTelegramPage, topicPanelPage, type PanelData } from "./web-navigation";
+import { searchItems, searchPage, settingsDataPage, settingsDispatchPage, settingsTelegramPage, topicPanelPage, type PanelData } from "./web-navigation";
+import { dispatchLimits, type DispatchCommand } from "./team/jit-dispatch";
+import type { SetDispatchAllowanceCommand } from "./team/allowance";
 
 /** ADR 0028 Content-Security-Policy: every page, asset and API response allows only this origin, and no inline script or eval. */
 export const contentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
@@ -191,6 +193,14 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       const streamRoute = /^\/projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})\/events$/.exec(pathname);
       const replyStopRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})\/replies\/([a-f0-9-]{36})\/stop$/.exec(pathname);
       const roleProposalRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})\/replies\/([a-f0-9-]{36})\/proposals\/([a-f0-9-]{36})\/(accept|reject|revise)$/.exec(pathname);
+      // app.dispatch_allowance/v1 routes.
+      const dispatchActionRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/dispatch\/([a-f0-9-]{36})\/(accept|dismiss|answer)$/.exec(pathname);
+      const stopAllRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/team\/discussions\/([a-f0-9-]{36})\/stop-all$/.exec(pathname);
+      const allowanceFormRoute = /^\/settings\/dispatch\/([a-f0-9-]{36})$/.exec(pathname);
+      const allowanceApiRoute = /^\/api\/projects\/([a-f0-9-]{36})\/dispatch-allowance$/.exec(pathname);
+      /** The topic page that holds a dispatch card, at its anchor. */
+      const cardLocation = (card: { projectId: string; topicId: string; anchorSequence: number; id: string }) =>
+        `/projects/${card.projectId}/topics/${card.topicId}?after=${Math.max(0, card.anchorSequence - 1)}#dispatch-${card.id}`;
       /** One app.jit_reply/v1 event: persisted state plus localised labels, so the script holds no strings. */
       const replyEvent = (view: JitReplyView) => {
         const labels = renderWith(ui, () => replyLabels(view));
@@ -270,6 +280,56 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const receipt = app.execute(auth.actor, command);
         const p = receipt.proposal;
         return api ? json(receipt) : respond(null, 303, { Location: `/projects/${p.projectId}/topics/${p.topicId}?after=${Math.max(0, (p.replySequence ?? 1) - 1)}#proposal-${p.id}` });
+      }
+      if (request.method === "POST" && dispatchActionRoute) {
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        const [, , projectId, proposalId, action] = dispatchActionRoute;
+        const form = request.headers.get("content-type")?.split(";")[0]?.trim() === "application/x-www-form-urlencoded";
+        const roleKeys = Object.keys(body).filter(key => /^role-[a-f0-9-]{36}$/.test(key));
+        const allowed = ["csrf", "requestId", "expectedRevision", ...(action === "accept" ? (form ? roleKeys : ["roleIds"]) : [])];
+        if (Object.keys(body).some(key => !allowed.includes(key))) throw new AppError("invalid_body");
+        if (form && roleKeys.some(key => body[key] !== "on")) throw new AppError("invalid_body");
+        const revision = typeof body.expectedRevision === "string" && /^\d{1,15}$/.test(body.expectedRevision) ? Number(body.expectedRevision) : body.expectedRevision;
+        const base = { requestId: body.requestId, projectId, expectedRevision: revision };
+        const command = (action === "accept" ? { ...base, kind: "dispatch.proposal.accept", payload: { proposalId, roleIds: form ? roleKeys.map(key => key.slice(5)) : body.roleIds } }
+          : { ...base, kind: action === "dismiss" ? "dispatch.proposal.dismiss" : "dispatch.answer", payload: { proposalId } }) as DispatchCommand;
+        const receipt = app.execute(auth.actor, command);
+        return api ? json(receipt) : respond(null, 303, { Location: cardLocation(receipt.proposal) });
+      }
+      if (request.method === "POST" && stopAllRoute) {
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision"].includes(key))) throw new AppError("invalid_body");
+        const revision = typeof body.expectedRevision === "string" && /^\d{1,15}$/.test(body.expectedRevision) ? Number(body.expectedRevision) : body.expectedRevision;
+        const command = { kind: "team.stop_all", requestId: body.requestId, projectId: stopAllRoute[2], expectedRevision: revision,
+          payload: { discussionId: stopAllRoute[3] } } as TeamCommand;
+        const receipt = app.execute(auth.actor, command);
+        const origin = receipt.discussion?.origin;
+        return api ? json(receipt) : respond(null, 303, { Location: origin ? cardLocation(app.dispatchCard(auth.actor, stopAllRoute[2]!, origin.proposalId))
+          : `/projects/${stopAllRoute[2]}/team/discussions/${stopAllRoute[3]}` });
+      }
+      if (allowanceApiRoute || (allowanceFormRoute && request.method === "POST")) {
+        const projectId = (allowanceApiRoute ?? allowanceFormRoute)![1]!;
+        if (request.method === "GET") return json(app.dispatchAllowance(auth.actor, projectId));
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "enabled", "maxRoles"].includes(key))) throw new AppError("invalid_body");
+        const number = (value: unknown) => typeof value === "string" && /^\d{1,15}$/.test(value) ? Number(value) : value;
+        // An unchecked checkbox is absent from a form post; JSON must say true or false.
+        const enabled = allowanceFormRoute ? body.enabled === undefined ? false : body.enabled === "on" ? true : body.enabled : body.enabled;
+        const command = { kind: "dispatch.allowance.set", requestId: body.requestId, projectId, expectedRevision: number(body.expectedRevision),
+          payload: { enabled, maxRoles: number(body.maxRoles) } } as SetDispatchAllowanceCommand;
+        const receipt = app.execute(auth.actor, command);
+        return allowanceApiRoute ? json(receipt) : respond(null, 303, { Location: `/settings/dispatch?project=${projectId}#allowance-${projectId}` });
+      }
+      if (url.pathname === "/settings/dispatch" && request.method === "GET") {
+        const raw = url.searchParams.get("offset") ?? "0";
+        if (!/^\d{1,7}$/.test(raw)) throw new AppError("invalid_offset");
+        // `?project=` opens one project's allowance wherever it falls in the paged list (team card links, form redirects).
+        const only = url.searchParams.getAll("project");
+        if (only.length > 1 || (only.length === 1 && !/^[a-f0-9-]{36}$/.test(only[0]!))) throw new AppError("invalid_query");
+        const offset = Number(raw), paged = app.workspace(auth.actor, offset);
+        const list = only.length ? { projects: [app.project(auth.actor, only[0]!)], hasMore: false, single: true } : { projects: paged.projects, hasMore: paged.hasMore, single: false };
+        const allowances = new Map(list.projects.map(p => [p.id, app.dispatchAllowance(auth.actor, p.id)] as const));
+        return page(() => settingsDispatchPage(nav(paged), list, allowances, auth.csrf, offset, config.pageSize));
       }
       if (request.method === "GET" && claimRoute) {
         const revision = Number(url.searchParams.get("revision")), generation = Number(url.searchParams.get("generation"));
@@ -631,13 +691,16 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       }
       if (request.method === "POST" && discussionControl) {
         const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
-        const allowed = ["csrf", "requestId", "expectedRevision", "action", "roleId"];
-        if (Object.keys(body).some(key => !allowed.includes(key))) throw new AppError("invalid_body");
+        const allowed = ["csrf", "requestId", "expectedRevision", "action", "roleId", "back"];
+        if (Object.keys(body).some(key => !allowed.includes(key)) || (body.back !== undefined && body.back !== "topic")) throw new AppError("invalid_body");
         const number = (value: unknown) => typeof value === "string" && /^\d{1,15}$/.test(value) ? Number(value) : value;
         const command = { kind: "team.control", requestId: body.requestId, projectId: discussionControl[1], expectedRevision: number(body.expectedRevision),
           payload: { discussionId: discussionControl[2], action: body.action, roleId: body.roleId } } as TeamCommand;
         const receipt = app.execute(auth.actor, command);
-        return api ? json(receipt) : respond(null, 303, { Location: `/projects/${discussionControl[1]}/team/discussions/${discussionControl[2]}` });
+        // A team card control returns to the card on its topic page (app.dispatch_allowance/v1).
+        const origin = body.back === "topic" ? receipt.discussion?.origin : undefined;
+        return api ? json(receipt) : respond(null, 303, { Location: origin ? cardLocation(app.dispatchCard(auth.actor, discussionControl[1]!, origin.proposalId))
+          : `/projects/${discussionControl[1]}/team/discussions/${discussionControl[2]}` });
       }
       if (request.method === "POST" && (synthesisRoute || decisionRoute)) {
         const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
@@ -789,8 +852,10 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         if (api) return json({ ...state, replies: [...replies.values()] });
         const team = app.team(auth.actor, state.project.id);
         const discussions = app.discussions(auth.actor, state.project.id, state.topic.id);
+        const cards = app.dispatchCards(auth.actor, state.project.id, state.topic.id, state.items.map(item => item.id));
         return page(() => conversationPage(state, nav(), app.topics(auth.actor, state.project.id).items, auth.csrf, after(), config.messageBytes, {
-          team, discussions, limits: config.jobs.maximum, dispatchAvailable: team.previewAvailable, replies,
+          team, discussions, limits: config.jobs.maximum, dispatchAvailable: team.previewAvailable, replies, cards,
+          synthesisLimits: dispatchLimits(config, 1),
           decision: app.decision(auth.actor, state.project.id, state.topic.id),
         }));
       }

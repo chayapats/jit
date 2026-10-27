@@ -11,11 +11,14 @@ type TeamCommand =
         include: string[]; exclude: string[]; limits: JobLimits } }
   | { kind: "team.control"; requestId: string; projectId: string; expectedRevision: number;
       payload: { discussionId: string; action: "include" | "exclude" | "skip" | "stop"; roleId: string } }
+  // BOT04: stops every role still queued, running or waiting (same fence as stop), plus a team reply
+  | { kind: "team.stop_all"; requestId: string; projectId: string; expectedRevision: number; payload: { discussionId: string } }
   // plus TEAM01 role.save / route.save / role.preview
 
 interface Discussion { kind: "discussion"; id; projectId; topicId; purpose; jobId;
   revision; createdAt; updatedAt; manifest; limits; router; participations; coverageGap }
 // MEM02: manifest also carries assembled claims and manifest.context (app.memory_context/v1)
+// BOT04: origin?: { kind: "standing-allowance" | "owner-accepted"; proposalId; replyId; allowanceRevision }, stoppedAll?: boolean
 
 Application.execute(actor, TeamCommand): TeamReceipt; // discussion?: Discussion
 Application.discussions(actor, projectId, topicId): Discussion[];
@@ -38,7 +41,8 @@ Owner `include` / `exclude` / `skip` / `stop` mutate participation without creat
 | --- | --- |
 | `POST /[api/]projects/PROJECT/team/discussions` | `team.dispatch` fields + receipt/revision; form encodes sources/include/exclude/limits as JSON strings |
 | `GET /[api/]projects/PROJECT/team/discussions/ID` | Projected discussion; HTML shows controls and provisional progress |
-| `POST /[api/]projects/PROJECT/team/discussions/ID/controls` | `action` + `roleId` + discussion `expectedRevision` |
+| `POST /[api/]projects/PROJECT/team/discussions/ID/controls` | `action` + `roleId` + discussion `expectedRevision`; optional `back=topic` returns a team card's post to its topic |
+| `POST /[api/]projects/PROJECT/team/discussions/ID/stop-all` | `team.stop_all` with discussion `expectedRevision` (BOT04) |
 | Topic HTML | Optional dispatch panel; GET never relaunches analysis |
 
 Deterministic evidence: `tests/team.test.ts` (TEAM02 cases) with scripted adapters, fake clocks and no paid APIs. Exact artifact signatures are those exported above plus [specialist results](specialist-results-v1.md) and [run records](run-records-v1.md).
