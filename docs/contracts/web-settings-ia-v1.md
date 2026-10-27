@@ -8,7 +8,7 @@ Owner: Jit #97 (S09 UX02). Status: implemented on the issue branch. Spec: [S09](
 
 | Section | Page | What it holds |
 | --- | --- | --- |
-| General | `/settings` | Appearance and language (`ui.preferences/v1`, unchanged) and font licences |
+| General | `/settings` | Persona (`app.persona/v1`, from BOT01), appearance and language (`ui.preferences/v1`, unchanged) and font licences |
 | Team and models | `/settings/team` | Installation roles, default route and role routes |
 | Telegram | `/settings/telegram` | Binding and inbox status (read only), each project's notification requests |
 | Backups | `/settings/backups`, `/settings/backups/:id` | `ops.backup_manifest/v1` inventory and detail |
@@ -16,8 +16,9 @@ Owner: Jit #97 (S09 UX02). Status: implemented on the issue branch. Spec: [S09](
 | Restores | `/settings/restores`, `/settings/restores/:id` | `ops.quarantined_restore/v1` console |
 | Project data | `/settings/data` | Each project's export and deletion pages |
 
-Every settings page shows the settings sub-navigation. Persona and dispatch allowance join this list in their own tickets.
+Every settings page shows the settings sub-navigation. Dispatch allowance joins this list in its own ticket.
 
+- **Settings shortcuts.** `GET /settings/preferences` and `GET /settings/persona` keep answering `303` to their section of `/settings`.
 - **Moved pages.** `GET /team`, `/backups[/:id]`, `/upgrades[/:id]` and `/restores[/:id]` answer `308` to the same path under `/settings`, keeping the query string. The redirect is static and runs before sign-in, so it reveals nothing.
 - **Commands do not move.** Forms on the new pages still post to `/team/roles`, `/team/routes`, `/backups`, `/upgrades[/:id]` and `/restores[/:id]`, with the same session, `Origin`, CSRF, `requestId`, revision and receipt rules. Only the no-script `303` after a post now points at the settings page. `POST` to a `/settings/...` page path is `404`, so there is no second command endpoint. The restore gate now sends ordinary pages to `/settings/restores`.
 - **JSON API paths do not move** (`/api/team`, `/api/backups`, `/api/upgrades`, `/api/restores`, …).
