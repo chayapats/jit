@@ -137,7 +137,7 @@ test("full app boots with the composed workers, persists owner state and restart
   if (!first.ok) throw new Error("unreachable");
   const ids = first.handle.queue.choices().map(c => c.id).sort();
   expect(ids).toEqual(["project.status", "role.scripted-preview", "schedule.reminder", "schedule.summary",
-    "team.discussion", "team.specialist-analysis", "team.coordinator-synthesis", "team.jit-reply", "memory.extract", "pr.snapshot", "pr.review"].sort());
+    "team.discussion", "team.specialist-analysis", "team.coordinator-synthesis", "team.jit-reply", "setup.route-check", "memory.extract", "pr.snapshot", "pr.review"].sort());
   expect(ids.some(id => id.includes("probe"))).toBe(false);
   const app = first.handle.app;
   await app.setupOwner("service-owner-password");

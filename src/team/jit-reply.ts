@@ -205,6 +205,14 @@ function topicHistory(tx: AppTransaction, projectId: string, topicId: string, me
 }
 
 /**
+ * The role that answers as Jit: the first enabled coordinator whose effective route resolves. Setup
+ * (app.setup/v1) uses the same rule, so the route it checks is the route replies use.
+ */
+export function jitCoordinator<T extends { kind: string; enabled: boolean; effective: { route: RoleRoute | null } }>(roles: readonly T[]): T | undefined {
+  return roles.find(role => role.kind === "coordinator" && role.enabled && role.effective.route);
+}
+
+/**
  * app.jit_reply/v1 admission, inside the owner's `message.send` transaction. Every owner message gets exactly one
  * `jit_replies` row (`message_id` is unique): either one admitted `team.jit-reply` job through
  * `jobs.queue_admission/v1`, or a not-admitted reason the page turns into a next action. Replaying the message's
@@ -222,7 +230,7 @@ export function admitJitReply(tx: AppTransaction, input: {
   };
   if (!queue || !queue.available(tx) || !queue.registered(jitReplyWorkId)) return notAdmitted("scheduler_unavailable");
   const team = readTeam(tx, message.projectId, config.team);
-  const jit = team.roles.find(role => role.kind === "coordinator" && role.enabled && role.effective.route);
+  const jit = jitCoordinator(team.roles);
   if (!jit?.effective.route) return notAdmitted("no_route");
   const persona = readPersona(tx);
   const operatorBase = [jitReplyMarker, ...jitReplyPolicy, ...roleProposalInstructions(configuredRoutes(tx, message.projectId, config.team)), ...personaInstructions(persona)];

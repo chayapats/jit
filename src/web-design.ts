@@ -30,7 +30,7 @@ export const scaleTokens = Object.freeze({
   }),
   size: Object.freeze({ xs: 12, sm: 13, ui: 14, chat: 15, lg: 18, xl: 24, xxl: 32 }),
   radius: Object.freeze({ control: 8, card: 14, composer: 24, pill: 999 }),
-  motion: Object.freeze({ ui: 160, panel: 240, breath: 4800 }),
+  motion: Object.freeze({ ui: 160, panel: 240, breath: 4800, ceremony: 1600 }),
   chatWidth: 720,
 });
 

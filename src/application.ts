@@ -4,6 +4,7 @@ import type { AppConfig } from "./config";
 import { TransactionStore, type AppTransaction } from "./store";
 import { preferencesIdentity, readPreferences, writePreferences, type PreferencesReceipt, type SetPreferencesCommand, type UiPreferences } from "./preferences";
 import { personaIdentity, readPersona, writePersona, type Persona, type PersonaReceipt, type SetPersonaCommand } from "./persona";
+import { applySetup, isSetupCommand, readGeneralSpace, readSetup, setupCheckWorkId, setupComplete, setupIdentity, type GeneralSpace, type SetupCommand, type SetupReceipt, type SetupView } from "./setup";
 import { jitReplyWorkId, admitJitReply, readRepliesFor, readReplyChanges, stopReply, stopReplyIdentity, type JitReplyView, type ReplyReceipt, type StopReplyCommand } from "./team/jit-reply";
 import { conversationIdentity, mutateConversation, readMessages, readTopic, readTopics, requireCursor,
   type ConversationCommand, type CreateTopicCommand, type SendMessageCommand, type Topic, type TopicReceipt, type MessageReceipt } from "./conversation";
@@ -141,7 +142,7 @@ import { ledgerCheckpointPathFor, syncLedgerCheckpoint, type TrustedLedger } fro
 /** Injectable clock and transaction fault seam for deterministic persistence checks. */
 export interface ApplicationOptions {
   now?: () => number;
-  beforeCommit?(stage: "project" | "topic" | "message" | "job" | "team" | "decision" | "delivery" | "task" | "memory" | "receipt" | "schedule" | "backup" | "ops"): void;
+  beforeCommit?(stage: "project" | "topic" | "message" | "job" | "team" | "decision" | "delivery" | "task" | "memory" | "receipt" | "schedule" | "backup" | "ops" | "setup"): void;
   jobs?: JobQueue;
   backupDir?: string;
   /** @deprecated Format-2 export artifacts live in SQLite; accepted for compatibility and ignored. */
@@ -479,6 +480,16 @@ export class Application {
     return this.store.read(tx => { this.#requireOwner(tx, actor); return readPersona(tx); });
   }
 
+  /** app.setup/v1: setup progress and Jit's route state, from persisted state only; it never starts a check. */
+  setup(actor: OwnerActor): SetupView {
+    return this.store.read(tx => { this.#requireOwner(tx, actor); return readSetup(tx, this.config); });
+  }
+
+  /** app.general_space/v1: the installation's one General space, or null before setup creates it. */
+  generalSpace(actor: OwnerActor): GeneralSpace | null {
+    return this.store.read(tx => { this.#requireOwner(tx, actor, ["web", "telegram"]); return readGeneralSpace(tx); });
+  }
+
   /** Resolves an exact source reference under an explicit authorized project and never fetches missing content. */
   source(actor: OwnerActor, projectId: string, reference: SourceReference): SourceLookup {
     requireId(projectId); requireReference(reference);
@@ -506,6 +517,7 @@ export class Application {
   execute(actor: OwnerActor, command: CreateProjectCommand): ProjectReceipt;
   execute(actor: OwnerActor, command: SetPreferencesCommand): PreferencesReceipt;
   execute(actor: OwnerActor, command: SetPersonaCommand): PersonaReceipt;
+  execute(actor: OwnerActor, command: SetupCommand): SetupReceipt;
   execute(actor: OwnerActor, command: StopReplyCommand): ReplyReceipt;
   execute(actor: OwnerActor, command: RoleProposalCommand): RoleProposalReceipt;
   execute(actor: OwnerActor, command: CreateTopicCommand): TopicReceipt;
@@ -527,8 +539,8 @@ export class Application {
   execute(actor: OwnerActor, command: ExportCommand): ExportReceipt;
   execute(actor: OwnerActor, command: UpgradeCommand): Promise<UpgradeReceipt>;
   execute(actor: OwnerActor, command: RestoreCommand): Promise<RestoreReceipt>;
-  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetPersonaCommand | StopReplyCommand | RoleProposalCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | PersonaReceipt | ReplyReceipt | RoleProposalReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt>;
-  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetPersonaCommand | StopReplyCommand | RoleProposalCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | PersonaReceipt | ReplyReceipt | RoleProposalReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt> {
+  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt>;
+  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt> {
     if (command?.kind?.startsWith("upgrade.")) return this.#upgradeCommand(actor, command as UpgradeCommand);
     if (command?.kind?.startsWith("restore.")) return this.#restoreCommand(actor, command as RestoreCommand);
     // ops.schema_migrations/v1 admission fence (held by an upgrade or, ops.quarantined_restore/v1, a restore):
@@ -536,6 +548,16 @@ export class Application {
     if (this.#upgradeBusy || upgradeFenced(this.store.path)) {
       this.store.read(tx => this.#requireOwner(tx, actor, ["web", "telegram"]));
       throw new AppError(readUpgradeFence(this.store.path)?.holder === "restore" ? "restore_in_progress" : "upgrade_in_progress", 409);
+    }
+    // app.general_space/v1: until the ceremony commits Jit's greeting, the General space takes no project command
+    // from any ingress, so the greeting is always its first message. Stopping or resuming the route check stays open.
+    const scope = (command as { projectId?: unknown } | null)?.projectId;
+    if (typeof scope === "string" && command.kind !== "job.stop" && command.kind !== "job.resume") {
+      this.store.read(tx => {
+        this.#requireOwner(tx, actor, ["web", "telegram"]);
+        // Completion is monotonic, so this check cannot go stale before the command's own transaction.
+        if (readGeneralSpace(tx)?.projectId === scope && !setupComplete(tx)) throw new AppError("setup_incomplete", 409);
+      });
     }
     if (command?.kind === "export.create") return this.#exportCommand(actor, command);
     if (command?.kind === "backup.create") return this.#createBackup(actor, command);
@@ -553,6 +575,7 @@ export class Application {
     if (command?.kind === "project.create") return this.#createProject(actor, command);
     if (command?.kind === "ui.preferences.set") return this.#setPreferences(actor, command);
     if (command?.kind === "persona.set") return this.#setPersona(actor, command);
+    if (isSetupCommand(command)) return this.#setupCommand(actor, command);
     if (command?.kind === "jit.reply.stop") return this.#stopReply(actor, command);
     if (command?.kind === "role.proposal.accept" || command?.kind === "role.proposal.reject" || command?.kind === "role.proposal.revise") return this.#roleProposalCommand(actor, command);
     if (command?.kind === "job.enqueue" || command?.kind === "job.resume" || command?.kind === "job.stop") return this.#jobCommand(actor, command);
@@ -1454,7 +1477,7 @@ export class Application {
       const available = this.#jobs?.available(tx) ?? false;
       const page = readJobs(tx, projectId, after, this.config.pageSize), now = this.#now();
       return { project, ...page, items: page.items.map(job => projectJob(job, now)),
-        choices: (this.#jobs?.choices() ?? []).filter(choice => ![reminderWorkId, summaryWorkId, "role.scripted-preview", "team.discussion", "team.specialist-analysis", coordinatorSynthesisWorkId, jitReplyWorkId].includes(choice.id)),
+        choices: (this.#jobs?.choices() ?? []).filter(choice => ![reminderWorkId, summaryWorkId, "role.scripted-preview", "team.discussion", "team.specialist-analysis", coordinatorSynthesisWorkId, jitReplyWorkId, setupCheckWorkId].includes(choice.id)),
         admission: { available, nextAction: available ? "inspect_or_authorize_work" : "resolve_scheduler_ownership_or_restart" } };
     });
   }
@@ -1662,6 +1685,29 @@ export class Application {
       tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, 'owner', ?)", command.kind, command.requestId, now);
       return result;
     });
+  }
+
+  /**
+   * app.setup/v1: one setup step as one owner command. The step's configuration writes (preferences, route,
+   * coordinator, persona, General space, greeting, check job admission), the setup row, receipt and audit commit
+   * together, so an interrupted step leaves nothing behind and can simply be submitted again.
+   */
+  #setupCommand(actor: OwnerActor, command: SetupCommand): SetupReceipt {
+    const payloadHash = setupIdentity(command);
+    const result = this.store.transaction(tx => {
+      this.#requireOwner(tx, actor);
+      const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
+      if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as SetupReceipt; }
+      const now = this.#now(), generation = tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'")!.generation;
+      const receipt = applySetup(tx, command, { config: this.config, queue: this.#jobs, generation, now });
+      this.#beforeCommit?.("setup");
+      tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(receipt), now);
+      tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, 'owner', ?)", command.kind, command.requestId, now);
+      this.#beforeCommit?.("receipt");
+      return receipt;
+    });
+    this.#jobs?.cancelFenced();
+    return result;
   }
 
   /** app.jit_reply/v1: stops one running reply through its job fence; the late result can no longer commit. */

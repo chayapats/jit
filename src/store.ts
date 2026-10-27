@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { commitDecisionMemorySource, retireDecisionMemorySource } from "./memory/decision-sources";
 
 /** Current application schema revision. Service packaging pins and checks this value. */
-export const schemaVersion = 25;
+export const schemaVersion = 26;
 
 /**
  * Installation-scoped state that never round-trips through backup images and
@@ -72,7 +72,7 @@ export class TransactionStore {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
           if (current === schemaVersion) return;
-          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24].includes(current)) throw new Error("Unsupported migration source");
+          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25].includes(current)) throw new Error("Unsupported migration source");
           if (existing) {
             const snapshot = `${path}.pre-v${current}-${crypto.randomUUID()}.sqlite`;
             const fd = openSync(snapshot, "wx", 0o600);
@@ -758,6 +758,26 @@ export class TransactionStore {
             );
             CREATE INDEX IF NOT EXISTS jit_reply_source_lineage ON jit_reply_sources(source_id, revision, generation);
             PRAGMA user_version = 25;
+          `);
+          if (current < 26) this.#db.exec(`
+            -- app.setup/v1 (BOT02): owner setup progress ("ตั้งจิต"), one row; absent until the first setup command.
+            -- Configuration only: the route, persona and language it sets live in their own tables.
+            CREATE TABLE IF NOT EXISTS setup_state (
+              id INTEGER PRIMARY KEY CHECK (id = 1),
+              revision INTEGER NOT NULL CHECK (revision > 0),
+              record_json TEXT NOT NULL,
+              completed_at INTEGER
+            );
+            -- app.general_space/v1 (BOT02, ADR 0031): the installation's one system project of kind general, its
+            -- first topic and the setup greeting. The singleton id and the unique project allow exactly one.
+            CREATE TABLE IF NOT EXISTS general_space (
+              id INTEGER PRIMARY KEY CHECK (id = 1),
+              project_id TEXT NOT NULL UNIQUE REFERENCES projects(id),
+              topic_id TEXT NOT NULL REFERENCES topics(id),
+              greeting_message_id TEXT UNIQUE REFERENCES messages(id),
+              created_at INTEGER NOT NULL
+            );
+            PRAGMA user_version = 26;
           `);
           // Every change to a reply's job (admission, reservation, wait, stop, deadline, commit) moves the reply to
           // the end of the change order, so the event stream replays transitions the queue makes alone. Every real

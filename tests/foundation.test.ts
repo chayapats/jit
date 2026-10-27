@@ -50,8 +50,12 @@ test("fresh local setup, browser login, create, reload, logout and reopen retain
   const cookie = login.headers.get("set-cookie")!;
   expect(cookie).toContain("HttpOnly; SameSite=Strict; Path=/; Max-Age=28800");
   expect(await login.text()).not.toContain(password);
-  const html = await (await f.web(webRequest("/", { token: f.token }))).text();
-  expect(html).toContain("โครงการของคุณ");
+  // FR-23: a fresh installation starts at setup ("ตั้งจิต"), not at the workspace.
+  const home = await f.web(webRequest("/", { token: f.token }));
+  expect(home.status).toBe(303);
+  expect(home.headers.get("location")).toBe("/setup");
+  const html = await (await f.web(webRequest("/setup", { token: f.token }))).text();
+  expect(html).toContain("ตั้งจิต");
   expect(html).not.toContain(f.token);
   const body = { name: "ระบบ <script>alert(1)</script>", requestId: "web-create-01", expectedRevision: 0 };
   const response = await f.web(webRequest("/api/projects", { method: "POST", token: f.token, csrf: f.auth.csrf, body }));
@@ -182,7 +186,7 @@ test("versioned migration snapshots existing v0 state and rejects future schema 
   const old = new Database(path);
   old.exec("CREATE TABLE fixture_marker (value TEXT); INSERT INTO fixture_marker VALUES ('pre-migration'); PRAGMA user_version = 0;"); old.close();
   const store = new TransactionStore(path); stores.push(store);
-  expect(store.read(tx => tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version)).toBe(25);
+  expect(store.read(tx => tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version)).toBe(26);
   const snapshots = readdirSync(dir).filter(p => p.includes(".pre-v0-"));
   expect(snapshots).toHaveLength(1);
   const snapshot = new Database(join(dir, snapshots[0]!), { readonly: true });
