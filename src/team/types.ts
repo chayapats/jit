@@ -118,6 +118,18 @@ export interface Discussion {
   manifest: RunSourceManifest; limits: JobLimits;
   router: DiscussionRouter; participations: DiscussionParticipation[];
   coverageGap: string[];
+  /**
+   * app.dispatch_allowance/v1: set when a Jit dispatch proposal started this discussion, either under the owner's
+   * standing allowance (with the allowance revision that admitted it) or after the owner accepted the proposal card.
+   * Absent for discussions the owner started from the dispatch form.
+   */
+  origin?: DiscussionOrigin;
+  /** Set by `team.stop_all`; a stopped team gets no automatic team reply. */
+  stoppedAll?: boolean;
+}
+/** Who authorized a discussion that a Jit dispatch proposal asked for. Model output is never the authority. */
+export interface DiscussionOrigin {
+  kind: "standing-allowance" | "owner-accepted"; proposalId: string; replyId: string; allowanceRevision: number;
 }
 /** Independent specialist analysis run bound to one discussion and one managed context. */
 export interface SpecialistRun {
@@ -144,6 +156,10 @@ export type TeamCommand = {
 } | {
   kind: "team.control"; requestId: string; projectId: string; expectedRevision: number;
   payload: { discussionId: string; action: "include" | "exclude" | "skip" | "stop"; roleId: string };
+} | {
+  /** Stops every role still queued, running or waiting, plus the team reply, through the same controls and fences. */
+  kind: "team.stop_all"; requestId: string; projectId: string; expectedRevision: number;
+  payload: { discussionId: string };
 };
 /** A durable fixture run records immutable configuration separately from current effective settings. */
 export interface RolePreview {

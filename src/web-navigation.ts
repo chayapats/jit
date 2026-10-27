@@ -2,7 +2,8 @@ import type { Application, Project, SearchResults } from "./application";
 import type { Topic } from "./conversation";
 import { dictionaries, tr } from "./i18n";
 import type { TelegramStatus } from "./telegram/types";
-import { escape, icon, jobStateLabels, prObservedState, prStatusLabels, shell, taskStatusText, time, type NavigationWorkspace } from "./web-layout";
+import type { DispatchAllowance } from "./team/allowance";
+import { escape, hiddenCommand, icon, jobStateLabels, prObservedState, prStatusLabels, shell, taskStatusText, time, type NavigationWorkspace } from "./web-layout";
 import { panelRows, panelTabLabels, panelTabs, paletteCommands, searchLimits, type PanelTab } from "./web-settings";
 
 /** One ⌘K row. `href` is always a same-origin path; labels are dictionary text or escaped-on-render owner text. */
@@ -126,4 +127,29 @@ export function settingsDataPage(workspace: NavigationWorkspace, csrf: string, o
     ${workspace.projects.length ? `<ul class="data-projects">${workspace.projects.map(p => `<li><h3>${escape(p.name)}</h3><p>${time(p.createdAt)}</p>
       <nav class="settings-links" aria-label="${escape(p.name)}"><a href="/projects/${p.id}/exports">${icon("arrow")}<span>${tr("exports.export_data")}</span></a><a href="/projects/${p.id}/memory/deletions">${icon("close")}<span>${tr("deletions.delete_data")}</span></a></nav></li>`).join("")}</ul>` : `<p class="empty-list">${tr("home.start_with_your_first_project")}</p>`}
     <nav class="pagination" aria-label="${tr("home.project_pages")}">${offset > 0 ? `<a href="/settings/data?offset=${Math.max(0, offset - pageSize)}">${tr("home.previous")}</a>` : ""}${workspace.hasMore ? `<a href="/settings/data?offset=${offset + pageSize}">${tr("common.next")}</a>` : ""}</nav></section></div>`, { breadcrumb: { title: tr("shell.settings"), href: "/settings" } });
+}
+
+/**
+ * Settings › Team dispatch (app.dispatch_allowance/v1): one owner form per project. The allowance is the only standing
+ * authorization Jit has, it covers read-only specialist analysis only, and the operator ceiling caps it.
+ */
+export function settingsDispatchPage(workspace: NavigationWorkspace, list: { projects: NavigationWorkspace["projects"]; hasMore: boolean; single: boolean },
+  allowances: ReadonlyMap<string, DispatchAllowance>, csrf: string, offset: number, pageSize: number): string {
+  const single = list.single;
+  const row = (p: NavigationWorkspace["projects"][number]) => {
+    const a = allowances.get(p.id);
+    if (!a) return "";
+    const state = a.enabled ? `${tr("settings.dispatch_on")} ${a.effectiveMaxRoles} ${tr("settings.dispatch_people")}` : tr("settings.dispatch_off");
+    return `<li class="allowance-row" id="allowance-${p.id}"><h3>${escape(p.name)}</h3><p><span class="job-status" data-state="${a.enabled ? "accepted" : "disabled"}">${state}</span></p>
+      ${a.effectiveMaxRoles < a.maxRoles ? `<p>${tr("settings.dispatch_capped")} ${a.effectiveMaxRoles}</p>` : ""}
+      <form class="team-form allowance-form" method="post" action="/settings/dispatch/${p.id}">${hiddenCommand(csrf, a.revision)}
+        <label class="choice"><input type="checkbox" name="enabled"${a.enabled ? " checked" : ""}>${tr("settings.dispatch_enabled")}</label>
+        <label>${tr("settings.dispatch_max")}<input type="number" name="maxRoles" min="1" max="${a.ceiling}" step="1" required value="${Math.min(a.maxRoles, a.ceiling)}"></label>
+        <small>${tr("settings.dispatch_ceiling")} ${a.ceiling} · ${tr("settings.dispatch_revision")} ${a.revision}${a.revision === 0 ? ` (${tr("settings.dispatch_default")})` : ""}</small>
+        <button class="primary">${tr("settings.dispatch_save")}</button></form></li>`;
+  };
+  return shell(tr("settings.dispatch"), { workspace, csrf, section: "settings", settings: "dispatch" }, `<div class="content settings-content">
+    <section class="settings-section" aria-labelledby="dispatch-title"><h2 id="dispatch-title">${tr("settings.dispatch_title")}</h2><p>${tr("settings.dispatch_note")}</p>
+    ${list.projects.length ? `<ul class="data-projects">${list.projects.map(row).join("")}</ul>` : `<p class="empty-list">${tr("settings.dispatch_no_projects")}</p>`}
+    <nav class="pagination" aria-label="${tr("home.project_pages")}">${single ? `<a href="/settings/dispatch">${tr("common.view_all_projects")}</a>` : ""}${!single && offset > 0 ? `<a href="/settings/dispatch?offset=${Math.max(0, offset - pageSize)}">${tr("home.previous")}</a>` : ""}${!single && list.hasMore ? `<a href="/settings/dispatch?offset=${offset + pageSize}">${tr("common.next")}</a>` : ""}</nav></section></div>`, { breadcrumb: { title: tr("shell.settings"), href: "/settings" } });
 }

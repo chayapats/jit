@@ -57,9 +57,12 @@ export function composeJobQueue(store: TransactionStore, config: AppConfig, opti
     const source = store.read(tx => lookupSource(tx, request.projectId, request.manifest.sources[0]!.reference));
     return scriptedMemoryResult(request, source.state === "available" && source.attribution.kind === "owner", config.jobs.outputBytes);
   });
+  // Jit replies and specialist results may admit follow-up work (app.dispatch_allowance/v1) through this same queue.
+  let composed: JobQueue | undefined;
+  const current = () => composed, now = options.now ?? Date.now;
   const queue = new JobQueue(store, config.jobs, [
     projectStateWork(store), scriptedPreviewWork(store, config, fixturePort), discussionPlanWork(),
-    specialistAnalysisWork(store, config, teamPort), coordinatorSynthesisWork(store, config, teamPort), jitReplyWork(store, config, teamPort),
+    specialistAnalysisWork(store, config, teamPort, now, current), coordinatorSynthesisWork(store, config, teamPort), jitReplyWork(store, config, teamPort, now, current),
     setupCheckWork(store, config, teamPort),
     memoryExtractionWork(store, config, memoryPort), scheduleReminderWork(store, config), scheduleSummaryWork(store, config, fixturePort),
     prSnapshotWork({ store, cacheRoot: options.prCacheRoot ?? ".local/pr-cache", fixtureFor: () => new FakeGitHubFixture() }),
@@ -69,5 +72,6 @@ export function composeJobQueue(store: TransactionStore, config: AppConfig, opti
       alertBytes: config.messageBytes,
     }),
   ], { ...(options.now ? { now: options.now } : {}), ...(options.timers ? { timers: options.timers } : {}) });
+  composed = queue;
   return { queue, teamPort };
 }

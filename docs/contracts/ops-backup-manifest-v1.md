@@ -165,6 +165,9 @@ included likewise; reply records themselves live in `team_runs`.
 Setup progress (`setup_state`; schema 26, app.setup/v1) and the General space
 identity (`general_space`; schema 26, app.general_space/v1) are owner
 configuration without credentials and are included likewise.
+Dispatch allowance revisions (`dispatch_allowance_revisions`; schema 27,
+app.dispatch_allowance/v1) and the identity-only dispatch proposals
+(`dispatch_proposals`) are included likewise.
 Activation (`TransactionStore.swapFrom`, used by OPS02 restore and upgrade
 activation) builds the complete replacement image before an atomic rename and
 always keeps the live installation's owner verifier, sessions,

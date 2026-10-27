@@ -31,7 +31,7 @@ Resuming a blocked reply uses the existing `job.resume` from the job page. It fo
 `normalizeJitReply` applies these rules to untrusted model text:
 
 - A JSON object, optionally inside one fenced json block, must carry a non-empty string `reply`.
-- Every other field is discarded. Each entry of `proposals` is offered to the handler registered for its `kind`; an entry without a handler, or one its handler declines, is discarded. BOT01 registered no kinds; BOT03 registers `role` ([app.role_proposals/v1](role-proposals-v1.md)). Each discarded item is recorded as evidence, `field:<name>` or `proposal:<kind>`. Names are reduced to safe identifiers, so model text is never copied, and at most 8 are kept, with the total counted.
+- Every other field is discarded. Each entry of `proposals` is offered to the handler registered for its `kind`; an entry without a handler, or one its handler declines, is discarded. BOT01 registered no kinds; BOT03 registers `role` ([app.role_proposals/v1](role-proposals-v1.md)). Each discarded item is recorded as evidence, `field:<name>` or `proposal:<kind>`. Names are reduced to safe identifiers, so model text is never copied, and at most 8 are kept, with the total counted. BOT04 registers `dispatch` on replies to owner messages ([app.dispatch_allowance/v1](dispatch-allowance-v1.md)): one well-formed `{"kind": "dispatch", "roles": [names]}` entry whose names are lookup keys only and are never stored; a second dispatch entry is discarded, and a team reply registers no kinds.
 - Text that does not start with `{` or `[` is prose.
 - Anything else is `malformed` or `empty` and produces no message.
 

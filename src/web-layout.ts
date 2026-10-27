@@ -8,9 +8,10 @@ import { assetUrl } from "./web-assets";
 import { logoLockup, logoMark } from "./web-logo";
 import type { JitReplyView } from "./team/jit-reply";
 import { routesOf } from "./team/role-proposals";
-import { roleProposalCard } from "./web-proposal-card";
+import { proposalCard, roleProposalCard } from "./web-proposal-card";
 import type { Persona } from "./persona";
 import type { DecisionReadModel, Discussion, RoleRoute } from "./team/types";
+import type { DispatchCardView, TeamCardRole } from "./team/jit-dispatch";
 import { panelTabLabels, panelTabs, searchLimits, settingsSections, type PanelTab, type SettingsSectionId } from "./web-settings";
 
 /** Escapes literal untrusted content before it enters HTML text or attributes. */
@@ -193,6 +194,99 @@ function replyStatus(view: JitReplyView, base: string, projectId: string, csrf: 
     <p class="reply-next" data-reply-next${labels.next ? "" : " hidden"}>${escape(labels.next ?? "")}</p><p class="reply-proposals" data-reply-proposals hidden><a href="${here}">${tr("proposal.reply_has_proposals")}</a></p></div>
     <div class="reply-actions">${stoppable ? `<form method="post" action="${base}/replies/${view.id}/stop" data-reply-stop>${hiddenCommand(csrf, view.revision)}<button>${tr("reply.stop")}</button></form>` : ""}${view.jobId && view.state !== "thinking" ? `<a href="/projects/${projectId}/jobs/${view.jobId}#job-${view.jobId}">${tr("reply.view_job")}</a>` : ""}<a class="reply-refresh" href="${here}" data-reply-refresh>${tr("reply.refresh")}</a></div></article>`;
 }
+const roleTone: Record<string, string> = { queued: "queued", running: "running", completed: "completed", blocked: "blocked", waiting: "waiting", stopped: "stopped", skipped: "skipped", excluded: "excluded" };
+const reasonKeys = new Set(["cancelled", "deadline", "lease_expired", "quota", "needs_login", "route_unavailable", "budget_exhausted", "source_unavailable", "invalid_result", "input_changed", "worker_failed"]);
+/** Localised short reason a role has no result; unknown codes read as "no result". */
+const gapReason = (reason: string) => tr((reasonKeys.has(reason) ? `team_card.reason.${reason}` : "team_card.reason.other") as MessageKey);
+const roleLabel = (role: TeamCardRole) => tr(`team_card.role.${role.activity === "waiting" ? "waiting" : role.state}` as MessageKey);
+/** Dispatch allowance settings anchor for one project. */
+export const allowanceHref = (projectId: string) => `/settings/dispatch?project=${projectId}#allowance-${projectId}`;
+
+/**
+ * app.dispatch_allowance/v1 card under the Jit reply that named specialists. A proposal that waits for the owner is a
+ * shared proposal card (accept a subset, or dismiss); an admitted or accepted dispatch is the collapsible team card
+ * (S09-D08) with each role's state in words, skip and stop-all through the existing discussion controls, each opinion
+ * readable, and "answer now" when nothing runs. Every action is a form post, so the card works without script.
+ */
+function dispatchCard(card: DispatchCardView, base: string, csrf: string): string {
+  const here = `${base}?after=${Math.max(0, card.anchorSequence - 1)}#dispatch-${card.id}`;
+  // Plain text: the shared proposal card escapes every value.
+  const dropped = [
+    card.dropped.unknown ? `${tr("dispatch.dropped_unknown")} ${card.dropped.unknown}` : "",
+    card.dropped.ambiguous ? `${tr("dispatch.dropped_ambiguous")} ${card.dropped.ambiguous}` : "",
+    card.dropped.disabled.length ? `${tr("dispatch.dropped_disabled")}: ${card.dropped.disabled.join(", ")}` : "",
+    card.dropped.coordinator ? `${tr("dispatch.dropped_coordinator")} ${card.dropped.coordinator}` : "",
+    card.dropped.overCeiling ? `${tr("dispatch.dropped_ceiling")} ${card.dropped.overCeiling}` : "",
+  ].filter(Boolean);
+  const droppedTotal = card.dropped.unknown + card.dropped.ambiguous + card.dropped.disabled.length + card.dropped.coordinator + card.dropped.overCeiling;
+  const droppedLine = dropped.length ? `<p class="team-role-note">${tr("dispatch.dropped")}: ${escape(dropped.join(" · "))}</p>` : "";
+  if (!card.discussion) {
+    // The anchor wrapper keeps `#dispatch-<id>` stable whichever card the proposal shows.
+    if (card.state === "empty") return `<div id="dispatch-${card.id}"><article class="team-card proposal-card" data-proposal-kind="dispatch" data-proposal-state="empty">
+      <header><div><p class="eyebrow">${tr("dispatch.kind")}</p><h3>${tr("dispatch.state.empty")}</h3></div></header><p class="proposal-note">${tr("dispatch.empty_note")}</p>${droppedLine}</article></div>`;
+    const open = card.state === "proposed";
+    const actions = open ? `<div class="proposal-actions"><form class="team-form" method="post" action="/projects/${card.projectId}/dispatch/${card.id}/accept">${hiddenCommand(csrf, card.revision)}
+      <fieldset class="choice-group"><legend>${tr("dispatch.choose_roles")}</legend>${card.roles.map(role => `<label class="choice"><input type="checkbox" name="role-${role.roleId}" checked>${escape(role.roleName)}</label>`).join("")}</fieldset>
+      <button class="primary">${tr("dispatch.accept")}</button></form>
+      <form method="post" action="/projects/${card.projectId}/dispatch/${card.id}/dismiss">${hiddenCommand(csrf, card.revision)}<button>${tr("dispatch.dismiss")}</button></form>
+      <a href="${allowanceHref(card.projectId)}">${tr("dispatch.allowance_link")}</a></div>` : "";
+    return `<div id="dispatch-${card.id}">${proposalCard({ id: card.id, kind: "dispatch", state: open ? "proposed" : "rejected", eyebrow: tr("dispatch.kind"), title: tr("dispatch.proposal_heading"),
+      meta: card.reason ? tr(`dispatch.reason.${card.reason}` as MessageKey) : "",
+      fields: [{ label: tr("team_card.title"), value: card.roles.map(role => role.roleName).join(", ") }],
+      dropped: droppedTotal ? { items: dropped, total: droppedTotal } : null,
+      note: open ? tr("dispatch.owner_only") : null, actions, footer: "" })}</div>`;
+  }
+  const team = card.discussion, live = team.roles.filter(role => role.activity === "live").length;
+  const waiting = team.roles.filter(role => role.activity === "waiting").length, done = team.roles.filter(role => role.state === "completed").length;
+  const summary = [live ? `${tr("team_card.working")} ${live}` : "", waiting ? `${tr("team_card.waiting")} ${waiting}` : "", `${tr("team_card.done")} ${done}/${team.roles.length}`].filter(Boolean).join(" · ");
+  const answered = card.teamReply?.state === "answered";
+  const origin = team.origin?.kind === "owner-accepted" ? tr("team_card.origin_owner")
+    : `${tr("team_card.origin_allowance")} ${card.allowanceRevision}${card.allowanceRevision === 0 ? ` (${tr("settings.dispatch_default")})` : ""}`;
+  const control = (role: TeamCardRole) => role.activity === "settled" ? "" : `<form method="post" action="/projects/${card.projectId}/team/discussions/${team.id}/controls">${hiddenCommand(csrf, team.revision)}
+    <input type="hidden" name="action" value="skip"><input type="hidden" name="roleId" value="${role.roleId}"><input type="hidden" name="back" value="topic"><button>${tr("team_card.skip")}</button></form>`;
+  const opinion = (role: TeamCardRole) => !role.opinion ? "" : role.opinion.text === null ? `<p class="team-role-note">${tr("team_card.opinion_unavailable")}</p>`
+    : `<details class="team-opinion"><summary>${tr("team_card.read_opinion")}</summary><div class="message-body">${literalContent(role.opinion.text)}</div></details>`;
+  const rows = team.roles.map(role => `<li class="team-role" data-role-state="${role.activity === "waiting" ? "waiting" : role.state}"><div class="team-role-head"><span class="team-role-name">${escape(role.roleName)}</span>
+    <span class="job-status" data-state="${roleTone[role.activity === "waiting" ? "waiting" : role.state] ?? "waiting"}">${roleLabel(role)}</span>${control(role)}</div>
+    ${role.activity === "waiting" ? `<p class="team-role-note">${tr("team_card.waiting_note")} <a href="/projects/${card.projectId}/jobs/${role.jobId}#job-${role.jobId}">${tr("reply.view_job")}</a></p>` : ""}${opinion(role)}</li>`).join("");
+  const actions = [
+    card.canStopAll ? `<form method="post" action="/projects/${card.projectId}/team/discussions/${team.id}/stop-all">${hiddenCommand(csrf, team.revision)}<button>${tr("team_card.stop_all")}</button></form>` : "",
+    card.canAnswer ? `<form method="post" action="/projects/${card.projectId}/dispatch/${card.id}/answer">${hiddenCommand(csrf, card.revision)}<button>${tr("team_card.answer_now")}</button></form>` : "",
+    `<a class="reply-refresh" href="${here}">${tr("reply.refresh")}</a>`,
+    `<a href="/projects/${card.projectId}/team/discussions/${team.id}">${tr("team_card.view_discussion")}</a>`,
+  ].join("");
+  const notes = [
+    team.stoppedAll ? `<p class="team-role-note">${tr("team_card.stopped_all")}</p>` : "",
+    card.teamHold && !card.teamReply ? `<p class="team-role-note" role="status">${tr(`team_card.hold.${card.teamHold}` as MessageKey)}</p>` : "",
+    !card.teamReply && !live && !waiting && !done ? `<p class="team-role-note">${tr("team_card.no_results")}</p>` : "",
+  ].join("");
+  return `<details class="team-card team-run" id="dispatch-${card.id}" data-dispatch-id="${card.id}"${answered ? "" : " open"}>
+    <summary><span class="team-run-title">${tr("team_card.title")} · ${team.roles.length} ${tr("team_card.people")}</span><span class="job-status" data-state="${live ? "running" : waiting ? "waiting" : "completed"}">${summary}</span></summary>
+    <p class="team-run-origin">${origin} · <a href="${allowanceHref(card.projectId)}">${tr("dispatch.allowance_link")}</a></p>${droppedLine}
+    <ul class="team-roles">${rows}</ul>${notes}<div class="reply-actions">${actions}</div></details>`;
+}
+
+/**
+ * Under a committed team reply: the specialist result revisions it cites, its coverage gap, and the existing decision
+ * path (ADR 0015). The save-as-decision form starts the owner's `decision.synthesize` for the discussion; the owner still
+ * accepts the exact proposal revision. Nothing here records a decision.
+ */
+function teamReplyMeta(view: JitReplyView, card: DispatchCardView | undefined, projectId: string, csrf: string, limits: JobLimits | undefined): string {
+  const team = view.team!;
+  const cites = team.citations.map(item => `${sourceLink(projectId, item.reference, `${item.roleName} · r${item.reference.revision}`)}`).join(" ");
+  const gap = team.gaps.length ? `${tr("team_reply.gap")}: ${team.gaps.map(item => `${escape(item.roleName)} (${gapReason(item.reason)})`).join(", ")}` : tr("team_reply.no_gap");
+  const decision = card?.decision, discussion = card?.discussion;
+  let action = "";
+  if (decision && discussion) {
+    if (decision.decided) action = `<p class="team-role-note">${tr("team_reply.decided")} · <a href="/projects/${projectId}/team/discussions/${discussion.id}#owner-decision">${tr("team_card.view_discussion")}</a></p>`;
+    else if (decision.synthesis === "queued" || decision.synthesis === "running") action = `<p class="team-role-note">${tr("team_reply.decision_drafting")} <a href="/projects/${projectId}/team/discussions/${discussion.id}#owner-decision">${tr("reply.refresh")}</a></p>`;
+    else if (decision.proposalId) action = `<a href="/projects/${projectId}/team/discussions/${discussion.id}#owner-decision">${tr("team_reply.review_decision")}</a>`;
+    else if (limits) action = `<form method="post" action="/projects/${projectId}/team/discussions/${discussion.id}/synthesis">${hiddenCommand(csrf, discussion.revision)}
+      <input type="hidden" name="limits" value="${escape(JSON.stringify(limits))}"><button>${tr("team_reply.save_decision")}</button></form><small>${tr("team_reply.save_decision_note")}</small>`;
+  }
+  return `<div class="team-reply-meta" data-team-reply="${view.id}"><p>${tr("team_reply.cites")}: ${cites}</p><p>${gap}</p>${action ? `<div class="reply-actions">${action}</div>` : ""}</div>`;
+}
+
 /**
  * Topic right panel toggle (web.settings_ia/v1). The panel is closed by default. Without script the link opens the
  * panel as its own page; the enhancement script loads that page's `.panel-body` into the empty aside instead.
@@ -206,9 +300,19 @@ export function conversationPage(state: ReturnType<Application["conversation"]>,
   team: ReturnType<Application["team"]>; discussions: Discussion[]; limits: JobPolicy["maximum"]; dispatchAvailable: boolean; decision?: DecisionReadModel;
   /** app.jit_reply/v1 views keyed by owner message id. */
   replies?: Map<string, JitReplyView>;
+  /** app.dispatch_allowance/v1 cards keyed by the dispatching Jit reply message id. */
+  cards?: Map<string, DispatchCardView>;
+  /** Limits for "save as a decision" (decision.synthesize). */
+  synthesisLimits?: JobLimits;
 }): string {
   const { project, topic } = state, title = topic.title ?? tr("common.topic_unavailable"), base = `/projects/${project.id}/topics/${topic.id}`;
   const replies = dispatch?.replies ?? new Map<string, JitReplyView>();
+  const cards = dispatch?.cards ?? new Map<string, DispatchCardView>();
+  const cardsById = new Map([...cards.values()].map(card => [card.id, card]));
+  // Specialist messages of a dispatched team are shown inside its team card, not as separate chat bubbles (S09-D08).
+  // Only when that card is on this page: otherwise the message stays in the column, so no page loses a result.
+  const onPageCards = [...cards.values()].filter(card => card.discussion && state.items.some(item => item.id === card.replyMessageId));
+  const folded = new Set(onPageCards.flatMap(card => card.discussion!.roles.map(role => role.runId)));
   const committedReplies = new Map([...replies.values()].filter(view => view.replyMessageId).map(view => [view.replyMessageId!, view]));
   const live = [...replies.values()].filter(view => view.state === "thinking" || view.state === "blocked");
   const onPage = new Set(state.items.map(item => item.id));
@@ -219,7 +323,7 @@ export function conversationPage(state: ReturnType<Application["conversation"]>,
   const cursor = Math.max(0, ...[...replies.values()].map(view => view.cursor));
   const label = (m: (typeof state.items)[number]) => {
     const reply = committedReplies.get(m.id);
-    return reply ? `${tr("jit.name")}${reply.mode === "fixture" ? ` · ${tr("reply.fixture")}` : ""}` : attributionLabel(m.attribution);
+    return reply ? `${tr("jit.name")}${reply.team ? ` · ${tr("team_reply.label")}` : ""}${reply.mode === "fixture" ? ` · ${tr("reply.fixture")}` : ""}` : attributionLabel(m.attribution);
   };
   const roles = dispatch?.team.roles.filter(role => role.kind === "specialist" && role.enabled && role.effective.route) ?? [];
   // app.role_proposals/v1 cards follow the Jit reply that carries them; the edit form lists configured routes only.
@@ -234,8 +338,10 @@ export function conversationPage(state: ReturnType<Application["conversation"]>,
     ${dispatch.discussions.length ? `<ul>${dispatch.discussions.map(item => `<li><a href="/projects/${project.id}/team/discussions/${item.id}">${escape(item.purpose)}</a> · ${item.participations.filter(p => p.state === "completed").length}/${item.participations.length} ${tr("topic.done_gaps")} ${item.coverageGap.length}</li>`).join("")}</ul>` : ""}</details>` : "";
   const decision = dispatch?.decision ? decisionPanel({ projectId: project.id, topicId: topic.id, topicRevision: topic.revision, csrf, model: dispatch.decision }) : "";
   const proposeTask = `<details class="team-card" id="task-proposal"><summary>${tr("topic.propose_as_task")}</summary><form class="team-form" method="post" action="/projects/${project.id}/tasks">${hiddenCommand(csrf, topic.revision)}<input type="hidden" name="topicId" value="${topic.id}"><label>${tr("common.task_title")}<input name="title" required maxlength="200"></label><label>${tr("common.summary")}<textarea name="summary" required maxlength="${messageBytes}"></textarea></label><button class="primary">${tr("common.save_as_proposal")}</button><small>${tr("topic.conversation_messages_are_not_accepted")}</small></form><p><a href="/projects/${project.id}/tasks?topic=${topic.id}">${tr("topic.view_project_tasks")}</a></p></details>`;
-  return shell(title, { workspace, csrf, project, topics, topic, section: "topic" }, `<div class="content chat-content"${live.length ? ` data-reply-stream="${base}/events" data-reply-cursor="${cursor}"` : ""}>${dispatchPanel}${decision}${proposeTask}<section aria-label="${tr("topic.message_history")}">${state.items.length ? state.items.map(m => { const jit = committedReplies.get(m.id), reply = replies.get(m.id); return `<article id="message-${m.id}" class="message${m.attribution.kind === "owner" ? " message--owner" : jit || setupGreeting(m.attribution) ? " message--jit" : ""}" data-message-id="${m.id}">${jit || setupGreeting(m.attribution) ? `<div class="reply-head"><span class="jit-avatar">${logoMark({ size: 20 })}</span><span class="reply-name">${tr("jit.name")}</span></div>` : ""}<div class="message-body">${m.text === null ? `<p class="literal">${tr("common.source_unavailable")}</p>` : literalContent(m.text)}</div>
-      <div class="message-meta"><span>${escape(label(m))}</span><span class="committed">${icon("check")}${tr("common.saved")}</span><details><summary aria-label="${tr("topic.message_details_and_origin")}">${icon("info")}${tr("topic.details")}</summary><div class="message-detail">${time(m.committedAt)}<br>${sourceLink(project.id, m.source, tr("common.message_origin"))}${jit?.discardedTotal ? `<br>${tr("reply.discarded")}: ${jit.discardedTotal} · ${escape(jit.discarded.join(", "))}` : ""}</div></details></div></article>${proposals(jit)}${reply && m.attribution.kind === "owner" ? reply.state !== "answered" ? replyStatus(reply, base, project.id, csrf) : !onPage.has(reply.replyMessageId!) ? answeredElsewhere(reply) : "" : ""}`; }).join("") : `<div class="empty-chat"><div>${icon("chat")}<h2>${tr("topic.start_this_conversation")}</h2><p>${tr("topic.keep_ideas_questions_and_things")}</p></div></div>`}</section>
+  return shell(title, { workspace, csrf, project, topics, topic, section: "topic" }, `<div class="content chat-content"${live.length ? ` data-reply-stream="${base}/events" data-reply-cursor="${cursor}"` : ""}>${dispatchPanel}${decision}${proposeTask}<section aria-label="${tr("topic.message_history")}">${state.items.length ? state.items.map(m => { const jit = committedReplies.get(m.id), reply = replies.get(m.id), card = cards.get(m.id);
+      if (m.attribution.kind === "participant" && !jit && folded.has(m.attribution.runId)) return "";
+      return `<article id="message-${m.id}" class="message${m.attribution.kind === "owner" ? " message--owner" : jit || setupGreeting(m.attribution) ? " message--jit" : ""}" data-message-id="${m.id}">${jit || setupGreeting(m.attribution) ? `<div class="reply-head"><span class="jit-avatar">${logoMark({ size: 20 })}</span><span class="reply-name">${tr("jit.name")}</span></div>` : ""}<div class="message-body">${m.text === null ? `<p class="literal">${tr("common.source_unavailable")}</p>` : literalContent(m.text)}</div>
+      <div class="message-meta"><span>${escape(label(m))}</span><span class="committed">${icon("check")}${tr("common.saved")}</span><details><summary aria-label="${tr("topic.message_details_and_origin")}">${icon("info")}${tr("topic.details")}</summary><div class="message-detail">${time(m.committedAt)}<br>${sourceLink(project.id, m.source, tr("common.message_origin"))}${jit?.discardedTotal ? `<br>${tr("reply.discarded")}: ${jit.discardedTotal} · ${escape(jit.discarded.join(", "))}` : ""}</div></details></div>${jit?.team ? teamReplyMeta(jit, cardsById.get(jit.team.proposalId), project.id, csrf, dispatch?.synthesisLimits) : ""}</article>${proposals(jit)}${card ? dispatchCard(card, base, csrf) : ""}${reply && (m.attribution.kind === "owner" || reply.team) ? reply.state !== "answered" ? replyStatus(reply, base, project.id, csrf) : !onPage.has(reply.replyMessageId!) ? answeredElsewhere(reply) : "" : ""}`; }).join("") : `<div class="empty-chat"><div>${icon("chat")}<h2>${tr("topic.start_this_conversation")}</h2><p>${tr("topic.keep_ideas_questions_and_things")}</p></div></div>`}</section>
       <nav class="pagination" aria-label="${tr("topic.message_history_pages")}">${after > 0 ? `<a href="${base}">${tr("common.first_page")}</a>` : ""}${state.hasMore ? `<a href="${base}?after=${state.nextAfter}">${tr("topic.next_messages")}</a>` : ""}</nav></div>`, {
     breadcrumb: { title: project.name, href: `/projects/${project.id}` }, action: `<a class="header-action" href="/projects/${project.id}#new-topic" aria-label="${tr("common.new_topic")}">${icon("plus")}${tr("common.new_topic")}</a>${panelToggle(base)}`,
     panel: topicPanelSlot(),
