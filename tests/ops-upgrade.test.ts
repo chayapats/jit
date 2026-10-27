@@ -742,24 +742,24 @@ test("web upgrades render the supported target, valid recovery choices only, and
   const req = (path: string, method = "GET", body?: unknown) => new Request(`http://localhost:3000${path}`, { method,
     headers: { cookie: `jit_session=${f.token}`, ...(body ? { origin: "http://localhost:3000", "x-csrf-token": f.rt.app.authenticate(f.token).csrf, "content-type": "application/json" } : {}) },
     ...(body ? { body: JSON.stringify(body) } : {}) });
-  const list = await (await web(req("/upgrades"))).text();
+  const list = await (await web(req("/settings/upgrades"))).text();
   expect(list).toContain(`name="targetSchema" value="${schemaVersion}"`);
   expect(list).not.toContain('value="20"');
   // A preflight failure has no checkpoint: no rollback or migrate is offered.
   await expect(prepare(f, 99)).rejects.toThrow("unsupported_upgrade");
   const failed = journals(f).at(-1)!;
   expect(failed.actions).toEqual([]);
-  expect(await (await web(req(`/upgrades/${failed.id}`))).text()).not.toContain('value="rollback"');
+  expect(await (await web(req(`/settings/upgrades/${failed.id}`))).text()).not.toContain('value="rollback"');
   const prepared = await (await web(req("/api/upgrades", "POST", { requestId: rid(), expectedRevision: appRevision(f), targetSchema: schemaVersion, note: "web" }))).json() as { journal: UpgradeJournal & { actions: string[] } };
   expect(prepared.journal).toMatchObject({ state: "prepared", actions: ["migrate", "rollback"] });
-  const html = await (await web(req(`/upgrades/${prepared.journal.id}`))).text();
+  const html = await (await web(req(`/settings/upgrades/${prepared.journal.id}`))).text();
   expect(html).toContain('value="migrate"');
   expect(html).not.toContain('value="activate"');
   for (const action of ["migrate", "validate", "activate"] as const) {
     const response = await web(req(`/api/upgrades/${prepared.journal.id}`, "POST", { requestId: rid(), expectedRevision: appRevision(f), action }));
     expect(response.status).toBe(200);
   }
-  const done = await (await web(req(`/upgrades/${prepared.journal.id}`))).text();
+  const done = await (await web(req(`/settings/upgrades/${prepared.journal.id}`))).text();
   expect(done).toContain("ops.schema_migrations/v1");
   expect(done).toContain("OPS02");
   expect(done).not.toContain('value="rollback"');

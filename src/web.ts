@@ -10,12 +10,14 @@ import type { EnqueueJobCommand, JobLimits, ResumeJobCommand, StopJobCommand } f
 import type { ScheduleCommand, ScheduleRecurrence } from "./jobs/schedules";
 import type { DecisionCommand, TeamCommand, RoleRoute } from "./team/types";
 import type { TaskCommand } from "./tasks";
-import { negotiateLocale, tr, trMaybe, type Locale } from "./i18n";
+import { negotiateLocale, tr, trMaybe, withLocale, type Locale } from "./i18n";
 import { lookupAsset } from "./web-assets";
-import { renderWith, replyLabels, replyTone, settingsPage, type ThemePreference } from "./web-layout";
+import { renderWith, replyLabels, replyTone, settingsPage, type NavigationWorkspace, type ThemePreference } from "./web-layout";
 import type { SetPreferencesCommand } from "./preferences";
 import type { SetPersonaCommand } from "./persona";
 import type { JitReplyView, StopReplyCommand } from "./team/jit-reply";
+import { defaultPanelTab, legacyRedirect, panelRows, panelTabs, searchLimits, settingsPageHandler, type PanelTab } from "./web-settings";
+import { searchItems, searchPage, settingsDataPage, settingsTelegramPage, topicPanelPage, type PanelData } from "./web-navigation";
 
 /** ADR 0028 Content-Security-Policy: every page, asset and API response allows only this origin, and no inline script or eval. */
 export const contentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
@@ -112,6 +114,9 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         if (!asset) throw new AppError("not_found", 404);
         return new Response(asset.body, { status: 200, headers: { ...headers, "Content-Type": asset.contentType, "Cache-Control": "public, max-age=31536000, immutable" } });
       }
+      // web.settings_ia/v1: moved installation pages answer GET with a permanent redirect to their settings page.
+      const moved = request.method === "GET" ? legacyRedirect(url.pathname) : null;
+      if (moved) return respond(null, 308, { Location: `${moved}${url.search}` });
       if (request.method === "GET" && url.pathname === "/login") {
         return page(() => loginPage());
       }
@@ -125,54 +130,63 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       const token = matches.length === 1 ? matches[0]!.slice(cookieName.length + 1) : "";
       const auth = app.authenticate(token);
       ui = uiFor(auth.actor);
-      const projectRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})$/.exec(url.pathname);
-      const topicCollection = /^\/(api\/)?projects\/([a-f0-9-]{36})\/topics$/.exec(url.pathname);
-      const topicRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})$/.exec(url.pathname);
-      const messageRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})\/messages$/.exec(url.pathname);
-      const sourceRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/sources\/([a-f0-9-]{36})$/.exec(url.pathname);
-      const deliveryRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/delivery$/.exec(url.pathname);
-      const deliveryIntentRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/delivery\/([a-f0-9-]{36})$/.exec(url.pathname);
-      const deliveryResendRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/delivery\/([a-f0-9-]{36})\/resend$/.exec(url.pathname);
-      const prReportsRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/pr\/reports$/.exec(url.pathname);
-      const prReportRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/pr\/reports\/([a-f0-9-]{36})$/.exec(url.pathname);
-      const prAlertPolicyRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/pr\/alert-policy$/.exec(url.pathname);
-      const jobsRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/jobs$/.exec(url.pathname);
-      const jobRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/jobs\/([a-f0-9-]{36})$/.exec(url.pathname);
-      const resumeRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/jobs\/([a-f0-9-]{36})\/(resume|stop)$/.exec(url.pathname);
-      const schedulesRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/schedules$/.exec(url.pathname);
-      const scheduleRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/schedules\/([a-f0-9-]{36})$/.exec(url.pathname);
-      const scheduleAction = /^\/(api\/)?projects\/([a-f0-9-]{36})\/schedules\/([a-f0-9-]{36})\/(pause|resume|revoke|edit)$/.exec(url.pathname);
-      const teamRoute = /^\/(?:api\/)?(?:projects\/([a-f0-9-]{36})\/)?team$/.exec(url.pathname);
-      const teamAction = /^\/(?:api\/)?(?:projects\/([a-f0-9-]{36})\/)?team\/(roles|routes|previews|discussions)$/.exec(url.pathname);
-      const previewRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/team\/previews\/([a-f0-9-]{36})$/.exec(url.pathname);
-      const discussionRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/team\/discussions\/([a-f0-9-]{36})$/.exec(url.pathname);
-      const discussionControl = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/team\/discussions\/([a-f0-9-]{36})\/controls$/.exec(url.pathname);
-      const synthesisRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/team\/discussions\/([a-f0-9-]{36})\/synthesis$/.exec(url.pathname);
-      const decisionRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})\/decisions$/.exec(url.pathname);
-      const tasksRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/tasks$/.exec(url.pathname);
-      const taskRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/tasks\/([a-f0-9-]{36})$/.exec(url.pathname);
-      const continuityRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/continuity$/.exec(url.pathname);
-      const memoryRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/memory$/.exec(url.pathname);
-      const claimRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/memory\/claims\/([a-f0-9-]{36})$/.exec(url.pathname);
-      const contextRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/memory\/contexts\/([a-f0-9-]{36})$/.exec(url.pathname);
-      const deletionsRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/memory\/deletions$/.exec(url.pathname);
-      const deletionRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/memory\/deletions\/([a-f0-9-]{36})$/.exec(url.pathname);
-      const exportsRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/exports$/.exec(url.pathname);
-      const exportRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/exports\/([a-f0-9-]{36})$/.exec(url.pathname);
-      const exportArtifactRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/exports\/([a-f0-9-]{36})\/artifact$/.exec(url.pathname);
-      const upgradesRoute = /^\/(api\/)?upgrades$/.exec(url.pathname);
-      const upgradeRoute = /^\/(api\/)?upgrades\/([a-f0-9-]{36})$/.exec(url.pathname);
-      const restoresRoute = /^\/(api\/)?restores$/.exec(url.pathname);
-      const restoreRoute = /^\/(api\/)?restores\/([a-f0-9-]{36})$/.exec(url.pathname);
-      const backupsRoute = /^\/(api\/)?backups$/.exec(url.pathname);
-      const backupRoute = /^\/(api\/)?backups\/([a-f0-9-]{36})$/.exec(url.pathname);
+      // New settings page paths render through the installation page handlers; commands keep their own paths.
+      const pathname = (request.method === "GET" ? settingsPageHandler(url.pathname) : null) ?? url.pathname;
+      const selectedProject = /^\/projects\/([a-f0-9-]{36})(?:\/|$)/.exec(pathname)?.[1];
+      /** Sidebar state: the workspace page plus waiting-on-owner counts for the projects the sidebar can show. */
+      const nav = (workspace = app.workspace(auth.actor)): NavigationWorkspace => {
+        const ids = [...new Set([...(selectedProject ? [selectedProject] : []), ...workspace.projects.slice(0, 8).map(p => p.id)])];
+        return { ...workspace, attention: app.attention(auth.actor, ids) };
+      };
+      const projectRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})$/.exec(pathname);
+      const topicCollection = /^\/(api\/)?projects\/([a-f0-9-]{36})\/topics$/.exec(pathname);
+      const topicRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})$/.exec(pathname);
+      const topicPanelRoute = /^\/projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})\/panel$/.exec(pathname);
+      const messageRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})\/messages$/.exec(pathname);
+      const sourceRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/sources\/([a-f0-9-]{36})$/.exec(pathname);
+      const deliveryRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/delivery$/.exec(pathname);
+      const deliveryIntentRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/delivery\/([a-f0-9-]{36})$/.exec(pathname);
+      const deliveryResendRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/delivery\/([a-f0-9-]{36})\/resend$/.exec(pathname);
+      const prReportsRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/pr\/reports$/.exec(pathname);
+      const prReportRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/pr\/reports\/([a-f0-9-]{36})$/.exec(pathname);
+      const prAlertPolicyRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/pr\/alert-policy$/.exec(pathname);
+      const jobsRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/jobs$/.exec(pathname);
+      const jobRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/jobs\/([a-f0-9-]{36})$/.exec(pathname);
+      const resumeRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/jobs\/([a-f0-9-]{36})\/(resume|stop)$/.exec(pathname);
+      const schedulesRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/schedules$/.exec(pathname);
+      const scheduleRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/schedules\/([a-f0-9-]{36})$/.exec(pathname);
+      const scheduleAction = /^\/(api\/)?projects\/([a-f0-9-]{36})\/schedules\/([a-f0-9-]{36})\/(pause|resume|revoke|edit)$/.exec(pathname);
+      const teamRoute = /^\/(?:api\/)?(?:projects\/([a-f0-9-]{36})\/)?team$/.exec(pathname);
+      const teamAction = /^\/(?:api\/)?(?:projects\/([a-f0-9-]{36})\/)?team\/(roles|routes|previews|discussions)$/.exec(pathname);
+      const previewRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/team\/previews\/([a-f0-9-]{36})$/.exec(pathname);
+      const discussionRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/team\/discussions\/([a-f0-9-]{36})$/.exec(pathname);
+      const discussionControl = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/team\/discussions\/([a-f0-9-]{36})\/controls$/.exec(pathname);
+      const synthesisRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/team\/discussions\/([a-f0-9-]{36})\/synthesis$/.exec(pathname);
+      const decisionRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})\/decisions$/.exec(pathname);
+      const tasksRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/tasks$/.exec(pathname);
+      const taskRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/tasks\/([a-f0-9-]{36})$/.exec(pathname);
+      const continuityRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/continuity$/.exec(pathname);
+      const memoryRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/memory$/.exec(pathname);
+      const claimRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/memory\/claims\/([a-f0-9-]{36})$/.exec(pathname);
+      const contextRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/memory\/contexts\/([a-f0-9-]{36})$/.exec(pathname);
+      const deletionsRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/memory\/deletions$/.exec(pathname);
+      const deletionRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/memory\/deletions\/([a-f0-9-]{36})$/.exec(pathname);
+      const exportsRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/exports$/.exec(pathname);
+      const exportRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/exports\/([a-f0-9-]{36})$/.exec(pathname);
+      const exportArtifactRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/exports\/([a-f0-9-]{36})\/artifact$/.exec(pathname);
+      const upgradesRoute = /^\/(api\/)?upgrades$/.exec(pathname);
+      const upgradeRoute = /^\/(api\/)?upgrades\/([a-f0-9-]{36})$/.exec(pathname);
+      const restoresRoute = /^\/(api\/)?restores$/.exec(pathname);
+      const restoreRoute = /^\/(api\/)?restores\/([a-f0-9-]{36})$/.exec(pathname);
+      const backupsRoute = /^\/(api\/)?backups$/.exec(pathname);
+      const backupRoute = /^\/(api\/)?backups\/([a-f0-9-]{36})$/.exec(pathname);
       const after = () => {
         const raw = url.searchParams.get("after") ?? "0";
         if (!/^\d{1,16}$/.test(raw)) throw new AppError("invalid_cursor");
         return Number(raw);
       };
-      const streamRoute = /^\/projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})\/events$/.exec(url.pathname);
-      const replyStopRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})\/replies\/([a-f0-9-]{36})\/stop$/.exec(url.pathname);
+      const streamRoute = /^\/projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})\/events$/.exec(pathname);
+      const replyStopRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})\/replies\/([a-f0-9-]{36})\/stop$/.exec(pathname);
       /** One app.jit_reply/v1 event: persisted state plus localised labels, so the script holds no strings. */
       const replyEvent = (view: JitReplyView) => {
         const labels = renderWith(ui, () => replyLabels(view));
@@ -247,7 +261,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const extra = { correction, impact, suppression, forgetImpact, ledger, revision: project.revision,
           sources: inspector.sources.flatMap(({ source }) => source.state === "available"
             ? [{ reference: source.reference, label: `${source.descriptor.kind} · ${Array.from(source.text).slice(0, 80).join("")}` }] : []) };
-        return api ? json({ ...state, correction, impact, suppression, forgetImpact, ledger }) : page(() => memoryClaimPage(state, extra, project, app.workspace(auth.actor), auth.csrf));
+        return api ? json({ ...state, correction, impact, suppression, forgetImpact, ledger }) : page(() => memoryClaimPage(state, extra, project, nav(), auth.csrf));
       }
       if (request.method === "POST" && claimRoute) {
         const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
@@ -273,25 +287,25 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       }
       if (request.method === "GET" && contextRoute) {
         const state = app.memoryContext(auth.actor, contextRoute[1]!, contextRoute[2]!);
-        return api ? json(state) : page(() => memoryContextPage(state, app.workspace(auth.actor), auth.csrf));
+        return api ? json(state) : page(() => memoryContextPage(state, nav(), auth.csrf));
       }
       if (request.method === "GET" && deletionsRoute) {
         const { project, operations } = app.deletionOperations(auth.actor, deletionsRoute[2]!);
         const inspector = app.memory(auth.actor, deletionsRoute[2]!);
         const sources = inspector.sources.flatMap(({ source }) => source.state === "available"
           ? [{ reference: source.reference, label: `${source.descriptor.kind} · ${Array.from(source.text).slice(0, 80).join("")}` }] : []);
-        return api ? json({ project, operations }) : page(() => deletionsPage({ project, operations }, app.workspace(auth.actor), auth.csrf, sources));
+        return api ? json({ project, operations }) : page(() => deletionsPage({ project, operations }, nav(), auth.csrf, sources));
       }
       if (request.method === "GET" && deletionRoute) {
         const { project, preview } = app.deletionPreview(auth.actor, deletionRoute[2]!, deletionRoute[3]!);
         const { operation } = app.deletionOperation(auth.actor, deletionRoute[2]!, deletionRoute[3]!);
         if (!preview && !operation) throw new AppError("deletion_not_found", 404);
-        return api ? json({ project, preview, operation }) : page(() => deletionDetailPage({ project, preview, operation }, app.workspace(auth.actor), auth.csrf));
+        return api ? json({ project, preview, operation }) : page(() => deletionDetailPage({ project, preview, operation }, nav(), auth.csrf));
       }
       if (request.method === "GET" && exportsRoute) {
         const state = app.exports(auth.actor, exportsRoute[2]!);
         const { preview } = app.exportPreview(auth.actor, exportsRoute[2]!, url.searchParams.get("history") === "1");
-        return api ? json({ ...state, preview }) : page(() => exportsPage({ ...state, preview }, app.workspace(auth.actor), auth.csrf));
+        return api ? json({ ...state, preview }) : page(() => exportsPage({ ...state, preview }, nav(), auth.csrf));
       }
       if (request.method === "GET" && exportArtifactRoute) {
         // Owner-authenticated only; bytes come from the committed valid row, never a filesystem path.
@@ -301,22 +315,24 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       }
       if (request.method === "GET" && exportRoute) {
         const state = app.export(auth.actor, exportRoute[2]!, exportRoute[3]!);
-        return api ? json(state) : page(() => exportDetailPage(state, app.workspace(auth.actor), auth.csrf));
+        return api ? json(state) : page(() => exportDetailPage(state, nav(), auth.csrf));
       }
       if (request.method === "GET" && upgradesRoute) {
         const state = { ...app.upgrades(auth.actor), status: app.upgradeStatus(auth.actor) };
         const revision = app.workspace(auth.actor).revision;
-        return api ? json(state) : page(() => upgradesPage(state, app.workspace(auth.actor), auth.csrf, revision));
+        return api ? json(state) : page(() => upgradesPage(state, nav(), auth.csrf, revision));
       }
       if (request.method === "GET" && upgradeRoute) {
         const state = app.upgrade(auth.actor, upgradeRoute[2]!);
-        return api ? json(state) : page(() => upgradeDetailPage(state, app.workspace(auth.actor), auth.csrf, app.workspace(auth.actor).revision));
+        if (api) return json(state);
+        const workspace = nav();
+        return page(() => upgradeDetailPage(state, workspace, auth.csrf, workspace.revision));
       }
       if (request.method === "GET" && (restoresRoute || restoreRoute)) {
         // ops.quarantined_restore/v1: restore status and remediation stay available while the read gate holds;
         // the shell then carries no project data.
         const consoleState = app.restoreConsole(auth.actor);
-        const workspace = consoleState.gatedBy ? { revision: consoleState.revision, projects: [], hasMore: false } : app.workspace(auth.actor);
+        const workspace: NavigationWorkspace = consoleState.gatedBy ? { revision: consoleState.revision, projects: [], hasMore: false } : nav();
         if (restoresRoute) {
           const state = app.restores(auth.actor);
           const backups = app.backups(auth.actor);
@@ -329,16 +345,16 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       if (request.method === "GET" && backupsRoute) {
         const state = app.backups(auth.actor);
         const revision = app.workspace(auth.actor).revision;
-        return api ? json(state) : page(() => backupsPage(state, app.workspace(auth.actor), auth.csrf, revision));
+        return api ? json(state) : page(() => backupsPage(state, nav(), auth.csrf, revision));
       }
       if (request.method === "GET" && backupRoute) {
         const state = app.backup(auth.actor, backupRoute[2]!);
-        return api ? json(state) : page(() => backupDetailPage(state, app.workspace(auth.actor), auth.csrf));
+        return api ? json(state) : page(() => backupDetailPage(state, nav(), auth.csrf));
       }
       if (request.method === "GET" && memoryRoute) {
         const sourceAfter = Number(url.searchParams.get("sourceAfter") ?? 0), extractionAfter = Number(url.searchParams.get("extractionAfter") ?? 0);
         const state = app.memory(auth.actor, memoryRoute[1]!, after(), sourceAfter, extractionAfter, url.searchParams.get("q") ?? "");
-        return api ? json(state) : page(() => memoryPage(state, app.workspace(auth.actor), auth.csrf, config.jobs.maximum, { after: after(), sourceAfter, extractionAfter }));
+        return api ? json(state) : page(() => memoryPage(state, nav(), auth.csrf, config.jobs.maximum, { after: after(), sourceAfter, extractionAfter }));
       }
       if (request.method === "POST" && memoryRoute) {
         const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
@@ -408,7 +424,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
             expectedRevision: number(body.expectedRevision) as number,
             payload: { targetSchema: number(body.targetSchema) as number, note: (body.note as string) ?? "manual upgrade" } };
           const result = await app.execute(auth.actor, command);
-          return api ? json(result) : respond(null, 303, { Location: `/upgrades/${result.journal.id}` });
+          return api ? json(result) : respond(null, 303, { Location: `/settings/upgrades/${result.journal.id}` });
         }
         if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "action"].includes(key))) throw new AppError("invalid_body");
         const action = body.action as "migrate" | "validate" | "activate" | "rollback";
@@ -416,7 +432,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const command = { kind: `upgrade.${action}` as const, requestId: body.requestId as string, projectId: null,
           expectedRevision: number(body.expectedRevision) as number, payload: { upgradeId: upgradeRoute![2]! } };
         const result = await app.execute(auth.actor, command);
-        return api ? json(result) : respond(null, 303, { Location: `/upgrades/${result.journal.id}` });
+        return api ? json(result) : respond(null, 303, { Location: `/settings/upgrades/${result.journal.id}` });
       }
       if (request.method === "POST" && (restoresRoute || restoreRoute)) {
         const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
@@ -427,7 +443,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
             expectedRevision: number(body.expectedRevision) as number,
             payload: { backupId: body.backupId as string, note: (body.note as string) ?? "manual restore" } };
           const result = await app.execute(auth.actor, command);
-          return api ? json(result) : respond(null, 303, { Location: `/restores/${result.quarantine.id}` });
+          return api ? json(result) : respond(null, 303, { Location: `/settings/restores/${result.quarantine.id}` });
         }
         // ops.quarantined_restore/v1: steps name only the quarantine; ledger content is never accepted from a request.
         if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "action"].includes(key))) throw new AppError("invalid_body");
@@ -438,9 +454,24 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const result = await app.execute(auth.actor, command);
         // Activation revokes every session (generation fence): the browser signs in again.
         if (!api && result.quarantine.activation.sessionsRevoked) return respond(null, 303, { Location: "/login" });
-        return api ? json(result) : respond(null, 303, { Location: `/restores/${result.quarantine.id}` });
+        return api ? json(result) : respond(null, 303, { Location: `/settings/restores/${result.quarantine.id}` });
       }
-      if (url.pathname === "/settings" && request.method === "GET") return page(() => settingsPage(app.preferences(auth.actor), app.workspace(auth.actor), auth.csrf, app.persona(auth.actor)));
+      if (url.pathname === "/settings" && request.method === "GET") return page(() => settingsPage(app.preferences(auth.actor), nav(), auth.csrf, app.persona(auth.actor)));
+      if (url.pathname === "/settings/telegram" && request.method === "GET") return page(() => settingsTelegramPage(app.telegramStatus(auth.actor), nav(), auth.csrf));
+      if (url.pathname === "/settings/data" && request.method === "GET") {
+        const raw = url.searchParams.get("offset") ?? "0";
+        if (!/^\d{1,7}$/.test(raw)) throw new AppError("invalid_offset");
+        const offset = Number(raw);
+        return page(() => settingsDataPage(nav(app.workspace(auth.actor, offset)), auth.csrf, offset, config.pageSize));
+      }
+      if (["/search", "/api/search"].includes(url.pathname) && request.method === "GET") {
+        // web.settings_ia/v1 ⌘K: one bounded, read-only query; the browser never receives a preloaded index.
+        const values = url.searchParams.getAll("q");
+        if (values.length > 1) throw new AppError("invalid_query");
+        const results = app.search(auth.actor, values[0] ?? "", searchLimits);
+        const response = withLocale(ui.locale, () => searchItems(results));
+        return api ? json(response) : page(() => searchPage(response, nav(), auth.csrf));
+      }
       if (["/settings/persona", "/api/settings/persona"].includes(url.pathname)) {
         if (request.method === "GET") return api ? json(app.persona(auth.actor)) : respond(null, 303, { Location: "/settings#persona" });
         const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
@@ -466,15 +497,15 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       }
       if (request.method === "GET" && teamRoute) {
         const state = app.team(auth.actor, teamRoute[1] ?? null);
-        return api ? json(state) : page(() => teamPage(state, app.workspace(auth.actor), auth.csrf, config.jobs.maximum, url.searchParams.get("preset") ?? undefined));
+        return api ? json(state) : page(() => teamPage(state, nav(), auth.csrf, config.jobs.maximum, url.searchParams.get("preset") ?? undefined));
       }
       if (request.method === "GET" && previewRoute) {
         const state = app.preview(auth.actor, previewRoute[1]!, previewRoute[2]!);
-        return api ? json(state) : page(() => previewPage(state, app.workspace(auth.actor), auth.csrf));
+        return api ? json(state) : page(() => previewPage(state, nav(), auth.csrf));
       }
       if (request.method === "GET" && discussionRoute) {
         const state = app.discussion(auth.actor, discussionRoute[1]!, discussionRoute[2]!);
-        return api ? json(state) : page(() => discussionPage(state, app.workspace(auth.actor), auth.csrf, config.jobs.maximum));
+        return api ? json(state) : page(() => discussionPage(state, nav(), auth.csrf, config.jobs.maximum));
       }
       if (request.method === "GET" && continuityRoute) {
         const state = app.continuity(auth.actor, continuityRoute[2]!);
@@ -482,11 +513,11 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       }
       if (request.method === "GET" && tasksRoute) {
         const state = app.tasks(auth.actor, tasksRoute[2]!);
-        return api ? json(state) : page(() => tasksPage(state, app.workspace(auth.actor), auth.csrf, url.searchParams.get("topic")));
+        return api ? json(state) : page(() => tasksPage(state, nav(), auth.csrf, url.searchParams.get("topic")));
       }
       if (request.method === "GET" && taskRoute) {
         const state = app.task(auth.actor, taskRoute[2]!, taskRoute[3]!);
-        return api ? json(state) : page(() => taskPage(state, app.workspace(auth.actor), auth.csrf, config.messageBytes));
+        return api ? json(state) : page(() => taskPage(state, nav(), auth.csrf, config.messageBytes));
       }
       if (request.method === "POST" && (tasksRoute || taskRoute)) {
         const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
@@ -583,24 +614,24 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
             : action === "roles" ? { roleId, name: body.name, kind: body.kind, responsibility: body.responsibility, enabled, route } : { roleId, route } } as TeamCommand;
         const receipt = app.execute(auth.actor, command);
         const location = receipt.discussion ? `/projects/${projectId}/team/discussions/${receipt.discussion.id}`
-          : receipt.preview ? `/projects/${projectId}/team/previews/${receipt.preview.id}` : projectId ? `/projects/${projectId}/team` : "/team";
+          : receipt.preview ? `/projects/${projectId}/team/previews/${receipt.preview.id}` : projectId ? `/projects/${projectId}/team` : "/settings/team";
         return api ? json(receipt) : respond(null, 303, { Location: location });
       }
       if (request.method === "GET" && deliveryRoute) {
         const state = app.deliveries(auth.actor, deliveryRoute[2]!, after());
-        return api ? json(state) : page(() => deliveryPage(state, app.workspace(auth.actor), auth.csrf, after()));
+        return api ? json(state) : page(() => deliveryPage(state, nav(), auth.csrf, after()));
       }
       if (request.method === "GET" && deliveryIntentRoute) {
         const state = app.delivery(auth.actor, deliveryIntentRoute[2]!, deliveryIntentRoute[3]!);
-        return api ? json(state) : page(() => deliveryDetailPage(state, app.workspace(auth.actor), auth.csrf));
+        return api ? json(state) : page(() => deliveryDetailPage(state, nav(), auth.csrf));
       }
       if (request.method === "GET" && prReportsRoute) {
         const state = app.prReports(auth.actor, prReportsRoute[2]!);
-        return api ? json(state) : page(() => prReportsPage(state, app.workspace(auth.actor), auth.csrf));
+        return api ? json(state) : page(() => prReportsPage(state, nav(), auth.csrf));
       }
       if (request.method === "GET" && prReportRoute) {
         const state = app.prReport(auth.actor, prReportRoute[2]!, prReportRoute[3]!);
-        return api ? json(state) : page(() => prReportPage(state, app.workspace(auth.actor), auth.csrf));
+        return api ? json(state) : page(() => prReportPage(state, nav(), auth.csrf));
       }
       if (request.method === "POST" && prReportRoute) {
         const body = await payload(request);
@@ -633,12 +664,12 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       }
       if (request.method === "GET" && schedulesRoute) {
         const state = app.schedules(auth.actor, schedulesRoute[2]!);
-        return api ? json(state) : page(() => schedulesPage(state, app.workspace(auth.actor), auth.csrf,
+        return api ? json(state) : page(() => schedulesPage(state, nav(), auth.csrf,
           app.topics(auth.actor, state.project.id).items, config.jobs.maximum));
       }
       if (request.method === "GET" && scheduleRoute) {
         const state = app.schedule(auth.actor, scheduleRoute[2]!, scheduleRoute[3]!);
-        return api ? json(state) : page(() => scheduleDetailPage(state, app.workspace(auth.actor), auth.csrf));
+        return api ? json(state) : page(() => scheduleDetailPage(state, nav(), auth.csrf));
       }
       if (request.method === "POST" && (deliveryRoute || deliveryResendRoute)) {
         const body = await payload(request);
@@ -657,11 +688,11 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       }
       if (request.method === "GET" && jobsRoute) {
         const state = app.jobs(auth.actor, jobsRoute[2]!, after());
-        return api ? json(state) : page(() => jobsPage(state, app.workspace(auth.actor), auth.csrf, after(), config.jobs));
+        return api ? json(state) : page(() => jobsPage(state, nav(), auth.csrf, after(), config.jobs));
       }
       if (request.method === "GET" && jobRoute) {
         const job = app.job(auth.actor, jobRoute[2]!, jobRoute[3]!);
-        return api ? json(job) : page(() => jobsPage({ ...app.jobs(auth.actor, job.projectId), items: [job], hasMore: false, nextAfter: 0 }, app.workspace(auth.actor), auth.csrf, 0, config.jobs, false));
+        return api ? json(job) : page(() => jobsPage({ ...app.jobs(auth.actor, job.projectId), items: [job], hasMore: false, nextAfter: 0 }, nav(), auth.csrf, 0, config.jobs, false));
       }
       if (request.method === "GET" && sourceRoute) {
         const positive = (key: string) => {
@@ -671,7 +702,18 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         };
         const source = app.source(auth.actor, sourceRoute[2]!, { sourceId: sourceRoute[3]!, revision: positive("revision"), generation: positive("generation") });
         const suppressed = app.sourceSuppressed(auth.actor, sourceRoute[2]!, { sourceId: sourceRoute[3]!, revision: positive("revision"), generation: positive("generation") });
-        return api ? json({ ...source, suppressed }) : page(() => sourcePage(source, suppressed, app.project(auth.actor, source.projectId), app.workspace(auth.actor), auth.csrf));
+        return api ? json({ ...source, suppressed }) : page(() => sourcePage(source, suppressed, app.project(auth.actor, source.projectId), nav(), auth.csrf));
+      }
+      if (request.method === "GET" && topicPanelRoute) {
+        // web.settings_ia/v1 right panel: one tab is read per request; the page doubles as the no-script panel.
+        const [, projectId, topicId] = topicPanelRoute;
+        const tabs = url.searchParams.getAll("tab");
+        const tab = (tabs.length === 0 ? defaultPanelTab : tabs.length === 1 && (panelTabs as readonly string[]).includes(tabs[0]!) ? tabs[0] : null) as PanelTab | null;
+        if (!tab) throw new AppError("invalid_panel_tab");
+        const { project, topic } = app.topic(auth.actor, projectId!, topicId!);
+        const data: PanelData = tab === "memory" ? { tab, state: app.memory(auth.actor, project.id) } : tab === "tasks" ? { tab, state: app.topicTasks(auth.actor, project.id, topic.id, panelRows * 3) }
+          : tab === "jobs" ? { tab, state: app.recentJobs(auth.actor, project.id, panelRows) } : tab === "pr" ? { tab, state: app.prReports(auth.actor, project.id) } : { tab, state: app.team(auth.actor, project.id) };
+        return page(() => topicPanelPage(project, topic, app.topics(auth.actor, project.id).items, data, nav(), auth.csrf));
       }
       if (request.method === "GET" && topicRoute) {
         const state = app.conversation(auth.actor, topicRoute[2]!, topicRoute[3]!, after());
@@ -679,25 +721,25 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         if (api) return json({ ...state, replies: [...replies.values()] });
         const team = app.team(auth.actor, state.project.id);
         const discussions = app.discussions(auth.actor, state.project.id, state.topic.id);
-        return page(() => conversationPage(state, app.workspace(auth.actor), app.topics(auth.actor, state.project.id).items, auth.csrf, after(), config.messageBytes, {
+        return page(() => conversationPage(state, nav(), app.topics(auth.actor, state.project.id).items, auth.csrf, after(), config.messageBytes, {
           team, discussions, limits: config.jobs.maximum, dispatchAvailable: team.previewAvailable, replies,
           decision: app.decision(auth.actor, state.project.id, state.topic.id),
         }));
       }
       if (request.method === "GET" && topicCollection) {
         const state = app.topics(auth.actor, topicCollection[2]!, after());
-        return api ? json(state) : page(() => projectPage(state, app.workspace(auth.actor), auth.csrf, after()));
+        return api ? json(state) : page(() => projectPage(state, nav(), auth.csrf, after()));
       }
       if (request.method === "GET" && projectRoute) {
         const project = app.project(auth.actor, projectRoute[2]!);
-        return api ? json(project) : page(() => projectPage(app.topics(auth.actor, project.id, after()), app.workspace(auth.actor), auth.csrf, after()));
+        return api ? json(project) : page(() => projectPage(app.topics(auth.actor, project.id, after()), nav(), auth.csrf, after()));
       }
       if (request.method === "GET" && ["/", "/api/projects"].includes(url.pathname)) {
         const raw = url.searchParams.get("offset") ?? "0";
         if (!/^\d{1,7}$/.test(raw)) throw new AppError("invalid_offset");
         const offset = Number(raw);
         const state = app.workspace(auth.actor, offset);
-        return api ? json(state) : page(() => workspacePage(state, auth.csrf, offset, config.pageSize));
+        return api ? json(state) : page(() => workspacePage(nav(state), auth.csrf, offset, config.pageSize));
       }
       if (request.method === "POST" && (["/projects", "/api/projects", "/logout"].includes(url.pathname) || backupsRoute || upgradesRoute || upgradeRoute || restoresRoute || restoreRoute || topicCollection || messageRoute || jobsRoute || resumeRoute || schedulesRoute || scheduleAction)) {
         const body = await payload(request);
@@ -708,7 +750,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
           const command = { kind: "backup.create" as const, requestId: body.requestId as string, projectId: null,
             expectedRevision: revision as number, payload: { note: (body.note as string) ?? "manual backup" } };
           const receipt = await app.execute(auth.actor, command);
-          return api ? json(receipt) : respond(null, 303, { Location: `/backups/${receipt.manifest.id}` });
+          return api ? json(receipt) : respond(null, 303, { Location: `/settings/backups/${receipt.manifest.id}` });
         }
         if (schedulesRoute || scheduleAction) {
           const number = (value: unknown) => typeof value === "string" && /^\d{1,15}$/.test(value) ? Number(value) : value;
@@ -790,7 +832,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       const rejection = error instanceof AppError ? error : new AppError("storage_unavailable", 503);
       if (!api && rejection.code === "authentication_required") return respond(null, 303, { "Location": "/login" });
       // Until an activated restore completes, every ordinary page leads to the restore console.
-      if (!api && rejection.code === "restore_incomplete" && request.method === "GET") return respond(null, 303, { "Location": "/restores" });
+      if (!api && rejection.code === "restore_incomplete" && request.method === "GET") return respond(null, 303, { "Location": "/settings/restores" });
       const detail = rejection.detail;
       const recovery = detail && typeof detail.projectId === "string" && /^[a-f0-9-]{36}$/.test(detail.projectId) && typeof detail.path === "string" && detail.path.startsWith(`/projects/${detail.projectId}/`)
         ? { href: detail.path, proposal: typeof detail.taskId === "string" } : undefined;

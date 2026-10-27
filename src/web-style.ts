@@ -129,9 +129,13 @@ button.danger:hover { background: var(--danger-bg); color: var(--danger); }
 .nav-main[aria-current=page], .nav-link[aria-current=page] { background: var(--surface-2); color: var(--fg); font-weight: 500; }
 .nav-link span, .nav-main span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .nav-project[data-selected] > .nav-link { color: var(--fg); }
-.nav-topics, .nav-tools { margin: 2px 0 6px 18px; padding-left: 8px; border-left: 1px solid var(--line); }
-.nav-topics .nav-link, .nav-tools .nav-link { min-height: 30px; font-size: 13px; }
-.nav-tools .nav-link { padding: 4px 8px; }
+.nav-topics { margin: 2px 0 6px 18px; padding-left: 8px; border-left: 1px solid var(--line); }
+.nav-topics .nav-link { min-height: 30px; font-size: 13px; }
+.nav-search { margin: 0 2px 4px; }
+.nav-search kbd { margin-left: auto; }
+/* Waiting-on-owner badge: words plus a number, never colour alone (NFR-11). */
+.nav-badge { margin-left: auto; flex-shrink: 0; font-size: 11px; font-weight: 500; line-height: 1.5; color: var(--fg); border: 1px solid var(--line-strong); border-radius: 999px; padding: 0 8px; }
+kbd { font: 500 11px/1.6 var(--font-sans); color: var(--fg-2); border: 1px solid var(--line-strong); border-radius: 5px; padding: 0 5px; }
 .nav-subtle { display: block; padding: 6px 10px; font-size: 12px; font-weight: 500; color: var(--fg-3); }
 .nav-subtle:hover { color: var(--fg); }
 .sidebar-foot { border-top: 1px solid var(--line); margin-top: 8px; padding-top: 8px; display: grid; gap: 2px; }
@@ -170,6 +174,64 @@ button.danger:hover { background: var(--danger-bg); color: var(--danger); }
 .settings-links a { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 8px 10px; border-radius: var(--radius-control); color: var(--fg); }
 .settings-links a:hover { background: var(--surface-3); }
 .settings-links small { color: var(--fg-3); margin-left: auto; font-size: 12px; }
+.settings-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px 16px; margin: 0; font-size: 13px; }
+.settings-facts dt { color: var(--fg-2); }
+.settings-facts dd { margin: 0; }
+.data-projects { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+.data-projects li { border-top: 1px solid var(--line); padding-top: 12px; }
+.data-projects h3 { font-size: 14px; }
+.data-projects p { font-size: 12px; color: var(--fg-3); }
+
+/* Section pills: settings sub-navigation, project tools and topic panel tabs (web.settings_ia/v1). */
+.settings-nav, .project-tools { padding: 16px 32px 0; }
+.settings-nav ul, .project-tools ul, .panel-tabs ul { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; margin: 0; padding: 0; }
+.settings-nav a, .project-tools a, .panel-tabs a {
+  display: inline-flex; align-items: center; min-height: 32px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 999px;
+  color: var(--fg-2); font-size: 13px; white-space: nowrap; transition: background-color var(--motion-ui) ease-out, color var(--motion-ui) ease-out;
+}
+.settings-nav a:hover, .project-tools a:hover, .panel-tabs a:hover { background: var(--surface-3); color: var(--fg); }
+.settings-nav a[aria-current=page], .project-tools a[aria-current=page], .panel-tabs a[aria-current=page] { background: var(--fg); color: var(--on-fg); border-color: var(--fg); }
+
+/* Topic right panel: closed by default; a third column on wide screens and an overlay below 900 px. */
+.topic-panel[hidden] { display: none; }
+.topic-panel { background: var(--surface-1); border-left: 1px solid var(--line); height: 100dvh; overflow: auto; min-width: 0; scrollbar-width: thin; }
+.topic-panel[aria-busy=true] { opacity: .7; }
+.app:has(> .topic-panel:not([hidden])) { grid-template-columns: 264px minmax(0, 1fr) min(380px, 34vw); }
+.panel-toggle[aria-expanded=true] { background: var(--surface-3); }
+.panel-body { padding: 14px 16px 24px; }
+.panel-page .panel-body { padding: 0; max-width: var(--chat-width); }
+.panel-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.panel-head h2 { font-size: 15px; }
+.panel-tabs { margin-bottom: 14px; }
+.panel-heading { font-size: 13px; font-weight: 600; margin: 4px 0 8px; }
+.panel-count { color: var(--fg-2); font-weight: 500; }
+.panel-list { list-style: none; margin: 0 0 12px; padding: 0; display: grid; gap: 6px; }
+.panel-list li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-control); font-size: 13px; overflow-wrap: anywhere; }
+.panel-list small { color: var(--fg-3); font-size: 12px; }
+.panel-more { font-size: 13px; margin: 4px 0; }
+
+/* ⌘K palette and the no-script search page. */
+.palette { width: min(640px, calc(100vw - 32px)); max-height: min(70dvh, 560px); margin: 12dvh auto auto; padding: 0; border: 1px solid var(--line-strong); border-radius: var(--radius-card); background: var(--surface-1); color: var(--fg); box-shadow: var(--shadow); overflow: hidden; }
+.palette[open] { display: flex; flex-direction: column; }
+.palette::backdrop { background: rgba(0, 0, 0, .55); }
+.palette-form { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.palette-form:focus-within { box-shadow: inset 0 -2px 0 var(--fg); }
+.palette-form svg { width: 18px; height: 18px; color: var(--fg-3); flex-shrink: 0; }
+.palette-form input { flex: 1; min-width: 0; border: 0; background: transparent; color: var(--fg); font: inherit; font-size: 15px; padding: 6px 0; outline: none; }
+.palette-results { list-style: none; margin: 0; padding: 6px; overflow: auto; flex: 1; }
+.palette-results [role=option] { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: var(--radius-control); cursor: pointer; font-size: 14px; }
+.palette-results [aria-selected=true] { background: var(--surface-3); outline: 2px solid var(--fg); outline-offset: -2px; }
+.palette-kind, .search-kind { font-size: 12px; color: var(--fg-3); min-width: 64px; }
+.palette-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.palette-detail, .search-detail { font-size: 12px; color: var(--fg-2); max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.palette-status { padding: 0 16px 8px; font-size: 13px; color: var(--fg-2); }
+.palette-status:empty { display: none; }
+.palette-hint { padding: 8px 16px; border-top: 1px solid var(--line); font-size: 12px; color: var(--fg-3); }
+.search-note { font-size: 13px; color: var(--fg-3); margin: 8px 0 20px; }
+.search-results { list-style: none; margin: 0 0 20px; padding: 0; display: grid; gap: 4px; }
+.search-results a { display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--radius-control); color: var(--fg); }
+.search-results a:hover { background: var(--surface-3); }
+.search-label { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .licenses { font-size: 12px; color: var(--fg-3); }
 .licenses a { text-decoration: underline; text-underline-offset: 3px; }
 
@@ -501,6 +563,9 @@ details.team-card[open] > summary { margin-bottom: 8px; }
   .content, .app-header, .composer-wrap { padding-inline: 20px; }
   .composer, .composer-note { width: min(100%, 920px); }
   .message-body, .message-meta { max-width: 100%; }
+  .settings-nav, .project-tools { padding-inline: 20px; }
+  .app:has(> .topic-panel:not([hidden])) { grid-template-columns: 232px minmax(0, 1fr); }
+  .topic-panel { position: fixed; z-index: 28; inset: 0 0 0 auto; width: min(92vw, 400px); box-shadow: var(--shadow); }
 }
 @media (max-width: 680px) {
   .app { display: block; }
@@ -539,6 +604,9 @@ details.team-card[open] > summary { margin-bottom: 8px; }
   .team-card > header, .job-card header { align-items: flex-start; }
   .team-route, .job-limits { grid-template-columns: 1fr; }
   .job-status { white-space: normal; }
+  .settings-nav, .project-tools { padding: 12px 16px 0; }
+  .settings-nav ul, .project-tools ul { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .palette { margin-top: 8dvh; }
 }
 @media (max-height: 480px) {
   .main-pane { overflow: auto; }

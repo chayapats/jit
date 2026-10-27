@@ -221,6 +221,36 @@ export function readTaskList(tx: AppTransaction, projectId: string, limit: numbe
 }
 
 /**
+ * Open tasks of one topic for the topic panel (web.settings_ia/v1): proposals, accepted obligations and those ready for
+ * close review, with the same current-evidence projection as {@link readTaskList}; newest first, at most `limit` rows.
+ */
+export function readTopicTasks(tx: AppTransaction, projectId: string, topicId: string, limit: number): { proposed: TaskRecord[]; accepted: TaskRecord[]; readyForReview: TaskRecord[]; hasMore: boolean } {
+  requireId(projectId); requireId(topicId);
+  const rows = tx.all<TaskRow>(`SELECT ${taskColumns} FROM tasks WHERE project_id = ? AND topic_id = ? AND state IN ('proposed', 'accepted', 'ready_for_review')
+    ORDER BY updated_at DESC, id LIMIT ?`, projectId, topicId, limit + 1);
+  const tasks = rows.slice(0, limit).map(row => projectCurrentTask(tx, row));
+  return { proposed: tasks.filter(task => task.state === "proposed"), accepted: tasks.filter(task => task.state === "accepted"),
+    readyForReview: tasks.filter(task => task.state === "ready_for_review"), hasMore: rows.length > limit };
+}
+
+/**
+ * Per-project counts of items waiting on the owner in tasks: proposals, and obligations ready for close review under
+ * current evidence (the projection {@link readTaskList} shows). At most `cap` open obligations are projected.
+ */
+export function countOwnerTaskQueue(tx: AppTransaction, projectIds: readonly string[], cap: number): Record<string, { proposals: number; reviews: number }> {
+  const result: Record<string, { proposals: number; reviews: number }> = Object.fromEntries(projectIds.map(id => [id, { proposals: 0, reviews: 0 }]));
+  if (!projectIds.length) return result;
+  const marks = projectIds.map(() => "?").join(", ");
+  for (const row of tx.all<{ projectId: string; count: number }>(`SELECT project_id AS projectId, count(*) AS count FROM tasks
+      WHERE project_id IN (${marks}) AND state = 'proposed' GROUP BY project_id`, ...projectIds)) result[row.projectId]!.proposals = row.count;
+  for (const row of tx.all<TaskRow>(`SELECT ${taskColumns} FROM tasks WHERE project_id IN (${marks}) AND state IN ('accepted', 'ready_for_review')
+      ORDER BY updated_at DESC, id LIMIT ?`, ...projectIds, cap)) {
+    if (projectCurrentTask(tx, row).state === "ready_for_review") result[row.projectId]!.reviews++;
+  }
+  return result;
+}
+
+/**
  * app.project_continuity/v1
  * Returns current obligations and owner decisions from committed state only. No provider inference is required.
  */

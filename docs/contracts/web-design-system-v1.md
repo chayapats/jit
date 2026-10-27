@@ -15,14 +15,14 @@ Every HTML response is rendered by `renderWith({ locale, theme }, page)`. Before
 
 The signed-in shell is the same on every page:
 
-- a sidebar with the lockup, a "new chat" entry (home, until BOT01 adds the chat home), projects with the selected project's tools (memory, tasks, jobs, notifications, team) and topics nested under it, and Settings plus sign-out at the bottom;
+- a sidebar with the lockup, a "new chat" entry (home, until BOT01 adds the chat home), projects with the selected project's tools (memory, tasks, jobs, notifications, team) and topics nested under it, and Settings plus sign-out at the bottom (UX02 replaces the nested tools with search, badges, a topic right panel and a project tools strip; see [web.settings_ia/v1](web-settings-ia-v1.md));
 - a main pane with a header and a scroll region. A composer appears where the page has one.
 
 Below 680 px the sidebar becomes a drawer. The menu link targets `#sidebar` and CSS `:target` opens it, so it works without script. The script adds Escape, focus return and no history entry. Later S09 tickets fill the main pane (chat home, right panel, ⌘K) without changing this frame.
 
 ## Scripts
 
-`app.js` is one hand-written ES module loaded with `<script type="module" src>` from the asset table. Pages contain no inline scripts, inline handlers or `javascript:` URLs, and the CSP forbids them. The script only enhances: the drawer, Enter (BOT01; ⌘/Ctrl+Enter in UX01) submitting the composer through its own form post, and textarea growth where `field-sizing` is unsupported. It stores nothing. Since BOT01 it opens one read-only `EventSource` on a topic with a live Jit reply ([app.jit_reply/v1](jit-reply-v1.md)); it still posts nothing itself. Script-initiated mutations added by later tickets must use the existing session cookie, exact `Origin`, `X-CSRF-Token` and idempotent `requestId`, as the JSON API already requires.
+`app.js` is one hand-written ES module loaded with `<script type="module" src>` from the asset table. Pages contain no inline scripts, inline handlers or `javascript:` URLs, and the CSP forbids them. The script only enhances: the drawer, Enter (BOT01; ⌘/Ctrl+Enter in UX01) submitting the composer through its own form post, and textarea growth where `field-sizing` is unsupported. It stores nothing. Since BOT01 it opens one read-only `EventSource` on a topic with a live Jit reply ([app.jit_reply/v1](jit-reply-v1.md)). UX02 adds two same-origin `GET`s, the topic panel page and the bounded ⌘K query ([web.settings_ia/v1](web-settings-ia-v1.md#script-reads)). It still posts nothing itself. Script-initiated mutations added by later tickets must use the existing session cookie, exact `Origin`, `X-CSRF-Token` and idempotent `requestId`, as the JSON API already requires.
 
 ## Evidence
 

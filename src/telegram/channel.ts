@@ -15,6 +15,22 @@ import type {
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const validToken = (value: string) => /^[a-f0-9]{64}$/.test(value);
 
+/** Owner-facing binding/inbox status and its next action; a read with no side effects (callers check the owner). */
+export function readTelegramStatus(tx: AppTransaction, config: AppConfig): TelegramStatus {
+  const binding = readBinding(tx), poll = readPoll(tx, config.telegram.retentionHours);
+  const counts = inboxCounts(tx);
+  const configured = botCredentialConfigured(config.telegram.botTokenPath);
+  let nextAction = "inspect_binding";
+  if (!configured) nextAction = "configure_bot_token_secret";
+  else if (poll.gapState === "possible_missing_inputs") nextAction = "inspect_possible_missing_inputs";
+  else if (binding.state === "unbound") nextAction = "bind_numeric_owner";
+  else if (binding.state === "pending") nextAction = "confirm_challenge_or_wait";
+  else if (counts.failedCount > 0) nextAction = "inspect_failed_inbox";
+  else if (counts.unauthorizedCount > 0) nextAction = "inspect_unauthorized_events";
+  else nextAction = "poll_and_inspect";
+  return { binding, poll, ...counts, botCredentialConfigured: configured, nextAction };
+}
+
 /** Opaque session-backed capability for Telegram owner setup; model payloads cannot mint it. */
 export interface TelegramOwnerActor {
   readonly ownerId: "owner";
@@ -59,18 +75,7 @@ export class TelegramChannel {
   status(actor: TelegramOwnerActor): TelegramStatus {
     return this.store.read(tx => {
       this.#requireOwner(tx, actor);
-      const binding = readBinding(tx), poll = readPoll(tx, this.config.telegram.retentionHours);
-      const counts = inboxCounts(tx);
-      const configured = botCredentialConfigured(this.config.telegram.botTokenPath);
-      let nextAction = "inspect_binding";
-      if (!configured) nextAction = "configure_bot_token_secret";
-      else if (poll.gapState === "possible_missing_inputs") nextAction = "inspect_possible_missing_inputs";
-      else if (binding.state === "unbound") nextAction = "bind_numeric_owner";
-      else if (binding.state === "pending") nextAction = "confirm_challenge_or_wait";
-      else if (counts.failedCount > 0) nextAction = "inspect_failed_inbox";
-      else if (counts.unauthorizedCount > 0) nextAction = "inspect_unauthorized_events";
-      else nextAction = "poll_and_inspect";
-      return { binding, poll, ...counts, botCredentialConfigured: configured, nextAction };
+      return readTelegramStatus(tx, this.config);
     });
   }
 

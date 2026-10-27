@@ -1,4 +1,4 @@
-import type { Application, Project, Workspace } from "./application";
+import type { Application, Project, ProjectAttention, Workspace } from "./application";
 import type { Topic } from "./conversation";
 import type { JobSchedule, ScheduleOccurrence } from "./jobs/schedules";
 import type { Attribution, SourceLookup, SourceReference } from "./sources";
@@ -9,6 +9,7 @@ import { logoLockup, logoMark } from "./web-logo";
 import type { JitReplyView } from "./team/jit-reply";
 import type { Persona } from "./persona";
 import type { DecisionReadModel, Discussion, RoleRoute } from "./team/types";
+import { panelTabLabels, panelTabs, searchLimits, settingsSections, type PanelTab, type SettingsSectionId } from "./web-settings";
 
 /** Escapes literal untrusted content before it enters HTML text or attributes. */
 export const escape = (value: unknown) => String(value).replace(/[&<>"']/g, char =>
@@ -25,14 +26,17 @@ const paths = {
   user: '<circle cx="12" cy="8" r="3"/><path d="M5 21v-2a7 7 0 0 1 14 0v2"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/>',
+  search: '<circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/>',
+  panel: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/>',
 };
-const icon = (name: keyof typeof paths) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name]}</svg>`;
+/** Inline stroke icon; decorative, so hidden from assistive technology. */
+export const icon = (name: keyof typeof paths) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name]}</svg>`;
 const brand = (height = 36) => `<a class="brand" href="/" aria-label="${tr("common.jit_all_projects")}">${logoLockup({ height, label: "Jit" })}</a>`;
 const sourceUrl = (projectId: string, ref: SourceReference) => `/projects/${projectId}/sources/${ref.sourceId}?revision=${ref.revision}&generation=${ref.generation}`;
 const sourceLink = (projectId: string, ref: SourceReference, label: string) => `<a class="source-link" href="${sourceUrl(projectId, ref)}">${icon("link")}${escape(label)}</a>`;
 const attributionLabel = (attribution: Attribution) => attribution.kind === "owner" ? tr("common.you") : attribution.kind === "participant"
   ? `${tr("common.teammate")} ${attribution.participantId} · run ${attribution.runId}` : tr("common.source_registry_service");
-function time(value: number): string {
+export function time(value: number): string {
   const date = new Date(value); if (!Number.isFinite(date.valueOf())) return tr("common.unknown_time");
   const format = new Intl.DateTimeFormat(currentLocale() === "en" ? "en-GB" : "th-TH", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
   return `<time datetime="${date.toISOString()}" title="${date.toISOString()}">${escape(format.format(date))} UTC</time>`;
@@ -60,45 +64,82 @@ function documentPage(title: string, content: string): string {
     <script type="module" src="${assetUrl("app.js")}"></script></head><body>
     <a class="skip" href="#main-content">${tr("common.skip_to_main_content")}</a>${content}</body></html>`;
 }
-interface Navigation { workspace: Workspace; csrf: string; project?: Project; topics?: Topic[]; topic?: Topic; section?: "home" | "project" | "topic" | "team" | "tasks" | "jobs" | "delivery" | "memory" | "settings" }
-/** Sidebar navigation: projects with the selected project's tools and topics nested under it. */
+/** Sidebar data: the workspace page plus, when known, counts of items waiting on the owner per project. */
+export type NavigationWorkspace = Workspace & { attention?: Readonly<Record<string, ProjectAttention>> };
+export interface Navigation {
+  workspace: NavigationWorkspace; csrf: string; project?: Project; topics?: Topic[]; topic?: Topic;
+  section?: "home" | "project" | "topic" | "team" | "tasks" | "jobs" | "pr" | "memory" | "search" | "settings";
+  /** Current settings section when `section` is `settings` (web.settings_ia/v1). */
+  settings?: SettingsSectionId;
+}
+/** Waiting-on-owner badge: visible words and a number, never colour alone (NFR-11). */
+function attentionBadge(waiting: ProjectAttention | undefined): string {
+  const total = waiting ? waiting.proposals + waiting.reviews + waiting.resumes : 0;
+  if (!waiting || !total) return "";
+  const detail = `${tr("shell.badge_proposals")} ${waiting.proposals} · ${tr("shell.badge_reviews")} ${waiting.reviews} · ${tr("shell.badge_resumes")} ${waiting.resumes}`;
+  return `<span class="nav-badge" title="${detail}"><span aria-hidden="true">${tr("shell.badge_waiting")} ${total}</span><span class="sr-only">${tr("shell.badge_waiting_long")} ${total}: ${detail}</span></span>`;
+}
+/** Sidebar navigation: projects with waiting-item badges, and the selected project's topics nested under it. */
 function navigation(n: Navigation): string {
   const selected = n.project, topics = n.topic ? [n.topic, ...(n.topics ?? []).filter(t => t.id !== n.topic!.id)] : n.topics ?? [];
   const here = (section: NonNullable<Navigation["section"]>) => n.section === section ? ' aria-current="page"' : "";
   const listed = n.workspace.projects.slice(0, 8);
   const projects = selected && !listed.some(p => p.id === selected.id) ? [selected, ...listed] : listed;
-  const nested = (p: Project) => p.id !== selected?.id ? "" : `<ul class="nav-tools" aria-label="${escape(p.name)}">
-      <li><a class="nav-link" href="/projects/${p.id}/memory"${here("memory")}>${icon("info")}<span>${tr("label.memory")}</span></a></li>
-      <li><a class="nav-link" href="/projects/${p.id}/tasks"${here("tasks")}>${icon("check")}<span>${tr("common.tasks")}</span></a></li>
-      <li><a class="nav-link" href="/projects/${p.id}/jobs"${here("jobs")}>${icon("clock")}<span>${tr("common.project_jobs")}</span></a></li>
-      <li><a class="nav-link" href="/projects/${p.id}/delivery"${here("delivery")}>${icon("info")}<span>${tr("common.notifications")}</span></a></li>
-      <li><a class="nav-link" href="/projects/${p.id}/team"${here("team")}>${icon("user")}<span>${tr("common.team_and_models")}</span></a></li></ul>
-    <ul class="nav-topics" aria-label="${tr("common.topics_in_project")}">${topics.slice(0, 12).map(t => `<li><a class="nav-link" href="/projects/${p.id}/topics/${t.id}"${t.id === n.topic?.id && n.section === "topic" ? ' aria-current="page"' : ""}>${icon("chat")}<span>${escape(t.title ?? tr("common.topic_unavailable"))}</span></a></li>`).join("")}
+  const nested = (p: Project) => p.id !== selected?.id ? "" : `<ul class="nav-topics" aria-label="${tr("common.topics_in_project")}">${topics.slice(0, 12).map(t => `<li><a class="nav-link" href="/projects/${p.id}/topics/${t.id}"${t.id === n.topic?.id && n.section === "topic" ? ' aria-current="page"' : ""}>${icon("chat")}<span>${escape(t.title ?? tr("common.topic_unavailable"))}</span></a></li>`).join("")}
       <li><a class="nav-subtle" href="/projects/${p.id}#new-topic">${tr("common.new_topic")}</a></li>${topics.length > 12 ? `<li><a class="nav-subtle" href="/projects/${p.id}">${tr("common.view_all_topics")}</a></li>` : ""}</ul>`;
   return `<nav class="nav-scroll" aria-label="${tr("common.projects_and_topics")}"><p class="nav-heading">${tr("common.your_projects")}</p>
-    <ul class="nav-projects">${projects.map(p => `<li class="nav-project"${p.id === selected?.id ? " data-selected" : ""}><a class="nav-link" href="/projects/${p.id}"${p.id === selected?.id && n.section === "project" ? ' aria-current="page"' : ""}>${icon("folder")}<span>${escape(p.name)}</span></a>${nested(p)}</li>`).join("")}</ul>
+    <ul class="nav-projects">${projects.map(p => `<li class="nav-project"${p.id === selected?.id ? " data-selected" : ""}><a class="nav-link" href="/projects/${p.id}"${p.id === selected?.id && n.section === "project" ? ' aria-current="page"' : ""}>${icon("folder")}<span>${escape(p.name)}</span>${attentionBadge(n.workspace.attention?.[p.id])}</a>${nested(p)}</li>`).join("")}</ul>
     <a class="nav-subtle" href="/#new-project">${tr("common.new_project")}</a>${n.workspace.hasMore || n.workspace.projects.length > 8 ? `<a class="nav-subtle" href="/"${here("home")}>${tr("common.view_all_projects")}</a>` : ""}</nav>`;
 }
 function ownerMenu(csrf: string): string {
   return `<div class="owner-menu"><div class="owner-name">${tr("common.your_space")}</div>
     <form method="post" action="/logout"><input type="hidden" name="csrf" value="${csrf}"><button class="icon-button" aria-label="${tr("common.sign_out")}" title="${tr("common.sign_out")}">${icon("logout")}</button></form></div>`;
 }
+/** Settings sub-navigation (web.settings_ia/v1): every installation operation is one step from any settings page. */
+function settingsNavigation(current: SettingsSectionId | undefined): string {
+  return `<nav class="settings-nav" aria-label="${tr("settings.sections")}"><ul>${settingsSections.map(section => `<li><a href="${section.href}"${section.id === current ? ' aria-current="page"' : ""}>${tr(section.label)}</a></li>`).join("")}</ul></nav>`;
+}
+const panelSection: Partial<Record<NonNullable<Navigation["section"]>, PanelTab>> = { memory: "memory", tasks: "tasks", jobs: "jobs", pr: "pr", team: "team" };
+/** Full-page links for the project tools the topic panel summarizes; shown on project pages outside a topic. */
+function projectTools(project: Project, section: Navigation["section"]): string {
+  const href: Record<PanelTab, string> = { memory: `/projects/${project.id}/memory`, tasks: `/projects/${project.id}/tasks`, jobs: `/projects/${project.id}/jobs`, pr: `/projects/${project.id}/pr/reports`, team: `/projects/${project.id}/team` };
+  const current = section ? panelSection[section] : undefined;
+  return `<nav class="project-tools" aria-label="${tr("panel.project_tools")}"><ul>${panelTabs.map(tab => `<li><a href="${href[tab]}"${tab === current ? ' aria-current="page"' : ""}>${tr(panelTabLabels[tab])}</a></li>`).join("")}</ul></nav>`;
+}
 /**
- * The application shell used by every signed-in page: sidebar (new chat, projects → topics, settings at the
- * bottom) and the main pane. Below 680 px the sidebar becomes a drawer: CSS `:target` opens it without
- * script, and the enhancement script adds Escape, focus return and no history entry.
- * Later S09 tickets fill the main pane (chat home, right panel, ⌘K) without changing this frame.
+ * ⌘K palette (web.settings_ia/v1). Without script it is never shown: the sidebar search link opens `/search`, a
+ * GET form with server-rendered results. The enhancement script opens this dialog with ⌘K / Ctrl+K and asks
+ * `/api/search` for bounded results; every label here comes from the dictionary.
  */
-function shell(title: string, n: Navigation, content: string, options: { breadcrumb?: { title: string; href: string }; action?: string; composer?: string } = {}): string {
+function palette(): string {
+  return `<dialog class="palette" id="palette" aria-labelledby="palette-title" data-kind-command="${tr("search.kind_command")}" data-kind-project="${tr("search.kind_project")}" data-kind-topic="${tr("search.kind_topic")}"
+    data-empty="${tr("search.no_results")}" data-loading="${tr("search.searching")}" data-error="${tr("search.unavailable")}" data-more="${tr("search.more_on_page")}">
+    <h2 class="sr-only" id="palette-title">${tr("search.title")}</h2>
+    <form class="palette-form" method="get" action="/search" role="search">${icon("search")}<label class="sr-only" for="palette-query">${tr("search.query")}</label>
+    <input id="palette-query" name="q" type="search" maxlength="${searchLimits.query}" autocomplete="off" spellcheck="false" placeholder="${tr("search.placeholder")}" role="combobox" aria-expanded="false" aria-controls="palette-results" aria-autocomplete="list"></form>
+    <ul class="palette-results" id="palette-results" role="listbox" aria-label="${tr("search.results")}"></ul>
+    <p class="palette-status" role="status" aria-live="polite"></p>
+    <p class="palette-hint"><kbd>↑</kbd><kbd>↓</kbd> ${tr("search.hint_move")} · <kbd>${tr("search.key_enter")}</kbd> ${tr("search.hint_open")} · <kbd>${tr("search.key_escape")}</kbd> ${tr("search.hint_close")}</p></dialog>`;
+}
+/**
+ * The application shell used by every signed-in page: sidebar (new chat, search, projects → topics, settings at the
+ * bottom) and the main pane. Below 680 px the sidebar becomes a drawer: CSS `:target` opens it without
+ * script, and the enhancement script adds Escape, focus return and no history entry. Settings pages carry the
+ * settings sub-navigation, project pages the project tools, and a topic may add its right panel after the main pane.
+ */
+export function shell(title: string, n: Navigation, content: string, options: { breadcrumb?: { title: string; href: string }; action?: string; composer?: string; panel?: string } = {}): string {
+  const frame = n.section === "settings" ? settingsNavigation(n.settings)
+    : n.project && n.section && n.section !== "topic" && n.section !== "search" ? projectTools(n.project, n.section) : "";
   return documentPage(title, `<div class="app"><aside class="sidebar" id="sidebar" aria-label="${tr("shell.sidebar")}">
     <div class="sidebar-top">${brand()}<a class="drawer-close" href="#main-content" aria-label="${tr("shell.close_menu")}">${icon("close")}</a></div>
     <a class="new-chat" href="/"${n.section === "home" ? ' aria-current="page"' : ""}>${icon("plus")}<span>${tr("shell.new_chat")}</span></a>
+    <a class="nav-main nav-search" href="/search" aria-keyshortcuts="Meta+K Control+K"${n.section === "search" ? ' aria-current="page"' : ""}>${icon("search")}<span>${tr("shell.search")}</span><kbd aria-hidden="true">⌘K</kbd></a>
     ${navigation(n)}
     <div class="sidebar-foot"><a class="nav-main" href="/settings"${n.section === "settings" ? ' aria-current="page"' : ""}>${icon("settings")}<span>${tr("shell.settings")}</span></a>${ownerMenu(n.csrf)}</div></aside>
     <a class="drawer-scrim" href="#main-content" tabindex="-1" aria-hidden="true"></a>
     <main class="main-pane" id="main-content"><header class="app-header"><a class="menu-button" href="#sidebar" aria-controls="sidebar" aria-label="${tr("common.open_project_menu")}">${icon("menu")}</a>
     <div class="header-title">${options.breadcrumb ? `<a class="breadcrumb" href="${options.breadcrumb.href}">${escape(options.breadcrumb.title)}</a>` : ""}<h1>${escape(title)}</h1></div>${options.action ?? ""}</header>
-    <div class="scroll-region">${content}</div>${options.composer ?? ""}</main></div>`);
+    <div class="scroll-region">${frame}${content}</div>${options.composer ?? ""}</main>${options.panel ?? ""}</div>${palette()}`);
 }
 function literalContent(text: string): string {
   const blocks: string[] = [], buffer: string[] = []; let code = false;
@@ -109,10 +150,10 @@ function literalContent(text: string): string {
   }
   flush(); return blocks.join("");
 }
-const hiddenCommand = (csrf: string, revision: number) => `<input type="hidden" name="csrf" value="${csrf}"><input type="hidden" name="requestId" value="${crypto.randomUUID()}"><input type="hidden" name="expectedRevision" value="${revision}">`;
+export const hiddenCommand = (csrf: string, revision: number) => `<input type="hidden" name="csrf" value="${csrf}"><input type="hidden" name="requestId" value="${crypto.randomUUID()}"><input type="hidden" name="expectedRevision" value="${revision}">`;
 
 /** Renders a bounded project workspace using only supported owner actions. */
-export function workspacePage(state: Workspace, csrf: string, offset: number, pageSize: number): string {
+export function workspacePage(state: NavigationWorkspace, csrf: string, offset: number, pageSize: number): string {
   return shell(tr("common.your_projects"), { workspace: state, csrf, section: "home" }, `<div class="content"><section class="hero"><p class="eyebrow">${tr("home.a_space_for_your_ideas")}</p><h2>${tr("home.which_project_do_you_want")}</h2><p>${tr("home.pick_up_where_you_left")}</p></section>
     <form class="create-form" id="new-project" method="post" action="/projects">${hiddenCommand(csrf, state.revision)}<label class="sr-only" for="name">${tr("home.project_name")}</label><input id="name" name="name" maxlength="200" placeholder="${tr("home.name_your_new_project")}" required autocomplete="off"><button class="primary" aria-label="${tr("home.create_project")}">${tr("home.create_project")}${icon("plus")}</button></form>
     <h2 class="section-heading">${tr("common.your_projects")}</h2>${state.projects.length ? `<div class="project-grid">${state.projects.map(p => `<a class="project-card" href="/projects/${p.id}">${icon("folder")}<h2>${escape(p.name)}</h2><p>${tr("home.open_topics_and_conversations")}</p></a>`).join("")}</div>` : `<p class="empty-list">${tr("home.start_with_your_first_project")}</p>`}
@@ -147,6 +188,14 @@ function replyStatus(view: JitReplyView, base: string, projectId: string, csrf: 
     <p class="reply-next" data-reply-next${labels.next ? "" : " hidden"}>${escape(labels.next ?? "")}</p></div>
     <div class="reply-actions">${stoppable ? `<form method="post" action="${base}/replies/${view.id}/stop" data-reply-stop>${hiddenCommand(csrf, view.revision)}<button>${tr("reply.stop")}</button></form>` : ""}${view.jobId && view.state !== "thinking" ? `<a href="/projects/${projectId}/jobs/${view.jobId}#job-${view.jobId}">${tr("reply.view_job")}</a>` : ""}<a class="reply-refresh" href="${here}" data-reply-refresh>${tr("reply.refresh")}</a></div></article>`;
 }
+/**
+ * Topic right panel toggle (web.settings_ia/v1). The panel is closed by default. Without script the link opens the
+ * panel as its own page; the enhancement script loads that page's `.panel-body` into the empty aside instead.
+ */
+function panelToggle(topicBase: string): string {
+  return `<a class="header-action panel-toggle" href="${topicBase}/panel" aria-controls="topic-panel" aria-expanded="false" aria-label="${tr("panel.open")}">${icon("panel")}${tr("panel.title")}</a>`;
+}
+const topicPanelSlot = () => `<aside class="topic-panel" id="topic-panel" aria-label="${tr("panel.title")}" hidden></aside>`;
 /** Presents committed attributed messages separately from a persistent, revision-bound composer. */
 export function conversationPage(state: ReturnType<Application["conversation"]>, workspace: Workspace, topics: Topic[], csrf: string, after: number, messageBytes: number, dispatch?: {
   team: ReturnType<Application["team"]>; discussions: Discussion[]; limits: JobPolicy["maximum"]; dispatchAvailable: boolean; decision?: DecisionReadModel;
@@ -180,7 +229,8 @@ export function conversationPage(state: ReturnType<Application["conversation"]>,
   return shell(title, { workspace, csrf, project, topics, topic, section: "topic" }, `<div class="content chat-content"${live.length ? ` data-reply-stream="${base}/events" data-reply-cursor="${cursor}"` : ""}>${dispatchPanel}${decision}${proposeTask}<section aria-label="${tr("topic.message_history")}">${state.items.length ? state.items.map(m => { const jit = committedReplies.get(m.id), reply = replies.get(m.id); return `<article id="message-${m.id}" class="message${m.attribution.kind === "owner" ? " message--owner" : jit ? " message--jit" : ""}" data-message-id="${m.id}">${jit ? `<div class="reply-head"><span class="jit-avatar">${logoMark({ size: 20 })}</span><span class="reply-name">${tr("jit.name")}</span></div>` : ""}<div class="message-body">${m.text === null ? `<p class="literal">${tr("common.source_unavailable")}</p>` : literalContent(m.text)}</div>
       <div class="message-meta"><span>${escape(label(m))}</span><span class="committed">${icon("check")}${tr("common.saved")}</span><details><summary aria-label="${tr("topic.message_details_and_origin")}">${icon("info")}${tr("topic.details")}</summary><div class="message-detail">${time(m.committedAt)}<br>${sourceLink(project.id, m.source, tr("common.message_origin"))}${jit?.discardedTotal ? `<br>${tr("reply.discarded")}: ${jit.discardedTotal} · ${escape(jit.discarded.join(", "))}` : ""}</div></details></div></article>${reply && m.attribution.kind === "owner" ? reply.state !== "answered" ? replyStatus(reply, base, project.id, csrf) : !onPage.has(reply.replyMessageId!) ? answeredElsewhere(reply) : "" : ""}`; }).join("") : `<div class="empty-chat"><div>${icon("chat")}<h2>${tr("topic.start_this_conversation")}</h2><p>${tr("topic.keep_ideas_questions_and_things")}</p></div></div>`}</section>
       <nav class="pagination" aria-label="${tr("topic.message_history_pages")}">${after > 0 ? `<a href="${base}">${tr("common.first_page")}</a>` : ""}${state.hasMore ? `<a href="${base}?after=${state.nextAfter}">${tr("topic.next_messages")}</a>` : ""}</nav></div>`, {
-    breadcrumb: { title: project.name, href: `/projects/${project.id}` }, action: `<a class="header-action" href="/projects/${project.id}#new-topic" aria-label="${tr("common.new_topic")}">${icon("plus")}${tr("common.new_topic")}</a>`,
+    breadcrumb: { title: project.name, href: `/projects/${project.id}` }, action: `<a class="header-action" href="/projects/${project.id}#new-topic" aria-label="${tr("common.new_topic")}">${icon("plus")}${tr("common.new_topic")}</a>${panelToggle(base)}`,
+    panel: topicPanelSlot(),
     composer: `<div class="composer-wrap"><form class="composer" method="post" action="${base}/messages">${hiddenCommand(csrf, topic.revision)}<label class="sr-only" for="text">${tr("topic.your_message")}</label><textarea id="text" name="text" rows="2" maxlength="${messageBytes}" placeholder="${tr("topic.write_a_message_in_this")}" required aria-describedby="composer-note"></textarea><div class="composer-bottom"><span class="composer-topic">${icon("chat")} ${escape(title)}</span><button class="send-button" aria-label="${tr("topic.send_message")}" title="${tr("topic.send_message")}">${icon("arrow")}</button></div></form><p class="composer-note" id="composer-note">${tr("topic.jit_replies_note")}<span class="composer-keys"> · ${tr("topic.composer_keys")}</span></p></div>`,
   });
 }
@@ -189,10 +239,12 @@ export function sourcePage(source: SourceLookup, suppressed: boolean, project: P
   return shell(tr("source.source"), { workspace, csrf, project }, `<div class="content source-content"><h1>${tr("source.cited_source")}</h1>${suppressed ? `<p role="note"><strong>${tr("source.this_source_has_been_removed")}</strong> ${tr("source.you_can_still_open_it")}</p>` : ""}${source.state === "available" ? `<p class="source-byline">${escape(attributionLabel(source.attribution))} · ${time(source.committedAt)} ${tr("source.saved")}</p>${literalContent(source.text)}` : `<p class="error">${tr("common.source_unavailable_2")}${escape(source.reason)})</p>${source.descriptor ? `<pre>${escape(JSON.stringify(source.descriptor, null, 2))}</pre>` : ""}`}
     <details class="source-details"><summary>${tr("source.source_details")}</summary><dl><dt>${tr("source.project")}</dt><dd>${escape(project.name)} · ${escape(source.projectId)}</dd><dt>${tr("label.source_id")}</dt><dd>${escape(source.reference.sourceId)}</dd><dt>${tr("label.revision_generation")}</dt><dd>${source.reference.revision} / ${source.reference.generation}</dd></dl></details></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
 }
+/** Words for each job state; status is never shown by colour alone. */
+export const jobStateLabels = (): Record<Job["state"], string> => ({ queued: tr("common.queued"), admitted: tr("jobs.running"), waiting: tr("jobs.awaiting_resume"), succeeded: tr("jobs.completed"), blocked: tr("common.hit_a_limit"), partial: tr("jobs.partially_completed"), failed: tr("jobs.unsuccessful") });
 /** Presents explicit job starts, committed states, unchanged routes and finite remaining budgets. */
 export function jobsPage(state: ReturnType<Application["jobs"]>, workspace: Workspace, csrf: string, after: number, policy: JobPolicy, showStart = true): string {
   const { project } = state, base = `/projects/${project.id}/jobs`;
-  const labels: Record<Job["state"], string> = { queued: tr("common.queued"), admitted: tr("jobs.running"), waiting: tr("jobs.awaiting_resume"), succeeded: tr("jobs.completed"), blocked: tr("common.hit_a_limit"), partial: tr("jobs.partially_completed"), failed: tr("jobs.unsuccessful") };
+  const labels = jobStateLabels();
   const reasons: Record<Job["reason"], string> = {
     cancelled: tr("jobs.cancelled_result_writing_closed"), revoked: tr("jobs.authorization_revoked"), superseded: tr("common.superseded"), source_retired: tr("jobs.source_retired"), context_retired: tr("jobs.context_retired"), lease_expired: tr("jobs.worker_authorization_expired"), queued: tr("jobs.waiting_for_queue_capacity"), running: tr("jobs.running_authorized_work"), complete: tr("jobs.evidence_recorded"), yielded: tr("jobs.paused_at_a_safe_point"),
     quota: tr("jobs.selected_route_is_still_over"), needs_login: tr("jobs.selected_route_requires_sign_in"), route_unavailable: tr("jobs.selected_route_isnt_ready_yet"), budget_exhausted: tr("jobs.job_budget_used_up"), deadline: tr("jobs.job_time_limit_reached"),
@@ -240,10 +292,10 @@ const deliveryNext = (): Record<string, string> => ({
 export function deliveryPage(state: ReturnType<Application["deliveries"]>, workspace: Workspace, csrf: string, after: number): string {
   const { project } = state;
   const base = `/projects/${project.id}/delivery`;
-  return shell(tr("common.notifications"), { project, workspace, csrf, section: "delivery" }, `<div class="content"><section class="hero"><p class="eyebrow">${tr("delivery.private_send_requests")}</p><h2>${tr("delivery.delivery_status")} ${escape(project.name)}</h2><p>${tr("delivery.saving_a_request_or_starting")}</p></section>
+  return shell(tr("common.notifications"), { project, workspace, csrf, section: "settings", settings: "telegram" }, `<div class="content"><section class="hero"><p class="eyebrow">${tr("delivery.private_send_requests")}</p><h2>${tr("delivery.delivery_status")} ${escape(project.name)}</h2><p>${tr("delivery.saving_a_request_or_starting")}</p></section>
     <form class="create-form" method="post" action="${base}">${hiddenCommand(csrf, project.revision)}<label>${tr("common.type")}<select name="kind"><option value="report">${tr("delivery.report")}</option><option value="reminder">${tr("common.reminder")}</option></select></label><label>${tr("common.message")}<input name="text" required maxlength="4096"></label><label>${tr("delivery.unique_id")}<input name="dedupeKey" required minlength="8" maxlength="160" placeholder="report:example:1"></label><button class="primary">${tr("delivery.save_send_request")}</button></form>
     ${state.items.length ? `<ul>${state.items.map(item => `<li class="topic-row"><div class="topic-row-main"><h3><a href="${base}/${item.id}">${escape(deliveryLabels()[item.status] ?? item.status)}</a></h3><p>${escape(item.payload.kind === "reminder" ? tr("common.reminder") : tr("delivery.report"))} · ${escape(deliveryNext()[item.nextAction] ?? item.nextAction)}</p><p class="literal">${escape(item.payload.text)}</p></div></li>`).join("")}</ul>` : `<p class="empty-list">${tr("delivery.no_send_requests_yet")}</p>`}
-    <nav class="pagination" aria-label="${tr("delivery.notification_pages")}">${after ? `<a href="${base}">${tr("common.first_page")}</a>` : ""}${state.hasMore ? `<a href="${base}?after=${state.nextAfter}">${tr("common.next")}</a>` : ""}</nav></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
+    <nav class="pagination" aria-label="${tr("delivery.notification_pages")}">${after ? `<a href="${base}">${tr("common.first_page")}</a>` : ""}${state.hasMore ? `<a href="${base}?after=${state.nextAfter}">${tr("common.next")}</a>` : ""}</nav></div>`, { breadcrumb: { title: tr("settings.telegram"), href: "/settings/telegram" } });
 }
 
 /** Shows provenance, outcome and the next action for one intent. A resend warns that duplicates are possible. */
@@ -251,7 +303,7 @@ export function deliveryDetailPage(state: ReturnType<Application["delivery"]>, w
   const { project, intent, report } = state;
   const source = `/projects/${project.id}/sources/${report.sourceId}?revision=${report.sourceRevision}&generation=${report.sourceGeneration}`;
   const uncertain = intent.status === "failed" || intent.status === "unknown";
-  return shell(tr("delivery.delivery_details"), { project, workspace, csrf, section: "delivery" }, `<div class="content"><section class="hero"><p class="eyebrow">${tr("delivery.local_dedupe_only")}</p><h2>${escape(deliveryLabels()[intent.status] ?? intent.status)}</h2><p>${escape(deliveryNext()[intent.nextAction] ?? intent.nextAction)}</p><p>${tr("delivery.saving_a_request_or_starting")}</p></section>
+  return shell(tr("delivery.delivery_details"), { project, workspace, csrf, section: "settings", settings: "telegram" }, `<div class="content"><section class="hero"><p class="eyebrow">${tr("delivery.local_dedupe_only")}</p><h2>${escape(deliveryLabels()[intent.status] ?? intent.status)}</h2><p>${escape(deliveryNext()[intent.nextAction] ?? intent.nextAction)}</p><p>${tr("delivery.saving_a_request_or_starting")}</p></section>
     <article class="team-card"><p class="literal">${escape(intent.payload.text)}</p><p>${tr("delivery.request_status")} ${escape(intent.status)} ${tr("delivery.destination_result")} ${escape(intent.remote)} ${tr("delivery.guarantee")} ${escape(intent.guarantee)}</p>
     ${intent.failureReason ? `<p>${tr("delivery.reason")} ${escape(deliveryNext()[intent.failureReason] ?? intent.failureReason)}</p>` : ""}
     ${intent.stale ? `<p>${tr("delivery.this_result_occurred_while_the")}${escape(intent.staleReason ?? "")}${tr("delivery.the_system_did_not_suppress")}</p>` : ""}
@@ -262,7 +314,7 @@ export function deliveryDetailPage(state: ReturnType<Application["delivery"]>, w
     </article><details class="team-card"><summary>${tr("common.message_origin")}</summary><dl><dt>${tr("delivery.report")}</dt><dd>${escape(report.id)} ${tr("delivery.generation")} ${report.revision}/${report.generation} · ${escape(report.availability)}</dd><dt>${tr("delivery.authorization_data_generation")}</dt><dd>${intent.provenance.authorityGeneration} / ${intent.provenance.inputGeneration}</dd><dt>${tr("delivery.unique_id")}</dt><dd>${escape(intent.dedupeKey)}</dd><dt>${tr("delivery.attempts")}</dt><dd>${state.attempts.length}</dd></dl></details></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}/delivery` } });
 }
 
-const prStatusLabels = (): Record<string, string> => ({
+export const prStatusLabels = (): Record<string, string> => ({
   running: tr("pr.reviewing"),
   complete_clean: tr("pr.reviewed_nothing_to_report"),
   complete_findings: tr("pr.reviewed_evidenced_findings"),
@@ -286,7 +338,7 @@ const prDeliveryLabels = (): Record<string, string> => ({
   failed: tr("common.send_failed"), unknown: tr("pr.result_unknown"), cancelled: tr("common.cancelled_before_sending"),
 });
 
-const prObservedState = (report: { stale: boolean; status: string }) =>
+export const prObservedState = (report: { stale: boolean; status: string }) =>
   report.stale ? "stale" : report.status === "complete_clean" ? "no_findings" : report.status === "complete_findings" ? "findings" : report.status;
 
 const prDecisionLabels = (): Record<string, string> => ({
@@ -303,7 +355,7 @@ function alertPolicySummary(policy: ReturnType<Application["prReports"]>["policy
 export function prReportsPage(state: ReturnType<Application["prReports"]>, workspace: Workspace, csrf: string): string {
   const { project, policy } = state;
   const categories = ["correctness", "security", "behavior"] as const;
-  return shell(tr("pr.pr_review_reports"), { project, workspace, csrf, section: "delivery" }, `<div class="content"><section class="hero"><p class="eyebrow">${tr("pr.private_static_review")}</p><h2>${tr("pr.reports_for")} ${escape(project.name)}</h2><p>${tr("pr.a_report_is_bound_only")}</p></section>
+  return shell(tr("pr.pr_review_reports"), { project, workspace, csrf, section: "pr" }, `<div class="content"><section class="hero"><p class="eyebrow">${tr("pr.private_static_review")}</p><h2>${tr("pr.reports_for")} ${escape(project.name)}</h2><p>${tr("pr.a_report_is_bound_only")}</p></section>
     <article class="team-card"><h3>${tr("pr.review_status_per_pr_revision")}</h3>${state.reviews.length ? `<ul>${state.reviews.map(item => `<li data-review-state="${escape(item.observed)}">${escape(`PR #${item.pullNumber} · ${item.baseSha.slice(0, 8)}...${item.headSha.slice(0, 8)}`)} · ${item.reportId ? `<a href="/projects/${project.id}/pr/reports/${item.reportId}">${escape(prReviewLabels()[item.observed] ?? item.observed)}</a>` : escape(prReviewLabels()[item.observed] ?? item.observed)}${item.staleReason ? ` (${escape(item.staleReason)})` : ""}${item.previousReportId ? ` · <a href="/projects/${project.id}/pr/reports/${item.previousReportId}">${tr("pr.earlier_reports_history")}</a>` : ""}${item.jobState ? ` ${tr("common.job")} ${escape(item.jobState)}/${escape(item.jobReason ?? "")}` : ""}</li>`).join("")}</ul>` : `<p class="empty-list">${tr("pr.no_tracked_prs_yet")}</p>`}</article>
     ${state.items.length ? `<ul>${state.items.map(item => `<li class="topic-row" data-state="${prObservedState(item)}"><div class="topic-row-main"><h3><a href="/projects/${project.id}/pr/reports/${item.id}">${escape(`PR #${item.pullNumber} · ${item.baseSha.slice(0, 8)}...${item.headSha.slice(0, 8)}`)}</a></h3><p>${escape(item.stale ? `stale (${item.staleReason ?? ""}${tr("pr.not_the_latest_result")}` : prStatusLabels()[item.status] ?? item.status)} · findings ${item.findings.filter(f => f.status === "actionable").length}/${item.findings.length}</p><p class="literal">coverage ${escape(item.coverageOverall)} · enum ${item.enumerationComplete ? tr("pr.complete") : tr("common.incomplete")} · roles ${escape(item.analyzedRoles.join(","))}</p></div></li>`).join("")}</ul>` : `<p class="empty-list">${tr("pr.no_pr_review_reports_yet")}</p>`}
     <article class="team-card"><h3>${tr("pr.notification_policy")}</h3><p>${alertPolicySummary(policy)}</p>
@@ -322,7 +374,7 @@ export function prReportPage(state: ReturnType<Application["prReport"]>, workspa
   const transmissionRows = (entries: NonNullable<typeof transmitted>["specialist"]) => entries.map(e => `<li data-transmission="${escape(e.state)}">${escape(e.kind)} ${escape(e.ref)} · ${escape(transmissionLabels()[e.state] ?? e.state)}${e.required ? "" : tr("pr.optional")} · ${e.sentBytes}/${e.bytes} bytes</li>`).join("");
   const observed = report.stale ? `stale (${report.staleReason ?? ""}${tr("pr.not_the_latest_result")}` : prStatusLabels()[report.status] ?? report.status;
   const dismissed = annotations.some(a => a.kind === "dismiss" && !a.findingId);
-  return shell(tr("pr.pr_report_details"), { project, workspace, csrf, section: "delivery" }, `<div class="content"><section class="hero" data-state="${prObservedState(report)}"><p class="eyebrow">${tr("pr.private_report_no_github_comments")}</p><h2>${escape(`PR #${report.pullNumber} · ${report.baseSha.slice(0, 8)}...${report.headSha.slice(0, 8)}`)}</h2><p>${escape(observed)} · coverage ${escape(report.coverageOverall)} · ${report.enumerationComplete ? tr("pr.enumeration_complete") : tr("pr.enumeration_incomplete")}</p><p>base ${escape(report.baseSha)} · head ${escape(report.headSha)} · policy v${report.policyVersion} · review v${report.reviewPolicyVersion} · revision ${report.revision}</p>${dismissed ? `<p>${tr("pr.the_owner_recorded_that_this")}</p>` : ""}</section>
+  return shell(tr("pr.pr_report_details"), { project, workspace, csrf, section: "pr" }, `<div class="content"><section class="hero" data-state="${prObservedState(report)}"><p class="eyebrow">${tr("pr.private_report_no_github_comments")}</p><h2>${escape(`PR #${report.pullNumber} · ${report.baseSha.slice(0, 8)}...${report.headSha.slice(0, 8)}`)}</h2><p>${escape(observed)} · coverage ${escape(report.coverageOverall)} · ${report.enumerationComplete ? tr("pr.enumeration_complete") : tr("pr.enumeration_incomplete")}</p><p>base ${escape(report.baseSha)} · head ${escape(report.headSha)} · policy v${report.policyVersion} · review v${report.reviewPolicyVersion} · revision ${report.revision}</p>${dismissed ? `<p>${tr("pr.the_owner_recorded_that_this")}</p>` : ""}</section>
     <article class="team-card"><h3>${tr("pr.findings")}${report.findings.length})</h3>${report.findings.length ? `<ul>${report.findings.map(f => `<li><strong>${escape(f.title)}</strong> [${escape(f.category)}/${escape(f.severity)}/${escape(f.status)}]<br><span class="literal">${escape(f.location.path)}${f.location.line ? `:${f.location.line}` : ""} · ${escape(f.evidenceType)}${f.evidenceRef ? ` ${escape(f.evidenceRef)}` : ""}</span><br><span>${escape(f.condition)}</span><br><span>${escape(f.impact)}</span>${f.validationErrors.length ? `<br><small>${tr("pr.reviewed")} ${escape(f.validationErrors.join(", "))}</small>` : ""}</li>`).join("")}</ul>` : `<p class="empty-list">${tr("pr.no_findings")}</p>`}
     <p>${tr("pr.analysis")} ${escape(report.analyzedRoles.join(", ") || "-")} ${tr("pr.required")} ${escape(report.requiredRoles.join(", "))} ${tr("pr.skipped")} ${escape(report.skippedScope.join(", ") || "-")}</p>
     ${report.disagreements.length ? `<p>${tr("pr.conflicts")} ${escape(report.disagreements.join(" · "))}</p>` : ""}</article>
@@ -352,9 +404,9 @@ export function teamPage(state: ReturnType<Application["team"]>, workspace: Work
   const presets: Record<string, { name: string; responsibility: string }> = { tech: { name: tr("team.technology"), responsibility: tr("team.analyzes_software_structure_correctness") }, design: { name: tr("team.design"), responsibility: tr("team.analyzes_user_experience_and_design") }, marketing: { name: tr("team.marketing"), responsibility: tr("team.analyzes_audiences_product_value_and") } };
   const example = preset ? presets[preset] : undefined;
   const roleForm = (role?: (typeof state.roles)[number]) => `<form class="team-form" method="post" action="/team/roles">${hiddenCommand(csrf, state.ownerRevision)}<input type="hidden" name="roleId" value="${role?.id ?? ""}"><label>${tr("team.role_name")}<input name="name" required maxlength="200" value="${escape(role?.name ?? example?.name ?? "")}"></label><label>${tr("common.type")}<select name="kind"><option value="specialist">${tr("label.specialist")}</option><option value="coordinator"${role?.kind === "coordinator" ? " selected" : ""}>${tr("label.coordinator")}</option></select></label><label>${tr("team.responsibility")}<textarea name="responsibility" required rows="3">${escape(role?.responsibility ?? example?.responsibility ?? "")}</textarea></label><label>${tr("common.status")}<select name="enabled"><option value="true">${tr("team.enabled")}</option><option value="false"${role?.enabled === false ? " selected" : ""}>${tr("team.disabled")}</option></select></label>${routeFields(role?.route ?? null, tr("team.role_route"))}<button class="primary">${role ? tr("team.save_role") : tr("team.create_role")}</button><small>${tr("team.saving_doesnt_start_work_or")}</small></form>`;
-  return shell(project ? `${tr("team.team_for")} ${project.name}` : tr("common.team_and_models"), { workspace, csrf, section: "team", ...(project ? { project } : {}) }, `<div class="content team-content"><section class="hero"><p class="eyebrow">${tr("team.roles_and_responsibilities")}</p><h2>${project ? tr("team.choose_a_team_for_this") : tr("team.a_team_built_your_way")}</h2><p>${tr("team.define_duties_and_models_clearly")}</p></section><p class="team-notice">${tr("team.the_live_connection_hasnt_been")}</p>
+  return shell(project ? `${tr("team.team_for")} ${project.name}` : tr("common.team_and_models"), { workspace, csrf, ...(project ? { project, section: "team" as const } : { section: "settings" as const, settings: "team" as const }) }, `<div class="content team-content"><section class="hero"><p class="eyebrow">${tr("team.roles_and_responsibilities")}</p><h2>${project ? tr("team.choose_a_team_for_this") : tr("team.a_team_built_your_way")}</h2><p>${tr("team.define_duties_and_models_clearly")}</p></section><p class="team-notice">${tr("team.the_live_connection_hasnt_been")}</p>
     <details class="team-card"><summary>${project ? tr("team.project_default") : tr("team.owner_default")}</summary><form class="team-form" method="post" action="${base}/routes">${hiddenCommand(csrf, project ? state.projectRevision : state.ownerRevision)}<input type="hidden" name="roleId" value="">${routeFields(project ? state.projectDefault : state.ownerDefault, tr("team.defaults"))}<button class="primary">${tr("team.save_defaults")}</button></form></details>
-    ${!project ? `<details class="team-card" id="new-role"${example || !state.roles.length ? " open" : ""}><summary>${tr("team.add_role")}</summary><p>${tr("team.create_your_own_or_start")} <a href="/team?preset=tech#new-role">${tr("team.technology")}</a> · <a href="/team?preset=design#new-role">${tr("team.design")}</a> · <a href="/team?preset=marketing#new-role">${tr("team.marketing")}</a> ${tr("team.each_role_is_optional")}</p>${roleForm()}</details>` : `<p><a href="/team">${tr("team.manage_all_roles_and_role")}</a></p>`}
+    ${!project ? `<details class="team-card" id="new-role"${example || !state.roles.length ? " open" : ""}><summary>${tr("team.add_role")}</summary><p>${tr("team.create_your_own_or_start")} <a href="/settings/team?preset=tech#new-role">${tr("team.technology")}</a> · <a href="/settings/team?preset=design#new-role">${tr("team.design")}</a> · <a href="/settings/team?preset=marketing#new-role">${tr("team.marketing")}</a> ${tr("team.each_role_is_optional")}</p>${roleForm()}</details>` : `<p><a href="/settings/team">${tr("team.manage_all_roles_and_role")}</a></p>`}
     <section aria-label="${tr("common.role")}">${state.roles.length ? state.roles.map(role => `<article class="team-card" id="role-${role.id}"><header><h3>${escape(role.name)}</h3><span class="job-status" data-state="${role.enabled ? role.kind : "disabled"}">${role.enabled ? role.kind === "coordinator" ? tr("label.coordinator") : tr("label.specialist") : tr("team.disabled")}</span></header><p class="literal">${escape(role.responsibility)}</p><p class="team-effective">${role.effective.route ? escape(`${role.effective.route.provider} / ${role.effective.route.model} · ${role.effective.route.authRoute}`) : tr("team.no_route_yet")}<br><small>${tr("team.source")} ${names[role.effective.layer]} · ${role.effective.status === "unverified" ? tr("team.set_live_connection_not_yet") : tr("team.cant_start_yet")}</small></p>
       ${project ? `<details><summary>${tr("team.adjust_the_route_for_this")}</summary><form class="team-form" method="post" action="${base}/routes">${hiddenCommand(csrf, state.projectRevision)}<input type="hidden" name="roleId" value="${role.id}">${routeFields(state.overrides[role.id] ?? null, tr("team.project_override"))}<button class="primary">${tr("team.save_override")}</button></form></details>
       ${role.enabled && role.effective.route && state.topics.length && state.previewAvailable ? `<form class="team-form team-preview" method="post" action="${base}/previews">${hiddenCommand(csrf, project.revision)}<input type="hidden" name="roleId" value="${role.id}"><input type="hidden" name="limits" value="${escape(JSON.stringify(limits))}"><label>${tr("team.send_sample_to_topic")}<select name="topicId">${state.topics.map(topic => `<option value="${topic.id}">${escape(topic.title ?? tr("common.topic_unavailable"))}</option>`).join("")}</select></label><label>${tr("team.what_to_try")}<input name="purpose" required maxlength="300" value="${tr("team.try_the_responsibility_of")} ${escape(role.name)}"></label><label>${tr("team.supporting_context")}<select name="sources"><option value="[]">${tr("team.no_source_data_attached")}</option>${state.topics.filter(topic => topic.availability === "available").map(topic => `<option value="${escape(JSON.stringify([topic.source]))}">${tr("team.topic_name")} ${escape(topic.title)}</option>`).join("")}</select></label><details><summary>${tr("team.budget_for_this_sample")}</summary><p>${limits.calls} calls · ${limits.rounds} rounds · ${limits.hops} hops · context ${limits.contextTokens} / output ${limits.outputTokens} tokens · ${Math.ceil(limits.wallMs / 1000)} ${tr("common.seconds")}</p><p>${tr("team.tools_none_no_shell_file")}</p></details><button class="primary">${tr("team.start_simulated_sample")}</button></form>` : `<p>${!role.enabled ? tr("team.enable_the_role_before_trying") : !role.effective.route ? tr("team.set_an_exact_route_before") : !state.topics.length ? tr("team.create_a_topic_in_the") : tr("team.the_queue_isnt_ready_for")}</p>`}` : `<details><summary>${tr("team.edit_role")}</summary>${roleForm(role)}</details>`}</article>`).join("") : `<p class="empty-list">${tr("team.no_roles_yet_start_with")}</p>`}</section><details class="team-card"><summary>${tr("team.route_selection_order")}</summary><p>${tr("team.project_role_override_project_default")}</p></details></div>`, project ? { breadcrumb: { title: project.name, href: `/projects/${project.id}` } } : {});
@@ -402,7 +454,7 @@ const policyLabels = (): Record<string, string> => ({
   owner_confirmed: tr("tasks.you_confirm_results_yourself_default"),
   evidence_satisfied: tr("tasks.can_close_once_evidence_meets"),
 });
-function taskStatusText(task: { state: string; pendingReason?: { detail: string } | null; completionPolicy: { kind: string } }): string {
+export function taskStatusText(task: { state: string; pendingReason?: { detail: string } | null; completionPolicy: { kind: string } }): string {
   const base = taskLabels()[task.state] ?? task.state;
   const policy = `${tr("tasks.policy")} ${policyLabels()[task.completionPolicy.kind] ?? task.completionPolicy.kind}`;
   const pending = task.pendingReason ? ` ${tr("tasks.pending")} ${escape(systemText(task.pendingReason.detail))}` : "";
@@ -696,12 +748,12 @@ export function scheduleDetailPage(state: ReturnType<Application["schedule"]>, w
 
 /** ops.backup_manifest/v1: bounded inventory outside ordinary project data; never auto-activates workers. */
 export function backupsPage(state: ReturnType<Application["backups"]>, workspace: Workspace, csrf: string, revision: number): string {
-  const items = state.manifests.map(m => `<article class="team-card" id="backup-${m.id}"><header><h3><a href="/backups/${m.id}">${escape(m.id)}</a></h3><span class="job-status" data-state="${m.state}">${escape(m.state)}</span></header>
+  const items = state.manifests.map(m => `<article class="team-card" id="backup-${m.id}"><header><h3><a href="/settings/backups/${m.id}">${escape(m.id)}</a></h3><span class="job-status" data-state="${m.state}">${escape(m.state)}</span></header>
     <p>schema ${m.appSchema} · app revision ${m.appRevision} · ${time(m.createdAt)} · ${m.content.projects} ${tr("backups.projects")} ${m.content.sources} ${tr("common.source")}</p>
     <p>native ${escape(m.native.state)}${m.native.reason ? ` · ${escape(m.native.reason)}` : ""} · lifecycle ${m.lifecycle.available ? `checkpoint ${escape(m.lifecycle.checkpoint ?? "")}` : escape(m.lifecycle.reason ?? "unavailable")}</p>
     <p><small>hash ${escape(m.content.hash.slice(0, 16))}… · ${m.content.bytes} bytes · contract ${escape(m.contract)}</small></p>
     ${m.state === "incomplete" ? `<p><small>${tr("backups.not_ready_to_restore_a")}</small></p>` : ""}</article>`).join("");
-  return shell(tr("common.backup"), { workspace, csrf, section: "home" }, `<div class="content"><section class="hero"><p class="eyebrow">ops.backup_manifest/v1</p><h2>${tr("backups.verifiable_backups")}</h2><p>${tr("backups.a_consistent_snapshot_of_application")}</p></section>
+  return shell(tr("common.backup"), { workspace, csrf, section: "settings", settings: "backups" }, `<div class="content"><section class="hero"><p class="eyebrow">ops.backup_manifest/v1</p><h2>${tr("backups.verifiable_backups")}</h2><p>${tr("backups.a_consistent_snapshot_of_application")}</p></section>
     <form class="create-form" method="post" action="/backups">${hiddenCommand(csrf, revision)}<input type="hidden" name="note" value="manual backup"><button class="primary">${tr("backups.create_backup")}${icon("plus")}</button></form>
     <section aria-label="${tr("common.backup")}">${items || `<p class="empty-list">${tr("backups.no_backups_yet")}</p>`}</section></div>`);
 }
@@ -709,12 +761,12 @@ export function backupsPage(state: ReturnType<Application["backups"]>, workspace
 /** One backup manifest: versions, hashes, completeness and retention without secret values. */
 export function backupDetailPage(state: ReturnType<Application["backup"]>, workspace: Workspace, csrf: string): string {
   const m = state.manifest;
-  return shell(`${tr("backups.backup")} ${m.id.slice(0, 8)}`, { workspace, csrf, section: "home" }, `<div class="content"><section class="hero"><p class="eyebrow">${escape(m.contract)} · ${escape(m.state)}</p><h2>${tr("common.backup")} ${escape(m.id)}</h2><p>${time(m.createdAt)} · schema ${m.appSchema} · app revision ${m.appRevision}</p></section>
+  return shell(`${tr("backups.backup")} ${m.id.slice(0, 8)}`, { workspace, csrf, section: "settings", settings: "backups" }, `<div class="content"><section class="hero"><p class="eyebrow">${escape(m.contract)} · ${escape(m.state)}</p><h2>${tr("common.backup")} ${escape(m.id)}</h2><p>${time(m.createdAt)} · schema ${m.appSchema} · app revision ${m.appRevision}</p></section>
     <article class="team-card"><h3>${tr("backups.completeness")}</h3><p>native ${escape(m.native.state)}${m.native.reason ? ` (${escape(m.native.reason)})` : ""} · lifecycle ${m.lifecycle.available ? tr("backups.ready") : escape(m.lifecycle.reason ?? tr("common.not_ready"))}</p>
     <p>projects ${m.content.projects} · sources ${m.content.sources} · ${m.content.bytes} bytes · hash ${escape(m.content.hash)}</p>
     <p>${tr("backups.max_retention")} ${m.retention.maxBackups} ${tr("backups.backups")} ${m.retention.maxBytes} bytes${m.retention.pruned.length ? ` ${tr("backups.pruned")} ${m.retention.pruned.length} ${tr("backups.backups_2")}` : ""}</p>
     ${m.reason ? `<p>${tr("common.reason")} ${escape(m.reason)}</p>` : ""}<p><small>artifact ${escape(m.artifact.path)} ${tr("backups.restore_only_through_ops02_quarantine")}</small></p></article>
-    <p><a href="/backups">${tr("backups.back_to_backups")}</a></p></div>`, { breadcrumb: { title: tr("common.backup"), href: "/backups" } });
+    <p><a href="/settings/backups">${tr("backups.back_to_backups")}</a></p></div>`, { breadcrumb: { title: tr("common.backup"), href: "/settings/backups" } });
 }
 
 /** app.data_lifecycle/v1: bounded deletion previews and per-scope operations; never shows deleted payload. */
@@ -724,11 +776,11 @@ export function deletionsPage(state: { project: Project; operations: import("./m
     <p>scope ${escape(op.scope.source.sourceId)} r${op.scope.source.revision} g${op.scope.source.generation} · tombstones ${op.tombstones.length} · attempts ${op.attempts}/${op.maxAttempts} ${tr("deletions.native_sessions_deleted")} ${op.contexts.filter(c => c.state === "deleted").length}/${op.contexts.length}</p>
     <p>${tr("deletions.backups_still_holding_this_data")} ${op.backupsRetained.length ? escape(op.backupsRetained.join(", ")) : tr("common.none")} · ${escape(op.nextAction)}</p>
     ${op.reason ? `<p>${tr("common.reason")} ${escape(op.reason)}</p>` : ""}</article>`).join("");
-  return shell(tr("deletions.delete_data"), { project, workspace, csrf, section: "memory" }, `<div class="content"><section class="hero"><p class="eyebrow">app.data_lifecycle/v1</p><h2>${tr("deletions.delete_source")} ${escape(project.name)}</h2><p>${tr("deletions.review_the_revision_bound_impact")}</p></section>
+  return shell(tr("deletions.delete_data"), { project, workspace, csrf, section: "settings", settings: "data" }, `<div class="content"><section class="hero"><p class="eyebrow">app.data_lifecycle/v1</p><h2>${tr("deletions.delete_source")} ${escape(project.name)}</h2><p>${tr("deletions.review_the_revision_bound_impact")}</p></section>
     <details class="team-card" open><summary>${tr("deletions.preview_source_impact")}</summary><form class="team-form" method="post" action="/projects/${project.id}/memory/deletions">${hiddenCommand(csrf, project.revision)}
       <input type="hidden" name="mode" value="preview"><label>${tr("common.source_2")}<select name="source">${sources.map(s => `<option value="${escape(JSON.stringify(s.reference))}">${escape(s.label)}</option>`).join("")}</select></label>
       <button class="primary">${tr("deletions.preview_impact")}</button></form></details>
-    <section aria-label="${tr("deletions.deletions")}">${items || `<p class="empty-list">${tr("deletions.no_deletions_in_this_project")}</p>`}</section></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
+    <section aria-label="${tr("deletions.deletions")}">${items || `<p class="empty-list">${tr("deletions.no_deletions_in_this_project")}</p>`}</section></div>`, { breadcrumb: { title: tr("settings.data"), href: "/settings/data" } });
 }
 
 /** One deletion preview or operation: complete collateral, named blockers, whole-session scope and per-scope state. */
@@ -763,7 +815,7 @@ export function deletionDetailPage(state: { project: Project; preview: import(".
     <p>${tr("deletions.copies_not_deleted")} ${escape(operation.residuals.join(", "))}</p>
     ${operation.state === "pending" || operation.state === "blocked" ? `<form class="team-form" method="post" action="/projects/${project.id}/memory/deletions">${hiddenCommand(csrf, project.revision)}
       <input type="hidden" name="mode" value="retry"><input type="hidden" name="operationId" value="${operation.id}"><button>${tr("deletions.retry_native_session_cleanup")}</button></form>` : ""}</article>` : "";
-  return shell(tr("deletions.deletion_result"), { project, workspace, csrf, section: "memory" }, `<div class="content">${previewCard}${operationCard || (!preview ? `<p class="empty-list">${tr("deletions.record_not_found")}</p>` : "")}
+  return shell(tr("deletions.deletion_result"), { project, workspace, csrf, section: "settings", settings: "data" }, `<div class="content">${previewCard}${operationCard || (!preview ? `<p class="empty-list">${tr("deletions.record_not_found")}</p>` : "")}
     <p><a href="/projects/${project.id}/memory/deletions">${tr("deletions.back_to_deletions")}</a></p></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
 }
 
@@ -773,20 +825,20 @@ export function exportsPage(state: { project: Project; manifests: import("./ops/
   const items = manifests.map(m => `<article class="team-card" id="export-${m.id}"><header><h3><a href="/projects/${project.id}/exports/${m.id}">${escape(m.id)}</a></h3><span class="job-status" data-state="${m.state}">${escape(m.state)}</span></header>
     <p>${time(m.createdAt)} ${tr("exports.history")} ${m.scope.includeHistory ? tr("exports.includes_raw_messages") : tr("exports.metadata_only")} · claims ${m.counts.claims} ${tr("common.job")} ${m.counts.jobs} · exclusions ${m.exclusions.length}</p>
     <p><small>${m.artifact ? `hash ${escape(m.artifact.hash.slice(0, 16))}… · ${m.artifact.bytes} bytes` : `${tr("exports.failed")} ${escape(m.failure?.reason ?? "export_failed")} ${tr("exports.no_file")}`} · tombstones ${m.lifecycle.tombstonesApplied}</small></p></article>`).join("");
-  return shell(tr("exports.export_data"), { project, workspace, csrf, section: "memory" }, `<div class="content"><section class="hero"><p class="eyebrow">ops.project_export/v1</p><h2>${tr("exports.export")} ${escape(project.name)}</h2><p>${tr("exports.a_re_verifiable_json_file")}</p></section>
+  return shell(tr("exports.export_data"), { project, workspace, csrf, section: "settings", settings: "data" }, `<div class="content"><section class="hero"><p class="eyebrow">ops.project_export/v1</p><h2>${tr("exports.export")} ${escape(project.name)}</h2><p>${tr("exports.a_re_verifiable_json_file")}</p></section>
     <details class="team-card" open><summary>${tr("exports.preview_before_export")}</summary><p>topics ${preview.counts.topics} · messages ${preview.counts.messages} · tasks ${preview.counts.tasks} · decisions ${preview.counts.decisions} · claims ${preview.counts.claims} · exclusions ${preview.manifest.exclusions.length} · missing ${preview.manifest.missingRefs.length}</p>
     <p><small>${escape(systemText(preview.manifest.lifecycle.note))}</small></p>
     <form class="team-form" method="post" action="/projects/${project.id}/exports">${hiddenCommand(csrf, project.revision)}
       <label><input type="checkbox" name="includeHistory" value="on"> ${tr("exports.include_raw_message_history_includes")}</label>
       <label>${tr("exports.note")}<input name="note" maxlength="500" value="manual export"></label>
       <button class="primary">${tr("exports.create_export")}</button></form></details>
-    <section aria-label="${tr("exports.export_file")}">${items || `<p class="empty-list">${tr("exports.no_exports_yet")}</p>`}</section></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
+    <section aria-label="${tr("exports.export_file")}">${items || `<p class="empty-list">${tr("exports.no_exports_yet")}</p>`}</section></div>`, { breadcrumb: { title: tr("settings.data"), href: "/settings/data" } });
 }
 
 /** One export manifest: versions, coverage, exclusions, residuals and artifact reference. */
 export function exportDetailPage(state: { project: Project; manifest: import("./ops/export").ExportManifest }, workspace: Workspace, csrf: string): string {
   const { project, manifest: m } = state;
-  return shell(`${tr("exports.export")} ${m.id.slice(0, 8)}`, { project, workspace, csrf, section: "memory" }, `<div class="content"><section class="hero"><p class="eyebrow">${escape(m.contract)} · ${escape(m.state)}</p><h2>${tr("exports.export_file")} ${escape(m.id)}</h2><p>${time(m.createdAt)} ${tr("exports.history_scope")} ${m.scope.includeHistory ? tr("exports.includes_raw_messages") : tr("exports.metadata_only")}</p></section>
+  return shell(`${tr("exports.export")} ${m.id.slice(0, 8)}`, { project, workspace, csrf, section: "settings", settings: "data" }, `<div class="content"><section class="hero"><p class="eyebrow">${escape(m.contract)} · ${escape(m.state)}</p><h2>${tr("exports.export_file")} ${escape(m.id)}</h2><p>${time(m.createdAt)} ${tr("exports.history_scope")} ${m.scope.includeHistory ? tr("exports.includes_raw_messages") : tr("exports.metadata_only")}</p></section>
     <article class="team-card"><h3>${tr("exports.scope_and_completeness")}</h3><p>topics ${m.counts.topics} · messages ${m.counts.messages} · tasks ${m.counts.tasks} · decisions ${m.counts.decisions} · claims ${m.counts.claims} · jobs ${m.counts.jobs} · deliveries ${m.counts.deliveries}</p>
     <p>exclusions ${m.exclusions.length} · missing ${m.missingRefs.length} ${tr("exports.pending_deletions")} ${m.pendingDeletions.length} · tombstones ${m.lifecycle.tombstonesApplied}</p>
     <p>${tr("common.backups_still_holding_this_data")} ${m.residuals.backups.length ? escape(m.residuals.backups.join(", ")) : tr("common.none")} ${tr("exports.external")} ${escape(m.residuals.external.join(", "))}</p>
@@ -804,14 +856,14 @@ type UpgradeView = import("./ops/upgrade").UpgradeJournal & { actions: import(".
  */
 export function upgradesPage(state: { journals: UpgradeView[]; status: import("./ops/upgrade").UpgradeStatus }, workspace: Workspace, csrf: string, revision: number): string {
   const s = state.status;
-  const items = state.journals.map(j => `<article class="team-card" id="upgrade-${j.id}"><header><h3><a href="/upgrades/${j.id}">${escape(j.id)}</a></h3><span class="job-status" data-state="${j.state}">${escape(j.state)}</span></header>
+  const items = state.journals.map(j => `<article class="team-card" id="upgrade-${j.id}"><header><h3><a href="/settings/upgrades/${j.id}">${escape(j.id)}</a></h3><span class="job-status" data-state="${j.state}">${escape(j.state)}</span></header>
     <p>schema ${j.fromSchema} → ${j.targetSchema} ${tr("upgrades.restore_point")} ${j.snapshotBackupId ? escape(j.snapshotBackupId) : tr("common.none")} · ${escape(j.nextAction)}</p>
     ${j.reason ? `<p>${tr("common.reason")} ${escape(j.reason)}</p>` : ""}</article>`).join("");
   const engine = s.engine.compatible ? `${escape(s.engine.contract ?? "")} (${escape(s.engine.engine ?? "engine")}${tr("upgrades.supported")}`
     : `${tr("upgrades.not_ready")} ${escape(s.engine.reason ?? "engine_unavailable")}`;
-  const form = s.active || s.fenced ? `<p>${tr("upgrades.an_upgrade_is_pending")} <a href="/upgrades/${s.active ? s.active.id : ""}">${tr("common.continue")}</a></p>`
+  const form = s.active || s.fenced ? `<p>${tr("upgrades.an_upgrade_is_pending")} <a href="/settings/upgrades/${s.active ? s.active.id : ""}">${tr("common.continue")}</a></p>`
     : `<form class="create-form" method="post" action="/upgrades">${hiddenCommand(csrf, revision)}<input type="hidden" name="targetSchema" value="${s.target}"><input type="hidden" name="note" value="manual upgrade"><button class="primary">${tr("upgrades.prepare_upgrade_to_schema")} ${s.target}${icon("plus")}</button></form>`;
-  return shell(tr("upgrades.upgrade"), { workspace, csrf, section: "home" }, `<div class="content"><section class="hero"><p class="eyebrow">ops.schema_migrations/v1</p><h2>${tr("upgrades.staged_upgrade")}</h2><p>${tr("upgrades.run_preflight_pause_new_work")}</p></section>
+  return shell(tr("upgrades.upgrade"), { workspace, csrf, section: "settings", settings: "upgrades" }, `<div class="content"><section class="hero"><p class="eyebrow">ops.schema_migrations/v1</p><h2>${tr("upgrades.staged_upgrade")}</h2><p>${tr("upgrades.run_preflight_pause_new_work")}</p></section>
     <article class="team-card"><h3>${tr("common.status")}</h3><p>${tr("upgrades.current_schema")} ${s.currentSchema} ${tr("upgrades.supported_target")} ${s.target} ${tr("upgrades.minimum_source")} ${s.supported.minSource}) · ${escape(s.jitVersion)} · engine ${engine}${s.fenced ? tr("upgrades.new_work_paused_during_upgrade") : ""}</p></article>
     ${form}
     <section aria-label="${tr("upgrades.upgrade")}">${items || `<p class="empty-list">${tr("upgrades.no_upgrades_yet")}</p>`}</section></div>`);
@@ -828,15 +880,15 @@ export function upgradeDetailPage(state: { journal: UpgradeView }, workspace: Wo
   const action = (name: import("./ops/upgrade").UpgradeAction) => `<form class="team-form" method="post" action="/upgrades/${j.id}">${hiddenCommand(csrf, revision)}<input type="hidden" name="action" value="${name}"><button>${upgradeActionLabels()[name]}</button></form>`;
   const engine = j.preflight.engine;
   const restoreHint = (j.state === "complete" || j.state === "activated") && j.snapshotBackupId
-    ? `<p>${tr("upgrades.roll_back_restore_backup")} ${escape(j.snapshotBackupId)} ${tr("common.passed")} <a href="/restores">quarantine (OPS02)</a> ${tr("upgrades.with_the_latest_ledger")}</p>` : "";
-  return shell(`${tr("upgrades.upgrade")} ${j.id.slice(0, 8)}`, { workspace, csrf, section: "home" }, `<div class="content"><section class="hero"><p class="eyebrow">${escape(j.contract)} · ${escape(j.state)}</p><h2>${tr("upgrades.schema_upgrade")} ${j.fromSchema} → ${j.targetSchema}</h2><p>${escape(j.nextAction)}${j.reason ? ` · ${escape(j.reason)}` : ""}</p></section>
+    ? `<p>${tr("upgrades.roll_back_restore_backup")} ${escape(j.snapshotBackupId)} ${tr("common.passed")} <a href="/settings/restores">quarantine (OPS02)</a> ${tr("upgrades.with_the_latest_ledger")}</p>` : "";
+  return shell(`${tr("upgrades.upgrade")} ${j.id.slice(0, 8)}`, { workspace, csrf, section: "settings", settings: "upgrades" }, `<div class="content"><section class="hero"><p class="eyebrow">${escape(j.contract)} · ${escape(j.state)}</p><h2>${tr("upgrades.schema_upgrade")} ${j.fromSchema} → ${j.targetSchema}</h2><p>${escape(j.nextAction)}${j.reason ? ` · ${escape(j.reason)}` : ""}</p></section>
     <article class="team-card"><h3>${tr("ops.preflight")}</h3><p>${escape(j.preflight.jitVersion)} · engine ${escape(engine.engine ?? tr("common.not_ready"))} · ${escape(engine.contract ?? tr("upgrades.no_contract"))} v${engine.formatVersion ?? "-"} · compatible ${j.preflight.compatible ? tr("upgrades.yes") : tr("upgrades.no")} · migrations ${escape(j.preflight.migrations.join(", ") || tr("common.none"))}</p>
     <h3>${tr("ops.steps")}</h3><ul>${j.steps.map(s => `<li>${escape(s.name)}: ${s.ok ? tr("common.passed") : tr("common.failed_2")} <small>${escape(s.detail)}</small></li>`).join("")}</ul>
     <h3>${tr("ops.validation")}</h3><ul>${checks}</ul>
     <p>${tr("upgrades.restore_point_2")} ${j.snapshotBackupId ? escape(j.snapshotBackupId) : tr("common.none")}${j.checkpoint ? ` · schema ${j.checkpoint.appSchema} · native refs ${j.checkpoint.nativeRefs}` : ""} · ledger ${j.ledger ? `tombstones ${j.ledger.deletions} · suppressions ${j.ledger.suppressions} · sources ${j.ledger.sources}` : tr("common.none")} · reconcile ${j.reconcile ? escape(j.reconcile.detail) : tr("upgrades.not_done_yet")}</p>
     ${restoreHint}
     <div>${j.actions.map(action).join(" ")}</div></article>
-    <p><a href="/upgrades">${tr("upgrades.back_to_upgrades")}</a></p></div>`, { breadcrumb: { title: tr("upgrades.upgrade"), href: "/upgrades" } });
+    <p><a href="/settings/upgrades">${tr("upgrades.back_to_upgrades")}</a></p></div>`, { breadcrumb: { title: tr("upgrades.upgrade"), href: "/settings/upgrades" } });
 }
 
 type RestoreView = import("./ops/restore").RestoreEvidence;
@@ -845,7 +897,7 @@ type LedgerView = { state: "trusted"; head: number; count: number; writtenAt: nu
 
 /** ops.quarantined_restore/v1: restore journals, installation ledger trust and the prepare form. */
 export function restoresPage(state: { quarantines: RestoreView[]; ledger: LedgerView; backups: import("./ops/backup").BackupManifest[] }, workspace: Workspace, csrf: string, revision: number): string {
-  const items = state.quarantines.map(q => `<article class="team-card" id="restore-${q.id}"><header><h3><a href="/restores/${q.id}">${escape(q.id)}</a></h3><span class="job-status" data-state="${q.state}">${escape(q.state)}</span></header>
+  const items = state.quarantines.map(q => `<article class="team-card" id="restore-${q.id}"><header><h3><a href="/settings/restores/${q.id}">${escape(q.id)}</a></h3><span class="job-status" data-state="${q.state}">${escape(q.state)}</span></header>
     <p>backup ${escape(q.backupId)} · schema ${q.compat.backupSchema} → ${q.stagedSchema ?? "?"} · ledger ${q.ledger ? `head ${q.ledger.head} (${q.ledger.deletions} tombstones, ${q.ledger.suppressions} suppressions)` : tr("restores.not_used_yet")} · ${escape(q.nextAction)}</p>
     ${q.reason ? `<p>${tr("common.reason")} ${escape(q.reason)}</p>` : ""}</article>`).join("");
   const options = state.backups.map(m => `<option value="${m.id}">${escape(m.id)} · schema ${m.appSchema} · ${escape(m.state)}</option>`).join("");
@@ -853,9 +905,9 @@ export function restoresPage(state: { quarantines: RestoreView[]; ledger: Ledger
     ? `${tr("restores.installation_ledger_trusted_head")} ${state.ledger.head} · ${state.ledger.count} ${tr("common.items")}`
     : `${tr("restores.installation_ledger_untrusted")} ${escape(state.ledger.reason)} · ${escape(state.ledger.nextAction)}`;
   const active = state.quarantines.find(q => !["complete", "failed", "discarded"].includes(q.state));
-  const form = active ? `<p>${tr("restores.a_restore_is_pending")} <a href="/restores/${active.id}">${tr("common.continue")}</a></p>`
+  const form = active ? `<p>${tr("restores.a_restore_is_pending")} <a href="/settings/restores/${active.id}">${tr("common.continue")}</a></p>`
     : `<form class="team-form" method="post" action="/restores">${hiddenCommand(csrf, revision)}<label>${tr("common.backup")}<select name="backupId">${options}</select></label><input type="hidden" name="note" value="manual restore"><button class="primary">${tr("restores.prepare_quarantine")}</button></form>`;
-  return shell(tr("restores.restore"), { workspace, csrf, section: "home" }, `<div class="content"><section class="hero"><p class="eyebrow">ops.quarantined_restore/v1</p><h2>${tr("restores.quarantined_restore")}</h2><p>${tr("restores.check_manifest_schema_and_engine")}</p></section>
+  return shell(tr("restores.restore"), { workspace, csrf, section: "settings", settings: "restores" }, `<div class="content"><section class="hero"><p class="eyebrow">ops.quarantined_restore/v1</p><h2>${tr("restores.quarantined_restore")}</h2><p>${tr("restores.check_manifest_schema_and_engine")}</p></section>
     <article class="team-card"><h3>${tr("ops.ledger")}</h3><p>${ledger}</p></article>
     ${form}
     <section aria-label="quarantine">${items || `<p class="empty-list">${tr("restores.no_quarantine_yet")}</p>`}</section></div>`);
@@ -872,7 +924,7 @@ export function restoreDetailPage(state: { quarantine: RestoreView }, workspace:
   const checks = q.validation ? q.validation.checks.map(c => `<li>${escape(c.name)}: ${c.pass ? tr("common.passed") : tr("common.failed")} <small>${escape(c.detail)}</small></li>`).join("") : `<li>${tr("common.not_validated_yet")}</li>`;
   const action = (name: import("./ops/restore").RestoreAction) => `<form class="team-form" method="post" action="/restores/${q.id}">${hiddenCommand(csrf, revision)}<input type="hidden" name="action" value="${name}"><button>${restoreActionLabels()[name]}</button></form>`;
   const inv = r.invalidated;
-  return shell(`${tr("restores.restore")} ${q.id.slice(0, 8)}`, { workspace, csrf, section: "home" }, `<div class="content"><section class="hero"><p class="eyebrow">${escape(q.contract)} · ${escape(q.state)}</p><h2>quarantine ${escape(q.id)}</h2><p>backup ${escape(q.backupId)} · ${escape(q.nextAction)}${q.reason ? ` · ${escape(q.reason)}` : ""}</p></section>
+  return shell(`${tr("restores.restore")} ${q.id.slice(0, 8)}`, { workspace, csrf, section: "settings", settings: "restores" }, `<div class="content"><section class="hero"><p class="eyebrow">${escape(q.contract)} · ${escape(q.state)}</p><h2>quarantine ${escape(q.id)}</h2><p>backup ${escape(q.backupId)} · ${escape(q.nextAction)}${q.reason ? ` · ${escape(q.reason)}` : ""}</p></section>
     <article class="team-card"><h3>${tr("ops.versions")}</h3><p>backup ${escape(r.versions.backupJit)} schema ${r.versions.backupSchema} → build ${escape(r.versions.currentJit)} schema ${r.versions.currentSchema} · quarantine ${r.versions.quarantineSchema ?? "?"} · native refs ${r.versions.engine.nativeRefs} · engine ${r.versions.engine.compatible ? tr("restores.supported") : `${tr("restores.not_supported")}${escape(r.versions.engine.reason ?? "")})`}</p>
     <h3>${tr("ops.steps")}</h3><ul>${q.steps.map(s => `<li>${escape(s.name)}: ${s.ok ? tr("common.passed") : tr("common.failed_2")} <small>${escape(s.detail)}</small></li>`).join("")}</ul>
     <h3>${tr("ops.validation")}</h3><ul>${checks}</ul>
@@ -882,10 +934,10 @@ export function restoreDetailPage(state: { quarantine: RestoreView }, workspace:
     <h3>${tr("restores.retention_limits")}</h3><ul>${r.retention.map(item => `<li>${escape(item)}</li>`).join("")}</ul>
     <h3>${tr("restores.activation_decision")}</h3><p>${r.activation.allowed ? tr("restores.ready_to_activate") : `${tr("restores.cannot_activate_yet")} ${escape(r.activation.blockers.join(", ") || q.nextAction)}`} · revision live ${r.generation.liveRevision ?? "?"} → ${r.generation.restoredRevision ?? "?"}${r.generation.sessionsRevoked ? tr("restores.previous_sessions_revoked") : ""}</p>
     <div>${q.actions.map(action).join(" ")}</div></article>
-    <p><a href="/restores">${tr("restores.back_to_restores")}</a></p></div>`, { breadcrumb: { title: tr("restores.restore"), href: "/restores" } });
+    <p><a href="/settings/restores">${tr("restores.back_to_restores")}</a></p></div>`, { breadcrumb: { title: tr("restores.restore"), href: "/settings/restores" } });
 }
 
-/** Owner settings: persisted appearance and language (ui.preferences/v1), plus entries to installation operations. */
+/** Owner settings home: persisted appearance and language (ui.preferences/v1) and the persona; the sub-navigation leads to every operation. */
 export function settingsPage(preferences: { theme: ThemePreference; language: "auto" | Locale; revision: number }, workspace: Workspace, csrf: string, persona?: Persona): string {
   const choice = (name: string, value: string, label: string, current: string) =>
     `<label class="choice"><input type="radio" name="${name}" value="${value}"${value === current ? " checked" : ""}>${label}</label>`;
@@ -899,15 +951,12 @@ export function settingsPage(preferences: { theme: ThemePreference; language: "a
       <fieldset class="choice-group"><legend>${tr("settings.persona_personality")}</legend>${choice("personality", "calm", tr("settings.persona_calm"), persona.personality)}${choice("personality", "direct", tr("settings.persona_direct"), persona.personality)}${choice("personality", "friendly", tr("settings.persona_friendly"), persona.personality)}</fieldset>
       <label>${tr("settings.persona_about")}<textarea name="aboutMe" maxlength="600" rows="3">${escape(persona.aboutMe)}</textarea></label>
       <small>${tr("settings.persona_revision")} ${persona.revision}</small><button class="primary">${tr("settings.persona_save")}</button></form></section>` : "";
-  return shell(tr("shell.settings"), { workspace, csrf, section: "settings" }, `<div class="content settings-content">${personaSection}
+  return shell(tr("shell.settings"), { workspace, csrf, section: "settings", settings: "general" }, `<div class="content settings-content">${personaSection}
     <section class="settings-section" id="appearance" aria-labelledby="appearance-title"><h2 id="appearance-title">${tr("settings.appearance")}</h2><p>${tr("settings.appearance_note")}</p>
     <form method="post" action="/settings/preferences">${hiddenCommand(csrf, preferences.revision)}
       <fieldset class="choice-group"><legend>${tr("settings.theme")}</legend>${choice("theme", "system", tr("settings.theme_system"), preferences.theme)}${choice("theme", "dark", tr("settings.theme_dark"), preferences.theme)}${choice("theme", "light", tr("settings.theme_light"), preferences.theme)}</fieldset>
       <fieldset class="choice-group"><legend>${tr("settings.language")}</legend>${choice("language", "auto", tr("settings.language_auto"), preferences.language)}${choice("language", "th", tr("settings.language_th"), preferences.language)}${choice("language", "en", tr("settings.language_en"), preferences.language)}</fieldset>
       <button class="primary">${tr("settings.save")}</button></form></section>
-    <section class="settings-section" aria-labelledby="operations-title"><h2 id="operations-title">${tr("settings.operations")}</h2><p>${tr("settings.operations_note")}</p>
-    <nav class="settings-links" aria-labelledby="operations-title"><a href="/team">${icon("user")}<span>${tr("common.team_and_models")}</span></a><a href="/backups">${icon("clock")}<span>${tr("settings.backups")}</span></a>
-      <a href="/upgrades">${icon("arrow")}<span>${tr("settings.upgrades")}</span></a><a href="/restores">${icon("info")}<span>${tr("settings.restores")}</span></a></nav></section>
     <section class="settings-section" aria-labelledby="about-title"><h2 id="about-title">${tr("settings.about")}</h2><p class="licenses">${tr("settings.fonts_note")}
       <a href="${assetUrl("OFL-Inter.txt")}">Inter</a> · <a href="${assetUrl("OFL-NotoSansThai.txt")}">Noto Sans Thai</a> · <a href="${assetUrl("OFL-JetBrainsMono.txt")}">JetBrains Mono</a></p></section></div>`);
 }

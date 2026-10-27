@@ -415,8 +415,8 @@ test("a context deleted after the backup is deleted through the run port before 
   expect(f.rt.app.restoreConsole(actor(f)).gatedBy).toBe(q.id);
   const web = createWebHandler(f.rt.app);
   const home = await web(new Request("http://localhost:3000/", { headers: { cookie: `jit_session=${f.token}` } }));
-  expect([home.status, home.headers.get("location")]).toEqual([303, "/restores"]);
-  const consolePage = await web(new Request("http://localhost:3000/restores", { headers: { cookie: `jit_session=${f.token}` } }));
+  expect([home.status, home.headers.get("location")]).toEqual([303, "/settings/restores"]);
+  const consolePage = await web(new Request("http://localhost:3000/settings/restores", { headers: { cookie: `jit_session=${f.token}` } }));
   expect(consolePage.status).toBe(200);
   expect(await consolePage.text()).not.toContain("โครงการ native");
   const memoryApi = await web(new Request(`http://localhost:3000/api/projects/${a.id}/memory`, { headers: { cookie: `jit_session=${f.token}` } }));
@@ -849,14 +849,14 @@ test("web restore inventory, report and actions render sanitized evidence; activ
     const response = await web(req(`/api/restores/${prepared.quarantine.id}`, "POST", { requestId: rid(), expectedRevision: appRevision(f), action }));
     expect(response.status).toBe(200);
   }
-  const list = await web(req("/restores"));
+  const list = await web(req("/settings/restores"));
   expect(list.status).toBe(200);
   const html = await list.text();
   expect(html).toContain(prepared.quarantine.id);
   expect(html).toContain("ledger ของ installation เชื่อถือได้");
   expect(html).not.toContain("web-canary-restore-007");
   expect(html).not.toContain(f.token);
-  const detail = await (await web(req(`/restores/${prepared.quarantine.id}`))).text();
+  const detail = await (await web(req(`/settings/restores/${prepared.quarantine.id}`))).text();
   expect(detail).toContain("ops.quarantined_restore/v1");
   expect(detail).toContain("พร้อม activate");
   expect(detail).not.toContain("web-canary-restore-007");
@@ -868,5 +868,5 @@ test("web restore inventory, report and actions render sanitized evidence; activ
     headers: { cookie: `jit_session=${f.token}`, origin: "http://localhost:3000", "content-type": "application/x-www-form-urlencoded" }, body: form }));
   expect(activated.status).toBe(303);
   expect(activated.headers.get("location")).toBe("/login");
-  expect((await web(req("/restores"))).status).not.toBe(200);
+  expect((await web(req("/settings/restores"))).headers.get("location")).toBe("/login");
 }, 60_000);

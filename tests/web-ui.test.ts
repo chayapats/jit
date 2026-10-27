@@ -178,7 +178,12 @@ test("web.static_assets/v1: hashed, immutable, self-hosted assets with font lice
     expect(new TextDecoder().decode(asset.body).replace('xmlns="http://www.w3.org/2000/svg"', "")).not.toMatch(/https?:\/\/|\/\/[a-z0-9.-]+\.[a-z]{2,}\//i);
   }
   const js = new TextDecoder().decode(staticAssets.get("app.js")!.body);
-  expect(js).not.toMatch(/\beval\s*\(|new Function|fetch\(|XMLHttpRequest|localStorage|sessionStorage|document\.cookie/);
+  expect(js).not.toMatch(/\beval\s*\(|new Function|XMLHttpRequest|localStorage|sessionStorage|document\.cookie|innerHTML|outerHTML|insertAdjacentHTML|document\.write|method:/);
+  // The script reads only two same-origin pages (topic panel, bounded ⌘K query), always with the session's own credentials.
+  const fetches = [...js.matchAll(/\bfetch\(([^,]+), (\{[^}]*\})/g)];
+  expect(fetches.map(m => m[1])).toEqual(["href", "`/api/search?q=${encodeURIComponent(input.value)}`"]);
+  for (const [, , options] of fetches) expect(options).toContain('credentials: "same-origin"');
+  expect(js.match(/\bfetch\(/g)).toHaveLength(2);
   for (const path of ["/assets/app.css", "/assets/app.0000000000000000.css", "/assets/fonts/Inter-Variable.woff2", `${assetUrl("app.css")}x`]) {
     expect((await get(f, path, {}, false)).status).toBe(404);
   }
@@ -207,7 +212,7 @@ test("the generated stylesheet has only valid property names and keeps literal t
 });
 
 test("layout templates contain no hard-coded English or Thai text nodes", async () => {
-  const source = await Bun.file(join(import.meta.dir, "../src/web-layout.ts")).text();
+  const source = (await Promise.all(["web-layout.ts", "web-navigation.ts", "web-settings.ts"].map(file => Bun.file(join(import.meta.dir, "../src", file)).text()))).join("\n");
   const nodes = [...source.matchAll(/>([^<>$`{}\n=;'"]*[A-Za-z\u0E00-\u0E7F]{2,}[^<>$`{}\n=;'"]*)</g)].map(m => m[1]!.trim()).filter(Boolean);
   // Allowed literals: vendored font names and contract identifiers, which are the same in every language.
   const literals = [...new Set(nodes)].filter(node => !/^[a-z_.]+\/v\d+$/.test(node) && !node.includes("(value)")).sort();
@@ -232,10 +237,12 @@ test("every existing page renders through the shell in Thai and English, dark an
   const routes = [
     "/", `/projects/${project.id}`, `/projects/${project.id}/topics`, `/projects/${project.id}/topics/${topic.id}`,
     `/projects/${project.id}/sources/${topic.source.sourceId}?revision=${topic.source.revision}&generation=${topic.source.generation}`,
-    "/team", `/projects/${project.id}/team`, `/projects/${project.id}/tasks`, `/projects/${project.id}/tasks/${task.id}`,
+    "/settings/team", `/projects/${project.id}/team`, `/projects/${project.id}/tasks`, `/projects/${project.id}/tasks/${task.id}`,
     `/projects/${project.id}/jobs`, `/projects/${project.id}/delivery`, `/projects/${project.id}/pr/reports`, `/projects/${project.id}/schedules`,
     `/projects/${project.id}/memory`, `/projects/${project.id}/memory/deletions`, `/projects/${project.id}/exports`,
-    "/backups", "/upgrades", "/restores", "/settings", `/projects/${project.id}/topics/00000000-0000-0000-0000-000000000000`,
+    "/settings/backups", "/settings/upgrades", "/settings/restores", "/settings", "/settings/telegram", "/settings/data", "/search", "/search?q=Topic",
+    `/projects/${project.id}/topics/${topic.id}/panel`, ...["memory", "tasks", "jobs", "pr", "team"].map(tab => `/projects/${project.id}/topics/${topic.id}/panel?tab=${tab}`),
+    `/projects/${project.id}/topics/00000000-0000-0000-0000-000000000000`,
   ];
   const keys = Object.keys(th);
   const keyPattern = new RegExp(`(?:^|[\\s>"])(?:${keys.map(k => k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})(?=[\\s<"]|$)`);
