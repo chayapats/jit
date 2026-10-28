@@ -15,6 +15,12 @@ export interface BoxManagerOptions {
   /** Called after a box stops or is reset, so the queue can admit work waiting as `box_capacity`. */
   onCapacity?: () => void;
   backend?: BoxBackendOptions;
+  /**
+   * exec.browser/v1 (ADR 0039): open every box with the project profile, so the browser image and its `/profile`
+   * mount are used whenever a pinned `browser` image is configured. One setting for every open keeps runs, MCP
+   * servers and browser sessions on the same container (a mismatch would restart the box under them).
+   */
+  profile?: boolean;
 }
 
 interface Slot {
@@ -44,11 +50,24 @@ export class BoxManager {
   readonly #now: () => number;
   readonly #onCapacity: (() => void) | undefined;
   readonly #backend: BoxBackendOptions;
+  readonly #profile: boolean;
+  readonly #stopListeners = new Set<(projectId: string) => void>();
 
   constructor(readonly store: TransactionStore, readonly config: AppConfig, readonly runtime: BoxRuntime, options: BoxManagerOptions = {}) {
     this.#now = options.now ?? Date.now;
     this.#onCapacity = options.onCapacity;
     this.#backend = options.backend ?? {};
+    this.#profile = options.profile === true;
+  }
+
+  /** Called after a project's box stopped or was reset (browser sessions close with it). Returns the unsubscribe. */
+  onStopped(listener: (projectId: string) => void): () => void {
+    this.#stopListeners.add(listener);
+    return () => this.#stopListeners.delete(listener);
+  }
+
+  #stopped(projectId: string): void {
+    for (const listener of [...this.#stopListeners]) { try { listener(projectId); } catch { /* Listeners never block a stop. */ } }
   }
 
   /**
@@ -93,7 +112,8 @@ export class BoxManager {
    * refuses further commands (only `kill` still reaches the runner). Refuses `box_busy` during a reset and
    * `box_capacity` when every slot is held by other projects.
    */
-  async open(projectId: string, roleId: string | null, options: { profile?: boolean } = {}): Promise<BoxSession> {
+  async open(projectId: string, roleId: string | null, requested: { profile?: boolean } = {}): Promise<BoxSession> {
+    const options = { profile: requested.profile ?? this.#profile };
     let mode = this.#mode(projectId, roleId);
     let slot = this.#slots.get(projectId);
     while (slot?.stopping) { await slot.stopping.catch(() => undefined); slot = this.#slots.get(projectId); }
@@ -178,6 +198,7 @@ export class BoxManager {
       await this.runtime.stop({ projectId });
       if (this.#slots.get(projectId) === slot) this.#slots.delete(projectId);
       slot.handle = null;
+      this.#stopped(projectId);
       this.#onCapacity?.();
     })().finally(() => { slot.stopping = null; });
     slot.stopping = stopping;
@@ -201,6 +222,7 @@ export class BoxManager {
     const slot = this.#slots.get(projectId);
     if (slot) return this.#stopSlot(projectId, slot);
     await this.runtime.stop({ projectId });
+    this.#stopped(projectId);
   }
 
   /**
@@ -233,6 +255,7 @@ export class BoxManager {
       steps.before?.();
       slot.handle = null;
       await this.runtime.reset({ projectId }, { wipeWorkspace });
+      this.#stopped(projectId);
       return steps.commit();
     } finally {
       if (this.#slots.get(projectId) === slot) this.#slots.delete(projectId);

@@ -49,7 +49,16 @@ export interface ExecutionConfig {
   idleMinutes: number;
   registryHosts: string[];
   fullAllowed: boolean;
+  /**
+   * exec.browser/v1 (ADR 0039): the operator's confirm vocabulary, Thai and English. A browser click on an element
+   * whose accessible name contains one of these words is a confirm action and waits for a card.
+   * `JIT_BROWSER_CONFIRM_WORDS` (comma-separated) replaces the defaults; absent means the defaults.
+   */
+  confirmWords?: string[];
 }
+
+/** Default confirm vocabulary (ADR 0039 § Pause before submit or confirm). */
+export const defaultConfirmWords: readonly string[] = Object.freeze(["submit", "send", "pay", "buy", "confirm", "delete", "ส่ง", "ยืนยัน", "ชำระ", "ซื้อ", "ลบ"]);
 
 /** Default registry egress allowlist for `workspace` boxes (ADR 0036). */
 const defaultExecutionRegistryHosts = ["registry.npmjs.org", "pypi.org", "files.pythonhosted.org", "proxy.golang.org", "crates.io"];
@@ -116,6 +125,15 @@ function parseExecutionConfig(env: Record<string, string | undefined>): Executio
       fullAllowed = raw === "1";
     }
   }
+  let confirmWords = [...defaultConfirmWords];
+  {
+    const raw = env["JIT_BROWSER_CONFIRM_WORDS"];
+    if (raw !== undefined) {
+      const words = raw.split(",").map(word => word.trim().toLowerCase()).filter(Boolean);
+      if (!words.length || words.length > 64 || words.some(word => word.length > 64 || !word.isWellFormed() || /[\u0000-\u001f]/.test(word))) throw new Error("Invalid JIT_BROWSER_CONFIRM_WORDS");
+      confirmWords = [...new Set(words)];
+    }
+  }
   return {
     directory,
     secretsDirectory,
@@ -127,6 +145,7 @@ function parseExecutionConfig(env: Record<string, string | undefined>): Executio
     idleMinutes,
     registryHosts,
     fullAllowed,
+    confirmWords,
   };
 }
 

@@ -41,5 +41,8 @@ export function approvalDetailParts(card: ApprovalCard): { pinned: string[]; fle
       return { pinned: [action.target.name, action.ref ?? "-"], flexible: [] };
     case "mcp_tool":
       return { pinned: [`${action.server.name} · ${action.tool}`], flexible: [JSON.stringify(action.arguments)] };
+    case "browser_confirm":
+      return { pinned: [action.url, `${action.operation} · ${action.element.name || action.element.tag}`, ...(action.operation === "type" ? [action.text ?? "••••••"] : [])],
+        flexible: action.formFields.length ? [action.formFields.join(", ")] : [] };
   }
 }

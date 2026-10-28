@@ -26,6 +26,11 @@ import {
 import type { EffectExecutor } from "./exec/effect-executor";
 import { applyMcpCommand, isMcpCommand, mcpCommandIdentity, readMcpProposals, readMcpServers, type McpCommand, type McpProposalView, type McpReceipt, type McpServerView } from "./exec/mcp";
 import type { McpGateway } from "./exec/mcp-gateway";
+import type { BrowserService } from "./exec/browser";
+import {
+  applyTakeoverCommand, isTakeoverCommand, isTakeoverInputCommand, readTakeover, requireTakeoverChannel, takeoverCommandIdentity, takeoverInput,
+  type ScreenshotMeta, type TakeoverCommand, type TakeoverInputCommand, type TakeoverInputReceipt, type TakeoverReceipt, type TakeoverView,
+} from "./exec/takeover";
 import {
   accessCommandIdentity, isAccessCommand, readProjectAccess, readRoleAccess, writeAccessLevel, writeHalt, writeResume, writeRoleRestriction,
   type AccessCommand, type AccessReceipt, type HaltExecutionCommand, type HaltOutcome, type ProjectAccess, type RoleAccess,
@@ -231,6 +236,11 @@ export interface ApplicationOptions {
    * stays `installing` until a process with a gateway reconciles it as `failed` (`interrupted`).
    */
   mcp?: McpGateway;
+  /**
+   * exec.browser/v1 and app.takeover/v1 (EXE14): the browser sessions, the screenshot store and the virtual display
+   * the owner's takeover input reaches. Without it takeover input is `browser_unavailable`.
+   */
+  browser?: BrowserService;
 }
 
 /** The committed receipt of an app.approval_cards/v1, app.auto_approve/v1 or effect target command. */
@@ -246,6 +256,7 @@ export class Application {
   #connections: ConnectionVault | undefined;
   #effects: EffectExecutor | undefined;
   #mcp: McpGateway | undefined;
+  #browser: BrowserService | undefined;
   #service: ApplicationOptions["service"];
   #upgradeFault: ApplicationOptions["upgradeFault"];
   #restoreFault: ApplicationOptions["restoreFault"];
@@ -270,6 +281,7 @@ export class Application {
     this.#connections = options.connections;
     this.#effects = options.effects;
     this.#mcp = options.mcp;
+    this.#browser = options.browser;
     // app.connections/v1: from boot on, an echo of any stored value in outgoing text is redacted.
     if (this.#connections) { const vault = this.#connections; store.read(tx => vault.fingerprintStored(tx)); }
     this.#service = options.service;
@@ -765,6 +777,8 @@ export class Application {
   execute(actor: OwnerActor, command: ConnectionCommand): ConnectionReceipt;
   execute(actor: OwnerActor, command: DecideCardCommand | SetAutoApproveCommand | SetEffectTargetCommand | RemoveEffectTargetCommand): ApprovalReceipt;
   execute(actor: OwnerActor, command: McpCommand): McpReceipt;
+  execute(actor: OwnerActor, command: TakeoverCommand): TakeoverReceipt;
+  execute(actor: OwnerActor, command: TakeoverInputCommand): Promise<TakeoverInputReceipt>;
   execute(actor: OwnerActor, command: DispatchCommand): DispatchReceipt;
   execute(actor: OwnerActor, command: CreateTopicCommand): TopicReceipt;
   execute(actor: OwnerActor, command: SendMessageCommand): MessageReceipt;
@@ -788,8 +802,8 @@ export class Application {
   execute(actor: OwnerActor, command: ExportCommand): ExportReceipt;
   execute(actor: OwnerActor, command: UpgradeCommand): Promise<UpgradeReceipt>;
   execute(actor: OwnerActor, command: RestoreCommand): Promise<RestoreReceipt>;
-  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetAttentionCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | FeedCommand | AccessCommand | ResetBoxCommand | ConnectionCommand | ApprovalCommand | McpCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | WebhookCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | AttentionReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | FeedReceipt | AccessReceipt | Promise<BoxResetReceipt> | ConnectionReceipt | ApprovalReceipt | McpReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | WebhookReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt>;
-  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetAttentionCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | FeedCommand | AccessCommand | ResetBoxCommand | ConnectionCommand | ApprovalCommand | McpCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | WebhookCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | AttentionReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | FeedReceipt | AccessReceipt | Promise<BoxResetReceipt> | ConnectionReceipt | ApprovalReceipt | McpReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | WebhookReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt> {
+  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetAttentionCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | FeedCommand | AccessCommand | ResetBoxCommand | ConnectionCommand | ApprovalCommand | McpCommand | TakeoverCommand | TakeoverInputCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | WebhookCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | AttentionReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | FeedReceipt | AccessReceipt | Promise<BoxResetReceipt> | ConnectionReceipt | ApprovalReceipt | McpReceipt | TakeoverReceipt | Promise<TakeoverInputReceipt> | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | WebhookReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt>;
+  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetAttentionCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | FeedCommand | AccessCommand | ResetBoxCommand | ConnectionCommand | ApprovalCommand | McpCommand | TakeoverCommand | TakeoverInputCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | WebhookCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | AttentionReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | FeedReceipt | AccessReceipt | Promise<BoxResetReceipt> | ConnectionReceipt | ApprovalReceipt | McpReceipt | TakeoverReceipt | Promise<TakeoverInputReceipt> | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | WebhookReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt> {
     if (command?.kind?.startsWith("upgrade.")) return this.#upgradeCommand(actor, command as UpgradeCommand);
     if (command?.kind?.startsWith("restore.")) return this.#restoreCommand(actor, command as RestoreCommand);
     // ops.schema_migrations/v1 admission fence (held by an upgrade or, ops.quarantined_restore/v1, a restore):
@@ -838,6 +852,8 @@ export class Application {
     if (isConnectionCommand(command)) return this.#connectionCommand(actor, command);
     if (isApprovalCommand(command)) return this.#approvalCommand(actor, command);
     if (isMcpCommand(command)) return this.#mcpCommand(actor, command);
+    if (isTakeoverCommand(command)) return this.#takeoverCommand(actor, command);
+    if (isTakeoverInputCommand(command)) return this.#takeoverInputCommand(actor, command);
     if (command?.kind === "dispatch.proposal.accept" || command?.kind === "dispatch.proposal.dismiss" || command?.kind === "dispatch.answer") return this.#dispatchCommand(actor, command);
     if (command?.kind === "job.enqueue" || command?.kind === "job.resume" || command?.kind === "job.stop") return this.#jobCommand(actor, command);
     if (command?.kind === "role.save" || command?.kind === "route.save" || command?.kind === "role.preview" ||
@@ -2123,6 +2139,8 @@ export class Application {
     if (command.kind === "execution.halt" || result.narrowed) this.#jobs?.cancelFenced();
     // app.approval_cards/v1: host work of an approved effect stops once its role no longer has `full`.
     this.#effects?.accessChanged(command.projectId);
+    // exec.browser/v1: the kill switch or a level below workspace closes the project's CDP stream.
+    this.#browser?.accessChanged(command.projectId);
     // exec.box_runtime/v1: the kill switch stops the box; a narrower level stops a box running wider. Both after commit.
     if (this.#boxes) {
       const boxes = this.#boxes;
@@ -2222,6 +2240,81 @@ export class Application {
     });
     if (!replay && command.kind === "mcp.install.accept" && result.server) void this.#mcp?.install(command.projectId, result.server.id).catch(() => undefined);
     return result;
+  }
+
+  /**
+   * app.takeover/v1 `takeover.start` / `takeover.end`: Web only (`takeover_requires_web` for Telegram and the local
+   * API), revisioned, with a receipt and audit row. While a takeover is active every agent browser and computer call
+   * fails `takeover_active`.
+   */
+  #takeoverCommand(actor: OwnerActor, command: TakeoverCommand): TakeoverReceipt {
+    const payloadHash = digest(takeoverCommandIdentity(command));
+    return this.store.transaction(tx => {
+      this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, command.projectId);
+      const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
+      if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as TakeoverReceipt; }
+      const now = this.#now();
+      const receipt: TakeoverReceipt = { takeover: applyTakeoverCommand(tx, command, this.#commandChannel(actor), now) };
+      tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(receipt), now);
+      tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);
+      this.#beforeCommit?.("receipt");
+      return receipt;
+    });
+  }
+
+  /**
+   * app.takeover/v1 owner input (`takeover.click`, `takeover.type`, `takeover.key`): Web only, for the active takeover
+   * it names. The receipt commits first, so a replayed request id never sends the input twice; the input then goes to
+   * the box's virtual display with `xdotool`.
+   */
+  async #takeoverInputCommand(actor: OwnerActor, command: TakeoverInputCommand): Promise<TakeoverInputReceipt> {
+    const payloadHash = digest(takeoverCommandIdentity(command));
+    let replay = false, input: ReturnType<typeof takeoverInput> | null = null;
+    const receipt = this.store.transaction(tx => {
+      this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, command.projectId);
+      const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
+      if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); replay = true; return JSON.parse(prior.result_json) as TakeoverInputReceipt; }
+      input = takeoverInput(tx, command, this.#commandChannel(actor));
+      if (!this.#browser) throw new AppError("browser_unavailable", 503);
+      const now = this.#now();
+      const result: TakeoverInputReceipt = { takeover: readTakeover(tx, command.projectId), input: input.kind };
+      tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
+      tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);
+      this.#beforeCommit?.("receipt");
+      return result;
+    });
+    if (!replay && input) await this.#browser!.desktopInput(command.projectId, null, input);
+    return receipt;
+  }
+
+  /** app.takeover/v1 read model: whether the owner holds a takeover of the project's box. */
+  takeover(actor: OwnerActor, projectId: string): TakeoverView {
+    requireId(projectId);
+    return this.store.read(tx => { this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, projectId); return readTakeover(tx, projectId); });
+  }
+
+  /** exec.browser/v1 read API (for EXE15): the project's stored screenshots, newest first. Web only; metadata never holds a URL. */
+  boxScreenshots(actor: OwnerActor, projectId: string): ScreenshotMeta[] {
+    requireId(projectId);
+    this.store.read(tx => { this.#requireOwner(tx, actor, ["web"]); this.#project(tx, projectId); });
+    return this.#browser?.screenshots.list(projectId) ?? [];
+  }
+
+  /** One stored screenshot (`screenshot_not_found`, 404). Web only. */
+  boxScreenshot(actor: OwnerActor, projectId: string, screenshotId: string): { meta: ScreenshotMeta; data: Uint8Array } {
+    requireId(projectId); requireId(screenshotId);
+    this.store.read(tx => { this.#requireOwner(tx, actor, ["web"]); this.#project(tx, projectId); });
+    const found = this.#browser?.screenshots.get(projectId, screenshotId);
+    if (!found) throw new AppError("screenshot_not_found", 404);
+    return found;
+  }
+
+  /** Captures the box's whole virtual display for the owner's live view. Web only (the local API is refused). */
+  async captureBoxScreen(actor: OwnerActor, projectId: string): Promise<ScreenshotMeta> {
+    requireId(projectId);
+    this.store.read(tx => { this.#requireOwner(tx, actor, ["web"]); this.#project(tx, projectId); requireTakeoverChannel(this.#commandChannel(actor)); });
+    if (!this.#browser) throw new AppError("browser_unavailable", 503);
+    return this.#browser.captureDesktop(projectId, null, "owner");
   }
 
   /** app.mcp_servers/v1 read model: the project's MCP install proposals, newest first (at most 50). */

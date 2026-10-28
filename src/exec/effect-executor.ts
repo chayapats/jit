@@ -190,7 +190,7 @@ export class EffectExecutor {
     catch { return { failed: failBeforeStart(card, "access_changed", now) }; }
     const action = card.action;
     // In-box kinds release no connection here: an MCP sidecar receives its bound values from the gateway at spawn.
-    if (action.kind === "mcp_tool") {
+    if (action.kind === "mcp_tool" || action.kind === "browser_confirm") {
       if (!this.#options.performers?.[action.kind]) return { failed: failBeforeStart(card, "performer_not_configured", now) };
       const started = claimCard(tx, projectId, cardId, now);
       if (!started) throw new AppError("approval_card_not_pending", 409);
@@ -406,6 +406,11 @@ function pushOutcome(result: { code: number | null; stdout: string; stderr: stri
   return { outcome: "unknown", reason: "push_unconfirmed", detail: { ...detail, stderr: clip(result.stderr, 500) } };
 }
 
+/** The host of a page URL (no path, query or credential), or `page`. */
+function hostOf(url: string): string {
+  try { return new URL(url).host || "page"; } catch { return "page"; }
+}
+
 /** The scheme, host and path of an endpoint — never a query or credential. */
 function endpointOf(url: string): string {
   try { const parsed = new URL(url); return `${parsed.protocol}//${parsed.host}${parsed.pathname}`; } catch { return "invalid"; }
@@ -424,6 +429,7 @@ function subjectOf(card: ApprovalCard): string {
     case "effect.github_pr_merge": return `${action.github.owner}/${action.github.repo} #${action.pullNumber} @${action.headSha.slice(0, 12)}`;
     case "effect.deploy": return `${action.target.name}${action.ref ? ` @${action.ref}` : ""}`;
     case "mcp_tool": return `${action.server.name} ${action.tool}`;
+    case "browser_confirm": return `${action.operation} "${action.element.name.slice(0, 80) || action.element.tag}" @ ${hostOf(action.url)}`;
   }
 }
 

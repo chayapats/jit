@@ -17,6 +17,9 @@ USER box
 FROM base AS browser
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends \
-  chromium xvfb xdotool openbox fonts-noto-core fonts-thai-tlwg \
+  chromium xvfb xdotool openbox scrot fonts-noto-core fonts-thai-tlwg \
   && rm -rf /var/lib/apt/lists/*
+# jit.box.cdp-stream/v1 (EXE14, ADR 0039): Xvfb :99 + Chromium on /profile with --remote-debugging-pipe, bridged to
+# stdin/stdout as NUL-framed CDP messages (1 MiB cap). No debugging port. python3 comes from the base stage.
+COPY --chmod=0555 ops/box/cdp-relay /opt/jit/cdp-relay
 USER box

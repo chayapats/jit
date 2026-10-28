@@ -9,6 +9,7 @@ import { assertExecutionAllowed, levelRank, readEffectiveAccess } from "./access
 import type { BoxSession } from "./box-manager";
 import { effectToolDefinitions, type EffectRunner } from "./effect-tools";
 import type { McpRunInput } from "./mcp-gateway";
+import type { BrowserRunInput } from "./browser";
 
 /** The model-facing result of one tool call (Schway's own type, re-exported for fixture ports). */
 export type { ToolExecutionResult };
@@ -114,7 +115,9 @@ export interface RunMcpTools { openRun(input: McpRunInput): Promise<{ definition
  * With `mcp` (the MCP gateway), a `workspace` or `full` grant also admits the tools of the project's installed MCP
  * servers (app.mcp_servers/v1), read-only ones directly and every other one through an approval card.
  */
-export interface RunExecution { boxes: RunBoxes; now?: () => number; effects?: EffectRunner; mcp?: RunMcpTools }
+export interface RunExecution { boxes: RunBoxes; now?: () => number; effects?: EffectRunner; mcp?: RunMcpTools; browser?: RunBrowserTools }
+/** exec.browser/v1: the browser tools of one run (`BrowserService` implements it); none unless the box is the browser image. */
+export interface RunBrowserTools { openRun(input: BrowserRunInput): { definitions: ToolDefinition[]; release(): void } }
 /** The admitted tool registry of one run; `release` returns the box session. */
 export interface RunTools { readonly definitions: readonly ToolDefinition[]; release(): void }
 
@@ -173,10 +176,13 @@ export async function openRunTools(store: TransactionStore, execution: RunExecut
     try { mcp = await execution.mcp.openRun({ request, handle: session.handle, current: tx => executionCurrent(tx, request), ...(execution.effects ? { effects: execution.effects } : {}) }); }
     catch { mcp = null; }
   }
+  // exec.browser/v1: browser tools exist only when the run's box is the browser image with the project profile.
+  const browser = execution.browser ? execution.browser.openRun({ request, handle: session.handle, current: tx => executionCurrent(tx, request) }) : null;
   const core = coreToolDefinitions(backend), taken = new Set(core.map(tool => tool.name));
-  const admitted = [...core,
-    ...(grant.level === "full" && execution.effects ? effectToolDefinitions(store, request, backend, execution.effects, now, tx => executionCurrent(tx, request)) : []),
-    ...(mcp?.definitions ?? []).filter(tool => !taken.has(tool.name))];
+  const own = [...core, ...(browser?.definitions ?? []),
+    ...(grant.level === "full" && execution.effects ? effectToolDefinitions(store, request, backend, execution.effects, now, tx => executionCurrent(tx, request)) : [])];
+  for (const tool of own) taken.add(tool.name);
+  const admitted = [...own, ...(mcp?.definitions ?? []).filter(tool => !taken.has(tool.name))];
   const definitions = admitted.map((definition): ToolDefinition => ({
     ...definition,
     async execute(input, ctx): Promise<ToolExecutionResult> {
@@ -205,7 +211,7 @@ export async function openRunTools(store: TransactionStore, execution: RunExecut
     },
   }));
   let released = false;
-  return { definitions: Object.freeze(definitions), release: () => { if (!released) { released = true; mcp?.release(); session.release(); } } };
+  return { definitions: Object.freeze(definitions), release: () => { if (!released) { released = true; browser?.release(); mcp?.release(); session.release(); } } };
 }
 
 /** Status of one audited tool call. `refused` calls never reached the box. */

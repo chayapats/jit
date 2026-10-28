@@ -19,5 +19,6 @@ export function createServiceBoxes(store: TransactionStore, config: AppConfig, o
       .catch(error => { proxy = null; throw error; }))).url,
   });
   // app.connections/v1: tool output and search lines pass the fingerprint guard before Schway sees them.
-  return new BoxManager(store, config, runtime, { ...options, backend: { redact: redactRegisteredSecrets, ...options.backend } });
+  // exec.browser/v1: with a pinned browser image every box carries the project profile (ADR 0039).
+  return new BoxManager(store, config, runtime, { profile: !!config.execution.images.browser, ...options, backend: { redact: redactRegisteredSecrets, ...options.backend } });
 }

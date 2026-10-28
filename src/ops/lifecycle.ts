@@ -14,6 +14,7 @@ import { ConnectionVault } from "../exec/connections";
 import { EffectExecutor } from "../exec/effect-executor";
 import { boxStreamsOf } from "../exec/box-runtime";
 import { McpGateway } from "../exec/mcp-gateway";
+import { BrowserService } from "../exec/browser";
 import { composeJobQueue } from "../composition";
 import type { ApplicationRunPort } from "../team/run-port";
 import { verifySchwayBridge } from "../team/schway-port";
@@ -299,6 +300,8 @@ export interface FullAppHandle {
   boxes: BoxManager | null;
   /** app.approval_cards/v1 effect executor, or null without boxes and a connection vault; the drain waits for it. */
   effects: EffectExecutor | null;
+  /** exec.browser/v1 browser sessions (idle-swept on the tick), or null without boxes. */
+  browser?: BrowserService | null;
   /** Boot reconciliation outcome; `reconciled: false` while an upgrade/restore fence holds. */
   boot: { reconciled: boolean; detail: string; upgrade: { id: string; state: string } | null;
     restore: { id: string; state: string; reason: string | null } | null };
@@ -377,10 +380,13 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
     const streams = boxes ? boxStreamsOf(boxes.runtime) : null;
     const mcp = boxes && streams ? new McpGateway(store, { boxes, runtime: streams, vault: connections, sidecarImage: config.execution.images?.base ?? null,
       executionDirectory: config.execution.directory, now }) : null;
+    // exec.browser/v1: browser sessions run in project boxes (the browser image when one is pinned) and end with the box.
+    const browser = boxes && streams ? new BrowserService(store, { boxes, runtime: streams, now, ...(config.execution.confirmWords ? { confirmWords: config.execution.confirmWords } : {}) }) : null;
+    if (boxes && browser) boxes.onStopped(projectId => browser.close(projectId));
     const effects = boxes && connections ? new EffectExecutor(store, { vault: connections, boxes, mirrorRoot: config.execution.directory, now,
-      ...(mcp ? { performers: { mcp_tool: mcp.perform } } : {}) }) : null;
+      performers: { ...(mcp ? { mcp_tool: mcp.perform } : {}), ...(browser ? { browser_confirm: browser.perform } : {}) } }) : null;
     const compose = { now, prCacheRoot: input.prCacheRoot ?? (service ? resolve(service.stateDirectory, "pr-cache") : ".local/pr-cache"), ...(boxes ? { boxes } : {}),
-      ...(effects ? { effects } : {}), ...(mcp ? { mcp } : {}) };
+      ...(effects ? { effects } : {}), ...(mcp ? { mcp } : {}), ...(browser ? { browser } : {}) };
     managed = ManagedService.forConfig(store, config, compose);
     const composed = composeJobQueue(store, config, compose);
     managed.adopt(composed);
@@ -391,7 +397,7 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
     const app = new Application(store, config, {
       service: managed, now, ...(service ? { backupDir: service.backupDirectory, ledgerPath: service.ledgerPath } : {}),
       ...(nativeSnapshot ? { nativeSnapshot } : {}), ...(boxes ? { boxes } : {}), ...(connections ? { connections } : {}), ...(effects ? { effects } : {}),
-      ...(mcp ? { mcp } : {}),
+      ...(mcp ? { mcp } : {}), ...(browser ? { browser } : {}),
     });
     const ledger = ledgerGate({ store, ledgerPath: service?.ledgerPath ?? null, now: now(), mode: "boot" });
     if (!ledger.trusted) return refuse([{ gate: "quarantine", state: "blocked", nextAction: ledger.nextAction, detail: ledger.reason }]);
@@ -406,7 +412,7 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
       channels = ServiceChannels.start(store, config, input.transports!, now);
     }
     const handle: FullAppHandle = {
-      store, app, service: managed, channels, config, serviceConfig: service, boxes, effects,
+      store, app, service: managed, channels, config, serviceConfig: service, boxes, effects, browser,
       boot: { reconciled: booted.reconciled, detail: booted.detail, upgrade: booted.upgrade ? { id: booted.upgrade.id, state: booted.upgrade.state } : null,
         restore: booted.restore ? { id: booted.restore.id, state: booted.restore.state, reason: booted.restore.reason ?? null } : null },
       get queue() { return managed!.queue ?? composed.queue; },
@@ -462,6 +468,8 @@ export function serveFullApp(handle: FullAppHandle, options: { drainTimeoutMs?: 
       }
     }
     // exec.box_runtime/v1 idle stop on the same tick; one sweep at a time.
+    // exec.browser/v1: a CDP stream idle for 5 minutes closes.
+    handle.browser?.sweep(Date.now());
     if (handle.boxes && !sweeping) {
       sweeping = true;
       void handle.boxes.sweep(Date.now()).catch(() => undefined).finally(() => { sweeping = false; });

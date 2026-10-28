@@ -10,6 +10,7 @@ import { ConnectionVault } from "../../src/exec/connections";
 import { EffectExecutor, type EffectExecutorOptions } from "../../src/exec/effect-executor";
 import { FakeBoxRuntime, type FakeBoxExec, type FakeBoxStream } from "../../src/exec/fake-box-runtime";
 import { McpGateway } from "../../src/exec/mcp-gateway";
+import { BrowserService } from "../../src/exec/browser";
 import { JobQueue } from "../../src/jobs/queue";
 import { TransactionStore } from "../../src/store";
 import { discussionPlanWork, specialistAnalysisWork } from "../../src/team/dispatch";
@@ -40,6 +41,8 @@ export interface EffectFixtureOptions {
   stream?: FakeBoxStream;
   /** app.mcp_servers/v1: wires an MCP gateway into the runs, the executor and the application. */
   mcp?: boolean;
+  /** exec.browser/v1: boxes open with the profile (the browser image) and a browser service is wired in. */
+  browser?: boolean;
 }
 
 /** The pinned image MCP sidecars use in fixtures. */
@@ -62,13 +65,15 @@ export async function effectFixture(options: EffectFixtureOptions = {}) {
   const now = () => clock.now;
   const runtime = new FakeBoxRuntime({ exec: options.exec ? options.exec(localExec(box)) : localExec(box), workspaceRoot: box.root, temporaryDirectory: box.tmp,
     executionDirectory: execution, ...(options.stream ? { stream: options.stream } : {}) });
-  const boxes = new BoxManager(store, config, runtime, { now });
+  const boxes = new BoxManager(store, config, runtime, { now, ...(options.browser ? { profile: true } : {}) });
   const vault = new ConnectionVault(secrets, { forbidden: [state, backups, execution] });
+  const browser = options.browser ? new BrowserService(store, { boxes, runtime, now, commandMs: 1_000 }) : null;
+  if (browser) boxes.onStopped(projectId => browser.close(projectId));
   const mcp = options.mcp ? new McpGateway(store, { boxes, runtime, vault, sidecarImage: fixtureBoxImage, executionDirectory: execution, now, requestMs: 1_000, callMs: 5_000, installMs: 5_000 }) : null;
   const fetches: FetchCall[] = [];
   const reply: FetchReply = options.fetch ?? (() => new Response(JSON.stringify({}), { status: 200 }));
   const executor = new EffectExecutor(store, {
-    vault, boxes, mirrorRoot: execution, now, tempRoot: root, ...(mcp ? { performers: { mcp_tool: mcp.perform } } : {}),
+    vault, boxes, mirrorRoot: execution, now, tempRoot: root, performers: { ...(mcp ? { mcp_tool: mcp.perform } : {}), ...(browser ? { browser_confirm: browser.perform } : {}) },
     fetch: async (url, init) => {
       const headers = Object.fromEntries(Object.entries(init.headers as Record<string, string>));
       const call = { url, method: String(init.method), headers, body: init.body ? JSON.parse(String(init.body)) : null };
@@ -80,14 +85,14 @@ export async function effectFixture(options: EffectFixtureOptions = {}) {
   const script: RunScript = options.script ?? ((request, _s, _o, tools) => answer(request, JSON.stringify({ reply: tools.names.join(",") })));
   const seen: ApplicationRunRequest[] = [];
   const port = new ScriptedRunPort(store, config.team, config.jobs.outputBytes, (request, signal, observe, tools) => { seen.push(request); return script(request, signal, observe, tools); },
-    undefined, undefined, { execution: { boxes, now, ...(options.effects === false ? {} : { effects: executor }), ...(mcp ? { mcp } : {}) } });
+    undefined, undefined, { execution: { boxes, now, ...(options.effects === false ? {} : { effects: executor }), ...(mcp ? { mcp } : {}), ...(browser ? { browser } : {}) } });
   let queueRef: JobQueue | undefined;
   const current = () => queueRef;
   const queue = new JobQueue(store, config.jobs, [discussionPlanWork(), specialistAnalysisWork(store, config, port, now, current), jitReplyWork(store, config, port, now, current)],
     { now, timers: { set: () => 0, clear: () => {} }, boxes });
   queueRef = queue;
   const app = new Application(store, config, { now, jobs: queue, boxes, connections: vault, backupDir: backups, ...(options.effects === false ? {} : { effects: executor }),
-    ...(mcp ? { mcp } : {}) });
+    ...(mcp ? { mcp } : {}), ...(browser ? { browser } : {}) });
   const password = "fixture-exe07-owner-password";
   await app.setupOwner(password); const token = await app.login(password), auth = app.authenticate(token);
   const telegram = app.issueAdapterActor(token, "telegram");
@@ -96,7 +101,7 @@ export async function effectFixture(options: EffectFixtureOptions = {}) {
   const jitId = app.execute(auth.actor, { kind: "role.save", projectId: null, requestId: rid(), expectedRevision: app.team(auth.actor).ownerRevision,
     payload: { roleId: null, name: "จิต", kind: "coordinator", responsibility: "ตอบเจ้าของและส่งงาน", enabled: true, route: grok } }).role!.id;
   const close = async () => { queue.close(); await queue.idle(); await executor.idle(); await mcp?.idle(); store.close(); };
-  return { root, box, state, execution, secrets, config, store, clock, runtime, boxes, vault, executor, mcp, fetches, port, queue, app, auth, telegram, project, topic, jitId, seen, close, token };
+  return { root, box, state, execution, secrets, config, store, clock, runtime, boxes, vault, executor, mcp, browser, fetches, port, queue, app, auth, telegram, project, topic, jitId, seen, close, token };
 }
 export type EffectFixture = Awaited<ReturnType<typeof effectFixture>>;
 

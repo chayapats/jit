@@ -16,19 +16,26 @@ import { assertExecutionAllowed } from "./access";
  * receipt; the effect executor then runs it exactly once outside every box. A crash during `executing` reconciles to
  * `unknown` and is never retried automatically. Model output, retrieved content and tool results never decide a card.
  */
-export type EffectKind = "effect.git_push" | "effect.github_pr_create" | "effect.github_comment" | "effect.github_pr_merge" | "effect.deploy" | "mcp_tool";
-export const effectKinds: readonly EffectKind[] = Object.freeze(["effect.git_push", "effect.github_pr_create", "effect.github_comment", "effect.github_pr_merge", "effect.deploy", "mcp_tool"]);
+export type EffectKind = "effect.git_push" | "effect.github_pr_create" | "effect.github_comment" | "effect.github_pr_merge" | "effect.deploy" | "mcp_tool" | "browser_confirm";
+export const effectKinds: readonly EffectKind[] = Object.freeze(["effect.git_push", "effect.github_pr_create", "effect.github_comment", "effect.github_pr_merge", "effect.deploy", "mcp_tool",
+  "browser_confirm"]);
+/**
+ * Kinds an owner auto-approve rule may decide. A browser confirm action always waits for the owner (ADR 0039):
+ * there is no rule for it.
+ */
+export const autoApproveKinds: readonly EffectKind[] = Object.freeze(["effect.git_push", "effect.github_pr_create", "effect.github_comment", "effect.github_pr_merge", "effect.deploy", "mcp_tool"]);
 /**
  * Card kinds whose effect runs inside the project box or an MCP sidecar through a registered performer
  * ({@link EffectExecutorOptions.performers}), rather than from Jit with a released connection.
  */
-export const inBoxKinds: readonly EffectKind[] = Object.freeze(["mcp_tool"]);
+export const inBoxKinds: readonly EffectKind[] = Object.freeze(["mcp_tool", "browser_confirm"]);
 /**
  * The level a card of `kind` needs from its proposing role, when it is created, decided and run. The EXE07 effects
- * need `full`; an `mcp_tool` card needs `workspace`, the level MCP servers are installed and run at (ADR 0038).
+ * need `full`; an `mcp_tool` card needs `workspace`, the level MCP servers are installed and run at (ADR 0038), and a
+ * `browser_confirm` card the level browser tools run at (ADR 0039).
  */
 export function cardLevel(kind: EffectKind): "workspace" | "full" {
-  return kind === "mcp_tool" ? "workspace" : "full";
+  return kind === "mcp_tool" || kind === "browser_confirm" ? "workspace" : "full";
 }
 /** Most bytes of the canonical arguments of one `mcp_tool` card. */
 export const maximumMcpArgumentBytes = 65_536;
@@ -68,9 +75,24 @@ export type EffectAction =
   | { kind: "effect.github_comment"; remote: PinnedRemote; github: GitHubTarget; issueNumber: number; body: string }
   | { kind: "effect.github_pr_merge"; remote: PinnedRemote; github: GitHubTarget; pullNumber: number; headSha: string; method: "merge" | "squash" | "rebase" }
   | { kind: "effect.deploy"; target: { name: string; url: string; revision: number }; ref: string | null }
-  | McpToolAction;
+  | McpToolAction
+  | BrowserConfirmAction;
 /** app.mcp_servers/v1 (EXE12): one call of a gated MCP tool with its exact arguments, pinned to the server revision. */
 export interface McpToolAction { kind: "mcp_tool"; server: { id: string; name: string; revision: number }; tool: string; arguments: Record<string, unknown> }
+/** Why Jit classified a browser action as a confirm action (ADR 0039). */
+export type ConfirmReason = "submit_control" | "confirm_word" | "line_break";
+export const confirmReasons: readonly ConfirmReason[] = Object.freeze(["submit_control", "confirm_word", "line_break"]);
+/**
+ * exec.browser/v1 (EXE14): one paused browser confirm action, pinned to the page URL and the element. For text typed
+ * into a password field the card holds only `textDigest` (SHA-256), never the value.
+ */
+export interface BrowserConfirmAction {
+  kind: "browser_confirm"; operation: "click" | "type"; url: string;
+  element: { ref: string; tag: string; name: string };
+  /** Names of the enclosing form's fields (never their values). */
+  formFields: string[];
+  text: string | null; textDigest: string | null; reasons: ConfirmReason[];
+}
 /** An MCP tool name as the server listed it: printable, no whitespace, at most 128 characters. */
 export const validMcpToolName = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_.\/-]{1,128}$/.test(value);
 const plainObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
@@ -131,6 +153,18 @@ export function validateAction(action: EffectAction): void {
       if (!action.target || !NAME.test(action.target.name) || !validHttpsUrl(action.target.url) || !Number.isSafeInteger(action.target.revision) ||
           action.target.revision < 1 || !(action.ref === null || validBranch(action.ref) || SHA.test(action.ref))) throw invalid();
       return;
+    case "browser_confirm": {
+      const singleLine = (value: unknown, max: number) => typeof value === "string" && value.isWellFormed() && value.length <= max && !/[\u0000-\u001f\u007f]/.test(value);
+      const typed = action.operation === "type";
+      if ((action.operation !== "click" && !typed) || !singleLine(action.url, 2048) || !action.element || !/^e\d{1,12}$/.test(action.element.ref) ||
+          !/^[a-z][a-z0-9-]{0,31}$/.test(action.element.tag) || !singleLine(action.element.name, 200) || !Array.isArray(action.formFields) ||
+          action.formFields.length > 32 || action.formFields.some(name => !singleLine(name, 64)) || !Array.isArray(action.reasons) || action.reasons.length < 1 ||
+          action.reasons.some(reason => !confirmReasons.includes(reason)) || new Set(action.reasons).size !== action.reasons.length) throw invalid();
+      if (typed ? !((typeof action.text === "string" && action.text.isWellFormed() && Buffer.byteLength(action.text) <= 4096 && action.textDigest === null) ||
+          (action.text === null && typeof action.textDigest === "string" && /^[0-9a-f]{64}$/.test(action.textDigest)))
+        : action.text !== null || action.textDigest !== null) throw invalid();
+      return;
+    }
     case "mcp_tool":
       if (!action.server || typeof action.server.id !== "string" || !/^[a-f0-9-]{36}$/.test(action.server.id) || !NAME.test(action.server.name) ||
           !Number.isSafeInteger(action.server.revision) || action.server.revision < 1 || !validMcpToolName(action.tool) || !plainObject(action.arguments) ||
@@ -225,7 +259,7 @@ export function approvalCommandIdentity(command: ApprovalCommand): string {
         (p.decision !== "approve" && p.decision !== "deny")) throw invalid();
     requireId(p.cardId);
   } else if (command.kind === "approval.rule.set") {
-    if (!exact(p, ["effectKind", "scope", "enabled"]) || !effectKinds.includes(p.effectKind as EffectKind) ||
+    if (!exact(p, ["effectKind", "scope", "enabled"]) || !autoApproveKinds.includes(p.effectKind as EffectKind) ||
         !validScope(p.effectKind as EffectKind, p.scope) || typeof p.enabled !== "boolean") throw invalid();
   } else if (command.kind === "effect.target.set") {
     if (p.target === "git_remote") {
@@ -321,7 +355,7 @@ export function readAutoApproveRule(tx: AppTransaction, projectId: string, effec
 }
 /** Every effect kind's latest rule in a project. */
 export function readAutoApproveRules(tx: AppTransaction, projectId: string): AutoApproveRule[] {
-  return effectKinds.map(kind => readAutoApproveRule(tx, projectId, kind)).filter((rule): rule is AutoApproveRule => !!rule);
+  return autoApproveKinds.map(kind => readAutoApproveRule(tx, projectId, kind)).filter((rule): rule is AutoApproveRule => !!rule);
 }
 /** Appends the next rule revision for one effect kind (`stale_revision` when `expectedRevision` is not current). */
 export function writeAutoApproveRule(tx: AppTransaction, command: SetAutoApproveCommand, channel: string, now: number): AutoApproveRule {
@@ -338,6 +372,7 @@ export function writeAutoApproveRule(tx: AppTransaction, command: SetAutoApprove
  * pushed branch, the GitHub remote, or the deploy target. Rules are evaluated by the service, never by a model.
  */
 export function matchingRule(tx: AppTransaction, projectId: string, action: EffectAction): AutoApproveRule | null {
+  if (!autoApproveKinds.includes(action.kind)) return null;
   const rule = readAutoApproveRule(tx, projectId, action.kind);
   if (!rule?.enabled) return null;
   const scope = rule.scope as Record<string, unknown>;
@@ -347,6 +382,7 @@ export function matchingRule(tx: AppTransaction, projectId: string, action: Effe
   }
   if (action.kind === "effect.deploy") return scope.target === action.target.name ? rule : null;
   if (action.kind === "mcp_tool") return (scope.tools as { server: string; tool: string }[]).some(item => item.server === action.server.name && item.tool === action.tool) ? rule : null;
+  if (action.kind === "browser_confirm") return null;
   return scope.remote === action.remote.name ? rule : null;
 }
 
