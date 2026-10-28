@@ -151,7 +151,11 @@ export async function runBoxDrill(input: BoxDrillInput): Promise<BoxDrillReport>
     };
     return { ...report, decision: boxDrillDecision(report) };
   } finally {
-    for (const projectId of projects) await input.runtime.reset({ projectId }, { wipeWorkspace: true }).catch(() => undefined);
+    for (const projectId of projects) {
+      await input.runtime.reset({ projectId }, { wipeWorkspace: true }).catch(() => undefined);
+      // The drill's projects are disposable: their now-empty project directories go too (reset keeps a real one).
+      if (/^[a-f0-9-]{36}$/.test(projectId)) rmSync(join(execution.directory, projectId), { recursive: true, force: true });
+    }
     store.close();
     rmSync(root, { recursive: true, force: true });
   }
