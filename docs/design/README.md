@@ -32,6 +32,8 @@ The UX01 drawing lives in `src/web-logo.ts`: `logoMark` (24-unit grid, halo only
 
 ## Colour tokens
 
+NFR-13 ([S10](../specs/S10-reliability-and-owner-integrations.md)): colours, text sizes, radii and durations come only from these tokens. A CI check (`ui.token_lint/v1`) fails on literal values outside `src/web-design.ts`.
+
 | Token | Dark (default) | Light | Use |
 | --- | --- | --- | --- |
 | `--bg` | `#0a0a0a` | `#fafaf9` | Page |
