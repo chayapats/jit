@@ -1,0 +1,588 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`responsive snapshots at 360/390/430/1280 px: drawer, bottom composer and safe areas on phones, columns on desktop 1`] = `
+{
+  "1280": {
+    ".app": {
+      "display": "grid",
+      "grid-template-columns": "264px minmax(0, 1fr)",
+      "height": "100dvh",
+      "overflow": "hidden",
+    },
+    ".app-header": {
+      "display": "flex",
+      "padding": "10px 32px",
+      "padding-top": "max(10px, env(safe-area-inset-top))",
+    },
+    ".auth": {
+      "display": "grid",
+      "padding": "max(24px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left))",
+    },
+    ".composer": {
+      "padding": "12px 14px 10px",
+      "width": "min(100%, var(--chat-width))",
+    },
+    ".composer textarea": {
+      "display": "block",
+      "font-size": "var(--size-ui)",
+      "padding": "0",
+      "width": "100%",
+    },
+    ".composer-wrap": {
+      "padding": "12px 32px max(16px, env(safe-area-inset-bottom))",
+      "width": "100%",
+    },
+    ".content": {
+      "padding": "28px 32px 64px",
+      "width": "min(100%, 960px)",
+    },
+    ".drawer-close": {
+      "display": "none",
+    },
+    ".drawer-scrim": {
+      "display": "none",
+    },
+    ".header-title h1": {
+      "font-size": "var(--size-ui)",
+      "max-width": "62vw",
+      "overflow": "hidden",
+      "text-overflow": "ellipsis",
+      "white-space": "nowrap",
+    },
+    ".home-composer": {
+      "padding": "14px 16px 12px",
+      "width": "100%",
+    },
+    ".main-pane": {
+      "display": "flex",
+      "height": "100dvh",
+      "min-width": "0",
+      "padding-right": "env(safe-area-inset-right)",
+    },
+    ".menu-button": {
+      "display": "none",
+    },
+    ".palette": {
+      "overflow": "hidden",
+      "padding": "0",
+      "width": "min(640px, calc(100vw - 32px))",
+    },
+    ".project-grid": {
+      "display": "grid",
+      "grid-template-columns": "1fr 1fr",
+    },
+    ".proposal-fields": {
+      "display": "grid",
+      "font-size": "var(--size-ui)",
+      "grid-template-columns": "max-content 1fr",
+    },
+    ".scroll-region": {
+      "overflow": "auto",
+    },
+    ".settings-nav ul": {
+      "display": "flex",
+      "flex-wrap": "wrap",
+      "padding": "0",
+    },
+    ".setup": {
+      "display": "grid",
+      "padding": "max(40px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(40px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left))",
+    },
+    ".setup-step-name": {
+      "font-size": "var(--size-sm)",
+      "overflow": "hidden",
+      "text-overflow": "ellipsis",
+      "white-space": "nowrap",
+    },
+    ".setup-steps": {
+      "display": "grid",
+      "grid-template-columns": "repeat(5, minmax(0, 1fr))",
+      "padding": "0",
+    },
+    ".setup-steps li": {
+      "display": "grid",
+      "min-width": "0",
+      "padding-top": "8px",
+    },
+    ".setup-summary div": {
+      "display": "grid",
+      "grid-template-columns": "minmax(0, 2fr) minmax(0, 3fr)",
+      "padding": "10px 0",
+    },
+    ".sidebar": {
+      "display": "flex",
+      "padding": "14px 10px 10px",
+      "padding-bottom": "max(10px, env(safe-area-inset-bottom))",
+      "padding-left": "max(10px, env(safe-area-inset-left))",
+      "padding-top": "max(14px, env(safe-area-inset-top))",
+    },
+    ".team-card": {
+      "padding": "16px",
+    },
+    ".topic-panel": {
+      "height": "100dvh",
+      "min-width": "0",
+      "overflow": "auto",
+      "padding-bottom": "env(safe-area-inset-bottom)",
+      "padding-right": "env(safe-area-inset-right)",
+      "padding-top": "env(safe-area-inset-top)",
+    },
+  },
+  "360": {
+    ".app": {
+      "display": "block",
+      "grid-template-columns": "232px minmax(0, 1fr)",
+      "height": "100dvh",
+      "overflow": "hidden",
+    },
+    ".app-header": {
+      "display": "flex",
+      "padding": "10px 12px",
+      "padding-top": "max(10px, env(safe-area-inset-top))",
+    },
+    ".auth": {
+      "display": "grid",
+      "padding": "max(24px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left))",
+    },
+    ".composer": {
+      "padding": "12px 14px 10px",
+      "width": "min(100%, 920px)",
+    },
+    ".composer textarea": {
+      "display": "block",
+      "font-size": "var(--size-input-mobile)",
+      "padding": "0",
+      "width": "100%",
+    },
+    ".composer-wrap": {
+      "padding": "10px 12px max(12px, env(safe-area-inset-bottom))",
+      "width": "100%",
+    },
+    ".content": {
+      "padding": "20px 16px 40px",
+      "width": "min(100%, 960px)",
+    },
+    ".create-form:not(:has(select)) .primary": {
+      "font-size": "0",
+      "height": "40px",
+      "min-width": "40px",
+      "padding": "0",
+      "width": "40px",
+    },
+    ".drawer-close": {
+      "display": "grid",
+      "height": "36px",
+      "width": "36px",
+    },
+    ".drawer-scrim": {
+      "display": "none",
+      "inset": "0",
+      "position": "fixed",
+    },
+    ".header-title h1": {
+      "font-size": "var(--size-ui)",
+      "max-width": "58vw",
+      "overflow": "hidden",
+      "text-overflow": "ellipsis",
+      "white-space": "nowrap",
+    },
+    ".home-composer": {
+      "padding": "14px 16px 12px",
+      "width": "100%",
+    },
+    ".main-pane": {
+      "display": "flex",
+      "height": "100dvh",
+      "min-width": "0",
+      "padding-left": "env(safe-area-inset-left)",
+      "padding-right": "env(safe-area-inset-right)",
+    },
+    ".menu-button": {
+      "display": "grid",
+      "height": "36px",
+      "width": "36px",
+    },
+    ".palette": {
+      "margin-top": "8dvh",
+      "overflow": "hidden",
+      "padding": "0",
+      "width": "min(640px, calc(100vw - 32px))",
+    },
+    ".project-grid": {
+      "display": "grid",
+      "grid-template-columns": "1fr",
+    },
+    ".proposal-fields": {
+      "display": "grid",
+      "font-size": "var(--size-ui)",
+      "grid-template-columns": "1fr",
+    },
+    ".scroll-region": {
+      "overflow": "auto",
+    },
+    ".settings-nav ul": {
+      "display": "flex",
+      "flex-wrap": "nowrap",
+      "overflow-x": "auto",
+      "padding": "0",
+    },
+    ".setup": {
+      "display": "grid",
+      "padding": "max(40px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(40px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left))",
+      "padding-top": "max(24px, env(safe-area-inset-top))",
+    },
+    ".setup-step-name": {
+      "font-size": "var(--size-xs)",
+      "overflow": "visible",
+      "text-overflow": "ellipsis",
+      "white-space": "normal",
+    },
+    ".setup-steps": {
+      "display": "grid",
+      "grid-template-columns": "repeat(5, minmax(min-content, 1fr))",
+      "overflow-x": "auto",
+      "padding": "0",
+    },
+    ".setup-steps li": {
+      "display": "grid",
+      "min-width": "auto",
+      "padding-top": "8px",
+    },
+    ".setup-summary div": {
+      "display": "grid",
+      "grid-template-columns": "1fr",
+      "padding": "10px 0",
+    },
+    ".sidebar": {
+      "display": "flex",
+      "inset": "0 auto 0 0",
+      "padding": "14px 10px 10px",
+      "padding-bottom": "max(10px, env(safe-area-inset-bottom))",
+      "padding-left": "max(10px, env(safe-area-inset-left))",
+      "padding-top": "max(14px, env(safe-area-inset-top))",
+      "position": "fixed",
+      "transform": "translateX(-102%)",
+      "visibility": "hidden",
+      "width": "min(86vw, 320px)",
+    },
+    ".team-card": {
+      "padding": "14px",
+    },
+    ".topic-panel": {
+      "height": "100dvh",
+      "inset": "0 0 0 auto",
+      "min-width": "0",
+      "overflow": "auto",
+      "padding-bottom": "env(safe-area-inset-bottom)",
+      "padding-right": "env(safe-area-inset-right)",
+      "padding-top": "env(safe-area-inset-top)",
+      "position": "fixed",
+      "width": "min(92vw, 400px)",
+    },
+  },
+  "390": {
+    ".app": {
+      "display": "block",
+      "grid-template-columns": "232px minmax(0, 1fr)",
+      "height": "100dvh",
+      "overflow": "hidden",
+    },
+    ".app-header": {
+      "display": "flex",
+      "padding": "10px 12px",
+      "padding-top": "max(10px, env(safe-area-inset-top))",
+    },
+    ".auth": {
+      "display": "grid",
+      "padding": "max(24px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left))",
+    },
+    ".composer": {
+      "padding": "12px 14px 10px",
+      "width": "min(100%, 920px)",
+    },
+    ".composer textarea": {
+      "display": "block",
+      "font-size": "var(--size-input-mobile)",
+      "padding": "0",
+      "width": "100%",
+    },
+    ".composer-wrap": {
+      "padding": "10px 12px max(12px, env(safe-area-inset-bottom))",
+      "width": "100%",
+    },
+    ".content": {
+      "padding": "20px 16px 40px",
+      "width": "min(100%, 960px)",
+    },
+    ".create-form:not(:has(select)) .primary": {
+      "font-size": "0",
+      "height": "40px",
+      "min-width": "40px",
+      "padding": "0",
+      "width": "40px",
+    },
+    ".drawer-close": {
+      "display": "grid",
+      "height": "36px",
+      "width": "36px",
+    },
+    ".drawer-scrim": {
+      "display": "none",
+      "inset": "0",
+      "position": "fixed",
+    },
+    ".header-title h1": {
+      "font-size": "var(--size-ui)",
+      "max-width": "58vw",
+      "overflow": "hidden",
+      "text-overflow": "ellipsis",
+      "white-space": "nowrap",
+    },
+    ".home-composer": {
+      "padding": "14px 16px 12px",
+      "width": "100%",
+    },
+    ".main-pane": {
+      "display": "flex",
+      "height": "100dvh",
+      "min-width": "0",
+      "padding-left": "env(safe-area-inset-left)",
+      "padding-right": "env(safe-area-inset-right)",
+    },
+    ".menu-button": {
+      "display": "grid",
+      "height": "36px",
+      "width": "36px",
+    },
+    ".palette": {
+      "margin-top": "8dvh",
+      "overflow": "hidden",
+      "padding": "0",
+      "width": "min(640px, calc(100vw - 32px))",
+    },
+    ".project-grid": {
+      "display": "grid",
+      "grid-template-columns": "1fr",
+    },
+    ".proposal-fields": {
+      "display": "grid",
+      "font-size": "var(--size-ui)",
+      "grid-template-columns": "1fr",
+    },
+    ".scroll-region": {
+      "overflow": "auto",
+    },
+    ".settings-nav ul": {
+      "display": "flex",
+      "flex-wrap": "nowrap",
+      "overflow-x": "auto",
+      "padding": "0",
+    },
+    ".setup": {
+      "display": "grid",
+      "padding": "max(40px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(40px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left))",
+      "padding-top": "max(24px, env(safe-area-inset-top))",
+    },
+    ".setup-step-name": {
+      "font-size": "var(--size-xs)",
+      "overflow": "visible",
+      "text-overflow": "ellipsis",
+      "white-space": "normal",
+    },
+    ".setup-steps": {
+      "display": "grid",
+      "grid-template-columns": "repeat(5, minmax(min-content, 1fr))",
+      "overflow-x": "auto",
+      "padding": "0",
+    },
+    ".setup-steps li": {
+      "display": "grid",
+      "min-width": "auto",
+      "padding-top": "8px",
+    },
+    ".setup-summary div": {
+      "display": "grid",
+      "grid-template-columns": "1fr",
+      "padding": "10px 0",
+    },
+    ".sidebar": {
+      "display": "flex",
+      "inset": "0 auto 0 0",
+      "padding": "14px 10px 10px",
+      "padding-bottom": "max(10px, env(safe-area-inset-bottom))",
+      "padding-left": "max(10px, env(safe-area-inset-left))",
+      "padding-top": "max(14px, env(safe-area-inset-top))",
+      "position": "fixed",
+      "transform": "translateX(-102%)",
+      "visibility": "hidden",
+      "width": "min(86vw, 320px)",
+    },
+    ".team-card": {
+      "padding": "14px",
+    },
+    ".topic-panel": {
+      "height": "100dvh",
+      "inset": "0 0 0 auto",
+      "min-width": "0",
+      "overflow": "auto",
+      "padding-bottom": "env(safe-area-inset-bottom)",
+      "padding-right": "env(safe-area-inset-right)",
+      "padding-top": "env(safe-area-inset-top)",
+      "position": "fixed",
+      "width": "min(92vw, 400px)",
+    },
+  },
+  "430": {
+    ".app": {
+      "display": "block",
+      "grid-template-columns": "232px minmax(0, 1fr)",
+      "height": "100dvh",
+      "overflow": "hidden",
+    },
+    ".app-header": {
+      "display": "flex",
+      "padding": "10px 12px",
+      "padding-top": "max(10px, env(safe-area-inset-top))",
+    },
+    ".auth": {
+      "display": "grid",
+      "padding": "max(24px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left))",
+    },
+    ".composer": {
+      "padding": "12px 14px 10px",
+      "width": "min(100%, 920px)",
+    },
+    ".composer textarea": {
+      "display": "block",
+      "font-size": "var(--size-input-mobile)",
+      "padding": "0",
+      "width": "100%",
+    },
+    ".composer-wrap": {
+      "padding": "10px 12px max(12px, env(safe-area-inset-bottom))",
+      "width": "100%",
+    },
+    ".content": {
+      "padding": "20px 16px 40px",
+      "width": "min(100%, 960px)",
+    },
+    ".create-form:not(:has(select)) .primary": {
+      "font-size": "0",
+      "height": "40px",
+      "min-width": "40px",
+      "padding": "0",
+      "width": "40px",
+    },
+    ".drawer-close": {
+      "display": "grid",
+      "height": "36px",
+      "width": "36px",
+    },
+    ".drawer-scrim": {
+      "display": "none",
+      "inset": "0",
+      "position": "fixed",
+    },
+    ".header-title h1": {
+      "font-size": "var(--size-ui)",
+      "max-width": "58vw",
+      "overflow": "hidden",
+      "text-overflow": "ellipsis",
+      "white-space": "nowrap",
+    },
+    ".home-composer": {
+      "padding": "14px 16px 12px",
+      "width": "100%",
+    },
+    ".main-pane": {
+      "display": "flex",
+      "height": "100dvh",
+      "min-width": "0",
+      "padding-left": "env(safe-area-inset-left)",
+      "padding-right": "env(safe-area-inset-right)",
+    },
+    ".menu-button": {
+      "display": "grid",
+      "height": "36px",
+      "width": "36px",
+    },
+    ".palette": {
+      "margin-top": "8dvh",
+      "overflow": "hidden",
+      "padding": "0",
+      "width": "min(640px, calc(100vw - 32px))",
+    },
+    ".project-grid": {
+      "display": "grid",
+      "grid-template-columns": "1fr",
+    },
+    ".proposal-fields": {
+      "display": "grid",
+      "font-size": "var(--size-ui)",
+      "grid-template-columns": "1fr",
+    },
+    ".scroll-region": {
+      "overflow": "auto",
+    },
+    ".settings-nav ul": {
+      "display": "flex",
+      "flex-wrap": "nowrap",
+      "overflow-x": "auto",
+      "padding": "0",
+    },
+    ".setup": {
+      "display": "grid",
+      "padding": "max(40px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(40px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left))",
+      "padding-top": "max(24px, env(safe-area-inset-top))",
+    },
+    ".setup-step-name": {
+      "font-size": "var(--size-xs)",
+      "overflow": "visible",
+      "text-overflow": "ellipsis",
+      "white-space": "normal",
+    },
+    ".setup-steps": {
+      "display": "grid",
+      "grid-template-columns": "repeat(5, minmax(min-content, 1fr))",
+      "overflow-x": "auto",
+      "padding": "0",
+    },
+    ".setup-steps li": {
+      "display": "grid",
+      "min-width": "auto",
+      "padding-top": "8px",
+    },
+    ".setup-summary div": {
+      "display": "grid",
+      "grid-template-columns": "1fr",
+      "padding": "10px 0",
+    },
+    ".sidebar": {
+      "display": "flex",
+      "inset": "0 auto 0 0",
+      "padding": "14px 10px 10px",
+      "padding-bottom": "max(10px, env(safe-area-inset-bottom))",
+      "padding-left": "max(10px, env(safe-area-inset-left))",
+      "padding-top": "max(14px, env(safe-area-inset-top))",
+      "position": "fixed",
+      "transform": "translateX(-102%)",
+      "visibility": "hidden",
+      "width": "min(86vw, 320px)",
+    },
+    ".team-card": {
+      "padding": "14px",
+    },
+    ".topic-panel": {
+      "height": "100dvh",
+      "inset": "0 0 0 auto",
+      "min-width": "0",
+      "overflow": "auto",
+      "padding-bottom": "env(safe-area-inset-bottom)",
+      "padding-right": "env(safe-area-inset-right)",
+      "padding-top": "env(safe-area-inset-top)",
+      "position": "fixed",
+      "width": "min(92vw, 400px)",
+    },
+  },
+}
+`;

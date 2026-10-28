@@ -1,0 +1,29 @@
+{
+  "name": "jit",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "bun": ">=1.4.2"
+  },
+  "scripts": {
+    "start": "bun src/main.ts serve",
+    "setup": "bun src/main.ts setup",
+    "owner:reset": "bun src/main.ts reset-owner",
+    "host:evidence": "bun src/evidence-cli.ts",
+    "host:probe": "bun src/probe-cli.ts",
+    "ops:drill": "bun src/ops-cli.ts",
+    "ops:package": "bun ops/package/bun-build.ts",
+    "ops:service": "bun src/main.ts service",
+    "ops:smoke": "bun ops/package/arm64-smoke.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.3",
+    "typescript": "7.0.2"
+  },
+  "dependencies": {
+    "schway": "file:vendor/schway-1.0.0-rc.2-128b77a.tgz"
+  }
+}
