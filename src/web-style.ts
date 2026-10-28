@@ -404,6 +404,10 @@ kbd { font: 500 var(--size-xs)/1.6 var(--font-sans); color: var(--fg-2); border:
 .team-run[open] > summary::before { content: "▾"; }
 .team-run-title { flex: 1; }
 .team-run .team-run-origin, .team-role-note { font-size: var(--size-xs); color: var(--muted); }
+/* app.routing_selection/v1: the rule name, or Jit's reasoning labelled as such (REL03). */
+.team-selection { font-size: var(--size-xs); color: var(--muted); }
+.team-selection-label { font-weight: 600; }
+.team-selection-why { overflow-wrap: anywhere; }
 .team-roles { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 8px; }
 .team-role { border-top: 1px solid var(--line); padding-top: 8px; }
 .team-role-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: var(--size-sm); }

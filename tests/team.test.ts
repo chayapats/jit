@@ -14,6 +14,7 @@ import { TransactionStore } from "../src/store";
 import { coordinatorSynthesisMarker, coordinatorSynthesisWork, normalizeCoordinatorSynthesis } from "../src/team/decisions";
 import { discussionPlanWork, specialistAnalysisWork } from "../src/team/dispatch";
 import { setScriptedRouter } from "../src/team/router";
+import { selectRoles } from "../src/team/routing";
 import { ScriptedRunPort, fixtureOutcome, validateRunRequest } from "../src/team/scripted-port";
 import { scriptedPreviewWork } from "../src/team/preview";
 import { createWebHandler } from "../src/web";
@@ -1395,4 +1396,24 @@ test("REL02 app.specialist_results/v2 normalization: closed shape, one unblock a
   expect(specialistResultView({ outcome: fixtureOutcome("complete", "x"), source, result: v2("blocked", "ติด", "none", "ขอสิทธิ์") }))
     .toEqual({ version: 2, status: "blocked", unblock: "ขอสิทธิ์" });
   expect(specialistResultView({ outcome: null, source: null, result: null })).toBeNull();
+});
+
+test("REL03 app.routing_selection/v1: fixed rules match exact NFC names, ignore owner-started discussions and never touch the owner's router", async () => {
+  const f = await fixture();
+  const { tech, design } = await specialists(f);
+  const cafe = f.app.execute(f.auth.actor, save(f, { name: "Café", kind: "specialist", responsibility: "วิเคราะห์ร้านกาแฟ", route: grok })).role!;
+  const select = (text: string, sequence = 99) => f.store.read(tx => selectRoles(tx, { message: { id: rid(), sequence, text }, topic: { id: f.topic.id }, project: { id: f.project.id }, config: f.config }));
+  // Case-insensitive, NFC-normalized, exact: a decomposed "é" names the same role; a prefix does not.
+  expect(select("@CAFÉ ช่วยดู")).toEqual({ selection: { rule: "named", roleIds: [cafe.id], why: null }, continues: null });
+  expect(select("@caf ช่วยดู")).toBeNull();
+  expect(select("@เทคโนโลยี และ @ออกแบบ, @เทคโนโลยี")).toMatchObject({ selection: { rule: "named", roleIds: [tech.id, design.id] } });
+  // An owner-started discussion has no Jit dispatch card, so it never makes a message a follow-up.
+  f.app.execute(f.auth.actor, dispatch(f, "เทคโนโลยี ออกแบบ software"));
+  await drain(f);
+  expect(f.app.discussions(f.auth.actor, f.project.id, f.topic.id)).toHaveLength(1);
+  expect(select("แล้วยังไงต่อ")).toBeNull();
+  // The owner-form router still selects by relevance, unaffected by the fixed rules.
+  expect(f.app.discussions(f.auth.actor, f.project.id, f.topic.id)[0]!.router.selected.sort()).toEqual([tech.id, design.id].sort());
+  expect(() => f.store.read(tx => selectRoles(tx, { message: { id: rid(), sequence: 99, text: "x", replyTo: { discussionId: rid(), roleId: tech.id } },
+    topic: { id: f.topic.id }, project: { id: f.project.id }, config: f.config }))).toThrow("reply_target_not_found");
 });

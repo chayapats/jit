@@ -19,6 +19,7 @@ interface Discussion { kind: "discussion"; id; projectId; topicId; purpose; jobI
   revision; createdAt; updatedAt; manifest; limits; router; participations; coverageGap }
 // MEM02: manifest also carries assembled claims and manifest.context (app.memory_context/v1)
 // BOT04: origin?: { kind: "standing-allowance" | "owner-accepted"; proposalId; replyId; allowanceRevision }, stoppedAll?: boolean
+// REL03: selection?: { rule: "named" | "reply" | "follow_up" | "single" | "model"; roleIds; why: null } (app.routing_selection/v1)
 
 Application.execute(actor, TeamCommand): TeamReceipt; // discussion?: Discussion
 Application.discussions(actor, projectId, topicId): Discussion[];

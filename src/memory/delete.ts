@@ -1287,7 +1287,9 @@ function redactDerivedRuns(tx: AppTransaction, sources: SourceEntry[]): void {
       const next = { ...parsed, ...(outcome && typeof outcome.output === "string" ? { outcome: { ...outcome, output: redactedText } } : {}),
         ...(redactedResult ? { result: redactedResult } : {}),
         ...("progress" in parsed ? { progress: null } : {}), ...(proposals.changed ? { roleProposals: proposals.value } : {}),
-        ...(promotion.changed ? { promotionProposal: promotion.value } : {}) };
+        ...(promotion.changed ? { promotionProposal: promotion.value } : {}),
+        // app.routing_selection/v1: Jit's dispatch `why` is model text from the same output.
+        ...(typeof parsed.dispatchWhy === "string" ? { dispatchWhy: null } : {}) };
       if (JSON.stringify(next) !== JSON.stringify(parsed)) tx.run(`UPDATE ${table} SET record_json = ? WHERE rowid = ?`, JSON.stringify(next), row.rowid_);
     }, null);
   }

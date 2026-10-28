@@ -612,14 +612,14 @@ export class Application {
     requireId(projectId); requireId(topicId);
     return this.store.read(tx => {
       this.#requireOwner(tx, actor); this.#project(tx, projectId); readTopic(tx, projectId, topicId);
-      return readDispatchCards(tx, projectId, topicId, messageIds);
+      return readDispatchCards(tx, projectId, topicId, messageIds, this.config.team);
     });
   }
 
   /** app.dispatch_allowance/v1: one proposal or team card by id. */
   dispatchCard(actor: OwnerActor, projectId: string, proposalId: string): DispatchCardView {
     requireId(projectId); requireId(proposalId);
-    return this.store.read(tx => { this.#requireOwner(tx, actor); this.#project(tx, projectId); return readDispatchCard(tx, projectId, proposalId); });
+    return this.store.read(tx => { this.#requireOwner(tx, actor); this.#project(tx, projectId); return readDispatchCard(tx, projectId, proposalId, this.config.team); });
   }
 
   /** app.persona/v1: the current owner persona, or the defaults (revision 0). */
@@ -767,7 +767,7 @@ export class Application {
       // app.jit_reply/v1: the message and its one reply admission commit together (ADR 0029). A chat started from
       // the home composer is a new topic plus its first message, answered the same way.
       if (command.kind === "message.send" || command.kind === "chat.start") admitJitReply(tx, { message: (result as MessageReceipt | ChatReceipt).message, requestId: command.requestId,
-        config: this.config, queue: this.#jobs, generation: tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'")!.generation, now });
+        replyTo: command.kind === "message.send" ? command.payload.replyTo ?? null : null, config: this.config, queue: this.#jobs, generation: tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'")!.generation, now });
       this.#beforeCommit?.(command.kind === "topic.create" ? "topic" : "message");
       tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
       tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)",

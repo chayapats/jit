@@ -1,5 +1,6 @@
 import type { JobLimits } from "../jobs/types";
 import type { SourceReference } from "../sources";
+import type { RoutingSelection } from "./routing";
 
 /** Registered work types; the authoritative jobs record carries the type, never the run JSON. */
 export const discussionWorkId = "team.discussion";
@@ -206,6 +207,8 @@ export interface Discussion {
    * readers skip any held role that is also a participant.
    */
   held?: { roleId: string; roleName: string; runId: string }[];
+  /** app.routing_selection/v1: the fixed rule or model selection that chose a Jit-dispatched discussion's roles. */
+  selection?: RoutingSelection;
 }
 /** Who authorized a discussion that a Jit dispatch proposal asked for. Model output is never the authority. */
 export interface DiscussionOrigin {
