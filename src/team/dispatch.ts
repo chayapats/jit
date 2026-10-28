@@ -271,6 +271,8 @@ export function prepareControl(
     if (existing) {
       discussion.participations = discussion.participations.map(item => item.roleId === p.roleId ? participation : item);
     } else discussion.participations.push(participation);
+    // A held role the owner includes is a participant now; its own result decides whether it is a gap.
+    if (discussion.held?.some(role => role.roleId === p.roleId)) discussion.held = discussion.held.filter(role => role.roleId !== p.roleId);
   } else {
     if (!existing) throw new AppError("participation_not_found", 404);
     fenceParticipation(tx, queue, existing, p.action, command, generation, now);

@@ -641,7 +641,7 @@ test("recorded derived outputs are purged by lineage and job attempts stop expos
   expect(() => f.rt.app.execute(actor(f), dispatch(f, a, "ใช้ผลเดิม", [derived[0]!.source]))).toThrow();
 });
 
-test("REL02: a purged blocked result takes its unblock action out of the run, the discussion and owner receipts", async () => {
+test("REL02: a purged blocked result takes its unblock action out of the run, the discussion and owner receipts; another run's identical text stays", async () => {
   const f = await fixture();
   // The blocked specialist writes its own unblock action: no textual overlap with the deleted claim.
   f.hooks.specialist = () => fixtureOutcome("complete", JSON.stringify({ status: "blocked", result: "ยังเปิดไม่ได้ blocked-505", evidence: "none", unblock: "ขอสิทธิ์อ่าน repo unblock-505" }));
@@ -649,16 +649,23 @@ test("REL02: a purged blocked result takes its unblock action out of the run, th
   const s1 = say(f, a, "ข้อความ unblock-canary-505 ต้องลบ");
   await remember(f, a, s1);
   const started = f.rt.app.execute(actor(f), dispatch(f, a, "วิเคราะห์ unblock")).discussion!;
+  // Another project's run writes the identical unblock action; it is not part of the deleted lineage.
+  const b = project(f, "โครงการอื่น", "หัวข้ออื่น");
+  const other = f.rt.app.execute(actor(f), dispatch(f, b, "วิเคราะห์อื่น")).discussion!;
   await drain(f);
   // A second role joins later: the owner receipt of that control holds the projected discussion with the unblock action.
   const design = f.rt.app.execute(actor(f), { kind: "role.save", projectId: null, requestId: rid(), expectedRevision: f.rt.app.team(actor(f)).ownerRevision,
     payload: { roleId: null, name: "ออกแบบ", kind: "specialist", responsibility: "วิเคราะห์ UX", enabled: true, route: grok } }).role!.id;
-  const current = f.rt.app.discussion(actor(f), a.id, started.id).discussion;
-  expect(current.participations[0]!.result).toEqual({ version: 2, status: "blocked", unblock: "ขอสิทธิ์อ่าน repo unblock-505" });
-  const receipt = f.rt.app.execute(actor(f), { kind: "team.control", requestId: rid(), projectId: a.id, expectedRevision: current.revision,
-    payload: { discussionId: started.id, action: "include", roleId: design } });
-  expect(JSON.stringify(receipt)).toContain("unblock-505");
+  const include = (p: Project, discussionId: string) => {
+    const current = f.rt.app.discussion(actor(f), p.id, discussionId).discussion;
+    expect(current.participations[0]!.result).toEqual({ version: 2, status: "blocked", unblock: "ขอสิทธิ์อ่าน repo unblock-505" });
+    const receipt = f.rt.app.execute(actor(f), { kind: "team.control", requestId: rid(), projectId: p.id, expectedRevision: current.revision,
+      payload: { discussionId, action: "include", roleId: design } });
+    expect(JSON.stringify(receipt)).toContain("unblock-505");
+  };
+  include(a, started.id); include(b, other.id);
   await drain(f);
+  const otherRunId = f.rt.app.discussion(actor(f), b.id, other.id).discussion.participations[0]!.runId;
   // The stored discussion keeps the status only; the action lives on the run record.
   const discussionJson = f.rt.store.read(tx => tx.get<{ t: string }>("SELECT record_json AS t FROM team_runs WHERE id = ?", started.id)!.t);
   expect(discussionJson).toContain('"status":"blocked"');
@@ -666,13 +673,19 @@ test("REL02: a purged blocked result takes its unblock action out of the run, th
   const preview = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, s1)));
   expect(preview.preview.affected.sources.some(s => s.relation === "derived_output")).toBe(true);
   asConfirmed(f.rt.app.execute(actor(f), confirmCommand(f, a, preview.preview.id, true, preview.preview.wholeSession.required)));
+  // Every copy bound to the purged run is gone; the other project's run and its receipt keep the identical text.
   const raw = f.rt.store.read(tx => [
-    ...tx.all<{ t: string | null }>("SELECT content_text AS t FROM source_versions"),
-    ...tx.all<{ t: string }>("SELECT record_json AS t FROM team_runs"),
-    ...tx.all<{ t: string }>("SELECT result_json AS t FROM command_receipts"),
+    ...tx.all<{ t: string | null }>("SELECT content_text AS t FROM source_versions WHERE source_id IN (SELECT id FROM sources WHERE project_id = ?)", a.id),
+    ...tx.all<{ t: string }>("SELECT record_json AS t FROM team_runs WHERE project_id = ?", a.id),
+    ...tx.all<{ t: string }>("SELECT result_json AS t FROM command_receipts WHERE result_json NOT LIKE ?", `%${b.id}%`),
   ].map(r => r.t ?? "").join("\n"));
   expect(raw).not.toContain("unblock-505");
   expect(raw).not.toContain("blocked-505");
+  expect(f.rt.store.read(tx => JSON.parse(tx.get<{ t: string }>("SELECT record_json AS t FROM team_runs WHERE id = ?", otherRunId)!.t)).result.unblock)
+    .toBe("ขอสิทธิ์อ่าน repo unblock-505");
+  const otherReceipts = f.rt.store.read(tx => tx.all<{ t: string }>("SELECT result_json AS t FROM command_receipts WHERE result_json LIKE ?", `%${otherRunId}%`)).map(r => r.t).join("\n");
+  expect(otherReceipts).toContain("ขอสิทธิ์อ่าน repo unblock-505");
+  expect(f.rt.app.discussion(actor(f), b.id, other.id).discussion.participations[0]!.result).toMatchObject({ unblock: "ขอสิทธิ์อ่าน repo unblock-505" });
   expect(f.rt.app.discussion(actor(f), a.id, started.id).discussion.participations[0]!.result).toMatchObject({ status: "blocked", unblock: "(memory ไม่พร้อมใช้งาน)" });
 });
 

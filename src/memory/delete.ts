@@ -1211,28 +1211,38 @@ function redactDeliveryText(tx: AppTransaction, intentId: string, reportId: stri
 }
 
 /**
- * app.specialist_results/v2: read models show a blocked result's unblock action, so command receipts (and any record
- * written before gaps kept only the run id) may hold a copy under an `unblock` key. Each exact copy of a purged run's
- * action is redacted; other strings, and `unblock` values that differ, stay.
+ * app.specialist_results/v2: read models show a blocked result's unblock action, so owner command receipts (and any
+ * record written before gaps kept only the run id) may hold a copy under an `unblock` key. A copy is redacted only
+ * when it is bound to the purged run: the nearest enclosing `runId` is that run, the nearest enclosing `projectId`
+ * (when present) is its project, and the value equals its action. Another run's identical text stays.
  */
-function redactUnblockCopies(tx: AppTransaction, unblocks: Set<string>): void {
-  if (!unblocks.size) return;
-  const forms = [...unblocks].map(value => JSON.stringify(value));
-  const visit = (node: unknown): unknown => Array.isArray(node) ? node.map(visit)
-    : node && typeof node === "object" ? Object.fromEntries(Object.entries(node).map(([key, item]) =>
-      [key, key === "unblock" && typeof item === "string" && unblocks.has(item) ? redactedText : visit(item)]))
-    : node;
-  for (const [table, column] of FREE_TEXT_TABLES) {
-    try {
-      scanTable<{ json: string; rowid_: number }>(tx, table, `${column} AS json`, row => {
-        if (!forms.some(form => row.json.includes(form))) return;
-        let parsed: unknown;
-        try { parsed = JSON.parse(row.json); } catch { return; }
-        const next = JSON.stringify(visit(parsed));
-        if (next !== JSON.stringify(parsed)) tx.run(`UPDATE ${table} SET ${column} = ? WHERE rowid = ?`, next, row.rowid_);
-      }, null);
-    } catch (error) {
-      if (!(error instanceof Error) || !/no such table/.test(error.message)) throw error;
+function redactUnblockCopies(tx: AppTransaction, purged: Map<string, { projectId: string; action: string }>): void {
+  type Scope = { runId: string | undefined; projectId: string | undefined };
+  const visit = (node: unknown, scope: Scope): unknown => {
+    if (Array.isArray(node)) return node.map(item => visit(item, scope));
+    if (!node || typeof node !== "object") return node;
+    const record = node as Record<string, unknown>;
+    const inner: Scope = {
+      runId: typeof record.runId === "string" ? record.runId : scope.runId,
+      projectId: typeof record.projectId === "string" ? record.projectId : scope.projectId,
+    };
+    const hit = inner.runId ? purged.get(inner.runId) : undefined;
+    return Object.fromEntries(Object.entries(record).map(([key, item]) => [key,
+      key === "unblock" && typeof item === "string" && hit && item === hit.action && (inner.projectId === undefined || inner.projectId === hit.projectId)
+        ? redactedText : visit(item, inner)]));
+  };
+  for (const [runId] of purged) {
+    for (const [table, column] of FREE_TEXT_TABLES) {
+      try {
+        scanTable<{ json: string; rowid_: number }>(tx, table, `${column} AS json`, row => {
+          let parsed: unknown;
+          try { parsed = JSON.parse(row.json); } catch { return; }
+          const next = JSON.stringify(visit(parsed, { runId: undefined, projectId: undefined }));
+          if (next !== JSON.stringify(parsed)) tx.run(`UPDATE ${table} SET ${column} = ? WHERE rowid = ?`, next, row.rowid_);
+        }, null, `${column} LIKE ?`, [`%${runId}%`]);
+      } catch (error) {
+        if (!(error instanceof Error) || !/no such table/.test(error.message)) throw error;
+      }
     }
   }
 }
@@ -1246,7 +1256,7 @@ function redactDerivedRuns(tx: AppTransaction, sources: SourceEntry[]): void {
     "SELECT json_extract(attribution_json, '$.runId') AS runId FROM source_versions WHERE source_id = ? AND revision = ? AND generation = ?",
     entry.source.sourceId, entry.source.revision, entry.source.generation)?.runId;
   const derived = sources.filter(entry => entry.relation === "derived_output");
-  const runIds = new Set<string>(), replyRunIds = new Set<string>(), purgedReplies = new Set<string>(), unblocks = new Set<string>();
+  const runIds = new Set<string>(), replyRunIds = new Set<string>(), purgedReplies = new Set<string>(), unblocks = new Map<string, { projectId: string; action: string }>();
   for (const entry of sources) {
     const runId = runOf(entry);
     if (typeof runId !== "string") continue;
@@ -1271,7 +1281,9 @@ function redactDerivedRuns(tx: AppTransaction, sources: SourceEntry[]): void {
       const redactedResult = result && result.version === 2 ? { ...result,
         ...(typeof result.result === "string" && result.result ? { result: redactedText } : {}),
         ...(typeof result.raw === "string" ? { raw: redactedText } : {}), ...(typeof result.unblock === "string" ? { unblock: redactedText } : {}) } : null;
-      if (redactedResult && typeof result!.unblock === "string" && result!.unblock !== redactedText) unblocks.add(result!.unblock);
+      if (redactedResult && typeof result!.unblock === "string" && result!.unblock !== redactedText && typeof parsed.projectId === "string") {
+        unblocks.set(parsed.id as string, { projectId: parsed.projectId, action: result!.unblock });
+      }
       const next = { ...parsed, ...(outcome && typeof outcome.output === "string" ? { outcome: { ...outcome, output: redactedText } } : {}),
         ...(redactedResult ? { result: redactedResult } : {}),
         ...("progress" in parsed ? { progress: null } : {}), ...(proposals.changed ? { roleProposals: proposals.value } : {}),

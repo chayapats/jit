@@ -1010,3 +1010,37 @@ test("REL02: a specialist run admitted before v2 keeps the v1 result path when i
   expect(messages(f).at(-1)!.text).toBe("วิเคราะห์จำลอง (fixture) · เทคโนโลยี\nความเห็นแบบเดิมของเทคโนโลยี");
 });
 
+test("REL02: a held role the owner includes again and that completes is no longer a gap of the team reply or synthesis", async () => {
+  let blocked = "";
+  const f = await fixture({ specialist: doneAndBlocked(() => blocked) });
+  blocked = f.designId;
+  const text = "ช่วยดู repo นี้หน่อย";
+  send(f, text);
+  await drain(f);
+  const again = send(f, text);
+  await drain(f);
+  const held = cardFor(f, replyFor(f, again.message.id).replyMessageId!);
+  expect(held.blocked.map(role => role.roleId)).toEqual([f.designId]);
+  expect(f.store.read(tx => readDiscussion(tx, f.project.id, held.discussion!.id)).held!.map(role => role.roleId)).toEqual([f.designId]);
+  // The owner includes the held role on this discussion; this time it is not blocked and completes with a citable result.
+  blocked = "";
+  const before = f.app.discussion(f.auth.actor, f.project.id, held.discussion!.id).discussion;
+  f.app.execute(f.auth.actor, { kind: "team.control", requestId: rid(), projectId: f.project.id, expectedRevision: before.revision,
+    payload: { discussionId: before.id, action: "include", roleId: f.designId } });
+  await drain(f);
+  const stored = f.store.read(tx => readDiscussion(tx, f.project.id, held.discussion!.id));
+  expect(stored.held ?? []).toEqual([]);
+  const after = f.app.discussion(f.auth.actor, f.project.id, held.discussion!.id).discussion;
+  expect(after.participations.find(item => item.roleId === f.designId)).toMatchObject({ state: "completed", result: { version: 2, status: "done", unblock: null } });
+  expect(after.coverageGap).toEqual([]);
+  f.app.execute(f.auth.actor, { kind: "decision.synthesize", requestId: rid(), projectId: f.project.id, expectedRevision: after.revision,
+    payload: { discussionId: after.id, limits: dispatchLimits(f) } });
+  await drain(f);
+  const proposal = f.app.decision(f.auth.actor, f.project.id, f.topic.id).proposal!;
+  expect(proposal.artifact.missing).toEqual([]);
+  expect(proposal.artifact.options.flatMap(option => option.citations.map(c => c.roleId)).sort()).toEqual([f.techId, f.designId].sort());
+  // A record that still lists the role as held (written before this rule) is judged by the participation, not the list.
+  const { heldGaps } = await import("../src/team/specialist-results");
+  expect(heldGaps({ ...stored, held: [{ roleId: f.designId, roleName: "ออกแบบ", runId: held.blocked[0]!.runId }] })).toEqual([]);
+});
+

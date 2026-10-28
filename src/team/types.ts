@@ -202,7 +202,8 @@ export interface Discussion {
   /**
    * app.specialist_results/v2: roles the Jit dispatch named but did not call again, because their latest result for
    * this same request is blocked. The team reply and synthesis show them as `result_blocked` gaps; each `runId` names
-   * the blocked run whose record holds the unblock action.
+   * the blocked run whose record holds the unblock action. A role the owner includes later leaves this list, and
+   * readers skip any held role that is also a participant.
    */
   held?: { roleId: string; roleName: string; runId: string }[];
 }

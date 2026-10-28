@@ -11,7 +11,7 @@ import { prepareDispatch, projectDiscussion, readDiscussion, readSpecialist } fr
 import { admitTeamReply, readReply, replyLimits, type JitReplyView, type ReplyNotAdmitted, type TeamReplyGap, type TeamReplyResult } from "./jit-reply";
 import type { Discussion, DiscussionOrigin, DiscussionParticipation, SynthesisState } from "./types";
 import { promotionFrom } from "../promotion";
-import { blockedForRequest, citableResult, unblockAction } from "./specialist-results";
+import { blockedForRequest, citableResult, heldGaps, unblockAction } from "./specialist-results";
 
 /** Lifecycle of one dispatch proposal. Only `admitted` (standing allowance) and `accepted` (owner) start work. */
 export type DispatchProposalState = "admitted" | "proposed" | "accepted" | "dismissed" | "empty";
@@ -293,7 +293,7 @@ function teamResults(tx: AppTransaction, discussion: Discussion): { results: Tea
       else gaps.push({ roleId: item.roleId, roleName: item.roleName, reason: "source_unavailable" });
     } else if (item.state !== "skipped" && item.state !== "excluded") gaps.push({ roleId: item.roleId, roleName: item.roleName, reason: item.reason ?? item.state });
   }
-  for (const role of discussion.held ?? []) gaps.push({ roleId: role.roleId, roleName: role.roleName, reason: "result_blocked", runId: role.runId });
+  for (const role of heldGaps(discussion)) gaps.push({ roleId: role.roleId, roleName: role.roleName, reason: "result_blocked", runId: role.runId });
   return { results, gaps };
 }
 

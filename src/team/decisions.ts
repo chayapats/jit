@@ -18,7 +18,7 @@ import type {
   SynthesisCitation, SynthesisGap, SynthesisState,
 } from "./types";
 import { coordinatorSynthesisWorkId } from "./types";
-import { citableResult, unblockAction } from "./specialist-results";
+import { citableResult, heldGaps, unblockAction } from "./specialist-results";
 /** Trusted operator line that identifies a coordinator invocation. It is not an owner decision. */
 export const coordinatorSynthesisMarker = "Synthesize only the cited specialist results under the exact route and finite budgets; a synthesis is a recommendation, never an owner decision.";
 
@@ -361,7 +361,7 @@ export function prepareSynthesis(
     } else if (!["skipped", "excluded"].includes(item.state)) gaps.push({ roleId: item.roleId, roleName: item.roleName, reason: item.reason ?? item.state });
   }
   // Roles a Jit dispatch held back because they were still blocked on this request are gaps too.
-  for (const role of stored.held ?? []) gaps.push({ roleId: role.roleId, roleName: role.roleName, reason: "result_blocked", runId: role.runId });
+  for (const role of heldGaps(stored)) gaps.push({ roleId: role.roleId, roleName: role.roleName, reason: "result_blocked", runId: role.runId });
   if (allowed.length < 1 || allowed.length > config.team.sourceLimit) throw new AppError("synthesis_not_ready", 409);
   const sources = allowed.map(item => {
     const source = lookupSource(tx, command.projectId, item.reference);

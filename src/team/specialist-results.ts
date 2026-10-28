@@ -1,6 +1,6 @@
 import { requireReference, type SourceReference } from "../sources";
 import type { AppTransaction } from "../store";
-import type { ParticipationResult, SpecialistResultStatus, SpecialistResultV2, SpecialistRun } from "./types";
+import type { Discussion, ParticipationResult, SpecialistResultStatus, SpecialistResultV2, SpecialistRun } from "./types";
 
 /** Trusted operator line that asks a specialist for the app.specialist_results/v2 shape. */
 export const specialistResultInstruction = "Return one JSON object {\"status\": \"done\"|\"partial\"|\"blocked\"|\"failed\", \"result\": string, \"evidence\": [{\"sourceId\", \"revision\", \"generation\"}, ...] or \"none\", \"unblock\": string|null}. Evidence entries must be manifest source references. \"blocked\" needs exactly one unblock action (one line, at most 200 characters); every other status uses null. Any other shape is stored as incomplete and never counts as done.";
@@ -143,4 +143,13 @@ export function unblockAction(tx: AppTransaction, projectId: string, runId: stri
     const run = JSON.parse(row.record_json) as SpecialistRun;
     return run.kind === "specialist" && run.result?.status === "blocked" ? run.result.unblock : null;
   } catch { return null; }
+}
+
+/**
+ * Held roles that are still gaps of a discussion: a role that is also a participant (the owner included it later)
+ * is judged by its own participation instead, so a completed, citable result is never reported as blocked.
+ */
+export function heldGaps(discussion: Pick<Discussion, "held" | "participations">): NonNullable<Discussion["held"]> {
+  const participants = new Set(discussion.participations.map(item => item.roleId));
+  return (discussion.held ?? []).filter(role => !participants.has(role.roleId));
 }
