@@ -31,6 +31,11 @@ export interface Job {
   configuration: { revision: number; policyRevision: number; fingerprint: string }; route: JobRoute;
   limits: JobLimits; remaining: JobLimits; state: JobState; reason: JobReason; nextAction: string;
   occupiesAdmission: boolean;
+  /**
+   * app.access_level/v1: present (and true) only when the job's work definition is execution-capable. The kill switch
+   * fences such jobs by this durable flag, so it needs no running scheduler. No current work definition sets it.
+   */
+  execution?: true;
   createdAt: number; updatedAt: number; deadlineAt: number; steps: number;
   checkpoint: JobData; evidence: string | null;
 }
@@ -77,6 +82,12 @@ export interface WorkDefinition {
   id: string; title: string; revision: number; route: JobRoute; cost: JobUsage;
   /** Only explicitly read-only interrupted work may be resumed; unspecified/mutation/send require manual resolution. */
   replay?: "read" | "mutation" | "send";
+  /**
+   * app.access_level/v1: execution-capable work. Admission and every result commit require
+   * `assertExecutionAllowed(…, "workspace")`, and `execution.halt` fences its admitted and running attempts.
+   * No current definition sets it; EXE05 is the first.
+   */
+  execution?: boolean;
   /** Captures native identities and immutable adapter input inside admission, before any dispatch. */
   prepare?(tx: AppTransaction, job: Job, generation: number): AttemptPreparation;
   /** Rechecks source/context freshness inside each reservation and result transaction. */

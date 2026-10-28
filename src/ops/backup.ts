@@ -298,6 +298,8 @@ export const backupImageTables: Readonly<Record<string, "include" | "exclude" | 
   chat_title_sources: "include",
   // app.local_api/v1 (schema 29): whether the owner turned the loopback API on; the token is never in the database.
   local_api_settings: "include",
+  // app.access_level/v1 (schema 31): owner access level, role restriction and kill switch revisions, no credentials.
+  project_access_revisions: "include", role_access_overrides: "include", execution_halts: "include",
   project_team: "include", projects: "include", restore_quarantines: "include", roles: "include",
   schway_native_refs: "include", source_versions: "include", sources: "include",
   task_events: "include", task_evidence_artifacts: "include", task_proposals: "include", tasks: "include",

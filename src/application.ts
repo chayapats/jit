@@ -6,7 +6,7 @@ import { preferencesIdentity, readPreferences, writePreferences, type Preference
 import { localApiIdentity, readLocalApi, writeLocalApi, type LocalApiReceipt, type LocalApiSettings, type SetLocalApiCommand } from "./local-api/settings";
 import { personaIdentity, readPersona, writePersona, type Persona, type PersonaReceipt, type SetPersonaCommand } from "./persona";
 import { applySetup, isSetupCommand, readGeneralSpace, readSetup, setupCheckWorkId, setupComplete, setupIdentity, type GeneralSpace, type SetupCommand, type SetupReceipt, type SetupView } from "./setup";
-import { jitReplyWorkId, admitJitReply, readRepliesFor, readReplyChanges, stopReply, stopReplyIdentity, type JitReplyView, type ReplyReceipt, type StopReplyCommand } from "./team/jit-reply";
+import { jitReplyWorkId, admitJitReply, readRepliesFor, readReply, readReplyChanges, stopReply, stopReplyIdentity, type JitReplyView, type ReplyReceipt, type StopReplyCommand } from "./team/jit-reply";
 import { conversationIdentity, mutateConversation, readMessages, readTopic, readTopics, requireCursor,
   type ChatReceipt, type ConversationCommand, type CreateTopicCommand, type SendMessageCommand, type StartChatCommand, type Topic, type TopicReceipt, type MessageReceipt } from "./conversation";
 import { executePromotion, isPromotionCommand, promotionIdentity, readTopicPromotion, requireTopicOpen, type PromotionCommand, type PromotionReceipt, type TopicPromotionView } from "./promotion";
@@ -16,7 +16,11 @@ import type { TelegramStatus } from "./telegram/types";
 import type { SessionReconciliation } from "./jobs/reconcile";
 import type { Job, JobStopOutcome } from "./jobs/types";
 import { readAttempts } from "./jobs/attempts";
-import { JobQueue, jobCommandIdentity, projectJob, readJob, readJobs } from "./jobs/queue";
+import { JobQueue, jobCommandIdentity, projectJob, readJob, readJobs, stopExecutionJobs } from "./jobs/queue";
+import {
+  accessCommandIdentity, isAccessCommand, readProjectAccess, readRoleAccess, writeAccessLevel, writeHalt, writeResume, writeRoleRestriction,
+  type AccessCommand, type AccessReceipt, type HaltExecutionCommand, type HaltOutcome, type ProjectAccess, type RoleAccess,
+} from "./exec/access";
 import type { EnqueueJobCommand, ResumeJobCommand, JobCommand, JobReceipt } from "./jobs/types";
 import { mutateTeamConfiguration, readTeam, teamIdentity } from "./team/configuration";
 import { executeRoleProposal, roleProposalIdentity, type RoleProposalCommand, type RoleProposalReceipt } from "./team/role-proposals";
@@ -598,6 +602,18 @@ export class Application {
     });
   }
 
+  /** app.access_level/v1: the project's access level and kill switch state; `read`, revision 0, not halted by default. */
+  projectAccess(actor: OwnerActor, projectId: string): ProjectAccess {
+    requireId(projectId);
+    return this.store.read(tx => { this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, projectId); return readProjectAccess(tx, projectId, this.config); });
+  }
+
+  /** app.access_level/v1: the latest restrict-only override of every restricted role, with its effective level. */
+  roleAccess(actor: OwnerActor, projectId: string): RoleAccess[] {
+    requireId(projectId);
+    return this.store.read(tx => { this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, projectId); return readRoleAccess(tx, projectId); });
+  }
+
   /** app.dispatch_allowance/v1: the project's current allowance, or the product default (revision 0). */
   dispatchAllowance(actor: OwnerActor, projectId: string): DispatchAllowance {
     requireId(projectId);
@@ -682,6 +698,7 @@ export class Application {
   execute(actor: OwnerActor, command: RoleProposalCommand): RoleProposalReceipt;
   execute(actor: OwnerActor, command: SetDispatchAllowanceCommand): DispatchAllowanceReceipt;
   execute(actor: OwnerActor, command: FeedCommand): FeedReceipt;
+  execute(actor: OwnerActor, command: AccessCommand): AccessReceipt;
   execute(actor: OwnerActor, command: DispatchCommand): DispatchReceipt;
   execute(actor: OwnerActor, command: CreateTopicCommand): TopicReceipt;
   execute(actor: OwnerActor, command: SendMessageCommand): MessageReceipt;
@@ -704,8 +721,8 @@ export class Application {
   execute(actor: OwnerActor, command: ExportCommand): ExportReceipt;
   execute(actor: OwnerActor, command: UpgradeCommand): Promise<UpgradeReceipt>;
   execute(actor: OwnerActor, command: RestoreCommand): Promise<RestoreReceipt>;
-  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | FeedCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | FeedReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt>;
-  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | FeedCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | FeedReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt> {
+  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | FeedCommand | AccessCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | FeedReceipt | AccessReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt>;
+  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | FeedCommand | AccessCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | FeedReceipt | AccessReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt> {
     if (command?.kind?.startsWith("upgrade.")) return this.#upgradeCommand(actor, command as UpgradeCommand);
     if (command?.kind?.startsWith("restore.")) return this.#restoreCommand(actor, command as RestoreCommand);
     // ops.schema_migrations/v1 admission fence (held by an upgrade or, ops.quarantined_restore/v1, a restore):
@@ -747,6 +764,7 @@ export class Application {
     if (isPromotionCommand(command)) return this.#promotionCommand(actor, command);
     if (command?.kind === "dispatch.allowance.set") return this.#setAllowance(actor, command);
     if (isFeedCommand(command)) return this.#feedCommand(actor, command);
+    if (isAccessCommand(command)) return this.#accessCommand(actor, command);
     if (command?.kind === "dispatch.proposal.accept" || command?.kind === "dispatch.proposal.dismiss" || command?.kind === "dispatch.answer") return this.#dispatchCommand(actor, command);
     if (command?.kind === "job.enqueue" || command?.kind === "job.resume" || command?.kind === "job.stop") return this.#jobCommand(actor, command);
     if (command?.kind === "role.save" || command?.kind === "route.save" || command?.kind === "role.preview" ||
@@ -1914,6 +1932,87 @@ export class Application {
       tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, 'owner', ?)", command.kind, command.requestId, now);
       return { feed, url: token ? `${this.config.origin}${feedPath(token)}` : null };
     });
+  }
+
+  /**
+   * app.access_level/v1: the only writer of access levels, role overrides and the kill switch. Accepted from `web`,
+   * `telegram` and local API owner actors; widening and resume are refused for every channel but `web`
+   * (exec/access.ts), and the local API counts as `local-api`, never `web`. Revisioned,
+   * idempotent by request id (a replay returns the first receipt) and audited in the state transaction.
+   */
+  #accessCommand(actor: OwnerActor, command: AccessCommand): AccessReceipt {
+    const payloadHash = digest(accessCommandIdentity(command));
+    const result = this.store.transaction(tx => {
+      this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, command.projectId);
+      const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
+      if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as AccessReceipt; }
+      const now = this.#now();
+      let halt: HaltOutcome | undefined;
+      const channel = this.#commandChannel(actor);
+      if (command.kind === "access.level.set") writeAccessLevel(tx, command, channel, this.config, now);
+      else if (command.kind === "access.role.restrict") writeRoleRestriction(tx, command, channel, now);
+      else if (command.kind === "execution.resume") writeResume(tx, command, channel, now);
+      else { writeHalt(tx, command, channel, now); halt = this.#haltExecution(tx, command, now); }
+      const result: AccessReceipt = { access: readProjectAccess(tx, command.projectId, this.config), roles: readRoleAccess(tx, command.projectId), ...(halt ? { halt } : {}) };
+      tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
+      tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);
+      this.#beforeCommit?.("receipt");
+      return result;
+    });
+    // Abort transports of attempts the halt fenced only after the fence committed.
+    if (command.kind === "execution.halt") this.#jobs?.cancelFenced();
+    return result;
+  }
+
+  /**
+   * The channel an access command is attributed to. The app.local_api/v1 listener's actor carries `channel: "web"`
+   * for ordinary commands, but it is a script on the host, not the owner in Web: for app.access_level/v1 it is the
+   * `local-api` channel, so it may narrow and halt but never widen or resume.
+   */
+  #commandChannel(actor: OwnerActor): string {
+    return this.#actors.get(actor)?.startsWith(localApiKeyPrefix) ? "local-api" : actor.channel;
+  }
+
+  /**
+   * The kill switch's effects inside the halt transaction: fences every execution-capable job of the project (no
+   * scheduler needed), then — when this process owns a live scheduler — stops every team discussion, Jit reply and
+   * coordinator synthesis of the project that is still queued, running or waiting, through `team.stop_all`,
+   * `jit.reply.stop` and the synthesis job's own `job.stop` (its projection reads `cancelled` from the job).
+   */
+  #haltExecution(tx: AppTransaction, command: HaltExecutionCommand, now: number): HaltOutcome {
+    const projectId = command.projectId;
+    const outcome: HaltOutcome = { fencedJobIds: stopExecutionJobs(tx, projectId, now), stoppedReplyIds: [], stoppedDiscussionIds: [], stoppedSynthesisIds: [] };
+    const queue = this.#jobs;
+    if (!queue?.available(tx)) return outcome;
+    const generation = tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'")!.generation;
+    const discussions = new Set<string>();
+    for (const row of tx.all<{ record_json: string }>(`SELECT t.record_json FROM team_runs t JOIN jobs j ON j.id = t.job_id
+      WHERE t.project_id = ? AND j.state IN ('queued', 'admitted', 'waiting') ORDER BY t.sequence`, projectId)) {
+      const record = JSON.parse(row.record_json) as { kind?: string; id: string; discussionId?: string };
+      if (record.kind === "discussion") discussions.add(record.id);
+      else if (record.kind === "specialist" && record.discussionId) discussions.add(record.discussionId);
+    }
+    for (const discussionId of discussions) {
+      const discussion = readDiscussion(tx, projectId, discussionId);
+      prepareStopAll(tx, { kind: "team.stop_all", requestId: command.requestId, projectId, expectedRevision: discussion.revision, payload: { discussionId } }, queue, generation, now);
+      outcome.stoppedDiscussionIds.push(discussionId);
+    }
+    // After the discussions: stop-all already stopped their team replies.
+    for (const row of tx.all<{ id: string }>(`SELECT r.id FROM jit_replies r JOIN team_runs t ON t.id = r.run_id JOIN jobs j ON j.id = t.job_id
+      WHERE r.project_id = ? AND j.state IN ('queued', 'admitted', 'waiting') ORDER BY r.cursor`, projectId)) {
+      const reply = readReply(tx, projectId, row.id);
+      if (reply.state !== "thinking" && reply.state !== "blocked") continue;
+      stopReply(tx, { kind: "jit.reply.stop", requestId: command.requestId, projectId, expectedRevision: reply.revision, payload: { replyId: reply.id } }, queue, generation, now);
+      outcome.stoppedReplyIds.push(reply.id);
+    }
+    // Coordinator synthesis has no team_runs row; its job is fenced like an owner stop from the job page.
+    for (const row of tx.all<{ id: string; jobId: string }>(`SELECT s.id, s.job_id AS jobId FROM coordinator_syntheses s JOIN jobs j ON j.id = s.job_id
+      WHERE s.project_id = ? AND j.state IN ('queued', 'admitted', 'waiting') ORDER BY s.created_at, s.id`, projectId)) {
+      const job = readJob(tx, projectId, row.jobId);
+      queue.execute(tx, { kind: "job.stop", requestId: command.requestId, projectId, expectedRevision: job.revision, payload: { jobId: job.id } }, generation, now);
+      outcome.stoppedSynthesisIds.push(row.id);
+    }
+    return outcome;
   }
 
   /** app.dispatch_allowance/v1: owner accept, dismiss or answer-now on a dispatch proposal card. */
