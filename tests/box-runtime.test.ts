@@ -106,7 +106,7 @@ test("create applies every hardening flag; workspace uses the internal network a
   expect(handle).toEqual({ projectId: projectA, name: `jit-box-${projectA}`, mode: "workspace", profile: false, workspaceRoot: "/workspace", temporaryDirectory: "/tmp" });
   const create = f.podman.calls.find(call => call[0] === "create")!;
   for (const flag of ["--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only", "--userns=keep-id", "--pull=never", "--pids-limit=256", "--memory=1024m", "--cpus=1.5",
-    "--network=jit-box-internal", "/tmp:rw,nosuid,nodev,size=1g,mode=1777", "/run:rw,nosuid,nodev,size=16m,mode=1777"]) expect(create).toContain(flag);
+    "--network=jit-box-internal", "/tmp:rw,nosuid,nodev,size=1g,mode=1777", "/run:rw,nosuid,nodev,size=128m,mode=1777"]) expect(create).toContain(flag);
   expect(create.some(arg => /privileged|--env-host|--volume|podman\.sock|--init/.test(arg))).toBe(false);
   expect(create.slice(-3)).toEqual([image, "sleep", "infinity"]);
   expect(create.filter((arg, i) => create[i - 1] === "--mount")).toEqual([`type=bind,source=${join(f.execution, projectA, "workspace")},destination=/workspace,rw=true`]);
@@ -146,6 +146,20 @@ test("a level change restarts a running box; the profile is mounted only when re
   expect(create.slice(-3)[0]).toBe(browserImage);
   await f.runtime.stop({ projectId: projectA });
   expect((await f.runtime.list()).map(box => [box.projectId, box.state, box.mode, box.profile])).toEqual([[projectA, "stopped", "full", true]]);
+});
+
+test("a box left by an earlier process with another proxy URL is recreated, not reused", async () => {
+  const f = podmanFixture();
+  await f.runtime.ensure(projectA, "workspace");
+  const podman = f.podman;
+  // A new process: same containers, a new proxy on another port.
+  const restarted = new PodmanBoxRuntime({ config: f.config.execution, run: podman.run, registryProxy: async gateway => `http://${gateway}:4129` });
+  await restarted.ensure(projectA, "workspace");
+  expect(podman.calls.filter(call => call[0] === "rm")).toHaveLength(1);
+  const create = podman.calls.filter(call => call[0] === "create")[1]!;
+  expect(create).toContain("HTTPS_PROXY=http://10.89.0.1:4129");
+  await restarted.ensure(projectA, "workspace");
+  expect(podman.calls.filter(call => call[0] === "create")).toHaveLength(2);
 });
 
 test("inspected mounts must equal the expected set exactly; a tampered box is removed and refused", async () => {
@@ -343,6 +357,70 @@ test("the third box over maxBoxes=2 waits as box_capacity without spinning and s
   expect(f.runtime.running()).toEqual([projects[1]!.id, projects[2]!.id].sort());
   for (const p of projects) f.gates.get(p.id)!.release();
   await ticks();
+});
+
+test("a narrowing that commits while a box opens or runs refuses every later command; kill still reaches the box", async () => {
+  const f = await fixture();
+  const p = f.project("ถอนสิทธิ์");
+  setLevel(f, p.id, "workspace");
+  // Narrow to read while ensure is in flight.
+  let release!: () => void;
+  const gateEnsure = new Promise<void>(resolve => { release = resolve; });
+  const ensure = f.runtime.ensure.bind(f.runtime);
+  f.runtime.ensure = async (...args) => { await gateEnsure; return ensure(...args); };
+  const opening = f.boxes.open(p.id, null);
+  await ticks();
+  setLevel(f, p.id, "read");
+  release();
+  await rejectsAsync(() => opening, "access_level_insufficient", 409);
+  expect(f.runtime.running()).toEqual([]);
+  f.runtime.ensure = ensure;
+  // Narrow while a session is open: the backend refuses new requests, but cancellation still goes through.
+  setLevel(f, p.id, "workspace");
+  const session = await f.boxes.open(p.id, null);
+  const before = f.runtime.calls.filter(call => call.op === "exec").length;
+  f.app.execute(f.auth.actor, { kind: "execution.halt", requestId: rid(), projectId: p.id, expectedRevision: f.app.projectAccess(f.auth.actor, p.id).haltRevision, payload: {} });
+  await expect(session.backend.stat("/workspace")).rejects.toMatchObject({ code: "EIO" });
+  expect(f.runtime.calls.filter(call => call.op === "exec").length).toBe(before);
+  session.release();
+});
+
+test("a stop that fails keeps the slot and its capacity until a later sweep confirms it", async () => {
+  const f = await fixture({ JIT_BOX_MAX: "1" });
+  const [a, b] = [f.project("หยุดไม่ได้"), f.project("รอ")];
+  setLevel(f, a.id, "workspace"); setLevel(f, b.id, "workspace");
+  (await f.boxes.open(a.id, null)).release();
+  const stop = f.runtime.stop.bind(f.runtime);
+  f.runtime.stop = async () => { throw new AppError("box_runtime_unavailable", 503); };
+  f.clock.advance(31 * 60_000);
+  expect(await f.boxes.sweep(f.clock.now)).toEqual([]);
+  expect(f.boxes.holding()).toEqual([a.id]);
+  expect(f.store.read(tx => f.boxes.hasCapacity(tx, b.id))).toBe(false);
+  await rejectsAsync(() => f.boxes.open(b.id, null), "box_capacity", 409);
+  f.runtime.stop = stop;
+  expect(await f.boxes.sweep(f.clock.now)).toEqual([a.id]);
+  expect(f.boxes.holding()).toEqual([]);
+  expect(f.store.read(tx => f.boxes.hasCapacity(tx, b.id))).toBe(true);
+});
+
+test("during a reset the project admits no execution work until the receipt commits", async () => {
+  const f = await fixture();
+  const p = f.project("กันระหว่าง reset");
+  setLevel(f, p.id, "workspace");
+  let release!: () => void;
+  const gateReset = new Promise<void>(resolve => { release = resolve; });
+  const resetRuntime = f.runtime.reset.bind(f.runtime);
+  f.runtime.reset = async (...args) => { await gateReset; return resetRuntime(...args); };
+  const resetting = reset(f, p.id, true);
+  await ticks();
+  expect(f.store.read(tx => f.boxes.hasCapacity(tx, p.id))).toBe(false);
+  const job = enqueue(f, p.id); f.queue.pump(); await ticks();
+  expect(f.app.job(f.auth.actor, p.id, job)).toMatchObject({ state: "queued", reason: "box_capacity" });
+  await rejectsAsync(() => f.boxes.open(p.id, null), "box_busy", 409);
+  release();
+  expect((await resetting).box.revision).toBe(1);
+  await ticks();
+  expect(f.opened).toEqual([p.id]);
 });
 
 test("a failed ensure releases its slot, and a direct open beyond capacity is refused", async () => {

@@ -9,7 +9,7 @@ Uses `app.access_level/v1` (channel attribution), `ops.execution_config/v1` (`ex
 `src/exec/connections.ts`; schema 34 `connections(id, kind, label, project_scope_json, revision, secret_state, created_at, rotated_at, removed_at)` and append-only `connection_audit(sequence, connection_id, action, purpose, channel, created_at)`.
 
 - **Kinds.** `github_token`, `deploy_secret`, `mcp_env`.
-- **Values are never in SQLite.** Each lives in `<execution.secretsDirectory>/<connectionId>`. `ConnectionVault` keeps the directory 0700 and owned by the service uid, writes each value atomically (`O_CREAT|O_EXCL|O_NOFOLLOW` staging file with mode 0600, fsync, rename — a symlink at the path is replaced, never followed) and reads one only after `lstat` and `fstat` agree on a regular, service-owned file of mode 0600 or narrower, opened with `O_NOFOLLOW`. A symlink, another owner or a wider mode is `connection_vault_unsafe` (503). The vault refuses a directory inside or containing the state, backup, ledger or execution directories, so managed backups and exports stay credential-free (ADR 0025).
+- **Values are never in SQLite.** Each lives in `<execution.secretsDirectory>/<connectionId>`. `ConnectionVault` keeps the directory 0700 and owned by the service uid, writes each value atomically (`O_CREAT|O_EXCL|O_NOFOLLOW` staging file with mode 0600, fsync, rename — a symlink at the path is replaced, never followed) and reads one only after `lstat` and `fstat` agree on a regular, service-owned file of mode 0600 or narrower, opened with `O_NOFOLLOW`. A symlink, another owner or a wider mode is `connection_vault_unsafe` (503). The vault refuses a directory inside or containing the state, backup, ledger or execution directories — comparing both lexical and real locations — and any vault path reached through a symlinked component, so a symlinked parent cannot alias values into a box, backup or export (ADR 0025).
 - **No read-back.** `Application.connections(actor)` and every receipt carry metadata only (`secret: "empty" | "set"`). The receipt identity of `set_secret`/`rotate` omits the value, so no digest of a value is stored either.
 
 ## Commands
@@ -21,7 +21,7 @@ All are `{ kind, requestId, projectId: null, expectedRevision, payload }` throug
 | `connection.create { kind, label, projectScope }` | 0 | `label` 1–80 characters without control characters or anything credential-like; `projectScope` is null (every project) or 1–32 existing project ids (`project_not_found`). |
 | `connection.set_secret { connectionId, secret }` | connection revision | Needs an empty connection (`connection_secret_exists`). The value is trimmed and must be 8–8192 bytes without NUL (`invalid_connection_secret`). |
 | `connection.rotate { connectionId, secret }` | connection revision | Needs a stored value (`connection_secret_missing`); sets `rotatedAt`. |
-| `connection.remove { connectionId }` | connection revision | Deletes the file, sets `removedAt`; later commands are `connection_removed`. |
+| `connection.remove { connectionId }` | connection revision | Deletes the file, sets `removedAt`; later commands are `connection_removed`. A file that cannot be deleted (anything but already missing) aborts the command, which then records nothing. |
 | `connection.test { connectionId }` | connection revision | Metadata-only file verdict in the receipt: `present`, `missing` or `unsafe`. No network call. |
 
 `stale_revision` (409) when the revision moved; `connection_not_found` (404); `connection_vault_not_configured` (503) without `JIT_EXECUTION_SECRETS_DIR`.

@@ -31,7 +31,48 @@ function abortError(): Error {
 }
 const decode = (base64: string) => Uint8Array.from(Buffer.from(base64, "base64"));
 const encode = (text: string) => Buffer.from(text, "utf8").toString("base64");
-const knownCodes = new Set(["ENOENT", "EACCES", "EPERM", "EISDIR", "ENOTDIR", "ECHANGED", "EINVAL", "EFBIG", "E2BIG", "EIO", "EPROTO"]);
+const knownCodes = new Set(["ENOENT", "EACCES", "EPERM", "EISDIR", "ENOTDIR", "ECHANGED", "EINVAL", "EFBIG", "E2BIG", "EIO", "EPROTO", "ETIMEDOUT"]);
+/** Runner limits a result can hit; an incomplete listing is an error, never a result that looks complete. */
+const maxEntries = 10_000, maxFiles = 50_000;
+function incomplete(message: string): Error { return Object.assign(new Error(message), { code: "EFBIG" }); }
+
+const ereSpecial = /[\\.^$*+?()[\]{}|]/g;
+/**
+ * A POSIX extended regular expression, anchored to absolute paths under `cwd`, that matches at least every path the
+ * glob matches (a superset: classes become any one character). The runner filters with it before its 50,000-file
+ * cap, so files that cannot match never use up the cap; `Bun.Glob` then decides exactly on the host. Returns null
+ * when the pattern cannot be translated safely (the runner then lists without a filter).
+ */
+export function globPrefilter(pattern: string, cwd: string): string | null {
+  let out = "", depth = 0;
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i]!;
+    if (c === "*" && pattern[i + 1] === "*") {
+      const slashAfter = pattern[i + 2] === "/", atStart = i === 0 || pattern[i - 1] === "/";
+      if (atStart && slashAfter) { out += "(.*/)?"; i += 2; } else { out += ".*"; i += 1; }
+    } else if (c === "*") out += "[^/]*";
+    else if (c === "?") out += "[^/]";
+    else if (c === "[") { const end = pattern.indexOf("]", i + 2); if (end < 0) return null; out += "[^/]"; i = end; }
+    else if (c === "{") { depth++; out += "("; }
+    else if (c === "}") { if (!depth) return null; depth--; out += ")"; }
+    else if (c === "," && depth) out += "|";
+    else if (c === "\\") { const next = pattern[i + 1]; if (next === undefined) return null; out += next.replace(ereSpecial, "\\$&"); i++; }
+    else out += c.replace(ereSpecial, "\\$&");
+  }
+  if (depth) return null;
+  return `^${cwd.replace(/\/$/, "").replace(ereSpecial, "\\$&")}/${out}$`;
+}
+
+/** The literal leading directories of a glob (`src/lib` for `src/lib/**\/*.ts`), so the box walks only that subtree. */
+export function globBase(pattern: string): string {
+  const segments = pattern.split("/");
+  const literal: string[] = [];
+  for (const segment of segments.slice(0, -1)) {
+    if (/[*?[\]{}!\\]/.test(segment) || segment === "" || segment === "." || segment === "..") break;
+    literal.push(segment);
+  }
+  return literal.join("/");
+}
 
 /**
  * exec.box_backend/v1 (EXE03) — Schway's `ExecutionBackend` (`schway.host.core-tools/v1`) over the box runner.
@@ -44,15 +85,18 @@ const knownCodes = new Set(["ENOENT", "EACCES", "EPERM", "EISDIR", "ENOTDIR", "E
  * - `readFile` streams 1 MiB chunks, one request each, and stops when iteration stops.
  * - `observeFile` returns opaque observations; `writeFileAtomically` only accepts observations this backend issued
  *   (`TypeError` otherwise) and the runner rejects a changed path with `ECHANGED`.
- * - `glob` lists regular files under `cwd` in the box (hidden directories pruned unless the pattern names one) and
- *   matches them on the host with `Bun.Glob`, the matcher of Schway's local backend.
+ * - `glob` lists regular files under the pattern's literal base directory in the box (hidden directories pruned unless
+ *   the pattern names one) and matches them on the host with `Bun.Glob`, the matcher of Schway's local backend. A
+ *   listing the runner had to cut (50,000 files, 10,000 directory entries) or stop (60 s) rejects (`EFBIG`,
+ *   `ETIMEDOUT`) instead of returning results that look complete.
+ * - A stream the box cut at 8 MiB ends with an explicit notice of the kept and total bytes.
  * - `spawn` runs `bash -c` in its own process group in the box. Cancellation sends a runner `kill` for that group
  *   (reaching the process inside the box, not only the `podman exec` client), then rejects with `AbortError`; a
  *   result that arrives after cancellation is never returned. Output is delivered to `onOutput` once the command ends.
  * - Runner failures reject with a Node-style `code` (`ENOENT`, `EACCES`, `EISDIR`, `ENOTDIR`, `ECHANGED`, …); a
  *   runner or transport failure is `EIO`.
  */
-export function createBoxBackend(runtime: BoxRuntime, handle: BoxHandle, options: BoxBackendOptions = {}): ExecutionBackend {
+export function createBoxBackend(runtime: Pick<BoxRuntime, "exec">, handle: BoxHandle, options: BoxBackendOptions = {}): ExecutionBackend {
   const redact = options.redact ?? (text => text);
   const callMs = options.callMs ?? 90_000;
   const observations = new WeakMap<ExecutionFileObservation, string>();
@@ -116,16 +160,23 @@ export function createBoxBackend(runtime: BoxRuntime, handle: BoxHandle, options
     },
     async writePrivateFile(path, content) { await call({ op: "writePrivate", path, data: encode(content) }); },
     async list(path, listOptions) {
-      const listed = await call<{ entries: ExecutionDirectoryEntry[] }>({ op: "list", path }, listOptions?.signal ? { signal: listOptions.signal } : {});
+      const listed = await call<{ entries: ExecutionDirectoryEntry[]; truncated: boolean }>({ op: "list", path }, listOptions?.signal ? { signal: listOptions.signal } : {});
+      if (listed.truncated) throw incomplete(`Directory has more than ${maxEntries} entries: ${path}. Use a more specific path.`);
       return listed.entries;
     },
     glob(pattern, globOptions) {
       return (async function* () {
         // Bun.Glob skips dot entries unless the pattern names one; prune hidden trees in the box the same way.
         const dot = pattern.split("/").some(segment => segment.startsWith("."));
-        const listed = await call<{ files: string[] }>({ op: "glob", cwd: globOptions.cwd, dot }, globOptions.signal ? { signal: globOptions.signal } : {});
+        // Walk only the pattern's literal base directory, then match the full pattern on the host.
+        const base = globBase(pattern), cwd = base ? `${globOptions.cwd.replace(/\/$/, "")}/${base}` : globOptions.cwd;
+        let listed: { files: string[]; truncated: boolean };
+        const match = globPrefilter(base ? pattern.slice(base.length + 1) : pattern, cwd);
+        try { listed = await call<{ files: string[]; truncated: boolean }>({ op: "glob", cwd, dot, ...(match ? { match } : {}) }, globOptions.signal ? { signal: globOptions.signal } : {}); }
+        catch (error) { if (base && (error as { code?: string }).code === "ENOENT") return; throw error; }
+        if (listed.truncated) throw incomplete(`More than ${maxFiles} files under ${cwd}; results would be incomplete. Use a narrower path or pattern.`);
         const matcher = new Bun.Glob(pattern);
-        for (const file of listed.files) if (matcher.match(file)) yield file;
+        for (const file of listed.files) { const relative = base ? `${base}/${file}` : file; if (matcher.match(relative)) yield relative; }
       })();
     },
     async search(request: ExecutionSearchRequest): Promise<ExecutionSearchResult> {
@@ -151,13 +202,18 @@ export function createBoxBackend(runtime: BoxRuntime, handle: BoxHandle, options
       request.signal?.addEventListener("abort", onAbort, { once: true });
       try {
         const timeoutMs = request.timeoutMs ?? defaultSpawnMs;
-        const result = await call<{ stdout: string; stderr: string; exitCode: number | null; timedOut: boolean }>(
+        const result = await call<{ stdout: string; stderr: string; exitCode: number | null; timedOut: boolean; stdoutBytes?: number; stderrBytes?: number }>(
           { op: "spawn", id, command: request.command, cwd: request.cwd, ...(env ? { env } : {}), ...(request.timeoutMs !== undefined ? { timeoutMs } : {}) },
           { signal: transport.signal, timeoutMs: timeoutMs + spawnGraceMs },
         ).catch(error => { if (cancelled) throw abortError(); throw error; });
         if (cancelled || request.signal?.aborted) throw abortError();
-        const text = (base64: string) => redact(new TextDecoder("utf-8").decode(decode(base64)));
-        const stdout = text(result.stdout), stderr = text(result.stderr);
+        // The box keeps at most 8 MiB of each stream; a cut stream says so instead of looking complete.
+        const text = (base64: string, total: number | undefined) => {
+          const bytes = decode(base64), body = redact(new TextDecoder("utf-8").decode(bytes));
+          return total !== undefined && total > bytes.length
+            ? `${body}\n[Output cut by the execution box: kept ${bytes.length} of ${total} bytes. Redirect large output to a file in the workspace.]\n` : body;
+        };
+        const stdout = text(result.stdout, result.stdoutBytes), stderr = text(result.stderr, result.stderrBytes);
         if (stdout) request.onOutput?.({ stream: "stdout", text: stdout });
         if (stderr) request.onOutput?.({ stream: "stderr", text: stderr });
         return { stdout, stderr, exitCode: result.exitCode, timedOut: result.timedOut };

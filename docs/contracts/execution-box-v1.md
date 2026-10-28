@@ -20,11 +20,11 @@ interface BoxRuntime {
 }
 ```
 
-- **Identity.** `jit-box-<projectId>`, labels `jit.box=1`, `jit.box.project`, `jit.box.mode`, `jit.box.profile`.
+- **Identity.** `jit-box-<projectId>`, labels `jit.box=1`, `jit.box.project`, `jit.box.mode`, `jit.box.profile` and `jit.box.env` (a digest of the environment, which names the proxy URL).
 - **Mounts.** Exactly `<execution.directory>/<projectId>/workspace` at `/workspace`, plus `<…>/profile` at `/profile` only with `profile: true` (ADR 0039). The directories are created 0700 and must be real directories owned by the service uid (`box_directory_unsafe` otherwise). Nothing else is mounted: no state, backup, ledger, secrets, socket or Podman socket.
-- **Hardening** (`podman create`): `--pull=never`, `--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--read-only`, tmpfs `/tmp` (1 GiB) and `/run` (16 MiB) with `nosuid,nodev`, `--pids-limit`, `--memory`, `--cpus` from `ops.execution_config/v1`, `--userns=keep-id`, `--log-driver=none`; never `--privileged`, `--env-host`, `--init` or `--volume`. The command is `sleep infinity`.
+- **Hardening** (`podman create`): `--pull=never`, `--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--read-only`, tmpfs `/tmp` (1 GiB) and `/run` (128 MiB, the runner's scratch space: a full request plus both capped streams fit) with `nosuid,nodev`, `--pids-limit`, `--memory`, `--cpus` from `ops.execution_config/v1`, `--userns=keep-id`, `--log-driver=none`; never `--privileged`, `--env-host`, `--init` or `--volume`. The command is `sleep infinity`.
 - **Environment.** Only `HOME=/tmp`, `PATH`, `LANG=C.UTF-8`, `TZ=UTC`, plus `HTTP(S)_PROXY`/`http(s)_proxy`/`NO_PROXY` in `workspace`. The `podman` client itself runs with `PATH`, `HOME`, `XDG_*`, `DBUS_SESSION_BUS_ADDRESS` and `LANG` only.
-- **Network.** `workspace` boxes join `jit-box-internal` (created once with `--internal`, no default route); their only egress is the registry proxy on that network's gateway. `full` boxes use the rootless default network. A box ensured in another mode, profile or image is removed and recreated (the workspace persists).
+- **Network.** `workspace` boxes join `jit-box-internal` (created once with `--internal`, no default route); their only egress is the registry proxy on that network's gateway. `full` boxes use the rootless default network. A box ensured in another mode, profile, image or environment is removed and recreated (the workspace persists); the proxy of the current process is started before an existing box is reused, so a box left by an earlier process with another proxy port is recreated.
 - **Verification.** After creation and before every reuse, `podman container inspect` must show exactly the expected bind mounts (`box_mount_mismatch`) and `Privileged: false`, `ReadonlyRootfs: true`, no `CapAdd` and the mode's network (`box_hardening_mismatch`). A box that differs is removed and refused.
 - **Reset.** `podman rm --force`; with `wipeWorkspace` the workspace and profile directories are deleted (a symlink there is refused).
 
@@ -36,15 +36,15 @@ interface BoxRuntime {
 
 ## `exec.box_backend/v1`
 
-`createBoxBackend(runtime, handle, { redact?, callMs? }): ExecutionBackend` (`src/exec/box-backend.ts`). Each member is one runner request. Schway keeps path confinement, output bounds, truncation and spill files, so `coreToolDefinitions(createBoxBackend(…))` reproduces the SCH01 golden byte for byte. `readFile` streams 1 MiB chunks; `observeFile`/`writeFileAtomically` use opaque runner tokens (`ECHANGED` on change, `TypeError` for an observation this backend did not issue); `glob` lists files in the box and matches with `Bun.Glob` on the host; `spawn` cancellation sends a runner `kill` for the command's process group, then rejects `AbortError`, and a late result is never returned. Spawn output and search lines pass `redact` before Schway sees them.
+`createBoxBackend(runtime, handle, { redact?, callMs? }): ExecutionBackend` (`src/exec/box-backend.ts`). Each member is one runner request. Schway keeps path confinement, output bounds, truncation and spill files, so `coreToolDefinitions(createBoxBackend(…))` reproduces the SCH01 golden byte for byte. `readFile` streams 1 MiB chunks; `observeFile`/`writeFileAtomically` use opaque runner tokens (`ECHANGED` on change, `TypeError` for an observation this backend did not issue); `glob` lists files under the pattern's literal base directory in the box, filtered there by a superset regular expression of the pattern before the cap, and matches exactly with `Bun.Glob` on the host; a listing the runner cut (50,000 files, 10,000 entries) rejects `EFBIG` and one it stopped at 60 s rejects `ETIMEDOUT`, so an incomplete result never looks complete; a stream the box cut at 8 MiB ends with a notice of the kept and total bytes; `spawn` cancellation sends a runner `kill` for the command's process group, then rejects `AbortError`, and a late result is never returned. Spawn output and search lines pass `redact` before Schway sees them.
 
 ## Lifecycle and capacity
 
 `src/exec/box-manager.ts` `BoxManager(store, config, runtime, { now, onCapacity, backend })`:
 
-- `open(projectId, roleId)` reads `assertExecutionAllowed(…, "workspace")` in its own transaction: `read` never reaches the runtime (`access_level_insufficient`), a halted project is `execution_halted`, and the mode is the effective level. It returns `{ handle, backend, release() }`.
+- `open(projectId, roleId)` reads `assertExecutionAllowed(…, "workspace")` in its own transaction: `read` never reaches the runtime (`access_level_insufficient`), a halted project is `execution_halted`, and the mode is the effective level. Every access command bumps the project's access generation; the level is checked again once the box is ensured (and the open starts over when the generation moved) and before every runner call of the session, so a narrowing or halt that commits meanwhile refuses further commands (only `kill` passes). It returns `{ handle, backend, release() }`.
 - `hasCapacity(tx, projectId)` is the queue's admission check for `execution: true` work (`SchedulerOptions.boxes`). Holders are projects with a running or opening box plus projects with an admitted execution job; at most `execution.maxBoxes`. Without a slot the job stays `queued` with reason `box_capacity` and next action `wait_for_box_capacity`, rewritten only when the reason changes. A box stop calls `onCapacity`, which pumps the queue.
-- `sweep(now)` runs on the service scheduler tick and stops boxes unused for `execution.idleMinutes`; a box in use is never stopped. `reconcile()` counts boxes left running by a previous process.
+- `sweep(now)` runs on the service scheduler tick and stops boxes unused for `execution.idleMinutes`; a box in use is never stopped. A slot keeps its capacity until the runtime confirms the stop; a failed stop is retried by the next sweep. `reconcile()` counts boxes left running by a previous process.
 - `stop(projectId)` runs after `execution.halt` commits; `accessChanged(projectId)` after any other access command stops a box running wider than the new effective level (or at `read`). Widening applies on the next open, which restarts the box.
 
 ## `execution.box.reset`
@@ -53,7 +53,7 @@ interface BoxRuntime {
 
 - Web only: the Telegram channel and the local API (`local-api`) are `box_reset_requires_web` (403).
 - `stale_revision` (409) when the revision moved; `box_busy` (409) while an execution job of the project is admitted or the box is in use; `box_not_configured` (503) without execution configuration; `invalid_box_command` for another shape.
-- The runtime reset runs first; the revision, receipt and audit row commit only after it succeeded, so a failed reset can be retried with the same request id. A replay returns the first receipt; another payload under the id is `request_id_conflict`.
+- From the start of the reset until its receipt commits, the project admits no execution job (`hasCapacity` is false) and opens are `box_busy`. The runtime reset runs first; the revision, receipt and audit row commit only after it succeeded, so a failed reset can be retried with the same request id. A replay returns the first receipt; another payload under the id is `request_id_conflict`.
 
 HTTP (JSON; the Web page is EXE04): `GET /api/projects/:project/execution/box` → `{ box }`; `POST /api/projects/:project/execution/box/reset` `{ requestId, expectedRevision, wipeWorkspace }` with the usual session, Origin and CSRF rules.
 

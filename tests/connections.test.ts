@@ -96,7 +96,15 @@ test("lifecycle: create, set, rotate, test and remove keep the value in a 0600 f
   expect(removed.connection).toMatchObject({ revision: 4, secret: "empty", removedAt: epoch });
   expect(existsSync(file)).toBe(false);
   rejects(() => withSecret(f, "connection.rotate", created.id, second, 4), "connection_removed", 409);
+  // A file that cannot be deleted aborts the remove instead of reporting success.
+  const stuck = create(f).connection;
+  withSecret(f, "connection.set_secret", stuck.id, secretValue("stuck"), 1);
+  chmodSync(f.secrets, 0o500);
+  try { expect(() => plain(f, "connection.remove", stuck.id, 2)).toThrow(); } finally { chmodSync(f.secrets, 0o700); }
+  expect(f.app.connections(f.auth.actor).find(item => item.id === stuck.id)).toMatchObject({ removedAt: null, secret: "set", revision: 2 });
+  expect(existsSync(join(f.secrets, stuck.id))).toBe(true);
   expect(audit(f, created.id).map(row => row.action)).toEqual(["created", "secret_set", "rotated", "tested", "removed"]);
+  expect(readdirSync(f.secrets).filter(name => name !== stuck.id)).toEqual([]);
   // No read model, receipt, audit or database page carries a value.
   const everything = JSON.stringify([f.app.connections(f.auth.actor), f.store.read(tx => tx.all("SELECT * FROM command_receipts")), f.store.read(tx => tx.all("SELECT * FROM audit"))]);
   for (const value of [first, second]) {
@@ -199,6 +207,15 @@ test("file safety: wider modes, symlinks, foreign directories and colliding loca
     rejects(() => new ConnectionVault(directory, { forbidden: [f.state, f.backups, f.execution] }), "connection_vault_unsafe", 503);
   }
   rejects(() => new ConnectionVault("relative/secrets", { forbidden: [] }), "connection_vault_unsafe", 503);
+  // A symlinked parent that aliases into the execution directory is refused by real location, and so is a vault
+  // reached through any symlinked component.
+  symlinkSync(f.execution, join(f.root, "alias"));
+  rejects(() => new ConnectionVault(join(f.root, "alias", "keys"), { forbidden: [f.state, f.backups, f.execution] }), "connection_vault_unsafe", 503);
+  const elsewhereDir = join(f.root, "real-keys"); mkdirSync(elsewhereDir, { mode: 0o700 });
+  symlinkSync(elsewhereDir, join(f.root, "keys-link"));
+  const linked = new ConnectionVault(join(f.root, "keys-link", "v"), { forbidden: [f.state, f.backups, f.execution] });
+  rejects(() => linked.write(rid(), secretValue("linked")), "connection_vault_unsafe", 503);
+  expect(readdirSync(elsewhereDir)).toEqual([]);
 });
 
 test("managed backup images and exports never contain a value", async () => {

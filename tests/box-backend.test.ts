@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { coreToolDefinitions, type ToolDefinition } from "schway/host";
@@ -115,18 +115,46 @@ test("runner and transport failures map to Node-style codes, and command output 
   expect(result.stdout).toBe("token=[credential-redacted]\n");
 });
 
-test("glob matches with Bun.Glob on the host and prunes hidden trees unless the pattern names one", async () => {
-  const requests: { op: string; dot?: boolean }[] = [];
+test("glob walks only the literal base, matches with Bun.Glob on the host and prunes hidden trees unless named", async () => {
+  const requests: { op: string; cwd?: string; dot?: boolean }[] = [];
+  const tree: Record<string, string[]> = { "/workspace": ["a.ts", "src/b.ts", "src/c.md"], "/workspace/src": ["b.ts", "c.md"], "/workspace/.github": ["w.yml"] };
   const { backend } = await backendOver(async request => {
-    const parsed = JSON.parse(new TextDecoder().decode(request.input)) as { op: string; dot?: boolean };
+    const parsed = JSON.parse(new TextDecoder().decode(request.input)) as { op: string; cwd: string; dot?: boolean };
     requests.push(parsed);
-    return ok({ files: ["a.ts", "src/b.ts", "src/c.md", ".github/w.yml"], truncated: false });
+    return ok({ files: tree[parsed.cwd] ?? [], truncated: false });
   });
   const collect = async (pattern: string) => { const out: string[] = []; for await (const file of backend.glob(pattern, { cwd: "/workspace" })) out.push(file); return out; };
   expect(await collect("**/*.ts")).toEqual(["a.ts", "src/b.ts"]);
+  expect(await collect("src/*.md")).toEqual(["src/c.md"]);
   expect(await collect(".github/*.yml")).toEqual([".github/w.yml"]);
-  expect(requests.map(request => request.dot)).toEqual([false, true]);
+  expect(requests.map(request => [request.cwd, request.dot])).toEqual([["/workspace", false], ["/workspace/src", false], ["/workspace/.github", true]]);
 });
+
+test("a listing the box had to cut or stop rejects instead of looking complete, and a cut stream says so", async () => {
+  const { backend } = await backendOver(async request => {
+    const op = (JSON.parse(new TextDecoder().decode(request.input)) as { op: string }).op;
+    if (op === "glob") return ok({ files: ["x.ts"], truncated: true });
+    if (op === "list") return ok({ entries: [{ name: "x", type: "file" }], truncated: true });
+    if (op === "search") return { exitCode: 0, stdout: new TextEncoder().encode('{"v":1,"ok":false,"error":{"code":"ETIMEDOUT"}}'), stderr: new Uint8Array() };
+    return ok({ stdout: Buffer.from("kept").toString("base64"), stderr: "", exitCode: 0, timedOut: false, stdoutBytes: 9_000_000, stderrBytes: 0 });
+  });
+  await expect((async () => { for await (const _ of backend.glob("**/*.ts", { cwd: "/workspace" })) { /* drain */ } })()).rejects.toMatchObject({ code: "EFBIG" });
+  await expect(backend.list("/workspace")).rejects.toMatchObject({ code: "EFBIG" });
+  await expect(backend.search({ pattern: "x", path: "/workspace", cwd: "/workspace", limit: 5 })).rejects.toMatchObject({ code: "ETIMEDOUT" });
+  const spawned = await backend.spawn({ command: "flood", cwd: "/workspace" });
+  expect(spawned.stdout).toBe("kept\n[Output cut by the execution box: kept 4 of 9000000 bytes. Redirect large output to a file in the workspace.]\n");
+});
+
+test("glob filters by pattern in the box before the 50,000-file cap, so a match among many files is found", async () => {
+  const { box, backend } = await backendOver();
+  mkdirSync(join(box.root, "deps"));
+  Bun.spawnSync(["sh", "-c", "seq 1 50500 | sed 's/^/f/' | xargs touch"], { cwd: join(box.root, "deps") });
+  writeFileSync(join(box.root, "deps", "wanted.match"), "x");
+  const found: string[] = [];
+  for await (const file of backend.glob("**/*.match", { cwd: box.root })) found.push(file);
+  expect(found).toEqual(["deps/wanted.match"]);
+  await expect((async () => { for await (const _ of backend.glob("**/*", { cwd: box.root })) { /* drain */ } })()).rejects.toMatchObject({ code: "EFBIG" });
+}, 60_000);
 
 test("readFile streams fixed 1 MiB chunks and stops requesting when iteration stops", async () => {
   const { box, runtime, backend } = await backendOver();

@@ -103,12 +103,25 @@ test("fixed limits: read chunks, observed files, spawn output and timeouts are b
   const chunk = await runnerCall(box, { op: "read", path: `${box.root}/big`, offset: 17 * 1024 * 1024 - 10, length: 1_048_576 });
   expect([Buffer.from(chunk.result.data, "base64").length, chunk.result.eof]).toEqual([10, true]);
   expect((await runnerCall(box, { op: "observe", path: `${box.root}/big`, content: true })).error?.code).toBe("EFBIG");
-  const spawned = await runnerCall(box, { op: "spawn", id: uuid(), command: "head -c 9000000 /dev/zero", cwd: box.root });
-  expect([Buffer.from(spawned.result.stdout, "base64").length, spawned.result.stdoutBytes]).toEqual([8_388_608, 9_000_000]);
+  const spawned = await runnerCall(box, { op: "spawn", id: uuid(), command: "head -c 9000000 /dev/zero; head -c 100 /dev/zero >&2", cwd: box.root });
+  expect([Buffer.from(spawned.result.stdout, "base64").length, spawned.result.stdoutBytes, spawned.result.stderrBytes]).toEqual([8_388_608, 9_000_000, 100]);
+  // The flood never lands in the box beyond the kept bytes: a 40 MB stream leaves no large file behind.
+  const flood = await runnerCall(box, { op: "spawn", id: uuid(), command: "head -c 40000000 /dev/zero", cwd: box.root });
+  expect(flood.result.stdoutBytes).toBe(40_000_000);
+  expect(readdirSync(box.state).filter(name => name.startsWith("req."))).toEqual([]);
   const started = Date.now();
   const timed = await runnerCall(box, { op: "spawn", id: uuid(), command: "trap '' TERM; sleep 5", cwd: box.root, timeoutMs: 150 });
   expect(timed.result).toMatchObject({ exitCode: null, timedOut: true });
   expect(Date.now() - started).toBeLessThan(3000);
+});
+
+test("a command that exits leaves background children 200 ms, then its group is killed and the pipes close", async () => {
+  const box = fresh();
+  const started = Date.now();
+  const result = await runnerCall(box, { op: "spawn", id: uuid(), command: "echo early; (sleep 20; echo late) & exit 0", cwd: box.root });
+  expect(Buffer.from(result.result.stdout, "base64").toString()).toBe("early\n");
+  expect(result.result.exitCode).toBe(0);
+  expect(Date.now() - started).toBeLessThan(5000);
 });
 
 test("spawn gets exactly the requested environment, runs in its own group and kill reaches every process", async () => {
@@ -140,4 +153,32 @@ test("spill files are the one exception outside the workspace, and only by exact
   expect((await runnerCall(box, { op: "writePrivate", path: join(box.tmp, "other.log"), data: b64("x") })).error?.code).toBe("EACCES");
   expect((await runnerCall(box, { op: "writePrivate", path: join(box.root, name), data: b64("x") })).error?.code).toBe("EACCES");
   expect((await runnerCall(box, { op: "read", path: join(box.tmp, "other.log"), offset: 0, length: 1 })).error?.code).toBe("EACCES");
+});
+
+test("glob and search stopped by the wall-time limit say so instead of looking complete", async () => {
+  const box = fresh();
+  box.opSeconds = 1;
+  // ripgrep reading a FIFO blocks until the limit stops it; its partial result is marked truncated with the reason.
+  Bun.spawnSync(["mkfifo", join(box.root, "pipe")]);
+  const searched = await runnerCall(box, { op: "search", pattern: "x", path: `${box.root}/pipe`, cwd: box.root, limit: 5 });
+  expect(searched.result).toMatchObject({ matches: [], truncated: true, failure: "search stopped after 1 seconds; narrow the path or the pattern" });
+  // A walk that outlives the limit is ETIMEDOUT.
+  const shims = join(dirname(box.root), "shims"); mkdirSync(shims);
+  writeFileSync(join(shims, "find"), "#!/bin/sh\nsleep 5\n", { mode: 0o755 });
+  box.pathPrefix = shims;
+  expect((await runnerCall(box, { op: "glob", cwd: box.root, dot: false })).error?.code).toBe("ETIMEDOUT");
+  expect(new TextDecoder().decode((await runLocal({ ...box, opSeconds: 999 }, { input: new TextEncoder().encode("{}") })).stdout)).toContain("EPROTO");
+});
+
+test("the declared limits fit the box scratch space: a 16 MiB write and a full 8 MiB stream succeed", async () => {
+  const box = fresh();
+  const data = Buffer.alloc(16 * 1024 * 1024, 0x61);
+  expect((await runnerCall(box, { op: "write", path: `${box.root}/big.txt`, data: data.toString("base64"), createParents: false })).ok).toBe(true);
+  expect(statSync(join(box.root, "big.txt")).size).toBe(16 * 1024 * 1024);
+  expect((await runnerCall(box, { op: "write", path: `${box.root}/big2.txt`, data: Buffer.alloc(16 * 1024 * 1024 + 1).toString("base64") })).error?.code).toBe("EFBIG");
+  const stream = await runnerCall(box, { op: "spawn", id: uuid(), command: "head -c 8388608 /dev/zero", cwd: box.root });
+  expect([Buffer.from(stream.result.stdout, "base64").length, stream.result.stdoutBytes]).toEqual([8_388_608, 8_388_608]);
+  // Worst case in /run: the 24 MiB request, 16 MiB of decoded data, and two capped streams with their base64 copies.
+  const worst = 24 + 16 + 2 * (8 + Math.ceil(8 * 4 / 3));
+  expect(worst).toBeLessThan(128);
 });

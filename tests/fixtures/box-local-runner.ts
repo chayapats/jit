@@ -8,7 +8,7 @@ import type { FakeBoxExec } from "../../src/exec/fake-box-runtime";
 export const runnerScript = join(import.meta.dir, "../../ops/box/runner");
 
 /** Directories standing in for the box layout on the host: `/workspace`, `/tmp` and `/run/jit-runner`. */
-export interface LocalBox { root: string; tmp: string; state: string }
+export interface LocalBox { root: string; tmp: string; state: string; opSeconds?: number; pathPrefix?: string }
 
 /** A fresh local stand-in; `tmp` is the real temporary directory so spill paths normalize like SCH01's golden. */
 export function localBox(prefix = "jit-box-"): LocalBox {
@@ -20,8 +20,9 @@ export function localBox(prefix = "jit-box-"): LocalBox {
 
 /** Runs `ops/box/runner` once on the host with a minimal environment, as `podman exec -i` runs it in a box. */
 export async function runLocal(box: LocalBox, request: BoxExecRequest | { input: Uint8Array; signal?: AbortSignal }): Promise<BoxExecResult> {
-  const proc = Bun.spawn(["sh", runnerScript, "--root", box.root, "--tmp", box.tmp, "--state", box.state], {
-    stdin: "pipe", stdout: "pipe", stderr: "pipe", env: { PATH: process.env.PATH ?? "/usr/bin:/bin", LANG: "C.UTF-8" },
+  const proc = Bun.spawn(["sh", runnerScript, "--root", box.root, "--tmp", box.tmp, "--state", box.state, ...(box.opSeconds ? ["--op-seconds", String(box.opSeconds)] : [])], {
+    stdin: "pipe", stdout: "pipe", stderr: "pipe",
+    env: { PATH: `${box.pathPrefix ? `${box.pathPrefix}:` : ""}${process.env.PATH ?? "/usr/bin:/bin"}`, LANG: "C.UTF-8" },
   });
   const kill = () => { try { proc.kill("SIGKILL"); } catch { /* Exited. */ } };
   request.signal?.addEventListener("abort", kill, { once: true });

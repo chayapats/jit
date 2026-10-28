@@ -2052,7 +2052,7 @@ export class Application {
     // exec.box_runtime/v1: the kill switch stops the box; a narrower level stops a box running wider. Both after commit.
     if (this.#boxes) {
       const boxes = this.#boxes;
-      void (command.kind === "execution.halt" ? boxes.stop(command.projectId) : boxes.accessChanged(command.projectId))
+      void (command.kind === "execution.halt" ? boxes.accessChanged(command.projectId).then(() => boxes.stop(command.projectId)) : boxes.accessChanged(command.projectId))
         .catch(() => { /* The box stays fenced: every open re-checks the access level in its own transaction. */ });
     }
     return result;
@@ -2100,8 +2100,9 @@ export class Application {
    * exec.box_runtime/v1 `execution.box.reset`: Web only — the Telegram channel and the local API (`local-api`) are
    * `box_reset_requires_web` (403). Validates the revision and refuses `box_busy` while an execution attempt of the
    * project is admitted or the box is in use, removes the box (and with `wipeWorkspace` its workspace) through the
-   * manager, then commits the reset revision, receipt and audit row. A failed reset commits nothing, so the same
-   * request id can be retried; a replay of a committed request returns its first receipt.
+   * manager, then commits the reset revision, receipt and audit row while the manager still holds the reset, so no
+   * execution job of the project is admitted in between. A failed reset commits nothing, so the same request id can be
+   * retried; a replay of a committed request returns its first receipt.
    */
   async #boxResetCommand(actor: OwnerActor, command: ResetBoxCommand): Promise<BoxResetReceipt> {
     const payloadHash = digest(boxCommandIdentity(command));
@@ -2117,17 +2118,20 @@ export class Application {
     const replay = this.store.read(check);
     if (replay) return replay;
     if (!this.#boxes) throw new AppError("box_not_configured", 503);
-    await this.#boxes.reset(command.projectId, command.payload.wipeWorkspace);
-    return this.store.transaction(tx => {
-      const raced = check(tx);
-      if (raced) return raced;
-      const now = this.#now();
-      writeBoxReset(tx, command, "web", now);
-      const result: BoxResetReceipt = { box: { projectId: command.projectId, ...readBoxResets(tx, command.projectId), holding: false, busy: false } };
-      tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
-      tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);
-      this.#beforeCommit?.("receipt");
-      return result;
+    // The manager holds the reset — no admission, no open — until the receipt below has committed.
+    return this.#boxes.reset(command.projectId, command.payload.wipeWorkspace, {
+      before: () => this.store.read(tx => { if (executionAttemptAdmitted(tx, command.projectId)) throw new AppError("box_busy", 409); }),
+      commit: () => this.store.transaction(tx => {
+        const raced = check(tx);
+        if (raced) return raced;
+        const now = this.#now();
+        writeBoxReset(tx, command, "web", now);
+        const result: BoxResetReceipt = { box: { projectId: command.projectId, ...readBoxResets(tx, command.projectId), holding: false, busy: false } };
+        tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
+        tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);
+        this.#beforeCommit?.("receipt");
+        return result;
+      }),
     });
   }
 

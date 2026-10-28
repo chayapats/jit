@@ -7,20 +7,22 @@
 # files `schway-bash-<uuid>.log` directly inside the temporary directory. Every operation has fixed byte and
 # time limits. Protocol: docs/contracts/box-runner-v1.md.
 #
-# Usage: runner [--root DIR] [--tmp DIR] [--state DIR]
-#   The defaults (/workspace, /tmp, /run/jit-runner) are the box layout; the options exist for local tests.
+# Usage: runner [--root DIR] [--tmp DIR] [--state DIR] [--op-seconds N]
+#   The defaults (/workspace, /tmp, /run/jit-runner, 60 s) are the box layout; the options exist for local tests.
 set -u
 umask 022
 
-ROOT=/workspace TMPROOT=/tmp STATE=/run/jit-runner
+ROOT=/workspace TMPROOT=/tmp STATE=/run/jit-runner OP_SECONDS_OVERRIDE=
 while [ $# -gt 0 ]; do
   case "$1" in
     --root) ROOT=$2; shift 2 ;;
     --tmp) TMPROOT=$2; shift 2 ;;
     --state) STATE=$2; shift 2 ;;
+    --op-seconds) OP_SECONDS_OVERRIDE=$2; shift 2 ;;
     *) printf '{"v":1,"ok":false,"error":{"code":"EPROTO"}}\n'; exit 0 ;;
   esac
 done
+case "$OP_SECONDS_OVERRIDE" in "" | [1-9] | [1-9][0-9]) ;; *) printf '{"v":1,"ok":false,"error":{"code":"EPROTO"}}\n'; exit 0 ;; esac
 
 # Fixed limits (bytes, entries, milliseconds).
 MAX_REQUEST=25165824      # 24 MiB of JSON: a 16 MiB file write plus base64 overhead
@@ -31,7 +33,7 @@ MAX_FILES=50000           # glob
 MAX_MATCHES=10000         # search
 MAX_STREAM=8388608        # spawn stdout and stderr, each
 MAX_FAILURE=65536         # search diagnostics
-OP_SECONDS=60             # glob and search wall time
+OP_SECONDS=${OP_SECONDS_OVERRIDE:-60}  # glob and search wall time (tests may lower it)
 SPAWN_DEFAULT_MS=1800000  # spawn without timeoutMs
 SPAWN_MAX_MS=3600000
 
@@ -226,13 +228,17 @@ case "$OP" in
       | {entries: .[:$max], truncated: (length > $max)}' "$work/entries")" ;;
 
   glob)
-    CWD=$(field cwd); DOT=$(field dot)
+    CWD=$(field cwd); DOT=$(field dot); MATCH=$(field match)
     follow "$CWD"
     [ -d "$CWD" ] || fail ENOTDIR
     NL=$(printf '\n_'); NL=${NL%_}
-    if [ "$DOT" = true ]; then with_limit find "$CWD" -mindepth 1 ! -name "*$NL*" -type f -print
-    else with_limit find "$CWD" -mindepth 1 \( -name '.*' -prune \) -o \( ! -name "*$NL*" -type f -print \); fi 2>/dev/null \
-      | head -n $((MAX_FILES + 1)) > "$work/files"
+    {
+      if [ "$DOT" = true ]; then with_limit find "$CWD" -mindepth 1 ! -name "*$NL*" -type f -print
+      else with_limit find "$CWD" -mindepth 1 \( -name '.*' -prune \) -o \( ! -name "*$NL*" -type f -print \); fi 2>/dev/null
+      echo $? > "$work/rc"
+    } | if [ -n "$MATCH" ]; then grep -E -- "$MATCH"; else cat; fi | head -n $((MAX_FILES + 1)) > "$work/files"
+    # A walk stopped by the wall-time limit is incomplete, not empty.
+    [ "$(cat "$work/rc" 2>/dev/null)" = 124 ] && fail ETIMEDOUT
     ok_json "$(jq -c -R -s --arg prefix "$CWD/" --argjson max "$MAX_FILES" '
       split("\n") | map(select(startswith($prefix)) | ltrimstr($prefix)) | {files: .[:$max], truncated: (length > $max)}' "$work/files")" ;;
 
@@ -255,8 +261,10 @@ case "$OP" in
       | head -n "$LIMIT" > "$work/matches"
     RC=$(cat "$work/rc" 2>/dev/null || echo 0)
     head -c "$MAX_FAILURE" "$work/stderr" > "$work/failure"
+    # A search stopped by the wall-time limit reports its partial matches as truncated, with the reason.
+    [ "$RC" = 124 ] && printf 'search stopped after %s seconds; narrow the path or the pattern' "$OP_SECONDS" > "$work/failure"
     ok_json "$(jq -cs --argjson limit "$LIMIT" --arg rc "$RC" --rawfile failure "$work/failure" '
-      {matches: ., truncated: (length >= $limit)} + (if $rc == "2" then {failure: $failure} else {} end)' "$work/matches")" ;;
+      {matches: ., truncated: (length >= $limit or $rc == "124")} + (if $rc == "2" or $rc == "124" then {failure: $failure} else {} end)' "$work/matches")" ;;
 
   spawn)
     ID=$(field id); CWD=$(field cwd); MS=$(field timeoutMs)
@@ -277,37 +285,64 @@ case "$OP" in
       set -- /bin/sh -c 'exec "$0" -c "$(cat "$1")"' "$BASH_BIN" "$work/command"
     fi
     : > "$work/stdout"; : > "$work/stderr"
-    # The supervisor runs the command in its own process group, records the group for `kill`, enforces the
-    # timeout (TERM, then KILL 200 ms later) and kills whatever is left of the group once the command exits.
+    # The supervisor runs the command in its own process group with stdout and stderr on pipes, keeps at most
+    # MAX_STREAM bytes of each while counting the rest (so a flood never fills the box), records the group for `kill`,
+    # enforces the timeout (TERM, then KILL 200 ms later) and, 200 ms after the command exits, kills whatever is left
+    # of its group so inherited pipes close.
     perl -e '
-      my ($pidf, $tof, $ms, $out, $err, $cwd, @cmd) = @ARGV;
+      my ($pidf, $tof, $ms, $cap, $out, $err, $cwd, @cmd) = @ARGV;
+      my $hires = eval { require Time::HiRes; 1 };
+      my $t0 = $hires ? Time::HiRes::time() : time;
+      my $elapsed = sub { 1000 * (($hires ? Time::HiRes::time() : time) - $t0) };
+      pipe(my $or, my $ow) or exit 125; pipe(my $er, my $ew) or exit 125;
       my $pid = fork; exit 125 unless defined $pid;
       if (!$pid) {
-        setpgrp(0, 0);
-        open(STDIN, "<", "/dev/null"); open(STDOUT, ">", $out) or exit 126; open(STDERR, ">", $err) or exit 126;
+        setpgrp(0, 0); close $or; close $er;
+        open(STDIN, "<", "/dev/null"); open(STDOUT, ">&", $ow) or exit 126; open(STDERR, ">&", $ew) or exit 126;
         chdir($cwd) or exit 126; exec { $cmd[0] } @cmd; exit 127;
       }
+      close $ow; close $ew;
       setpgrp($pid, $pid);
       if (open(my $f, ">", "$pidf.tmp")) { print {$f} $pid; close($f); rename("$pidf.tmp", $pidf); }
-      my ($elapsed, $killat, $status) = (0, undef, 0);
+      open(my $fo, ">", $out) or exit 125; open(my $fe, ">", $err) or exit 125; binmode $fo; binmode $fe;
+      my %total = (out => 0, err => 0);
+      my %open = (fileno($or) => [$or, $fo, "out"], fileno($er) => [$er, $fe, "err"]);
+      my ($killat, $status, $reaped, $drainat, $hardstop, $ticks) = (undef, 0, 0, undef, undef, 0);
       for (;;) {
-        my $r = waitpid($pid, 1);
-        if ($r == $pid || $r < 0) { $status = $?; last; }
-        if (!defined $killat && $elapsed >= $ms) { open(my $t, ">", $tof); close $t; kill "TERM", -$pid; $killat = $elapsed + 200; }
-        if (defined $killat && $elapsed >= $killat) { kill "KILL", -$pid; $killat = 1e18; }
-        select(undef, undef, undef, 0.01); $elapsed += 10;
+        if (!$reaped) { my $r = waitpid($pid, 1); if ($r == $pid || $r < 0) { $status = $?; $reaped = 1; } }
+        last if $reaped && !%open;
+        my $now = $hires ? $elapsed->() : (($ticks * 10) > $elapsed->() ? $ticks * 10 : $elapsed->());
+        if (!$reaped && !defined $killat && $now >= $ms) { open(my $t, ">", $tof); close $t; kill "TERM", -$pid; $killat = $now + 200; }
+        if (defined $killat && $killat < 1e18 && $now >= $killat) { kill "KILL", -$pid; $killat = 1e18; }
+        if ($reaped && !defined $drainat) { $drainat = $now + 200; }
+        if (defined $drainat && $drainat < 1e18 && $now >= $drainat) { kill "KILL", -$pid; $drainat = 1e18; $hardstop = $now + 1000; }
+        # A process that left the group cannot hold the pipes open forever.
+        last if defined $hardstop && $now >= $hardstop;
+        my $bits = ""; vec($bits, $_, 1) = 1 for keys %open;
+        my $n = select(my $ready = $bits, undef, undef, 0.01);
+        $ticks++ if $n == 0;
+        next unless $n > 0;
+        for my $fd (keys %open) {
+          next unless vec($ready, $fd, 1);
+          my $entry = $open{$fd};
+          my $got = sysread($entry->[0], my $buf, 65536);
+          if (!$got) { close $entry->[0]; delete $open{$fd}; next; }
+          my $room = $cap - $total{$entry->[2]};
+          print { $entry->[1] } ($room >= $got ? $buf : substr($buf, 0, $room)) if $room > 0;
+          $total{$entry->[2]} += $got;
+        }
       }
       kill "KILL", -$pid;
       unlink $pidf;
-      print(($status & 127) ? "signal\n" : ("exit " . ($status >> 8) . "\n"));
-    ' "$STATE/$ID.pid" "$work/timedout" "$MS" "$work/stdout" "$work/stderr" "$CWD" "$@" > "$work/status" 2>/dev/null || fail EIO
-    STATUS=$(cat "$work/status")
-    case "$STATUS" in "exit "*) CODE=${STATUS#exit } ;; *) CODE=null ;; esac
+      close $fo; close $fe;
+      print((($status & 127) ? "signal" : ("exit " . ($status >> 8))) . " $total{out} $total{err}\n");
+    ' "$STATE/$ID.pid" "$work/timedout" "$MS" "$MAX_STREAM" "$work/stdout" "$work/stderr" "$CWD" "$@" > "$work/status" 2>/dev/null || fail EIO
+    set -- $(cat "$work/status")
+    case "$1" in exit) CODE=$2; OUTBYTES=$3; ERRBYTES=$4 ;; signal) CODE=null; OUTBYTES=$2; ERRBYTES=$3 ;; *) fail EIO ;; esac
     TIMED=false; [ -e "$work/timedout" ] && TIMED=true
     [ "$TIMED" = true ] && [ "$CODE" != null ] && [ "$CODE" -gt 128 ] && CODE=null
-    OUTBYTES=$(size_of "$work/stdout"); ERRBYTES=$(size_of "$work/stderr")
-    head -c "$MAX_STREAM" "$work/stdout" | base64 | tr -d '\n' > "$work/stdout.b64"
-    head -c "$MAX_STREAM" "$work/stderr" | base64 | tr -d '\n' > "$work/stderr.b64"
+    base64 < "$work/stdout" | tr -d '\n' > "$work/stdout.b64"; rm -f "$work/stdout"
+    base64 < "$work/stderr" | tr -d '\n' > "$work/stderr.b64"; rm -f "$work/stderr"
     ok_json "$(jq -cn --rawfile o "$work/stdout.b64" --rawfile e "$work/stderr.b64" --argjson code "$CODE" --argjson timed "$TIMED" \
       --argjson ob "$OUTBYTES" --argjson eb "$ERRBYTES" \
       '{stdout: $o, stderr: $e, exitCode: $code, timedOut: $timed, stdoutBytes: $ob, stderrBytes: $eb}')" ;;

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { lstatSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import type { ExecutionConfig } from "../config";
 import { AppError } from "../errors";
@@ -58,7 +59,7 @@ export interface PodmanBoxRuntimeOptions {
 }
 
 const commandMs = 120_000;
-const tmpfs = ["/tmp:rw,nosuid,nodev,size=1g,mode=1777", "/run:rw,nosuid,nodev,size=16m,mode=1777"];
+const tmpfs = ["/tmp:rw,nosuid,nodev,size=1g,mode=1777", "/run:rw,nosuid,nodev,size=128m,mode=1777"];
 
 /**
  * The production {@link BoxRuntime} on rootless Podman. Every container is created with the ADR 0036 hardening:
@@ -92,14 +93,16 @@ export class PodmanBoxRuntime implements BoxRuntime {
     if (!image) throw new AppError("box_image_missing", 503);
     const dirs = this.#prepare(projectId, profile);
     const expected = expectedBoxMounts(dirs.workspace, profile ? dirs.profile : null);
+    // The proxy of this process comes first: a box left by an earlier process points at that process's proxy port.
+    const env = boxEnvironment(mode, mode === "workspace" ? await this.#proxy() : null);
     let info = await this.#inspect(name);
-    // A box created for another level, profile or image is replaced; the workspace persists on the host.
-    if (info && (info.Config?.Labels?.["jit.box.mode"] !== mode || info.Config?.Labels?.["jit.box.profile"] !== (profile ? "1" : "0") || info.ImageName !== image)) {
+    // A box created for another level, profile, image or environment is replaced; the workspace persists on the host.
+    const labels = info?.Config?.Labels ?? {};
+    if (info && (labels["jit.box.mode"] !== mode || labels["jit.box.profile"] !== (profile ? "1" : "0") || labels["jit.box.env"] !== environmentDigest(env) || info.ImageName !== image)) {
       await this.#remove(name); info = null;
     }
     if (!info) {
-      const proxy = mode === "workspace" ? await this.#proxy() : null;
-      await this.#podman(createArgs({ name, projectId, mode, profile, image, mounts: expected, env: boxEnvironment(mode, proxy), config: this.#config }));
+      await this.#podman(createArgs({ name, projectId, mode, profile, image, mounts: expected, env, config: this.#config }));
       info = await this.#inspect(name);
     }
     await this.#verify(name, info, mode, expected);
@@ -216,6 +219,11 @@ export class PodmanBoxRuntime implements BoxRuntime {
   }
 }
 
+/** A digest of the box environment (it names the proxy URL), stored as a label so a stale box is recreated. */
+export function environmentDigest(env: Record<string, string>): string {
+  return createHash("sha256").update(JSON.stringify(Object.entries(env).sort(([a], [b]) => a.localeCompare(b)))).digest("hex").slice(0, 32);
+}
+
 function parseJson(bytes: Uint8Array): unknown {
   try { return JSON.parse(new TextDecoder().decode(bytes)); } catch { throw new AppError("box_runtime_unavailable", 503); }
 }
@@ -227,6 +235,7 @@ export function createArgs(input: {
 }): string[] {
   const args = ["create", "--name", input.name, "--pull=never",
     "--label", "jit.box=1", "--label", `jit.box.project=${input.projectId}`, "--label", `jit.box.mode=${input.mode}`, "--label", `jit.box.profile=${input.profile ? "1" : "0"}`,
+    "--label", `jit.box.env=${environmentDigest(input.env)}`,
     "--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only", ...tmpfs.flatMap(spec => ["--tmpfs", spec]),
     `--pids-limit=${input.config.pidsLimit}`, `--memory=${input.config.memoryMb}m`, `--cpus=${input.config.cpus}`, "--userns=keep-id",
     "--log-driver=none", "--stop-timeout=2", "--workdir", boxWorkspaceRoot];

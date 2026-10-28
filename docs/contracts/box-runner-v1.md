@@ -13,7 +13,7 @@ request  = { "v": 1, "op": <op>, ...fields }
 response = { "v": 1, "ok": true, "result": <value> } | { "v": 1, "ok": false, "error": { "code": <code> } }
 ```
 
-The options `--root`, `--tmp` and `--state` (defaults `/workspace`, `/tmp`, `/run/jit-runner`) exist only so tests can run the script on the host against stand-in directories. Jit never passes them, and no `JIT_*` variable reaches the box.
+The options `--root`, `--tmp`, `--state` and `--op-seconds` (defaults `/workspace`, `/tmp`, `/run/jit-runner`, 60) exist only so tests can run the script on the host against stand-in directories. Jit never passes them, and no `JIT_*` variable reaches the box. Scratch files live in the state directory (`/run`, a 128 MiB tmpfs) and are removed when the response is written.
 
 ## Confinement
 
@@ -33,12 +33,12 @@ The options `--root`, `--tmp` and `--state` (defaults `/workspace`, `/tmp`, `/ru
 | `write` | `path`, `data` (base64), `createParents`, `observed?` | `{}`. `observed` absent: no check; `null`: the path must still be absent; a token: the path must still match it, else `ECHANGED`. The new file keeps the old file's mode (or `0666 & ~umask`). |
 | `writePrivate` | `path` (spill name only), `data` | `{}` (mode 0600) |
 | `list` | `path` | `{ entries: [{ name, type: "file" \| "directory" \| "symlink" \| "other" }], truncated }` (own type, symlinks not followed) |
-| `glob` | `cwd`, `dot` | `{ files: [relative path], truncated }`: regular files under `cwd`, symlinks not followed; with `dot: false` hidden entries are pruned. The host matches the pattern. |
+| `glob` | `cwd`, `dot`, `match?` | `{ files: [relative path], truncated }`: regular files under `cwd`, symlinks not followed; with `dot: false` hidden entries are pruned. `match` is an extended regular expression over absolute paths (`grep -E`), applied before the file cap; the host translates the pattern into it as a superset and still matches the pattern exactly. |
 | `search` | `pattern`, `path`, `cwd`, `limit`, `glob?`, `ignoreCase?` | `{ matches: [{ path, line, text }], truncated, failure? }` from `rg --json --no-config` run in `cwd`; `ENOENT` when `rg` is missing; `failure` is ripgrep's stderr when it exits 2. |
 | `spawn` | `id` (uuid), `command`, `cwd`, `env?`, `timeoutMs?` | `{ stdout, stderr (base64), exitCode (null after a signal), timedOut, stdoutBytes, stderrBytes }` |
 | `kill` | `id` | `{ killed }`: TERM, then KILL 200 ms later, to the process group of that `spawn` |
 
-`spawn` runs `bash -c <command>` with stdin from `/dev/null`, in `cwd`, in a new process group. With `env` the environment is exactly those variables (names `[A-Za-z_][A-Za-z0-9_]*`, values shell-quoted by `jq @sh`; anything else is `EINVAL`); without it, the box's own fixed environment. On timeout the group gets TERM and, 200 ms later, KILL, and the result is `timedOut: true` with `exitCode: null`. When the command exits, whatever is left of its group is killed. Cancellation from the host is a second runner call, `kill` with the same `id`, which reaches the processes inside the box rather than only the `podman exec` client.
+`spawn` runs `bash -c <command>` with stdin from `/dev/null`, in `cwd`, in a new process group. With `env` the environment is exactly those variables (names `[A-Za-z_][A-Za-z0-9_]*`, values shell-quoted by `jq @sh`; anything else is `EINVAL`); without it, the box's own fixed environment. On timeout the group gets TERM and, 200 ms later, KILL, and the result is `timedOut: true` with `exitCode: null`. Its stdout and stderr are pipes read by the supervisor, which keeps the first 8 MiB of each. 200 ms after the command exits, whatever is left of its group is killed so inherited pipes close. Cancellation from the host is a second runner call, `kill` with the same `id`, which reaches the processes inside the box rather than only the `podman exec` client.
 
 ## Fixed limits
 
@@ -48,16 +48,16 @@ The options `--root`, `--tmp` and `--state` (defaults `/workspace`, `/tmp`, `/ru
 | `observe` content and `write` data | 16 MiB (`EFBIG`) |
 | `read` chunk | 1 MiB |
 | `list` entries / `glob` files / `search` matches | 10,000 / 50,000 / 10,000 (`truncated`) |
-| `spawn` stdout and stderr | 8 MiB each returned; `stdoutBytes`/`stderrBytes` report the full size |
+| `spawn` stdout and stderr | 8 MiB each kept while the command runs (the rest is counted, not stored); `stdoutBytes`/`stderrBytes` report the full size |
 | `search` diagnostics | 64 KiB |
-| `glob` and `search` wall time | 60 s (`timeout`) |
+| `glob` and `search` wall time | 60 s (`timeout`): `glob` fails `ETIMEDOUT`; `search` returns its partial matches with `truncated: true` and a `failure` reason |
 | `spawn` time | `timeoutMs`, default 30 min, at most 60 min |
 
 Entry names that contain a newline are omitted from `list` and `glob`.
 
 ## Error codes
 
-`ENOENT`, `ENOTDIR`, `EISDIR`, `EACCES` (outside the workspace or unreadable), `ECHANGED`, `EINVAL`, `EFBIG`, `E2BIG`, `EPROTO` (malformed request or unknown op) and `EIO`. The host backend maps unknown codes to `EIO`.
+`ENOENT`, `ENOTDIR`, `EISDIR`, `EACCES` (outside the workspace or unreadable), `ECHANGED`, `EINVAL`, `EFBIG`, `E2BIG`, `ETIMEDOUT`, `EPROTO` (malformed request or unknown op) and `EIO`. The host backend maps unknown codes to `EIO`.
 
 ## Tests
 

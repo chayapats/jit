@@ -1,5 +1,5 @@
-import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeSync, chmodSync, type Stats } from "node:fs";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, renameSync, unlinkSync, writeSync, chmodSync, type Stats } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { AppError } from "../errors";
 import { containsCredential } from "../security/credentials";
 import { registerSecretFingerprint } from "../security/secret-fingerprints";
@@ -194,9 +194,19 @@ function inside(child: string, parent: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
+/** The real location of a path that may not exist yet: the realpath of its deepest existing ancestor plus the rest. */
+function realLocation(path: string): string {
+  const missing: string[] = [];
+  for (let current = resolve(path); ; current = dirname(current)) {
+    try { return join(realpathSync(current), ...missing.reverse()); }
+    catch { if (dirname(current) === current) return resolve(path); missing.push(basename(current)); }
+  }
+}
+
 /**
  * The secret files of app.connections/v1 in `execution.secretsDirectory`. The directory must be absolute, outside
- * (and not containing) the state, backup and execution directories — so managed backups stay credential-free —
+ * (and not containing) the state, backup and execution directories by lexical and real location, and reached through
+ * no symlinked component — so managed backups and boxes stay credential-free —
  * and is kept mode 0700 and owned by the service uid. Files are 0600, written atomically (`O_EXCL|O_NOFOLLOW`
  * staging file, fsync, rename) and read only after lstat/fstat agree on a regular, owner-only, service-owned file.
  * A symlink, another owner or a mode wider than 0600 is `connection_vault_unsafe`.
@@ -208,12 +218,30 @@ export class ConnectionVault {
   constructor(directory: string, options: { forbidden: readonly (string | null | undefined)[]; uid?: number }) {
     if (!isAbsolute(directory)) throw new AppError("connection_vault_unsafe", 503);
     this.directory = resolve(directory);
-    for (const path of options.forbidden) if (path && (inside(this.directory, path) || inside(path, this.directory))) throw new AppError("connection_vault_unsafe", 503);
+    this.#forbidden = options.forbidden.filter((path): path is string => !!path).map(path => resolve(path));
     this.#uid = options.uid ?? process.getuid?.();
+    this.#refuseCollision();
+  }
+  readonly #forbidden: string[];
+
+  /**
+   * Refuses a vault inside or around a forbidden directory, comparing both the lexical and the real locations, so a
+   * symlinked parent (for example an alias into a workspace) cannot carry values into a box or a backup.
+   */
+  #refuseCollision(): void {
+    const mine = [this.directory, realLocation(this.directory)];
+    for (const path of this.#forbidden) for (const other of [path, realLocation(path)]) for (const own of mine) {
+      if (inside(own, other) || inside(other, own)) throw new AppError("connection_vault_unsafe", 503);
+    }
   }
 
   #dir(): string {
+    this.#refuseCollision();
+    // Nothing is created through a symlinked component: the existing part of the path must already be real.
+    if (realLocation(this.directory) !== this.directory) throw new AppError("connection_vault_unsafe", 503);
     try { mkdirSync(this.directory, { recursive: true, mode: 0o700 }); } catch { throw new AppError("connection_vault_unsafe", 503); }
+    // The directory that will hold values must resolve to itself: no symlinked component anywhere on the path.
+    if (realpathSync(this.directory) !== this.directory) throw new AppError("connection_vault_unsafe", 503);
     const stats = lstatSync(this.directory);
     if (stats.isSymbolicLink() || !stats.isDirectory() || (this.#uid !== undefined && stats.uid !== this.#uid) || (stats.mode & 0o777) !== 0o700) {
       throw new AppError("connection_vault_unsafe", 503);
@@ -269,7 +297,8 @@ export class ConnectionVault {
 
   /** Deletes the stored value, if any. */
   remove(id: string): void {
-    try { unlinkSync(this.#path(id)); } catch (error) { if (error instanceof AppError) throw error; }
+    // Only an already-missing file is success; any other failure aborts the command, which then records nothing.
+    try { unlinkSync(this.#path(id)); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   }
 
   /** Fingerprints every stored value of a connection that holds one, so their echoes are redacted from boot on. */
