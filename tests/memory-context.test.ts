@@ -13,7 +13,7 @@ import type { SourceReference } from "../src/sources";
 import { TransactionStore } from "../src/store";
 import { coordinatorSynthesisMarker, coordinatorSynthesisWork } from "../src/team/decisions";
 import { discussionPlanWork, specialistAnalysisWork } from "../src/team/dispatch";
-import { ScriptedRunPort, fixtureOutcome, withContextAnswer } from "../src/team/scripted-port";
+import { ScriptedRunPort, fixtureOutcome, specialistFixtureResult } from "../src/team/scripted-port";
 import type { ApplicationRunRequest, Discussion, RoleRoute, TeamCommand } from "../src/team/types";
 import { createWebHandler } from "../src/web";
 
@@ -53,7 +53,7 @@ async function fixture() {
   const config = readConfig({ JIT_DATABASE: join(root, "state.sqlite") }), clock = { now: epoch };
   const defaults = {
     extract: ((request: ApplicationRunRequest) => scriptedMemoryResult(request, true)) as Script,
-    specialist: ((request: ApplicationRunRequest) => fixtureOutcome("complete", withContextAnswer("ตอบจำลอง", request, config.jobs.outputBytes))) as Script,
+    specialist: ((request: ApplicationRunRequest) => fixtureOutcome("complete", specialistFixtureResult("ตอบจำลอง", request, config.jobs.outputBytes))) as Script,
   };
   const hooks = { ...defaults };
   const rt = boot(config, hooks, clock);

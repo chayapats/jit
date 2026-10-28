@@ -17,6 +17,8 @@ import { portFailureOutcome, schwayMaxAttempts } from "./schway-port";
 import type { ApplicationRunOutcome, ApplicationRunRequest, ContextPacketOmission, MemoryContextLayout, RoleRoute } from "./types";
 import { admitJitDispatch } from "./jit-dispatch";
 import { evaluateWorkGroup, workGroupOfReply } from "./work-group";
+import { communicationPolicyLine, teamCommunicationPolicy } from "./communication-policy";
+import { unblockAction } from "./specialist-results";
 import { generalProjectId, parsePromotionProposal, promotionFrom, promotionInstruction, promotionProposalViews, type PromotionProposal, type PromotionProposalView } from "../promotion";
 
 /** Registered work type for one Jit reply to one owner message (ADR 0029). */
@@ -52,6 +54,8 @@ interface JitReplyRecord {
   kind: "jit_reply";
   id: string; projectId: string; topicId: string; messageId: string; jobId: string; roleId: string;
   personaRevision: number;
+  /** app.communication_policy/v1 version sent with this run. Absent on records written before the policy. */
+  policyVersion?: number;
   /** The immutable run request; its manifest holds untrusted topic history. */
   request: ApplicationRunRequest;
   /** Owner-visible revision: 1 at admission, +1 when a result commits. Stop expects it. */
@@ -79,7 +83,13 @@ interface JitReplyRecord {
 /** One committed specialist result a team reply was given and cites, frozen at admission. */
 export interface TeamReplyCitation { roleId: string; roleName: string; reference: SourceReference }
 /** A selected role with no citable result when the team reply was admitted; the reply must show it. */
-export interface TeamReplyGap { roleId: string; roleName: string; reason: string }
+export interface TeamReplyGap {
+  roleId: string; roleName: string; reason: string;
+  /** app.specialist_results/v2: the specialist run of a `result_blocked` gap, whose record holds the unblock action. */
+  runId?: string;
+  /** Read model only: the unblock action, read from that run record and shown to the owner by the service. Never stored. */
+  unblock?: string | null;
+}
 /** app.dispatch_allowance/v1 team reply context: the discussion, its citations and its coverage gap. */
 export interface TeamReplyContext { proposalId: string; discussionId: string; citations: TeamReplyCitation[]; gaps: TeamReplyGap[] }
 
@@ -323,8 +333,10 @@ function admitReply(tx: AppTransaction, input: ReplyAdmission): { id: string; re
   // Policy lines go as one operator line: run requests hold at most 8, and role proposals (app.role_proposals/v1)
   // and dispatch proposals each add instruction lines to a message reply.
   // app.topic_promotion/v1: only a reply to an owner message in an open General space topic may suggest a promotion.
+  // app.communication_policy/v1 ends that line, so a reply with the persona's about-me line still fits in 8.
   const promotable = !teamInput && promotionOpen(tx, message.projectId, message.topicId);
-  const fixedOperator = [teamInput ? teamReplyMarker : jitReplyMarker, [...teamInput ? teamReplyPolicy : jitReplyPolicy, ...promotable ? [promotionInstruction] : []].join(" "),
+  const fixedOperator = [teamInput ? teamReplyMarker : jitReplyMarker,
+    [...teamInput ? teamReplyPolicy : jitReplyPolicy, ...promotable ? [promotionInstruction] : [], communicationPolicyLine].join(" "),
     ...(teamInput ? [] : roleProposalInstructions(configuredRoutes(tx, message.projectId, config.team))), ...personaInstructions(persona)];
   // The metadata line is charged at an upper bound that holds for every split of the offered results into kept and
   // gaps, in any order: the line with empty lists plus, per list, the smaller of its cap and every candidate entry,
@@ -449,7 +461,7 @@ function admitReply(tx: AppTransaction, input: ReplyAdmission): { id: string; re
   tx.run("INSERT INTO team_contexts VALUES (?, 1, 'active')", context.id);
   const record: JitReplyRecord = {
     kind: "jit_reply", id: replyId, projectId: message.projectId, topicId: message.topicId, messageId: message.id, jobId: job.id, roleId: jit.id,
-    personaRevision: persona.revision, request, revision: 1, createdAt: now, updatedAt: now,
+    personaRevision: persona.revision, policyVersion: teamCommunicationPolicy.version, request, revision: 1, createdAt: now, updatedAt: now,
     outcome: null, result: null, source: null, replyMessageId: null, progress: null,
     ...(teamInput ? { team: { proposalId: teamInput.proposalId, discussionId: teamInput.discussionId,
       citations: results.map(item => ({ roleId: item.roleId, roleName: item.roleName, reference: { ...item.reference } })), gaps: gaps.map(gap => ({ ...gap })) } } : {}),
@@ -541,7 +553,7 @@ function project(tx: AppTransaction, row: { id: string; projectId: string; topic
     roleProposals: roleProposalViews(record, record.roleProposals, sequenceOf(tx, record.replyMessageId)),
     promotionProposals: promotionProposalViews(record, record.promotionProposal, sequenceOf(tx, record.replyMessageId),
       record.promotionProposal ? promotionFrom(tx, record.projectId, record.topicId) : null),
-    team: record.team ?? null };
+    team: record.team ? { ...record.team, gaps: record.team.gaps.map(gap => gap.runId ? { ...gap, unblock: unblockAction(tx, row.projectId, gap.runId) } : gap) } : null };
   if (record.result?.state === "answered") {
     return { ...common, state: "answered", reason: null, nextAction: null, progress: null, replyMessageId: record.replyMessageId, source: record.source,
       replySequence: sequenceOf(tx, record.replyMessageId) };

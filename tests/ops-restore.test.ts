@@ -26,7 +26,7 @@ import { TransactionStore, schemaVersion } from "../src/store";
 import { coordinatorSynthesisMarker, coordinatorSynthesisWork } from "../src/team/decisions";
 import { discussionPlanWork, specialistAnalysisWork } from "../src/team/dispatch";
 import type { ApplicationRunPort } from "../src/team/run-port";
-import { ScriptedRunPort, fixtureOutcome, withContextAnswer } from "../src/team/scripted-port";
+import { ScriptedRunPort, fixtureOutcome, specialistFixtureResult } from "../src/team/scripted-port";
 import type { ApplicationRunRequest, RoleRoute, TeamCommand } from "../src/team/types";
 import { createWebHandler } from "../src/web";
 import type { ServiceConfig } from "../ops/package/service-config";
@@ -90,7 +90,7 @@ async function fixture(native: BackupNativePort = enginePort()) {
   const requests: string[] = [];
   const defaults = {
     extract: ((request: ApplicationRunRequest) => scriptedMemoryResult(request, true)) as Script,
-    specialist: ((request: ApplicationRunRequest) => { requests.push(JSON.stringify(request)); return fixtureOutcome("complete", withContextAnswer("ตอบจำลอง", request, config.jobs.outputBytes)); }) as Script,
+    specialist: ((request: ApplicationRunRequest) => { requests.push(JSON.stringify(request)); return fixtureOutcome("complete", specialistFixtureResult("ตอบจำลอง", request, config.jobs.outputBytes)); }) as Script,
   };
   const hooks = { ...defaults };
   const dirs = { backup: join(root, "backups"), restore: join(root, "restores"), upgrade: join(root, "upgrades") };
@@ -498,7 +498,7 @@ test("restored pending jobs, in-flight attempts and unknown outbox are fenced, n
   const gate = new Promise<void>(resolve => { release = resolve; });
   f.hooks.specialist = async (request, signal) => {
     await Promise.race([gate, new Promise(resolve => signal.addEventListener("abort", resolve))]);
-    return fixtureOutcome("complete", withContextAnswer("ช้า", request, f.config.jobs.outputBytes));
+    return fixtureOutcome("complete", specialistFixtureResult("ช้า", request, f.config.jobs.outputBytes));
   };
   f.rt.app.execute(actor(f), dispatch(f, a, "งานที่กำลังทำตอนสำรอง", [s1]));
   for (let i = 0; i < 50 && !f.rt.store.read(tx => tx.get("SELECT 1 FROM jobs WHERE state = 'admitted' AND json_extract(record_json, '$.type') != 'team.discussion.plan'")); i++) {

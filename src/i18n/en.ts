@@ -1498,6 +1498,7 @@ export const en: Record<MessageKey, string> = {
   "attention.notice_proposal": "Jit asks to call {count} specialists and waits for you",
   "attention.notice_blocked": "Team work is blocked ({reason}) and waits for you",
   "attention.notice_hold": "The team finished, but Jit could not start its answer ({reason}); it waits for you",
+  "attention.notice_result_blocked": "{count} specialist results are blocked and wait for your unblock action",
   "attention.notice_open": "Open: {path}",
   "error.retry_key_expired": "This retry key is older than 24 hours. Use a new key to send again.",
   "error.receipt_not_found": "This receipt was not found.",
@@ -1513,4 +1514,13 @@ export const en: Record<MessageKey, string> = {
   "local_api.cli_thinking": "Jit is still thinking. Check again with jit status",
   "local_api.cli_waiting_on_owner": "Waiting on you:",
   "local_api.cli_failed": "Not done:",
+  // app.specialist_results/v2 (REL02)
+  "team.result_status_done": "Done",
+  "team.result_status_partial": "Partial",
+  "team.result_status_blocked": "Blocked",
+  "team.result_status_failed": "Failed",
+  "team.result_status_incomplete": "Incomplete result",
+  "team.unblock": "To unblock",
+  "dispatch.held_blocked": "Jit did not call these specialists again for the same request, because their latest result is still blocked",
+  "dispatch.empty_blocked_note": "The specialists Jit asked for are still blocked on this request, so nobody was called again. Do the step below first",
 };

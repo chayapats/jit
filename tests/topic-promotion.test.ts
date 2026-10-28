@@ -16,7 +16,7 @@ import type { SourceReference } from "../src/sources";
 import { TransactionStore } from "../src/store";
 import { discussionPlanWork, specialistAnalysisWork } from "../src/team/dispatch";
 import { jitReplyWork, type JitReplyView } from "../src/team/jit-reply";
-import { ScriptedRunPort, fixtureOutcome, withContextAnswer } from "../src/team/scripted-port";
+import { ScriptedRunPort, fixtureOutcome, specialistFixtureResult } from "../src/team/scripted-port";
 import type { ApplicationRunOutcome, ApplicationRunRequest, RoleRoute, TeamCommand } from "../src/team/types";
 import { createWebHandler } from "../src/web";
 import { assetUrl } from "../src/web-assets";
@@ -57,7 +57,7 @@ async function fixture(language: "th" | "en" = "th") {
     }
     if (request.purpose.startsWith("Jit")) return answer(request, JSON.stringify({ reply: "รับทราบ" }));
     if (request.instructions.operator.some(line => line.startsWith("Jit setup connection check"))) return answer(request, "OK");
-    return fixtureOutcome("complete", withContextAnswer("วิเคราะห์แล้ว", request, config.jobs.outputBytes));
+    return fixtureOutcome("complete", specialistFixtureResult("วิเคราะห์แล้ว", request, config.jobs.outputBytes));
   });
   const queue = new JobQueue(store, config.jobs, [setupCheckWork(store, config, port, () => now), jitReplyWork(store, config, port, () => now),
     memoryExtractionWork(store, config, port, () => now), discussionPlanWork(), specialistAnalysisWork(store, config, port, () => now)], { now: () => now });
