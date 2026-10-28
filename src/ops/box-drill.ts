@@ -19,8 +19,8 @@ export interface BoxDrillHost {
   boxMemoryBytes(name: string): Promise<number | null>;
   /** Memory available to new work on the host (`MemAvailable`), in bytes. */
   memoryAvailableBytes(): Promise<number>;
-  /** Disk used by the box images and by the execution directory (workspaces), in bytes. */
-  diskBytes(): Promise<{ images: number; workspaces: number }>;
+  /** Disk used by the box images and by the execution directory (workspaces), in bytes; null when unmeasured. */
+  diskBytes(): Promise<{ images: number | null; workspaces: number | null }>;
   /** A sanitized hardware/OS line (no hostnames or addresses). */
   hardware(): Promise<string>;
 }
@@ -37,7 +37,7 @@ export interface BoxDrillReport {
   defaults: { maxBoxes: number; memoryMb: number; cpus: number; pidsLimit: number; idleMinutes: number };
   boxes: { box: number; latency: BoxDrillLatency; rssBytes: number | null }[];
   memoryAvailableBytes: { before: number; withBoxes: number };
-  disk: { images: number; workspaces: number };
+  disk: { images: number | null; workspaces: number | null };
   capacityWait: { observed: boolean; code: string | null };
   idleStop: { observed: boolean; stopped: number };
   decision: string;
@@ -78,10 +78,10 @@ export function boxDrillDecision(report: Omit<BoxDrillReport, "decision">): stri
 }
 
 /**
- * ops.load_drill/v1 box scenario (EXE06). On a disposable store it creates three projects at the `workspace` level,
- * opens two boxes and runs `calls` runner calls (write, read, stat) in each, sampling latency, resident memory,
- * available memory and disk. It then opens a third box and expects `box_capacity`, sweeps past `idleMinutes` with
- * the manager's clock and expects both boxes stopped. Every box it made is reset with its workspace at the end.
+ * ops.load_drill/v1 box scenario (EXE06). On a disposable store it creates `execution.maxBoxes + 1` projects at the
+ * `workspace` level, opens `maxBoxes` boxes and runs `calls` runner calls (write, read, stat) in each, sampling latency,
+ * resident memory, available memory and disk. It then opens one more box and expects `box_capacity`, sweeps past
+ * `idleMinutes` with the manager's clock and expects every opened box stopped. Every box it made is reset with its workspace at the end.
  * No model, network or Jit service state is used.
  */
 export async function runBoxDrill(input: BoxDrillInput): Promise<BoxDrillReport> {
@@ -101,7 +101,8 @@ export async function runBoxDrill(input: BoxDrillInput): Promise<BoxDrillReport>
     const password = crypto.randomUUID();
     await app.setupOwner(password);
     const actor = app.authenticate(await app.login(password)).actor;
-    for (let index = 0; index < 3; index++) {
+    const opened = execution.maxBoxes;
+    for (let index = 0; index <= opened; index++) {
       const revision = store.read(tx => tx.get<{ revision: number }>("SELECT revision FROM app_state WHERE id = 1")!.revision);
       const project = app.execute(actor, { kind: "project.create", projectId: null, requestId: crypto.randomUUID(), expectedRevision: revision,
         payload: { name: `box drill ${index + 1}` } }).project;
@@ -113,7 +114,7 @@ export async function runBoxDrill(input: BoxDrillInput): Promise<BoxDrillReport>
     const before = await input.host.memoryAvailableBytes();
     const boxes: BoxDrillReport["boxes"] = [];
     const sessions = [];
-    for (const [index, projectId] of projects.slice(0, 2).entries()) {
+    for (const [index, projectId] of projects.slice(0, opened).entries()) {
       const session = await manager.open(projectId, null);
       sessions.push(session);
       const samples: number[] = [];
@@ -136,17 +137,17 @@ export async function runBoxDrill(input: BoxDrillInput): Promise<BoxDrillReport>
     const withBoxes = await input.host.memoryAvailableBytes();
     const disk = await input.host.diskBytes();
     let capacityCode: string | null = null;
-    try { (await manager.open(projects[2]!, null)).release(); } catch (error) { capacityCode = error instanceof AppError ? error.code : "unexpected"; }
+    try { (await manager.open(projects[opened]!, null)).release(); } catch (error) { capacityCode = error instanceof AppError ? error.code : "unexpected"; }
     for (const session of sessions) session.release();
     managerNow += execution.idleMinutes * 60_000 + 1;
     const stopped = await manager.sweep(managerNow);
-    const states = await Promise.all(projects.slice(0, 2).map(id => input.runtime.status(id)));
+    const states = await Promise.all(projects.slice(0, opened).map(id => input.runtime.status(id)));
     const report: Omit<BoxDrillReport, "decision"> = {
       schema: "jit.ops.box-drill/v1", installationLabel: label, observedAt: new Date().toISOString(), hardware: await input.host.hardware(),
       defaults: { maxBoxes: execution.maxBoxes, memoryMb: execution.memoryMb, cpus: execution.cpus, pidsLimit: execution.pidsLimit, idleMinutes: execution.idleMinutes },
       boxes, memoryAvailableBytes: { before, withBoxes }, disk,
       capacityWait: { observed: capacityCode === "box_capacity", code: capacityCode },
-      idleStop: { observed: stopped.length === 2 && states.every(state => state.state !== "running"), stopped: stopped.length },
+      idleStop: { observed: stopped.length === opened && states.every(state => state.state !== "running"), stopped: stopped.length },
     };
     return { ...report, decision: boxDrillDecision(report) };
   } finally {

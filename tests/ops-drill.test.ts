@@ -1002,6 +1002,14 @@ test("EXE06 box scenario reports latency, memory, disk, capacity wait, idle stop
     expect(runtime.calls.filter(call => call.op === "reset").map(call => (call as { wipeWorkspace?: boolean }).wipeWorkspace)).toEqual([true, true, true]);
     expect(JSON.stringify(report)).not.toContain(root);
     // A memory budget above what is available names the limit to change instead.
+    // The scenario follows execution.maxBoxes: with one box it opens one and the second waits; with three, three.
+    for (const max of [1, 3]) {
+      const sized = readConfig({ JIT_DATABASE: join(root, "unused.sqlite"), JIT_EXECUTION_DIR: join(root, "execution"), JIT_EXECUTION_SECRETS_DIR: join(root, "secrets"),
+        JIT_BOX_IMAGE_BASE: image, JIT_BOX_MAX: String(max) });
+      const result = await runBoxDrill({ config: sized, runtime, host, calls: 3, boxes: (store, drillConfig, now) => new BoxManager(store, drillConfig, runtime, { now }) });
+      expect(result.boxes).toHaveLength(max);
+      expect(result).toMatchObject({ capacityWait: { observed: true, code: "box_capacity" }, idleStop: { observed: true, stopped: max } });
+    }
     const tight = await runBoxDrill({ config, runtime, host: { ...host, memoryAvailableBytes: async () => 1024 }, calls: 3,
       boxes: (store, drillConfig, now) => new BoxManager(store, drillConfig, runtime, { now }) });
     expect(tight.decision).toBe("change execution.memoryMb or execution.maxBoxes: their product exceeds available memory");
@@ -1010,6 +1018,17 @@ test("EXE06 box scenario reports latency, memory, disk, capacity wait, idle stop
 
 test("EXE06 box scenario CLI refuses other scenarios and an unconfigured execution block", async () => {
   expect(await runOpsCommand(["drill", "--scenario", "load"], process.cwd())).toMatchObject({ exitCode: 2, output: { nextAction: "use-drill-scenario-boxes" } });
+  // The runtime (and its registry proxy) is closed even when the drill throws, so the command always exits.
+  let closed = 0;
+  const failing = { runtime: { exec: async () => { throw new Error("x"); } } as never, host: {} as never, close: async () => { closed++; } };
+  const saved0 = { dir: process.env.JIT_EXECUTION_DIR, image: process.env.JIT_BOX_IMAGE_BASE };
+  process.env.JIT_EXECUTION_DIR = join(tmpdir(), "jit-box-drill-cli"); process.env.JIT_BOX_IMAGE_BASE = `localhost/jit-box-base@sha256:${"a".repeat(64)}`;
+  try { expect((await runOpsCommand(["drill", "--scenario", "boxes"], process.cwd(), { boxDrill: failing })).exitCode).toBe(2); }
+  finally {
+    if (saved0.dir === undefined) delete process.env.JIT_EXECUTION_DIR; else process.env.JIT_EXECUTION_DIR = saved0.dir;
+    if (saved0.image === undefined) delete process.env.JIT_BOX_IMAGE_BASE; else process.env.JIT_BOX_IMAGE_BASE = saved0.image;
+  }
+  expect(closed).toBe(1);
   const saved = { dir: process.env.JIT_EXECUTION_DIR, image: process.env.JIT_BOX_IMAGE_BASE };
   delete process.env.JIT_EXECUTION_DIR; delete process.env.JIT_BOX_IMAGE_BASE;
   try {

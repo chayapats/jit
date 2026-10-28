@@ -17,7 +17,7 @@ import { statSync } from "node:fs";
 export interface OpsPorts {
   drill?: typeof runLoadDrill;
   /** The box scenario's runtime and host samplers; the default is the service's rootless Podman on this host. */
-  boxDrill?: Pick<BoxDrillInput, "runtime" | "host">;
+  boxDrill?: Pick<BoxDrillInput, "runtime" | "host"> & { close?: () => Promise<void> };
 }
 
 function spawnText(cmd: string[]): string {
@@ -48,14 +48,15 @@ function liveBoxHost(executionDirectory: string): BoxDrillHost {
       return kb ? Number(kb) * 1024 : 0;
     },
     async diskBytes() {
-      let images = 0;
+      // A failed measurement is null, never a zero that reads as "no disk used".
+      let images: number | null = null;
       try {
-        for (const row of JSON.parse(spawnText(["podman", "system", "df", "--format", "json"]) || "[]") as { Type?: string; RawSize?: number }[]) {
+        for (const row of JSON.parse(spawnText(["podman", "system", "df", "--format", "json"])) as { Type?: string; RawSize?: number }[]) {
           if (row.Type === "Images" && typeof row.RawSize === "number") images = row.RawSize;
         }
-      } catch { /* Unknown stays zero. */ }
-      const workspaces = Number(spawnText(["du", "-sb", executionDirectory]).split(/\s/)[0]) || 0;
-      return { images, workspaces };
+      } catch { /* Unmeasured. */ }
+      const du = /^(\d+)\s/.exec(spawnText(["du", "-sb", executionDirectory]))?.[1];
+      return { images, workspaces: du === undefined ? null : Number(du) };
     },
     async hardware() {
       let model = "unknown";
@@ -99,14 +100,19 @@ export async function runOpsCommand(args: string[], root: string, ports: OpsPort
       if (args[2] !== "boxes") return invalid("use-drill-scenario-boxes");
       if (args.length === 5 && args[3] !== "--label") return invalid("use-drill-scenario-boxes-label");
       const config = readConfig();
-      const runtime = ports.boxDrill?.runtime ?? serviceBoxRuntime(config);
-      if (!runtime || !config.execution.directory) return { exitCode: 2, output: { error: "execution-not-configured", nextAction: "run-box-doctor" } };
-      const report = await runBoxDrill({
-        config, runtime, host: ports.boxDrill?.host ?? liveBoxHost(config.execution.directory),
-        boxes: (store, drillConfig, now) => new BoxManager(store, drillConfig, runtime, { now, backend: { redact: redactRegisteredSecrets } }),
-        ...(args.length === 5 ? { installationLabel: args[4]! } : {}),
-      });
-      return { exitCode: report.decision === "fullAllowed may be set" ? 0 : 1, output: report };
+      const service = ports.boxDrill ? { runtime: ports.boxDrill.runtime, close: ports.boxDrill.close ?? (async () => {}) } : serviceBoxRuntime(config);
+      if (!service || !config.execution.directory) return { exitCode: 2, output: { error: "execution-not-configured", nextAction: "run-box-doctor" } };
+      const { runtime } = service;
+      try {
+        const report = await runBoxDrill({
+          config, runtime, host: ports.boxDrill?.host ?? liveBoxHost(config.execution.directory),
+          // The same manager settings as createServiceBoxes, so the drill measures the boxes the service would run.
+          boxes: (store, drillConfig, now) => new BoxManager(store, drillConfig, runtime,
+            { now, profile: !!drillConfig.execution.images?.browser, backend: { redact: redactRegisteredSecrets } }),
+          ...(args.length === 5 ? { installationLabel: args[4]! } : {}),
+        });
+        return { exitCode: report.decision === "fullAllowed may be set" ? 0 : 1, output: report };
+      } finally { await service.close().catch(() => undefined); }
     }
     if (args[0] === "diagnose" && args.length === 1) {
       const config = readConfig();
