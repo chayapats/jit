@@ -8,6 +8,7 @@ import { currentLocale, systemText, tr, withLocale, type Locale, type MessageKey
 import { assetUrl } from "./web-assets";
 import { logoLockup, logoMark } from "./web-logo";
 import { colorTokens } from "./web-design";
+import { effectiveAccess, type ProjectAccess } from "./exec/access";
 import type { JitReplyView } from "./team/jit-reply";
 import { routesOf } from "./team/role-proposals";
 import { fillText, promotionProposalCard, proposalCard, roleProposalCard } from "./web-proposal-card";
@@ -88,7 +89,20 @@ export function documentPage(title: string, content: string): string {
     <a class="skip" href="#main-content">${tr("common.skip_to_main_content")}</a>${content}</body></html>`;
 }
 /** Sidebar data: the workspace page plus, when known, counts of items waiting on the owner per project. */
-export type NavigationWorkspace = Workspace & { attention?: Readonly<Record<string, ProjectAttention>> };
+export type NavigationWorkspace = Workspace & { attention?: Readonly<Record<string, ProjectAttention>>; access?: ReadonlyMap<string, ProjectAccess> };
+/**
+ * The project's execution access badge (web.access_settings/v1, S11-D02): the level in words, never colour
+ * alone, plus the stopped note while the kill switch holds. The effective level while halted reads `read`.
+ */
+export function accessBadge(access: ProjectAccess): string {
+  const stopped = access.halted ? ` <span class="access-strike" aria-hidden="true">⊘</span> ${tr("access.halted")}` : "";
+  return `<span class="access-badge" data-level="${access.level}">${tr(`access.level_${access.level}` as MessageKey)}${stopped}</span>`;
+}
+/** Whether the topic header offers the kill switch: a wider-than-read level, or a halted project. */
+export function topicHaltAction(access: ProjectAccess | undefined): boolean {
+  if (!access) return false;
+  return effectiveAccess(access, null).level !== "read" || access.halted;
+}
 export interface Navigation {
   workspace: NavigationWorkspace; csrf: string; project?: Project; topics?: Topic[]; topic?: Topic;
   section?: "home" | "project" | "topic" | "team" | "tasks" | "jobs" | "pr" | "memory" | "search" | "settings";
@@ -111,7 +125,7 @@ function navigation(n: Navigation): string {
   const nested = (p: Project) => p.id !== selected?.id ? "" : `<ul class="nav-topics" aria-label="${tr("common.topics_in_project")}">${topics.slice(0, 12).map(t => `<li><a class="nav-link" href="/projects/${p.id}/topics/${t.id}"${t.id === n.topic?.id && n.section === "topic" ? ' aria-current="page"' : ""}>${icon("chat")}<span>${escape(t.title ?? tr("common.topic_unavailable"))}</span></a></li>`).join("")}
       <li><a class="nav-subtle" href="/projects/${p.id}#new-topic">${tr("common.new_topic")}</a></li>${topics.length > 12 ? `<li><a class="nav-subtle" href="/projects/${p.id}">${tr("common.view_all_topics")}</a></li>` : ""}</ul>`;
   return `<nav class="nav-scroll" aria-label="${tr("common.projects_and_topics")}"><p class="nav-heading">${tr("common.your_projects")}</p>
-    <ul class="nav-projects">${projects.map(p => `<li class="nav-project"${p.id === selected?.id ? " data-selected" : ""}><a class="nav-link" href="/projects/${p.id}"${p.id === selected?.id && n.section === "project" ? ' aria-current="page"' : ""}>${icon("folder")}<span>${escape(p.name)}</span>${attentionBadge(n.workspace.attention?.[p.id])}</a>${nested(p)}</li>`).join("")}</ul>
+    <ul class="nav-projects">${projects.map(p => `<li class="nav-project"${p.id === selected?.id ? " data-selected" : ""}><a class="nav-link" href="/projects/${p.id}"${p.id === selected?.id && n.section === "project" ? ' aria-current="page"' : ""}>${icon("folder")}<span>${escape(p.name)}</span>${n.workspace.access?.get(p.id) ? accessBadge(n.workspace.access.get(p.id)!) : ""}${attentionBadge(n.workspace.attention?.[p.id])}</a>${nested(p)}</li>`).join("")}</ul>
     <a class="nav-subtle" href="/#new-project">${tr("common.new_project")}</a>${n.workspace.hasMore || n.workspace.projects.length > 8 ? `<a class="nav-subtle" href="/"${here("home")}>${tr("common.view_all_projects")}</a>` : ""}</nav>`;
 }
 function ownerMenu(csrf: string): string {
@@ -212,9 +226,9 @@ export function workspacePage(state: NavigationWorkspace, csrf: string, offset: 
     <nav class="pagination" aria-label="${tr("home.project_pages")}">${offset > 0 ? `<a href="/?offset=${Math.max(0, offset - pageSize)}">${tr("home.previous")}</a>` : ""}${state.hasMore ? `<a href="/?offset=${offset + pageSize}">${tr("common.next")}</a>` : ""}</nav></div>`);
 }
 /** Renders the selected project's bounded topics and revision-bound topic creation form. */
-export function projectPage(state: ReturnType<Application["topics"]>, workspace: Workspace, csrf: string, after: number): string {
+export function projectPage(state: ReturnType<Application["topics"]>, workspace: NavigationWorkspace, csrf: string, after: number): string {
   const p = state.project;
-  return shell(p.name, { workspace, csrf, project: p, topics: state.items, section: "project" }, `<div class="content" data-group-id="${p.groupId}"><section class="hero"><p class="eyebrow">${tr("project.project_group")}</p><h2>${escape(p.name)}</h2><p>${tr("project.split_off_a_subject_and")}</p></section>
+  return shell(p.name, { workspace, csrf, project: p, topics: state.items, section: "project" }, `<div class="content" data-group-id="${p.groupId}"><section class="hero"><p class="eyebrow">${tr("project.project_group")}</p><h2>${escape(p.name)}</h2>${workspace.access?.get(p.id) ? `<p>${accessBadge(workspace.access.get(p.id)!)}</p>` : ""}<p>${tr("project.split_off_a_subject_and")}</p></section>
     <form class="create-form" id="new-topic" method="post" action="/projects/${p.id}/topics">${hiddenCommand(csrf, p.revision)}<label class="sr-only" for="title">${tr("project.topic_name")}</label><input id="title" name="title" maxlength="200" placeholder="${tr("project.what_do_you_want_to")}" required><button class="primary" aria-label="${tr("project.create_topic")}">${tr("project.create_topic")}${icon("plus")}</button></form>
     <h2 class="section-heading">${tr("project.topics_in_project_group")}</h2>${state.items.length ? `<ul>${state.items.map(t => `<li class="topic-row">${icon("chat")}<div class="topic-row-main"><h3><a href="/projects/${p.id}/topics/${t.id}">${escape(t.title ?? tr("common.topic_unavailable"))}</a></h3>${time(t.createdAt)}</div>${sourceLink(p.id, t.source, tr("project.topic_origin"))}</li>`).join("")}</ul>` : `<p class="empty-list">${tr("project.no_topics_yet_start_the")}</p>`}
     <nav class="pagination" aria-label="${tr("project.topic_pages")}">${after > 0 ? `<a href="/projects/${p.id}">${tr("common.first_page")}</a>` : ""}${state.hasMore ? `<a href="/projects/${p.id}?after=${state.nextAfter}">${tr("project.next_topics")}</a>` : ""}</nav></div>`, { breadcrumb: { title: tr("common.all_projects"), href: "/" } });
@@ -384,7 +398,7 @@ function panelToggle(topicBase: string): string {
 }
 const topicPanelSlot = () => `<aside class="topic-panel" id="topic-panel" aria-label="${tr("panel.title")}" hidden></aside>`;
 /** Presents committed attributed messages separately from a persistent, revision-bound composer. */
-export function conversationPage(state: ReturnType<Application["conversation"]>, workspace: Workspace, topics: Topic[], csrf: string, after: number, messageBytes: number, dispatch?: {
+export function conversationPage(state: ReturnType<Application["conversation"]>, workspace: NavigationWorkspace, topics: Topic[], csrf: string, after: number, messageBytes: number, dispatch?: {
   team: ReturnType<Application["team"]>; discussions: Discussion[]; limits: JobPolicy["maximum"]; dispatchAvailable: boolean; decision?: DecisionReadModel;
   /** app.jit_reply/v1 views keyed by owner message id. */
   replies?: Map<string, JitReplyView>;
@@ -442,13 +456,16 @@ export function conversationPage(state: ReturnType<Application["conversation"]>,
     ${dispatch.discussions.length ? `<ul>${dispatch.discussions.map(item => `<li><a href="/projects/${project.id}/team/discussions/${item.id}">${escape(item.purpose)}</a> · ${item.participations.filter(p => p.state === "completed" && citableResult(p.result)).length}/${item.participations.length} ${tr("topic.done_gaps")} ${item.coverageGap.length}</li>`).join("")}</ul>` : ""}</details>` : "";
   const decision = dispatch?.decision ? decisionPanel({ projectId: project.id, topicId: topic.id, topicRevision: topic.revision, csrf, model: dispatch.decision }) : "";
   const proposeTask = `<details class="team-card" id="task-proposal"><summary>${tr("topic.propose_as_task")}</summary><form class="team-form" method="post" action="/projects/${project.id}/tasks">${hiddenCommand(csrf, topic.revision)}<input type="hidden" name="topicId" value="${topic.id}"><label>${tr("common.task_title")}<input name="title" required maxlength="200"></label><label>${tr("common.summary")}<textarea name="summary" required maxlength="${messageBytes}"></textarea></label><button class="primary">${tr("common.save_as_proposal")}</button><small>${tr("topic.conversation_messages_are_not_accepted")}</small></form><p><a href="/projects/${project.id}/tasks?topic=${topic.id}">${tr("topic.view_project_tasks")}</a></p></details>`;
+  const access = workspace.access?.get(project.id);
+  const haltForm = access && topicHaltAction(access)
+    ? `<form class="header-halt" method="post" action="/settings/access/${project.id}/halt">${hiddenCommand(csrf, access.haltRevision)}<button class="danger">${tr("access.stop_everything")}</button></form>` : "";
   return shell(title, { workspace, csrf, project, topics, topic, section: "topic" }, `<div class="content chat-content"${live.length ? ` data-reply-stream="${base}/events" data-reply-cursor="${cursor}"` : ""}>${promotedBanner}${dispatchPanel}${decision}${proposeTask}<section aria-label="${tr("topic.message_history")}">${state.items.length ? state.items.map(m => { const jit = committedReplies.get(m.id), reply = replies.get(m.id), card = cards.get(m.id);
       if (m.attribution.kind === "participant" && !jit && folded.has(m.attribution.runId)) return "";
       if (m.attribution.kind === "service" && m.attribution.service === "jit-promotion") return continuedBlock(m);
       return `<article id="message-${m.id}" class="message${m.attribution.kind === "owner" ? " message--owner" : jit || setupGreeting(m.attribution) ? " message--jit" : ""}" data-message-id="${m.id}">${jit || setupGreeting(m.attribution) ? `<div class="reply-head"><span class="jit-avatar">${logoMark({ size: 20 })}</span><span class="reply-name">${tr("jit.name")}</span></div>` : ""}<div class="message-body">${m.text === null ? `<p class="literal">${tr("common.source_unavailable")}</p>` : literalContent(m.text)}</div>
       <div class="message-meta"><span>${escape(label(m))}</span><span class="committed">${icon("check")}${tr("common.saved")}</span><details><summary aria-label="${tr("topic.message_details_and_origin")}">${icon("info")}${tr("topic.details")}</summary><div class="message-detail">${time(m.committedAt)}<br>${sourceLink(project.id, m.source, tr("common.message_origin"))}${jit?.discardedTotal ? `<br>${tr("reply.discarded")}: ${jit.discardedTotal} · ${escape(jit.discarded.join(", "))}` : ""}</div></details></div>${jit?.team ? teamReplyMeta(jit, cardsById.get(jit.team.proposalId), project.id, csrf, dispatch?.synthesisLimits) : ""}</article>${proposals(jit)}${card ? dispatchCard(card, base, csrf, topic.revision) : ""}${reply && (m.attribution.kind === "owner" || reply.team) ? reply.state !== "answered" ? replyStatus(reply, base, project.id, csrf) : !onPage.has(reply.replyMessageId!) ? answeredElsewhere(reply) : "" : ""}`; }).join("") : `<div class="empty-chat"><div>${icon("chat")}<h2>${tr("topic.start_this_conversation")}</h2><p>${tr("topic.keep_ideas_questions_and_things")}</p></div></div>`}</section>
       <nav class="pagination" aria-label="${tr("topic.message_history_pages")}">${after > 0 ? `<a href="${base}">${tr("common.first_page")}</a>` : ""}${state.hasMore ? `<a href="${base}?after=${state.nextAfter}">${tr("topic.next_messages")}</a>` : ""}</nav></div>`, {
-    breadcrumb: { title: project.name, href: `/projects/${project.id}` }, action: `<a class="header-action" href="/projects/${project.id}#new-topic" aria-label="${tr("common.new_topic")}">${icon("plus")}${tr("common.new_topic")}</a>${panelToggle(base)}`,
+    breadcrumb: { title: project.name, href: `/projects/${project.id}` }, action: `<a class="header-action" href="/projects/${project.id}#new-topic" aria-label="${tr("common.new_topic")}">${icon("plus")}${tr("common.new_topic")}</a>${panelToggle(base)}${access ? accessBadge(access) : ""}${haltForm}`,
     panel: topicPanelSlot(),
     composer: promotedTo ? `<div class="composer-wrap"><div class="composer composer--closed" role="note"><p>${tr("promotion.read_only")}</p><a class="promotion-link" href="${continuation}">${tr("promotion.continue_here")}</a></div></div>`
       : `<div class="composer-wrap"><form class="composer" method="post" action="${base}/messages">${hiddenCommand(csrf, topic.revision)}<label class="sr-only" for="text">${tr("topic.your_message")}</label><textarea id="text" name="text" rows="2" maxlength="${messageBytes}" placeholder="${tr("topic.write_a_message_in_this")}" required aria-describedby="composer-note"></textarea><div class="composer-bottom"><span class="composer-topic">${icon("chat")} ${escape(title)}</span><button class="send-button" aria-label="${tr("topic.send_message")}" title="${tr("topic.send_message")}">${icon("arrow")}</button></div></form><p class="composer-note" id="composer-note">${tr("topic.jit_replies_note")}<span class="composer-keys"> · ${tr("topic.composer_keys")}</span></p></div>`,
