@@ -210,3 +210,36 @@ Parent: [S10 / Jit #111](https://github.com/chayapats/jit/issues/111) ([spec](..
 | [REL06](https://github.com/chayapats/jit/issues/118) | Owner loopback API and `jit` CLI with retry keys and exit codes | None | Agent |
 | [REL07](https://github.com/chayapats/jit/issues/119) | Signed webhooks that only nudge an early PR poll | [REL06](https://github.com/chayapats/jit/issues/118) | Agent |
 | [REL08](https://github.com/chayapats/jit/issues/120) | Read-only `.ics` feed of schedules | None | Agent |
+
+## S11 — Execution access levels, approval cards and extensible tools
+
+Parent: [S11 / Jit #123](https://github.com/chayapats/jit/issues/123) ([spec](../specs/S11-execution-access-and-tools.md)). Created 2026-10-28. There are 16 Jit tickets and 1 Schway contract ticket ([SCH01, schway#429](https://github.com/chayapats/schway/issues/429)), linked as sub-issues of #123 with native blocking relations, including the cross-repo blocker. Every Jit ticket also waits for the S11 docs PR [#124](https://github.com/chayapats/jit/pull/124), which is stacked on #121, to merge. Titles carry the model-tier prefix defined in [workflow](../agents/workflow.md#model-tier-prefixes).
+
+**Parallel waves**
+- **Wave 1:** SCH01, EXE01, EXE02
+- **Wave 2:** EXE03 (after SCH01, EXE01 and EXE02), EXE04 and EXE08 (after EXE01)
+- **Wave 3:** EXE05 (after EXE03), EXE11 (after EXE08)
+- **Wave 4:** EXE06 (human, after EXE05), EXE07 (after EXE05 and EXE08)
+- **Wave 5:** EXE09, EXE10, EXE12, EXE14 (after EXE07)
+- **Wave 6:** EXE13 (after EXE12), EXE15 and EXE16 (after EXE14)
+
+`full` stays unavailable until EXE06 evidence is committed and the operator sets `execution.fullAllowed`.
+
+| Ticket | Tier | Outcome | Direct blockers | Done by |
+| --- | --- | --- | --- | --- |
+| [EXE01](https://github.com/chayapats/jit/issues/125) | `[Frontier]` | Projects have owner-controlled access levels, restrict-only overrides and a kill switch | None | Agent |
+| [EXE02](https://github.com/chayapats/jit/issues/126) | `[Standard]` | Box images, operator execution config, box doctor and runbook | None | Agent |
+| [EXE03](https://github.com/chayapats/jit/issues/127) | `[Frontier]` | Execution box runtime on rootless Podman with the box runner and Schway execution backend | [SCH01](https://github.com/chayapats/schway/issues/429) (cross-repo), [EXE01](https://github.com/chayapats/jit/issues/125), [EXE02](https://github.com/chayapats/jit/issues/126) | Agent |
+| [EXE04](https://github.com/chayapats/jit/issues/128) | `[Standard]` | Owner sets access levels in Settings with a confirmation page, sees the level badge everywhere and has a kill switch | [EXE01](https://github.com/chayapats/jit/issues/125) | Agent |
+| [EXE08](https://github.com/chayapats/jit/issues/129) | `[Frontier]` | Owner-managed connections hold credentials outside every box, prompt and backup | [EXE01](https://github.com/chayapats/jit/issues/125) | Agent |
+| [EXE05](https://github.com/chayapats/jit/issues/130) | `[Frontier]` | Jit replies and specialist runs execute in the project box according to the effective access level | [EXE03](https://github.com/chayapats/jit/issues/127) | Agent |
+| [EXE11](https://github.com/chayapats/jit/issues/131) | `[Standard]` | Settings › Connections page to add, rotate, test and remove credentials without ever showing them | [EXE08](https://github.com/chayapats/jit/issues/129) | Agent |
+| [EXE06](https://github.com/chayapats/jit/issues/132) | `[Standard]` | Pi resource evidence for execution boxes, required before Full is enabled | [EXE05](https://github.com/chayapats/jit/issues/130) | Human |
+| [EXE07](https://github.com/chayapats/jit/issues/133) | `[Frontier]` | External effects run only through approval cards, effect tools and connections | [EXE05](https://github.com/chayapats/jit/issues/130), [EXE08](https://github.com/chayapats/jit/issues/129) | Agent |
+| [EXE09](https://github.com/chayapats/jit/issues/134) | `[Standard]` | Approval cards in the topic and Settings › Approvals with auto-approve rules | [EXE07](https://github.com/chayapats/jit/issues/133) | Agent |
+| [EXE10](https://github.com/chayapats/jit/issues/135) | `[Standard]` | Approval cards reach the bound Telegram chat with Approve/Deny buttons | [EXE07](https://github.com/chayapats/jit/issues/133) | Agent |
+| [EXE12](https://github.com/chayapats/jit/issues/136) | `[Frontier]` | Agents propose MCP server installs, the owner approves in Web, and the gateway runs them in the box | [EXE07](https://github.com/chayapats/jit/issues/133) | Agent |
+| [EXE14](https://github.com/chayapats/jit/issues/137) | `[Frontier]` | Browser-use in the box with a per-project profile, a pause before submit/confirm, and owner takeover | [EXE07](https://github.com/chayapats/jit/issues/133) | Agent |
+| [EXE13](https://github.com/chayapats/jit/issues/138) | `[Standard]` | MCP install proposal card and Settings › MCP servers with per-tool auto-approve | [EXE12](https://github.com/chayapats/jit/issues/136) | Agent |
+| [EXE15](https://github.com/chayapats/jit/issues/139) | `[Standard]` | Live view and takeover page for the project box, working without script | [EXE14](https://github.com/chayapats/jit/issues/137) | Agent |
+| [EXE16](https://github.com/chayapats/jit/issues/140) | `[Frontier]` | Computer-use on the box's virtual desktop with declared intents and confirm-every-click by default | [EXE14](https://github.com/chayapats/jit/issues/137) | Agent |
