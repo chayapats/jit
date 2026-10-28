@@ -48,7 +48,7 @@ export const pinnedBytes = (pinned: readonly PinnedDecision[]): number =>
  * Null while the pinned set still equals the project's live decisions at the same revisions. A decision accepted or
  * superseded after assembly makes the packet stale, so pending runs fence through the existing `isCurrent` checks.
  */
-export function pinnedCurrent(tx: AppTransaction, projectId: string, pinned: readonly PinnedDecision[]): "superseded" | null {
+export function pinnedCurrent(tx: AppTransaction, projectId: string, pinned: readonly Pick<PinnedDecision, "id" | "revision">[]): "superseded" | null {
   const live = tx.all<{ id: string; revision: number }>("SELECT id, revision FROM owner_decisions WHERE project_id = ? AND superseded_by IS NULL", projectId);
   if (live.length !== pinned.length) return "superseded";
   const recorded = new Map(pinned.map(item => [item.id, item.revision]));
@@ -58,16 +58,15 @@ export function pinnedCurrent(tx: AppTransaction, projectId: string, pinned: rea
 /** The newest committed scheduled summary of a topic, with its text, or null; `skipped` counts unavailable newer ones. */
 export function topicSummary(tx: AppTransaction, projectId: string, topicId: string):
   { summary: Omit<ContextPacketSummary, "index">; text: string; skipped: number } | { summary: null; text: null; skipped: number } {
+  // Every committed summary of the topic, newest first; rows are identities only, and the walk stops at the first
+  // available one, so an older summary is still found when every newer one was withdrawn.
   const rows = tx.all<{ id: string; sequence: number; reference: string | null }>(
     `SELECT o.id, o.sequence, json_extract(o.record_json, '$.outputSource') AS reference FROM job_schedule_occurrences o
        JOIN job_schedules s ON s.id = o.schedule_id
      WHERE s.project_id = ? AND json_extract(s.record_json, '$.topicId') = ? AND json_extract(o.record_json, '$.kind') = 'summary'
        AND json_extract(o.record_json, '$.state') = 'complete' AND json_extract(o.record_json, '$.outputSource') IS NOT NULL
-     ORDER BY o.sequence DESC LIMIT 16`, projectId, topicId);
-  const total = tx.get<{ n: number }>(
-    `SELECT count(*) AS n FROM job_schedule_occurrences o JOIN job_schedules s ON s.id = o.schedule_id
-     WHERE s.project_id = ? AND json_extract(s.record_json, '$.topicId') = ? AND json_extract(o.record_json, '$.kind') = 'summary'
-       AND json_extract(o.record_json, '$.state') = 'complete' AND json_extract(o.record_json, '$.outputSource') IS NOT NULL`, projectId, topicId)!.n;
+     ORDER BY o.sequence DESC`, projectId, topicId);
+  const total = rows.length;
   let skipped = 0;
   for (const row of rows) {
     const reference = JSON.parse(row.reference!) as SourceReference;

@@ -197,7 +197,7 @@ test("REL05 trim order: sections are dropped from 8 upward, pinned decisions are
   // The same order on a live discussion: a decision, a committed summary and a claim, then pressure from long tasks.
   const f = await fixture();
   const p = project(f, "Packet");
-  const claim = await remember(f, p, "โครงการนี้ใช้ SQLite เป็นฐานข้อมูลหลัก");
+  await remember(f, p, "โครงการนี้ใช้ SQLite เป็นฐานข้อมูลหลัก");
   const decision = accept(f, p, await proposal(f, p), "ใช้ SQLite สำหรับ MVP");
   const schedule = await scheduledSummary(f, p);
   const summarySource = schedule.occurrences[0]!.outputSource!;
@@ -206,12 +206,14 @@ test("REL05 trim order: sections are dropped from 8 upward, pinned decisions are
   expect(roomy.packet.pinned.map(item => [item.id, item.scope])).toEqual([[decision.id, "topic"]]);
   expect(roomy.packet.summary).toMatchObject({ summaryRevision: 1, index: 1, source: summarySource, sourceIds: [p.topic.source.sourceId] });
   expect(roomy.discussion.manifest.sources.map(source => source.reference)).toEqual([p.topic.source, summarySource]);
-  expect(roomy.discussion.manifest.claims.map(item => item.claimId)).toEqual([claim.claimId]);
-  expect(roomy.packet.omissions).toEqual([]);
+  // The summary is memory-derived, so the ADR 0020 loop guard withholds claims from a run that receives it.
+  expect(roomy.discussion.manifest.claims).toEqual([]);
+  expect(roomy.discussion.manifest.context!.derivation.inputDepth).toBeGreaterThanOrEqual(1);
+  expect(roomy.packet.omissions).toEqual([{ section: "memory_claims", reason: "loop_guard", items: 0 }]);
   expect(Object.fromEntries(roomy.packet.sections.map(section => [section.name, section.state]))).toMatchObject({
-    pinned_decisions: "included", constraints: "empty", recent_messages: "withheld", summary: "included", memory_claims: "included",
+    pinned_decisions: "included", constraints: "empty", recent_messages: "withheld", summary: "included", memory_claims: "withheld",
   });
-  expect(roomy.context!.record.complete).toBe(true);
+  expect(roomy.context!.record.complete).toBe(false);
   expect(roomy.context!.entries.filter(entry => entry.layer === "pinned_decision").map(entry => entry.id)).toEqual([decision.id]);
 
   for (let index = 0; index <= memoryContextPolicy.constraints; index++) propose(f, p, `งานยาว ${index + 1}`, `รายละเอียด ${index + 1} `.padEnd(560, "x"));
@@ -239,6 +241,12 @@ test("REL05 trim order: sections are dropped from 8 upward, pinned decisions are
   expect(record.packet!.omissions).toEqual(tight.packet.omissions);
   const answer = f.rt.app.source(actor(f), p.id, tight.discussion.participations[0]!.output!);
   expect(answer.state === "available" && answer.text).toContain(`decision ${decision.id} r1 (ปักไว้)`);
+
+  // A decision accepted after assembly stales the recorded context in the inspect view too, not only the run fence.
+  expect(f.rt.app.memoryContext(actor(f), p.id, record.id).current).toBe(true);
+  const other = topic(f, p.id, "หัวข้ออื่น");
+  accept(f, p, await proposal(f, p, other.id), "มติใหม่ของหัวข้ออื่น");
+  expect(f.rt.app.memoryContext(actor(f), p.id, record.id).current).toBe(false);
 });
 
 test("REL05 thirteen live decisions of the topic and the project are all pinned in every related run (no count cap)", async () => {

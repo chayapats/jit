@@ -41,13 +41,13 @@ The packet is labels and copied committed state only. `validateRunRequest` check
 
 Sections 1–3 are the run's fixed input and are already charged by `contextByteRoom` (or the reply overhead). The remaining room, after the pinned decisions and within `memoryContextPolicy.bytes`, is filled from section 5 down. `trimBottomUp` keeps candidates in order and, at the first candidate that does not fit, drops it and everything below it. The result equals removing candidates from section 8 upward until the rest fit. Section 8 receives bytes only when sections 5–7 were kept whole; inside section 8 the claim rules of ADR 0020 apply unchanged. A Jit reply fills section 5 before section 6, so older messages go before any task.
 
-Every loss is recorded twice: in `packet.omissions` on the request, and in `memory_contexts.record_json.packet` (`sections`, `omissions`, `budget`, `summary`) for discussions, syntheses and summaries. A budget or ceiling omission makes the record `complete: false`. The inspect view and the discussion "context used" panel list pinned decisions as their own group and name the trimmed sections.
+Every loss is recorded twice: in `packet.omissions` on the request, and in `memory_contexts.record_json.packet` (`sections`, `omissions`, `budget`, `summary`) for discussions, syntheses and summaries. A budget or ceiling omission makes the record `complete: false`. The inspect view and the discussion "context used" panel list pinned decisions as their own group and name the trimmed sections; the view reports the context as no longer current once the project's live decisions differ from the pinned set. `memoryContextOperator` ranks the pinned decisions with the current purpose and task constraints, above explicit preferences and inferences.
 
 ## Per run type
 
 | Run | Section 3 | Section 6 | Section 7 | Section 8 | Provenance record |
 | --- | --- | --- | --- | --- | --- |
-| discussion (specialists) | frozen sources | withheld | newest summary | claims | `memory_contexts` (`discussion`) |
+| discussion (specialists) | frozen sources | withheld | newest summary | claims, unless the summary or evidence is memory-derived (`loop_guard`) | `memory_contexts` (`discussion`) |
 | coordinator synthesis | specialist results | withheld | withheld (`run_policy`) | claims | `memory_contexts` (`synthesis`) |
 | scheduled summary | topic source | withheld | withheld (`loop_guard`) | claims | `memory_contexts` (`schedule`) |
 | Jit reply / team reply | owner message (+ results) | older topic messages | withheld | withheld | the reply record (`recordId` = reply id) |
@@ -56,7 +56,7 @@ Topic messages are never replayed into discussions, syntheses or summaries (ADR 
 
 ## Versioned summary
 
-`topicSummary(tx, projectId, topicId)` takes the newest committed scheduled summary of the topic: a complete `summary` occurrence with an output source that is still available, at its current revision and not suppressed. Unavailable newer summaries are skipped and recorded as `unavailable`. `summaryRevision` is the ordinal of that summary among the topic's committed summaries. `sourceIds` are the source entries of that summary run's own context record. The summary text is one more `manifest.sources` entry at `summary.index`, so deletion, suppression and source currentness treat it like any other cited source; it needs a free source slot (`ceiling` otherwise). Summary outputs are memory-derived, so `outputDerivation` inherits `summary.depth`, and a summary run never receives a summary (no recursive summaries).
+`topicSummary(tx, projectId, topicId)` takes the newest committed scheduled summary of the topic: a complete `summary` occurrence with an output source that is still available, at its current revision and not suppressed. Unavailable newer summaries are skipped and recorded as `unavailable`. `summaryRevision` is the ordinal of that summary among the topic's committed summaries. `sourceIds` are the source entries of that summary run's own context record. The summary text is one more `manifest.sources` entry at `summary.index`, so deletion, suppression and source currentness treat it like any other cited source; it needs a free source slot (`ceiling` otherwise). Summary outputs are memory-derived, so a run that receives the summary counts its depth in `derivation.inputDepth`: the ADR 0020 loop guard then withholds claims (`memory_claims` / `loop_guard`), the output inherits the depth, and a summary run never receives a summary (no recursive summaries). Every committed summary of the topic is walked newest first, so an older available summary is still found when newer ones were withdrawn.
 
 ## Staleness
 
