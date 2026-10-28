@@ -80,8 +80,15 @@ function readFiles(directory: string): ApiFiles {
 
 interface ApiResponse { status: number; body: Record<string, unknown>; retryAfterMs: number }
 
-async function call(io: CliIo, method: "GET" | "POST", path: string, body: unknown, timeoutMs: number): Promise<ApiResponse> {
-  // A 401 usually means the service restarted and rotated the token: read the files once more.
+/** How long a command without `--wait` keeps retrying a rate-limited request: one rate window plus slack. */
+const rateRetryMs = 65_000;
+
+/**
+ * One API request. A 401 usually means the service restarted and rotated the token, so the files are read once
+ * more. A 429 waits for `Retry-After` and retries while that still ends before `deadline`; otherwise it is returned.
+ */
+async function call(io: CliIo, method: "GET" | "POST", path: string, body: unknown, timeoutMs: number, deadline: number): Promise<ApiResponse> {
+  const sleep = io.sleep ?? Bun.sleep, now = io.now ?? Date.now;
   for (let attempt = 0; ; attempt++) {
     const files = readFiles(io.directory);
     let response: Response;
@@ -97,7 +104,9 @@ async function call(io: CliIo, method: "GET" | "POST", path: string, body: unkno
     }
     const parsed = await response.json().catch(() => ({})) as Record<string, unknown>;
     const retry = Number(response.headers.get("retry-after") ?? "1");
-    return { status: response.status, body: parsed, retryAfterMs: (Number.isFinite(retry) && retry > 0 ? Math.min(retry, 60) : 1) * 1000 };
+    const retryAfterMs = (Number.isFinite(retry) && retry > 0 ? Math.min(retry, 60) : 1) * 1000;
+    if (response.status === 429 && now() + retryAfterMs <= deadline) { await sleep(retryAfterMs); attempt = -1; continue; }
+    return { status: response.status, body: parsed, retryAfterMs };
   }
 }
 
@@ -130,9 +139,9 @@ export async function runLocalApiCli(command: "ask" | "status" | "pending", args
   };
   try {
     if (command === "pending") {
-      const response = await call(io, "GET", "/v1/pending", undefined, 10_000);
+      const response = await call(io, "GET", "/v1/pending", undefined, 10_000, now() + rateRetryMs);
       if (response.status !== 200) return refused(response);
-      if (parsed.json) { print(response.body); return cliExit.done; }
+      if (parsed.json) { print({ outcome: "done", ...response.body }); return cliExit.done; }
       const proposals = (response.body.proposals ?? []) as { id: string; revision: number; roles: { roleName: string }[] }[];
       const jobs = (response.body.jobs ?? []) as { id: string; reason: string | null }[];
       if (!proposals.length && !jobs.length) say(io, "local_api.cli_nothing_pending");
@@ -140,7 +149,7 @@ export async function runLocalApiCli(command: "ask" | "status" | "pending", args
       for (const job of jobs) io.out(`job ${job.id}: ${job.reason ?? "waiting"}`);
       return cliExit.done;
     }
-    if (command === "status") return reportReply(await call(io, "GET", `/v1/replies/${parsed.positional[0]}`, undefined, 10_000));
+    if (command === "status") return reportReply(await call(io, "GET", `/v1/replies/${parsed.positional[0]}`, undefined, 10_000, now() + rateRetryMs));
 
     // ask
     const target = parsed.positional[0]!;
@@ -149,12 +158,8 @@ export async function runLocalApiCli(command: "ask" | "status" | "pending", args
     if (!text.trim()) { say(io, "local_api.cli_usage"); return cliExit.usage; }
     const key = parsed.id ?? crypto.randomUUID();
     const deadline = now() + (parsed.timeoutMs ?? 30 * 60_000);
-    let sent: ApiResponse;
-    for (;;) {
-      sent = await call(io, "POST", `/v1/topics/${target}/messages`, { text, clientRequestId: key }, 10_000);
-      if (sent.status === 429 && parsed.wait && now() + sent.retryAfterMs < deadline) { await sleep(sent.retryAfterMs); continue; }
-      break;
-    }
+    // The retry key makes a repeated send safe: it replays the same receipt.
+    const sent = await call(io, "POST", `/v1/topics/${target}/messages`, { text, clientRequestId: key }, 10_000, parsed.wait ? deadline : now() + rateRetryMs);
     if (sent.status !== 202) return refused(sent);
     const receiptId = String(sent.body.receiptId);
     if (!parsed.wait) {
@@ -166,14 +171,14 @@ export async function runLocalApiCli(command: "ask" | "status" | "pending", args
       if (remaining <= 0) break;
       const waitSeconds = Math.max(1, Math.min(25, Math.ceil(remaining / 1000)));
       let response: ApiResponse;
-      try { response = await call(io, "GET", `/v1/replies/${receiptId}?wait=${waitSeconds}`, undefined, waitSeconds * 1000 + 10_000); }
+      try { response = await call(io, "GET", `/v1/replies/${receiptId}?wait=${waitSeconds}`, undefined, waitSeconds * 1000 + 10_000, deadline); }
       catch (error) {
         // Service restarting: the receipt is durable, so read the files again until the deadline.
         if (!(error instanceof Unavailable)) throw error;
         await sleep(Math.min(1000, Math.max(1, deadline - now())));
         continue;
       }
-      if (response.status === 429) { await sleep(Math.min(response.retryAfterMs, Math.max(1, deadline - now()))); continue; }
+      if (response.status === 429) break;
       if (response.status !== 200 || response.body.outcome !== "running") return reportReply(response);
     }
     if (parsed.json) print({ outcome: "timed_out", receiptId }); else say(io, "local_api.cli_timed_out", receiptId);

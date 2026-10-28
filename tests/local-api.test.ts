@@ -1,11 +1,11 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Application } from "../src/application";
 import { readConfig } from "../src/config";
 import { JobQueue } from "../src/jobs/queue";
-import { cliExit, parseDuration } from "../src/local-api/cli";
+import { cliExit, parseDuration, runLocalApiCli } from "../src/local-api/cli";
 import { LocalApiListener, createLocalApiHandler, localApiDirectory, localApiFiles, localApiLimits, localApiRoutes, tokenCheck } from "../src/local-api/server";
 import { backupImageTables } from "../src/ops/backup";
 import { TransactionStore } from "../src/store";
@@ -354,7 +354,7 @@ test("jit CLI: ask --wait, a pending owner question, timeout, a disabled API and
   expect(waiting.stderr).toContain("Waiting on you: dispatch:");
   const pending = await cli(f, ["pending", "--json"]);
   expect(pending.code).toBe(cliExit.done);
-  expect((JSON.parse(pending.stdout) as { proposals: unknown[] }).proposals).toHaveLength(1);
+  expect(JSON.parse(pending.stdout)).toMatchObject({ outcome: "done", proposals: [expect.any(Object)] });
   f.state.mode = "answer";
 
   pumping = false;
@@ -390,6 +390,44 @@ test("jit CLI: ask --wait, a pending owner question, timeout, a disabled API and
   expect(off.stderr).toContain("local API is off");
   expect((await cli(f, ["pending"])).code).toBe(cliExit.unavailable);
 }, 60_000);
+
+test("a symlinked local-api folder is never cleaned through or written through", async () => {
+  const f = await fixture();
+  const elsewhere = join(f.root, "elsewhere");
+  mkdirSync(elsewhere);
+  for (const name of localApiFiles) writeFileSync(join(elsewhere, name), "keep\n");
+  symlinkSync(elsewhere, dir(f));
+  const listener = listen(f);
+  // Off: the start-up cleanup leaves the files behind the symlink alone.
+  listener.reconcile();
+  for (const name of localApiFiles) expect(readFileSync(join(elsewhere, name), "utf8")).toBe("keep\n");
+  // On: the listener refuses the folder instead of writing the token through the symlink.
+  setLocalApi(f, true);
+  expect(() => listener.reconcile()).toThrow("local_api_directory_invalid");
+  expect(listener.url).toBeNull();
+  for (const name of localApiFiles) expect(readFileSync(join(elsewhere, name), "utf8")).toBe("keep\n");
+  await listener.stop();
+  for (const name of localApiFiles) expect(readFileSync(join(elsewhere, name), "utf8")).toBe("keep\n");
+});
+
+test("the CLI waits for Retry-After on 429 instead of failing", async () => {
+  const f = await fixture();
+  setLocalApi(f, true);
+  listen(f, { ...localApiLimits, requests: 1 }).reconcile();
+  const out: string[] = [], slept: number[] = [];
+  const io = { directory: dir(f), locale: "en" as const, out: (text: string) => { out.push(text); }, err: () => {}, stdin: async () => null,
+    now: () => f.clock.now, sleep: async (ms: number) => { slept.push(ms); f.clock.now += ms; } };
+  expect(await runLocalApiCli("pending", ["--json"], io)).toBe(cliExit.done);
+  expect(slept).toEqual([]);
+  // The window is used up: the next call waits Retry-After on the fake clock, then succeeds.
+  expect(await runLocalApiCli("pending", ["--json"], io)).toBe(cliExit.done);
+  expect(slept).toEqual([60_000]);
+  expect(out.map(line => JSON.parse(line).outcome)).toEqual(["done", "done"]);
+  // A send without --wait retries too, and the retry key keeps it to one message.
+  expect(await runLocalApiCli("ask", [f.topic.id, "หลังรอ quota", "--json", "--id", "after-429"], io)).toBe(cliExit.done);
+  expect(slept).toEqual([60_000, 60_000]);
+  expect(ownerMessages(f)).toBe(1);
+});
 
 test("CLI durations are bounded", () => {
   expect(parseDuration("30m")).toBe(1_800_000);

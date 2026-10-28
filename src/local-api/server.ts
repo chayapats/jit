@@ -252,8 +252,14 @@ function writePrivate(directory: string, name: string, content: string): void {
   renameSync(temporary, join(directory, name));
 }
 
-/** Removes the listener files (and the folder when it is empty). Missing files are fine. */
+/**
+ * Removes the listener files (and the folder when it is empty). Missing files are fine. Only a real folder is
+ * touched: through a symlink the files would belong to another folder, so nothing is removed there.
+ */
 export function removeLocalApiFiles(directory: string): void {
+  let stat;
+  try { stat = lstatSync(directory); } catch { return; }
+  if (!stat.isDirectory() || stat.isSymbolicLink()) return;
   for (const name of localApiFiles) rmSync(join(directory, name), { force: true });
   try { rmdirSync(directory); } catch { /* Not empty or already gone. */ }
 }

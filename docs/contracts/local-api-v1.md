@@ -9,7 +9,7 @@ Uses `app.conversation/v1` (`message.send`), `app.jit_reply/v1` (reply read mode
 | Part | Entry and behavior |
 | --- | --- |
 | Setting | `src/local-api/settings.ts`, schema 29 `local_api_settings` (one row). `Application.localApi(actor)` returns `{ enabled, revision, updatedAt }`; with no row the API is off at revision 0. `Application.execute(actor, { kind: "local_api.set", requestId, projectId: null, expectedRevision, payload: { enabled } })` returns `{ localApi }`. It is revisioned (`stale_revision`), idempotent by request id (`request_id_conflict`), validated (`invalid_local_api`), audited and refused during upgrade or restore fences. HTTP: `/settings#local-api` (section of the general settings page), `POST /settings/local-api` (form; an unchecked box means off; 303 back), `GET`/`POST /api/settings/local-api` (JSON, CSRF header). Same session, `Origin` and CSRF checks as every owner form. The API itself cannot change this setting. |
-| Listener | `src/local-api/server.ts` `LocalApiListener`, started by `serveCommand` (`src/ops/serve.ts`). It follows the setting every 500 ms. While on, it binds `127.0.0.1` on a free port (never another address) and writes `url`, `token` and `headers` to `<data>/local-api/`, where `<data>` is the folder of the installation database. The folder is `0700` and must be a real folder (not a symlink); each file is written `0600` to a temporary name and renamed. A new token (32 random bytes, base64url) is made on every start, on every change of the setting revision and on every owner credential generation change. Turning the API off or stopping the service stops the listener and removes the files. A stale set from a crash is removed at the next start. The token never appears in logs, output, the database or images. |
+| Listener | `src/local-api/server.ts` `LocalApiListener`, started by `serveCommand` (`src/ops/serve.ts`). It follows the setting every 500 ms. While on, it binds `127.0.0.1` on a free port (never another address) and writes `url`, `token` and `headers` to `<data>/local-api/`, where `<data>` is the folder of the installation database. The folder is `0700` and must be a real folder (not a symlink); each file is written `0600` to a temporary name and renamed. A new token (32 random bytes, base64url) is made on every start, on every change of the setting revision and on every owner credential generation change. Turning the API off or stopping the service stops the listener and removes the files. A stale set from a crash is removed at the next start. Cleanup touches only a real folder: if `<data>/local-api` is a symlink, nothing is removed through it, and turning the API on fails with `local_api_directory_invalid` instead of writing the token through it. The token never appears in logs, output, the database or images. |
 | Actor | `Application.issueLocalApiActor()` gives the listener a Web-channel owner actor bound to the setting revision and the owner generation. Every operation rechecks both, so turning the API off or resetting the owner revokes it at the next request, before the listener stops. It reaches only what a Web session reaches, and only through the routes below. |
 
 ### Request pipeline
@@ -44,7 +44,7 @@ Only dispatch proposals are reachable. Role proposals create roles and promotion
 - `status RECEIPT [--json]`. `status` without a receipt, or with `--service-config` first, stays the operator status command.
 - `pending [--json]`.
 
-The installation is the one `JIT_DATABASE` names, or `--service-config <path>`. The CLI reads `url` and `headers` on every call and never opens SQLite. It sends the token only to an `http://127.0.0.1:<port>` URL and never prints it. A `401` makes it read the files again once, which covers a token rotated by a restart. `ask --wait` long-polls `GET /v1/replies/:receipt?wait=…`; when the listener is gone mid-wait it reads the files again every second until the deadline, so a service restart does not end the wait. A `429` waits for `Retry-After`.
+The installation is the one `JIT_DATABASE` names, or `--service-config <path>`. The CLI reads `url` and `headers` on every call and never opens SQLite. It sends the token only to an `http://127.0.0.1:<port>` URL and never prints it. A `401` makes it read the files again once, which covers a token rotated by a restart. `ask --wait` long-polls `GET /v1/replies/:receipt?wait=…`; when the listener is gone mid-wait it reads the files again every second until the deadline, so a service restart does not end the wait. A `429` waits for `Retry-After` and retries: under `--wait` until the deadline, otherwise for up to one rate window (65 s); a send retried this way keeps its retry key, so it stays one message.
 
 | Exit | Meaning |
 | --- | --- |
@@ -55,7 +55,7 @@ The installation is the one `JIT_DATABASE` names, or `--service-config <path>`. 
 | 4 | The wait timed out; the work continues (`jit status RECEIPT` later). |
 | 5 | Jit is not running, or the API is off (files missing, connection refused, or the token rejected twice). |
 
-Human messages use the `local_api.cli_*` dictionary keys in Thai, or English when `LC_ALL`, `LC_MESSAGES` or `LANG` starts with `en`. `--json` prints one JSON object with an `outcome` field (`accepted`, `done`, `running`, `waiting_on_owner`, `failed`, `refused`, `timed_out`, `unavailable`).
+Human messages use the `local_api.cli_*` dictionary keys in Thai, or English when `LC_ALL`, `LC_MESSAGES` or `LANG` starts with `en`. `--json` prints one JSON object with an `outcome` field (`pending --json` adds `outcome: "done"` to the pending list) (`accepted`, `done`, `running`, `waiting_on_owner`, `failed`, `refused`, `timed_out`, `unavailable`).
 
 ## Schema
 
@@ -71,6 +71,8 @@ Schema 29 adds `local_api_settings (id = 1, revision > 0, enabled 0|1, updated_a
 - the route table maps onto existing commands and reads; role, route, shell, tool, access and settings paths → 404; extra body fields → `invalid_body`;
 - replies, pending items, dismiss and accept at the exact revision, stale and closed proposals;
 - the Web settings form with Origin and CSRF;
+- a symlinked `local-api` folder: no cleanup or token write goes through it;
+- the CLI in-process with a fake clock: a 429 waits `Retry-After` and succeeds, and a retried send stays one message;
 - the CLI in a subprocess: `ask --wait` → 0 with the answer; JSON and `status`; `--id` replay; a pending dispatch proposal → 3; `--timeout 1s` → 4; a restart in the middle of `--wait` → 0; bad flags → 2; unknown receipt → 1; API off → 5. The token never appears in CLI output.
 
 Run `bun test` and `bun run typecheck`.
