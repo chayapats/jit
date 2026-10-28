@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { readConfig } from "../src/config";
 import { createBoxBackend } from "../src/exec/box-backend";
 import { PodmanBoxRuntime, podmanCommandRunner } from "../src/exec/podman-runtime";
+import { NetnsRegistryProxy } from "../src/exec/netns-proxy";
 import { startRegistryProxy, type RegistryProxy } from "../src/exec/registry-proxy";
 
 const live = process.env.JIT_LIVE_PODMAN === "1";
@@ -19,15 +20,18 @@ const image = process.env.JIT_LIVE_BOX_IMAGE ?? "";
 const root = live ? realpathSync(mkdtempSync(join(tmpdir(), "jit-live-box-"))) : "";
 const projectId = crypto.randomUUID();
 let proxy: RegistryProxy | null = null;
+// Rootless Podman: the proxy runs inside the rootless network namespace, as the service does (#163).
+const netns = live && process.getuid?.() !== 0 ? new NetnsRegistryProxy({ hosts: ["registry.npmjs.org"] }) : null;
 const runtime = live ? new PodmanBoxRuntime({
   config: readConfig({ JIT_EXECUTION_DIR: join(root, "execution"), JIT_EXECUTION_SECRETS_DIR: join(root, "secrets"), JIT_BOX_IMAGE_BASE: image }).execution,
-  registryProxy: async gateway => (proxy ??= await startRegistryProxy({ hostname: gateway, port: 0, hosts: ["registry.npmjs.org"] })).url,
+  registryProxy: netns ?? (async gateway => (proxy ??= await startRegistryProxy({ hostname: gateway, port: 0, hosts: ["registry.npmjs.org"] })).url),
 }) : null;
 
 afterAll(async () => {
   if (!live) return;
   await runtime!.reset({ projectId }, { wipeWorkspace: true }).catch(() => undefined);
   await proxy?.close();
+  await netns?.close();
   rmSync(root, { recursive: true, force: true });
 });
 

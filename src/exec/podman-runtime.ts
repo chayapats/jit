@@ -83,13 +83,20 @@ interface Inspected {
   HostConfig?: { Privileged?: boolean; ReadonlyRootfs?: boolean; NetworkMode?: string; CapAdd?: string[] | null };
 }
 
+/** A proxy that runs where the internal gateway lives (e.g. {@link NetnsRegistryProxy}); see {@link PodmanBoxRuntimeOptions.registryProxy}. */
+export interface RegistryProxyPort { url(gateway: string): string; ensure(gateway: string): Promise<void> }
+
 /** Options of {@link PodmanBoxRuntime}. */
 export interface PodmanBoxRuntimeOptions {
   /** `ops.execution_config/v1`; `directory` and `images.base` must be configured. */
   config: ExecutionConfig;
   run?: CommandRunner;
-  /** Starts (once) the registry allowlist proxy on the internal network gateway and returns its `http://` URL. */
-  registryProxy?: (gateway: string) => Promise<string>;
+  /**
+   * The registry allowlist proxy of `workspace` boxes. A function starts it (once) on the internal network gateway
+   * before the box exists and returns its `http://` URL. A {@link RegistryProxyPort} instead names a stable URL up
+   * front and is ensured after the box is running, when the gateway exists (rootless Podman, #163).
+   */
+  registryProxy?: ((gateway: string) => Promise<string>) | RegistryProxyPort;
   /** The service uid that must own the execution directories (defaults to the process uid). */
   uid?: number;
   /** Opens long-lived `podman exec -i` pipes (MCP servers, the CDP relay); defaults to {@link podmanStreamRunner}. */
@@ -111,10 +118,10 @@ export class PodmanBoxRuntime implements BoxRuntime, BoxStreams {
   readonly #config: ExecutionConfig;
   readonly #directory: string;
   readonly #run: CommandRunner;
-  readonly #registryProxy: ((gateway: string) => Promise<string>) | undefined;
+  readonly #registryProxy: ((gateway: string) => Promise<string>) | RegistryProxyPort | undefined;
   readonly #uid: number | undefined;
   readonly #streams: StreamRunner;
-  #proxyUrl: Promise<string> | null = null;
+  #proxyUrl: Promise<{ url: string; gateway: string }> | null = null;
 
   constructor(options: PodmanBoxRuntimeOptions) {
     if (!options.config.directory || !options.config.images) throw new AppError("box_not_configured", 503);
@@ -134,7 +141,8 @@ export class PodmanBoxRuntime implements BoxRuntime, BoxStreams {
     const dirs = this.#prepare(projectId, profile);
     const expected = expectedBoxMounts(dirs.workspace, profile ? dirs.profile : null);
     // The proxy of this process comes first: a box left by an earlier process points at that process's proxy port.
-    const env = boxEnvironment(mode, mode === "workspace" ? await this.#proxy() : null);
+    const proxy = mode === "workspace" ? await this.#proxy() : null;
+    const env = boxEnvironment(mode, proxy?.url ?? null);
     let info = await this.#inspect(name);
     // A box created for another level, profile, image or environment is replaced; the workspace persists on the host.
     const labels = info?.Config?.Labels ?? {};
@@ -150,6 +158,7 @@ export class PodmanBoxRuntime implements BoxRuntime, BoxStreams {
       await this.#podman(["start", name]);
       await this.#verify(name, await this.#inspect(name), mode, expected);
     }
+    if (proxy) await this.#ensureProxy(proxy.gateway);
     return Object.freeze({ projectId, name, mode, profile, workspaceRoot: boxWorkspaceRoot, temporaryDirectory: boxTemporaryDirectory });
   }
 
@@ -227,7 +236,8 @@ export class PodmanBoxRuntime implements BoxRuntime, BoxStreams {
       if (stats.isSymbolicLink() || !stats.isDirectory() || (this.#uid !== undefined && stats.uid !== this.#uid)) throw new AppError("box_directory_unsafe", 503);
       volume = realpathSync(spec.volume);
     }
-    const env = boxEnvironment(spec.mode, spec.mode === "workspace" ? await this.#proxy() : null);
+    const proxy = spec.mode === "workspace" ? await this.#proxy() : null;
+    const env = boxEnvironment(spec.mode, proxy?.url ?? null);
     const mounts = volume ? [{ source: volume, destination: sidecarInstallRoot }] : [];
     const args = createArgs({ name, projectId: spec.projectId, mode: spec.mode, profile: false, image: spec.image, mounts, env, config: this.#config });
     // A sidecar is labelled as one, not as the project's box, so `list` and capacity never mistake it for the box.
@@ -236,6 +246,7 @@ export class PodmanBoxRuntime implements BoxRuntime, BoxStreams {
     await this.#podman(["start", name]);
     const info = await this.#inspect(name);
     await this.#verify(name, info, spec.mode, mounts);
+    if (proxy) await this.#ensureProxy(proxy.gateway);
     return Object.freeze({ projectId: spec.projectId, serverId: spec.serverId, instance: spec.instance, name, mode: spec.mode, image: spec.image });
   }
 
@@ -306,8 +317,14 @@ export class PodmanBoxRuntime implements BoxRuntime, BoxStreams {
 
   async #remove(name: string): Promise<void> { await this.#podman(["rm", "--force", "--time", "2", name]); }
 
-  /** The internal network (created once, `--internal`: no default route) and the proxy bound to its gateway. */
-  #proxy(): Promise<string> {
+  /** Ensures a {@link RegistryProxyPort} now that a box on the internal network runs (its gateway exists). */
+  async #ensureProxy(gateway: string): Promise<void> {
+    const port = this.#registryProxy;
+    if (port && typeof port !== "function") await port.ensure(gateway);
+  }
+
+  /** The internal network (created once, `--internal`: no default route) and the proxy URL on its gateway. */
+  #proxy(): Promise<{ url: string; gateway: string }> {
     return this.#proxyUrl ??= (async () => {
       const exists = await this.#run(["network", "exists", boxInternalNetwork], { timeoutMs: commandMs });
       if (exists.exitCode !== 0) await this.#podman(["network", "create", "--internal", "--label", "jit.box=1", boxInternalNetwork]);
@@ -315,8 +332,9 @@ export class PodmanBoxRuntime implements BoxRuntime, BoxStreams {
       const network = Array.isArray(networks) ? networks[0] : undefined;
       const gateway = network?.subnets?.[0]?.gateway;
       if (network?.internal !== true || !gateway || !/^[0-9a-f.:]+$/.test(gateway)) throw new AppError("box_network_unavailable", 503);
-      if (!this.#registryProxy) throw new AppError("box_proxy_unavailable", 503);
-      return this.#registryProxy(gateway);
+      const port = this.#registryProxy;
+      if (!port) throw new AppError("box_proxy_unavailable", 503);
+      return { url: typeof port === "function" ? await port(gateway) : port.url(gateway), gateway };
     })().catch(error => { this.#proxyUrl = null; throw error; });
   }
 

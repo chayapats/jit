@@ -32,7 +32,7 @@ interface BoxRuntime {
 
 ## Registry allowlist proxy
 
-`src/exec/registry-proxy.ts` `startRegistryProxy({ hostname, port, hosts, log?, connectUpstream? })`: HTTP `CONNECT` only, tunnelled only to a host in `config.execution.registryHosts` on port 443. Another host, port or IP literal is `403`, a plain-HTTP method `405`, a malformed head `400`. Each refusal logs one line with the host name (or the method) only — never a path, query or header. The service starts it lazily on the internal network gateway with the first `workspace` box (`src/exec/box-service.ts`).
+`src/exec/registry-proxy.ts` `startRegistryProxy({ hostname, port, hosts, log?, connectUpstream? })`: HTTP `CONNECT` only, tunnelled only to a host in `config.execution.registryHosts` on port 443. Another host, port or IP literal is `403`, a plain-HTTP method `405`, a malformed head `400`. Each refusal logs one line with the host name (or the method) only — never a path, query or header. The service starts it lazily on the internal network gateway with the first `workspace` box (`src/exec/box-service.ts`); on rootless Podman it runs inside the rootless network namespace (see Risks).
 
 ## `exec.box_backend/v1`
 
@@ -65,4 +65,4 @@ HTTP (JSON; the Web page is EXE04): `GET /api/projects/:project/execution/box` �
 
 - `spawn` output reaches `onOutput` when the command ends, not while it runs.
 - An execution job that never opens its box keeps the project counted as a holder only while it is admitted.
-- On rootless Podman the internal network's gateway lives in the rootless network namespace; whether the host-side proxy can bind it depends on the network backend. The live test is the evidence; EXE06 records it on the Pi.
+- On rootless Podman the internal network's gateway lives only in the rootless network namespace; a host process gets `EADDRNOTAVAIL` (observed on the Pi, Podman 4.9.3, #163). A rootless service therefore runs the proxy there as a child (`NetnsRegistryProxy`, `src/exec/netns-proxy.ts`): `podman unshare --rootless-netns <bun> src/exec/registry-proxy-main.ts --hostname <gateway> --port 3128 --hosts …`. The URL `http://<gateway>:3128` is fixed, so a box is created with it before the gateway exists. `PodmanBoxRuntime` ensures the child after a `workspace` box or sidecar is running, and the child is restarted when it exited or the namespace inode changed (Podman recreates the namespace after the last box stops). The child prints one ready line with its namespace inode, logs refusals by host name only, and exits when its stdin closes, so it never outlives the service. A root service still binds the gateway on the host. The host needs `/var/lib/cni` when the service home is under `/var/lib` (runbook).

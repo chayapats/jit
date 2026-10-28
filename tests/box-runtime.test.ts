@@ -162,6 +162,26 @@ test("a box left by an earlier process with another proxy URL is recreated, not 
   expect(podman.calls.filter(call => call[0] === "create")).toHaveLength(2);
 });
 
+test("#163 a proxy port names its URL before the box exists and is ensured only after a workspace box runs", async () => {
+  const f = podmanFixture();
+  const events: string[] = [];
+  const run: CommandRunner = async (argv, options) => { if (argv[0] === "create" || argv[0] === "start") events.push(argv[0]); return f.podman.run(argv, options); };
+  const port = { url: (gateway: string) => `http://${gateway}:3128`, ensure: async (gateway: string) => { events.push(`ensure ${gateway}`); } };
+  const runtime = new PodmanBoxRuntime({ config: f.config.execution, run, registryProxy: port });
+  await runtime.ensure(projectA, "workspace");
+  expect(f.podman.calls.find(call => call[0] === "create")).toContain("HTTPS_PROXY=http://10.89.0.1:3128");
+  expect(events).toEqual(["create", "start", "ensure 10.89.0.1"]);
+  // Reuse re-ensures (the child may have died or the namespace may be new); a full box never touches the proxy.
+  await runtime.ensure(projectA, "workspace");
+  expect(events).toEqual(["create", "start", "ensure 10.89.0.1", "ensure 10.89.0.1"]);
+  await runtime.ensure(projectB, "full");
+  expect(events.filter(event => event.startsWith("ensure"))).toHaveLength(2);
+  // A proxy that cannot start refuses the open.
+  const failing = new PodmanBoxRuntime({ config: f.config.execution, run: f.podman.run,
+    registryProxy: { url: port.url, ensure: async () => { throw new AppError("box_proxy_unavailable", 503); } } });
+  await expect(failing.ensure(projectA, "workspace")).rejects.toThrow("box_proxy_unavailable");
+});
+
 test("inspected mounts must equal the expected set exactly; a tampered box is removed and refused", async () => {
   const f = podmanFixture();
   await f.runtime.ensure(projectA, "workspace");

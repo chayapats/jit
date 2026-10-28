@@ -23,7 +23,7 @@ S11-D01, D04 and D05 require execution in a boundary separate from the Jit servi
   - No environment from the Jit service. Only a fixed allowlist (`HOME`, `PATH`, `LANG`, `TZ`) plus explicit per-call variables reaches the box.
 - **Network per access level.**
   - `read` never creates a box.
-  - `workspace` attaches to an internal Podman network with no default route. The only egress is a Jit-owned HTTP(S) proxy that allows the operator-configured registry hosts. Its default list is `registry.npmjs.org`, `pypi.org`, `files.pythonhosted.org`, `proxy.golang.org` and `crates.io`.
+  - `workspace` attaches to an internal Podman network with no default route. The only egress is a Jit-owned HTTP(S) proxy that allows the operator-configured registry hosts. Its default list is `registry.npmjs.org`, `pypi.org`, `files.pythonhosted.org`, `proxy.golang.org` and `crates.io`. On rootless Podman the proxy process runs inside Podman's rootless network namespace, where the internal gateway exists (#163). It is a child of the service with a fixed port and is restarted when that namespace is recreated. It still holds no Jit state or credential.
   - `full` uses the rootless default network (pasta/slirp4netns).
   - A level change applies when the box is next ensured. A running box is restarted on a level change.
 - **Runner protocol `jit.box.runner/v1`.** The image contains `/opt/jit/runner`, a small static script with no model and no network. It reads one JSON request on stdin and writes one JSON response on stdout through `podman exec -i`. The operations are `spawn`, `readFile`, `writeFileAtomically`, `stat`, `list`, `glob` and `search`. Every operation has fixed byte and time limits, and paths are confined to `/workspace`.
