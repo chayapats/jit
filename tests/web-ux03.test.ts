@@ -514,6 +514,30 @@ test("accessibility: the checker itself rejects the problems it looks for", () =
     ['<label for="q2"><span aria-hidden="true">Q</span></label><input id="q2">', /has no label/],
   ];
   for (const [body, problem] of cases) expect(accessibilityProblems(page(body), "en").join("\n")).toMatch(problem);
+  // Unnamed controls in every native-label shape: each control kind, label[for] or wrapping label, hidden or aria-hidden
+  // label, and an empty aria-labelledby beside a working label (it decides alone).
+  const controls = { input: (id: string, extra = "") => `<input id="${id}"${extra}>`, select: (id: string, extra = "") => `<select id="${id}"${extra}><option>A</option></select>`,
+    textarea: (id: string, extra = "") => `<textarea id="${id}"${extra}></textarea>` };
+  let rows = 0;
+  for (const [kind, control] of Object.entries(controls)) {
+    for (const hide of ["hidden", 'aria-hidden="true"']) {
+      for (const body of [`<label for="c" ${hide}>Name</label>${control("c")}`, `<div ${hide}><label for="c">Name</label></div>${control("c")}`, `<label ${hide}>Name ${control("c")}</label>`]) {
+        const problems = accessibilityProblems(page(body), "en").join("\n");
+        // A control inside its own hidden wrapping label is hidden too; that variant is reported as hidden-but-focusable or skipped.
+        if (body.startsWith("<label hidden>")) continue;
+        expect(problems, `${kind}: ${body}`).toMatch(/has no label|aria-hidden but focusable/);
+        rows++;
+      }
+    }
+    expect(accessibilityProblems(page(`<span id="e"></span><label for="c">Name</label>${control("c", ' aria-labelledby="e"')}`), "en").join("\n"), kind).toMatch(/has no label/);
+    expect(accessibilityProblems(page(`<span id="e"></span><label>Name ${control("c", ' aria-labelledby="e"')}</label>`), "en").join("\n"), kind).toMatch(/has no label/);
+    // A wrapped control's own content is not its name.
+    expect(accessibilityProblems(page(`<label>${control("c")}</label>`), "en").join("\n"), kind).toMatch(/has no label/);
+    // Positive: a referenced label may itself be hidden, and a visible label names the control.
+    expect(accessibilityProblems(page(`<span id="h" hidden>Name</span>${control("c", ' aria-labelledby="h"')}<label for="d">Name</label>${control("d")}`), "en"), kind).toEqual([]);
+    rows += 3;
+  }
+  expect(rows).toBe(3 * (5 + 3));
 });
 
 test("keyboard and motion: visible focus everywhere, outline removed only with a replacement, and reduced motion stops all motion", () => {

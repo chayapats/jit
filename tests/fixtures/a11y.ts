@@ -48,11 +48,26 @@ function accessibleName(node: Node, byId: Map<string, Node>): string {
   const content = text(node);
   return content || (node.attrs.title ?? "").trim();
 }
+/**
+ * Name of a form control in accname order, with no fallback past a step that applies: aria-labelledby with at least
+ * one valid IDREF decides alone (an empty result is no name), then aria-label, then the native labels (`label[for]`
+ * and a wrapping `label`) that are themselves exposed. A native label's text leaves out its hidden parts and the
+ * control's own content, such as a wrapped select's options.
+ */
+function controlName(node: Node, all: Node[], byId: Map<string, Node>): string {
+  const refs = (node.attrs["aria-labelledby"] ?? "").split(/\s+/).filter(id => byId.has(id));
+  if (refs.length) return refs.map(id => text(byId.get(id)!)).join(" ").trim();
+  if (node.attrs["aria-label"]?.trim()) return node.attrs["aria-label"].trim();
+  const labels = all.filter(n => n.tag === "label" && node.attrs.id !== undefined && n.attrs.for === node.attrs.id);
+  for (let up = node.parent; up; up = up.parent) if (up.tag === "label") labels.push(up);
+  return labels.filter(label => !hiddenInTree(label)).map(label => text(label, node)).join(" ").trim();
+}
 /** Landmarks and dialogs are named only by aria-labelledby or aria-label, never by their content. */
 const landmarkName = (node: Node, byId: Map<string, Node>) => node.attrs["aria-labelledby"] || node.attrs["aria-label"]?.trim() ? accessibleName(node, byId) : "";
-function text(node: Node): string {
-  return node.children.map(child => typeof child === "string" ? child : hiddenFromAt(child) ? ""
-    : child.tag === "svg" ? child.attrs.role === "img" ? child.attrs["aria-label"] ?? "" : "" : text(child)).join(" ").replace(/\s+/g, " ").trim();
+/** Exposed text of a subtree: hidden parts and the `skip` subtree are left out; a labelled SVG contributes its label. */
+function text(node: Node, skip?: Node): string {
+  return node.children.map(child => typeof child === "string" ? child : hiddenFromAt(child) || child === skip ? ""
+    : child.tag === "svg" ? child.attrs.role === "img" ? child.attrs["aria-label"] ?? "" : "" : text(child, skip)).join(" ").replace(/\s+/g, " ").trim();
 }
 /** Interactive content (HTML content model): what may not be nested in a link or button. */
 const interactive = (node: Node) => ["button", "select", "textarea", "summary"].includes(node.tag)
@@ -114,12 +129,8 @@ export function accessibilityProblems(html: string, locale: "th" | "en"): string
       && !(attrs["aria-labelledby"] ? accessibleName(node, byId) : attrs["aria-label"]?.trim() || (attrs.value === undefined ? attrs.type !== "button" : attrs.value.trim()))) {
       problems.push(`${where(node)} has no accessible name`);
     }
-    if (["input", "select", "textarea"].includes(tag) && !["hidden", "submit", "reset", "button"].includes(attrs.type ?? "") && !hiddenInTree(node)) {
-      let labelled = Boolean(attrs["aria-labelledby"] ? accessibleName(node, byId) : attrs["aria-label"]?.trim());
-      if (!labelled && attrs.id) labelled = all.some(n => n.tag === "label" && n.attrs.for === attrs.id && text(n));
-      for (let up = node.parent; !labelled && up; up = up.parent) if (up.tag === "label" && text(up)) labelled = true;
-      if (!labelled) problems.push(`${where(node)}[name=${attrs.name}] has no label`);
-    }
+    if (["input", "select", "textarea"].includes(tag) && !["hidden", "submit", "reset", "button"].includes(attrs.type ?? "") && !hiddenInTree(node)
+      && !controlName(node, all, byId)) problems.push(`${where(node)}[name=${attrs.name}] has no label`);
   }
   return problems;
 }
