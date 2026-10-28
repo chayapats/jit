@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { inflateSync } from "node:zlib";
-import { colorTokens } from "../src/web-design";
+import { colorTokens, scaleTokens } from "../src/web-design";
 import { assetUrl, lookupAsset, staticAssets } from "../src/web-assets";
 import { drawIcon, iconSpecs, pathPolygons } from "../src/web-icons";
 import { offlineAssets, offlineVersion, serviceWorkerPath, serviceWorkerScript } from "../src/web-pwa";
@@ -390,7 +390,9 @@ test("responsive snapshots at 360/390/430/1280 px: drawer, bottom composer and s
     // The composer stays at the bottom of the main column and clears the home indicator; inputs never zoom on focus.
     expect(at[".main-pane"]).toMatchObject({ height: "100dvh", "padding-left": "env(safe-area-inset-left)", "padding-right": "env(safe-area-inset-right)" });
     expect(at[".composer-wrap"]!.padding).toBe("10px 12px max(12px, env(safe-area-inset-bottom))");
-    expect(at[".composer textarea"]!["font-size"]).toBe("16px");
+    // UX04 tokenized the size; the token is 16px, the size below which mobile browsers zoom on focus.
+    expect(at[".composer textarea"]!["font-size"]).toBe("var(--size-input-mobile)");
+    expect(scaleTokens.size.input).toBe(16);
     expect(at[".app-header"]!["padding-top"]).toBe("max(10px, env(safe-area-inset-top))");
     expect(at[".topic-panel"]).toMatchObject({ position: "fixed", width: "min(92vw, 400px)" });
     expect(at[".project-grid"]!["grid-template-columns"]).toBe("1fr");

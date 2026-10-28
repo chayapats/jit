@@ -547,7 +547,7 @@ pre:last-child { margin-bottom: 0; }
   /* Phones: step names wrap between words instead of being cut, and a long word widens its own column. */
   .setup-steps { grid-template-columns: repeat(5, minmax(min-content, 1fr)); overflow-x: auto; }
   .setup-steps li { min-width: auto; }
-  .setup-step-name { font-size: 12px; line-height: 1.3; white-space: normal; overflow: visible; }
+  .setup-step-name { font-size: var(--size-xs); line-height: 1.3; white-space: normal; overflow: visible; }
   .setup-summary div { grid-template-columns: 1fr; gap: 2px; }
 }
 .auth-footer { margin-top: 18px; text-align: left; font-size: var(--size-xs); color: var(--faint); }
