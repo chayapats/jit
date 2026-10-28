@@ -46,6 +46,8 @@ exports[`responsive snapshots at 360/390/430/1280 px: drawer, bottom composer an
       "font-size": "14px",
       "max-width": "62vw",
       "overflow": "hidden",
+      "text-overflow": "ellipsis",
+      "white-space": "nowrap",
     },
     ".home-composer": {
       "padding": "14px 16px 12px",
@@ -86,10 +88,21 @@ exports[`responsive snapshots at 360/390/430/1280 px: drawer, bottom composer an
       "display": "grid",
       "padding": "max(40px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(40px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left))",
     },
+    ".setup-step-name": {
+      "font-size": "13px",
+      "overflow": "hidden",
+      "text-overflow": "ellipsis",
+      "white-space": "nowrap",
+    },
     ".setup-steps": {
       "display": "grid",
       "grid-template-columns": "repeat(5, minmax(0, 1fr))",
       "padding": "0",
+    },
+    ".setup-steps li": {
+      "display": "grid",
+      "min-width": "0",
+      "padding-top": "8px",
     },
     ".setup-summary div": {
       "display": "grid",
@@ -170,6 +183,8 @@ exports[`responsive snapshots at 360/390/430/1280 px: drawer, bottom composer an
       "font-size": "14px",
       "max-width": "58vw",
       "overflow": "hidden",
+      "text-overflow": "ellipsis",
+      "white-space": "nowrap",
     },
     ".home-composer": {
       "padding": "14px 16px 12px",
@@ -216,11 +231,22 @@ exports[`responsive snapshots at 360/390/430/1280 px: drawer, bottom composer an
       "padding": "max(40px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(40px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left))",
       "padding-top": "max(24px, env(safe-area-inset-top))",
     },
+    ".setup-step-name": {
+      "font-size": "12px",
+      "overflow": "visible",
+      "text-overflow": "ellipsis",
+      "white-space": "normal",
+    },
     ".setup-steps": {
       "display": "grid",
       "grid-template-columns": "repeat(5, minmax(min-content, 1fr))",
       "overflow-x": "auto",
       "padding": "0",
+    },
+    ".setup-steps li": {
+      "display": "grid",
+      "min-width": "auto",
+      "padding-top": "8px",
     },
     ".setup-summary div": {
       "display": "grid",
@@ -309,6 +335,8 @@ exports[`responsive snapshots at 360/390/430/1280 px: drawer, bottom composer an
       "font-size": "14px",
       "max-width": "58vw",
       "overflow": "hidden",
+      "text-overflow": "ellipsis",
+      "white-space": "nowrap",
     },
     ".home-composer": {
       "padding": "14px 16px 12px",
@@ -355,11 +383,22 @@ exports[`responsive snapshots at 360/390/430/1280 px: drawer, bottom composer an
       "padding": "max(40px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(40px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left))",
       "padding-top": "max(24px, env(safe-area-inset-top))",
     },
+    ".setup-step-name": {
+      "font-size": "12px",
+      "overflow": "visible",
+      "text-overflow": "ellipsis",
+      "white-space": "normal",
+    },
     ".setup-steps": {
       "display": "grid",
       "grid-template-columns": "repeat(5, minmax(min-content, 1fr))",
       "overflow-x": "auto",
       "padding": "0",
+    },
+    ".setup-steps li": {
+      "display": "grid",
+      "min-width": "auto",
+      "padding-top": "8px",
     },
     ".setup-summary div": {
       "display": "grid",
@@ -448,6 +487,8 @@ exports[`responsive snapshots at 360/390/430/1280 px: drawer, bottom composer an
       "font-size": "14px",
       "max-width": "58vw",
       "overflow": "hidden",
+      "text-overflow": "ellipsis",
+      "white-space": "nowrap",
     },
     ".home-composer": {
       "padding": "14px 16px 12px",
@@ -494,11 +535,22 @@ exports[`responsive snapshots at 360/390/430/1280 px: drawer, bottom composer an
       "padding": "max(40px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(40px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left))",
       "padding-top": "max(24px, env(safe-area-inset-top))",
     },
+    ".setup-step-name": {
+      "font-size": "12px",
+      "overflow": "visible",
+      "text-overflow": "ellipsis",
+      "white-space": "normal",
+    },
     ".setup-steps": {
       "display": "grid",
       "grid-template-columns": "repeat(5, minmax(min-content, 1fr))",
       "overflow-x": "auto",
       "padding": "0",
+    },
+    ".setup-steps li": {
+      "display": "grid",
+      "min-width": "auto",
+      "padding-top": "8px",
     },
     ".setup-summary div": {
       "display": "grid",

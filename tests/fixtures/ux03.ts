@@ -30,7 +30,8 @@ const answer = (request: ApplicationRunRequest, output: string): ApplicationRunO
 });
 const long = "ข้อความยาวมากที่ไม่มีช่องว่างเลย".repeat(6);
 
-export async function ux03Installation(options: { root?: string; origin?: string } = {}) {
+export async function ux03Installation(options: { root?: string; origin?: string; setupLanguage?: "th" | "en" } = {}) {
+  const language = options.setupLanguage ?? "th";
   const root = options.root ?? mkdtempSync(join(tmpdir(), "jit-ux03-"));
   const path = join(root, "state.sqlite");
   const config = readConfig({ JIT_DATABASE: path, JIT_JOB_CONCURRENCY: "4", JIT_JOB_ROUTE_CONCURRENCY: "4", ...options.origin ? { JIT_ORIGIN: options.origin } : {} });
@@ -67,25 +68,34 @@ export async function ux03Installation(options: { root?: string; origin?: string
   await app.setupOwner(fixturePassword);
   const token = await app.login(fixturePassword), auth = app.authenticate(token);
   const { actor } = auth;
-  /** Every setup step as served, in Thai and English, captured while the installation walks through setup. */
-  const setupPages: { step: string; locale: "th" | "en"; html: string }[] = [];
+  /**
+   * Every setup step as served while the installation walks through setup in `setupLanguage`, once with each saved
+   * theme. Before the wake step the browser's language decides; after it, the language the owner chose.
+   */
+  const setupPages: { step: string; locale: "th" | "en"; theme: "dark" | "light"; html: string }[] = [];
+  const preferences = (theme: "system" | "dark" | "light", saved: "auto" | "th" | "en") =>
+    app.execute(actor, { kind: "ui.preferences.set", requestId: rid(), projectId: null, expectedRevision: app.preferences(actor).revision, payload: { theme, language: saved } });
+  let chosen: "auto" | "th" | "en" = "auto";
   const capture = async (step: string) => {
-    for (const locale of ["th", "en"] as const) {
-      const response = await web(new Request(`${config.origin}/setup`, { headers: { cookie: `jit_session=${token}`, "accept-language": locale } }));
-      setupPages.push({ step, locale, html: await response.text() });
+    for (const theme of ["dark", "light"] as const) {
+      preferences(theme, chosen);
+      const response = await web(new Request(`${config.origin}/setup`, { headers: { cookie: `jit_session=${token}`, "accept-language": language } }));
+      setupPages.push({ step, locale: language, theme, html: await response.text() });
     }
+    preferences("system", chosen);
   };
   const setup = (kind: SetupCommand["kind"], payload: unknown) =>
     app.execute(actor, { kind, requestId: rid(), projectId: null, expectedRevision: app.setup(actor).revision, payload } as SetupCommand);
   await capture("wake");
-  setup("setup.wake", { language: "th" });
+  setup("setup.wake", { language });
+  chosen = language;
   await capture("connect");
   setup("setup.connect", { route: grok });
   await settle();
   await capture("connect-checked");
   setup("setup.connect.continue", {});
   await capture("know");
-  setup("setup.know", { addressAs: "พี่บอส", selfReference: "", language: "th", particle: "khrap" });
+  setup("setup.know", { addressAs: language === "th" ? "พี่บอส" : "Boss", selfReference: "", language, particle: language === "th" ? "khrap" : "none" });
   await capture("personality");
   setup("setup.personality.skip", {});
   await capture("ceremony");

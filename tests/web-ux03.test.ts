@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { inflateSync } from "node:zlib";
 import { colorTokens } from "../src/web-design";
 import { assetUrl, lookupAsset, staticAssets } from "../src/web-assets";
-import { drawIcon, iconSpecs } from "../src/web-icons";
+import { drawIcon, iconSpecs, pathPolygons } from "../src/web-icons";
 import { offlineAssets, offlineVersion, serviceWorkerPath, serviceWorkerScript } from "../src/web-pwa";
 import { contentSecurityPolicy } from "../src/web";
 import { accessibilityProblems } from "./fixtures/a11y";
@@ -94,6 +94,23 @@ test("install icons are the logo drawing: shipped PNGs match a fresh rasterizati
   }
 });
 
+test("the icon path parser reads the SVG number grammar exactly and drops degenerate arcs", () => {
+  const first = (d: string) => pathPolygons(d)[0]![0];
+  expect(first("M1e1 2E1L30 0L30 30Z")).toEqual([10, 20]);
+  expect(first("M+1.5-2.5e-1L3 3L4 0Z")).toEqual([1.5, -0.25]);
+  expect(first("M.5.5L3 3L4 0Z")).toEqual([.5, .5]);
+  for (const d of ["M1e L2 2 L3 0 Z", "M1 L2 2", "1 2 L3 3", "M1 2 X3 4"]) expect(() => pathPolygons(d)).toThrow();
+  const arc = pathPolygons("M0 0 A5 5 0 0 1 0 0 L1 0 L1 1 Z")[0]!;
+  expect(arc).toEqual([[0, 0], [1, 0], [1, 1]]);
+  expect(arc.flat().every(Number.isFinite)).toBe(true);
+  // A zero radius is a straight line to the end point.
+  expect(pathPolygons("M0 0 A0 5 0 0 1 4 0 L4 4 Z")[0]).toEqual([[0, 0], [4, 0], [4, 4]]);
+  // A half circle reaches its far point and ends exactly on the end point.
+  const half = pathPolygons("M0 0 A1 1 0 0 1 2 0 Z")[0]!;
+  expect(half.at(-1)).toEqual([2, 0]);
+  expect(Math.min(...half.map(([, y]) => y))).toBeCloseTo(-1, 6);
+});
+
 test("every page links the manifest, the touch icon and a theme colour, allows zoom and covers the safe areas", async () => {
   const f = await installation();
   for (const [theme, language] of [["dark", "th"], ["light", "en"]] as const) {
@@ -140,7 +157,7 @@ test("the service worker is public, never stored, carries the CSP and lists exac
 });
 
 /** Runs the served worker against fake `caches`/`fetch` globals; network requests go to the real web handler. */
-function runWorker(f: Installation, body: string, caches: Map<string, Map<string, Response>>) {
+function runWorker(f: Installation, body: string, caches: Map<string, Map<string, Response>>, options: { put?: (key: string) => Promise<void> } = {}) {
   const listeners: Record<string, (event: unknown) => void> = {};
   const network: string[] = [];
   const fetchImpl = async (input: Request | string) => {
@@ -158,7 +175,8 @@ function runWorker(f: Installation, body: string, caches: Map<string, Map<string
       return {
         addAll: async (paths: string[]) => { for (const path of paths) { const r = await fetchImpl(path); if (r.status !== 200) throw new Error(`addAll ${path} ${r.status}`); cache.set(path, r); } },
         match: async (key: string) => cache.get(key)?.clone(),
-        put: async (key: string, response: Response) => { cache.set(key, response); },
+        // Like the real Cache API, the entry exists only once the (possibly slow or failing) write settles.
+        put: async (key: string, response: Response) => { await options.put?.(key); cache.set(key, response); },
       };
     },
     keys: async () => [...caches.keys()],
@@ -175,12 +193,15 @@ function runWorker(f: Installation, body: string, caches: Map<string, Map<string
     await wait;
   };
   /** Dispatches one fetch event; returns the worker's answer, or null when it left the request to the network. */
+  /** Lifetime extensions the worker registered with `event.waitUntil` during fetch events. */
+  const extended: Promise<unknown>[] = [];
   const request = async (url: string, init: RequestInit = {}): Promise<Response | null> => {
     let answer = null as Promise<Response> | null;
-    listeners.fetch!({ request: new Request(new URL(url, f.config.origin), init), respondWith: (promise: Promise<Response>) => { answer = promise; } });
+    listeners.fetch!({ request: new Request(new URL(url, f.config.origin), init), respondWith: (promise: Promise<Response>) => { answer = promise; },
+      waitUntil: (promise: Promise<unknown>) => { extended.push(promise); } });
     return answer ? await answer : null;
   };
-  return { lifecycle, request, network, listeners };
+  return { lifecycle, request, network, listeners, extended };
 }
 
 test("service worker cache holds only the asset table allowlist; pages, API, SSE, auth and other assets are never answered or stored", async () => {
@@ -236,6 +257,36 @@ test("a cached allowlisted asset is served from cache; a miss is fetched and kep
   expect((await worker.request(css))?.status).toBe(200);
   expect(worker.network).toEqual([css]);
   expect(caches.get(name)!.has(css)).toBe(true);
+});
+
+test("a cache miss's write is part of the fetch event's lifetime, and a failed write still answers from the network", async () => {
+  const f = await installation();
+  const caches = new Map<string, Map<string, Response>>();
+  let release = () => {}, fail = false;
+  const worker = runWorker(f, serviceWorkerScript(), caches, { put: () => fail ? Promise.reject(new Error("quota")) : new Promise<void>(resolve => { release = resolve; }) });
+  // Install without the slow writer, then drop one entry to force a miss.
+  const name = `jit-static-${offlineVersion}`, js = assetUrl("app.js");
+  caches.set(name, new Map(offlineAssets.map(asset => [asset.path, new Response(asset.body)])));
+  caches.get(name)!.delete(js);
+  const answer = await worker.request(js);
+  expect(answer?.status).toBe(200);
+  expect(new Uint8Array(await answer!.arrayBuffer())).toEqual(lookupAsset(js)!.body);
+  // The page has its answer while the write is still pending, and the event's lifetime waits for that write.
+  expect(worker.extended).toHaveLength(1);
+  expect(caches.get(name)!.has(js)).toBe(false);
+  let settled = false;
+  void worker.extended[0]!.then(() => { settled = true; });
+  await Bun.sleep(5);
+  expect(settled).toBe(false);
+  release();
+  await worker.extended[0];
+  expect(caches.get(name)!.has(js)).toBe(true);
+  // A rejected write is absorbed: the lifetime promise resolves and the response was already delivered.
+  fail = true;
+  caches.get(name)!.delete(js);
+  expect((await worker.request(js))?.status).toBe(200);
+  await expect(worker.extended[1]!).resolves.toBeUndefined();
+  expect(caches.get(name)!.has(js)).toBe(false);
 });
 
 test("a new asset version opens a new cache and deletes every older cache on activation", async () => {
@@ -306,8 +357,8 @@ function mediaMatches(media: string | null, width: number, height = 800): boolea
 }
 const layoutSelectors = [".app", ".sidebar", ".drawer-scrim", ".menu-button", ".drawer-close", ".main-pane", ".app-header", ".header-title h1", ".content",
   ".scroll-region", ".composer-wrap", ".composer", ".home-composer", ".composer textarea", ".topic-panel", ".palette", ".project-grid", ".create-form:not(:has(select)) .primary",
-  ".settings-nav ul", ".proposal-fields", ".team-card", ".setup", ".setup-steps", ".setup-summary div", ".auth"];
-const layoutProperties = /^(?:display|position|inset|grid-template-columns|width|min-width|max-width|height|padding(?:-[a-z]+)?|transform|visibility|overflow(?:-x)?|flex-wrap|font-size|margin-top)$/;
+  ".settings-nav ul", ".proposal-fields", ".team-card", ".setup", ".setup-steps", ".setup-steps li", ".setup-step-name", ".setup-summary div", ".auth"];
+const layoutProperties = /^(?:display|position|inset|grid-template-columns|width|min-width|max-width|height|padding(?:-[a-z]+)?|transform|visibility|overflow(?:-x)?|flex-wrap|font-size|margin-top|white-space|text-overflow)$/;
 /** The final value of each layout property for each tracked selector at one viewport width. */
 function layoutAt(rules: Rule[], width: number): Record<string, Record<string, string>> {
   const out: Record<string, Record<string, string>> = {};
@@ -343,10 +394,15 @@ test("responsive snapshots at 360/390/430/1280 px: drawer, bottom composer and s
     expect(at[".app-header"]!["padding-top"]).toBe("max(10px, env(safe-area-inset-top))");
     expect(at[".topic-panel"]).toMatchObject({ position: "fixed", width: "min(92vw, 400px)" });
     expect(at[".project-grid"]!["grid-template-columns"]).toBe("1fr");
+    // Setup step names wrap between words and a long word widens its own column, so no step name is cut off.
+    expect(at[".setup-step-name"]).toMatchObject({ "white-space": "normal", overflow: "visible" });
+    expect(at[".setup-steps li"]!["min-width"]).toBe("auto");
+    expect(at[".setup-steps"]!["grid-template-columns"]).toBe("repeat(5, minmax(min-content, 1fr))");
   }
   expect(snapshot[1280]![".app"]).toMatchObject({ display: "grid", "grid-template-columns": "264px minmax(0, 1fr)" });
   expect(snapshot[1280]![".menu-button"]!.display).toBe("none");
   expect(snapshot[1280]![".sidebar"]!.position).toBeUndefined();
+  expect(snapshot[1280]![".setup-step-name"]).toMatchObject({ "white-space": "nowrap", overflow: "hidden", "text-overflow": "ellipsis" });
 });
 
 test("no rule active at 360–430 px sets a fixed width or grid track wider than the viewport", () => {
@@ -403,22 +459,31 @@ test("accessibility: every main page passes the HTML checks in Thai and English,
   }
 });
 
-test("accessibility: every setup step passes the HTML checks in both languages", async () => {
-  const f = await installation();
-  expect(new Set(f.setupPages.map(p => p.step))).toEqual(new Set(["wake", "connect", "connect-checked", "know", "personality", "ceremony"]));
-  for (const page of f.setupPages) {
-    const lang = /<html lang="(th|en)"/.exec(page.html)![1] as "th" | "en";
-    const problems = accessibilityProblems(page.html, lang);
-    if (problems.length) throw new Error(`${page.step}/${page.locale}:\n${problems.join("\n")}`);
+test("accessibility: every setup step passes the HTML checks in Thai and English, dark and light", async () => {
+  for (const language of ["th", "en"] as const) {
+    const f = await ux03Installation({ setupLanguage: language });
+    installations.push(f);
+    const seen = new Set<string>();
+    for (const page of f.setupPages) {
+      // The requested language and theme are the expected ones; nothing is read back from the page.
+      expect(page.html).toStartWith(`<!doctype html><html lang="${language}" data-theme="${page.theme}">`);
+      // Labels follow the language: an English step has no Thai in its title or headings.
+      if (language === "en") expect(page.html).not.toMatch(/<(title|h1)[^>]*>[^<]*[\u0E00-\u0E7F]/);
+      else expect(page.html).toMatch(/<title>[^<]*[\u0E00-\u0E7F]/);
+      const problems = accessibilityProblems(page.html, language);
+      if (problems.length) throw new Error(`${page.step}/${language}/${page.theme}:\n${problems.join("\n")}`);
+      seen.add(`${page.step}/${page.theme}`);
+    }
+    expect(seen.size).toBe(12);
+    expect(new Set(f.setupPages.map(p => p.step))).toEqual(new Set(["wake", "connect", "connect-checked", "know", "personality", "ceremony"]));
   }
-  // The wake step follows the browser's language before the owner chooses one.
-  expect(f.setupPages.find(p => p.step === "wake" && p.locale === "en")!.html).toStartWith('<!doctype html><html lang="en"');
 });
 
 test("accessibility: the checker itself rejects the problems it looks for", () => {
   const page = (body: string) =>
     `<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>T</title></head><body><a class="skip" href="#main-content">Skip</a><main id="main-content"><h1>T</h1>${body}</main></body></html>`;
   expect(accessibilityProblems(page(""), "en")).toEqual([]);
+  expect(accessibilityProblems(page('<div hidden><button></button></div><input type="submit" value="Send"><input type="submit"><span id="l">Name</span><input aria-labelledby="l">'), "en")).toEqual([]);
   expect(accessibilityProblems(page(""), "th")).toEqual(["html lang en (expected th)"]);
   const cases: [string, RegExp][] = [
     ['<button><svg aria-hidden="true"></svg></button>', /no accessible name/],
@@ -437,6 +502,16 @@ test("accessibility: the checker itself rejects the problems it looks for", () =
     ['<a href="/" aria-hidden="true">x</a>', /aria-hidden but focusable/],
     ["<h1>Two</h1>", /2 h1 headings/],
     ["<p><span></p>", /mismatched/],
+    ['<div aria-hidden="true"><button>Hidden control</button></div>', /aria-hidden but focusable/],
+    ['<button>Choose<select aria-label="Choice"><option>A</option></select></button>', /nests interactive content/],
+    ['<a href="/x">Go<textarea aria-label="T"></textarea></a>', /nests interactive content/],
+    ['<button><span hidden>Hidden name</span></button>', /no accessible name/],
+    ['<button><span aria-hidden="true">Hidden name</span></button>', /no accessible name/],
+    ['<input type="submit" value="">', /no accessible name/],
+    ['<input type="button">', /no accessible name/],
+    ['<span id="empty"></span><input aria-labelledby="empty">', /has no label/],
+    ['<span id="empty2"></span><button aria-labelledby="empty2">Text</button>', /no accessible name/],
+    ['<label for="q2"><span aria-hidden="true">Q</span></label><input id="q2">', /has no label/],
   ];
   for (const [body, problem] of cases) expect(accessibilityProblems(page(body), "en").join("\n")).toMatch(problem);
 });

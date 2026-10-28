@@ -42,13 +42,16 @@ const curveSteps = 24;
 
 /** Parses SVG path data into closed polygons (one per subpath). Supports M L H V C Q A Z, absolute and relative. */
 export function pathPolygons(d: string): Polygon[] {
-  const tokens = d.match(/[MLHVCQAZmlhvcqaz]|-?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?/g) ?? [];
+  const grammar = /[MLHVCQAZmlhvcqaz]|[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?/g;
+  // Anything besides commands, numbers, spaces and commas is malformed, never silently skipped.
+  if (d.replace(grammar, "").replace(/[\s,]/g, "")) throw new Error("malformed path data");
+  const tokens = d.match(grammar) ?? [];
   const polygons: Polygon[] = [];
   let index = 0, command = "", x = 0, y = 0, startX = 0, startY = 0, current: Polygon = [];
   const number = () => {
-    const token = tokens[index++];
-    if (token === undefined || /[a-z]/i.test(token)) throw new Error(`malformed path near token ${index}`);
-    return Number(token);
+    const token = tokens[index++], value = Number(token);
+    if (token === undefined || /^[MLHVCQAZ]$/i.test(token) || !Number.isFinite(value)) throw new Error(`malformed path near token ${index}`);
+    return value;
   };
   const close = () => { if (current.length > 2) polygons.push(current); current = []; };
   while (index < tokens.length) {
@@ -98,6 +101,8 @@ export function pathPolygons(d: string): Polygon[] {
 
 /** SVG endpoint arc to points (SVG 1.1 appendix F.6.5), excluding the start point. */
 function arcPoints(x1: number, y1: number, rx: number, ry: number, degrees: number, large: boolean, sweep: boolean, x2: number, y2: number): Point[] {
+  // SVG 1.1 F.6.2: identical endpoints draw nothing; a zero radius is a straight line.
+  if (x1 === x2 && y1 === y2) return [];
   if (rx === 0 || ry === 0) return [[x2, y2]];
   rx = Math.abs(rx); ry = Math.abs(ry);
   const phi = degrees * Math.PI / 180, cos = Math.cos(phi), sin = Math.sin(phi);

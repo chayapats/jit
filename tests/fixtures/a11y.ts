@@ -34,9 +34,15 @@ function parseHtml(html: string): Node {
   return root;
 }
 const elements = (node: Node): Node[] => node.children.flatMap(child => typeof child === "string" ? [] : [child, ...elements(child)]);
-const hiddenFromAt = (node: Node) => node.attrs["aria-hidden"] === "true";
+/** Content the accessibility tree leaves out: `aria-hidden="true"` and the `hidden` attribute. */
+const hiddenFromAt = (node: Node) => node.attrs["aria-hidden"] === "true" || "hidden" in node.attrs;
+/** True when the node or any ancestor is hidden from assistive technology. */
+/** The `hidden` attribute on the node or an ancestor: not rendered, so not focusable. */
+const hiddenFromAtAttr = (node: Node | null): boolean => !!node && ("hidden" in node.attrs || hiddenFromAtAttr(node.parent));
+const hiddenInTree = (node: Node | null): boolean => !!node && (hiddenFromAt(node) || hiddenInTree(node.parent));
 /** Accessible name per the parts of accname that the markup uses: aria-labelledby, aria-label, content, title. */
 function accessibleName(node: Node, byId: Map<string, Node>): string {
+  // Referenced labels count even when hidden themselves (accname 2B), but their own hidden parts do not.
   if (node.attrs["aria-labelledby"]) return node.attrs["aria-labelledby"].split(/\s+/).map(id => byId.get(id) ? text(byId.get(id)!) : "").join(" ").trim();
   if (node.attrs["aria-label"]?.trim()) return node.attrs["aria-label"].trim();
   const content = text(node);
@@ -48,8 +54,10 @@ function text(node: Node): string {
   return node.children.map(child => typeof child === "string" ? child : hiddenFromAt(child) ? ""
     : child.tag === "svg" ? child.attrs.role === "img" ? child.attrs["aria-label"] ?? "" : "" : text(child)).join(" ").replace(/\s+/g, " ").trim();
 }
-const focusable = (node: Node) => node.attrs.tabindex !== "-1" && (["button", "select", "textarea", "summary"].includes(node.tag)
-  || (node.tag === "a" && "href" in node.attrs) || (node.tag === "input" && node.attrs.type !== "hidden") || (node.attrs.tabindex !== undefined));
+/** Interactive content (HTML content model): what may not be nested in a link or button. */
+const interactive = (node: Node) => ["button", "select", "textarea", "summary"].includes(node.tag)
+  || (node.tag === "a" && "href" in node.attrs) || (node.tag === "input" && node.attrs.type !== "hidden");
+const focusable = (node: Node) => node.attrs.tabindex !== "-1" && (interactive(node) || node.attrs.tabindex !== undefined);
 
 /** Deterministic WCAG checks of one served document; returns readable problems. */
 export function accessibilityProblems(html: string, locale: "th" | "en"): string[] {
@@ -96,12 +104,18 @@ export function accessibilityProblems(html: string, locale: "th" | "en"): string
     if (tag === "li" && !["ul", "ol"].includes(node.parent!.tag)) problems.push(`${where(node)} li outside a list`);
     if (tag === "fieldset" && !node.children.some(child => typeof child !== "string" && child.tag === "legend")) problems.push(`${where(node)} fieldset without legend`);
     if ((tag === "dialog" || tag === "nav" || tag === "aside") && !landmarkName(node, byId)) problems.push(`${where(node)} ${tag} without a name`);
-    if (hiddenFromAt(node) && focusable(node)) problems.push(`${where(node)} aria-hidden but focusable`);
-    if (["a", "button"].includes(tag) && elements(node).some(child => child.tag === "a" || child.tag === "button" || child.tag === "input")) problems.push(`${where(node)} nests interactive content`);
-    const interactive = (tag === "a" && "href" in attrs) || tag === "button" || tag === "summary";
-    if (interactive && !hiddenFromAt(node) && !accessibleName(node, byId)) problems.push(`${where(node)} has no accessible name`);
-    if (["input", "select", "textarea"].includes(tag) && !["hidden", "submit"].includes(attrs.type ?? "")) {
-      let labelled = Boolean(attrs["aria-label"]?.trim() || attrs["aria-labelledby"]);
+    // Inside an aria-hidden subtree a control can still take focus; only the `hidden` attribute removes it.
+    const ariaHidden = (n: Node | null): boolean => !!n && (n.attrs["aria-hidden"] === "true" || ariaHidden(n.parent));
+    if (focusable(node) && ariaHidden(node) && !hiddenFromAtAttr(node)) problems.push(`${where(node)} aria-hidden but focusable`);
+    if ((tag === "button" || (tag === "a" && "href" in attrs)) && elements(node).some(interactive)) problems.push(`${where(node)} nests interactive content`);
+    const named = (tag === "a" && "href" in attrs) || tag === "button" || tag === "summary";
+    if (named && !hiddenInTree(node) && !accessibleName(node, byId)) problems.push(`${where(node)} has no accessible name`);
+    if (tag === "input" && ["submit", "reset", "button"].includes(attrs.type ?? "") && !hiddenInTree(node)
+      && !(attrs["aria-labelledby"] ? accessibleName(node, byId) : attrs["aria-label"]?.trim() || (attrs.value === undefined ? attrs.type !== "button" : attrs.value.trim()))) {
+      problems.push(`${where(node)} has no accessible name`);
+    }
+    if (["input", "select", "textarea"].includes(tag) && !["hidden", "submit", "reset", "button"].includes(attrs.type ?? "") && !hiddenInTree(node)) {
+      let labelled = Boolean(attrs["aria-labelledby"] ? accessibleName(node, byId) : attrs["aria-label"]?.trim());
       if (!labelled && attrs.id) labelled = all.some(n => n.tag === "label" && n.attrs.for === attrs.id && text(n));
       for (let up = node.parent; !labelled && up; up = up.parent) if (up.tag === "label" && text(up)) labelled = true;
       if (!labelled) problems.push(`${where(node)}[name=${attrs.name}] has no label`);

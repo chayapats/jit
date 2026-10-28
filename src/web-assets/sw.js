@@ -24,9 +24,15 @@ self.addEventListener("fetch", event => {
   const url = new URL(request.url);
   // Exact same-origin hashed paths only; a query, another origin or any other path goes to the network untouched.
   if (url.origin !== self.location.origin || url.search || !allowed.has(url.pathname)) return;
-  event.respondWith(caches.open(cacheName).then(cache => cache.match(url.pathname).then(hit => hit ?? fetch(request).then(response => {
-    // Only a complete same-origin answer is kept; the hashed path names one immutable body.
-    if (response.status === 200 && response.type === "basic") cache.put(url.pathname, response.clone());
+  event.respondWith((async () => {
+    const cache = await caches.open(cacheName);
+    const hit = await cache.match(url.pathname);
+    if (hit) return hit;
+    const response = await fetch(request);
+    // Only a complete same-origin answer is kept; the hashed path names one immutable body. The write is part of the
+    // event's lifetime, so the browser keeps the worker alive until it finishes, and a failed write only means a
+    // later miss: the page still gets the network answer.
+    if (response.status === 200 && response.type === "basic") event.waitUntil(cache.put(url.pathname, response.clone()).catch(() => {}));
     return response;
-  }))));
+  })());
 });
