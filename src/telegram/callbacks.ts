@@ -3,7 +3,7 @@ import { AppError } from "../errors";
 import type { AppTransaction } from "../store";
 import { ensureTelegramProjectSchema } from "./schema";
 
-export type TelegramCallbackAction = "task.accept" | "task.edit";
+export type TelegramCallbackAction = "task.accept" | "task.edit" | "approval.approve" | "approval.deny";
 
 export interface TelegramCallbackRef {
   id: string;
@@ -16,6 +16,8 @@ export interface TelegramCallbackRef {
   taskId: string;
   proposalId: string;
   expectedRevision: number;
+  /** EXE10: the card digest the owner saw; approval callbacks are bound to it. */
+  expectedDigest?: string;
   requestId: string;
   createdAt: number;
   expiresAt: number;
@@ -51,17 +53,20 @@ export function createCallbackRef(
   tx: AppTransaction,
   input: Omit<TelegramCallbackRef, "id" | "createdAt" | "expiresAt">,
   now: number,
+  expiresAt?: number,
 ): { ref: TelegramCallbackRef; data: string } {
   ensureTelegramProjectSchema(tx);
   for (const id of [input.projectId, input.topicId, input.taskId, input.proposalId]) requireId(id);
   tx.run("DELETE FROM telegram_callback_refs WHERE expires_at <= ?", now);
   if (tx.get<{ n: number }>("SELECT count(*) AS n FROM telegram_callback_refs")!.n >= 4096) throw new AppError("telegram_callback_limit", 409);
   const id = crypto.randomUUID().replaceAll("-", "");
-  const ref: TelegramCallbackRef = { ...input, id, createdAt: now, expiresAt: now + CALLBACK_TTL_MS };
+  // EXE10: approval callbacks expire with the card when it is sooner than the 24 h TTL.
+  const expires = Math.min(now + CALLBACK_TTL_MS, expiresAt ?? now + CALLBACK_TTL_MS);
+  const ref: TelegramCallbackRef = { ...input, id, createdAt: now, expiresAt: expires };
   tx.run(`INSERT INTO telegram_callback_refs VALUES (?, ?, ?, ?, ?, ?)`,
     id, input.telegramChatId, input.bindingRevision, JSON.stringify({
       projectId: ref.projectId, topicId: ref.topicId, contextRevision: ref.contextRevision, action: ref.action, taskId: ref.taskId,
-      proposalId: ref.proposalId, expectedRevision: ref.expectedRevision, requestId: ref.requestId,
+      proposalId: ref.proposalId, expectedRevision: ref.expectedRevision, expectedDigest: ref.expectedDigest, requestId: ref.requestId,
     }), now, ref.expiresAt);
   return { ref, data: encodeRef(ref) };
 }

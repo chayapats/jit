@@ -1699,4 +1699,7 @@ export const th = {
   "approval.rule_disable": "ปิด",
   "approval.rule_confirm": "ฉันเข้าใจว่า action ที่ตรงตามเงื่อนไขจะทำงานโดยไม่ต้องถามฉัน",
   "approval.pending_none": "ไม่มีอะไรรอคุณ",
+  "telegram.approval_expired": "การอนุมัตินี้หมดอายุแล้ว",
+  "telegram.approval_used": "การอนุมัตินี้ถูกตอบไปแล้ว",
+  "telegram.approval_web_only": "action นี้เปิดได้ในเว็บแอปเท่านั้น",
 } as const;

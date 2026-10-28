@@ -1697,4 +1697,7 @@ export const en: Record<MessageKey, string> = {
   "approval.rule_disable": "Disable",
   "approval.rule_confirm": "I understand matching actions will run without asking me",
   "approval.pending_none": "Nothing is waiting for you",
+  "telegram.approval_expired": "This approval has expired",
+  "telegram.approval_used": "This approval was already answered",
+  "telegram.approval_web_only": "Open the web app for this action",
 };
