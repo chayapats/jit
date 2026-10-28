@@ -128,6 +128,10 @@ function observe(tx: AppTransaction, row: GroupRow, card: DispatchCardView): { s
   }
   const discussion = card.discussion;
   if (!discussion) return { stalls, final: null, closed: null };
+  // REL04 follow-up (#157): a stopped-all team closes silently. Check before
+  // collecting stalls and before deciding any final, so a re-included role that
+  // settles after stop-all never emits a final:group notice.
+  if (discussion.stoppedAll) return { stalls, final: null, closed: "stopped" };
   for (const role of discussion.roles) {
     if (role.activity !== "waiting") continue;
     const waiting = job(role.jobId);
@@ -158,7 +162,6 @@ function observe(tx: AppTransaction, row: GroupRow, card: DispatchCardView): { s
     // Stopped by the owner (or never admitted): the owner's own action ends the group without a notice.
     return { stalls, final: null, closed: reply.state };
   }
-  if (discussion.stoppedAll) return { stalls, final: null, closed: "stopped" };
   if (open) return { stalls, final: null, closed: null };
   if (promoted) return { stalls, final: null, closed: "promoted" };
   if (card.teamHold) {

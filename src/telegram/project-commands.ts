@@ -12,7 +12,7 @@ import { readBinding } from "./binding";
 import { createCallbackRef, decodeCallbackData, readCallbackRef, refreshCallbackRef, type TelegramCallbackRef } from "./callbacks";
 import { mutateProjectContext, readProjectContext, type TelegramProjectContext } from "./context";
 import { ensureTelegramProjectSchema } from "./schema";
-import { tr } from "../i18n";
+import { tr, trMaybe } from "../i18n";
 import type { TelegramInboxEvent, TelegramUpdate } from "./types";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -228,6 +228,7 @@ export class TelegramProjectCommands {
     if (!refId) return { kind: "reject", reason: "telegram_callback_invalid" };
     try {
       const ref = this.store.read(tx => readCallbackRef(tx, refId, this.#now()));
+      if (ref.action === "approval.approve" || ref.action === "approval.deny") return this.#approvalCallback(event, ref, bindingRevision);
       const ctx = this.contextForChat(event.telegramChatId!);
       if (!ctx || ctx.bindingRevision !== bindingRevision || ctx.revision !== ref.contextRevision || ctx.projectId !== ref.projectId || ctx.topicId !== ref.topicId || ref.telegramChatId !== event.telegramChatId || ref.bindingRevision !== bindingRevision) {
         return { kind: "reply", text: "บริบทหรือ binding เปลี่ยนแล้ว — ใช้ /tasks ใน project/topic ปัจจุบันเพื่อรับ callback ใหม่" };
@@ -236,9 +237,68 @@ export class TelegramProjectCommands {
       return { kind: "reject", reason: "telegram_callback_unsupported" };
     } catch (error) {
       if (error instanceof AppError && error.code === "telegram_callback_expired") {
+        const stored = this.store.read(tx => {
+          try {
+            ensureTelegramProjectSchema(tx);
+            const row = tx.get<{ record_json: string }>("SELECT record_json FROM telegram_callback_refs WHERE id = ?", refId);
+            return row ? (JSON.parse(row.record_json) as { action?: string; projectId?: string }) : null;
+          } catch { return null; }
+        });
+        if (stored?.action === "approval.approve" || stored?.action === "approval.deny") {
+          return typeof stored.projectId === "string"
+            ? { kind: "reply", projectId: stored.projectId, text: tr("telegram.approval_expired"), dedupeKey: `tg:approval-expired:${refId}` }
+            : { kind: "reply", text: tr("telegram.approval_expired") };
+        }
         return { kind: "reply", text: "Callback หมดอายุ — ใช้ /tasks เพื่อรับ proposal ปัจจุบัน" };
       }
       return this.#errorOutcome(error);
+    }
+  }
+
+  /**
+   * telegram.approval_cards/v1 decision from the bound owner chat (EXE10).
+   * Uses the merged `approval.decide` shape (`payload: { cardId, digest, decision }`;
+   * the issue's `expectedDigest`/`cardId` top-level fields do not exist).
+   * Only single-action (`telegramEligible`) cards are decidable here; anything that
+   * widens power (rules, levels, targets) is never built from Telegram.
+   */
+  #approvalCallback(event: TelegramInboxEvent, ref: TelegramCallbackRef, bindingRevision: number): TelegramCommandOutcome {
+    if (ref.telegramChatId !== event.telegramChatId || ref.bindingRevision !== bindingRevision) return { kind: "reject", reason: "telegram_binding_changed" };
+    const binding = this.store.read(tx => readBinding(tx));
+    if (binding.state !== "bound" || binding.telegramChatId !== event.telegramChatId) return { kind: "reject", reason: "telegram_binding_changed" };
+    const decision = ref.action === "approval.approve" ? "approve" as const : "deny" as const;
+    let card;
+    try {
+      card = this.#app.approvalCard(this.#telegramActor(), ref.projectId, ref.proposalId);
+    } catch (error) {
+      return this.#errorOutcome(error, ref.projectId);
+    }
+    if (card.state === "expired" || this.#now() >= card.expiresAt) return { kind: "reply", projectId: ref.projectId, text: tr("telegram.approval_expired") };
+    if (card.state !== "pending") return { kind: "reply", projectId: ref.projectId, text: tr("telegram.approval_used"), dedupeKey: `tg:approval-used:${ref.id}` };
+    if (!card.telegramEligible) return { kind: "reply", projectId: ref.projectId, text: tr("telegram.approval_web_only") };
+    if (ref.expectedDigest !== undefined && ref.expectedDigest !== card.digest) {
+      return { kind: "reply", projectId: ref.projectId, text: trMaybe("error.approval_digest_mismatch") ?? "approval_digest_mismatch" };
+    }
+    if (ref.expectedRevision !== card.revision) {
+      return { kind: "reply", projectId: ref.projectId, text: tr("telegram.approval_used"), dedupeKey: `tg:approval-used:${ref.id}` };
+    }
+    try {
+      const receipt = this.#app.execute(this.#telegramActor(), {
+        kind: "approval.decide", requestId: ref.requestId, projectId: ref.projectId, expectedRevision: ref.expectedRevision,
+        payload: { cardId: ref.proposalId, digest: ref.expectedDigest ?? card.digest, decision },
+      });
+      const state = receipt.card?.state ?? decision;
+      const label = trMaybe(`approval.state_${state}` as never) ?? state;
+      // The outbox has no edit API; the state is appended as a reply (the message cannot be edited in place).
+      return { kind: "reply", projectId: ref.projectId, text: `${label}\ncard ${ref.proposalId} ${decision}`, dedupeKey: `tg:approval:${ref.requestId}` };
+    } catch (error) {
+      if (error instanceof AppError) {
+        if (error.code === "approval_card_expired") return { kind: "reply", projectId: ref.projectId, text: tr("telegram.approval_expired") };
+        if (error.code === "approval_card_not_pending") return { kind: "reply", projectId: ref.projectId, text: tr("telegram.approval_used"), dedupeKey: `tg:approval-used:${ref.id}` };
+        if (error.code === "approval_requires_web") return { kind: "reply", projectId: ref.projectId, text: tr("telegram.approval_web_only") };
+        if (error.status < 500) return { kind: "reply", projectId: ref.projectId, text: trMaybe(`error.${error.code}`) ?? error.code };
+      }
+      return this.#errorOutcome(error, ref.projectId);
     }
   }
 

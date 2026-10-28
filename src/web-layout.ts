@@ -11,7 +11,8 @@ import { colorTokens } from "./web-design";
 import { effectiveAccess, type ProjectAccess } from "./exec/access";
 import type { JitReplyView } from "./team/jit-reply";
 import { routesOf } from "./team/role-proposals";
-import { fillText, promotionProposalCard, proposalCard, roleProposalCard } from "./web-proposal-card";
+import { fillText, promotionProposalCard, proposalCard, roleProposalCard, approvalCard } from "./web-proposal-card";
+import type { ApprovalCard } from "./exec/approval-cards";
 import type { TopicPromotionView } from "./promotion";
 import type { Persona } from "./persona";
 import type { LocalApiSettings } from "./local-api/settings";
@@ -408,6 +409,8 @@ export function conversationPage(state: ReturnType<Application["conversation"]>,
   synthesisLimits?: JobLimits;
   /** app.topic_promotion/v1: whether this topic was promoted, or continues a promoted General topic. */
   promotion?: TopicPromotionView;
+  /** web.approval_cards/v1: approval cards of this topic, in thread order (EXE09). */
+  approvals?: ApprovalCard[];
 }): string {
   const { project, topic } = state, title = topic.title ?? tr("common.topic_unavailable"), base = `/projects/${project.id}/topics/${topic.id}`;
   const replies = dispatch?.replies ?? new Map<string, JitReplyView>();
@@ -459,7 +462,9 @@ export function conversationPage(state: ReturnType<Application["conversation"]>,
   const access = workspace.access?.get(project.id);
   const haltForm = access && topicHaltAction(access)
     ? `<form class="header-halt" method="post" action="/settings/access/${project.id}/halt">${hiddenCommand(csrf, access.haltRevision)}<button class="danger">${tr("access.stop_everything")}</button></form>` : "";
-  return shell(title, { workspace, csrf, project, topics, topic, section: "topic" }, `<div class="content chat-content"${live.length ? ` data-reply-stream="${base}/events" data-reply-cursor="${cursor}"` : ""}>${promotedBanner}${dispatchPanel}${decision}${proposeTask}<section aria-label="${tr("topic.message_history")}">${state.items.length ? state.items.map(m => { const jit = committedReplies.get(m.id), reply = replies.get(m.id), card = cards.get(m.id);
+  const approvals = [...(dispatch?.approvals ?? [])].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
+    .map(card => approvalCard(card, { topicBase: base, csrf })).join("");
+  return shell(title, { workspace, csrf, project, topics, topic, section: "topic" }, `<div class="content chat-content"${live.length ? ` data-reply-stream="${base}/events" data-reply-cursor="${cursor}"` : ""}>${promotedBanner}${dispatchPanel}${decision}${proposeTask}${approvals}<section aria-label="${tr("topic.message_history")}">${state.items.length ? state.items.map(m => { const jit = committedReplies.get(m.id), reply = replies.get(m.id), card = cards.get(m.id);
       if (m.attribution.kind === "participant" && !jit && folded.has(m.attribution.runId)) return "";
       if (m.attribution.kind === "service" && m.attribution.service === "jit-promotion") return continuedBlock(m);
       return `<article id="message-${m.id}" class="message${m.attribution.kind === "owner" ? " message--owner" : jit || setupGreeting(m.attribution) ? " message--jit" : ""}" data-message-id="${m.id}">${jit || setupGreeting(m.attribution) ? `<div class="reply-head"><span class="jit-avatar">${logoMark({ size: 20 })}</span><span class="reply-name">${tr("jit.name")}</span></div>` : ""}<div class="message-body">${m.text === null ? `<p class="literal">${tr("common.source_unavailable")}</p>` : literalContent(m.text)}</div>

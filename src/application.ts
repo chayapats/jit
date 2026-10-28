@@ -2188,9 +2188,31 @@ export class Application {
   }
 
   /** app.approval_cards/v1 read model: the project's cards, newest first (at most 100), with lazy expiry. */
-  approvalCards(actor: OwnerActor, projectId: string, options: { state?: CardState; limit?: number } = {}): ApprovalCard[] {
+  approvalCards(actor: OwnerActor, projectId: string, options: { state?: CardState; limit?: number; topicId?: string } = {}): ApprovalCard[] {
     requireId(projectId);
     return this.store.read(tx => { this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, projectId); return readCards(tx, projectId, { ...options, now: this.#now() }); });
+  }
+
+  /**
+   * web.approval_cards/v1 topic read: every card of one topic, oldest first. Pending cards of the
+   * topic are always included no matter how many newer cards other topics hold; pages of 100 keep
+   * the query bounded (a topic realistically never holds that many cards).
+   */
+  topicApprovalCards(actor: OwnerActor, projectId: string, topicId: string): ApprovalCard[] {
+    requireId(projectId); requireId(topicId);
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, projectId);
+      const now = this.#now(), seen = new Set<string>(), cards: ApprovalCard[] = [];
+      for (const page of readCards(tx, projectId, { topicId, limit: 100, now })) {
+        if (seen.has(page.id)) continue;
+        seen.add(page.id); cards.push(page);
+      }
+      for (const page of readCards(tx, projectId, { topicId, state: "pending", limit: 100, now })) {
+        if (seen.has(page.id)) continue;
+        seen.add(page.id); cards.push(page);
+      }
+      return cards.sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+    });
   }
 
   /** One approval card of the project (`approval_card_not_found`), with lazy expiry. */

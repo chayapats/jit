@@ -3,6 +3,63 @@ import { escape, hiddenCommand } from "./web-layout";
 import { sameRoute, type RoleProposalView } from "./team/role-proposals";
 import type { RoleRoute } from "./team/types";
 import { promotionNameChars, type PromotionProposalView } from "./promotion";
+import { canonicalJson, type ApprovalCard, type EffectAction } from "./exec/approval-cards";
+
+/**
+ * web.approval_cards/v1 card summary (EXE09): human-readable lines for the exact pinned action.
+ * The action holds only metadata (names, SHAs, titles); no connection value ever appears here.
+ */
+export function summarizeApprovalAction(action: EffectAction): string[] {
+  switch (action.kind) {
+    case "effect.git_push":
+      return [
+        `${action.remote.name} (${action.remote.url})`,
+        action.repository,
+        ...action.updates.map(update => `${update.ref}: ${update.oldSha ?? "new"} → ${update.newSha}`),
+        ...action.commits.map(commit => `${commit.sha.slice(0, 8)} ${commit.summary}`),
+      ];
+    case "effect.github_pr_create":
+      return [`${action.github.owner}/${action.github.repo}`, `base ${action.base} ← head ${action.head}`, action.title, ...(action.body ? [action.body.slice(0, 500)] : []), action.draft ? "draft" : "ready"];
+    case "effect.github_comment":
+      return [`${action.github.owner}/${action.github.repo} #${action.issueNumber}`, action.body.slice(0, 500)];
+    case "effect.github_pr_merge":
+      return [`${action.github.owner}/${action.github.repo} #${action.pullNumber}`, action.headSha.slice(0, 8), action.method];
+    case "effect.deploy":
+      return [`${action.target.name} (${action.target.url})`, action.ref ?? "-"];
+  }
+}
+
+/** web.approval_cards/v1 card (EXE09) over `ApprovalCard` (the merged EXE07 read model; there is no separate `ApprovalCardView`). */
+export function approvalCard(view: ApprovalCard, options: { topicBase: string; csrf: string; now?: number }): string {
+  const kindSuffix = view.kind.replace(/^effect\./, "");
+  const kindKey = `approval.kind_${kindSuffix}` as MessageKey;
+  const title = tr(kindKey);
+  const summary = summarizeApprovalAction(view.action);
+  const actionJson = canonicalJson(view.action);
+  const now = options.now ?? Date.now();
+  const minutes = Math.max(0, Math.ceil((view.expiresAt - now) / 60_000));
+  const meta = `${tr("approval.title")} · ${fillText(tr("approval.expires_in"), { minutes: String(minutes) })}`;
+  const fields = summary.map(line => `<dt>${escape(title)}</dt><dd>${escape(line)}</dd>`).join("");
+  const details = `<details><summary>${tr("approval.details")}</summary><pre>${escape(actionJson)}</pre></details>`;
+  const open = view.state === "pending";
+  if (!open) {
+    const stateKey = `approval.state_${view.state}` as MessageKey;
+    return `<article class="team-card proposal-card" id="approval-${escape(view.id)}" data-approval-kind="${escape(view.kind)}" data-approval-state="${view.state}">`
+      + `<header><div><p class="eyebrow">${escape(tr("approval.title"))}</p><h3>${escape(title)}</h3></div>`
+      + `<span class="job-status" data-state="${view.state}">${escape(tr(stateKey))}</span></header>`
+      + `<p class="proposal-meta">${escape(meta)}</p><dl class="proposal-fields">${fields}</dl>${details}</article>`;
+  }
+  const approveAction = `${options.topicBase}/approvals/${view.id}`;
+  const hidden = hiddenCommand(options.csrf, view.revision)
+    + `<input type="hidden" name="cardId" value="${escape(view.id)}"><input type="hidden" name="expectedDigest" value="${escape(view.digest)}">`;
+  const actions = `<div class="proposal-actions">`
+    + `<form method="post" action="${approveAction}">${hidden}<input type="hidden" name="decision" value="approve"><button class="primary">${tr("approval.approve")}</button></form>`
+    + `<form method="post" action="${approveAction}">${hidden}<input type="hidden" name="decision" value="deny"><button>${tr("approval.deny")}</button></form></div>`;
+  return `<article class="team-card proposal-card" id="approval-${escape(view.id)}" data-approval-kind="${escape(view.kind)}" data-approval-state="pending">`
+    + `<header><div><p class="eyebrow">${escape(tr("approval.title"))}</p><h3>${escape(title)}</h3></div>`
+    + `<span class="job-status" data-state="pending">${escape(title)}</span></header>`
+    + `<p class="proposal-meta">${escape(meta)}</p><dl class="proposal-fields">${fields}</dl>${details}${actions}</article>`;
+}
 
 /**
  * The proposal card of the design system (docs/design/README.md, "Components"): one Jit suggestion with a status

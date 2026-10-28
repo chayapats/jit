@@ -358,15 +358,17 @@ export function readCard(tx: AppTransaction, projectId: string, cardId: string, 
 /**
  * The project's cards, newest first, at most `limit` (1–100). `state` filters by the state the reader sees: with
  * `now`, a pending card past its deadline is `expired` (and not `pending`), whether or not the expiry was written yet.
+ * `topicId` narrows the query before the limit, so a topic page never loses its cards to newer cards in other topics.
  */
-export function readCards(tx: AppTransaction, projectId: string, options: { now?: number; state?: CardState; limit?: number } = {}): ApprovalCard[] {
+export function readCards(tx: AppTransaction, projectId: string, options: { now?: number; state?: CardState; limit?: number; topicId?: string } = {}): ApprovalCard[] {
   const limit = options.limit ?? 50;
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new AppError("invalid_cursor");
   const now = options.now ?? null;
   let filter = "", args: (string | number)[] = [projectId];
-  if (options.state && now !== null && options.state === "pending") { filter = "AND state = 'pending' AND expires_at > ?"; args.push(now); }
-  else if (options.state && now !== null && options.state === "expired") { filter = "AND (state = 'expired' OR (state = 'pending' AND expires_at <= ?))"; args.push(now); }
-  else if (options.state) { filter = "AND state = ?"; args.push(options.state); }
+  if (options.topicId !== undefined) { requireId(options.topicId); filter += "AND topic_id = ? "; args.push(options.topicId); }
+  if (options.state && now !== null && options.state === "pending") { filter += "AND state = 'pending' AND expires_at > ?"; args.push(now); }
+  else if (options.state && now !== null && options.state === "expired") { filter += "AND (state = 'expired' OR (state = 'pending' AND expires_at <= ?))"; args.push(now); }
+  else if (options.state) { filter += "AND state = ?"; args.push(options.state); }
   args = [...args, limit];
   return tx.all<CardRow>(`SELECT * FROM approval_cards WHERE project_id = ? ${filter} ORDER BY created_at DESC, id DESC LIMIT ?`, ...args).map(row => project(row, now));
 }

@@ -23,8 +23,10 @@ import { setupPage, visibleStep } from "./web-setup";
 import type { JitReplyView, StopReplyCommand } from "./team/jit-reply";
 import type { RoleProposalCommand } from "./team/role-proposals";
 import { defaultPanelTab, legacyRedirect, panelRows, panelTabs, searchLimits, settingsPageHandler, type PanelTab } from "./web-settings";
-import { searchItems, searchPage, settingsAccessPage, accessConfirmPage, settingsConnectionsPage, settingsDataPage, settingsDispatchPage, settingsFeedPage, settingsTelegramPage, topicPanelPage, type PanelData } from "./web-navigation";
+import { searchItems, searchPage, settingsAccessPage, accessConfirmPage, settingsApprovalsPage, settingsConnectionsPage, settingsDataPage, settingsDispatchPage, settingsFeedPage, settingsTelegramPage, topicPanelPage, type PanelData } from "./web-navigation";
 import { dispatchLimits, type DispatchCommand } from "./team/jit-dispatch";
+import { effectKinds } from "./exec/approval-cards";
+import type { DecideCardCommand, SetAutoApproveCommand } from "./exec/approval-cards";
 import { createWebhookHandler, type WebhookHandlerOptions } from "./pr/webhook-route";
 import { webhookPathPrefix, type WebhookCommandKind } from "./pr/webhooks";
 import type { SetDispatchAllowanceCommand } from "./team/allowance";
@@ -243,6 +245,10 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       // app.dispatch_allowance/v1 routes.
       const dispatchActionRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/dispatch\/([a-f0-9-]{36})\/(accept|dismiss|answer)$/.exec(pathname);
       const stopAllRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/team\/discussions\/([a-f0-9-]{36})\/stop-all$/.exec(pathname);
+      // web.approval_cards/v1 (EXE09): decide one card in its topic; settings approvals pages.
+      const approvalDecideRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})\/approvals\/([a-f0-9-]{36})$/.exec(pathname);
+      const approvalRulesRoute = /^\/settings\/approvals\/rules$/.exec(pathname);
+      const approvalRuleDisableRoute = /^\/settings\/approvals\/rules\/(.+)$/.exec(pathname);
       const allowanceFormRoute = /^\/settings\/dispatch\/([a-f0-9-]{36})$/.exec(pathname);
       const allowanceApiRoute = /^\/api\/projects\/([a-f0-9-]{36})\/dispatch-allowance$/.exec(pathname);
       // app.access_level/v1 JSON API (EXE01); the Web pages are EXE04.
@@ -385,6 +391,72 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const origin = receipt.discussion?.origin;
         return api ? json(receipt) : respond(null, 303, { Location: origin ? cardLocation(app.dispatchCard(auth.actor, stopAllRoute[2]!, origin.proposalId))
           : `/projects/${stopAllRoute[2]}/team/discussions/${stopAllRoute[3]}` });
+      }
+      if (request.method === "POST" && approvalDecideRoute) {
+        // web.approval_cards/v1 (EXE09): decide one card bound to its digest and revision.
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "expectedDigest", "decision", "cardId"].includes(key))) throw new AppError("invalid_body");
+        const [, , projectId, topicId, urlCardId] = approvalDecideRoute;
+        if (typeof body.cardId === "string" && body.cardId !== urlCardId) throw new AppError("invalid_body");
+        if (body.decision !== "approve" && body.decision !== "deny") throw new AppError("invalid_body");
+        if (typeof body.expectedDigest !== "string" || !/^[0-9a-f]{64}$/.test(body.expectedDigest)) throw new AppError("invalid_body");
+        const revision = typeof body.expectedRevision === "string" && /^\d{1,15}$/.test(body.expectedRevision) ? Number(body.expectedRevision) : body.expectedRevision;
+        const command = { kind: "approval.decide", requestId: body.requestId, projectId, expectedRevision: revision,
+          payload: { cardId: urlCardId, digest: body.expectedDigest, decision: body.decision } } as DecideCardCommand;
+        const receipt = app.execute(auth.actor, command);
+        return api ? json(receipt) : respond(null, 303, { Location: `/projects/${projectId}/topics/${topicId}#approval-${urlCardId}` });
+      }
+      if (url.pathname === "/settings/approvals" && request.method === "GET") {
+        const raw = url.searchParams.get("offset") ?? "0";
+        if (!/^\d{1,7}$/.test(raw)) throw new AppError("invalid_offset");
+        const offset = Number(raw), paged = app.workspace(auth.actor, offset);
+        const projects = paged.projects;
+        const pending = projects.flatMap(p => {
+          try { return app.approvalCards(auth.actor, p.id, { state: "pending" }).map(card => ({ card, projectName: p.name })); }
+          catch { return []; }
+        });
+        const rules = projects.flatMap(p => {
+          try { return app.effectSettings(auth.actor, p.id).rules.map(rule => ({ projectId: p.id, projectName: p.name, rule })); }
+          catch { return []; }
+        });
+        return page(() => settingsApprovalsPage(nav(paged), pending, rules, projects.map(p => ({ id: p.id, name: p.name })), auth.csrf));
+      }
+      if (request.method === "POST" && (approvalRulesRoute || approvalRuleDisableRoute)) {
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        if (approvalRulesRoute) {
+          if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "projectId", "effectKind", "remote", "branches", "target", "confirm"].includes(key))) throw new AppError("invalid_body");
+          const confirmed = body.confirm === "on" || body.confirm === true;
+          if (!confirmed) throw new AppError("invalid_body", 400);
+          if (typeof body.projectId !== "string" || !/^[a-f0-9-]{36}$/.test(body.projectId)) throw new AppError("invalid_body");
+          if (typeof body.effectKind !== "string" || !(effectKinds as readonly string[]).includes(body.effectKind)) throw new AppError("invalid_body");
+          const kind = body.effectKind as (typeof effectKinds)[number];
+          const text = (value: unknown) => typeof value === "string" ? value.trim() : "";
+          const scope = kind === "effect.git_push"
+            ? { remote: text(body.remote), branches: text(body.branches).split(",").map(s => s.trim()).filter(Boolean) }
+            : kind === "effect.deploy" ? { target: text(body.target) } : { remote: text(body.remote) };
+          const revision = typeof body.expectedRevision === "string" && /^\d{1,15}$/.test(body.expectedRevision) ? Number(body.expectedRevision) : body.expectedRevision;
+          const command = { kind: "approval.rule.set", requestId: body.requestId, projectId: body.projectId, expectedRevision: revision,
+            payload: { effectKind: kind, scope, enabled: true } } as SetAutoApproveCommand;
+          const receipt = app.execute(auth.actor, command);
+          return api ? json(receipt) : respond(null, 303, { Location: "/settings/approvals" });
+        }
+        // Disable: /settings/approvals/rules/<projectId:effectKind> (the `:rule` in the issue).
+        const encoded = approvalRuleDisableRoute![1]!;
+        let projectId: string | undefined, effectKind: string | undefined;
+        const split = encoded.split(":");
+        if (split.length === 2 && /^[a-f0-9-]{36}$/.test(split[0]!)) { projectId = split[0]; effectKind = decodeURIComponent(split[1]!); }
+        else if (/^[a-f0-9-]{36}$/.test(encoded)) { projectId = encoded; effectKind = typeof body.effectKind === "string" ? body.effectKind : undefined; }
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "projectId", "effectKind"].includes(key))) throw new AppError("invalid_body");
+        projectId ??= typeof body.projectId === "string" ? body.projectId : undefined;
+        effectKind ??= typeof body.effectKind === "string" ? body.effectKind : undefined;
+        if (!projectId || !/^[a-f0-9-]{36}$/.test(projectId) || !effectKind || !(effectKinds as readonly string[]).includes(effectKind)) throw new AppError("invalid_body");
+        const current = app.effectSettings(auth.actor, projectId).rules.find(rule => rule.effectKind === effectKind);
+        if (!current) throw new AppError("effect_target_not_found", 404);
+        const revision = typeof body.expectedRevision === "string" && /^\d{1,15}$/.test(body.expectedRevision) ? Number(body.expectedRevision) : body.expectedRevision;
+        const command = { kind: "approval.rule.set", requestId: body.requestId, projectId, expectedRevision: revision,
+          payload: { effectKind: effectKind as (typeof effectKinds)[number], scope: current.scope, enabled: false } } as SetAutoApproveCommand;
+        const receipt = app.execute(auth.actor, command);
+        return api ? json(receipt) : respond(null, 303, { Location: "/settings/approvals" });
       }
       if (allowanceApiRoute || (allowanceFormRoute && request.method === "POST")) {
         const projectId = (allowanceApiRoute ?? allowanceFormRoute)![1]!;
@@ -1181,10 +1253,14 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const team = app.team(auth.actor, state.project.id);
         const discussions = app.discussions(auth.actor, state.project.id, state.topic.id);
         const cards = app.dispatchCards(auth.actor, state.project.id, state.topic.id, state.items.map(item => item.id));
+        // web.approval_cards/v1: topic-filtered query before the limit, so a pending card
+        // never disappears behind newer cards in other topics.
+        const approvals = app.topicApprovalCards(auth.actor, state.project.id, state.topic.id);
         return page(() => conversationPage(state, nav(), app.topics(auth.actor, state.project.id).items, auth.csrf, after(), config.messageBytes, {
           team, discussions, limits: config.jobs.maximum, dispatchAvailable: team.previewAvailable, replies, cards,
           synthesisLimits: dispatchLimits(config, 1), promotion,
           decision: app.decision(auth.actor, state.project.id, state.topic.id),
+          approvals,
         }));
       }
       if (request.method === "GET" && topicCollection) {
