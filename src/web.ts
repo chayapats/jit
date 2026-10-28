@@ -13,6 +13,7 @@ import type { DecisionCommand, TeamCommand, RoleRoute } from "./team/types";
 import type { TaskCommand } from "./tasks";
 import { negotiateLocale, tr, trMaybe, withLocale, type Locale } from "./i18n";
 import { lookupAsset } from "./web-assets";
+import { serviceWorkerPath, serviceWorkerScript } from "./web-pwa";
 import { renderWith, replyLabels, replyTone, settingsPage, type NavigationWorkspace, type ThemePreference } from "./web-layout";
 import type { SetPreferencesCommand } from "./preferences";
 import type { SetPersonaCommand } from "./persona";
@@ -37,6 +38,8 @@ export interface ReplyStreamOptions {
   timers?: { set(callback: () => void, ms: number): unknown; clear(handle: unknown): void };
 }
 const defaultStream: ReplyStreamOptions = { intervalMs: 1000, polls: 120 };
+/** web.pwa/v1 worker body, filled in once with this version's asset allowlist. */
+const serviceWorker = new TextEncoder().encode(serviceWorkerScript());
 
 /** Creates a server-rendered owner workspace; all mutations use the shared application boundary. */
 export function createWebHandler(app: Application, options: { stream?: ReplyStreamOptions } = {}): (request: Request) => Promise<Response> {
@@ -119,6 +122,10 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const asset = lookupAsset(url.pathname);
         if (!asset) throw new AppError("not_found", 404);
         return new Response(asset.body, { status: 200, headers: { ...headers, "Content-Type": asset.contentType, "Cache-Control": "public, max-age=31536000, immutable" } });
+      }
+      if (request.method === "GET" && url.pathname === serviceWorkerPath) {
+        // web.pwa/v1: public, never stored by HTTP caches, so the browser sees a new asset version on its next check.
+        return new Response(serviceWorker, { status: 200, headers: { ...headers, "Content-Type": "text/javascript; charset=utf-8" } });
       }
       // web.settings_ia/v1: moved installation pages answer GET with a permanent redirect to their settings page.
       const moved = request.method === "GET" ? legacyRedirect(url.pathname) : null;

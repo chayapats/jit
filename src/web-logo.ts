@@ -19,7 +19,8 @@ const body = "M9.1 14.72C8.3 14.72 7.9 14.95 7.6 15.36C7.15 15.95 6.3 17 5.72 17
   + "C2.75 19.45 2.43 20.1 2.43 20.74C2.43 21.9 3.2 23 5 23H19C20.8 23 21.57 21.9 21.57 20.74"
   + "C21.57 20.1 21.25 19.45 20.87 19.35C19.8 19.1 18.7 18.25 18.28 17.75C17.7 17 16.85 15.95 16.4 15.36"
   + "C16.1 14.95 15.7 14.72 14.9 14.72Z";
-const dot = (cls = "jit-dot") => `<circle class="${cls}" cx="12" cy="4.42" r="1.13"/>`;
+const dotAt = Object.freeze({ cx: 12, cy: 4.42, r: 1.13 });
+const dot = (cls = "jit-dot") => `<circle class="${cls}" cx="${dotAt.cx}" cy="${dotAt.cy}" r="${dotAt.r}"/>`;
 const halo = `<circle class="jit-halo" cx="12" cy="11.04" r="9.85" fill="none" stroke="currentColor" stroke-width=".45"/>`;
 const figure = (bold: boolean, cls?: string) => `<path d="${body}"/><path fill-rule="evenodd" d="${head}${eyes(bold)}"/>${dot(cls)}`;
 
@@ -55,8 +56,17 @@ export function logoLockup(options: { height?: number; label?: string } = {}): s
 }
 
 /**
- * Standalone favicon / app icon: the mark without halo on a dark rounded tile, with fixed colours
- * because an icon file cannot read page tokens (dark `--bg` and `--fg`).
+ * The app-icon drawing as plain geometry, shared by {@link faviconSvg} and the PNG install icons (web.pwa/v1,
+ * src/web-icons.ts): the mark without halo (bold eyes) on a dark tile, with fixed colours because an icon file
+ * cannot read page tokens (dark `--bg` and `--fg`). The figure is scaled about the tile centre; `centerY` is the
+ * figure's own vertical centre, so it sits optically centred.
  */
-export const faviconSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="5.5" fill="#0a0a0a"/>`
-  + `<g fill="#ededed" transform="translate(12 12) scale(.84) translate(-12 -13.15)">${figure(true, "d")}</g></svg>`;
+export const appIcon = Object.freeze({
+  body, head: `${head}${eyes(true)}`, dot: dotAt,
+  tile: Object.freeze({ radius: 5.5, background: "#0a0a0a", foreground: "#ededed" }),
+  scale: .84, centerY: 13.15,
+});
+
+/** Standalone favicon: the {@link appIcon} drawing as SVG. */
+export const faviconSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="${appIcon.tile.radius}" fill="${appIcon.tile.background}"/>`
+  + `<g fill="${appIcon.tile.foreground}" transform="translate(12 12) scale(${String(appIcon.scale).replace(/^0/, "")}) translate(-12 -${appIcon.centerY})">${figure(true, "d")}</g></svg>`;

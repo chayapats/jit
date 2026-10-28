@@ -152,10 +152,11 @@ test("ui.design_tokens/v1: text and status pairs meet WCAG AA in both themes and
 
 test("web.static_assets/v1: hashed, immutable, self-hosted assets with font licences; unknown paths are 404", async () => {
   const f = await fixture();
-  expect([...staticAssets.keys()].sort()).toEqual(["OFL-Inter.txt", "OFL-JetBrainsMono.txt", "OFL-NotoSansThai.txt", "app.css", "app.js", "favicon.svg", "inter.woff2", "jetbrains-mono.woff2", "noto-sans-thai.woff2"]);
+  expect([...staticAssets.keys()].sort()).toEqual(["OFL-Inter.txt", "OFL-JetBrainsMono.txt", "OFL-NotoSansThai.txt", "app.css", "app.js", "apple-touch-icon.png", "favicon.svg",
+    "icon-192.png", "icon-512.png", "icon-maskable-512.png", "inter.woff2", "jetbrains-mono.woff2", "manifest.webmanifest", "noto-sans-thai.woff2"]);
   for (const asset of staticAssets.values()) {
     expect(asset.hash).toBe(createHash("sha256").update(asset.body).digest("hex").slice(0, 16));
-    expect(asset.path).toMatch(new RegExp(`^/assets/[a-zA-Z-]+\\.${asset.hash}\\.(css|js|svg|woff2|txt)$`));
+    expect(asset.path).toMatch(new RegExp(`^/assets/[a-zA-Z0-9-]+\\.${asset.hash}\\.(css|js|svg|woff2|txt|png|webmanifest)$`));
     // Assets are public (the sign-in page needs them) and carry no owner data.
     const response = await get(f, asset.path, {}, false);
     expect(response.status).toBe(200);
@@ -175,7 +176,7 @@ test("web.static_assets/v1: hashed, immutable, self-hosted assets with font lice
   const urls = [...css.matchAll(/url\("([^"]+)"\)/g)].map(m => m[1]!);
   expect(urls.sort()).toEqual([assetUrl("inter.woff2"), assetUrl("jetbrains-mono.woff2"), assetUrl("noto-sans-thai.woff2")].sort());
   for (const asset of staticAssets.values()) {
-    if (asset.contentType.startsWith("font/") || asset.name.endsWith(".txt")) continue;
+    if (asset.contentType.startsWith("font/") || asset.contentType === "image/png" || asset.name.endsWith(".txt")) continue;
     // No remote origin anywhere (the SVG namespace URI is an identifier, not a request).
     expect(new TextDecoder().decode(asset.body).replace('xmlns="http://www.w3.org/2000/svg"', "")).not.toMatch(/https?:\/\/|\/\/[a-z0-9.-]+\.[a-z]{2,}\//i);
   }
@@ -533,4 +534,19 @@ test("app.js contract: drawer follows the no-script #sidebar target both ways; E
   (await runAppScript(closedStart))();
   expect(closedStart.app.dataset.drawer).toBe("closed");
   expect(closedStart.replaced).toEqual([]);
+});
+
+test("app.js contract (web.pwa/v1): registers the static-only worker at the origin scope only in a secure context", async () => {
+  for (const secure of [true, false]) {
+    const dom = fakeDom("");
+    const registered: unknown[][] = [];
+    Object.assign(dom.globals, { isSecureContext: secure, navigator: { serviceWorker: { register: (...args: unknown[]) => { registered.push(args); return Promise.resolve(); } } } });
+    (await runAppScript(dom))();
+    expect(registered).toEqual(secure ? [["/sw.js", { scope: "/", updateViaCache: "none" }]] : []);
+  }
+  // A browser without service workers (or a failed registration) leaves every page working as before.
+  const dom = fakeDom("");
+  Object.assign(dom.globals, { isSecureContext: true, navigator: {} });
+  (await runAppScript(dom))();
+  expect(dom.app.dataset.drawer).toBe("closed");
 });
