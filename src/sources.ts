@@ -6,7 +6,7 @@ export interface SourceReference { sourceId: string; revision: number; generatio
 /** Attributes content to a verified ingress identity or a trusted service producer, never its text. */
 export type Attribution = { kind: "owner"; ownerId: "owner" }
   | { kind: "participant"; participantId: string; runId: string }
-  | { kind: "service"; service: "source-registry" | "jit-setup" | "jit-promotion" };
+  | { kind: "service"; service: "source-registry" | "jit-setup" | "jit-promotion" | "jit-effects" };
 /** Describes application data or an external identity without provider wire objects or fetch authority. */
 export type SourceDescriptor = { kind: "topic"; topicId: string }
   | { kind: "message"; topicId: string; messageId: string }
@@ -82,9 +82,10 @@ export function commitOutputSource(tx: AppTransaction, input: {
  * Stores fixed service-authored text (app.setup/v1 greeting) inside the caller's owner command transaction.
  * It is product text built from owner configuration, never model output, so it carries service attribution.
  */
-export function commitServiceOutput(tx: AppTransaction, input: { projectId: string; service: "jit-setup"; text: string; committedAt: number }): SourceReference {
+export function commitServiceOutput(tx: AppTransaction, input: { projectId: string; service: "jit-setup" | "jit-effects"; text: string; committedAt: number }): SourceReference {
   requireText(input.text, 65536);
-  if (input.service !== "jit-setup") throw new AppError("invalid_producer_reference");
+  // app.approval_cards/v1: the effect executor posts each outcome as fixed `jit-effects` text.
+  if (input.service !== "jit-setup" && input.service !== "jit-effects") throw new AppError("invalid_producer_reference");
   return insert(tx, input.projectId, { kind: "output" }, { kind: "service", service: input.service }, input.text, input.committedAt);
 }
 

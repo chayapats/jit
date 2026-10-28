@@ -198,6 +198,9 @@ they are included likewise.
 The execution tool call audit (`execution_tool_calls`; schema 36, exec.run_tools/v1)
 is included: each row holds the redacted first 2 KiB of a command or path, never
 file content or command output.
+Approval cards, auto-approve rules, git remotes and deploy targets (`approval_cards`,
+`auto_approve_rules`, `git_remotes`, `deploy_targets`; schema 37) are included: they hold
+pinned actions, digests, receipts and connection ids, never a connection value.
 Activation (`TransactionStore.swapFrom`, used by OPS02 restore and upgrade
 activation) builds the complete replacement image before an atomic rename and
 always keeps the live installation's owner verifier, sessions,

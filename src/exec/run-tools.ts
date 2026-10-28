@@ -7,6 +7,7 @@ import type { AppTransaction, TransactionStore } from "../store";
 import type { ApplicationRunRequest, RunExecutionGrant, RunReason } from "../team/types";
 import { assertExecutionAllowed, levelRank, readEffectiveAccess } from "./access";
 import type { BoxSession } from "./box-manager";
+import { effectToolDefinitions, type EffectRunner } from "./effect-tools";
 
 /** The model-facing result of one tool call (Schway's own type, re-exported for fixture ports). */
 export type { ToolExecutionResult };
@@ -20,8 +21,9 @@ export type { ToolExecutionResult };
  *   a port without boxes give `null`: the run's tool registry is empty, so a model call to `bash` settles as
  *   `Unknown tool: bash` and nothing reaches a box.
  * - **Tools.** A `workspace` or `full` grant admits exactly Schway's core tools (`schway.host.core-tools/v1`) over the
- *   project box backend (exec.box_backend/v1). The service environment never reaches a command: the `bash` environment
- *   is the box's own.
+ *   project box backend (exec.box_backend/v1); a `full` grant also admits the effect tools (app.effect_tools/v1) when
+ *   the port has an effect executor. The service environment never reaches a command: the `bash` environment is the
+ *   box's own.
  * - **Fence.** Before and after every tool call the run is re-checked against its job attempt fence and the access
  *   level ({@link executionCurrent}); a halt, stop, narrowing or superseded attempt refuses further calls and turns a
  *   late result into a cancellation, so it is never published.
@@ -103,8 +105,11 @@ export function executionCurrent(tx: AppTransaction, request: ApplicationRunRequ
 
 /** Opens the project box for one role; `BoxManager` implements it (exec.box_runtime/v1). */
 export interface RunBoxes { open(projectId: string, roleId: string | null): Promise<BoxSession> }
-/** What a run port needs to admit execution tools. A port without it never admits any. */
-export interface RunExecution { boxes: RunBoxes; now?: () => number }
+/**
+ * What a run port needs to admit execution tools. A port without it never admits any. With `effects` (the effect
+ * executor), a `full` grant also admits the effect tools (app.effect_tools/v1); without it no effect tool exists.
+ */
+export interface RunExecution { boxes: RunBoxes; now?: () => number; effects?: EffectRunner }
 /** The admitted tool registry of one run; `release` returns the box session. */
 export interface RunTools { readonly definitions: readonly ToolDefinition[]; release(): void }
 
@@ -130,10 +135,10 @@ function clip(text: string, bytes: number): string {
   return out;
 }
 
-/** The audited subject of a call: its command, path or pattern — never file content. Redacted and cut to 2 KiB. */
+/** The audited subject of a call: its command, path, pattern or effect target — never file content. Redacted, cut to 2 KiB. */
 function subjectOf(input: unknown): string {
   const fields = input && typeof input === "object" ? input as Record<string, unknown> : {};
-  const parts = ["command", "path", "pattern"].map(key => fields[key]).filter((value): value is string => typeof value === "string");
+  const parts = ["command", "path", "pattern", "remote", "target"].map(key => fields[key]).filter((value): value is string => typeof value === "string");
   return clip(redactRegisteredSecrets(redactCredentials(parts.join(" "))), toolCallSubjectBytes);
 }
 
@@ -156,7 +161,10 @@ export async function openRunTools(store: TransactionStore, execution: RunExecut
   const inner = session.backend;
   // The service environment never reaches the box: `bash` always runs with the box's own environment.
   const backend: ExecutionBackend = { ...inner, spawn: ({ env: _env, ...spawn }) => inner.spawn(spawn) };
-  const definitions = coreToolDefinitions(backend).map((definition): ToolDefinition => ({
+  // app.effect_tools/v1: only a `full` grant with an effect executor admits the effect tools; they only create cards.
+  const admitted = [...coreToolDefinitions(backend),
+    ...(grant.level === "full" && execution.effects ? effectToolDefinitions(store, request, backend, execution.effects, now) : [])];
+  const definitions = admitted.map((definition): ToolDefinition => ({
     ...definition,
     async execute(input, ctx): Promise<ToolExecutionResult> {
       const id = crypto.randomUUID(), startedAt = now();

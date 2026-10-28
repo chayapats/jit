@@ -2,7 +2,7 @@
 
 Owner: Jit #130 (S11 EXE05). Status: implemented on the issue branch. Decision: [ADR 0036](../adr/0036-execution-box-and-runner.md) (tools in the box, audit) and [ADR 0037](../adr/0037-access-levels-approvals-and-connections.md) (effective level, kill switch). Spec: [S11](../specs/S11-execution-access-and-tools.md) (S11-D01, D02, D04; S11-AC01, AC04). Requirements: FR-36, FR-35, FR-19, FR-02, FR-15, NFR-01, NFR-14.
 
-Uses `schway.host.core-tools/v1`, `exec.box_runtime/v1` and `exec.box_backend/v1` (EXE03), `app.access_level/v1` (EXE01), `app.run_port/v1` and `jobs.attempt_fence/v1`. Effect tools and approval cards are EXE07.
+Uses `schway.host.core-tools/v1`, `exec.box_runtime/v1` and `exec.box_backend/v1` (EXE03), `app.access_level/v1` (EXE01), `app.run_port/v1` and `jobs.attempt_fence/v1`. Effect tools and approval cards are EXE07 ([approval-cards-v1](approval-cards-v1.md)): a `full` grant with an effect executor also admits the effect tools.
 
 ## `exec.run_tools/v1`
 

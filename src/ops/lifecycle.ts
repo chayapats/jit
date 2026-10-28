@@ -11,6 +11,7 @@ import { webhookLimits } from "../pr/webhooks";
 import type { BoxManager } from "../exec/box-manager";
 import { createServiceBoxes } from "../exec/box-service";
 import { ConnectionVault } from "../exec/connections";
+import { EffectExecutor } from "../exec/effect-executor";
 import { composeJobQueue } from "../composition";
 import type { ApplicationRunPort } from "../team/run-port";
 import { verifySchwayBridge } from "../team/schway-port";
@@ -364,7 +365,13 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
     if (!fenced) prepareServiceState(store, now());
     // exec.box_runtime/v1: a box stop pumps the queue so work waiting as box_capacity is admitted.
     const boxes = createServiceBoxes(store, config, { onCapacity: () => { try { managed?.queue?.pump(); } catch { /* The next tick retries. */ } } });
-    const compose = { now, prCacheRoot: input.prCacheRoot ?? (service ? resolve(service.stateDirectory, "pr-cache") : ".local/pr-cache"), ...(boxes ? { boxes } : {}) };
+    // app.connections/v1: values live in the secrets directory, never beside the state, backups or boxes.
+    const connections = config.execution.secretsDirectory ? new ConnectionVault(config.execution.secretsDirectory, {
+      forbidden: [dirname(resolve(config.databasePath)), service?.stateDirectory, service?.backupDirectory, service?.ledgerPath, config.execution.directory] }) : null;
+    // app.approval_cards/v1: approved effects run once, outside every box, only where boxes and the vault exist.
+    const effects = boxes && connections ? new EffectExecutor(store, { vault: connections, boxes, mirrorRoot: config.execution.directory, now }) : null;
+    const compose = { now, prCacheRoot: input.prCacheRoot ?? (service ? resolve(service.stateDirectory, "pr-cache") : ".local/pr-cache"), ...(boxes ? { boxes } : {}),
+      ...(effects ? { effects } : {}) };
     managed = ManagedService.forConfig(store, config, compose);
     const composed = composeJobQueue(store, config, compose);
     managed.adopt(composed);
@@ -374,10 +381,7 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
     // Constructing the Application first resolves durable upgrade intent left by a crash.
     const app = new Application(store, config, {
       service: managed, now, ...(service ? { backupDir: service.backupDirectory, ledgerPath: service.ledgerPath } : {}),
-      ...(nativeSnapshot ? { nativeSnapshot } : {}), ...(boxes ? { boxes } : {}),
-      // app.connections/v1: values live in the secrets directory, never beside the state, backups or boxes.
-      ...(config.execution.secretsDirectory ? { connections: new ConnectionVault(config.execution.secretsDirectory, {
-        forbidden: [dirname(resolve(config.databasePath)), service?.stateDirectory, service?.backupDirectory, service?.ledgerPath, config.execution.directory] }) } : {}),
+      ...(nativeSnapshot ? { nativeSnapshot } : {}), ...(boxes ? { boxes } : {}), ...(connections ? { connections } : {}), ...(effects ? { effects } : {}),
     });
     const ledger = ledgerGate({ store, ledgerPath: service?.ledgerPath ?? null, now: now(), mode: "boot" });
     if (!ledger.trusted) return refuse([{ gate: "quarantine", state: "blocked", nextAction: ledger.nextAction, detail: ledger.reason }]);

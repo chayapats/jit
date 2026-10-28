@@ -45,7 +45,8 @@ const sourceUrl = (projectId: string, ref: SourceReference) => `/projects/${proj
 const sourceLink = (projectId: string, ref: SourceReference, label: string) => `<a class="source-link" href="${sourceUrl(projectId, ref)}">${icon("link")}${escape(label)}</a>`;
 const attributionLabel = (attribution: Attribution) => attribution.kind === "owner" ? tr("common.you") : attribution.kind === "participant"
   ? `${tr("common.teammate")} ${attribution.participantId} · run ${attribution.runId}` : attribution.service === "jit-setup" ? tr("setup.greeting_label")
-  : attribution.service === "jit-promotion" ? tr("promotion.link_label") : tr("common.source_registry_service");
+  : attribution.service === "jit-promotion" ? tr("promotion.link_label") : attribution.service === "jit-effects" ? tr("effects.result_label")
+  : tr("common.source_registry_service");
 /** app.setup/v1 greeting: fixed product text in the owner's persona, shown as Jit's (never model output). */
 const setupGreeting = (attribution: Attribution) => attribution.kind === "service" && attribution.service === "jit-setup";
 export function time(value: number): string {
