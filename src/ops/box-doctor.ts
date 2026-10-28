@@ -17,7 +17,7 @@ export interface DoctorReport {
 /** Injected host access. Unit tests provide scripted `run`/`stat`. */
 export interface BoxDoctorDeps {
   run(cmd: string[]): { exitCode: number; stdout: string };
-  stat(path: string): { uid: number; mode: number } | null;
+  stat(path: string): { uid: number; mode: number; isDirectory?: boolean } | null;
   uid: number;
 }
 
@@ -156,6 +156,7 @@ export function boxDoctor(deps: BoxDoctorDeps, config: AppConfig["execution"]): 
     if (path === null) return fail(name, `${name} is not configured`, "configure-execution-block");
     const stats = deps.stat(path);
     if (stats === null) return fail(name, `${path} does not exist`, "create-execution-directory");
+    if (stats.isDirectory === false) return fail(name, `${path} is not a directory`, "create-execution-directory");
     if (stats.uid !== deps.uid) return fail(name, `${path} is not owned by the service uid`, "chown-execution-directory");
     if (stats.mode !== 0o700) return fail(name, `${path} has mode ${stats.mode.toString(8)}, want 700`, "restrict-execution-directory");
     return pass(name, `${path} exists with owner ${stats.uid} and mode 700`);

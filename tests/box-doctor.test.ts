@@ -51,7 +51,8 @@ function depsFor(scenario: string): BoxDoctorDeps {
     return { exitCode: 0, stdout: "" };
   };
   const stat = (path: string) => {
-    if (scenario === "bad-mode") return { uid: 1000, mode: 0o755 };
+    if (scenario === "bad-mode") return { uid: 1000, mode: 0o755, isDirectory: true };
+    if (scenario === "file") return { uid: 1000, mode: 0o700, isDirectory: false };
     return statOk(path);
   };
   return { run, stat, uid: 1000 };
@@ -116,6 +117,10 @@ test("missing image fails image-base-present", () => {
 
 test("directory mode 0755 fails execution-directory", () => {
   assertShape("bad-mode", false, ["execution-directory", "secrets-directory"]);
+});
+
+test("regular file fails directory checks", () => {
+  assertShape("file", false, ["execution-directory", "secrets-directory"]);
 });
 
 test("all-ok passes", () => {

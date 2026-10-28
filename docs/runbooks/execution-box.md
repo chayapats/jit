@@ -77,6 +77,12 @@ Add the `execution` block to `.local/service-config.json` (validated by `parseSe
 
 ## 5. Run `jit ops box-doctor`
 
+`box-doctor` reads the same `JIT_EXECUTION_*` / `JIT_BOX_*` environment the
+supervised unit sets (see `serviceEnvironment`). The service config file alone
+is not enough: run the command with the unit's environment, for example as the
+service user with the installed unit's `Environment=` values exported, or from
+a shell that already has those variables.
+
 ```sh
 jit ops box-doctor
 ```

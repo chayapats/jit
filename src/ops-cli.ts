@@ -24,13 +24,17 @@ export async function runOpsCommand(args: string[], root: string, ports: OpsPort
       const config = readConfig();
       const report = boxDoctor({
         run: (cmd: string[]) => {
-          const result = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe" });
-          return { exitCode: result.exitCode, stdout: new TextDecoder().decode(result.stdout as Uint8Array) };
+          try {
+            const result = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe" });
+            return { exitCode: result.exitCode, stdout: new TextDecoder().decode(result.stdout as Uint8Array) };
+          } catch {
+            return { exitCode: 127, stdout: "" };
+          }
         },
         stat: (path: string) => {
           try {
             const stats = statSync(path);
-            return { uid: stats.uid, mode: stats.mode & 0o777 };
+            return { uid: stats.uid, mode: stats.mode & 0o777, isDirectory: stats.isDirectory() };
           } catch { return null; }
         },
         uid: process.getuid?.() ?? 0,
