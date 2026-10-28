@@ -1734,4 +1734,6 @@ export const en: Record<MessageKey, string> = {
   "error.computer_setting_requires_web": "Only the owner in Web can change whether every computer-use click and key needs approval.",
   "error.invalid_computer_command": "The computer-use setting command is not valid.",
   "approval.kind_computer_confirm": "Act on the box’s desktop",
+  "access.computer_confirm_every": "Ask me before every computer-use click and key press",
+  "access.computer_note": "Computer-use runs only at Full. Enter keys, line breaks and declared submit or confirm actions always wait for your approval, whatever this setting says.",
 };

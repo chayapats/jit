@@ -590,7 +590,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       }
       // web.access_settings/v1 (EXE04): execution levels, role limits and the kill switch. Narrowing posts
       // straight to the project; widening goes through the confirmation page; halt and resume fence execution.
-      const accessPageRoute = /^\/settings\/access\/([a-f0-9-]{36})\/(confirm|roles|halt|resume)$/.exec(url.pathname);
+      const accessPageRoute = /^\/settings\/access\/([a-f0-9-]{36})\/(confirm|roles|halt|resume|computer)$/.exec(url.pathname);
       const accessProjectRoute = /^\/settings\/access\/([a-f0-9-]{36})$/.exec(url.pathname);
       /** Maps an EXE01 command refusal to its owner-facing Settings sentence. */
       const accessError = (error: unknown): string | null => error instanceof AppError ? ({
@@ -598,6 +598,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         access_confirm_required: "access.error_confirm_required",
         access_full_not_allowed: "access.error_full_not_allowed",
         access_role_above_project: "access.error_role_above_project",
+        computer_setting_requires_web: "error.computer_setting_requires_web",
       } as Record<string, string>)[error.code] ?? null : null;
       if (url.pathname === "/settings/access" && request.method === "GET") {
         const raw = url.searchParams.get("offset") ?? "0";
@@ -612,7 +613,8 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const access = new Map(rows.map(({ project }) => [project.id, app.projectAccess(auth.actor, project.id)] as const));
         const roles = new Map(rows.map(({ project }) => [project.id, app.roleAccess(auth.actor, project.id)] as const));
         const list = { projects: rows, hasMore: only.length ? false : paged.hasMore, single: only.length > 0 };
-        return page(() => settingsAccessPage(nav(paged), list, access, roles, auth.csrf, offset, config.pageSize));
+        const computer = new Map(rows.map(({ project }) => [project.id, app.computerSettings(auth.actor, project.id)] as const));
+        return page(() => settingsAccessPage(nav(paged), list, access, roles, auth.csrf, offset, config.pageSize, computer));
       }
       if (request.method === "GET" && accessPageRoute && accessPageRoute[2] === "confirm") {
         const projectId = accessPageRoute[1]!;
@@ -632,8 +634,11 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
         const number = (value: unknown) => typeof value === "string" && /^\d{1,15}$/.test(value) ? Number(value) : value;
         const allowed = ["csrf", "requestId", "expectedRevision",
-          ...(verb === "level" ? ["level", "confirmToken"] : verb === "roles" ? ["roleId", "level"] : [])];
+          ...(verb === "level" ? ["level", "confirmToken"] : verb === "roles" ? ["roleId", "level"] : verb === "computer" ? ["confirmEveryAction"] : [])];
         if (Object.keys(body).some(key => !allowed.includes(key))) throw new AppError("invalid_body");
+        // exec.computer/v1: an unticked checkbox is absent from the post and means off; only "on" turns it on.
+        const settingCommand = verb === "computer" ? { kind: "computer.settings.set", requestId: body.requestId, projectId, expectedRevision: number(body.expectedRevision),
+          payload: { confirmEveryAction: body.confirmEveryAction === undefined ? false : body.confirmEveryAction === "on" ? true : body.confirmEveryAction } } as SetComputerSettingsCommand : null;
         const kind = verb === "level" ? "access.level.set" : verb === "roles" ? "access.role.restrict"
           : verb === "halt" ? "execution.halt" : "execution.resume";
         // The role form posts `inherit` for a cleared override; only sent fields enter the command payload.
@@ -643,7 +648,8 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const command = { requestId: body.requestId, projectId, expectedRevision: number(body.expectedRevision),
           kind, payload: verb === "halt" || verb === "resume" ? {} : picked } as AccessCommand;
         try {
-          app.execute(auth.actor, command);
+          if (settingCommand) app.execute(auth.actor, settingCommand);
+          else app.execute(auth.actor, command);
         } catch (error) {
           const key = accessError(error);
           if (!key) throw error;

@@ -5,6 +5,7 @@ import type { TelegramStatus } from "./telegram/types";
 import type { DispatchAllowance } from "./team/allowance";
 import type { ScheduleFeed } from "./schedule-feed";
 import { accessLevels, levelRank, type AccessLevel, type ProjectAccess, type RoleAccess } from "./exec/access";
+import type { ComputerSettings } from "./exec/computer";
 import { connectionKinds, type ConnectionKind, type ConnectionView } from "./exec/connections";
 import { accessBadge, escape, hiddenCommand, icon, jobStateLabels, prObservedState, prStatusLabels, shell, taskStatusText, time, type NavigationWorkspace } from "./web-layout";
 import { panelRows, panelTabLabels, panelTabs, paletteCommands, searchLimits, type PanelTab } from "./web-settings";
@@ -136,7 +137,7 @@ export interface AccessProjectRow {
 export function settingsAccessPage(workspace: NavigationWorkspace, list: { projects: AccessProjectRow[]; hasMore: boolean; single: boolean },
   access: ReadonlyMap<string, ProjectAccess>,
   roles: ReadonlyMap<string, RoleAccess[]>,
-  csrf: string, offset: number, pageSize: number): string {
+  csrf: string, offset: number, pageSize: number, computer: ReadonlyMap<string, ComputerSettings> = new Map()): string {
   const single = list.single;
   const levelText = (level: AccessLevel) => tr(`access.level_${level}` as MessageKey);
   const row = ({ project: p, teamRoles }: AccessProjectRow) => {
@@ -171,10 +172,15 @@ export function settingsAccessPage(workspace: NavigationWorkspace, list: { proje
     const halt = a.halted
       ? `<form class="team-form access-form" method="post" action="/settings/access/${p.id}/resume">${hiddenCommand(csrf, a.haltRevision)}<button class="primary">${tr("access.resume")}</button></form>`
       : `<form class="team-form access-form" method="post" action="/settings/access/${p.id}/halt">${hiddenCommand(csrf, a.haltRevision)}<button class="danger">${tr("access.stop_everything")}</button></form>`;
+    // exec.computer/v1 (EXE16): Web-only `computer.confirmEveryAction`, on until the owner unticks it here.
+    const settings = computer.get(p.id);
+    const confirmEvery = settings ? `<form class="team-form access-form" method="post" action="/settings/access/${p.id}/computer">${hiddenCommand(csrf, settings.revision)}
+      <label><input type="checkbox" name="confirmEveryAction"${settings.confirmEveryAction ? " checked" : ""}> ${tr("access.computer_confirm_every")}</label>
+      <p class="team-role-note">${tr("access.computer_note")}</p><button>${tr("settings.save")}</button></form>` : "";
     return `<li class="access-row" id="access-${p.id}"><h3>${escape(p.name)}</h3><p>${accessBadge(a)}</p>
       ${narrow}${widen ? `<nav class="settings-links" aria-label="${escape(p.name)}">${widen}</nav>` : ""}
       ${roleRows ? `<ul class="access-roles">${roleRows}</ul>` : ""}
-      ${halt}</li>`;
+      ${confirmEvery}${halt}</li>`;
   };
   return shell(tr("settings.access"), { workspace, csrf, section: "settings", settings: "access" }, `<div class="content settings-content">
     <section class="settings-section" aria-labelledby="access-title"><h2 id="access-title">${tr("settings.access_title")}</h2><p>${tr("settings.access_note")}</p>

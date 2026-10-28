@@ -193,3 +193,30 @@ test("web.access_settings/v1: the project and topic headers show the badge, in T
     expect(conversation).toContain(badge);
   }
 });
+
+test("exec.computer/v1: the project row carries the Web-only confirm-every-action checkbox, on by default", async () => {
+  const f = await fixture();
+  const p = project(f, "Desktop project");
+  const html = await (await get(f, "/settings/access")).text();
+  const action = `/settings/access/${p.id}/computer`;
+  expect(html).toContain(`action="${action}"`);
+  expect(html).toContain('<input type="checkbox" name="confirmEveryAction" checked>');
+  // An unticked box is absent from the post and turns the setting off; ticking it turns it back on.
+  const off = await postForm(f, action, form(html, action));
+  expect([off.status, off.headers.get("location")]).toEqual([303, `/settings/access?project=${p.id}#access-${p.id}`]);
+  expect(f.app.computerSettings(f.auth.actor, p.id)).toMatchObject({ revision: 1, confirmEveryAction: false });
+  const unticked = await (await get(f, "/settings/access")).text();
+  expect(unticked).toContain('<input type="checkbox" name="confirmEveryAction">');
+  const on = await postForm(f, action, { ...form(unticked, action), confirmEveryAction: "on" });
+  expect(on.status).toBe(303);
+  expect(f.app.computerSettings(f.auth.actor, p.id)).toMatchObject({ revision: 2, confirmEveryAction: true });
+  // Replaying the first form returns its receipt; a new request at the stale revision is refused and changes nothing.
+  expect((await postForm(f, action, form(html, action))).status).toBe(303);
+  expect(f.app.computerSettings(f.auth.actor, p.id).revision).toBe(2);
+  expect((await postForm(f, action, { ...form(html, action), requestId: rid() })).status).toBe(409);
+  expect(f.app.computerSettings(f.auth.actor, p.id).confirmEveryAction).toBe(true);
+  for (const key of ["access.computer_confirm_every", "access.computer_note"]) {
+    expect(dictionaries.th[key as keyof typeof dictionaries.th]).toBeTruthy();
+    expect(dictionaries.en[key as keyof typeof dictionaries.en]).toBeTruthy();
+  }
+});

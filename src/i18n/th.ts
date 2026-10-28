@@ -1736,4 +1736,6 @@ export const th = {
   "error.computer_setting_requires_web": "เปลี่ยนการตั้งค่าว่าทุกการคลิกและกดปุ่มของ computer-use ต้องขออนุมัติหรือไม่ ได้เฉพาะเจ้าของใน Web",
   "error.invalid_computer_command": "คำสั่งตั้งค่า computer-use ไม่ถูกต้อง",
   "approval.kind_computer_confirm": "สั่งงานบน desktop ของ box",
+  "access.computer_confirm_every": "ถามฉันก่อนทุกการคลิกและการกดปุ่มของ computer-use",
+  "access.computer_note": "computer-use ใช้ได้เฉพาะระดับ Full การกด Enter การขึ้นบรรทัดใหม่ และ action ที่ประกาศว่าเป็น submit หรือ confirm ต้องรอให้คุณอนุมัติเสมอ ไม่ว่าจะตั้งค่านี้ไว้อย่างไร",
 } as const;
