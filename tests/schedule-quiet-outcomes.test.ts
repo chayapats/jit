@@ -16,6 +16,7 @@ import {
   type ScheduleCommand,
 } from "../src/jobs/schedules";
 import { fixtureOutcome, ScriptedRunPort } from "../src/team/scripted-port";
+import { containsCredential } from "../src/security/credentials";
 import type { JobLimits } from "../src/jobs/types";
 import type { ApplicationRunOutcome } from "../src/team/types";
 
@@ -242,6 +243,22 @@ test("coalesced misfire stays one quiet occurrence", async () => {
   const second = f.app.schedule(f.auth.actor, f.project.id, b.id).occurrences[0]!;
   expect(second.missed).toMatchObject({ count: 5 });
   expect(intentCount(f)).toBe(1);
+});
+
+test("failure notice redacts a credential-like schedule purpose", async () => {
+  const f = await fixture();
+  f.control.next = () => fixtureOutcome("complete", '{"outcome":"failed","reason":"repo unreachable"}');
+  const created = f.app.execute(f.auth.actor, summary(f, { purpose: "Review bot token rotation" })).schedule;
+  f.clock.now = epoch + 60_000;
+  tickSchedules(f.store, f.queue, f.config, f.clock.now);
+  await drain(f);
+  expect(intentCount(f)).toBe(1);
+  const text = intents(f)[0]!.payload.text;
+  expect(containsCredential(text)).toBe(false);
+  expect(text).toContain("[credential-redacted]");
+  expect(text).toContain("repo unreachable");
+  expect(f.app.schedule(f.auth.actor, f.project.id, created.id).occurrences[0]).toMatchObject({
+    state: "failed", outcome: { kind: "failed", reason: "repo unreachable" }, jobState: "partial" });
 });
 
 test("reminders never quiet", async () => {

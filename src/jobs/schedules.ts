@@ -12,7 +12,7 @@ import { requireRoleRoute } from "../team/configuration";
 import type { ApplicationRunPort } from "../team/run-port";
 import { fixtureOutcome, normalizeFixtureResult, validateRunRequest } from "../team/scripted-port";
 import type { ApplicationRunRequest, RoleRoute } from "../team/types";
-import { containsCredential } from "../security/credentials";
+import { containsCredential, redactCredentials } from "../security/credentials";
 import { upgradeFenced } from "../ops/upgrade-fence";
 
 /** Behavior contract delivered by this module. Occurrence identity, timezone policy and
@@ -489,7 +489,15 @@ const dedupeKey = (scheduleId: string, revision: number, instant: number) => `sc
 // typed branch of a `complete` run in `scheduleSummaryWork().run` below.
 /** jobs.quiet_outcomes/v1: the typed outcome of one schedule.summary run (ADR 0032). */
 export type SummaryOutcome = { kind: "report"; text: string } | { kind: "no_update" } | { kind: "failed"; reason: string };
+/** Maximum `reason` length (UTF-16 code units) for a typed failed summary outcome. */
 export const summaryReasonChars = 200;
+/**
+ * Normalizes a `jobs.quiet_outcomes/v1` run output. Prose, JSON without an
+ * `outcome` key, and unknown outcome strings stay reports; malformed typed
+ * fields fail with `invalid_outcome`; a failed reason must be a non-empty
+ * string within `summaryReasonChars`, and a credential-like reason becomes
+ * `reason_redacted`. Only an explicit `no_update` outcome is quiet.
+ */
 export function normalizeSummaryOutcome(output: string): SummaryOutcome {
   const raw = output, trimmed = output.trim();
   let parsed: unknown;
@@ -515,11 +523,19 @@ export function normalizeSummaryOutcome(output: string): SummaryOutcome {
   return { kind: "report", text: raw };
 }
 
+/**
+ * Failure notice for one schedule.summary run. The schedule `purpose` is
+ * owner text and may contain credential-like spans, so it is redacted before
+ * the notice reaches `commitDeliveryIntent`, which would otherwise reject the
+ * whole commit and fault the queue. The model reason is already bounded by
+ * `normalizeSummaryOutcome` and never carries raw model output.
+ */
 function summaryFailureText(schedule: JobSchedule, reason: string): string {
-  return `สรุปตามกำหนดการ "${schedule.purpose}" ไม่สำเร็จ · เหตุผล: ${reason}`;
+  return `สรุปตามกำหนดการ "${redactCredentials(schedule.purpose)}" ไม่สำเร็จ · เหตุผล: ${reason}`;
 }
 
-function reminderText(schedule: JobSchedule, occurrence: ScheduleOccurrence): string {  const missed = occurrence.missed
+function reminderText(schedule: JobSchedule, occurrence: ScheduleOccurrence): string {
+  const missed = occurrence.missed
     ? `\n\n(รวม ${occurrence.missed.count} ครั้งที่พลาด ${new Date(occurrence.missed.from).toISOString()}..${new Date(occurrence.missed.to).toISOString()} เป็นครั้งเดียว ไม่ย้อนส่งแยก)`
     : "";
   const resolution = occurrence.resolution === "exact" ? ""

@@ -38,7 +38,7 @@ All branches run inside the job `commit(result, mutate)` fence; a late result fr
 | `failed(reason)` | `partial` (because `#finish` drops `mutate` for `failed`), evidence `summary <scheduleId> @ <ISO instant> failed: <reason>` | exactly one `report` intent with clipped `สรุปตามกำหนดการ "<purpose>" ไม่สำเร็จ · เหตุผล: <reason>` | none directly (the intent carries its own delivery report) | `failed`, `outcome { failed, reason }` | `failed` / `reason`, intent id |
 | Run not `complete` or empty output (other than quota/login/route waits) | `partial` via `commitFailure(outcome.reason ?? "worker_failed")` | exactly one `report` intent naming the reason | as `failed` | `failed` with that reason | `failed` / reason |
 
-Clipping everywhere reuses the report rule: `Buffer.byteLength(text) <= config.messageBytes` else the first 512 code points plus `…(ตัดให้พอขนาดแจ้งเตือน)`. The failure notification carries only the bounded reason, never the raw model output. Quota / `needs_login` / `route_unavailable` keep the unchanged `waiting` path with no commit.
+Clipping everywhere reuses the report rule: `Buffer.byteLength(text) <= config.messageBytes` else the first 512 code points plus `…(ตัดให้พอขนาดแจ้งเตือน)`. The failure notification carries only the bounded reason, never the raw model output. The schedule `purpose` inside the notice is passed through `redactCredentials` first: purpose text is owner-configured and may contain credential-like spans, which `commitDeliveryIntent` would otherwise reject, rolling back the failure commit and faulting the queue. Quota / `needs_login` / `route_unavailable` keep the unchanged `waiting` path with no commit.
 
 ## Never-quiet rule
 
