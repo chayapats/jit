@@ -535,9 +535,16 @@ test("accessibility: the checker itself rejects the problems it looks for", () =
     expect(accessibilityProblems(page(`<label>${control("c")}</label>`), "en").join("\n"), kind).toMatch(/has no label/);
     // Positive: a referenced label may itself be hidden, and a visible label names the control.
     expect(accessibilityProblems(page(`<span id="h" hidden>Name</span>${control("c", ' aria-labelledby="h"')}<label for="d">Name</label>${control("d")}`), "en"), kind).toEqual([]);
+    // A label is associated only through `for` naming this control, or as the first labelable descendant without `for`.
+    for (const body of [`<label for="o">Name ${control("c")}</label><input id="o" aria-label="Other">`, `<label for="">Name ${control("c")}</label>`,
+      `<label>Name <input id="first" aria-label="First"> ${control("c")}</label>`]) {
+      expect(accessibilityProblems(page(body), "en").join("\n"), `${kind}: ${body}`).toMatch(/#c[^\n]*has no label/);
+      rows++;
+    }
+    expect(accessibilityProblems(page(`<label for="c">Name</label><label>Other ${control("d")}</label>${control("c")}`), "en"), kind).toEqual([]);
     rows += 3;
   }
-  expect(rows).toBe(3 * (5 + 3));
+  expect(rows).toBe(3 * (5 + 3 + 3));
 });
 
 test("keyboard and motion: visible focus everywhere, outline removed only with a replacement, and reduced motion stops all motion", () => {

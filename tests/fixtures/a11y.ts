@@ -50,16 +50,18 @@ function accessibleName(node: Node, byId: Map<string, Node>): string {
 }
 /**
  * Name of a form control in accname order, with no fallback past a step that applies: aria-labelledby with at least
- * one valid IDREF decides alone (an empty result is no name), then aria-label, then the native labels (`label[for]`
- * and a wrapping `label`) that are themselves exposed. A native label's text leaves out its hidden parts and the
+ * one valid IDREF decides alone (an empty result is no name), then aria-label, then the native labels associated with
+ * it (`label[for]` naming its id, or a `label` without `for` whose first labelable descendant it is) that are exposed. A native label's text leaves out its hidden parts and the
  * control's own content, such as a wrapped select's options.
  */
 function controlName(node: Node, all: Node[], byId: Map<string, Node>): string {
   const refs = (node.attrs["aria-labelledby"] ?? "").split(/\s+/).filter(id => byId.has(id));
   if (refs.length) return refs.map(id => text(byId.get(id)!)).join(" ").trim();
   if (node.attrs["aria-label"]?.trim()) return node.attrs["aria-label"].trim();
-  const labels = all.filter(n => n.tag === "label" && node.attrs.id !== undefined && n.attrs.for === node.attrs.id);
-  for (let up = node.parent; up; up = up.parent) if (up.tag === "label") labels.push(up);
+  // HTML label association: `for` names the control's id; a label without `for` labels its first labelable descendant.
+  const labels = all.filter(n => n.tag === "label" && (n.attrs.for !== undefined
+    ? node.attrs.id !== undefined && n.attrs.for === node.attrs.id
+    : elements(n).find(labelable) === node));
   return labels.filter(label => !hiddenInTree(label)).map(label => text(label, node)).join(" ").trim();
 }
 /** Landmarks and dialogs are named only by aria-labelledby or aria-label, never by their content. */
@@ -69,6 +71,8 @@ function text(node: Node, skip?: Node): string {
   return node.children.map(child => typeof child === "string" ? child : hiddenFromAt(child) || child === skip ? ""
     : child.tag === "svg" ? child.attrs.role === "img" ? child.attrs["aria-label"] ?? "" : "" : text(child, skip)).join(" ").replace(/\s+/g, " ").trim();
 }
+/** Labelable elements (HTML): what a `label` can be associated with. */
+const labelable = (node: Node) => ["button", "select", "textarea", "meter", "output", "progress"].includes(node.tag) || (node.tag === "input" && node.attrs.type !== "hidden");
 /** Interactive content (HTML content model): what may not be nested in a link or button. */
 const interactive = (node: Node) => ["button", "select", "textarea", "summary"].includes(node.tag)
   || (node.tag === "a" && "href" in node.attrs) || (node.tag === "input" && node.attrs.type !== "hidden");
