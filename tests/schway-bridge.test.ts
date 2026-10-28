@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Application } from "../src/application";
+import { AppError } from "../src/errors";
 import { readConfig } from "../src/config";
 import { JobQueue } from "../src/jobs/queue";
 import { createFullAppQueue } from "../src/ops/lifecycle";
@@ -424,6 +425,65 @@ test("team dispatch commits production specialist evidence while preview stays f
   const specialistRequest = teamPort.requests[0]!;
   expect(await blocked.invoke({ ...specialistRequest, runId: rid() }, new AbortController().signal, () => {}))
     .toMatchObject({ state: "blocked", reason: "needs_login" });
+});
+
+async function minimumTeam(runPort: "schway" | "scripted") {
+  const root = mkdtempSync(join(tmpdir(), "jit-schway-minimum-")); roots.push(root);
+  const path = join(root, "state.sqlite"), config = readConfig({ JIT_DATABASE: path, JIT_RUN_PORT: runPort });
+  const store = new TransactionStore(path); stores.push(store);
+  if (runPort === "schway") expect((await verifySchwayBridge(store)).ok).toBe(true);
+  const port = runPort === "schway"
+    ? new SchwayRunPort(store, config.team, config.jobs.outputBytes, { model: scripted("ผลวิเคราะห์ขั้นต่ำ") })
+    : new ScriptedRunPort(store, config.team, config.jobs.outputBytes);
+  const now = () => 1800000000000;
+  const queue = new JobQueue(store, config.jobs, [discussionPlanWork(), specialistAnalysisWork(store, config, port)], { now }); queues.push(queue);
+  const app = new Application(store, config, { jobs: queue, now });
+  await app.setupOwner("fixture-minimum-owner-pass");
+  const auth = app.authenticate(await app.login("fixture-minimum-owner-pass"));
+  const project = app.execute(auth.actor, { kind: "project.create", projectId: null, requestId: rid(), expectedRevision: 0, payload: { name: "โครงการขั้นต่ำ" } }).project;
+  const topic = app.execute(auth.actor, { kind: "topic.create", projectId: project.id, requestId: rid(), expectedRevision: project.revision, payload: { title: "หัวข้อขั้นต่ำ" } }).topic;
+  const role = app.execute(auth.actor, { kind: "role.save", projectId: null, requestId: rid(), expectedRevision: 0,
+    payload: { roleId: null, name: "ขั้นต่ำ", kind: "specialist", responsibility: "วิเคราะห์งบประมาณ", enabled: true, route: grok } }).role!;
+  const jobs = () => store.read(tx => tx.get<{ n: number }>("SELECT COUNT(*) AS n FROM jobs")!.n);
+  const dispatch = (limits: Partial<typeof config.jobs.maximum>) => app.execute(auth.actor, {
+    kind: "team.dispatch", projectId: project.id, requestId: rid(), expectedRevision: app.project(auth.actor, project.id).revision,
+    payload: { topicId: topic.id, purpose: "ตรวจขั้นต่ำ", sources: [topic.source], include: [role.id], exclude: [],
+      limits: { ...config.jobs.maximum, roles: 1, hops: 1, ...limits } },
+  });
+  const participation = () => {
+    const discussion = app.discussions(auth.actor, project.id, topic.id).at(-1)!;
+    return app.discussion(auth.actor, project.id, discussion.id).discussion.participations[0]!;
+  };
+  return { app, auth, project, queue, port, jobs, dispatch, participation };
+}
+
+test("schway dispatch refuses calls or rounds below retries + 1 before any job is admitted", async () => {
+  const { queue, port, jobs, dispatch, participation } = await minimumTeam("schway");
+  const refusal = (limits: { calls: number; rounds: number; retries: number }) => {
+    try { dispatch(limits); } catch (error) { return error as AppError; }
+    throw new Error("dispatch admitted");
+  };
+  // The OPS05 drill shape: calls 1 with one retry used to be admitted and then blocked as budget_exhausted.
+  for (const limits of [{ calls: 1, rounds: 1, retries: 1 }, { calls: 3, rounds: 2, retries: 2 }, { calls: 2, rounds: 3, retries: 2 }]) {
+    const error = refusal(limits);
+    expect(error).toBeInstanceOf(AppError);
+    expect(error.code).toBe("dispatch_limits_below_retry_minimum");
+    expect(error.detail).toEqual({ retries: limits.retries, minimumCalls: limits.retries + 1, minimumRounds: limits.retries + 1 });
+  }
+  expect(jobs()).toBe(0);
+  // At the minimum the specialist reaches the bridge and completes.
+  dispatch({ calls: 2, rounds: 2, retries: 1 });
+  queue.pump(); await queue.idle();
+  expect((port as SchwayRunPort).requests).toHaveLength(1);
+  expect(participation().state).toBe("completed");
+});
+
+test("scripted dispatch keeps admitting calls below retries + 1", async () => {
+  const { queue, jobs, dispatch, participation } = await minimumTeam("scripted");
+  dispatch({ calls: 1, rounds: 1, retries: 1 });
+  expect(jobs()).toBe(2);
+  queue.pump(); await queue.idle();
+  expect(participation().state).toBe("completed");
 });
 
 test("concurrent delete during native creation retires the orphan instead of running it", async () => {

@@ -871,6 +871,7 @@ export const th = {
   "error.dispatch_source_unavailable": "แหล่งข้อมูลเปลี่ยนหรือไม่พร้อมใช้งาน กรุณาเลือกใหม่",
   "error.invalid_router_output": "ผลเลือกทีมไม่ถูกต้อง จึงยังไม่เริ่มวิเคราะห์",
   "error.role_already_participating": "บทบาทนี้อยู่ในการหารือแล้ว",
+  "error.dispatch_limits_below_retry_minimum": "เส้นทาง Schway ต้องตั้ง calls และ rounds อย่างน้อย retries + 1 ต่อผู้เชี่ยวชาญ เพิ่ม calls และ rounds หรือลด retries",
   "error.role_budget_exhausted": "จำนวนบทบาทครบขีดจำกัดของการหารือนี้แล้ว",
   "error.participation_not_found": "ไม่พบบทบาทนี้ในการหารือ",
   "error.run_not_found": "ไม่พบผลการวิเคราะห์ที่เลือก",

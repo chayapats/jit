@@ -2,14 +2,14 @@ import { AppError } from "../errors";
 import { readTopic } from "../conversation";
 import { JobQueue, jobData, validateJobLimits } from "../jobs/queue";
 import { readJob } from "../jobs/queue";
-import type { WorkDefinition } from "../jobs/types";
+import type { JobLimits, WorkDefinition } from "../jobs/types";
 import { commitOutputSource, lookupSource, requireId } from "../sources";
 import type { AppTransaction, TransactionStore } from "../store";
 import type { AppConfig } from "../config";
 import { readTeam } from "./configuration";
 import { planDiscussionRoles } from "./router";
 import { fixtureOutcome, normalizePortResult, validateRunRequest } from "./scripted-port";
-import { portFailureOutcome, schwayMaxCalls } from "./schway-port";
+import { portFailureOutcome, schwayMaxAttempts, schwayMaxCalls } from "./schway-port";
 import { executionGrant } from "../exec/run-tools";
 import type { ApplicationRunPort } from "./run-port";
 import type {
@@ -191,6 +191,23 @@ function enqueueSpecialist(
   };
 }
 
+/**
+ * Smallest `calls` and `rounds` a Schway-routed specialist job can run with: admission spends one of each and the
+ * attempt pre-reserves one more per host retry ({@link schwayMaxCalls}), so anything lower is blocked as
+ * `budget_exhausted` before the bridge is invoked. The scripted port reserves nothing extra.
+ */
+export function schwayDispatchMinimum(limits: Pick<JobLimits, "retries">): number {
+  return schwayMaxAttempts({ limits: limits as JobLimits });
+}
+
+/** Refuses Schway dispatch limits the retry pre-reserve can never satisfy, naming the minimum for the chosen retries. */
+function assertSchwayRetryRoom(limits: JobLimits): void {
+  const minimum = schwayDispatchMinimum(limits);
+  if (limits.calls < minimum || limits.rounds < minimum) {
+    throw new AppError("dispatch_limits_below_retry_minimum", 400, { retries: limits.retries, minimumCalls: minimum, minimumRounds: minimum });
+  }
+}
+
 /** Captures frozen sources, scripted router plan and interactive specialist jobs in one owner transaction. */
 export function prepareDispatch(
   tx: AppTransaction, command: Extract<TeamCommand, { kind: "team.dispatch" }>, config: AppConfig,
@@ -201,6 +218,7 @@ export function prepareDispatch(
   const p = command.payload;
   readTopic(tx, command.projectId, p.topicId);
   validateJobLimits(p.limits, config.jobs.maximum);
+  if (config.runPort === "schway") assertSchwayRetryRoom(p.limits);
   if (!Array.isArray(p.include) || !Array.isArray(p.exclude) || p.include.length > config.team.roleLimit ||
       p.exclude.length > config.team.roleLimit) throw new AppError("invalid_team_command");
   const state = readTeam(tx, command.projectId, config.team);

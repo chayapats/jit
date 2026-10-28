@@ -869,6 +869,7 @@ export const en: Record<MessageKey, string> = {
   "error.dispatch_source_unavailable": "The source has changed or is unavailable. Choose it again.",
   "error.invalid_router_output": "The team selection was invalid, so analysis hasn’t started.",
   "error.role_already_participating": "This role is already in the discussion.",
+  "error.dispatch_limits_below_retry_minimum": "With the Schway route each specialist needs calls and rounds of at least retries + 1. Raise calls and rounds, or lower retries.",
   "error.role_budget_exhausted": "This discussion has reached its role limit.",
   "error.participation_not_found": "This role isn’t part of the discussion.",
   "error.run_not_found": "Selected analysis result not found.",

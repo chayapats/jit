@@ -134,7 +134,12 @@ and fixture-free protocol transport.
 - Worst-case retry admissions are pre-reserved (`calls`/`rounds` for
   `maxAttempts = retries + 1`); retry budgets above the pinned host ceiling
   of ten attempts fail before any native work instead of being silently
-  capped. Single-output token accounting stays as committed with measured
+  capped. Because admission spends one call and one round and the attempt
+  pre-reserves the rest, `team.dispatch` in Schway mode refuses limits whose
+  `calls` or `rounds` are below `retries + 1` with
+  `dispatch_limits_below_retry_minimum` (detail `retries`, `minimumCalls`,
+  `minimumRounds`) before any job is admitted; the scripted port is unchanged.
+  Single-output token accounting stays as committed with measured
   overrun in usage evidence (see ADR 0023). Usage
   records whether any token counter was unreported (`tokensUnknown`, absent
   only on pre-bridge fixture records which carry exact accounting) instead of
