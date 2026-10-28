@@ -182,6 +182,24 @@ test("#163 a proxy port names its URL before the box exists and is ensured only 
   await expect(failing.ensure(projectA, "workspace")).rejects.toThrow("box_proxy_unavailable");
 });
 
+test("#163 Podman 4.x NetworkMode bridge counts as the internal network only when it is the one attached network", async () => {
+  const f = podmanFixture();
+  const run: CommandRunner = async (argv, options) => {
+    const result = await f.podman.run(argv, options);
+    if (argv[0] !== "container" || argv[1] !== "inspect") return result;
+    const [info] = JSON.parse(new TextDecoder().decode(result.stdout));
+    const named = info.HostConfig.NetworkMode;
+    info.HostConfig.NetworkMode = named === "jit-box-internal" ? "bridge" : named;
+    info.NetworkSettings = { Networks: { [named === "jit-box-internal" ? "jit-box-internal" : "slirp4netns"]: {} } };
+    if (argv[2]?.endsWith(projectB)) info.NetworkSettings.Networks.podman = {};
+    return { ...result, stdout: new TextEncoder().encode(JSON.stringify([info])) };
+  };
+  const runtime = new PodmanBoxRuntime({ config: f.config.execution, run, registryProxy: async gateway => `http://${gateway}:3128` });
+  await runtime.ensure(projectA, "workspace");
+  // A second attached network on a workspace box is refused and the box removed.
+  await expect(runtime.ensure(projectB, "workspace")).rejects.toThrow("box_hardening_mismatch");
+});
+
 test("inspected mounts must equal the expected set exactly; a tampered box is removed and refused", async () => {
   const f = podmanFixture();
   await f.runtime.ensure(projectA, "workspace");

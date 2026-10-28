@@ -81,6 +81,7 @@ interface Inspected {
   Config?: { Labels?: Record<string, string> | null };
   Mounts?: { Type?: string; Source?: string; Destination?: string }[];
   HostConfig?: { Privileged?: boolean; ReadonlyRootfs?: boolean; NetworkMode?: string; CapAdd?: string[] | null };
+  NetworkSettings?: { Networks?: Record<string, unknown> | null };
 }
 
 /** A proxy that runs where the internal gateway lives (e.g. {@link NetnsRegistryProxy}); see {@link PodmanBoxRuntimeOptions.registryProxy}. */
@@ -300,8 +301,11 @@ export class PodmanBoxRuntime implements BoxRuntime, BoxStreams {
     }
     const host = info.HostConfig ?? {};
     const network = host.NetworkMode ?? "";
+    // Podman 4.x reports a named bridge network as NetworkMode "bridge" and names it in NetworkSettings.Networks.
+    const attached = Object.keys(info.NetworkSettings?.Networks ?? {});
+    const internalOnly = network === boxInternalNetwork || (network === "bridge" && attached.length === 1 && attached[0] === boxInternalNetwork);
     if (host.Privileged !== false || host.ReadonlyRootfs !== true || (host.CapAdd ?? []).length > 0 ||
-        (mode === "workspace" ? network !== boxInternalNetwork : network === boxInternalNetwork || network === "host")) {
+        (mode === "workspace" ? !internalOnly : network === boxInternalNetwork || attached.includes(boxInternalNetwork) || network === "host")) {
       await this.#remove(name);
       throw new AppError("box_hardening_mismatch", 503);
     }
