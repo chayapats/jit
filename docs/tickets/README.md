@@ -191,3 +191,22 @@ Parent: [S09 / Jit #90](https://github.com/chayapats/jit/issues/90) ([spec](../s
 | [BOT05](https://github.com/chayapats/jit/issues/96) | Chat-first home, General space and topic promotion that keeps provenance | [BOT02](https://github.com/chayapats/jit/issues/93) | Agent |
 | [UX02](https://github.com/chayapats/jit/issues/97) | Ops pages consolidated under settings, topic right panel and ⌘K | [UX01](https://github.com/chayapats/jit/issues/91) | Agent |
 | [UX03](https://github.com/chayapats/jit/issues/98) | Static-only PWA, mobile polish and accessibility | [UX02](https://github.com/chayapats/jit/issues/97), [BOT05](https://github.com/chayapats/jit/issues/96) | Agent |
+
+## S10 — Reliability and owner integrations
+
+Parent: [S10 / Jit #111](https://github.com/chayapats/jit/issues/111) ([spec](../specs/S10-reliability-and-owner-integrations.md)). Created 2026-10-28 from openbot-inspired concepts; no code was reused. There are 9 vertical slices, linked as sub-issues of #111 with native blocking relations. Every ticket also waits for the S10 docs PR to merge.
+
+**Parallel wave 1** (no S10 blockers): UX04, REL01, REL02, REL03, REL05, REL06, REL08. REL02 and REL03 both touch team reply/dispatch code, so rebase whichever lands second.
+**Wave 2:** REL04 after REL01, and REL07 after REL06.
+
+| Ticket | Outcome | Direct blockers | Done by |
+| --- | --- | --- | --- |
+| [UX04](https://github.com/chayapats/jit/issues/112) | CI fails on non-token colour, size, radius or duration values in the UI | None | Agent |
+| [REL01](https://github.com/chayapats/jit/issues/113) | Quiet `no_update` summaries; failed runs always notify with a reason | None | Agent |
+| [REL02](https://github.com/chayapats/jit/issues/114) | Status/Result/Evidence/Unblock result contract and a versioned communication policy | None | Agent |
+| [REL03](https://github.com/chayapats/jit/issues/115) | Deterministic-first routing, with a visible reason the owner can correct | None | Agent |
+| [REL04](https://github.com/chayapats/jit/issues/116) | `all`/`needs-me` attention levels and one notification per work group | [REL01](https://github.com/chayapats/jit/issues/113) | Agent |
+| [REL05](https://github.com/chayapats/jit/issues/117) | Context packet with pinned owner decisions that survives compaction and reopen | None | Agent |
+| [REL06](https://github.com/chayapats/jit/issues/118) | Owner loopback API and `jit` CLI with retry keys and exit codes | None | Agent |
+| [REL07](https://github.com/chayapats/jit/issues/119) | Signed webhooks that only nudge an early PR poll | [REL06](https://github.com/chayapats/jit/issues/118) | Agent |
+| [REL08](https://github.com/chayapats/jit/issues/120) | Read-only `.ics` feed of schedules | None | Agent |
