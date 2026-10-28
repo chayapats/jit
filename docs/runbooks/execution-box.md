@@ -20,6 +20,11 @@ jit:100000:65536
 ```
 
 - Verify `podman --version` is 4.4 or newer (`jit ops box-doctor` checks `podman-version>=4.4`).
+- When the service user's home (and so its rootless container storage) lies under `/var/lib` (for example
+  `/var/lib/jit`), create `/var/lib/cni` once as root (`sudo mkdir -p /var/lib/cni`). Podman 4.x otherwise mounts a
+  tmpfs over `/var/lib` inside its rootless network namespace, which hides the user's network definitions there, and
+  every box on `jit-box-internal` fails with `unable to find network with name or ID jit-box-internal` (observed on
+  the Pi with Podman 4.9.3, 2026-10-28).
 
 ## 2. Enable lingering
 
