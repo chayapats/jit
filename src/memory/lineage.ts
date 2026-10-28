@@ -24,9 +24,9 @@ function manifestSources(value: unknown): SourceReference[] | null {
 }
 
 /**
- * Producers indexed by the exact source revisions their manifests cite. Team runs (specialist results, role previews,
- * discussions and Jit replies) keep the manifest in their record; coordinator syntheses keep it in theirs and commit
- * their output as a decision proposal source. Built once per walk; an unreadable record cites nothing here, and its
+ * Producers indexed by the exact source revisions their manifests cite. Team runs (specialist results, role previews
+ * and discussions) keep the manifest in their record; coordinator syntheses keep it in theirs and commit their output
+ * as a decision proposal source. Jit replies are walked once, through {@link replyProducers}. Built once per walk; an unreadable record cites nothing here, and its
  * pending job still loses authority through the stale-context fence.
  */
 function producerIndex(tx: AppTransaction): Map<string, Producer[]> {
@@ -39,7 +39,8 @@ function producerIndex(tx: AppTransaction): Map<string, Producer[]> {
   };
   for (const row of tx.all<{ id: string; projectId: string; jobId: string; jobState: string | null; json: string }>(
     `SELECT r.id, r.project_id AS projectId, r.job_id AS jobId, j.state AS jobState, r.record_json AS json
-     FROM team_runs r LEFT JOIN jobs j ON j.id = r.job_id`)) {
+     FROM team_runs r LEFT JOIN jobs j ON j.id = r.job_id
+     WHERE NOT EXISTS (SELECT 1 FROM jit_replies jr WHERE jr.run_id = r.id)`)) {
     let record: ManifestRecord;
     try { record = JSON.parse(row.json) as ManifestRecord; } catch { continue; }
     const discussion = record?.kind === "discussion";

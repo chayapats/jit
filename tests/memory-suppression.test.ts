@@ -357,3 +357,37 @@ test("#110 forget fences a running extraction of an output it newly suppresses a
   expect(f.rt.app.memory(actor(f), p.id).extractions.find(e => e.id === running.extraction.id)?.claimIds ?? []).toHaveLength(0);
   expect(claims(f, p).some(item => item.source.sourceId === output.sourceId)).toBe(false);
 });
+
+test("#110 forget lists the context of a run fenced only because it admitted a claim of a newly suppressed output", async () => {
+  const f = await fixture();
+  const p = project(f, "โครงการลับ", "หัวข้อรหัส");
+  const origin = say(f, p, "รหัสลับคือ ม่วง-42");
+  const claim = (await remember(f, p, origin))[0]!;
+  const preview = f.rt.app.execute(actor(f), { kind: "role.preview", requestId: rid(), projectId: p.id, expectedRevision: f.rt.app.project(actor(f), p.id).revision,
+    payload: { roleId: f.roles.tech, topicId: p.topic.id, purpose: "ทวนรหัสลับ", sources: [origin], limits: { ...f.config.jobs.maximum } } }).preview!;
+  await drain(f);
+  const output = runOutput(f, preview.id);
+  const copy: Script = request => fixtureOutcome("complete", JSON.stringify({ version: 1, complete: true, claims: [{ kind: "inference" as const,
+    text: "ทีมเลือกใช้ฐานข้อมูล SQLite สำหรับงานทดลองบน Pi", quote: request.manifest.sources[0]!.text, source: request.manifest.sources[0]!.reference, dependencies: [], conflicts: [] }] }));
+  const copied = (await remember(f, p, output, { output: copy }))[0]!;
+  // The specialist is given only the topic source, but its memory context admits the claim extracted from the preview.
+  const started = f.rt.app.execute(actor(f), dispatch(f, p, copied.text)).discussion!;
+  const queued = f.rt.app.discussion(actor(f), p.id, started.id).discussion;
+  expect(queued.manifest.claims.map(item => item.claimId)).toContain(copied.claimId);
+  expect(queued.manifest.sources.map(item => item.reference.sourceId)).not.toContain(output.sourceId);
+  // Keep only the copied claim in the recorded manifests, so no fence that follows withdrawn claims can reach this run.
+  const onlyCopied = (manifest: { claims: { claimId: string }[] }) => { manifest.claims = manifest.claims.filter(item => item.claimId === copied.claimId); };
+  const run = f.rt.store.transaction(tx => {
+    for (const id of [started.id, queued.participations[0]!.runId]) {
+      const record = JSON.parse(tx.get<{ json: string }>("SELECT record_json AS json FROM team_runs WHERE id = ?", id)!.json);
+      onlyCopied(record.request?.manifest ?? record.manifest);
+      tx.run("UPDATE team_runs SET record_json = ? WHERE id = ?", JSON.stringify(record), id);
+    }
+    return tx.get<{ contextId: string; jobId: string }>("SELECT context_id AS contextId, job_id AS jobId FROM team_runs WHERE id = ?", queued.participations[0]!.runId)!;
+  });
+  const receipt = f.rt.app.execute(actor(f), forgetCommand(f, p, claim));
+  expect(receipt.suppression.sources.map(entry => entry.source.sourceId)).toContain(output.sourceId);
+  expect(jobState(f, run.jobId)).toMatchObject({ state: "blocked" });
+  expect(receipt.suppression.contexts.map(context => context.id)).toContain(run.contextId);
+  expect(f.rt.app.suppressionLedger(actor(f), p.id, claim.claimId)).toMatchObject({ retire: { state: "incomplete" } });
+});

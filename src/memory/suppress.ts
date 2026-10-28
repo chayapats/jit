@@ -207,7 +207,8 @@ function pendingReferencing(tx: AppTransaction, ids: Set<string>, suppressed: Se
  * cites a withdrawn claim is fenced here with its specialist participations; the next
  * run must assemble a fresh context from permitted sources before any result can commit.
  */
-function fenceSuppressedDiscussions(tx: AppTransaction, ids: Set<string>, now: number): void {
+function fenceSuppressedDiscussions(tx: AppTransaction, ids: Set<string>, now: number): string[] {
+  const fenced: string[] = [];
   for (const row of tx.all<{ projectId: string; jobId: string; json: string }>("SELECT project_id AS projectId, job_id AS jobId, record_json AS json FROM team_runs LIMIT 2000")) {
     let discussion: Discussion;
     try {
@@ -215,9 +216,14 @@ function fenceSuppressedDiscussions(tx: AppTransaction, ids: Set<string>, now: n
       if (discussion.kind !== "discussion" || !discussion.manifest) continue;
     } catch { continue; }
     if (!discussion.manifest.claims.some(claim => ids.has(claim.claimId))) continue;
-    invalidatePendingJob(tx, row.projectId, discussion.jobId, "source_retired", now);
-    for (const participation of discussion.participations) invalidatePendingJob(tx, row.projectId, participation.jobId, "source_retired", now);
+    for (const jobId of [discussion.jobId, ...discussion.participations.map(item => item.jobId)]) {
+      const state = tx.get<{ state: string }>("SELECT state FROM jobs WHERE id = ?", jobId)?.state;
+      if (!state || !["queued", "admitted", "waiting"].includes(state)) continue;
+      invalidatePendingJob(tx, row.projectId, jobId, "source_retired", now);
+      fenced.push(jobId);
+    }
   }
+  return fenced;
 }
 
 /** Native contexts owned by jobs this suppression fenced, for the run_port retirement checkpoint. */
@@ -288,8 +294,10 @@ export function prepareSuppression(tx: AppTransaction, command: ForgetMemoryComm
   const fenced = dedupeJobs([...pendingReferencing(tx, ids, suppressedKeys(sources)), ...lineage.pendingJobs]);
   const fencedJobs = new Set(fenced.map(job => job.id));
   for (const job of fenced) invalidatePendingJob(tx, job.projectId, job.id, "source_retired", now);
-  fenceSuppressedDiscussions(tx, ids, now);
-  fenceStaleContexts(tx, now);
+  // Every fence below adds its jobs too: a run that admitted a claim of a newly suppressed output is fenced only by the
+  // stale-context check, and its context must still be listed so the ledger cannot report complete too early.
+  for (const jobId of fenceSuppressedDiscussions(tx, ids, now)) fencedJobs.add(jobId);
+  for (const jobId of fenceStaleContexts(tx, now)) fencedJobs.add(jobId);
   // Every project that owns a withdrawn claim or a suppressed source, not only the claims' projects.
   const projects = new Set([...[...withdrawn.values()].map(entry => entry.projectId), ...sources.map(entry => entry.projectId)]);
   for (const project of projects) for (const jobId of fenceUnavailableExtractions(tx, project, now)) fencedJobs.add(jobId);
