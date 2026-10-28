@@ -1,14 +1,20 @@
 import { AppError } from "./errors";
 import type { AppTransaction } from "./store";
 import { commitOwnerSource, lookupSource, requireId, requireText, type Attribution, type SourceReference } from "./sources";
+import { requireParticipationReference, type ParticipationReference } from "./team/routing";
 
 /** Creates a topic under the selected project's current aggregate revision. */
 export interface CreateTopicCommand {
   kind: "topic.create"; requestId: string; projectId: string; expectedRevision: number; payload: { title: string };
 }
-/** Appends literal owner text under the selected topic's current conversation revision. */
+/**
+ * Appends literal owner text under the selected topic's current conversation revision. `replyTo` optionally names the
+ * participation (one role in one discussion of this topic) the owner is answering; app.routing_selection/v1 uses it to
+ * call that role again without a model choice. It is owner input and never comes from model text.
+ */
 export interface SendMessageCommand {
-  kind: "message.send"; requestId: string; projectId: string; expectedRevision: number; payload: { topicId: string; text: string };
+  kind: "message.send"; requestId: string; projectId: string; expectedRevision: number;
+  payload: { topicId: string; text: string; replyTo?: ParticipationReference };
 }
 /**
  * Starts a new chat from the home composer (app.topic_promotion/v1 home, S09-D05/D09): one topic in the chosen project
@@ -89,9 +95,12 @@ export function conversationIdentity(command: ConversationCommand, messageBytes:
     return JSON.stringify([command.kind, command.projectId, command.expectedRevision, command.payload.text]);
   }
   if (command.kind === "message.send") {
-    if (Object.keys(command.payload).some(k => !["topicId", "text"].includes(k))) throw new AppError("invalid_conversation_command");
+    if (Object.keys(command.payload).some(k => !["topicId", "text", "replyTo"].includes(k))) throw new AppError("invalid_conversation_command");
     requireId(command.payload.topicId); requireText(command.payload.text, messageBytes);
-    return JSON.stringify([command.kind, command.projectId, command.expectedRevision, command.payload.topicId, command.payload.text]);
+    // A message without a reply target keeps its original receipt identity.
+    if (!Object.hasOwn(command.payload, "replyTo")) return JSON.stringify([command.kind, command.projectId, command.expectedRevision, command.payload.topicId, command.payload.text]);
+    const replyTo = requireParticipationReference(command.payload.replyTo);
+    return JSON.stringify([command.kind, command.projectId, command.expectedRevision, command.payload.topicId, command.payload.text, replyTo.discussionId, replyTo.roleId]);
   }
   throw new AppError("invalid_conversation_command");
 }

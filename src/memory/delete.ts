@@ -1256,7 +1256,7 @@ function redactDerivedRuns(tx: AppTransaction, sources: SourceEntry[]): void {
     "SELECT json_extract(attribution_json, '$.runId') AS runId FROM source_versions WHERE source_id = ? AND revision = ? AND generation = ?",
     entry.source.sourceId, entry.source.revision, entry.source.generation)?.runId;
   const derived = sources.filter(entry => entry.relation === "derived_output");
-  const runIds = new Set<string>(), replyRunIds = new Set<string>(), purgedReplies = new Set<string>(), unblocks = new Map<string, { projectId: string; action: string }>();
+  const runIds = new Set<string>(), replyRunIds = new Set<string>(), purgedReplies = new Set<string>(), purgedWhy = new Set<string>(), unblocks = new Map<string, { projectId: string; action: string }>();
   for (const entry of sources) {
     const runId = runOf(entry);
     if (typeof runId !== "string") continue;
@@ -1273,6 +1273,7 @@ function redactDerivedRuns(tx: AppTransaction, sources: SourceEntry[]): void {
       const matches = (ids: Set<string>) => ids.has(parsed.id as string) || (typeof runId === "string" && ids.has(runId));
       if (!matches(runIds) && !(table === "team_runs" && parsed.kind === "jit_reply" && matches(replyRunIds))) return;
       if (parsed.kind === "jit_reply" && ((Array.isArray(parsed.roleProposals) && parsed.roleProposals.length) || parsed.promotionProposal)) purgedReplies.add(parsed.id as string);
+      if (parsed.kind === "jit_reply" && typeof parsed.dispatchWhy === "string") purgedWhy.add(parsed.id as string);
       const outcome = parsed.outcome as { output?: unknown } | null | undefined;
       const proposals = redactRoleProposals(parsed.roleProposals, () => redactedText);
       const promotion = redactPromotionProposal(parsed.promotionProposal, () => redactedText);
@@ -1287,7 +1288,9 @@ function redactDerivedRuns(tx: AppTransaction, sources: SourceEntry[]): void {
       const next = { ...parsed, ...(outcome && typeof outcome.output === "string" ? { outcome: { ...outcome, output: redactedText } } : {}),
         ...(redactedResult ? { result: redactedResult } : {}),
         ...("progress" in parsed ? { progress: null } : {}), ...(proposals.changed ? { roleProposals: proposals.value } : {}),
-        ...(promotion.changed ? { promotionProposal: promotion.value } : {}) };
+        ...(promotion.changed ? { promotionProposal: promotion.value } : {}),
+        // app.routing_selection/v1: Jit's dispatch `why` is model text from the same output.
+        ...(typeof parsed.dispatchWhy === "string" ? { dispatchWhy: null } : {}) };
       if (JSON.stringify(next) !== JSON.stringify(parsed)) tx.run(`UPDATE ${table} SET record_json = ? WHERE rowid = ?`, JSON.stringify(next), row.rowid_);
     }, null);
   }
@@ -1301,6 +1304,18 @@ function redactDerivedRuns(tx: AppTransaction, sources: SourceEntry[]): void {
       if (!isRoleProposalView(parsed.proposal) || parsed.proposal.replyId !== replyId) return;
       const view = redactRoleProposalView(parsed.proposal, () => redactedText);
       if (view.changed) tx.run("UPDATE command_receipts SET result_json = ? WHERE rowid = ?", JSON.stringify({ ...parsed, proposal: view.value }), row.rowid_);
+    }, null, "result_json LIKE ?", [`%${replyId}%`]);
+  }
+  // app.routing_selection/v1: dispatch.* receipts snapshot the card, including Jit's `why`; a replay must not return
+  // the reason the reply record no longer holds. The rule and role ids stay.
+  for (const replyId of purgedWhy) {
+    scanTable<{ json: string; rowid_: number }>(tx, "command_receipts", "result_json AS json", row => {
+      let parsed: Record<string, unknown>;
+      try { parsed = JSON.parse(row.json) as Record<string, unknown>; } catch { return; }
+      const proposal = parsed.proposal as { replyId?: unknown; selection?: { why?: unknown } | null } | undefined;
+      if (!proposal || typeof proposal !== "object" || proposal.replyId !== replyId || typeof proposal.selection?.why !== "string") return;
+      const next = { ...parsed, proposal: { ...proposal, selection: { ...proposal.selection, why: null } } };
+      tx.run("UPDATE command_receipts SET result_json = ? WHERE rowid = ?", JSON.stringify(next), row.rowid_);
     }, null, "result_json LIKE ?", [`%${replyId}%`]);
   }
   for (const entry of derived) {

@@ -10,7 +10,7 @@ import { TransactionStore } from "../src/store";
 import { listDiscussions } from "../src/team/dispatch";
 import { memoryExtractionMarker, memoryExtractionWork, scriptedMemoryResult } from "../src/memory/extract";
 import { commitOutputSource } from "../src/sources";
-import { jitReplyMarker, jitReplyWork, jitReplyWorkId, normalizeJitReply, type JitReplyView } from "../src/team/jit-reply";
+import { dispatchNames, jitReplyMarker, jitReplyWork, jitReplyWorkId, normalizeJitReply, type JitReplyView } from "../src/team/jit-reply";
 import type { ApplicationRunPort } from "../src/team/run-port";
 import { ScriptedRunPort, fixtureOutcome } from "../src/team/scripted-port";
 import type { ApplicationRunEvent, ApplicationRunOutcome, ApplicationRunRequest, RoleRoute } from "../src/team/types";
@@ -697,4 +697,18 @@ test("REL02 app.communication_policy/v1: every reply carries the fixed policy an
     expect(operator.join("\n")).not.toContain("v9");
     expect(record.request.manifest.sources.at(-1).text).toBe(text);
   }
+});
+
+test("REL03 the dispatch proposal is a closed schema of roles plus an optional why of at most 160 characters", () => {
+  expect(dispatchNames({ kind: "dispatch", roles: [" เทคโนโลยี "] })).toEqual({ names: ["เทคโนโลยี"], why: null });
+  expect(dispatchNames({ kind: "dispatch", roles: ["ออกแบบ"], why: "  ต้องดู\nUX  " })).toEqual({ names: ["ออกแบบ"], why: "ต้องดู UX" });
+  expect(dispatchNames({ kind: "dispatch", roles: ["ออกแบบ"], why: "😀".repeat(160) })?.why).toBe("😀".repeat(160));
+  for (const bad of [
+    { kind: "dispatch", roles: ["ออกแบบ"], why: "ก".repeat(161) }, { kind: "dispatch", roles: ["ออกแบบ"], why: "" }, { kind: "dispatch", roles: ["ออกแบบ"], why: 1 },
+    { kind: "dispatch", roles: ["ออกแบบ"], why: "\ud800" }, { kind: "dispatch", roles: ["ออกแบบ"], why: "ok", allowance: 9 }, { kind: "dispatch", roles: [], why: "ok" },
+  ]) expect(dispatchNames(bad)).toBeNull();
+  // Through normalization, a declined entry is discarded by kind only: model text never reaches evidence.
+  const handlers = { dispatch: (item: unknown) => !!dispatchNames(item) };
+  expect(normalizeJitReply(JSON.stringify({ reply: "ok", proposals: [{ kind: "dispatch", roles: ["x"], why: "<b>" + "y".repeat(200) }] }), 4096, handlers))
+    .toMatchObject({ state: "complete", discarded: ["proposal:dispatch"] });
 });

@@ -18,6 +18,7 @@ import type { ApplicationRunOutcome, ApplicationRunRequest, ContextPacketOmissio
 import { admitJitDispatch } from "./jit-dispatch";
 import { communicationPolicyLine, teamCommunicationPolicy } from "./communication-policy";
 import { unblockAction } from "./specialist-results";
+import { selectRoles, selectionWhy, selectionWhyLimit, type FixedSelection, type ParticipationReference } from "./routing";
 import { generalProjectId, parsePromotionProposal, promotionFrom, promotionInstruction, promotionProposalViews, type PromotionProposal, type PromotionProposalView } from "../promotion";
 
 /** Registered work type for one Jit reply to one owner message (ADR 0029). */
@@ -72,6 +73,16 @@ interface JitReplyRecord {
   roleProposals?: RoleProposal[];
   /** app.topic_promotion/v1: a General space reply's suggestion to continue the topic as a project; absent otherwise. */
   promotionProposal?: PromotionProposal;
+  /**
+   * app.routing_selection/v1: the fixed rule that chose specialists when the owner's message was admitted. The run is
+   * told the choice and is not offered a dispatch proposal; the service admits the roles when the reply commits.
+   */
+  routing?: FixedSelection;
+  /**
+   * app.routing_selection/v1: the `why` of this reply's model dispatch proposal, untrusted model text. It lives only
+   * here, with the output it came from, so data deletion of the reply redacts it too; cards read it from here.
+   */
+  dispatchWhy?: string | null;
 }
 
 /** One committed specialist result a team reply was given and cites, frozen at admission. */
@@ -193,16 +204,19 @@ export function normalizeJitReply(output: string, outputBytes: number, handlers:
 }
 
 /**
- * The names of one well-formed dispatch proposal `{"kind": "dispatch", "roles": [string, ...]}` with no other keys,
- * or null. Names are untrusted lookup keys only: the service matches them against the owner's configuration and
- * never stores or shows them (app.dispatch_allowance/v1).
+ * One well-formed dispatch proposal `{"kind": "dispatch", "roles": [string, ...], "why"?: string}` with no other keys,
+ * or null (the closed schema of app.routing_selection/v1). Names are untrusted lookup keys only: the service matches
+ * them against the owner's configuration and never stores or shows them (app.dispatch_allowance/v1). `why` is at most
+ * {@link selectionWhyLimit} characters; it is kept as Jit's untrusted reasoning, shown escaped, and grants nothing.
  */
-function dispatchNames(item: unknown): string[] | null {
-  if (!exact(item, ["kind", "roles"]) || (item as { kind: unknown }).kind !== "dispatch") return null;
+export function dispatchNames(item: unknown): { names: string[]; why: string | null } | null {
+  if ((!exact(item, ["kind", "roles"]) && !exact(item, ["kind", "roles", "why"])) || (item as { kind: unknown }).kind !== "dispatch") return null;
   const roles = (item as { roles: unknown }).roles;
   if (!Array.isArray(roles) || roles.length < 1 || roles.length > dispatchNameLimit) return null;
   if (roles.some(name => typeof name !== "string" || !name.trim() || name.length > 200 || !name.isWellFormed())) return null;
-  return roles.map(name => (name as string).trim());
+  const why = selectionWhy((item as { why?: unknown }).why);
+  if (why === undefined) return null;
+  return { names: roles.map(name => (name as string).trim()), why };
 }
 
 /** Reads one reply record. app.role_proposals/v1 keeps its proposal revisions here. */
@@ -270,6 +284,8 @@ interface ReplyAdmission {
    * Specialist results become cited manifest sources after that history.
    */
   team?: { proposalId: string; discussionId: string; question: ReplyAnchor; results: TeamReplyResult[]; gaps: TeamReplyGap[] };
+  /** A message reply whose specialists a fixed rule already chose (app.routing_selection/v1). */
+  routing?: FixedSelection | null;
 }
 
 /** Longest UTF-8 byte length of one service-written operator line (app.run_port/v1 accepts 2048). */
@@ -307,6 +323,7 @@ function boundedNames(names: readonly string[], budget: number): string {
  */
 function admitReply(tx: AppTransaction, input: ReplyAdmission): { id: string; reason: ReplyNotAdmitted | null } {
   const { message, config, queue, now, team: teamInput } = input;
+  const routing = teamInput ? null : input.routing ?? null;
   const replyId = crypto.randomUUID();
   const notAdmitted = (reason: ReplyNotAdmitted) => {
     tx.run("INSERT INTO jit_replies (id, project_id, topic_id, message_id, run_id, reason, cursor, created_at) VALUES (?, ?, ?, ?, NULL, ?, ?, ?)",
@@ -323,7 +340,9 @@ function admitReply(tx: AppTransaction, input: ReplyAdmission): { id: string; re
   const roster = team.roles.filter(role => role.kind === "specialist" && role.enabled && role.effective.route).map(role => role.name);
   const metadataOf = (kept: readonly TeamReplyResult[], missing: readonly TeamReplyGap[]) => teamInput
     ? `Committed specialist results (service-recorded), in manifest order after the history: ${boundedNames(kept.map(item => item.roleName), operatorLineBytes / 2 - 120)}. Roles without a result: ${boundedNames(missing.map(gap => `${gap.roleName} (${gap.reason})`), operatorLineBytes / 2 - 120)}.`
-    : `Optional "proposals" entry {"kind":"dispatch","roles":[names]} (at most one) that asks the service to call existing specialists for read-only analysis when the question needs them; the service checks it against the owner's configuration and dispatch allowance, and the owner confirms anything beyond it. Specialists you may name (owner-configured, service-recorded): ${boundedNames(roster, operatorLineBytes - 520)}.`;
+    : routing
+      ? `The service already chose specialists by a fixed rule (${routing.selection.rule}) and calls them after your reply when the owner's dispatch allowance covers them; do not propose a dispatch. Chosen specialists (owner-configured, service-recorded): ${boundedNames(routing.selection.roleIds.map(id => team.roles.find(role => role.id === id)?.name ?? id), operatorLineBytes - 520)}.`
+      : `Optional "proposals" entry {"kind":"dispatch","roles":[names],"why":string} (at most one) that asks the service to call existing specialists for read-only analysis when the question needs them; "why" is one short reason of at most ${selectionWhyLimit} characters, shown to the owner as your reasoning. The service checks the entry against the owner's configuration and dispatch allowance, and the owner confirms anything beyond it. Specialists you may name (owner-configured, service-recorded): ${boundedNames(roster, operatorLineBytes - 720)}.`;
   // Policy lines go as one operator line: run requests hold at most 8, and role proposals (app.role_proposals/v1)
   // and dispatch proposals each add instruction lines to a message reply.
   // app.topic_promotion/v1: only a reply to an owner message in an open General space topic may suggest a promotion.
@@ -456,7 +475,7 @@ function admitReply(tx: AppTransaction, input: ReplyAdmission): { id: string; re
   const record: JitReplyRecord = {
     kind: "jit_reply", id: replyId, projectId: message.projectId, topicId: message.topicId, messageId: message.id, jobId: job.id, roleId: jit.id,
     personaRevision: persona.revision, policyVersion: teamCommunicationPolicy.version, request, revision: 1, createdAt: now, updatedAt: now,
-    outcome: null, result: null, source: null, replyMessageId: null, progress: null,
+    outcome: null, result: null, source: null, replyMessageId: null, progress: null, ...(routing ? { routing: structuredClone(routing) } : {}),
     ...(teamInput ? { team: { proposalId: teamInput.proposalId, discussionId: teamInput.discussionId,
       citations: results.map(item => ({ roleId: item.roleId, roleName: item.roleName, reference: { ...item.reference } })), gaps: gaps.map(gap => ({ ...gap })) } } : {}),
   };
@@ -479,8 +498,13 @@ function admitReply(tx: AppTransaction, input: ReplyAdmission): { id: string; re
  */
 export function admitJitReply(tx: AppTransaction, input: {
   message: CommittedMessage; requestId: string; config: AppConfig; queue: JobQueue | undefined; generation: number; now: number;
+  /** The participation the owner replied to, if any (app.routing_selection/v1 rule `reply`). */
+  replyTo?: ParticipationReference | null;
 }): void {
-  admitReply(tx, input);
+  // app.routing_selection/v1: fixed rules first, with no model call; null leaves the choice to Jit's dispatch proposal.
+  const routing = selectRoles(tx, { message: { id: input.message.id, sequence: input.message.sequence, text: input.message.text, replyTo: input.replyTo ?? null },
+    topic: { id: input.message.topicId }, project: { id: input.message.projectId }, config: input.config });
+  admitReply(tx, { ...input, routing });
 }
 
 /**
@@ -723,8 +747,9 @@ export function jitReplyWork(store: TransactionStore, config: AppConfig, port: A
       // app.role_proposals/v1: a valid role proposal becomes Jit's revision 1 on a card; its route must be configured.
       const roleProposals: RoleProposal[] = [];
       const routes = store.read(tx => configuredRoutes(tx, job.projectId, config.team));
-      // app.dispatch_allowance/v1: at most one well-formed dispatch proposal; names are lookup keys only.
-      let dispatch: string[] | null = null;
+      // app.dispatch_allowance/v1: at most one well-formed dispatch proposal; names are lookup keys only. A reply whose
+      // specialists a fixed rule chose (app.routing_selection/v1) is not offered one, so any it returns is discarded.
+      let dispatch: { names: string[]; why: string | null } | null = null;
       // app.topic_promotion/v1: at most one promotion proposal, and only in an open General space topic.
       let promotion: PromotionProposal | null = null;
       const promotable = !opened.team && store.read(tx => promotionOpen(tx, job.projectId, opened.topicId));
@@ -734,11 +759,11 @@ export function jitReplyWork(store: TransactionStore, config: AppConfig, port: A
         const proposal = parseRoleProposal(item, routes, config.team, now());
         if (proposal) roleProposals.push(proposal);
         return !!proposal;
-      }, dispatch: (item: unknown) => {
+      }, ...opened.routing ? {} : { dispatch: (item: unknown) => {
         if (dispatch) return false;
         dispatch = dispatchNames(item);
         return !!dispatch;
-      }, ...promotable ? { promotion: (item: unknown) => {
+      } }, ...promotable ? { promotion: (item: unknown) => {
         if (promotion) return false;
         promotion = parsePromotionProposal(item, now());
         return !!promotion;
@@ -748,7 +773,7 @@ export function jitReplyWork(store: TransactionStore, config: AppConfig, port: A
         ? { state: "answered", reason: null, structured: parsed.structured, discarded: parsed.discarded, discardedTotal: parsed.discardedTotal }
         : { state: "failed", reason: parsed?.state === "failed" ? parsed.reason : outcome.reason, structured: false, discarded: [], discardedTotal: 0 };
       // Language-neutral technical evidence (codes only), the same on Thai and English pages.
-      const evidence = `jit-reply · ${outcome.mode} · ${result.state}${result.reason ? `/${result.reason}` : ""} · discarded ${result.discardedTotal}${result.discarded.length ? ` (${result.discarded.join(", ")})` : ""}${result.state === "answered" && roleProposals.length ? ` · proposals role:${roleProposals.length}` : ""}${result.state === "answered" && promotion ? " · proposals promotion:1" : ""}${opened.team ? ` · team cites ${opened.team.citations.length} gaps ${opened.team.gaps.length}` : ""}${result.state === "answered" && (dispatch as string[] | null)?.length ? ` · dispatch named ${(dispatch as string[] | null)?.length}` : ""} · tools none · reply ${opened.id}`;
+      const evidence = `jit-reply · ${outcome.mode} · ${result.state}${result.reason ? `/${result.reason}` : ""} · discarded ${result.discardedTotal}${result.discarded.length ? ` (${result.discarded.join(", ")})` : ""}${result.state === "answered" && roleProposals.length ? ` · proposals role:${roleProposals.length}` : ""}${result.state === "answered" && promotion ? " · proposals promotion:1" : ""}${opened.team ? ` · team cites ${opened.team.citations.length} gaps ${opened.team.gaps.length}` : ""}${result.state === "answered" && (dispatch as { names: string[] } | null)?.names.length ? ` · dispatch named ${(dispatch as { names: string[] } | null)?.names.length}` : ""}${result.state === "answered" && opened.routing ? ` · selection ${opened.routing.selection.rule} ${opened.routing.selection.roleIds.length}` : ""} · tools none · reply ${opened.id}`;
       const outcomeState = result.state === "answered" ? { state: "succeeded" as const, evidence } : { state: "partial" as const, evidence };
       const committed = commit(outcomeState, tx => {
         const current = readReplyRecord(tx, job.projectId, opened.id);
@@ -769,14 +794,22 @@ export function jitReplyWork(store: TransactionStore, config: AppConfig, port: A
           current.source = source; current.replyMessageId = messageId;
           if (roleProposals.length) current.roleProposals = roleProposals;
           if (promotion) current.promotionProposal = promotion;
+          const why = (dispatch as { why: string | null } | null)?.why;
+          if (why) current.dispatchWhy = why;
           tx.run("UPDATE jit_replies SET reply_message_id = ?, reply_source_id = ? WHERE id = ?", messageId, source.sourceId, current.id);
           if (current.team) inheritDerivation(tx, current.projectId, source, current.team.citations);
           saveReplyRecord(tx, current);
-          // app.dispatch_allowance/v1: the service, not the model, decides what a dispatch proposal may start.
-          const names = dispatch as string[] | null;
-          if (names) {
-            admitJitDispatch(tx, { reply: { id: current.id, projectId: current.projectId, topicId: current.topicId, messageId: current.messageId,
-              replyMessageId: messageId, generation: job.authorization.generation }, names, config, queue: queue(), now: now() });
+          // app.dispatch_allowance/v1: the service, not the model, decides what a dispatch proposal may start. A fixed
+          // rule's selection (app.routing_selection/v1) goes through the same admission without any model choice.
+          const proposal = dispatch as { names: string[]; why: string | null } | null;
+          const replyRef = { id: current.id, projectId: current.projectId, topicId: current.topicId, messageId: current.messageId,
+            replyMessageId: messageId, generation: job.authorization.generation };
+          if (current.routing) {
+            admitJitDispatch(tx, { reply: replyRef, config, queue: queue(), now: now(),
+              selection: { rule: current.routing.selection.rule, roleIds: current.routing.selection.roleIds, continues: current.routing.continues } });
+          } else if (proposal) {
+            admitJitDispatch(tx, { reply: replyRef, config, queue: queue(), now: now(),
+              selection: { rule: "model", names: proposal.names, configuration: request.configuration } });
           }
           return;
         }

@@ -259,7 +259,10 @@ export function prepareControl(
   if (p.action === "include") {
     // app.topic_promotion/v1: a promoted origin is read-only, so no specialist starts there again.
     requireTopicOpen(tx, command.projectId, discussion.topicId);
-    if (existing && !["excluded", "skipped", "stopped"].includes(existing.state)) throw new AppError("role_already_participating", 409);
+    // The participation's projected state, the one the team card shows: a role whose job was stopped from the job page
+    // (`job.stop`) reads `stopped` while its stored state is still queued or running. Its job is already fenced.
+    const current = existing ? projectDiscussion(tx, discussion).participations.find(item => item.roleId === p.roleId)! : null;
+    if (current && !["excluded", "skipped", "stopped"].includes(current.state)) throw new AppError("role_already_participating", 409);
     if (discussion.participations.filter(item => !["excluded", "skipped"].includes(item.state)).length >= discussion.limits.roles) {
       throw new AppError("role_budget_exhausted", 409);
     }

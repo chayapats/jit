@@ -255,6 +255,19 @@ export function unblockLine(roleName: string | null, unblock: string | null | un
   return unblock ? `<p class="team-role-note team-unblock" data-unblock>${roleName ? `${escape(roleName)} · ` : ""}${tr("team.unblock")}: ${escape(unblock)}</p>` : "";
 }
 const roleLabel = (role: TeamCardRole) => tr(`team_card.role.${role.activity === "waiting" ? "waiting" : role.state}` as MessageKey);
+/**
+ * app.routing_selection/v1 line on a dispatch card. A fixed rule shows only its name. A model selection shows
+ * "Jit chose X because …", labelled as Jit's reasoning and not evidence; the names come from owner configuration and
+ * `why` is untrusted model text, so the whole line is escaped.
+ */
+function selectionLine(card: DispatchCardView): string {
+  const selection = card.selection;
+  if (!selection || !card.roles.length) return "";
+  if (selection.rule !== "model") return `<p class="team-selection" data-selection-rule="${selection.rule}">${tr(`team.selection_rule_${selection.rule}` as MessageKey)}</p>`;
+  const names = card.roles.map(role => role.roleName).join(", ");
+  const text = selection.why ? fillText(tr("team.selection_why"), { names, why: selection.why }) : fillText(tr("team.selection_model"), { names });
+  return `<p class="team-selection" data-selection-rule="model"><span class="team-selection-label">${tr("team.selection_why_label")}</span> <span class="team-selection-why">${escape(text)}</span></p>`;
+}
 /** Dispatch allowance settings anchor for one project. */
 export const allowanceHref = (projectId: string) => `/settings/dispatch?project=${projectId}#allowance-${projectId}`;
 
@@ -264,7 +277,7 @@ export const allowanceHref = (projectId: string) => `/settings/dispatch?project=
  * (S09-D08) with each role's state in words, skip and stop-all through the existing discussion controls, each opinion
  * readable, and "answer now" when nothing runs. Every action is a form post, so the card works without script.
  */
-function dispatchCard(card: DispatchCardView, base: string, csrf: string): string {
+function dispatchCard(card: DispatchCardView, base: string, csrf: string, topicRevision: number): string {
   const here = `${base}?after=${Math.max(0, card.anchorSequence - 1)}#dispatch-${card.id}`;
   // Plain text: the shared proposal card escapes every value.
   const dropped = [
@@ -292,7 +305,7 @@ function dispatchCard(card: DispatchCardView, base: string, csrf: string): strin
       meta: card.reason ? tr(`dispatch.reason.${card.reason}` as MessageKey) : "",
       fields: [{ label: tr("team_card.title"), value: card.roles.map(role => role.roleName).join(", ") }],
       dropped: droppedTotal ? { items: dropped, total: droppedTotal } : null,
-      note: open ? tr("dispatch.owner_only") : null, actions, footer: "" })}</div>`;
+      note: open ? tr("dispatch.owner_only") : null, actions: `${selectionLine(card)}${actions}`, footer: "" })}</div>`;
   }
   const team = card.discussion, live = team.roles.filter(role => role.activity === "live").length;
   const waiting = team.roles.filter(role => role.activity === "waiting").length;
@@ -302,14 +315,25 @@ function dispatchCard(card: DispatchCardView, base: string, csrf: string): strin
   const answered = card.teamReply?.state === "answered";
   const origin = team.origin?.kind === "owner-accepted" ? tr("team_card.origin_owner")
     : `${tr("team_card.origin_allowance")} ${card.allowanceRevision}${card.allowanceRevision === 0 ? ` (${tr("settings.dispatch_default")})` : ""}`;
-  const control = (role: TeamCardRole) => role.activity === "settled" ? "" : `<form method="post" action="/projects/${card.projectId}/team/discussions/${team.id}/controls">${hiddenCommand(csrf, team.revision)}
-    <input type="hidden" name="action" value="skip"><input type="hidden" name="roleId" value="${role.roleId}"><input type="hidden" name="back" value="topic"><button>${tr("team_card.skip")}</button></form>`;
+  // Skip, re-dispatch and add reuse the discussion's `team.control` (skip fences the job; include admits within the role budget).
+  const controlForm = (action: "skip" | "include", role: string, label: string) => `<form method="post" action="/projects/${card.projectId}/team/discussions/${team.id}/controls">${hiddenCommand(csrf, team.revision)}
+    <input type="hidden" name="action" value="${action}"><input type="hidden" name="roleId" value="${role}"><input type="hidden" name="back" value="topic"><button>${label}</button></form>`;
+  const rerunnable = (role: TeamCardRole) => card.canInclude && (role.state === "skipped" || role.state === "stopped" || role.state === "excluded");
+  const control = (role: TeamCardRole) => role.activity !== "settled" ? controlForm("skip", role.roleId, tr("team_card.skip"))
+    : rerunnable(role) ? controlForm("include", role.roleId, tr("team_card.redispatch")) : "";
+  // app.routing_selection/v1 rule `reply`: answering one opinion names its participation, so that role is called again without a model choice.
+  const replyForm = (role: TeamCardRole) => `<form class="team-form team-reply-to" method="post" action="${base}/messages">${hiddenCommand(csrf, topicRevision)}
+    <input type="hidden" name="replyDiscussion" value="${team.id}"><input type="hidden" name="replyRole" value="${role.roleId}">
+    <label>${escape(fillText(tr("team_card.reply_label"), { name: role.roleName }))}<textarea name="text" rows="2" required></textarea></label><button>${escape(fillText(tr("team_card.reply_to"), { name: role.roleName }))}</button></form>`;
   const opinion = (role: TeamCardRole) => !role.opinion ? "" : role.opinion.text === null ? `<p class="team-role-note">${tr("team_card.opinion_unavailable")}</p>`
-    : `<details class="team-opinion"><summary>${tr("team_card.read_opinion")}</summary><div class="message-body">${literalContent(role.opinion.text)}</div></details>`;
+    : `<details class="team-opinion"><summary>${tr("team_card.read_opinion")}</summary><div class="message-body">${literalContent(role.opinion.text)}</div>${replyForm(role)}</details>`;
+  const add = card.addable.length ? `<form class="team-form team-add" method="post" action="/projects/${card.projectId}/team/discussions/${team.id}/controls">${hiddenCommand(csrf, team.revision)}
+    <input type="hidden" name="action" value="include"><input type="hidden" name="back" value="topic"><label>${tr("team_card.add_role")}<select name="roleId">${card.addable.map(role => `<option value="${role.roleId}">${escape(role.roleName)}</option>`).join("")}</select></label><button>${tr("team_card.add")}</button></form>` : "";
   const rows = team.roles.map(role => `<li class="team-role" data-role-state="${role.activity === "waiting" ? "waiting" : role.state}"><div class="team-role-head"><span class="team-role-name">${escape(role.roleName)}</span>
     <span class="job-status" data-state="${roleTone[role.activity === "waiting" ? "waiting" : role.state] ?? "waiting"}">${roleLabel(role)}</span>${role.result ? resultPill(role.result) : ""}${control(role)}</div>
     ${role.result?.status === "blocked" ? unblockLine(null, role.result.unblock) : ""}${role.activity === "waiting" ? `<p class="team-role-note">${tr("team_card.waiting_note")} <a href="/projects/${card.projectId}/jobs/${role.jobId}#job-${role.jobId}">${tr("reply.view_job")}</a></p>` : ""}${opinion(role)}</li>`).join("");
   const actions = [
+    add,
     card.canStopAll ? `<form method="post" action="/projects/${card.projectId}/team/discussions/${team.id}/stop-all">${hiddenCommand(csrf, team.revision)}<button>${tr("team_card.stop_all")}</button></form>` : "",
     card.canAnswer ? `<form method="post" action="/projects/${card.projectId}/dispatch/${card.id}/answer">${hiddenCommand(csrf, card.revision)}<button>${tr("team_card.answer_now")}</button></form>` : "",
     `<a class="reply-refresh" href="${here}">${tr("reply.refresh")}</a>`,
@@ -322,7 +346,7 @@ function dispatchCard(card: DispatchCardView, base: string, csrf: string): strin
   ].join("");
   return `<details class="team-card team-run" id="dispatch-${card.id}" data-dispatch-id="${card.id}"${answered ? "" : " open"}>
     <summary><span class="team-run-title">${tr("team_card.title")} · ${team.roles.length} ${tr("team_card.people")}</span><span class="job-status" data-state="${live ? "running" : waiting ? "waiting" : "completed"}">${summary}</span></summary>
-    <p class="team-run-origin">${origin} · <a href="${allowanceHref(card.projectId)}">${tr("dispatch.allowance_link")}</a></p>${droppedLine}${blockedLine}
+    <p class="team-run-origin">${origin} · <a href="${allowanceHref(card.projectId)}">${tr("dispatch.allowance_link")}</a></p>${selectionLine(card)}${droppedLine}${blockedLine}
     <ul class="team-roles">${rows}</ul>${notes}<div class="reply-actions">${actions}</div></details>`;
 }
 
@@ -419,7 +443,7 @@ export function conversationPage(state: ReturnType<Application["conversation"]>,
       if (m.attribution.kind === "participant" && !jit && folded.has(m.attribution.runId)) return "";
       if (m.attribution.kind === "service" && m.attribution.service === "jit-promotion") return continuedBlock(m);
       return `<article id="message-${m.id}" class="message${m.attribution.kind === "owner" ? " message--owner" : jit || setupGreeting(m.attribution) ? " message--jit" : ""}" data-message-id="${m.id}">${jit || setupGreeting(m.attribution) ? `<div class="reply-head"><span class="jit-avatar">${logoMark({ size: 20 })}</span><span class="reply-name">${tr("jit.name")}</span></div>` : ""}<div class="message-body">${m.text === null ? `<p class="literal">${tr("common.source_unavailable")}</p>` : literalContent(m.text)}</div>
-      <div class="message-meta"><span>${escape(label(m))}</span><span class="committed">${icon("check")}${tr("common.saved")}</span><details><summary aria-label="${tr("topic.message_details_and_origin")}">${icon("info")}${tr("topic.details")}</summary><div class="message-detail">${time(m.committedAt)}<br>${sourceLink(project.id, m.source, tr("common.message_origin"))}${jit?.discardedTotal ? `<br>${tr("reply.discarded")}: ${jit.discardedTotal} · ${escape(jit.discarded.join(", "))}` : ""}</div></details></div>${jit?.team ? teamReplyMeta(jit, cardsById.get(jit.team.proposalId), project.id, csrf, dispatch?.synthesisLimits) : ""}</article>${proposals(jit)}${card ? dispatchCard(card, base, csrf) : ""}${reply && (m.attribution.kind === "owner" || reply.team) ? reply.state !== "answered" ? replyStatus(reply, base, project.id, csrf) : !onPage.has(reply.replyMessageId!) ? answeredElsewhere(reply) : "" : ""}`; }).join("") : `<div class="empty-chat"><div>${icon("chat")}<h2>${tr("topic.start_this_conversation")}</h2><p>${tr("topic.keep_ideas_questions_and_things")}</p></div></div>`}</section>
+      <div class="message-meta"><span>${escape(label(m))}</span><span class="committed">${icon("check")}${tr("common.saved")}</span><details><summary aria-label="${tr("topic.message_details_and_origin")}">${icon("info")}${tr("topic.details")}</summary><div class="message-detail">${time(m.committedAt)}<br>${sourceLink(project.id, m.source, tr("common.message_origin"))}${jit?.discardedTotal ? `<br>${tr("reply.discarded")}: ${jit.discardedTotal} · ${escape(jit.discarded.join(", "))}` : ""}</div></details></div>${jit?.team ? teamReplyMeta(jit, cardsById.get(jit.team.proposalId), project.id, csrf, dispatch?.synthesisLimits) : ""}</article>${proposals(jit)}${card ? dispatchCard(card, base, csrf, topic.revision) : ""}${reply && (m.attribution.kind === "owner" || reply.team) ? reply.state !== "answered" ? replyStatus(reply, base, project.id, csrf) : !onPage.has(reply.replyMessageId!) ? answeredElsewhere(reply) : "" : ""}`; }).join("") : `<div class="empty-chat"><div>${icon("chat")}<h2>${tr("topic.start_this_conversation")}</h2><p>${tr("topic.keep_ideas_questions_and_things")}</p></div></div>`}</section>
       <nav class="pagination" aria-label="${tr("topic.message_history_pages")}">${after > 0 ? `<a href="${base}">${tr("common.first_page")}</a>` : ""}${state.hasMore ? `<a href="${base}?after=${state.nextAfter}">${tr("topic.next_messages")}</a>` : ""}</nav></div>`, {
     breadcrumb: { title: project.name, href: `/projects/${project.id}` }, action: `<a class="header-action" href="/projects/${project.id}#new-topic" aria-label="${tr("common.new_topic")}">${icon("plus")}${tr("common.new_topic")}</a>${panelToggle(base)}`,
     panel: topicPanelSlot(),

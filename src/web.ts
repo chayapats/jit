@@ -1063,7 +1063,8 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
           return api ? json(receipt) : respond(null, 303, { Location: `/projects/${receipt.job.projectId}/jobs/${receipt.job.id}#job-${receipt.job.id}` });
         }
         if (topicCollection || messageRoute) {
-          const allowed = ["csrf", "requestId", "expectedRevision", topicCollection ? "title" : "text"];
+          // app.routing_selection/v1: a reply to one specialist's opinion names its participation (both fields or neither).
+          const allowed = ["csrf", "requestId", "expectedRevision", ...topicCollection ? ["title"] : ["text", "replyDiscussion", "replyRole"]];
           if (Object.keys(body).some(key => !allowed.includes(key))) throw new AppError("invalid_body");
           const revision = typeof body.expectedRevision === "string" && /^\d{1,15}$/.test(body.expectedRevision)
             ? Number(body.expectedRevision) : body.expectedRevision;
@@ -1073,8 +1074,10 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
             const receipt = app.execute(auth.actor, command);
             return api ? json(receipt) : respond(null, 303, { "Location": `/projects/${receipt.topic.projectId}/topics/${receipt.topic.id}` });
           }
+          if ((body.replyDiscussion === undefined) !== (body.replyRole === undefined)) throw new AppError("invalid_body");
           const command: SendMessageCommand = { kind: "message.send", projectId: messageRoute![2]!, requestId: body.requestId as string,
-            expectedRevision: revision as number, payload: { topicId: messageRoute![3]!, text: body.text as string } };
+            expectedRevision: revision as number, payload: { topicId: messageRoute![3]!, text: body.text as string,
+              ...body.replyDiscussion !== undefined ? { replyTo: { discussionId: body.replyDiscussion as string, roleId: body.replyRole as string } } : {} } };
           const receipt = app.execute(auth.actor, command);
           return api ? json(receipt) : respond(null, 303, { "Location": `/projects/${receipt.message.projectId}/topics/${receipt.message.topicId}?after=${Math.max(0, receipt.message.sequence - config.pageSize)}#message-${receipt.message.id}` });
         }

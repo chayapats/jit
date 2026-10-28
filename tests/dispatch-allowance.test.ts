@@ -263,20 +263,22 @@ test("over the allowance or with it off, the proposal waits for the owner's card
   expect(jobsOf(f, "team.specialist-analysis")).toHaveLength(1);
 });
 
-test("unknown, disabled and coordinator names are dropped; nothing valid starts nothing; injected text gains no authority", async () => {
+test("unknown, disabled and coordinator names make the selection invalid and held; nothing valid starts nothing; injected text gains no authority", async () => {
   let output = dispatching(["ไม่มีจริง", "กฎหมาย", "จิต", "เทคโนโลยี", "เทคโนโลยี"]);
   const f = await fixture({ jit: request => answer(request, output) });
   const sent = send(f, "ช่วยดูเรื่องนี้");
   await drain(f);
   const card = cardFor(f, replyFor(f, sent.message.id).replyMessageId!);
-  expect(card).toMatchObject({ state: "admitted", roles: [{ roleId: f.techId, roleName: "เทคโนโลยี" }],
-    dropped: { unknown: 1, disabled: ["กฎหมาย"], coordinator: 1, overCeiling: 0 } });
-  expect(card.discussion!.roles.map(role => role.roleId)).toEqual([f.techId]);
+  // app.routing_selection/v1: an invalid model selection never broadcasts; the callable roles wait for the owner.
+  expect(card).toMatchObject({ state: "proposed", reason: "invalid_selection", roles: [{ roleId: f.techId, roleName: "เทคโนโลยี" }],
+    dropped: { unknown: 1, disabled: ["กฎหมาย"], coordinator: 1, overCeiling: 0 }, discussion: null });
+  expect(jobsOf(f, "team.specialist-analysis")).toHaveLength(0);
   // The model's unknown name is never stored or shown.
   expect(f.store.read(tx => tx.all<{ record_json: string }>("SELECT record_json FROM dispatch_proposals")).some(row => row.record_json.includes("ไม่มีจริง"))).toBe(false);
   const html = await page(f);
   expect(html).not.toContain("ไม่มีจริง");
-  expect(html).toContain("ตัดออก: ชื่อที่ไม่รู้จัก 1 · ปิดอยู่หรือไม่มี route: กฎหมาย · ไม่ใช่ผู้เชี่ยวชาญ 1");
+  expect(html).toContain("<li>ชื่อที่ไม่รู้จัก 1</li><li>ปิดอยู่หรือไม่มี route: กฎหมาย</li><li>ไม่ใช่ผู้เชี่ยวชาญ 1</li>");
+  expect(html).toContain(`data-proposal-state="proposed"`);
 
   // Nothing valid: an empty proposal, no job.
   output = dispatching(["ไม่มีจริง", "กฎหมาย"]);
@@ -295,8 +297,8 @@ test("unknown, disabled and coordinator names are dropped; nothing valid starts 
   const reply = replyFor(f, injected.message.id);
   expect(reply.discarded).toEqual(["field:allowance", "field:dispatchAllowance", "field:decision"]);
   expect(f.app.dispatchAllowance(f.auth.actor, f.project.id)).toMatchObject({ revision: 0, enabled: true, maxRoles: 3 });
-  // Three valid roles fit the default allowance of three; the unknown fourth name is dropped.
-  expect(cardFor(f, reply.replyMessageId!)).toMatchObject({ state: "admitted", dropped: { unknown: 1 } });
+  // Three valid roles would fit the default allowance of three, but the unknown fourth name makes the selection invalid.
+  expect(cardFor(f, reply.replyMessageId!)).toMatchObject({ state: "proposed", reason: "invalid_selection", dropped: { unknown: 1 }, discussion: null });
   expect(count(f, "SELECT count(*) AS n FROM owner_decisions")).toBe(0);
   expect(count(f, "SELECT count(*) AS n FROM roles")).toBe(5);
 
@@ -328,7 +330,8 @@ test("the operator ceiling caps the allowance and the roles one proposal may sta
   const sent = send(f, "ทุกด้าน");
   await drain(f);
   const card = cardFor(f, replyFor(f, sent.message.id).replyMessageId!);
-  expect(card).toMatchObject({ state: "admitted", dropped: { overCeiling: 1 } });
+  // Roles past the ceiling make the selection invalid, so the proposal waits for the owner with the roles that fit.
+  expect(card).toMatchObject({ state: "proposed", reason: "invalid_selection", dropped: { overCeiling: 1 } });
   expect(card.roles).toHaveLength(2);
   const settings = await (await get(f, "/settings/dispatch")).text();
   expect(settings).toContain("เพดานของระบบ 2");
@@ -889,7 +892,11 @@ test("REL02: Jit does not re-dispatch a role for the same request while its late
   await drain(f);
   expect(f.app.decision(f.auth.actor, f.project.id, f.topic.id).proposal!.artifact.missing)
     .toEqual([{ roleId: f.designId, roleName: "ออกแบบ", reason: "result_blocked", runId: held.blocked[0]!.runId, unblock: unblockText }]);
-  // Naming only the blocked role for the same request calls nobody and shows why.
+  // Naming only the blocked role for the same request calls nobody and shows why. (REL03: the repeat above was a
+  // follow-up of the first team, so close this team first; otherwise rule follow_up, not Jit's model, would choose.)
+  expect(held.selection).toMatchObject({ rule: "follow_up" });
+  const closing = f.app.discussion(f.auth.actor, f.project.id, held.discussion!.id).discussion;
+  f.app.execute(f.auth.actor, { kind: "team.stop_all", requestId: rid(), projectId: f.project.id, expectedRevision: closing.revision, payload: { discussionId: closing.id } });
   named = ["ออกแบบ"];
   const only = send(f, text);
   await drain(f);
@@ -1044,3 +1051,359 @@ test("REL02: a held role the owner includes again and that completes is no longe
   expect(heldGaps({ ...stored, held: [{ roleId: f.designId, roleName: "ออกแบบ", runId: held.blocked[0]!.runId }] })).toEqual([]);
 });
 
+// ---- REL03 (app.routing_selection/v1): deterministic rules first, a visible reason the owner can correct ----
+
+const addRole = (f: Fixture, name: string, enabled = true) => f.app.execute(f.auth.actor, { kind: "role.save", projectId: null, requestId: rid(),
+  expectedRevision: f.app.team(f.auth.actor).ownerRevision, payload: { roleId: null, name, kind: "specialist", responsibility: `วิเคราะห์ด้าน ${name}`, enabled, route: grok } }).role!.id;
+const disableRole = (f: Fixture, roleId: string) => {
+  const role = f.app.team(f.auth.actor).roles.find(item => item.id === roleId)!;
+  f.app.execute(f.auth.actor, { kind: "role.save", projectId: null, requestId: rid(), expectedRevision: f.app.team(f.auth.actor).ownerRevision,
+    payload: { roleId, name: role.name, kind: role.kind, responsibility: role.responsibility, enabled: false, route: role.route } });
+};
+/** The team card's `team.control` form for one action and role. */
+const controlForm = (html: string, action: string, roleId: string) => [...html.matchAll(/<form method="post" action="([^"]+\/controls)">([\s\S]*?)<\/form>/g)]
+  .map(match => ({ action: match[1]!, fields: Object.fromEntries([...match[2]!.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)">/g)].map(m => [m[1]!, m[2]!])) }))
+  .find(item => item.fields.action === action && item.fields.roleId === roleId);
+const jitRequests = (f: Fixture) => f.port.requests.filter(request => request.instructions.operator[0] === jitReplyMarker);
+/** Whether a reply run was offered the model dispatch proposal, i.e. asked to select specialists. */
+const offersDispatch = (request: ApplicationRunRequest) => request.instructions.operator.some(line => line.includes(`{"kind":"dispatch","roles":[names],"why":string}`));
+const sendReply = (f: Fixture, text: string, replyTo: { discussionId: string; roleId: string }) => {
+  const topic = f.app.conversation(f.auth.actor, f.project.id, f.topic.id).topic;
+  return f.app.execute(f.auth.actor, { kind: "message.send", projectId: f.project.id, requestId: rid(), expectedRevision: topic.revision, payload: { topicId: f.topic.id, text, replyTo } });
+};
+
+test("REL03 named: an exact @name chooses that specialist with no model selection, records the rule and shows only its name", async () => {
+  const f = await fixture();
+  const databaseId = addRole(f, "Database");
+  const sent = send(f, "@database ช่วยดู schema ของตาราง users หน่อย");
+  await drain(f);
+  const reply = replyFor(f, sent.message.id);
+  // The reply run was told the choice and never offered a dispatch proposal: zero model calls select specialists.
+  expect(jitRequests(f)).toHaveLength(1);
+  const request = jitRequests(f)[0]!;
+  expect(offersDispatch(request)).toBe(false);
+  expect(request.instructions.operator.some(line => line.includes("fixed rule (named)") && line.includes(`["Database"]`))).toBe(true);
+  // The scripted reply still names other roles; that proposal is discarded and changes nothing.
+  expect(reply.discarded).toEqual(["proposal:dispatch"]);
+  const card = cardFor(f, reply.replyMessageId!);
+  expect(card).toMatchObject({ state: "admitted", selection: { rule: "named", roleIds: [databaseId], why: null }, roles: [{ roleId: databaseId, roleName: "Database" }] });
+  expect(card.discussion!.roles.map(role => role.roleId)).toEqual([databaseId]);
+  expect(f.store.read(tx => readDiscussion(tx, f.project.id, card.discussion!.id)).selection).toEqual({ rule: "named", roleIds: [databaseId], why: null });
+  // Allowance and fencing are the BOT04 ones: standing allowance, revision 0.
+  expect(card.discussion!.origin).toMatchObject({ kind: "standing-allowance", allowanceRevision: 0 });
+  const job = f.store.read(tx => tx.all<{ record_json: string }>("SELECT record_json FROM jobs")).map(row => JSON.parse(row.record_json) as { type: string; evidence: string | null })
+    .find(item => item.type === "team.jit-reply")!;
+  expect(JSON.stringify(job)).toContain("selection named 1");
+  const html = await page(f);
+  expect(html).toContain(`data-selection-rule="named"`);
+  expect(html).toContain(dictionaries.th["team.selection_rule_named"]);
+  expect(html).not.toContain(dictionaries.th["team.selection_why_label"]);
+  // Mentions that are addresses, inside a word or naming nobody are not mentions.
+  for (const text of ["mail me at a@database.example", "x@Database", "@Databases please", "@nobody here"]) {
+    const other = send(f, text);
+    await drain(f);
+    expect(cardFor(f, replyFor(f, other.message.id).replyMessageId!).selection?.rule).not.toBe("named");
+  }
+});
+
+test("REL03 named: an @name shared by two eligible specialists is ambiguous, so no rule applies and Jit's model path selects", async () => {
+  const f = await fixture();
+  addRole(f, "DB"); addRole(f, "db");
+  const sent = send(f, "@db ช่วยดูหน่อย");
+  await drain(f);
+  expect(offersDispatch(jitRequests(f)[0]!)).toBe(true);
+  const card = cardFor(f, replyFor(f, sent.message.id).replyMessageId!);
+  expect(card).toMatchObject({ state: "admitted", selection: { rule: "model", roleIds: [f.techId, f.designId], why: null } });
+  expect(await page(f)).toContain(`data-selection-rule="model"`);
+  // An unambiguous mention next to an ambiguous one is still not a fixed rule.
+  f.app.execute(f.auth.actor, { kind: "team.stop_all", requestId: rid(), projectId: f.project.id, expectedRevision: card.discussion!.revision, payload: { discussionId: card.discussion!.id } });
+  const mixed = send(f, "@เทคโนโลยี กับ @db ช่วยดู");
+  await drain(f);
+  expect(cardFor(f, replyFor(f, mixed.message.id).replyMessageId!).selection).toMatchObject({ rule: "model" });
+});
+
+test("REL03 reply: answering one specialist's opinion calls that role again; a foreign reply target is rejected", async () => {
+  const f = await fixture();
+  const first = send(f, "ควรใช้ SQLite หรือ Postgres ดี");
+  await drain(f);
+  const firstCard = cardFor(f, replyFor(f, first.message.id).replyMessageId!);
+  expect(firstCard.selection).toMatchObject({ rule: "model" });
+  const discussionId = firstCard.discussion!.id;
+  const answered = sendReply(f, "ช่วยขยายเรื่อง UX อีกนิด", { discussionId, roleId: f.designId });
+  await drain(f);
+  const reply = replyFor(f, answered.message.id);
+  expect(offersDispatch(jitRequests(f).at(-1)!)).toBe(false);
+  expect(cardFor(f, reply.replyMessageId!)).toMatchObject({ state: "admitted", selection: { rule: "reply", roleIds: [f.designId], why: null } });
+  // A replayed request id is the same receipt; a role that never took part, or a discussion of another topic, is rejected.
+  const topic = f.app.conversation(f.auth.actor, f.project.id, f.topic.id).topic;
+  expect(() => sendReply(f, "ไม่ได้อยู่ในการหารือ", { discussionId, roleId: f.marketingId })).toThrow(expect.objectContaining({ code: "reply_target_not_found" }));
+  const otherTopic = f.app.execute(f.auth.actor, { kind: "topic.create", projectId: f.project.id, requestId: rid(), expectedRevision: f.app.project(f.auth.actor, f.project.id).revision, payload: { title: "อีกหัวข้อ" } }).topic;
+  expect(() => f.app.execute(f.auth.actor, { kind: "message.send", projectId: f.project.id, requestId: rid(), expectedRevision: otherTopic.revision,
+    payload: { topicId: otherTopic.id, text: "ข้ามหัวข้อ", replyTo: { discussionId, roleId: f.designId } } })).toThrow(expect.objectContaining({ code: "reply_target_not_found" }));
+  expect(f.app.conversation(f.auth.actor, f.project.id, f.topic.id).topic.revision).toBe(topic.revision);
+  expect(() => f.app.execute(f.auth.actor, { kind: "message.send", projectId: f.project.id, requestId: rid(), expectedRevision: topic.revision,
+    payload: { topicId: f.topic.id, text: "x", replyTo: { discussionId } as never } })).toThrow(expect.objectContaining({ code: "invalid_conversation_command" }));
+});
+
+test("REL03 follow_up: the next message after the only open discussion's team reply calls that team; two open discussions fall to the model", async () => {
+  const f = await fixture();
+  const first = send(f, "ควรใช้ SQLite หรือ Postgres ดี");
+  await drain(f);
+  const d1 = cardFor(f, replyFor(f, first.message.id).replyMessageId!);
+  expect(d1.teamReply).toMatchObject({ state: "answered" });
+  const second = send(f, "แล้วถ้าต้องรองรับผู้ใช้หมื่นคนล่ะ");
+  await drain(f);
+  const d2 = cardFor(f, replyFor(f, second.message.id).replyMessageId!);
+  expect(d2).toMatchObject({ state: "admitted", selection: { rule: "follow_up", roleIds: [f.techId, f.designId], why: null } });
+  expect(offersDispatch(jitRequests(f).at(-1)!)).toBe(false);
+  // The follow-up continues the first discussion, so it stays the only open one and the chain goes on.
+  const third = send(f, "สรุปอีกทีได้ไหม");
+  await drain(f);
+  expect(cardFor(f, replyFor(f, third.message.id).replyMessageId!).selection).toMatchObject({ rule: "follow_up" });
+  // A named dispatch opens a second discussion; with two open, a follow-up is no longer clear.
+  const named = send(f, "@การตลาด มองเรื่องนี้ยังไง");
+  await drain(f);
+  expect(cardFor(f, replyFor(f, named.message.id).replyMessageId!).selection).toMatchObject({ rule: "named", roleIds: [f.marketingId] });
+  const fourth = send(f, "แล้วยังไงต่อ");
+  await drain(f);
+  expect(offersDispatch(jitRequests(f).at(-1)!)).toBe(true);
+  expect(cardFor(f, replyFor(f, fourth.message.id).replyMessageId!).selection).toMatchObject({ rule: "model" });
+});
+
+test("REL03 follow_up needs the message to follow the team reply directly and an open discussion; stop-all closes it", async () => {
+  const f = await fixture();
+  send(f, "ควรใช้ SQLite หรือ Postgres ดี");
+  await drain(f);
+  // Two owner messages before either reply commits: only the first one directly follows the team reply.
+  const a = send(f, "ข้อแรก"), b = send(f, "ข้อสอง");
+  await drain(f);
+  expect(cardFor(f, replyFor(f, a.message.id).replyMessageId!).selection).toMatchObject({ rule: "follow_up" });
+  expect(cardFor(f, replyFor(f, b.message.id).replyMessageId!).selection).toMatchObject({ rule: "model" });
+  // A stopped team is not open.
+  const g = await fixture();
+  const sent = send(g, "ควรใช้ SQLite หรือ Postgres ดี");
+  await drain(g);
+  const card = cardFor(g, replyFor(g, sent.message.id).replyMessageId!);
+  g.app.execute(g.auth.actor, { kind: "team.stop_all", requestId: rid(), projectId: g.project.id, expectedRevision: card.discussion!.revision, payload: { discussionId: card.discussion!.id } });
+  const after = send(g, "ต่อจากนี้");
+  await drain(g);
+  expect(cardFor(g, replyFor(g, after.message.id).replyMessageId!).selection).toMatchObject({ rule: "model" });
+});
+
+test("REL03 single: a project with exactly one eligible specialist calls it without a model selection", async () => {
+  const f = await fixture();
+  disableRole(f, f.designId); disableRole(f, f.marketingId);
+  const sent = send(f, "ช่วยดูหน่อย");
+  await drain(f);
+  expect(offersDispatch(jitRequests(f)[0]!)).toBe(false);
+  const reply = replyFor(f, sent.message.id);
+  expect(reply.discarded).toEqual(["proposal:dispatch"]);
+  expect(cardFor(f, reply.replyMessageId!)).toMatchObject({ state: "admitted", selection: { rule: "single", roleIds: [f.techId], why: null } });
+  expect(await page(f)).toContain(dictionaries.th["team.selection_rule_single"]);
+});
+
+test("REL03 model: a selection naming a disabled role or made before the team changed is held for the owner and never broadcasts", async () => {
+  let output = dispatching(["เทคโนโลยี", "กฎหมาย"]);
+  const gate = deferred<void>();
+  let wait = false;
+  const f = await fixture({ jit: async request => { if (wait) await gate.promise; return answer(request, output); } });
+  const sent = send(f, "ช่วยดู");
+  await drain(f);
+  const held = cardFor(f, replyFor(f, sent.message.id).replyMessageId!);
+  expect(held).toMatchObject({ state: "proposed", reason: "invalid_selection", roles: [{ roleId: f.techId }], dropped: { disabled: ["กฎหมาย"] },
+    selection: { rule: "model", roleIds: [f.techId] }, discussion: null });
+  expect(jobsOf(f, "team.specialist-analysis")).toHaveLength(0);
+  // Only a disabled role: nothing callable, nothing admitted.
+  output = dispatching(["กฎหมาย"]);
+  const only = send(f, "อีกเรื่อง");
+  await drain(f);
+  expect(cardFor(f, replyFor(f, only.message.id).replyMessageId!)).toMatchObject({ state: "empty", discussion: null });
+  // Stale: the owner changes the team while the reply run still holds the old roster.
+  output = dispatching(["เทคโนโลยี", "ออกแบบ"]); wait = true;
+  const stale = send(f, "ลองอีกครั้ง");
+  f.queue.pump(); await ticks();
+  disableRole(f, f.marketingId);
+  gate.resolve();
+  await drain(f);
+  expect(cardFor(f, replyFor(f, stale.message.id).replyMessageId!)).toMatchObject({ state: "proposed", reason: "stale_selection", discussion: null });
+  expect(jobsOf(f, "team.specialist-analysis")).toHaveLength(0);
+  // The owner may still accept the held roles from the card; the discussion keeps Jit's selection.
+  const card = cardFor(f, replyFor(f, stale.message.id).replyMessageId!);
+  const accepted = f.app.execute(f.auth.actor, { kind: "dispatch.proposal.accept", requestId: rid(), projectId: f.project.id, expectedRevision: card.revision,
+    payload: { proposalId: card.id, roleIds: [f.techId] } }).proposal;
+  expect(accepted).toMatchObject({ state: "accepted", selection: { rule: "model" } });
+  expect(f.store.read(tx => readDiscussion(tx, f.project.id, accepted.discussion!.id)).selection).toMatchObject({ rule: "model", roleIds: [f.techId, f.designId] });
+});
+
+test("REL03 model: why is bounded, rendered escaped and labelled as Jit's reasoning, never as evidence", async () => {
+  const why = "<img src=x onerror=alert(1)>";
+  let output = JSON.stringify({ reply: "ถามทีม", proposals: [{ kind: "dispatch", roles: ["เทคโนโลยี"], why }] });
+  const f = await fixture({ jit: request => answer(request, output) });
+  const sent = send(f, "ช่วยดู");
+  await drain(f);
+  const card = cardFor(f, replyFor(f, sent.message.id).replyMessageId!);
+  expect(card.selection).toEqual({ rule: "model", roleIds: [f.techId], why });
+  const html = await page(f);
+  expect(html).not.toContain("<img src=x");
+  expect(html).toContain(`<span class="team-selection-label">${dictionaries.th["team.selection_why_label"]}</span> <span class="team-selection-why">จิตเลือก เทคโนโลยี เพราะ &lt;img src=x onerror=alert(1)&gt;</span>`);
+  const english = await (await get(f, `/projects/${f.project.id}/topics/${f.topic.id}`, { "accept-language": "en" })).text();
+  expect(english).toContain(`${dictionaries.en["team.selection_why_label"]}</span> <span class="team-selection-why">Jit chose เทคโนโลยี because &lt;img src=x onerror=alert(1)&gt;`);
+  // Close the team, so the next messages are not follow-ups to it.
+  f.app.execute(f.auth.actor, { kind: "team.stop_all", requestId: rid(), projectId: f.project.id, expectedRevision: card.discussion!.revision, payload: { discussionId: card.discussion!.id } });
+  // A why longer than 160 characters, or one that is not a string, breaks the closed schema: the entry is discarded.
+  for (const bad of ["ก".repeat(161), 7, ""]) {
+    output = JSON.stringify({ reply: "ถามทีม", proposals: [{ kind: "dispatch", roles: ["ออกแบบ"], why: bad }] });
+    const other = send(f, `ข้อ ${String(bad).length}`);
+    await drain(f);
+    const view = replyFor(f, other.message.id);
+    expect(view.discarded).toEqual(["proposal:dispatch"]);
+    expect(f.app.dispatchCards(f.auth.actor, f.project.id, f.topic.id, [view.replyMessageId!]).get(view.replyMessageId!)).toBeUndefined();
+  }
+  output = JSON.stringify({ reply: "ถามทีม", proposals: [{ kind: "dispatch", roles: ["ออกแบบ"], why: "ก".repeat(160), allowance: 99 }] });
+  const extra = send(f, "คีย์เกิน");
+  await drain(f);
+  expect(replyFor(f, extra.message.id).discarded).toEqual(["proposal:dispatch"]);
+});
+
+test("REL03 a rule that selects more roles than the allowance is held per BOT04; the owner's card forms work by plain POST", async () => {
+  const f = await fixture();
+  setAllowance(f, true, 1);
+  const sent = send(f, "@เทคโนโลยี @ออกแบบ ช่วยกันดู");
+  await drain(f);
+  const held = cardFor(f, replyFor(f, sent.message.id).replyMessageId!);
+  expect(held).toMatchObject({ state: "proposed", reason: "over_allowance", selection: { rule: "named", roleIds: [f.techId, f.designId] }, discussion: null });
+  expect(jobsOf(f, "team.specialist-analysis")).toHaveLength(0);
+  let html = await page(f);
+  expect(html).toContain(dictionaries.th["team.selection_rule_named"]);
+  const accept = form(html, `/projects/${f.project.id}/dispatch/${held.id}/accept`);
+  expect((await postForm(f, accept.action, { ...accept.fields, [`role-${f.techId}`]: "on", [`role-${f.designId}`]: "on" })).status).toBe(303);
+  await drain(f);
+  const card = cardFor(f, replyFor(f, sent.message.id).replyMessageId!);
+  expect(card).toMatchObject({ state: "accepted", admission: "owner", discussion: { origin: { kind: "owner-accepted" } } });
+  expect(f.store.read(tx => readDiscussion(tx, f.project.id, card.discussion!.id)).selection).toMatchObject({ rule: "named" });
+  expect(card.teamReply).toMatchObject({ state: "answered" });
+
+  // Once the team reply exists, a later result could never reach it, so the card offers neither add nor call again.
+  html = await page(f);
+  expectNoInlineScript(html);
+  expect(card).toMatchObject({ addable: [], canInclude: false });
+  expect(html).not.toContain(`class="team-form team-add"`);
+  expect(html).not.toMatch(/<input type="hidden" name="action" value="include">/);
+
+  // Reply to one opinion: the form names its participation, and the role is called again by rule `reply`.
+  html = await page(f);
+  const replyForm = [...html.matchAll(/<form class="team-form team-reply-to"[^>]*action="([^"]+)"[^>]*>([\s\S]*?)<\/form>/g)]
+    .find(match => match[2]!.includes(`name="replyRole" value="${f.designId}"`))!;
+  const replyFields = Object.fromEntries([...replyForm[2]!.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)">/g)].map(m => [m[1]!, m[2]!]));
+  expect(replyFields).toMatchObject({ replyDiscussion: card.discussion!.id, replyRole: f.designId });
+  const posted = await postForm(f, replyForm[1]!, { ...replyFields, text: "ขยายเรื่อง UX" });
+  expect(posted.status).toBe(303);
+  await drain(f);
+  const owner = messages(f).filter(item => item.attribution.kind === "owner").at(-1)!;
+  expect(cardFor(f, replyFor(f, owner.id).replyMessageId!).selection).toMatchObject({ rule: "reply", roleIds: [f.designId] });
+  // Only one of the reply target fields is a malformed body.
+  const lone = await postForm(f, replyForm[1]!, { ...replyFields, replyRole: undefined as never, text: "x" });
+  expect(lone.status).toBe(400);
+
+  // Before the team reply: skip a running role, add a specialist and call the skipped role again from the card.
+  const gate = deferred<void>();
+  // Tech stays running too, so skipping design does not settle the team and start its reply.
+  const g = await fixture({ specialist: async request => { if (request.roleId === g.designId || request.roleId === g.techId) await gate.promise; return result(request, "ความเห็น"); } });
+  const dispatched = send(g, "ควรใช้ SQLite หรือ Postgres ดี");
+  g.queue.pump(); await ticks(); g.queue.pump(); await ticks();
+  let gCard = cardFor(g, replyFor(g, dispatched.message.id).replyMessageId!);
+  const skip = controlForm(await page(g), "skip", g.designId)!;
+  expect(skip.action).toBe(`/projects/${g.project.id}/team/discussions/${gCard.discussion!.id}/controls`);
+  expect((await postForm(g, skip.action, skip.fields)).status).toBe(303);
+  gCard = cardFor(g, replyFor(g, dispatched.message.id).replyMessageId!);
+  expect(gCard.discussion!.roles.find(role => role.roleId === g.designId)).toMatchObject({ state: "skipped" });
+  expect(gCard).toMatchObject({ teamReply: null, canInclude: true });
+  expect(gCard.addable.map(role => role.roleId)).toEqual([g.marketingId]);
+  let gHtml = await page(g);
+  expectNoInlineScript(gHtml);
+  const addForm = [...gHtml.matchAll(/<form class="team-form team-add"[^>]*action="([^"]+)"[^>]*>([\s\S]*?)<\/form>/g)][0]!;
+  const addFields = Object.fromEntries([...addForm[2]!.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)">/g)].map(m => [m[1]!, m[2]!]));
+  expect(addFields).toMatchObject({ action: "include", back: "topic" });
+  const added = await postForm(g, addForm[1]!, { ...addFields, roleId: g.marketingId });
+  expect(added.status).toBe(303);
+  expect(added.headers.get("location")).toContain(`#dispatch-${gCard.id}`);
+  gHtml = await page(g);
+  const again = controlForm(gHtml, "include", g.designId)!;
+  expect(again.fields).toMatchObject({ back: "topic" });
+  expect((await postForm(g, again.action, again.fields)).status).toBe(303);
+  gate.resolve();
+  await drain(g);
+  const settled = cardFor(g, replyFor(g, dispatched.message.id).replyMessageId!);
+  expect(settled.discussion!.roles.find(role => role.roleId === g.designId)).toMatchObject({ state: "completed" });
+  expect(settled.discussion!.roles.find(role => role.roleId === g.marketingId)).toMatchObject({ state: "completed" });
+  // The added and re-called roles finished before the team answered, so the team reply cites them.
+  expect(settled.teamReply).toMatchObject({ state: "answered" });
+  expect(settled.teamReply!.team!.citations.map(c => c.roleId).sort()).toEqual([g.techId, g.designId, g.marketingId].sort());
+  expect(settled).toMatchObject({ addable: [], canInclude: false });
+});
+
+test("REL03 a role stopped from its job page reads stopped on the card and can be called again from it", async () => {
+  const gate = deferred<void>();
+  let ref!: Fixture;
+  const f = ref = await fixture({ specialist: async request => { if (request.roleId === ref.designId) await gate.promise; return result(request, "ความเห็น"); } });
+  const sent = send(f, "ควรใช้ SQLite หรือ Postgres ดี");
+  f.queue.pump(); await ticks(); f.queue.pump(); await ticks();
+  let card = cardFor(f, replyFor(f, sent.message.id).replyMessageId!);
+  const design = card.discussion!.roles.find(role => role.roleId === f.designId)!;
+  // job.stop from the job page fences the job; the stored participation is not rewritten.
+  const job = f.app.job(f.auth.actor, f.project.id, design.jobId);
+  f.app.execute(f.auth.actor, { kind: "job.stop", requestId: rid(), projectId: f.project.id, expectedRevision: job.revision, payload: { jobId: job.id } });
+  expect(f.store.read(tx => readDiscussion(tx, f.project.id, card.discussion!.id)).participations.find(item => item.roleId === f.designId)!.state).not.toBe("stopped");
+  card = cardFor(f, replyFor(f, sent.message.id).replyMessageId!);
+  expect(card.discussion!.roles.find(role => role.roleId === f.designId)).toMatchObject({ state: "stopped" });
+  // The card's call-again button and the command read the same state, so the include is accepted.
+  const html = await page(f);
+  const again = controlForm(html, "include", f.designId)!;
+  expect(again).toBeDefined();
+  const posted = await postForm(f, again.action, again.fields);
+  expect(posted.status).toBe(303);
+  card = cardFor(f, replyFor(f, sent.message.id).replyMessageId!);
+  const rerun = card.discussion!.roles.find(role => role.roleId === f.designId)!;
+  expect(rerun.jobId).not.toBe(design.jobId);
+  expect(["queued", "running"]).toContain(rerun.state);
+  // A role that is still running is not offered, and including it is still rejected.
+  const current = f.app.discussion(f.auth.actor, f.project.id, card.discussion!.id).discussion;
+  expect(() => f.app.execute(f.auth.actor, { kind: "team.control", requestId: rid(), projectId: f.project.id, expectedRevision: current.revision,
+    payload: { discussionId: current.id, action: "include", roleId: f.designId } })).toThrow(expect.objectContaining({ code: "role_already_participating" }));
+  gate.resolve();
+  await drain(f);
+  card = cardFor(f, replyFor(f, sent.message.id).replyMessageId!);
+  expect(card.discussion!.roles.find(role => role.roleId === f.designId)).toMatchObject({ state: "completed" });
+  expect(card.teamReply!.team!.citations.map(c => c.roleId).sort()).toEqual([f.techId, f.designId].sort());
+});
+
+test("REL03 deleting the reply that carried why also removes why from the card and from replayed receipts; ids and the rule stay", async () => {
+  const why = "เพราะ ลับสุด-4412 ต้องดูโครงสร้าง";
+  const f = await fixture({ jit: request => answer(request, JSON.stringify({ reply: "ขอให้ฝ่ายเทคโนโลยีช่วยดูโครงสร้างระบบเดิมก่อนตอบนะครับ", proposals: [{ kind: "dispatch", roles: ["เทคโนโลยี"], why }] })) });
+  setAllowance(f, false, 3);
+  const sent = send(f, "ช่วยดูโครงสร้างระบบเดิมของเราหน่อย");
+  await drain(f);
+  const reply = replyFor(f, sent.message.id);
+  const held = cardFor(f, reply.replyMessageId!);
+  expect(held).toMatchObject({ state: "proposed", reason: "allowance_disabled", selection: { rule: "model", roleIds: [f.techId], why } });
+  // `why` is kept only with the reply record, never in the proposal or discussion records.
+  expect(f.store.read(tx => tx.all<{ record_json: string }>("SELECT record_json FROM dispatch_proposals")).some(row => row.record_json.includes("4412"))).toBe(false);
+  // The owner's accept writes a receipt that snapshots the card, including why.
+  const accept = { kind: "dispatch.proposal.accept" as const, requestId: rid(), projectId: f.project.id, expectedRevision: held.revision, payload: { proposalId: held.id, roleIds: [f.techId] } };
+  expect(f.app.execute(f.auth.actor, accept).proposal.selection).toMatchObject({ why });
+  await drain(f);
+  expect(f.store.read(tx => tx.all<{ record_json: string }>("SELECT record_json FROM team_runs WHERE json_extract(record_json, '$.kind') = 'discussion'")).some(row => row.record_json.includes("4412"))).toBe(false);
+  const receipts = () => f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM command_receipts WHERE result_json LIKE '%4412%'")!.n);
+  expect(receipts()).toBe(1);
+  const revision = () => f.app.project(f.auth.actor, f.project.id).revision;
+  const preview = f.app.execute(f.auth.actor, { kind: "memory.delete.preview", requestId: rid(), projectId: f.project.id, expectedRevision: revision(),
+    payload: { scope: { kind: "source", projectId: f.project.id, source: { ...reply.source! } } } }) as { preview: { id: string } };
+  f.app.execute(f.auth.actor, { kind: "memory.delete.confirm", requestId: rid(), projectId: f.project.id, expectedRevision: revision(),
+    payload: { previewId: preview.preview.id, acknowledged: true, acknowledgedWholeSession: true } });
+  expect(f.app.dispatchCard(f.auth.actor, f.project.id, held.id).selection).toEqual({ rule: "model", roleIds: [f.techId], why: null });
+  expect(f.store.read(tx => tx.get<{ json: string }>("SELECT record_json AS json FROM team_runs WHERE id = ?", reply.id)!.json)).not.toContain("4412");
+  // Replaying the accept returns its original receipt, now without the deleted reason.
+  expect(receipts()).toBe(0);
+  expect(f.app.execute(f.auth.actor, accept).proposal).toMatchObject({ id: held.id, selection: { rule: "model", roleIds: [f.techId], why: null } });
+  expect(await page(f)).not.toContain("4412");
+});
