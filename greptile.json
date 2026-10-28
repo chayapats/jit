@@ -1,0 +1,5 @@
+{
+  "autoReview": ["open"],
+  "triggerOnDrafts": false,
+  "ignorePatterns": "bun.lock\n**/__snapshots__/**\nvendor/**\nresources/**\n*.woff2\n*.png"
+}
