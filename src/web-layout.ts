@@ -9,9 +9,11 @@ import { assetUrl } from "./web-assets";
 import { logoLockup, logoMark } from "./web-logo";
 import { colorTokens } from "./web-design";
 import { effectiveAccess, type ProjectAccess } from "./exec/access";
+import type { ConnectionView } from "./exec/connections";
+import type { McpProposalView } from "./exec/mcp";
 import type { JitReplyView } from "./team/jit-reply";
 import { routesOf } from "./team/role-proposals";
-import { fillText, promotionProposalCard, proposalCard, roleProposalCard, approvalCard } from "./web-proposal-card";
+import { fillText, mcpInstallProposalCard, promotionProposalCard, proposalCard, roleProposalCard, approvalCard } from "./web-proposal-card";
 import type { ApprovalCard } from "./exec/approval-cards";
 import type { TopicPromotionView } from "./promotion";
 import type { Persona } from "./persona";
@@ -411,6 +413,8 @@ export function conversationPage(state: ReturnType<Application["conversation"]>,
   promotion?: TopicPromotionView;
   /** web.approval_cards/v1: approval cards of this topic, in thread order (EXE09). */
   approvals?: ApprovalCard[];
+  /** app.mcp_servers/v1: install proposal cards of this topic, in thread order (EXE13). */
+  mcp?: { proposals: McpProposalView[]; connections: ConnectionView[] };
 }): string {
   const { project, topic } = state, title = topic.title ?? tr("common.topic_unavailable"), base = `/projects/${project.id}/topics/${topic.id}`;
   const replies = dispatch?.replies ?? new Map<string, JitReplyView>();
@@ -437,6 +441,18 @@ export function conversationPage(state: ReturnType<Application["conversation"]>,
   const routes = dispatch ? routesOf(dispatch.team) : [];
   const proposals = (view: JitReplyView | undefined) => (view?.roleProposals.map(item => roleProposalCard(item, { topicBase: base, csrf, routes, defaultRoute: dispatch?.team.projectDefault ?? dispatch?.team.ownerDefault ?? null })).join("") ?? "") +
     (view?.promotionProposals.map(item => promotionProposalCard(item, { topicBase: base, csrf, originTitle: topic.title })).join("") ?? "");
+  // app.mcp_servers/v1 (EXE13): install proposal cards follow the Jit reply that carries them, in thread order
+  // like role proposals, with the project-scoped connection selects. A card whose reply fell off this page is
+  // not shown, the same as a role proposal card.
+  const mcpByReply = new Map<string, McpProposalView[]>();
+  for (const proposal of [...(dispatch?.mcp?.proposals ?? [])].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))) {
+    if (proposal.topicId !== topic.id) continue;
+    const list = mcpByReply.get(proposal.replyId) ?? [];
+    list.push(proposal);
+    mcpByReply.set(proposal.replyId, list);
+  }
+  const mcpCards = (view: JitReplyView | undefined) => (view && dispatch?.mcp
+    ? (mcpByReply.get(view.id) ?? []).map(item => mcpInstallProposalCard(item, { topicBase: base, csrf, connections: dispatch.mcp!.connections })).join("") : "");
   // app.topic_promotion/v1: a promoted origin is read-only and points to its continuation.
   const promotedTo = dispatch?.promotion?.promotedTo ?? null, continuedFrom = dispatch?.promotion?.continuedFrom ?? null;
   const continuation = promotedTo ? `/projects/${promotedTo.target.projectId}/topics/${promotedTo.target.topicId}` : "";
@@ -468,7 +484,7 @@ export function conversationPage(state: ReturnType<Application["conversation"]>,
       if (m.attribution.kind === "participant" && !jit && folded.has(m.attribution.runId)) return "";
       if (m.attribution.kind === "service" && m.attribution.service === "jit-promotion") return continuedBlock(m);
       return `<article id="message-${m.id}" class="message${m.attribution.kind === "owner" ? " message--owner" : jit || setupGreeting(m.attribution) ? " message--jit" : ""}" data-message-id="${m.id}">${jit || setupGreeting(m.attribution) ? `<div class="reply-head"><span class="jit-avatar">${logoMark({ size: 20 })}</span><span class="reply-name">${tr("jit.name")}</span></div>` : ""}<div class="message-body">${m.text === null ? `<p class="literal">${tr("common.source_unavailable")}</p>` : literalContent(m.text)}</div>
-      <div class="message-meta"><span>${escape(label(m))}</span><span class="committed">${icon("check")}${tr("common.saved")}</span><details><summary aria-label="${tr("topic.message_details_and_origin")}">${icon("info")}${tr("topic.details")}</summary><div class="message-detail">${time(m.committedAt)}<br>${sourceLink(project.id, m.source, tr("common.message_origin"))}${jit?.discardedTotal ? `<br>${tr("reply.discarded")}: ${jit.discardedTotal} · ${escape(jit.discarded.join(", "))}` : ""}</div></details></div>${jit?.team ? teamReplyMeta(jit, cardsById.get(jit.team.proposalId), project.id, csrf, dispatch?.synthesisLimits) : ""}</article>${proposals(jit)}${card ? dispatchCard(card, base, csrf, topic.revision) : ""}${reply && (m.attribution.kind === "owner" || reply.team) ? reply.state !== "answered" ? replyStatus(reply, base, project.id, csrf) : !onPage.has(reply.replyMessageId!) ? answeredElsewhere(reply) : "" : ""}`; }).join("") : `<div class="empty-chat"><div>${icon("chat")}<h2>${tr("topic.start_this_conversation")}</h2><p>${tr("topic.keep_ideas_questions_and_things")}</p></div></div>`}</section>
+      <div class="message-meta"><span>${escape(label(m))}</span><span class="committed">${icon("check")}${tr("common.saved")}</span><details><summary aria-label="${tr("topic.message_details_and_origin")}">${icon("info")}${tr("topic.details")}</summary><div class="message-detail">${time(m.committedAt)}<br>${sourceLink(project.id, m.source, tr("common.message_origin"))}${jit?.discardedTotal ? `<br>${tr("reply.discarded")}: ${jit.discardedTotal} · ${escape(jit.discarded.join(", "))}` : ""}</div></details></div>${jit?.team ? teamReplyMeta(jit, cardsById.get(jit.team.proposalId), project.id, csrf, dispatch?.synthesisLimits) : ""}</article>${proposals(jit)}${mcpCards(jit)}${card ? dispatchCard(card, base, csrf, topic.revision) : ""}${reply && (m.attribution.kind === "owner" || reply.team) ? reply.state !== "answered" ? replyStatus(reply, base, project.id, csrf) : !onPage.has(reply.replyMessageId!) ? answeredElsewhere(reply) : "" : ""}`; }).join("") : `<div class="empty-chat"><div>${icon("chat")}<h2>${tr("topic.start_this_conversation")}</h2><p>${tr("topic.keep_ideas_questions_and_things")}</p></div></div>`}</section>
       <nav class="pagination" aria-label="${tr("topic.message_history_pages")}">${after > 0 ? `<a href="${base}">${tr("common.first_page")}</a>` : ""}${state.hasMore ? `<a href="${base}?after=${state.nextAfter}">${tr("topic.next_messages")}</a>` : ""}</nav></div>`, {
     breadcrumb: { title: project.name, href: `/projects/${project.id}` }, action: `<a class="header-action" href="/projects/${project.id}#new-topic" aria-label="${tr("common.new_topic")}">${icon("plus")}${tr("common.new_topic")}</a>${panelToggle(base)}${access ? accessBadge(access) : ""}${haltForm}`,
     panel: topicPanelSlot(),

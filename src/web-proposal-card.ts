@@ -1,5 +1,7 @@
 import { tr, type MessageKey } from "./i18n";
 import { escape, hiddenCommand } from "./web-layout";
+import type { ConnectionView } from "./exec/connections";
+import type { McpProposalView } from "./exec/mcp";
 import { sameRoute, type RoleProposalView } from "./team/role-proposals";
 import type { RoleRoute } from "./team/types";
 import { promotionNameChars, type PromotionProposalView } from "./promotion";
@@ -82,14 +84,14 @@ export interface ProposalCard {
   /** Element id is `proposal-<id>`, the anchor redirects and links return to. */
   id: string;
   kind: string;
-  state: "proposed" | "accepted" | "rejected" | "superseded";
+  state: "proposed" | "accepted" | "rejected" | "superseded" | "dropped";
   /** Localised kind line, e.g. "Jit suggests a new specialist". */
   eyebrow: string;
   /** Untrusted proposal text (model- or owner-authored). */
   title: string;
   /** Localised revision and author line. */
   meta: string;
-  fields: readonly { label: string; value: string; literal?: boolean }[];
+  fields: readonly { label: string; value: string; literal?: boolean; code?: boolean }[];
   /** Localised labels of what was dropped, plus the total when more were dropped than listed. */
   dropped: { items: readonly string[]; total: number } | null;
   /** Localised authority note shown while the proposal is open. */
@@ -98,7 +100,7 @@ export interface ProposalCard {
   footer: string;
 }
 
-const tone: Record<ProposalCard["state"], string> = { proposed: "proposed", accepted: "accepted", rejected: "dismissed", superseded: "disabled" };
+const tone: Record<ProposalCard["state"], string> = { proposed: "proposed", accepted: "accepted", rejected: "dismissed", superseded: "disabled", dropped: "dismissed" };
 
 /** Renders one proposal card. It works without script: every action is a plain form post. */
 export function proposalCard(card: ProposalCard): string {
@@ -107,7 +109,7 @@ export function proposalCard(card: ProposalCard): string {
   return `<article class="team-card proposal-card" id="proposal-${escape(card.id)}" data-proposal-kind="${escape(card.kind)}" data-proposal-state="${card.state}">
     <header><div><p class="eyebrow">${escape(card.eyebrow)}</p><h3>${escape(card.title)}</h3></div><span class="job-status" data-state="${tone[card.state]}">${tr(`proposal.state.${card.state}` as MessageKey)}</span></header>
     <p class="proposal-meta">${escape(card.meta)}</p>
-    <dl class="proposal-fields">${card.fields.map(field => `<dt>${escape(field.label)}</dt><dd${field.literal ? ' class="literal"' : ""}>${escape(field.value)}</dd>`).join("")}</dl>
+    <dl class="proposal-fields">${card.fields.map(field => `<dt>${escape(field.label)}</dt><dd${field.literal ? ' class="literal"' : ""}>${field.code ? `<code>${escape(field.value)}</code>` : escape(field.value)}</dd>`).join("")}</dl>
     ${dropped}${card.note ? `<p class="proposal-note">${escape(card.note)}</p>` : ""}${card.actions}${card.footer}</article>`;
 }
 
@@ -161,6 +163,58 @@ export function roleProposalCard(view: RoleProposalView, options: { topicBase: s
   });
 }
 
+/**
+ * app.mcp_servers/v1 card (EXE13, web.mcp_settings/v1) over `McpProposalView` (the merged EXE12 read model).
+ * Shows the source, package, pinned version, command and args verbatim — escaped, inside `<code>` — and one
+ * connection select per env name (connections of kind `mcp_env` serving the project, plus a none option).
+ * Accept (with the env bindings), reject and revise post to `${topicBase}/mcp-proposals/${id}` with `decision`,
+ * `expectedRevision` and `requestId`. Only an open proposal offers actions; a dropped one shows its offered
+ * fields and why it cannot be installed. Secret values never appear: the selects carry ids and labels only.
+ */
+export function mcpInstallProposalCard(view: McpProposalView, options: { topicBase: string; csrf: string; connections: ConnectionView[] }): string {
+  const action = `${options.topicBase}/mcp-proposals/${view.id}`;
+  const open = view.state === "proposed";
+  const spec = view.spec;
+  const name = spec?.name ?? view.offered?.name ?? view.id;
+  const previous = view.history.slice(0, -1).map(item => `${item.revision} ${tr(item.author === "owner" ? "proposal.by_owner" : "proposal.by_jit")} · ${tr(`proposal.state.${item.state}` as MessageKey)}`);
+  const meta = `${tr("proposal.revision")} ${view.revision} · ${tr(view.author === "owner" ? "proposal.by_owner" : "proposal.by_jit")}${previous.length ? ` · ${tr("proposal.earlier")} ${previous.join(", ")}` : ""}`;
+  const offered: { label: string; value: string }[] = [];
+  if (!spec && view.offered) {
+    const labels = { name: "proposal.role.name", source: "mcp.source", package: "mcp.package", version: "mcp.version" } as const;
+    for (const [field, label] of Object.entries(labels)) {
+      const value = view.offered[field as keyof typeof view.offered];
+      if (value !== undefined) offered.push({ label: tr(label as MessageKey), value });
+    }
+  }
+  const fields: ProposalCard["fields"] = spec
+    ? [{ label: tr("mcp.source"), value: spec.source, code: true }, { label: tr("mcp.package"), value: spec.package, code: true },
+      { label: tr("mcp.version"), value: spec.version, code: true }, { label: tr("mcp.command"), value: spec.command, code: true },
+      { label: tr("mcp.args"), value: spec.args.join(" "), code: true },
+      ...(spec.env.length ? [{ label: tr("mcp.env"), value: spec.env.join(", ") }] : [])]
+    : offered.map(field => ({ ...field, code: true }));
+  const dropped = [...view.dropped, ...(view.state === "dropped" && view.reason ? [view.reason] : [])];
+  // Only connections that could serve this project appear; the value stays in the vault.
+  const eligible = options.connections.filter(connection => connection.kind === "mcp_env" && connection.removedAt === null &&
+    (connection.projectScope === null || connection.projectScope.includes(view.projectId)));
+  const selects = (spec?.env ?? []).map(env => `<label>${escape(env)}<select name="env_${escape(env)}" required>`
+    + `<option value="">${tr("mcp.env_none")}</option>${eligible.map(connection => `<option value="${connection.id}">${escape(connection.label)}</option>`).join("")}</select></label>`).join("");
+  const actions = open && spec ? `<div class="proposal-actions">`
+    + `<form method="post" action="${action}">${hiddenCommand(options.csrf, view.revision)}<input type="hidden" name="decision" value="accept">${selects}<button class="primary">${tr("mcp.install")}</button></form>`
+    + `<form method="post" action="${action}">${hiddenCommand(options.csrf, view.revision)}<input type="hidden" name="decision" value="reject"><button>${tr("mcp.reject")}</button></form></div>`
+    + `<details class="proposal-edit"><summary>${tr("mcp.revise")}</summary><form class="team-form" method="post" action="${action}">${hiddenCommand(options.csrf, view.revision)}<input type="hidden" name="decision" value="revise">`
+    + `<label>${tr("proposal.role.name")}<input name="name" required maxlength="80" value="${escape(spec.name)}"></label>`
+    + `<label>${tr("mcp.source")}<select name="source" required>${(["npm", "pypi", "oci"] as const).map(source => `<option value="${source}"${source === spec.source ? " selected" : ""}>${source}</option>`).join("")}</select></label>`
+    + `<label>${tr("mcp.package")}<input name="package" required maxlength="255" value="${escape(spec.package)}"></label>`
+    + `<label>${tr("mcp.version")}<input name="version" required maxlength="255" value="${escape(spec.version)}"></label>`
+    + `<label>${tr("mcp.command")}<input name="command" required maxlength="128" value="${escape(spec.command)}"></label>`
+    + `<label>${tr("mcp.args")}<input name="args" required maxlength="2000" value="${escape(JSON.stringify(spec.args))}"></label>`
+    + `<label>${tr("mcp.env")}<input name="env" maxlength="500" value="${escape(spec.env.join(", "))}"></label>`
+    + `<small>${tr("proposal.edit_note")}</small><button class="primary">${tr("proposal.save_edit")}</button></form></details>` : "";
+  return proposalCard({
+    id: view.id, kind: "mcp_install", state: view.state === "dropped" ? "dropped" : view.state, eyebrow: tr("mcp.proposal_title"), title: name, meta,
+    fields, dropped: dropped.length ? { items: dropped.map(droppedLabel), total: dropped.length } : null, note: null, actions, footer: "",
+  });
+}
 /** Replaces `{name}` placeholders of a trusted dictionary template; values are escaped by the caller's renderer. */
 export const fillText = (template: string, values: Readonly<Record<string, string>>) =>
   template.replace(/\{([a-z]+)\}/g, (token, name: string) => Object.hasOwn(values, name) ? values[name]! : token);

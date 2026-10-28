@@ -6,6 +6,7 @@ import type { DispatchAllowance } from "./team/allowance";
 import type { ScheduleFeed } from "./schedule-feed";
 import { accessLevels, levelRank, type AccessLevel, type ProjectAccess, type RoleAccess } from "./exec/access";
 import type { ComputerSettings } from "./exec/computer";
+import type { McpServerView } from "./exec/mcp";
 import { connectionKinds, type ConnectionKind, type ConnectionView } from "./exec/connections";
 import { accessBadge, escape, hiddenCommand, icon, jobStateLabels, prObservedState, prStatusLabels, shell, taskStatusText, time, type NavigationWorkspace } from "./web-layout";
 import { panelRows, panelTabLabels, panelTabs, paletteCommands, searchLimits, type PanelTab } from "./web-settings";
@@ -206,6 +207,53 @@ export function accessConfirmPage(workspace: NavigationWorkspace, project: Navig
     { breadcrumb: { title: tr("shell.settings"), href: "/settings" } });
 }
 
+/**
+ * Settings › MCP servers (web.mcp_settings/v1, EXE13 over the merged EXE12 read model): per project the installed
+ * servers, their state and their tools. A read-only tool gets only its badge; any other listed tool gets a toggle
+ * that creates or disables the project's EXE07 `mcp_tool` rule for that exact server and tool. Each server also
+ * gets a remove form. `rule` is the project's current `mcp_tool` rule (if any), so the page can mark auto-approved
+ * tools and post the rule revision; the handler merges the toggled pair into the rule's scope.
+ */
+export interface McpSettingsEntry {
+  projectId: string; projectName: string; server: McpServerView; rule: AutoApproveRule | null;
+}
+export function settingsMcpPage(workspace: NavigationWorkspace, servers: McpSettingsEntry[], csrf: string): string {
+  // The merged EXE12 read model has no separate settings view; the page pairs each server with its rule here.
+  // (The EXE13 issue names `servers: McpServerView[]`; the rule each toggle posts the revision of travels with it.)
+  const stateText = (state: McpServerView["state"]) => state === "installed" ? tr("mcp.state_ready")
+    : state === "installing" ? tr("mcp.state_installing") : tr("mcp.state_failed");
+  const autoOf = (entry: McpSettingsEntry, tool: string) =>
+    entry.rule?.enabled === true && (entry.rule.scope as { tools?: { server: string; tool: string }[] }).tools?.some(item => item.server === entry.server.name && item.tool === tool) === true;
+  const byProject = new Map<string, { projectName: string; entries: McpSettingsEntry[] }>();
+  for (const entry of servers) {
+    const existing = byProject.get(entry.projectId) ?? { projectName: entry.projectName, entries: [] };
+    existing.entries.push(entry);
+    byProject.set(entry.projectId, existing);
+  }
+  const groups = [...byProject.values()].map(({ projectName, entries }) => {
+    const rows = entries.map(entry => {
+      const { server } = entry;
+      const tools = server.tools.length ? `<ul class="mcp-tools">${server.tools.map(tool => {
+        const auto = autoOf(entry, tool.name);
+        const badge = tool.readOnly ? `<span class="job-status" data-state="accepted">${tr("mcp.tool_read_only")}</span>`
+          : `<span class="job-status" data-state="${auto ? "accepted" : "waiting"}">${tr(auto ? "mcp.tool_auto" : "mcp.tool_needs_approval")}</span>`;
+        // A refused listing (invalid name, oversized schema) is shown but cannot be toggled.
+        const toggle = !tool.readOnly && tool.exposed !== null
+          ? `<form class="team-form" method="post" action="/settings/mcp/${server.id}/tools/${encodeURIComponent(tool.name)}/auto">${hiddenCommand(csrf, entry.rule?.revision ?? 0)}<button>${tr("mcp.tool_auto")}</button></form>` : "";
+        return `<li>${escape(tool.name)}${tool.exposed !== null && tool.exposed !== tool.name ? ` · <code>${escape(tool.exposed)}</code>` : ""} ${badge}${toggle}</li>`;
+      }).join("")}</ul>` : `<p class="empty-list">${tr("mcp.no_servers")}</p>`;
+      return `<li class="connection-row" id="server-${server.id}"><h3>${escape(server.name)}</h3>`
+        + `<p><span class="job-status" data-state="${server.state === "installed" ? "accepted" : server.state === "installing" ? "waiting" : "failed"}">${escape(stateText(server.state))}</span>`
+        + ` · <code>${escape(server.spec.package)}@${escape(server.spec.version)}</code></p>${tools}`
+        + `<form class="team-form connection-form" method="post" action="/settings/mcp/${server.id}/remove">${hiddenCommand(csrf, server.revision)}<button class="danger">${tr("mcp.remove")}</button></form></li>`;
+    }).join("");
+    return `<section class="settings-section" aria-labelledby="mcp-${projectName}"><h3>${escape(projectName)}</h3><ul class="data-projects">${rows}</ul></section>`;
+  }).join("");
+  return shell(tr("settings.mcp"), { workspace, csrf, section: "settings", settings: "mcp" }, `<div class="content settings-content">
+    <section class="settings-section" aria-labelledby="mcp-title"><h2 id="mcp-title">${tr("settings.mcp")}</h2>
+    ${servers.length ? groups : `<p class="empty-list" role="status">${tr("mcp.no_servers")}</p>`}</section></div>`,
+    { breadcrumb: { title: tr("shell.settings"), href: "/settings" } });
+}
 /**
  * Settings › Calendar feed (app.schedule_feed/v1). Plain forms, so every control works without script. `url` is the
  * freshly minted feed URL, passed only when rendering the response to the command that minted it; the page
