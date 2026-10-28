@@ -135,3 +135,39 @@ _Avoid_: Database copy-back, backup import, rollback.
 **Lifecycle ledger**:
 The installation's append-only, identity-only record of every deletion and forget, kept outside every backup image with an independent checkpoint; the only authority for what a restored image must still not contain.
 _Avoid_: A backup's own tombstones, owner-attested deletion list.
+
+**Access level**:
+A project's revisioned execution permission, `read`, `workspace` or `full`, widened only by the owner in Web and restricted by any authorized channel.
+_Avoid_: Model permission, role setting, approval.
+
+**Execution box**:
+The disposable per-project container where every execution tool runs, holding the project workspace and none of Jit's credentials or state.
+_Avoid_: Sandbox inside Schway, Jit service process, host shell.
+
+**Runner**:
+The small agent-free process inside an execution box that performs file and process requests from Jit's execution backend.
+_Avoid_: Specialist, model, Schway session.
+
+**External effect**:
+An action whose result leaves the execution box and cannot be recalled, such as push, PR mutation, deploy, sending as the owner, payment or remote deletion.
+_Avoid_: File edit inside the box, read-only network fetch.
+
+**Approval card**:
+A revision-bound, single-use, expiring owner decision that releases exactly one external effect.
+_Avoid_: Task acceptance, standing authorization, model confirmation.
+
+**Connection**:
+An owner-entered credential stored outside every box and prompt, released only to an approved effect or an owner-bound MCP server.
+_Avoid_: Environment variable in the box, auth route.
+
+**Kill switch**:
+The project control that cancels execution work, stops the box and blocks new admissions until the owner resumes.
+_Avoid_: Access level change, stop of one discussion.
+
+**Takeover**:
+An owner session controlling a project's box browser or desktop during which the agent cannot send input.
+_Avoid_: Approval, remote desktop of the owner's computer.
+
+**MCP install proposal**:
+A revisioned card from an agent naming an MCP server's source, pinned version and command, installed only when the owner accepts it in Web.
+_Avoid_: Connector, automatic plugin install.
