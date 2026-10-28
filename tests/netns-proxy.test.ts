@@ -92,3 +92,11 @@ test("the proxy entry refuses invalid arguments", async () => {
   const child = Bun.spawn([process.execPath, join(import.meta.dir, "../src/exec/registry-proxy-main.ts"), "--hostname", "example.com", "--port", "3128", "--hosts", "x"], { stdout: "pipe", stderr: "pipe" });
   expect(await child.exited).toBe(2);
 });
+
+test("a namespace lookup that hangs does not block ensure", async () => {
+  const proxy = new NetnsRegistryProxy({ hosts: ["registry.npmjs.org"], readyMs: 30, currentNetns: () => new Promise(() => {}),
+    spawn: () => scriptedChild({ port: 3128, netns: "1" }) });
+  await proxy.ensure("10.89.0.1");
+  await proxy.ensure("10.89.0.1");
+  await proxy.close();
+});

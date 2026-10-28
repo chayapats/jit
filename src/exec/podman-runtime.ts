@@ -148,7 +148,8 @@ export class PodmanBoxRuntime implements BoxRuntime, BoxStreams {
     let info = await this.#inspect(name);
     // A box created for another level, profile, image or environment is replaced; the workspace persists on the host.
     const labels = info?.Config?.Labels ?? {};
-    if (info && (labels["jit.box.mode"] !== mode || labels["jit.box.profile"] !== (profile ? "1" : "0") || labels["jit.box.env"] !== environmentDigest(env) || info.ImageName !== image)) {
+    if (info && (labels["jit.box.mode"] !== mode || labels["jit.box.profile"] !== (profile ? "1" : "0") || labels["jit.box.env"] !== environmentDigest(env) ||
+        labels["jit.box.layout"] !== boxLayoutVersion || info.ImageName !== image)) {
       await this.#remove(name); info = null;
     }
     if (!info) {
@@ -160,7 +161,8 @@ export class PodmanBoxRuntime implements BoxRuntime, BoxStreams {
       await this.#podman(["start", name]);
       await this.#verify(name, await this.#inspect(name), mode, expected);
     }
-    if (proxy) await this.#ensureProxy(proxy.gateway);
+    // A box whose proxy cannot start is removed, so it never runs outside the manager's capacity and idle sweep.
+    if (proxy) await this.#ensureProxy(proxy.gateway).catch(async error => { await this.#remove(name).catch(() => undefined); throw error; });
     return Object.freeze({ projectId, name, mode, profile, workspaceRoot: boxWorkspaceRoot, temporaryDirectory: boxTemporaryDirectory });
   }
 
@@ -248,7 +250,7 @@ export class PodmanBoxRuntime implements BoxRuntime, BoxStreams {
     await this.#podman(["start", name]);
     const info = await this.#inspect(name);
     await this.#verify(name, info, spec.mode, mounts);
-    if (proxy) await this.#ensureProxy(proxy.gateway);
+    if (proxy) await this.#ensureProxy(proxy.gateway).catch(async error => { await this.#remove(name).catch(() => undefined); throw error; });
     return Object.freeze({ projectId: spec.projectId, serverId: spec.serverId, instance: spec.instance, name, mode: spec.mode, image: spec.image });
   }
 
@@ -359,6 +361,12 @@ function parseJson(bytes: Uint8Array): unknown {
   try { return JSON.parse(new TextDecoder().decode(bytes)); } catch { throw new AppError("box_runtime_unavailable", 503); }
 }
 
+/**
+ * Version of the container layout a box was created with (flags that are not in its labels or environment). A box
+ * from an older layout is recreated on its next open; v2 maps the service uid onto `box` (#163).
+ */
+export const boxLayoutVersion = "2";
+
 /** The exact `podman create` arguments of one box (exported for the hardening-flag tests). */
 export function createArgs(input: {
   name: string; projectId: string; mode: BoxMode; profile: boolean; image: string; mounts: BoxMount[]; env: Record<string, string>;
@@ -366,7 +374,7 @@ export function createArgs(input: {
 }): string[] {
   const args = ["create", "--name", input.name, "--pull=never",
     "--label", "jit.box=1", "--label", `jit.box.project=${input.projectId}`, "--label", `jit.box.mode=${input.mode}`, "--label", `jit.box.profile=${input.profile ? "1" : "0"}`,
-    "--label", `jit.box.env=${environmentDigest(input.env)}`,
+    "--label", `jit.box.env=${environmentDigest(input.env)}`, "--label", `jit.box.layout=${boxLayoutVersion}`,
     "--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only", ...tmpfs.flatMap(spec => ["--tmpfs", spec]),
     `--pids-limit=${input.config.pidsLimit}`, `--memory=${input.config.memoryMb}m`, `--cpus=${input.config.cpus}`, `--userns=keep-id:uid=${boxUserId},gid=${boxUserId}`,
     "--log-driver=none", "--stop-timeout=2", "--workdir", boxWorkspaceRoot];

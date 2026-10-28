@@ -180,6 +180,21 @@ test("#163 a proxy port names its URL before the box exists and is ensured only 
   const failing = new PodmanBoxRuntime({ config: f.config.execution, run: f.podman.run,
     registryProxy: { url: port.url, ensure: async () => { throw new AppError("box_proxy_unavailable", 503); } } });
   await expect(failing.ensure(projectA, "workspace")).rejects.toThrow("box_proxy_unavailable");
+  // The started box is removed, so it can never run outside the manager's capacity and idle sweep.
+  expect(f.podman.calls.at(-1)).toEqual(["rm", "--force", "--time", "2", `jit-box-${projectA}`]);
+  expect((await failing.status(projectA)).state).toBe("absent");
+});
+
+test("#163 a box from an older container layout (no layout label) is recreated on its next open", async () => {
+  const f = podmanFixture();
+  await f.runtime.ensure(projectB, "full");
+  const box = f.podman.containers.get(`jit-box-${projectB}`)!;
+  const at = box.args.indexOf("jit.box.layout=2");
+  expect(at).toBeGreaterThan(0);
+  box.args.splice(at - 1, 2);
+  await f.runtime.ensure(projectB, "full");
+  expect(f.podman.calls.filter(call => call[0] === "rm")).toHaveLength(1);
+  expect(f.podman.calls.filter(call => call[0] === "create")).toHaveLength(2);
 });
 
 test("#163 Podman 4.x NetworkMode bridge counts as the internal network only when it is the one attached network", async () => {

@@ -53,12 +53,18 @@ export function podmanProxySpawner(): ProxySpawner {
   };
 }
 
-/** The current rootless network namespace's inode, through Podman (it creates the namespace when none exists). */
-export async function podmanRootlessNetns(): Promise<string | null> {
+/**
+ * The current rootless network namespace's inode, through Podman (it creates the namespace when none exists), or null
+ * when Podman fails or takes longer than `timeoutMs` (the child is killed, so a hung Podman never blocks the queue).
+ */
+export async function podmanRootlessNetns(timeoutMs = 15_000): Promise<string | null> {
   try {
     const child = Bun.spawn(["podman", "unshare", "--rootless-netns", "stat", "-L", "-c", "%i", "/proc/self/ns/net"], { stdout: "pipe", stderr: "ignore" });
-    const [code, text] = await Promise.all([child.exited, new Response(child.stdout).text()]);
-    return code === 0 && /^\d+$/.test(text.trim()) ? text.trim() : null;
+    const timer = setTimeout(() => child.kill(), timeoutMs);
+    try {
+      const [code, text] = await Promise.all([child.exited, new Response(child.stdout).text()]);
+      return code === 0 && /^\d+$/.test(text.trim()) ? text.trim() : null;
+    } finally { clearTimeout(timer); }
   } catch { return null; }
 }
 
@@ -100,7 +106,10 @@ export class NetnsRegistryProxy {
   /** Makes sure a live child serves `gateway` in the current namespace; concurrent callers share one start. */
   ensure(gateway: string): Promise<void> {
     const run = async () => {
-      const current = await this.#currentNetns();
+      // A namespace lookup that hangs counts as unknown rather than blocking every later open.
+      let lookup: ReturnType<typeof setTimeout> | undefined;
+      const current = await Promise.race([this.#currentNetns().catch(() => null),
+        new Promise<null>(resolve => { lookup = setTimeout(() => resolve(null), this.#readyMs); })]).finally(() => clearTimeout(lookup));
       const child = this.#child;
       if (child?.alive && child.gateway === gateway && (current === null || child.netns === current)) return;
       child?.process.kill();
