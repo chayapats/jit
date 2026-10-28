@@ -900,9 +900,19 @@ export function schedulesPage(state: ReturnType<Application["schedules"]>, works
 /** Shows one schedule, its recent occurrences and the fenced or committed job behind each. */
 export function scheduleDetailPage(state: ReturnType<Application["schedule"]>, workspace: Workspace, csrf: string): string {
   const { project, schedule, occurrences } = state, base = `/projects/${project.id}/schedules`;
-  const occurrence = (item: ScheduleOccurrence & { jobState: string }) => `<article class="team-card"><p>${tr("schedules.run")} ${time(item.scheduledInstant)} · <a href="/projects/${project.id}/jobs/${item.jobId}">${tr("common.job_2")}</a> (${escape(item.jobState)}) · revision ${item.revision} · ${escape(item.resolution)}</p>
+  const occurrence = (item: ScheduleOccurrence & { jobState: string }) => {
+    const outcome = !item.outcome ? "" : (() => {
+      const state = item.outcome.kind === "report" ? "succeeded" : item.outcome.kind === "no_update" ? "waiting" : "failed";
+      const key = item.outcome.kind === "report" ? "schedules.outcome_report"
+        : item.outcome.kind === "no_update" ? "schedules.outcome_no_update" : "schedules.outcome_failed";
+      const reason = item.outcome.kind === "failed" ? ` ${tr("schedules.outcome_reason")} ${escape(item.outcome.reason ?? "")}` : "";
+      return `<p><span class="job-status" data-state="${state}">${tr(key)}</span>${reason}</p>`;
+    })();
+    return `<article class="team-card"><p>${tr("schedules.run")} ${time(item.scheduledInstant)} · <a href="/projects/${project.id}/jobs/${item.jobId}">${tr("common.job_2")}</a> (${escape(item.jobState)}) · revision ${item.revision} · ${escape(item.resolution)}</p>
+    ${outcome}
     ${item.missed ? `<p>${tr("schedules.coalesced_missed_runs")} ${item.missed.count} ${tr("common.times")} ${time(item.missed.from)}..${time(item.missed.to)} ${tr("schedules.into_one_run")}</p>` : ""}
     ${item.requestedWall ? `<p>${tr("schedules.requested_local_time")} ${escape(item.requestedWall)}</p>` : ""}</article>`;
+  };
   return shell(schedule.purpose, { project, workspace, csrf, section: "jobs" }, `<div class="content"><section class="hero"><p class="eyebrow">${escape(scheduleKindLabels()[schedule.kind])} · ${escape(scheduleStateLabels()[schedule.state])}</p><h2>${escape(schedule.purpose)}</h2><p>${recurrenceLabel(schedule)} ${tr("schedules.runs_remaining")} ${schedule.occurrencesRemaining} · revision ${schedule.revision} · contract ${escape(schedule.contract)}</p></section>
     ${nextRunLine(schedule)}${lastResultLine(project.id, schedule)}
     <section aria-label="${tr("schedules.past_runs")}"><h2>${tr("schedules.past_runs")}</h2>${occurrences.length ? occurrences.map(occurrence).join("") : `<p class="empty-list">${tr("schedules.no_runs_due_yet")}</p>`}</section>
