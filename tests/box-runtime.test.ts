@@ -444,7 +444,7 @@ test("the registry proxy tunnels only allowlisted hosts on 443 and logs refused 
 // Schema, backup classification and dictionaries
 // ---------------------------------------------------------------------------
 
-test("schema 32 installations migrate to the box reset table with their data intact, and reopen", () => {
+test("schema 32 installations migrate through the box reset table with their data intact, and reopen", () => {
   const root = mkdtempSync(join(tmpdir(), "jit-exe03-migrate-")); roots.push(root);
   const path = join(root, "state.sqlite"), old = new Database(path);
   old.exec(readFileSync(new URL("./fixtures/foundation-v32.sql", import.meta.url), "utf8"));
@@ -454,8 +454,8 @@ test("schema 32 installations migrate to the box reset table with their data int
   old.query("INSERT INTO project_access_revisions VALUES (?, 1, 'workspace', 'web', ?)").run(projectId, epoch);
   old.close();
   const migrated = new TransactionStore(path); stores.push(migrated);
-  expect(schemaVersion).toBe(33);
-  expect(migrated.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 33 });
+  expect(schemaVersion).toBeGreaterThanOrEqual(33);
+  expect(migrated.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: schemaVersion });
   expect(readdirSync(root).some(name => name.startsWith("state.sqlite.pre-v32-"))).toBe(true);
   expect(migrated.read(tx => tx.get("SELECT level FROM project_access_revisions WHERE project_id = ?", projectId))).toEqual({ level: "workspace" });
   expect(migrated.read(tx => tx.all("SELECT * FROM execution_box_resets"))).toEqual([]);
@@ -463,7 +463,7 @@ test("schema 32 installations migrate to the box reset table with their data int
   expect(migrated.read(tx => tx.all("PRAGMA foreign_key_check"))).toEqual([]);
   migrated.close(); stores.splice(stores.indexOf(migrated), 1);
   const reopened = new TransactionStore(path); stores.push(reopened);
-  expect(reopened.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 33 });
+  expect(reopened.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: schemaVersion });
   expect(backupImageTables.execution_box_resets).toBe("include");
 });
 

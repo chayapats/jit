@@ -305,6 +305,8 @@ export const backupImageTables: Readonly<Record<string, "include" | "exclude" | 
   webhook_triggers: "scrub", webhook_receipts: "include", pr_poll_due: "include",
   // exec.box_runtime/v1 (schema 33): owner box reset revisions only; the box and its workspace are never in an image.
   execution_box_resets: "include",
+  // app.connections/v1 (schema 34): connection metadata and audit only; values live in the secrets directory, never in an image.
+  connections: "include", connection_audit: "include",
   project_team: "include", projects: "include", restore_quarantines: "include", roles: "include",
   schway_native_refs: "include", source_versions: "include", sources: "include",
   task_events: "include", task_evidence_artifacts: "include", task_proposals: "include", tasks: "include",

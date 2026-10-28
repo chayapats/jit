@@ -24,6 +24,7 @@ import type {
   Model,
 } from "schway/host";
 import { AppError } from "../errors";
+import { redactRegisteredSecrets } from "../security/secret-fingerprints";
 import { requireId } from "../sources";
 import type { TransactionStore } from "../store";
 import type { ApplicationRunPort, ManagedContextOutcome, NativeRunInspection } from "./run-port";
@@ -161,8 +162,11 @@ export function describeEffectiveRun(request: ApplicationRunRequest): EffectiveS
   ];
   for (const document of sources) {
     if (!HOST_ID_PATTERN.test(document.id) || !HOST_ID_PATTERN.test(document.revision)) throw new AppError("invalid_run_request");
+    // app.connections/v1: a stored connection value never reaches a prompt, even when a source echoes it.
+    document.content = redactRegisteredSecrets(document.content);
   }
-  const inputText = request.purpose;
+  for (const section of sections) section.content = redactRegisteredSecrets(section.content);
+  const inputText = redactRegisteredSecrets(request.purpose);
   const totalBytes = Buffer.byteLength(SCHWAY_SYSTEM_PROMPT)
     + sections.reduce((sum, section) => sum + Buffer.byteLength(section.name) + Buffer.byteLength(section.content), 0)
     + sources.reduce((sum, source) => sum + Buffer.byteLength(source.id) + Buffer.byteLength(source.revision) + Buffer.byteLength(source.content), 0)

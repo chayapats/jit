@@ -1573,4 +1573,17 @@ export const th = {
   "error.box_proxy_unavailable": "proxy ของ package registry ยังไม่พร้อม — ให้ผู้ดูแลระบบตรวจสอบ",
   "error.invalid_box_mode": "โหมดของ box ไม่ถูกต้อง",
   "error.invalid_box_command": "คำสั่ง box ไม่ถูกต้อง",
+  // app.connections/v1 (EXE08)
+  "error.connection_requires_web": "จัดการ connection และกรอก secret ได้เฉพาะเจ้าของใน Web เท่านั้น",
+  "error.connection_not_found": "ไม่พบ connection นี้",
+  "error.connection_removed": "connection นี้ถูกลบไปแล้ว",
+  "error.connection_secret_exists": "connection นี้มี secret อยู่แล้ว — ใช้ rotate เพื่อเปลี่ยน",
+  "error.connection_secret_missing": "connection นี้ยังไม่มี secret — กรอก secret ก่อน",
+  "error.connection_unavailable": "connection นี้ยังใช้ไม่ได้ (ไม่มี secret หรือถูกลบแล้ว)",
+  "error.connection_out_of_scope": "connection นี้ไม่ได้อนุญาตให้ใช้กับโครงการนี้",
+  "error.connection_purpose_invalid": "ใช้ connection เพื่อจุดประสงค์นี้ไม่ได้",
+  "error.connection_vault_unsafe": "โฟลเดอร์ secret ไม่ปลอดภัย (symlink, เจ้าของ หรือสิทธิ์ไฟล์ไม่ถูกต้อง) — ให้ผู้ดูแลระบบตรวจสอบ",
+  "error.connection_vault_not_configured": "เครื่องนี้ยังไม่ได้ตั้งค่าโฟลเดอร์ secret ของ connection — ให้ผู้ดูแลระบบตั้งค่าก่อน",
+  "error.invalid_connection_command": "คำสั่ง connection ไม่ถูกต้อง",
+  "error.invalid_connection_secret": "secret ต้องยาว 8 ถึง 8192 ไบต์ และไม่มีอักขระ NUL",
 } as const;

@@ -1,4 +1,5 @@
 import type { AppConfig } from "../config";
+import { redactRegisteredSecrets } from "../security/secret-fingerprints";
 import type { TransactionStore } from "../store";
 import { BoxManager, type BoxManagerOptions } from "./box-manager";
 import { PodmanBoxRuntime } from "./podman-runtime";
@@ -17,5 +18,6 @@ export function createServiceBoxes(store: TransactionStore, config: AppConfig, o
     registryProxy: async gateway => (await (proxy ??= startRegistryProxy({ hostname: gateway, port: 0, hosts: config.execution.registryHosts })
       .catch(error => { proxy = null; throw error; }))).url,
   });
-  return new BoxManager(store, config, runtime, options);
+  // app.connections/v1: tool output and search lines pass the fingerprint guard before Schway sees them.
+  return new BoxManager(store, config, runtime, { ...options, backend: { redact: redactRegisteredSecrets, ...options.backend } });
 }

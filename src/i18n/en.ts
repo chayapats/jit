@@ -1571,4 +1571,17 @@ export const en: Record<MessageKey, string> = {
   "error.box_proxy_unavailable": "The package registry proxy is not ready — the operator should check it.",
   "error.invalid_box_mode": "The box mode is not valid.",
   "error.invalid_box_command": "The box command is not valid.",
+  // app.connections/v1 (EXE08)
+  "error.connection_requires_web": "Only the owner in Web can manage connections and enter secrets.",
+  "error.connection_not_found": "This connection was not found.",
+  "error.connection_removed": "This connection was removed.",
+  "error.connection_secret_exists": "This connection already has a secret — rotate it to change it.",
+  "error.connection_secret_missing": "This connection has no secret yet — enter one first.",
+  "error.connection_unavailable": "This connection can’t be used (it has no secret or was removed).",
+  "error.connection_out_of_scope": "This connection isn’t allowed for this project.",
+  "error.connection_purpose_invalid": "This connection can’t be used for that purpose.",
+  "error.connection_vault_unsafe": "The secrets folder is unsafe (a symlink, the wrong owner or wrong file permissions) — the operator should check it.",
+  "error.connection_vault_not_configured": "The connection secrets folder is not configured on this host — the operator sets it up first.",
+  "error.invalid_connection_command": "The connection command is not valid.",
+  "error.invalid_connection_secret": "A secret must be 8 to 8192 bytes and contain no NUL character.",
 };

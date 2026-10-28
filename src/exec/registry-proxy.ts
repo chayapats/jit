@@ -1,4 +1,5 @@
 import { connect, createServer, type Server, type Socket } from "node:net";
+import { logLine } from "../security/log";
 
 /** Opens the upstream TLS-tunnel socket for an allowed `host:443` (injected by tests). */
 export type UpstreamConnector = (host: string, port: number) => Socket;
@@ -30,7 +31,7 @@ const headerMs = 10_000;
  */
 export async function startRegistryProxy(options: RegistryProxyOptions): Promise<RegistryProxy> {
   const allowed = new Set(options.hosts.map(host => host.toLowerCase()));
-  const log = options.log ?? (line => console.error(line));
+  const log = options.log ?? (line => logLine(line));
   const upstream = options.connectUpstream ?? ((host, port) => connect({ host, port }));
   const sockets = new Set<Socket>();
   const server: Server = createServer(client => {

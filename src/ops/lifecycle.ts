@@ -1,5 +1,5 @@
 import { realpathSync, statSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { Application } from "../application";
 import { prepareServiceState } from "../bootstrap";
 import type { AppConfig } from "../config";
@@ -10,6 +10,7 @@ import { tickPrPolls } from "../pr/poll-due";
 import { webhookLimits } from "../pr/webhooks";
 import type { BoxManager } from "../exec/box-manager";
 import { createServiceBoxes } from "../exec/box-service";
+import { ConnectionVault } from "../exec/connections";
 import { composeJobQueue } from "../composition";
 import type { ApplicationRunPort } from "../team/run-port";
 import { verifySchwayBridge } from "../team/schway-port";
@@ -373,6 +374,9 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
     const app = new Application(store, config, {
       service: managed, now, ...(service ? { backupDir: service.backupDirectory, ledgerPath: service.ledgerPath } : {}),
       ...(nativeSnapshot ? { nativeSnapshot } : {}), ...(boxes ? { boxes } : {}),
+      // app.connections/v1: values live in the secrets directory, never beside the state, backups or boxes.
+      ...(config.execution.secretsDirectory ? { connections: new ConnectionVault(config.execution.secretsDirectory, {
+        forbidden: [dirname(resolve(config.databasePath)), service?.stateDirectory, service?.backupDirectory, service?.ledgerPath, config.execution.directory] }) } : {}),
     });
     const ledger = ledgerGate({ store, ledgerPath: service?.ledgerPath ?? null, now: now(), mode: "boot" });
     if (!ledger.trusted) return refuse([{ gate: "quarantine", state: "blocked", nextAction: ledger.nextAction, detail: ledger.reason }]);

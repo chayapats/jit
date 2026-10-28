@@ -1,3 +1,5 @@
+import { containsRegisteredSecret, redactRegisteredSecrets } from "./secret-fingerprints";
+
 /**
  * Shared credential detector for untrusted or outbound text (PR evidence, model output, outbox
  * payloads, exports). Patterns favour recall: a false positive holds or redacts text, a false
@@ -37,9 +39,13 @@ export const CREDENTIAL_PATTERNS: readonly CredentialPattern[] = Object.freeze([
   },
 ]);
 
-/** Returns the first matching credential kind, or null when the text has no credential-like content. */
+/**
+ * Returns the first matching credential kind, or null when the text has no credential-like content. A stored
+ * connection secret (app.connections/v1 fingerprints) is `connection_secret`, whatever its shape.
+ */
 export function findCredential(text: string): string | null {
   if (typeof text !== "string" || text.length === 0) return null;
+  if (containsRegisteredSecret(text)) return "connection_secret";
   for (const { kind, pattern } of CREDENTIAL_PATTERNS) {
     pattern.lastIndex = 0;
     const hit = pattern.test(text);
@@ -54,10 +60,13 @@ export function containsCredential(text: string): boolean {
   return findCredential(text) !== null;
 }
 
-/** Replaces every credential-like span with `replacement`; the original value is never returned. */
+/**
+ * Replaces every credential-like span — and every stored connection secret, by fingerprint — with `replacement`;
+ * the original value is never returned.
+ */
 export function redactCredentials(text: string, replacement = "[credential-redacted]"): string {
   if (typeof text !== "string" || text.length === 0) return text;
-  let out = text;
+  let out = redactRegisteredSecrets(text, replacement);
   for (const { pattern } of CREDENTIAL_PATTERNS) {
     pattern.lastIndex = 0;
     out = out.replace(pattern, replacement);
