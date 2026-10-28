@@ -614,3 +614,22 @@ test("stopping, skipping or excluding a role on a promoted topic never admits th
   await settle(f);
   expect(count(f, "jit_replies")).toBe(before);
 });
+
+test("promoting a topic resolves its dispatch card notice and closes the work group (REL04)", async () => {
+  const f = await fixture();
+  const projectId = general(f).projectId;
+  f.app.execute(f.auth.actor, { kind: "dispatch.allowance.set", requestId: rid(), projectId,
+    expectedRevision: f.app.dispatchAllowance(f.auth.actor, projectId).revision, payload: { enabled: false, maxRoles: 1 } });
+  // One reply both asks to call a specialist (waiting on the owner's card) and suggests a promotion.
+  f.outputs.push({ reply: "ขอเรียกทีมก่อนครับ", proposals: [{ kind: "dispatch", roles: ["เทคโนโลยี"] }, { kind: "promotion", name: "ฐานข้อมูลใหม่" }] });
+  const started = await chat(f, "ช่วยวางแผนฐานข้อมูล");
+  const dispatchCard = f.app.dispatchCards(f.auth.actor, projectId, started.topic.id, [started.reply.replyMessageId!]).get(started.reply.replyMessageId!)!;
+  expect(dispatchCard).toMatchObject({ state: "proposed", reason: "allowance_disabled" });
+  const notices = () => f.store.read(tx => tx.all<{ record_json: string }>("SELECT record_json FROM delivery_intents ORDER BY sequence"))
+    .map(row => JSON.parse(row.record_json) as { status: string; failureReason: string | null; attention?: { item: string | null } });
+  expect(notices()).toMatchObject([{ status: "waiting", attention: { item: `proposal:${dispatchCard.id}` } }]);
+  f.app.execute(f.auth.actor, promote(f, "accept", started.reply.promotionProposals[0]!));
+  expect(notices()).toMatchObject([{ status: "cancelled", failureReason: "owner_answered" }]);
+  expect(f.store.read(tx => tx.get<{ state: string; record_json: string }>("SELECT state, record_json FROM work_groups"))).toMatchObject({ state: "closed" });
+  expect(JSON.parse(f.store.read(tx => tx.get<{ record_json: string }>("SELECT record_json FROM work_groups")!.record_json)).closed).toBe("promoted");
+});
