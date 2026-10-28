@@ -68,6 +68,9 @@ async function fixture(path?: string) {
       payload: { roleId: null, name, kind, responsibility, enabled: true, route: grok } }).role!.id;
   role("จิต", "coordinator", "ตอบเจ้าของและประสานทีม");
   role("เทคโนโลยี", "specialist", "วิเคราะห์ด้าน software architecture");
+  // Two specialists, so app.routing_selection/v1 rule `single` does not dispatch every message: a plain answer stays
+  // plain and only Jit's model proposal asks for the team.
+  role("ออกแบบ", "specialist", "วิเคราะห์ด้าน UX");
   // A disabled allowance keeps every dispatch proposal waiting for the owner.
   app.execute(auth.actor, { kind: "dispatch.allowance.set", requestId: rid(), projectId: project.id, expectedRevision: 0, payload: { enabled: false, maxRoles: 3 } });
   return { root, path: database, config, store, app, queue, auth, clock, state, project, topic };

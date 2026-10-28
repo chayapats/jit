@@ -425,7 +425,7 @@ export class Application {
       const jobs = tx.all<{ record_json: string }>("SELECT record_json FROM jobs WHERE state = 'waiting' ORDER BY sequence DESC LIMIT ?", limit + 1);
       return {
         proposals: proposals.slice(0, limit).map(row => {
-          const card = readDispatchCard(tx, row.projectId, row.id);
+          const card = readDispatchCard(tx, row.projectId, row.id, this.config.team);
           return { kind: "dispatch" as const, id: card.id, projectId: card.projectId, topicId: card.topicId, revision: card.revision,
             reason: card.reason, roles: card.roles, replyMessageId: card.replyMessageId };
         }),
