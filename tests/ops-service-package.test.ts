@@ -221,7 +221,7 @@ test("plan prints the exact unit, journald and config files with modes and no se
   expect(unit.content).toContain("LogNamespace=jit");
   // #89: on a host reboot the stop summary must reach the namespace journal before it stops.
   expect(unit.content).toContain("After=systemd-journald@jit.service\n");
-  expect(unit.content.indexOf("After=systemd-journald@jit.service")).toBeLessThan(unit.content.indexOf("[Service]"));
+  expect(unit.content!.indexOf("After=systemd-journald@jit.service")).toBeLessThan(unit.content!.indexOf("[Service]"));
   expect(unit.content).toContain("WantedBy=multi-user.target");
   expect(plan.files.find(f => f.path.endsWith("journald@jit.conf"))!.content).toContain("SystemMaxUse=1048576");
   expect(plan.files.find(f => f.path.endsWith("service-config.json"))).toMatchObject({ mode: "0640", content: null });

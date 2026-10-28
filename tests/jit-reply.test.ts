@@ -670,6 +670,23 @@ test("a forget keeps the forgotten message and every Jit reply that copied it ou
   expect(messages(f).some(m => m.text === "รหัสลับคือ ม่วง-42")).toBe(true);
 });
 
+test("a forget fences a queued extraction of a reply output it newly suppresses (#110)", async () => {
+  const f = await fixture({ script: request => answer(request, JSON.stringify({ reply: `ทวนว่า: ${request.manifest.sources.map(s => s.text).join(" | ")}` })) });
+  const secret = send(f, "รหัสลับคือ ส้ม-7"); await settle(f);
+  const echoed = replyFor(f, secret.message.id);
+  const claim = await remember(f, secret.message.source);
+  // Extraction of the reply output is queued, not yet run, when the owner forgets the original message.
+  const queued = f.app.execute(f.auth.actor, { kind: "memory.extract", requestId: rid(), projectId: f.project.id, expectedRevision: f.app.project(f.auth.actor, f.project.id).revision,
+    payload: { topicId: f.topic.id, roleId: f.coordinatorId, source: echoed.source!, dependencies: [], limits: { ...f.config.jobs.maximum } } });
+  const receipt = forget(f, claim);
+  expect(receipt.suppression.sources.map(entry => entry.source.sourceId)).toContain(echoed.source!.sourceId);
+  const job = f.store.read(tx => JSON.parse(tx.get<{ json: string }>("SELECT record_json AS json FROM jobs WHERE id = ?", queued.extraction.jobId)!.json) as { state: string });
+  expect(job.state).toBe("blocked");
+  await settle(f);
+  expect(f.app.memory(f.auth.actor, f.project.id).items.flatMap(item => item.state === "available" ? [item.claim] : [])
+    .some(item => item.source.sourceId === echoed.source!.sourceId)).toBe(false);
+});
+
 test("a forget while a reply is running fences it: the late result never commits", async () => {
   const gate = deferred<void>();
   let held = false;

@@ -3,9 +3,9 @@ import { invalidatePendingJob, jobData } from "../jobs/queue";
 import { requireId, requireText, type SourceReference } from "../sources";
 import type { AppTransaction } from "../store";
 import type { Discussion } from "../team/types";
-import { replyLineage } from "../team/reply-lineage";
 import { fenceStaleContexts, lexicalScore, lexicalTerms } from "./context";
 import { fenceUnavailableExtractions } from "./extract";
+import { forgetLineage } from "./lineage";
 import { lookupActiveClaim, requireClaimReference, suppressedClaim, suppressedSource } from "./read";
 import type {
   ClaimReference, ForgetMemoryCommand, MemoryClaim, MemorySuppression, SuppressedClaimIdentity,
@@ -127,6 +127,7 @@ export function suppressionImpact(tx: AppTransaction, projectId: string, referen
     !siblings.some(item => item.claim.claimId === entry.claim.claimId));
   const listed = [...direct, ...indirect].map(entry => ({ projectId: entry.projectId,
     reference: { claimId: entry.claim.claimId, revision: entry.claim.revision, generation: entry.claim.generation }, text: null as string | null }));
+  const { sources, lineage } = suppressedLineage(tx, withdrawn);
   const placeholders = [...ids].map(() => "?").join(",");
   const contexts = placeholders ? tx.all<{ id: string; generation: number; projectId: string; ownerKind: string; ownerId: string }>(
     `SELECT c.id, e.generation AS generation, c.project_id AS projectId, c.owner_kind AS ownerKind, c.owner_id AS ownerId
@@ -137,16 +138,41 @@ export function suppressionImpact(tx: AppTransaction, projectId: string, referen
     siblings: siblings.map(entry => ({ projectId: entry.projectId,
       reference: { claimId: entry.claim.claimId, revision: entry.claim.revision, generation: entry.claim.generation } })),
     contexts: contexts.map(row => ({ id: row.id, generation: row.generation ?? 1, projectId: row.projectId, ownerKind: row.ownerKind, ownerId: row.ownerId })),
-    pendingJobs: dedupeJobs([...pendingReferencing(tx, ids),
-      ...replyLineage(tx, [...withdrawn.values()].map(entry => entry.claim.source)).pendingJobs]),
+    pendingJobs: dedupeJobs([...pendingReferencing(tx, ids, suppressedKeys(sources)), ...lineage.pendingJobs]),
     overlaps: overlapTitles(tx, projectId, claim.claim.text),
     note: forgetNote };
 }
 
 const dedupeJobs = (jobs: { id: string; projectId: string }[]) => [...new Map(jobs.map(job => [job.id, job])).values()];
 
-/** Pending work that admitted a soon-withdrawn claim or a soon-suppressed source, across projects. */
-function pendingReferencing(tx: AppTransaction, ids: Set<string>): { id: string; projectId: string }[] {
+const sourceKey = (ref: SourceReference) => `${ref.sourceId}:${ref.revision}:${ref.generation}`;
+const suppressedKeys = (sources: readonly SuppressedSourceIdentity[]) => new Set(sources.map(entry => sourceKey(entry.source)));
+
+/**
+ * The sources one forget suppresses: those of every withdrawn claim, their chat-title twins, and every derived output
+ * of them by any producer ({@link forgetLineage}), with the pending jobs of producers that were given any of them.
+ */
+function suppressedLineage(tx: AppTransaction, withdrawn: Map<string, Withdrawn>): {
+  sources: SuppressedSourceIdentity[]; lineage: ReturnType<typeof forgetLineage>;
+} {
+  const sources: SuppressedSourceIdentity[] = [];
+  const seen = new Set<string>();
+  const bind = (entry: SuppressedSourceIdentity) => {
+    if (seen.has(sourceKey(entry.source))) return;
+    seen.add(sourceKey(entry.source)); sources.push({ projectId: entry.projectId, source: { ...entry.source } });
+  };
+  for (const entry of withdrawn.values()) bind({ projectId: entry.projectId, source: entry.claim.source });
+  // A chat title and the first message it was derived from are one lineage: forgetting either suppresses both.
+  for (const entry of [...sources]) for (const twin of chatTitleTwins(tx, entry.source)) bind(twin);
+  // Jit replies, specialist results, role previews and coordinator syntheses that were given a forgotten source,
+  // directly or through an earlier output, may copy it: their outputs join the suppressed lineage.
+  const lineage = forgetLineage(tx, sources.map(entry => entry.source));
+  for (const output of lineage.outputs) bind(output);
+  return { sources, lineage };
+}
+
+/** Pending work that admitted a withdrawn claim or a suppressed source (`suppressed`, or already recorded), across projects. */
+function pendingReferencing(tx: AppTransaction, ids: Set<string>, suppressed: Set<string>): { id: string; projectId: string }[] {
   const found = new Map<string, { id: string; projectId: string }>();
   const pending = "state IN ('queued', 'admitted', 'waiting')";
   const cites = (refs: ClaimReference[] | undefined) => refs?.some(ref => ids.has(ref.claimId)) ?? false;
@@ -154,7 +180,7 @@ function pendingReferencing(tx: AppTransaction, ids: Set<string>): { id: string;
     `SELECT project_id AS projectId, job_id AS jobId, record_json AS json FROM memory_extractions WHERE job_id IN (SELECT id FROM jobs WHERE ${pending}) LIMIT 500`)) {
     try {
       const extraction = JSON.parse(row.json) as { dependencies?: ClaimReference[]; source?: { sourceId: string; revision: number; generation: number } };
-      if (cites(extraction.dependencies) || (extraction.source && suppressedSource(tx, extraction.source))) found.set(row.jobId, { id: row.jobId, projectId: row.projectId });
+      if (cites(extraction.dependencies) || (extraction.source && (suppressed.has(sourceKey(extraction.source)) || suppressedSource(tx, extraction.source)))) found.set(row.jobId, { id: row.jobId, projectId: row.projectId });
     } catch { /* Corrupt rows fail closed elsewhere; impact stays silent here. */ }
   }
   for (const row of tx.all<{ projectId: string; jobId: string; json: string }>(
@@ -239,41 +265,14 @@ export function prepareSuppression(tx: AppTransaction, command: ForgetMemoryComm
   const suppressionId = crypto.randomUUID();
   const listed: SuppressedClaimIdentity[] = [...withdrawn.values()].map(entry => ({ projectId: entry.projectId,
     claimId: entry.claim.claimId, revision: entry.claim.revision, generation: entry.claim.generation }));
-  const sources: SuppressedSourceIdentity[] = [];
-  const seenSources = new Set<string>();
-  for (const entry of withdrawn.values()) {
-    const key = `${entry.claim.source.sourceId}:${entry.claim.source.revision}:${entry.claim.source.generation}`;
-    if (seenSources.has(key)) continue;
-    seenSources.add(key);
-    sources.push({ projectId: entry.projectId, source: { ...entry.claim.source } });
-  }
-  // A chat title and the first message it was derived from are one lineage: forgetting either suppresses both.
-  for (const entry of [...sources]) {
-    for (const twin of chatTitleTwins(tx, entry.source)) {
-      const key = `${twin.source.sourceId}:${twin.source.revision}:${twin.source.generation}`;
-      if (!seenSources.has(key)) { seenSources.add(key); sources.push(twin); }
-    }
-  }
-  // app.jit_reply/v1: Jit replies that were given a forgotten source, directly or through an earlier reply, may
-  // copy it. Their outputs join the suppressed lineage and replies still pending lose their authority.
-  const lineage = replyLineage(tx, sources.map(entry => entry.source));
-  for (const output of lineage.outputs) {
-    const key = `${output.source.sourceId}:${output.source.revision}:${output.source.generation}`;
-    if (!seenSources.has(key)) { seenSources.add(key); sources.push(output); }
-  }
-  const fenced = dedupeJobs([...pendingReferencing(tx, ids), ...lineage.pendingJobs]);
-  const fencedJobs = new Set(fenced.map(job => job.id));
-  for (const job of fenced) invalidatePendingJob(tx, job.projectId, job.id, "source_retired", now);
-  fenceSuppressedDiscussions(tx, ids, now);
-  fenceStaleContexts(tx, now);
-  const projects = new Set([...withdrawn.values()].map(entry => entry.projectId));
-  for (const project of projects) fenceUnavailableExtractions(tx, project, now);
-  const contexts = fencedContexts(tx, fencedJobs);
+  const { sources, lineage } = suppressedLineage(tx, withdrawn);
   const suppression: MemorySuppression = { id: suppressionId, projectId: command.projectId, claimId: target.claimId,
     fromRevision: target.revision, fromGeneration: target.generation,
-    withdrawn: listed, sources, contexts, overlaps,
+    withdrawn: listed, sources, contexts: [], overlaps,
     reason: p.reason, acknowledged: p.acknowledged,
     ownerRevision, projectRevision, createdAt: now };
+  // The final suppressed set is recorded first, so every fence below (and the currentness checks it relies on) sees
+  // each title twin and derived output this forget adds, not only the sources that were suppressed before it.
   tx.run("INSERT INTO memory_suppressions (id, project_id, claim_id, record_json) VALUES (?, ?, ?, ?)",
     suppression.id, command.projectId, target.claimId, JSON.stringify(suppression));
   for (const entry of withdrawn.values()) {
@@ -286,6 +285,16 @@ export function prepareSuppression(tx: AppTransaction, command: ForgetMemoryComm
     tx.run("INSERT OR IGNORE INTO memory_suppressed_sources VALUES (?, ?, ?, ?, ?)",
       suppressionId, source.projectId, source.source.sourceId, source.source.revision, source.source.generation);
   }
+  const fenced = dedupeJobs([...pendingReferencing(tx, ids, suppressedKeys(sources)), ...lineage.pendingJobs]);
+  const fencedJobs = new Set(fenced.map(job => job.id));
+  for (const job of fenced) invalidatePendingJob(tx, job.projectId, job.id, "source_retired", now);
+  fenceSuppressedDiscussions(tx, ids, now);
+  fenceStaleContexts(tx, now);
+  // Every project that owns a withdrawn claim or a suppressed source, not only the claims' projects.
+  const projects = new Set([...[...withdrawn.values()].map(entry => entry.projectId), ...sources.map(entry => entry.projectId)]);
+  for (const project of projects) for (const jobId of fenceUnavailableExtractions(tx, project, now)) fencedJobs.add(jobId);
+  suppression.contexts = fencedContexts(tx, fencedJobs);
+  tx.run("UPDATE memory_suppressions SET record_json = ? WHERE id = ?", JSON.stringify(suppression), suppression.id);
   return { suppression, withdrawn: listed };
 }
 

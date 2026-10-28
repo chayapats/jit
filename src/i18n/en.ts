@@ -1150,7 +1150,7 @@ export const en: Record<MessageKey, string> = {
   "error.route_not_configured": "That route is not configured. Pick a configured route or the default.",
   "error.invalid_role_proposal_command": "The proposal form is invalid. Check the name and responsibility and try again.",
   "system.jit_reply_purpose": "Jit reply",
-  "error.memory_forget_too_broad": "This forget reaches too many replies. Contact the maintainer before trying again.",
+  "error.memory_forget_too_broad": "This forget reaches too many replies and team results. Contact the maintainer before trying again.",
   // UX02: settings IA, topic panel, ⌘K and sidebar badges (web.settings_ia/v1).
   "settings.general": "General",
   "settings.sections": "Settings sections",

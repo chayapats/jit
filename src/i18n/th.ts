@@ -1152,7 +1152,7 @@ export const th = {
   "error.route_not_configured": "route นี้ยังไม่ได้ตั้งค่า — เลือก route ที่ตั้งไว้ หรือใช้ route เริ่มต้น",
   "error.invalid_role_proposal_command": "ข้อมูลการ์ดไม่ถูกต้อง — ตรวจชื่อและหน้าที่แล้วลองอีกครั้ง",
   "system.jit_reply_purpose": "จิตตอบข้อความ",
-  "error.memory_forget_too_broad": "การลืมครั้งนี้กระทบคำตอบมากเกินไป ติดต่อผู้ดูแลก่อนลองอีกครั้ง",
+  "error.memory_forget_too_broad": "การลืมครั้งนี้กระทบคำตอบและผลงานของทีมมากเกินไป ติดต่อผู้ดูแลก่อนลองอีกครั้ง",
   // UX02: settings IA, topic panel, ⌘K and sidebar badges (web.settings_ia/v1).
   "settings.general": "ทั่วไป",
   "settings.sections": "หมวดการตั้งค่า",
