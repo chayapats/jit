@@ -1,0 +1,111 @@
+/**
+ * Deterministic accessibility checks of server-rendered HTML (UX03, NFR-11). No browser: a strict tree builder for
+ * the generated markup and the WCAG rules the markup can break on its own — language, title, zoom, one main landmark
+ * reached by the skip link first, one h1, unique and resolvable id references, names for every link, button and
+ * form control, decorative or labelled SVG, no positive tabindex, no focusable aria-hidden content, no nested
+ * interactive content, lists, fieldset legends, and distinct names for dialogs and nav/aside landmarks. Contrast is covered by ui.design_tokens/v1 tests.
+ */
+interface Node { tag: string; attrs: Record<string, string>; children: (Node | string)[]; parent: Node | null }
+const voidTags = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr", "path", "circle", "rect"]);
+/** A strict tree builder for the generated markup: unbalanced or mismatched tags fail the check. */
+function parseHtml(html: string): Node {
+  const root: Node = { tag: "#root", attrs: {}, children: [], parent: null };
+  let current = root;
+  const unescape = (value: string) => value.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+  const source = html.replace(/<!doctype html>/i, "");
+  for (const match of source.matchAll(/<\/([a-zA-Z][\w-]*)\s*>|<([a-zA-Z][\w-]*)((?:\s+[^\s=>/]+(?:="[^"]*")?)*)\s*(\/?)>|([^<]+)/g)) {
+    if (match[5] !== undefined) { if (match[5].trim()) current.children.push(unescape(match[5])); continue; }
+    if (match[1]) {
+      const tag = match[1].toLowerCase();
+      if (current.tag !== tag) throw new Error(`mismatched </${tag}> inside <${current.tag}>`);
+      current = current.parent!;
+      continue;
+    }
+    const tag = match[2]!.toLowerCase(), attrs: Record<string, string> = {};
+    for (const a of match[3]!.matchAll(/([^\s=>/]+)(?:="([^"]*)")?/g)) {
+      if (a[1]! in attrs) throw new Error(`duplicate attribute ${a[1]} on <${tag}>`);
+      attrs[a[1]!.toLowerCase()] = unescape(a[2] ?? "");
+    }
+    const node: Node = { tag, attrs, children: [], parent: current };
+    current.children.push(node);
+    if (!voidTags.has(tag) && !match[4]) current = node;
+  }
+  if (current !== root) throw new Error(`unclosed <${current.tag}>`);
+  return root;
+}
+const elements = (node: Node): Node[] => node.children.flatMap(child => typeof child === "string" ? [] : [child, ...elements(child)]);
+const hiddenFromAt = (node: Node) => node.attrs["aria-hidden"] === "true";
+/** Accessible name per the parts of accname that the markup uses: aria-labelledby, aria-label, content, title. */
+function accessibleName(node: Node, byId: Map<string, Node>): string {
+  if (node.attrs["aria-labelledby"]) return node.attrs["aria-labelledby"].split(/\s+/).map(id => byId.get(id) ? text(byId.get(id)!) : "").join(" ").trim();
+  if (node.attrs["aria-label"]?.trim()) return node.attrs["aria-label"].trim();
+  const content = text(node);
+  return content || (node.attrs.title ?? "").trim();
+}
+/** Landmarks and dialogs are named only by aria-labelledby or aria-label, never by their content. */
+const landmarkName = (node: Node, byId: Map<string, Node>) => node.attrs["aria-labelledby"] || node.attrs["aria-label"]?.trim() ? accessibleName(node, byId) : "";
+function text(node: Node): string {
+  return node.children.map(child => typeof child === "string" ? child : hiddenFromAt(child) ? ""
+    : child.tag === "svg" ? child.attrs.role === "img" ? child.attrs["aria-label"] ?? "" : "" : text(child)).join(" ").replace(/\s+/g, " ").trim();
+}
+const focusable = (node: Node) => node.attrs.tabindex !== "-1" && (["button", "select", "textarea", "summary"].includes(node.tag)
+  || (node.tag === "a" && "href" in node.attrs) || (node.tag === "input" && node.attrs.type !== "hidden") || (node.attrs.tabindex !== undefined));
+
+/** Deterministic WCAG checks of one served document; returns readable problems. */
+export function accessibilityProblems(html: string, locale: "th" | "en"): string[] {
+  const problems: string[] = [];
+  let root: Node;
+  try { root = parseHtml(html); } catch (error) { return [`markup: ${(error as Error).message}`]; }
+  const all = elements(root), byId = new Map<string, Node>();
+  const where = (node: Node) => `<${node.tag}${node.attrs.id ? `#${node.attrs.id}` : ""}${node.attrs.class ? `.${node.attrs.class.split(" ")[0]}` : ""}${node.attrs.href ? ` href=${node.attrs.href}` : ""}>`;
+  for (const node of all) {
+    if (node.attrs.id === undefined) continue;
+    if (byId.has(node.attrs.id)) problems.push(`duplicate id ${node.attrs.id}`);
+    byId.set(node.attrs.id, node);
+  }
+  const html0 = all.find(n => n.tag === "html")!;
+  if (html0.attrs.lang !== locale) problems.push(`html lang ${html0.attrs.lang} (expected ${locale})`);
+  if (!text(all.find(n => n.tag === "title")!)) problems.push("empty title");
+  const viewport = all.find(n => n.tag === "meta" && n.attrs.name === "viewport")?.attrs.content ?? "";
+  if (!/width=device-width/.test(viewport) || /user-scalable=no|maximum-scale/.test(viewport)) problems.push(`viewport ${viewport}`);
+  const mains = all.filter(n => n.tag === "main");
+  if (mains.length !== 1 || mains[0]!.attrs.id !== "main-content") problems.push(`main landmarks ${mains.length}`);
+  const firstFocusable = all.find(n => n.parent && focusable(n) && !n.attrs.hidden);
+  if (firstFocusable?.attrs.href !== "#main-content") problems.push(`first focusable is ${firstFocusable ? where(firstFocusable) : "none"}, not the skip link`);
+  // Several landmarks of one kind are told apart by their names.
+  for (const kind of ["nav", "aside"]) {
+    const names = all.filter(n => n.tag === kind).map(n => landmarkName(n, byId));
+    if (new Set(names).size !== names.length) problems.push(`${kind} landmarks share a name: ${names.join(" | ")}`);
+  }
+  const h1 = all.filter(n => n.tag === "h1");
+  if (h1.length !== 1) problems.push(`${h1.length} h1 headings`);
+  for (const node of all) {
+    const { tag, attrs } = node;
+    for (const ref of ["for", "aria-controls", "aria-labelledby", "aria-describedby"]) {
+      for (const id of (attrs[ref] ?? "").split(/\s+/).filter(Boolean)) if (!byId.has(id)) problems.push(`${where(node)} ${ref}=${id} points nowhere`);
+    }
+    if (tag === "a" && attrs.href?.startsWith("#") && attrs.href.length > 1 && !byId.has(attrs.href.slice(1))) problems.push(`${where(node)} targets a missing id`);
+    if (attrs.tabindex !== undefined && Number(attrs.tabindex) > 0) problems.push(`${where(node)} positive tabindex`);
+    if (/^h[1-6]$/.test(tag) && !text(node)) problems.push(`${where(node)} empty heading`);
+    if (tag === "img" && attrs.alt === undefined) problems.push(`${where(node)} without alt`);
+    if (tag === "svg" && attrs["aria-hidden"] !== "true" && !(attrs.role === "img" && attrs["aria-label"]?.trim())) {
+      let inner = node.parent; let hidden = false;
+      while (inner) { if (hiddenFromAt(inner)) hidden = true; inner = inner.parent; }
+      if (!hidden) problems.push(`${where(node)} svg is neither decorative nor labelled`);
+    }
+    if (tag === "li" && !["ul", "ol"].includes(node.parent!.tag)) problems.push(`${where(node)} li outside a list`);
+    if (tag === "fieldset" && !node.children.some(child => typeof child !== "string" && child.tag === "legend")) problems.push(`${where(node)} fieldset without legend`);
+    if ((tag === "dialog" || tag === "nav" || tag === "aside") && !landmarkName(node, byId)) problems.push(`${where(node)} ${tag} without a name`);
+    if (hiddenFromAt(node) && focusable(node)) problems.push(`${where(node)} aria-hidden but focusable`);
+    if (["a", "button"].includes(tag) && elements(node).some(child => child.tag === "a" || child.tag === "button" || child.tag === "input")) problems.push(`${where(node)} nests interactive content`);
+    const interactive = (tag === "a" && "href" in attrs) || tag === "button" || tag === "summary";
+    if (interactive && !hiddenFromAt(node) && !accessibleName(node, byId)) problems.push(`${where(node)} has no accessible name`);
+    if (["input", "select", "textarea"].includes(tag) && !["hidden", "submit"].includes(attrs.type ?? "")) {
+      let labelled = Boolean(attrs["aria-label"]?.trim() || attrs["aria-labelledby"]);
+      if (!labelled && attrs.id) labelled = all.some(n => n.tag === "label" && n.attrs.for === attrs.id && text(n));
+      for (let up = node.parent; !labelled && up; up = up.parent) if (up.tag === "label" && text(up)) labelled = true;
+      if (!labelled) problems.push(`${where(node)}[name=${attrs.name}] has no label`);
+    }
+  }
+  return problems;
+}

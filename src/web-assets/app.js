@@ -1,14 +1,21 @@
 // Jit browser enhancements (ADR 0028). Hand-written ES module, no dependencies, no build step.
 // Every page is complete without this file. It adds behaviour only: it never posts data itself and
-// never stores owner content. Forms still submit through the normal form post (the setup ceremony only delays its
-// own form's submit to play the animation). The only reads it makes
-// are two same-origin GETs that already work as pages: the topic panel page and the bounded ⌘K query.
+// never stores owner content (the service worker it registers caches only static assets). Forms still submit
+// through the normal form post (the setup ceremony only delays its own form's submit to play the animation).
+// The only reads it makes are two same-origin GETs that already work as pages: the topic panel page and the
+// bounded ⌘K query.
 
 const root = document.documentElement;
 root.dataset.enhanced = "true";
 const palette = document.getElementById("palette");
 /** Same-origin absolute path only: never a scheme, host or protocol-relative URL (`//x` or `/\x`). */
 const localPath = href => typeof href === "string" && /^\/(?![\/\\])/.test(href) && !/[\u0000-\u001f]/.test(href);
+
+// Static-only PWA (web.pwa/v1). The worker caches only the hashed stylesheet, scripts, fonts and icons; pages and data
+// always come from the network. Browsers allow workers only in a secure context (HTTPS or localhost).
+if (globalThis.isSecureContext && globalThis.navigator?.serviceWorker?.register) {
+  navigator.serviceWorker.register("/sw.js", { scope: "/", updateViaCache: "none" }).catch(() => {});
+}
 
 // Sidebar drawer (mobile). Without script, the menu link targets #sidebar and CSS :target opens it.
 const app = document.querySelector(".app");

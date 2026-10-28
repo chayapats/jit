@@ -530,7 +530,10 @@ pre:last-child { margin-bottom: 0; }
 @keyframes ceremony-dot { 0% { opacity: 0; transform: translateY(3px); } 70% { opacity: 1; transform: translateY(-.5px); } 100% { opacity: 1; transform: translateY(0); } }
 @media (max-width: 520px) {
   .setup { padding-top: 24px; }
-  .setup-steps { grid-template-columns: repeat(5, minmax(56px, 1fr)); overflow-x: auto; }
+  /* Phones: step names wrap between words instead of being cut, and a long word widens its own column. */
+  .setup-steps { grid-template-columns: repeat(5, minmax(min-content, 1fr)); overflow-x: auto; }
+  .setup-steps li { min-width: auto; }
+  .setup-step-name { font-size: 12px; line-height: 1.3; white-space: normal; overflow: visible; }
   .setup-summary div { grid-template-columns: 1fr; gap: 2px; }
 }
 .auth-footer { margin-top: 18px; text-align: left; font-size: 12px; color: var(--faint); }
@@ -748,6 +751,23 @@ details.team-card[open] > summary { margin-bottom: 8px; }
   .composer { padding: 8px 10px; }
   .composer textarea { min-height: 28px; max-height: clamp(28px, 20dvh, 96px); }
   .composer-note { display: none; }
+}
+/* Safe areas (web.pwa/v1). Pages use viewport-fit=cover, so the installed app draws under the status bar, notch and
+   home indicator; every edge that touches the screen keeps its own spacing or the device inset, whichever is larger.
+   Without insets env() is 0 and nothing moves. These come last so the breakpoints above cannot undo them. */
+.sidebar { padding-top: max(14px, env(safe-area-inset-top)); padding-bottom: max(10px, env(safe-area-inset-bottom)); padding-left: max(10px, env(safe-area-inset-left)); }
+.app-header { padding-top: max(10px, env(safe-area-inset-top)); }
+.main-pane { padding-right: env(safe-area-inset-right); }
+.topic-panel { padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); padding-right: env(safe-area-inset-right); }
+.skip:focus { top: max(12px, env(safe-area-inset-top)); }
+.auth { padding: max(24px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); }
+.setup { padding: max(40px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(40px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); }
+.scroll-region:last-child { padding-bottom: env(safe-area-inset-bottom); }
+@media (max-width: 680px) { .main-pane { padding-left: env(safe-area-inset-left); } }
+@media (max-width: 520px) { .setup { padding-top: max(24px, env(safe-area-inset-top)); } }
+@media (max-height: 480px) {
+  .app-header { padding-top: max(6px, env(safe-area-inset-top)); }
+  .composer-wrap { padding-bottom: max(8px, env(safe-area-inset-bottom)); }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; }

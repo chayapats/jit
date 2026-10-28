@@ -6,6 +6,7 @@ import type { Job, JobLimits, JobPolicy } from "./jobs/types";
 import { currentLocale, systemText, tr, withLocale, type Locale, type MessageKey } from "./i18n";
 import { assetUrl } from "./web-assets";
 import { logoLockup, logoMark } from "./web-logo";
+import { colorTokens } from "./web-design";
 import type { JitReplyView } from "./team/jit-reply";
 import { routesOf } from "./team/role-proposals";
 import { fillText, promotionProposalCard, proposalCard, roleProposalCard } from "./web-proposal-card";
@@ -62,12 +63,21 @@ export function renderWith<T>(ui: { locale: Locale; theme: ThemePreference }, re
   try { return withLocale(ui.locale, render); } finally { activeTheme = previous; }
 }
 
-/** The full HTML document around a page body: theme, language, stylesheet, icon, fonts and the one enhancement script. */
+/** Browser chrome colour (web.pwa/v1): the page background of the theme in use, or of each system theme. */
+function themeColor(): string {
+  const meta = (theme: "dark" | "light", media = "") => `<meta name="theme-color" content="${colorTokens[theme].bg}"${media ? ` media="(prefers-color-scheme: ${media})"` : ""}>`;
+  return activeTheme === "system" ? `${meta("dark", "dark")}${meta("light", "light")}` : meta(activeTheme);
+}
+/**
+ * The full HTML document around a page body: theme, language, stylesheet, icons, web app manifest, fonts and the one
+ * enhancement script. `viewport-fit=cover` lets the layout pad itself with the device safe areas; zoom stays allowed.
+ */
 export function documentPage(title: string, content: string): string {
   const theme = activeTheme === "system" ? "" : ` data-theme="${activeTheme}"`;
-  return `<!doctype html><html lang="${currentLocale()}"${theme}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-    <meta name="color-scheme" content="${activeTheme === "system" ? "dark light" : activeTheme}"><title>${escape(title)} · Jit</title>
+  return `<!doctype html><html lang="${currentLocale()}"${theme}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+    <meta name="color-scheme" content="${activeTheme === "system" ? "dark light" : activeTheme}">${themeColor()}<title>${escape(title)} · Jit</title>
     <link rel="stylesheet" href="${assetUrl("app.css")}"><link rel="icon" type="image/svg+xml" href="${assetUrl("favicon.svg")}">
+    <link rel="manifest" href="${assetUrl("manifest.webmanifest")}"><link rel="apple-touch-icon" href="${assetUrl("apple-touch-icon.png")}">
     <link rel="preload" href="${assetUrl("inter.woff2")}" as="font" type="font/woff2" crossorigin><link rel="preload" href="${assetUrl("noto-sans-thai.woff2")}" as="font" type="font/woff2" crossorigin>
     <script type="module" src="${assetUrl("app.js")}"></script></head><body>
     <a class="skip" href="#main-content">${tr("common.skip_to_main_content")}</a>${content}</body></html>`;
@@ -824,7 +834,7 @@ export function memoryPage(state: ReturnType<Application["memory"]>, workspace: 
   return shell(tr("memory.project_memory"), { workspace, csrf, project: p, topics: state.topics, section: "memory" }, `<div class="content memory-content"><section class="hero"><h2>${tr("memory.memory_with_traceable_sources")}</h2><p>${tr("memory.a_fact_only_confirms_that")} <a href="/projects/${p.id}/tasks">${tr("common.tasks")}</a> ${tr("memory.and_the_projects_topics")}</p><p>${tr("memory.extraction_in_this_build_is")}</p></section>
     <form class="team-form" method="get"><label>${tr("memory.search_memory")} <input name="q" value="${escape(state.query)}" maxlength="200" placeholder="${tr("memory.thai_or_english_terms")}"></label><button>${tr("memory.search")}</button></form>
     <section><h2>${tr("memory.saved_memory")}</h2>${state.items.length ? state.items.map(item => memoryClaimContent(item, p.id)).join("") : `<p class="empty-list">${tr("memory.no_memory_on_this_page")}</p>`}
-    <nav class="pagination">${cursor.after ? `<a href="${escape(href({ after: 0 }))}">${tr("memory.first_memory_page")}</a>` : ""}${state.nextAfter !== null ? `<a href="${escape(href({ after: state.nextAfter }))}">${tr("memory.next_memory_page")}</a>` : ""}</nav></section>
+    <nav class="pagination" aria-label="${tr("memory.memory_pages")}">${cursor.after ? `<a href="${escape(href({ after: 0 }))}">${tr("memory.first_memory_page")}</a>` : ""}${state.nextAfter !== null ? `<a href="${escape(href({ after: state.nextAfter }))}">${tr("memory.next_memory_page")}</a>` : ""}</nav></section>
     <section><h2>${tr("memory.extract_from_saved_sources")}</h2><p>${tr("memory.one_request_per_source_revision")}</p>
     ${available ? `<form class="team-form" method="post" action="/projects/${p.id}/memory">${hiddenCommand(csrf, p.revision)}<input type="hidden" name="limits" value="${escape(JSON.stringify(limits))}">
       <label>${tr("common.role")} <select name="roleId">${roles.map(role => `<option value="${role.id}">${escape(role.name)} · ${escape(role.effective.route!.model)}</option>`).join("")}</select></label>
@@ -832,9 +842,9 @@ export function memoryPage(state: ReturnType<Application["memory"]>, workspace: 
       <label>${tr("common.source_2")} <select name="source">${usable.map(({ source, decision }) => source.state === "available" ? `<option value="${escape(JSON.stringify(source.reference))}">${escape(decision ? tr("memory.owner_decision") : source.descriptor.kind)} · ${escape(Array.from(source.text).slice(0, 80).join(""))}</option>` : "").join("")}</select></label>
       <label>${tr("memory.cite_existing_memory")} <select name="dependencies"><option value="[]">${tr("memory.dont_cite")}</option>${state.items.map(item => item.state === "available" ? `<option value="${escape(JSON.stringify([{ claimId: item.claim.claimId, revision: item.claim.revision, generation: item.claim.generation }]))}">${escape(Array.from(item.claim.text).slice(0, 80).join(""))}</option>` : "").join("")}</select></label><button class="primary">${tr("memory.run_simulated_extraction")}</button></form>` : `<p>${tr("memory.enable_a_role_with_a")}</p>`}
       ${excluded.length ? `<p role="note">${tr("common.source_2")} ${excluded.length} ${tr("memory.sets_excluded_from_automatic_memory")} ${excluded.map(({ source }) => sourceLink(p.id, source.reference, `${tr("memory.excluded_sources")}`)).join(" ")}</p>` : ""}
-      <nav class="pagination">${cursor.sourceAfter ? `<a href="${escape(href({ sourceAfter: 0 }))}">${tr("memory.first_source_page")}</a>` : ""}${state.sourcesNextAfter !== null ? `<a href="${escape(href({ sourceAfter: state.sourcesNextAfter }))}">${tr("memory.next_source_page")}</a>` : ""}</nav></section>
+      <nav class="pagination" aria-label="${tr("memory.source_pages")}">${cursor.sourceAfter ? `<a href="${escape(href({ sourceAfter: 0 }))}">${tr("memory.first_source_page")}</a>` : ""}${state.sourcesNextAfter !== null ? `<a href="${escape(href({ sourceAfter: state.sourcesNextAfter }))}">${tr("memory.next_source_page")}</a>` : ""}</nav></section>
     <section><h2>${tr("memory.extraction_results_and_gaps")}</h2>${state.extractions.map(e => `<article class="team-card" id="extraction-${e.id}"><p>${escape(e.state)} · ${escape(e.reason)} · fixture · ${escape(e.extractor)} · policy ${e.policy}</p><p>${tr("memory.queue")} ${escape(e.job.state)} · ${escape(e.job.reason)} · ${escape(e.job.nextAction)} · <a href="/projects/${p.id}/jobs/${e.jobId}">${tr("memory.review_and_stop_job")}</a></p><p>${e.claimIds.length} ${tr("memory.claims_rejected")} ${e.rejected} ${tr("memory.items")}</p><p>${tr("memory.configured_route")} ${escape(e.route.provider)} / ${escape(e.route.model)} ${tr("memory.live_access_not_verified")}</p><p>${sourceLink(p.id, e.source.reference, `${tr("common.source_2")} ${e.source.state}`)}</p></article>`).join("") || `<p>${tr("memory.no_extraction_requests_yet")}</p>`}
-    <nav class="pagination">${cursor.extractionAfter ? `<a href="${escape(href({ extractionAfter: 0 }))}">${tr("memory.first_results_page")}</a>` : ""}${state.extractionsNextAfter !== null ? `<a href="${escape(href({ extractionAfter: state.extractionsNextAfter }))}">${tr("memory.next_results_page")}</a>` : ""}</nav></section></div>`);
+    <nav class="pagination" aria-label="${tr("memory.result_pages")}">${cursor.extractionAfter ? `<a href="${escape(href({ extractionAfter: 0 }))}">${tr("memory.first_results_page")}</a>` : ""}${state.extractionsNextAfter !== null ? `<a href="${escape(href({ extractionAfter: state.extractionsNextAfter }))}">${tr("memory.next_results_page")}</a>` : ""}</nav></section></div>`);
 }
 
 const scheduleKindLabels = (): Record<JobSchedule["kind"], string> => ({ reminder: tr("common.reminder"), summary: tr("schedules.scheduled_summary") });
