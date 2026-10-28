@@ -5,6 +5,10 @@
  * This linter scans stylesheet source text (`src/web-style.ts`) and fails
  * on literal colours, font sizes, radii, durations, unguarded hover rules,
  * literal press scales and long transitions outside the allowlist.
+ *
+ * Value rules parse each `prop: value` declaration across lines up to its
+ * terminating `;` or `}` and check every comma-separated item, reporting
+ * the line where the declaration starts.
  */
 
 /** Rule identifiers reported by {@link lintStyleSource}. */
@@ -37,10 +41,17 @@ export const longMotionAllowlist: Readonly<Record<string, string>> = Object.free
 
 const colorLiteralPattern = /#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?)\(/;
 const fontSizePxPattern = /\d+(\.\d+)?px/;
-const durationPattern = /\d+(\.\d+)?m?s\b/;
 const pressScalePattern = /scale\(\s*[0-9.]/;
 const hoverMediaPattern = /\(hover:\s*hover\)/;
 const pointerFinePattern = /\(pointer:\s*fine\)/;
+
+/** Words in an `animation` shorthand that are never the keyframe name. */
+const animationKeywords: ReadonlySet<string> = new Set([
+  "ease", "ease-in", "ease-out", "ease-in-out", "linear", "step-start", "step-end",
+  "infinite", "normal", "reverse", "alternate", "alternate-reverse",
+  "none", "forwards", "backwards", "both", "running", "paused",
+  "initial", "inherit", "unset",
+]);
 
 /** Replace every `${ … }` interpolation with spaces, preserving newlines. */
 function stripInterpolations(source: string): string {
@@ -84,165 +95,213 @@ function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, (match) => match.replace(/[^\n]/g, " "));
 }
 
-/** Value after the first `:` in a declaration, up to `;` or `}`. */
-function declarationValue(line: string, property: string): string | null {
-  const index = line.indexOf(property);
-  if (index === -1) return null;
-  let value = line.slice(index + property.length).trim();
-  if (!value.startsWith(":")) return null;
-  value = value.slice(1).trim();
-  const end = value.search(/[;}]/);
-  if (end !== -1) value = value.slice(0, end);
-  return value.trim();
+/** Split on a separator that sits at paren depth zero (commas inside `var()`/`rgba()` stay). */
+function splitTopLevel(value: string, separator: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let current = "";
+  for (let i = 0; i < value.length; i++) {
+    const ch = value[i]!;
+    if (ch === "(") depth++;
+    else if (ch === ")") depth = Math.max(0, depth - 1);
+    if (ch === separator && depth === 0) {
+      parts.push(current);
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  parts.push(current);
+  return parts;
 }
 
+/**
+ * A `@media` prelude guards `:hover` only when one comma-separated query
+ * joins `(hover: hover)` and `(pointer: fine)` with `and`. A comma list
+ * such as `@media (hover: hover), (pointer: fine)` is an OR and guards nothing.
+ */
 function isHoverMediaPrelude(prelude: string): boolean {
-  return (
-    prelude.includes("@media") &&
-    hoverMediaPattern.test(prelude) &&
-    pointerFinePattern.test(prelude)
+  const atMedia = prelude.indexOf("@media");
+  if (atMedia === -1) return false;
+  const query = prelude.slice(atMedia + "@media".length);
+  return splitTopLevel(query, ",").some(
+    (part) => hoverMediaPattern.test(part) && pointerFinePattern.test(part),
   );
+}
+
+/** Long-motion (`--motion-breath`/`--motion-ceremony`) marker in an animation item. */
+function usesLongMotion(value: string): boolean {
+  return value.includes("var(--motion-breath)") || value.includes("var(--motion-ceremony)");
+}
+
+/**
+ * Whether one comma-separated `animation` item names an allowlisted keyframe.
+ * The keyframe name must match exactly: `jit-breath-extra` is not `jit-breath`,
+ * and each item in a list needs its own allowlisted name.
+ */
+function animationItemAllowed(item: string): boolean {
+  const tokens = item
+    .split(/\s+/)
+    .map((token) => token.replace(/^[(),]+|[(),]+$/g, "").trim())
+    .filter(Boolean);
+  return tokens.some((token) => {
+    if (!/^[A-Za-z][\w-]*$/.test(token)) return false;
+    if (animationKeywords.has(token.toLowerCase())) return false;
+    return Object.hasOwn(longMotionAllowlist, token);
+  });
+}
+
+interface Declaration {
+  prop: string;
+  value: string;
+  startLine: number;
+  text: string;
 }
 
 /**
  * Scan stylesheet source text for token literals.
  *
- * Each returned violation carries the file name, 1-based line number, rule
- * and the offending line text. Text inside `/* … *\/` comments and inside
- * `${ … }` interpolations is ignored.
+ * Each returned violation carries the file name, the 1-based line where its
+ * declaration starts, the rule and the offending source line text. Text inside
+ * `/* … *\/` comments and inside `${ … }` interpolations is ignored.
  */
 export function lintStyleSource(source: string, file: string): TokenLintViolation[] {
   const cleaned = stripInterpolations(stripComments(source));
-  const lines = cleaned.split("\n");
+  const sourceLines = source.split("\n");
   const violations: TokenLintViolation[] = [];
 
-  // Brace stack of block preludes for hover-outside-media tracking.
-  const stack: string[] = [];
-  let preludeBuffer = "";
+  // Map a cleaned-source offset to its 1-based line number.
+  const lineStarts: number[] = [0];
+  for (let i = 0; i < cleaned.length; i++) {
+    if (cleaned[i] === "\n") lineStarts.push(i + 1);
+  }
+  const lineOf = (offset: number): number => {
+    let line = 1;
+    for (let i = 1; i < lineStarts.length; i++) {
+      if (lineStarts[i]! <= offset) line = i + 1;
+      else break;
+    }
+    return line;
+  };
+  const textOf = (line: number): string => (sourceLines[line - 1] ?? "").trim();
 
-  for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
-    const rawLine = lines[lineIndex]!;
-    const lineNumber = lineIndex + 1;
-    const text = (source.split("\n")[lineNumber - 1] ?? "").trim();
+  // Every `prop: value` declaration, including ones split across lines.
+  const declarations: Declaration[] = [];
+  const declarationPattern = /([\-\w]+)\s*:([^;{}]*)([;}])/g;
+  for (const match of cleaned.matchAll(declarationPattern)) {
+    const startLine = lineOf(match.index ?? 0);
+    declarations.push({
+      prop: (match[1] ?? "").trim(),
+      value: (match[2] ?? "").trim(),
+      startLine,
+      text: textOf(startLine),
+    });
+  }
 
-    // --- per-line rules (on the cleaned line) ---
+  for (const declaration of declarations) {
+    const prop = declaration.prop.toLowerCase();
+    const push = (rule: TokenLintRule) => {
+      violations.push({ file, line: declaration.startLine, rule, text: declaration.text });
+    };
 
-    if (colorLiteralPattern.test(rawLine)) {
-      violations.push({ file, line: lineNumber, rule: "color-literal", text });
+    if (colorLiteralPattern.test(declaration.value)) {
+      push("color-literal");
     }
 
-    // font-size-literal: font-size: whose value is not 0/inherit/var(; font: shorthand with px.
-    const fontSizeValue = declarationValue(rawLine, "font-size");
-    if (fontSizeValue !== null) {
-      const firstToken = fontSizeValue.split(/[\s,;]+/)[0] ?? "";
-      if (!(firstToken === "0" || firstToken === "inherit" || firstToken.startsWith("var("))) {
-        violations.push({ file, line: lineNumber, rule: "font-size-literal", text });
+    if (prop === "font-size") {
+      for (const item of splitTopLevel(declaration.value, ",")) {
+        const firstToken = item.trim().split(/\s+/)[0] ?? "";
+        if (firstToken === "") continue;
+        if (!(firstToken === "0" || firstToken === "inherit" || firstToken.startsWith("var("))) {
+          push("font-size-literal");
+          break;
+        }
       }
-    } else {
-      const fontValue = declarationValue(rawLine, "font");
-      if (fontValue !== null && fontSizePxPattern.test(fontValue)) {
-        violations.push({ file, line: lineNumber, rule: "font-size-literal", text });
-      }
-    }
-
-    // radius-literal: border(-...)-radius with a disallowed token.
-    const radiusPattern = /\bborder(?:-[a-z]+)*-radius\s*:([^;{}]*)/g;
-    for (const match of rawLine.matchAll(radiusPattern)) {
-      const value = (match[1] ?? "").trim();
-      const tokens = value
-        .split(/\s+/)
-        .map((t) => t.replace(/[,;]+$/, "").trim())
-        .filter(Boolean);
-      const bad = tokens.some(
-        (token) =>
-          token !== "0" &&
-          token !== "50%" &&
-          token !== "inherit" &&
-          !token.startsWith("var(--radius-"),
-      );
-      if (bad) {
-        violations.push({ file, line: lineNumber, rule: "radius-literal", text });
-        break;
-      }
-    }
-
-    // duration-literal + long-transition + animation allowlist.
-    const watchedProps = [
-      "transition-duration",
-      "transition-delay",
-      "animation-duration",
-      "animation-delay",
-      "transition",
-      "animation",
-    ];
-    let watchedValue: string | null = null;
-    let watchedProp = "";
-    for (const prop of watchedProps) {
-      const value = declarationValue(rawLine, prop);
-      // Avoid matching "transition" inside "transition-duration" twice: prefer longest match.
-      if (value !== null) {
-        // Ensure the match is for this exact property (declarationValue already checks prefix).
-        // For "transition"/"animation", skip when a longer prop matched on the same line.
-        if ((prop === "transition" || prop === "animation") && watchedValue !== null) continue;
-        if (watchedValue === null || prop.length > watchedProp.length) {
-          watchedValue = value;
-          watchedProp = prop;
+    } else if (prop === "font") {
+      for (const item of splitTopLevel(declaration.value, ",")) {
+        if (fontSizePxPattern.test(item)) {
+          push("font-size-literal");
+          break;
         }
       }
     }
-    // Collect every watched declaration on the line (there can be two, e.g. transition + animation).
-    // Simpler: scan each prop independently for duration-literal.
-    for (const prop of watchedProps) {
-      // Find all occurrences of `prop:` on the line.
-      const pattern = new RegExp(`\\b${prop}\\s*:([^;{}]*)`, "g");
-      for (const match of rawLine.matchAll(pattern)) {
-        const value = (match[1] ?? "").trim();
-        for (const duration of value.matchAll(/\d+(\.\d+)?m?s\b/g)) {
+
+    if (/^border(?:-[a-z]+)*-radius$/.test(prop)) {
+      for (const item of splitTopLevel(declaration.value, ",")) {
+        const tokens = item
+          .split(/\s+/)
+          .map((t) => t.replace(/[,;]+$/, "").trim())
+          .filter(Boolean);
+        const bad = tokens.some(
+          (token) =>
+            token !== "0" &&
+            token !== "50%" &&
+            token !== "inherit" &&
+            !token.startsWith("var(--radius-"),
+        );
+        if (bad) {
+          push("radius-literal");
+          break;
+        }
+      }
+    }
+
+    if (
+      prop === "transition" ||
+      prop === "transition-duration" ||
+      prop === "transition-delay" ||
+      prop === "animation" ||
+      prop === "animation-duration" ||
+      prop === "animation-delay"
+    ) {
+      for (const item of splitTopLevel(declaration.value, ",")) {
+        let bad = false;
+        for (const duration of item.matchAll(/\d+(\.\d+)?m?s\b/g)) {
           const token = duration[0];
           if (token !== "0s" && token !== "0ms") {
-            violations.push({ file, line: lineNumber, rule: "duration-literal", text });
+            bad = true;
             break;
           }
         }
-      }
-    }
-
-    // long-transition: transition using breath/ceremony; animation using them without allowlisted keyframe.
-    {
-      const transitionPattern = /\btransition\s*:([^;{}]*)/g;
-      for (const match of rawLine.matchAll(transitionPattern)) {
-        const value = match[1] ?? "";
-        if (value.includes("var(--motion-breath)") || value.includes("var(--motion-ceremony)")) {
-          violations.push({ file, line: lineNumber, rule: "long-transition", text });
-        }
-      }
-      const animationPattern = /\banimation\s*:([^;{}]*)/g;
-      for (const match of rawLine.matchAll(animationPattern)) {
-        const value = match[1] ?? "";
-        if (value.includes("var(--motion-breath)") || value.includes("var(--motion-ceremony)")) {
-          const namesAllowlist = Object.keys(longMotionAllowlist);
-          const namesOne = namesAllowlist.some((name) => value.includes(name));
-          if (!namesOne) {
-            violations.push({ file, line: lineNumber, rule: "long-transition", text });
-          }
-        }
-      }
-      // animation-duration/delay with breath/ceremony vars (no keyframe name to check): treat as long-transition.
-      const animLongPattern = /\b(?:animation-duration|animation-delay)\s*:([^;{}]*)/g;
-      for (const match of rawLine.matchAll(animLongPattern)) {
-        const value = match[1] ?? "";
-        if (value.includes("var(--motion-breath)") || value.includes("var(--motion-ceremony)")) {
-          violations.push({ file, line: lineNumber, rule: "long-transition", text });
+        if (bad) {
+          push("duration-literal");
+          break;
         }
       }
     }
 
-    if (pressScalePattern.test(rawLine)) {
-      violations.push({ file, line: lineNumber, rule: "press-scale-literal", text });
+    // Transitions may only use --motion-ui or --motion-panel.
+    if (prop === "transition" || prop === "transition-duration" || prop === "transition-delay") {
+      if (usesLongMotion(declaration.value)) {
+        push("long-transition");
+      }
+    } else if (prop === "animation") {
+      if (usesLongMotion(declaration.value)) {
+        const allowed = splitTopLevel(declaration.value, ",")
+          .filter((item) => usesLongMotion(item))
+          .every((item) => animationItemAllowed(item));
+        if (!allowed) {
+          push("long-transition");
+        }
+      }
+    } else if (prop === "animation-duration" || prop === "animation-delay") {
+      if (usesLongMotion(declaration.value)) {
+        push("long-transition");
+      }
     }
 
-    // --- hover-outside-media via brace stack ---
-    // Walk the cleaned line character by character.
+    if (pressScalePattern.test(declaration.value)) {
+      push("press-scale-literal");
+    }
+  }
+
+  // --- hover-outside-media via brace stack (preludes may span lines) ---
+  const lines = cleaned.split("\n");
+  const stack: string[] = [];
+  let preludeBuffer = "";
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+    const rawLine = lines[lineIndex]!;
+    const lineNumber = lineIndex + 1;
     let segmentStart = 0;
     const flushSegment = (end: number, isOpen: boolean) => {
       const segment = rawLine.slice(segmentStart, end);
@@ -253,7 +312,7 @@ export function lintStyleSource(source: string, file: string): TokenLintViolatio
         if (prelude.includes(":hover")) {
           const protectedByHoverMedia = stack.some(isHoverMediaPrelude);
           if (!protectedByHoverMedia) {
-            violations.push({ file, line: lineNumber, rule: "hover-outside-media", text });
+            violations.push({ file, line: lineNumber, rule: "hover-outside-media", text: textOf(lineNumber) });
           }
         }
         stack.push(prelude);
@@ -274,9 +333,10 @@ export function lintStyleSource(source: string, file: string): TokenLintViolatio
       }
     }
     preludeBuffer += rawLine.slice(segmentStart);
-    // A line without braces that is a complete rule prelude without `{` yet
-    // keeps accumulating; a declaration line ending with `;` was already reset.
   }
 
+  // Declarations parse in document order and hover findings append after;
+  // a stable sort by line restores source order for the report.
+  violations.sort((a, b) => a.line - b.line);
   return violations;
 }

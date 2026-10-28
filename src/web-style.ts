@@ -23,6 +23,7 @@ export function styleSheet(fonts: { inter: string; thai: string; mono: string })
   --size-sm:${scaleTokens.size.sm}px;
   --size-ui:${scaleTokens.size.ui}px;
   --size-chat:${scaleTokens.size.chat}px;
+  --size-input-mobile:${scaleTokens.size.input}px;
   --size-lg:${scaleTokens.size.lg}px;
   --size-xl:${scaleTokens.size.xl}px;
   --size-xxl:${scaleTokens.size.xxl}px;
@@ -741,7 +742,7 @@ details.team-card[open] > summary { margin-bottom: 8px; }
   .project-grid { grid-template-columns: 1fr; }
   .chat-content { padding-top: 16px; }
   .composer-wrap { padding: 10px 12px max(12px, env(safe-area-inset-bottom)); }
-  .composer textarea, .team-form input, .team-form textarea, .team-form select, .job-create input, .job-create select, .auth-card input, .create-form input, .create-form select { font-size: var(--size-chat); }
+  .composer textarea, .team-form input, .team-form textarea, .team-form select, .job-create input, .job-create select, .auth-card input, .create-form input, .create-form select { font-size: var(--size-input-mobile); }
   .empty-chat { min-height: 200px; }
   .source-link { white-space: normal; }
   .topic-row { gap: 10px; align-items: flex-start; }

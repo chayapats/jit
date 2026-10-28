@@ -75,3 +75,54 @@ test("rendered stylesheet still themes", () => {
   expect(css).toContain(effectTokens.shadow.dark);
   expect(css).toContain(effectTokens.shadow.light);
 });
+
+test("declarations split across lines are reported at their start line", () => {
+  const splitTransition = [".a {", " transition:", " opacity 200ms;", "}"].join("\n");
+  expect(lintStyleSource(splitTransition, "split.css").map((v) => [v.line, v.rule])).toEqual([
+    [2, "duration-literal"],
+  ]);
+  const splitRadius = [".a {", " border-radius:", " 10px;", "}"].join("\n");
+  expect(lintStyleSource(splitRadius, "split.css").map((v) => [v.line, v.rule])).toEqual([
+    [2, "radius-literal"],
+  ]);
+});
+
+test("literals in later list items and font shorthands beside font-size are reported", () => {
+  const laterItem = ".x { transition: color var(--motion-ui) ease-out, opacity 200ms ease-out; }";
+  expect(lintStyleSource(laterItem, "list.css").map((v) => [v.line, v.rule])).toEqual([
+    [1, "duration-literal"],
+  ]);
+  const bothFonts = ".x { font-size: var(--size-xs); font: 500 12px/1.6 sans; }";
+  expect(lintStyleSource(bothFonts, "list.css").map((v) => [v.line, v.rule])).toEqual([
+    [1, "font-size-literal"],
+  ]);
+});
+
+test("transition-duration with a long-motion token fails", () => {
+  expect(
+    lintStyleSource(".a { transition-duration: var(--motion-breath); }", "duration.css").map((v) => v.rule),
+  ).toEqual(["long-transition"]);
+});
+
+test("animation allowlist matches keyframe names exactly per list item", () => {
+  const substring = ".a { animation: jit-breath-extra var(--motion-breath) ease-in-out infinite; }";
+  expect(lintStyleSource(substring, "anim.css").map((v) => v.rule)).toEqual(["long-transition"]);
+  const mixedList = ".a { animation: other var(--motion-breath), jit-breath var(--motion-ui); }";
+  expect(lintStyleSource(mixedList, "anim.css").map((v) => v.rule)).toEqual(["long-transition"]);
+  const exact = ".a { animation: jit-breath var(--motion-breath) ease-in-out infinite; }";
+  expect(lintStyleSource(exact, "anim.css")).toEqual([]);
+});
+
+test("hover guards require hover and pointer-fine joined by and in one query", () => {
+  const orList = "@media (hover: hover), (pointer: fine) { .g:hover { color: var(--fg); } }";
+  expect(lintStyleSource(orList, "hover.css").map((v) => v.rule)).toEqual(["hover-outside-media"]);
+  const joined = "@media screen and (hover: hover) and (pointer: fine) { .g:hover { color: var(--fg); } }";
+  expect(lintStyleSource(joined, "hover.css")).toEqual([]);
+});
+
+test("mobile form inputs use a 16px token so iOS does not zoom", () => {
+  expect(scaleTokens.size.input).toBe(16);
+  const css = styleSheet({ inter: "/i", thai: "/t", mono: "/m" });
+  expect(css).toContain("--size-input-mobile:16px");
+  expect(css).toContain("font-size: var(--size-input-mobile)");
+});
