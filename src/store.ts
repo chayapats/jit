@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { commitDecisionMemorySource, retireDecisionMemorySource } from "./memory/decision-sources";
 
 /** Current application schema revision. Service packaging pins and checks this value. */
-export const schemaVersion = 29;
+export const schemaVersion = 30;
 
 /**
  * Installation-scoped state that never round-trips through backup images and
@@ -13,8 +13,10 @@ export const schemaVersion = 29;
  * `lifecycle_ledger`/`lifecycle_checkpoint` (schema 23, app.deletion_ledger/v1)
  * are the installation lifecycle ledger: a restore or upgrade activation can
  * therefore never roll back current tombstones or suppressions.
+ * `schedule_feed` (schema 30, app.schedule_feed/v1) holds the feed token hash,
+ * so a restore can never revive a rotated or turned-off feed URL.
  */
-export const installationScopedTables = Object.freeze(["owner", "sessions", "login_throttle", "ops_backups", "lifecycle_ledger", "lifecycle_checkpoint"] as const);
+export const installationScopedTables = Object.freeze(["owner", "sessions", "login_throttle", "ops_backups", "lifecycle_ledger", "lifecycle_checkpoint", "schedule_feed"] as const);
 
 /** Synchronous SQL operations scoped to an application transaction. */
 export interface AppTransaction {
@@ -72,7 +74,7 @@ export class TransactionStore {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
           if (current === schemaVersion) return;
-          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28].includes(current)) throw new Error("Unsupported migration source");
+          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29].includes(current)) throw new Error("Unsupported migration source");
           if (existing) {
             const snapshot = `${path}.pre-v${current}-${crypto.randomUUID()}.sqlite`;
             const fd = openSync(snapshot, "wx", 0o600);
@@ -878,6 +880,21 @@ export class TransactionStore {
               updated_at INTEGER NOT NULL
             );
             PRAGMA user_version = 29;
+          `);
+          if (current < 30) this.#db.exec(`
+            -- app.schedule_feed/v1 (REL08, ADR 0035): the owner's one read-only .ics feed. Only the SHA-256 of the
+            -- feed token is stored; the row is installation-scoped, so no backup image carries it and activation
+            -- keeps the live row, and a restore can never bring back a rotated or turned-off feed URL.
+            CREATE TABLE IF NOT EXISTS schedule_feed (
+              id INTEGER PRIMARY KEY CHECK (id = 1),
+              revision INTEGER NOT NULL CHECK (revision > 0),
+              token_hash TEXT CHECK (token_hash IS NULL OR (length(token_hash) = 64 AND token_hash NOT GLOB '*[^0-9a-f]*')),
+              include_purpose INTEGER NOT NULL CHECK (include_purpose IN (0, 1)),
+              token_created_at INTEGER,
+              updated_at INTEGER NOT NULL,
+              CHECK ((token_hash IS NULL) = (token_created_at IS NULL))
+            );
+            PRAGMA user_version = 30;
           `);
         }).immediate();
         this.#db.exec("PRAGMA foreign_keys = ON;");

@@ -23,9 +23,10 @@ import { setupPage, visibleStep } from "./web-setup";
 import type { JitReplyView, StopReplyCommand } from "./team/jit-reply";
 import type { RoleProposalCommand } from "./team/role-proposals";
 import { defaultPanelTab, legacyRedirect, panelRows, panelTabs, searchLimits, settingsPageHandler, type PanelTab } from "./web-settings";
-import { searchItems, searchPage, settingsDataPage, settingsDispatchPage, settingsTelegramPage, topicPanelPage, type PanelData } from "./web-navigation";
+import { searchItems, searchPage, settingsDataPage, settingsDispatchPage, settingsFeedPage, settingsTelegramPage, topicPanelPage, type PanelData } from "./web-navigation";
 import { dispatchLimits, type DispatchCommand } from "./team/jit-dispatch";
 import type { SetDispatchAllowanceCommand } from "./team/allowance";
+import { feedPathToken, renderScheduleFeed, type FeedCommand } from "./schedule-feed";
 
 /** ADR 0028 Content-Security-Policy: every page, asset and API response allows only this origin, and no inline script or eval. */
 export const contentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
@@ -107,6 +108,25 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         return { locale: saved.language === "auto" ? negotiated : saved.language, theme: saved.theme };
       } catch { return ui; }
     };
+    /**
+     * app.schedule_feed/v1 (ADR 0035): `GET /feeds/schedules/<token>.ics`. The path token is the only credential:
+     * no session is read and no cookie is set. A malformed, wrong or turned-off token is a bodiless 404, so the
+     * answer reveals nothing; storage trouble or an incomplete restore is a bodiless 503. Nothing here logs the
+     * request path, and the response keeps the shared security headers (CSP, nosniff, no-store).
+     */
+    const scheduleFeed = (incoming: Request, pathname: string): Response => {
+      const bare = (status: number, extra: Record<string, string> = {}) => new Response(null, { status, headers: { ...headers, ...extra } });
+      const token = incoming.method === "GET" ? feedPathToken(pathname) : null;
+      if (token === null) return bare(404);
+      try {
+        const feed = app.scheduleFeed(token);
+        if (!feed) return bare(404);
+        const locale = feed.language === "auto" ? negotiated : feed.language;
+        const body = withLocale(locale, () => renderScheduleFeed(feed.events, { includePurpose: feed.includePurpose,
+          labels: { calendarName: tr("settings.feed_calendar_name"), kind: { reminder: tr("common.reminder"), summary: tr("common.summary") } } }));
+        return new Response(body, { status: 200, headers: { ...headers, "Content-Type": "text/calendar; charset=utf-8", "Content-Language": locale } });
+      } catch { return bare(503, { "Retry-After": "60" }); }
+    };
     /** Renders an HTML page in the request's language and theme. */
     const page = (render: () => string, status = 200) =>
       respond(renderWith(ui, render), status, { "Content-Language": ui.locale, "Vary": "Accept-Language, Cookie" });
@@ -115,6 +135,9 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         throw new AppError("origin_rejected", 403);
       }
       if (Buffer.byteLength(url.pathname + url.search) > config.queryBytes) throw new AppError("request_too_large", 414);
+      // app.schedule_feed/v1: the feed is answered before any method, session, cookie or Origin handling; every
+      // method but GET gets the same bodiless 404 as a wrong token.
+      if (url.pathname.startsWith("/feeds/")) return scheduleFeed(request, url.pathname);
       if (request.method !== "GET" && request.method !== "POST") throw new AppError("method_not_allowed", 405);
       if (request.method === "POST" && (request.headers.get("origin") !== config.origin ||
           request.headers.get("sec-fetch-site") === "cross-site")) throw new AppError("origin_rejected", 403);
@@ -622,6 +645,26 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         return respond(null, 303, { Location: location });
       }
       if (url.pathname === "/settings" && request.method === "GET") return page(() => settingsPage(app.preferences(auth.actor), nav(), auth.csrf, app.persona(auth.actor), app.localApi(auth.actor)));
+      if (url.pathname === "/settings/feed" && request.method === "GET") return page(() => settingsFeedPage(app.scheduleFeedSettings(auth.actor), nav(), auth.csrf));
+      if (url.pathname === "/api/settings/feed" && request.method === "GET") return json(app.scheduleFeedSettings(auth.actor));
+      // app.schedule_feed/v1 owner commands. New URL answers with the page (or JSON) that shows the minted URL once.
+      const feedAction = request.method === "POST" ? /^\/(api\/)?settings\/feed\/(create|rotate|disable|purpose)$/.exec(url.pathname) : null;
+      if (feedAction) {
+        const body = await payload(request);
+        app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        const action = feedAction[2] as "create" | "rotate" | "disable" | "purpose";
+        const allowed = ["csrf", "requestId", "expectedRevision", ...(action === "purpose" ? ["includePurpose"] : [])];
+        if (Object.keys(body).some(key => !allowed.includes(key))) throw new AppError("invalid_body");
+        const revision = typeof body.expectedRevision === "string" && /^\d{1,15}$/.test(body.expectedRevision) ? Number(body.expectedRevision) : body.expectedRevision;
+        const base = { requestId: body.requestId as string, projectId: null, expectedRevision: revision as number };
+        const command: FeedCommand = action === "purpose"
+          ? { ...base, kind: "feed.set_include_purpose", payload: { includePurpose: (api ? body.includePurpose : body.includePurpose === "on") as boolean } }
+          : { ...base, kind: action === "create" ? "feed.create" : action === "rotate" ? "feed.rotate" : "feed.disable", payload: {} };
+        const receipt = app.execute(auth.actor, command);
+        if (api) return json(receipt);
+        return action === "create" || action === "rotate" ? page(() => settingsFeedPage(receipt.feed, nav(), auth.csrf, receipt.url))
+          : respond(null, 303, { Location: "/settings/feed" });
+      }
       if (url.pathname === "/settings/telegram" && request.method === "GET") return page(() => settingsTelegramPage(app.telegramStatus(auth.actor), nav(), auth.csrf));
       if (url.pathname === "/settings/data" && request.method === "GET") {
         const raw = url.searchParams.get("offset") ?? "0";

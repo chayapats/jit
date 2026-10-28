@@ -3,6 +3,7 @@ import type { Topic } from "./conversation";
 import { dictionaries, tr } from "./i18n";
 import type { TelegramStatus } from "./telegram/types";
 import type { DispatchAllowance } from "./team/allowance";
+import type { ScheduleFeed } from "./schedule-feed";
 import { escape, hiddenCommand, icon, jobStateLabels, prObservedState, prStatusLabels, shell, taskStatusText, time, type NavigationWorkspace } from "./web-layout";
 import { panelRows, panelTabLabels, panelTabs, paletteCommands, searchLimits, type PanelTab } from "./web-settings";
 
@@ -118,6 +119,29 @@ export function settingsTelegramPage(status: TelegramStatus, workspace: Navigati
     <section class="settings-section" aria-labelledby="notifications-title"><h2 id="notifications-title">${tr("common.notifications")}</h2><p>${tr("telegram.notifications_note")}</p>
     ${workspace.projects.length ? `<nav class="settings-links" aria-labelledby="notifications-title">${workspace.projects.map(p => `<a href="/projects/${p.id}/delivery">${icon("info")}<span>${escape(p.name)}</span></a>`).join("")}</nav>` : `<p class="empty-list">${tr("home.start_with_your_first_project")}</p>`}
     ${workspace.hasMore ? `<p><a href="/">${tr("common.view_all_projects")}</a></p>` : ""}</section></div>`, { breadcrumb: { title: tr("shell.settings"), href: "/settings" } });
+}
+
+/**
+ * Settings › Calendar feed (app.schedule_feed/v1). Plain forms, so every control works without script. `url` is the
+ * freshly minted feed URL, passed only when rendering the response to the command that minted it; the page
+ * otherwise never shows a URL, because the service keeps only the token's hash.
+ */
+export function settingsFeedPage(feed: ScheduleFeed, workspace: NavigationWorkspace, csrf: string, url: string | null = null): string {
+  const state = feed.enabled ? `${tr("settings.feed_state_on")}${feed.tokenCreatedAt !== null ? ` · ${tr("settings.feed_since")} ${time(feed.tokenCreatedAt)}` : ""}` : tr("settings.feed_state_off");
+  const shown = url ? `<div class="feed-url"><label for="feed-url">${tr("settings.feed_url_label")}</label><input id="feed-url" type="text" readonly value="${escape(url)}" autocomplete="off" spellcheck="false"><p>${tr("settings.feed_url_once")}</p></div>`
+    : feed.enabled ? `<p>${tr("settings.feed_url_hidden")}</p>` : "";
+  return shell(tr("settings.feed"), { workspace, csrf, section: "settings", settings: "feed" }, `<div class="content settings-content">
+    <section class="settings-section" aria-labelledby="feed-title"><h2 id="feed-title">${tr("settings.feed_title")}</h2><p>${tr("settings.feed_note")}</p>
+    <dl class="settings-facts"><dt>${tr("settings.feed")}</dt><dd><span class="job-status" data-state="${feed.enabled ? "accepted" : "disabled"}">${state}</span></dd>
+      <dt>${tr("settings.feed_revision")}</dt><dd>${feed.revision}</dd></dl>
+    ${shown}
+    <form class="team-form feed-form" method="post" action="/settings/feed/${feed.enabled ? "rotate" : "create"}">${hiddenCommand(csrf, feed.revision)}<button class="primary">${tr("settings.feed_new_url")}</button></form>
+    ${feed.enabled ? `<form class="team-form feed-form" method="post" action="/settings/feed/disable">${hiddenCommand(csrf, feed.revision)}<button class="danger">${tr("settings.feed_turn_off")}</button></form>` : ""}
+    <p><small>${tr("settings.feed_rotate_note")}</small></p></section>
+    <section class="settings-section" aria-labelledby="feed-purpose-title"><h2 id="feed-purpose-title">${tr("settings.feed_include_purpose")}</h2><p>${tr("settings.feed_purpose_note")}</p>
+    <form class="team-form feed-form" method="post" action="/settings/feed/purpose">${hiddenCommand(csrf, feed.revision)}
+      <label class="choice"><input type="checkbox" name="includePurpose"${feed.includePurpose ? " checked" : ""}>${tr("settings.feed_include_purpose")}</label>
+      <button class="primary">${tr("settings.feed_save")}</button></form></section></div>`, { breadcrumb: { title: tr("shell.settings"), href: "/settings" } });
 }
 
 /** Settings › Project data: each project's export and deletion pages (their URLs and commands are unchanged). */

@@ -272,6 +272,8 @@ export const backupImageTables: Readonly<Record<string, "include" | "exclude" | 
   // Export artifacts (registry + bytes) never enter images, so a restore cannot resurrect
   // content deleted after an export; restored request ids replay as export_expired.
   export_artifact_bodies: "exclude",
+  // app.schedule_feed/v1 (schema 30): installation-scoped feed token hash; preserved from live on activation.
+  schedule_feed: "exclude",
   telegram_binding: "scrub", command_receipts: "scrub",
   app_state: "include", audit: "include", coordinator_syntheses: "include", decision_proposals: "include",
   deletion_ledger: "include", deletion_operations: "include", deletion_previews: "include",

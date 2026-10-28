@@ -24,7 +24,7 @@ exports[`responsive snapshots at 360/390/430/1280 px: drawer, bottom composer an
     },
     ".composer textarea": {
       "display": "block",
-      "font-size": "14px",
+      "font-size": "var(--size-ui)",
       "padding": "0",
       "width": "100%",
     },
@@ -43,7 +43,7 @@ exports[`responsive snapshots at 360/390/430/1280 px: drawer, bottom composer an
       "display": "none",
     },
     ".header-title h1": {
-      "font-size": "14px",
+      "font-size": "var(--size-ui)",
       "max-width": "62vw",
       "overflow": "hidden",
       "text-overflow": "ellipsis",
@@ -73,7 +73,7 @@ exports[`responsive snapshots at 360/390/430/1280 px: drawer, bottom composer an
     },
     ".proposal-fields": {
       "display": "grid",
-      "font-size": "14px",
+      "font-size": "var(--size-ui)",
       "grid-template-columns": "max-content 1fr",
     },
     ".scroll-region": {
@@ -89,7 +89,7 @@ exports[`responsive snapshots at 360/390/430/1280 px: drawer, bottom composer an
       "padding": "max(40px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(40px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left))",
     },
     ".setup-step-name": {
-      "font-size": "13px",
+      "font-size": "var(--size-sm)",
       "overflow": "hidden",
       "text-overflow": "ellipsis",
       "white-space": "nowrap",
@@ -150,7 +150,7 @@ exports[`responsive snapshots at 360/390/430/1280 px: drawer, bottom composer an
     },
     ".composer textarea": {
       "display": "block",
-      "font-size": "16px",
+      "font-size": "var(--size-input-mobile)",
       "padding": "0",
       "width": "100%",
     },
@@ -180,7 +180,7 @@ exports[`responsive snapshots at 360/390/430/1280 px: drawer, bottom composer an
       "position": "fixed",
     },
     ".header-title h1": {
-      "font-size": "14px",
+      "font-size": "var(--size-ui)",
       "max-width": "58vw",
       "overflow": "hidden",
       "text-overflow": "ellipsis",
@@ -214,7 +214,7 @@ exports[`responsive snapshots at 360/390/430/1280 px: drawer, bottom composer an
     },
     ".proposal-fields": {
       "display": "grid",
-      "font-size": "14px",
+      "font-size": "var(--size-ui)",
       "grid-template-columns": "1fr",
     },
     ".scroll-region": {
@@ -232,7 +232,7 @@ exports[`responsive snapshots at 360/390/430/1280 px: drawer, bottom composer an
       "padding-top": "max(24px, env(safe-area-inset-top))",
     },
     ".setup-step-name": {
-      "font-size": "12px",
+      "font-size": "var(--size-xs)",
       "overflow": "visible",
       "text-overflow": "ellipsis",
       "white-space": "normal",
@@ -302,7 +302,7 @@ exports[`responsive snapshots at 360/390/430/1280 px: drawer, bottom composer an
     },
     ".composer textarea": {
       "display": "block",
-      "font-size": "16px",
+      "font-size": "var(--size-input-mobile)",
       "padding": "0",
       "width": "100%",
     },
@@ -332,7 +332,7 @@ exports[`responsive snapshots at 360/390/430/1280 px: drawer, bottom composer an
       "position": "fixed",
     },
     ".header-title h1": {
-      "font-size": "14px",
+      "font-size": "var(--size-ui)",
       "max-width": "58vw",
       "overflow": "hidden",
       "text-overflow": "ellipsis",
@@ -366,7 +366,7 @@ exports[`responsive snapshots at 360/390/430/1280 px: drawer, bottom composer an
     },
     ".proposal-fields": {
       "display": "grid",
-      "font-size": "14px",
+      "font-size": "var(--size-ui)",
       "grid-template-columns": "1fr",
     },
     ".scroll-region": {
@@ -384,7 +384,7 @@ exports[`responsive snapshots at 360/390/430/1280 px: drawer, bottom composer an
       "padding-top": "max(24px, env(safe-area-inset-top))",
     },
     ".setup-step-name": {
-      "font-size": "12px",
+      "font-size": "var(--size-xs)",
       "overflow": "visible",
       "text-overflow": "ellipsis",
       "white-space": "normal",
@@ -454,7 +454,7 @@ exports[`responsive snapshots at 360/390/430/1280 px: drawer, bottom composer an
     },
     ".composer textarea": {
       "display": "block",
-      "font-size": "16px",
+      "font-size": "var(--size-input-mobile)",
       "padding": "0",
       "width": "100%",
     },
@@ -484,7 +484,7 @@ exports[`responsive snapshots at 360/390/430/1280 px: drawer, bottom composer an
       "position": "fixed",
     },
     ".header-title h1": {
-      "font-size": "14px",
+      "font-size": "var(--size-ui)",
       "max-width": "58vw",
       "overflow": "hidden",
       "text-overflow": "ellipsis",
@@ -518,7 +518,7 @@ exports[`responsive snapshots at 360/390/430/1280 px: drawer, bottom composer an
     },
     ".proposal-fields": {
       "display": "grid",
-      "font-size": "14px",
+      "font-size": "var(--size-ui)",
       "grid-template-columns": "1fr",
     },
     ".scroll-region": {
@@ -536,7 +536,7 @@ exports[`responsive snapshots at 360/390/430/1280 px: drawer, bottom composer an
       "padding-top": "max(24px, env(safe-area-inset-top))",
     },
     ".setup-step-name": {
-      "font-size": "12px",
+      "font-size": "var(--size-xs)",
       "overflow": "visible",
       "text-overflow": "ellipsis",
       "white-space": "normal",
