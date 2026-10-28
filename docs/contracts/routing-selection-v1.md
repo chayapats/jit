@@ -52,7 +52,7 @@ If no name is callable the proposal is `empty`. The owner can still accept a sub
 
 - `dispatch_proposals.record_json` adds `selection` (ids and the rule only; `why` is stored as null) and, for `follow_up`, `continues` (the discussion it continues). Proposals written before REL03 have neither.
 - The discussion a proposal starts (standing allowance or owner-accepted) records the same `selection`. `Discussion.selection` is absent on owner-form and pre-REL03 discussions.
-- `why` is model text, so it is stored only on the Jit reply record that produced it (`team_runs`, kind `jit_reply`, field `dispatchWhy`), next to the output it came from. The card's read model fills `selection.why` from there. Data deletion of that reply's output (and the quarantined-restore replay, which reuses the same lineage redaction) clears `dispatchWhy`, so the card then shows the selection without a reason. Backups classify `team_runs` as before.
+- `why` is model text, so it is stored only on the Jit reply record that produced it (`team_runs`, kind `jit_reply`, field `dispatchWhy`), next to the output it came from. The card's read model fills `selection.why` from there. Data deletion of that reply's output (and the quarantined-restore replay, which reuses the same lineage redaction) clears `dispatchWhy` and the `selection.why` copied into `dispatch.*` command receipts of that reply, so the card and a replayed receipt then show the selection without a reason. Backups classify `team_runs` as before.
 - `DispatchCardView` adds `selection`, `addable` (eligible specialists not in the started discussion) and `canInclude` (the discussion is not stopped and has room in its role budget).
 
 ## Web

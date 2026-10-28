@@ -1323,22 +1323,33 @@ test("REL03 a rule that selects more roles than the allowance is held per BOT04;
   expect(cardFor(g, replyFor(g, dispatched.message.id).replyMessageId!).discussion!.roles.find(role => role.roleId === g.designId)).toMatchObject({ state: "completed" });
 });
 
-test("REL03 deleting the reply that carried why also removes why from the card; ids and the rule stay", async () => {
+test("REL03 deleting the reply that carried why also removes why from the card and from replayed receipts; ids and the rule stay", async () => {
   const why = "เพราะ ลับสุด-4412 ต้องดูโครงสร้าง";
   const f = await fixture({ jit: request => answer(request, JSON.stringify({ reply: "ขอให้ฝ่ายเทคโนโลยีช่วยดูโครงสร้างระบบเดิมก่อนตอบนะครับ", proposals: [{ kind: "dispatch", roles: ["เทคโนโลยี"], why }] })) });
+  setAllowance(f, false, 3);
   const sent = send(f, "ช่วยดูโครงสร้างระบบเดิมของเราหน่อย");
   await drain(f);
   const reply = replyFor(f, sent.message.id);
-  expect(cardFor(f, reply.replyMessageId!).selection).toEqual({ rule: "model", roleIds: [f.techId], why });
+  const held = cardFor(f, reply.replyMessageId!);
+  expect(held).toMatchObject({ state: "proposed", reason: "allowance_disabled", selection: { rule: "model", roleIds: [f.techId], why } });
   // `why` is kept only with the reply record, never in the proposal or discussion records.
   expect(f.store.read(tx => tx.all<{ record_json: string }>("SELECT record_json FROM dispatch_proposals")).some(row => row.record_json.includes("4412"))).toBe(false);
+  // The owner's accept writes a receipt that snapshots the card, including why.
+  const accept = { kind: "dispatch.proposal.accept" as const, requestId: rid(), projectId: f.project.id, expectedRevision: held.revision, payload: { proposalId: held.id, roleIds: [f.techId] } };
+  expect(f.app.execute(f.auth.actor, accept).proposal.selection).toMatchObject({ why });
+  await drain(f);
   expect(f.store.read(tx => tx.all<{ record_json: string }>("SELECT record_json FROM team_runs WHERE json_extract(record_json, '$.kind') = 'discussion'")).some(row => row.record_json.includes("4412"))).toBe(false);
+  const receipts = () => f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM command_receipts WHERE result_json LIKE '%4412%'")!.n);
+  expect(receipts()).toBe(1);
   const revision = () => f.app.project(f.auth.actor, f.project.id).revision;
   const preview = f.app.execute(f.auth.actor, { kind: "memory.delete.preview", requestId: rid(), projectId: f.project.id, expectedRevision: revision(),
     payload: { scope: { kind: "source", projectId: f.project.id, source: { ...reply.source! } } } }) as { preview: { id: string } };
   f.app.execute(f.auth.actor, { kind: "memory.delete.confirm", requestId: rid(), projectId: f.project.id, expectedRevision: revision(),
     payload: { previewId: preview.preview.id, acknowledged: true, acknowledgedWholeSession: true } });
-  expect(f.app.dispatchCard(f.auth.actor, f.project.id, cardFor(f, reply.replyMessageId!).id).selection).toEqual({ rule: "model", roleIds: [f.techId], why: null });
+  expect(f.app.dispatchCard(f.auth.actor, f.project.id, held.id).selection).toEqual({ rule: "model", roleIds: [f.techId], why: null });
   expect(f.store.read(tx => tx.get<{ json: string }>("SELECT record_json AS json FROM team_runs WHERE id = ?", reply.id)!.json)).not.toContain("4412");
+  // Replaying the accept returns its original receipt, now without the deleted reason.
+  expect(receipts()).toBe(0);
+  expect(f.app.execute(f.auth.actor, accept).proposal).toMatchObject({ id: held.id, selection: { rule: "model", roleIds: [f.techId], why: null } });
   expect(await page(f)).not.toContain("4412");
 });
