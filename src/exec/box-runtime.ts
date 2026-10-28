@@ -171,11 +171,14 @@ export interface BoxStream {
   close(): void;
 }
 
-/** One MCP server sidecar. `name` is `jit-mcp-<projectId>-<serverId>`. */
-export interface SidecarHandle { readonly projectId: string; readonly serverId: string; readonly name: string; readonly mode: BoxMode; readonly image: string }
+/**
+ * One MCP server sidecar: one per server connection, so concurrent runs of a project never share or replace each
+ * other's sidecar. `name` is `jit-mcp-<serverId>-<instance>`; the project is a label.
+ */
+export interface SidecarHandle { readonly projectId: string; readonly serverId: string; readonly instance: string; readonly name: string; readonly mode: BoxMode; readonly image: string }
 
 /** What a sidecar is created from. `volume` is the server's own install directory, mounted at `/mcp` only there. */
-export interface SidecarSpec { projectId: string; serverId: string; mode: BoxMode; image: string; volume: string | null }
+export interface SidecarSpec { projectId: string; serverId: string; instance: string; mode: BoxMode; image: string; volume: string | null }
 
 /** Mount point of a sidecar's install directory. */
 export const sidecarInstallRoot = "/mcp";
@@ -191,14 +194,16 @@ export interface BoxStreams {
   ensureSidecar(spec: SidecarSpec): Promise<SidecarHandle>;
   /** Removes a sidecar; removing an absent one is a no-op. */
   removeSidecar(handle: Pick<SidecarHandle, "name">): Promise<void>;
+  /** Removes every sidecar left by an earlier process (boot, before any connection); returns how many. */
+  pruneSidecars(): Promise<number>;
   /** Pulls a digest-pinned image (`name@sha256:…`); tags are refused (`box_image_unpinned`). */
   pullImage(reference: string): Promise<void>;
 }
 
-/** `jit-mcp-<projectId>-<serverId>` after validating both ids. */
-export function sidecarName(projectId: string, serverId: string): string {
-  requireId(projectId); requireId(serverId);
-  return `jit-mcp-${projectId}-${serverId}`;
+/** `jit-mcp-<serverId>-<instance>` after validating both ids. */
+export function sidecarName(serverId: string, instance: string): string {
+  requireId(serverId); requireId(instance);
+  return `jit-mcp-${serverId}-${instance}`;
 }
 
 /** A digest-pinned OCI reference: `[host[:port]/]path@sha256:<64 hex>`. */
@@ -219,6 +224,6 @@ export function validateStreamRequest(target: StreamTarget, request: BoxStreamRe
 /** The {@link BoxStreams} of a runtime that implements them (both shipped runtimes do), or null. */
 export function boxStreamsOf(runtime: BoxRuntime): BoxStreams | null {
   const candidate = runtime as Partial<BoxStreams>;
-  return typeof candidate.stream === "function" && typeof candidate.ensureSidecar === "function" && typeof candidate.removeSidecar === "function" &&
+  return typeof candidate.stream === "function" && typeof candidate.ensureSidecar === "function" && typeof candidate.removeSidecar === "function" && typeof candidate.pruneSidecars === "function" &&
     typeof candidate.pullImage === "function" ? runtime as BoxRuntime & BoxStreams : null;
 }

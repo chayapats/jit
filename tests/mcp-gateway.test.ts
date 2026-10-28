@@ -308,7 +308,13 @@ test("a server that binds a connection runs in its own sidecar; the value reache
   expect(w.f.store.read(tx => tx.all<{ purpose: string }>("SELECT purpose FROM connection_audit WHERE action = 'released'")).every(row => row.purpose === `mcp:${server.id}`)).toBe(true);
   expect(JSON.stringify(w.f.app.mcpServers(w.f.auth.actor, w.f.project.id))).not.toContain(secret);
   expect(texts(w.f).join("\n")).not.toContain(secret);
-  // Sidecars are removed when the run releases them, and the runtime refuses a secret for the project box itself.
+  // Each connection has its own sidecar (concurrent runs never replace each other's), removed when the run releases it;
+  // a sidecar left by a crashed process is pruned at boot. The runtime refuses a secret for the project box itself.
+  const names = w.f.runtime.calls.filter(call => call.op === "sidecar.ensure").map(call => (call as { name: string }).name);
+  expect(new Set(names).size).toBe(names.length);
+  expect(w.f.runtime.sidecars.size).toBe(0);
+  await w.f.runtime.ensureSidecar({ projectId: w.f.project.id, serverId: server.id, instance: rid(), mode: "workspace", image: "x", volume: null });
+  expect(await w.f.mcp!.pruneSidecars()).toBe(1);
   expect(w.f.runtime.sidecars.size).toBe(0);
   const handle = await w.f.runtime.ensure(w.f.project.id, "workspace");
   expect(() => validateStreamRequest({ kind: "box", handle }, { argv: ["x"], secretEnv: { NOTES_TOKEN: secret } })).toThrow("box_secret_refused");

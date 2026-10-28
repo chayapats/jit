@@ -126,10 +126,10 @@ export class FakeBoxRuntime implements BoxRuntime, BoxStreams {
 
   async ensureSidecar(spec: SidecarSpec): Promise<SidecarHandle> {
     requireBoxMode(spec.mode);
-    const name = sidecarName(spec.projectId, spec.serverId);
+    const name = sidecarName(spec.serverId, spec.instance);
     const env = boxEnvironment(spec.mode, spec.mode === "workspace" ? this.#proxyUrl : null);
     this.calls.push({ op: "sidecar.ensure", projectId: spec.projectId, name, mode: spec.mode, image: spec.image, volume: spec.volume, env });
-    const handle = Object.freeze({ projectId: spec.projectId, serverId: spec.serverId, name, mode: spec.mode, image: spec.image });
+    const handle = Object.freeze({ projectId: spec.projectId, serverId: spec.serverId, instance: spec.instance, name, mode: spec.mode, image: spec.image });
     this.sidecars.set(name, { ...handle, env, volume: spec.volume });
     return handle;
   }
@@ -137,6 +137,12 @@ export class FakeBoxRuntime implements BoxRuntime, BoxStreams {
   async removeSidecar(handle: Pick<SidecarHandle, "name">): Promise<void> {
     this.calls.push({ op: "sidecar.remove", name: handle.name });
     this.sidecars.delete(handle.name);
+  }
+
+  async pruneSidecars(): Promise<number> {
+    const removed = this.sidecars.size;
+    for (const name of [...this.sidecars.keys()]) await this.removeSidecar({ name });
+    return removed;
   }
 
   async pullImage(reference: string): Promise<void> {

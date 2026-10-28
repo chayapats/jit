@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { lstatSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import type { ExecutionConfig } from "../config";
 import { AppError } from "../errors";
+import { requireId } from "../sources";
 import {
   boxDirectories, boxEnvironment, boxInternalNetwork, boxName, boxRunnerPath, boxTemporaryDirectory, boxWorkspaceRoot, expectedBoxMounts, pinnedImagePattern, requireBoxMode,
   sameMounts, sidecarInstallRoot, sidecarName, validateStreamRequest,
@@ -198,7 +199,7 @@ export class PodmanBoxRuntime implements BoxRuntime, BoxStreams {
    */
   async stream(target: StreamTarget, request: BoxStreamRequest): Promise<BoxStream> {
     validateStreamRequest(target, request);
-    const name = target.kind === "box" ? boxName(target.handle.projectId) : sidecarName(target.handle.projectId, target.handle.serverId);
+    const name = target.kind === "box" ? boxName(target.handle.projectId) : sidecarName(target.handle.serverId, target.handle.instance);
     const argv = ["exec", "-i", "--workdir", request.workdir ?? "/"];
     for (const [key, value] of Object.entries(request.env ?? {}).sort(([a], [b]) => a.localeCompare(b))) argv.push("--env", `${key}=${value}`);
     for (const key of Object.keys(request.secretEnv ?? {}).sort()) argv.push("--env", key);
@@ -214,8 +215,9 @@ export class PodmanBoxRuntime implements BoxRuntime, BoxStreams {
    */
   async ensureSidecar(spec: SidecarSpec): Promise<SidecarHandle> {
     requireBoxMode(spec.mode);
-    const name = sidecarName(spec.projectId, spec.serverId);
+    const name = sidecarName(spec.serverId, spec.instance);
     if (spec.image !== this.#config.images!.base && spec.image !== this.#config.images!.browser && !pinnedImagePattern.test(spec.image)) throw new AppError("box_image_unpinned", 409);
+    requireId(spec.projectId);
     let volume: string | null = null;
     if (spec.volume !== null) {
       const dirs = boxDirectories(this.#directory, spec.projectId);
@@ -226,7 +228,6 @@ export class PodmanBoxRuntime implements BoxRuntime, BoxStreams {
       volume = realpathSync(spec.volume);
     }
     const env = boxEnvironment(spec.mode, spec.mode === "workspace" ? await this.#proxy() : null);
-    if (await this.#inspect(name)) await this.#remove(name);
     const mounts = volume ? [{ source: volume, destination: sidecarInstallRoot }] : [];
     const args = createArgs({ name, projectId: spec.projectId, mode: spec.mode, profile: false, image: spec.image, mounts, env, config: this.#config });
     // A sidecar is labelled as one, not as the project's box, so `list` and capacity never mistake it for the box.
@@ -235,12 +236,23 @@ export class PodmanBoxRuntime implements BoxRuntime, BoxStreams {
     await this.#podman(["start", name]);
     const info = await this.#inspect(name);
     await this.#verify(name, info, spec.mode, mounts);
-    return Object.freeze({ projectId: spec.projectId, serverId: spec.serverId, name, mode: spec.mode, image: spec.image });
+    return Object.freeze({ projectId: spec.projectId, serverId: spec.serverId, instance: spec.instance, name, mode: spec.mode, image: spec.image });
   }
 
   async removeSidecar(handle: Pick<SidecarHandle, "name">): Promise<void> {
     if (!/^jit-mcp-[a-f0-9-]{36}-[a-f0-9-]{36}$/.test(handle.name)) throw new AppError("invalid_box_stream");
     if (await this.#inspect(handle.name)) await this.#remove(handle.name);
+  }
+
+  /** Removes every MCP sidecar (label `jit.mcp=1`); used at boot, before any server connection exists. */
+  async pruneSidecars(): Promise<number> {
+    const rows = parseJson(await this.#podman(["ps", "--all", "--filter", "label=jit.mcp=1", "--format", "json"])) as { Names?: string[] }[];
+    let removed = 0;
+    for (const name of Array.isArray(rows) ? rows.flatMap(row => row.Names ?? []) : []) {
+      if (!/^jit-mcp-[a-f0-9-]{36}-[a-f0-9-]{36}$/.test(name)) continue;
+      await this.#remove(name); removed++;
+    }
+    return removed;
   }
 
   async pullImage(reference: string): Promise<void> {

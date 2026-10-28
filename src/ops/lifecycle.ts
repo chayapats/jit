@@ -411,6 +411,8 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
     const booted = await app.boot();
     // Boxes left running by a previous process count for capacity and the idle sweep.
     await boxes?.reconcile().catch(() => { /* Podman unavailable: boxes are re-ensured (and re-verified) on open. */ });
+    // app.mcp_servers/v1: sidecars of the previous process held released values; none may outlive it.
+    await mcp?.pruneSidecars().catch(() => { /* Podman unavailable: the next boot prunes again. */ });
     if (service && telegramEnabled(service)) {
       // Preflight proved the token reference and transport; a failure here still fails closed.
       channels = ServiceChannels.start(store, config, input.transports!, now);

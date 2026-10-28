@@ -180,6 +180,9 @@ export class McpGateway {
     return this.#store.transaction(tx => installingServers(tx).map(server => { writeServerState(tx, server, server.revision, "failed", "interrupted", this.#now()); return server.id; }));
   }
 
+  /** Boot: removes sidecars a previous process left running (each connection's sidecar is its own). */
+  pruneSidecars(): Promise<number> { return this.#options.runtime.pruneSidecars(); }
+
   /** Waits for every install this gateway started. */
   async idle(): Promise<void> { while (this.#running.size) await Promise.allSettled([...this.#running]); }
 
@@ -240,7 +243,7 @@ export class McpGateway {
     const oci = server.spec.source === "oci";
     if (!oci && (!this.#options.sidecarImage || !this.#options.executionDirectory)) throw new AppError("box_not_configured", 503);
     const volume = oci ? null : `${boxDirectories(this.#options.executionDirectory!, server.projectId).project}/mcp/${server.id}`;
-    return this.#options.runtime.ensureSidecar({ projectId: server.projectId, serverId: server.id, mode: handle.mode,
+    return this.#options.runtime.ensureSidecar({ projectId: server.projectId, serverId: server.id, instance: crypto.randomUUID(), mode: handle.mode,
       image: oci ? `${server.spec.package}@${server.spec.version}` : this.#options.sidecarImage!, volume });
   }
 
