@@ -155,11 +155,16 @@ export function settingsAccessPage(workspace: NavigationWorkspace, list: { proje
     const roleRows = teamRoles.map(role => {
       const override = overrides.get(role.id);
       const current = override?.level ?? null;
-      const options: (AccessLevel | "inherit")[] = ["inherit", "read", "workspace", ...(a.level === "full" ? ["full" as AccessLevel] : [])];
+      // Only levels at or below the project are offered; a saved higher override (kept across a
+      // narrowing) stays visible as a read-only note instead of a choice that could never save.
+      const rank = levelRank(a.level);
+      const options: (AccessLevel | "inherit")[] = ["inherit", ...accessLevels.slice(0, rank + 1)];
+      const above = current !== null && levelRank(current) > rank ? current : null;
       return `<li><form class="team-form access-form" method="post" action="/settings/access/${p.id}/roles">${hiddenCommand(csrf, override?.revision ?? 0)}
         <input type="hidden" name="roleId" value="${role.id}">
         <label>${tr("access.role_label")} · ${escape(role.name)}<select name="level" required>${options.map(option =>
           `<option value="${option}"${(option === "inherit" ? current === null : option === current) ? " selected" : ""}>${option === "inherit" ? tr("access.role_inherit") : levelText(option)}</option>`).join("")}</select></label>
+        ${above ? `<p class="team-role-note">${levelText(above)} · ${tr("access.error_role_above_project")}</p>` : ""}
         <button>${tr("settings.save")}</button></form></li>`;
     }).join("");
     const halt = a.halted
@@ -258,24 +263,32 @@ export function settingsDispatchPage(workspace: NavigationWorkspace, list: { pro
  * outcome of the test the owner just ran, from the redirect query, so the row can name its last test result.
  */
 export function settingsConnectionsPage(workspace: NavigationWorkspace, list: ConnectionView[],
-  projects: NavigationWorkspace["projects"], csrf: string, tested: { id: string; ok: boolean } | null = null): string {
+  projects: NavigationWorkspace["projects"], csrf: string, tested: { id: string; ok: boolean } | null = null,
+  createState: { scope: string[]; error: MessageKey } | null = null): string {
   const names = new Map(projects.map(p => [p.id, p.name]));
   const kindText = (kind: ConnectionKind) => tr(`connection.kind_${kind}` as MessageKey);
   const scopeText = (scope: string[] | null) => scope === null ? tr("connection.scope_all")
     : scope.map(id => escape(names.get(id) ?? id)).join(", ");
+  const checked = createState ? new Set(createState.scope) : null;
   const row = (view: ConnectionView) => {
     const lastTest = tested?.id === view.id
       ? tested.ok ? tr("connection.last_test_ok") : tr("connection.last_test_failed")
       : tr("connection.never_tested");
+    // An empty connection takes its first secret here; only a filled one rotates it.
+    const secretForm = view.secret === "empty"
+      ? `<form class="team-form connection-form" method="post" action="/settings/connections/${view.id}/secret">${hiddenCommand(csrf, view.revision)}
+        <label>${tr("connection.secret")}<input type="password" name="secret" autocomplete="off" required></label>
+        <button>${tr("connection.set_secret")}</button></form>`
+      : `<form class="team-form connection-form" method="post" action="/settings/connections/${view.id}/secret">${hiddenCommand(csrf, view.revision)}
+        <label>${tr("connection.secret")}<input type="password" name="secret" autocomplete="off" required></label>
+        <button>${tr("connection.rotate")}</button></form>`;
     return `<li class="connection-row" id="connection-${view.id}"><h3>${escape(view.label)}</h3>
       <dl class="settings-facts"><dt>${tr("connection.kind")}</dt><dd>${kindText(view.kind)}</dd>
         <dt>${tr("connection.scope")}</dt><dd>${scopeText(view.projectScope)}</dd>
         <dt>${tr("connection.created")}</dt><dd>${time(view.createdAt)}</dd>
         ${view.rotatedAt !== null ? `<dt>${tr("connection.rotated")}</dt><dd>${time(view.rotatedAt)}</dd>` : ""}
         <dt>${tr("connection.test")}</dt><dd>${lastTest}</dd></dl>
-      <form class="team-form connection-form" method="post" action="/settings/connections/${view.id}/secret">${hiddenCommand(csrf, view.revision)}
-        <label>${tr("connection.secret")}<input type="password" name="secret" autocomplete="off" required></label>
-        <button>${tr("connection.rotate")}</button></form>
+      ${secretForm}
       <form class="team-form connection-form" method="post" action="/settings/connections/${view.id}/test">${hiddenCommand(csrf, view.revision)}
         <button>${tr("connection.test")}</button></form>
       <form class="team-form connection-form" method="post" action="/settings/connections/${view.id}/remove">${hiddenCommand(csrf, view.revision)}
@@ -288,7 +301,9 @@ export function settingsConnectionsPage(workspace: NavigationWorkspace, list: Co
       <label>${tr("connection.label")}<input name="label" required maxlength="80" autocomplete="off"></label>
       <label>${tr("connection.kind")}<select name="kind" required>${connectionKinds.map(kind => `<option value="${kind}">${kindText(kind)}</option>`).join("")}</select></label>
       <fieldset class="choice-group"><legend>${tr("connection.scope")}</legend>
-        ${projects.map(p => `<label class="choice"><input type="checkbox" name="scope-${p.id}">${escape(p.name)}</label>`).join("")}</fieldset>
+        <p><small>${tr("connection.scope_limit")}</small></p>
+        ${projects.map(p => `<label class="choice"><input type="checkbox" name="scope-${p.id}"${checked?.has(p.id) ? " checked" : ""}>${escape(p.name)}</label>`).join("")}</fieldset>
+      ${createState ? `<p class="error" role="alert">${tr(createState.error)}</p>` : ""}
       <label>${tr("connection.secret")}<input type="password" name="secret" autocomplete="off" required></label>
       <button class="primary">${tr("connection.create")}</button></form></section>
     <section class="settings-section" aria-labelledby="connections-list-title"><h2 id="connections-list-title">${tr("settings.connections")}</h2>

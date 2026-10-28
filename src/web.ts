@@ -527,8 +527,15 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         if (tested.length > 1 || result.length > 1 || tested.length !== result.length ||
             (tested.length === 1 && (!/^[a-f0-9-]{36}$/.test(tested[0]!) || (result[0] !== "ok" && result[0] !== "failed"))))
           throw new AppError("invalid_query");
+        // The scope picker lists every project, not just the first page.
+        const projects: NavigationWorkspace["projects"] = [];
+        for (let offset = 0; ; offset += config.pageSize) {
+          const page = app.workspace(auth.actor, offset);
+          projects.push(...page.projects);
+          if (!page.hasMore) break;
+        }
         return page(() => settingsConnectionsPage(nav(), app.connections(auth.actor).filter(view => view.removedAt === null),
-          app.workspace(auth.actor).projects, auth.csrf, tested.length ? { id: tested[0]!, ok: result[0] === "ok" } : null));
+          projects, auth.csrf, tested.length ? { id: tested[0]!, ok: result[0] === "ok" } : null));
       }
       if (request.method === "POST" && (url.pathname === "/settings/connections" || connectionPageRoute)) {
         const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
@@ -538,15 +545,30 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
           const scopeKeys = Object.keys(body).filter(key => key.startsWith("scope-"));
           if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "kind", "label", "secret", ...scopeKeys].includes(key)) ||
               scopeKeys.some(key => !/^scope-[a-f0-9-]{36}$/.test(key) || body[key] !== "on") ||
-              typeof body.kind !== "string" || typeof body.label !== "string" || typeof body.secret !== "string")
+              typeof body.kind !== "string" || typeof body.label !== "string" || typeof body.secret !== "string" ||
+              typeof body.requestId !== "string")
             throw new AppError("invalid_body");
           // Fail a weak secret before the row exists, so no empty connection is left behind.
           normalizeSecret(body.secret);
           const scope = [...new Set(scopeKeys.map(key => key.slice("scope-".length)))].sort();
+          // A connection holds at most 32 projects: re-render the form with the selection kept, not a dead end.
+          if (scope.length > 32) {
+            const projects: NavigationWorkspace["projects"] = [];
+            for (let offset = 0; ; offset += config.pageSize) {
+              const page = app.workspace(auth.actor, offset);
+              projects.push(...page.projects);
+              if (!page.hasMore) break;
+            }
+            return page(() => settingsConnectionsPage(nav(), app.connections(auth.actor).filter(view => view.removedAt === null),
+              projects, auth.csrf, null, { scope, error: "connection.error_scope_too_many" }), 400);
+          }
           try {
             const created = app.execute(auth.actor, { kind: "connection.create", requestId: body.requestId, projectId: null,
               expectedRevision: 0, payload: { kind: body.kind, label: body.label, projectScope: scope.length ? scope : null } } as ConnectionCommand);
-            app.execute(auth.actor, { kind: "connection.set_secret", requestId: crypto.randomUUID(), projectId: null,
+            // The secret step derives its request id from the create step, so a repeated
+            // form replays the saved receipt instead of racing the committed revision.
+            const secretRequestId = `${body.requestId}-secret`;
+            app.execute(auth.actor, { kind: "connection.set_secret", requestId: secretRequestId, projectId: null,
               expectedRevision: created.connection.revision,
               payload: { connectionId: created.connection.id, secret: body.secret } } as ConnectionCommand);
             return respond(null, 303, { Location: `/settings/connections#connection-${created.connection.id}` });
@@ -561,7 +583,12 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         // Removing needs the explicit checkbox; its absence (or any other value) refuses the removal.
         if (verb === "remove" && body.confirm !== "on") throw new AppError("invalid_body");
         if (verb === "secret" && typeof body.secret !== "string") throw new AppError("invalid_body");
-        const kind = verb === "secret" ? "connection.rotate" : verb === "test" ? "connection.test" : "connection.remove";
+        // An empty connection takes its first secret; only a filled one rotates.
+        const stored = verb === "secret" ? app.connections(auth.actor).find(view => view.id === connectionId) : undefined;
+        if (verb === "secret" && !stored) throw new AppError("connection_not_found", 404);
+        const kind = verb === "secret"
+          ? stored!.secret === "empty" ? "connection.set_secret" : "connection.rotate"
+          : verb === "test" ? "connection.test" : "connection.remove";
         const command = { kind, requestId: body.requestId, projectId: null, expectedRevision: revisionNumber(body.expectedRevision),
           payload: verb === "secret" ? { connectionId, secret: body.secret } : { connectionId } } as ConnectionCommand;
         try {

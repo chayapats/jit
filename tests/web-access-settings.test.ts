@@ -155,6 +155,26 @@ test("web.access_settings/v1: forms need a session and a CSRF token", async () =
   expect(forged.status).toBe(403);
 });
 
+test("web.access_settings/v1: role options never exceed the project level, with saved higher values kept as a note", async () => {
+  const f = await fixture();
+  setLanguage(f, "en");
+  const p = project(f, "Role options project");
+  const roleId = specialist(f, "Reviewer");
+  widen(f, p.id, "workspace");
+  // Pin the role at the project ceiling, then narrow the project below it.
+  const restricted = await postForm(f, `/settings/access/${p.id}/roles`,
+    { csrf: f.auth.csrf, requestId: rid(), expectedRevision: "0", roleId, level: "workspace" });
+  expect(restricted.status).toBe(303);
+  const narrowed = await postForm(f, `/settings/access/${p.id}`,
+    { csrf: f.auth.csrf, requestId: rid(), expectedRevision: "1", level: "read" });
+  expect(narrowed.status).toBe(303);
+  const html = await (await get(f, "/settings/access")).text();
+  // The select offers only the project level and below; the saved higher value stays as a read-only note.
+  expect(html).toContain(`<p class="team-role-note">Workspace · ${dictionaries.en["access.error_role_above_project"]}</p>`);
+  expect(html).not.toContain('value="workspace"');
+  expect(html).not.toContain('value="full"');
+});
+
 test("web.access_settings/v1: the project and topic headers show the badge, in Thai and English", async () => {
   const f = await fixture();
   const p = project(f, "Badged project");

@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,11 +18,11 @@ const roots: string[] = [];
 const stores: TransactionStore[] = [];
 afterEach(() => { for (const s of stores.splice(0)) s.close(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
-async function fixture() {
+async function fixture(env: Record<string, string> = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "jit-exe11-"))); roots.push(root);
   const state = join(root, "state"), backups = join(root, "backups"), execution = join(root, "execution"), secrets = join(root, "secrets");
   mkdirSync(state); mkdirSync(execution);
-  const config = readConfig({ JIT_DATABASE: join(state, "jit.sqlite"), JIT_EXECUTION_DIR: execution, JIT_EXECUTION_SECRETS_DIR: secrets });
+  const config = readConfig({ JIT_DATABASE: join(state, "jit.sqlite"), JIT_EXECUTION_DIR: execution, JIT_EXECUTION_SECRETS_DIR: secrets, ...env });
   const store = new TransactionStore(config.databasePath); stores.push(store);
   const vault = new ConnectionVault(secrets, { forbidden: [state, backups, execution] });
   const app = new Application(store, config, { now: () => epoch, backupDir: backups, connections: vault });
@@ -33,7 +33,12 @@ async function fixture() {
   const auth = app.authenticate(token);
   const project = app.execute(auth.actor, { kind: "project.create", requestId: crypto.randomUUID(), projectId: null,
     expectedRevision: app.workspace(auth.actor).revision, payload: { name: "โครงการ connection" } }).project;
-  return { root, config, store, vault, app, web, token, auth, project };
+  return { root, config, store, vault, secrets, app, web, token, auth, project };
+}
+function project(f: Fixture, name: string) {
+  const { actor } = f.auth;
+  return f.app.execute(actor, { kind: "project.create", requestId: crypto.randomUUID(), projectId: null,
+    expectedRevision: f.app.workspace(actor).revision, payload: { name } }).project;
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 const rid = () => crypto.randomUUID();
@@ -159,4 +164,76 @@ test("web.connections_settings/v1: no request, response, redirect or log line ca
     for (const method of methods) console[method] = originals.get(method)!;
   }
   expect(lines.filter(line => line.includes(secret) || line.includes(rotated))).toEqual([]);
+});
+
+test("web.connections_settings/v1: an empty connection left by a failed write takes its first secret from the page", async () => {
+  const f = await fixture();
+  setLanguage(f, "en");
+  const secret = "ghp_fixture_SECRET_123";
+  // Break the vault so the secret write fails after the row commits.
+  rmSync(f.secrets, { recursive: true, force: true });
+  writeFileSync(f.secrets, "blocker");
+  const before = await (await get(f, "/settings/connections")).text();
+  const failed = await postForm(f, "/settings/connections",
+    { ...form(before, "/settings/connections"), kind: "github_token", label: "Broken", secret });
+  expect(failed.status).toBe(503);
+  const empty = f.app.connections(f.auth.actor).find(item => item.label === "Broken")!;
+  expect(empty.secret).toBe("empty");
+  // Restore the vault: the row offers a first-secret form, and setting it fills the row.
+  rmSync(f.secrets, { force: true });
+  mkdirSync(f.secrets, { mode: 0o700 });
+  let html = await (await get(f, "/settings/connections")).text();
+  expect(html).toContain(`action="/settings/connections/${empty.id}/secret"`);
+  expect(html).toContain(`<button>${dictionaries.en["connection.set_secret"]}</button>`);
+  const saved = await postForm(f, `/settings/connections/${empty.id}/secret`,
+    { ...form(html, `/settings/connections/${empty.id}/secret`), secret });
+  expect(saved.status).toBe(303);
+  expect(f.app.connections(f.auth.actor).find(item => item.id === empty.id)!.secret).toBe("set");
+  html = await (await get(f, "/settings/connections")).text();
+  expect(html).not.toContain(secret);
+});
+
+test("web.connections_settings/v1: the scope picker lists projects beyond the first page", async () => {
+  const f = await fixture({ JIT_PAGE_SIZE: "5" });
+  setLanguage(f, "en");
+  const ids = [f.project.id];
+  for (let i = 0; i < 6; i++) ids.push(project(f, `Extra ${i}`).id);
+  const html = await (await get(f, "/settings/connections")).text();
+  const boxes = [...html.matchAll(/name="(scope-[a-f0-9-]+)"/g)].map(m => m[1]!);
+  expect(new Set(boxes).size).toBe(7);
+  for (const id of ids) expect(boxes).toContain(`scope-${id}`);
+  // A connection scoped to a later-page project keeps its name on the row.
+  const created = await postForm(f, "/settings/connections",
+    { ...form(html, "/settings/connections"), kind: "github_token", label: "Scoped", [`scope-${ids[6]}`]: "on", secret: "ghp_fixture_SECRET_123" });
+  expect(created.status).toBe(303);
+  expect(await (await get(f, "/settings/connections")).text()).toContain("Extra 5");
+});
+
+test("web.connections_settings/v1: re-submitting the create form replays both steps instead of going stale", async () => {
+  const f = await fixture();
+  const html = await (await get(f, "/settings/connections")).text();
+  const fields = { ...form(html, "/settings/connections"), kind: "github_token", label: "Retry", secret: "ghp_fixture_SECRET_123" };
+  const first = await postForm(f, "/settings/connections", fields);
+  expect(first.status).toBe(303);
+  const second = await postForm(f, "/settings/connections", fields);
+  expect(second.status).toBe(303);
+  expect(second.headers.get("location")).toBe(first.headers.get("location"));
+});
+
+test("web.connections_settings/v1: more than 32 scoped projects re-renders with the selection kept", async () => {
+  const f = await fixture();
+  setLanguage(f, "en");
+  const ids = [f.project.id];
+  for (let i = 0; i < 32; i++) ids.push(project(f, `Many ${i}`).id);
+  const html = await (await get(f, "/settings/connections")).text();
+  expect(html).toContain(dictionaries.en["connection.scope_limit"]);
+  const fields: Record<string, string> = { ...form(html, "/settings/connections"), kind: "github_token", label: "Many", secret: "ghp_fixture_SECRET_123" };
+  for (const id of ids) fields[`scope-${id}`] = "on";
+  const response = await postForm(f, "/settings/connections", fields);
+  expect(response.status).toBe(400);
+  const body = await response.text();
+  expect(body).toContain(dictionaries.en["connection.error_scope_too_many"]);
+  // Nothing was added, and every chosen box is still checked.
+  expect(f.app.connections(f.auth.actor).filter(item => item.removedAt === null)).toHaveLength(0);
+  expect(body.split(" checked").length - 1).toBe(33);
 });
