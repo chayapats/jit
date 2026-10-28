@@ -27,6 +27,7 @@ import { searchItems, searchPage, settingsDataPage, settingsDispatchPage, settin
 import { dispatchLimits, type DispatchCommand } from "./team/jit-dispatch";
 import type { SetDispatchAllowanceCommand } from "./team/allowance";
 import { feedPathToken, renderScheduleFeed, type FeedCommand } from "./schedule-feed";
+import { effectiveAccess, type AccessCommand } from "./exec/access";
 
 /** ADR 0028 Content-Security-Policy: every page, asset and API response allows only this origin, and no inline script or eval. */
 export const contentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
@@ -232,6 +233,8 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       const stopAllRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/team\/discussions\/([a-f0-9-]{36})\/stop-all$/.exec(pathname);
       const allowanceFormRoute = /^\/settings\/dispatch\/([a-f0-9-]{36})$/.exec(pathname);
       const allowanceApiRoute = /^\/api\/projects\/([a-f0-9-]{36})\/dispatch-allowance$/.exec(pathname);
+      // app.access_level/v1 JSON API (EXE01); the Web pages are EXE04.
+      const accessRoute = /^\/api\/projects\/([a-f0-9-]{36})\/(access|access\/roles|execution\/halt|execution\/resume)$/.exec(pathname);
       /** The topic page that holds a dispatch card, at its anchor. */
       const cardLocation = (card: { projectId: string; topicId: string; anchorSequence: number; id: string }) =>
         `/projects/${card.projectId}/topics/${card.topicId}?after=${Math.max(0, card.anchorSequence - 1)}#dispatch-${card.id}`;
@@ -379,6 +382,22 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
           payload: { enabled, maxRoles: number(body.maxRoles) } } as SetDispatchAllowanceCommand;
         const receipt = app.execute(auth.actor, command);
         return allowanceApiRoute ? json(receipt) : respond(null, 303, { Location: `/settings/dispatch?project=${projectId}#allowance-${projectId}` });
+      }
+      if (accessRoute) {
+        const projectId = accessRoute[1]!, target = accessRoute[2]!;
+        if (request.method === "GET") {
+          if (target !== "access") throw new AppError("method_not_allowed", 405);
+          const access = app.projectAccess(auth.actor, projectId);
+          return json({ access, roles: app.roleAccess(auth.actor, projectId), effective: effectiveAccess(access, null) });
+        }
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        const fields = target === "access" ? ["level", "confirmToken"] : target === "access/roles" ? ["roleId", "level"] : target === "execution/halt" ? ["reason"] : [];
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", ...fields].includes(key))) throw new AppError("invalid_body");
+        // Only fields the body carries enter the payload, so the command's exact-keys check sees what the owner sent.
+        const picked = Object.fromEntries(fields.filter(key => Object.hasOwn(body, key)).map(key => [key, body[key]]));
+        const kind = target === "access" ? "access.level.set" : target === "access/roles" ? "access.role.restrict" : target === "execution/halt" ? "execution.halt" : "execution.resume";
+        const command = { kind, requestId: body.requestId, projectId, expectedRevision: body.expectedRevision, payload: picked } as AccessCommand;
+        return json(app.execute(auth.actor, command));
       }
       if (url.pathname === "/settings/dispatch" && request.method === "GET") {
         const raw = url.searchParams.get("offset") ?? "0";

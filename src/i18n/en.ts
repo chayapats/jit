@@ -1502,4 +1502,16 @@ export const en: Record<MessageKey, string> = {
   "team.unblock": "To unblock",
   "dispatch.held_blocked": "Jit did not call these specialists again for the same request, because their latest result is still blocked",
   "dispatch.empty_blocked_note": "The specialists Jit asked for are still blocked on this request, so nobody was called again. Do the step below first",
+  // app.access_level/v1 (EXE01)
+  "telegram.halt_needs_bind": "Bind a project/topic with /bind before halting execution.",
+  "telegram.halt_done": "Execution in this project is halted (kill switch revision {revision}). Pending execution work was cancelled and Jit and the team stopped replying — only Web can resume.",
+  "error.invalid_access_command": "The access command is not valid.",
+  "error.invalid_access_level": "The access level is not valid.",
+  "error.access_widen_requires_web": "Only the owner in Web can widen access or resume execution.",
+  "error.access_confirm_required": "Confirm the wider access in Web at the current revision first — reload the project and confirm again.",
+  "error.access_full_not_allowed": "Full access cannot be set until the operator enables it after recording the host’s resource evidence.",
+  "error.access_role_above_project": "A specialist’s level cannot be above the project’s level.",
+  "error.execution_halted": "Execution in this project is halted — resume it in Web first.",
+  "error.execution_not_halted": "Execution in this project is not halted.",
+  "error.access_level_insufficient": "The project’s access level is below what this work needs.",
 };

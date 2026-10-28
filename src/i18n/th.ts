@@ -1504,4 +1504,16 @@ export const th = {
   "team.unblock": "สิ่งที่ต้องทำเพื่อไปต่อ",
   "dispatch.held_blocked": "จิตไม่เรียกผู้เชี่ยวชาญเหล่านี้ซ้ำสำหรับคำขอเดิม เพราะผลล่าสุดยังติดขัดอยู่",
   "dispatch.empty_blocked_note": "ผู้เชี่ยวชาญที่จิตขอเรียกยังติดขัดกับคำขอนี้ จึงไม่มีใครถูกเรียกซ้ำ ทำตามสิ่งที่ต้องทำด้านล่างก่อน",
+  // app.access_level/v1 (EXE01)
+  "telegram.halt_needs_bind": "ผูก project/topic ด้วย /bind ก่อนสั่งหยุดการทำงาน",
+  "telegram.halt_done": "หยุดการทำงานของโครงการนี้แล้ว (kill switch ฉบับที่ {revision}) งาน execution ที่ค้างถูกยกเลิก จิตและทีมหยุดตอบ — เริ่มใหม่ได้จาก Web เท่านั้น",
+  "error.invalid_access_command": "คำสั่งระดับสิทธิ์ไม่ถูกต้อง",
+  "error.invalid_access_level": "ระดับสิทธิ์ไม่ถูกต้อง",
+  "error.access_widen_requires_web": "เพิ่มระดับสิทธิ์หรือเริ่มการทำงานใหม่ได้เฉพาะเจ้าของใน Web เท่านั้น",
+  "error.access_confirm_required": "ต้องยืนยันการเพิ่มระดับสิทธิ์ใน Web ตาม revision ปัจจุบันก่อน — เปิดหน้าโครงการใหม่แล้วยืนยันอีกครั้ง",
+  "error.access_full_not_allowed": "ยังตั้งระดับ Full ไม่ได้ จนกว่าผู้ดูแลระบบจะเปิดใช้หลังมีหลักฐานทรัพยากรของเครื่อง",
+  "error.access_role_above_project": "ตั้งระดับของผู้เชี่ยวชาญสูงกว่าระดับของโครงการไม่ได้",
+  "error.execution_halted": "โครงการนี้ถูกสั่งหยุดการทำงานอยู่ — เริ่มใหม่ใน Web ก่อน",
+  "error.execution_not_halted": "โครงการนี้ไม่ได้ถูกสั่งหยุดการทำงาน",
+  "error.access_level_insufficient": "ระดับสิทธิ์ของโครงการต่ำกว่าที่งานนี้ต้องใช้",
 } as const;

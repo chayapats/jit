@@ -12,6 +12,7 @@ import { readBinding } from "./binding";
 import { createCallbackRef, decodeCallbackData, readCallbackRef, refreshCallbackRef, type TelegramCallbackRef } from "./callbacks";
 import { mutateProjectContext, readProjectContext, type TelegramProjectContext } from "./context";
 import { ensureTelegramProjectSchema } from "./schema";
+import { tr } from "../i18n";
 import type { TelegramInboxEvent, TelegramUpdate } from "./types";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -85,6 +86,7 @@ export class TelegramProjectCommands {
     if (text.startsWith("/follow ")) return this.#follow(event, text.slice(8).trim(), binding.revision);
     if (text.startsWith("/accept ")) return this.#callback({ ...event, textContent: text.slice(8).trim() }, binding.revision);
     if (text.startsWith("/task edit ")) return this.#taskEditText(event, text.slice(11), binding.revision);
+    if (text === "/halt" || text.startsWith("/halt ")) return this.#halt(event, text.slice(5).trim(), binding.revision);
     return { kind: "noop" };
   }
 
@@ -165,6 +167,30 @@ export class TelegramProjectCommands {
         kind: "reply", projectId: ctx.projectId,
         text: `Follow-up บันทึกแล้ว\nproject ${ctx.projectId}\ntopic ${ctx.topicId}\ndiscussion ${discussion.id} rev ${discussion.revision}\nดูรายละเอียด specialist บน Web`,
         dedupeKey: `tg:follow:${event.sequence}`,
+      };
+    } catch (error) {
+      return this.#errorOutcome(error, ctx.projectId);
+    }
+  }
+
+  /**
+   * app.access_level/v1 kill switch from the bound owner chat: `/halt [reason]` issues `execution.halt` for the chat's
+   * bound project with the `telegram` channel. Telegram can only narrow: no text command or callback widens a level or
+   * resumes execution (the Application refuses any such command from this channel with `access_widen_requires_web`).
+   */
+  #halt(event: TelegramInboxEvent, reason: string, bindingRevision: number): TelegramCommandOutcome {
+    const ctx = this.store.read(tx => readProjectContext(tx, event.telegramChatId!));
+    if (!ctx || ctx.bindingRevision !== bindingRevision) return { kind: "reply", text: tr("telegram.halt_needs_bind") };
+    try {
+      const access = this.#app.projectAccess(this.#telegramActor(), ctx.projectId);
+      const receipt = this.#app.execute(this.#telegramActor(), {
+        kind: "execution.halt", requestId: `tg-halt-${event.sequence}`, projectId: ctx.projectId, expectedRevision: access.haltRevision,
+        payload: reason ? { reason } : {},
+      });
+      return {
+        kind: "reply", projectId: ctx.projectId,
+        text: tr("telegram.halt_done").replace("{revision}", String(receipt.access.haltRevision)),
+        dedupeKey: `tg:halt:${event.sequence}`,
       };
     } catch (error) {
       return this.#errorOutcome(error, ctx.projectId);

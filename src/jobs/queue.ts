@@ -8,6 +8,7 @@ import { AppError } from "../errors";
 import { TransactionStore, type AppTransaction } from "../store";
 import type { Job, JobCommand, JobData, JobLimits, JobPolicy, JobReason, JobUsage, WorkDefinition, WorkOutcome } from "./types";
 import { upgradeFenced } from "../ops/upgrade-fence";
+import { assertExecutionAllowed } from "../exec/access";
 
 const counters = ["roles", "calls", "rounds", "hops", "contextTokens", "outputTokens", "retries"] as const;
 const limitKeys = [...counters, "wallMs"];
@@ -114,6 +115,27 @@ export function invalidatePendingJob(tx: AppTransaction, projectId: string, jobI
   tx.run("UPDATE jobs SET state = ?, record_json = ? WHERE id = ?", job.state, JSON.stringify(job), job.id);
 }
 
+/**
+ * app.access_level/v1 kill switch: fences every queued, admitted or waiting execution-capable job of one project
+ * exactly like an owner `job.stop` (authority generation bump, stop outcome, `blocked`/`cancelled`), inside the halt
+ * transaction and without a running scheduler. A late result of a fenced attempt is never committed; the caller asks
+ * a live scheduler to abort transports after commit (`JobQueue.cancelFenced`). Returns the fenced job ids.
+ */
+export function stopExecutionJobs(tx: AppTransaction, projectId: string, now: number): string[] {
+  if (!Number.isSafeInteger(now) || now < 0) throw new AppError("invalid_job_clock");
+  const rows = tx.all<{ record_json: string }>(`SELECT record_json FROM jobs WHERE project_id = ? AND state IN ('queued', 'admitted', 'waiting')
+    AND json_extract(record_json, '$.execution') = 1 ORDER BY sequence`, projectId);
+  return rows.map(row => {
+    const job = JSON.parse(row.record_json) as Job;
+    invalidateJob(tx, job.id, "cancelled", now, true);
+    job.state = "blocked"; job.reason = "cancelled"; job.revision++;
+    job.updatedAt = Math.max(job.updatedAt, now); job.remaining.wallMs = Math.max(0, job.deadlineAt - job.updatedAt);
+    job.nextAction = job.occupiesAdmission ? "wait_for_adapter_to_stop" : "inspect_reason_and_authorize_new_work";
+    tx.run("UPDATE jobs SET state = ?, record_json = ? WHERE id = ?", job.state, JSON.stringify(job), job.id);
+    return job.id;
+  });
+}
+
 /** Projects a live wall budget at read time without mutating committed state or replay receipts. */
 export function projectJob(job: Job, now: number): Job {
   if (!Number.isSafeInteger(now) || now < 0) throw new AppError("invalid_job_clock");
@@ -155,12 +177,12 @@ export class JobQueue {
     for (const raw of definitions) {
       const { run, validate, prepare, isCurrent, ...metadata } = raw, definition: WorkDefinition = { ...structuredClone(metadata), run, validate, ...(prepare ? { prepare } : {}), ...(isCurrent ? { isCurrent } : {}) };
       if (!id(raw.id) || this.#definitions.has(raw.id) || !positive(raw.revision) || typeof raw.title !== "string" || !raw.title.length || raw.title.length > 120 ||
-          typeof run !== "function" || typeof validate !== "function" || (raw.replay !== undefined && !["read", "mutation", "send"].includes(raw.replay)) ||
+          typeof run !== "function" || typeof validate !== "function" || (raw.replay !== undefined && !["read", "mutation", "send"].includes(raw.replay)) || (raw.execution !== undefined && typeof raw.execution !== "boolean") ||
           (prepare !== undefined && typeof prepare !== "function") || (isCurrent !== undefined && typeof isCurrent !== "function") || !exact(raw.route, ["provider", "model", "authRoute"]) ||
           !id(raw.route.provider) || (raw.route.model !== null && !id(raw.route.model)) || !id(raw.route.authRoute)) throw new AppError("invalid_work_definition");
       this.#usage(raw.cost);
       if (["roles", "calls", "rounds", "hops"].some(key => !positive(raw.cost[key as keyof JobUsage]))) throw new AppError("invalid_work_definition");
-      const fingerprint = hash(jobData({ id: raw.id, revision: raw.revision, route: raw.route, cost: raw.cost, replay: raw.replay ?? "manual" }, policy.inputBytes));
+      const fingerprint = hash(jobData({ id: raw.id, revision: raw.revision, route: raw.route, cost: raw.cost, replay: raw.replay ?? "manual", ...(raw.execution ? { execution: true } : {}) }, policy.inputBytes));
       this.#definitions.set(raw.id, { definition, fingerprint });
     }
     const isAlive = options.isAlive ?? ((pid: number) => { try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; } });
@@ -237,6 +259,7 @@ export class JobQueue {
         this.#save(tx, job, false); return { job };
       }
       if (job.reason === "interrupted" && entry.definition.replay !== "read") throw new AppError("job_requires_manual_reconciliation", 409);
+      if (entry.definition.execution) assertExecutionAllowed(tx, job.projectId, null, "workspace");
       if (readAttempts(tx, job.id).some(a => a.native && !["retired", "deleted"].includes(a.contextState))) throw new AppError("job_context_reconciliation_required", 409);
       validateJobLimits(job.limits, this.policy.maximum);
       job.remaining.retries--; job.authorization = { ownerId: "owner", generation, requestId: command.requestId };
@@ -248,6 +271,8 @@ export class JobQueue {
     validateJobLimits(p.limits, this.policy.maximum);
     const project = tx.get<{ revision: number }>("SELECT revision FROM projects WHERE id = ?", command.projectId);
     if (project?.revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
+    // app.access_level/v1: execution-capable work is admitted only under a sufficient, unhalted access level.
+    if (entry.definition.execution) assertExecutionAllowed(tx, command.projectId, null, "workspace");
     const input = JSON.parse(jobData(p.input, this.policy.inputBytes)) as JobData;
     if (!entry.definition.validate(input, { projectId: command.projectId, projectRevision: project.revision, inputRevision: p.inputRevision })) throw new AppError("invalid_job_input");
     const count = tx.get<{ count: number }>("SELECT count(*) AS count FROM jobs WHERE state IN ('queued', 'admitted', 'waiting')")!.count;
@@ -257,6 +282,7 @@ export class JobQueue {
       inputRevision: p.inputRevision, input, authorization: { ownerId: "owner", generation, requestId: command.requestId },
       configuration: { revision: entry.definition.revision, policyRevision: this.policy.revision, fingerprint: entry.fingerprint }, route: structuredClone(entry.definition.route),
       limits: structuredClone(p.limits), remaining: structuredClone(p.limits), state: "queued", reason: "queued", nextAction: "wait_for_admission",
+      ...(entry.definition.execution ? { execution: true as const } : {}),
       createdAt: now, updatedAt: now, deadlineAt: now + p.limits.wallMs, steps: 0, checkpoint: null, evidence: null, occupiesAdmission: false };
     tx.run("INSERT INTO jobs (id, project_id, queue_order, priority, state, occupies, route_key, record_json) VALUES (?, ?, ?, ?, ?, 0, ?, ?)",
       job.id, job.projectId, this.#order(tx), job.priority === "interactive" ? 1 : 0, job.state, routeKey(job.route), JSON.stringify(job));
@@ -282,6 +308,7 @@ export class JobQueue {
               : !entry || entry.fingerprint !== job.configuration.fingerprint || job.configuration.policyRevision !== this.policy.revision ? "configuration_changed"
               : this.#time() >= job.deadlineAt ? "deadline" : null;
             try { validateJobLimits(job.limits, this.policy.maximum); } catch { reason = "configuration_changed"; }
+            if (!reason && entry!.definition.execution) { try { assertExecutionAllowed(tx, job.projectId, null, "workspace"); } catch { reason = "authorization_changed"; } }
             if (!reason) { try { if (!entry!.definition.validate(job.input, { projectId: job.projectId, projectRevision: project?.revision ?? -1, inputRevision: job.inputRevision })) reason = "input_changed"; } catch { reason = "input_changed"; } }
             // Occupancy must outlive yield/freshness until the in-process worker settles.
             if (reason) {
@@ -413,6 +440,7 @@ export class JobQueue {
     if (current.inputRevision !== snapshot.inputRevision || jobData(current.input, this.policy.inputBytes) !== jobData(snapshot.input, this.policy.inputBytes)) return "input_changed";
     if (jobData(current.configuration, 1024) !== jobData(snapshot.configuration, 1024) || jobData(current.route, 1024) !== jobData(snapshot.route, 1024)) return "configuration_changed";
     if (!entry || entry.fingerprint !== current.configuration.fingerprint || current.configuration.policyRevision !== this.policy.revision) return "configuration_changed";
+    if (entry.definition.execution) { try { assertExecutionAllowed(tx, current.projectId, null, "workspace"); } catch { return "authorization_changed"; } }
     const revision = tx.get<{ revision: number }>("SELECT revision FROM projects WHERE id = ?", current.projectId)?.revision ?? -1;
     try {
       if (!entry.definition.validate(current.input, { projectId: current.projectId, projectRevision: revision, inputRevision: current.inputRevision }) ||

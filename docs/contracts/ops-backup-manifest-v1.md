@@ -174,6 +174,10 @@ included likewise.
 The loopback API setting (`local_api_settings`; schema 29, app.local_api/v1)
 records only whether the owner turned the API on; it is included likewise. The
 API token lives in `<data>/local-api/` files, never in the database or an image.
+Access level revisions, restrict-only role overrides and kill switch revisions
+(`project_access_revisions`, `role_access_overrides`, `execution_halts`; schema
+31, app.access_level/v1) are owner configuration without credentials and are
+included likewise.
 Activation (`TransactionStore.swapFrom`, used by OPS02 restore and upgrade
 activation) builds the complete replacement image before an atomic rename and
 always keeps the live installation's owner verifier, sessions,

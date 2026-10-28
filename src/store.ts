@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { commitDecisionMemorySource, retireDecisionMemorySource } from "./memory/decision-sources";
 
 /** Current application schema revision. Service packaging pins and checks this value. */
-export const schemaVersion = 30;
+export const schemaVersion = 31;
 
 /**
  * Installation-scoped state that never round-trips through backup images and
@@ -74,7 +74,7 @@ export class TransactionStore {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
           if (current === schemaVersion) return;
-          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29].includes(current)) throw new Error("Unsupported migration source");
+          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30].includes(current)) throw new Error("Unsupported migration source");
           if (existing) {
             const snapshot = `${path}.pre-v${current}-${crypto.randomUUID()}.sqlite`;
             const fd = openSync(snapshot, "wx", 0o600);
@@ -895,6 +895,39 @@ export class TransactionStore {
               CHECK ((token_hash IS NULL) = (token_created_at IS NULL))
             );
             PRAGMA user_version = 30;
+          `);
+          if (current < 31) this.#db.exec(`
+            -- app.access_level/v1 (EXE01, ADR 0037): append-only owner revisions of a project's execution access level.
+            -- No row means revision 0, which is 'read'. channel records which owner channel committed the revision.
+            CREATE TABLE IF NOT EXISTS project_access_revisions (
+              project_id TEXT NOT NULL REFERENCES projects(id),
+              revision INTEGER NOT NULL CHECK (revision > 0),
+              level TEXT NOT NULL CHECK (level IN ('read', 'workspace', 'full')),
+              channel TEXT NOT NULL,
+              created_at INTEGER NOT NULL,
+              PRIMARY KEY (project_id, revision)
+            );
+            -- Restrict-only per-role overrides; a NULL level clears the override so the role follows its project.
+            CREATE TABLE IF NOT EXISTS role_access_overrides (
+              project_id TEXT NOT NULL REFERENCES projects(id),
+              role_id TEXT NOT NULL,
+              revision INTEGER NOT NULL CHECK (revision > 0),
+              level TEXT CHECK (level IS NULL OR level IN ('read', 'workspace', 'full')),
+              channel TEXT NOT NULL,
+              created_at INTEGER NOT NULL,
+              PRIMARY KEY (project_id, role_id, revision)
+            );
+            -- The kill switch: append-only halt/resume revisions; the latest row decides whether execution is halted.
+            CREATE TABLE IF NOT EXISTS execution_halts (
+              project_id TEXT NOT NULL REFERENCES projects(id),
+              revision INTEGER NOT NULL CHECK (revision > 0),
+              halted INTEGER NOT NULL CHECK (halted IN (0, 1)),
+              channel TEXT NOT NULL,
+              reason TEXT,
+              created_at INTEGER NOT NULL,
+              PRIMARY KEY (project_id, revision)
+            );
+            PRAGMA user_version = 31;
           `);
         }).immediate();
         this.#db.exec("PRAGMA foreign_keys = ON;");
