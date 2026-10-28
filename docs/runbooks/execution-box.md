@@ -114,3 +114,16 @@ jit ops box-doctor
 | `image-browser-present` | `build-box-images`: run `bun ops/box/build.ts --target browser --tag <tag>` and pin the digest (skipped when not configured). |
 | `execution-directory` | `create-execution-directory` / `chown-execution-directory` / `restrict-execution-directory`: create the directory, chown to the service uid, chmod 0700. |
 | `secrets-directory` | `create-execution-directory` / `chown-execution-directory` / `restrict-execution-directory`: same as above for the secrets directory. |
+
+## Runtime (EXE03)
+
+Once configured, Jit creates one box per project on demand (`jit-box-<projectId>`) with the hardening of [execution-box-v1](../contracts/execution-box-v1.md); it never pulls an image (`--pull=never`), so pre-build and pin both targets. `workspace` boxes use the internal network `jit-box-internal`, which Jit creates on first use, and reach only the registries in `registryHosts` through Jit's proxy on that network's gateway. Idle boxes stop after `idleMinutes`; the workspace stays under `<directory>/<projectId>/workspace`.
+
+Live evidence on the host (opt-in, not a release test):
+
+```sh
+bun ops/box/build.ts --target base --tag <tag>          # prints the digest
+JIT_LIVE_PODMAN=1 JIT_LIVE_BOX_IMAGE=jit-box-base:<tag>@sha256:<digest> bun test tests/box-podman.live.test.ts
+```
+
+It checks the inspected mounts, zero capabilities, no Jit variable or path in the box, and that the internal network blocks `example.com` while the proxy allows `registry.npmjs.org`.

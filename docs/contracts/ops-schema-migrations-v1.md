@@ -15,7 +15,7 @@ reconciliation), `delivery.outbox/v1` (unknown outcomes stay unknown),
 ## Versions
 
 - Target: exactly the schema this build migrates to
-  (`currentSupportedSchema` = `schemaVersion`, 32 at this revision; 23 adds
+  (`currentSupportedSchema` = `schemaVersion`, 33 at this revision; 23 adds
   the installation lifecycle ledger of app.deletion_ledger/v1, backfilled from
   existing tombstones and suppressions; 24 adds the empty `owner_preferences`
   table of ui.preferences/v1; 25 adds the empty `persona_revisions` and
@@ -32,7 +32,9 @@ reconciliation), `delivery.outbox/v1` (unknown outcomes stay unknown),
   so every upgraded project reads `read`, revision 0, not halted; 32 adds the empty
   `webhook_triggers`, `webhook_receipts` and `pr_poll_due` tables of
   app.webhook_triggers/v1, so an upgraded installation has no webhook trigger
-  and polls on its derived schedule).
+  and polls on its derived schedule; 33 adds the empty
+  `execution_box_resets` table of exec.box_runtime/v1, so every upgraded project
+  reads box reset revision 0).
 - Sources: `minUpgradeSourceSchema` (17) through the target. A recovery point
   needs the managed backup registry (schema 16) and the deletion ledger
   (schema 17); older installations are `manual_recovery_required`.
@@ -43,8 +45,8 @@ reconciliation), `delivery.outbox/v1` (unknown outcomes stay unknown),
   `SNAPSHOT_NATIVE_FORMAT_VERSION` (4) exactly. Anything else is
   `engine_unavailable` or `unsupported_engine`. The scripted default has no
   native port, so it cannot upgrade (fail closed, like backups).
-- Tested from/to: fixture installations at 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30 and 31 → 32, and
-  32 → 32 (no schema change; recovery point, validation and reconciliation
+- Tested from/to: fixture installations at 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31 and 32 → 33, and
+  33 → 33 (no schema change; recovery point, validation and reconciliation
   still run). No production historical release exists yet; fixtures are the
   evidence.
 

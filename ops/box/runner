@@ -1,0 +1,325 @@
+#!/bin/sh
+# jit.box.runner/v1 (EXE03, ADR 0036): the agent-free request runner inside an execution box.
+#
+# Reads one JSON request on stdin, writes one JSON response on stdout and exits 0. It has no model, opens no
+# socket and keeps no state between calls beyond the spawn bookkeeping of a running command. Every path is
+# confined to the workspace root (realpath checks, so symlink escapes are refused) except Schway's bash spill
+# files `schway-bash-<uuid>.log` directly inside the temporary directory. Every operation has fixed byte and
+# time limits. Protocol: docs/contracts/box-runner-v1.md.
+#
+# Usage: runner [--root DIR] [--tmp DIR] [--state DIR]
+#   The defaults (/workspace, /tmp, /run/jit-runner) are the box layout; the options exist for local tests.
+set -u
+umask 022
+
+ROOT=/workspace TMPROOT=/tmp STATE=/run/jit-runner
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --root) ROOT=$2; shift 2 ;;
+    --tmp) TMPROOT=$2; shift 2 ;;
+    --state) STATE=$2; shift 2 ;;
+    *) printf '{"v":1,"ok":false,"error":{"code":"EPROTO"}}\n'; exit 0 ;;
+  esac
+done
+
+# Fixed limits (bytes, entries, milliseconds).
+MAX_REQUEST=25165824      # 24 MiB of JSON: a 16 MiB file write plus base64 overhead
+MAX_FILE=16777216         # observe with content and write
+MAX_CHUNK=1048576         # one read chunk
+MAX_ENTRIES=10000         # list
+MAX_FILES=50000           # glob
+MAX_MATCHES=10000         # search
+MAX_STREAM=8388608        # spawn stdout and stderr, each
+MAX_FAILURE=65536         # search diagnostics
+OP_SECONDS=60             # glob and search wall time
+SPAWN_DEFAULT_MS=1800000  # spawn without timeoutMs
+SPAWN_MAX_MS=3600000
+
+work= STAGE=
+# Every exit path writes exactly one response and removes this request's scratch files and staging file.
+respond() { printf '%s\n' "$1"; [ -n "$STAGE" ] && rm -f "$STAGE"; [ -n "$work" ] && rm -rf "$work"; exit 0; }
+fail() { respond "{\"v\":1,\"ok\":false,\"error\":{\"code\":\"$1\"}}"; }
+ok_json() { respond "{\"v\":1,\"ok\":true,\"result\":$1}"; }
+
+mkdir -p "$STATE" 2>/dev/null && chmod 700 "$STATE" 2>/dev/null || fail EIO
+work=$(mktemp -d "$STATE/req.XXXXXXXX") || { work=; fail EIO; }
+REQ=$work/request.json
+
+head -c $((MAX_REQUEST + 1)) > "$REQ" || fail EPROTO
+[ "$(wc -c < "$REQ" | tr -d ' ')" -le "$MAX_REQUEST" ] || fail E2BIG
+# One object, version 1, and no NUL or newline in any string except file data and the command.
+jq -e 'type == "object" and .v == 1 and (.op | type == "string") and
+  ([paths(type == "string") as $p | select(($p | last) != "data" and ($p | last) != "command") | getpath($p)
+    | select(test("[\u0000\n]"))] | length == 0) and ((.command // "") | test("\u0000") | not)' "$REQ" >/dev/null 2>&1 || fail EPROTO
+
+field() { jq -r --arg k "$1" '.[$k] // empty | tostring' "$REQ"; }
+
+REALROOT=$(realpath -- "$ROOT" 2>/dev/null) || fail EIO
+REALTMP=$(realpath -- "$TMPROOT" 2>/dev/null) || fail EIO
+
+# Paths arrive absolute and canonical from Schway; anything else is refused.
+canonical() {
+  case "$1" in /*) ;; *) return 1 ;; esac
+  [ "$1" = / ] && return 0
+  case "$1" in */ | *//* | */./* | */../* | */. | */..) return 1 ;; esac
+  return 0
+}
+within() { case "$2" in "$1" | "$1"/*) return 0 ;; esac; return 1; }
+lexical() { canonical "$1" && within "$ROOT" "$1"; }
+spill() {
+  canonical "$1" || return 1
+  [ "$(dirname -- "$1")" = "$TMPROOT" ] || return 1
+  printf '%s' "$(basename -- "$1")" | grep -Eq '^schway-bash-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.log$'
+}
+# The code for a path that does not exist: ENOTDIR when the deepest existing ancestor is not a directory.
+missing() {
+  p=$1
+  while [ ! -e "$p" ]; do
+    q=$(dirname -- "$p"); [ "$q" = "$p" ] && break; p=$q
+  done
+  [ -e "$p" ] && [ ! -d "$p" ] && fail ENOTDIR
+  fail ENOENT
+}
+# R = realpath of an existing path, which must lie inside the real workspace root.
+follow() {
+  lexical "$1" || fail EACCES
+  [ -e "$1" ] || missing "$1"
+  R=$(realpath -- "$1" 2>/dev/null) || fail EIO
+  within "$REALROOT" "$R" || fail EACCES
+}
+# The deepest existing ancestor of a path must resolve inside the real workspace root (writes and new files).
+parent_within() {
+  lexical "$1" || fail EACCES
+  p=$(dirname -- "$1")
+  while [ ! -e "$p" ]; do p=$(dirname -- "$p"); done
+  [ -d "$p" ] || fail ENOTDIR
+  real=$(realpath -- "$p" 2>/dev/null) || fail EIO
+  within "$REALROOT" "$real" || fail EACCES
+}
+kind_of() { if [ -d "$1" ]; then echo directory; elif [ -f "$1" ]; then echo file; else echo other; fi; }
+size_of() { wc -c < "$1" | tr -d ' '; }
+# An opaque observation of a path's own entry and, for a regular target, its bytes.
+token_of() {
+  {
+    ls -ldni -- "$1" 2>/dev/null
+    if [ -f "$1" ]; then ls -ldniL -- "$1"; sha256sum < "$1"; elif [ -e "$1" ]; then ls -ldniL -- "$1"; fi
+  } | sha256sum | cut -c1-64
+}
+b64file() { base64 < "$1" | tr -d '\n'; }
+with_limit() { if command -v timeout >/dev/null 2>&1; then timeout "$OP_SECONDS" "$@"; else "$@"; fi; }
+mode_of() { perl -e 'printf "%o", (stat shift)[2] & 07777' "$1"; }
+
+OP=$(field op)
+case "$OP" in
+  realpath)
+    P=$(field path)
+    if [ "$P" = "$TMPROOT" ]; then ok_json "$(jq -cn --arg p "$REALTMP" '{path: $p}')"; fi
+    if spill "$P"; then
+      [ -e "$P" ] || fail ENOENT
+      R=$(realpath -- "$P" 2>/dev/null) || fail EIO
+      [ "$(dirname -- "$R")" = "$REALTMP" ] || fail EACCES
+    else
+      # The resolved path is reported even when a symlink leaves the workspace, so Schway refuses it with its own
+      # message; every operation that reads, writes, lists, searches or runs refuses such a path itself.
+      lexical "$P" || fail EACCES
+      [ -e "$P" ] || missing "$P"
+      R=$(realpath -- "$P" 2>/dev/null) || fail EIO
+    fi
+    ok_json "$(jq -cn --arg p "$R" '{path: $p}')" ;;
+
+  stat)
+    P=$(field path)
+    if spill "$P"; then [ -e "$P" ] || fail ENOENT; else follow "$P"; fi
+    ok_json "{\"type\":\"$(kind_of "$P")\"}" ;;
+
+  read)
+    P=$(field path); OFFSET=$(field offset); LENGTH=$(field length)
+    case "$OFFSET$LENGTH" in *[!0-9]* | "") fail EINVAL ;; esac
+    [ "$LENGTH" -ge 1 ] && [ "$LENGTH" -le "$MAX_CHUNK" ] || fail EINVAL
+    if spill "$P"; then [ -e "$P" ] || fail ENOENT; else follow "$P"; fi
+    [ -d "$P" ] && fail EISDIR
+    [ -f "$P" ] || fail EINVAL
+    [ -r "$P" ] || fail EACCES
+    SIZE=$(size_of "$P")
+    tail -c +$((OFFSET + 1)) -- "$P" 2>/dev/null | head -c "$LENGTH" > "$work/chunk"
+    b64file "$work/chunk" > "$work/chunk.b64"
+    EOF_=false; [ $((OFFSET + LENGTH)) -ge "$SIZE" ] && EOF_=true
+    ok_json "$(jq -cn --rawfile d "$work/chunk.b64" --argjson eof "$EOF_" '{data: $d, eof: $eof}')" ;;
+
+  observe)
+    P=$(field path); CONTENT=$(field content)
+    parent_within "$P"
+    if [ ! -e "$P" ] && [ ! -L "$P" ]; then ok_json null; fi
+    if [ -e "$P" ]; then
+      # A final symlink must still point inside the workspace before its target is observed.
+      R=$(realpath -- "$P" 2>/dev/null) || fail EIO
+      within "$REALROOT" "$R" || fail EACCES
+    fi
+    TOKEN=$(token_of "$P")
+    if [ ! -e "$P" ]; then ok_json "$(jq -cn --arg t "$TOKEN" '{targetExists: false, token: $t}')"; fi
+    if [ "$CONTENT" = true ]; then
+      [ -d "$P" ] && fail EISDIR
+      [ -f "$P" ] || fail EINVAL
+      [ -r "$P" ] || fail EACCES
+      [ "$(size_of "$P")" -le "$MAX_FILE" ] || fail EFBIG
+      cat -- "$P" > "$work/content"
+      [ "$(token_of "$P")" = "$TOKEN" ] || fail ECHANGED
+      b64file "$work/content" > "$work/content.b64"
+      ok_json "$(jq -cn --arg t "$TOKEN" --rawfile d "$work/content.b64" '{targetExists: true, token: $t, data: $d}')"
+    fi
+    ok_json "$(jq -cn --arg t "$TOKEN" '{targetExists: true, token: $t}')" ;;
+
+  write)
+    P=$(field path); CREATE=$(field createParents)
+    HAS_OBSERVED=$(jq -r 'has("observed")' "$REQ"); OBSERVED=$(jq -r '.observed // "null"' "$REQ")
+    lexical "$P" || fail EACCES
+    DIR=$(dirname -- "$P")
+    if [ "$CREATE" = true ] && [ ! -d "$DIR" ]; then parent_within "$P"; mkdir -p -- "$DIR" 2>/dev/null || missing "$DIR"; fi
+    [ -e "$DIR" ] || missing "$DIR"
+    [ -d "$DIR" ] || fail ENOTDIR
+    REALDIR=$(realpath -- "$DIR" 2>/dev/null) || fail EIO
+    within "$REALROOT" "$REALDIR" || fail EACCES
+    [ -d "$P" ] && [ ! -L "$P" ] && fail EISDIR
+    check_observed() {
+      [ "$HAS_OBSERVED" = true ] || return 0
+      if [ "$OBSERVED" = null ]; then { [ -e "$P" ] || [ -L "$P" ]; } && fail ECHANGED; return 0; fi
+      { [ -e "$P" ] || [ -L "$P" ]; } || fail ECHANGED
+      [ "$(token_of "$P")" = "$OBSERVED" ] || fail ECHANGED
+    }
+    check_observed
+    jq -r '.data' "$REQ" | base64 -d > "$work/data" 2>/dev/null || fail EINVAL
+    [ "$(size_of "$work/data")" -le "$MAX_FILE" ] || fail EFBIG
+    if [ -f "$P" ]; then MODE=$(mode_of "$P"); else MODE=$(printf '%o' $((0666 & ~0$(umask)))); fi
+    STAGE=$(mktemp "$DIR/.jit-write.XXXXXXXX") || { STAGE=; fail EACCES; }
+    { cat "$work/data" > "$STAGE" && chmod "$MODE" "$STAGE"; } || fail EIO
+    check_observed
+    # rename(2) replaces the path's own entry; a final symlink is replaced, never followed.
+    if mv --version >/dev/null 2>&1; then mv -f -T -- "$STAGE" "$P" || fail EIO
+    else mv -f -h "$STAGE" "$P" || fail EIO; fi
+    STAGE=
+    ok_json '{}' ;;
+
+  writePrivate)
+    P=$(field path)
+    spill "$P" || fail EACCES
+    [ -d "$TMPROOT" ] || fail ENOENT
+    [ -L "$P" ] && rm -f -- "$P"
+    jq -r '.data' "$REQ" | base64 -d > "$work/data" 2>/dev/null || fail EINVAL
+    [ "$(size_of "$work/data")" -le "$MAX_FILE" ] || fail EFBIG
+    ( umask 077; cat "$work/data" > "$P" ) && chmod 600 "$P" || fail EIO
+    ok_json '{}' ;;
+
+  list)
+    P=$(field path)
+    follow "$P"
+    [ -d "$P" ] || fail ENOTDIR
+    NL=$(printf '\n_'); NL=${NL%_}
+    {
+      find "$P" -mindepth 1 -maxdepth 1 ! -name "*$NL*" -type d -print | sed 's/^/directory /'
+      find "$P" -mindepth 1 -maxdepth 1 ! -name "*$NL*" -type f -print | sed 's/^/file /'
+      find "$P" -mindepth 1 -maxdepth 1 ! -name "*$NL*" -type l -print | sed 's/^/symlink /'
+      find "$P" -mindepth 1 -maxdepth 1 ! -name "*$NL*" ! -type d ! -type f ! -type l -print | sed 's/^/other /'
+    } 2>/dev/null | head -n $((MAX_ENTRIES + 1)) > "$work/entries"
+    ok_json "$(jq -c -R -s --arg prefix "$P/" --argjson max "$MAX_ENTRIES" '
+      split("\n") | map(select(length > 0) | capture("^(?<type>[a-z]+) (?<path>.*)$") | select(.path | startswith($prefix))
+        | {name: (.path | ltrimstr($prefix)), type})
+      | {entries: .[:$max], truncated: (length > $max)}' "$work/entries")" ;;
+
+  glob)
+    CWD=$(field cwd); DOT=$(field dot)
+    follow "$CWD"
+    [ -d "$CWD" ] || fail ENOTDIR
+    NL=$(printf '\n_'); NL=${NL%_}
+    if [ "$DOT" = true ]; then with_limit find "$CWD" -mindepth 1 ! -name "*$NL*" -type f -print
+    else with_limit find "$CWD" -mindepth 1 \( -name '.*' -prune \) -o \( ! -name "*$NL*" -type f -print \); fi 2>/dev/null \
+      | head -n $((MAX_FILES + 1)) > "$work/files"
+    ok_json "$(jq -c -R -s --arg prefix "$CWD/" --argjson max "$MAX_FILES" '
+      split("\n") | map(select(startswith($prefix)) | ltrimstr($prefix)) | {files: .[:$max], truncated: (length > $max)}' "$work/files")" ;;
+
+  search)
+    P=$(field path); CWD=$(field cwd); PATTERN=$(jq -r '.pattern' "$REQ"); GLOB=$(field glob); ICASE=$(field ignoreCase); LIMIT=$(field limit)
+    case "$LIMIT" in *[!0-9]* | "") fail EINVAL ;; esac
+    [ "$LIMIT" -ge 1 ] || fail EINVAL
+    [ "$LIMIT" -le "$MAX_MATCHES" ] || LIMIT=$MAX_MATCHES
+    follow "$CWD"; [ -d "$CWD" ] || fail ENOTDIR
+    follow "$P"
+    command -v rg >/dev/null 2>&1 || fail ENOENT
+    if [ "$P" = "$CWD" ]; then REL=.; else case "$P" in "$CWD"/*) REL=${P#"$CWD"/} ;; *) REL=$P ;; esac; fi
+    set -- --json --no-config
+    [ "$ICASE" = true ] && set -- "$@" -i
+    [ -n "$GLOB" ] && set -- "$@" -g "$GLOB"
+    set -- "$@" -- "$PATTERN" "$REL"
+    ( cd "$CWD" && { with_limit rg "$@" 2>"$work/stderr"; echo $? > "$work/rc"; } ) \
+      | jq -c 'select(.type == "match") | select(.data.path.text != null)
+          | {path: .data.path.text, line: .data.line_number, text: ((.data.lines.text // "") | sub("[\r\n]+$"; ""))}' 2>/dev/null \
+      | head -n "$LIMIT" > "$work/matches"
+    RC=$(cat "$work/rc" 2>/dev/null || echo 0)
+    head -c "$MAX_FAILURE" "$work/stderr" > "$work/failure"
+    ok_json "$(jq -cs --argjson limit "$LIMIT" --arg rc "$RC" --rawfile failure "$work/failure" '
+      {matches: ., truncated: (length >= $limit)} + (if $rc == "2" then {failure: $failure} else {} end)' "$work/matches")" ;;
+
+  spawn)
+    ID=$(field id); CWD=$(field cwd); MS=$(field timeoutMs)
+    printf '%s' "$ID" | grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' || fail EINVAL
+    case "$MS" in "") MS=$SPAWN_DEFAULT_MS ;; *[!0-9]*) fail EINVAL ;; esac
+    [ "$MS" -ge 1 ] || fail EINVAL
+    [ "$MS" -le "$SPAWN_MAX_MS" ] || MS=$SPAWN_MAX_MS
+    follow "$CWD"; [ -d "$CWD" ] || fail ENOTDIR
+    BASH_BIN=$(command -v bash) || fail ENOENT
+    jq -j '.command' "$REQ" > "$work/command"
+    if [ "$(jq -r 'has("env")' "$REQ")" = true ]; then
+      # The complete environment, shell-quoted by jq; names must be portable identifiers.
+      jq -r '.env | if type != "object" then error("env") else . end | to_entries[] | select(.value != null)
+        | if (.key | test("^[A-Za-z_][A-Za-z0-9_]*$")) and (.value | type == "string") then "export \(.key)=\(.value | @sh)" else error("env") end' \
+        "$REQ" > "$work/env" 2>/dev/null || fail EINVAL
+      set -- env -i /bin/sh -c '. "$0"; exec "$1" -c "$(cat "$2")"' "$work/env" "$BASH_BIN" "$work/command"
+    else
+      set -- /bin/sh -c 'exec "$0" -c "$(cat "$1")"' "$BASH_BIN" "$work/command"
+    fi
+    : > "$work/stdout"; : > "$work/stderr"
+    # The supervisor runs the command in its own process group, records the group for `kill`, enforces the
+    # timeout (TERM, then KILL 200 ms later) and kills whatever is left of the group once the command exits.
+    perl -e '
+      my ($pidf, $tof, $ms, $out, $err, $cwd, @cmd) = @ARGV;
+      my $pid = fork; exit 125 unless defined $pid;
+      if (!$pid) {
+        setpgrp(0, 0);
+        open(STDIN, "<", "/dev/null"); open(STDOUT, ">", $out) or exit 126; open(STDERR, ">", $err) or exit 126;
+        chdir($cwd) or exit 126; exec { $cmd[0] } @cmd; exit 127;
+      }
+      setpgrp($pid, $pid);
+      if (open(my $f, ">", "$pidf.tmp")) { print {$f} $pid; close($f); rename("$pidf.tmp", $pidf); }
+      my ($elapsed, $killat, $status) = (0, undef, 0);
+      for (;;) {
+        my $r = waitpid($pid, 1);
+        if ($r == $pid || $r < 0) { $status = $?; last; }
+        if (!defined $killat && $elapsed >= $ms) { open(my $t, ">", $tof); close $t; kill "TERM", -$pid; $killat = $elapsed + 200; }
+        if (defined $killat && $elapsed >= $killat) { kill "KILL", -$pid; $killat = 1e18; }
+        select(undef, undef, undef, 0.01); $elapsed += 10;
+      }
+      kill "KILL", -$pid;
+      unlink $pidf;
+      print(($status & 127) ? "signal\n" : ("exit " . ($status >> 8) . "\n"));
+    ' "$STATE/$ID.pid" "$work/timedout" "$MS" "$work/stdout" "$work/stderr" "$CWD" "$@" > "$work/status" 2>/dev/null || fail EIO
+    STATUS=$(cat "$work/status")
+    case "$STATUS" in "exit "*) CODE=${STATUS#exit } ;; *) CODE=null ;; esac
+    TIMED=false; [ -e "$work/timedout" ] && TIMED=true
+    [ "$TIMED" = true ] && [ "$CODE" != null ] && [ "$CODE" -gt 128 ] && CODE=null
+    OUTBYTES=$(size_of "$work/stdout"); ERRBYTES=$(size_of "$work/stderr")
+    head -c "$MAX_STREAM" "$work/stdout" | base64 | tr -d '\n' > "$work/stdout.b64"
+    head -c "$MAX_STREAM" "$work/stderr" | base64 | tr -d '\n' > "$work/stderr.b64"
+    ok_json "$(jq -cn --rawfile o "$work/stdout.b64" --rawfile e "$work/stderr.b64" --argjson code "$CODE" --argjson timed "$TIMED" \
+      --argjson ob "$OUTBYTES" --argjson eb "$ERRBYTES" \
+      '{stdout: $o, stderr: $e, exitCode: $code, timedOut: $timed, stdoutBytes: $ob, stderrBytes: $eb}')" ;;
+
+  kill)
+    ID=$(field id)
+    printf '%s' "$ID" | grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' || fail EINVAL
+    [ -f "$STATE/$ID.pid" ] || ok_json '{"killed":false}'
+    PID=$(cat "$STATE/$ID.pid")
+    case "$PID" in *[!0-9]* | "") fail EIO ;; esac
+    perl -e 'my $p = shift; kill "TERM", -$p; select(undef, undef, undef, 0.2); kill "KILL", -$p;' "$PID"
+    ok_json '{"killed":true}' ;;
+
+  *) fail EPROTO ;;
+esac

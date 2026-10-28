@@ -25,6 +25,8 @@ export interface ComposeOptions {
   schwayOptions?: SchwayPortOptions;
   /** Deterministic queue timers for tests. */
   timers?: SchedulerOptions["timers"];
+  /** exec.box_runtime/v1 capacity for execution-capable work (EXE03); absent when execution is not configured. */
+  boxes?: SchedulerOptions["boxes"];
 }
 
 /** The composed queue plus the team port the caller reconciles against. */
@@ -71,7 +73,7 @@ export function composeJobQueue(store: TransactionStore, config: AppConfig, opti
       sourceLimit: config.team.sourceLimit, contextBytes: config.team.contextBytes, outputBytes: config.jobs.outputBytes,
       alertBytes: config.messageBytes,
     }),
-  ], { ...(options.now ? { now: options.now } : {}), ...(options.timers ? { timers: options.timers } : {}) });
+  ], { ...(options.now ? { now: options.now } : {}), ...(options.timers ? { timers: options.timers } : {}), ...(options.boxes ? { boxes: options.boxes } : {}) });
   composed = queue;
   return { queue, teamPort };
 }

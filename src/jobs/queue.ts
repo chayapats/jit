@@ -148,6 +148,12 @@ export interface SchedulerOptions {
   leaseMs?: number;
   now?: () => number; pid?: number; isAlive?: (pid: number) => boolean;
   timers?: { set(callback: () => void, ms: number): unknown; clear(handle: unknown): void };
+  /**
+   * exec.box_runtime/v1 capacity (EXE03): consulted inside admission for execution-capable work only. When it
+   * reports no free box for the job's project, the job stays `queued` with reason `box_capacity` and next action
+   * `wait_for_box_capacity`; it is re-checked on the next pump (a box stop pumps), never in a loop.
+   */
+  boxes?: { hasCapacity(tx: AppTransaction, projectId: string): boolean };
 }
 
 /** Owns one local scheduler, durable admission and usage reservations, never a model/tool protocol loop. */
@@ -159,6 +165,7 @@ export class JobQueue {
   #active = new Map<string, { attemptId: string; abort: AbortController; timer: unknown; promise: Promise<unknown> }>();
   #closing = false; #fault = false; #leaseMs: number;
   #lifecyclePort: ApplicationRunPort | null = null; #deletions: Promise<void> = Promise.resolve();
+  #boxes: SchedulerOptions["boxes"];
 
   constructor(readonly store: TransactionStore, policy: JobPolicy, definitions: WorkDefinition[], options: SchedulerOptions = {}) {
     this.policy = structuredClone(policy);
@@ -169,6 +176,7 @@ export class JobQueue {
     Object.freeze(this.policy.maximum); Object.freeze(this.policy);
     this.#pid = options.pid ?? process.pid; if (!positive(this.#pid, 2_147_483_647)) throw new AppError("invalid_job_policy");
     this.#now = options.now ?? Date.now;
+    this.#boxes = options.boxes;
     this.#timers = options.timers ?? { set: (fn, ms) => setTimeout(fn, ms), clear: handle => clearTimeout(handle as ReturnType<typeof setTimeout>) };
     this.#time();
     this.#leaseMs = options.leaseMs ?? 60_000;
@@ -320,6 +328,11 @@ export class JobQueue {
             if (job.state === "waiting" || occupied >= this.policy.concurrency || this.#active.has(job.id)) continue;
             const routeSlots = tx.get<{ count: number }>("SELECT count(*) AS count FROM jobs WHERE occupies = 1 AND route_key = ?", routeKey(job.route))!.count;
             if (routeSlots >= this.policy.routeConcurrency) continue;
+            // exec.box_runtime/v1: execution work waits for a free box without spending or spinning.
+            if (entry!.definition.execution && this.#boxes && !this.#boxes.hasCapacity(tx, job.projectId)) {
+              if (job.reason !== "box_capacity") { this.#transition(job, "queued", "box_capacity"); this.#save(tx, job, false); }
+              continue;
+            }
             if (!this.#spend(job, entry!.definition.cost)) { this.#save(tx, job, false); continue; }
             job.steps++; this.#transition(job, "admitted", "running"); this.#save(tx, job, true);
             tx.run("UPDATE job_authority SET generation = generation + 1, reason = NULL WHERE job_id = ?", job.id);
@@ -567,7 +580,7 @@ export class JobQueue {
   #save(tx: AppTransaction, job: Job, occupies: boolean, requeue = false) {
     job.revision++;
     job.occupiesAdmission = occupies;
-    job.nextAction = occupies && job.state !== "admitted" ? "wait_for_adapter_to_stop" : job.state === "queued" ? "wait_for_admission"
+    job.nextAction = occupies && job.state !== "admitted" ? "wait_for_adapter_to_stop" : job.state === "queued" ? job.reason === "box_capacity" ? "wait_for_box_capacity" : "wait_for_admission"
       : job.state === "admitted" ? "wait_for_running_work" : job.state === "waiting" ? job.reason === "interrupted" ? "inspect_interrupted_work_then_resume" : "resolve_same_route_then_resume"
       : job.state === "succeeded" ? "inspect_committed_evidence" : "inspect_reason_and_authorize_new_work";
     job.updatedAt = Math.max(job.updatedAt, this.#time()); job.remaining.wallMs = Math.max(0, job.deadlineAt - job.updatedAt);

@@ -1,0 +1,702 @@
+[
+  {
+    "tool": "read",
+    "input": {
+      "path": "a.txt"
+    },
+    "content": "     1|hello\n     2|world\n     3|third line",
+    "isError": false,
+    "details": {
+      "path": "a.txt",
+      "resolvedPath": "<root>/a.txt",
+      "lineCount": 3,
+      "startLine": 1,
+      "endLine": 3,
+      "truncated": false
+    }
+  },
+  {
+    "tool": "read",
+    "input": {
+      "path": "a.txt",
+      "offset": 2,
+      "limit": 1
+    },
+    "content": "     2|world\n... truncated: 1 lines remaining. Use offset=3 to continue.",
+    "isError": false,
+    "details": {
+      "path": "a.txt",
+      "resolvedPath": "<root>/a.txt",
+      "lineCount": 3,
+      "startLine": 2,
+      "endLine": 2,
+      "truncated": true,
+      "nextOffset": 3
+    }
+  },
+  {
+    "tool": "read",
+    "input": {
+      "path": "many.txt"
+    },
+    "content": "<sha256:d27cd4ea81586ffc66abcecc55da634b07b9eaaab948ff28f6c8d2b7bb236e20 bytes:32957 head:\"     1|line 1\\n     2|line 2\\n     3|line \" tail:\"994|line 1994\\n  1995|line 1995\\n  1996|line 1996\\n  1997|line 1997\\n  1998|line 1998\\n  1999|line 1999\\n  2000|line 2000\\n... truncated: 500 lines remaining. Use offset=2001 to continue.\">",
+    "isError": false,
+    "details": {
+      "path": "many.txt",
+      "resolvedPath": "<root>/many.txt",
+      "lineCount": 2500,
+      "startLine": 1,
+      "endLine": 2000,
+      "truncated": true,
+      "nextOffset": 2001
+    }
+  },
+  {
+    "tool": "read",
+    "input": {
+      "path": "thai.txt"
+    },
+    "content": "<sha256:a13b2c25b7d53f41580a3095931b4b8a790456695d34ee70cafd712c46f14cac bytes:50060 head:\"     1|ภาษาไทย🙂ภาษาไทย🙂ภาษาไทย🙂ภาษาไท\" tail:\"าไทย🙂ภาษาไทย🙂ภาษาไทย🙂ภาษาไทย🙂ภาษาไทย🙂ภาษาไทย🙂ภาษาไทย🙂ภาษาไทย🙂ภาษาไทย🙂ภาษาไทย🙂ภาษาไทย🙂ภาษาไทย🙂ภาษาไทย🙂ภาษาไท\\n... truncated: 1 lines remaining. Use offset=2 to continue.\">",
+    "isError": false,
+    "details": {
+      "path": "thai.txt",
+      "resolvedPath": "<root>/thai.txt",
+      "lineCount": 2,
+      "startLine": 1,
+      "endLine": 1,
+      "truncated": true,
+      "nextOffset": 2
+    }
+  },
+  {
+    "tool": "read",
+    "input": {
+      "path": "empty.txt"
+    },
+    "content": "(empty file)",
+    "isError": false,
+    "details": {
+      "path": "empty.txt",
+      "resolvedPath": "<root>/empty.txt",
+      "lineCount": 0,
+      "startLine": 1,
+      "endLine": 0,
+      "truncated": false
+    }
+  },
+  {
+    "tool": "read",
+    "input": {
+      "path": "bin.dat"
+    },
+    "content": "Cannot read binary file: bin.dat",
+    "isError": true,
+    "details": {
+      "path": "bin.dat",
+      "resolvedPath": "<root>/bin.dat"
+    }
+  },
+  {
+    "tool": "read",
+    "input": {
+      "path": "missing.txt"
+    },
+    "content": "File not found: missing.txt",
+    "isError": true,
+    "details": {
+      "path": "missing.txt",
+      "resolvedPath": "<root>/missing.txt"
+    }
+  },
+  {
+    "tool": "read",
+    "input": {
+      "path": "src"
+    },
+    "content": "Path is a directory: src",
+    "isError": true,
+    "details": {
+      "path": "src",
+      "resolvedPath": "<root>/src"
+    }
+  },
+  {
+    "tool": "read",
+    "input": {
+      "path": "a.txt",
+      "offset": 99
+    },
+    "content": "offset 99 is beyond the end of the file (3 lines)",
+    "isError": true,
+    "details": {
+      "path": "a.txt",
+      "resolvedPath": "<root>/a.txt",
+      "lineCount": 3,
+      "startLine": 99,
+      "endLine": 3,
+      "truncated": false
+    }
+  },
+  {
+    "tool": "read",
+    "input": {
+      "path": "src-link/x.ts"
+    },
+    "content": "     1|export const needle = 1;\n     2|export const other = 2;",
+    "isError": false,
+    "details": {
+      "path": "src-link/x.ts",
+      "resolvedPath": "<root>/src-link/x.ts",
+      "lineCount": 2,
+      "startLine": 1,
+      "endLine": 2,
+      "truncated": false
+    }
+  },
+  {
+    "tool": "write",
+    "input": {
+      "path": "created/new.txt",
+      "content": "one\ntwo\n"
+    },
+    "content": "Wrote created/new.txt",
+    "isError": false,
+    "details": {
+      "path": "created/new.txt",
+      "resolvedPath": "<root>/created/new.txt",
+      "created": true,
+      "lineCount": 2
+    }
+  },
+  {
+    "tool": "write",
+    "input": {
+      "path": "replace.txt",
+      "content": "new contents"
+    },
+    "content": "Wrote replace.txt",
+    "isError": false,
+    "details": {
+      "path": "replace.txt",
+      "resolvedPath": "<root>/replace.txt",
+      "created": false,
+      "lineCount": 1
+    }
+  },
+  {
+    "tool": "write",
+    "input": {
+      "path": "src",
+      "content": "x"
+    },
+    "content": "Path is a directory: src",
+    "isError": true,
+    "details": {
+      "path": "src",
+      "resolvedPath": "<root>/src"
+    }
+  },
+  {
+    "tool": "read",
+    "input": {
+      "path": "created/new.txt"
+    },
+    "content": "     1|one\n     2|two",
+    "isError": false,
+    "details": {
+      "path": "created/new.txt",
+      "resolvedPath": "<root>/created/new.txt",
+      "lineCount": 2,
+      "startLine": 1,
+      "endLine": 2,
+      "truncated": false
+    }
+  },
+  {
+    "tool": "edit",
+    "input": {
+      "path": "edit.txt",
+      "edits": [
+        {
+          "oldText": "alpha",
+          "newText": "ALPHA"
+        },
+        {
+          "oldText": "gamma",
+          "newText": "GAMMA"
+        }
+      ]
+    },
+    "content": "Edited edit.txt (2 replacements)",
+    "isError": false,
+    "details": {
+      "path": "edit.txt",
+      "resolvedPath": "<root>/edit.txt",
+      "hunks": [
+        {
+          "startLine": 1,
+          "oldText": "alpha",
+          "newText": "ALPHA"
+        },
+        {
+          "startLine": 3,
+          "oldText": "gamma",
+          "newText": "GAMMA"
+        }
+      ]
+    }
+  },
+  {
+    "tool": "edit",
+    "input": {
+      "path": "edit.txt",
+      "edits": [
+        {
+          "oldText": "missing",
+          "newText": "x"
+        }
+      ]
+    },
+    "content": "Edit 1 of 1 failed: oldText not found. Each oldText must match exactly once in the original file.",
+    "isError": true,
+    "details": {
+      "path": "edit.txt",
+      "resolvedPath": "<root>/edit.txt"
+    }
+  },
+  {
+    "tool": "edit",
+    "input": {
+      "path": "edit.txt",
+      "edits": [
+        {
+          "oldText": "beta",
+          "newText": "x"
+        }
+      ]
+    },
+    "content": "Edit 1 of 1 failed: oldText matched more than once. Each oldText must match exactly once; add more surrounding context.",
+    "isError": true,
+    "details": {
+      "path": "edit.txt",
+      "resolvedPath": "<root>/edit.txt"
+    }
+  },
+  {
+    "tool": "edit",
+    "input": {
+      "path": "edit.txt",
+      "edits": [
+        {
+          "oldText": "ALPHA\nbeta",
+          "newText": "x"
+        },
+        {
+          "oldText": "beta\nGAMMA",
+          "newText": "y"
+        }
+      ]
+    },
+    "content": "Edits overlap. All replacements are matched against the original file; overlapping or nested edits are rejected.",
+    "isError": true,
+    "details": {
+      "path": "edit.txt",
+      "resolvedPath": "<root>/edit.txt"
+    }
+  },
+  {
+    "tool": "edit",
+    "input": {
+      "path": "missing.txt",
+      "edits": [
+        {
+          "oldText": "a",
+          "newText": "b"
+        }
+      ]
+    },
+    "content": "File not found: missing.txt",
+    "isError": true,
+    "details": {
+      "path": "missing.txt",
+      "resolvedPath": "<root>/missing.txt"
+    }
+  },
+  {
+    "tool": "read",
+    "input": {
+      "path": "edit.txt"
+    },
+    "content": "     1|ALPHA\n     2|beta\n     3|GAMMA\n     4|beta-two",
+    "isError": false,
+    "details": {
+      "path": "edit.txt",
+      "resolvedPath": "<root>/edit.txt",
+      "lineCount": 4,
+      "startLine": 1,
+      "endLine": 4,
+      "truncated": false
+    }
+  },
+  {
+    "tool": "bash",
+    "input": {
+      "command": "printf 'out\\n'; printf 'err\\n' >&2"
+    },
+    "content": "Exit code: 0\n\nstdout:\nout\n\n\nstderr:\nerr\n",
+    "isError": false,
+    "details": {
+      "command": "printf 'out\\n'; printf 'err\\n' >&2",
+      "cwd": "<root>",
+      "exitCode": 0,
+      "stdout": "out\n",
+      "stderr": "err\n",
+      "truncated": false
+    }
+  },
+  {
+    "tool": "bash",
+    "input": {
+      "command": "echo failing; exit 3"
+    },
+    "content": "Exit code: 3\n\nstdout:\nfailing\n",
+    "isError": false,
+    "details": {
+      "command": "echo failing; exit 3",
+      "cwd": "<root>",
+      "exitCode": 3,
+      "stdout": "failing\n",
+      "stderr": "",
+      "truncated": false
+    }
+  },
+  {
+    "tool": "bash",
+    "input": {
+      "command": "pwd",
+      "cwd": "src"
+    },
+    "content": "Exit code: 0\n\nstdout:\n<root>/src\n",
+    "isError": false,
+    "details": {
+      "command": "pwd",
+      "cwd": "<root>/src",
+      "exitCode": 0,
+      "stdout": "<root>/src\n",
+      "stderr": "",
+      "truncated": false
+    }
+  },
+  {
+    "tool": "read",
+    "input": {
+      "path": "<spill>",
+      "offset": 3,
+      "limit": 2
+    },
+    "content": "     3|stderr:\n     4|tail-err",
+    "isError": false,
+    "details": {
+      "path": "<tmp>/schway-bash-<uuid>.log",
+      "resolvedPath": "<tmp>/schway-bash-<uuid>.log",
+      "lineCount": 4,
+      "startLine": 3,
+      "endLine": 4,
+      "truncated": false
+    }
+  },
+  {
+    "tool": "bash",
+    "input": {
+      "command": "for i in $(seq 8000); do printf 'ASCII ภาษาไทย 🙂 '; done; printf 'tail-err' >&2"
+    },
+    "content": "<sha256:e2f2a4b5988192294a5f3b2e20524ea41ae309b450d151a5df2a6f1f246089ef bytes:50155 head:\"Exit code: 0\\n\\nstdout:\\nASCII ภาษาไทย 🙂 A\" tail:\"าไทย 🙂 ASCII ภาษาไทย 🙂 ASCII ภาษาไทย 🙂 ASCII\\n\\n[Output truncated: showing 50000 of 264008 bytes. Full output: <tmp>/schway-bash-<uuid>.log. Use read with offset to see the rest.]\">",
+    "isError": false,
+    "details": {
+      "command": "for i in $(seq 8000); do printf 'ASCII ภาษาไทย 🙂 '; done; printf 'tail-err' >&2",
+      "cwd": "<root>",
+      "exitCode": 0,
+      "stdout": "<sha256:703f204bc37a66f824275dbfc3e0a821a089f05fb7bca0d2b40dc054df0420b7 bytes:50000 head:\"ASCII ภาษาไทย 🙂 ASCII ภาษาไทย 🙂 ASCII \" tail:\"ย 🙂 ASCII ภาษาไทย 🙂 ASCII ภาษาไทย 🙂 ASCII ภาษาไทย 🙂 ASCII ภาษาไทย 🙂 ASCII ภาษาไทย 🙂 ASCII ภาษาไทย 🙂 ASCII ภาษาไทย 🙂 ASCII ภาษาไทย 🙂 ASCII ภาษาไทย 🙂 ASCII ภาษาไทย 🙂 ASCII\">",
+      "stderr": "",
+      "truncated": true,
+      "outputPath": "<tmp>/schway-bash-<uuid>.log",
+      "shownBytes": 50000,
+      "totalBytes": 264008
+    },
+    "spill": "<sha256:59323e1505fa141ad01de54cd2bc6909e31c13633e2f8223cc10e5415241afd6 bytes:264026 head:\"stdout:\\nASCII ภาษาไทย 🙂 ASCII ภาษาไทย \\ud83d\" tail:\"ษาไทย 🙂 ASCII ภาษาไทย 🙂 ASCII ภาษาไทย 🙂 ASCII ภาษาไทย 🙂 ASCII ภาษาไทย 🙂 ASCII ภาษาไทย 🙂 ASCII ภาษาไทย 🙂 ASCII ภาษาไทย 🙂 ASCII ภาษาไทย 🙂 ASCII ภาษาไทย 🙂 \\nstderr:\\ntail-err\\n\">"
+  },
+  {
+    "tool": "bash",
+    "input": {
+      "command": "sleep 5",
+      "timeout": 100
+    },
+    "content": "Command timed out after 100ms.\nExit code: (none)",
+    "isError": true,
+    "details": {
+      "command": "sleep 5",
+      "cwd": "<root>",
+      "exitCode": null,
+      "stdout": "",
+      "stderr": "",
+      "truncated": false,
+      "timedOut": true
+    }
+  },
+  {
+    "tool": "grep",
+    "input": {
+      "pattern": "needle",
+      "path": "docs"
+    },
+    "content": "docs/readme.md:1:needle docs",
+    "isError": false,
+    "details": {
+      "path": "docs",
+      "resolvedPath": "<root>/docs",
+      "pattern": "needle",
+      "matchCount": 1,
+      "truncated": false,
+      "matches": [
+        {
+          "path": "docs/readme.md",
+          "line": 1
+        }
+      ]
+    }
+  },
+  {
+    "tool": "grep",
+    "input": {
+      "pattern": "needle",
+      "path": "src/nested",
+      "glob": "*.ts"
+    },
+    "content": "src/nested/z.ts:1:needle();",
+    "isError": false,
+    "details": {
+      "path": "src/nested",
+      "resolvedPath": "<root>/src/nested",
+      "pattern": "needle",
+      "matchCount": 1,
+      "truncated": false,
+      "matches": [
+        {
+          "path": "src/nested/z.ts",
+          "line": 1
+        }
+      ]
+    }
+  },
+  {
+    "tool": "grep",
+    "input": {
+      "pattern": "NEEDLE",
+      "ignoreCase": true,
+      "path": "src/y.ts"
+    },
+    "content": "src/y.ts:1:// Needle in caps\nsrc/y.ts:2:const needle = 3;",
+    "isError": false,
+    "details": {
+      "path": "src/y.ts",
+      "resolvedPath": "<root>/src/y.ts",
+      "pattern": "NEEDLE",
+      "matchCount": 2,
+      "truncated": false,
+      "matches": [
+        {
+          "path": "src/y.ts",
+          "line": 1
+        },
+        {
+          "path": "src/y.ts",
+          "line": 2
+        }
+      ]
+    }
+  },
+  {
+    "tool": "grep",
+    "input": {
+      "pattern": "line [0-9]+",
+      "path": "many.txt",
+      "maxResults": 2
+    },
+    "content": "many.txt:1:line 1\nmany.txt:2:line 2\n... truncated: stopped early. Narrow with path, glob, maxResults, or a more specific pattern.",
+    "isError": false,
+    "details": {
+      "path": "many.txt",
+      "resolvedPath": "<root>/many.txt",
+      "pattern": "line [0-9]+",
+      "matchCount": 2,
+      "truncated": true,
+      "matches": [
+        {
+          "path": "many.txt",
+          "line": 1
+        },
+        {
+          "path": "many.txt",
+          "line": 2
+        }
+      ]
+    }
+  },
+  {
+    "tool": "grep",
+    "input": {
+      "pattern": "absent-token"
+    },
+    "content": "(no matches)",
+    "isError": false,
+    "details": {
+      "path": ".",
+      "resolvedPath": "<root>",
+      "pattern": "absent-token",
+      "matchCount": 0,
+      "truncated": false,
+      "matches": []
+    }
+  },
+  {
+    "tool": "grep",
+    "input": {
+      "pattern": "needle",
+      "path": "missing"
+    },
+    "content": "File not found: missing",
+    "isError": true,
+    "details": {
+      "path": "missing",
+      "resolvedPath": "<root>/missing",
+      "pattern": "needle"
+    }
+  },
+  {
+    "tool": "find",
+    "input": {
+      "pattern": "**/*.ts"
+    },
+    "content": "src/nested/z.ts\nsrc/x.ts\nsrc/y.ts",
+    "isError": false,
+    "details": {
+      "path": ".",
+      "resolvedPath": "<root>",
+      "pattern": "**/*.ts",
+      "fileCount": 3,
+      "truncated": false
+    }
+  },
+  {
+    "tool": "find",
+    "input": {
+      "pattern": "*.md",
+      "path": "docs"
+    },
+    "content": "docs/readme.md",
+    "isError": false,
+    "details": {
+      "path": "docs",
+      "resolvedPath": "<root>/docs",
+      "pattern": "*.md",
+      "fileCount": 1,
+      "truncated": false
+    }
+  },
+  {
+    "tool": "find",
+    "input": {
+      "pattern": "**/*.none"
+    },
+    "content": "(no matching files)",
+    "isError": false,
+    "details": {
+      "path": ".",
+      "resolvedPath": "<root>",
+      "pattern": "**/*.none",
+      "fileCount": 0,
+      "truncated": false
+    }
+  },
+  {
+    "tool": "find",
+    "input": {
+      "pattern": "*",
+      "path": "a.txt"
+    },
+    "content": "Path is a file: a.txt",
+    "isError": true,
+    "details": {
+      "path": "a.txt",
+      "resolvedPath": "<root>/a.txt",
+      "pattern": "*"
+    }
+  },
+  {
+    "tool": "find",
+    "input": {
+      "pattern": "*",
+      "path": "missing"
+    },
+    "content": "File not found: missing",
+    "isError": true,
+    "details": {
+      "path": "missing",
+      "resolvedPath": "<root>/missing",
+      "pattern": "*"
+    }
+  },
+  {
+    "tool": "ls",
+    "input": {},
+    "content": "a.txt\nbin.dat\ncreated/\ndocs/\nedit.txt\nempty.txt\nmany.txt\nreplace.txt\nsrc/\nsrc-link\nthai.txt",
+    "isError": false,
+    "details": {
+      "path": ".",
+      "resolvedPath": "<root>",
+      "depth": 1,
+      "entryCount": 11,
+      "truncated": false
+    }
+  },
+  {
+    "tool": "ls",
+    "input": {
+      "path": "src",
+      "depth": 2
+    },
+    "content": "src/nested/\nsrc/nested/z.ts\nsrc/x.ts\nsrc/y.ts",
+    "isError": false,
+    "details": {
+      "path": "src",
+      "resolvedPath": "<root>/src",
+      "depth": 2,
+      "entryCount": 4,
+      "truncated": false
+    }
+  },
+  {
+    "tool": "ls",
+    "input": {
+      "path": "a.txt"
+    },
+    "content": "Path is a file: a.txt",
+    "isError": true,
+    "details": {
+      "path": "a.txt",
+      "resolvedPath": "<root>/a.txt"
+    }
+  },
+  {
+    "tool": "ls",
+    "input": {
+      "path": "missing"
+    },
+    "content": "File not found: missing",
+    "isError": true,
+    "details": {
+      "path": "missing",
+      "resolvedPath": "<root>/missing"
+    }
+  }
+]

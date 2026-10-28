@@ -21,6 +21,8 @@ import {
   accessCommandIdentity, isAccessCommand, readProjectAccess, readRoleAccess, writeAccessLevel, writeHalt, writeResume, writeRoleRestriction,
   type AccessCommand, type AccessReceipt, type HaltExecutionCommand, type HaltOutcome, type ProjectAccess, type RoleAccess,
 } from "./exec/access";
+import { boxCommandIdentity, executionAttemptAdmitted, isBoxCommand, readBoxResets, writeBoxReset, type BoxResetReceipt, type BoxView, type ResetBoxCommand } from "./exec/box-commands";
+import type { BoxManager } from "./exec/box-manager";
 import type { EnqueueJobCommand, ResumeJobCommand, JobCommand, JobReceipt } from "./jobs/types";
 import { mutateTeamConfiguration, readTeam, teamIdentity } from "./team/configuration";
 import { executeRoleProposal, roleProposalIdentity, type RoleProposalCommand, type RoleProposalReceipt } from "./team/role-proposals";
@@ -195,6 +197,11 @@ export interface ApplicationOptions {
    * `<db>.lifecycle-ledger.json`; the service package passes its `ledgerPath`.
    */
   ledgerPath?: string;
+  /**
+   * exec.box_runtime/v1 (EXE03): the project boxes of this process. Without it `execution.box.reset` is
+   * `box_not_configured`, and the kill switch has no box to stop.
+   */
+  boxes?: BoxManager;
 }
 
 /** Owns identity validation and revisioned app commands independently of Web or model transports. */
@@ -203,6 +210,7 @@ export class Application {
   #now: () => number;
   #beforeCommit: ApplicationOptions["beforeCommit"];
   #jobsOption: JobQueue | undefined;
+  #boxes: BoxManager | undefined;
   #service: ApplicationOptions["service"];
   #upgradeFault: ApplicationOptions["upgradeFault"];
   #restoreFault: ApplicationOptions["restoreFault"];
@@ -223,6 +231,7 @@ export class Application {
     this.#beforeCommit = options.beforeCommit;
     if (options.jobs && options.jobs.store !== store) throw new AppError("invalid_job_store");
     this.#jobsOption = options.jobs;
+    this.#boxes = options.boxes;
     this.#service = options.service;
     this.#upgradeFault = options.upgradeFault;
     this.#restoreFault = options.restoreFault;
@@ -702,6 +711,7 @@ export class Application {
   execute(actor: OwnerActor, command: SetDispatchAllowanceCommand): DispatchAllowanceReceipt;
   execute(actor: OwnerActor, command: FeedCommand): FeedReceipt;
   execute(actor: OwnerActor, command: AccessCommand): AccessReceipt;
+  execute(actor: OwnerActor, command: ResetBoxCommand): Promise<BoxResetReceipt>;
   execute(actor: OwnerActor, command: DispatchCommand): DispatchReceipt;
   execute(actor: OwnerActor, command: CreateTopicCommand): TopicReceipt;
   execute(actor: OwnerActor, command: SendMessageCommand): MessageReceipt;
@@ -725,8 +735,8 @@ export class Application {
   execute(actor: OwnerActor, command: ExportCommand): ExportReceipt;
   execute(actor: OwnerActor, command: UpgradeCommand): Promise<UpgradeReceipt>;
   execute(actor: OwnerActor, command: RestoreCommand): Promise<RestoreReceipt>;
-  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | FeedCommand | AccessCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | WebhookCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | FeedReceipt | AccessReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | WebhookReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt>;
-  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | FeedCommand | AccessCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | WebhookCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | FeedReceipt | AccessReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | WebhookReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt> {
+  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | FeedCommand | AccessCommand | ResetBoxCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | WebhookCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | FeedReceipt | AccessReceipt | Promise<BoxResetReceipt> | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | WebhookReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt>;
+  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | FeedCommand | AccessCommand | ResetBoxCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | WebhookCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | FeedReceipt | AccessReceipt | Promise<BoxResetReceipt> | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | WebhookReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt> {
     if (command?.kind?.startsWith("upgrade.")) return this.#upgradeCommand(actor, command as UpgradeCommand);
     if (command?.kind?.startsWith("restore.")) return this.#restoreCommand(actor, command as RestoreCommand);
     // ops.schema_migrations/v1 admission fence (held by an upgrade or, ops.quarantined_restore/v1, a restore):
@@ -770,6 +780,7 @@ export class Application {
     if (command?.kind === "dispatch.allowance.set") return this.#setAllowance(actor, command);
     if (isFeedCommand(command)) return this.#feedCommand(actor, command);
     if (isAccessCommand(command)) return this.#accessCommand(actor, command);
+    if (isBoxCommand(command)) return this.#boxResetCommand(actor, command);
     if (command?.kind === "dispatch.proposal.accept" || command?.kind === "dispatch.proposal.dismiss" || command?.kind === "dispatch.answer") return this.#dispatchCommand(actor, command);
     if (command?.kind === "job.enqueue" || command?.kind === "job.resume" || command?.kind === "job.stop") return this.#jobCommand(actor, command);
     if (command?.kind === "role.save" || command?.kind === "route.save" || command?.kind === "role.preview" ||
@@ -2023,7 +2034,58 @@ export class Application {
     });
     // Abort transports of attempts the halt fenced only after the fence committed.
     if (command.kind === "execution.halt") this.#jobs?.cancelFenced();
+    // exec.box_runtime/v1: the kill switch stops the box; a narrower level stops a box running wider. Both after commit.
+    if (this.#boxes) {
+      const boxes = this.#boxes;
+      void (command.kind === "execution.halt" ? boxes.stop(command.projectId) : boxes.accessChanged(command.projectId))
+        .catch(() => { /* The box stays fenced: every open re-checks the access level in its own transaction. */ });
+    }
     return result;
+  }
+
+  /** exec.box_runtime/v1: the project's box reset revision and whether a box is held or busy in this process. */
+  boxStatus(actor: OwnerActor, projectId: string): BoxView {
+    requireId(projectId);
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, projectId);
+      return { projectId, ...readBoxResets(tx, projectId), holding: this.#boxes?.holding().includes(projectId) ?? false,
+        busy: executionAttemptAdmitted(tx, projectId) || (this.#boxes?.busy(projectId) ?? false) };
+    });
+  }
+
+  /**
+   * exec.box_runtime/v1 `execution.box.reset`: Web only — the Telegram channel and the local API (`local-api`) are
+   * `box_reset_requires_web` (403). Validates the revision and refuses `box_busy` while an execution attempt of the
+   * project is admitted or the box is in use, removes the box (and with `wipeWorkspace` its workspace) through the
+   * manager, then commits the reset revision, receipt and audit row. A failed reset commits nothing, so the same
+   * request id can be retried; a replay of a committed request returns its first receipt.
+   */
+  async #boxResetCommand(actor: OwnerActor, command: ResetBoxCommand): Promise<BoxResetReceipt> {
+    const payloadHash = digest(boxCommandIdentity(command));
+    const check = (tx: AppTransaction): BoxResetReceipt | null => {
+      this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, command.projectId);
+      const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
+      if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as BoxResetReceipt; }
+      if (this.#commandChannel(actor) !== "web") throw new AppError("box_reset_requires_web", 403);
+      if (readBoxResets(tx, command.projectId).revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
+      if (executionAttemptAdmitted(tx, command.projectId)) throw new AppError("box_busy", 409);
+      return null;
+    };
+    const replay = this.store.read(check);
+    if (replay) return replay;
+    if (!this.#boxes) throw new AppError("box_not_configured", 503);
+    await this.#boxes.reset(command.projectId, command.payload.wipeWorkspace);
+    return this.store.transaction(tx => {
+      const raced = check(tx);
+      if (raced) return raced;
+      const now = this.#now();
+      writeBoxReset(tx, command, "web", now);
+      const result: BoxResetReceipt = { box: { projectId: command.projectId, ...readBoxResets(tx, command.projectId), holding: false, busy: false } };
+      tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
+      tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);
+      this.#beforeCommit?.("receipt");
+      return result;
+    });
   }
 
   /**

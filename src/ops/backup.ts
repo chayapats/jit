@@ -303,6 +303,8 @@ export const backupImageTables: Readonly<Record<string, "include" | "exclude" | 
   // app.webhook_triggers/v1 (schema 32): trigger identities keep, the sealed secret is nulled in every image (rotate
   // after a restore); receipts hold delivery ids only; the poll schedule is service-owned timing.
   webhook_triggers: "scrub", webhook_receipts: "include", pr_poll_due: "include",
+  // exec.box_runtime/v1 (schema 33): owner box reset revisions only; the box and its workspace are never in an image.
+  execution_box_resets: "include",
   project_team: "include", projects: "include", restore_quarantines: "include", roles: "include",
   schway_native_refs: "include", source_versions: "include", sources: "include",
   task_events: "include", task_evidence_artifacts: "include", task_proposals: "include", tasks: "include",
