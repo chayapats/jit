@@ -2,7 +2,7 @@ import { reconcileContext, reconcileSessions } from "./reconcile";
 import { reconcileDeletions } from "../memory/delete";
 import type { ApplicationRunPort } from "../team/run-port";
 import type { ManagedContextReference } from "../team/types";
-import { attemptAuthority, invalidateJob, readAttempt, readAttempts, saveAttempt, stopFullyObserved, unsettledTransportAttempts, type JobAttempt } from "./attempts";
+import { attemptAuthority, invalidateJob, readAttempt, readAttempts, saveAttempt, stopFullyObserved, unsettledTransportAttempts, type AttemptPreparation, type JobAttempt } from "./attempts";
 import { createHash } from "node:crypto";
 import { AppError } from "../errors";
 import { TransactionStore, type AppTransaction } from "../store";
@@ -136,6 +136,32 @@ export function stopExecutionJobs(tx: AppTransaction, projectId: string, now: nu
   });
 }
 
+/**
+ * exec.run_tools/v1: after an access level or role override narrows, fences every admitted execution job of the
+ * project whose current attempt was granted a level the role no longer has (or any level, once halted), exactly like
+ * an owner stop with reason `authorization_changed`. A late result of a fenced attempt is never committed; the caller
+ * asks a live scheduler to abort transports after commit (`JobQueue.cancelFenced`). Returns the fenced job ids.
+ */
+export function fenceNarrowedExecution(tx: AppTransaction, projectId: string, now: number): string[] {
+  if (!Number.isSafeInteger(now) || now < 0) throw new AppError("invalid_job_clock");
+  const rows = tx.all<{ record_json: string }>(`SELECT record_json FROM jobs WHERE project_id = ? AND state = 'admitted'
+    AND json_extract(record_json, '$.execution') = 1 ORDER BY sequence`, projectId);
+  const fenced: string[] = [];
+  for (const row of rows) {
+    const job = JSON.parse(row.record_json) as Job;
+    const grant = readAttempts(tx, job.id).filter(attempt => ["prepared", "dispatched"].includes(attempt.state)).at(-1)?.execution;
+    if (!grant) continue;
+    try { assertExecutionAllowed(tx, projectId, grant.roleId, grant.level); continue; } catch { /* Narrowed below the grant: fence. */ }
+    invalidateJob(tx, job.id, "authorization_changed", now, true);
+    job.state = "blocked"; job.reason = "authorization_changed"; job.revision++;
+    job.updatedAt = Math.max(job.updatedAt, now); job.remaining.wallMs = Math.max(0, job.deadlineAt - job.updatedAt);
+    job.nextAction = job.occupiesAdmission ? "wait_for_adapter_to_stop" : "inspect_reason_and_authorize_new_work";
+    tx.run("UPDATE jobs SET state = ?, record_json = ? WHERE id = ?", job.state, JSON.stringify(job), job.id);
+    fenced.push(job.id);
+  }
+  return fenced;
+}
+
 /** Projects a live wall budget at read time without mutating committed state or replay receipts. */
 export function projectJob(job: Job, now: number): Job {
   if (!Number.isSafeInteger(now) || now < 0) throw new AppError("invalid_job_clock");
@@ -183,10 +209,11 @@ export class JobQueue {
     if (!positive(this.#leaseMs, 3_600_000)) throw new AppError("invalid_job_policy");
     if (!Array.isArray(definitions) || definitions.length > 32) throw new AppError("invalid_work_definition");
     for (const raw of definitions) {
-      const { run, validate, prepare, isCurrent, ...metadata } = raw, definition: WorkDefinition = { ...structuredClone(metadata), run, validate, ...(prepare ? { prepare } : {}), ...(isCurrent ? { isCurrent } : {}) };
+      const { run, validate, prepare, isCurrent, executes, ...metadata } = raw, definition: WorkDefinition = { ...structuredClone(metadata), run, validate, ...(prepare ? { prepare } : {}), ...(isCurrent ? { isCurrent } : {}), ...(executes ? { executes } : {}) };
       if (!id(raw.id) || this.#definitions.has(raw.id) || !positive(raw.revision) || typeof raw.title !== "string" || !raw.title.length || raw.title.length > 120 ||
           typeof run !== "function" || typeof validate !== "function" || (raw.replay !== undefined && !["read", "mutation", "send"].includes(raw.replay)) || (raw.execution !== undefined && typeof raw.execution !== "boolean") ||
-          (prepare !== undefined && typeof prepare !== "function") || (isCurrent !== undefined && typeof isCurrent !== "function") || !exact(raw.route, ["provider", "model", "authRoute"]) ||
+          (prepare !== undefined && typeof prepare !== "function") || (isCurrent !== undefined && typeof isCurrent !== "function") ||
+          (executes !== undefined && typeof executes !== "function") || !exact(raw.route, ["provider", "model", "authRoute"]) ||
           !id(raw.route.provider) || (raw.route.model !== null && !id(raw.route.model)) || !id(raw.route.authRoute)) throw new AppError("invalid_work_definition");
       this.#usage(raw.cost);
       if (["roles", "calls", "rounds", "hops"].some(key => !positive(raw.cost[key as keyof JobUsage]))) throw new AppError("invalid_work_definition");
@@ -328,21 +355,28 @@ export class JobQueue {
             if (job.state === "waiting" || occupied >= this.policy.concurrency || this.#active.has(job.id)) continue;
             const routeSlots = tx.get<{ count: number }>("SELECT count(*) AS count FROM jobs WHERE occupies = 1 AND route_key = ?", routeKey(job.route))!.count;
             if (routeSlots >= this.policy.routeConcurrency) continue;
+            // exec.run_tools/v1: work whose next attempt gets an execution grant counts as execution work.
+            let executes = entry!.definition.execution === true;
+            if (!executes && entry!.definition.executes) { try { executes = entry!.definition.executes(tx, structuredClone(job)); } catch { executes = false; } }
             // exec.box_runtime/v1: execution work waits for a free box without spending or spinning.
-            if (entry!.definition.execution && this.#boxes && !this.#boxes.hasCapacity(tx, job.projectId)) {
+            if (executes && this.#boxes && !this.#boxes.hasCapacity(tx, job.projectId)) {
               if (job.reason !== "box_capacity") { this.#transition(job, "queued", "box_capacity"); this.#save(tx, job, false); }
               continue;
             }
             if (!this.#spend(job, entry!.definition.cost)) { this.#save(tx, job, false); continue; }
+            // The durable flag the kill switch, box capacity and box reset read; it follows this admission's grant.
+            if (executes) job.execution = true; else delete job.execution;
             job.steps++; this.#transition(job, "admitted", "running"); this.#save(tx, job, true);
             tx.run("UPDATE job_authority SET generation = generation + 1, reason = NULL WHERE job_id = ?", job.id);
             const attemptGeneration = tx.get<{ generation: number }>("SELECT generation FROM job_authority WHERE job_id = ?", job.id)!.generation;
-            let preparation: { native: JobAttempt["native"]; data: JobAttempt["data"] };
+            let preparation: AttemptPreparation;
             try {
               preparation = entry!.definition.prepare?.(tx, structuredClone(job), attemptGeneration) ?? { native: null, data: null };
               // TEAM accepts request bodies up to 64KiB; the attempt envelope adds small native refs beyond that.
               jobData(preparation.data, 65_536);
               jobData({ native: preparation.native }, 4096);
+              const grant = preparation.execution;
+              if (grant !== undefined && (!grant || !["workspace", "full"].includes(grant.level) || (grant.roleId !== null && !id(grant.roleId)) || !executes)) throw new AppError("invalid_job_input");
             } catch (error) {
               // Fail this job only; a single oversized/invalid preparation must not disable the scheduler.
               if (!(error instanceof AppError)) throw error;
@@ -454,6 +488,8 @@ export class JobQueue {
     if (jobData(current.configuration, 1024) !== jobData(snapshot.configuration, 1024) || jobData(current.route, 1024) !== jobData(snapshot.route, 1024)) return "configuration_changed";
     if (!entry || entry.fingerprint !== current.configuration.fingerprint || current.configuration.policyRevision !== this.policy.revision) return "configuration_changed";
     if (entry.definition.execution) { try { assertExecutionAllowed(tx, current.projectId, null, "workspace"); } catch { return "authorization_changed"; } }
+    // exec.run_tools/v1: an attempt granted execution needs that level for its role at every reservation and commit.
+    if (attempt.execution) { try { assertExecutionAllowed(tx, current.projectId, attempt.execution.roleId, attempt.execution.level); } catch { return "authorization_changed"; } }
     const revision = tx.get<{ revision: number }>("SELECT revision FROM projects WHERE id = ?", current.projectId)?.revision ?? -1;
     try {
       if (!entry.definition.validate(current.input, { projectId: current.projectId, projectRevision: revision, inputRevision: current.inputRevision }) ||

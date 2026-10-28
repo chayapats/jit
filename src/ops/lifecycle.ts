@@ -11,6 +11,7 @@ import { webhookLimits } from "../pr/webhooks";
 import type { BoxManager } from "../exec/box-manager";
 import { createServiceBoxes } from "../exec/box-service";
 import { ConnectionVault } from "../exec/connections";
+import { EffectExecutor } from "../exec/effect-executor";
 import { composeJobQueue } from "../composition";
 import type { ApplicationRunPort } from "../team/run-port";
 import { verifySchwayBridge } from "../team/schway-port";
@@ -294,6 +295,8 @@ export interface FullAppHandle {
   serviceConfig: ServiceConfig | null;
   /** exec.box_runtime/v1 project boxes, or null when the operator has not configured execution. */
   boxes: BoxManager | null;
+  /** app.approval_cards/v1 effect executor, or null without boxes and a connection vault; the drain waits for it. */
+  effects: EffectExecutor | null;
   /** Boot reconciliation outcome; `reconciled: false` while an upgrade/restore fence holds. */
   boot: { reconciled: boolean; detail: string; upgrade: { id: string; state: string } | null;
     restore: { id: string; state: string; reason: string | null } | null };
@@ -364,7 +367,13 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
     if (!fenced) prepareServiceState(store, now());
     // exec.box_runtime/v1: a box stop pumps the queue so work waiting as box_capacity is admitted.
     const boxes = createServiceBoxes(store, config, { onCapacity: () => { try { managed?.queue?.pump(); } catch { /* The next tick retries. */ } } });
-    const compose = { now, prCacheRoot: input.prCacheRoot ?? (service ? resolve(service.stateDirectory, "pr-cache") : ".local/pr-cache"), ...(boxes ? { boxes } : {}) };
+    // app.connections/v1: values live in the secrets directory, never beside the state, backups or boxes.
+    const connections = config.execution.secretsDirectory ? new ConnectionVault(config.execution.secretsDirectory, {
+      forbidden: [dirname(resolve(config.databasePath)), service?.stateDirectory, service?.backupDirectory, service?.ledgerPath, config.execution.directory] }) : null;
+    // app.approval_cards/v1: approved effects run once, outside every box, only where boxes and the vault exist.
+    const effects = boxes && connections ? new EffectExecutor(store, { vault: connections, boxes, mirrorRoot: config.execution.directory, now }) : null;
+    const compose = { now, prCacheRoot: input.prCacheRoot ?? (service ? resolve(service.stateDirectory, "pr-cache") : ".local/pr-cache"), ...(boxes ? { boxes } : {}),
+      ...(effects ? { effects } : {}) };
     managed = ManagedService.forConfig(store, config, compose);
     const composed = composeJobQueue(store, config, compose);
     managed.adopt(composed);
@@ -374,10 +383,7 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
     // Constructing the Application first resolves durable upgrade intent left by a crash.
     const app = new Application(store, config, {
       service: managed, now, ...(service ? { backupDir: service.backupDirectory, ledgerPath: service.ledgerPath } : {}),
-      ...(nativeSnapshot ? { nativeSnapshot } : {}), ...(boxes ? { boxes } : {}),
-      // app.connections/v1: values live in the secrets directory, never beside the state, backups or boxes.
-      ...(config.execution.secretsDirectory ? { connections: new ConnectionVault(config.execution.secretsDirectory, {
-        forbidden: [dirname(resolve(config.databasePath)), service?.stateDirectory, service?.backupDirectory, service?.ledgerPath, config.execution.directory] }) } : {}),
+      ...(nativeSnapshot ? { nativeSnapshot } : {}), ...(boxes ? { boxes } : {}), ...(connections ? { connections } : {}), ...(effects ? { effects } : {}),
     });
     const ledger = ledgerGate({ store, ledgerPath: service?.ledgerPath ?? null, now: now(), mode: "boot" });
     if (!ledger.trusted) return refuse([{ gate: "quarantine", state: "blocked", nextAction: ledger.nextAction, detail: ledger.reason }]);
@@ -392,7 +398,7 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
       channels = ServiceChannels.start(store, config, input.transports!, now);
     }
     const handle: FullAppHandle = {
-      store, app, service: managed, channels, config, serviceConfig: service, boxes,
+      store, app, service: managed, channels, config, serviceConfig: service, boxes, effects,
       boot: { reconciled: booted.reconciled, detail: booted.detail, upgrade: booted.upgrade ? { id: booted.upgrade.id, state: booted.upgrade.state } : null,
         restore: booted.restore ? { id: booted.restore.id, state: booted.restore.state, reason: booted.restore.reason ?? null } : null },
       get queue() { return managed!.queue ?? composed.queue; },
@@ -489,13 +495,16 @@ export interface DrainResult {
  * interrupted or unknown, never as stopped or sent. The next start's
  * delivery worker and queue reconciliation consume the recovery metadata.
  */
-export async function stopDrain(handle: Pick<FullAppHandle, "queue" | "store"> & { channels?: ServiceChannels | null }, options: { timeoutMs: number }): Promise<DrainResult> {
+export async function stopDrain(handle: Pick<FullAppHandle, "queue" | "store"> & { channels?: ServiceChannels | null; effects?: EffectExecutor | null }, options: { timeoutMs: number }): Promise<DrainResult> {
   if (!options || !Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 0 || options.timeoutMs > 300000) {
     throw new Error("invalid_drain_options");
   }
   try { await handle.channels?.close(); } catch { /* Ownership already released or store gone; reconciliation handles it. */ }
   // Only attempts this drain interrupted count; historical waiting/blocked/failed jobs are not new interruptions.
   const { interrupted } = handle.queue.close();
+  // app.approval_cards/v1: no new effect is claimed and in-flight ones are aborted; they must settle (as `unknown`)
+  // before the store closes, or the drain reports `unknown` and the next boot reconciles them.
+  handle.effects?.close();
   const deadline = Date.now() + options.timeoutMs;
   for (;;) {
     const unsettled = handle.store.read(tx => {
@@ -510,6 +519,10 @@ export async function stopDrain(handle: Pick<FullAppHandle, "queue" | "store"> &
     await Bun.sleep(5);
   }
   try { await handle.queue.idle(); } catch { /* Settlement already fenced; report honestly below. */ }
+  if (handle.effects) {
+    const settled = await Promise.race([handle.effects.idle().then(() => true), Bun.sleep(Math.max(0, deadline - Date.now())).then(() => false)]);
+    if (!settled) return { outcome: "unknown", fencedJobs: interrupted.length, unknownDeliveries: countUnknownDeliveries(handle.store), nextAction: "terminate-supervised-process-and-reconcile" };
+  }
   return interrupted.length === 0
     ? { outcome: "stopped", fencedJobs: 0, unknownDeliveries: countUnknownDeliveries(handle.store), nextAction: "none" }
     : { outcome: "interrupted", fencedJobs: interrupted.length, unknownDeliveries: countUnknownDeliveries(handle.store),

@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { commitDecisionMemorySource, retireDecisionMemorySource } from "./memory/decision-sources";
 
 /** Current application schema revision. Service packaging pins and checks this value. */
-export const schemaVersion = 35;
+export const schemaVersion = 37;
 
 /**
  * Installation-scoped state that never round-trips through backup images and
@@ -74,7 +74,7 @@ export class TransactionStore {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
           if (current === schemaVersion) return;
-          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34].includes(current)) throw new Error("Unsupported migration source");
+          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36].includes(current)) throw new Error("Unsupported migration source");
           if (existing) {
             const snapshot = `${path}.pre-v${current}-${crypto.randomUUID()}.sqlite`;
             const fd = openSync(snapshot, "wx", 0o600);
@@ -1028,6 +1028,89 @@ export class TransactionStore {
             );
             CREATE INDEX IF NOT EXISTS work_groups_open ON work_groups(state, created_at);
             PRAGMA user_version = 35;
+          `);
+          if (current < 36) this.#db.exec(`
+            -- exec.run_tools/v1 (EXE05, ADR 0036, schema 36): one bounded audit row per execution tool call. subject is the redacted
+            -- first 2 KiB of the command or path, never file content or output; rows are pruned per project.
+            CREATE TABLE IF NOT EXISTS execution_tool_calls (
+              sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+              id TEXT NOT NULL UNIQUE,
+              project_id TEXT NOT NULL,
+              run_id TEXT NOT NULL,
+              job_id TEXT NOT NULL,
+              role_id TEXT NOT NULL,
+              box TEXT NOT NULL,
+              level TEXT NOT NULL CHECK (level IN ('workspace', 'full')),
+              tool TEXT NOT NULL CHECK (length(tool) BETWEEN 1 AND 64),
+              subject TEXT NOT NULL CHECK (length(CAST(subject AS BLOB)) <= 2048),
+              status TEXT NOT NULL CHECK (status IN ('running', 'success', 'error', 'cancelled', 'refused')),
+              exit_code INTEGER,
+              started_at INTEGER NOT NULL,
+              duration_ms INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS execution_tool_calls_project ON execution_tool_calls (project_id, sequence);
+            PRAGMA user_version = 36;
+          `);
+          if (current < 37) this.#db.exec(`
+            -- app.approval_cards/v1 (EXE07, ADR 0037, schema 37): one row per proposed external effect. action_json is the exact
+            -- canonical action and digest its SHA-256; decision_json and receipt_json never hold a credential.
+            CREATE TABLE IF NOT EXISTS approval_cards (
+              id TEXT PRIMARY KEY,
+              project_id TEXT NOT NULL,
+              topic_id TEXT NOT NULL,
+              run_id TEXT NOT NULL,
+              job_id TEXT NOT NULL,
+              role_id TEXT NOT NULL,
+              kind TEXT NOT NULL CHECK (kind IN ('effect.git_push', 'effect.github_pr_create', 'effect.github_comment', 'effect.github_pr_merge', 'effect.deploy')),
+              action_json TEXT NOT NULL,
+              digest TEXT NOT NULL CHECK (length(digest) = 64),
+              revision INTEGER NOT NULL CHECK (revision > 0),
+              state TEXT NOT NULL CHECK (state IN ('pending', 'approved', 'denied', 'expired', 'executing', 'succeeded', 'failed', 'unknown')),
+              reason TEXT,
+              decision_json TEXT,
+              receipt_json TEXT,
+              telegram_eligible INTEGER NOT NULL CHECK (telegram_eligible IN (0, 1)),
+              created_at INTEGER NOT NULL,
+              expires_at INTEGER NOT NULL,
+              updated_at INTEGER NOT NULL,
+              started_at INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS approval_cards_project ON approval_cards (project_id, created_at);
+            -- app.auto_approve/v1: Web-only owner rules, append-only per (project, effect kind).
+            CREATE TABLE IF NOT EXISTS auto_approve_rules (
+              project_id TEXT NOT NULL,
+              effect_kind TEXT NOT NULL CHECK (effect_kind IN ('effect.git_push', 'effect.github_pr_create', 'effect.github_comment', 'effect.github_pr_merge', 'effect.deploy')),
+              scope_json TEXT NOT NULL,
+              revision INTEGER NOT NULL CHECK (revision > 0),
+              enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+              channel TEXT NOT NULL CHECK (channel = 'web'),
+              created_at INTEGER NOT NULL,
+              PRIMARY KEY (project_id, effect_kind, revision)
+            );
+            -- Owner-named effect targets: git remotes (with an optional GitHub repository) and deploy hooks, each bound
+            -- to a connection by id. Metadata only; the value stays in the secrets directory (app.connections/v1).
+            CREATE TABLE IF NOT EXISTS git_remotes (
+              project_id TEXT NOT NULL,
+              name TEXT NOT NULL,
+              revision INTEGER NOT NULL CHECK (revision > 0),
+              url TEXT NOT NULL,
+              github_json TEXT,
+              connection_id TEXT NOT NULL,
+              removed INTEGER NOT NULL CHECK (removed IN (0, 1)),
+              created_at INTEGER NOT NULL,
+              PRIMARY KEY (project_id, name, revision)
+            );
+            CREATE TABLE IF NOT EXISTS deploy_targets (
+              project_id TEXT NOT NULL,
+              name TEXT NOT NULL,
+              revision INTEGER NOT NULL CHECK (revision > 0),
+              url TEXT NOT NULL,
+              connection_id TEXT NOT NULL,
+              removed INTEGER NOT NULL CHECK (removed IN (0, 1)),
+              created_at INTEGER NOT NULL,
+              PRIMARY KEY (project_id, name, revision)
+            );
+            PRAGMA user_version = 37;
           `);
         }).immediate();
         this.#db.exec("PRAGMA foreign_keys = ON;");

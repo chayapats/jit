@@ -309,6 +309,11 @@ export const backupImageTables: Readonly<Record<string, "include" | "exclude" | 
   connections: "include", connection_audit: "include",
   // delivery.attention_levels/v1 (schema 35): per-channel notification level and identity-only work group notices.
   attention_levels: "include", work_groups: "include",
+  // exec.run_tools/v1 (schema 36): bounded tool call audit; subjects are redacted command/path prefixes, never output.
+  execution_tool_calls: "include",
+  // app.approval_cards/v1 and app.auto_approve/v1 (schema 37): cards, rules and effect targets hold actions, digests,
+  // receipts and connection ids only — never a connection value.
+  approval_cards: "include", auto_approve_rules: "include", git_remotes: "include", deploy_targets: "include",
   project_team: "include", projects: "include", restore_quarantines: "include", roles: "include",
   schway_native_refs: "include", source_versions: "include", sources: "include",
   task_events: "include", task_evidence_artifacts: "include", task_proposals: "include", tasks: "include",

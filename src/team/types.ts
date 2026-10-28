@@ -112,6 +112,12 @@ export interface ContextPacket {
 }
 /** Service-owned read tools that later consumers may select explicitly; preview and dispatch select none. */
 export type ApplicationReadTool = "project.read" | "source.read" | "memory.read";
+/**
+ * exec.run_tools/v1 (EXE05, ADR 0036): the execution grant of one run, computed at admission from the effective access
+ * level of the project and the run's role, and frozen in the attempt snapshot. `null` (and a missing field on records
+ * written before EXE05) admits no execution tool. Model output, sources and tool results never change it.
+ */
+export interface RunExecutionGrant { level: "workspace" | "full"; boxProjectId: string }
 /** The immutable scope/configuration and finite authority supplied to one application run invocation. */
 export interface ApplicationRunRequest {
   runId: string; projectId: string; topicId: string; roleId: string; purpose: string;
@@ -121,7 +127,13 @@ export interface ApplicationRunRequest {
   instructions: { operator: readonly string[]; responsibility: string };
   manifest: RunSourceManifest;
   tools: readonly ApplicationReadTool[];
+  /**
+   * Host-process policy: no generic execution, fetch, hosted lookup or discovery ever runs in the Jit process. Box
+   * execution is the separate `execution` grant, whose tools run only inside the project's execution box.
+   */
   policy: { genericExecution: false; arbitraryFetch: false; hostedLookup: false; repositoryDiscovery: false };
+  /** exec.run_tools/v1: the frozen execution grant; `null` or absent means no execution tool is admitted. */
+  execution?: RunExecutionGrant | null;
   limits: JobLimits;
 }
 /** Normalized reasons retain incomplete/blocked/cancelled states without raw provider diagnostics or route fallback. */

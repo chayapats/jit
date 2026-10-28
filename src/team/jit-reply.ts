@@ -13,13 +13,14 @@ import { readTeam } from "./configuration";
 import { configuredRoutes, parseRoleProposal, roleProposalInstructions, roleProposalLimit, roleProposalViews, type RoleProposal, type RoleProposalView } from "./role-proposals";
 import type { ApplicationRunPort } from "./run-port";
 import { normalizePortResult, validateRunRequest } from "./scripted-port";
-import { portFailureOutcome, schwayMaxAttempts } from "./schway-port";
+import { portFailureOutcome, schwayMaxCalls } from "./schway-port";
 import type { ApplicationRunOutcome, ApplicationRunRequest, ContextPacketOmission, MemoryContextLayout, RoleRoute } from "./types";
 import { admitJitDispatch } from "./jit-dispatch";
 import { communicationPolicyLine, teamCommunicationPolicy } from "./communication-policy";
 import { unblockAction } from "./specialist-results";
 import { selectRoles, selectionWhy, selectionWhyLimit, type FixedSelection, type ParticipationReference } from "./routing";
 import { evaluateWorkGroup, workGroupOfReply } from "./work-group";
+import { executionGrant, executionMaxTurns } from "../exec/run-tools";
 import { generalProjectId, parsePromotionProposal, promotionFrom, promotionInstruction, promotionProposalViews, type PromotionProposal, type PromotionProposalView } from "../promotion";
 
 /** Registered work type for one Jit reply to one owner message (ADR 0029). */
@@ -138,10 +139,11 @@ export const replyAttemptOutputTokens = 1024;
  * Bounded fixed limits for one reply, clamped to the installation maximum. Budgets cover the first attempt
  * and every allowed retry, because each attempt (including an owner resume) is admitted and reserves its own share.
  */
-export function replyLimits(maximum: JobLimits, contextBytes: number): JobLimits {
+export function replyLimits(maximum: JobLimits, contextBytes: number, execution = false): JobLimits {
   const retries = Math.min(2, maximum.retries), attempts = retries + 1;
-  // Each admission spends one role, call, round and hop; a Schway attempt may pre-reserve its host retries.
-  const calls = attempts * (retries + 1);
+  // Each admission spends one role, call, round and hop; a Schway attempt may pre-reserve its host retries, and an
+  // execution reply (exec.run_tools/v1) those of every model turn its tools may take.
+  const calls = attempts * (retries + 1) * (execution ? executionMaxTurns : 1);
   return {
     roles: Math.min(attempts, maximum.roles), calls: Math.min(calls, maximum.calls), rounds: Math.min(calls, maximum.rounds), hops: Math.min(attempts, maximum.hops),
     contextTokens: Math.min(Math.ceil(contextBytes / 4) * attempts, maximum.contextTokens),
@@ -403,7 +405,8 @@ function admitReply(tx: AppTransaction, input: ReplyAdmission): { id: string; re
   const fitted = fit(results, trimmed.used);
   if (!fitted) return notAdmitted("context_too_large");
   const operatorBase = [...fixedOperator, metadataOf(results, gaps)];
-  const limits = replyLimits(config.jobs.maximum, config.team.contextBytes);
+  // exec.run_tools/v1: a reply admitted while Jit may execute gets the call budget for several tool turns.
+  const limits = replyLimits(config.jobs.maximum, config.team.contextBytes, executionGrant(tx, message.projectId, jit.id) !== null);
   const context = { id: crypto.randomUUID(), generation: 1 };
   const json = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
   // One request whose recent messages start `dropped` messages later than the budget fit allowed.
@@ -687,6 +690,8 @@ export function jitReplyWork(store: TransactionStore, config: AppConfig, port: A
     cost: { roles: 1, calls: 1, rounds: 1, hops: 1 },
     // A reply belongs to its message, not to the project revision: new topics elsewhere do not fence it.
     validate: input => valid(input),
+    // exec.run_tools/v1: a port with boxes grants Jit's effective level; `read`, a halt or no boxes grants nothing.
+    executes: (tx, job) => valid(job.input) && !!port.execution && executionGrant(tx, job.projectId, readReplyRecord(tx, job.projectId, job.input.replyId).roleId) !== null,
     prepare: (tx, job, generation) => {
       if (!valid(job.input)) throw new AppError("invalid_job_input");
       const record = readReplyRecord(tx, job.projectId, job.input.replyId);
@@ -698,10 +703,13 @@ export function jitReplyWork(store: TransactionStore, config: AppConfig, port: A
         tx.run("INSERT INTO team_contexts VALUES (?, 1, 'active')", request.context.id);
       }
       request.fence = { jobId: job.id, generation, ownerGeneration: job.authorization.generation };
+      // Frozen in the attempt snapshot at admission; model output never changes it.
+      request.execution = port.execution ? executionGrant(tx, job.projectId, request.roleId) : null;
       record.request = request; record.progress = null; record.updatedAt = now();
       saveReplyRecord(tx, record);
       return { native: { adapter: port.adapter, runId: request.runId, sessionId: request.runId, context: request.context },
-        data: JSON.parse(jobData(request, config.team.contextBytes)) };
+        data: JSON.parse(jobData(request, config.team.contextBytes)),
+        ...(request.execution ? { execution: { level: request.execution.level, roleId: request.roleId } } : {}) };
     },
     isCurrent: (tx, job, attempt) => {
       const request = attempt.data as unknown as ApplicationRunRequest;
@@ -719,7 +727,7 @@ export function jitReplyWork(store: TransactionStore, config: AppConfig, port: A
       const outputTokens = Math.min(replyAttemptOutputTokens, job.limits.outputTokens);
       reserve({ contextTokens: Math.ceil(Buffer.byteLength(jobData(request, config.team.contextBytes)) / 4), outputTokens });
       if (port.adapter === "schway") {
-        const extra = schwayMaxAttempts(request) - 1;
+        const extra = schwayMaxCalls(request) - 1;
         if (extra > 0) reserve({ calls: extra, rounds: extra });
       }
       const outputBytes = Math.min(config.jobs.outputBytes, outputTokens * 4, 65000);

@@ -33,7 +33,8 @@ export interface Job {
   occupiesAdmission: boolean;
   /**
    * app.access_level/v1: present (and true) only when the job's work definition is execution-capable. The kill switch
-   * fences such jobs by this durable flag, so it needs no running scheduler. No current work definition sets it.
+   * fences such jobs by this durable flag, so it needs no running scheduler. Set at admission for work whose attempt
+   * runs with an execution grant (exec.run_tools/v1).
    */
   execution?: true;
   createdAt: number; updatedAt: number; deadlineAt: number; steps: number;
@@ -85,9 +86,16 @@ export interface WorkDefinition {
   /**
    * app.access_level/v1: execution-capable work. Admission and every result commit require
    * `assertExecutionAllowed(…, "workspace")`, and `execution.halt` fences its admitted and running attempts.
-   * No current definition sets it; EXE05 is the first.
+   * No current definition sets it statically.
    */
   execution?: boolean;
+  /**
+   * exec.run_tools/v1 (EXE05): per-job execution. Called inside admission; true when the job's next attempt will run
+   * with an execution grant (its effective access level is `workspace` or `full`). Such an admission waits for box
+   * capacity like static execution work, marks the job `execution` so the kill switch fences it, and `prepare`
+   * returns the grant's `execution` so every reservation and result commit re-checks that level.
+   */
+  executes?(tx: AppTransaction, job: Job): boolean;
   /** Captures native identities and immutable adapter input inside admission, before any dispatch. */
   prepare?(tx: AppTransaction, job: Job, generation: number): AttemptPreparation;
   /** Rechecks source/context freshness inside each reservation and result transaction. */

@@ -228,7 +228,7 @@ async function fullUpgrade(f: Fixture) {
 
 test("preflight matrix: one supported target, sequential sources, downgrade/forward/newer/too-old rejection, exact engine contract", () => {
   expect(planUpgrade(schemaVersion, schemaVersion, upgradeEngineContract)).toMatchObject({ compatible: true, reason: null });
-  expect(planSchema(17, schemaVersion)).toEqual({ compatible: true, reason: null, migrations: [18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35].filter(v => v <= schemaVersion) });
+  expect(planSchema(17, schemaVersion)).toEqual({ compatible: true, reason: null, migrations: [18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37].filter(v => v <= schemaVersion) });
   expect(planSchema(schemaVersion, 99)).toMatchObject({ compatible: false, reason: "forward_upgrade_unsupported" });
   expect(planSchema(schemaVersion, schemaVersion - 1)).toMatchObject({ compatible: false, reason: "downgrade_rejected" });
   expect(planSchema(99, 99)).toMatchObject({ compatible: false, reason: "newer_schema_unsupported" });
@@ -631,7 +631,7 @@ function serviceFor(root: string): ServiceConfig {
 /** Rewinds a fresh current store to a historical fixture schema by removing tables later migrations add. */
 function historical(path: string, version: number) {
   const db = new Database(path);
-  const drops: Record<number, string[]> = { 35: ["attention_levels", "work_groups"], 34: ["connection_audit", "connections"], 33: ["execution_box_resets"], 32: ["webhook_receipts", "webhook_triggers", "pr_poll_due"], 31: ["project_access_revisions", "role_access_overrides", "execution_halts"], 30: ["schedule_feed"], 29: ["local_api_settings"], 28: ["topic_promotions", "chat_title_sources"], 27: ["dispatch_proposals", "dispatch_allowance_revisions"], 26: ["general_space", "setup_state"], 25: ["jit_reply_sources", "jit_replies", "persona_revisions"], 24: ["owner_preferences"], 23: ["lifecycle_ledger", "lifecycle_checkpoint"], 22: [], 21: ["schway_native_refs"], 20: ["restore_quarantines"], 19: ["upgrade_journal"], 18: ["export_artifacts"] };
+  const drops: Record<number, string[]> = { 37: ["approval_cards", "auto_approve_rules", "git_remotes", "deploy_targets"], 36: ["execution_tool_calls"], 35: ["attention_levels", "work_groups"], 34: ["connection_audit", "connections"], 33: ["execution_box_resets"], 32: ["webhook_receipts", "webhook_triggers", "pr_poll_due"], 31: ["project_access_revisions", "role_access_overrides", "execution_halts"], 30: ["schedule_feed"], 29: ["local_api_settings"], 28: ["topic_promotions", "chat_title_sources"], 27: ["dispatch_proposals", "dispatch_allowance_revisions"], 26: ["general_space", "setup_state"], 25: ["jit_reply_sources", "jit_replies", "persona_revisions"], 24: ["owner_preferences"], 23: ["lifecycle_ledger", "lifecycle_checkpoint"], 22: [], 21: ["schway_native_refs"], 20: ["restore_quarantines"], 19: ["upgrade_journal"], 18: ["export_artifacts"] };
   const triggers: Record<number, string[]> = { 28: ["general_space_keep", "general_space_fixed", "general_project_keep"], 25: ["jit_reply_job_change"], 23: ["lifecycle_ledger_deletion", "lifecycle_ledger_suppression", "lifecycle_ledger_suppressed_claim", "lifecycle_ledger_suppressed_source"] };
   for (let v = schemaVersion; v > version; v--) {
     for (const trigger of triggers[v] ?? []) db.exec(`DROP TRIGGER IF EXISTS ${trigger}`);
@@ -642,7 +642,7 @@ function historical(path: string, version: number) {
 }
 
 test("boot never migrates an older installation; the owner upgrade migrates staged copies from every supported schema", async () => {
-  for (const version of [17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34]) {
+  for (const version of [17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36]) {
     const root = mkdtempSync(join(tmpdir(), "jit-ops-upgrade-legacy-")); roots.push(root);
     const path = join(root, "state.sqlite");
     const config = readConfig({ JIT_DATABASE: path });

@@ -140,6 +140,9 @@ export class BoxManager {
         // Cancellation must always reach the runner; every other request needs the level the box runs in.
         const op = (() => { try { return (JSON.parse(new TextDecoder().decode(request.input)) as { op?: unknown }).op; } catch { return null; } })();
         if (op !== "kill") {
+          // A session is bound to the container it opened: once another open restarted the box (in another mode, for
+          // another role), this session's commands would reach a box with different network rights, so they are refused.
+          if (own.handle !== handle || this.#slots.get(projectId) !== own) throw new AppError("access_level_insufficient", 409, { effective: handle.mode, needed: handle.mode, reason: "box_restarted" });
           const now = this.#mode(projectId, roleId);
           if (levelRank(now) < levelRank(handle.mode)) throw new AppError("access_level_insufficient", 409, { effective: now, needed: handle.mode });
         }
