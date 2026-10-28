@@ -20,12 +20,18 @@ export const installationScopedTables = Object.freeze(["owner", "sessions", "log
 
 /**
  * Rebuilds `approval_cards` and `auto_approve_rules` with new kind CHECK lists, keeping every row (SQLite cannot alter
- * a CHECK). Used by the S11 migrations that add card kinds (schema 38 onward).
+ * a CHECK). Used by the S11 migrations that add card kinds (schema 38 onward). The rows are copied out to a temporary
+ * table and the table is recreated under its own name: no `ALTER TABLE … RENAME`, whose schema re-check (SQLite
+ * without legacy alter-table behaviour) fails on databases whose other triggers reference tables of older shapes.
  */
 function rebuildCardKinds(cardKinds: readonly string[], ruleKinds: readonly string[]): string {
   const list = (kinds: readonly string[]) => kinds.map(kind => `'${kind}'`).join(", ");
+  const cardColumns = "id, project_id, topic_id, run_id, job_id, role_id, kind, action_json, digest, revision, state, reason, decision_json, receipt_json, telegram_eligible, created_at, expires_at, updated_at, started_at";
+  const ruleColumns = "project_id, effect_kind, scope_json, revision, enabled, channel, created_at";
   return `
-    CREATE TABLE approval_cards_next (
+    CREATE TEMP TABLE approval_cards_copy AS SELECT ${cardColumns} FROM approval_cards;
+    DROP TABLE approval_cards;
+    CREATE TABLE approval_cards (
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL,
       topic_id TEXT NOT NULL,
@@ -46,12 +52,12 @@ function rebuildCardKinds(cardKinds: readonly string[], ruleKinds: readonly stri
       updated_at INTEGER NOT NULL,
       started_at INTEGER
     );
-    INSERT INTO approval_cards_next SELECT id, project_id, topic_id, run_id, job_id, role_id, kind, action_json, digest, revision, state, reason,
-      decision_json, receipt_json, telegram_eligible, created_at, expires_at, updated_at, started_at FROM approval_cards;
-    DROP TABLE approval_cards;
-    ALTER TABLE approval_cards_next RENAME TO approval_cards;
+    INSERT INTO approval_cards (${cardColumns}) SELECT ${cardColumns} FROM temp.approval_cards_copy;
+    DROP TABLE temp.approval_cards_copy;
     CREATE INDEX IF NOT EXISTS approval_cards_project ON approval_cards (project_id, created_at);
-    CREATE TABLE auto_approve_rules_next (
+    CREATE TEMP TABLE auto_approve_rules_copy AS SELECT ${ruleColumns} FROM auto_approve_rules;
+    DROP TABLE auto_approve_rules;
+    CREATE TABLE auto_approve_rules (
       project_id TEXT NOT NULL,
       effect_kind TEXT NOT NULL CHECK (effect_kind IN (${list(ruleKinds)})),
       scope_json TEXT NOT NULL,
@@ -61,9 +67,8 @@ function rebuildCardKinds(cardKinds: readonly string[], ruleKinds: readonly stri
       created_at INTEGER NOT NULL,
       PRIMARY KEY (project_id, effect_kind, revision)
     );
-    INSERT INTO auto_approve_rules_next SELECT project_id, effect_kind, scope_json, revision, enabled, channel, created_at FROM auto_approve_rules;
-    DROP TABLE auto_approve_rules;
-    ALTER TABLE auto_approve_rules_next RENAME TO auto_approve_rules;`;
+    INSERT INTO auto_approve_rules (${ruleColumns}) SELECT ${ruleColumns} FROM temp.auto_approve_rules_copy;
+    DROP TABLE temp.auto_approve_rules_copy;`;
 }
 
 /** Synchronous SQL operations scoped to an application transaction. */
@@ -117,7 +122,9 @@ export class TransactionStore {
       this.#db.exec("PRAGMA busy_timeout = 2000; PRAGMA foreign_keys = ON;");
       if (version < schemaVersion && (options.migrateExisting !== false || !existing)) {
         // SQLite table rebuilds must not delete referenced parents with enforcement enabled.
-        this.#db.exec("PRAGMA foreign_keys = OFF;");
+        // Modern ALTER TABLE semantics everywhere: Apple's SQLite build defaults to the legacy behaviour, Linux (CI, the
+        // Pi) does not, so migrations are always checked the way production runs them.
+        this.#db.exec("PRAGMA foreign_keys = OFF; PRAGMA legacy_alter_table = OFF;");
         this.#db.transaction(() => {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
