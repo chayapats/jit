@@ -11,7 +11,7 @@ import type { MessageKey } from "./i18n";
  *   inside the settings frame. Memory, tasks, jobs, PR reports and the team stay at their project URLs too; the
  *   topic right panel links to them.
  */
-export type SettingsSectionId = "general" | "team" | "dispatch" | "access" | "connections" | "telegram" | "feed" | "backups" | "upgrades" | "restores" | "data";
+export type SettingsSectionId = "general" | "team" | "dispatch" | "access" | "connections" | "telegram" | "feed" | "approvals" | "backups" | "upgrades" | "restores" | "data";
 
 /** Settings sections in display order. `href` is the canonical page; `label` is a dictionary key. */
 export const settingsSections: readonly { readonly id: SettingsSectionId; readonly href: string; readonly label: MessageKey }[] = Object.freeze([
@@ -22,6 +22,7 @@ export const settingsSections: readonly { readonly id: SettingsSectionId; readon
   { id: "connections", href: "/settings/connections", label: "settings.connections" },
   { id: "telegram", href: "/settings/telegram", label: "settings.telegram" },
   { id: "feed", href: "/settings/feed", label: "settings.feed" },
+  { id: "approvals", href: "/settings/approvals", label: "settings.approvals" },
   { id: "backups", href: "/settings/backups", label: "settings.backups" },
   { id: "upgrades", href: "/settings/upgrades", label: "settings.upgrades" },
   { id: "restores", href: "/settings/restores", label: "settings.restores" },
@@ -92,6 +93,8 @@ export const routeInventory: readonly { readonly from: string; readonly kind: "r
   { from: "/settings/access", kind: "settings", section: "access" },
   // web.connections_settings/v1 (EXE11): owner credentials for approved effects and MCP servers.
   { from: "/settings/connections", kind: "settings", section: "connections" },
+  // web.approval_cards/v1 (EXE09): approval cards and auto-approve rules.
+  { from: "/settings/approvals", kind: "settings", section: "approvals" },
   { from: "/projects/:project/exports", kind: "settings", section: "data" },
   { from: "/projects/:project/exports/:export", kind: "settings", section: "data" },
   { from: "/projects/:project/memory/deletions", kind: "settings", section: "data" },

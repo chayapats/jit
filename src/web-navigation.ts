@@ -8,6 +8,7 @@ import { accessLevels, levelRank, type AccessLevel, type ProjectAccess, type Rol
 import { connectionKinds, type ConnectionKind, type ConnectionView } from "./exec/connections";
 import { accessBadge, escape, hiddenCommand, icon, jobStateLabels, prObservedState, prStatusLabels, shell, taskStatusText, time, type NavigationWorkspace } from "./web-layout";
 import { panelRows, panelTabLabels, panelTabs, paletteCommands, searchLimits, type PanelTab } from "./web-settings";
+import { effectKinds, type ApprovalCard, type AutoApproveRule } from "./exec/approval-cards";
 
 /** One ⌘K row. `href` is always a same-origin path; labels are dictionary text or escaped-on-render owner text. */
 export interface SearchItem { kind: "command" | "project" | "topic"; label: string; detail: string | null; href: string }
@@ -309,4 +310,49 @@ export function settingsConnectionsPage(workspace: NavigationWorkspace, list: Co
     <section class="settings-section" aria-labelledby="connections-list-title"><h2 id="connections-list-title">${tr("settings.connections")}</h2>
     ${list.length ? `<ul class="data-projects">${list.map(row).join("")}</ul>` : `<p class="empty-list" role="status">${tr("connection.note")}</p>`}</section></div>`,
     { breadcrumb: { title: tr("shell.settings"), href: "/settings" } });
+
+/**
+ * Settings › Approvals (web.approval_cards/v1, EXE09): pending cards across projects and the per-project
+ * auto-approve rules. Uses `ApprovalCard`/`AutoApproveRule` (the merged EXE07 read models; there is no separate
+ * `ApprovalCardView`/`AutoApproveRuleView`).
+ */
+export function settingsApprovalsPage(workspace: NavigationWorkspace,
+  pending: { card: ApprovalCard; projectName: string }[],
+  rules: { projectId: string; projectName: string; rule: AutoApproveRule }[],
+  projects: { id: string; name: string }[], csrf: string): string {
+  const kindTitle = (kind: ApprovalCard["kind"]) => tr(`approval.kind_${kind.replace(/^effect\./, "")}` as MessageKey);
+  const pendingList = pending.length
+    ? `<ul class="data-projects">${pending.map(({ card, projectName }) =>
+      `<li id="approval-${card.id}"><h3>${escape(kindTitle(card.kind))}</h3><p>${escape(projectName)}</p>`
+      + `<p><a href="/projects/${card.projectId}/topics/${card.topicId}#approval-${card.id}">${escape(card.topicId)}</a></p></li>`).join("")}</ul>`
+    : `<p class="empty-list">${tr("approval.pending_none")}</p>`;
+  const byProject = new Map<string, { projectName: string; rules: AutoApproveRule[] }>();
+  for (const entry of rules) {
+    const existing = byProject.get(entry.projectId) ?? { projectName: entry.projectName, rules: [] };
+    existing.rules.push(entry.rule);
+    byProject.set(entry.projectId, existing);
+  }
+  const rulesTables = projects.map(p => {
+    const entry = byProject.get(p.id);
+    const rows = (entry?.rules ?? []).map(rule =>
+      `<li>${escape(rule.effectKind)} · ${escape(JSON.stringify(rule.scope))} · ${rule.enabled ? escape(tr("approval.state_approved")) : escape(tr("approval.state_denied"))} · rev ${rule.revision}`
+      + (rule.enabled ? ` <form method="post" action="/settings/approvals/rules/${p.id}%3A${rule.effectKind}">${hiddenCommand(csrf, rule.revision)}`
+        + `<input type="hidden" name="projectId" value="${p.id}"><input type="hidden" name="effectKind" value="${escape(rule.effectKind)}">`
+        + `<button>${tr("approval.rule_disable")}</button></form>` : "") + `</li>`).join("");
+    return `<li><h3>${escape(p.name)}</h3>${rows ? `<ul>${rows}</ul>` : `<p class="empty-list">${tr("approval.pending_none")}</p>`}</li>`;
+  }).join("");
+  const kindOptions = effectKinds.map(kind => `<option value="${kind}">${escape(tr(`approval.kind_${kind.replace(/^effect\./, "")}` as MessageKey))}</option>`).join("");
+  const projectOptions = projects.map(p => `<option value="${p.id}">${escape(p.name)}</option>`).join("");
+  return shell(tr("settings.approvals"), { workspace, csrf, section: "settings", settings: "approvals" }, `<div class="content settings-content">
+    <section class="settings-section" aria-labelledby="approvals-pending"><h2 id="approvals-pending">${tr("approval.title")}</h2>${pendingList}</section>
+    <section class="settings-section" aria-labelledby="approvals-rules"><h2 id="approvals-rules">${tr("approval.rules_title")}</h2>
+    <ul class="data-projects">${rulesTables}</ul>
+    <form class="team-form" method="post" action="/settings/approvals/rules">${hiddenCommand(csrf, 0)}
+      <label>project<select name="projectId" required>${projectOptions}</select></label>
+      <label>effectKind<select name="effectKind" required>${kindOptions}</select></label>
+      <label>remote<input name="remote" maxlength="32" placeholder="origin"></label>
+      <label>branches<input name="branches" maxlength="400" placeholder="main"></label>
+      <label>target<input name="target" maxlength="32" placeholder="production"></label>
+      <label class="choice"><input type="checkbox" name="confirm" value="on" required>${tr("approval.rule_confirm")}</label>
+      <button class="primary">${tr("approval.rule_create")}</button></form></section></div>`, { breadcrumb: { title: tr("shell.settings"), href: "/settings" } });
 }
