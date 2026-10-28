@@ -15,6 +15,7 @@ import { backupNativePortFor } from "./schway-backup";
 import { ledgerCheckpointPathFor, syncLedgerCheckpoint } from "./lifecycle-ledger";
 import { openReadOnlyStore, unavailableReadOnlyStore } from "./readonly-store";
 import { ServiceChannels, channelReadiness, type ChannelTransportFactory } from "./service-channels";
+import { tickWorkGroups } from "../team/work-group";
 import { ManagedService } from "./upgrade-service";
 import { upgradeFenced } from "./upgrade-fence";
 import { validateArtifact, type BuildManifest } from "../../ops/package/bun-build";
@@ -411,11 +412,16 @@ export function serveFullApp(handle: FullAppHandle, options: { drainTimeoutMs?: 
   const config = handle.config;
   const server = Bun.serve({ hostname: config.hostname, port: config.port, maxRequestBodySize: config.bodyBytes,
     idleTimeout: 15, fetch: createWebHandler(handle.app), error: () => new Response("Request failed", { status: 503 }) });
+  // delivery.attention_levels/v1: recompute open work groups from committed state once at start (restart safety)
+  // and on every tick (route waits, deadlines and interrupted work happen inside the queue alone).
+  const groups = () => { try { tickWorkGroups(handle.store, Date.now()); } catch { /* Storage failure: the next tick retries. */ } };
+  groups();
   const timer = setInterval(() => {
     const queue = handle.service.queue;
     if (queue) {
       try { queue.pump(); tickSchedules(handle.store, queue, config, Date.now()); } catch { /* Queue refuses acknowledgments after a storage/ownership failure or under an upgrade fence. */ }
     }
+    groups();
     handle.channels?.tick();
   }, options.intervalMs ?? 100);
   timer.unref();

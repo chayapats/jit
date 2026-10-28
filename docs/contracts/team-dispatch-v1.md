@@ -19,6 +19,7 @@ interface Discussion { kind: "discussion"; id; projectId; topicId; purpose; jobI
   revision; createdAt; updatedAt; manifest; limits; router; participations; coverageGap }
 // MEM02: manifest also carries assembled claims and manifest.context (app.memory_context/v1)
 // BOT04: origin?: { kind: "standing-allowance" | "owner-accepted"; proposalId; replyId; allowanceRevision }, stoppedAll?: boolean
+// REL04: workGroupId?: string | null (delivery.attention_levels/v1 work group of the dispatching Jit reply)
 
 Application.execute(actor, TeamCommand): TeamReceipt; // discussion?: Discussion
 Application.discussions(actor, projectId, topicId): Discussion[];

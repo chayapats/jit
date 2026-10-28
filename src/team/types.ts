@@ -180,6 +180,8 @@ export interface Discussion {
   origin?: DiscussionOrigin;
   /** Set by `team.stop_all`; a stopped team gets no automatic team reply. */
   stoppedAll?: boolean;
+  /** delivery.attention_levels/v1: the work group of the Jit reply that started this discussion; absent otherwise. */
+  workGroupId?: string | null;
 }
 /** Who authorized a discussion that a Jit dispatch proposal asked for. Model output is never the authority. */
 export interface DiscussionOrigin {

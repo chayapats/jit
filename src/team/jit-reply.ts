@@ -16,6 +16,7 @@ import { normalizePortResult, validateRunRequest } from "./scripted-port";
 import { portFailureOutcome, schwayMaxAttempts } from "./schway-port";
 import type { ApplicationRunOutcome, ApplicationRunRequest, ContextPacketOmission, MemoryContextLayout, RoleRoute } from "./types";
 import { admitJitDispatch } from "./jit-dispatch";
+import { evaluateWorkGroup, workGroupOfReply } from "./work-group";
 import { generalProjectId, parsePromotionProposal, promotionFrom, promotionInstruction, promotionProposalViews, type PromotionProposal, type PromotionProposalView } from "../promotion";
 
 /** Registered work type for one Jit reply to one owner message (ADR 0029). */
@@ -68,6 +69,11 @@ interface JitReplyRecord {
   roleProposals?: RoleProposal[];
   /** app.topic_promotion/v1: a General space reply's suggestion to continue the topic as a project; absent otherwise. */
   promotionProposal?: PromotionProposal;
+  /**
+   * delivery.attention_levels/v1: the work group this reply opened (a dispatching reply) or speaks for (a team reply);
+   * absent on replies that dispatched nothing and on records written before REL04.
+   */
+  workGroupId?: string | null;
 }
 
 /** One committed specialist result a team reply was given and cites, frozen at admission. */
@@ -259,7 +265,7 @@ interface ReplyAdmission {
    * A team reply: `question` is the owner message the team analyzed; history ends there, whatever was said since.
    * Specialist results become cited manifest sources after that history.
    */
-  team?: { proposalId: string; discussionId: string; question: ReplyAnchor; results: TeamReplyResult[]; gaps: TeamReplyGap[] };
+  team?: { proposalId: string; discussionId: string; question: ReplyAnchor; results: TeamReplyResult[]; gaps: TeamReplyGap[]; workGroupId: string | null };
 }
 
 /** Longest UTF-8 byte length of one service-written operator line (app.run_port/v1 accepts 2048). */
@@ -447,6 +453,7 @@ function admitReply(tx: AppTransaction, input: ReplyAdmission): { id: string; re
     outcome: null, result: null, source: null, replyMessageId: null, progress: null,
     ...(teamInput ? { team: { proposalId: teamInput.proposalId, discussionId: teamInput.discussionId,
       citations: results.map(item => ({ roleId: item.roleId, roleName: item.roleName, reference: { ...item.reference } })), gaps: gaps.map(gap => ({ ...gap })) } } : {}),
+    ...(teamInput?.workGroupId ? { workGroupId: teamInput.workGroupId } : {}),
   };
   tx.run("INSERT INTO team_runs (id, project_id, job_id, context_id, record_json) VALUES (?, ?, ?, ?, ?)", replyId, message.projectId, job.id, context.id, JSON.stringify(record));
   tx.run("INSERT INTO jit_replies (id, project_id, topic_id, message_id, run_id, reason, cursor, created_at) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)",
@@ -479,10 +486,10 @@ export function admitJitReply(tx: AppTransaction, input: {
  */
 export function admitTeamReply(tx: AppTransaction, input: {
   anchor: ReplyAnchor; question: ReplyAnchor; proposalId: string; discussionId: string; results: TeamReplyResult[]; gaps: TeamReplyGap[];
-  requestId: string; config: AppConfig; queue: JobQueue | undefined; generation: number; now: number;
+  workGroupId: string | null; requestId: string; config: AppConfig; queue: JobQueue | undefined; generation: number; now: number;
 }): { id: string; reason: ReplyNotAdmitted | null } {
   return admitReply(tx, { message: input.anchor, requestId: input.requestId, config: input.config, queue: input.queue, generation: input.generation, now: input.now,
-    team: { proposalId: input.proposalId, discussionId: input.discussionId, question: input.question, results: input.results, gaps: input.gaps } });
+    team: { proposalId: input.proposalId, discussionId: input.discussionId, question: input.question, results: input.results, gaps: input.gaps, workGroupId: input.workGroupId } });
 }
 
 const blockedNext: Record<string, string> = {
@@ -599,6 +606,8 @@ export function stopReply(tx: AppTransaction, command: StopReplyCommand, queue: 
   const record = readReplyRecord(tx, command.projectId, view.id);
   record.progress = null; record.updatedAt = now;
   saveReplyRecord(tx, record);
+  // delivery.attention_levels/v1: stopping a waiting team reply answers its notice in this transaction.
+  evaluateWorkGroup(tx, record.workGroupId, now, "owner_answered");
   return { reply: readReply(tx, command.projectId, view.id) };
 }
 
@@ -766,9 +775,12 @@ export function jitReplyWork(store: TransactionStore, config: AppConfig, port: A
             admitJitDispatch(tx, { reply: { id: current.id, projectId: current.projectId, topicId: current.topicId, messageId: current.messageId,
               replyMessageId: messageId, generation: job.authorization.generation }, names, config, queue: queue(), now: now() });
           }
+          // delivery.attention_levels/v1: a proposal card stalls on the owner at once; a team reply ends its group.
+          evaluateWorkGroup(tx, current.workGroupId ?? workGroupOfReply(tx, current.id), now(), "no_longer_waiting");
           return;
         }
         saveReplyRecord(tx, current);
+        evaluateWorkGroup(tx, current.workGroupId, now(), "no_longer_waiting");
       });
       if (!committed) clearProgress();
       return committed ? outcomeState : { state: "failed", reason: "worker_failed" };

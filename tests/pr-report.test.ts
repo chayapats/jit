@@ -1237,7 +1237,7 @@ test("store v22 migration keeps existing reports and allows report history per c
     INSERT INTO pr_reports SELECT * FROM legacy; DROP TABLE legacy; PRAGMA user_version = 21;`);
   db.close();
   const reopened = new TransactionStore(path); stores.push(reopened);
-  expect(reopened.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 29 });
+  expect(reopened.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 30 });
   expect(reopened.read(tx => tx.get<{ sql: string }>("SELECT sql FROM sqlite_master WHERE name = 'pr_reports'")!.sql)).not.toContain("UNIQUE");
   expect(reopened.read(tx => readReport(tx, f.project.id, reportId).id)).toBe(reportId);
   reopened.transaction(tx => persistReport(tx, {

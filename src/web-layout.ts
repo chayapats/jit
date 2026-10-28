@@ -13,6 +13,7 @@ import { fillText, promotionProposalCard, proposalCard, roleProposalCard } from 
 import type { TopicPromotionView } from "./promotion";
 import type { Persona } from "./persona";
 import type { LocalApiSettings } from "./local-api/settings";
+import type { AttentionLevels } from "./delivery";
 import type { DecisionReadModel, Discussion, RoleRoute } from "./team/types";
 import type { DispatchCardView, TeamCardRole } from "./team/jit-dispatch";
 import { panelTabLabels, panelTabs, searchLimits, settingsSections, type PanelTab, type SettingsSectionId } from "./web-settings";
@@ -481,6 +482,7 @@ export function deliveryDetailPage(state: ReturnType<Application["delivery"]>, w
     <article class="team-card"><p class="literal">${escape(intent.payload.text)}</p><p>${tr("delivery.request_status")} ${escape(intent.status)} ${tr("delivery.destination_result")} ${escape(intent.remote)} ${tr("delivery.guarantee")} ${escape(intent.guarantee)}</p>
     ${intent.failureReason ? `<p>${tr("delivery.reason")} ${escape(deliveryNext()[intent.failureReason] ?? intent.failureReason)}</p>` : ""}
     ${intent.stale ? `<p>${tr("delivery.this_result_occurred_while_the")}${escape(intent.staleReason ?? "")}${tr("delivery.the_system_did_not_suppress")}</p>` : ""}
+    ${intent.resolution ? `<p data-resolution="${escape(intent.resolution.reason)}">${tr(intent.resolution.reason === "owner_answered" ? "delivery.resolved_owner_answered" : "delivery.resolved_no_longer_waiting")}</p>` : ""}
     ${intent.messageRef ? `<p>${tr("delivery.message_reference")} ${intent.messageRef.chatId} / ${intent.messageRef.messageId}</p>` : ""}
     ${uncertain ? `<p>${tr("delivery.the_source_report_is_still")}</p>` : ""}
     <p><a href="${source}">${tr("delivery.open_saved_report")}</a></p>
@@ -915,7 +917,8 @@ export function scheduleDetailPage(state: ReturnType<Application["schedule"]>, w
   const occurrence = (item: ScheduleOccurrence & { jobState: string }) => {
     const outcome = !item.outcome ? "" : (() => {
       const state = item.outcome.kind === "report" ? "succeeded" : item.outcome.kind === "no_update" ? "waiting" : "failed";
-      const key = item.outcome.kind === "report" ? "schedules.outcome_report"
+      // delivery.attention_levels/v1: a summary saved while the level was `needs-me` has no intent; say so.
+      const key = item.outcome.kind === "report" ? item.deliveryIntentId ? "schedules.outcome_report" : "schedules.outcome_report_unnotified"
         : item.outcome.kind === "no_update" ? "schedules.outcome_no_update" : "schedules.outcome_failed";
       const reason = item.outcome.kind === "failed" ? ` ${tr("schedules.outcome_reason")} ${escape(item.outcome.reason ?? "")}` : "";
       return `<p><span class="job-status" data-state="${state}">${tr(key)}</span>${reason}</p>`;
@@ -1123,7 +1126,7 @@ export function restoreDetailPage(state: { quarantine: RestoreView }, workspace:
 }
 
 /** Owner settings home: persisted appearance and language (ui.preferences/v1) and the persona; the sub-navigation leads to every operation. */
-export function settingsPage(preferences: { theme: ThemePreference; language: "auto" | Locale; revision: number }, workspace: Workspace, csrf: string, persona?: Persona, localApi?: LocalApiSettings): string {
+export function settingsPage(preferences: { theme: ThemePreference; language: "auto" | Locale; revision: number }, workspace: Workspace, csrf: string, persona?: Persona, localApi?: LocalApiSettings, attention?: AttentionLevels): string {
   const choice = (name: string, value: string, label: string, current: string) =>
     `<label class="choice"><input type="radio" name="${name}" value="${value}"${value === current ? " checked" : ""}>${label}</label>`;
   // app.persona/v1: the only Web writer of the persona is this owner form (setup reuses the same command).
@@ -1146,6 +1149,10 @@ ${localApi ? `<section class="settings-section" id="local-api" aria-labelledby="
     <form class="team-form" method="post" action="/settings/local-api">${hiddenCommand(csrf, localApi.revision)}
       <label class="choice"><input type="checkbox" name="enabled"${localApi.enabled ? " checked" : ""}>${tr("settings.local_api_enabled")}</label>
       <small>${tr(localApi.enabled ? "settings.local_api_state_on" : "settings.local_api_state_off")} · ${tr("settings.local_api_revision")} ${localApi.revision}</small><button class="primary">${tr("settings.local_api_save")}</button></form></section>` : ""}
+${attention ? `<section class="settings-section" id="attention" aria-labelledby="attention-title"><h2 id="attention-title">${tr("settings.attention")}</h2><p>${tr("settings.attention_note")}</p>
+    ${(["telegram", "web"] as const).map(channel => `<form class="team-form" method="post" action="/settings/attention">${hiddenCommand(csrf, attention[channel].revision)}<input type="hidden" name="channel" value="${channel}">
+      <fieldset class="choice-group"><legend>${tr(channel === "telegram" ? "settings.attention_channel_telegram" : "settings.attention_channel_web")}</legend>${choice("level", "all", tr("settings.attention_level_all"), attention[channel].level)}${choice("level", "needs-me", tr("settings.attention_level_needs_me"), attention[channel].level)}</fieldset>
+      ${channel === "web" ? `<p>${tr("settings.attention_web_note")}</p>` : ""}<small>${tr("settings.attention_revision")} ${attention[channel].revision}</small><button class="primary">${tr("settings.attention_save")}</button></form>`).join("")}</section>` : ""}
         <section class="settings-section" aria-labelledby="about-title"><h2 id="about-title">${tr("settings.about")}</h2><p class="licenses">${tr("settings.fonts_note")}
       <a href="${assetUrl("OFL-Inter.txt")}">Inter</a> · <a href="${assetUrl("OFL-NotoSansThai.txt")}">Noto Sans Thai</a> · <a href="${assetUrl("OFL-JetBrainsMono.txt")}">JetBrains Mono</a></p></section></div>`);
 }

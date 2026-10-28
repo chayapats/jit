@@ -28,9 +28,10 @@ import { preparePreview, readPreview } from "./team/preview";
 import type { DecisionCommand, DecisionReadModel, DecisionReceipt, TeamCommand, TeamReceipt } from "./team/types";
 import { coordinatorSynthesisWorkId } from "./team/types";
 import {
-  commitDeliveryIntent, deliveryCommandIdentity, listDeliveryAttempts, listDeliveryIntents, readDeliveryIntent,
-  readDeliveryReport, resendDeliveryIntent, retireDeliveryReport,
+  attentionIdentity, commitDeliveryIntent, deliveryCommandIdentity, listDeliveryAttempts, listDeliveryIntents, readAttentionLevels, readDeliveryIntent,
+  readDeliveryReport, resendDeliveryIntent, retireDeliveryReport, writeAttentionLevel, type AttentionLevels, type AttentionReceipt, type SetAttentionCommand,
 } from "./delivery";
+import { evaluateWorkGroup, workGroupOfJob } from "./team/work-group";
 import { annotateReport, listReports, listReviewStates, prReportIdentity, readAnnotations, readReport, reportRunEvidence } from "./pr/report";
 import { admitReportAlerts, alertPolicyIdentity, evaluateReport, readAlertDecisions, readAlertPolicy, setAlertPolicy } from "./pr/alerts";
 import { readAlertLinks } from "./pr/alert-links";
@@ -359,6 +360,11 @@ export class Application {
     return this.store.read(tx => { this.#requireOwner(tx, actor, ["web"], false); return readPreferences(tx); });
   }
 
+  /** delivery.attention_levels/v1: the owner's notification level per channel, or the defaults (`all`, revision 0). */
+  attentionLevels(actor: OwnerActor): AttentionLevels {
+    return this.store.read(tx => { this.#requireOwner(tx, actor); return readAttentionLevels(tx); });
+  }
+
   /** app.local_api/v1: whether the owner turned the loopback API on, or the default (off, revision 0). */
   localApi(actor: OwnerActor): LocalApiSettings {
     return this.store.read(tx => { this.#requireOwner(tx, actor); return readLocalApi(tx); });
@@ -656,6 +662,7 @@ export class Application {
   execute(actor: OwnerActor, command: CreateProjectCommand): ProjectReceipt;
   execute(actor: OwnerActor, command: SetPreferencesCommand): PreferencesReceipt;
   execute(actor: OwnerActor, command: SetLocalApiCommand): LocalApiReceipt;
+  execute(actor: OwnerActor, command: SetAttentionCommand): AttentionReceipt;
   execute(actor: OwnerActor, command: SetPersonaCommand): PersonaReceipt;
   execute(actor: OwnerActor, command: SetupCommand): SetupReceipt;
   execute(actor: OwnerActor, command: StopReplyCommand): ReplyReceipt;
@@ -683,8 +690,8 @@ export class Application {
   execute(actor: OwnerActor, command: ExportCommand): ExportReceipt;
   execute(actor: OwnerActor, command: UpgradeCommand): Promise<UpgradeReceipt>;
   execute(actor: OwnerActor, command: RestoreCommand): Promise<RestoreReceipt>;
-  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt>;
-  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt> {
+  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetAttentionCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | AttentionReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt>;
+  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetAttentionCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | AttentionReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt> {
     if (command?.kind?.startsWith("upgrade.")) return this.#upgradeCommand(actor, command as UpgradeCommand);
     if (command?.kind?.startsWith("restore.")) return this.#restoreCommand(actor, command as RestoreCommand);
     // ops.schema_migrations/v1 admission fence (held by an upgrade or, ops.quarantined_restore/v1, a restore):
@@ -719,6 +726,7 @@ export class Application {
     if (command?.kind === "project.create") return this.#createProject(actor, command);
     if (command?.kind === "ui.preferences.set") return this.#setPreferences(actor, command);
     if (command?.kind === "local_api.set") return this.#setLocalApi(actor, command);
+    if (command?.kind === "attention.set") return this.#setAttention(actor, command);
     if (command?.kind === "persona.set") return this.#setPersona(actor, command);
     if (isSetupCommand(command)) return this.#setupCommand(actor, command);
     if (command?.kind === "jit.reply.stop") return this.#stopReply(actor, command);
@@ -1662,7 +1670,9 @@ export class Application {
       }
       const now = this.#now();
       const result = command.kind === "delivery.commit"
-        ? commitDeliveryIntent(tx, { projectId: command.projectId, kind: command.payload.kind, text: command.payload.text, dedupeKey: command.payload.dedupeKey, maxBytes: this.config.messageBytes, expectedProjectRevision: command.expectedRevision }, now)
+        // delivery.attention_levels/v1: the owner asked for this notice explicitly, so every level creates it.
+        ? commitDeliveryIntent(tx, { projectId: command.projectId, kind: command.payload.kind, text: command.payload.text, dedupeKey: command.payload.dedupeKey, maxBytes: this.config.messageBytes, expectedProjectRevision: command.expectedRevision,
+          attention: { class: "needs_owner", item: null, workGroupId: null } }, now)
         : command.kind === "delivery.resend"
           ? resendDeliveryIntent(tx, command.projectId, command.payload.intentId, command.expectedRevision, now)
           : retireDeliveryReport(tx, command.projectId, command.payload.reportId, command.payload.action, command.expectedRevision, now);
@@ -1684,6 +1694,8 @@ export class Application {
       if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as JobReceipt; }
       const now = this.#now(), generation = tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'")!.generation;
       const result = this.#jobs.execute(tx, command, generation, now);
+      // delivery.attention_levels/v1: resuming or stopping a waiting team job answers its notice in this transaction.
+      if (command.kind !== "job.enqueue") evaluateWorkGroup(tx, workGroupOfJob(tx, command.projectId, command.payload.jobId), now, "owner_answered");
       this.#beforeCommit?.("job");
       tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
       tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);
@@ -1835,6 +1847,28 @@ export class Application {
       }
       const now = this.#now();
       const result: LocalApiReceipt = { localApi: writeLocalApi(tx, command, now) };
+      tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
+      tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, 'owner', ?)", command.kind, command.requestId, now);
+      return result;
+    });
+  }
+
+  /**
+   * delivery.attention_levels/v1: the only writer of a channel's notification level. Revisioned per channel,
+   * idempotent by request id and audited. It never touches an intent that already exists.
+   */
+  #setAttention(actor: OwnerActor, command: SetAttentionCommand): AttentionReceipt {
+    const payloadHash = attentionIdentity(command);
+    return this.store.transaction(tx => {
+      this.#requireOwner(tx, actor);
+      const receipt = tx.get<{ payload_hash: string; result_json: string }>(
+        "SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
+      if (receipt) {
+        if (receipt.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409);
+        return JSON.parse(receipt.result_json) as AttentionReceipt;
+      }
+      const now = this.#now();
+      const result: AttentionReceipt = { attention: writeAttentionLevel(tx, command, now) };
       tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
       tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, 'owner', ?)", command.kind, command.requestId, now);
       return result;

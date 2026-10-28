@@ -15,6 +15,7 @@ listDeliveryAttempts(tx, intentId): DeliveryAttempt[]
 resendDeliveryIntent(tx, projectId, intentId, expectedRevision, now): DeliveryResendReceipt
 retireDeliveryReport(tx, projectId, reportId, action, expectedRevision, now): DeliveryRetireReceipt
 retireDeliveryIntent(tx, projectId, intentId, reason, now, { markSettledStale }): "cancelled" | "marked_stale" | "unchanged"
+resolveDeliveryIntent(tx, projectId, intentId, reason, now): "cancelled" | "resolved" | "unchanged"   // REL04
 registerDeliveryGuard(name, check: DeliveryGuard): void
 recordDeliveryResult(tx, attemptId, result, now): DeliveryIntent
 deliveryCommandIdentity(command, maxBytes): string
@@ -38,6 +39,8 @@ Application.delivery(actor, projectId, intentId): { project; intent; report; att
 ```
 
 `commitDeliveryIntent` input may carry `guard` (a registered guard name, for example `pr-alert` from `pr.private_alerts/v1`), stored as `DeliveryIntent.guard` (absent/null on unguarded and legacy intents). `DeliveryGuard = (tx, intent) => DeliveryCurrentness` runs in the claim and send transactions after the owner/source checks and before the channel check, and again in `recordDeliveryResult`. `{ current: false, hold: true }` keeps the intent `waiting` with `nextAction` `wait_for_current_source`; any other non-current verdict cancels unsent work with `stale: true` and the verdict reason; a result landing after drift is kept and marked stale. An unregistered guard or a throwing check holds the intent (`currentness_unavailable`) instead of sending. Dedupe namespace `pr-alert/` is statically reserved for guard `pr-alert`: guardless legacy intents in it are treated as guarded (the field is persisted on the next save) and commits in it without that guard are rejected. Credential screening of text and dedupe keys uses the shared `containsCredential` (`src/security/credentials.ts`). `cancelUnsent` never rewrites a `sent`, `unknown` or terminal `failed` intent. `scrubDeliveryIntentText(tx, intent, scrub)` rewrites only the stored text of one intent, its delivery report and the report's source version (outcome fields untouched). `retireDeliveryIntent` lets a domain cancel one unsent intent (stale + reason) or, with `markSettledStale`, mark an already sent/unknown/failed intent stale without claiming withdrawal.
+
+Since REL04 ([delivery.attention_levels/v1](delivery-attention-levels-v1.md)), `commitDeliveryIntent` input may carry `attention: { class, item, workGroupId }` (identities only, exact shape), stored as `DeliveryIntent.attention`, and intents may carry `resolution: { reason, at } | null`. `resolveDeliveryIntent` cancels unsent work with the reason (`owner_answered` or `no_longer_waiting`) or, when the send already reached the transport, keeps the outcome, sets `resolution` and removes a failed intent's safe retry; it never claims withdrawal. Producers classify their intents and the owner's level filters only creation (`commitAttentionIntent`).
 
 `DeliveryIntent.guarantee` is `"local_dedupe_only"`. `remote` is `none`, `accepted`, `rejected` or `uncertain`, separate from `status` (`waiting`, `queued`, `claimed`, `sent`, `failed`, `unknown`, `cancelled`). `DeliveryReport` has no delivered flag. `DeliveryResendReceipt.warning` is `"duplicates_possible"`.
 
