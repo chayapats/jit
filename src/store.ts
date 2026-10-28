@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { commitDecisionMemorySource, retireDecisionMemorySource } from "./memory/decision-sources";
 
 /** Current application schema revision. Service packaging pins and checks this value. */
-export const schemaVersion = 28;
+export const schemaVersion = 29;
 
 /**
  * Installation-scoped state that never round-trips through backup images and
@@ -72,7 +72,7 @@ export class TransactionStore {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
           if (current === schemaVersion) return;
-          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27].includes(current)) throw new Error("Unsupported migration source");
+          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28].includes(current)) throw new Error("Unsupported migration source");
           if (existing) {
             const snapshot = `${path}.pre-v${current}-${crypto.randomUUID()}.sqlite`;
             const fd = openSync(snapshot, "wx", 0o600);
@@ -866,6 +866,18 @@ export class TransactionStore {
               SELECT RAISE(ABORT, 'general_space_protected');
             END;
             PRAGMA user_version = 28;
+          `);
+          if (current < 29) this.#db.exec(`
+            -- app.local_api/v1 (REL06, ADR 0035): one installation-wide row; no row means the API is off (revision 0).
+            -- Only the owner command local_api.set writes it. The token is never stored here: it lives in owner-only
+            -- files under <data>/local-api/ and rotates on every start.
+            CREATE TABLE IF NOT EXISTS local_api_settings (
+              id INTEGER PRIMARY KEY CHECK (id = 1),
+              revision INTEGER NOT NULL CHECK (revision > 0),
+              enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+              updated_at INTEGER NOT NULL
+            );
+            PRAGMA user_version = 29;
           `);
         }).immediate();
         this.#db.exec("PRAGMA foreign_keys = ON;");

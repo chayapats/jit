@@ -171,6 +171,9 @@ app.dispatch_allowance/v1) and the identity-only dispatch proposals
 Topic promotion links (`topic_promotions`; schema 28, app.topic_promotion/v1)
 and chat title lineage (`chat_title_sources`) hold identities only and are
 included likewise.
+The loopback API setting (`local_api_settings`; schema 29, app.local_api/v1)
+records only whether the owner turned the API on; it is included likewise. The
+API token lives in `<data>/local-api/` files, never in the database or an image.
 Activation (`TransactionStore.swapFrom`, used by OPS02 restore and upgrade
 activation) builds the complete replacement image before an atomic rename and
 always keeps the live installation's owner verifier, sessions,

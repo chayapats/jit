@@ -12,6 +12,7 @@ import { routesOf } from "./team/role-proposals";
 import { fillText, promotionProposalCard, proposalCard, roleProposalCard } from "./web-proposal-card";
 import type { TopicPromotionView } from "./promotion";
 import type { Persona } from "./persona";
+import type { LocalApiSettings } from "./local-api/settings";
 import type { DecisionReadModel, Discussion, RoleRoute } from "./team/types";
 import type { DispatchCardView, TeamCardRole } from "./team/jit-dispatch";
 import { panelTabLabels, panelTabs, searchLimits, settingsSections, type PanelTab, type SettingsSectionId } from "./web-settings";
@@ -1121,7 +1122,7 @@ export function restoreDetailPage(state: { quarantine: RestoreView }, workspace:
 }
 
 /** Owner settings home: persisted appearance and language (ui.preferences/v1) and the persona; the sub-navigation leads to every operation. */
-export function settingsPage(preferences: { theme: ThemePreference; language: "auto" | Locale; revision: number }, workspace: Workspace, csrf: string, persona?: Persona): string {
+export function settingsPage(preferences: { theme: ThemePreference; language: "auto" | Locale; revision: number }, workspace: Workspace, csrf: string, persona?: Persona, localApi?: LocalApiSettings): string {
   const choice = (name: string, value: string, label: string, current: string) =>
     `<label class="choice"><input type="radio" name="${name}" value="${value}"${value === current ? " checked" : ""}>${label}</label>`;
   // app.persona/v1: the only Web writer of the persona is this owner form (setup reuses the same command).
@@ -1140,6 +1141,10 @@ export function settingsPage(preferences: { theme: ThemePreference; language: "a
       <fieldset class="choice-group"><legend>${tr("settings.theme")}</legend>${choice("theme", "system", tr("settings.theme_system"), preferences.theme)}${choice("theme", "dark", tr("settings.theme_dark"), preferences.theme)}${choice("theme", "light", tr("settings.theme_light"), preferences.theme)}</fieldset>
       <fieldset class="choice-group"><legend>${tr("settings.language")}</legend>${choice("language", "auto", tr("settings.language_auto"), preferences.language)}${choice("language", "th", tr("settings.language_th"), preferences.language)}${choice("language", "en", tr("settings.language_en"), preferences.language)}</fieldset>
       <button class="primary">${tr("settings.save")}</button></form></section>
-    <section class="settings-section" aria-labelledby="about-title"><h2 id="about-title">${tr("settings.about")}</h2><p class="licenses">${tr("settings.fonts_note")}
+${localApi ? `<section class="settings-section" id="local-api" aria-labelledby="local-api-title"><h2 id="local-api-title">${tr("settings.local_api")}</h2><p>${tr("settings.local_api_note")}</p><p>${tr("settings.local_api_files")}</p>
+    <form class="team-form" method="post" action="/settings/local-api">${hiddenCommand(csrf, localApi.revision)}
+      <label class="choice"><input type="checkbox" name="enabled"${localApi.enabled ? " checked" : ""}>${tr("settings.local_api_enabled")}</label>
+      <small>${tr(localApi.enabled ? "settings.local_api_state_on" : "settings.local_api_state_off")} · ${tr("settings.local_api_revision")} ${localApi.revision}</small><button class="primary">${tr("settings.local_api_save")}</button></form></section>` : ""}
+        <section class="settings-section" aria-labelledby="about-title"><h2 id="about-title">${tr("settings.about")}</h2><p class="licenses">${tr("settings.fonts_note")}
       <a href="${assetUrl("OFL-Inter.txt")}">Inter</a> · <a href="${assetUrl("OFL-NotoSansThai.txt")}">Noto Sans Thai</a> · <a href="${assetUrl("OFL-JetBrainsMono.txt")}">JetBrains Mono</a></p></section></div>`);
 }
