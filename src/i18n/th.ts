@@ -1733,4 +1733,7 @@ export const th = {
   "error.screenshot_invalid": "เก็บภาพหน้าจอนี้ไม่ได้",
   "error.screenshot_not_found": "ไม่ได้เก็บภาพหน้าจอนี้ไว้แล้ว",
   "approval.kind_browser_confirm": "ส่งหรือยืนยันใน browser",
+  "error.computer_setting_requires_web": "เปลี่ยนการตั้งค่าว่าทุกการคลิกและกดปุ่มของ computer-use ต้องขออนุมัติหรือไม่ ได้เฉพาะเจ้าของใน Web",
+  "error.invalid_computer_command": "คำสั่งตั้งค่า computer-use ไม่ถูกต้อง",
+  "approval.kind_computer_confirm": "สั่งงานบน desktop ของ box",
 } as const;

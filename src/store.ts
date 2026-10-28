@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { commitDecisionMemorySource, retireDecisionMemorySource } from "./memory/decision-sources";
 
 /** Current application schema revision. Service packaging pins and checks this value. */
-export const schemaVersion = 39;
+export const schemaVersion = 40;
 
 /**
  * Installation-scoped state that never round-trips through backup images and
@@ -122,7 +122,7 @@ export class TransactionStore {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
           if (current === schemaVersion) return;
-          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38].includes(current)) throw new Error("Unsupported migration source");
+          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39].includes(current)) throw new Error("Unsupported migration source");
           if (existing) {
             const snapshot = `${path}.pre-v${current}-${crypto.randomUUID()}.sqlite`;
             const fd = openSync(snapshot, "wx", 0o600);
@@ -1219,6 +1219,21 @@ export class TransactionStore {
               PRIMARY KEY (project_id, revision)
             );
             PRAGMA user_version = 39;
+          `);
+          // exec.computer/v1 (EXE16, ADR 0039, schema 40): the `computer_confirm` card kind (never auto-approved) and the
+          // Web-only project setting `computer.confirmEveryAction`; no row means the default, on.
+          if (current < 40) this.#db.exec(`
+            ${rebuildCardKinds(["effect.git_push", "effect.github_pr_create", "effect.github_comment", "effect.github_pr_merge", "effect.deploy", "mcp_tool", "browser_confirm",
+              "computer_confirm"], ["effect.git_push", "effect.github_pr_create", "effect.github_comment", "effect.github_pr_merge", "effect.deploy", "mcp_tool"])}
+            CREATE TABLE IF NOT EXISTS computer_settings (
+              project_id TEXT NOT NULL,
+              revision INTEGER NOT NULL CHECK (revision > 0),
+              confirm_every_action INTEGER NOT NULL CHECK (confirm_every_action IN (0, 1)),
+              channel TEXT NOT NULL CHECK (channel = 'web'),
+              created_at INTEGER NOT NULL,
+              PRIMARY KEY (project_id, revision)
+            );
+            PRAGMA user_version = 40;
           `);
         }).immediate();
         this.#db.exec("PRAGMA foreign_keys = ON;");

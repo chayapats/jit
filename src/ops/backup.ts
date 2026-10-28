@@ -319,6 +319,8 @@ export const backupImageTables: Readonly<Record<string, "include" | "exclude" | 
   mcp_proposals: "include", mcp_servers: "include",
   // app.takeover/v1 (schema 39): owner takeover revisions, identity only; screenshots are memory-only, never in an image.
   takeover_sessions: "include",
+  // exec.computer/v1 (schema 40): the owner's confirm-every-action revisions, no credentials.
+  computer_settings: "include",
   project_team: "include", projects: "include", restore_quarantines: "include", roles: "include",
   schway_native_refs: "include", source_versions: "include", sources: "include",
   task_events: "include", task_evidence_artifacts: "include", task_proposals: "include", tasks: "include",

@@ -467,6 +467,16 @@ export class BrowserService {
   };
 
   /**
+   * Keeps the project's virtual display (Xvfb :99 with Chromium, started by the relay) running for one user, such as
+   * one computer-use run; `release` ends that use with the same rules as a browser run.
+   */
+  async holdDesktop(projectId: string, roleId: string | null): Promise<{ release(): void }> {
+    const live = await this.#acquire(projectId, roleId);
+    let released = false;
+    return { release: () => { if (!released) { released = true; if (!live.closed) this.#release(live); } } };
+  }
+
+  /**
    * Captures the whole virtual display (`scrot` on :99, through the runner) into the screenshot store: the owner's
    * live view during a takeover, and `computer_screenshot`. `screen_unavailable` when no display runs.
    */

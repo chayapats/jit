@@ -16,23 +16,25 @@ import { assertExecutionAllowed } from "./access";
  * receipt; the effect executor then runs it exactly once outside every box. A crash during `executing` reconciles to
  * `unknown` and is never retried automatically. Model output, retrieved content and tool results never decide a card.
  */
-export type EffectKind = "effect.git_push" | "effect.github_pr_create" | "effect.github_comment" | "effect.github_pr_merge" | "effect.deploy" | "mcp_tool" | "browser_confirm";
+export type EffectKind = "effect.git_push" | "effect.github_pr_create" | "effect.github_comment" | "effect.github_pr_merge" | "effect.deploy" | "mcp_tool" | "browser_confirm"
+  | "computer_confirm";
 export const effectKinds: readonly EffectKind[] = Object.freeze(["effect.git_push", "effect.github_pr_create", "effect.github_comment", "effect.github_pr_merge", "effect.deploy", "mcp_tool",
-  "browser_confirm"]);
+  "browser_confirm", "computer_confirm"]);
 /**
- * Kinds an owner auto-approve rule may decide. A browser confirm action always waits for the owner (ADR 0039):
- * there is no rule for it.
+ * Kinds an owner auto-approve rule may decide. A browser or computer confirm action always waits for the owner
+ * (ADR 0039): there is no rule for either.
  */
 export const autoApproveKinds: readonly EffectKind[] = Object.freeze(["effect.git_push", "effect.github_pr_create", "effect.github_comment", "effect.github_pr_merge", "effect.deploy", "mcp_tool"]);
 /**
  * Card kinds whose effect runs inside the project box or an MCP sidecar through a registered performer
  * ({@link EffectExecutorOptions.performers}), rather than from Jit with a released connection.
  */
-export const inBoxKinds: readonly EffectKind[] = Object.freeze(["mcp_tool", "browser_confirm"]);
+export const inBoxKinds: readonly EffectKind[] = Object.freeze(["mcp_tool", "browser_confirm", "computer_confirm"]);
 /**
  * The level a card of `kind` needs from its proposing role, when it is created, decided and run. The EXE07 effects
  * need `full`; an `mcp_tool` card needs `workspace`, the level MCP servers are installed and run at (ADR 0038), and a
- * `browser_confirm` card the level browser tools run at (ADR 0039).
+ * `browser_confirm` card the level browser tools run at (ADR 0039). A `computer_confirm` card needs `full`, like
+ * computer-use itself.
  */
 export function cardLevel(kind: EffectKind): "workspace" | "full" {
   return kind === "mcp_tool" || kind === "browser_confirm" ? "workspace" : "full";
@@ -76,7 +78,20 @@ export type EffectAction =
   | { kind: "effect.github_pr_merge"; remote: PinnedRemote; github: GitHubTarget; pullNumber: number; headSha: string; method: "merge" | "squash" | "rebase" }
   | { kind: "effect.deploy"; target: { name: string; url: string; revision: number }; ref: string | null }
   | McpToolAction
-  | BrowserConfirmAction;
+  | BrowserConfirmAction
+  | ComputerConfirmAction;
+/** The intent a model declares for a computer action. Untrusted: it can only add a card, never remove one (ADR 0039). */
+export type ComputerIntent = "input" | "navigate" | "submit" | "confirm";
+export const computerIntents: readonly ComputerIntent[] = Object.freeze(["input", "navigate", "submit", "confirm"]);
+/** Why Jit put a computer action behind a card. */
+export type ComputerReason = "declared_submit" | "declared_confirm" | "enter_key" | "line_break" | "confirm_every_action";
+export const computerReasonCodes: readonly ComputerReason[] = Object.freeze(["declared_submit", "declared_confirm", "enter_key", "line_break", "confirm_every_action"]);
+/** exec.computer/v1 (EXE16): one paused desktop action with its exact input, the declared intent and Jit's reasons. */
+export interface ComputerConfirmAction {
+  kind: "computer_confirm"; operation: "click" | "type" | "key";
+  x: number | null; y: number | null; text: string | null; keys: string[] | null;
+  intent: ComputerIntent; reasons: ComputerReason[];
+}
 /** app.mcp_servers/v1 (EXE12): one call of a gated MCP tool with its exact arguments, pinned to the server revision. */
 export interface McpToolAction { kind: "mcp_tool"; server: { id: string; name: string; revision: number }; tool: string; arguments: Record<string, unknown> }
 /** Why Jit classified a browser action as a confirm action (ADR 0039). */
@@ -163,6 +178,18 @@ export function validateAction(action: EffectAction): void {
       if (typed ? !((typeof action.text === "string" && action.text.isWellFormed() && Buffer.byteLength(action.text) <= 4096 && action.textDigest === null) ||
           (action.text === null && typeof action.textDigest === "string" && /^[0-9a-f]{64}$/.test(action.textDigest)))
         : action.text !== null || action.textDigest !== null) throw invalid();
+      return;
+    }
+    case "computer_confirm": {
+      const int = (value: unknown, max: number) => Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) < max;
+      const shape = action.operation === "click" ? int(action.x, 1280) && int(action.y, 800) && action.text === null && action.keys === null
+        : action.operation === "type" ? action.x === null && action.y === null && typeof action.text === "string" && action.text.length >= 1 && [...action.text].length <= 2000 &&
+          action.text.isWellFormed() && !action.text.includes("\u0000") && action.keys === null
+        : action.operation === "key" ? action.x === null && action.y === null && action.text === null && Array.isArray(action.keys) && action.keys.length >= 1 && action.keys.length <= 16 &&
+          action.keys.every(key => typeof key === "string" && /^[A-Za-z0-9_]{1,32}(\+[A-Za-z0-9_]{1,32}){0,3}$/.test(key) && !/(^|\+)0x/i.test(key))
+        : false;
+      if (!shape || !computerIntents.includes(action.intent) || !Array.isArray(action.reasons) || action.reasons.length < 1 ||
+          action.reasons.some(reason => !computerReasonCodes.includes(reason)) || new Set(action.reasons).size !== action.reasons.length) throw invalid();
       return;
     }
     case "mcp_tool":
@@ -382,7 +409,7 @@ export function matchingRule(tx: AppTransaction, projectId: string, action: Effe
   }
   if (action.kind === "effect.deploy") return scope.target === action.target.name ? rule : null;
   if (action.kind === "mcp_tool") return (scope.tools as { server: string; tool: string }[]).some(item => item.server === action.server.name && item.tool === action.tool) ? rule : null;
-  if (action.kind === "browser_confirm") return null;
+  if (action.kind === "browser_confirm" || action.kind === "computer_confirm") return null;
   return scope.remote === action.remote.name ? rule : null;
 }
 

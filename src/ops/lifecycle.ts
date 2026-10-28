@@ -15,6 +15,7 @@ import { EffectExecutor } from "../exec/effect-executor";
 import { boxStreamsOf } from "../exec/box-runtime";
 import { McpGateway } from "../exec/mcp-gateway";
 import { BrowserService } from "../exec/browser";
+import { ComputerService } from "../exec/computer";
 import { composeJobQueue } from "../composition";
 import type { ApplicationRunPort } from "../team/run-port";
 import { verifySchwayBridge } from "../team/schway-port";
@@ -383,10 +384,13 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
     // exec.browser/v1: browser sessions run in project boxes (the browser image when one is pinned) and end with the box.
     const browser = boxes && streams ? new BrowserService(store, { boxes, runtime: streams, now, ...(config.execution.confirmWords ? { confirmWords: config.execution.confirmWords } : {}) }) : null;
     if (boxes && browser) boxes.onStopped(projectId => browser.close(projectId));
+    // exec.computer/v1: xdotool on the same virtual display, at `full` only.
+    const computer = browser ? new ComputerService(store, browser, { now }) : null;
     const effects = boxes && connections ? new EffectExecutor(store, { vault: connections, boxes, mirrorRoot: config.execution.directory, now,
-      performers: { ...(mcp ? { mcp_tool: mcp.perform } : {}), ...(browser ? { browser_confirm: browser.perform } : {}) } }) : null;
+      performers: { ...(mcp ? { mcp_tool: mcp.perform } : {}), ...(browser ? { browser_confirm: browser.perform } : {}),
+        ...(computer ? { computer_confirm: computer.perform } : {}) } }) : null;
     const compose = { now, prCacheRoot: input.prCacheRoot ?? (service ? resolve(service.stateDirectory, "pr-cache") : ".local/pr-cache"), ...(boxes ? { boxes } : {}),
-      ...(effects ? { effects } : {}), ...(mcp ? { mcp } : {}), ...(browser ? { browser } : {}) };
+      ...(effects ? { effects } : {}), ...(mcp ? { mcp } : {}), ...(browser ? { browser } : {}), ...(computer ? { computer } : {}) };
     managed = ManagedService.forConfig(store, config, compose);
     const composed = composeJobQueue(store, config, compose);
     managed.adopt(composed);

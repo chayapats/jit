@@ -36,6 +36,7 @@ import { normalizeSecret, type ConnectionCommand } from "./exec/connections";
 import type { ResetBoxCommand } from "./exec/box-commands";
 import type { McpCommand } from "./exec/mcp";
 import type { TakeoverCommand, TakeoverInputCommand } from "./exec/takeover";
+import type { SetComputerSettingsCommand } from "./exec/computer";
 
 /** ADR 0028 Content-Security-Policy: every page, asset and API response allows only this origin, and no inline script or eval. */
 export const contentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
@@ -262,6 +263,8 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       // app.mcp_servers/v1 JSON API (EXE12): proposals and servers, Web-only accept/revise; the cards and settings page are EXE13.
       // app.takeover/v1 and exec.browser/v1 JSON API (EXE14): takeover state and Web-only owner commands, and the bounded
       // screenshot store the live view (EXE15) reads.
+      // exec.computer/v1 JSON API (EXE16): the Web-only `computer.confirmEveryAction` toggle; the settings row lands with EXE04.
+      const computerRoute = /^\/api\/projects\/([a-f0-9-]{36})\/computer$/.exec(pathname);
       const takeoverRoute = /^\/api\/projects\/([a-f0-9-]{36})\/takeover(?:\/(start|end|click|type|key))?$/.exec(pathname);
       const screenshotRoute = /^\/api\/projects\/([a-f0-9-]{36})\/box\/screenshots(?:\/([a-f0-9-]{36}))?$/.exec(pathname);
       const mcpRoute = /^\/api\/projects\/([a-f0-9-]{36})\/mcp(?:\/(proposals|servers)\/([a-f0-9-]{36})\/(accept|reject|revise|remove))?$/.exec(pathname);
@@ -492,6 +495,16 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
           payload: action ? { connectionId, ...picked } : picked } as ConnectionCommand;
         return json(app.execute(auth.actor, command));
       }
+      if (computerRoute) {
+        const projectId = computerRoute[1]!;
+        if (request.method === "GET") return json({ computer: app.computerSettings(auth.actor, projectId) });
+        if (request.method !== "POST") throw new AppError("method_not_allowed", 405);
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "confirmEveryAction"].includes(key))) throw new AppError("invalid_body");
+        const command = { kind: "computer.settings.set", requestId: body.requestId, projectId, expectedRevision: body.expectedRevision,
+          payload: Object.hasOwn(body, "confirmEveryAction") ? { confirmEveryAction: body.confirmEveryAction } : {} } as SetComputerSettingsCommand;
+        return json(app.execute(auth.actor, command));
+      }
       if (takeoverRoute) {
         const projectId = takeoverRoute[1]!, action = takeoverRoute[2];
         if (!action) {
@@ -552,7 +565,8 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         if (request.method === "GET") {
           if (target !== "access") throw new AppError("method_not_allowed", 405);
           const access = app.projectAccess(auth.actor, projectId);
-          return json({ access, roles: app.roleAccess(auth.actor, projectId), effective: effectiveAccess(access, null) });
+          // exec.computer/v1: the access settings carry the project's computer-use row.
+          return json({ access, roles: app.roleAccess(auth.actor, projectId), effective: effectiveAccess(access, null), computer: app.computerSettings(auth.actor, projectId) });
         }
         const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
         const fields = target === "access" ? ["level", "confirmToken"] : target === "access/roles" ? ["roleId", "level"] : target === "execution/halt" ? ["reason"] : [];

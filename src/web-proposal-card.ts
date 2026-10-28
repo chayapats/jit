@@ -33,6 +33,10 @@ export function summarizeApprovalAction(action: EffectAction): string[] {
     case "browser_confirm":
       return [action.url, `${action.operation} · ${action.element.name || action.element.tag}`, ...(action.formFields.length ? [action.formFields.join(", ")] : []),
         ...(action.operation === "type" ? [action.text ?? "••••••"] : [])];
+    // exec.computer/v1 (EXE16): the exact desktop input, the model's declared intent and Jit's reasons.
+    case "computer_confirm":
+      return [action.operation === "click" ? `click ${action.x}, ${action.y}` : action.operation === "key" ? `key ${action.keys!.join(" ")}` : `type ${action.text!}`,
+        `${action.intent} · ${action.reasons.join(", ")}`];
   }
 }
 

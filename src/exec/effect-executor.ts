@@ -190,7 +190,7 @@ export class EffectExecutor {
     catch { return { failed: failBeforeStart(card, "access_changed", now) }; }
     const action = card.action;
     // In-box kinds release no connection here: an MCP sidecar receives its bound values from the gateway at spawn.
-    if (action.kind === "mcp_tool" || action.kind === "browser_confirm") {
+    if (action.kind === "mcp_tool" || action.kind === "browser_confirm" || action.kind === "computer_confirm") {
       if (!this.#options.performers?.[action.kind]) return { failed: failBeforeStart(card, "performer_not_configured", now) };
       const started = claimCard(tx, projectId, cardId, now);
       if (!started) throw new AppError("approval_card_not_pending", 409);
@@ -430,6 +430,8 @@ function subjectOf(card: ApprovalCard): string {
     case "effect.deploy": return `${action.target.name}${action.ref ? ` @${action.ref}` : ""}`;
     case "mcp_tool": return `${action.server.name} ${action.tool}`;
     case "browser_confirm": return `${action.operation} "${action.element.name.slice(0, 80) || action.element.tag}" @ ${hostOf(action.url)}`;
+    case "computer_confirm": return action.operation === "click" ? `click ${action.x},${action.y} (${action.intent})`
+      : action.operation === "key" ? `key ${action.keys!.join(" ")} (${action.intent})` : `type ${[...action.text!].length} characters (${action.intent})`;
   }
 }
 

@@ -52,7 +52,8 @@ export function validTypedText(text: unknown): text is string {
 }
 /** Validates key combinations (`Return`, `ctrl+a`); at most {@link maximumKeys}. */
 export function validKeys(keys: unknown): keys is string[] {
-  return Array.isArray(keys) && keys.length >= 1 && keys.length <= maximumKeys && keys.every(key => typeof key === "string" && keyPattern.test(key));
+  // Hex keysyms (`0xff0d` is Return) are refused, so every key is a name Jit can classify.
+  return Array.isArray(keys) && keys.length >= 1 && keys.length <= maximumKeys && keys.every(key => typeof key === "string" && keyPattern.test(key) && !/(^|\+)0x/i.test(key));
 }
 
 /** Validates the exact shape (`invalid_takeover_command`) and returns the receipt identity. */

@@ -44,5 +44,8 @@ export function approvalDetailParts(card: ApprovalCard): { pinned: string[]; fle
     case "browser_confirm":
       return { pinned: [action.url, `${action.operation} · ${action.element.name || action.element.tag}`, ...(action.operation === "type" ? [action.text ?? "••••••"] : [])],
         flexible: action.formFields.length ? [action.formFields.join(", ")] : [] };
+    case "computer_confirm":
+      return { pinned: [action.operation === "click" ? `click ${action.x}, ${action.y}` : action.operation === "key" ? `key ${action.keys!.join(" ")}` : `type ${action.text!}`,
+        `${action.intent} · ${action.reasons.join(", ")}`], flexible: [] };
   }
 }

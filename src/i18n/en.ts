@@ -1731,4 +1731,7 @@ export const en: Record<MessageKey, string> = {
   "error.screenshot_invalid": "That screenshot couldn’t be stored.",
   "error.screenshot_not_found": "This screenshot is no longer kept.",
   "approval.kind_browser_confirm": "Submit or confirm in the browser",
+  "error.computer_setting_requires_web": "Only the owner in Web can change whether every computer-use click and key needs approval.",
+  "error.invalid_computer_command": "The computer-use setting command is not valid.",
+  "approval.kind_computer_confirm": "Act on the box’s desktop",
 };
