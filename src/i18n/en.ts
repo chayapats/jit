@@ -1695,6 +1695,8 @@ export const en: Record<MessageKey, string> = {
   "approval.rules_title": "Automatic approvals",
   "approval.rule_create": "Add rule",
   "approval.rule_disable": "Disable",
+  "approval.rule_save": "Save rule",
+  "approval.rule_enable": "Enable rule",
   "approval.rule_confirm": "I understand matching actions will run without asking me",
   "approval.pending_none": "Nothing is waiting for you",
   "approval.field_project": "Project",

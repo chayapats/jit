@@ -156,3 +156,51 @@ test("(8) the rendered text contains no { and no JSON details", async () => {
   expect(rendered.text).not.toContain('"kind"');
   expect(rendered.buttons).toHaveLength(2);
 });
+
+test("a push card with 20 long commit summaries still notifies within the byte budget", async () => {
+  const { f } = await proposing();
+  setLevel(f, "full");
+  setRemote(f, connection(f, "github_token", `ghp_${rid().replaceAll("-", "")}`));
+  const { actionDigest, canonicalJson } = await import("../src/exec/approval-cards");
+  const sha = (n: number) => n.toString(16).padStart(40, "0");
+  const action = {
+    kind: "effect.git_push" as const,
+    remote: { name: "origin", url: "https://github.com/owner/repo.git", revision: 1 },
+    repository: ".",
+    updates: [{ ref: "refs/heads/main", oldSha: "a".repeat(40), newSha: "b".repeat(40) }],
+    commits: Array.from({ length: 20 }, (_, i) => ({ sha: sha(i + 1), summary: `งาน ${i} ` + "ก".repeat(300) })),
+  };
+  const cardId = rid(), now = f.clock.now;
+  f.store.transaction(tx => {
+    tx.run(`INSERT INTO approval_cards (id, project_id, topic_id, run_id, job_id, role_id, kind, action_json, digest, revision, state, telegram_eligible, created_at, expires_at, updated_at, started_at)
+      VALUES (?, ?, ?, ?, ?, ?, 'effect.git_push', ?, ?, 1, 'pending', 1, ?, ?, ?, NULL)`,
+      cardId, f.project.id, f.topic.id, rid(), rid(), f.jitId, canonicalJson(action), actionDigest(action as never), now, now + cardLifetimeMs, now);
+  });
+  const full = f.app.approvalCard(f.auth.actor, f.project.id, cardId);
+  expect(full.telegramEligible).toBe(true);
+  const notified = notifyApprovalCard(f.store, full, now);
+  expect(notified).not.toBeNull();
+  const text = lastIntentText(f);
+  expect(Buffer.byteLength(text) <= 4000).toBe(true);
+  expect(text).toContain(notified!.approveData);
+  expect(text).toContain(notified!.denyData);
+  expect(text).toMatch(/และอีก \d+ รายการ|and \d+ more/);
+});
+
+test("tapping an expired card after a newer callback still answers expired", async () => {
+  const { f, telegram, commands, propose } = await proposing();
+  setLevel(f, "full");
+  setDeploy(f, connection(f, "deploy_secret", deployToken()));
+  const card = await propose(effectToolNames["effect.deploy"], { target: "production" });
+  const notified = notifyApprovalCard(f.store, card, f.clock.now)!;
+  f.clock.now += cardLifetimeMs + 1;
+  // A newer callback prunes through the tombstone window but keeps the old refs readable.
+  await propose(effectToolNames["effect.deploy"], { target: "production" });
+  const next = cards(f)[0]!;
+  expect(next.id).not.toBe(card.id);
+  notifyApprovalCard(f.store, next, f.clock.now);
+  telegram.ingest([callback(741, notified.approveData)]);
+  telegram.processProjectCommands(commands);
+  expect(lastIntentText(f)).toContain(dictionaries.th["telegram.approval_expired"]);
+  expect(f.app.approvalCard(f.auth.actor, f.project.id, card.id).state).toBe("expired");
+});

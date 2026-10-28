@@ -310,6 +310,7 @@ export function settingsConnectionsPage(workspace: NavigationWorkspace, list: Co
     <section class="settings-section" aria-labelledby="connections-list-title"><h2 id="connections-list-title">${tr("settings.connections")}</h2>
     ${list.length ? `<ul class="data-projects">${list.map(row).join("")}</ul>` : `<p class="empty-list" role="status">${tr("connection.note")}</p>`}</section></div>`,
     { breadcrumb: { title: tr("shell.settings"), href: "/settings" } });
+}
 
 /**
  * Settings › Approvals (web.approval_cards/v1, EXE09): pending cards across projects and the per-project
@@ -334,11 +335,23 @@ export function settingsApprovalsPage(workspace: NavigationWorkspace,
   }
   const rulesTables = projects.map(p => {
     const entry = byProject.get(p.id);
-    const rows = (entry?.rules ?? []).map(rule =>
-      `<li>${escape(rule.effectKind)} · ${escape(JSON.stringify(rule.scope))} · ${rule.enabled ? escape(tr("approval.state_approved")) : escape(tr("approval.state_denied"))} · rev ${rule.revision}`
-      + (rule.enabled ? ` <form method="post" action="/settings/approvals/rules/${p.id}%3A${rule.effectKind}">${hiddenCommand(csrf, rule.revision)}`
+    const rows = (entry?.rules ?? []).map(rule => {
+      const scope = rule.scope as { remote?: string; branches?: string[]; target?: string };
+      const remote = scope.remote ?? "", branches = (scope.branches ?? []).join(","), target = scope.target ?? "";
+      // P1: an edit/enable form per existing rule posts rule.revision, so editing a rule
+      // or re-enabling a disabled one no longer fails with 409 stale_revision.
+      const edit = `<form class="team-form" method="post" action="/settings/approvals/rules">${hiddenCommand(csrf, rule.revision)}`
         + `<input type="hidden" name="projectId" value="${p.id}"><input type="hidden" name="effectKind" value="${escape(rule.effectKind)}">`
-        + `<button>${tr("approval.rule_disable")}</button></form>` : "") + `</li>`).join("");
+        + `<label>${tr("approval.field_remote")}<input name="remote" maxlength="32" value="${escape(remote)}"></label>`
+        + `<label>${tr("approval.field_branches")}<input name="branches" maxlength="400" value="${escape(branches)}"></label>`
+        + `<label>${tr("approval.field_target")}<input name="target" maxlength="32" value="${escape(target)}"></label>`
+        + `<label class="choice"><input type="checkbox" name="confirm" value="on" required>${tr("approval.rule_confirm")}</label>`
+        + `<button class="primary">${rule.enabled ? tr("approval.rule_save") : tr("approval.rule_enable")}</button></form>`;
+      const disable = rule.enabled ? ` <form method="post" action="/settings/approvals/rules/${p.id}%3A${rule.effectKind}">${hiddenCommand(csrf, rule.revision)}`
+        + `<input type="hidden" name="projectId" value="${p.id}"><input type="hidden" name="effectKind" value="${escape(rule.effectKind)}">`
+        + `<button>${tr("approval.rule_disable")}</button></form>` : "";
+      return `<li>${escape(rule.effectKind)} · ${escape(JSON.stringify(rule.scope))} · ${rule.enabled ? escape(tr("approval.state_approved")) : escape(tr("approval.state_denied"))} · rev ${rule.revision}${disable}${edit}</li>`;
+    }).join("");
     return `<li><h3>${escape(p.name)}</h3>${rows ? `<ul>${rows}</ul>` : `<p class="empty-list">${tr("approval.pending_none")}</p>`}</li>`;
   }).join("");
   const kindOptions = effectKinds.map(kind => `<option value="${kind}">${escape(tr(`approval.kind_${kind.replace(/^effect\./, "")}` as MessageKey))}</option>`).join("");

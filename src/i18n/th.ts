@@ -1697,6 +1697,8 @@ export const th = {
   "approval.rules_title": "การอนุมัติอัตโนมัติ",
   "approval.rule_create": "เพิ่มกฎ",
   "approval.rule_disable": "ปิด",
+  "approval.rule_save": "บันทึกกฎ",
+  "approval.rule_enable": "เปิดใช้กฎ",
   "approval.rule_confirm": "ฉันเข้าใจว่า action ที่ตรงตามเงื่อนไขจะทำงานโดยไม่ต้องถามฉัน",
   "approval.pending_none": "ไม่มีอะไรรอคุณ",
   "approval.field_project": "โครงการ",

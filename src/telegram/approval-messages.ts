@@ -8,26 +8,36 @@ export function renderApprovalMessage(card: ApprovalCard, locale: Locale, option
     const kindTitle = tr(`approval.kind_${kindSuffix}` as never);
     const project = options?.projectName ?? card.projectId;
     const topic = options?.topicTitle ?? card.topicId;
-    const lines = [kindTitle, project, topic, ...summarize(card)];
+    const { pinned, flexible } = approvalDetailParts(card);
+    const lines = [kindTitle, project, topic, ...pinned, ...flexible];
     const text = lines.join("\n");
     return { text, buttons: [{ text: tr("approval.approve"), data: "" }, { text: tr("approval.deny"), data: "" }] };
   });
 }
 
-function summarize(card: ApprovalCard): string[] {
+/** Splits the card summary into pinned lines (always kept) and flexible lines (truncated first). */
+export function approvalDetailParts(card: ApprovalCard): { pinned: string[]; flexible: string[] } {
   const action = card.action;
   switch (action.kind) {
     case "effect.git_push":
-      return [`${action.remote.name}`, action.repository,
-        ...action.updates.map(update => `${update.ref}: ${update.oldSha ?? "new"} -> ${update.newSha}`),
-        ...action.commits.map(commit => `${commit.sha.slice(0, 8)} ${commit.summary}`)];
+      return {
+        pinned: [`${action.remote.name}`, action.repository,
+          ...action.updates.map(update => `${update.ref}: ${update.oldSha ?? "new"} -> ${update.newSha}`)],
+        flexible: action.commits.map(commit => `${commit.sha.slice(0, 8)} ${commit.summary}`),
+      };
     case "effect.github_pr_create":
-      return [`${action.github.owner}/${action.github.repo}`, `base ${action.base} <- head ${action.head}`, action.title];
+      return {
+        pinned: [`${action.github.owner}/${action.github.repo}`, `base ${action.base} <- head ${action.head}`, action.title],
+        flexible: action.body ? [action.body] : [],
+      };
     case "effect.github_comment":
-      return [`${action.github.owner}/${action.github.repo} #${action.issueNumber}`, action.body.slice(0, 500)];
+      return { pinned: [`${action.github.owner}/${action.github.repo} #${action.issueNumber}`], flexible: [action.body] };
     case "effect.github_pr_merge":
-      return [`${action.github.owner}/${action.github.repo} #${action.pullNumber}`, action.headSha.slice(0, 8), action.method];
+      return {
+        pinned: [`${action.github.owner}/${action.github.repo} #${action.pullNumber}`, action.headSha.slice(0, 8), action.method],
+        flexible: [],
+      };
     case "effect.deploy":
-      return [action.target.name, action.ref ?? "-"];
+      return { pinned: [action.target.name, action.ref ?? "-"], flexible: [] };
   }
 }

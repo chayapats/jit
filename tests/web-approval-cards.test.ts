@@ -154,3 +154,53 @@ test("(9) CSRF missing → 403", async () => {
     headers: { "content-type": "application/x-www-form-urlencoded", origin, cookie: `jit_session=${f.token}` } }));
   expect(res.status).toBe(403);
 });
+
+test("(10) rule edit posts the rule revision; disabling then re-enabling works", async () => {
+  const { f, web } = await proposing();
+  setLevel(f, "full");
+  setDeploy(f, connection(f, "deploy_secret", deployToken()));
+  const fields = { csrf: f.auth.csrf, projectId: f.project.id, effectKind: "effect.deploy", remote: "", branches: "" };
+  const created = await postForm(f, web, "/settings/approvals/rules", { ...fields, requestId: rid(), expectedRevision: "0", target: "production", confirm: "on" });
+  expect(created.status).toBe(303);
+  let rule = f.app.effectSettings(f.auth.actor, f.project.id).rules.find(r => r.effectKind === "effect.deploy")!;
+  expect(rule).toMatchObject({ enabled: true, revision: 1, scope: { target: "production" } });
+  // The settings page renders per-rule edit/enable forms posting the rule revision.
+  const listing = await (await get(f, web, "/settings/approvals")).text();
+  expect(listing).toContain(`name="expectedRevision" value="${rule.revision}"`);
+  // Editing with a stale revision fails; with the rule revision it updates the scope.
+  const stale = await postForm(f, web, "/settings/approvals/rules", { ...fields, requestId: rid(), expectedRevision: "0", target: "staging", confirm: "on" });
+  expect(stale.status).toBe(409);
+  const edited = await postForm(f, web, "/settings/approvals/rules", { ...fields, requestId: rid(), expectedRevision: String(rule.revision), target: "staging", confirm: "on" });
+  expect(edited.status).toBe(303);
+  rule = f.app.effectSettings(f.auth.actor, f.project.id).rules.find(r => r.effectKind === "effect.deploy")!;
+  expect(rule).toMatchObject({ enabled: true, revision: 2, scope: { target: "staging" } });
+  // Disable, then re-enable through the edit/enable form that posts the rule revision.
+  const disabled = await postForm(f, web, `/settings/approvals/rules/${f.project.id}%3Aeffect.deploy`,
+    { csrf: f.auth.csrf, requestId: rid(), expectedRevision: String(rule.revision), projectId: f.project.id, effectKind: "effect.deploy" });
+  expect(disabled.status).toBe(303);
+  rule = f.app.effectSettings(f.auth.actor, f.project.id).rules.find(r => r.effectKind === "effect.deploy")!;
+  expect(rule).toMatchObject({ enabled: false, revision: 3 });
+  const reenabled = await postForm(f, web, "/settings/approvals/rules", { ...fields, requestId: rid(), expectedRevision: String(rule.revision), target: "staging", confirm: "on" });
+  expect(reenabled.status).toBe(303);
+  rule = f.app.effectSettings(f.auth.actor, f.project.id).rules.find(r => r.effectKind === "effect.deploy")!;
+  expect(rule).toMatchObject({ enabled: true, revision: 4, scope: { target: "staging" } });
+});
+
+test("(11) a pending card shows even with 51 newer cards in another topic", async () => {
+  const { f, web, propose } = await proposing();
+  setLevel(f, "full");
+  setDeploy(f, connection(f, "deploy_secret", deployToken()));
+  const card = await propose(effectToolNames["effect.deploy"], { target: "production" });
+  const project = f.app.project(f.auth.actor, f.project.id);
+  const other = f.app.execute(f.auth.actor, { kind: "topic.create", projectId: f.project.id, requestId: rid(), expectedRevision: project.revision, payload: { title: "หัวข้ออื่น" } }).topic;
+  f.store.transaction(tx => {
+    for (let i = 0; i < 51; i++) {
+      const now = f.clock.now + i + 1;
+      tx.run(`INSERT INTO approval_cards (id, project_id, topic_id, run_id, job_id, role_id, kind, action_json, digest, revision, state, telegram_eligible, created_at, expires_at, updated_at, started_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'effect.deploy', '{}', ?, 1, 'pending', 1, ?, ?, ?, NULL)`,
+        rid(), f.project.id, other.id, rid(), rid(), f.jitId, "b".repeat(63) + (i % 16).toString(16), now, now + cardLifetimeMs, now);
+    }
+  });
+  const html = await (await get(f, web, topicPath(f))).text();
+  expect(html).toContain(`action="${topicPath(f)}/approvals/${card.id}"`);
+});

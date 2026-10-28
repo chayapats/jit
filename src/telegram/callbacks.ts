@@ -27,6 +27,9 @@ interface RefRow { id: string; telegram_chat_id: number; binding_revision: numbe
 
 const CALLBACK_PREFIX = "tg/1/";
 const CALLBACK_TTL_MS = 86_400_000;
+/** A pruned callback stays readable as expired for this long, so tapping an old card
+ * answers with the translated expiry notice instead of `telegram_callback_unknown`. */
+export const callbackTombstoneMs = 7 * 86_400_000;
 
 function encodeRef(ref: TelegramCallbackRef): string {
   return `${CALLBACK_PREFIX}${ref.id}`;
@@ -57,7 +60,10 @@ export function createCallbackRef(
 ): { ref: TelegramCallbackRef; data: string } {
   ensureTelegramProjectSchema(tx);
   for (const id of [input.projectId, input.topicId, input.taskId, input.proposalId]) requireId(id);
-  tx.run("DELETE FROM telegram_callback_refs WHERE expires_at <= ?", now);
+  // Keep expired callbacks as tombstones for a week instead of pruning them at once:
+  // tapping an old approval card then reads `telegram_callback_expired` (translated),
+  // not `telegram_callback_unknown`.
+  tx.run("DELETE FROM telegram_callback_refs WHERE expires_at <= ?", now - callbackTombstoneMs);
   if (tx.get<{ n: number }>("SELECT count(*) AS n FROM telegram_callback_refs")!.n >= 4096) throw new AppError("telegram_callback_limit", 409);
   const id = crypto.randomUUID().replaceAll("-", "");
   // EXE10: approval callbacks expire with the card when it is sooner than the 24 h TTL.

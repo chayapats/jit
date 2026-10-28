@@ -1253,7 +1253,9 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const team = app.team(auth.actor, state.project.id);
         const discussions = app.discussions(auth.actor, state.project.id, state.topic.id);
         const cards = app.dispatchCards(auth.actor, state.project.id, state.topic.id, state.items.map(item => item.id));
-        const approvals = app.approvalCards(auth.actor, state.project.id).filter(card => card.topicId === state.topic.id);
+        // web.approval_cards/v1: topic-filtered query before the limit, so a pending card
+        // never disappears behind newer cards in other topics.
+        const approvals = app.topicApprovalCards(auth.actor, state.project.id, state.topic.id);
         return page(() => conversationPage(state, nav(), app.topics(auth.actor, state.project.id).items, auth.csrf, after(), config.messageBytes, {
           team, discussions, limits: config.jobs.maximum, dispatchAvailable: team.previewAvailable, replies, cards,
           synthesisLimits: dispatchLimits(config, 1), promotion,
