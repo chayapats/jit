@@ -75,6 +75,8 @@ export interface BoxRuntime {
 
 /** The runner inside every box image (`ops/box/runner`, mode 0555). */
 export const boxRunnerPath = "/opt/jit/runner";
+/** UID and GID of the image's `box` user (`ops/box/Containerfile`); the service uid is mapped onto it. */
+export const boxUserId = 1000;
 export const boxWorkspaceRoot = "/workspace";
 export const boxTemporaryDirectory = "/tmp";
 export const boxProfileRoot = "/profile";

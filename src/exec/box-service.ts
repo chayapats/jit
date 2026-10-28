@@ -2,6 +2,7 @@ import type { AppConfig } from "../config";
 import { redactRegisteredSecrets } from "../security/secret-fingerprints";
 import type { TransactionStore } from "../store";
 import { BoxManager, type BoxManagerOptions } from "./box-manager";
+import { NetnsRegistryProxy } from "./netns-proxy";
 import { PodmanBoxRuntime } from "./podman-runtime";
 import { startRegistryProxy, type RegistryProxy } from "./registry-proxy";
 
@@ -25,6 +26,12 @@ export function createServiceBoxes(store: TransactionStore, config: AppConfig, o
  */
 export function serviceBoxRuntime(config: AppConfig): { runtime: PodmanBoxRuntime; close(): Promise<void> } | null {
   if (!config.execution.directory || !config.execution.images) return null;
+  // Rootless Podman keeps the internal gateway inside its own network namespace, where a host process cannot bind;
+  // the proxy then runs there as a child (#163). A root service binds the gateway on the host as before.
+  if (process.getuid?.() !== 0) {
+    const proxy = new NetnsRegistryProxy({ hosts: config.execution.registryHosts });
+    return { runtime: new PodmanBoxRuntime({ config: config.execution, registryProxy: proxy }), close: () => proxy.close() };
+  }
   let proxy: Promise<RegistryProxy> | null = null;
   const runtime = new PodmanBoxRuntime({
     config: config.execution,

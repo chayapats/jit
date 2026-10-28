@@ -105,7 +105,7 @@ test("create applies every hardening flag; workspace uses the internal network a
   const handle = await f.runtime.ensure(projectA, "workspace");
   expect(handle).toEqual({ projectId: projectA, name: `jit-box-${projectA}`, mode: "workspace", profile: false, workspaceRoot: "/workspace", temporaryDirectory: "/tmp" });
   const create = f.podman.calls.find(call => call[0] === "create")!;
-  for (const flag of ["--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only", "--userns=keep-id", "--pull=never", "--pids-limit=256", "--memory=1024m", "--cpus=1.5",
+  for (const flag of ["--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only", "--userns=keep-id:uid=1000,gid=1000", "--pull=never", "--pids-limit=256", "--memory=1024m", "--cpus=1.5",
     "--network=jit-box-internal", "/tmp:rw,nosuid,nodev,size=1g,mode=1777", "/run:rw,nosuid,nodev,size=128m,mode=1777"]) expect(create).toContain(flag);
   expect(create.some(arg => /privileged|--env-host|--volume|podman\.sock|--init/.test(arg))).toBe(false);
   expect(create.slice(-3)).toEqual([image, "sleep", "infinity"]);
@@ -160,6 +160,59 @@ test("a box left by an earlier process with another proxy URL is recreated, not 
   expect(create).toContain("HTTPS_PROXY=http://10.89.0.1:4129");
   await restarted.ensure(projectA, "workspace");
   expect(podman.calls.filter(call => call[0] === "create")).toHaveLength(2);
+});
+
+test("#163 a proxy port names its URL before the box exists and is ensured only after a workspace box runs", async () => {
+  const f = podmanFixture();
+  const events: string[] = [];
+  const run: CommandRunner = async (argv, options) => { if (argv[0] === "create" || argv[0] === "start") events.push(argv[0]); return f.podman.run(argv, options); };
+  const port = { url: (gateway: string) => `http://${gateway}:3128`, ensure: async (gateway: string) => { events.push(`ensure ${gateway}`); } };
+  const runtime = new PodmanBoxRuntime({ config: f.config.execution, run, registryProxy: port });
+  await runtime.ensure(projectA, "workspace");
+  expect(f.podman.calls.find(call => call[0] === "create")).toContain("HTTPS_PROXY=http://10.89.0.1:3128");
+  expect(events).toEqual(["create", "start", "ensure 10.89.0.1"]);
+  // Reuse re-ensures (the child may have died or the namespace may be new); a full box never touches the proxy.
+  await runtime.ensure(projectA, "workspace");
+  expect(events).toEqual(["create", "start", "ensure 10.89.0.1", "ensure 10.89.0.1"]);
+  await runtime.ensure(projectB, "full");
+  expect(events.filter(event => event.startsWith("ensure"))).toHaveLength(2);
+  // A proxy that cannot start refuses the open.
+  const failing = new PodmanBoxRuntime({ config: f.config.execution, run: f.podman.run,
+    registryProxy: { url: port.url, ensure: async () => { throw new AppError("box_proxy_unavailable", 503); } } });
+  await expect(failing.ensure(projectA, "workspace")).rejects.toThrow("box_proxy_unavailable");
+  // The started box is removed, so it can never run outside the manager's capacity and idle sweep.
+  expect(f.podman.calls.at(-1)).toEqual(["rm", "--force", "--time", "2", `jit-box-${projectA}`]);
+  expect((await failing.status(projectA)).state).toBe("absent");
+});
+
+test("#163 a box from an older container layout (no layout label) is recreated on its next open", async () => {
+  const f = podmanFixture();
+  await f.runtime.ensure(projectB, "full");
+  const box = f.podman.containers.get(`jit-box-${projectB}`)!;
+  const at = box.args.indexOf("jit.box.layout=2");
+  expect(at).toBeGreaterThan(0);
+  box.args.splice(at - 1, 2);
+  await f.runtime.ensure(projectB, "full");
+  expect(f.podman.calls.filter(call => call[0] === "rm")).toHaveLength(1);
+  expect(f.podman.calls.filter(call => call[0] === "create")).toHaveLength(2);
+});
+
+test("#163 Podman 4.x NetworkMode bridge counts as the internal network only when it is the one attached network", async () => {
+  const f = podmanFixture();
+  const run: CommandRunner = async (argv, options) => {
+    const result = await f.podman.run(argv, options);
+    if (argv[0] !== "container" || argv[1] !== "inspect") return result;
+    const [info] = JSON.parse(new TextDecoder().decode(result.stdout));
+    const named = info.HostConfig.NetworkMode;
+    info.HostConfig.NetworkMode = named === "jit-box-internal" ? "bridge" : named;
+    info.NetworkSettings = { Networks: { [named === "jit-box-internal" ? "jit-box-internal" : "slirp4netns"]: {} } };
+    if (argv[2]?.endsWith(projectB)) info.NetworkSettings.Networks.podman = {};
+    return { ...result, stdout: new TextEncoder().encode(JSON.stringify([info])) };
+  };
+  const runtime = new PodmanBoxRuntime({ config: f.config.execution, run, registryProxy: async gateway => `http://${gateway}:3128` });
+  await runtime.ensure(projectA, "workspace");
+  // A second attached network on a workspace box is refused and the box removed.
+  await expect(runtime.ensure(projectB, "workspace")).rejects.toThrow("box_hardening_mismatch");
 });
 
 test("inspected mounts must equal the expected set exactly; a tampered box is removed and refused", async () => {

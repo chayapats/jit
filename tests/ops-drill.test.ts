@@ -1001,6 +1001,7 @@ test("EXE06 box scenario reports latency, memory, disk, capacity wait, idle stop
     // Every disposable box is reset with its workspace; the report carries no path or address.
     expect(runtime.calls.filter(call => call.op === "reset").map(call => (call as { wipeWorkspace?: boolean }).wipeWorkspace)).toEqual([true, true, true]);
     expect(JSON.stringify(report)).not.toContain(root);
+    expect(existsSync(join(root, "execution")) ? readdirSync(join(root, "execution")) : []).toEqual([]);
     // A memory budget above what is available names the limit to change instead.
     // The scenario follows execution.maxBoxes: with one box it opens one and the second waits; with three, three.
     for (const max of [1, 3]) {
