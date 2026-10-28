@@ -284,7 +284,8 @@ export function acceptWebhookDelivery(tx: AppTransaction, delivery: WebhookDeliv
   return { dueAt: wakeMonitorPoll(tx, monitor.projectId, monitor.id, now).after };
 }
 
-/** The monitor's next poll instant for the owner view. */
-export function monitorPollDue(tx: AppTransaction, projectId: string, monitorId: string): number {
-  return readPollDue(tx, readMonitor(tx, projectId, monitorId)).dueAt;
+/** The monitor's next poll instant and last poll failure (a reason code) for the owner view. */
+export function monitorPollDue(tx: AppTransaction, projectId: string, monitorId: string): { dueAt: number; failure: { reason: string; at: number } | null } {
+  const due = readPollDue(tx, readMonitor(tx, projectId, monitorId));
+  return { dueAt: due.dueAt, failure: due.failure };
 }

@@ -1618,20 +1618,23 @@ export class Application {
   }
 
   /**
-   * app.webhook_triggers/v1 owner view: every PR monitor of the project with its trigger state and next poll instant.
+   * app.webhook_triggers/v1 owner view: every PR monitor of the project with its trigger state, next poll instant and
+   * the last poll failure (a reason code, cleared by the next successful poll).
    * Never returns a secret or its sealed form.
    */
-  prWebhooks(actor: OwnerActor, projectId: string): { project: Project; monitors: { id: string; repository: string; state: string; pollDueAt: number; trigger: WebhookTriggerView }[] } {
+  prWebhooks(actor: OwnerActor, projectId: string): { project: Project; monitors: { id: string; repository: string; state: string; pollDueAt: number;
+    pollFailure: { reason: string; at: number } | null; trigger: WebhookTriggerView }[] } {
     requireId(projectId);
     const directory = webhookKeyDirectory(this.store.path);
     return this.store.read(tx => {
       this.#requireOwner(tx, actor);
       const project = this.#project(tx, projectId);
       if (!tx.get("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'pr_monitors'")) return { project, monitors: [] };
-      return { project, monitors: readMonitors(tx, projectId).map(monitor => ({
-        id: monitor.id, repository: `${monitor.repository.owner}/${monitor.repository.name}`, state: monitor.state,
-        pollDueAt: monitorPollDue(tx, projectId, monitor.id), trigger: readWebhookTrigger(tx, projectId, monitor.id, directory),
-      })) };
+      return { project, monitors: readMonitors(tx, projectId).map(monitor => {
+        const poll = monitorPollDue(tx, projectId, monitor.id);
+        return { id: monitor.id, repository: `${monitor.repository.owner}/${monitor.repository.name}`, state: monitor.state,
+          pollDueAt: poll.dueAt, pollFailure: poll.failure, trigger: readWebhookTrigger(tx, projectId, monitor.id, directory) };
+      }) };
     });
   }
 

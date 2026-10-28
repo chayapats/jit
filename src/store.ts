@@ -959,7 +959,10 @@ export class TransactionStore {
               project_id TEXT NOT NULL REFERENCES projects(id),
               due_at INTEGER NOT NULL,
               last_polled_at INTEGER,
-              woken_at INTEGER
+              woken_at INTEGER,
+              -- The last poll that threw, as a bounded reason code only; cleared by the next successful poll.
+              last_failure TEXT,
+              last_failed_at INTEGER
             );
             PRAGMA user_version = 32;
           `);

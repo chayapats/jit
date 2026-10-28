@@ -1557,4 +1557,5 @@ export const th = {
   "error.invalid_webhook_command": "คำสั่ง webhook ไม่ถูกต้อง",
   "error.webhook_key_unavailable": "ใช้ key สำหรับ seal webhook ข้างฐานข้อมูลไม่ได้ ตรวจโฟลเดอร์ webhooks",
   "error.pr_monitor_revoked": "การตรวจ PR ของ repository นี้ถูกเพิกถอนแล้ว",
+  "pr.webhook_poll_failed": "PR poll รอบล่าสุดล้มเหลว จะลองใหม่ในรอบถัดไป รหัสสาเหตุ:",
 } as const;

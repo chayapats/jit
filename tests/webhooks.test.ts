@@ -11,6 +11,7 @@ import { mutateMonitor, prMonitorIdentity } from "../src/pr/authority";
 import { FakeGitHubFixture, fixturePull } from "../src/pr/github";
 import { readCandidates } from "../src/pr/poll";
 import { readPollDue, tickPrPolls, wakeMonitorPoll } from "../src/pr/poll-due";
+import { AppError } from "../src/errors";
 import { ensurePrSchema } from "../src/pr/schema";
 import { TRIGGER_POLICY_VERSION, type EnableMonitorCommand, type PrMonitor } from "../src/pr/types";
 import { createWebhookHandler } from "../src/pr/webhook-route";
@@ -372,4 +373,27 @@ test("the Web listener routes signed deliveries without a session, and the owner
   expect((await api("delete", 2)).status).toBe(200);
   expect(f.app.prWebhooks(f.auth.actor, f.project.id).monitors[0]!.trigger.state).toBe("deleted");
   for (const key of Object.keys(dictionaries.th).filter(k => k.startsWith("pr.webhook_"))) expect(dictionaries.en[key as keyof typeof dictionaries.en]).toBeTruthy();
+});
+
+test("a poll that throws is recorded as a bounded reason code the owner sees, retried one interval later and cleared on success", async () => {
+  const f = await fixture();
+  const monitor = enableMonitor(f);
+  const failing = new FakeGitHubFixture();
+  failing.listPulls = () => { throw new AppError("github_unreachable", 503); };
+  const once = (port: FakeGitHubFixture) => tickPrPolls(f.store, { now: f.clock.now, portFor: () => port, cacheRoot: f.cacheRoot });
+  expect(once(failing)).toEqual([{ monitorId: monitor.id, outcome: "failed", reason: "github_unreachable", created: 0, nextDueAt: f.clock.now + monitor.limits.pollIntervalMs }]);
+  expect(f.app.prWebhooks(f.auth.actor, f.project.id).monitors[0]).toMatchObject({ pollFailure: { reason: "github_unreachable", at: epoch }, pollDueAt: epoch + monitor.limits.pollIntervalMs });
+  const web = createWebHandler(f.app);
+  const html = await (await web(new Request(`${origin}/projects/${f.project.id}/pr/reports`, { headers: { Cookie: `jit_session=${f.token}`, "Accept-Language": "en" } }))).text();
+  expect(html).toContain('data-poll-failure="github_unreachable"');
+  expect(html).toContain(dictionaries.en["pr.webhook_poll_failed"]);
+  // Not due again until one interval later; any other error keeps only a generic code, never its text.
+  expect(once(failing)).toEqual([]);
+  f.clock.now += monitor.limits.pollIntervalMs;
+  failing.listPulls = () => { throw new Error("token ghp_abcdefghijklmnopqrstuvwxyz0123 leaked"); };
+  expect(once(failing)).toMatchObject([{ outcome: "failed", reason: "poll_failed" }]);
+  expect(dump(f)).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz0123");
+  f.clock.now += monitor.limits.pollIntervalMs;
+  expect(once(f.github)).toMatchObject([{ outcome: "polled" }]);
+  expect(f.app.prWebhooks(f.auth.actor, f.project.id).monitors[0]!.pollFailure).toBeNull();
 });

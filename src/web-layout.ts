@@ -581,6 +581,7 @@ function prWebhooksSection(projectId: string, webhooks: PrWebhooksState, csrf: s
     `<form method="post" action="/projects/${projectId}/pr/monitors/${monitor.id}/webhook/${action}">${hiddenCommand(csrf, monitor.trigger.revision)}<button${action === "delete" ? "" : ` class="primary"`}>${label}</button></form>`;
   const rows = webhooks.monitors.map(monitor => `<li data-webhook-state="${escape(monitor.trigger.state)}" data-monitor-state="${escape(monitor.state)}"><h4>${tr("pr.webhook_monitor")} ${escape(monitor.repository)}</h4>
     <p>${state(monitor)} · ${tr("pr.webhook_next_poll")} ${monitor.state === "active" ? time(monitor.pollDueAt) : "-"}</p>
+    ${monitor.pollFailure ? `<p data-poll-failure="${escape(monitor.pollFailure.reason)}">${tr("pr.webhook_poll_failed")} <span class="literal">${escape(monitor.pollFailure.reason)}</span> · ${time(monitor.pollFailure.at)}</p>` : ""}
     ${monitor.state === "paused" ? `<p>${tr("pr.webhook_monitor_paused")}</p>` : monitor.state === "revoked" ? `<p>${tr("pr.webhook_monitor_revoked")}</p>` : ""}
     ${monitor.trigger.state === "active" ? `<p class="literal">${tr("pr.webhook_path")} ${escape(monitor.trigger.path ?? "")}</p>${monitor.trigger.secretAvailable ? "" : `<p>${tr("pr.webhook_secret_missing")}</p>`}` : ""}
     ${monitor.trigger.state === "active" ? `${monitor.state === "revoked" ? "" : form(monitor, "rotate", tr("pr.webhook_rotate"))}${form(monitor, "delete", tr("pr.webhook_delete"))}`

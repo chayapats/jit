@@ -1555,4 +1555,5 @@ export const en: Record<MessageKey, string> = {
   "error.invalid_webhook_command": "The webhook command is not valid.",
   "error.webhook_key_unavailable": "The webhook sealing key next to the database cannot be used. Check the webhooks folder.",
   "error.pr_monitor_revoked": "PR monitoring was revoked for this repository.",
+  "pr.webhook_poll_failed": "The last PR poll failed and will be retried at the next poll. Reason code:",
 };
