@@ -74,6 +74,9 @@ function saveSpecialist(tx: AppTransaction, run: SpecialistRun): void {
   tx.run("UPDATE team_runs SET record_json = ? WHERE id = ?", JSON.stringify(run), run.id);
 }
 
+/** A participation result as stored on the discussion: the status only, never a copy of the unblock text. */
+const storedResult = (view: ReturnType<typeof specialistResultView>) => view ? { ...view, unblock: null } : null;
+
 /** Roles without a citable result: not completed, or completed with a blocked, failed or incomplete result. */
 function coverageGap(discussion: Discussion): string[] {
   return discussion.participations
@@ -454,7 +457,9 @@ export function specialistAnalysisWork(
         ? (outcome.state === "complete" ? "ใช้ route ที่เลือกผ่าน schway/host" : "ตรวจผ่าน route ที่เลือกแต่ไม่สำเร็จ")
         : "ไม่ได้ตรวจ live subscription route";
       // app.specialist_results/v2: untrusted output becomes a normalized result; evidence must be manifest sources.
-      const normalized = outcome.state === "complete" && outcome.output
+      // A run admitted before v2 never asked for that shape, so it keeps the v1 result path.
+      const v2 = request.instructions.operator.includes(specialistResultInstruction);
+      const normalized = v2 && outcome.state === "complete" && outcome.output
         ? normalizeSpecialistResult(outcome.output, request.manifest.sources.map(source => source.reference)) : null;
       const resultLine = normalized ? ` · result ${normalized.result.status}${normalized.droppedEvidence ? ` · evidence dropped ${normalized.droppedEvidence}` : ""}` : "";
       const result = { state: "succeeded" as const, evidence: `${evidenceKind}: ${outcome.state} / ${outcome.reason}${resultLine} · run ${run.id}\n${evidenceRoute}` };
@@ -462,11 +467,13 @@ export function specialistAnalysisWork(
         const current = readSpecialist(tx, job.projectId, run.id);
         if (current.outcome) throw new AppError("run_already_committed");
         current.request = request; current.outcome = outcome; current.mode = outcome.mode; current.progress = null;
-        // Records written before v2 keep their shape; this run writes v2.
-        current.result = normalized?.result ?? null;
+        // A v1 run keeps its v1 shape (no `result`, read as done when complete); a v2 run writes v2.
+        if (v2) current.result = normalized?.result ?? null;
+        else delete current.result;
         if (normalized?.droppedEvidence) current.droppedEvidence = normalized.droppedEvidence;
-        if (outcome.state === "complete" && outcome.output && normalized) {
-          const text = renderSpecialistResult(run.roleName, outcome.mode === "production" ? "วิเคราะห์ผ่าน Schway" : "วิเคราะห์จำลอง (fixture)", normalized.result);
+        if (outcome.state === "complete" && outcome.output) {
+          const header = outcome.mode === "production" ? "วิเคราะห์ผ่าน Schway" : "วิเคราะห์จำลอง (fixture)";
+          const text = normalized ? renderSpecialistResult(run.roleName, header, normalized.result) : `${header} · ${run.roleName}\n${outcome.output}`;
           current.source = commitOutputSource(tx, { projectId: run.projectId, participantId: run.roleId, runId: run.id, text, committedAt: now() });
           markMemoryDerived(tx, run.projectId, current.source, request.manifest);
           const topic = tx.get<{ message_sequence: number }>("SELECT message_sequence FROM topics WHERE project_id = ? AND id = ?", run.projectId, run.topicId)!;
@@ -485,7 +492,8 @@ export function specialistAnalysisWork(
           reason: outcome.reason,
           nextAction: outcome.state === "complete" && current.source ? "inspect_committed_analysis" : "inspect_failure_or_restart",
           output: current.source, route: request.route, progress: null,
-          result: outcome.state === "complete" && current.source ? specialistResultView(current) : null,
+          // Status only: the unblock text stays on the run record, which data deletion redacts by lineage.
+          result: outcome.state === "complete" && current.source ? storedResult(specialistResultView(current)) : null,
         } : item);
         discussion.coverageGap = coverageGap(discussion);
         discussion.updatedAt = now();

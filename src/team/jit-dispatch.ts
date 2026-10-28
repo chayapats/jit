@@ -172,6 +172,8 @@ function ownerRequest(tx: AppTransaction, projectId: string, replyId: string) {
  */
 function startDiscussion(tx: AppTransaction, input: {
   row: ProposalRow; roleIds: string[]; origin: DiscussionOrigin; requestId: string; config: AppConfig; queue: JobQueue | undefined; generation: number; now: number;
+  /** Named roles held back because they are still blocked on this request; they stay gaps of this discussion. */
+  held: DispatchRecord["blocked"];
 }): Discussion {
   const { row, config } = input;
   const request = ownerRequest(tx, row.projectId, row.replyId);
@@ -186,6 +188,7 @@ function startDiscussion(tx: AppTransaction, input: {
   }, config, input.queue, input.generation, input.now);
   const discussion = readDiscussion(tx, row.projectId, receipt.discussion!.id);
   discussion.origin = input.origin;
+  if (input.held?.length) discussion.held = input.held.map(role => ({ ...role }));
   tx.run("UPDATE team_runs SET record_json = ? WHERE id = ?", JSON.stringify(discussion), discussion.id);
   return discussion;
 }
@@ -251,7 +254,7 @@ export function admitJitDispatch(tx: AppTransaction, input: {
   if (!input.queue || !input.queue.available(tx)) { record.reason = "scheduler_unavailable"; return saveRow(tx, row, record); }
   try {
     const discussion = withSavepoint(tx, "jit_dispatch", () => startDiscussion(tx, {
-      row, roleIds: record.roles.map(role => role.roleId), requestId: `allowance-${reply.id}`, config, queue: input.queue, generation: reply.generation, now,
+      row, roleIds: record.roles.map(role => role.roleId), requestId: `allowance-${reply.id}`, config, queue: input.queue, generation: reply.generation, now, held: record.blocked,
       origin: { kind: "standing-allowance", proposalId: row.id, replyId: reply.id, allowanceRevision: allowance.revision },
     }));
     row.state = "admitted"; row.admission = "standing_allowance"; row.discussionId = discussion.id;
@@ -290,6 +293,7 @@ function teamResults(tx: AppTransaction, discussion: Discussion): { results: Tea
       else gaps.push({ roleId: item.roleId, roleName: item.roleName, reason: "source_unavailable" });
     } else if (item.state !== "skipped" && item.state !== "excluded") gaps.push({ roleId: item.roleId, roleName: item.roleName, reason: item.reason ?? item.state });
   }
+  for (const role of discussion.held ?? []) gaps.push({ roleId: role.roleId, roleName: role.roleName, reason: "result_blocked", runId: role.runId });
   return { results, gaps };
 }
 
@@ -366,7 +370,7 @@ export function executeDispatchCommand(tx: AppTransaction, command: DispatchComm
     const offered = new Set(record.roles.map(role => role.roleId));
     if (command.payload.roleIds.some(id => !offered.has(id))) throw new AppError("dispatch_role_not_proposed", 409);
     const discussion = startDiscussion(tx, {
-      row, roleIds: command.payload.roleIds, requestId: command.requestId, config, queue, generation, now,
+      row, roleIds: command.payload.roleIds, requestId: command.requestId, config, queue, generation, now, held: record.blocked,
       origin: { kind: "owner-accepted", proposalId: row.id, replyId: row.replyId, allowanceRevision: row.allowanceRevision },
     });
     row.state = "accepted"; row.admission = "owner"; row.discussionId = discussion.id; record.acceptedRoleIds = [...command.payload.roleIds];

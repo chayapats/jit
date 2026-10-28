@@ -199,6 +199,12 @@ export interface Discussion {
   origin?: DiscussionOrigin;
   /** Set by `team.stop_all`; a stopped team gets no automatic team reply. */
   stoppedAll?: boolean;
+  /**
+   * app.specialist_results/v2: roles the Jit dispatch named but did not call again, because their latest result for
+   * this same request is blocked. The team reply and synthesis show them as `result_blocked` gaps; each `runId` names
+   * the blocked run whose record holds the unblock action.
+   */
+  held?: { roleId: string; roleName: string; runId: string }[];
 }
 /** Who authorized a discussion that a Jit dispatch proposal asked for. Model output is never the authority. */
 export interface DiscussionOrigin {

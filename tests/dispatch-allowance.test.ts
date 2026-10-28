@@ -880,6 +880,15 @@ test("REL02: Jit does not re-dispatch a role for the same request while its late
   expect(held.blocked).toEqual([{ roleId: f.designId, roleName: "ออกแบบ", runId: expect.any(String), unblock: unblockText }]);
   expect(held.discussion!.roles.map(role => role.roleId)).toEqual([f.techId]);
   expect(designJobs()).toBe(1);
+  // The held role is still a gap of this request: the team reply names it with its unblock action, and so does synthesis.
+  expect(held.teamReply!.team!.citations.map(c => c.roleId)).toEqual([f.techId]);
+  expect(held.teamReply!.team!.gaps).toEqual([{ roleId: f.designId, roleName: "ออกแบบ", reason: "result_blocked", runId: held.blocked[0]!.runId, unblock: unblockText }]);
+  const heldDiscussion = f.app.discussion(f.auth.actor, f.project.id, held.discussion!.id).discussion;
+  f.app.execute(f.auth.actor, { kind: "decision.synthesize", requestId: rid(), projectId: f.project.id, expectedRevision: heldDiscussion.revision,
+    payload: { discussionId: heldDiscussion.id, limits: dispatchLimits(f) } });
+  await drain(f);
+  expect(f.app.decision(f.auth.actor, f.project.id, f.topic.id).proposal!.artifact.missing)
+    .toEqual([{ roleId: f.designId, roleName: "ออกแบบ", reason: "result_blocked", runId: held.blocked[0]!.runId, unblock: unblockText }]);
   // Naming only the blocked role for the same request calls nobody and shows why.
   named = ["ออกแบบ"];
   const only = send(f, text);
@@ -976,5 +985,28 @@ test("REL02: a v1 specialist record from before the change still renders on the 
   }
   // Reading never rewrote the v1 rows.
   for (const [runId, json] of v1) expect(f.store.read(tx => tx.get<{ record_json: string }>("SELECT record_json FROM team_runs WHERE id = ?", runId)!.record_json)).toBe(json);
+});
+
+test("REL02: a specialist run admitted before v2 keeps the v1 result path when it finishes after the upgrade", async () => {
+  const f = await fixture({ specialist: request => answer(request, `ความเห็นแบบเดิมของ${request.roleId === f.techId ? "เทคโนโลยี" : "ออกแบบ"}`) });
+  const project = f.app.project(f.auth.actor, f.project.id);
+  const started = f.app.execute(f.auth.actor, { kind: "team.dispatch", requestId: rid(), projectId: f.project.id, expectedRevision: project.revision,
+    payload: { topicId: f.topic.id, purpose: "งานที่ค้างจากก่อนอัปเดต", sources: [f.topic.source], include: [f.techId], exclude: [f.designId, f.marketingId], limits: dispatchLimits(f) } }).discussion!;
+  // Rewrite the queued run into its pre-v2 shape: v1 operator lines, no result, no policy version.
+  const runId = started.participations[0]!.runId;
+  f.store.transaction(tx => {
+    const run = JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM team_runs WHERE id = ?", runId)!.record_json);
+    run.request.instructions.operator = run.request.instructions.operator.filter((line: string) => !line.startsWith("Return one JSON object") && !line.startsWith("Team communication policy"));
+    delete run.result; delete run.policyVersion;
+    tx.run("UPDATE team_runs SET record_json = ? WHERE id = ?", JSON.stringify(run), runId);
+  });
+  await drain(f);
+  const run = specialistRun(f, runId);
+  expect("result" in run).toBe(false);
+  expect(run.outcome.output).toBe("ความเห็นแบบเดิมของเทคโนโลยี");
+  const discussion = f.app.discussion(f.auth.actor, f.project.id, started.id).discussion;
+  expect(discussion.participations[0]).toMatchObject({ state: "completed", result: { version: 1, status: "done", unblock: null } });
+  expect(discussion.coverageGap).toEqual([]);
+  expect(messages(f).at(-1)!.text).toBe("วิเคราะห์จำลอง (fixture) · เทคโนโลยี\nความเห็นแบบเดิมของเทคโนโลยี");
 });
 

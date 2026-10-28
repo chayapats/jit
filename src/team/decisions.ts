@@ -360,6 +360,8 @@ export function prepareSynthesis(
       else allowed.push({ roleId: item.roleId, roleName: item.roleName, route: item.route, reference: source.reference });
     } else if (!["skipped", "excluded"].includes(item.state)) gaps.push({ roleId: item.roleId, roleName: item.roleName, reason: item.reason ?? item.state });
   }
+  // Roles a Jit dispatch held back because they were still blocked on this request are gaps too.
+  for (const role of stored.held ?? []) gaps.push({ roleId: role.roleId, roleName: role.roleName, reason: "result_blocked", runId: role.runId });
   if (allowed.length < 1 || allowed.length > config.team.sourceLimit) throw new AppError("synthesis_not_ready", 409);
   const sources = allowed.map(item => {
     const source = lookupSource(tx, command.projectId, item.reference);
