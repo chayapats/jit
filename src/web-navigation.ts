@@ -217,29 +217,40 @@ export function accessConfirmPage(workspace: NavigationWorkspace, project: Navig
 export interface McpSettingsEntry {
   projectId: string; projectName: string; server: McpServerView; rule: AutoApproveRule | null;
 }
-export function settingsMcpPage(workspace: NavigationWorkspace, servers: McpSettingsEntry[], csrf: string): string {
+/** Paging and the project picker of the MCP settings page (the same pattern as the other settings lists). */
+export interface McpSettingsPaging {
+  /** Every project the owner sees, for the picker, in display order. */
+  all: { id: string; name: string }[];
+  /** True when `?project=` narrows the page to one project. */
+  single: boolean;
+  /** The `?project=` id the picker keeps selected, if any. */
+  selected: string | null;
+  offset: number; pageSize: number;
+}
+export function settingsMcpPage(workspace: NavigationWorkspace, servers: McpSettingsEntry[], csrf: string, paging: McpSettingsPaging): string {
   // The merged EXE12 read model has no separate settings view; the page pairs each server with its rule here.
   // (The EXE13 issue names `servers: McpServerView[]`; the rule each toggle posts the revision of travels with it.)
   const stateText = (state: McpServerView["state"]) => state === "installed" ? tr("mcp.state_ready")
     : state === "installing" ? tr("mcp.state_installing") : tr("mcp.state_failed");
   const autoOf = (entry: McpSettingsEntry, tool: string) =>
     entry.rule?.enabled === true && (entry.rule.scope as { tools?: { server: string; tool: string }[] }).tools?.some(item => item.server === entry.server.name && item.tool === tool) === true;
-  const byProject = new Map<string, { projectName: string; entries: McpSettingsEntry[] }>();
+  const byProject = new Map<string, { projectId: string; projectName: string; entries: McpSettingsEntry[] }>();
   for (const entry of servers) {
-    const existing = byProject.get(entry.projectId) ?? { projectName: entry.projectName, entries: [] };
+    const existing = byProject.get(entry.projectId) ?? { projectId: entry.projectId, projectName: entry.projectName, entries: [] };
     existing.entries.push(entry);
     byProject.set(entry.projectId, existing);
   }
-  const groups = [...byProject.values()].map(({ projectName, entries }) => {
+  const groups = [...byProject.values()].map(({ projectId, projectName, entries }) => {
     const rows = entries.map(entry => {
       const { server } = entry;
       const tools = server.tools.length ? `<ul class="mcp-tools">${server.tools.map(tool => {
         const auto = autoOf(entry, tool.name);
         const badge = tool.readOnly ? `<span class="job-status" data-state="accepted">${tr("mcp.tool_read_only")}</span>`
           : `<span class="job-status" data-state="${auto ? "accepted" : "waiting"}">${tr(auto ? "mcp.tool_auto" : "mcp.tool_needs_approval")}</span>`;
-        // A refused listing (invalid name, oversized schema) is shown but cannot be toggled.
+        // A refused listing (invalid name, oversized schema) is shown but cannot be toggled. The hidden
+        // `enabled` field names the end state the button asks for, so disabling one pair never touches another.
         const toggle = !tool.readOnly && tool.exposed !== null
-          ? `<form class="team-form" method="post" action="/settings/mcp/${server.id}/tools/${encodeURIComponent(tool.name)}/auto">${hiddenCommand(csrf, entry.rule?.revision ?? 0)}<button>${tr("mcp.tool_auto")}</button></form>` : "";
+          ? `<form class="team-form" method="post" action="/settings/mcp/${server.id}/tools/${encodeURIComponent(tool.name)}/auto">${hiddenCommand(csrf, entry.rule?.revision ?? 0)}<input type="hidden" name="enabled" value="${auto ? "off" : "on"}"><button>${tr("mcp.tool_auto")}</button></form>` : "";
         return `<li>${escape(tool.name)}${tool.exposed !== null && tool.exposed !== tool.name ? ` · <code>${escape(tool.exposed)}</code>` : ""} ${badge}${toggle}</li>`;
       }).join("")}</ul>` : `<p class="empty-list">${tr("mcp.no_servers")}</p>`;
       return `<li class="connection-row" id="server-${server.id}"><h3>${escape(server.name)}</h3>`
@@ -247,11 +258,14 @@ export function settingsMcpPage(workspace: NavigationWorkspace, servers: McpSett
         + ` · <code>${escape(server.spec.package)}@${escape(server.spec.version)}</code></p>${tools}`
         + `<form class="team-form connection-form" method="post" action="/settings/mcp/${server.id}/remove">${hiddenCommand(csrf, server.revision)}<button class="danger">${tr("mcp.remove")}</button></form></li>`;
     }).join("");
-    return `<section class="settings-section" aria-labelledby="mcp-${projectName}"><h3>${escape(projectName)}</h3><ul class="data-projects">${rows}</ul></section>`;
+    // The labelledby target is a generated id: project names may hold quotes and markup.
+    return `<section class="settings-section" aria-labelledby="mcp-title-${projectId}"><h3 id="mcp-title-${projectId}">${escape(projectName)}</h3><ul class="data-projects">${rows}</ul></section>`;
   }).join("");
   return shell(tr("settings.mcp"), { workspace, csrf, section: "settings", settings: "mcp" }, `<div class="content settings-content">
     <section class="settings-section" aria-labelledby="mcp-title"><h2 id="mcp-title">${tr("settings.mcp")}</h2>
-    ${servers.length ? groups : `<p class="empty-list" role="status">${tr("mcp.no_servers")}</p>`}</section></div>`,
+    <form class="team-form" method="get" action="/settings/mcp"><label>${tr("approval.field_project")}<select name="project" required>${paging.all.map(p => `<option value="${p.id}"${p.id === paging.selected ? " selected" : ""}>${escape(p.name)}</option>`).join("")}</select></label><button>${tr("mcp.show")}</button></form>
+    ${servers.length ? groups : `<p class="empty-list" role="status">${tr("mcp.no_servers")}</p>`}
+    <nav class="pagination" aria-label="${tr("home.project_pages")}">${paging.single ? `<a href="/settings/mcp">${tr("common.view_all_projects")}</a>` : ""}${!paging.single && paging.offset > 0 ? `<a href="/settings/mcp?offset=${Math.max(0, paging.offset - paging.pageSize)}">${tr("home.previous")}</a>` : ""}${!paging.single && workspace.hasMore ? `<a href="/settings/mcp?offset=${paging.offset + paging.pageSize}">${tr("common.next")}</a>` : ""}</nav></section></div>`,
     { breadcrumb: { title: tr("shell.settings"), href: "/settings" } });
 }
 /**

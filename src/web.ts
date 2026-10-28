@@ -277,6 +277,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       const boxLiveRoute = /^\/projects\/([a-f0-9-]{36})\/box\/live$/.exec(pathname);
       const boxShotRoute = /^\/projects\/([a-f0-9-]{36})\/box\/screenshot\/([a-f0-9-]{36})$/.exec(pathname);
       const boxLatestRoute = /^\/projects\/([a-f0-9-]{36})\/box\/latest$/.exec(pathname);
+      const boxRefreshRoute = /^\/projects\/([a-f0-9-]{36})\/box\/refresh$/.exec(pathname);
       const boxTakeoverRoute = /^\/projects\/([a-f0-9-]{36})\/box\/takeover\/(start|end|click|type|key)$/.exec(pathname);
       /** Finds an installed MCP server by id across every project the owner sees; null when gone. */
       /** Finds an installed MCP server by id across every project the owner sees; null when gone. */
@@ -608,41 +609,71 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
           if (!key || api) throw error;
           return page(() => errorPage(tr(key as MessageKey)), error instanceof AppError ? error.status : 409);
         }
-        return api ? json(receipt) : respond(null, 303, { Location: `/projects/${projectId}/topics/${topicId}#proposal-${proposalId}` });
+        if (api) return json(receipt);
+        // Land on the page that holds the proposal's reply: walk the topic's pages for the reply sequence
+        // (a checked cursor from the read model, never from the request). Accept, reject and revise always
+        // return the proposal; remove has its own route.
+        const decided = receipt.proposal!;
+        let cursor: number | null = null, scanned = 0;
+        for (;;) {
+          const conv = app.conversation(auth.actor, projectId, topicId, scanned);
+          const views = app.replies(auth.actor, projectId, topicId, conv.items.map(item => item.id));
+          const found = [...views.values()].find(view => view.id === decided.replyId);
+          if (found?.replySequence != null) { cursor = Math.max(0, found.replySequence - 1); break; }
+          if (!conv.hasMore) break;
+          scanned = conv.nextAfter;
+        }
+        return respond(null, 303, { Location: `/projects/${projectId}/topics/${topicId}${cursor !== null ? `?after=${cursor}` : ""}#proposal-${proposalId}` });
       }
       if (url.pathname === "/settings/mcp" && request.method === "GET") {
         // web.mcp_settings/v1 (EXE13): installed servers and their per-tool auto-approve rules, per project.
+        // The server list pages like the other settings lists; the picker spans every project the owner sees.
         const raw = url.searchParams.get("offset") ?? "0";
         if (!/^\d{1,7}$/.test(raw)) throw new AppError("invalid_offset");
         const only = url.searchParams.getAll("project");
         if (only.length > 1 || (only.length === 1 && !/^[a-f0-9-]{36}$/.test(only[0]!))) throw new AppError("invalid_query");
         const offset = Number(raw), paged = app.workspace(auth.actor, offset);
         const projects = only.length ? [app.project(auth.actor, only[0]!)] : paged.projects;
+        const all: { id: string; name: string }[] = [];
+        for (let scan = 0; ; scan += config.pageSize) {
+          const page = app.workspace(auth.actor, scan);
+          all.push(...page.projects.map(p => ({ id: p.id, name: p.name })));
+          if (!page.hasMore) break;
+        }
         const entries: McpSettingsEntry[] = projects.flatMap(p => {
           const rule = app.effectSettings(auth.actor, p.id).rules.find(item => item.effectKind === "mcp_tool") ?? null;
           return app.mcpServers(auth.actor, p.id).map(server => ({ projectId: p.id, projectName: p.name, server, rule }));
         });
-        return page(() => settingsMcpPage(nav(paged), entries, auth.csrf));
+        return page(() => settingsMcpPage(nav(paged), entries, auth.csrf,
+          { all, single: only.length > 0, selected: only[0] ?? null, offset, pageSize: config.pageSize }));
       }
       if (request.method === "POST" && settingsMcpAutoRoute) {
-        // web.mcp_settings/v1: toggle one tool's auto-approve. The project's `mcp_tool` rule holds every
-        // auto-approved pair; toggling merges the pair in, or disables the rule while keeping its pairs.
+        // web.mcp_settings/v1: toggle one tool's auto-approve. The enabled set is stored per pair: the rule's
+        // scope holds exactly the pairs the owner enabled, so toggling one pair never touches another. A
+        // disabled pair never sits inside an enabled rule; an emptied rule is disabled (its inert scope is
+        // never trusted — the next toggle rebuilds from the enabled set).
         const serverId = settingsMcpAutoRoute[1]!;
         let tool: string;
         try { tool = decodeURIComponent(settingsMcpAutoRoute[2]!); } catch { throw new AppError("invalid_body"); }
         const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
-        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision"].includes(key))) throw new AppError("invalid_body");
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "enabled"].includes(key)) ||
+            (body.enabled !== "on" && body.enabled !== "off")) throw new AppError("invalid_body");
         const found = findMcpServer(serverId);
         if (!found) throw new AppError("mcp_server_not_found", 404);
         const listed = found.server.tools.find(item => item.name === tool);
         if (!listed || listed.readOnly || listed.exposed === null) throw new AppError("invalid_body");
         const revision = typeof body.expectedRevision === "string" && /^\d{1,15}$/.test(body.expectedRevision) ? Number(body.expectedRevision) : body.expectedRevision;
         const current = app.effectSettings(auth.actor, found.projectId).rules.find(item => item.effectKind === "mcp_tool") ?? null;
-        const existing = ((current?.scope ?? {}) as { tools?: { server: string; tool: string }[] }).tools ?? [];
-        const covered = existing.some(item => item.server === found.server.name && item.tool === tool);
+        const stored = ((current?.scope ?? {}) as { tools?: { server: string; tool: string }[] }).tools ?? [];
+        const enabledPairs = current?.enabled === true ? stored : [];
+        const pair = { server: found.server.name, tool };
+        const has = enabledPairs.some(item => item.server === pair.server && item.tool === pair.tool);
+        const next = body.enabled === "on"
+          ? (has ? enabledPairs : [...enabledPairs, pair])
+          : enabledPairs.filter(item => !(item.server === pair.server && item.tool === pair.tool));
         const command = { kind: "approval.rule.set", requestId: body.requestId, projectId: found.projectId, expectedRevision: revision,
-          payload: { effectKind: "mcp_tool", scope: { tools: covered ? existing : [...existing, { server: found.server.name, tool }] },
-            enabled: covered ? !(current?.enabled === true) : true } } as SetAutoApproveCommand;
+          payload: { effectKind: "mcp_tool", scope: { tools: next.length ? next : (stored.length ? stored : [pair]) },
+            enabled: next.length > 0 } } as SetAutoApproveCommand;
         const receipt = app.execute(auth.actor, command);
         return api ? json(receipt) : respond(null, 303, { Location: `/settings/mcp#server-${serverId}` });
       }
@@ -706,6 +737,17 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
           if (!key) throw error;
           return page(() => errorPage(tr(key as MessageKey)), error instanceof AppError ? error.status : 403);
         }
+        // The stored screenshots are what the page, its Refresh link and the script poll read: capture a
+        // fresh one after every owner input so the owner never keeps seeing a stale image.
+        if (action === "click" || action === "type" || action === "key") await app.captureBoxScreen(auth.actor, projectId);
+        return respond(null, 303, { Location: `/projects/${projectId}/box/live` });
+      }
+      if (request.method === "POST" && boxRefreshRoute) {
+        // web.box_live/v1: the script-free "Refresh screen" form captures a fresh screenshot, then the page re-renders it.
+        const projectId = boxRefreshRoute[1]!;
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision"].includes(key))) throw new AppError("invalid_body");
+        await app.captureBoxScreen(auth.actor, projectId);
         return respond(null, 303, { Location: `/projects/${projectId}/box/live` });
       }
       if (boxRoute) {

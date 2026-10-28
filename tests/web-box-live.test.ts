@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Application } from "../src/application";
@@ -25,6 +25,12 @@ async function liveWorld() {
     exec: local => async (handle, request) => {
       const parsed = JSON.parse(new TextDecoder().decode(request.input)) as { op?: string; command?: string };
       if (parsed.op === "spawn" && parsed.command?.includes("xdotool")) { desktop.push(parsed.command); return ok(); }
+      // The virtual display: scrot captures a PNG into the box workspace for captureBoxScreen.
+      if (parsed.op === "spawn" && parsed.command?.includes("scrot")) {
+        mkdirSync(join(handle.workspaceRoot, ".jit"), { recursive: true });
+        writeFileSync(join(handle.workspaceRoot, ".jit/screen.png"), fakePng);
+        return ok();
+      }
       return local(handle, request);
     },
   });
@@ -82,10 +88,13 @@ test("(3) start takeover → 303; the page now has type=\"image\" name=\"shot\""
   expect(html).toContain(dictionaries.th["live.takeover_end"]);
 });
 
-test("(4) click POST with shot.x=10&shot.y=20 → the EXE14 click runs at {x:10,y:20}; type POST sends text", async () => {
+test("(4) click POST with shot.x=10&shot.y=20 → the EXE14 click runs at {x:10,y:20}; type POST sends text; the stored image is fresh", async () => {
   const { f, web, desktop } = await liveWorld();
   seed(f);
   const takeover = await startTakeover(f, web);
+  const shotId = (html: string) => /box\/screenshot\/([a-f0-9-]+)/.exec(html)?.[1];
+  const before = shotId(await (await get(f, web, livePath(f))).text());
+  expect(before).toBeTruthy();
   const click = await postForm(f, web, `/projects/${f.project.id}/box/takeover/click`, {
     csrf: f.auth.csrf, requestId: rid(), expectedRevision: String(takeover.revision), takeoverId: takeover.takeoverId!, "shot.x": "10", "shot.y": "20",
   });
@@ -96,6 +105,10 @@ test("(4) click POST with shot.x=10&shot.y=20 → the EXE14 click runs at {x:10,
   });
   expect(type.status).toBe(303);
   expect(desktop.some(command => command.includes("xdotool type") && command.includes("hello"))).toBe(true);
+  // Every owner input captures a fresh screenshot, so the page no longer shows a stale image.
+  const after = shotId(await (await get(f, web, livePath(f))).text());
+  expect(after).toBeTruthy();
+  expect(after).not.toBe(before);
 });
 
 test("(5) key POST Enter → the owner's word reaches EXE14 as Return", async () => {
@@ -142,11 +155,29 @@ test("(8) CSRF missing on POST → 403", async () => {
   expect(res.status).toBe(403);
 });
 
+test("(8b) the Refresh screen form captures a fresh screenshot before the page re-renders", async () => {
+  const { f, web } = await liveWorld();
+  seed(f);
+  const html = await (await get(f, web, livePath(f))).text();
+  expect(html).toContain(dictionaries.th["live.refresh_screen"]);
+  const first = await (await get(f, web, `/projects/${f.project.id}/box/latest`)).json() as { id: string | null };
+  expect(first.id).toBeTruthy();
+  const res = await postForm(f, web, `/projects/${f.project.id}/box/refresh`, {
+    csrf: f.auth.csrf, requestId: rid(), expectedRevision: "0",
+  });
+  expect(res.status).toBe(303);
+  expect(res.headers.get("location")).toBe(livePath(f));
+  const second = await (await get(f, web, `/projects/${f.project.id}/box/latest`)).json() as { id: string | null };
+  expect(second.id).toBeTruthy();
+  expect(second.id).not.toBe(first.id);
+});
+
 test("(9) the live-view enhancement never intercepts a form submit", async () => {
   const source = readFileSync(join(import.meta.dir, "../src/web-assets/app.js"), "utf8");
   // The setup ceremony predates the live view and still submits its own form; the live view itself only polls.
   const live = source.slice(source.indexOf("// Live view"), source.indexOf("// ⌘K"));
   expect(live).toContain("data-live-refresh");
+  expect(live).toContain('input[type="image"][data-live-refresh]');
   expect(live).not.toContain("submit");
 });
 

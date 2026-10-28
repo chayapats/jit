@@ -510,7 +510,9 @@ export interface BoxLiveView {
 export function boxLivePage(workspace: NavigationWorkspace, project: Project, view: BoxLiveView, csrf: string): string {
   const base = `/projects/${project.id}/box`, live = `${base}/live`;
   const shot = (id: string) => `${base}/screenshot/${id}`;
-  const refresh = `<p><a href="${live}">${tr("live.refresh")}</a></p>`;
+  // The Refresh link reloads the stored image; the Refresh screen form captures a fresh one first (script-free).
+  const refresh = `<p><a href="${live}">${tr("live.refresh")}</a></p>`
+    + `<form method="post" action="${base}/refresh">${hiddenCommand(csrf, view.takeover.revision)}<button>${tr("live.refresh_screen")}</button></form>`;
   const hiddenTakeover = view.takeover.takeoverId !== null ? `<input type="hidden" name="takeoverId" value="${view.takeover.takeoverId}">` : "";
   const image = view.screenshotId
     ? view.takeover.active

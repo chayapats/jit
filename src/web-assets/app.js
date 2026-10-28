@@ -169,7 +169,7 @@ if (app && panel && panelToggle) {
 // the Refresh link reloads and every takeover control is a plain form post (forms are never intercepted here).
 // With script, the image swaps to the latest screenshot every second while the page is visible; hidden pages
 // stop polling. The latest id comes from the page's own JSON endpoint next to the screenshot URL.
-const live = document.querySelector("img[data-live-refresh]");
+const live = document.querySelector('img[data-live-refresh], input[type="image"][data-live-refresh]');
 // Duck-typed (no HTMLImageElement): the contract harness evaluates this file with a stub DOM.
 if (live && typeof fetch === "function" && typeof live.dataset?.liveLatest === "string") {
   const latestUrl = live.dataset.liveLatest;
