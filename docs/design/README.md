@@ -73,7 +73,7 @@ Derived tones (`--line-strong` and the tinted status borders) are `color-mix` va
 
 ## Layout
 
-- **Home:** greeting, a large composer with a project chip (default "ทั่วไป"), and a quiet strip of items waiting on the owner.
+- **Home:** greeting, a large composer with a project chip (default "ทั่วไป"), and a quiet strip of items waiting on the owner. BOT05 implemented it ([app.topic_promotion/v1](../contracts/topic-promotion-v1.md)): the chip is a plain `<select>`, the composer posts `chat.start` (a new topic plus its first message, answered by Jit), and the strip names each project with items waiting, in words and a number. Projects and project creation follow below.
 - **Sidebar:** new chat, search (⌘K), projects with nested topics, badges for pending items, and settings at the bottom. On mobile it becomes a drawer.
 - **Topic:** a single chat column. The right panel, closed by default, holds memory, tasks, jobs, PR reports and the team.
 - **Settings:** persona, models and routes, dispatch allowance, appearance and language, Telegram, backups, upgrades, restores, exports and deletions. UX01 shipped appearance and language (owner-persisted, `ui.preferences/v1`). UX02 moved team and models, Telegram status, backups, upgrades, restores and project data (exports and deletions) under `/settings/*`, with a sub-navigation of section pills on every settings page. Old page URLs redirect there. BOT01 added the persona to the general page; BOT04 added Team dispatch (`/settings/dispatch`) with one allowance form per project. See [web.settings_ia/v1](../contracts/web-settings-ia-v1.md).
@@ -85,7 +85,7 @@ Derived tones (`--line-strong` and the tinted status borders) are `color-mix` va
 
 Composer, message (owner bubble or Jit plain text), team card (collapsible, per-role state with stop and skip), proposal card (role, dispatch or promotion, with accept, edit and dismiss), decision chip, status pill with text, command palette, drawer, right panel, setup steps, toast. Each component exists in dark, light, Thai and English.
 
-The proposal card is `proposalCard` in `src/web-proposal-card.ts` (BOT03). It sits under the Jit reply that carries it. It shows a kind line, the title, a status pill in words, the revision and its author, the fields, a warning-ruled list of what was dropped from Jit's suggestion and an authority note. Actions are plain form posts. BOT03 renders role proposals with it ([app.role_proposals/v1](../contracts/role-proposals-v1.md)), and later kinds pass their own fields and actions.
+The proposal card is `proposalCard` in `src/web-proposal-card.ts` (BOT03). It sits under the Jit reply that carries it. It shows a kind line, the title, a status pill in words, the revision and its author, the fields, a warning-ruled list of what was dropped from Jit's suggestion and an authority note. Actions are plain form posts. BOT03 renders role proposals with it ([app.role_proposals/v1](../contracts/role-proposals-v1.md)), and later kinds pass their own fields and actions. BOT05's promotion card (`promotionProposalCard`) shows the new project name, the origin topic and what accepting does; accepting opens the new topic, whose first block is an expandable "ต่อจากทั่วไป" / "Continued from General" quote of the origin at the linked revision, while the origin shows a read-only banner and a closed composer.
 
 ## Voice
 
@@ -150,3 +150,25 @@ The ceremony with its summary, in light English:
 Jit's greeting is the first message of the General space, in the persona's language:
 
 ![BOT02 greeting, dark Thai interface](assets/bot02-greeting-dark-th.png)
+
+## BOT05 chat-first home and topic promotion
+
+These show a scripted fixture installation ([app.topic_promotion/v1](../contracts/topic-promotion-v1.md)). The home greets the owner by the persona's address. Its composer's project chip defaults to the General space, and the strip below names a project that has an item waiting:
+
+![BOT05 home, dark Thai](assets/bot05-home-dark-th.png)
+
+A General topic where Jit suggests a promotion. The card names the origin topic and says what accepting does and does not do:
+
+![BOT05 promotion card, dark Thai](assets/bot05-card-dark-th.png)
+
+After acceptance, the origin is read-only. It shows a banner, a closed composer and links to the continuation:
+
+![BOT05 promoted origin, dark Thai](assets/bot05-origin-dark-th.png)
+
+The continuation opens with the expandable "ต่อจากทั่วไป" block, which shows the origin at the linked revision:
+
+![BOT05 continuation, dark Thai](assets/bot05-continued-dark-th.png)
+
+The same block in English:
+
+![BOT05 continuation, dark English](assets/bot05-continued-dark-en.png)

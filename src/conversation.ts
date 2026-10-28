@@ -10,8 +10,16 @@ export interface CreateTopicCommand {
 export interface SendMessageCommand {
   kind: "message.send"; requestId: string; projectId: string; expectedRevision: number; payload: { topicId: string; text: string };
 }
+/**
+ * Starts a new chat from the home composer (app.topic_promotion/v1 home, S09-D05/D09): one topic in the chosen project
+ * (the General space by default) titled from the first line of the text, and the owner's first message in it, in one
+ * commit. `expectedRevision` is the workspace revision the home page rendered its project chip from.
+ */
+export interface StartChatCommand {
+  kind: "chat.start"; requestId: string; projectId: string; expectedRevision: number; payload: { text: string };
+}
 /** Represents the owner conversation commands accepted by every authenticated ingress adapter. */
-export type ConversationCommand = CreateTopicCommand | SendMessageCommand;
+export type ConversationCommand = CreateTopicCommand | SendMessageCommand | StartChatCommand;
 /** Identifies a topic, its creator and its immutable metadata source independently from its conversation revision. */
 export interface Topic {
   id: string; projectId: string; groupId: string; title: string | null; revision: number; sequence: number;
@@ -26,6 +34,8 @@ export interface CommittedMessage {
 export interface TopicReceipt { topic: Topic; projectRevision: number }
 /** Returns an immutable message and the new topic revision only after its append commit. */
 export interface MessageReceipt { message: CommittedMessage; topicRevision: number }
+/** Returns the new chat's topic and first message after their single commit. */
+export interface ChatReceipt { topic: Topic; message: CommittedMessage; projectRevision: number; topicRevision: number }
 /** A bounded cursor page never reads the entire conversation or topic collection. */
 export interface CursorPage<T> { items: T[]; hasMore: boolean; nextAfter: number }
 
@@ -73,6 +83,11 @@ export function conversationIdentity(command: ConversationCommand, messageBytes:
     if (command.payload.title.length > 200) throw new AppError("title_too_long");
     return JSON.stringify([command.kind, command.projectId, command.expectedRevision, command.payload.title]);
   }
+  if (command.kind === "chat.start") {
+    if (Object.keys(command.payload).some(k => k !== "text")) throw new AppError("invalid_conversation_command");
+    requireText(command.payload.text, messageBytes);
+    return JSON.stringify([command.kind, command.projectId, command.expectedRevision, command.payload.text]);
+  }
   if (command.kind === "message.send") {
     if (Object.keys(command.payload).some(k => !["topicId", "text"].includes(k))) throw new AppError("invalid_conversation_command");
     requireId(command.payload.topicId); requireText(command.payload.text, messageBytes);
@@ -107,9 +122,32 @@ export function readMessages(tx: AppTransaction, projectId: string, topicId: str
     nextAfter: visible.at(-1)?.sequence ?? after };
 }
 
+/** Most characters of a topic title derived from a chat's first line. */
+export const chatTitleChars = 60;
+/** The title of a chat started from the home composer: its first non-empty line, whitespace collapsed, bounded. */
+export function chatTitle(text: string): string {
+  const line = text.split("\n").map(item => item.replace(/\s+/g, " ").trim()).find(Boolean) ?? "";
+  const chars = Array.from(line);
+  return chars.length > chatTitleChars ? `${chars.slice(0, chatTitleChars - 1).join("").trimEnd()}…` : line;
+}
+
 /** Mutates conversation state inside an owner-validated transaction; the caller commits receipts and audit atomically. */
-export function mutateConversation(tx: AppTransaction, command: ConversationCommand, now: number): TopicReceipt | MessageReceipt {
+export function mutateConversation(tx: AppTransaction, command: ConversationCommand, now: number): TopicReceipt | MessageReceipt | ChatReceipt {
   const attribution: Attribution = { kind: "owner", ownerId: "owner" };
+  if (command.kind === "chat.start") {
+    const workspace = tx.get<{ revision: number }>("SELECT revision FROM app_state WHERE id = 1")!.revision;
+    if (workspace !== command.expectedRevision) throw new AppError("stale_revision", 409);
+    const project = tx.get<{ revision: number }>("SELECT revision FROM projects WHERE id = ?", command.projectId);
+    if (!project) throw new AppError("project_not_found", 404);
+    const { topic, projectRevision } = mutateConversation(tx, { kind: "topic.create", requestId: command.requestId, projectId: command.projectId,
+      expectedRevision: project.revision, payload: { title: chatTitle(command.payload.text) } }, now) as TopicReceipt;
+    const { message, topicRevision } = mutateConversation(tx, { kind: "message.send", requestId: command.requestId, projectId: command.projectId,
+      expectedRevision: topic.revision, payload: { topicId: topic.id, text: command.payload.text } }, now) as MessageReceipt;
+    // The title is a copy of the message's first line: record the lineage, so deleting the message deletes the title.
+    tx.run("INSERT INTO chat_title_sources (title_source_id, project_id, topic_id, message_source_id) VALUES (?, ?, ?, ?)",
+      topic.source.sourceId, command.projectId, topic.id, message.source.sourceId);
+    return { topic: readTopic(tx, command.projectId, topic.id), message, projectRevision, topicRevision };
+  }
   if (command.kind === "topic.create") {
     const project = tx.get<{ revision: number; groupId: string }>(`SELECT p.revision, g.id AS groupId
       FROM projects p JOIN project_groups g ON p.id = g.project_id WHERE p.id = ?`, command.projectId);
@@ -125,6 +163,9 @@ export function mutateConversation(tx: AppTransaction, command: ConversationComm
   }
   const topic = tx.get<TopicRow>(`SELECT ${topicColumns} FROM topics WHERE id = ? AND project_id = ?`, command.payload.topicId, command.projectId);
   if (!topic) throw new AppError("topic_not_found", 404);
+  // app.topic_promotion/v1: a promoted origin is read-only; the conversation continues in its new project.
+  const promoted = tx.get<{ projectId: string; topicId: string }>("SELECT project_id AS projectId, topic_id AS topicId FROM topic_promotions WHERE origin_project_id = ? AND origin_topic_id = ?", command.projectId, topic.id);
+  if (promoted) throw new AppError("topic_promoted", 409, { projectId: promoted.projectId, path: `/projects/${promoted.projectId}/topics/${promoted.topicId}` });
   if (topic.revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
   const id = crypto.randomUUID(), sequence = topic.messageSequence + 1;
   const source = commitOwnerSource(tx, { projectId: command.projectId,

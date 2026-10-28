@@ -431,6 +431,42 @@ pre:last-child { margin-bottom: 0; }
 .composer-topic { font-size: 12px; color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }
 .composer-topic svg { width: 14px; height: 14px; }
 .composer-note { text-align: left; color: var(--muted); font-size: 12px; margin: 8px auto 0; width: min(100%, var(--chat-width)); }
+/* Chat-first home (BOT05): greeting, a large composer with the project chip, and a quiet waiting strip. */
+.content.home { width: min(100%, calc(var(--chat-width) + 64px)); margin-inline: auto; padding-top: 12vh; }
+.home-hero { display: grid; justify-items: center; gap: 10px; text-align: center; margin-bottom: 24px; }
+.home-mark { display: inline-flex; color: var(--fg); }
+.home-greeting { font-size: 32px; line-height: 1.2; font-weight: 600; letter-spacing: -.015em; }
+.home-hero p { color: var(--fg-2); font-size: 15px; }
+.home-composer { width: 100%; padding: 14px 16px 12px; }
+.home-composer textarea { min-height: 84px; font-size: 15px; }
+.home-note { width: 100%; }
+.project-chip { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; max-width: 70%; padding: 0 4px 0 12px; border: 1px solid var(--line-strong); border-radius: 999px; color: var(--fg-2); font-size: 13px; }
+.project-chip svg { width: 14px; height: 14px; flex-shrink: 0; }
+.project-chip select { min-width: 0; max-width: 100%; border: 0; background: transparent; color: var(--fg); font: inherit; font-weight: 500; padding: 4px 8px 4px 0; text-overflow: ellipsis; }
+.project-chip:focus-within { border-color: var(--fg); }
+.waiting-strip { margin-top: 28px; padding-top: 14px; border-top: 1px solid var(--line); font-size: 13px; color: var(--fg-2); }
+.waiting-title { font-size: 12px; font-weight: 600; color: var(--fg-3); margin-bottom: 8px; }
+.waiting-strip ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.waiting-strip a { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 4px 6px 4px 12px; border: 1px solid var(--line); border-radius: 999px; color: var(--fg); text-decoration: none; }
+.waiting-strip a:hover { background: var(--surface-3); }
+.waiting-strip a svg { width: 14px; height: 14px; color: var(--fg-2); }
+/* Topic promotion (BOT05): the read-only origin and the "continued from" block of its continuation. */
+.promotion-banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; margin-bottom: 20px; padding: 12px 16px; border: 1px solid var(--line-strong); border-radius: 14px; background: var(--surface); font-size: 14px; }
+.promotion-banner p { margin: 0; color: var(--fg-2); }
+.promotion-banner strong { color: var(--fg); font-weight: 600; }
+.promotion-link { display: inline-flex; align-items: center; min-height: 32px; padding: 4px 14px; border-radius: 999px; background: var(--fg); color: var(--on-fg); font-size: 13px; font-weight: 600; text-decoration: none; }
+.promotion-link:hover { background: var(--accent-hover); }
+.composer--closed { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; color: var(--fg-2); font-size: 13px; }
+.composer--closed p { margin: 0; }
+.continued-from { margin: 0 0 24px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
+.continued-from > details > summary { cursor: pointer; padding: 12px 16px; font-size: 13px; font-weight: 600; color: var(--fg); }
+.continued-from > details > :not(summary) { margin-inline: 16px; }
+.continued-from > details > a { display: inline-block; margin-bottom: 14px; font-size: 13px; color: var(--fg-2); }
+.continued-meta { font-size: 12px; color: var(--fg-3); margin-bottom: 10px; }
+.continued-messages { list-style: none; padding: 0 0 4px; display: grid; gap: 10px; border-left: 2px solid var(--line-strong); padding-left: 12px; }
+.continued-message { display: grid; gap: 2px; }
+.continued-speaker { font-size: 12px; font-weight: 600; color: var(--fg-3); }
+.continued-message .message-body { font-size: 14px; color: var(--fg-2); }
 
 .auth { min-height: 100dvh; display: grid; place-items: center; padding: 24px 16px; background: var(--canvas); }
 .auth-card { width: min(100%, 400px); background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 28px 24px 20px; box-shadow: var(--shadow); }

@@ -459,7 +459,7 @@ test("MEM02 schema v11 store migrates to v20 with a private snapshot and keeps M
   db.exec("DROP TABLE memory_suppressed_sources; DROP TABLE memory_suppressed_claims; DROP TABLE memory_suppressions; DROP TABLE memory_corrections; DROP TABLE memory_derived_sources; DROP TABLE memory_context_entries; DROP TABLE memory_contexts; DROP TABLE job_schedule_occurrences; DROP TABLE job_schedules; PRAGMA user_version = 11;");
   db.close();
   f.rt = boot(f.config, f.hooks, f.clock);
-  expect(f.rt.store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 27 });
+  expect(f.rt.store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 28 });
   expect(readdirSync(f.root).filter(name => name.includes(".pre-v11-"))).toHaveLength(1);
   expect(f.rt.app.memoryClaim(actor(f), p.id, ref(claim)).state).toBe("available");
   const answered = await ask(f, p, "ฐานข้อมูลคืออะไร");

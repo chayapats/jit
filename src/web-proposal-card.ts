@@ -2,6 +2,7 @@ import { tr, type MessageKey } from "./i18n";
 import { escape, hiddenCommand } from "./web-layout";
 import { sameRoute, type RoleProposalView } from "./team/role-proposals";
 import type { RoleRoute } from "./team/types";
+import { promotionNameChars, type PromotionProposalView } from "./promotion";
 
 /**
  * The proposal card of the design system (docs/design/README.md, "Components"): one Jit suggestion with a status
@@ -89,5 +90,39 @@ export function roleProposalCard(view: RoleProposalView, options: { topicBase: s
     fields: [{ label: tr("proposal.role.responsibility"), value: view.responsibility, literal: true }, { label: tr("proposal.role.route"), value: routeLabel(view.route, options.defaultRoute) }],
     dropped: view.droppedTotal ? { items: view.dropped.map(droppedLabel), total: view.droppedTotal } : null,
     note: open ? tr(routeless ? "proposal.role.needs_route" : "proposal.role.note") : null, actions, footer,
+  });
+}
+
+/** Replaces `{name}` placeholders of a trusted dictionary template; values are escaped by the caller's renderer. */
+export const fillText = (template: string, values: Readonly<Record<string, string>>) =>
+  template.replace(/\{([a-z]+)\}/g, (token, name: string) => Object.hasOwn(values, name) ? values[name]! : token);
+
+/**
+ * app.topic_promotion/v1 card. While open it offers accept (promote at this revision), edit (an owner-authored revision
+ * of the project name) and dismiss, each posting to `<topic>/replies/<reply>/promotions/<id>/(accept|revise|dismiss)`
+ * with the current revision. The card states what accept does and does not do.
+ */
+export function promotionProposalCard(view: PromotionProposalView, options: { topicBase: string; csrf: string; originTitle: string | null }): string {
+  const action = (verb: string) => `${options.topicBase}/replies/${view.replyId}/promotions/${view.id}/${verb}`;
+  const open = view.state === "proposed";
+  const previous = view.history.slice(0, -1).map(item => `${item.revision} ${tr(item.author === "owner" ? "proposal.by_owner" : "proposal.by_jit")} · ${tr(`proposal.state.${item.state}` as MessageKey)}`);
+  const meta = `${tr("proposal.revision")} ${view.revision} · ${tr(view.author === "owner" ? "proposal.by_owner" : "proposal.by_jit")}${previous.length ? ` · ${tr("proposal.earlier")} ${previous.join(", ")}` : ""}`;
+  const actions = open ? `<div class="proposal-actions">
+      <form method="post" action="${action("accept")}">${hiddenCommand(options.csrf, view.revision)}<button class="primary">${tr("promotion.accept")}</button></form>
+      <form method="post" action="${action("dismiss")}">${hiddenCommand(options.csrf, view.revision)}<button>${tr("proposal.dismiss")}</button></form></div>
+    <details class="proposal-edit"><summary>${tr("proposal.edit")}</summary><form class="team-form" method="post" action="${action("revise")}">${hiddenCommand(options.csrf, view.revision)}
+      <label>${tr("promotion.name")}<input name="name" required maxlength="${promotionNameChars}" value="${escape(view.name)}"></label>
+      <small>${tr("promotion.edit_note")}</small><button class="primary">${tr("proposal.save_edit")}</button></form></details>` : "";
+  const footer = view.state === "accepted" && view.promotion
+    ? `<p class="proposal-outcome">${tr("promotion.created")} <a href="/projects/${view.promotion.projectId}/topics/${view.promotion.topicId}">${tr("promotion.open_continuation")}</a></p>`
+    : view.state === "rejected" ? `<p class="proposal-outcome">${tr("promotion.dismissed_note")}</p>`
+    : view.closedByPromotion ? `<p class="proposal-outcome">${tr("promotion.closed_by_promotion")}</p>`
+    : view.closedByDeletion ? `<p class="proposal-outcome">${tr("promotion.closed_by_deletion")}</p>` : "";
+  return proposalCard({
+    id: view.id, kind: "promotion", state: view.state, eyebrow: tr("promotion.eyebrow"), title: view.name, meta,
+    fields: [{ label: tr("promotion.from_topic"), value: options.originTitle ?? tr("common.topic_unavailable") },
+      { label: tr("promotion.what_happens"), value: tr("promotion.what_happens_text") }],
+    dropped: view.droppedTotal ? { items: view.dropped.map(droppedLabel), total: view.droppedTotal } : null,
+    note: open ? tr("promotion.note") : null, actions, footer,
   });
 }

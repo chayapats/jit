@@ -7,7 +7,8 @@ import { personaIdentity, readPersona, writePersona, type Persona, type PersonaR
 import { applySetup, isSetupCommand, readGeneralSpace, readSetup, setupCheckWorkId, setupComplete, setupIdentity, type GeneralSpace, type SetupCommand, type SetupReceipt, type SetupView } from "./setup";
 import { jitReplyWorkId, admitJitReply, readRepliesFor, readReplyChanges, stopReply, stopReplyIdentity, type JitReplyView, type ReplyReceipt, type StopReplyCommand } from "./team/jit-reply";
 import { conversationIdentity, mutateConversation, readMessages, readTopic, readTopics, requireCursor,
-  type ConversationCommand, type CreateTopicCommand, type SendMessageCommand, type Topic, type TopicReceipt, type MessageReceipt } from "./conversation";
+  type ChatReceipt, type ConversationCommand, type CreateTopicCommand, type SendMessageCommand, type StartChatCommand, type Topic, type TopicReceipt, type MessageReceipt } from "./conversation";
+import { executePromotion, isPromotionCommand, promotionIdentity, readTopicPromotion, requireTopicOpen, type PromotionCommand, type PromotionReceipt, type TopicPromotionView } from "./promotion";
 import { lookupSource, requireId, requireReference, type SourceReference, type SourceLookup } from "./sources";
 import { readTelegramStatus } from "./telegram/channel";
 import type { TelegramStatus } from "./telegram/types";
@@ -516,6 +517,18 @@ export class Application {
     return this.store.read(tx => { this.#requireOwner(tx, actor, ["web", "telegram"]); return readGeneralSpace(tx); });
   }
 
+  /**
+   * app.topic_promotion/v1: whether this topic was promoted (read-only, with its continuation) or continues a promoted
+   * General space topic (with the origin read live through its own project, up to the linked revision). A read only.
+   */
+  promotion(actor: OwnerActor, projectId: string, topicId: string): TopicPromotionView {
+    requireId(projectId); requireId(topicId);
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, projectId); readTopic(tx, projectId, topicId);
+      return readTopicPromotion(tx, projectId, topicId);
+    });
+  }
+
   /** Resolves an exact source reference under an explicit authorized project and never fetches missing content. */
   source(actor: OwnerActor, projectId: string, reference: SourceReference): SourceLookup {
     requireId(projectId); requireReference(reference);
@@ -550,6 +563,8 @@ export class Application {
   execute(actor: OwnerActor, command: DispatchCommand): DispatchReceipt;
   execute(actor: OwnerActor, command: CreateTopicCommand): TopicReceipt;
   execute(actor: OwnerActor, command: SendMessageCommand): MessageReceipt;
+  execute(actor: OwnerActor, command: StartChatCommand): ChatReceipt;
+  execute(actor: OwnerActor, command: PromotionCommand): PromotionReceipt;
   execute(actor: OwnerActor, command: TeamCommand): TeamReceipt;
   execute(actor: OwnerActor, command: DecisionCommand): DecisionReceipt;
   execute(actor: OwnerActor, command: TaskCommand): TaskReceipt;
@@ -567,8 +582,8 @@ export class Application {
   execute(actor: OwnerActor, command: ExportCommand): ExportReceipt;
   execute(actor: OwnerActor, command: UpgradeCommand): Promise<UpgradeReceipt>;
   execute(actor: OwnerActor, command: RestoreCommand): Promise<RestoreReceipt>;
-  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | SetDispatchAllowanceCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | DispatchAllowanceReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt>;
-  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | SetDispatchAllowanceCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | DispatchAllowanceReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt> {
+  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt>;
+  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt> {
     if (command?.kind?.startsWith("upgrade.")) return this.#upgradeCommand(actor, command as UpgradeCommand);
     if (command?.kind?.startsWith("restore.")) return this.#restoreCommand(actor, command as RestoreCommand);
     // ops.schema_migrations/v1 admission fence (held by an upgrade or, ops.quarantined_restore/v1, a restore):
@@ -606,6 +621,7 @@ export class Application {
     if (isSetupCommand(command)) return this.#setupCommand(actor, command);
     if (command?.kind === "jit.reply.stop") return this.#stopReply(actor, command);
     if (command?.kind === "role.proposal.accept" || command?.kind === "role.proposal.reject" || command?.kind === "role.proposal.revise") return this.#roleProposalCommand(actor, command);
+    if (isPromotionCommand(command)) return this.#promotionCommand(actor, command);
     if (command?.kind === "dispatch.allowance.set") return this.#setAllowance(actor, command);
     if (command?.kind === "dispatch.proposal.accept" || command?.kind === "dispatch.proposal.dismiss" || command?.kind === "dispatch.answer") return this.#dispatchCommand(actor, command);
     if (command?.kind === "job.enqueue" || command?.kind === "job.resume" || command?.kind === "job.stop") return this.#jobCommand(actor, command);
@@ -619,13 +635,14 @@ export class Application {
         "SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
       if (receipt) {
         if (receipt.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409);
-        return JSON.parse(receipt.result_json) as TopicReceipt | MessageReceipt;
+        return JSON.parse(receipt.result_json) as TopicReceipt | MessageReceipt | ChatReceipt;
       }
       this.#project(tx, command.projectId!);
       const now = this.#now();
       const result = mutateConversation(tx, command as ConversationCommand, now);
-      // app.jit_reply/v1: the message and its one reply admission commit together (ADR 0029).
-      if (command.kind === "message.send") admitJitReply(tx, { message: (result as MessageReceipt).message, requestId: command.requestId,
+      // app.jit_reply/v1: the message and its one reply admission commit together (ADR 0029). A chat started from
+      // the home composer is a new topic plus its first message, answered the same way.
+      if (command.kind === "message.send" || command.kind === "chat.start") admitJitReply(tx, { message: (result as MessageReceipt | ChatReceipt).message, requestId: command.requestId,
         config: this.config, queue: this.#jobs, generation: tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'")!.generation, now });
       this.#beforeCommit?.(command.kind === "topic.create" ? "topic" : "message");
       tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
@@ -1341,6 +1358,8 @@ export class Application {
       const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
       if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as TeamReceipt; }
       const now = this.#now(), generation = tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'")!.generation;
+      // app.topic_promotion/v1: a promoted origin takes no new team work; it would add conversation after the link.
+      if ((command.kind === "team.dispatch" || command.kind === "role.preview") && command.projectId) requireTopicOpen(tx, command.projectId, command.payload.topicId);
       const result = command.kind === "role.preview" ? preparePreview(tx, command, this.config, this.#jobs, generation, now)
         : command.kind === "team.dispatch" ? prepareDispatch(tx, command, this.config, this.#jobs, generation, now)
         : command.kind === "team.control" ? prepareControl(tx, command, this.config, this.#jobs, generation, now)
@@ -1741,6 +1760,10 @@ export class Application {
       const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
       if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as DispatchReceipt; }
       const now = this.#now(), generation = tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'")!.generation;
+      if (command.kind !== "dispatch.proposal.dismiss") {
+        const topic = tx.get<{ topicId: string }>("SELECT topic_id AS topicId FROM dispatch_proposals WHERE project_id = ? AND id = ?", command.projectId, command.payload?.proposalId);
+        if (topic) requireTopicOpen(tx, command.projectId, topic.topicId);
+      }
       const receipt = executeDispatchCommand(tx, command, this.config, this.#jobs, generation, now);
       this.#beforeCommit?.("team");
       tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(receipt), now);
@@ -1798,6 +1821,26 @@ export class Application {
    * app.role_proposals/v1: the owner's accept, edit or dismiss of one Jit role proposal. Accept writes the role
    * through `role.save` in this transaction, under this command's single receipt and audit entry.
    */
+  /**
+   * app.topic_promotion/v1: accept, edit or dismiss one promotion proposal revision. Accept commits the new project, its
+   * topic, the identity-only link and the read-only mark on the origin with the receipt and audit, or none of them.
+   */
+  #promotionCommand(actor: OwnerActor, command: PromotionCommand): PromotionReceipt {
+    const payloadHash = digest(promotionIdentity(command));
+    return this.store.transaction(tx => {
+      this.#requireOwner(tx, actor); this.#project(tx, command.projectId);
+      const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
+      if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as PromotionReceipt; }
+      const now = this.#now();
+      const receipt = executePromotion(tx, command, now);
+      this.#beforeCommit?.("project");
+      tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(receipt), now);
+      tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);
+      this.#beforeCommit?.("receipt");
+      return receipt;
+    });
+  }
+
   #roleProposalCommand(actor: OwnerActor, command: RoleProposalCommand): RoleProposalReceipt {
     const payloadHash = digest(roleProposalIdentity(command, this.config.team));
     return this.store.transaction(tx => {

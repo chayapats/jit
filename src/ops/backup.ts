@@ -290,6 +290,10 @@ export const backupImageTables: Readonly<Record<string, "include" | "exclude" | 
   setup_state: "include", general_space: "include",
   // app.dispatch_allowance/v1 (schema 27): owner allowance revisions and identity-only dispatch proposals.
   dispatch_allowance_revisions: "include", dispatch_proposals: "include",
+  // app.topic_promotion/v1 (schema 28): identity-only links between a promoted General topic and its continuation.
+  topic_promotions: "include",
+  // Chat-first home (schema 28): identity-only lineage from a derived chat title to its first message.
+  chat_title_sources: "include",
   project_team: "include", projects: "include", restore_quarantines: "include", roles: "include",
   schway_native_refs: "include", source_versions: "include", sources: "include",
   task_events: "include", task_evidence_artifacts: "include", task_proposals: "include", tasks: "include",

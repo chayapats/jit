@@ -15,6 +15,7 @@ import { normalizePortResult, validateRunRequest } from "./scripted-port";
 import { portFailureOutcome, schwayMaxAttempts } from "./schway-port";
 import type { ApplicationRunOutcome, ApplicationRunRequest, RoleRoute } from "./types";
 import { admitJitDispatch } from "./jit-dispatch";
+import { generalProjectId, parsePromotionProposal, promotionFrom, promotionInstruction, promotionProposalViews, type PromotionProposal, type PromotionProposalView } from "../promotion";
 
 /** Registered work type for one Jit reply to one owner message (ADR 0029). */
 export const jitReplyWorkId = "team.jit-reply";
@@ -64,6 +65,8 @@ interface JitReplyRecord {
   progress: { text: string; provisional: true } | null;
   /** app.role_proposals/v1: specialists suggested by this reply; absent on records written before it. */
   roleProposals?: RoleProposal[];
+  /** app.topic_promotion/v1: a General space reply's suggestion to continue the topic as a project; absent otherwise. */
+  promotionProposal?: PromotionProposal;
 }
 
 /** One committed specialist result a team reply was given and cites, frozen at admission. */
@@ -88,6 +91,8 @@ export interface JitReplyView {
   discarded: string[]; discardedTotal: number; createdAt: number;
   /** app.role_proposals/v1 cards attached to the committed reply. */
   roleProposals: RoleProposalView[];
+  /** app.topic_promotion/v1 card attached to the committed reply (at most one). */
+  promotionProposals: PromotionProposalView[];
   /** A team reply (app.dispatch_allowance/v1) answers Jit's dispatching message; null for a reply to an owner message. */
   team: TeamReplyContext | null;
 }
@@ -307,7 +312,9 @@ function admitReply(tx: AppTransaction, input: ReplyAdmission): { id: string; re
     : `Optional "proposals" entry {"kind":"dispatch","roles":[names]} (at most one) that asks the service to call existing specialists for read-only analysis when the question needs them; the service checks it against the owner's configuration and dispatch allowance, and the owner confirms anything beyond it. Specialists you may name (owner-configured, service-recorded): ${boundedNames(roster, operatorLineBytes - 520)}.`;
   // Policy lines go as one operator line: run requests hold at most 8, and role proposals (app.role_proposals/v1)
   // and dispatch proposals each add instruction lines to a message reply.
-  const fixedOperator = [teamInput ? teamReplyMarker : jitReplyMarker, (teamInput ? teamReplyPolicy : jitReplyPolicy).join(" "),
+  // app.topic_promotion/v1: only a reply to an owner message in an open General space topic may suggest a promotion.
+  const promotable = !teamInput && promotionOpen(tx, message.projectId, message.topicId);
+  const fixedOperator = [teamInput ? teamReplyMarker : jitReplyMarker, [...teamInput ? teamReplyPolicy : jitReplyPolicy, ...promotable ? [promotionInstruction] : []].join(" "),
     ...(teamInput ? [] : roleProposalInstructions(configuredRoutes(tx, message.projectId, config.team))), ...personaInstructions(persona)];
   // The metadata line is charged at an upper bound that holds for every split of the offered results into kept and
   // gaps, in any order: the line with empty lists plus, per list, the smaller of its cap and every candidate entry,
@@ -429,6 +436,11 @@ function dispatchAnchored(tx: AppTransaction, replyId: string): TeamReplyContext
   return row ? { proposalId: row.id, discussionId: row.discussionId, citations: [], gaps: [] } : null;
 }
 
+/** Whether a reply in this topic may carry a promotion proposal: a General space topic that is not promoted yet. */
+function promotionOpen(tx: AppTransaction, projectId: string, topicId: string): boolean {
+  return generalProjectId(tx) === projectId && !promotionFrom(tx, projectId, topicId);
+}
+
 const sequenceOf = (tx: AppTransaction, messageId: string | null) => messageId
   ? tx.get<{ sequence: number }>("SELECT sequence FROM messages WHERE id = ?", messageId)?.sequence ?? null : null;
 
@@ -438,12 +450,14 @@ function project(tx: AppTransaction, row: { id: string; projectId: string; topic
   if (!row.runId) {
     return { ...base, jobId: null, revision: 1, state: "not_admitted", reason: row.reason, nextAction: notAdmittedNext[row.reason as ReplyNotAdmitted] ?? "send_again",
       progress: null, replyMessageId: null, source: null, mode: null, route: null, personaRevision: null, discarded: [], discardedTotal: 0, roleProposals: [],
-      team: dispatchAnchored(tx, row.id) };
+      promotionProposals: [], team: dispatchAnchored(tx, row.id) };
   }
   const record = readReplyRecord(tx, row.projectId, row.runId);
   const common = { ...base, jobId: record.jobId, revision: record.revision, route: record.request.route, personaRevision: record.personaRevision,
     mode: record.outcome?.mode ?? null, discarded: record.result?.discarded ?? [], discardedTotal: record.result?.discardedTotal ?? 0,
     roleProposals: roleProposalViews(record, record.roleProposals, sequenceOf(tx, record.replyMessageId)),
+    promotionProposals: promotionProposalViews(record, record.promotionProposal, sequenceOf(tx, record.replyMessageId),
+      record.promotionProposal ? promotionFrom(tx, record.projectId, record.topicId) : null),
     team: record.team ?? null };
   if (record.result?.state === "answered") {
     return { ...common, state: "answered", reason: null, nextAction: null, progress: null, replyMessageId: record.replyMessageId, source: record.source,
@@ -623,6 +637,9 @@ export function jitReplyWork(store: TransactionStore, config: AppConfig, port: A
       const routes = store.read(tx => configuredRoutes(tx, job.projectId, config.team));
       // app.dispatch_allowance/v1: at most one well-formed dispatch proposal; names are lookup keys only.
       let dispatch: string[] | null = null;
+      // app.topic_promotion/v1: at most one promotion proposal, and only in an open General space topic.
+      let promotion: PromotionProposal | null = null;
+      const promotable = !opened.team && store.read(tx => promotionOpen(tx, job.projectId, opened.topicId));
       // A team reply speaks for the team: it may neither re-dispatch nor propose roles.
       const handlers = opened.team ? {} : { role: (item: unknown) => {
         if (roleProposals.length >= roleProposalLimit) return false;
@@ -633,13 +650,17 @@ export function jitReplyWork(store: TransactionStore, config: AppConfig, port: A
         if (dispatch) return false;
         dispatch = dispatchNames(item);
         return !!dispatch;
-      } };
+      }, ...promotable ? { promotion: (item: unknown) => {
+        if (promotion) return false;
+        promotion = parsePromotionProposal(item, now());
+        return !!promotion;
+      } } : {} };
       const parsed = outcome.state === "complete" && outcome.output ? normalizeJitReply(outcome.output, outputBytes, handlers) : null;
       const result: NonNullable<JitReplyRecord["result"]> = parsed?.state === "complete"
         ? { state: "answered", reason: null, structured: parsed.structured, discarded: parsed.discarded, discardedTotal: parsed.discardedTotal }
         : { state: "failed", reason: parsed?.state === "failed" ? parsed.reason : outcome.reason, structured: false, discarded: [], discardedTotal: 0 };
       // Language-neutral technical evidence (codes only), the same on Thai and English pages.
-      const evidence = `jit-reply · ${outcome.mode} · ${result.state}${result.reason ? `/${result.reason}` : ""} · discarded ${result.discardedTotal}${result.discarded.length ? ` (${result.discarded.join(", ")})` : ""}${result.state === "answered" && roleProposals.length ? ` · proposals role:${roleProposals.length}` : ""}${opened.team ? ` · team cites ${opened.team.citations.length} gaps ${opened.team.gaps.length}` : ""}${result.state === "answered" && (dispatch as string[] | null)?.length ? ` · dispatch named ${(dispatch as string[] | null)?.length}` : ""} · tools none · reply ${opened.id}`;
+      const evidence = `jit-reply · ${outcome.mode} · ${result.state}${result.reason ? `/${result.reason}` : ""} · discarded ${result.discardedTotal}${result.discarded.length ? ` (${result.discarded.join(", ")})` : ""}${result.state === "answered" && roleProposals.length ? ` · proposals role:${roleProposals.length}` : ""}${result.state === "answered" && promotion ? " · proposals promotion:1" : ""}${opened.team ? ` · team cites ${opened.team.citations.length} gaps ${opened.team.gaps.length}` : ""}${result.state === "answered" && (dispatch as string[] | null)?.length ? ` · dispatch named ${(dispatch as string[] | null)?.length}` : ""} · tools none · reply ${opened.id}`;
       const outcomeState = result.state === "answered" ? { state: "succeeded" as const, evidence } : { state: "partial" as const, evidence };
       const committed = commit(outcomeState, tx => {
         const current = readReplyRecord(tx, job.projectId, opened.id);
@@ -659,6 +680,7 @@ export function jitReplyWork(store: TransactionStore, config: AppConfig, port: A
           tx.run("UPDATE topics SET message_sequence = message_sequence + 1 WHERE project_id = ? AND id = ?", current.projectId, current.topicId);
           current.source = source; current.replyMessageId = messageId;
           if (roleProposals.length) current.roleProposals = roleProposals;
+          if (promotion) current.promotionProposal = promotion;
           tx.run("UPDATE jit_replies SET reply_message_id = ?, reply_source_id = ? WHERE id = ?", messageId, source.sourceId, current.id);
           if (current.team) inheritDerivation(tx, current.projectId, source, current.team.citations);
           saveReplyRecord(tx, current);
