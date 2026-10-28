@@ -19,7 +19,7 @@ S11-D01, D04 and D05 require execution in a boundary separate from the Jit servi
   - `--cap-drop=ALL`, `--security-opt=no-new-privileges` and `--read-only`.
   - A `tmpfs` for `/tmp` and `/run`.
   - `--pids-limit`, `--memory` and `--cpus` from operator config.
-  - `--userns=keep-id` and no `--privileged`.
+  - `--userns=keep-id:uid=1000,gid=1000` (the service uid maps onto the image's `box` user, so the workspace it owns is usable whatever that uid is; #163) and no `--privileged`.
   - No environment from the Jit service. Only a fixed allowlist (`HOME`, `PATH`, `LANG`, `TZ`) plus explicit per-call variables reaches the box.
 - **Network per access level.**
   - `read` never creates a box.

@@ -105,7 +105,7 @@ test("create applies every hardening flag; workspace uses the internal network a
   const handle = await f.runtime.ensure(projectA, "workspace");
   expect(handle).toEqual({ projectId: projectA, name: `jit-box-${projectA}`, mode: "workspace", profile: false, workspaceRoot: "/workspace", temporaryDirectory: "/tmp" });
   const create = f.podman.calls.find(call => call[0] === "create")!;
-  for (const flag of ["--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only", "--userns=keep-id", "--pull=never", "--pids-limit=256", "--memory=1024m", "--cpus=1.5",
+  for (const flag of ["--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only", "--userns=keep-id:uid=1000,gid=1000", "--pull=never", "--pids-limit=256", "--memory=1024m", "--cpus=1.5",
     "--network=jit-box-internal", "/tmp:rw,nosuid,nodev,size=1g,mode=1777", "/run:rw,nosuid,nodev,size=128m,mode=1777"]) expect(create).toContain(flag);
   expect(create.some(arg => /privileged|--env-host|--volume|podman\.sock|--init/.test(arg))).toBe(false);
   expect(create.slice(-3)).toEqual([image, "sleep", "infinity"]);

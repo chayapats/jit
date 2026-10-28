@@ -4,7 +4,7 @@ import type { ExecutionConfig } from "../config";
 import { AppError } from "../errors";
 import { requireId } from "../sources";
 import {
-  boxDirectories, boxEnvironment, boxInternalNetwork, boxName, boxRunnerPath, boxTemporaryDirectory, boxWorkspaceRoot, expectedBoxMounts, pinnedImagePattern, requireBoxMode,
+  boxDirectories, boxEnvironment, boxInternalNetwork, boxName, boxRunnerPath, boxTemporaryDirectory, boxUserId, boxWorkspaceRoot, expectedBoxMounts, pinnedImagePattern, requireBoxMode,
   sameMounts, sidecarInstallRoot, sidecarName, validateStreamRequest,
   type BoxEnsureOptions, type BoxExecRequest, type BoxExecResult, type BoxHandle, type BoxMode, type BoxMount, type BoxRef, type BoxRuntime, type BoxStatus,
   type BoxStream, type BoxStreamRequest, type BoxStreams, type SidecarHandle, type SidecarSpec, type StreamTarget,
@@ -110,7 +110,8 @@ const tmpfs = ["/tmp:rw,nosuid,nodev,size=1g,mode=1777", "/run:rw,nosuid,nodev,s
 /**
  * The production {@link BoxRuntime} on rootless Podman. Every container is created with the ADR 0036 hardening:
  * `--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--read-only`, tmpfs `/tmp` and `/run`, `--pids-limit`,
- * `--memory`, `--cpus`, `--userns=keep-id`, never `--privileged`, `--pull=never` (images are pinned by digest), the
+ * `--memory`, `--cpus`, `--userns=keep-id:uid=1000,gid=1000` (the service user is the image's `box` user, so the workspace
+ * it owns is writable inside whatever the service uid is), never `--privileged`, `--pull=never` (images are pinned by digest), the
  * constant {@link boxEnvironment} and exactly the expected bind mounts. After creation (and before every reuse)
  * `podman container inspect` must show exactly those mounts, no privilege, a read-only root and the mode's network;
  * a box that differs is removed and refused with `box_mount_mismatch` (or `box_hardening_mismatch`).
@@ -367,7 +368,7 @@ export function createArgs(input: {
     "--label", "jit.box=1", "--label", `jit.box.project=${input.projectId}`, "--label", `jit.box.mode=${input.mode}`, "--label", `jit.box.profile=${input.profile ? "1" : "0"}`,
     "--label", `jit.box.env=${environmentDigest(input.env)}`,
     "--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only", ...tmpfs.flatMap(spec => ["--tmpfs", spec]),
-    `--pids-limit=${input.config.pidsLimit}`, `--memory=${input.config.memoryMb}m`, `--cpus=${input.config.cpus}`, "--userns=keep-id",
+    `--pids-limit=${input.config.pidsLimit}`, `--memory=${input.config.memoryMb}m`, `--cpus=${input.config.cpus}`, `--userns=keep-id:uid=${boxUserId},gid=${boxUserId}`,
     "--log-driver=none", "--stop-timeout=2", "--workdir", boxWorkspaceRoot];
   if (input.mode === "workspace") args.push(`--network=${boxInternalNetwork}`);
   for (const [name, value] of Object.entries(input.env).sort(([a], [b]) => a.localeCompare(b))) args.push("--env", `${name}=${value}`);
