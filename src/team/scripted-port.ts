@@ -6,6 +6,7 @@ import { requireId, requireReference, requireText } from "../sources";
 import type { TransactionStore } from "../store";
 import type { ApplicationRunPort, ManagedContextOutcome } from "./run-port";
 import type { ApplicationRunEvent, ApplicationRunOutcome, ApplicationRunRequest, ManagedContextReference, RunReason, TeamPolicy } from "./types";
+import { contextPacketSections } from "./types";
 import { requireRoleRoute } from "./configuration";
 import { renderContextAnswer } from "../memory/context-answer";
 
@@ -77,6 +78,42 @@ function validateContextLayout(request: ApplicationRunRequest, policy: TeamPolic
       requireId(ref.claimId);
       if (![ref.revision, ref.generation].every(value => Number.isSafeInteger(value) && value > 0)) throw new AppError("invalid_run_request");
     }
+  }
+  if (context.packet !== undefined) validatePacket(request, policy);
+}
+
+const sectionStates = ["included", "trimmed", "dropped", "empty", "withheld"];
+const omissionReasons = ["budget", "ceiling", "loop_guard", "unavailable", "run_policy"];
+/** app.context_packet/v1 shape: eight labelled sections in fixed order; pinned decisions and indexes only label data. */
+function validatePacket(request: ApplicationRunRequest, policy: TeamPolicy): void {
+  const packet = request.manifest.context!.packet!;
+  const sources = request.manifest.sources.length;
+  const index = (value: unknown) => count(value) && (value as number) < sources;
+  if (!packet || typeof packet !== "object" || packet.contract !== "app.context_packet/v1" || packet.version !== 1 ||
+      !Array.isArray(packet.sections) || packet.sections.length !== contextPacketSections.length ||
+      packet.sections.some((section, at) => !section || section.order !== at + 1 || section.name !== contextPacketSections[at] ||
+        !sectionStates.includes(section.state) || !count(section.items) || !count(section.bytes)) ||
+      !Array.isArray(packet.pinned) || !Array.isArray(packet.omissions) || packet.omissions.length > 32 ||
+      packet.omissions.some(item => !item || !contextPacketSections.includes(item.section) || (item.section as string) === "pinned_decisions" ||
+        !omissionReasons.includes(item.reason) || !count(item.items)) ||
+      !packet.sourceIndexes || !Array.isArray(packet.sourceIndexes.currentRequest) || !Array.isArray(packet.sourceIndexes.recentMessages) ||
+      ![...packet.sourceIndexes.currentRequest, ...packet.sourceIndexes.recentMessages].every(index) ||
+      !packet.budget || ![packet.budget.bytes, packet.budget.pinned, packet.budget.used].every(count)) throw new AppError("invalid_run_request");
+  const pinnedIds = new Set<string>();
+  for (const item of packet.pinned) {
+    if (!item || !["topic", "project"].includes(item.scope) || !Number.isSafeInteger(item.revision) || item.revision < 1 || pinnedIds.has(item.id)) throw new AppError("invalid_run_request");
+    requireId(item.id); requireId(item.topicId); requireReference(item.source);
+    requireText(item.conclusion, policy.contextBytes); requireText(item.rationale, policy.contextBytes);
+    pinnedIds.add(item.id);
+  }
+  if (packet.summary !== null) {
+    const summary = packet.summary;
+    if (!summary || !Number.isSafeInteger(summary.summaryRevision) || summary.summaryRevision < 1 || !index(summary.index) || !count(summary.depth) ||
+        !Array.isArray(summary.sourceIds) || summary.sourceIds.length > 256) throw new AppError("invalid_run_request");
+    requireReference(summary.source);
+    const cited = request.manifest.sources[summary.index]!.reference;
+    if (cited.sourceId !== summary.source.sourceId || cited.revision !== summary.source.revision || cited.generation !== summary.source.generation) throw new AppError("invalid_run_request");
+    for (const id of summary.sourceIds) requireId(id);
   }
 }
 

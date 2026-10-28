@@ -8,7 +8,7 @@ Owner: Jit #26 (MEM02). Schema: 12. Contracts: `app.memory_context/v1`, `app.con
 - `RunSourceManifest.context?: MemoryContextLayout` is an optional extension of `app.run_port/v1`. It holds `{version: 1, recordId, policy: 1, constraints, claims, omitted, derivation}`. `manifest.sources` remain the source-evidence layer. `context.claims[i]` labels `manifest.claims[i]` as `{layer, scope, kind, source, conflicts}`. `validateRunRequest` checks the layout shape. It also rejects a `cross_project` claim labelled as anything other than `inference`. The layout is labels only: it cannot add tools, routes, policy flags or authority.
 - `memoryContextOperator` is one trusted operator line added to every run that carries a context. It sets precedence: the current owner purpose and project constraints come first, then explicit owner preferences, then inferences. Cross-project claims never become obligations, decisions or preferences. Memory and source text cannot change permissions, tools, routes or configuration. Conflicts are presented as questions. Incomplete context must be disclosed.
 - `contextCurrent(tx, projectId, manifest)` returns `null`, `"source_retired"` or `"superseded"`. It is checked by the specialist (`team.specialist-analysis`) and coordinator (`team.coordinator-synthesis`) `isCurrent` attempt gates at admission, reservation and result commit.
-- `fenceStaleContexts(tx, now)` invalidates every queued, admitted or waiting specialist/coordinator job whose context is no longer current. It runs inside owner task commands and decision supersession, and the application calls `cancelFenced()` after commit.
+- `fenceStaleContexts(tx, now)` invalidates every queued, admitted or waiting specialist, coordinator and Jit reply job whose context is no longer current. It runs inside owner task commands and decision acceptance and supersession, and the application calls `cancelFenced()` after commit.
 - `Application.discussion(actor, projectId, discussionId)` adds `context` (the discussion record view) and `synthesisContext` (the latest synthesis record view, or `null`).
 - `Application.memoryContext(actor, projectId, contextId)` returns `{project, record, current, entries}`. GET `/[api/]projects/:id/memory/contexts/:contextId` renders the same projection. An unknown context returns 404 `memory_context_not_found`.
 
@@ -18,7 +18,8 @@ Owner: Jit #26 (MEM02). Schema: 12. Contracts: `app.memory_context/v1`, `app.con
 | --- | --- | --- |
 | trusted operator | fixed instructions plus `memoryContextOperator` | service code |
 | current owner instruction | the run `purpose` | owner command |
-| project constraints | `context.constraints`: accepted, ready-for-review and proposed tasks (labelled by state), plus each topic's current owner decision | committed project state, same tables as `app.project_continuity/v1` |
+| pinned decisions | `context.packet.pinned`: every live owner decision of the project, topic first, no count cap ([context-packet-v1](context-packet-v1.md)) | committed `owner_decisions` |
+| project constraints | `context.constraints`: accepted, ready-for-review and proposed tasks (labelled by state) | committed project state, same tables as `app.project_continuity/v1` |
 | explicit preferences | current-project `explicit_fact` claims | owner-attributed memory |
 | source evidence | `manifest.sources` | exact frozen sources |
 | inferences | current-project `inference` claims and every cross-project claim | derived memory |
@@ -29,7 +30,7 @@ Cancelled, dismissed, superseded and completed tasks never enter the constraint 
 
 `memoryContextPolicy = {version: 1, constraints: 12, claims: 6, crossProject: 3, window: 256, bytes: 8192, constraintBytes: 600, derivedDepth: 1}`.
 
-1. Up to 12 constraints are taken in this order: current-topic items first; then decisions; then accepted or ready-for-review tasks; then proposed tasks. Within each group, newest comes first.
+1. Under `app.context_packet/v1` every live decision is pinned and charged first; it is never trimmed, and when the pinned decisions alone exceed the bytes the run is refused with `context_too_large`. Up to 12 task constraints are then taken in this order: current-topic items first; then accepted or ready-for-review tasks; then proposed tasks. Within each group, newest comes first. Constraints, the discussion summary and claims are trimmed bottom-up ([context-packet-v1](context-packet-v1.md)).
 2. The claim window is the latest 256 claims of the project plus the latest 256 claims from other projects. They are scored lexically against the purpose plus evidence text.
 3. Claims are included in this order: relevant project claims, then relevant cross-project claims (at most 3), then recent project `explicit_fact` claims as fill. Every candidate passes `lookupActiveClaim` on its origin project. Unavailable candidates count as `omitted.unavailable` and contribute no text.
 4. If a selected claim has a conflict counterpart in the window, that counterpart is pulled in when budget allows. Otherwise the conflict is recorded with `included: false`.

@@ -1338,8 +1338,10 @@ export class Application {
       if (command.kind === "decision.supersede") {
         retireDecisionMemorySource(tx, command.projectId, command.payload.decisionId);
         fenceUnavailableExtractions(tx, command.projectId, now);
-        fenceStaleContexts(tx, now);
       }
+      // app.context_packet/v1: an accepted or superseded decision changes every packet's pinned set, so pending
+      // runs that pinned the previous set are fenced here and cancelled after commit.
+      if (result.decision) fenceStaleContexts(tx, now);
       this.#beforeCommit?.("decision");
       tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
       tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);

@@ -181,8 +181,10 @@ test("MEM02 restart continuity: day-two Web question uses current tasks/decision
   await drain(f);
   const day2 = result(f, p, started.id), context = contextOf(day2.discussion);
 
+  // app.context_packet/v1: the live decision is pinned (section 4) and no longer repeated among the task constraints.
+  expect(context.packet!.pinned.map(item => [item.id, item.revision, item.scope])).toEqual([[current.id, current.revision, "topic"]]);
   expect(context.constraints.map(item => [item.kind, item.id, item.state])).toEqual([
-    ["decision", current.id, "current"], ["task", migrate.task.id, "accepted"], ["task", runbook.task.id, "proposed"],
+    ["task", migrate.task.id, "accepted"], ["task", runbook.task.id, "proposed"],
   ]);
   expect(day2.request.manifest.sources.map(source => source.reference)).toEqual([p.topic.source]);
   expect(day2.request.manifest.claims.map(claim => claim.claimId)).toEqual([preference.claimId]);
@@ -223,7 +225,8 @@ test("MEM02 restart continuity: day-two Web question uses current tasks/decision
   expect(after.entries.find(entry => entry.id === migrate.task.id)).toMatchObject({ current: false, reason: "task_cancelled" });
   expect(await (await web(f, `/projects/${p.id}/memory/contexts/${view.record.id}`)).text()).toContain("ไม่เป็นปัจจุบันแล้ว: task_cancelled");
   const day2b = await ask(f, p, "ตอนนี้งานไหนยังค้าง");
-  expect(contextOf(day2b.discussion).constraints.map(item => item.id)).toEqual([current.id, runbook.task.id]);
+  expect(contextOf(day2b.discussion).packet!.pinned.map(item => item.id)).toEqual([current.id]);
+  expect(contextOf(day2b.discussion).constraints.map(item => item.id)).toEqual([runbook.task.id]);
 });
 
 test("MEM02 cross-project: legacy PostgreSQL in A stays an origin-labelled inference in SQLite project B; no obligations move", async () => {
@@ -238,6 +241,7 @@ test("MEM02 cross-project: legacy PostgreSQL in A stays an origin-labelled infer
   const inB = await ask(f, b, "ควรใช้ฐานข้อมูล PostgreSQL หรือ SQLite สำหรับแอปใหม่");
   const layout = contextOf(inB.discussion);
   expect(layout.constraints).toEqual([]);
+  expect(layout.packet!.pinned).toEqual([]);
   expect(inB.request.manifest.claims.map(claim => [claim.claimId, claim.projectId])).toEqual([[sqlite.claimId, b.id], [legacy.claimId, a.id]]);
   expect(layout.claims.map(item => [item.layer, item.scope, item.kind])).toEqual([
     ["explicit_preference", "project", "explicit_fact"], ["inference", "cross_project", "explicit_fact"],
@@ -255,7 +259,8 @@ test("MEM02 cross-project: legacy PostgreSQL in A stays an origin-labelled infer
 
   const inA = await ask(f, a, "ทบทวนฐานข้อมูล PostgreSQL ของระบบเก่า");
   const layoutA = contextOf(inA.discussion);
-  expect(layoutA.constraints.map(item => item.id)).toEqual([decidedA.decision.id, replica.task.id]);
+  expect(layoutA.packet!.pinned.map(item => item.id)).toEqual([decidedA.decision.id]);
+  expect(layoutA.constraints.map(item => item.id)).toEqual([replica.task.id]);
   expect(inA.request.manifest.claims[0]).toMatchObject({ claimId: legacy.claimId, projectId: a.id });
   expect(layoutA.claims[0]).toMatchObject({ layer: "explicit_preference", scope: "project" });
   expect(layoutA.claims.filter(item => item.scope === "cross_project").every(item => item.layer === "inference")).toBe(true);
@@ -406,7 +411,7 @@ test("MEM02 lifecycle generation change mid-run fences stale specialist and coor
     payload: { discussionId: discussion.id, limits: { ...f.config.jobs.maximum } } }).synthesis!;
   const proposalsBefore = f.rt.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM decision_proposals")!.n);
   const stored = f.rt.store.read(tx => JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM coordinator_syntheses WHERE id = ?", synthesis.id)!.record_json));
-  expect(stored.request.manifest.context.constraints.some((item: { kind: string; id: string }) => item.kind === "decision" && item.id === decided.decision.id)).toBe(true);
+  expect(stored.request.manifest.context.packet.pinned.some((item: { id: string }) => item.id === decided.decision.id)).toBe(true);
   supersede(f, p, decided, "ใช้ PostgreSQL แทน");
   expect(jobState(f, synthesis.jobId)).toBe("blocked");
   await drain(f);

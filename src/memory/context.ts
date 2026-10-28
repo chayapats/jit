@@ -7,10 +7,14 @@ import { discussionWorkId } from "../team/types";
 import type {
   ApplicationRunRequest, ContextClaimLayer, ContextConstraint, MemoryContextLayout, RunSourceManifest, TeamPolicy,
 } from "../team/types";
+import {
+  contextPacket, contextTooLarge, omit, packetSections, pinnedBytes, pinnedCurrent, pinnedDecisions, summaryCurrent, topicSummary, trimBottomUp,
+} from "./packet";
 import { lookupActiveClaim, memoryDerivation } from "./read";
 import type {
   ClaimReference, ContextConflict, ContextProvenanceEntry, MemoryClaim, MemoryContextRecord, MemoryContextView,
 } from "./types";
+import type { ContextPacketOmission } from "../team/types";
 
 /** app.memory_context/v1 policy 1: finite assembly ceilings recorded with every run context. */
 export const memoryContextPolicy: Readonly<MemoryContextRecord["policy"]> = Object.freeze({
@@ -74,9 +78,11 @@ export function contextByteRoom(policy: TeamPolicy, input: {
   return Math.max(0, policy.contextBytes - used - 2048);
 }
 
-/** One bounded assembly; `evidence` is the run's already frozen exact source set. */
+/** One bounded assembly; `evidence` is the run's already frozen exact source set (packet section 3). */
 export interface MemoryContextInput {
   projectId: string; topicId: string; purpose: string;
+  /** The role responsibility the run receives (packet section 2); already charged by contextByteRoom. */
+  responsibility: string;
   owner: MemoryContextRecord["owner"];
   evidence: RunSourceManifest["sources"];
   /** Remaining manifest entries under TeamPolicy.sourceLimit. */
@@ -86,25 +92,12 @@ export interface MemoryContextInput {
   ownerGeneration: number; now: number;
 }
 
-function decisionSource(tx: AppTransaction, projectId: string, decisionId: string): SourceReference {
-  const owned = tx.get<SourceReference>("SELECT source_id AS sourceId, source_revision AS revision, source_generation AS generation FROM memory_decision_sources WHERE project_id = ? AND decision_id = ?", projectId, decisionId);
-  if (owned) return owned;
-  return tx.get<SourceReference>("SELECT p.source_id AS sourceId, p.source_revision AS revision, p.source_generation AS generation FROM owner_decisions d JOIN decision_proposals p ON p.id = d.proposal_id WHERE d.project_id = ? AND d.id = ?", projectId, decisionId)!;
-}
-
-/** The same committed obligations and current owner decisions as app.project_continuity/v1, under finite ceilings. */
-function constraintCandidates(tx: AppTransaction, projectId: string, topicId: string): { items: ContextConstraint[]; total: number } {
+/**
+ * The same committed obligations as app.project_continuity/v1, under the finite constraint ceiling (packet section 5).
+ * Live owner decisions are pinned in section 4 instead (app.context_packet/v1), so they are not repeated here.
+ */
+export function constraintCandidates(tx: AppTransaction, projectId: string, topicId: string): { items: ContextConstraint[]; total: number } {
   const limit = memoryContextPolicy.constraints, rank: { key: number[]; item: ContextConstraint }[] = [];
-  const decisions = tx.all<{ id: string; topicId: string; revision: number; conclusion: string; rationale: string; createdAt: number }>(
-    "SELECT id, topic_id AS topicId, revision, conclusion, rationale, created_at AS createdAt FROM owner_decisions WHERE project_id = ? AND superseded_by IS NULL ORDER BY (topic_id = ?) DESC, created_at DESC, id LIMIT ?",
-    projectId, topicId, limit);
-  for (const row of decisions) {
-    const text = clip(`${row.conclusion}\n${row.rationale}`, memoryContextPolicy.constraintBytes);
-    rank.push({ key: [row.topicId === topicId ? 0 : 1, 0, -row.createdAt], item: {
-      kind: "decision", id: row.id, revision: row.revision, topicId: row.topicId, state: "current",
-      text: text.text, truncated: text.truncated, source: decisionSource(tx, projectId, row.id),
-    } });
-  }
   const tasks = tx.all<{ id: string }>(
     `SELECT id FROM tasks WHERE project_id = ? AND state IN (${activeTaskStates.map(() => "?").join(",")}) ORDER BY (topic_id = ?) DESC, (state = 'proposed'), updated_at DESC, id LIMIT ?`,
     projectId, ...activeTaskStates, topicId, limit);
@@ -118,8 +111,7 @@ function constraintCandidates(tx: AppTransaction, projectId: string, topicId: st
     } });
   }
   rank.sort((a, b) => a.key[0]! - b.key[0]! || a.key[1]! - b.key[1]! || a.key[2]! - b.key[2]! || a.item.id.localeCompare(b.item.id));
-  const total = tx.get<{ n: number }>(`SELECT count(*) AS n FROM tasks WHERE project_id = ? AND state IN (${activeTaskStates.map(() => "?").join(",")})`, projectId, ...activeTaskStates)!.n +
-    tx.get<{ n: number }>("SELECT count(*) AS n FROM owner_decisions WHERE project_id = ? AND superseded_by IS NULL", projectId)!.n;
+  const total = tx.get<{ n: number }>(`SELECT count(*) AS n FROM tasks WHERE project_id = ? AND state IN (${activeTaskStates.map(() => "?").join(",")})`, projectId, ...activeTaskStates)!.n;
   return { items: rank.slice(0, limit).map(entry => entry.item), total };
 }
 
@@ -139,17 +131,23 @@ const reference = (claim: ClaimReference): ClaimReference => ({ claimId: claim.c
 const byRank = (a: Candidate, b: Candidate) => b.score - a.score || b.sequence - a.sequence;
 
 /**
- * app.memory_context/v1
- * Assembles and records one bounded, layered context inside the caller's owner transaction. Current tasks and
- * decisions come from committed project state; claims are retrieved project-first, then cross-project under a separate
- * ceiling, and each passes `lookupActiveClaim`. Topic messages and raw native history are never read. When any
- * evidence source is memory-derived (loop guard) no claims are retrieved.
+ * app.memory_context/v1 + app.context_packet/v1
+ * Assembles and records one bounded, layered context inside the caller's owner transaction, as the eight labelled
+ * packet sections of ADR 0034. Every live owner decision of the project is pinned (topic first, no count cap) and
+ * charged first; when they alone exceed `bytes` the run is refused with `context_too_large`. Current tasks come from
+ * committed project state; a discussion also gets the topic's newest committed scheduled summary as one more
+ * manifest source; claims are retrieved project-first, then cross-project under a separate ceiling, and each passes
+ * `lookupActiveClaim`. Sections 5–8 are trimmed bottom-up and every trim is recorded. Topic messages and raw native
+ * history are never read. When any evidence source is memory-derived (loop guard) no claims are retrieved.
  */
 export function assembleMemoryContext(tx: AppTransaction, input: MemoryContextInput): { manifest: RunSourceManifest; record: MemoryContextRecord } {
   requireId(input.projectId); requireId(input.topicId); requireId(input.owner.id);
   const policy = memoryContextPolicy, recordId = crypto.randomUUID();
-  let bytes = Math.max(0, Math.min(policy.bytes, input.bytes));
-  let slots = Math.max(0, Math.min(policy.claims, input.claimSlots));
+  const room = Math.max(0, input.bytes);
+  const pinned = pinnedDecisions(tx, input.projectId, input.topicId), pinnedCost = pinnedBytes(pinned);
+  if (pinnedCost > room) throw contextTooLarge(pinnedCost, room);
+  const sectionBytes = Math.max(0, Math.min(policy.bytes, room - pinnedCost));
+  const omissions: ContextPacketOmission[] = [];
   const omitted = { constraints: 0, claims: 0, unavailable: 0, budget: false, loopGuard: false };
   const entries: ContextProvenanceEntry[] = input.evidence.map(source => ({
     layer: "source_evidence", scope: source.projectId === input.projectId ? "project" : "cross_project", kind: "source",
@@ -157,14 +155,29 @@ export function assembleMemoryContext(tx: AppTransaction, input: MemoryContextIn
     generation: source.reference.generation, status: "available", claimKind: null, topicId: null,
     source: { ...source.reference }, conflicts: [], score: null,
   }));
+  for (const item of pinned) {
+    entries.push({
+      layer: "pinned_decision", scope: "project", kind: "decision", projectId: input.projectId, id: item.id,
+      revision: item.revision, generation: null, status: "current", claimKind: null, topicId: item.topicId,
+      source: { ...item.source }, conflicts: [], score: null,
+    });
+  }
   const inputDepth = Math.max(0, ...input.evidence.map(source => memoryDerivation(tx, source.projectId, source.reference.sourceId)));
 
-  const constraints: ContextConstraint[] = [];
+  // Sections 5–7 are fixed candidate lists; trimming them bottom-up decides whether section 8 gets any bytes.
   const candidates = constraintCandidates(tx, input.projectId, input.topicId);
-  for (const item of candidates.items) {
-    const cost = Buffer.byteLength(JSON.stringify(item));
-    if (cost > bytes) { omitted.budget = true; continue; }
-    bytes -= cost; constraints.push(item);
+  const constraintCosts = candidates.items.map(item => Buffer.byteLength(JSON.stringify(item)));
+  const found = topicSummary(tx, input.projectId, input.topicId);
+  const summaryPolicy: ContextPacketOmission["reason"] | null = input.owner.kind === "schedule" ? "loop_guard" : input.owner.kind === "synthesis" ? "run_policy" : null;
+  // The summary is one more manifest source, so it needs a free source slot.
+  const summarySlot = input.claimSlots > 0;
+  const summarySource = found.summary && !summaryPolicy && summarySlot
+    ? { projectId: input.projectId, reference: { ...found.summary.source }, text: found.text! } : null;
+  const summaryCosts = summarySource ? [Buffer.byteLength(JSON.stringify(summarySource)) + Buffer.byteLength(JSON.stringify(found.summary))] : [];
+  const trim = trimBottomUp(sectionBytes, [constraintCosts, [], summaryCosts]);
+  const [constraintKept, , summaryKept] = trim.kept as [number, number, number];
+  const constraints = candidates.items.slice(0, constraintKept);
+  for (const item of constraints) {
     entries.push({
       layer: "project_constraint", scope: "project", kind: item.kind, projectId: input.projectId, id: item.id,
       revision: item.revision, generation: null, status: item.state, claimKind: null, topicId: item.topicId,
@@ -172,9 +185,29 @@ export function assembleMemoryContext(tx: AppTransaction, input: MemoryContextIn
     });
   }
   omitted.constraints = Math.max(0, candidates.total - constraints.length);
+  omit(omissions, "constraints", "ceiling", candidates.total - candidates.items.length);
+  omit(omissions, "constraints", "budget", candidates.items.length - constraintKept);
+  const summary = summarySource && summaryKept ? { ...found.summary!, index: input.evidence.length } : null;
+  if (summary) {
+    entries.push({
+      layer: "source_evidence", scope: "project", kind: "source", projectId: input.projectId, id: summary.source.sourceId,
+      revision: summary.source.revision, generation: summary.source.generation, status: "available", claimKind: null,
+      topicId: input.topicId, source: { ...summary.source }, conflicts: [], score: null,
+    });
+  }
+  if (found.summary && summaryPolicy) omit(omissions, "summary", summaryPolicy, 1);
+  else if (found.summary && !summarySlot) omit(omissions, "summary", "ceiling", 1);
+  else if (summarySource && !summary) omit(omissions, "summary", "budget", 1);
+  omit(omissions, "summary", "unavailable", found.skipped);
+  const evidence = summary ? [...input.evidence, summarySource!] : [...input.evidence];
+  const sectionsOpen = constraintKept === constraintCosts.length && summaryKept === summaryCosts.length;
+  if (!sectionsOpen) omitted.budget = true;
+  let bytes = sectionsOpen ? Math.max(0, sectionBytes - trim.used) : 0;
+  let slots = Math.max(0, Math.min(policy.claims, input.claimSlots - (summary ? 1 : 0)));
 
   const claims: RunSourceManifest["claims"][number][] = [], layers: ContextClaimLayer[] = [], conflicts: ContextConflict[] = [];
   const included = new Map<string, Candidate>();
+  let claimBudget = 0, claimCeiling = 0, claimBytes = 0;
   if (inputDepth >= policy.derivedDepth) omitted.loopGuard = true;
   else {
     const query = lexicalTerms([input.purpose, ...input.evidence.map(source => source.text)].join("\n"));
@@ -183,8 +216,8 @@ export function assembleMemoryContext(tx: AppTransaction, input: MemoryContextIn
     let crossIncluded = 0;
     const tryInclude = (candidate: Candidate, counted: boolean): void => {
       if (included.has(candidate.claim.claimId)) return;
-      if (candidate.scope === "cross_project" && crossIncluded >= policy.crossProject) { if (counted) omitted.claims++; return; }
-      if (slots === 0) { if (counted) omitted.claims++; return; }
+      if (candidate.scope === "cross_project" && crossIncluded >= policy.crossProject) { if (counted) { omitted.claims++; claimCeiling++; } return; }
+      if (slots === 0) { if (counted) { omitted.claims++; claimCeiling++; } return; }
       const found = lookupActiveClaim(tx, candidate.claim.projectId, reference(candidate.claim));
       if (found.state !== "available") { omitted.unavailable++; return; }
       const claim = found.claim;
@@ -194,8 +227,8 @@ export function assembleMemoryContext(tx: AppTransaction, input: MemoryContextIn
       };
       const item = { projectId: claim.projectId, ...reference(claim), text: claim.text };
       const cost = Buffer.byteLength(JSON.stringify([item, layer]));
-      if (cost > bytes) { if (counted) omitted.claims++; omitted.budget = true; return; }
-      bytes -= cost; slots--; claims.push(item); layers.push(layer);
+      if (cost > bytes) { if (counted) { omitted.claims++; claimBudget++; } omitted.budget = true; return; }
+      bytes -= cost; claimBytes += cost; slots--; claims.push(item); layers.push(layer);
       included.set(claim.claimId, { ...candidate, claim });
       if (candidate.scope === "cross_project") crossIncluded++;
     };
@@ -238,8 +271,29 @@ export function assembleMemoryContext(tx: AppTransaction, input: MemoryContextIn
       source: { ...layer.source }, conflicts: layer.conflicts.map(reference), score: candidate.score,
     });
   }
+  if (omitted.loopGuard) omissions.push({ section: "memory_claims", reason: "loop_guard", items: 0 });
+  omit(omissions, "memory_claims", "budget", claimBudget);
+  omit(omissions, "memory_claims", "ceiling", claimCeiling);
+  omit(omissions, "memory_claims", "unavailable", omitted.unavailable);
+  const json = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+  const packet = contextPacket({
+    sections: packetSections({
+      purpose: { candidates: 1, kept: 1, bytes: json(input.purpose) },
+      responsibilities: { candidates: 1, kept: 1, bytes: json(input.responsibility) },
+      current_request: { candidates: input.evidence.length, kept: input.evidence.length, bytes: json(input.evidence) },
+      pinned_decisions: { candidates: pinned.length, kept: pinned.length, bytes: pinnedCost },
+      constraints: { candidates: candidates.total, kept: constraints.length, bytes: constraintCosts.slice(0, constraintKept).reduce((a, b) => a + b, 0) },
+      recent_messages: { candidates: 0, kept: 0, bytes: 0, withheld: true },
+      summary: { candidates: found.summary ? 1 : 0, kept: summary ? 1 : 0, bytes: summary ? summaryCosts[0]! : 0, withheld: !!summaryPolicy },
+      memory_claims: { candidates: claims.length + claimBudget + claimCeiling, kept: claims.length, bytes: claimBytes, withheld: omitted.loopGuard },
+    }),
+    pinned, summary,
+    sourceIndexes: { currentRequest: input.evidence.map((_, index) => index), recentMessages: [] },
+    omissions,
+    budget: { bytes: room, pinned: pinnedCost, used: pinnedCost + trim.used + claimBytes },
+  });
   const layout: MemoryContextLayout = {
-    version: 1, recordId, policy: 1, constraints, claims: layers, omitted: { ...omitted }, derivation: { inputDepth },
+    version: 1, recordId, policy: 1, constraints, claims: layers, omitted: { ...omitted }, derivation: { inputDepth }, packet,
   };
   const projectRow = tx.get<{ revision: number }>("SELECT revision FROM projects WHERE id = ?", input.projectId);
   if (!projectRow) throw new AppError("project_not_found", 404);
@@ -248,7 +302,9 @@ export function assembleMemoryContext(tx: AppTransaction, input: MemoryContextIn
     owner: { ...input.owner }, policy: { ...policy }, purpose: input.purpose, entries, conflicts, omitted,
     snapshot: { assembledAt: input.now, ownerGeneration: input.ownerGeneration, projectRevision: projectRow.revision },
     derivation: { inputDepth, claimsUsed: claims.length },
-    complete: omitted.constraints === 0 && omitted.claims === 0 && !omitted.budget && !omitted.loopGuard,
+    packet: { sections: packet.sections, omissions: packet.omissions, budget: packet.budget, summary: packet.summary },
+    complete: omitted.constraints === 0 && omitted.claims === 0 && !omitted.budget && !omitted.loopGuard &&
+      !omissions.some(item => item.reason === "budget" || item.reason === "ceiling"),
   };
   tx.run("INSERT INTO memory_contexts (id, project_id, topic_id, owner_kind, owner_id, record_json) VALUES (?, ?, ?, ?, ?, ?)",
     record.id, record.projectId, record.topicId, record.owner.kind, record.owner.id, JSON.stringify(record));
@@ -256,7 +312,7 @@ export function assembleMemoryContext(tx: AppTransaction, input: MemoryContextIn
     tx.run("INSERT OR IGNORE INTO memory_context_entries VALUES (?, ?, ?, ?, ?, ?)",
       record.id, entry.projectId, entry.kind, entry.id, entry.revision, entry.generation);
   }
-  return { manifest: { sources: structuredClone(input.evidence), claims, context: layout }, record };
+  return { manifest: { sources: structuredClone(evidence), claims, context: layout }, record };
 }
 
 function constraintReason(tx: AppTransaction, projectId: string, item: { kind: string; id: string; revision: number }): string | null {
@@ -273,13 +329,19 @@ function constraintReason(tx: AppTransaction, projectId: string, item: { kind: s
 /**
  * app.context_provenance/v1 freshness: rechecked at admission, reservation and result commit. Null means every
  * claim is still the active generation with the same text and every constraint is the same current revision.
+ * Under app.context_packet/v1 the pinned decisions must also still equal the project's live decisions, so a
+ * decision accepted or superseded after assembly makes the context stale, and the packet summary must still be
+ * available.
  */
 export function contextCurrent(tx: AppTransaction, projectId: string, manifest: RunSourceManifest): "source_retired" | "superseded" | null {
   for (const claim of manifest.claims) {
     const found = lookupActiveClaim(tx, claim.projectId, reference(claim));
     if (found.state !== "available" || found.claim.text !== claim.text) return "source_retired";
   }
+  const packet = manifest.context?.packet;
+  if (packet && !summaryCurrent(tx, projectId, packet.summary)) return "source_retired";
   for (const item of manifest.context?.constraints ?? []) if (constraintReason(tx, projectId, item)) return "superseded";
+  if (packet && pinnedCurrent(tx, projectId, packet.pinned)) return "superseded";
   return null;
 }
 
@@ -320,10 +382,14 @@ function fenceRow(tx: AppTransaction, projectId: string, jobId: string, json: st
   if (reason) invalidatePendingJob(tx, projectId, jobId, reason, now);
 }
 
-/** Loop depth of an output produced under `manifest`: inherited input depth, plus one when memory claims were used. */
+/**
+ * Loop depth of an output produced under `manifest`: inherited input depth (or the packet summary's depth, when
+ * deeper), plus one when memory claims were used.
+ */
 export function outputDerivation(manifest: RunSourceManifest): number {
   if (!manifest.context) return 0;
-  return manifest.context.derivation.inputDepth + (manifest.claims.length > 0 ? 1 : 0);
+  const inherited = Math.max(manifest.context.derivation.inputDepth, manifest.context.packet?.summary?.depth ?? 0);
+  return inherited + (manifest.claims.length > 0 ? 1 : 0);
 }
 
 /** Marks a committed output as memory-derived so extraction refuses it and follow-on runs withhold claims. */

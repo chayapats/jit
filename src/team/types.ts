@@ -54,6 +54,60 @@ export interface MemoryContextLayout {
   claims: readonly ContextClaimLayer[];
   omitted: { constraints: number; claims: number; unavailable: number; budget: boolean; loopGuard: boolean };
   derivation: { inputDepth: number };
+  /** app.context_packet/v1 labelled sections; absent on contexts assembled before the packet existed. */
+  packet?: ContextPacket;
+}
+
+/** app.context_packet/v1 section names, always in this order (ADR 0034). */
+export const contextPacketSections = [
+  "purpose", "responsibilities", "current_request", "pinned_decisions", "constraints", "recent_messages", "summary", "memory_claims",
+] as const;
+export type ContextPacketSectionName = typeof contextPacketSections[number];
+/**
+ * One live owner decision copied from committed `owner_decisions` at assembly: the run topic's live decision first,
+ * then the live decisions of the project's other topics. Text is never clipped; it is owner state, not memory.
+ */
+export interface PinnedDecision {
+  id: string; revision: number; topicId: string; scope: "topic" | "project";
+  conclusion: string; rationale: string; source: SourceReference;
+}
+/**
+ * The packet's versioned summary: the newest committed scheduled summary of the run topic. Its text is the
+ * manifest source at `index`; `sourceIds` are the sources that summary run itself was given.
+ */
+export interface ContextPacketSummary {
+  summaryRevision: number; index: number; source: SourceReference; sourceIds: string[];
+  /** Memory derivation depth of the summary output; the run output inherits it. */
+  depth: number;
+}
+/** One packet section and how much of it the run received. */
+export interface ContextPacketSection {
+  order: number; name: ContextPacketSectionName;
+  /** included: every candidate; trimmed: some dropped; dropped: none fit; empty: nothing to add; withheld: not given to this run type. */
+  state: "included" | "trimmed" | "dropped" | "empty" | "withheld";
+  items: number; bytes: number;
+}
+/** One recorded reason a packet section lost candidates. A pinned decision never appears here. */
+export interface ContextPacketOmission {
+  section: Exclude<ContextPacketSectionName, "pinned_decisions">;
+  reason: "budget" | "ceiling" | "loop_guard" | "unavailable" | "run_policy";
+  items: number;
+}
+/**
+ * app.context_packet/v1: the labelled layout every run's context is rebuilt from, using committed tables only.
+ * Pinned decisions have no count cap and are never trimmed; when they alone exceed the run's context bytes the run
+ * is not admitted (`context_too_large`). Other sections are trimmed bottom-up, and every trim is an omission record.
+ */
+export interface ContextPacket {
+  contract: "app.context_packet/v1"; version: 1;
+  sections: ContextPacketSection[];
+  pinned: PinnedDecision[];
+  summary: ContextPacketSummary | null;
+  /** Indexes into `manifest.sources` for the current request and the recent topic messages. */
+  sourceIndexes: { currentRequest: number[]; recentMessages: number[] };
+  omissions: ContextPacketOmission[];
+  /** Request bytes the packet sections 4–8 could use, the pinned decision bytes, and the bytes they used in total. */
+  budget: { bytes: number; pinned: number; used: number };
 }
 /** Service-owned read tools that later consumers may select explicitly; preview and dispatch select none. */
 export type ApplicationReadTool = "project.read" | "source.read" | "memory.read";

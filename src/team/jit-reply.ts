@@ -3,7 +3,8 @@ import type { AppConfig } from "../config";
 import type { CommittedMessage } from "../conversation";
 import { JobQueue, jobData, readJob } from "../jobs/queue";
 import type { Job, JobLimits, WorkDefinition } from "../jobs/types";
-import { contextCurrent, markMemoryDerived } from "../memory/context";
+import { constraintCandidates, contextCurrent, markMemoryDerived, memoryContextPolicy } from "../memory/context";
+import { contextPacket, omit, packetSections, pinnedBytes, pinnedDecisions, trimBottomUp } from "../memory/packet";
 import { suppressedSource } from "../memory/read";
 import { personaInstructions, readPersona } from "../persona";
 import { commitOutputSource, lookupSource, requireId, type Attribution, type SourceReference } from "../sources";
@@ -13,7 +14,7 @@ import { configuredRoutes, parseRoleProposal, roleProposalInstructions, roleProp
 import type { ApplicationRunPort } from "./run-port";
 import { normalizePortResult, validateRunRequest } from "./scripted-port";
 import { portFailureOutcome, schwayMaxAttempts } from "./schway-port";
-import type { ApplicationRunOutcome, ApplicationRunRequest, RoleRoute } from "./types";
+import type { ApplicationRunOutcome, ApplicationRunRequest, ContextPacketOmission, MemoryContextLayout, RoleRoute } from "./types";
 import { admitJitDispatch } from "./jit-dispatch";
 import { generalProjectId, parsePromotionProposal, promotionFrom, promotionInstruction, promotionProposalViews, type PromotionProposal, type PromotionProposalView } from "../promotion";
 
@@ -227,23 +228,26 @@ function topicHistory(tx: AppTransaction, projectId: string, topicId: string, me
     `SELECT m.id, m.sequence, m.attribution_json AS attribution, m.source_id AS sourceId, m.source_revision AS revision, m.source_generation AS generation,
        EXISTS (SELECT 1 FROM jit_replies r WHERE r.reply_message_id = m.id) AS jit
      FROM messages m WHERE m.project_id = ? AND m.topic_id = ? AND m.sequence <= ? ORDER BY m.sequence DESC LIMIT ?`, projectId, topicId, message.sequence, slots * 4);
-  const picked: { source: { projectId: string; reference: SourceReference; text: string }; speaker: string }[] = [];
-  let used = 0;
+  const picked: { source: { projectId: string; reference: SourceReference; text: string }; speaker: string; cost: number }[] = [];
+  // app.context_packet/v1 records what recent-message trimming left out of the fetched window, by cause.
+  const left = { budget: 0, ceiling: 0 };
+  let used = 0, stop: keyof typeof left | null = null;
   for (const row of rows) {
-    if (picked.length >= slots) break;
     const owner = (JSON.parse(row.attribution) as Attribution).kind === "owner";
     if (!owner && !row.jit) continue;
+    if (stop) { left[stop]++; continue; }
+    if (picked.length >= slots) { stop = "ceiling"; left.ceiling++; continue; }
     const reference = { sourceId: row.sourceId, revision: row.revision, generation: row.generation };
     if (suppressedSource(tx, reference)) { if (row.id === message.id) return null; continue; }
     const found = lookupSource(tx, projectId, reference);
     if (found.state !== "available") continue;
     const cost = Buffer.byteLength(JSON.stringify(found.text)) + 160;
-    if (used + cost > bytes) { if (row.id === message.id) return null; break; }
+    if (used + cost > bytes) { if (row.id === message.id) return null; stop = "budget"; left.budget++; continue; }
     used += cost;
-    picked.push({ source: { projectId, reference: found.reference, text: found.text }, speaker: owner ? "owner" : "assistant" });
+    picked.push({ source: { projectId, reference: found.reference, text: found.text }, speaker: owner ? "owner" : "assistant", cost });
   }
   if (picked[0]?.source.reference.sourceId !== message.source.sourceId) return null;
-  return picked.reverse();
+  return { items: picked.reverse(), left, used };
 }
 
 /** A specialist result offered to a team reply: its committed, currently available output source. */
@@ -325,12 +329,17 @@ function admitReply(tx: AppTransaction, input: ReplyAdmission): { id: string; re
     ? Buffer.byteLength(JSON.stringify(metadataOf([], []))) + Math.min(listCap, listBytes(offered.map(item => item.roleName))) + Math.min(listCap, listBytes(gapEntries)) + 2 * moreSuffixBytes
     : Buffer.byteLength(JSON.stringify(metadataOf([], [])));
   const overheadBase = Buffer.byteLength(JSON.stringify(fixedOperator)) + metadataBound + Buffer.byteLength(jit.responsibility) + 3000;
+  // app.context_packet/v1: every live owner decision is pinned and charged before anything below the request;
+  // it is never trimmed, so a reply whose pinned decisions alone exceed the room is not admitted.
+  const pinned = pinnedDecisions(tx, message.projectId, message.topicId), pinnedCost = pinnedBytes(pinned);
+  const room = Math.max(0, config.team.contextBytes - overheadBase);
+  if (pinnedCost > room) return notAdmitted("context_too_large");
   const cost = (item: TeamReplyResult) => Buffer.byteLength(JSON.stringify(item.text)) + 160;
   // A team reply's history ends at the question the team analyzed, never at a later owner message.
   const anchor = teamInput?.question ?? message;
-  const fit = (kept: readonly TeamReplyResult[]) => {
+  const fit = (kept: readonly TeamReplyResult[], reserved = 0) => {
     const slots = config.team.sourceLimit - kept.length;
-    return slots > 0 ? topicHistory(tx, message.projectId, message.topicId, anchor, slots, config.team.contextBytes - overheadBase - kept.reduce((sum, item) => sum + cost(item), 0)) : null;
+    return slots > 0 ? topicHistory(tx, message.projectId, message.topicId, anchor, slots, room - pinnedCost - reserved - kept.reduce((sum, item) => sum + cost(item), 0)) : null;
   };
   // The owner's question is reserved first. Each result then only adds its own fixed cost, so trying the smallest
   // first keeps the most results and one large result never crowds out smaller ones. Results that do not fit
@@ -344,23 +353,78 @@ function admitReply(tx: AppTransaction, input: ReplyAdmission): { id: string; re
   }
   results.sort((x, y) => offered.indexOf(x) - offered.indexOf(y));
   if (!history || (teamInput && !results.length)) return notAdmitted("context_too_large");
+  // Sections 5 (current tasks) then 6 (recent messages) share what the request, its results and the pinned decisions
+  // left; trimming runs bottom-up, so older messages go before any task constraint.
+  const purpose = teamInput ? "Jit team reply to the owner's question" : "Jit reply to the owner's newest message";
+  const resultsCost = results.reduce((sum, item) => sum + cost(item), 0);
+  const anchorCost = history.items.at(-1)!.cost;
+  const candidates = constraintCandidates(tx, message.projectId, message.topicId);
+  const constraintCosts = candidates.items.map(item => Buffer.byteLength(JSON.stringify(item)));
+  const constraintRoom = Math.max(0, Math.min(memoryContextPolicy.bytes, room - pinnedCost - resultsCost - anchorCost));
+  const trimmed = trimBottomUp(constraintRoom, [constraintCosts]);
+  const constraints = candidates.items.slice(0, trimmed.kept[0]);
+  const fitted = fit(results, trimmed.used);
+  if (!fitted) return notAdmitted("context_too_large");
   const operatorBase = [...fixedOperator, metadataOf(results, gaps)];
-  const sources = [...history.map(item => item.source), ...results.map(item => ({ projectId: message.projectId, reference: item.reference, text: item.text }))];
-  const speakers = `Manifest speakers in order (service-recorded): ${[...history.map(item => item.speaker), ...results.map(() => "specialist")].join(",")}. ${teamInput
-    ? "The owner's question is the last owner source; specialist sources are the results to speak for." : "The last source is the message to answer."}`;
   const limits = replyLimits(config.jobs.maximum, config.team.contextBytes);
   const context = { id: crypto.randomUUID(), generation: 1 };
-  const request: ApplicationRunRequest = {
-    runId: replyId, projectId: message.projectId, topicId: message.topicId, roleId: jit.id,
-    purpose: teamInput ? "Jit team reply to the owner's question" : "Jit reply to the owner's newest message",
-    route: structuredClone(jit.effective.route),
-    configuration: { ownerRevision: team.ownerRevision, projectRevision: team.projectRevision, roleRevision: jit.revision },
-    context, fence: { jobId: "00000000-0000-0000-0000-000000000000", generation: 1, ownerGeneration: input.generation },
-    instructions: { operator: [...operatorBase, speakers], responsibility: jit.responsibility },
-    manifest: { sources, claims: [] },
-    tools: [], policy: { genericExecution: false, arbitraryFetch: false, hostedLookup: false, repositoryDiscovery: false },
-    limits,
+  const json = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+  // One request whose recent messages start `dropped` messages later than the budget fit allowed.
+  const build = (dropped: number): ApplicationRunRequest => {
+    const items = fitted.items.slice(dropped), recent = items.length - 1;
+    const recentBytes = items.slice(0, -1).reduce((sum, item) => sum + item.cost, 0);
+    const sources = [...items.map(item => item.source), ...results.map(item => ({ projectId: message.projectId, reference: item.reference, text: item.text }))];
+    const omissions: ContextPacketOmission[] = [];
+    omit(omissions, "current_request", "budget", offered.length - results.length);
+    omit(omissions, "constraints", "ceiling", candidates.total - candidates.items.length);
+    omit(omissions, "constraints", "budget", candidates.items.length - constraints.length);
+    omit(omissions, "recent_messages", "budget", fitted.left.budget + dropped);
+    omit(omissions, "recent_messages", "ceiling", fitted.left.ceiling);
+    const packet = contextPacket({
+      sections: packetSections({
+        purpose: { candidates: 1, kept: 1, bytes: json(purpose) },
+        responsibilities: { candidates: 1, kept: 1, bytes: json(jit.responsibility) },
+        current_request: { candidates: 1 + offered.length, kept: 1 + results.length, bytes: anchorCost + resultsCost },
+        pinned_decisions: { candidates: pinned.length, kept: pinned.length, bytes: pinnedCost },
+        constraints: { candidates: candidates.total, kept: constraints.length, bytes: trimmed.used },
+        recent_messages: { candidates: fitted.items.length - 1 + fitted.left.budget + fitted.left.ceiling, kept: recent, bytes: recentBytes },
+        // app.jit_reply/v1: replies never receive memory claims or memory-derived summaries.
+        summary: { candidates: 0, kept: 0, bytes: 0, withheld: true },
+        memory_claims: { candidates: 0, kept: 0, bytes: 0, withheld: true },
+      }),
+      pinned, summary: null,
+      sourceIndexes: {
+        currentRequest: [recent, ...results.map((_, index) => items.length + index)],
+        recentMessages: Array.from({ length: recent }, (_, index) => index),
+      },
+      omissions,
+      budget: { bytes: room, pinned: pinnedCost, used: pinnedCost + trimmed.used + recentBytes },
+    });
+    // The reply record is the provenance record (recordId = reply id): replies never use claims, so no memory record.
+    const layout: MemoryContextLayout = {
+      version: 1, recordId: replyId, policy: 1, constraints, claims: [],
+      omitted: { constraints: candidates.total - constraints.length, claims: 0, unavailable: 0, budget: omissions.some(item => item.reason === "budget"), loopGuard: false },
+      derivation: { inputDepth: 0 }, packet,
+    };
+    const speakers = `Manifest speakers in order (service-recorded): ${[...items.map(item => item.speaker), ...results.map(() => "specialist")].join(",")}. ${teamInput
+      ? "The owner's question is the last owner source; specialist sources are the results to speak for." : "The last source is the message to answer."}`;
+    return {
+      runId: replyId, projectId: message.projectId, topicId: message.topicId, roleId: jit.id,
+      purpose,
+      route: structuredClone(jit.effective.route!),
+      configuration: { ownerRevision: team.ownerRevision, projectRevision: team.projectRevision, roleRevision: jit.revision },
+      context, fence: { jobId: "00000000-0000-0000-0000-000000000000", generation: 1, ownerGeneration: input.generation },
+      instructions: { operator: [...operatorBase, speakers], responsibility: jit.responsibility },
+      manifest: { sources, claims: [], context: layout },
+      tools: [], policy: { genericExecution: false, arbitraryFetch: false, hostedLookup: false, repositoryDiscovery: false },
+      limits,
+    };
   };
+  // The packet's own labels are not charged above; if they push the request past its bytes, the oldest recent
+  // messages go first (section 6 trims before anything above it), and each is recorded as a budget omission.
+  const fits = (candidate: ApplicationRunRequest) => { try { jobData(candidate, config.team.contextBytes); return true; } catch { return false; } };
+  let request = build(0);
+  for (let dropped = 1; !fits(request) && dropped < fitted.items.length; dropped++) request = build(dropped);
   try { validateRunRequest(request, config.team); } catch { return notAdmitted("context_too_large"); }
   const projectRevision = tx.get<{ revision: number }>("SELECT revision FROM projects WHERE id = ?", message.projectId)!.revision;
   let job: Job;
@@ -430,6 +494,18 @@ const notAdmittedNext: Record<ReplyNotAdmitted, string> = {
   context_too_large: "send_a_shorter_message",
 };
 
+/**
+ * The owner's next step for a reply that was not admitted. A reply is refused as `context_too_large` both when the
+ * message is too long and when the pinned owner decisions (app.context_packet/v1) leave no room; while the project
+ * has live decisions the step names both remedies.
+ */
+function notAdmittedAction(tx: AppTransaction, row: { projectId: string; reason: string | null }): string {
+  if (row.reason === "context_too_large" && tx.get("SELECT 1 FROM owner_decisions WHERE project_id = ? AND superseded_by IS NULL LIMIT 1", row.projectId)) {
+    return "review_pinned_decisions";
+  }
+  return notAdmittedNext[row.reason as ReplyNotAdmitted] ?? "send_again";
+}
+
 /** A not-admitted team reply has no record; its proposal row still names the discussion it was for. */
 function dispatchAnchored(tx: AppTransaction, replyId: string): TeamReplyContext | null {
   const row = tx.get<{ id: string; discussionId: string }>("SELECT id, discussion_id AS discussionId FROM dispatch_proposals WHERE team_reply_id = ?", replyId);
@@ -448,7 +524,7 @@ function project(tx: AppTransaction, row: { id: string; projectId: string; topic
   const base = { id: row.id, projectId: row.projectId, topicId: row.topicId, messageId: row.messageId, cursor: row.cursor, createdAt: row.createdAt,
     messageSequence: sequenceOf(tx, row.messageId) ?? 0, replySequence: null as number | null };
   if (!row.runId) {
-    return { ...base, jobId: null, revision: 1, state: "not_admitted", reason: row.reason, nextAction: notAdmittedNext[row.reason as ReplyNotAdmitted] ?? "send_again",
+    return { ...base, jobId: null, revision: 1, state: "not_admitted", reason: row.reason, nextAction: notAdmittedAction(tx, row),
       progress: null, replyMessageId: null, source: null, mode: null, route: null, personaRevision: null, discarded: [], discardedTotal: 0, roleProposals: [],
       promotionProposals: [], team: dispatchAnchored(tx, row.id) };
   }

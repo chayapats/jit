@@ -152,6 +152,12 @@ export function describeEffectiveRun(request: ApplicationRunRequest): EffectiveS
     ...request.manifest.claims.map(claim => ({
       id: `claim/${claim.projectId}/${claim.claimId}`, revision: `r${claim.revision}g${claim.generation}`, content: claim.text,
     })),
+    // app.context_packet/v1 section 4: every pinned owner decision reaches the model in every run, rebuilt from
+    // committed tables; native history or compaction is never the only place a decision lives.
+    ...(request.manifest.context?.packet?.pinned ?? []).map(decision => ({
+      id: `decision/${request.projectId}/${decision.id}`, revision: `r${decision.revision}`,
+      content: `Owner decision (${decision.scope === "topic" ? "this topic" : "another topic of this project"}): ${decision.conclusion}\nRationale: ${decision.rationale}`,
+    })),
   ];
   for (const document of sources) {
     if (!HOST_ID_PATTERN.test(document.id) || !HOST_ID_PATTERN.test(document.revision)) throw new AppError("invalid_run_request");
