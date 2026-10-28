@@ -295,6 +295,8 @@ export interface FullAppHandle {
   serviceConfig: ServiceConfig | null;
   /** exec.box_runtime/v1 project boxes, or null when the operator has not configured execution. */
   boxes: BoxManager | null;
+  /** app.approval_cards/v1 effect executor, or null without boxes and a connection vault; the drain waits for it. */
+  effects: EffectExecutor | null;
   /** Boot reconciliation outcome; `reconciled: false` while an upgrade/restore fence holds. */
   boot: { reconciled: boolean; detail: string; upgrade: { id: string; state: string } | null;
     restore: { id: string; state: string; reason: string | null } | null };
@@ -396,7 +398,7 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
       channels = ServiceChannels.start(store, config, input.transports!, now);
     }
     const handle: FullAppHandle = {
-      store, app, service: managed, channels, config, serviceConfig: service, boxes,
+      store, app, service: managed, channels, config, serviceConfig: service, boxes, effects,
       boot: { reconciled: booted.reconciled, detail: booted.detail, upgrade: booted.upgrade ? { id: booted.upgrade.id, state: booted.upgrade.state } : null,
         restore: booted.restore ? { id: booted.restore.id, state: booted.restore.state, reason: booted.restore.reason ?? null } : null },
       get queue() { return managed!.queue ?? composed.queue; },
@@ -493,13 +495,16 @@ export interface DrainResult {
  * interrupted or unknown, never as stopped or sent. The next start's
  * delivery worker and queue reconciliation consume the recovery metadata.
  */
-export async function stopDrain(handle: Pick<FullAppHandle, "queue" | "store"> & { channels?: ServiceChannels | null }, options: { timeoutMs: number }): Promise<DrainResult> {
+export async function stopDrain(handle: Pick<FullAppHandle, "queue" | "store"> & { channels?: ServiceChannels | null; effects?: EffectExecutor | null }, options: { timeoutMs: number }): Promise<DrainResult> {
   if (!options || !Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 0 || options.timeoutMs > 300000) {
     throw new Error("invalid_drain_options");
   }
   try { await handle.channels?.close(); } catch { /* Ownership already released or store gone; reconciliation handles it. */ }
   // Only attempts this drain interrupted count; historical waiting/blocked/failed jobs are not new interruptions.
   const { interrupted } = handle.queue.close();
+  // app.approval_cards/v1: no new effect is claimed and in-flight ones are aborted; they must settle (as `unknown`)
+  // before the store closes, or the drain reports `unknown` and the next boot reconciles them.
+  handle.effects?.close();
   const deadline = Date.now() + options.timeoutMs;
   for (;;) {
     const unsettled = handle.store.read(tx => {
@@ -514,6 +519,10 @@ export async function stopDrain(handle: Pick<FullAppHandle, "queue" | "store"> &
     await Bun.sleep(5);
   }
   try { await handle.queue.idle(); } catch { /* Settlement already fenced; report honestly below. */ }
+  if (handle.effects) {
+    const settled = await Promise.race([handle.effects.idle().then(() => true), Bun.sleep(Math.max(0, deadline - Date.now())).then(() => false)]);
+    if (!settled) return { outcome: "unknown", fencedJobs: interrupted.length, unknownDeliveries: countUnknownDeliveries(handle.store), nextAction: "terminate-supervised-process-and-reconcile" };
+  }
   return interrupted.length === 0
     ? { outcome: "stopped", fencedJobs: 0, unknownDeliveries: countUnknownDeliveries(handle.store), nextAction: "none" }
     : { outcome: "interrupted", fencedJobs: interrupted.length, unknownDeliveries: countUnknownDeliveries(handle.store),

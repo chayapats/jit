@@ -19,7 +19,7 @@ import { readAttempts } from "./jobs/attempts";
 import { JobQueue, fenceNarrowedExecution, jobCommandIdentity, projectJob, readJob, readJobs, stopExecutionJobs } from "./jobs/queue";
 import { readToolCalls, type ToolCallView } from "./exec/run-tools";
 import {
-  approvalCommandIdentity, decideCard, isApprovalCommand, readAutoApproveRules, readCard, readCards, readEffectTargets, requireApprovalConfigChannel,
+  approvalCommandIdentity, decideCard, expireCards, isApprovalCommand, readAutoApproveRules, readCard, readCards, readEffectTargets, requireApprovalConfigChannel,
   writeAutoApproveRule, writeEffectTarget, type ApprovalCard, type ApprovalCommand, type AutoApproveRule, type CardState, type DecideCardCommand,
   type DeployTarget, type GitRemote, type RemoveEffectTargetCommand, type SetAutoApproveCommand, type SetEffectTargetCommand,
 } from "./exec/approval-cards";
@@ -2108,6 +2108,8 @@ export class Application {
     });
     // Abort transports of attempts the halt or a narrowing fenced only after the fence committed.
     if (command.kind === "execution.halt" || result.narrowed) this.#jobs?.cancelFenced();
+    // app.approval_cards/v1: host work of an approved effect stops once its role no longer has `full`.
+    this.#effects?.accessChanged(command.projectId);
     // exec.box_runtime/v1: the kill switch stops the box; a narrower level stops a box running wider. Both after commit.
     if (this.#boxes) {
       const boxes = this.#boxes;
@@ -2165,6 +2167,8 @@ export class Application {
   #approvalCommand(actor: OwnerActor, command: ApprovalCommand): ApprovalReceipt {
     const payloadHash = digest(approvalCommandIdentity(command));
     let replay = false;
+    // A decision on an expired card is refused and rolled back, so the expiry is recorded in its own transaction first.
+    if (command.kind === "approval.decide") this.store.transaction(tx => { this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, command.projectId); expireCards(tx, command.projectId, this.#now()); });
     const result = this.store.transaction(tx => {
       this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, command.projectId);
       const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);

@@ -8,7 +8,7 @@ import type { ApprovalCard, AutoApproveScope, EffectKind } from "../../src/exec/
 import { BoxManager } from "../../src/exec/box-manager";
 import { ConnectionVault } from "../../src/exec/connections";
 import { EffectExecutor, type EffectExecutorOptions } from "../../src/exec/effect-executor";
-import { FakeBoxRuntime } from "../../src/exec/fake-box-runtime";
+import { FakeBoxRuntime, type FakeBoxExec } from "../../src/exec/fake-box-runtime";
 import { JobQueue } from "../../src/jobs/queue";
 import { TransactionStore } from "../../src/store";
 import { discussionPlanWork, specialistAnalysisWork } from "../../src/team/dispatch";
@@ -29,9 +29,13 @@ export const answer = (request: ApplicationRunRequest, output: string): Applicat
 
 /** One recorded protocol-fixture HTTP request. */
 export interface FetchCall { url: string; method: string; headers: Record<string, string>; body: unknown }
-export type FetchReply = (call: FetchCall) => Response | Promise<Response>;
+export type FetchReply = (call: FetchCall, signal: AbortSignal | null) => Response | Promise<Response>;
 
-export interface EffectFixtureOptions { script?: RunScript; fetch?: FetchReply; executor?: Partial<EffectExecutorOptions>; effects?: boolean }
+export interface EffectFixtureOptions {
+  script?: RunScript; fetch?: FetchReply; executor?: Partial<EffectExecutorOptions>; effects?: boolean;
+  /** Wraps the box's runner handler (for gating one request). */
+  exec?: (local: FakeBoxExec) => FakeBoxExec;
+}
 
 /**
  * An installation for EXE07: a `full`-capable project whose box is a local directory running the real runner, an
@@ -48,7 +52,7 @@ export async function effectFixture(options: EffectFixtureOptions = {}) {
   const store = new TransactionStore(config.databasePath);
   const clock = { now: epoch };
   const now = () => clock.now;
-  const runtime = new FakeBoxRuntime({ exec: localExec(box), workspaceRoot: box.root, temporaryDirectory: box.tmp });
+  const runtime = new FakeBoxRuntime({ exec: options.exec ? options.exec(localExec(box)) : localExec(box), workspaceRoot: box.root, temporaryDirectory: box.tmp });
   const boxes = new BoxManager(store, config, runtime, { now });
   const vault = new ConnectionVault(secrets, { forbidden: [state, backups, execution] });
   const fetches: FetchCall[] = [];
@@ -59,7 +63,7 @@ export async function effectFixture(options: EffectFixtureOptions = {}) {
       const headers = Object.fromEntries(Object.entries(init.headers as Record<string, string>));
       const call = { url, method: String(init.method), headers, body: init.body ? JSON.parse(String(init.body)) : null };
       fetches.push(call);
-      return reply(call);
+      return reply(call, init.signal ?? null);
     },
     ...options.executor,
   });

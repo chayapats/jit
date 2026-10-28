@@ -33,6 +33,8 @@ export interface EffectExecutorOptions {
   localRemote?: (url: string) => string;
   /** Test-only fault seam, called after the claim commits and before the effect is attempted. */
   afterClaim?: (card: ApprovalCard) => void | Promise<void>;
+  /** Test-only fault seam, called after the bundle reached the mirror and before the push re-check. */
+  beforePush?: (card: ApprovalCard) => void | Promise<void>;
   /** Most bytes of a git bundle copied out of the box (default 256 MiB). */
   bundleBytes?: number;
 }
@@ -65,6 +67,9 @@ export class EffectExecutor {
   readonly #options: EffectExecutorOptions;
   readonly #now: () => number;
   readonly #running = new Set<Promise<unknown>>();
+  /** In-flight effects by card, so a halt can abort the host work of its project. */
+  readonly #inFlight = new Map<string, { projectId: string; abort: AbortController }>();
+  #closing = false;
 
   constructor(store: TransactionStore, options: EffectExecutorOptions) {
     this.#store = store;
@@ -90,6 +95,34 @@ export class EffectExecutor {
   /** Waits for every effect this executor started. */
   async idle(): Promise<void> { while (this.#running.size) await Promise.allSettled([...this.#running]); }
 
+  /**
+   * Service drain: claims nothing more (an approved card left unclaimed fails `interrupted_before_start` at the next
+   * boot) and aborts effects still in flight, which end `unknown`. Callers then wait for {@link idle} within their
+   * drain deadline.
+   */
+  close(): void {
+    this.#closing = true;
+    for (const item of this.#inFlight.values()) item.abort.abort();
+  }
+
+  /**
+   * After an access command commits (kill switch, narrowing): aborts the host work of every in-flight effect of the
+   * project whose role no longer has `full` in an unhalted project. An aborted push or call ends `unknown`.
+   */
+  accessChanged(projectId: string): void {
+    for (const [cardId, item] of this.#inFlight) {
+      if (item.projectId !== projectId) continue;
+      const roleId = this.#store.read(tx => tx.get<{ roleId: string }>("SELECT role_id AS roleId FROM approval_cards WHERE id = ?", cardId)?.roleId);
+      try { this.#store.read(tx => assertExecutionAllowed(tx, projectId, roleId ?? null, "full")); } catch { item.abort.abort(); }
+    }
+  }
+
+  /** True while the card may still cause its effect: not aborted, and the role keeps `full` in an unhalted project. */
+  #allowed(card: ApprovalCard, signal: AbortSignal): boolean {
+    if (signal.aborted || this.#closing) return false;
+    try { this.#store.read(tx => assertExecutionAllowed(tx, card.projectId, card.roleId, "full")); return true; } catch { return false; }
+  }
+
   /** Runs the card once if it is claimable; resolves with the card's final state. Never throws for an effect failure. */
   run(projectId: string, cardId: string): Promise<ApprovalCard> {
     const promise = this.#run(projectId, cardId);
@@ -100,6 +133,7 @@ export class EffectExecutor {
 
   async #run(projectId: string, cardId: string): Promise<ApprovalCard> {
     requireId(projectId); requireId(cardId);
+    if (this.#closing) return this.#store.read(tx => readCard(tx, projectId, cardId));
     let claimed: { card: ApprovalCard; secret: string } | { failed: ApprovalCard } | null;
     try {
       claimed = this.#store.transaction(tx => this.#claim(tx, projectId, cardId));
@@ -116,12 +150,16 @@ export class EffectExecutor {
     if ("failed" in claimed) return claimed.failed;
     const { card, secret } = claimed;
     registerSecretFingerprint(secret);
+    const abort = new AbortController();
+    this.#inFlight.set(card.id, { projectId, abort });
     let outcome: Outcome;
     try {
       await this.#options.afterClaim?.(card);
-      outcome = await this.#perform(card, secret);
+      outcome = await this.#perform(card, secret, abort.signal);
     } catch {
       outcome = { outcome: "unknown", reason: "executor_error", detail: {} };
+    } finally {
+      this.#inFlight.delete(card.id);
     }
     return this.#store.transaction(tx => {
       const now = this.#now();
@@ -160,27 +198,30 @@ export class EffectExecutor {
     return { card: started, secret: released.secret };
   }
 
-  async #perform(card: ApprovalCard, secret: string): Promise<Outcome> {
+  async #perform(card: ApprovalCard, secret: string, signal: AbortSignal): Promise<Outcome> {
     const action = card.action;
+    // Every external step re-checks the level and the halt right before it starts (ADR 0037).
+    const allowed = () => this.#allowed(card, signal);
+    if (action.kind === "effect.git_push") return this.#push(card, action, secret, signal, allowed);
+    if (!allowed()) return { outcome: "failed", reason: "access_changed", detail: {} };
     switch (action.kind) {
-      case "effect.git_push": return this.#push(card, action, secret);
       case "effect.github_pr_create":
-        return this.#github(action.github, secret, "POST", `pulls`, { title: action.title, head: action.head, base: action.base, body: action.body, draft: action.draft },
+        return this.#github(signal, action.github, secret, "POST", `pulls`, { title: action.title, head: action.head, base: action.base, body: action.body, draft: action.draft },
           201, body => ({ number: body.number, url: body.html_url }));
       case "effect.github_comment":
-        return this.#github(action.github, secret, "POST", `issues/${action.issueNumber}/comments`, { body: action.body }, 201, body => ({ id: body.id, url: body.html_url }));
+        return this.#github(signal, action.github, secret, "POST", `issues/${action.issueNumber}/comments`, { body: action.body }, 201, body => ({ id: body.id, url: body.html_url }));
       case "effect.github_pr_merge":
-        return this.#github(action.github, secret, "PUT", `pulls/${action.pullNumber}/merge`, { sha: action.headSha, merge_method: action.method }, 200,
+        return this.#github(signal, action.github, secret, "PUT", `pulls/${action.pullNumber}/merge`, { sha: action.headSha, merge_method: action.method }, 200,
           body => ({ sha: body.sha, merged: body.merged }), { 409: "stale", 405: "not_mergeable" });
       case "effect.deploy":
-        return this.#http(action.target.url, secret, "POST", { projectId: card.projectId, target: action.target.name, ref: action.ref, cardId: card.id }, null, () => ({}));
+        return this.#http(signal, action.target.url, secret, "POST", { projectId: card.projectId, target: action.target.name, ref: action.ref, cardId: card.id }, null, () => ({}));
     }
   }
 
-  async #github(github: GitHubTarget, secret: string, method: string, path: string, body: unknown, expected: number,
+  async #github(signal: AbortSignal, github: GitHubTarget, secret: string, method: string, path: string, body: unknown, expected: number,
     pick: (body: Record<string, unknown>) => Record<string, unknown>, failures: Record<number, string> = {}): Promise<Outcome> {
     const url = `${github.apiBase.replace(/\/$/, "")}/repos/${encodeURIComponent(github.owner)}/${encodeURIComponent(github.repo)}/${path}`;
-    return this.#http(url, secret, method, body, expected, pick, failures);
+    return this.#http(signal, url, secret, method, body, expected, pick, failures);
   }
 
   /**
@@ -188,13 +229,13 @@ export class EffectExecutor {
    * non-success status is `failed` with `http_<status>` (or the named reason). Redirects are refused and only the
    * picked fields of the response are kept.
    */
-  async #http(url: string, secret: string, method: string, body: unknown, expected: number | null,
+  async #http(signal: AbortSignal, url: string, secret: string, method: string, body: unknown, expected: number | null,
     pick: (body: Record<string, unknown>) => Record<string, unknown>, failures: Record<number, string> = {}): Promise<Outcome> {
     const fetcher = this.#options.fetch ?? ((input, init) => fetch(input, init));
     let response: Response;
     try {
       response = await fetcher(url, {
-        method, redirect: "error", signal: AbortSignal.timeout(30_000),
+        method, redirect: "error", signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
         headers: { authorization: `Bearer ${secret}`, accept: "application/vnd.github+json", "x-github-api-version": "2022-11-28", "content-type": "application/json", "user-agent": "jit" },
         body: JSON.stringify(body),
       });
@@ -209,14 +250,15 @@ export class EffectExecutor {
   }
 
   /** The git bundle → mirror → push path (ADR 0037 § Git push safety). */
-  async #push(card: ApprovalCard, action: Extract<EffectAction, { kind: "effect.git_push" }>, secret: string): Promise<Outcome> {
+  async #push(card: ApprovalCard, action: Extract<EffectAction, { kind: "effect.git_push" }>, secret: string, signal: AbortSignal, allowed: () => boolean): Promise<Outcome> {
     const work = mkdtempSync(join(this.#options.tempRoot ?? tmpdir(), "jit-effect-"));
     chmodSync(work, 0o700);
     try {
+      if (!allowed()) return { outcome: "failed", reason: "access_changed", detail: {} };
       const bundle = await this.#bundleFromBox(card, action, work);
       if ("outcome" in bundle) return bundle;
       const mirror = this.#mirror(card.projectId, work);
-      const git = (args: string[], options: { secret?: string; timeoutMs?: number } = {}) => runGit(mirror.env(options.secret), args, options.timeoutMs ?? 120_000);
+      const git = (args: string[], options: { secret?: string; timeoutMs?: number } = {}) => runGit(mirror.env(options.secret), args, options.timeoutMs ?? 120_000, signal);
       // Fixed flags on every call; transports are allowed per step: only the local bundle file for the fetch, only
       // https for the push (a local bare repository too, under the test-only seam).
       const base = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "credential.helper=", "-c", "transfer.fsckObjects=true",
@@ -233,10 +275,13 @@ export class EffectExecutor {
       for (const update of action.updates) {
         if ((await git([...base, "cat-file", "-e", `${update.newSha}^{commit}`])).code !== 0) return { outcome: "failed", reason: "stale", detail: { missing: [update.newSha] } };
       }
+      await this.#options.beforePush?.(card);
+      // A halt, a narrower level or a drain since the claim stops the push before it starts; nothing was sent.
+      if (!allowed()) return { outcome: "failed", reason: "access_changed", detail: {} };
       const url = this.#options.localRemote ? this.#options.localRemote(action.remote.url) : action.remote.url;
-      const pushed = await git([...base, ...pushFlags, "push", "--porcelain", "--atomic", "--no-verify", url,
+      const pushed = await runGit(mirror.env(secret), [...base, ...pushFlags, "push", "--porcelain", "--atomic", "--no-verify", url,
         ...action.updates.map(update => `--force-with-lease=${update.ref}:${update.oldSha ?? ""}`),
-        ...action.updates.map(update => `${update.newSha}:${update.ref}`)], { secret });
+        ...action.updates.map(update => `${update.newSha}:${update.ref}`)], 120_000, signal);
       for (let index = 0; index < action.updates.length; index++) await git([...base, "update-ref", "-d", `refs/jit-effect/${card.id}/${index}`]).catch(() => undefined);
       return pushOutcome(pushed, action);
     } finally {
@@ -312,13 +357,16 @@ export class EffectExecutor {
 }
 
 /** Runs host git with a fixed environment; output is bounded and redacted before it is kept anywhere. */
-async function runGit(env: Record<string, string>, args: string[], timeoutMs: number): Promise<{ code: number | null; stdout: string; stderr: string }> {
+async function runGit(env: Record<string, string>, args: string[], timeoutMs: number, signal?: AbortSignal): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  if (signal?.aborted) return { code: null, stdout: "", stderr: "aborted" };
   const proc = Bun.spawn(["git", ...args], { env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
-  const timer = setTimeout(() => { try { proc.kill("SIGKILL"); } catch { /* Exited. */ } }, timeoutMs);
+  const kill = () => { try { proc.kill("SIGKILL"); } catch { /* Exited. */ } };
+  const timer = setTimeout(kill, timeoutMs);
+  signal?.addEventListener("abort", kill, { once: true });
   try {
     const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
     return { code: proc.signalCode ? null : code, stdout: stdout.slice(0, 65_536), stderr: stderr.slice(0, 65_536) };
-  } finally { clearTimeout(timer); }
+  } finally { clearTimeout(timer); signal?.removeEventListener("abort", kill); }
 }
 
 /**

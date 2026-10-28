@@ -282,3 +282,20 @@ test("schema 37 classifies every new table for backups and every new owner-visib
   for (const key of Object.keys(dictionaries.en).filter(key => key.startsWith("effects."))) expect(dictionaries.th[key as keyof typeof dictionaries.th]).toBeTruthy();
 });
 
+
+test("card lists filter by the state the owner sees, and a late decision records the expiry", async () => {
+  const { f, propose } = await proposing();
+  setLevel(f, "full");
+  setDeploy(f, connection(f, "deploy_secret", deployToken()));
+  const { cardId } = JSON.parse((await propose(effectToolNames["effect.deploy"], { target: "production" })).content) as { cardId: string };
+  expect(f.app.approvalCards(f.auth.actor, f.project.id, { state: "pending" }).map(card => card.id)).toEqual([cardId]);
+  f.clock.now += cardLifetimeMs;
+  // Not written yet, but read as expired: a pending query no longer lists it and an expired query does.
+  expect(f.app.approvalCards(f.auth.actor, f.project.id, { state: "pending" })).toEqual([]);
+  expect(f.app.approvalCards(f.auth.actor, f.project.id, { state: "expired" }).map(card => [card.id, card.state])).toEqual([[cardId, "expired"]]);
+  // A decision after the deadline is refused, and the expiry it found is recorded durably.
+  rejects(() => decide(f, f.store.read(tx => readCard(tx, f.project.id, cardId)), "approve"), "approval_card_expired", 409);
+  expect(f.store.read(tx => tx.get<{ state: string; reason: string }>("SELECT state, reason FROM approval_cards WHERE id = ?", cardId))).toEqual({ state: "expired", reason: "expired" });
+  expect(f.app.approvalCards(f.auth.actor, f.project.id, { state: "expired" }).map(card => card.id)).toEqual([cardId]);
+  expect(f.fetches).toEqual([]);
+});

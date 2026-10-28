@@ -355,12 +355,20 @@ export function readCard(tx: AppTransaction, projectId: string, cardId: string, 
   if (!row) throw new AppError("approval_card_not_found", 404);
   return project(row, now);
 }
-/** The project's cards, newest first, at most `limit` (1–100); `state` narrows by the stored state. */
+/**
+ * The project's cards, newest first, at most `limit` (1–100). `state` filters by the state the reader sees: with
+ * `now`, a pending card past its deadline is `expired` (and not `pending`), whether or not the expiry was written yet.
+ */
 export function readCards(tx: AppTransaction, projectId: string, options: { now?: number; state?: CardState; limit?: number } = {}): ApprovalCard[] {
   const limit = options.limit ?? 50;
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new AppError("invalid_cursor");
-  return tx.all<CardRow>(`SELECT * FROM approval_cards WHERE project_id = ? ${options.state ? "AND state = ?" : ""} ORDER BY created_at DESC, id DESC LIMIT ?`,
-    ...(options.state ? [projectId, options.state, limit] : [projectId, limit])).map(row => project(row, options.now ?? null));
+  const now = options.now ?? null;
+  let filter = "", args: (string | number)[] = [projectId];
+  if (options.state && now !== null && options.state === "pending") { filter = "AND state = 'pending' AND expires_at > ?"; args.push(now); }
+  else if (options.state && now !== null && options.state === "expired") { filter = "AND (state = 'expired' OR (state = 'pending' AND expires_at <= ?))"; args.push(now); }
+  else if (options.state) { filter = "AND state = ?"; args.push(options.state); }
+  args = [...args, limit];
+  return tx.all<CardRow>(`SELECT * FROM approval_cards WHERE project_id = ? ${filter} ORDER BY created_at DESC, id DESC LIMIT ?`, ...args).map(row => project(row, now));
 }
 
 function transition(tx: AppTransaction, card: ApprovalCard, state: CardState, now: number, extra: { reason?: string | null; decision?: CardDecision; receipt?: CardReceipt; startedAt?: number } = {}): ApprovalCard {
@@ -418,6 +426,7 @@ export function createCard(tx: AppTransaction, origin: CardOrigin, action: Effec
 export function decideCard(tx: AppTransaction, command: DecideCardCommand, channel: string, now: number, options: { executor: boolean }): ApprovalCard {
   const card = readCard(tx, command.projectId, command.payload.cardId);
   if (channel !== "web" && !(channel === "telegram" && card.telegramEligible)) throw new AppError("approval_requires_web", 403);
+  if (card.state === "expired") throw new AppError("approval_card_expired", 409);
   if (card.state !== "pending") throw new AppError("approval_card_not_pending", 409, { state: card.state });
   if (now >= card.expiresAt) { transition(tx, card, "expired", now, { reason: "expired" }); throw new AppError("approval_card_expired", 409); }
   if (card.revision !== command.expectedRevision) throw new AppError("stale_revision", 409);

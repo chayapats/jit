@@ -423,3 +423,25 @@ test("the trusted execution statement depends only on the frozen grant", () => {
   expect(full).toContain("only through Jit effect tools");
   expect(full).toContain("approval card");
 });
+
+test("a box session is bound to the container it opened: a wider reopen for another role refuses the older session", async () => {
+  const f = await fixture();
+  setLevel(f, "full");
+  restrict(f, f.techId, "workspace");
+  // The workspace-limited role opens the box first, in workspace mode (no network beyond the registry proxy).
+  const limited = await f.boxes.open(f.project.id, f.techId);
+  expect(limited.handle.mode).toBe("workspace");
+  expect((await limited.backend.stat(f.box.root)).type).toBe("directory");
+  // Another run opens it at full: the container is recreated in full mode under the same name.
+  const wide = await f.boxes.open(f.project.id, f.jitId);
+  expect(wide.handle.mode).toBe("full");
+  expect(f.runtime.calls.filter(call => call.op === "ensure").map(call => (call as { outcome: string; mode: string }).mode)).toEqual(["workspace", "full"]);
+  const before = f.runtime.calls.filter(call => call.op === "exec").length;
+  // The older session would now reach a full-network box: every further command is refused before the runtime.
+  await expect(limited.backend.stat(f.box.root)).rejects.toMatchObject({ code: "EIO" });
+  await expect(limited.backend.spawn({ command: "curl https://example.com", cwd: f.box.root })).rejects.toMatchObject({ code: "EIO" });
+  expect(f.runtime.calls.filter(call => call.op === "exec").length).toBe(before);
+  // The session that opened the current container keeps working.
+  expect((await wide.backend.stat(f.box.root)).type).toBe("directory");
+  limited.release(); wide.release();
+});

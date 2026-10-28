@@ -2,9 +2,12 @@ import { afterEach, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { effectToolNames } from "../src/exec/effect-tools";
+import type { FakeBoxExec } from "../src/exec/fake-box-runtime";
+import { invalidateJob } from "../src/jobs/attempts";
+import { stopDrain } from "../src/ops/lifecycle";
 import type { ScriptedTools } from "../src/team/scripted-port";
 import {
-  answer, connection, decide, effectFixture, git, rid, send, setLevel, setRemote, settle, texts,
+  answer, connection, decide, effectFixture, git, rid, send, setDeploy, setLevel, setRemote, settle, texts,
   type EffectFixture, type EffectFixtureOptions, type FetchCall,
 } from "./fixtures/effects";
 
@@ -48,9 +51,9 @@ async function proposing(options: EffectFixtureOptions = {}) {
  * in for the https remote (through the executor's test-only `localRemote` seam), and an owner remote `origin` bound
  * to a GitHub token connection.
  */
-async function pushFixture() {
+async function pushFixture(options: EffectFixtureOptions = {}) {
   const remotes = new Map<string, string>();
-  const { f, propose } = await proposing({ executor: { localRemote: url => remotes.get(url) ?? "/nonexistent" } });
+  const { f, propose } = await proposing({ ...options, executor: { localRemote: url => remotes.get(url) ?? "/nonexistent", ...options.executor } });
   const bare = join(f.root, "remote.git");
   git(f.root, "init", "--quiet", "--bare", bare);
   remotes.set("https://github.com/owner/repo.git", bare);
@@ -283,4 +286,80 @@ test("bad push proposals are refused before any card", async () => {
     { remote: "origin", branches: [{ branch: "main", oldSha: "short" }] },
   ]) expect((await propose(effectToolNames["effect.git_push"], input)).isError).toBe(true);
   expect(f.app.approvalCards(f.auth.actor, f.project.id)).toEqual([]);
+});
+
+test("a run fenced while effect_git_push reads SHAs creates no card and starts no auto-approved push", async () => {
+  let gate!: () => void, reading!: () => void;
+  const released = new Promise<void>(resolve => { gate = resolve; }), started = new Promise<void>(resolve => { reading = resolve; });
+  // The runner answers the SHA read only when the test releases it, ignoring cancellation: the read itself completes.
+  const exec = (local: FakeBoxExec): FakeBoxExec => async (handle, request) => {
+    const body = JSON.parse(new TextDecoder().decode(request.input)) as { op: string; command?: string };
+    if (body.op === "spawn" && body.command?.includes("printf 'NEW")) { reading(); await released; return local(handle, { input: request.input, timeoutMs: request.timeoutMs }); }
+    return local(handle, request);
+  };
+  const { f, propose, bare, first } = await pushFixture({ exec });
+  // An auto-approve rule would start the push the moment a card exists.
+  f.app.execute(f.auth.actor, { kind: "approval.rule.set", requestId: rid(), projectId: f.project.id, expectedRevision: 0,
+    payload: { effectKind: "effect.git_push", scope: { remote: "origin", branches: ["main"] }, enabled: true } });
+  const proposal = propose(effectToolNames["effect.git_push"], { remote: "origin", branches: [{ branch: "main" }] });
+  await started;
+  // The owner stops the run (here: another process fenced the attempt, so no local abort reaches the read).
+  const jobId = f.store.read(tx => tx.get<{ id: string }>("SELECT id FROM jobs WHERE state = 'admitted'")!.id);
+  f.store.transaction(tx => invalidateJob(tx, jobId, "cancelled", f.clock.now, true));
+  gate();
+  const result = await proposal;
+  expect(result.isError).toBe(true);
+  await f.executor.idle();
+  expect(f.app.approvalCards(f.auth.actor, f.project.id)).toEqual([]);
+  expect(remoteHead(bare)).toBe(first);
+});
+
+test("a halt between the bundle copy and the push stops the push before the credential is used", async () => {
+  const holder: { f?: EffectFixture } = {};
+  const { f, propose, bare, first } = await pushFixture({ executor: { beforePush: () => {
+    const own = holder.f!;
+    own.app.execute(own.auth.actor, { kind: "execution.halt", requestId: rid(), projectId: own.project.id, expectedRevision: 0, payload: {} });
+  } } });
+  holder.f = f;
+  const cardId = await proposePush(propose);
+  const done = await approve(f, cardId);
+  expect(done).toMatchObject({ state: "failed", reason: "access_changed" });
+  expect(remoteHead(bare)).toBe(first);
+  // The bundle had reached the mirror; only the push was refused.
+  expect(git(join(f.execution, f.project.id, "mirror.git"), "cat-file", "-t", done.action.kind === "effect.git_push" ? done.action.updates[0]!.newSha : "")).toBe("commit");
+});
+
+test("the kill switch aborts in-flight host effect work, and the service drain waits for it", async () => {
+  let entered!: () => void;
+  const inFlight = new Promise<void>(resolve => { entered = resolve; });
+  // The deploy hook never answers; like a real transport, the request rejects once its signal aborts.
+  const { f, propose } = await proposing({ fetch: async (_call, signal) => {
+    entered();
+    return new Promise<Response>((_, reject) => signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true }));
+  } });
+  setLevel(f, "full");
+  setDeploy(f, connection(f, "deploy_secret", `deploy-${rid()}`));
+  const { cardId } = JSON.parse((await propose(effectToolNames["effect.deploy"], { target: "production" })).content) as { cardId: string };
+  decide(f, f.app.approvalCard(f.auth.actor, f.project.id, cardId), "approve");
+  await inFlight;
+  f.app.execute(f.auth.actor, { kind: "execution.halt", requestId: rid(), projectId: f.project.id, expectedRevision: 0, payload: {} });
+  await f.executor.idle();
+  // Aborted mid-request: the hook may or may not have acted, so the outcome is unknown, never retried.
+  expect(f.app.approvalCard(f.auth.actor, f.project.id, cardId)).toMatchObject({ state: "unknown", reason: "transport_error" });
+  // With nothing in flight the drain stops cleanly; afterwards the executor claims nothing more.
+  expect(await stopDrain({ queue: f.queue, store: f.store, effects: f.executor }, { timeoutMs: 1_000 })).toMatchObject({ outcome: "stopped" });
+});
+
+test("the service drain reports unknown while an effect is still in flight past its deadline", async () => {
+  const hang = new Promise<void>(() => {});
+  const { f, propose } = await proposing({ executor: { afterClaim: () => hang } });
+  setLevel(f, "full");
+  setRemote(f, connection(f, "github_token", githubToken()));
+  const { cardId } = JSON.parse((await propose(effectToolNames["effect.github_comment"], { remote: "origin", issueNumber: 1, body: "hi" })).content) as { cardId: string };
+  decide(f, f.app.approvalCard(f.auth.actor, f.project.id, cardId), "approve");
+  await Bun.sleep(20);
+  expect(await stopDrain({ queue: f.queue, store: f.store, effects: f.executor }, { timeoutMs: 50 })).toMatchObject({ outcome: "unknown", nextAction: "terminate-supervised-process-and-reconcile" });
+  expect(f.fetches).toEqual([]);
+  // Let afterEach close cleanly: a stand-in for the supervisor terminating the process.
+  (f as { close: () => Promise<void> }).close = async () => { f.store.close(); };
 });

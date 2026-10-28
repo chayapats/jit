@@ -163,7 +163,7 @@ export async function openRunTools(store: TransactionStore, execution: RunExecut
   const backend: ExecutionBackend = { ...inner, spawn: ({ env: _env, ...spawn }) => inner.spawn(spawn) };
   // app.effect_tools/v1: only a `full` grant with an effect executor admits the effect tools; they only create cards.
   const admitted = [...coreToolDefinitions(backend),
-    ...(grant.level === "full" && execution.effects ? effectToolDefinitions(store, request, backend, execution.effects, now) : [])];
+    ...(grant.level === "full" && execution.effects ? effectToolDefinitions(store, request, backend, execution.effects, now, tx => executionCurrent(tx, request)) : [])];
   const definitions = admitted.map((definition): ToolDefinition => ({
     ...definition,
     async execute(input, ctx): Promise<ToolExecutionResult> {

@@ -1,6 +1,6 @@
 import type { ExecutionBackend, ToolDefinition, ToolExecutionResult } from "schway/host";
 import { AppError } from "../errors";
-import type { TransactionStore } from "../store";
+import type { AppTransaction, TransactionStore } from "../store";
 import type { ApplicationRunRequest } from "../team/types";
 import {
   createCard, maximumCommitSummaries, maximumRefUpdates, readDeployTarget, readRemote, validBranch, validRepository,
@@ -37,11 +37,19 @@ function result(card: ApprovalCard): ToolExecutionResult {
 }
 
 /** The effect tool definitions of one `full` run. `backend` is the run's box, used only to read SHAs for a push. */
-export function effectToolDefinitions(store: TransactionStore, request: ApplicationRunRequest, backend: ExecutionBackend, runner: EffectRunner, now: () => number): ToolDefinition[] {
+export function effectToolDefinitions(store: TransactionStore, request: ApplicationRunRequest, backend: ExecutionBackend, runner: EffectRunner, now: () => number,
+  current: (tx: AppTransaction) => boolean): ToolDefinition[] {
   const origin = { projectId: request.projectId, topicId: request.topicId, runId: request.runId, jobId: request.fence.jobId, roleId: request.roleId };
   const propose = (action: EffectAction): ToolExecutionResult => {
     let card: ApprovalCard;
-    try { card = store.transaction(tx => createCard(tx, origin, action, now(), { autoApprove: true })); }
+    try {
+      // The run's own fence (stop, halt, narrowing, superseded attempt) is checked in the card's transaction, so a run
+      // fenced while it was reading SHAs can neither create a card nor start an auto-approved effect.
+      card = store.transaction(tx => {
+        if (!current(tx)) throw new AppError("execution_access_changed");
+        return createCard(tx, origin, action, now(), { autoApprove: true });
+      });
+    }
     catch (error) { return fail(`Jit refused the effect: ${error instanceof AppError ? error.code : "invalid_effect_action"}.`); }
     if (card.state === "executing") void runner.run(card.projectId, card.id).catch(() => undefined);
     return result(card);
