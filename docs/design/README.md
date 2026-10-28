@@ -26,7 +26,7 @@ Rules:
 - Use one colour only, `--fg` on `--bg`.
 - Do not add Buddhist iconography: no ushnisha, lotus throne, unalome, flames or gold leaf.
 - Keep the concept's cuteness: its head-to-body proportions, eye size and soft base. Do not add a blush, a smile or other features. (Owner decision, 2026-10-27; it replaces the earlier rule to tone the cuteness down.)
-- Lockup: mark plus the "Jit" wordmark (custom SVG lettering, not font text). No Thai wordmark. Use the mark alone for the favicon, PWA icon and avatar.
+- Lockup: mark plus the "Jit" wordmark (custom SVG lettering, not font text). No Thai wordmark. Use the mark alone for the favicon, PWA icon and avatar. UX03 draws the PWA icons from the same favicon geometry (`appIcon` in `src/web-logo.ts`, rasterized by `src/web-icons.ts`): a rounded tile for `any`, a full-bleed tile with the figure inside the 80 % safe circle for `maskable`, and a full-bleed 180 px tile for iOS.
 
 The UX01 drawing lives in `src/web-logo.ts`: `logoMark` (24-unit grid, halo only at 24 px and above; below that the figure moves up to stay centred and the eye cuts get thicker), `logoLockup` (round-capped stroked "Jit") and `faviconSvg` (mark without halo on a dark tile). The dot breathes only inside `[data-state="thinking"]`, which BOT01 sets while Jit is replying.
 
@@ -80,6 +80,7 @@ Derived tones (`--line-strong` and the tinted status borders) are `color-mix` va
 - **Right panel (UX02):** a header toggle on the topic page opens an aside with five tabs: memory, tasks (filtered to the topic, with "waiting on you" first), jobs, PR reports and team. It is closed by default. Without script the toggle opens the panel as its own page. Project pages outside a topic show the same five destinations as a project tools strip.
 - **⌘K (UX02):** a centred dialog with one query field, rows labelled by kind (project, topic, go to) and a hint line. It is keyboard-first (↑ ↓ Enter Esc). Without script the sidebar search link opens a search page.
 - **Badges (UX02):** an outlined pill after the project name, "รอคุณ 2" / "Waiting 2", counting proposals, close reviews and jobs awaiting resume. It always uses words, not colour alone.
+- **Mobile and installed app (UX03):** at 360–430 px the sidebar is the drawer, the composer stays at the bottom, and no page scrolls sideways. Jit installs as a standalone app (`web.pwa/v1`, [contract](../contracts/web-pwa-v1.md)). With `viewport-fit=cover`, every edge that touches the screen keeps the device safe-area inset clear: the status bar, the notch and the home indicator. Below 520 px the setup step names wrap between words instead of being cut off. The service worker caches only static assets, never pages or data.
 
 ## Components
 
@@ -172,3 +173,19 @@ The continuation opens with the expandable "ต่อจากทั่วไป
 The same block in English:
 
 ![BOT05 continuation, dark English](assets/bot05-continued-dark-en.png)
+
+## UX03 screenshots
+
+These show a scripted fixture installation (`tests/fixtures/ux03.ts`) at 390 px. The top row is dark Thai and the bottom row is light English. The columns are:
+
+1. home;
+2. a topic with a role proposal;
+3. a General topic with a long unbroken message and a promotion card;
+4. the drawer opened through `#sidebar`;
+5. a setup step.
+
+![UX03 mobile matrix](assets/ux03-mobile-matrix.png)
+
+The install icons, from left to right: `any` (512 px, with transparent corners shown grey), `maskable` and the iOS touch icon:
+
+![UX03 install icons](assets/ux03-icons.png)
