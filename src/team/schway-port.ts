@@ -24,6 +24,7 @@ import type {
   Model,
 } from "schway/host";
 import { AppError } from "../errors";
+import { redactRegisteredSecrets } from "../security/secret-fingerprints";
 import { requireId } from "../sources";
 import type { TransactionStore } from "../store";
 import type { ApplicationRunPort, ManagedContextOutcome, NativeRunInspection } from "./run-port";
@@ -36,7 +37,7 @@ import type { ApplicationRunEvent, ApplicationRunOutcome, ApplicationRunRequest,
  * Production integration imports only the pinned supported Schway public host
  * artifact (`schway/host` at `SCHWAY_PINNED_REVISION`, tarball
  * `SCHWAY_PINNED_TARBALL_SHA256`). Every dispatch first verifies
- * `schway.host.release/v1` through `hostCapabilities()` and the runtime's own
+ * `schway.host.release/v2` through `hostCapabilities()` and the runtime's own
  * capabilities; a mismatch fails closed before any native session exists.
  *
  * One native Schway session backs one application run. The durable
@@ -51,11 +52,11 @@ export const SCHWAY_RELEASE_CONTRACT = RELEASE_CONTRACT;
 /** Supported native snapshot behavior set for operations reads. */
 export const SCHWAY_SNAPSHOT_CONTRACT = SNAPSHOT_CONTRACT;
 /** Exact pinned Schway git revision backing the vendored artifact. */
-export const SCHWAY_PINNED_REVISION = "128b77aa70c3774154969fd0b617be0480520c5f";
+export const SCHWAY_PINNED_REVISION = "ac6355702d42a44deabb91a675081f08113cb1a9";
 /** Exact pinned Schway npm version carried by the vendored tarball. */
 export const SCHWAY_PINNED_VERSION = "1.0.0-rc.2";
-/** SHA-256 of `vendor/schway-1.0.0-rc.2-128b77a.tgz`, the tested artifact. */
-export const SCHWAY_PINNED_TARBALL_SHA256 = "8ada843fefbecd906d5f76b8fb3f0665f8f1275ef7bc04bdabacf0a0ace84f65";
+/** SHA-256 of `vendor/schway-1.0.0-rc.2-ac63557.tgz`, the tested artifact. */
+export const SCHWAY_PINNED_TARBALL_SHA256 = "6e95fb181ba3ba3dae5f7fc4d186e57acf899b9e8824b8b7a72b63b743f914e3";
 /** Owner next action when the pinned release gate does not hold. */
 export const SCHWAY_NEXT_ACTION = "pin_supported_schway_host_release";
 /** Owner next action when no managed native session exists for a snapshot read. */
@@ -161,8 +162,11 @@ export function describeEffectiveRun(request: ApplicationRunRequest): EffectiveS
   ];
   for (const document of sources) {
     if (!HOST_ID_PATTERN.test(document.id) || !HOST_ID_PATTERN.test(document.revision)) throw new AppError("invalid_run_request");
+    // app.connections/v1: a stored connection value never reaches a prompt, even when a source echoes it.
+    document.content = redactRegisteredSecrets(document.content);
   }
-  const inputText = request.purpose;
+  for (const section of sections) section.content = redactRegisteredSecrets(section.content);
+  const inputText = redactRegisteredSecrets(request.purpose);
   const totalBytes = Buffer.byteLength(SCHWAY_SYSTEM_PROMPT)
     + sections.reduce((sum, section) => sum + Buffer.byteLength(section.name) + Buffer.byteLength(section.content), 0)
     + sources.reduce((sum, source) => sum + Buffer.byteLength(source.id) + Buffer.byteLength(source.revision) + Buffer.byteLength(source.content), 0)

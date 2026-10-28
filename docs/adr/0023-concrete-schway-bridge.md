@@ -16,8 +16,9 @@ select live account defaults, claim Pi readiness, or certify semantic quality.
 Schway `1.0.0-rc.3` (the first npm publish carrying `schway.host.release/v1`)
 is not published; publication needs repository authorization outside this
 slice. Jit therefore vendors the exact tested tarball built from the merged
-Schway main revision (`128b77a`, suite green, #416+#418+#420+#424+#426 merged) at
-`vendor/schway-1.0.0-rc.2-128b77a.tgz` and depends on it via a `file:` reference,
+Schway main revision (`ac63557`, suite green, #416+#418+#420+#424+#426+#430 merged;
+re-pinned by EXE03 for `schway.host.core-tools/v1`, composed as `schway.host.release/v2`) at
+`vendor/schway-1.0.0-rc.2-ac63557.tgz` and depends on it via a `file:` reference,
 so installs are reproducible offline and CI needs no registry credentials for
 a private repository. The tarball SHA-256 is recorded in code, the contract
 and a test; the runtime `releaseContract` gate rejects any other behavior set.

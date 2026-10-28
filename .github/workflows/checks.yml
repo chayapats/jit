@@ -29,5 +29,7 @@ jobs:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
       - run: bun install --frozen-lockfile
+      # The box runner protocol and SCH01 golden tests run ops/box/runner on the host: it needs jq, perl and ripgrep.
+      - run: command -v rg >/dev/null || (sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends ripgrep)
       - run: bun run typecheck
       - run: bun test

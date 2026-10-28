@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { AppError } from "../errors";
 import { fenceDenied } from "../jobs/attempts";
 import { containsCredential } from "../security/credentials";
+import { redactRegisteredSecrets } from "../security/secret-fingerprints";
 import { commitOutputSource, requireId, requireText } from "../sources";
 import type { AppTransaction } from "../store";
 import { TransactionStore } from "../store";
@@ -162,8 +163,10 @@ export function commitDeliveryIntent(tx: AppTransaction, input: CommitInput, now
   if (!Number.isSafeInteger(now) || now < 0) throw new AppError("invalid_commit_time");
   if (input.kind !== "report" && input.kind !== "reminder") throw new AppError("invalid_delivery_command");
   if (!dedupeOk(input.dedupeKey)) throw new AppError("invalid_delivery_command");
-  requireText(input.text, input.maxBytes);
-  if (containsCredential(input.text) || containsCredential(input.dedupeKey)) throw new AppError("invalid_delivery_payload");
+  // app.connections/v1: a stored connection value echoed in the text is redacted before anything is committed or sent.
+  const text = redactRegisteredSecrets(input.text);
+  requireText(text, input.maxBytes);
+  if (containsCredential(text) || containsCredential(input.dedupeKey)) throw new AppError("invalid_delivery_payload");
   if (input.guard !== undefined && !guardName.test(input.guard)) throw new AppError("invalid_delivery_command");
   const reserved = reservedGuard(input.dedupeKey);
   if (reserved !== null && input.guard !== reserved) throw new AppError("invalid_delivery_command");
@@ -175,7 +178,7 @@ export function commitDeliveryIntent(tx: AppTransaction, input: CommitInput, now
   const existing = tx.get<{ record_json: string }>("SELECT record_json FROM delivery_intents WHERE dedupe_key = ?", input.dedupeKey);
   if (existing) {
     const intent = intentOf(existing);
-    if (intent.projectId !== input.projectId || intent.payload.kind !== input.kind || intent.payload.text !== input.text) {
+    if (intent.projectId !== input.projectId || intent.payload.kind !== input.kind || intent.payload.text !== text) {
       throw new AppError("delivery_dedupe_conflict", 409);
     }
     return { intent, report: readDeliveryReport(tx, input.projectId, intent.provenance.reportId), created: false };
@@ -185,14 +188,14 @@ export function commitDeliveryIntent(tx: AppTransaction, input: CommitInput, now
   const binding = readBinding(tx);
   const bound = binding.state === "bound" && binding.telegramChatId !== null;
   const reportId = crypto.randomUUID();
-  const source = commitOutputSource(tx, { projectId: input.projectId, participantId: "delivery", runId: reportId, text: input.text, committedAt: now });
+  const source = commitOutputSource(tx, { projectId: input.projectId, participantId: "delivery", runId: reportId, text, committedAt: now });
   const report: DeliveryReport = {
     id: reportId, projectId: input.projectId, kind: input.kind, revision: 1, generation: 1, availability: "available",
-    text: input.text, sourceId: source.sourceId, sourceRevision: source.revision, sourceGeneration: source.generation, committedAt: now,
+    text, sourceId: source.sourceId, sourceRevision: source.revision, sourceGeneration: source.generation, committedAt: now,
   };
   tx.run("INSERT INTO delivery_reports VALUES (?, ?, ?)", report.id, report.projectId, JSON.stringify(report));
   const payload: DeliveryPayload = {
-    kind: input.kind, text: input.text,
+    kind: input.kind, text,
     reference: { reportId, revision: 1, generation: 1, sourceId: source.sourceId, sourceRevision: source.revision, sourceGeneration: source.generation },
   };
   const intent: DeliveryIntent = {

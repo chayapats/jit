@@ -9,6 +9,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   python3 python3-venv nodejs build-essential curl jq tzdata \
   && rm -rf /var/lib/apt/lists/*
 RUN useradd --uid 1000 --create-home --home-dir /home/box --shell /bin/bash box
+# jit.box.runner/v1 (EXE03): POSIX sh + jq, perl-base for process groups; no model, no network, mode 0555.
+COPY --chmod=0555 ops/box/runner /opt/jit/runner
 WORKDIR /workspace
 USER box
 

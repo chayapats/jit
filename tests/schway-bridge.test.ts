@@ -90,14 +90,14 @@ test("pinned artifact gate reports the exact vendored release", () => {
     release: { version: SCHWAY_PINNED_VERSION, revision: SCHWAY_PINNED_REVISION, tarballSha256: SCHWAY_PINNED_TARBALL_SHA256 },
     nextAction: "none",
   });
-  expect(SCHWAY_RELEASE_CONTRACT).toBe("schway.host.release/v1");
+  expect(SCHWAY_RELEASE_CONTRACT).toBe("schway.host.release/v2");
   expect(SCHWAY_PINNED_VERSION).toBe("1.0.0-rc.2");
   expect(SCHWAY_PINNED_REVISION).toHaveLength(40);
   expect(SCHWAY_PINNED_TARBALL_SHA256).toHaveLength(64);
 });
 
 test("vendored tarball matches the pinned sha256", () => {
-  const bytes = readFileSync(join(import.meta.dir, "../vendor/schway-1.0.0-rc.2-128b77a.tgz"));
+  const bytes = readFileSync(join(import.meta.dir, "../vendor/schway-1.0.0-rc.2-ac63557.tgz"));
   expect(createHash("sha256").update(bytes).digest("hex")).toBe(SCHWAY_PINNED_TARBALL_SHA256);
 });
 

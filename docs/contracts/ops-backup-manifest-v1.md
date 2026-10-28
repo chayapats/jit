@@ -185,6 +185,13 @@ restored trigger reports `secretAvailable: false` until the owner rotates it.
 The sealing key lives in `<data>/webhooks/seal.key`, never in the database or
 an image. Delivery receipts (`webhook_receipts`, delivery ids only) and the
 service-owned poll schedule (`pr_poll_due`) are included.
+Owner box reset revisions (`execution_box_resets`; schema 33, exec.box_runtime/v1)
+are included likewise. A box, its workspace and its output live under
+`execution.directory` and never enter the database or an image.
+Connection metadata and its audit (`connections`, `connection_audit`; schema 34,
+app.connections/v1) hold no value and are included. Connection values live in
+`<execution.secretsDirectory>/<id>`, outside the state, backup and execution
+directories, so no image or export can contain one.
 Activation (`TransactionStore.swapFrom`, used by OPS02 restore and upgrade
 activation) builds the complete replacement image before an atomic rename and
 always keeps the live installation's owner verifier, sessions,

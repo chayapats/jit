@@ -30,6 +30,8 @@ import { webhookPathPrefix, type WebhookCommandKind } from "./pr/webhooks";
 import type { SetDispatchAllowanceCommand } from "./team/allowance";
 import { feedPathToken, renderScheduleFeed, type FeedCommand } from "./schedule-feed";
 import { effectiveAccess, type AccessCommand } from "./exec/access";
+import type { ResetBoxCommand } from "./exec/box-commands";
+import type { ConnectionCommand } from "./exec/connections";
 
 /** ADR 0028 Content-Security-Policy: every page, asset and API response allows only this origin, and no inline script or eval. */
 export const contentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
@@ -243,6 +245,10 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       const allowanceApiRoute = /^\/api\/projects\/([a-f0-9-]{36})\/dispatch-allowance$/.exec(pathname);
       // app.access_level/v1 JSON API (EXE01); the Web pages are EXE04.
       const accessRoute = /^\/api\/projects\/([a-f0-9-]{36})\/(access|access\/roles|execution\/halt|execution\/resume)$/.exec(pathname);
+      // exec.box_runtime/v1 JSON API (EXE03): box state and the Web-only owner reset.
+      const boxRoute = /^\/api\/projects\/([a-f0-9-]{36})\/execution\/box(\/reset)?$/.exec(pathname);
+      // app.connections/v1 JSON API (EXE08): metadata reads and the Web-only owner commands; the settings page is EXE11.
+      const connectionRoute = /^\/api\/connections(?:\/([a-f0-9-]{36})\/(secret|rotate|remove|test))?$/.exec(pathname);
       /** The topic page that holds a dispatch card, at its anchor. */
       const cardLocation = (card: { projectId: string; topicId: string; anchorSequence: number; id: string }) =>
         `/projects/${card.projectId}/topics/${card.topicId}?after=${Math.max(0, card.anchorSequence - 1)}#dispatch-${card.id}`;
@@ -390,6 +396,32 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
           payload: { enabled, maxRoles: number(body.maxRoles) } } as SetDispatchAllowanceCommand;
         const receipt = app.execute(auth.actor, command);
         return allowanceApiRoute ? json(receipt) : respond(null, 303, { Location: `/settings/dispatch?project=${projectId}#allowance-${projectId}` });
+      }
+      if (connectionRoute) {
+        const connectionId = connectionRoute[1], action = connectionRoute[2];
+        if (!action && request.method === "GET") return json({ connections: app.connections(auth.actor) });
+        if (request.method !== "POST") throw new AppError("method_not_allowed", 405);
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        const fields = !action ? ["kind", "label", "projectScope"] : action === "secret" || action === "rotate" ? ["secret"] : [];
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", ...fields].includes(key))) throw new AppError("invalid_body");
+        const picked = Object.fromEntries(fields.filter(key => Object.hasOwn(body, key)).map(key => [key, body[key]]));
+        const kind = !action ? "connection.create" : action === "secret" ? "connection.set_secret" : `connection.${action}`;
+        const command = { kind, requestId: body.requestId, projectId: null, expectedRevision: action ? body.expectedRevision : 0,
+          payload: action ? { connectionId, ...picked } : picked } as ConnectionCommand;
+        return json(app.execute(auth.actor, command));
+      }
+      if (boxRoute) {
+        const projectId = boxRoute[1]!;
+        if (!boxRoute[2]) {
+          if (request.method !== "GET") throw new AppError("method_not_allowed", 405);
+          return json({ box: app.boxStatus(auth.actor, projectId) });
+        }
+        if (request.method !== "POST") throw new AppError("method_not_allowed", 405);
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "wipeWorkspace"].includes(key))) throw new AppError("invalid_body");
+        const command = { kind: "execution.box.reset", requestId: body.requestId, projectId, expectedRevision: body.expectedRevision,
+          payload: Object.hasOwn(body, "wipeWorkspace") ? { wipeWorkspace: body.wipeWorkspace } : {} } as ResetBoxCommand;
+        return json(await app.execute(auth.actor, command));
       }
       if (accessRoute) {
         const projectId = accessRoute[1]!, target = accessRoute[2]!;

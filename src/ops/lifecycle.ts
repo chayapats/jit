@@ -1,5 +1,5 @@
 import { realpathSync, statSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { Application } from "../application";
 import { prepareServiceState } from "../bootstrap";
 import type { AppConfig } from "../config";
@@ -8,6 +8,9 @@ import { tickSchedules } from "../jobs/schedules";
 import { FakeGitHubFixture } from "../pr/github";
 import { tickPrPolls } from "../pr/poll-due";
 import { webhookLimits } from "../pr/webhooks";
+import type { BoxManager } from "../exec/box-manager";
+import { createServiceBoxes } from "../exec/box-service";
+import { ConnectionVault } from "../exec/connections";
 import { composeJobQueue } from "../composition";
 import type { ApplicationRunPort } from "../team/run-port";
 import { verifySchwayBridge } from "../team/schway-port";
@@ -288,6 +291,8 @@ export interface FullAppHandle {
   config: AppConfig;
   /** Trusted installation configuration, or null under the development profile. */
   serviceConfig: ServiceConfig | null;
+  /** exec.box_runtime/v1 project boxes, or null when the operator has not configured execution. */
+  boxes: BoxManager | null;
   /** Boot reconciliation outcome; `reconciled: false` while an upgrade/restore fence holds. */
   boot: { reconciled: boolean; detail: string; upgrade: { id: string; state: string } | null;
     restore: { id: string; state: string; reason: string | null } | null };
@@ -356,7 +361,9 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
     // Pre-listen state preparation runs before the job queue, delivery work or HTTP server exist.
     // Under a fence nothing sends and live state must stay the validated epoch, so it waits for the next boot.
     if (!fenced) prepareServiceState(store, now());
-    const compose = { now, prCacheRoot: input.prCacheRoot ?? (service ? resolve(service.stateDirectory, "pr-cache") : ".local/pr-cache") };
+    // exec.box_runtime/v1: a box stop pumps the queue so work waiting as box_capacity is admitted.
+    const boxes = createServiceBoxes(store, config, { onCapacity: () => { try { managed?.queue?.pump(); } catch { /* The next tick retries. */ } } });
+    const compose = { now, prCacheRoot: input.prCacheRoot ?? (service ? resolve(service.stateDirectory, "pr-cache") : ".local/pr-cache"), ...(boxes ? { boxes } : {}) };
     managed = ManagedService.forConfig(store, config, compose);
     const composed = composeJobQueue(store, config, compose);
     managed.adopt(composed);
@@ -366,7 +373,10 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
     // Constructing the Application first resolves durable upgrade intent left by a crash.
     const app = new Application(store, config, {
       service: managed, now, ...(service ? { backupDir: service.backupDirectory, ledgerPath: service.ledgerPath } : {}),
-      ...(nativeSnapshot ? { nativeSnapshot } : {}),
+      ...(nativeSnapshot ? { nativeSnapshot } : {}), ...(boxes ? { boxes } : {}),
+      // app.connections/v1: values live in the secrets directory, never beside the state, backups or boxes.
+      ...(config.execution.secretsDirectory ? { connections: new ConnectionVault(config.execution.secretsDirectory, {
+        forbidden: [dirname(resolve(config.databasePath)), service?.stateDirectory, service?.backupDirectory, service?.ledgerPath, config.execution.directory] }) } : {}),
     });
     const ledger = ledgerGate({ store, ledgerPath: service?.ledgerPath ?? null, now: now(), mode: "boot" });
     if (!ledger.trusted) return refuse([{ gate: "quarantine", state: "blocked", nextAction: ledger.nextAction, detail: ledger.reason }]);
@@ -374,12 +384,14 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
     // (skipped while an upgrade fence holds admission; activation/rollback reconciles), and complete
     // an activated upgrade once that reconciliation succeeded (ops.schema_migrations/v1).
     const booted = await app.boot();
+    // Boxes left running by a previous process count for capacity and the idle sweep.
+    await boxes?.reconcile().catch(() => { /* Podman unavailable: boxes are re-ensured (and re-verified) on open. */ });
     if (service && telegramEnabled(service)) {
       // Preflight proved the token reference and transport; a failure here still fails closed.
       channels = ServiceChannels.start(store, config, input.transports!, now);
     }
     const handle: FullAppHandle = {
-      store, app, service: managed, channels, config, serviceConfig: service,
+      store, app, service: managed, channels, config, serviceConfig: service, boxes,
       boot: { reconciled: booted.reconciled, detail: booted.detail, upgrade: booted.upgrade ? { id: booted.upgrade.id, state: booted.upgrade.state } : null,
         restore: booted.restore ? { id: booted.restore.id, state: booted.restore.state, reason: booted.restore.reason ?? null } : null },
       get queue() { return managed!.queue ?? composed.queue; },
@@ -416,6 +428,7 @@ export function serveFullApp(handle: FullAppHandle, options: { drainTimeoutMs?: 
   const server = Bun.serve({ hostname: config.hostname, port: config.port, maxRequestBodySize: Math.max(config.bodyBytes, webhookLimits.bodyBytes * 2),
     idleTimeout: 15, fetch: createWebHandler(handle.app), error: () => new Response("Request failed", { status: 503 }) });
   let lastPrTick = 0;
+  let sweeping = false;
   const timer = setInterval(() => {
     const queue = handle.service.queue;
     if (queue) {
@@ -428,6 +441,11 @@ export function serveFullApp(handle: FullAppHandle, options: { drainTimeoutMs?: 
         try { tickPrPolls(handle.store, { now: at, portFor: () => new FakeGitHubFixture(), cacheRoot: ".local/pr-cache", assertOwner: tx => queue.assertOwner(tx) }); }
         catch { /* Ownership lost, storage unavailable or fenced: the next tick decides again. */ }
       }
+    }
+    // exec.box_runtime/v1 idle stop on the same tick; one sweep at a time.
+    if (handle.boxes && !sweeping) {
+      sweeping = true;
+      void handle.boxes.sweep(Date.now()).catch(() => undefined).finally(() => { sweeping = false; });
     }
     handle.channels?.tick();
   }, options.intervalMs ?? 100);
