@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Application } from "../src/application";
 import { readConfig } from "../src/config";
-import { DeliveryWorker, ScriptedTelegramSender, commitAttentionIntent, type DeliveryIntent } from "../src/delivery";
+import { DeliveryWorker, ScriptedTelegramSender, commitAttentionIntent, resolveDeliveryIntent, type DeliveryIntent, type DeliverySender } from "../src/delivery";
 import { JobQueue } from "../src/jobs/queue";
 import { backupImageTables } from "../src/ops/backup";
 import { TransactionStore } from "../src/store";
@@ -475,4 +475,75 @@ test("attention.set: revisioned per channel, idempotent, validated, audited; set
   // The level and the group notices are classified for backups.
   expect(backupImageTables.attention_levels).toBe("include");
   expect(backupImageTables.work_groups).toBe("include");
+});
+
+test("an owner answer during an in-flight send that comes back retryable never re-sends the resolved notice", async () => {
+  const f = await fixture();
+  bindTelegram(f);
+  setAllowance(f, true, 1);
+  const sent = send(f, "ตอบระหว่างส่ง");
+  await drain(f);
+  const card = cardFor(f, replyFor(f, sent.message.id).replyMessageId!);
+  const notice = intents(f)[0]!;
+  expect(notice).toMatchObject({ status: "queued", attention: { item: `proposal:${card.id}` } });
+  let calls = 0;
+  // The owner answers on Web while the transport call is in flight; Telegram then reports a safe failure.
+  const sender: DeliverySender = { send: () => {
+    calls += 1;
+    f.store.transaction(tx => expect(resolveDeliveryIntent(tx, f.project.id, notice.id, "owner_answered", f.clock.now)).toBe("resolved"));
+    return { outcome: "failed", reason: "telegram_unavailable", retryable: true };
+  } };
+  const worker = new DeliveryWorker(f.store, { sender, now: () => f.clock.now });
+  try {
+    worker.pump(); worker.pump();
+    expect(calls).toBe(1);
+    expect(intents(f)[0]).toMatchObject({ status: "failed", retryable: false, resolution: { reason: "owner_answered" } });
+  } finally { worker.close(); }
+});
+
+test("a role included again after the team reply keeps the group open; the final waits until it settles", async () => {
+  const first = deferred<ApplicationRunOutcome>(), again = deferred<ApplicationRunOutcome>(), team = deferred<ApplicationRunOutcome>();
+  let included = false;
+  const f = await fixture({
+    jit: r => answer(r, dispatching(["เทคโนโลยี", "การตลาด"])),
+    specialist: r => r.roleId === f.marketingId ? (included ? again.promise : first.promise) : answer(r, "ความเห็น"),
+    team: () => team.promise,
+  });
+  try {
+    const sent = send(f, "ช่วยดูสองด้าน");
+    f.queue.pump(); await ticks(); f.queue.pump(); await ticks();
+    let card = cardFor(f, replyFor(f, sent.message.id).replyMessageId!);
+    const control = (action: "skip" | "include", roleId: string) => f.app.execute(f.auth.actor, { kind: "team.control", requestId: rid(), projectId: f.project.id,
+      expectedRevision: f.app.discussion(f.auth.actor, f.project.id, card.discussion!.id).discussion.revision, payload: { discussionId: card.discussion!.id, action, roleId } });
+    control("skip", f.marketingId);
+    expect(cardFor(f, replyFor(f, sent.message.id).replyMessageId!).teamReply).toMatchObject({ state: "thinking" });
+    // While Jit answers, the owner brings the skipped role back; the team reply then commits first.
+    included = true;
+    control("include", f.marketingId);
+    f.queue.pump(); await ticks();
+    team.resolve(answer(f.port.requests.find(r => r.instructions.operator[0] === teamReplyMarker)!, JSON.stringify({ reply: "ทีมตอบก่อน" })));
+    await ticks(); tickWorkGroups(f.store, f.config.team, f.clock.now);
+    card = cardFor(f, replyFor(f, sent.message.id).replyMessageId!);
+    expect(card.teamReply).toMatchObject({ state: "answered" });
+    expect(card.discussion!.roles.some(role => role.roleId === f.marketingId && role.activity === "live")).toBe(true);
+    expect(intents(f)).toHaveLength(0);
+    expect(groups(f)[0]!.state).toBe("open");
+    again.resolve(answer(f.port.requests.filter(r => r.roleId === f.marketingId).at(-1)!, "ความเห็นที่เพิ่มมา"));
+    first.resolve(fixtureOutcome("complete", "ผลเก่า"));
+    await drain(f);
+    expect(intents(f).map(intent => intent.attention!.item)).toEqual(["final:group"]);
+    expect(groups(f)[0]).toMatchObject({ state: "closed", record: { closed: "final" } });
+  } finally { first.resolve(fixtureOutcome("complete", "x")); again.resolve(fixtureOutcome("complete", "x")); team.resolve(fixtureOutcome("complete", "x")); }
+});
+
+test("the sweep rotates through every open group instead of re-reading the oldest page", async () => {
+  const f = await fixture();
+  setAllowance(f, true, 1);
+  for (const text of ["หนึ่ง", "สอง", "สาม"]) { send(f, text); f.queue.pump(); await f.queue.idle(); f.clock.now += 1; }
+  // Remove the notices so only the sweep can recreate them, one group per tick.
+  f.store.transaction(tx => { tx.run("DELETE FROM delivery_intents"); tx.run("UPDATE work_groups SET record_json = '{\"items\":{},\"closed\":null}'"); });
+  const seen: number[] = [];
+  for (let i = 0; i < 3; i++) { tickWorkGroups(f.store, f.config.team, f.clock.now, 1); seen.push(intents(f).length); }
+  expect(seen).toEqual([1, 2, 3]);
+  expect(new Set(intents(f).map(intent => intent.attention!.workGroupId)).size).toBe(3);
 });

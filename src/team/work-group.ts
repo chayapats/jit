@@ -36,8 +36,10 @@ interface GroupRow { id: string; projectId: string; topicId: string; replyId: st
 
 type Notice = { item: string; class: AttentionClass; key: MessageKey; values: Record<string, string> };
 
-/** The most open groups one sweep evaluates; the rest wait for the next tick. */
+/** The most open groups one sweep evaluates; the next tick continues after the last one, then wraps around. */
 export const workGroupSweepLimit = 200;
+/** Per-database position of the rotating sweep (process memory; a restart starts from the oldest group). */
+const sweepCursors = new Map<string, { createdAt: number; id: string }>();
 
 /**
  * Opens the work group of a dispatching reply inside its commit. Idempotent per reply (`reply_id` is unique);
@@ -116,6 +118,8 @@ function observe(tx: AppTransaction, row: GroupRow, card: DispatchCardView): { s
     stalls.push({ item: `job:${waiting.id}:${waiting.steps}`, class: "needs_owner", key: "attention.notice_blocked", values: { reason: waiting.reason } });
   }
   const reply = card.teamReply;
+  // A role the owner included again after the team reply started keeps the group open until it settles too.
+  const open = discussion.roles.some(role => role.activity !== "settled");
   if (reply) {
     if (reply.state === "thinking") return { stalls, final: null, closed: null };
     if (reply.state === "blocked") {
@@ -123,6 +127,7 @@ function observe(tx: AppTransaction, row: GroupRow, card: DispatchCardView): { s
       stalls.push({ item: `job:${waiting.id}:${waiting.steps}`, class: "needs_owner", key: "attention.notice_blocked", values: { reason: waiting.reason } });
       return { stalls, final: null, closed: null };
     }
+    if (open) return { stalls, final: null, closed: null };
     if (reply.state === "answered") {
       return { stalls, final: { item: "final:group", class: "informational", key: "attention.notice_final", values: { count: String(reply.team?.citations.length ?? 0) } }, closed: "final" };
     }
@@ -133,7 +138,7 @@ function observe(tx: AppTransaction, row: GroupRow, card: DispatchCardView): { s
     return { stalls, final: null, closed: reply.state };
   }
   if (discussion.stoppedAll) return { stalls, final: null, closed: "stopped" };
-  if (discussion.roles.some(role => role.activity !== "settled")) return { stalls, final: null, closed: null };
+  if (open) return { stalls, final: null, closed: null };
   if (card.teamHold) {
     stalls.push({ item: `hold:${card.id}:${card.revision}`, class: "needs_owner", key: "attention.notice_hold", values: { reason: card.teamHold } });
     return { stalls, final: null, closed: null };
@@ -205,9 +210,21 @@ function evaluate(tx: AppTransaction, groupId: string, policy: TeamPolicy, now: 
  * tick, which covers transitions the queue makes alone (a route wait, a deadline, a restart's interrupted work).
  * Nothing runs under an upgrade or restore fence. Returns the number of groups evaluated.
  */
-export function tickWorkGroups(store: TransactionStore, policy: TeamPolicy, now: number): number {
+export function tickWorkGroups(store: TransactionStore, policy: TeamPolicy, now: number, limit = workGroupSweepLimit): number {
   if (upgradeFenced(store.path)) return 0;
-  const ids = store.read(tx => tx.all<{ id: string }>("SELECT id FROM work_groups WHERE state = 'open' ORDER BY created_at, id LIMIT ?", workGroupSweepLimit)).map(row => row.id);
+  // Keyset pages that rotate through every open group, so long-waiting groups never starve newer ones.
+  const after = sweepCursors.get(store.path) ?? { createdAt: -1, id: "" };
+  const page = (from: { createdAt: number; id: string }) => store.read(tx => tx.all<{ id: string; createdAt: number }>(
+    `SELECT id, created_at AS createdAt FROM work_groups WHERE state = 'open' AND (created_at > ? OR (created_at = ? AND id > ?))
+     ORDER BY created_at, id LIMIT ?`, from.createdAt, from.createdAt, from.id, limit));
+  let rows = page(after);
+  if (rows.length < limit && after.createdAt >= 0) {
+    const seen = new Set(rows.map(row => row.id));
+    rows = [...rows, ...page({ createdAt: -1, id: "" }).filter(row => !seen.has(row.id))].slice(0, limit);
+  }
+  const last = rows.at(-1);
+  sweepCursors.set(store.path, last && rows.length >= limit ? { createdAt: last.createdAt, id: last.id } : { createdAt: -1, id: "" });
+  const ids = rows.map(row => row.id);
   for (const id of ids) {
     try { store.transaction(tx => evaluateWorkGroup(tx, id, policy, now, "no_longer_waiting")); }
     catch { /* Storage or ownership failure: the next tick retries. */ }
