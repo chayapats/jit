@@ -3,6 +3,7 @@ import { AppError } from "./errors";
 import type { AppConfig } from "./config";
 import { TransactionStore, type AppTransaction } from "./store";
 import { preferencesIdentity, readPreferences, writePreferences, type PreferencesReceipt, type SetPreferencesCommand, type UiPreferences } from "./preferences";
+import { localApiIdentity, readLocalApi, writeLocalApi, type LocalApiReceipt, type LocalApiSettings, type SetLocalApiCommand } from "./local-api/settings";
 import { personaIdentity, readPersona, writePersona, type Persona, type PersonaReceipt, type SetPersonaCommand } from "./persona";
 import { applySetup, isSetupCommand, readGeneralSpace, readSetup, setupCheckWorkId, setupComplete, setupIdentity, type GeneralSpace, type SetupCommand, type SetupReceipt, type SetupView } from "./setup";
 import { jitReplyWorkId, admitJitReply, readRepliesFor, readReplyChanges, stopReply, stopReplyIdentity, type JitReplyView, type ReplyReceipt, type StopReplyCommand } from "./team/jit-reply";
@@ -96,6 +97,17 @@ export interface ProjectReceipt { project: Project; workspaceRevision: number }
 
 /** Owner-scoped, paginated workspace state with the revision required by create commands. */
 export interface Workspace { revision: number; projects: Project[]; hasMore: boolean }
+
+/** app.local_api/v1: actor keys of the loopback listener; session keys are hex digests, so they never collide. */
+const localApiKeyPrefix = "local-api:";
+
+/** app.local_api/v1 pending owner actions: identities, revisions and reason codes only, never model text. */
+export interface PendingActions {
+  proposals: { kind: "dispatch"; id: string; projectId: string; topicId: string; revision: number; reason: string | null;
+    roles: { roleId: string; roleName: string }[]; replyMessageId: string }[];
+  jobs: { id: string; projectId: string; state: string; reason: string | null }[];
+  more: { proposals: boolean; jobs: boolean };
+}
 
 /** Items in one project that wait on the owner (web.settings_ia/v1 sidebar badges). */
 export interface ProjectAttention {
@@ -347,6 +359,94 @@ export class Application {
     return this.store.read(tx => { this.#requireOwner(tx, actor, ["web"], false); return readPreferences(tx); });
   }
 
+  /** app.local_api/v1: whether the owner turned the loopback API on, or the default (off, revision 0). */
+  localApi(actor: OwnerActor): LocalApiSettings {
+    return this.store.read(tx => { this.#requireOwner(tx, actor); return readLocalApi(tx); });
+  }
+
+  /**
+   * app.local_api/v1: issues the Web-channel owner actor the in-process loopback listener uses, or null while the
+   * API is off or before owner setup. The listener proves the caller holds the token file before it uses the actor;
+   * the actor itself carries no authority beyond a Web session. It stays valid only while the setting keeps this
+   * revision and the owner keeps this credential generation, so turning the API off or resetting the owner revokes
+   * it at the next operation, before the listener stops.
+   */
+  issueLocalApiActor(): { actor: OwnerActor; revision: number; generation: number } | null {
+    const state = this.store.read(tx => {
+      const owner = tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'");
+      const settings = readLocalApi(tx);
+      return owner && settings.enabled ? { revision: settings.revision, generation: owner.generation } : null;
+    });
+    if (!state) return null;
+    const actor: OwnerActor = Object.freeze({ ownerId: "owner", channel: "web" });
+    this.#actors.set(actor, `${localApiKeyPrefix}${state.generation}:${state.revision}`);
+    return { actor, ...state };
+  }
+
+  /**
+   * app.local_api/v1: the committed `message.send` receipt with this request id and its commit time, or null.
+   * A read of the owner's own receipt; it never replays or executes the command.
+   */
+  messageReceipt(actor: OwnerActor, requestId: string): { receipt: MessageReceipt; committedAt: number } | null {
+    if (typeof requestId !== "string" || !/^[a-zA-Z0-9_-]{8,128}$/.test(requestId)) throw new AppError("invalid_request_id");
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor);
+      const row = tx.get<{ result_json: string; committed_at: number }>(`SELECT r.result_json, r.committed_at FROM command_receipts r
+        WHERE r.actor_id = 'owner' AND r.request_id = ? AND EXISTS (SELECT 1 FROM audit a WHERE a.actor_id = 'owner'
+          AND a.request_id = r.request_id AND a.command_kind = 'message.send')`, requestId);
+      return row ? { receipt: JSON.parse(row.result_json) as MessageReceipt, committedAt: row.committed_at } : null;
+    });
+  }
+
+  /** app.local_api/v1: the project of one topic, resolved by the topic's stable identity under the owner. */
+  topicScope(actor: OwnerActor, topicId: string): { project: Project; topic: Topic } {
+    requireId(topicId);
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor);
+      const row = tx.get<{ projectId: string }>("SELECT project_id AS projectId FROM topics WHERE id = ?", topicId);
+      if (!row) throw new AppError("topic_not_found", 404);
+      return { project: this.#project(tx, row.projectId), topic: readTopic(tx, row.projectId, topicId) };
+    });
+  }
+
+  /**
+   * app.local_api/v1 pending owner actions: dispatch proposals still waiting for the owner and jobs waiting on the
+   * owner, newest first, at most `limit` of each with a flag when more exist. A read only.
+   */
+  pendingActions(actor: OwnerActor, limit: number): PendingActions {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200) throw new AppError("invalid_limit");
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor);
+      const proposals = tx.all<{ id: string; projectId: string }>(`SELECT id, project_id AS projectId FROM dispatch_proposals
+        WHERE state = 'proposed' ORDER BY updated_at DESC, id LIMIT ?`, limit + 1);
+      const now = this.#now();
+      const jobs = tx.all<{ record_json: string }>("SELECT record_json FROM jobs WHERE state = 'waiting' ORDER BY sequence DESC LIMIT ?", limit + 1);
+      return {
+        proposals: proposals.slice(0, limit).map(row => {
+          const card = readDispatchCard(tx, row.projectId, row.id);
+          return { kind: "dispatch" as const, id: card.id, projectId: card.projectId, topicId: card.topicId, revision: card.revision,
+            reason: card.reason, roles: card.roles, replyMessageId: card.replyMessageId };
+        }),
+        jobs: jobs.slice(0, limit).map(row => {
+          const job = projectJob(JSON.parse(row.record_json) as Job, now);
+          return { id: job.id, projectId: job.projectId, state: job.state, reason: job.reason };
+        }),
+        more: { proposals: proposals.length > limit, jobs: jobs.length > limit },
+      };
+    });
+  }
+
+  /** app.local_api/v1: the project of one dispatch proposal, so a route that names only the proposal can scope its command. */
+  dispatchProposalProject(actor: OwnerActor, proposalId: string): string {
+    requireId(proposalId);
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor);
+      const row = tx.get<{ projectId: string }>("SELECT project_id AS projectId FROM dispatch_proposals WHERE id = ?", proposalId);
+      if (!row) throw new AppError("dispatch_proposal_not_found", 404);
+      return row.projectId;
+    });
+  }
+
   /**
    * web.settings_ia/v1 sidebar badges: counts of items waiting on the owner for at most 50 named projects.
    * Unknown identifiers count as zero; nothing is created, started or acknowledged.
@@ -555,6 +655,7 @@ export class Application {
   execute(actor: OwnerActor, command: ScheduleCommand): ScheduleReceipt;
   execute(actor: OwnerActor, command: CreateProjectCommand): ProjectReceipt;
   execute(actor: OwnerActor, command: SetPreferencesCommand): PreferencesReceipt;
+  execute(actor: OwnerActor, command: SetLocalApiCommand): LocalApiReceipt;
   execute(actor: OwnerActor, command: SetPersonaCommand): PersonaReceipt;
   execute(actor: OwnerActor, command: SetupCommand): SetupReceipt;
   execute(actor: OwnerActor, command: StopReplyCommand): ReplyReceipt;
@@ -582,8 +683,8 @@ export class Application {
   execute(actor: OwnerActor, command: ExportCommand): ExportReceipt;
   execute(actor: OwnerActor, command: UpgradeCommand): Promise<UpgradeReceipt>;
   execute(actor: OwnerActor, command: RestoreCommand): Promise<RestoreReceipt>;
-  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt>;
-  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt> {
+  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt>;
+  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt> {
     if (command?.kind?.startsWith("upgrade.")) return this.#upgradeCommand(actor, command as UpgradeCommand);
     if (command?.kind?.startsWith("restore.")) return this.#restoreCommand(actor, command as RestoreCommand);
     // ops.schema_migrations/v1 admission fence (held by an upgrade or, ops.quarantined_restore/v1, a restore):
@@ -617,6 +718,7 @@ export class Application {
     if (command?.kind === "delivery.commit" || command?.kind === "delivery.resend" || command?.kind === "delivery.retire") return this.#deliveryCommand(actor, command);
     if (command?.kind === "project.create") return this.#createProject(actor, command);
     if (command?.kind === "ui.preferences.set") return this.#setPreferences(actor, command);
+    if (command?.kind === "local_api.set") return this.#setLocalApi(actor, command);
     if (command?.kind === "persona.set") return this.#setPersona(actor, command);
     if (isSetupCommand(command)) return this.#setupCommand(actor, command);
     if (command?.kind === "jit.reply.stop") return this.#stopReply(actor, command);
@@ -1718,6 +1820,25 @@ export class Application {
     });
   }
 
+  /** app.local_api/v1: the only writer of the loopback API setting. Revisioned, idempotent by request id and audited. */
+  #setLocalApi(actor: OwnerActor, command: SetLocalApiCommand): LocalApiReceipt {
+    const payloadHash = localApiIdentity(command);
+    return this.store.transaction(tx => {
+      this.#requireOwner(tx, actor);
+      const receipt = tx.get<{ payload_hash: string; result_json: string }>(
+        "SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
+      if (receipt) {
+        if (receipt.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409);
+        return JSON.parse(receipt.result_json) as LocalApiReceipt;
+      }
+      const now = this.#now();
+      const result: LocalApiReceipt = { localApi: writeLocalApi(tx, command, now) };
+      tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
+      tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, 'owner', ?)", command.kind, command.requestId, now);
+      return result;
+    });
+  }
+
   /** app.persona/v1: the only writer of the persona. Revisioned, idempotent by request id and audited. */
   #setPersona(actor: OwnerActor, command: SetPersonaCommand): PersonaReceipt {
     const payloadHash = personaIdentity(command);
@@ -1890,6 +2011,14 @@ export class Application {
   }
 
   #session(tx: AppTransaction, key: string): void {
+    if (key.startsWith(localApiKeyPrefix)) {
+      // app.local_api/v1: the listener's actor lives exactly as long as the setting revision and owner generation it was issued for.
+      const [generation, revision] = key.slice(localApiKeyPrefix.length).split(":").map(Number);
+      const owner = tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'");
+      const settings = readLocalApi(tx);
+      if (!owner || owner.generation !== generation || !settings.enabled || settings.revision !== revision) throw new AppError("authentication_required", 401);
+      return;
+    }
     const row = tx.get<{ token_hash: string }>(`SELECT s.token_hash FROM sessions s JOIN owner o ON o.id = s.owner_id
       WHERE s.token_hash = ? AND s.expires_at > ? AND s.generation = o.generation`, key, this.#now());
     if (!row) throw new AppError("authentication_required", 401);

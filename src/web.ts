@@ -15,6 +15,7 @@ import { negotiateLocale, tr, trMaybe, withLocale, type Locale } from "./i18n";
 import { lookupAsset } from "./web-assets";
 import { renderWith, replyLabels, replyTone, settingsPage, type NavigationWorkspace, type ThemePreference } from "./web-layout";
 import type { SetPreferencesCommand } from "./preferences";
+import type { SetLocalApiCommand } from "./local-api/settings";
 import type { SetPersonaCommand } from "./persona";
 import type { SetupCommand } from "./setup";
 import { setupPage, visibleStep } from "./web-setup";
@@ -613,7 +614,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
           : step === "connect" || step === "check" ? "/setup?step=connect#connection" : "/setup";
         return respond(null, 303, { Location: location });
       }
-      if (url.pathname === "/settings" && request.method === "GET") return page(() => settingsPage(app.preferences(auth.actor), nav(), auth.csrf, app.persona(auth.actor)));
+      if (url.pathname === "/settings" && request.method === "GET") return page(() => settingsPage(app.preferences(auth.actor), nav(), auth.csrf, app.persona(auth.actor), app.localApi(auth.actor)));
       if (url.pathname === "/settings/telegram" && request.method === "GET") return page(() => settingsTelegramPage(app.telegramStatus(auth.actor), nav(), auth.csrf));
       if (url.pathname === "/settings/data" && request.method === "GET") {
         const raw = url.searchParams.get("offset") ?? "0";
@@ -641,6 +642,18 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
           payload: Object.fromEntries(fields.map(key => [key, text(body[key])])) } as unknown as SetPersonaCommand;
         const receipt = app.execute(auth.actor, command);
         return api ? json(receipt) : respond(null, 303, { Location: "/settings#persona" });
+      }
+      if (["/settings/local-api", "/api/settings/local-api"].includes(url.pathname)) {
+        // app.local_api/v1: the owner's only switch for the loopback API (ADR 0035).
+        if (request.method === "GET") return api ? json(app.localApi(auth.actor)) : respond(null, 303, { Location: "/settings#local-api" });
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "enabled"].includes(key))) throw new AppError("invalid_body");
+        const revision = typeof body.expectedRevision === "string" && /^\d{1,15}$/.test(body.expectedRevision) ? Number(body.expectedRevision) : body.expectedRevision;
+        // An unchecked checkbox is absent from a form post; JSON must say true or false.
+        const enabled = api ? body.enabled : body.enabled === undefined ? false : body.enabled === "on" ? true : body.enabled;
+        const command = { kind: "local_api.set", requestId: body.requestId, projectId: null, expectedRevision: revision, payload: { enabled } } as SetLocalApiCommand;
+        const receipt = app.execute(auth.actor, command);
+        return api ? json(receipt) : respond(null, 303, { Location: "/settings#local-api" });
       }
       if (["/settings/preferences", "/api/settings/preferences"].includes(url.pathname)) {
         if (request.method === "GET") return api ? json(app.preferences(auth.actor)) : respond(null, 303, { Location: "/settings#appearance" });

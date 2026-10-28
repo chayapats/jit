@@ -1,4 +1,5 @@
 import type { AppConfig } from "../config";
+import { LocalApiListener, localApiDirectory } from "../local-api/server";
 import { inspectStoreSchema, schemaVersion } from "../store";
 import { serviceAppConfig, serveFullApp, startFullApp, stopDrain, type LedgerGate } from "./lifecycle";
 import type { ChannelTransportFactory } from "./service-channels";
@@ -49,10 +50,15 @@ export async function serveCommand(config: AppConfig, args: string[], options: S
   let running: ReturnType<typeof serveFullApp>;
   try { running = serveFullApp(handle); }
   catch (error) { await stopDrain(handle, { timeoutMs: 0 }).catch(() => {}); handle.service.close(); handle.store.close(); throw error; }
+  // app.local_api/v1: off by default; follows the owner setting and binds 127.0.0.1 only while it is on.
+  const localApi = new LocalApiListener({ app: handle.app, directory: localApiDirectory(handle.config.databasePath) });
+  try { localApi.start(); } catch { console.error("Local API could not start: check the local-api folder next to the database. The workspace keeps running."); }
   console.log(handle.channels
     ? "Jit workspace started. Telegram channel active; owner commands still require owner authentication."
     : "Jit workspace started. No external services connected.");
   const stop = async () => {
+    // The listener and its token files go first, so no script request lands during the drain.
+    await localApi.stop().catch(() => {});
     const drained = await running.stop();
     // Interrupted/unknown work is recorded for the next start's reconciliation; never reported as sent or completed.
     console.log(JSON.stringify({ stopped: drained.outcome, fencedJobs: drained.fencedJobs, unknownDeliveries: drained.unknownDeliveries, nextAction: drained.nextAction }));

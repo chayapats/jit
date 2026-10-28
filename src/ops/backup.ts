@@ -294,6 +294,8 @@ export const backupImageTables: Readonly<Record<string, "include" | "exclude" | 
   topic_promotions: "include",
   // Chat-first home (schema 28): identity-only lineage from a derived chat title to its first message.
   chat_title_sources: "include",
+  // app.local_api/v1 (schema 29): whether the owner turned the loopback API on; the token is never in the database.
+  local_api_settings: "include",
   project_team: "include", projects: "include", restore_quarantines: "include", roles: "include",
   schway_native_refs: "include", source_versions: "include", sources: "include",
   task_events: "include", task_evidence_artifacts: "include", task_proposals: "include", tasks: "include",

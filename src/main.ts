@@ -25,8 +25,14 @@ async function secret(): Promise<string> {
 }
 
 async function main(): Promise<void> {
-  const config = readConfig();
   const command = process.argv[2];
+  // app.local_api/v1 CLI. `status RECEIPT` reads a reply; `status [--service-config <path>]` stays the operator status.
+  const rest = process.argv.slice(3);
+  if (command === "ask" || command === "pending" || (command === "status" && rest.length > 0 && !rest[0]!.startsWith("--"))) {
+    process.exitCode = await localApiCommand(command, rest);
+    return;
+  }
+  const config = readConfig();
   if (command === "probe") {
     const { runProbeCommand } = await import("./probe-cli");
     const result = await runProbeCommand(process.argv.slice(3), process.cwd());
@@ -35,7 +41,7 @@ async function main(): Promise<void> {
     return;
   }
   if (!["serve", "setup", "reset-owner", "probe", "diagnose", "preflight", "status", "upgrade", "service"].includes(command ?? "")) {
-    throw new Error("Use serve, setup, reset-owner, probe, diagnose, preflight, status, upgrade or service");
+    throw new Error("Use serve, setup, reset-owner, probe, diagnose, preflight, status, upgrade, service, ask or pending");
   }
   if (command === "service") {
     // Operator package commands (ops.service_package/v1): plan, install, start, stop, status, upgrade, disable, uninstall.
@@ -92,6 +98,32 @@ async function main(): Promise<void> {
     await app.setupOwner(await secret(), command === "reset-owner");
     console.log("Owner credentials saved; existing browser sessions revoked.");
   } finally { store.close(); }
+}
+
+/**
+ * `ask`, `status RECEIPT` and `pending` (app.local_api/v1): talk to the running service over its loopback API.
+ * The installation is the development database (`JIT_DATABASE`) or `--service-config <path>`; the CLI only reads
+ * the listener files next to that database and never opens SQLite.
+ */
+async function localApiCommand(command: "ask" | "status" | "pending", args: string[]): Promise<number> {
+  const { cliExit, cliLocale, runLocalApiCli } = await import("./local-api/cli");
+  const { localApiDirectory } = await import("./local-api/server");
+  const index = args.indexOf("--service-config");
+  let databasePath: string;
+  try {
+    const config = readConfig();
+    if (index >= 0) {
+      const path = args[index + 1];
+      if (!path) return cliExit.usage;
+      databasePath = serviceAppConfig(config, readServiceConfigFile(path)).databasePath;
+      args = [...args.slice(0, index), ...args.slice(index + 2)];
+    } else databasePath = config.databasePath;
+  } catch { return cliExit.unavailable; }
+  return runLocalApiCli(command, args, {
+    directory: localApiDirectory(databasePath), locale: cliLocale(process.env),
+    out: text => console.log(text), err: text => console.error(text),
+    stdin: async () => process.stdin.isTTY ? null : await Bun.stdin.text(),
+  });
 }
 
 /**
