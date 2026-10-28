@@ -16,6 +16,16 @@ Use native GitHub blocking relations where supported; otherwise include explicit
 
 Apply ready-for-agent only to scoped implementation work whose decisions are sufficient for unattended work. Human login, physical reboot or subscription validation uses ready-for-human where human participation is required. Preserve claims and existing ownership.
 
+## Model tier prefixes
+
+Every implementation ticket title starts with a model tier, then the ticket key: `[Frontier] [EXE01] <outcome>` or `[Standard] [EXE04] <outcome>`.
+
+- `[Frontier]`: security or isolation boundaries, authority and approval semantics, credential handling, concurrency/fencing/reconciliation, cross-repository contract design, or any slice whose implementer must make non-trivial design decisions.
+- `[Standard]`: everything else, but only when the body removes judgment. It names the exact files to create or modify (checked against current `main`), function and type signatures, data shapes and schema/migration steps, existing helpers to reuse with paths, an ordered list of implementation steps, exact test files with enumerated cases (input → expected output), the commands to run, the dictionary keys to add in both `th` and `en`, and an explicit "Do not" list.
+- When a slice mixes both, split it: keep the Standard part as large as possible and make it depend on the Frontier part's contract.
+
+Every ticket body, in both tiers, has: Parent, Model tier with a one-line justification, Context to read, Deliverable, Implementation steps, Acceptance criteria (checkboxes), Tests and evidence (enumerated), Requirements, Blocked by, Contracts used/delivered, Out of scope, Do not, and Definition of done (commands that must pass; PR body `Closes #n`; no merge by the implementer).
+
 ## Label roles
 
 | Label | Meaning |

@@ -346,11 +346,60 @@ MVP ไม่มี model-driven repository mutation หรือ shell executio
 - token อยู่ใน path, เปลี่ยนหรือปิดได้ และไม่อยู่ใน log; token ผิดได้ 404
 - ชื่อ event มีแค่ชนิดของ schedule และชื่อโครงการเป็นค่าเริ่มต้น; การใส่ข้อความ purpose ลงไปด้วยเป็นตัวเลือกที่ owner เปิดเอง
 
+### FR-35 — Project access levels and kill switch
+
+ที่มา S11-D02, S11-D08, S11-D09; MUST — [S11](../specs/S11-execution-access-and-tools.md)
+
+- แต่ละโครงการมี access level `read` (ค่าเริ่มต้น), `workspace` หรือ `full` แบบ revisioned และ specialist ตั้ง override ที่ต่ำกว่าได้เท่านั้น
+- การเพิ่มระดับต้องเป็น owner command จาก Web พร้อมขั้นยืนยัน; Telegram, model output, local API และ source text ลดระดับได้อย่างเดียว
+- `full` ตั้งได้เมื่อ operator config บันทึก Pi resource evidence แล้วเท่านั้น
+- ทุกหน้าของโครงการแสดงระดับปัจจุบันเป็นข้อความ; kill switch ยกเลิกงาน execution ทั้งหมด หยุด box และห้าม admit งานใหม่จน owner resume
+
+### FR-36 — Execution box
+
+ที่มา S11-D01, S11-D04, S11-D05; MUST
+
+- execution tools ทำงานใน box ต่อโครงการที่แยกจาก Jit service; box ไม่มี credentials, database, backups หรือ channel tokens ของ Jit
+- network ของ box ตามระดับ: `workspace` ออกได้เฉพาะ package registry ที่ owner อนุญาต; `full` ออกได้ทั้งหมด; `read` ไม่มี box
+- ทรัพยากรมีขอบเขต finite (ค่าเริ่มต้น 2 box พร้อมกัน, 2 GB/2 CPU, idle stop 30 นาที); reset ทำได้โดย owner เท่านั้น
+- run ใช้ core tools ของ Schway ผ่าน host-pluggable backend (`schway.host.core-tools/v1`) และทุก tool call ถูกบันทึก audit แบบ bounded
+
+### FR-37 — External effects and approval cards
+
+ที่มา S11-D03, S11-D08; MUST
+
+- external effect (push, PR/comment/merge, deploy, ส่งข้อความในนาม owner, จ่ายเงิน, ลบของ remote) เกิดได้ผ่าน effect tool ของ Jit และ approval card เท่านั้น
+- การ์ดผูกกับ action ที่แน่นอนและ revision, ใช้ได้ครั้งเดียว, หมดอายุ; การอนุมัติทำให้ effect เกิดครั้งเดียวพร้อม receipt
+- owner ตั้ง auto-approve ต่อโครงการต่อชนิด effect ได้ใน Web เท่านั้น
+- Telegram อนุมัติหรือปฏิเสธการ์ดทีละใบได้จาก bound owner chat; การตั้งค่าที่ขยายอำนาจทำได้ใน Web เท่านั้น
+
+### FR-38 — Connections
+
+ที่มา S11-D03, S11-D06; MUST
+
+- owner สร้าง หมุน และลบ connection ใน Web; ค่า secret ไม่ถูกแสดงกลับ
+- secret ไม่อยู่ใน prompt, log, export, box filesystem หรือ tool result; ใช้ได้เฉพาะตอน effect ที่อนุมัติหรือ MCP server ที่ owner ผูกไว้
+
+### FR-39 — MCP servers
+
+ที่มา S11-D06; MUST
+
+- agent เสนอการติดตั้ง MCP server เป็นการ์ดที่แสดง source, pinned version และ command; owner อนุมัติใน Web เท่านั้น
+- server รันใน box ของโครงการ; tool ที่ไม่มี `readOnlyHint` เป็น external effect ที่ต้องอนุมัติ เว้นแต่ owner ตั้ง auto-approve tool นั้น
+
+### FR-40 — Browser-use and computer-use
+
+ที่มา S11-D07; MUST
+
+- Chromium (profile ต่อโครงการ) และ desktop เสมือนรันใน box ของโครงการ
+- owner ดู live view และ takeover ได้ใน Web; ระหว่าง takeover agent ส่ง input ไม่ได้
+- action ประเภท submit/confirm หยุดรอ approval card
+
 ## Non-functional requirements
 
 | ID | ข้อกำหนดและการตรวจรับ |
 | --- | --- |
-| NFR-01 | ไม่มี repository mutation/agent shell ใน MVP; negative tests และ credential/tool scopes ต้องพิสูจน์ |
+| NFR-01 | ไม่มี repository mutation/agent shell ใน MVP; negative tests และ credential/tool scopes ต้องพิสูจน์. หลัง S11 การ mutation เกิดได้เฉพาะใน execution box ตาม access level และ approval card (FR-35–FR-37, NFR-14) |
 | NFR-02 | Schway owns loop, retries, sessions, provider-independent conversation; Jit ไม่ deep-import private runtime เป็น production integration |
 | NFR-03 | headless host ไม่โหลด TUI; โหลดเฉพาะ provider ที่ run เลือก; test import boundary ใน Schway bridge |
 | NFR-04 | Pi ARM64 boot/reboot, persisted state และ subscription renewal ต้องผ่าน smoke test ใน service context จริง |
@@ -363,6 +412,7 @@ MVP ไม่มี model-driven repository mutation หรือ shell executio
 | NFR-11 | ไทย/อังกฤษและ Unicode content ถูกเก็บ ค้น และแสดงไม่เสีย; UI สถานะมีข้อความไม่พึ่งสีอย่างเดียว; ป้าย UI รองรับไทยและอังกฤษตาม FR-25 (S09) |
 | NFR-12 | migrations/version compatibility มี backup และ recovery path; Jit ไม่แก้หรือ rewrite Schway session format เอง |
 | NFR-13 | UI ใช้ค่าสี ขนาดตัวอักษร radius และ duration จาก token เท่านั้น; CI ล้มเมื่อพบค่า literal นอกไฟล์ token ([S10](../specs/S10-reliability-and-owner-integrations.md)) |
+| NFR-14 | execution ไม่รันใน process หรือด้วย identity ของ Jit service; box ไม่มี Jit credentials/state; deterministic tests ใช้ fake box runtime; Podman จริงและ Pi resource checks เป็น opt-in evidence ([S11](../specs/S11-execution-access-and-tools.md)) |
 
 ## Quality gates และสิ่งที่ยังไม่กำหนด
 
