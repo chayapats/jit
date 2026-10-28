@@ -6,11 +6,66 @@ import { runLoadDrill } from "./ops/drill";
 import { exportOpsSummary, readLocalDrillConfig, readOpsRecord, writeOpsRecord } from "./ops/records";
 import { composeProfile, composeReleaseChecklist } from "./ops/report";
 import { boxDoctor } from "./ops/box-doctor";
+import { runBoxDrill, type BoxDrillHost, type BoxDrillInput } from "./ops/box-drill";
+import { BoxManager } from "./exec/box-manager";
+import { serviceBoxRuntime } from "./exec/box-service";
+import { redactRegisteredSecrets } from "./security/secret-fingerprints";
+import { readFileSync } from "node:fs";
 import { statSync } from "node:fs";
 
 /** Live ports for operator use. Tests inject scripted seams instead. */
 export interface OpsPorts {
   drill?: typeof runLoadDrill;
+  /** The box scenario's runtime and host samplers; the default is the service's rootless Podman on this host. */
+  boxDrill?: Pick<BoxDrillInput, "runtime" | "host"> & { close?: () => Promise<void> };
+}
+
+function spawnText(cmd: string[]): string {
+  try {
+    const result = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe" });
+    return result.exitCode === 0 ? new TextDecoder().decode(result.stdout as Uint8Array) : "";
+  } catch { return ""; }
+}
+
+const units: Record<string, number> = { b: 1, kb: 1e3, mb: 1e6, gb: 1e9, kib: 1024, mib: 1024 ** 2, gib: 1024 ** 3 };
+function bytesOf(text: string): number | null {
+  const match = /^([\d.]+)\s*([a-z]+)$/i.exec(text.trim());
+  const unit = match ? units[match[2]!.toLowerCase()] : undefined;
+  return match && unit ? Math.round(Number(match[1]) * unit) : null;
+}
+
+/** Live samplers for the box drill on a Linux host: `podman stats`, `/proc/meminfo`, `podman system df` and `du`. */
+function liveBoxHost(executionDirectory: string): BoxDrillHost {
+  return {
+    async boxMemoryBytes(name) {
+      try {
+        const rows = JSON.parse(spawnText(["podman", "stats", "--no-stream", "--format", "json", name]) || "[]") as { mem_usage?: string }[];
+        return bytesOf(rows[0]?.mem_usage?.split("/")[0] ?? "");
+      } catch { return null; }
+    },
+    async memoryAvailableBytes() {
+      const kb = /MemAvailable:\s+(\d+) kB/.exec(readFileSync("/proc/meminfo", "utf8"))?.[1];
+      return kb ? Number(kb) * 1024 : 0;
+    },
+    async diskBytes() {
+      // A failed measurement is null, never a zero that reads as "no disk used".
+      let images: number | null = null;
+      try {
+        for (const row of JSON.parse(spawnText(["podman", "system", "df", "--format", "json"])) as { Type?: string; RawSize?: number }[]) {
+          if (row.Type === "Images" && typeof row.RawSize === "number") images = row.RawSize;
+        }
+      } catch { /* Unmeasured. */ }
+      const du = /^(\d+)\s/.exec(spawnText(["du", "-sb", executionDirectory]))?.[1];
+      return { images, workspaces: du === undefined ? null : Number(du) };
+    },
+    async hardware() {
+      let model = "unknown";
+      try { model = readFileSync("/proc/device-tree/model", "utf8").replace(/\0/g, "").trim(); } catch { /* Not a device-tree host. */ }
+      const os = /^PRETTY_NAME="?([^"\n]+)"?/m.exec((() => { try { return readFileSync("/etc/os-release", "utf8"); } catch { return ""; } })())?.[1] ?? "unknown";
+      const total = /MemTotal:\s+(\d+) kB/.exec(readFileSync("/proc/meminfo", "utf8"))?.[1];
+      return `${model} · ${os} · kernel ${spawnText(["uname", "-r"]).trim()} · ${spawnText(["uname", "-m"]).trim()} · ${total ? Math.round(Number(total) / 1024 / 1024 * 10) / 10 : "?"} GiB RAM · ${spawnText(["podman", "--version"]).trim()}`;
+    },
+  };
 }
 
 /**
@@ -40,6 +95,24 @@ export async function runOpsCommand(args: string[], root: string, ports: OpsPort
         uid: process.getuid?.() ?? 0,
       }, config.execution);
       return { exitCode: report.ok ? 0 : 1, output: report };
+    }
+    if (args[0] === "drill" && (args.length === 3 || args.length === 5) && args[1] === "--scenario") {
+      if (args[2] !== "boxes") return invalid("use-drill-scenario-boxes");
+      if (args.length === 5 && args[3] !== "--label") return invalid("use-drill-scenario-boxes-label");
+      const config = readConfig();
+      const service = ports.boxDrill ? { runtime: ports.boxDrill.runtime, close: ports.boxDrill.close ?? (async () => {}) } : serviceBoxRuntime(config);
+      if (!service || !config.execution.directory) return { exitCode: 2, output: { error: "execution-not-configured", nextAction: "run-box-doctor" } };
+      const { runtime } = service;
+      try {
+        const report = await runBoxDrill({
+          config, runtime, host: ports.boxDrill?.host ?? liveBoxHost(config.execution.directory),
+          // The same manager settings as createServiceBoxes, so the drill measures the boxes the service would run.
+          boxes: (store, drillConfig, now) => new BoxManager(store, drillConfig, runtime,
+            { now, profile: !!drillConfig.execution.images?.browser, backend: { redact: redactRegisteredSecrets } }),
+          ...(args.length === 5 ? { installationLabel: args[4]! } : {}),
+        });
+        return { exitCode: report.decision === "fullAllowed may be set" ? 0 : 1, output: report };
+      } finally { await service.close().catch(() => undefined); }
     }
     if (args[0] === "diagnose" && args.length === 1) {
       const config = readConfig();
