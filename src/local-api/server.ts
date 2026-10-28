@@ -1,9 +1,10 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Server } from "bun";
 import type { Application, OwnerActor } from "../application";
 import { AppError } from "../errors";
+import { FixedWindowRate, browserRequest, constantTimeEqual, readCappedBody } from "../security/inbound";
 
 /**
  * app.local_api/v1 — the owner's loopback API (REL06, ADR 0035, FR-32).
@@ -56,8 +57,7 @@ export const tokenCheck = {
   /** Constant-time compare of the supplied bearer value against the listener token. */
   verify(expected: string, supplied: string | null): boolean {
     if (supplied === null) return false;
-    const a = createHash("sha256").update(expected).digest(), b = createHash("sha256").update(supplied).digest();
-    return timingSafeEqual(a, b);
+    return constantTimeEqual(expected, supplied);
   },
 };
 
@@ -95,27 +95,23 @@ export function createLocalApiHandler(options: LocalApiHandlerOptions): (request
   const { app, actor, token, port } = options;
   const limits = options.limits ?? localApiLimits, now = options.now ?? Date.now, sleep = options.sleep ?? Bun.sleep;
   const hosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
-  let windowStart = 0, admitted = 0;
+  const rate = new FixedWindowRate(limits, now);
   const routes = localApiRoutes.map(route => ({ ...route, pattern: new RegExp(`^${route.path.replace(/:[a-z]+/g, "([A-Za-z0-9_-]{1,128})")}$`) }));
 
   return async request => {
     // 1. Browser and DNS-rebinding check, before anything reads the body or the token.
     const host = request.headers.get("host");
-    if (request.headers.has("origin") || request.headers.has("sec-fetch-site") || host === null || !hosts.has(host)) {
+    if (browserRequest(request) || host === null || !hosts.has(host)) {
       return json({ error: "origin_rejected" }, 403);
     }
-    // 2. Body cap.
+    // 2. Body cap (shared inbound guard). Only POST bodies are read; any declared oversize body is refused.
     const declared = request.headers.get("content-length");
     if (declared !== null && (!/^\d{1,9}$/.test(declared) || Number(declared) > limits.bodyBytes)) return json({ error: "request_too_large" }, 413);
-    const raw = request.method === "POST" ? new Uint8Array(await request.arrayBuffer()) : new Uint8Array();
-    if (raw.byteLength > limits.bodyBytes) return json({ error: "request_too_large" }, 413);
+    const raw = request.method === "POST" ? await readCappedBody(request, limits.bodyBytes) : new Uint8Array();
+    if (raw === null) return json({ error: "request_too_large" }, 413);
     // 3. Rate cap over a fixed window.
-    const at = now();
-    if (at - windowStart >= limits.windowMs) { windowStart = at; admitted = 0; }
-    if (admitted >= limits.requests) {
-      return json({ error: "rate_limited" }, 429, { "Retry-After": String(Math.max(1, Math.ceil((windowStart + limits.windowMs - at) / 1000))) });
-    }
-    admitted++;
+    const admitted = rate.admit();
+    if (!admitted.ok) return json({ error: "rate_limited" }, 429, { "Retry-After": String(admitted.retryAfterSeconds) });
     // 4. Token.
     const authorization = request.headers.get("authorization");
     const supplied = authorization?.startsWith("Bearer ") ? authorization.slice(7) : null;

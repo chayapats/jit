@@ -1,4 +1,5 @@
 import type { Application, Project, ProjectAttention, Workspace } from "./application";
+import type { WebhookReceipt } from "./pr/webhooks";
 import type { Topic } from "./conversation";
 import type { JobSchedule, ScheduleOccurrence } from "./jobs/schedules";
 import type { Attribution, SourceLookup, SourceReference } from "./sources";
@@ -569,7 +570,35 @@ function alertPolicySummary(policy: ReturnType<Application["prReports"]>["policy
 }
 
 /** Lists private static review reports, unreviewed/running candidates and the owner alert policy; reading never admits work or sends. */
-export function prReportsPage(state: ReturnType<Application["prReports"]>, workspace: Workspace, csrf: string): string {
+/** app.webhook_triggers/v1 owner view of a project's monitors and their triggers. */
+type PrWebhooksState = ReturnType<Application["prWebhooks"]>;
+
+/** app.webhook_triggers/v1 section of the PR page: each monitor's trigger with create, rotate and delete forms. */
+function prWebhooksSection(projectId: string, webhooks: PrWebhooksState, csrf: string): string {
+  const state = (monitor: (typeof webhooks.monitors)[number]) => monitor.trigger.state === "active" ? tr("pr.webhook_state_active")
+    : monitor.trigger.state === "deleted" ? tr("pr.webhook_state_deleted") : tr("pr.webhook_state_none");
+  const form = (monitor: (typeof webhooks.monitors)[number], action: "create" | "rotate" | "delete", label: string) =>
+    `<form method="post" action="/projects/${projectId}/pr/monitors/${monitor.id}/webhook/${action}">${hiddenCommand(csrf, monitor.trigger.revision)}<button${action === "delete" ? "" : ` class="primary"`}>${label}</button></form>`;
+  const rows = webhooks.monitors.map(monitor => `<li data-webhook-state="${escape(monitor.trigger.state)}" data-monitor-state="${escape(monitor.state)}"><h4>${tr("pr.webhook_monitor")} ${escape(monitor.repository)}</h4>
+    <p>${state(monitor)} · ${tr("pr.webhook_next_poll")} ${monitor.state === "active" ? time(monitor.pollDueAt) : "-"}</p>
+    ${monitor.state === "paused" ? `<p>${tr("pr.webhook_monitor_paused")}</p>` : monitor.state === "revoked" ? `<p>${tr("pr.webhook_monitor_revoked")}</p>` : ""}
+    ${monitor.trigger.state === "active" ? `<p class="literal">${tr("pr.webhook_path")} ${escape(monitor.trigger.path ?? "")}</p>${monitor.trigger.secretAvailable ? "" : `<p>${tr("pr.webhook_secret_missing")}</p>`}` : ""}
+    ${monitor.trigger.state === "active" ? `${monitor.state === "revoked" ? "" : form(monitor, "rotate", tr("pr.webhook_rotate"))}${form(monitor, "delete", tr("pr.webhook_delete"))}`
+      : monitor.state === "revoked" ? "" : form(monitor, "create", tr("pr.webhook_create"))}</li>`).join("");
+  return `<article class="team-card" id="webhooks"><h3>${tr("pr.webhook_title")}</h3><p>${tr("pr.webhook_note")}</p>
+    ${webhooks.monitors.length ? `<ul>${rows}</ul>` : `<p class="empty-list">${tr("pr.webhook_no_monitors")}</p>`}</article>`;
+}
+
+/** Shows a new webhook secret exactly once, right after create or rotate. The page is never cached. */
+export function prWebhookSecretPage(state: { project: Project; receipt: WebhookReceipt; origin: string }, workspace: Workspace, csrf: string): string {
+  const { project, receipt } = state;
+  return shell(tr("pr.webhook_secret_title"), { project, workspace, csrf, section: "pr" }, `<div class="content"><section class="hero"><p class="eyebrow">${tr("pr.webhook_title")}</p><h2>${tr("pr.webhook_secret_title")}</h2><p>${tr("pr.webhook_secret_once")}</p></section>
+    <article class="team-card" data-webhook-secret><p>${tr("pr.webhook_url")}</p><p class="literal">${escape(`${state.origin}${receipt.trigger.path ?? ""}`)}</p>
+    <p>${tr("pr.webhook_secret")}</p><p class="literal">${escape(receipt.secret ?? "")}</p><p>${tr("pr.webhook_sender_help")}</p>
+    <p><a href="/projects/${project.id}/pr/reports#webhooks">${tr("pr.webhook_back")}</a></p></article></div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}/pr/reports` } });
+}
+
+export function prReportsPage(state: ReturnType<Application["prReports"]>, workspace: Workspace, csrf: string, webhooks?: PrWebhooksState): string {
   const { project, policy } = state;
   const categories = ["correctness", "security", "behavior"] as const;
   return shell(tr("pr.pr_review_reports"), { project, workspace, csrf, section: "pr" }, `<div class="content"><section class="hero"><p class="eyebrow">${tr("pr.private_static_review")}</p><h2>${tr("pr.reports_for")} ${escape(project.name)}</h2><p>${tr("pr.a_report_is_bound_only")}</p></section>
@@ -581,6 +610,7 @@ export function prReportsPage(state: ReturnType<Application["prReports"]>, works
     <label>${tr("pr.minimum_severity_2")}<select name="minimumSeverity">${prSeverities.map(v => `<option value="${v}"${v === policy.minimumSeverity ? " selected" : ""}>${v}</option>`).join("")}</select></label>
     <label><input type="checkbox" name="notifyPartial"${policy.notifyPartial ? " checked" : ""}> ${tr("pr.notify_partial_reports_always_with")}</label>
     <button class="primary">${tr("pr.save_new_policy_version")}</button><small>${tr("pr.severity_doesnt_replace_evidence_doubts")}</small></form></article>
+    ${webhooks ? prWebhooksSection(project.id, webhooks, csrf) : ""}
     </div>`, { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
 }
 

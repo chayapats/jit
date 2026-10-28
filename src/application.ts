@@ -40,6 +40,9 @@ import {
 import { annotateReport, listReports, listReviewStates, prReportIdentity, readAnnotations, readReport, reportRunEvidence } from "./pr/report";
 import { admitReportAlerts, alertPolicyIdentity, evaluateReport, readAlertDecisions, readAlertPolicy, setAlertPolicy } from "./pr/alerts";
 import { readAlertLinks } from "./pr/alert-links";
+import { readMonitors } from "./pr/authority";
+import { acceptWebhookDelivery, applyWebhookCommand, isWebhookCommand, monitorPollDue, readWebhookTrigger, webhookIdentity, webhookKeyDirectory, webhookRouteActive,
+  type WebhookCommand, type WebhookDelivery, type WebhookReceipt, type WebhookTriggerView } from "./pr/webhooks";
 import type {
   AlertPolicyReceipt,
   DismissReportCommand,
@@ -714,6 +717,7 @@ export class Application {
   execute(actor: OwnerActor, command: RetireDeliveryCommand): DeliveryRetireReceipt;
   execute(actor: OwnerActor, command: PrReportCommand): PrReportReceipt;
   execute(actor: OwnerActor, command: SetAlertPolicyCommand): AlertPolicyReceipt;
+  execute(actor: OwnerActor, command: WebhookCommand): WebhookReceipt;
   execute(actor: OwnerActor, command: CreateBackupCommand): Promise<BackupReceipt>;
   execute(actor: OwnerActor, command: PruneBackupsCommand): BackupReceipt;
   execute(actor: OwnerActor, command: BackupCommand): BackupReceipt | Promise<BackupReceipt>;
@@ -721,8 +725,8 @@ export class Application {
   execute(actor: OwnerActor, command: ExportCommand): ExportReceipt;
   execute(actor: OwnerActor, command: UpgradeCommand): Promise<UpgradeReceipt>;
   execute(actor: OwnerActor, command: RestoreCommand): Promise<RestoreReceipt>;
-  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | FeedCommand | AccessCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | FeedReceipt | AccessReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt>;
-  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | FeedCommand | AccessCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | FeedReceipt | AccessReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt> {
+  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | FeedCommand | AccessCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | WebhookCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | FeedReceipt | AccessReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | WebhookReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt>;
+  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | FeedCommand | AccessCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | WebhookCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | FeedReceipt | AccessReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | WebhookReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt> {
     if (command?.kind?.startsWith("upgrade.")) return this.#upgradeCommand(actor, command as UpgradeCommand);
     if (command?.kind?.startsWith("restore.")) return this.#restoreCommand(actor, command as RestoreCommand);
     // ops.schema_migrations/v1 admission fence (held by an upgrade or, ops.quarantined_restore/v1, a restore):
@@ -750,6 +754,7 @@ export class Application {
     if (command?.kind === "memory.forget") return this.#forgetCommand(actor, command);
     if (command?.kind === "pr.report.dismiss") return this.#prReportCommand(actor, command as DismissReportCommand);
     if (command?.kind === "pr.alert_policy.set") return this.#alertPolicyCommand(actor, command as SetAlertPolicyCommand);
+    if (isWebhookCommand(command)) return this.#webhookCommand(actor, command);
     if (command?.kind === "schedule.create" || command?.kind === "schedule.pause" || command?.kind === "schedule.resume" ||
       command?.kind === "schedule.edit" || command?.kind === "schedule.revoke") return this.#scheduleCommand(actor, command as ScheduleCommand);
     if (isTaskCommand(command)) return this.#taskCommand(actor, command);
@@ -1609,6 +1614,60 @@ export class Application {
       this.#requireOwner(tx, actor);
       this.#project(tx, projectId);
       return admitReportAlerts(tx, { projectId, reportId, maxBytes: this.config.messageBytes, trigger: "owner_admit" }, this.#now());
+    });
+  }
+
+  /**
+   * app.webhook_triggers/v1 owner view: every PR monitor of the project with its trigger state and next poll instant.
+   * Never returns a secret or its sealed form.
+   */
+  prWebhooks(actor: OwnerActor, projectId: string): { project: Project; monitors: { id: string; repository: string; state: string; pollDueAt: number; trigger: WebhookTriggerView }[] } {
+    requireId(projectId);
+    const directory = webhookKeyDirectory(this.store.path);
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor);
+      const project = this.#project(tx, projectId);
+      if (!tx.get("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'pr_monitors'")) return { project, monitors: [] };
+      return { project, monitors: readMonitors(tx, projectId).map(monitor => ({
+        id: monitor.id, repository: `${monitor.repository.owner}/${monitor.repository.name}`, state: monitor.state,
+        pollDueAt: monitorPollDue(tx, projectId, monitor.id), trigger: readWebhookTrigger(tx, projectId, monitor.id, directory),
+      })) };
+    });
+  }
+
+  /** app.webhook_triggers/v1: whether a route id names an active trigger. Not an owner read; it discloses nothing else. */
+  webhookRouteActive(routeId: string): boolean {
+    return this.store.read(tx => webhookRouteActive(tx, routeId));
+  }
+
+  /**
+   * app.webhook_triggers/v1: verifies one signed delivery and, only if every check passes, records its delivery id
+   * and moves the monitor's next poll earlier. Not an owner command: the sender holds no owner authority, and the
+   * payload is never parsed or stored. Refused while an upgrade or restore holds the installation.
+   */
+  acceptWebhook(delivery: WebhookDelivery): { dueAt: number } {
+    if (this.#upgradeBusy || upgradeFenced(this.store.path) || readRestoreGate(this.store.path)) throw new AppError("service_unavailable", 503);
+    const directory = webhookKeyDirectory(this.store.path);
+    return this.store.transaction(tx => acceptWebhookDelivery(tx, delivery, this.#now(), directory));
+  }
+
+  /** app.webhook_triggers/v1 owner command. The stored receipt never holds the secret: a replay answers `secret: null`. */
+  #webhookCommand(actor: OwnerActor, command: WebhookCommand): WebhookReceipt {
+    const payloadHash = digest(webhookIdentity(command));
+    const directory = webhookKeyDirectory(this.store.path);
+    return this.store.transaction(tx => {
+      this.#requireOwner(tx, actor);
+      this.#project(tx, command.projectId);
+      const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
+      if (prior) {
+        if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409);
+        return JSON.parse(prior.result_json) as WebhookReceipt;
+      }
+      const now = this.#now();
+      const result = applyWebhookCommand(tx, command, now, directory);
+      tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify({ ...result, secret: null }), now);
+      tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);
+      return result;
     });
   }
 

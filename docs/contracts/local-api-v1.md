@@ -22,7 +22,7 @@ Each request passes these checks in this order. A failing check stops the reques
 4. **Token.** `Authorization: Bearer <token>` compared in constant time (`tokenCheck.verify`, sha256 digests and `timingSafeEqual`) → `401 authentication_required`.
 5. **Route.** Unknown path → `404 not_found`; known path, wrong method → `405 method_not_allowed`.
 
-Limits are `localApiLimits` (`bodyBytes` 16384, `requests` 30, `windowMs` 60000, `waitMs` 25000, `retryKeyMs` 24 h). Errors answer `{ error: <code> }` with the `AppError` status; internal errors answer `500 request_failed` and disclose nothing.
+Steps 1–4 use the shared inbound guard `src/security/inbound.ts` (`browserRequest`, `readCappedBody`, `FixedWindowRate`, `constantTimeEqual`), which `app.webhook_triggers/v1` also uses. Limits are `localApiLimits` (`bodyBytes` 16384, `requests` 30, `windowMs` 60000, `waitMs` 25000, `retryKeyMs` 24 h). Errors answer `{ error: <code> }` with the `AppError` status; internal errors answer `500 request_failed` and disclose nothing.
 
 ### Routes (`localApiRoutes`)
 

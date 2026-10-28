@@ -4,6 +4,7 @@ import type { AppTransaction } from "../store";
 import { retirePrAlerts } from "./alert-links";
 import { ensurePrSchema } from "./schema";
 import { fencePrCandidateWork } from "./fence";
+import { eraseMonitorWebhooks } from "./webhooks";
 import {
   DEFAULT_PR_LIMITS,
   DEFAULT_TRIGGER_POLICY,
@@ -206,6 +207,8 @@ export function mutateMonitor(
     }
     // PR03: revoked monitoring retires pending alerts and marks settled ones visibly stale.
     retirePrAlerts(tx, { projectId: command.projectId, monitorId: monitor.id }, "monitoring_revoked", now, { markSettledStale: true });
+    // REL07: revoked monitoring deletes its webhook trigger and erases the sealed secret in the same transaction.
+    eraseMonitorWebhooks(tx, monitor.id, now);
     onRevoke?.(monitor);
   }
   monitor.revision += 1;

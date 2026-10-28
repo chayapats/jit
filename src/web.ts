@@ -2,7 +2,7 @@ import { Application, type CreateProjectCommand } from "./application";
 import { AppError } from "./errors";
 import type { CreateTopicCommand, SendMessageCommand, StartChatCommand } from "./conversation";
 import type { PromotionCommand } from "./promotion";
-import { workspacePage, projectPage, conversationPage, sourcePage, jobsPage, teamPage, previewPage, discussionPage, deliveryPage, deliveryDetailPage, prReportsPage, prReportPage, tasksPage, taskPage, memoryPage, memoryClaimPage, memoryContextPage, schedulesPage, scheduleDetailPage, backupsPage, backupDetailPage, deletionsPage, deletionDetailPage, exportsPage, exportDetailPage, upgradesPage, upgradeDetailPage, restoresPage, restoreDetailPage, loginPage, errorPage } from "./web-layout";
+import { workspacePage, projectPage, conversationPage, sourcePage, jobsPage, teamPage, previewPage, discussionPage, deliveryPage, deliveryDetailPage, prReportsPage, prReportPage, prWebhookSecretPage, tasksPage, taskPage, memoryPage, memoryClaimPage, memoryContextPage, schedulesPage, scheduleDetailPage, backupsPage, backupDetailPage, deletionsPage, deletionDetailPage, exportsPage, exportDetailPage, upgradesPage, upgradeDetailPage, restoresPage, restoreDetailPage, loginPage, errorPage } from "./web-layout";
 import type { ExtractMemoryCommand } from "./memory/types";
 import type { CorrectMemoryCommand } from "./memory/types";
 import type { ForgetMemoryCommand } from "./memory/types";
@@ -25,6 +25,8 @@ import type { RoleProposalCommand } from "./team/role-proposals";
 import { defaultPanelTab, legacyRedirect, panelRows, panelTabs, searchLimits, settingsPageHandler, type PanelTab } from "./web-settings";
 import { searchItems, searchPage, settingsDataPage, settingsDispatchPage, settingsFeedPage, settingsTelegramPage, topicPanelPage, type PanelData } from "./web-navigation";
 import { dispatchLimits, type DispatchCommand } from "./team/jit-dispatch";
+import { createWebhookHandler, type WebhookHandlerOptions } from "./pr/webhook-route";
+import { webhookPathPrefix, type WebhookCommandKind } from "./pr/webhooks";
 import type { SetDispatchAllowanceCommand } from "./team/allowance";
 import { feedPathToken, renderScheduleFeed, type FeedCommand } from "./schedule-feed";
 import { effectiveAccess, type AccessCommand } from "./exec/access";
@@ -45,7 +47,9 @@ const defaultStream: ReplyStreamOptions = { intervalMs: 1000, polls: 120 };
 const serviceWorker = new TextEncoder().encode(serviceWorkerScript());
 
 /** Creates a server-rendered owner workspace; all mutations use the shared application boundary. */
-export function createWebHandler(app: Application, options: { stream?: ReplyStreamOptions } = {}): (request: Request) => Promise<Response> {
+export function createWebHandler(app: Application, options: { stream?: ReplyStreamOptions; webhook?: WebhookHandlerOptions } = {}): (request: Request) => Promise<Response> {
+  // app.webhook_triggers/v1: signed senders on the VPN reach this one path without a session, Origin or CSRF.
+  const webhooks = createWebhookHandler(app, options.webhook);
   const streamOptions = options.stream ?? defaultStream;
   const streamTimers = streamOptions.timers ?? { set: (fn: () => void, ms: number) => setTimeout(fn, ms), clear: (handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>) };
   const { config } = app;
@@ -140,6 +144,8 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       // method but GET gets the same bodiless 404 as a wrong token.
       if (url.pathname.startsWith("/feeds/")) return scheduleFeed(request, url.pathname);
       if (request.method !== "GET" && request.method !== "POST") throw new AppError("method_not_allowed", 405);
+      // app.webhook_triggers/v1: after the Host check, before the browser Origin rule (a sender is not a browser).
+      if (url.pathname.startsWith(webhookPathPrefix)) return await webhooks(request, url.pathname.slice(webhookPathPrefix.length));
       if (request.method === "POST" && (request.headers.get("origin") !== config.origin ||
           request.headers.get("sec-fetch-site") === "cross-site")) throw new AppError("origin_rejected", 403);
       if (request.method === "GET" && url.pathname.startsWith("/assets/")) {
@@ -188,6 +194,8 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       const prReportsRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/pr\/reports$/.exec(pathname);
       const prReportRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/pr\/reports\/([a-f0-9-]{36})$/.exec(pathname);
       const prAlertPolicyRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/pr\/alert-policy$/.exec(pathname);
+      const prWebhooksRoute = /^\/api\/projects\/([a-f0-9-]{36})\/pr\/webhooks$/.exec(pathname);
+      const prWebhookRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/pr\/monitors\/([a-f0-9-]{36})\/webhook\/(create|rotate|delete)$/.exec(pathname);
       const jobsRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/jobs$/.exec(pathname);
       const jobRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/jobs\/([a-f0-9-]{36})$/.exec(pathname);
       const resumeRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/jobs\/([a-f0-9-]{36})\/(resume|stop)$/.exec(pathname);
@@ -869,7 +877,20 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       }
       if (request.method === "GET" && prReportsRoute) {
         const state = app.prReports(auth.actor, prReportsRoute[2]!);
-        return api ? json(state) : page(() => prReportsPage(state, nav(), auth.csrf));
+        return api ? json(state) : page(() => prReportsPage(state, nav(), auth.csrf, app.prWebhooks(auth.actor, prReportsRoute[2]!)));
+      }
+      if (request.method === "GET" && prWebhooksRoute) return json(app.prWebhooks(auth.actor, prWebhooksRoute[1]!));
+      if (request.method === "POST" && prWebhookRoute) {
+        const body = await payload(request);
+        app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision"].includes(key))) throw new AppError("invalid_body");
+        const projectId = prWebhookRoute[2]!, monitorId = prWebhookRoute[3]!;
+        const receipt = app.execute(auth.actor, { kind: `pr.webhook.${prWebhookRoute[4]}` as WebhookCommandKind, requestId: body.requestId as string, projectId,
+          expectedRevision: Number(body.expectedRevision), payload: { monitorId } });
+        if (api) return json(receipt);
+        // The secret is shown once, in this response only; a delete (or a replayed form) goes back to the list.
+        return receipt.secret ? page(() => prWebhookSecretPage({ project: app.prWebhooks(auth.actor, projectId).project, receipt, origin: config.origin }, nav(), auth.csrf))
+          : respond(null, 303, { Location: `/projects/${projectId}/pr/reports#webhooks` });
       }
       if (request.method === "GET" && prReportRoute) {
         const state = app.prReport(auth.actor, prReportRoute[2]!, prReportRoute[3]!);

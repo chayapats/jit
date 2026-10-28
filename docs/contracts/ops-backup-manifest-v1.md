@@ -178,6 +178,13 @@ Access level revisions, restrict-only role overrides and kill switch revisions
 (`project_access_revisions`, `role_access_overrides`, `execution_halts`; schema
 31, app.access_level/v1) are owner configuration without credentials and are
 included likewise.
+Webhook triggers (`webhook_triggers`; schema 32, app.webhook_triggers/v1) are
+classified `scrub`: identities and revisions are kept and `sealed_secret` is
+nulled in every image (`webhook_triggers.sealed_secret` in `scrubbed`), so a
+restored trigger reports `secretAvailable: false` until the owner rotates it.
+The sealing key lives in `<data>/webhooks/seal.key`, never in the database or
+an image. Delivery receipts (`webhook_receipts`, delivery ids only) and the
+service-owned poll schedule (`pr_poll_due`) are included.
 Activation (`TransactionStore.swapFrom`, used by OPS02 restore and upgrade
 activation) builds the complete replacement image before an atomic rename and
 always keeps the live installation's owner verifier, sessions,

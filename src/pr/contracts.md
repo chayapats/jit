@@ -14,6 +14,7 @@ Standing owner authorization for read-only polling of one allowlisted repository
 | `pr.monitor.pause` / `resume` / `revoke` | Owner can pause, resume, or revoke. Revoke cancels non-terminal candidates and may fence jobs via `onRevoke` in the same transaction. |
 | `prMonitorIdentity` / `mutateMonitor` | Receipt identity and transactional mutate for `app.project_commands/v1` composition. |
 | `pollMonitorPage` / `pollMonitorCatchUp` | Persist checkpoint + candidates; dedupe by repository/PR/base/head/policy; incomplete pagination does not claim catch-up complete or advance past unrecorded work. |
+| `readPollDue` / `wakeMonitorPoll` / `tickPrPolls` | REL07 (`app.webhook_triggers/v1`, [docs/contracts/webhook-triggers-v1.md](../../docs/contracts/webhook-triggers-v1.md)): service-owned poll instant per monitor (schema 32 `pr_poll_due`); the service loop polls active monitors when due; a signed webhook may only move the instant earlier. Revoke also deletes the monitor's webhook trigger and erases its sealed secret. |
 
 ## `pr.immutable_snapshot/v1`
 

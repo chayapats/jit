@@ -519,8 +519,9 @@ test("schema 30 installations migrate to the access tables with their data intac
   old.close();
   const config = readConfig({ JIT_DATABASE: path });
   const migrated = new TransactionStore(path); stores.push(migrated);
-  expect(schemaVersion).toBe(31);
-  expect(migrated.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 31 });
+  // Schema 31 adds the access tables; later schemas (32: REL07 webhook triggers) migrate on top of them.
+  expect(schemaVersion).toBe(32);
+  expect(migrated.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 32 });
   // The existing snapshot-before-DDL rule kept a private copy of the schema 30 file.
   expect(readdirSync(root).some(name => name.startsWith("state.sqlite.pre-v30-"))).toBe(true);
   const tables = migrated.read(tx => tx.all<{ name: string }>("SELECT name FROM sqlite_schema WHERE type = 'table' AND name IN ('project_access_revisions', 'role_access_overrides', 'execution_halts') ORDER BY name"));
@@ -534,7 +535,7 @@ test("schema 30 installations migrate to the access tables with their data intac
   expect(migrated.read(tx => tx.all("PRAGMA foreign_key_check"))).toEqual([]);
   migrated.close(); stores.splice(stores.indexOf(migrated), 1);
   const reopened = new TransactionStore(path); stores.push(reopened);
-  expect(reopened.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 31 });
+  expect(reopened.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 32 });
   expect(reopened.read(tx => tx.get("SELECT name FROM projects WHERE id = ?", projectId))).toEqual({ name: "โครงการเดิม" });
   expect(existsSync(path)).toBe(true);
 });

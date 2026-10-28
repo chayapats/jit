@@ -300,6 +300,9 @@ export const backupImageTables: Readonly<Record<string, "include" | "exclude" | 
   local_api_settings: "include",
   // app.access_level/v1 (schema 31): owner access level, role restriction and kill switch revisions, no credentials.
   project_access_revisions: "include", role_access_overrides: "include", execution_halts: "include",
+  // app.webhook_triggers/v1 (schema 32): trigger identities keep, the sealed secret is nulled in every image (rotate
+  // after a restore); receipts hold delivery ids only; the poll schedule is service-owned timing.
+  webhook_triggers: "scrub", webhook_receipts: "include", pr_poll_due: "include",
   project_team: "include", projects: "include", restore_quarantines: "include", roles: "include",
   schway_native_refs: "include", source_versions: "include", sources: "include",
   task_events: "include", task_evidence_artifacts: "include", task_proposals: "include", tasks: "include",
@@ -362,6 +365,10 @@ export function captureBackupImage(tx: AppTransaction, store: Pick<TransactionSt
     if (tables.includes("telegram_binding")) {
       image.exec("UPDATE telegram_binding SET challenge_nonce = NULL, challenge_expires_at = NULL");
       scrubbed.push("telegram_binding.challenge_nonce");
+    }
+    if (tables.includes("webhook_triggers")) {
+      image.exec("UPDATE webhook_triggers SET sealed_secret = NULL");
+      scrubbed.push("webhook_triggers.sealed_secret");
     }
     if (tables.includes("command_receipts")) {
       const rows = image.query("SELECT rowid AS id, result_json FROM command_receipts").all() as { id: number; result_json: string }[];

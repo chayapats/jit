@@ -28,6 +28,7 @@ export const CREDENTIAL_PATTERNS: readonly CredentialPattern[] = Object.freeze([
   { kind: "google_oauth_token", pattern: /\bya29\.[0-9A-Za-z_-]{20,}/g },
   { kind: "aws_access_key", pattern: /\b(?:AKIA|ASIA|AGPA|AIDA|AROA)[0-9A-Z]{16}\b/g },
   { kind: "npm_token", pattern: /\bnpm_[A-Za-z0-9]{30,}/g },
+  { kind: "jit_webhook_secret", pattern: /\bjitwh_[A-Za-z0-9_-]{16,}/g },
   { kind: "jwt", pattern: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g },
   { kind: "url_userinfo", pattern: /\b[a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:[^\s/@]+@/gi },
   {

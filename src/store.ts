@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { commitDecisionMemorySource, retireDecisionMemorySource } from "./memory/decision-sources";
 
 /** Current application schema revision. Service packaging pins and checks this value. */
-export const schemaVersion = 31;
+export const schemaVersion = 32;
 
 /**
  * Installation-scoped state that never round-trips through backup images and
@@ -74,7 +74,7 @@ export class TransactionStore {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
           if (current === schemaVersion) return;
-          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30].includes(current)) throw new Error("Unsupported migration source");
+          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31].includes(current)) throw new Error("Unsupported migration source");
           if (existing) {
             const snapshot = `${path}.pre-v${current}-${crypto.randomUUID()}.sqlite`;
             const fd = openSync(snapshot, "wx", 0o600);
@@ -928,6 +928,40 @@ export class TransactionStore {
               PRIMARY KEY (project_id, revision)
             );
             PRAGMA user_version = 31;
+          `);
+          if (current < 32) this.#db.exec(`
+            -- app.webhook_triggers/v1 (REL07, ADR 0035): one active signed trigger per PR monitor. The HMAC secret is
+            -- stored only sealed (AES-256-GCM under an installation key file outside the database) and is nulled on
+            -- delete, on monitor revoke and in every backup image. Receipts keep delivery identities only, never a payload.
+            CREATE TABLE IF NOT EXISTS webhook_triggers (
+              route_id TEXT PRIMARY KEY,
+              project_id TEXT NOT NULL REFERENCES projects(id),
+              monitor_id TEXT NOT NULL,
+              revision INTEGER NOT NULL CHECK (revision > 0),
+              sealed_secret TEXT,
+              created_at INTEGER NOT NULL,
+              rotated_at INTEGER,
+              revoked_at INTEGER,
+              UNIQUE (monitor_id, revision)
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS webhook_trigger_active ON webhook_triggers(monitor_id) WHERE revoked_at IS NULL;
+            CREATE TABLE IF NOT EXISTS webhook_receipts (
+              route_id TEXT NOT NULL REFERENCES webhook_triggers(route_id),
+              delivery_id TEXT NOT NULL,
+              received_at INTEGER NOT NULL,
+              PRIMARY KEY (route_id, delivery_id)
+            );
+            CREATE INDEX IF NOT EXISTS webhook_receipt_age ON webhook_receipts(received_at);
+            -- Service-owned PR poll schedule: when the service loop next runs pollMonitorCatchUp for a monitor.
+            -- A webhook may only move due_at earlier; the poll result stays the source of truth.
+            CREATE TABLE IF NOT EXISTS pr_poll_due (
+              monitor_id TEXT PRIMARY KEY,
+              project_id TEXT NOT NULL REFERENCES projects(id),
+              due_at INTEGER NOT NULL,
+              last_polled_at INTEGER,
+              woken_at INTEGER
+            );
+            PRAGMA user_version = 32;
           `);
         }).immediate();
         this.#db.exec("PRAGMA foreign_keys = ON;");

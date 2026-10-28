@@ -5,6 +5,9 @@ import { prepareServiceState } from "../bootstrap";
 import type { AppConfig } from "../config";
 import type { JobQueue } from "../jobs/queue";
 import { tickSchedules } from "../jobs/schedules";
+import { FakeGitHubFixture } from "../pr/github";
+import { tickPrPolls } from "../pr/poll-due";
+import { webhookLimits } from "../pr/webhooks";
 import { composeJobQueue } from "../composition";
 import type { ApplicationRunPort } from "../team/run-port";
 import { verifySchwayBridge } from "../team/schway-port";
@@ -409,12 +412,22 @@ export interface RunningService {
  */
 export function serveFullApp(handle: FullAppHandle, options: { drainTimeoutMs?: number; intervalMs?: number } = {}): RunningService {
   const config = handle.config;
-  const server = Bun.serve({ hostname: config.hostname, port: config.port, maxRequestBodySize: config.bodyBytes,
+  // app.webhook_triggers/v1 bodies may reach 32 KiB; owner forms stay capped at config.bodyBytes by the Web handler.
+  const server = Bun.serve({ hostname: config.hostname, port: config.port, maxRequestBodySize: Math.max(config.bodyBytes, webhookLimits.bodyBytes * 2),
     idleTimeout: 15, fetch: createWebHandler(handle.app), error: () => new Response("Request failed", { status: 503 }) });
+  let lastPrTick = 0;
   const timer = setInterval(() => {
     const queue = handle.service.queue;
     if (queue) {
       try { queue.pump(); tickSchedules(handle.store, queue, config, Date.now()); } catch { /* Queue refuses acknowledgments after a storage/ownership failure or under an upgrade fence. */ }
+      // app.webhook_triggers/v1 wake mechanism: poll every active PR monitor whose due instant has come (a webhook
+      // may only have moved it earlier). Checked once a second; the read port is the same process-owned wiring as pr.snapshot.
+      const at = Date.now();
+      if (at - lastPrTick >= 1000) {
+        lastPrTick = at;
+        try { tickPrPolls(handle.store, { now: at, portFor: () => new FakeGitHubFixture(), cacheRoot: ".local/pr-cache", assertOwner: tx => queue.assertOwner(tx) }); }
+        catch { /* Ownership lost, storage unavailable or fenced: the next tick decides again. */ }
+      }
     }
     handle.channels?.tick();
   }, options.intervalMs ?? 100);
