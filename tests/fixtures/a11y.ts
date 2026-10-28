@@ -43,7 +43,9 @@ const hiddenInTree = (node: Node | null): boolean => !!node && (hiddenFromAt(nod
 /** Accessible name per the parts of accname that the markup uses: aria-labelledby, aria-label, content, title. */
 function accessibleName(node: Node, byId: Map<string, Node>): string {
   // Referenced labels count even when hidden themselves (accname 2B), but their own hidden parts do not.
-  if (node.attrs["aria-labelledby"]) return node.attrs["aria-labelledby"].split(/\s+/).map(id => byId.get(id) ? text(byId.get(id)!) : "").join(" ").trim();
+  // With at least one valid IDREF, aria-labelledby decides alone, even when the result is empty.
+  const refs = idrefs(node.attrs["aria-labelledby"]).filter(id => byId.has(id));
+  if (refs.length) return refs.map(id => text(byId.get(id)!)).join(" ").trim();
   if (node.attrs["aria-label"]?.trim()) return node.attrs["aria-label"].trim();
   const content = text(node);
   return content || (node.attrs.title ?? "").trim();
@@ -55,17 +57,19 @@ function accessibleName(node: Node, byId: Map<string, Node>): string {
  * control's own content, such as a wrapped select's options.
  */
 function controlName(node: Node, all: Node[], byId: Map<string, Node>): string {
-  const refs = (node.attrs["aria-labelledby"] ?? "").split(/\s+/).filter(id => byId.has(id));
+  const refs = idrefs(node.attrs["aria-labelledby"]).filter(id => byId.has(id));
   if (refs.length) return refs.map(id => text(byId.get(id)!)).join(" ").trim();
   if (node.attrs["aria-label"]?.trim()) return node.attrs["aria-label"].trim();
   // HTML label association: `for` names the control's id; a label without `for` labels its first labelable descendant.
   const labels = all.filter(n => n.tag === "label" && (n.attrs.for !== undefined
-    ? node.attrs.id !== undefined && n.attrs.for === node.attrs.id
+    ? Boolean(node.attrs.id) && n.attrs.for === node.attrs.id
     : elements(n).find(labelable) === node));
   return labels.filter(label => !hiddenInTree(label)).map(label => text(label, node)).join(" ").trim();
 }
+/** IDREF list tokens: whitespace-separated, never empty. */
+const idrefs = (value: string | undefined) => (value ?? "").split(/\s+/).filter(Boolean);
 /** Landmarks and dialogs are named only by aria-labelledby or aria-label, never by their content. */
-const landmarkName = (node: Node, byId: Map<string, Node>) => node.attrs["aria-labelledby"] || node.attrs["aria-label"]?.trim() ? accessibleName(node, byId) : "";
+const landmarkName = (node: Node, byId: Map<string, Node>) => idrefs(node.attrs["aria-labelledby"]).length || node.attrs["aria-label"]?.trim() ? accessibleName(node, byId) : "";
 /** Exposed text of a subtree: hidden parts and the `skip` subtree are left out; a labelled SVG contributes its label. */
 function text(node: Node, skip?: Node): string {
   return node.children.map(child => typeof child === "string" ? child : hiddenFromAt(child) || child === skip ? ""
@@ -87,6 +91,8 @@ export function accessibilityProblems(html: string, locale: "th" | "en"): string
   const where = (node: Node) => `<${node.tag}${node.attrs.id ? `#${node.attrs.id}` : ""}${node.attrs.class ? `.${node.attrs.class.split(" ")[0]}` : ""}${node.attrs.href ? ` href=${node.attrs.href}` : ""}>`;
   for (const node of all) {
     if (node.attrs.id === undefined) continue;
+    // An empty or spaced id can never be referenced; it is reported and left out of the lookup.
+    if (!/^\S+$/.test(node.attrs.id)) { problems.push(`${where(node)} invalid id "${node.attrs.id}"`); continue; }
     if (byId.has(node.attrs.id)) problems.push(`duplicate id ${node.attrs.id}`);
     byId.set(node.attrs.id, node);
   }
@@ -109,7 +115,7 @@ export function accessibilityProblems(html: string, locale: "th" | "en"): string
   for (const node of all) {
     const { tag, attrs } = node;
     for (const ref of ["for", "aria-controls", "aria-labelledby", "aria-describedby"]) {
-      for (const id of (attrs[ref] ?? "").split(/\s+/).filter(Boolean)) if (!byId.has(id)) problems.push(`${where(node)} ${ref}=${id} points nowhere`);
+      for (const id of idrefs(attrs[ref])) if (!byId.has(id)) problems.push(`${where(node)} ${ref}=${id} points nowhere`);
     }
     if (tag === "a" && attrs.href?.startsWith("#") && attrs.href.length > 1 && !byId.has(attrs.href.slice(1))) problems.push(`${where(node)} targets a missing id`);
     if (attrs.tabindex !== undefined && Number(attrs.tabindex) > 0) problems.push(`${where(node)} positive tabindex`);
