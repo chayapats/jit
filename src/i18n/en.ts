@@ -869,6 +869,7 @@ export const en: Record<MessageKey, string> = {
   "error.dispatch_source_unavailable": "The source has changed or is unavailable. Choose it again.",
   "error.invalid_router_output": "The team selection was invalid, so analysis hasn’t started.",
   "error.role_already_participating": "This role is already in the discussion.",
+  "error.dispatch_limits_below_retry_minimum": "With the Schway route each specialist needs calls and rounds of at least retries + 1. Raise calls and rounds, or lower retries.",
   "error.role_budget_exhausted": "This discussion has reached its role limit.",
   "error.participation_not_found": "This role isn’t part of the discussion.",
   "error.run_not_found": "Selected analysis result not found.",
@@ -1149,7 +1150,7 @@ export const en: Record<MessageKey, string> = {
   "error.route_not_configured": "That route is not configured. Pick a configured route or the default.",
   "error.invalid_role_proposal_command": "The proposal form is invalid. Check the name and responsibility and try again.",
   "system.jit_reply_purpose": "Jit reply",
-  "error.memory_forget_too_broad": "This forget reaches too many replies. Contact the maintainer before trying again.",
+  "error.memory_forget_too_broad": "This forget reaches too many replies and team results. Contact the maintainer before trying again.",
   // UX02: settings IA, topic panel, ⌘K and sidebar badges (web.settings_ia/v1).
   "settings.general": "General",
   "settings.sections": "Settings sections",

@@ -13,6 +13,7 @@ import type { ApplicationRunRequest, RoleRoute, TeamCommand } from "../src/team/
 import type { ApplicationRunPort } from "../src/team/run-port";
 import { coordinatorSynthesisMarker, coordinatorSynthesisWork } from "../src/team/decisions";
 import { discussionPlanWork, specialistAnalysisWork } from "../src/team/dispatch";
+import { scriptedPreviewWork } from "../src/team/preview";
 import { TransactionStore } from "../src/store";
 import { createWebHandler } from "../src/web";
 
@@ -36,7 +37,7 @@ function boot(config: Config, hooks: { extract: Script; specialist: Script }, cl
   const port = new ScriptedRunPort(store, config.team, config.jobs.outputBytes, script, undefined, () => flags.retire);
   const now = () => clock.now;
   const queue = new JobQueue(store, config.jobs, [memoryExtractionWork(store, config, port, now), discussionPlanWork(),
-    specialistAnalysisWork(store, config, port, now), coordinatorSynthesisWork(store, config, port, now)], { now }); live.push(queue);
+    specialistAnalysisWork(store, config, port, now), coordinatorSynthesisWork(store, config, port, now), scriptedPreviewWork(store, config, port, now)], { now }); live.push(queue);
   const app = new Application(store, config, { jobs: queue, now });
   return { store, port, queue, app };
 }
@@ -282,4 +283,111 @@ test("MEM04 forget over HTTP: API commits, claim page links the ledger and hides
   expect(html).not.toContain("ใช้ PostgreSQL สำหรับทุกโครงการ");
   const ledger = f.rt.app.suppressionLedger(actor(f), p.id, target.claimId)!;
   expect(ledger.suppression.reason).toBe("เจ้าของขอให้ลืม");
+});
+
+/** The committed output source of a specialist/preview team run, or of the coordinator synthesis's decision proposal. */
+const runOutput = (f: Fixture, runId: string): SourceReference => f.rt.store.read(tx =>
+  (JSON.parse(tx.get<{ json: string }>("SELECT record_json AS json FROM team_runs WHERE id = ?", runId)!.json) as { source: SourceReference }).source);
+const proposalOutput = (f: Fixture, discussionId: string): SourceReference => f.rt.store.read(tx => {
+  const row = tx.get<{ sourceId: string; revision: number; generation: number }>(
+    "SELECT source_id AS sourceId, source_revision AS revision, source_generation AS generation FROM decision_proposals WHERE discussion_id = ?", discussionId)!;
+  return { sourceId: row.sourceId, revision: row.revision, generation: row.generation };
+});
+
+test("#110 forget suppresses specialist, role-preview and coordinator outputs of the forgotten message", async () => {
+  const f = await fixture();
+  const p = project(f, "โครงการลับ", "หัวข้อรหัส");
+  const origin = say(f, p, "รหัสลับคือ ม่วง-42");
+  const claim = (await remember(f, p, origin))[0]!;
+  // The specialist copies its evidence into its result; the coordinator then cites that result.
+  f.hooks.specialist = request => fixtureOutcome("complete", specialistFixtureResult(`ทวน ${request.manifest.sources.map(s => s.text).join(" | ")}`, request, f.config.jobs.outputBytes));
+  const started = f.rt.app.execute(actor(f), dispatch(f, p, "ทวนรหัสลับ", [origin])).discussion!;
+  await drain(f);
+  const discussion = f.rt.app.discussion(actor(f), p.id, started.id).discussion;
+  expect(discussion.participations[0]!.state).toBe("completed");
+  f.rt.app.execute(actor(f), { kind: "decision.synthesize", requestId: rid(), projectId: p.id, expectedRevision: discussion.revision,
+    payload: { discussionId: discussion.id, limits: { ...f.config.jobs.maximum } } });
+  const preview = f.rt.app.execute(actor(f), { kind: "role.preview", requestId: rid(), projectId: p.id, expectedRevision: f.rt.app.project(actor(f), p.id).revision,
+    payload: { roleId: f.roles.tech, topicId: p.topic.id, purpose: "ทวนรหัสลับ", sources: [origin], limits: { ...f.config.jobs.maximum } } }).preview!;
+  await drain(f);
+  const specialist = runOutput(f, discussion.participations[0]!.runId), previewed = runOutput(f, preview.id), synthesized = proposalOutput(f, discussion.id);
+  for (const output of [specialist, previewed, synthesized]) expect(f.rt.app.sourceSuppressed(actor(f), p.id, output)).toBe(false);
+
+  const receipt = f.rt.app.execute(actor(f), forgetCommand(f, p, claim));
+  const bound = receipt.suppression.sources.map(entry => entry.source.sourceId);
+  expect(bound).toEqual(expect.arrayContaining([origin.sourceId, specialist.sourceId, previewed.sourceId, synthesized.sourceId]));
+  for (const output of [specialist, previewed, synthesized]) {
+    expect(f.rt.app.sourceSuppressed(actor(f), p.id, output)).toBe(true);
+    // Neither extraction nor a later run's evidence can bring the copied text back.
+    expect(() => f.rt.app.execute(actor(f), extractCommand(f, p, output))).toThrow("memory_source_suppressed");
+    expect(f.rt.app.source(actor(f), p.id, output)).toMatchObject({ state: "available" });
+  }
+  f.hooks.specialist = f.defaults.specialist;
+  const later = f.rt.app.execute(actor(f), dispatch(f, p, "ทวนรหัสลับอีกครั้ง")).discussion!;
+  await drain(f);
+  const evidence = f.rt.app.discussion(actor(f), p.id, later.id).discussion.manifest;
+  expect(JSON.stringify(evidence).includes("ม่วง-42")).toBe(false);
+});
+
+test("#110 forget fences a running extraction of an output it newly suppresses and lists its context", async () => {
+  const f = await fixture();
+  const p = project(f, "โครงการลับ", "หัวข้อรหัส");
+  const origin = say(f, p, "เลขบัญชี 123-456");
+  const claim = (await remember(f, p, origin))[0]!;
+  // A role preview carries no memory context, so its output is an ordinary extractable source.
+  const preview = f.rt.app.execute(actor(f), { kind: "role.preview", requestId: rid(), projectId: p.id, expectedRevision: f.rt.app.project(actor(f), p.id).revision,
+    payload: { roleId: f.roles.tech, topicId: p.topic.id, purpose: "ทวนเลขบัญชี", sources: [origin], limits: { ...f.config.jobs.maximum } } }).preview!;
+  await drain(f);
+  const output = runOutput(f, preview.id);
+  // Extraction of the preview output is running when the owner forgets the original message.
+  let release!: () => void, started = false;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  f.hooks.extract = async request => { started = true; await gate; return scriptedMemoryResult(request, true); };
+  const running = f.rt.app.execute(actor(f), extractCommand(f, p, output));
+  f.rt.queue.pump();
+  for (let i = 0; i < 100 && !started; i++) await new Promise(resolve => setTimeout(resolve, 2));
+  expect(started).toBe(true);
+  const receipt = f.rt.app.execute(actor(f), forgetCommand(f, p, claim));
+  expect(receipt.suppression.sources.map(entry => entry.source.sourceId)).toContain(output.sourceId);
+  expect(jobState(f, running.extraction.jobId)).toMatchObject({ state: "blocked" });
+  const attempt = f.rt.store.read(tx => JSON.parse(tx.get<{ json: string }>("SELECT record_json AS json FROM job_attempts WHERE job_id = ? ORDER BY sequence DESC LIMIT 1", running.extraction.jobId)!.json) as { native: { context: { id: string; generation: number } } });
+  expect(receipt.suppression.contexts).toContainEqual(attempt.native.context);
+  release(); f.hooks.extract = f.defaults.extract;
+  await drain(f);
+  expect(f.rt.app.memory(actor(f), p.id).extractions.find(e => e.id === running.extraction.id)?.claimIds ?? []).toHaveLength(0);
+  expect(claims(f, p).some(item => item.source.sourceId === output.sourceId)).toBe(false);
+});
+
+test("#110 forget lists the context of a run fenced only because it admitted a claim of a newly suppressed output", async () => {
+  const f = await fixture();
+  const p = project(f, "โครงการลับ", "หัวข้อรหัส");
+  const origin = say(f, p, "รหัสลับคือ ม่วง-42");
+  const claim = (await remember(f, p, origin))[0]!;
+  const preview = f.rt.app.execute(actor(f), { kind: "role.preview", requestId: rid(), projectId: p.id, expectedRevision: f.rt.app.project(actor(f), p.id).revision,
+    payload: { roleId: f.roles.tech, topicId: p.topic.id, purpose: "ทวนรหัสลับ", sources: [origin], limits: { ...f.config.jobs.maximum } } }).preview!;
+  await drain(f);
+  const output = runOutput(f, preview.id);
+  const copy: Script = request => fixtureOutcome("complete", JSON.stringify({ version: 1, complete: true, claims: [{ kind: "inference" as const,
+    text: "ทีมเลือกใช้ฐานข้อมูล SQLite สำหรับงานทดลองบน Pi", quote: request.manifest.sources[0]!.text, source: request.manifest.sources[0]!.reference, dependencies: [], conflicts: [] }] }));
+  const copied = (await remember(f, p, output, { output: copy }))[0]!;
+  // The specialist is given only the topic source, but its memory context admits the claim extracted from the preview.
+  const started = f.rt.app.execute(actor(f), dispatch(f, p, copied.text)).discussion!;
+  const queued = f.rt.app.discussion(actor(f), p.id, started.id).discussion;
+  expect(queued.manifest.claims.map(item => item.claimId)).toContain(copied.claimId);
+  expect(queued.manifest.sources.map(item => item.reference.sourceId)).not.toContain(output.sourceId);
+  // Keep only the copied claim in the recorded manifests, so no fence that follows withdrawn claims can reach this run.
+  const onlyCopied = (manifest: { claims: { claimId: string }[] }) => { manifest.claims = manifest.claims.filter(item => item.claimId === copied.claimId); };
+  const run = f.rt.store.transaction(tx => {
+    for (const id of [started.id, queued.participations[0]!.runId]) {
+      const record = JSON.parse(tx.get<{ json: string }>("SELECT record_json AS json FROM team_runs WHERE id = ?", id)!.json);
+      onlyCopied(record.request?.manifest ?? record.manifest);
+      tx.run("UPDATE team_runs SET record_json = ? WHERE id = ?", JSON.stringify(record), id);
+    }
+    return tx.get<{ contextId: string; jobId: string }>("SELECT context_id AS contextId, job_id AS jobId FROM team_runs WHERE id = ?", queued.participations[0]!.runId)!;
+  });
+  const receipt = f.rt.app.execute(actor(f), forgetCommand(f, p, claim));
+  expect(receipt.suppression.sources.map(entry => entry.source.sourceId)).toContain(output.sourceId);
+  expect(jobState(f, run.jobId)).toMatchObject({ state: "blocked" });
+  expect(receipt.suppression.contexts.map(context => context.id)).toContain(run.contextId);
+  expect(f.rt.app.suppressionLedger(actor(f), p.id, claim.claimId)).toMatchObject({ retire: { state: "incomplete" } });
 });

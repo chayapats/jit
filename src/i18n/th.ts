@@ -871,6 +871,7 @@ export const th = {
   "error.dispatch_source_unavailable": "แหล่งข้อมูลเปลี่ยนหรือไม่พร้อมใช้งาน กรุณาเลือกใหม่",
   "error.invalid_router_output": "ผลเลือกทีมไม่ถูกต้อง จึงยังไม่เริ่มวิเคราะห์",
   "error.role_already_participating": "บทบาทนี้อยู่ในการหารือแล้ว",
+  "error.dispatch_limits_below_retry_minimum": "เส้นทาง Schway ต้องตั้ง calls และ rounds อย่างน้อย retries + 1 ต่อผู้เชี่ยวชาญ เพิ่ม calls และ rounds หรือลด retries",
   "error.role_budget_exhausted": "จำนวนบทบาทครบขีดจำกัดของการหารือนี้แล้ว",
   "error.participation_not_found": "ไม่พบบทบาทนี้ในการหารือ",
   "error.run_not_found": "ไม่พบผลการวิเคราะห์ที่เลือก",
@@ -1151,7 +1152,7 @@ export const th = {
   "error.route_not_configured": "route นี้ยังไม่ได้ตั้งค่า — เลือก route ที่ตั้งไว้ หรือใช้ route เริ่มต้น",
   "error.invalid_role_proposal_command": "ข้อมูลการ์ดไม่ถูกต้อง — ตรวจชื่อและหน้าที่แล้วลองอีกครั้ง",
   "system.jit_reply_purpose": "จิตตอบข้อความ",
-  "error.memory_forget_too_broad": "การลืมครั้งนี้กระทบคำตอบมากเกินไป ติดต่อผู้ดูแลก่อนลองอีกครั้ง",
+  "error.memory_forget_too_broad": "การลืมครั้งนี้กระทบคำตอบและผลงานของทีมมากเกินไป ติดต่อผู้ดูแลก่อนลองอีกครั้ง",
   // UX02: settings IA, topic panel, ⌘K and sidebar badges (web.settings_ia/v1).
   "settings.general": "ทั่วไป",
   "settings.sections": "หมวดการตั้งค่า",

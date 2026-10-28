@@ -347,8 +347,9 @@ export function contextCurrent(tx: AppTransaction, projectId: string, manifest: 
   return null;
 }
 
-/** Fences pending specialist and coordinator attempts whose recorded context is no longer current. */
-export function fenceStaleContexts(tx: AppTransaction, now: number): void {
+/** Fences pending specialist and coordinator attempts whose recorded context is no longer current; returns their jobs. */
+export function fenceStaleContexts(tx: AppTransaction, now: number): string[] {
+  const fenced: string[] = [];
   const pending = "j.state IN ('queued', 'admitted', 'waiting')";
   const teamRuns = tx.all<{ projectId: string; jobId: string; json: string; jobJson: string }>(
     `SELECT r.project_id AS projectId, r.job_id AS jobId, r.record_json AS json, j.record_json AS jobJson FROM team_runs r JOIN jobs j ON j.id = r.job_id WHERE ${pending}`);
@@ -356,18 +357,19 @@ export function fenceStaleContexts(tx: AppTransaction, now: number): void {
     // The authoritative job type decides: a run whose stored kind claims "discussion"
     // but whose job is not a discussion is evaluated as what it actually is, never skipped.
     if (jobTypeOf(row.jobJson) === discussionWorkId) continue;
-    fenceRow(tx, row.projectId, row.jobId, row.json, now);
+    if (fenceRow(tx, row.projectId, row.jobId, row.json, now)) fenced.push(row.jobId);
   }
   const syntheses = tx.all<{ projectId: string; jobId: string; json: string }>(
     `SELECT s.project_id AS projectId, s.job_id AS jobId, s.record_json AS json FROM coordinator_syntheses s JOIN jobs j ON j.id = s.job_id WHERE ${pending}`);
-  for (const row of syntheses) fenceRow(tx, row.projectId, row.jobId, row.json, now);
+  for (const row of syntheses) if (fenceRow(tx, row.projectId, row.jobId, row.json, now)) fenced.push(row.jobId);
+  return fenced;
 }
 
 /** Fences one pending non-discussion run unless its stored request manifest proves current.
  * A missing/unreadable request, a missing claims array, or an unevaluable manifest loses
  * commit authority; a valid context-less manifest passes through the shared currentness
- * query, which treats absent context as no constraint. */
-function fenceRow(tx: AppTransaction, projectId: string, jobId: string, json: string, now: number): void {
+ * query, which treats absent context as no constraint. Returns whether it fenced the job. */
+function fenceRow(tx: AppTransaction, projectId: string, jobId: string, json: string, now: number): boolean {
   let parsed: { request?: ApplicationRunRequest } | null = null;
   try {
     parsed = JSON.parse(json) as { request?: ApplicationRunRequest };
@@ -375,13 +377,14 @@ function fenceRow(tx: AppTransaction, projectId: string, jobId: string, json: st
   const manifest = parsed && typeof parsed === "object" ? parsed.request?.manifest : undefined;
   if (!manifest || typeof manifest !== "object" || !Array.isArray(manifest.claims)) {
     invalidatePendingJob(tx, projectId, jobId, "source_retired", now);
-    return;
+    return true;
   }
   let reason: "source_retired" | "superseded" | null = null;
   try {
     reason = contextCurrent(tx, projectId, manifest);
-  } catch { invalidatePendingJob(tx, projectId, jobId, "source_retired", now); return; }
+  } catch { invalidatePendingJob(tx, projectId, jobId, "source_retired", now); return true; }
   if (reason) invalidatePendingJob(tx, projectId, jobId, reason, now);
+  return reason !== null;
 }
 
 /**

@@ -23,9 +23,13 @@ const receipt = (extraction: MemoryExtraction, duplicate: boolean): MemoryReceip
   return { extraction: visible, duplicate };
 };
 
-/** Fences direct and transitive pending extraction authority after source retirement in the same app transaction. */
-export function fenceUnavailableExtractions(tx: AppTransaction, projectId: string, now: number): void {
+/**
+ * Fences direct and transitive pending extraction authority after source retirement in the same app transaction.
+ * Returns the extraction jobs it fenced.
+ */
+export function fenceUnavailableExtractions(tx: AppTransaction, projectId: string, now: number): string[] {
   const pending = tx.all<{ record_json: string }>("SELECT e.record_json FROM memory_extractions e JOIN jobs j ON j.id = e.job_id WHERE e.project_id = ? AND j.state IN ('queued', 'admitted', 'waiting')", projectId);
+  const fenced: string[] = [];
   for (const row of pending) {
     const extraction = JSON.parse(row.record_json) as MemoryExtraction;
     let current = false;
@@ -33,8 +37,9 @@ export function fenceUnavailableExtractions(tx: AppTransaction, projectId: strin
       eligibleMemorySource(tx, projectId, extraction.source);
       current = extraction.dependencies.every(ref => lookupActiveClaim(tx, projectId, ref).state === "available");
     } catch { /* The retired exact source is no longer eligible. */ }
-    if (!current) invalidatePendingJob(tx, projectId, extraction.jobId, "source_retired", now);
+    if (!current) { invalidatePendingJob(tx, projectId, extraction.jobId, "source_retired", now); fenced.push(extraction.jobId); }
   }
+  return fenced;
 }
 
 /** Validates the complete owner command before global receipt deduplication. */

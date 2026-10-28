@@ -4,6 +4,10 @@
 [Unit]
 Description=Jit personal application
 Documentation=https://github.com/chayapats/jit
+# LogNamespace= orders only after the namespace sockets; ordering after the
+# namespace journald itself makes a host shutdown stop this unit, and log its
+# stop summary, before that journald stops.
+After=systemd-journald@{{LOG_NAMESPACE}}.service
 After=network-online.target
 Wants=network-online.target
 {{UNIT_ORDERING}}StartLimitIntervalSec={{RESTART_WINDOW}}
