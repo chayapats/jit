@@ -10,8 +10,8 @@ import { upgradeFenced } from "../ops/upgrade-fence";
 import { readBinding } from "../telegram/binding";
 import type { DeliverySender, DeliverySendResult } from "./sender";
 import type {
-  CommitDeliveryCommand, DeliveryAttempt, DeliveryCommand, DeliveryIntent, DeliveryPage, DeliveryPayload,
-  DeliveryReceipt, DeliveryReport, DeliveryResendReceipt, DeliveryRetireReceipt, ResendDeliveryCommand, RetireDeliveryCommand,
+  CommitDeliveryCommand, DeliveryAttention, DeliveryAttempt, DeliveryCommand, DeliveryIntent, DeliveryPage, DeliveryPayload,
+  DeliveryReceipt, DeliveryReport, DeliveryResendReceipt, DeliveryResolution, DeliveryRetireReceipt, ResendDeliveryCommand, RetireDeliveryCommand,
 } from "./types";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -42,6 +42,16 @@ interface CommitInput {
   expectedProjectRevision?: number;
   /** Registered send-time currentness guard name; absent for unguarded report/reminder intents. */
   guard?: string;
+  /** delivery.attention_levels/v1 classification stored on the intent (identities only). */
+  attention?: DeliveryAttention;
+}
+
+const attentionItem = /^[a-z][a-z-]{0,23}:[a-z0-9:-]{1,100}$/;
+function validAttention(value: DeliveryAttention): boolean {
+  return !!value && typeof value === "object" && Object.keys(value).sort().join(",") === "class,item,workGroupId" &&
+    (value.class === "needs_owner" || value.class === "informational") &&
+    (value.item === null || (typeof value.item === "string" && attentionItem.test(value.item))) &&
+    (value.workGroupId === null || (typeof value.workGroupId === "string" && /^[a-f0-9-]{36}$/.test(value.workGroupId)));
 }
 
 /**
@@ -170,6 +180,7 @@ export function commitDeliveryIntent(tx: AppTransaction, input: CommitInput, now
   if (input.guard !== undefined && !guardName.test(input.guard)) throw new AppError("invalid_delivery_command");
   const reserved = reservedGuard(input.dedupeKey);
   if (reserved !== null && input.guard !== reserved) throw new AppError("invalid_delivery_command");
+  if (input.attention !== undefined && !validAttention(input.attention)) throw new AppError("invalid_delivery_command");
   const retries = input.maxSafeRetries ?? DEFAULT_SAFE_RETRIES;
   if (!Number.isSafeInteger(retries) || retries < 0 || retries > 5) throw new AppError("invalid_delivery_command");
   const project = tx.get<{ revision: number }>("SELECT revision FROM projects WHERE id = ?", input.projectId);
@@ -202,6 +213,7 @@ export function commitDeliveryIntent(tx: AppTransaction, input: CommitInput, now
     id: crypto.randomUUID(), dedupeKey: input.dedupeKey, projectId: input.projectId, ownerId: "owner", channel: "telegram",
     authorityGeneration: owner.generation, inputGeneration: 1, bindingRevision: bound ? binding.revision : null,
     guard: input.guard ?? null,
+    ...(input.attention ? { attention: { ...input.attention }, resolution: null } : {}),
     payload, provenance: {
       reportId, reportRevision: 1, reportGeneration: 1, sourceId: source.sourceId, sourceRevision: source.revision,
       sourceGeneration: source.generation, committedAt: now, authorityGeneration: owner.generation, inputGeneration: 1,
@@ -288,6 +300,27 @@ export function retireDeliveryIntent(
   intent.stale = true; intent.staleReason = reason; intent.revision += 1; intent.updatedAt = now;
   saveIntent(tx, intent);
   return "marked_stale";
+}
+
+/**
+ * delivery.attention_levels/v1: the item one intent stood for stopped waiting on the owner (the owner answered from
+ * any channel, or the item closed by itself). Unsent work is cancelled with `reason`; an intent whose send already
+ * reached the transport (sent, unknown, failed, or in flight) keeps its outcome and is marked resolved, and a
+ * failed intent loses its safe automatic retry. This never claims a remote message was withdrawn.
+ */
+export function resolveDeliveryIntent(
+  tx: AppTransaction, projectId: string, intentId: string, reason: DeliveryResolution["reason"], now: number,
+): "cancelled" | "resolved" | "unchanged" {
+  if (!Number.isSafeInteger(now) || now < 0) throw new AppError("invalid_commit_time");
+  if (reason !== "owner_answered" && reason !== "no_longer_waiting") throw new AppError("invalid_delivery_command");
+  const intent = readDeliveryIntent(tx, projectId, intentId);
+  if (intent.status === "cancelled" || intent.resolution) return "unchanged";
+  if (cancelUnsent(tx, intent, reason, now)) return "cancelled";
+  intent.resolution = { reason, at: now };
+  if (intent.status === "failed") intent.retryable = false;
+  intent.revision += 1; intent.updatedAt = now;
+  saveIntent(tx, intent);
+  return "resolved";
 }
 
 /**

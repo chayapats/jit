@@ -303,8 +303,8 @@ test("schema 32 installations migrate to the connection tables, and reopen", () 
   old.exec(readFileSync(new URL("./fixtures/foundation-v32.sql", import.meta.url), "utf8"));
   old.close();
   const migrated = new TransactionStore(path); stores.push(migrated);
-  expect(schemaVersion).toBe(34);
-  expect(migrated.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 34 });
+  expect(schemaVersion).toBeGreaterThanOrEqual(34);
+  expect(migrated.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: schemaVersion });
   expect(migrated.read(tx => tx.all<{ name: string }>("SELECT name FROM sqlite_schema WHERE type = 'table' AND name IN ('connections', 'connection_audit') ORDER BY name")).map(row => row.name))
     .toEqual(["connection_audit", "connections"]);
   expect(() => migrated.transaction(tx => tx.run("INSERT INTO connections VALUES (?, 'payment', 'x', NULL, 1, 'empty', 0, NULL, NULL)", rid()))).toThrow();
@@ -312,7 +312,7 @@ test("schema 32 installations migrate to the connection tables, and reopen", () 
   expect(columns.some(name => /secret_value|token|value/.test(name))).toBe(false);
   migrated.close(); stores.splice(stores.indexOf(migrated), 1);
   const reopened = new TransactionStore(path); stores.push(reopened);
-  expect(reopened.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 34 });
+  expect(reopened.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: schemaVersion });
 });
 
 test("every owner-visible connection string exists in Thai and English", () => {

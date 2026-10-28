@@ -8,11 +8,12 @@ import { allowanceCeiling, readDispatchAllowance } from "./allowance";
 import { readTeam } from "./configuration";
 import { readDecisionModel } from "./decisions";
 import { prepareDispatch, projectDiscussion, readDiscussion, readSpecialist } from "./dispatch";
-import { admitTeamReply, readReply, readReplyRecord, replyLimits, type JitReplyView, type ReplyNotAdmitted, type TeamReplyGap, type TeamReplyResult } from "./jit-reply";
+import { admitTeamReply, readReply, readReplyRecord, replyLimits, saveReplyRecord, type JitReplyView, type ReplyNotAdmitted, type TeamReplyGap, type TeamReplyResult } from "./jit-reply";
 import { roleKey, type RoutingSelection, type SelectionRule } from "./routing";
 import type { Discussion, DiscussionOrigin, DiscussionParticipation, SynthesisState, TeamPolicy } from "./types";
 import { promotionFrom } from "../promotion";
 import { blockedForRequest, citableResult, heldGaps, unblockAction } from "./specialist-results";
+import { evaluateWorkGroup, openWorkGroup, workGroupOfReply } from "./work-group";
 
 /** Lifecycle of one dispatch proposal. Only `admitted` (standing allowance) and `accepted` (owner) start work. */
 export type DispatchProposalState = "admitted" | "proposed" | "accepted" | "dismissed" | "empty";
@@ -208,6 +209,8 @@ function startDiscussion(tx: AppTransaction, input: {
   discussion.origin = input.origin;
   if (input.held?.length) discussion.held = input.held.map(role => ({ ...role }));
   if (input.selection) discussion.selection = structuredClone(input.selection);
+  // delivery.attention_levels/v1: the discussion joins the work group its dispatching reply opened.
+  discussion.workGroupId = workGroupOfReply(tx, row.replyId);
   tx.run("UPDATE team_runs SET record_json = ? WHERE id = ?", JSON.stringify(discussion), discussion.id);
   return discussion;
 }
@@ -299,6 +302,12 @@ export function admitJitDispatch(tx: AppTransaction, input: {
   tx.run(`INSERT INTO dispatch_proposals (id, project_id, topic_id, reply_id, revision, state, admission, allowance_revision, discussion_id, team_reply_id, record_json, created_at, updated_at)
     VALUES (?, ?, ?, ?, 1, 'proposed', NULL, ?, NULL, NULL, '{}', ?, ?)`, row.id, row.projectId, row.topicId, row.replyId, row.allowanceRevision, now, now);
   if (!record.roles.length) { row.state = "empty"; return saveRow(tx, row, record); }
+  // delivery.attention_levels/v1: a dispatch with at least one role opens the reply's work group, whether it starts
+  // now under the allowance or waits on the owner's card; an accepted card continues the same group.
+  const workGroupId = openWorkGroup(tx, { projectId: reply.projectId, topicId: reply.topicId, replyId: reply.id, now });
+  const replyRecord = readReplyRecord(tx, reply.projectId, reply.id);
+  replyRecord.workGroupId = workGroupId;
+  saveReplyRecord(tx, replyRecord);
   // app.routing_selection/v1: an invalid or stale selection never broadcasts; the owner decides from the card.
   if (stale) { record.reason = "stale_selection"; return saveRow(tx, row, record); }
   if (droppedAny) { record.reason = "invalid_selection"; return saveRow(tx, row, record); }
@@ -375,6 +384,7 @@ function admitTeam(tx: AppTransaction, row: ProposalRow, discussion: Discussion,
   try {
     const replyId = withSavepoint(tx, "jit_team_admit", () => {
       const admitted = admitTeamReply(tx, { anchor: asAnchor(anchor), question: asAnchor(question), proposalId: row.id, discussionId: discussion.id, results, gaps,
+        workGroupId: discussion.workGroupId ?? workGroupOfReply(tx, row.replyId),
         requestId: input.requestId, config: input.config, queue: input.queue, generation: input.generation, now: input.now });
       if (admitted.reason) throw new TeamHold(admitted.reason);
       return admitted.id;
@@ -436,11 +446,15 @@ export function executeDispatchCommand(tx: AppTransaction, command: DispatchComm
     if (projectDiscussion(tx, discussion).participations.some(item => activity(tx, row.projectId, item) === "live")) throw new AppError("team_reply_not_ready", 409);
     const outcome = admitTeam(tx, row, discussion, { requestId: command.requestId, config, queue, generation, now });
     if (outcome === "empty") throw new AppError("team_reply_not_ready", 409);
+    // delivery.attention_levels/v1: the owner answered; a stall this resolves closes in this transaction.
+    evaluateWorkGroup(tx, workGroupOfReply(tx, row.replyId), config.team, now, "owner_answered");
     // A hold is recorded on the card (with its next action) and the owner may answer again later.
     return { proposal: readCard(tx, readProposalRow(tx, row.projectId, row.id), config.team) };
   }
   row.revision += 1; row.updatedAt = now;
   saveRow(tx, row, record);
+  // delivery.attention_levels/v1: accepting or dismissing the card resolves its notice in this transaction.
+  evaluateWorkGroup(tx, workGroupOfReply(tx, row.replyId), config.team, now, "owner_answered");
   return { proposal: readCard(tx, readProposalRow(tx, row.projectId, row.id), config.team) };
 }
 

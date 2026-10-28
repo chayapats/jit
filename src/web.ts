@@ -6,7 +6,7 @@ import { workspacePage, projectPage, conversationPage, sourcePage, jobsPage, tea
 import type { ExtractMemoryCommand } from "./memory/types";
 import type { CorrectMemoryCommand } from "./memory/types";
 import type { ForgetMemoryCommand } from "./memory/types";
-import type { CommitDeliveryCommand, ResendDeliveryCommand } from "./delivery";
+import type { CommitDeliveryCommand, ResendDeliveryCommand, SetAttentionCommand } from "./delivery";
 import type { EnqueueJobCommand, JobLimits, ResumeJobCommand, StopJobCommand } from "./jobs/types";
 import type { ScheduleCommand, ScheduleRecurrence } from "./jobs/schedules";
 import type { DecisionCommand, TeamCommand, RoleRoute } from "./team/types";
@@ -703,7 +703,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
           : step === "connect" || step === "check" ? "/setup?step=connect#connection" : "/setup";
         return respond(null, 303, { Location: location });
       }
-      if (url.pathname === "/settings" && request.method === "GET") return page(() => settingsPage(app.preferences(auth.actor), nav(), auth.csrf, app.persona(auth.actor), app.localApi(auth.actor)));
+      if (url.pathname === "/settings" && request.method === "GET") return page(() => settingsPage(app.preferences(auth.actor), nav(), auth.csrf, app.persona(auth.actor), app.localApi(auth.actor), app.attentionLevels(auth.actor)));
       if (url.pathname === "/settings/feed" && request.method === "GET") return page(() => settingsFeedPage(app.scheduleFeedSettings(auth.actor), nav(), auth.csrf));
       if (url.pathname === "/api/settings/feed" && request.method === "GET") return json(app.scheduleFeedSettings(auth.actor));
       // app.schedule_feed/v1 owner commands. New URL answers with the page (or JSON) that shows the minted URL once.
@@ -763,6 +763,17 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const command = { kind: "local_api.set", requestId: body.requestId, projectId: null, expectedRevision: revision, payload: { enabled } } as SetLocalApiCommand;
         const receipt = app.execute(auth.actor, command);
         return api ? json(receipt) : respond(null, 303, { Location: "/settings#local-api" });
+      }
+      if (["/settings/attention", "/api/settings/attention"].includes(url.pathname)) {
+        // delivery.attention_levels/v1: one form per channel; each posts the revision of that channel's row.
+        if (request.method === "GET") return api ? json(app.attentionLevels(auth.actor)) : respond(null, 303, { Location: "/settings#attention" });
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "channel", "level"].includes(key))) throw new AppError("invalid_body");
+        const revision = typeof body.expectedRevision === "string" && /^\d{1,15}$/.test(body.expectedRevision) ? Number(body.expectedRevision) : body.expectedRevision;
+        const command = { kind: "attention.set", requestId: body.requestId, projectId: null, expectedRevision: revision,
+          payload: { channel: body.channel, level: body.level } } as SetAttentionCommand;
+        const receipt = app.execute(auth.actor, command);
+        return api ? json(receipt) : respond(null, 303, { Location: "/settings#attention" });
       }
       if (["/settings/preferences", "/api/settings/preferences"].includes(url.pathname)) {
         if (request.method === "GET") return api ? json(app.preferences(auth.actor)) : respond(null, 303, { Location: "/settings#appearance" });

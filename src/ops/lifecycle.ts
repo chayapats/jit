@@ -21,6 +21,7 @@ import { backupNativePortFor } from "./schway-backup";
 import { ledgerCheckpointPathFor, syncLedgerCheckpoint } from "./lifecycle-ledger";
 import { openReadOnlyStore, unavailableReadOnlyStore } from "./readonly-store";
 import { ServiceChannels, channelReadiness, type ChannelTransportFactory } from "./service-channels";
+import { tickWorkGroups } from "../team/work-group";
 import { ManagedService } from "./upgrade-service";
 import { upgradeFenced } from "./upgrade-fence";
 import { validateArtifact, type BuildManifest } from "../../ops/package/bun-build";
@@ -429,6 +430,10 @@ export function serveFullApp(handle: FullAppHandle, options: { drainTimeoutMs?: 
     idleTimeout: 15, fetch: createWebHandler(handle.app), error: () => new Response("Request failed", { status: 503 }) });
   let lastPrTick = 0;
   let sweeping = false;
+  // delivery.attention_levels/v1: recompute open work groups from committed state once at start (restart safety)
+  // and on every tick (route waits, deadlines and interrupted work happen inside the queue alone).
+  const groups = () => { try { tickWorkGroups(handle.store, config.team, Date.now()); } catch { /* Storage failure: the next tick retries. */ } };
+  groups();
   const timer = setInterval(() => {
     const queue = handle.service.queue;
     if (queue) {
@@ -447,6 +452,7 @@ export function serveFullApp(handle: FullAppHandle, options: { drainTimeoutMs?: 
       sweeping = true;
       void handle.boxes.sweep(Date.now()).catch(() => undefined).finally(() => { sweeping = false; });
     }
+    groups();
     handle.channels?.tick();
   }, options.intervalMs ?? 100);
   timer.unref();

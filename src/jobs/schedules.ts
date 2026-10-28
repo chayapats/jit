@@ -3,7 +3,7 @@ import { readTopic } from "../conversation";
 import { AppError } from "../errors";
 import { lookupSource, requireId, requireText, commitOutputSource, type SourceReference } from "../sources";
 import type { AppTransaction, TransactionStore } from "../store";
-import { cancelScheduleIntents, commitDeliveryIntent } from "../delivery";
+import { cancelScheduleIntents, commitAttentionIntent } from "../delivery";
 import { invalidatePendingJob } from "./queue";
 import { jobData, validateJobLimits, type JobQueue } from "./queue";
 import type { JobLimits, WorkDefinition, WorkOutcome } from "./types";
@@ -576,8 +576,10 @@ export function scheduleReminderWork(store: TransactionStore, config: AppConfig,
         const found = currentOccurrence(tx, job, input);
         if (!found) throw new AppError("invalid_job_input");
         const at = now();
-        const receipt = commitDeliveryIntent(tx, { projectId: job.projectId, kind: "reminder", text,
-          dedupeKey: dedupeKey(input.scheduleId, input.scheduleRevision, input.scheduledInstant), maxBytes: config.messageBytes }, at);
+        // delivery.attention_levels/v1: a reminder is the owner's own text at the owner's own time, so it always notifies.
+        const receipt = commitAttentionIntent(tx, { projectId: job.projectId, kind: "reminder", text,
+          dedupeKey: dedupeKey(input.scheduleId, input.scheduleRevision, input.scheduledInstant), maxBytes: config.messageBytes,
+          attention: { class: "needs_owner", item: null, workGroupId: null } }, at)!;
         found.occurrence.deliveryIntentId = receipt.intent.id;
         found.occurrence.state = "complete";
         saveOccurrence(tx, found.occurrence);
@@ -677,9 +679,11 @@ export function scheduleSummaryWork(store: TransactionStore, config: AppConfig, 
           const found = currentOccurrence(tx, job, input);
           if (!found) throw new AppError("invalid_job_input");
           if (found.occurrence.state !== "queued") throw new AppError("invalid_job_input");
-          const delivery = commitDeliveryIntent(tx, { projectId: job.projectId, kind: "report",
+          // delivery.attention_levels/v1: a failure waits on the owner, so every level notifies it.
+          const delivery = commitAttentionIntent(tx, { projectId: job.projectId, kind: "report",
             text: clip(summaryFailureText(found.schedule, reason)),
-            dedupeKey: dedupeKey(input.scheduleId, input.scheduleRevision, input.scheduledInstant), maxBytes: config.messageBytes }, now());
+            dedupeKey: dedupeKey(input.scheduleId, input.scheduleRevision, input.scheduledInstant), maxBytes: config.messageBytes,
+            attention: { class: "needs_owner", item: null, workGroupId: null } }, now())!;
           found.occurrence.deliveryIntentId = delivery.intent.id;
           found.occurrence.state = "failed";
           found.occurrence.outcome = { kind: "failed", reason };
@@ -724,15 +728,17 @@ export function scheduleSummaryWork(store: TransactionStore, config: AppConfig, 
         if (request.manifest.context) {
           tx.run("INSERT OR IGNORE INTO memory_derived_sources VALUES (?, ?, ?, ?)", ref.sourceId, job.projectId, request.manifest.context.recordId, depth);
         }
-        const delivery = commitDeliveryIntent(tx, { projectId: job.projectId, kind: "report", text: clip(text),
-          dedupeKey: dedupeKey(input.scheduleId, input.scheduleRevision, input.scheduledInstant), maxBytes: config.messageBytes }, now());
-        found.occurrence.deliveryIntentId = delivery.intent.id;
+        // delivery.attention_levels/v1: a plain summary is informational; under `needs-me` it is saved without an intent.
+        const delivery = commitAttentionIntent(tx, { projectId: job.projectId, kind: "report", text: clip(text),
+          dedupeKey: dedupeKey(input.scheduleId, input.scheduleRevision, input.scheduledInstant), maxBytes: config.messageBytes,
+          attention: { class: "informational", item: null, workGroupId: null } }, now());
+        found.occurrence.deliveryIntentId = delivery?.intent.id ?? null;
         found.occurrence.outputSource = ref;
         found.occurrence.state = "complete";
         found.occurrence.outcome = { kind: "report", reason: null };
         saveOccurrence(tx, found.occurrence);
         found.schedule.lastResult = { instant: found.occurrence.scheduledInstant, occurrenceId: found.occurrence.id, jobId: job.id,
-          state: "succeeded", reason: "complete", deliveryIntentId: delivery.intent.id, outputSource: ref, completedAt: now() };
+          state: "succeeded", reason: "complete", deliveryIntentId: delivery?.intent.id ?? null, outputSource: ref, completedAt: now() };
         found.schedule.updatedAt = Math.max(found.schedule.updatedAt, now());
         saveSchedule(tx, found.schedule);
       });

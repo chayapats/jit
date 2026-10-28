@@ -25,6 +25,23 @@ export interface DeliveryProvenance {
   inputGeneration: number;
 }
 
+/**
+ * delivery.attention_levels/v1 classification. `needs_owner` is an item that waits on the owner (a question, a
+ * proposal card, a decision awaiting acceptance, a failure or a blocked result); everything else is `informational`.
+ */
+export type AttentionClass = "needs_owner" | "informational";
+
+/** Classification and identities a producer stores on its intent; never text. */
+export interface DeliveryAttention {
+  class: AttentionClass;
+  /** Owner-waiting item key inside its work group (for example `proposal:<id>`), or null for a one-off notice. */
+  item: string | null;
+  workGroupId: string | null;
+}
+
+/** Why a sent intent no longer stands for an open item. */
+export interface DeliveryResolution { reason: "owner_answered" | "no_longer_waiting"; at: number }
+
 /** Local logical notification. `sent` is a known remote response, never a claim that the report itself was delivered. */
 export type DeliveryStatus = "waiting" | "queued" | "claimed" | "sent" | "failed" | "unknown" | "cancelled";
 
@@ -51,6 +68,16 @@ export interface DeliveryIntent {
    * is not registered in this process the intent waits instead of sending (fail closed).
    */
   guard?: string | null;
+  /**
+   * delivery.attention_levels/v1: how the producer classified this notice and the owner-waiting item it stands for.
+   * Absent on intents committed before REL04.
+   */
+  attention?: DeliveryAttention | null;
+  /**
+   * delivery.attention_levels/v1: set when the item this intent stood for stopped waiting on the owner after the
+   * intent had already been sent (or its send was in flight). It never claims the remote message was withdrawn.
+   */
+  resolution?: DeliveryResolution | null;
   payload: DeliveryPayload;
   provenance: DeliveryProvenance;
   status: DeliveryStatus;

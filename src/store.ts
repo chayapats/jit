@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { commitDecisionMemorySource, retireDecisionMemorySource } from "./memory/decision-sources";
 
 /** Current application schema revision. Service packaging pins and checks this value. */
-export const schemaVersion = 34;
+export const schemaVersion = 35;
 
 /**
  * Installation-scoped state that never round-trips through backup images and
@@ -74,7 +74,7 @@ export class TransactionStore {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
           if (current === schemaVersion) return;
-          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33].includes(current)) throw new Error("Unsupported migration source");
+          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34].includes(current)) throw new Error("Unsupported migration source");
           if (existing) {
             const snapshot = `${path}.pre-v${current}-${crypto.randomUUID()}.sqlite`;
             const fd = openSync(snapshot, "wx", 0o600);
@@ -1003,6 +1003,31 @@ export class TransactionStore {
               created_at INTEGER NOT NULL
             );
             PRAGMA user_version = 34;
+          `);
+          if (current < 35) this.#db.exec(`
+            -- delivery.attention_levels/v1 (REL04, ADR 0032, schema 35): one row per channel; no row means 'all' at revision 0.
+            -- Only the owner command attention.set writes it. The level filters which intents are created, never
+            -- reports, decisions or history, and never cancels existing intents.
+            CREATE TABLE IF NOT EXISTS attention_levels (
+              channel TEXT PRIMARY KEY CHECK (channel IN ('telegram', 'web')),
+              level TEXT NOT NULL CHECK (level IN ('all', 'needs-me')),
+              revision INTEGER NOT NULL CHECK (revision > 0),
+              updated_at INTEGER NOT NULL
+            );
+            -- One work group per Jit reply that admitted a dispatch: identities and evaluated notice keys only, never
+            -- text. The group id is also carried as workGroupId in the reply and discussion record_json.
+            CREATE TABLE IF NOT EXISTS work_groups (
+              id TEXT PRIMARY KEY,
+              project_id TEXT NOT NULL REFERENCES projects(id),
+              topic_id TEXT NOT NULL REFERENCES topics(id),
+              reply_id TEXT NOT NULL UNIQUE REFERENCES jit_replies(id),
+              state TEXT NOT NULL CHECK (state IN ('open', 'closed')),
+              record_json TEXT NOT NULL,
+              created_at INTEGER NOT NULL,
+              updated_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS work_groups_open ON work_groups(state, created_at);
+            PRAGMA user_version = 35;
           `);
         }).immediate();
         this.#db.exec("PRAGMA foreign_keys = ON;");
