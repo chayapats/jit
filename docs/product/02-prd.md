@@ -204,6 +204,7 @@ MVP ไม่มี model-driven repository mutation หรือ shell executio
 - ไม่ autoload extensions/packages/skills หรือ AGENTS.md จาก PR snapshot เป็น trusted instruction
 - provider-hosted web search/lookup ปิดใน MVP; ไม่ใช้ความสามารถ read-only ของ provider เป็นช่องส่ง context ไป search service ที่ยังไม่ได้อนุญาต
 - เอกสารที่อ้างว่าเป็นคำสั่ง owner ไม่เปลี่ยน policy จนผ่านช่องทางที่ authorize จริง
+- model หรือ agent จำกัดสิทธิ์ได้อย่างเดียว ขยายไม่ได้; role หรือ run ใหม่ไม่เกินขอบเขตของผู้สร้าง; มีเพียง owner ที่ขยายสิทธิ์ได้ (S10-D02)
 
 ### FR-18 — Inspect, stop and export
 
@@ -275,6 +276,76 @@ MVP ไม่มี model-driven repository mutation หรือ shell executio
 - ภาษาที่เลือกใน setup ใช้กับ UI และภาษาที่ Jit พูด และแยกตั้งค่าได้
 - ไม่มีป้ายที่ขาดคำแปลใน release; test ตรวจ key ครบทั้งสองภาษา
 
+### FR-26 — Quiet and failed scheduled runs
+
+ที่มา S10-D01; MUST — [S10](../specs/S10-reliability-and-owner-integrations.md)
+
+- run ที่เกิดจาก schedule ไม่มีคนรอคำตอบ จึงจบเป็น `no_update` ได้ผ่าน typed outcome; `no_update` ไม่สร้าง delivery intent, ไม่นับเป็น unread และไม่เปลี่ยน preview แต่ยังอยู่ในประวัติ run
+- run ที่ทำงานไม่สำเร็จรายงาน `failed(reason)` ผ่าน typed outcome; failed ไม่มีทางเป็น quiet และแจ้งเตือนเสมอ
+- การตัดสินว่า quiet ใช้ typed outcome ไม่ใช่การจับคำในข้อความ; run ที่ owner สั่งเองหรือ Test run ไม่มีทางเป็น quiet
+
+### FR-27 — Deterministic-first routing with visible selection
+
+ที่มา S10-D01; MUST
+
+- ใช้กฎตายตัวก่อนเรียก model: ผู้รับที่ owner ระบุชื่อ, การตอบต่อใน task ที่ผูกอยู่, การถามต่อของ task เดียวที่เปิดอยู่ และโครงการที่มี specialist ที่พร้อมทำงานเพียงคนเดียว
+- กรณีอื่นให้ Jit เลือกด้วย run ที่ไม่มี tool และตอบตาม result schema; ผลที่ไม่ถูกต้องหรือ stale ทำให้ broadcast ไม่ได้
+- ทุกการเลือกที่ใช้ model แสดงบรรทัดเหตุผลให้ owner เห็นและแก้ได้; การเลือกด้วยกฎตายตัวไม่เพิ่มข้อความ
+
+### FR-28 — Attention levels and notify-once
+
+ที่มา S10-D01; MUST
+
+- owner ตั้งระดับการแจ้งเตือนต่อช่องทางได้: `all` หรือ `needs-me` (เฉพาะคำถาม, การยืนยัน, decision ที่รอ owner และความล้มเหลว)
+- งานหนึ่งชุด (Jit reply พร้อม discussion ของมัน) แจ้งเตือนครั้งเดียวเมื่อไม่มีงานเปิดค้าง; การแจ้งที่รอ owner ปิดเองเมื่อ owner ตอบจากช่องทางอื่น
+- ระดับการแจ้งเตือนไม่ระงับ report, decision หรือประวัติ; เปลี่ยนแค่ว่าจะส่งอะไรออกไป
+
+### FR-29 — Specialist result contract
+
+ที่มา S10-D01; MUST
+
+- ผลของ specialist ประกอบด้วย `Status` (done/partial/blocked/failed), `Result`, `Evidence` (อ้าง source หรือระบุว่าไม่มีหลักฐาน) และเมื่อ blocked ต้องมี `Unblock` ที่ระบุ action เดียว
+- ผลที่ผิดรูปแบบถือเป็น incomplete ไม่ใช่สำเร็จ; คำว่า "เสร็จแล้ว" ในข้อความไม่ใช่หลักฐาน
+- เมื่อ specialist รายงานว่างานติด Jit ไม่สั่งงานเดิมซ้ำ แต่ส่งเรื่องที่ติดกับวิธีปลดล็อกให้ owner
+
+### FR-30 — Communication policy
+
+ที่มา S10-D01; SHOULD
+
+- trusted instructions ของ Jit และ specialists มี communication policy แบบ versioned: ไม่บรรยายขั้นตอนเตรียมตัว, อัปเดตเฉพาะผลที่มีความหมาย, ไม่ส่ง ack ไปมาจนวนลูป และคำตอบที่มาจาก specialist ระบุชื่อคนนั้นก่อน
+- policy อยู่ในโค้ดและผ่าน review; model, source หรือ memory แก้ไม่ได้
+
+### FR-31 — Self-contained context packet
+
+ที่มา S10-D01; MUST
+
+- ทุก run ได้ packet ที่ครบในตัว: purpose, responsibilities, คำขอปัจจุบัน, owner decisions ที่ยังมีผลของ topic (ปักไว้ ไม่ถูกตัดก่อน), ข้อความล่าสุด และ summary แบบ versioned พร้อม source IDs
+- compaction, reopen หรือการเปลี่ยน provider ไม่ทำให้ owner decision ที่ยังมีผลหลุดจาก packet; ถ้า budget ไม่พอให้ตัดส่วนอื่นก่อนและแจ้งสิ่งที่ตัดไป
+
+### FR-32 — Owner local API and CLI
+
+ที่มา S10-D01; MUST
+
+- owner เปิด local API ได้ต่อ installation (ปิดเป็นค่าเริ่มต้น); รับเฉพาะ loopback และใช้ bearer token จากไฟล์ที่เจ้าของ process อ่านได้คนเดียว
+- `jit` CLI ส่งข้อความเข้า topic, รอคำตอบ (`--wait`), อ่านสถานะ และใช้ retry key ที่คงที่ได้ receipt เดิม; มี exit codes ที่ระบุความหมาย
+- API ทำได้แค่สิ่งที่ owner ทำได้ผ่าน command เดิม และไม่ขยายสิทธิ์ใดๆ; request ที่มี `Origin` หรือ `Host` แปลกปลอมถูกปฏิเสธก่อนตรวจ token
+
+### FR-33 — Signed webhook triggers
+
+ที่มา S10-D01; SHOULD
+
+- owner สร้าง webhook trigger ต่อ PR monitor ได้ ใช้ HMAC secret ที่เก็บแบบ redacted
+- webhook ที่ลงลายเซ็นถูกต้องทำได้แค่ปลุก poll เดิมให้เร็วขึ้น; payload ไม่ใช่ input ของ review และไม่ถูกส่งเป็นคำสั่งถึง model
+- event ซ้ำถูก dedupe ด้วย delivery ID; ลายเซ็นผิด, request ที่เกินขนาด หรือ rate เกินถูกปฏิเสธโดยไม่เปลี่ยน state
+
+### FR-34 — Read-only schedule feed
+
+ที่มา S10-D01; MAY
+
+- owner สร้าง `.ics` feed URL แบบอ่านอย่างเดียวของ schedules ได้ แสดง occurrence ล่วงหน้า 30 วัน คำนวณจาก schedule logic ตัวเดียวกับที่สั่ง run
+- token อยู่ใน path, เปลี่ยนหรือปิดได้ และไม่อยู่ใน log; token ผิดได้ 404
+- ชื่อ event มีแค่ชนิดของ schedule และชื่อโครงการเป็นค่าเริ่มต้น; การใส่ข้อความ purpose ลงไปด้วยเป็นตัวเลือกที่ owner เปิดเอง
+
 ## Non-functional requirements
 
 | ID | ข้อกำหนดและการตรวจรับ |
@@ -291,6 +362,7 @@ MVP ไม่มี model-driven repository mutation หรือ shell executio
 | NFR-10 | deterministic tests ใช้ scripted model, protocol fixtures และ fake clock ไม่ใช้ paid inference; live validation opt-in แยกจาก release tests |
 | NFR-11 | ไทย/อังกฤษและ Unicode content ถูกเก็บ ค้น และแสดงไม่เสีย; UI สถานะมีข้อความไม่พึ่งสีอย่างเดียว; ป้าย UI รองรับไทยและอังกฤษตาม FR-25 (S09) |
 | NFR-12 | migrations/version compatibility มี backup และ recovery path; Jit ไม่แก้หรือ rewrite Schway session format เอง |
+| NFR-13 | UI ใช้ค่าสี ขนาดตัวอักษร radius และ duration จาก token เท่านั้น; CI ล้มเมื่อพบค่า literal นอกไฟล์ token ([S10](../specs/S10-reliability-and-owner-integrations.md)) |
 
 ## Quality gates และสิ่งที่ยังไม่กำหนด
 

@@ -56,6 +56,38 @@ _Avoid_: Moving a topic, relabeling history.
 The first-run flow that connects a model route and records the persona before the owner starts chatting.
 _Avoid_: Project creation wizard, team setup.
 
+**Quiet run**:
+A scheduled run whose typed outcome is `no_update`: it keeps its run record but creates no notification.
+_Avoid_: Hidden failure, text marker in prose.
+
+**Attention level**:
+The owner's per-channel choice of what creates notifications: `all`, or `needs-me` for items that wait on the owner.
+_Avoid_: Mute that hides reports or decisions.
+
+**Work group**:
+A Jit reply together with the discussion it admitted, notified once when no work in it is still open.
+_Avoid_: One notification per specialist event.
+
+**Result contract**:
+The required shape of a specialist result: Status, Result, Evidence, and an Unblock action when blocked.
+_Avoid_: Free-form "done" text treated as success.
+
+**Context packet**:
+The self-contained, labelled context a run receives, with the owner's live decisions pinned so compaction or a provider change cannot drop them.
+_Avoid_: Native session history as the only carrier of decisions.
+
+**Local API**:
+An owner-enabled loopback endpoint and `jit` CLI that map onto existing owner commands, for scripts on the host.
+_Avoid_: Agent tool, remote API, shell access.
+
+**Webhook trigger**:
+A signed request that only wakes an existing PR poll early; its payload is data and never review input.
+_Avoid_: Event-driven review from untrusted payload.
+
+**Restrict-only authority**:
+A model or agent may narrow access but never widen it; only the owner widens access.
+_Avoid_: Model-granted permission, inherited escalation.
+
 **Task**:
 A proposed or owner-accepted obligation within a project, with an explicit status and completion rule.
 _Avoid_: Agent run, suggestion treated as a commitment.
