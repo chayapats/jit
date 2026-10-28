@@ -11,12 +11,15 @@ fails closed before any native session exists.
 Pinned artifact (verified, deterministic):
 
 - npm `schway@1.0.0-rc.2`, git revision
-  `128b77aa70c3774154969fd0b617be0480520c5f` (Schway main, #416+#418+#420+#424+#426 merged).
-- Vendored tarball `vendor/schway-1.0.0-rc.2-128b77a.tgz`,
-  SHA-256 `8ada843fefbecd906d5f76b8fb3f0665f8f1275ef7bc04bdabacf0a0ace84f65`.
-- Behavior set `schway.host.release/v1` (composes `base`, `context-policy`,
+  `ac6355702d42a44deabb91a675081f08113cb1a9` (Schway main, #416+#418+#420+#424+#426+#430 merged; adds schway.host.core-tools/v1 and composes schway.host.release/v2).
+- Vendored tarball `vendor/schway-1.0.0-rc.2-ac63557.tgz`,
+  SHA-256 `6e95fb181ba3ba3dae5f7fc4d186e57acf899b9e8824b8b7a72b63b743f914e3`.
+- Behavior set `schway.host.release/v2` (composes `base`, `context-policy`,
   `tool-policy`, `durable-sessions`, `auth-routes`, `run-control`,
-  `managed-session-data`, `session-snapshot`).
+  `managed-session-data`, `session-snapshot` and `core-tools`). `release/v2` is
+  `release/v1` plus `schway.host.core-tools/v1`; every `release/v1` behavior is
+  unchanged. EXE03 (#127) re-pinned to this artifact for
+  `coreToolDefinitions` over a host `ExecutionBackend`.
 - Upgrade path: replace the vendored tarball with `schway@^1.0.0-rc.3` once
   published under repository authorization; the runtime `releaseContract`
   gate rejects any other behavior set.
@@ -24,11 +27,11 @@ Pinned artifact (verified, deterministic):
 ## Exact public surface
 
 ```ts
-SCHWAY_RELEASE_CONTRACT: "schway.host.release/v1";
+SCHWAY_RELEASE_CONTRACT: "schway.host.release/v2";
 SCHWAY_SNAPSHOT_CONTRACT: "schway.host.session-snapshot/v1";
-SCHWAY_PINNED_REVISION: "128b77a...";
+SCHWAY_PINNED_REVISION: "ac63557...";
 SCHWAY_PINNED_VERSION: "1.0.0-rc.2";
-SCHWAY_PINNED_TARBALL_SHA256: "8ada843f...";
+SCHWAY_PINNED_TARBALL_SHA256: "6e95fb18...";
 SCHWAY_NEXT_ACTION: "pin_supported_schway_host_release";
 SCHWAY_SNAPSHOT_NEXT_ACTION: "await_supported_schway_snapshot_api";
 SCHWAY_SYSTEM_PROMPT: string;
@@ -65,7 +68,7 @@ and fixture-free protocol transport.
   port rejects them. Oversized fixed evidence beyond host bounds throws
   `invalid_run_request` instead of silent truncation.
 - Every dispatch verifies `hostCapabilities().releaseContract` and the
-  runtime's own capabilities against `schway.host.release/v1`. A mismatch
+  runtime's own capabilities against `schway.host.release/v2`. A mismatch
   throws before any native session exists; serve refuses to start in
   `schway` mode when `verifySchwayBridge` reports a blocked gate.
 - Service-owned host directories (`<store-dir>/.jit-host/{workspace,home,sessions}`,

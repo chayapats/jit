@@ -5,7 +5,7 @@
     "": {
       "name": "jit",
       "dependencies": {
-        "schway": "file:vendor/schway-1.0.0-rc.2-128b77a.tgz",
+        "schway": "file:vendor/schway-1.0.0-rc.2-ac63557.tgz",
       },
       "devDependencies": {
         "@types/bun": "1.4.3",
@@ -106,7 +106,7 @@
 
     "require-from-string": ["require-from-string@2.0.2", "", {}, "sha512-Xf0nWe6RseziFMu+Ap9biiUbmplq6S9/p+7w7YXP/JBHhrUDDUhwa+vANyubuqfZWTveU//DYVGsDG7RKL/vEw=="],
 
-    "schway": ["schway@vendor/schway-1.0.0-rc.2-128b77a.tgz", { "dependencies": { "@opentui/core": "^0.5.11", "@sinclair/typebox": "^0.34.52", "@types/semver": "^7.8.0", "ajv": "^8.20.0", "openai": "^7.20.0", "semver": "^7.8.5" }, "bin": { "schway": "./bin/schway" } }, "sha512-0JlIcLKJR6V+Ftsp8r9XC9/JCztNayUdzKGsYhi6X6vbjUScxVzVw4Ojh6TJF2yQjnR9y5pYyLpeGm7s1umBgA=="],
+    "schway": ["schway@vendor/schway-1.0.0-rc.2-ac63557.tgz", { "dependencies": { "@opentui/core": "^0.5.11", "@sinclair/typebox": "^0.34.52", "@types/semver": "^7.8.0", "ajv": "^8.20.0", "openai": "^7.20.0", "semver": "^7.8.5" }, "bin": { "schway": "./bin/schway" } }, "sha512-EnXtqbgM17aZWnaZXfaxR0Y+FhicwiwW2Ed/57c3v76ug7s3N9VZeTnL9NAiqUm9bFy7U/iIJIUqVKpSz4eUtQ=="],
 
     "semver": ["semver@7.8.5", "", { "bin": { "semver": "bin/semver.js" } }, "sha512-Y7/KDsb8LjooZpwaqGyulO6DQlksgCncchHGk+sZIY4SBvUocMBEFH5Ur1fI4dV+Jvl0w6cjvucaIi40puRioA=="],
 

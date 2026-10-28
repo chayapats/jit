@@ -36,7 +36,7 @@ import type { ApplicationRunEvent, ApplicationRunOutcome, ApplicationRunRequest,
  * Production integration imports only the pinned supported Schway public host
  * artifact (`schway/host` at `SCHWAY_PINNED_REVISION`, tarball
  * `SCHWAY_PINNED_TARBALL_SHA256`). Every dispatch first verifies
- * `schway.host.release/v1` through `hostCapabilities()` and the runtime's own
+ * `schway.host.release/v2` through `hostCapabilities()` and the runtime's own
  * capabilities; a mismatch fails closed before any native session exists.
  *
  * One native Schway session backs one application run. The durable
@@ -51,11 +51,11 @@ export const SCHWAY_RELEASE_CONTRACT = RELEASE_CONTRACT;
 /** Supported native snapshot behavior set for operations reads. */
 export const SCHWAY_SNAPSHOT_CONTRACT = SNAPSHOT_CONTRACT;
 /** Exact pinned Schway git revision backing the vendored artifact. */
-export const SCHWAY_PINNED_REVISION = "128b77aa70c3774154969fd0b617be0480520c5f";
+export const SCHWAY_PINNED_REVISION = "ac6355702d42a44deabb91a675081f08113cb1a9";
 /** Exact pinned Schway npm version carried by the vendored tarball. */
 export const SCHWAY_PINNED_VERSION = "1.0.0-rc.2";
-/** SHA-256 of `vendor/schway-1.0.0-rc.2-128b77a.tgz`, the tested artifact. */
-export const SCHWAY_PINNED_TARBALL_SHA256 = "8ada843fefbecd906d5f76b8fb3f0665f8f1275ef7bc04bdabacf0a0ace84f65";
+/** SHA-256 of `vendor/schway-1.0.0-rc.2-ac63557.tgz`, the tested artifact. */
+export const SCHWAY_PINNED_TARBALL_SHA256 = "6e95fb181ba3ba3dae5f7fc4d186e57acf899b9e8824b8b7a72b63b743f914e3";
 /** Owner next action when the pinned release gate does not hold. */
 export const SCHWAY_NEXT_ACTION = "pin_supported_schway_host_release";
 /** Owner next action when no managed native session exists for a snapshot read. */

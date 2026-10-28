@@ -336,7 +336,7 @@ test("drill record carries tested revisions; malformed revisions are rejected", 
   expect(record.versions.schema).toBe(schemaVersion);
   expect(record.versions.app).toMatch(/^\d+\.\d+\.\d+/);
   expect([record.versions.engine.release, record.versions.engine.bridge, record.versions.engine.snapshot])
-    .toEqual(["schway.host.release/v1", "jit.schway.bridge/v1", "schway.host.session-snapshot/v1"]);
+    .toEqual(["schway.host.release/v2", "jit.schway.bridge/v1", "schway.host.session-snapshot/v1"]);
   expect(record.versions.git === null || /^[a-f0-9]{40}$/.test(record.versions.git)).toBe(true);
   expect(record.versions.contentHash).toMatch(/^[a-f0-9]{64}$/);
   expect(contentHash()).toBe(record.versions.contentHash);
