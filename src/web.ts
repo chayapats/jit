@@ -135,9 +135,10 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         throw new AppError("origin_rejected", 403);
       }
       if (Buffer.byteLength(url.pathname + url.search) > config.queryBytes) throw new AppError("request_too_large", 414);
-      if (request.method !== "GET" && request.method !== "POST") throw new AppError("method_not_allowed", 405);
-      // app.schedule_feed/v1: the feed is answered before any session, cookie or Origin handling.
+      // app.schedule_feed/v1: the feed is answered before any method, session, cookie or Origin handling; every
+      // method but GET gets the same bodiless 404 as a wrong token.
       if (url.pathname.startsWith("/feeds/")) return scheduleFeed(request, url.pathname);
+      if (request.method !== "GET" && request.method !== "POST") throw new AppError("method_not_allowed", 405);
       if (request.method === "POST" && (request.headers.get("origin") !== config.origin ||
           request.headers.get("sec-fetch-site") === "cross-site")) throw new AppError("origin_rejected", 403);
       if (request.method === "GET" && url.pathname.startsWith("/assets/")) {

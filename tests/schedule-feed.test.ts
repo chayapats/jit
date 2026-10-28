@@ -8,7 +8,7 @@ import { dictionaries } from "../src/i18n";
 import { TransactionStore, installationScopedTables } from "../src/store";
 import { contentSecurityPolicy, createWebHandler } from "../src/web";
 import { JobQueue } from "../src/jobs/queue";
-import { nextScheduledInstant, scheduleReminderWork, scheduleSummaryWork, tickSchedules, type JobSchedule, type ScheduleCommand } from "../src/jobs/schedules";
+import { dueRange, nextScheduledInstant, scheduleReminderWork, scheduleSummaryWork, tickSchedules, type JobSchedule, type ScheduleCommand } from "../src/jobs/schedules";
 import { backupImageTables } from "../src/ops/backup";
 import { escapeIcsText, feedLimits, feedPathToken, foldIcsLine, scheduleFeedContract, type FeedReceipt } from "../src/schedule-feed";
 import { settingsSections } from "../src/web-settings";
@@ -135,10 +135,13 @@ function parseIcs(body: string): { calendar: Record<string, string>; events: Par
   expect(calendar.VERSION).toBe("2.0");
   return { calendar, events };
 }
-/** The engine's own sequence: `nextScheduledInstant` from `now`, bounded by the 30-day horizon and the budget. */
+/**
+ * The engine's own sequence: `nextScheduledInstant` from `now`, bounded by the 30-day horizon and the budget the
+ * engine will spend on future instants (an already-due, unticked instant spends one first).
+ */
 function engineSequence(s: JobSchedule, now: number): number[] {
   const out: number[] = [];
-  for (let after = now, n = 0; n < s.occurrencesRemaining; n++) {
+  for (let after = now, n = 0; n < s.occurrencesRemaining - (dueRange(s, now) ? 1 : 0); n++) {
     const next = nextScheduledInstant(s, after);
     if (!next || next.utc > now + 30 * day) break;
     out.push(next.utc); after = next.utc;
@@ -210,6 +213,37 @@ test("app.schedule_feed/v1: the feed's next occurrences are the instants the eng
   expect(fired).toEqual(planned);
 });
 
+test("app.schedule_feed/v1: a due but unticked instant spends budget first, so the feed never shows an occurrence that cannot fire", async () => {
+  const f = await fixture();
+  const start = f.clock.now, hour = 3_600_000;
+  const s = schedule(f, { recurrence: { kind: "interval", everyMs: hour }, occurrenceBudget: 2 });
+  const url = feedCommand(f, "feed.create").url!;
+  expect(startsOf((await readFeed(f, url)).events, s.id)).toEqual([start + hour, start + 2 * hour]);
+  // The first instant has passed but the scheduler has not ticked: that tick will spend one of the two.
+  f.clock.now = start + 1.5 * hour;
+  expect(startsOf((await readFeed(f, url)).events, s.id)).toEqual([start + 2 * hour]);
+  expect(tickSchedules(f.store, f.queue, f.config, f.clock.now)).toEqual([expect.objectContaining({ action: "enqueued", instant: start + hour })]);
+  expect(startsOf((await readFeed(f, url)).events, s.id)).toEqual([start + 2 * hour]);
+  // Missing the last instant too: it is due, the budget is spent on it, and nothing future is shown.
+  f.clock.now = start + 2.5 * hour;
+  expect(startsOf((await readFeed(f, url)).events, s.id)).toEqual([]);
+  f.queue.pump(); await f.queue.idle();
+  expect(tickSchedules(f.store, f.queue, f.config, f.clock.now)).toEqual([expect.objectContaining({ action: "enqueued", instant: start + 2 * hour })]);
+  expect(readStored(f, s.id).occurrencesRemaining).toBe(0);
+  expect(startsOf((await readFeed(f, url)).events, s.id)).toEqual([]);
+});
+
+test("app.schedule_feed/v1: the event cap keeps the earliest occurrences across all schedules, in order", async () => {
+  const f = await fixture();
+  const hourly = Array.from({ length: 8 }, (_, i) => { f.clock.now += 60_000 * i; return schedule(f, { recurrence: { kind: "interval", everyMs: 3_600_000 } }); });
+  const { events } = await readFeed(f, feedCommand(f, "feed.create").url!);
+  const all = hourly.flatMap(s => engineSequence(readStored(f, s.id), f.clock.now).map(instant => ({ id: s.id, instant })))
+    .sort((a, b) => a.instant - b.instant || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  expect(all.length).toBeGreaterThan(feedLimits.events);
+  expect(events).toHaveLength(feedLimits.events);
+  expect(events.map(e => [e.uid.slice(0, 36), e.start])).toEqual(all.slice(0, feedLimits.events).map(e => [e.id, e.instant]));
+});
+
 test("app.schedule_feed/v1: paused and revoked schedules produce no VEVENT", async () => {
   const f = await fixture();
   const active = schedule(f);
@@ -258,7 +292,11 @@ test("app.schedule_feed/v1: wrong, malformed, rotated and turned-off tokens get 
       expect(await response.text()).toBe("");
       expect(response.headers.get("set-cookie")).toBeNull();
     }
-    expect((await fetchFeed(f, path1, { method: "POST", headers: { origin } })).status).toBe(404);
+    // Every method but GET is the same bodiless 404, never the HTML 405 page.
+    for (const method of ["POST", "HEAD", "PUT", "DELETE", "PATCH", "OPTIONS"]) {
+      const response = await fetchFeed(f, path1, { method, headers: { origin } });
+      expect([method, response.status, await response.text(), response.headers.get("content-type")]).toEqual([method, 404, "", null]);
+    }
     // A signed-in browser cookie changes nothing, and a stale or garbage cookie does not block the feed.
     expect((await f.web(new Request(`${origin}${path1}`, { headers: { cookie: "jit_session=garbage" } }))).status).toBe(200);
     // Reading the feed writes nothing: no audit row, receipt or session.

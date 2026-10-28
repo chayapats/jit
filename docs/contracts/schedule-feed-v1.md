@@ -40,7 +40,7 @@ ADR 0035 asks for the token to be "encrypted at rest using the existing secret h
 
 `GET /feeds/schedules/<token>.ics` is answered before any session, cookie, sign-in redirect or restore redirect:
 
-- The path must be exactly `/feeds/schedules/` + 43 base64url characters + `.ics`. Anything else under `/feeds/` (another shape, another method) is `404`.
+- The path must be exactly `/feeds/schedules/` + 43 base64url characters + `.ics`. Anything else under `/feeds/` (another shape, or any method but `GET`, including `HEAD`) is the same bodiless `404`. The host and URL-size checks still run first; the generic `405` page never applies here.
 - The check hashes the presented token and compares the two 32-byte digests with `timingSafeEqual`. A malformed token is compared against an all-zero digest, so a malformed, wrong, rotated or turned-off token all take the same path and answer the same bodiless `404`.
 - `200` has `Content-Type: text/calendar; charset=utf-8` and keeps the shared headers: the ADR 0028 CSP, `X-Content-Type-Options: nosniff`, `Cache-Control: no-store` and `Referrer-Policy`. No response sets a cookie; a cookie on the request is ignored.
 - While a restore is incomplete, or if storage fails, the answer is a bodiless `503` with `Retry-After: 60`. It reveals nothing about the token.
@@ -49,8 +49,8 @@ ADR 0035 asks for the token to be "encrypted at rest using the existing secret h
 
 ## Feed contents
 
-- Occurrences of every `active` schedule with remaining budget, in every project, in `(now, now + 30 days]`. They are computed only by `nextScheduledInstant`, applied repeatedly from `now`, so DST gaps (shifted forward) and overlaps (first instant) are exactly the engine's. A schedule contributes at most its `occurrencesRemaining`. `paused` and `revoked` schedules contribute nothing.
-- Events are ordered by instant, then schedule id, and capped at `feedLimits.events` (5000) per response.
+- Occurrences of every `active` schedule with remaining budget, in every project, in `(now, now + 30 days]`. They are computed only by `nextScheduledInstant`, applied repeatedly from `now`, so DST gaps (shifted forward) and overlaps (first instant) are exactly the engine's. A schedule contributes at most the budget the engine will still spend on future instants: `occurrencesRemaining`, less one when an instant is already due but not yet ticked (the next tick coalesces it into one occurrence and spends one), so the feed never shows an occurrence that cannot fire. `paused` and `revoked` schedules contribute nothing.
+- Events are ordered by instant, then schedule id, and capped at `feedLimits.events` (5000) per response. Schedules are merged lazily through a heap, so one read computes at most the capped events plus one look-ahead per schedule, not every schedule's full 30 days.
 - Each `VEVENT` has exactly `UID`, `DTSTAMP`, `DTSTART`, `SUMMARY` and `TRANSP:TRANSPARENT`:
   - `UID` is `<scheduleId>-<revision>-<instant>@jit` (instant in epoch milliseconds), stable across refreshes until the schedule's revision changes.
   - `DTSTART` is UTC (`YYYYMMDDTHHMMSSZ`). `DTSTAMP` is the schedule's `updatedAt` in UTC.
@@ -73,8 +73,8 @@ ADR 0035 asks for the token to be "encrypted at rest using the existing secret h
 `tests/schedule-feed.test.ts` covers the following:
 
 - With a fake clock, an hourly, a daily `Asia/Bangkok` and a daily `America/New_York` schedule across the 2026-11-01 overlap and the 2027-03-14 gap, the parsed `DTSTART` lists equal the engine's `nextScheduledInstant` sequence for 30 days. A budgeted schedule ticked at each feed instant materializes exactly those instants.
-- Paused, revoked and out-of-horizon schedules produce no `VEVENT`.
-- A wrong, flipped, malformed, rotated or turned-off token and a non-`GET` method are a bodiless `404`; no response sets a cookie; reading writes no audit row; console output during the requests holds no feed path or token.
+- Paused, revoked and out-of-horizon schedules produce no `VEVENT`. A due but unticked instant spends budget first, so a schedule whose last occurrence is pending shows nothing. With more than 5000 candidates, the feed is exactly the earliest 5000 across all schedules.
+- A wrong, flipped, malformed, rotated or turned-off token and every non-`GET` method (`POST`, `HEAD`, `PUT`, `DELETE`, `PATCH`, `OPTIONS`) are a bodiless `404`; no response sets a cookie; reading writes no audit row; console output during the requests holds no feed path or token.
 - Only the hash is stored: no table holds the token, the receipt replay has `url: null`, and the row is installation-scoped and excluded from backup images. An incomplete restore answers `503`.
 - Default titles have only the kind and the project name. With include-purpose on, the purpose appears, escaped. Reminder text, topic titles, ids and routes never appear.
 - A strict ICS reader checks CRLF, lines of at most 75 octets, unfolding, balanced components, exactly the five event properties and strict TEXT escaping, and reads every event back.

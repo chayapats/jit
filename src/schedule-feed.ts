@@ -1,7 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { AppError } from "./errors";
 import type { AppTransaction } from "./store";
-import { listSchedules, nextScheduledInstant, type ScheduleKind } from "./jobs/schedules";
+import { dueRange, listSchedules, nextScheduledInstant, type JobSchedule, type ScheduleKind } from "./jobs/schedules";
 
 /**
  * app.schedule_feed/v1 — the owner's read-only `.ics` feed of upcoming schedule occurrences (S10 REL08, FR-34,
@@ -135,26 +135,60 @@ export interface FeedEvent {
 /**
  * Upcoming occurrences of every `active` schedule in (now, now + 30 days], computed only with
  * `nextScheduledInstant` (jobs.configured_schedules/v1) applied iteratively from `now`, and never more than the
- * schedule's remaining occurrence budget. Paused and revoked schedules contribute nothing. Events are ordered by
- * instant, then schedule id, and cut at `feedLimits.events`.
+ * budget the engine will still spend on future instants: `occurrencesRemaining`, less one when an instant is
+ * already due but not yet ticked (the next tick coalesces it and spends one). Paused and revoked schedules
+ * contribute nothing. Events are ordered by instant, then schedule id, and cut at `feedLimits.events`; the
+ * schedules are merged lazily through a heap, so one read computes at most that many occurrences beyond one
+ * look-ahead per schedule.
  */
 export function readFeedEvents(tx: AppTransaction, now: number): FeedEvent[] {
   const horizon = now + feedLimits.horizonMs;
-  const events: FeedEvent[] = [];
+  interface Head { event: FeedEvent; schedule: JobSchedule; left: number }
+  const before = (a: Head, b: Head) => a.event.instant < b.event.instant || (a.event.instant === b.event.instant && a.event.scheduleId < b.event.scheduleId);
+  const heap: Head[] = [];
+  const push = (head: Head) => {
+    heap.push(head);
+    for (let i = heap.length - 1; i > 0;) {
+      const parent = (i - 1) >> 1;
+      if (!before(heap[i]!, heap[parent]!)) break;
+      [heap[i], heap[parent]] = [heap[parent]!, heap[i]!]; i = parent;
+    }
+  };
+  const pop = (): Head => {
+    const top = heap[0]!, last = heap.pop()!;
+    if (heap.length) {
+      heap[0] = last;
+      for (let i = 0; ;) {
+        const l = 2 * i + 1, r = l + 1;
+        let m = i;
+        if (l < heap.length && before(heap[l]!, heap[m]!)) m = l;
+        if (r < heap.length && before(heap[r]!, heap[m]!)) m = r;
+        if (m === i) break;
+        [heap[i], heap[m]] = [heap[m]!, heap[i]!]; i = m;
+      }
+    }
+    return top;
+  };
+  const advance = (schedule: JobSchedule, projectName: string, after: number, left: number) => {
+    if (left <= 0) return;
+    const next = nextScheduledInstant(schedule, after);
+    if (!next || next.utc > horizon) return;
+    push({ schedule, left, event: { scheduleId: schedule.id, revision: schedule.revision, instant: next.utc, stamp: schedule.updatedAt,
+      kind: schedule.kind, projectName, purpose: schedule.purpose } });
+  };
   for (const project of tx.all<{ id: string; name: string }>("SELECT id, name FROM projects ORDER BY created_at, id")) {
     for (const schedule of listSchedules(tx, project.id)) {
       if (schedule.state !== "active" || schedule.occurrencesRemaining <= 0) continue;
-      let after = now;
-      for (let n = 0; n < schedule.occurrencesRemaining; n++) {
-        const next = nextScheduledInstant(schedule, after);
-        if (!next || next.utc > horizon) break;
-        events.push({ scheduleId: schedule.id, revision: schedule.revision, instant: next.utc, stamp: schedule.updatedAt,
-          kind: schedule.kind, projectName: project.name, purpose: schedule.purpose });
-        after = next.utc;
-      }
+      advance(schedule, project.name, now, schedule.occurrencesRemaining - (dueRange(schedule, now) ? 1 : 0));
     }
   }
-  return events.sort((a, b) => a.instant - b.instant || (a.scheduleId < b.scheduleId ? -1 : a.scheduleId > b.scheduleId ? 1 : 0)).slice(0, feedLimits.events);
+  const events: FeedEvent[] = [];
+  while (heap.length && events.length < feedLimits.events) {
+    const head = pop();
+    events.push(head.event);
+    advance(head.schedule, head.event.projectName, head.event.instant, head.left - 1);
+  }
+  return events;
 }
 
 /** RFC 5545 TEXT escaping: backslash, semicolon, comma and line breaks; other control characters become spaces. */
