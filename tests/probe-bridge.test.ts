@@ -1334,12 +1334,17 @@ test("a post-deadline landing whose cleanup fails never publishes a clean cancel
   const root = setup();
   const expired = JSON.stringify({ accessToken: "old-access", refreshToken: "refresh-token", obtainedAt: 0, expiresAt: 1 });
   const backend = new Map<string, string>();
-  // The write outlives the 100ms deadline, then lands; its cleanup fails.
-  // The record is immutable by then, so it must already state uncertainty.
+  // The write is gated: it is admitted, then held until the test releases it, so the abort always lands
+  // mid-write whatever the machine speed. Releasing after the abort models the post-deadline landing, and
+  // its cleanup fails; the record is immutable by then, so it must already state uncertainty.
+  let entered!: () => void, release!: () => void;
+  const enteredGate = new Promise<void>(resolve => { entered = resolve; });
+  const writeGate = new Promise<void>(resolve => { release = resolve; });
   const store: HostCredentialStore & { compareAndDelete(identity: { account: string }, expected: string): Promise<boolean> } = {
     get: async () => expired,
     set: async (identity, value) => {
-      await new Promise(r => setTimeout(r, 300));
+      entered();
+      await writeGate;
       backend.set(identity.account, value);
     },
     delete: async identity => backend.delete(identity.account),
@@ -1352,12 +1357,18 @@ test("a post-deadline landing whose cleanup fails never publishes a clean cancel
     }
     return successFetch("late")(input, init);
   } });
-  const { record } = await liveProbe("fixture-probe-host",
-    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 100 },
-    { ...ports, now: () => 1800000000000, id: () => OTHER_ID }, root);
+  // The caller abort drives the same owned-abort path the deadline timer fires; the generous deadline never
+  // decides anything, so no wall-clock sleep or timer drives this test.
+  const stop = new AbortController();
+  const pending = liveProbe("fixture-probe-host",
+    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 8000 },
+    { ...ports, now: () => 1800000000000, id: () => OTHER_ID }, root, stop.signal);
+  await enteredGate;
+  stop.abort();
+  release();
+  const { record } = await pending;
   expect(record.lifecycle).toBe("store-unavailable");
   expect(record.nextAction).toBe("check-secure-store");
-  await new Promise(r => setTimeout(r, 500));
   // The late value stayed visible and the durable record says so.
   expect(backend.size).toBe(1);
   expect((await readProbeAttempt(root, OTHER_ID)).lifecycle).toBe("store-unavailable");

@@ -36,7 +36,27 @@ const answer = (request: ApplicationRunRequest, output: string): ApplicationRunO
 const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(r => { resolve = r; }); return { promise, resolve }; };
 
 const stream: ReplyStreamOptions = { intervalMs: 1, polls: 3 };
-interface Options { script?: Script; wrap?: (port: ScriptedRunPort) => ApplicationRunPort; coordinator?: boolean; path?: string; env?: Record<string, string> }
+interface Options { script?: Script; wrap?: (port: ScriptedRunPort) => ApplicationRunPort; coordinator?: boolean; path?: string; env?: Record<string, string>; streamTimers?: ReplyStreamOptions["timers"] }
+/** Stream pacing the test drives by hand: ticks run only when flushed, never on a wall-clock timer. */
+function manualStreamTimers() {
+  const pending = new Map<number, () => void>();
+  let next = 0;
+  return {
+    timers: {
+      set: (callback: () => void): unknown => { const id = ++next; pending.set(id, callback); return id; },
+      clear: (handle: unknown): void => { pending.delete(handle as number); },
+    },
+    /** Runs every scheduled tick until none remains; each tick may schedule the next. */
+    async flush(): Promise<void> {
+      while (pending.size > 0) {
+        const callbacks = [...pending.values()];
+        pending.clear();
+        for (const callback of callbacks) callback();
+        await Promise.resolve();
+      }
+    },
+  };
+}
 async function fixture(options: Options = {}) {
   const root = options.path ? join(options.path, "..") : mkdtempSync(join(tmpdir(), "jit-bot01-"));
   if (!options.path) roots.push(root);
@@ -48,7 +68,7 @@ async function fixture(options: Options = {}) {
   const port = options.wrap?.(scripted) ?? scripted;
   const queue = new JobQueue(store, config.jobs, [jitReplyWork(store, config, port, () => now), memoryExtractionWork(store, config, scripted, () => now)], { now: () => now }); queues.push(queue);
   const app = new Application(store, config, { now: () => now, jobs: queue });
-  const web = createWebHandler(app, { stream });
+  const web = createWebHandler(app, { stream: options.streamTimers ? { ...stream, timers: options.streamTimers } : stream });
   if (options.path) {
     const token = await app.login(password), auth = app.authenticate(token);
     return { root, path, config, store, app, queue, port: scripted, token, auth, web, project: null as never, topic: null as never, coordinatorId: "", advance: (ms: number) => { now += ms; } };
@@ -545,16 +565,22 @@ test("the stream reports queue-only transitions and acknowledges each change wit
 });
 
 test("many live replies stream without a growing URL, across more than one page of changes", async () => {
-  const f = await fixture({ env: { JIT_PAGE_SIZE: "10" } });
+  const pacing = manualStreamTimers();
+  const f = await fixture({ env: { JIT_PAGE_SIZE: "10", JIT_JOB_CONCURRENCY: "8", JIT_JOB_ROUTE_CONCURRENCY: "8" }, streamTimers: pacing.timers });
   const url = `/projects/${f.project.id}/topics/${f.topic.id}`;
   const sent = Array.from({ length: 25 }, (_, index) => send(f, `ข้อความที่ ${index}`));
   const page = await (await get(f, `${url}?after=15`)).text();
   expect(page).toContain(`data-reply-stream="${url}/events"`);
-  const first = events(await (await get(f, `${url}/events`)).text());
+  // Stream pacing is driven by hand: the first tick ran when the response opened, the rest run here.
+  const firstResponse = await get(f, `${url}/events`);
+  await pacing.flush();
+  const first = events(await firstResponse.text());
   expect(first.map(e => e.data.messageId)).toEqual(sent.map(s => s.message.id));
   expect(new Set(first.map(e => e.id)).size).toBe(25);
   while (f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM jobs WHERE state IN ('queued', 'admitted')")!.n)) await settle(f);
-  const done = events(await (await get(f, `${url}/events`, { "last-event-id": String(first.at(-1)!.id) })).text());
+  const doneResponse = await get(f, `${url}/events`, { "last-event-id": String(first.at(-1)!.id) });
+  await pacing.flush();
+  const done = events(await doneResponse.text());
   expect(new Set(done.filter(e => e.data.state === "answered").map(e => e.data.messageId)).size).toBe(25);
 });
 
