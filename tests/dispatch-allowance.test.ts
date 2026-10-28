@@ -892,7 +892,11 @@ test("REL02: Jit does not re-dispatch a role for the same request while its late
   await drain(f);
   expect(f.app.decision(f.auth.actor, f.project.id, f.topic.id).proposal!.artifact.missing)
     .toEqual([{ roleId: f.designId, roleName: "ออกแบบ", reason: "result_blocked", runId: held.blocked[0]!.runId, unblock: unblockText }]);
-  // Naming only the blocked role for the same request calls nobody and shows why.
+  // Naming only the blocked role for the same request calls nobody and shows why. (REL03: the repeat above was a
+  // follow-up of the first team, so close this team first; otherwise rule follow_up, not Jit's model, would choose.)
+  expect(held.selection).toMatchObject({ rule: "follow_up" });
+  const closing = f.app.discussion(f.auth.actor, f.project.id, held.discussion!.id).discussion;
+  f.app.execute(f.auth.actor, { kind: "team.stop_all", requestId: rid(), projectId: f.project.id, expectedRevision: closing.revision, payload: { discussionId: closing.id } });
   named = ["ออกแบบ"];
   const only = send(f, text);
   await drain(f);
@@ -1056,6 +1060,10 @@ const disableRole = (f: Fixture, roleId: string) => {
   f.app.execute(f.auth.actor, { kind: "role.save", projectId: null, requestId: rid(), expectedRevision: f.app.team(f.auth.actor).ownerRevision,
     payload: { roleId, name: role.name, kind: role.kind, responsibility: role.responsibility, enabled: false, route: role.route } });
 };
+/** The team card's `team.control` form for one action and role. */
+const controlForm = (html: string, action: string, roleId: string) => [...html.matchAll(/<form method="post" action="([^"]+\/controls)">([\s\S]*?)<\/form>/g)]
+  .map(match => ({ action: match[1]!, fields: Object.fromEntries([...match[2]!.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)">/g)].map(m => [m[1]!, m[2]!])) }))
+  .find(item => item.fields.action === action && item.fields.roleId === roleId);
 const jitRequests = (f: Fixture) => f.port.requests.filter(request => request.instructions.operator[0] === jitReplyMarker);
 /** Whether a reply run was offered the model dispatch proposal, i.e. asked to select specialists. */
 const offersDispatch = (request: ApplicationRunRequest) => request.instructions.operator.some(line => line.includes(`{"kind":"dispatch","roles":[names],"why":string}`));
@@ -1275,19 +1283,12 @@ test("REL03 a rule that selects more roles than the allowance is held per BOT04;
   expect(f.store.read(tx => readDiscussion(tx, f.project.id, card.discussion!.id)).selection).toMatchObject({ rule: "named" });
   expect(card.teamReply).toMatchObject({ state: "answered" });
 
-  // Add: an eligible specialist not in the team, through `team.control` include, with no script.
+  // Once the team reply exists, a later result could never reach it, so the card offers neither add nor call again.
   html = await page(f);
   expectNoInlineScript(html);
-  expect(card.addable.map(role => role.roleId)).toEqual([f.marketingId]);
-  const addForm = [...html.matchAll(/<form class="team-form team-add"[^>]*action="([^"]+)"[^>]*>([\s\S]*?)<\/form>/g)][0]!;
-  const addFields = Object.fromEntries([...addForm[2]!.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)">/g)].map(m => [m[1]!, m[2]!]));
-  expect(addFields).toMatchObject({ action: "include", back: "topic" });
-  const added = await postForm(f, addForm[1]!, { ...addFields, roleId: f.marketingId });
-  expect(added.status).toBe(303);
-  expect(added.headers.get("location")).toContain(`#dispatch-${card.id}`);
-  await drain(f);
-  const withMarketing = cardFor(f, replyFor(f, sent.message.id).replyMessageId!);
-  expect(withMarketing.discussion!.roles.find(role => role.roleId === f.marketingId)).toMatchObject({ state: "completed" });
+  expect(card).toMatchObject({ addable: [], canInclude: false });
+  expect(html).not.toContain(`class="team-form team-add"`);
+  expect(html).not.toMatch(/<input type="hidden" name="action" value="include">/);
 
   // Reply to one opinion: the form names its participation, and the role is called again by rule `reply`.
   html = await page(f);
@@ -1304,23 +1305,76 @@ test("REL03 a rule that selects more roles than the allowance is held per BOT04;
   const lone = await postForm(f, replyForm[1]!, { ...replyFields, replyRole: undefined as never, text: "x" });
   expect(lone.status).toBe(400);
 
-  // Re-dispatch: skip a running role, then call it again from the card.
+  // Before the team reply: skip a running role, add a specialist and call the skipped role again from the card.
   const gate = deferred<void>();
-  const g = await fixture({ specialist: async request => { if (request.roleId === g.designId) await gate.promise; return answer(request, "ความเห็น"); } });
+  // Tech stays running too, so skipping design does not settle the team and start its reply.
+  const g = await fixture({ specialist: async request => { if (request.roleId === g.designId || request.roleId === g.techId) await gate.promise; return result(request, "ความเห็น"); } });
   const dispatched = send(g, "ควรใช้ SQLite หรือ Postgres ดี");
   g.queue.pump(); await ticks(); g.queue.pump(); await ticks();
   let gCard = cardFor(g, replyFor(g, dispatched.message.id).replyMessageId!);
-  const skip = form(await page(g), `/projects/${g.project.id}/team/discussions/${gCard.discussion!.id}/controls`);
-  expect(skip.fields).toMatchObject({ action: "skip", roleId: g.designId });
+  const skip = controlForm(await page(g), "skip", g.designId)!;
+  expect(skip.action).toBe(`/projects/${g.project.id}/team/discussions/${gCard.discussion!.id}/controls`);
   expect((await postForm(g, skip.action, skip.fields)).status).toBe(303);
   gCard = cardFor(g, replyFor(g, dispatched.message.id).replyMessageId!);
   expect(gCard.discussion!.roles.find(role => role.roleId === g.designId)).toMatchObject({ state: "skipped" });
-  const again = form(await page(g), `/projects/${g.project.id}/team/discussions/${gCard.discussion!.id}/controls`);
-  expect(again.fields).toMatchObject({ action: "include", roleId: g.designId });
+  expect(gCard).toMatchObject({ teamReply: null, canInclude: true });
+  expect(gCard.addable.map(role => role.roleId)).toEqual([g.marketingId]);
+  let gHtml = await page(g);
+  expectNoInlineScript(gHtml);
+  const addForm = [...gHtml.matchAll(/<form class="team-form team-add"[^>]*action="([^"]+)"[^>]*>([\s\S]*?)<\/form>/g)][0]!;
+  const addFields = Object.fromEntries([...addForm[2]!.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)">/g)].map(m => [m[1]!, m[2]!]));
+  expect(addFields).toMatchObject({ action: "include", back: "topic" });
+  const added = await postForm(g, addForm[1]!, { ...addFields, roleId: g.marketingId });
+  expect(added.status).toBe(303);
+  expect(added.headers.get("location")).toContain(`#dispatch-${gCard.id}`);
+  gHtml = await page(g);
+  const again = controlForm(gHtml, "include", g.designId)!;
+  expect(again.fields).toMatchObject({ back: "topic" });
   expect((await postForm(g, again.action, again.fields)).status).toBe(303);
   gate.resolve();
   await drain(g);
-  expect(cardFor(g, replyFor(g, dispatched.message.id).replyMessageId!).discussion!.roles.find(role => role.roleId === g.designId)).toMatchObject({ state: "completed" });
+  const settled = cardFor(g, replyFor(g, dispatched.message.id).replyMessageId!);
+  expect(settled.discussion!.roles.find(role => role.roleId === g.designId)).toMatchObject({ state: "completed" });
+  expect(settled.discussion!.roles.find(role => role.roleId === g.marketingId)).toMatchObject({ state: "completed" });
+  // The added and re-called roles finished before the team answered, so the team reply cites them.
+  expect(settled.teamReply).toMatchObject({ state: "answered" });
+  expect(settled.teamReply!.team!.citations.map(c => c.roleId).sort()).toEqual([g.techId, g.designId, g.marketingId].sort());
+  expect(settled).toMatchObject({ addable: [], canInclude: false });
+});
+
+test("REL03 a role stopped from its job page reads stopped on the card and can be called again from it", async () => {
+  const gate = deferred<void>();
+  let ref!: Fixture;
+  const f = ref = await fixture({ specialist: async request => { if (request.roleId === ref.designId) await gate.promise; return result(request, "ความเห็น"); } });
+  const sent = send(f, "ควรใช้ SQLite หรือ Postgres ดี");
+  f.queue.pump(); await ticks(); f.queue.pump(); await ticks();
+  let card = cardFor(f, replyFor(f, sent.message.id).replyMessageId!);
+  const design = card.discussion!.roles.find(role => role.roleId === f.designId)!;
+  // job.stop from the job page fences the job; the stored participation is not rewritten.
+  const job = f.app.job(f.auth.actor, f.project.id, design.jobId);
+  f.app.execute(f.auth.actor, { kind: "job.stop", requestId: rid(), projectId: f.project.id, expectedRevision: job.revision, payload: { jobId: job.id } });
+  expect(f.store.read(tx => readDiscussion(tx, f.project.id, card.discussion!.id)).participations.find(item => item.roleId === f.designId)!.state).not.toBe("stopped");
+  card = cardFor(f, replyFor(f, sent.message.id).replyMessageId!);
+  expect(card.discussion!.roles.find(role => role.roleId === f.designId)).toMatchObject({ state: "stopped" });
+  // The card's call-again button and the command read the same state, so the include is accepted.
+  const html = await page(f);
+  const again = controlForm(html, "include", f.designId)!;
+  expect(again).toBeDefined();
+  const posted = await postForm(f, again.action, again.fields);
+  expect(posted.status).toBe(303);
+  card = cardFor(f, replyFor(f, sent.message.id).replyMessageId!);
+  const rerun = card.discussion!.roles.find(role => role.roleId === f.designId)!;
+  expect(rerun.jobId).not.toBe(design.jobId);
+  expect(["queued", "running"]).toContain(rerun.state);
+  // A role that is still running is not offered, and including it is still rejected.
+  const current = f.app.discussion(f.auth.actor, f.project.id, card.discussion!.id).discussion;
+  expect(() => f.app.execute(f.auth.actor, { kind: "team.control", requestId: rid(), projectId: f.project.id, expectedRevision: current.revision,
+    payload: { discussionId: current.id, action: "include", roleId: f.designId } })).toThrow(expect.objectContaining({ code: "role_already_participating" }));
+  gate.resolve();
+  await drain(f);
+  card = cardFor(f, replyFor(f, sent.message.id).replyMessageId!);
+  expect(card.discussion!.roles.find(role => role.roleId === f.designId)).toMatchObject({ state: "completed" });
+  expect(card.teamReply!.team!.citations.map(c => c.roleId).sort()).toEqual([f.techId, f.designId].sort());
 });
 
 test("REL03 deleting the reply that carried why also removes why from the card and from replayed receipts; ids and the rule stay", async () => {

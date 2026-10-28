@@ -85,7 +85,8 @@ export interface DispatchCardView {
   selection: RoutingSelection | null;
   /**
    * Eligible specialists the owner may add to the started discussion from the card (`team.control` include), empty
-   * when the discussion's role budget is used; `canInclude` says whether a skipped or stopped role may run again.
+   * when the discussion's role budget is used or the team reply exists; `canInclude` says whether a skipped or stopped
+   * role may run again (false once the team reply exists, since a later result would never reach it).
    */
   addable: { roleId: string; roleName: string }[]; canInclude: boolean;
   /** Why Jit could not start the team reply last time; null when it started or was never tried. */
@@ -472,7 +473,9 @@ function readCard(tx: AppTransaction, row: ProposalRow, policy: TeamPolicy): Dis
     decision = { synthesis: model.synthesis?.state ?? null, proposalId: model.proposal?.id ?? null, proposalRevision: model.proposal?.revision ?? null,
       decided: model.decisions.some(entry => entry.decision.supersededBy === null) };
     // Owner controls on the card reuse `team.control` include, which admits a role only within the discussion's role budget.
-    canInclude = !stored.stoppedAll && stored.participations.filter(item => item.state !== "excluded" && item.state !== "skipped").length < stored.limits.roles;
+    // Once the team reply exists a later result can no longer reach it (settleDispatch and `dispatch.answer` answer
+    // once), so the card stops offering add and call-again; the owner corrects through a reply, @name or follow-up.
+    canInclude = !stored.stoppedAll && !row.teamReplyId && stored.participations.filter(item => item.state !== "excluded" && item.state !== "skipped").length < stored.limits.roles;
     if (canInclude) {
       addable = readTeam(tx, row.projectId, policy).roles
         .filter(role => role.kind === "specialist" && role.enabled && role.effective.route && !stored.participations.some(item => item.roleId === role.id))

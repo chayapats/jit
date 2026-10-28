@@ -53,7 +53,7 @@ If no name is callable the proposal is `empty`. The owner can still accept a sub
 - `dispatch_proposals.record_json` adds `selection` (ids and the rule only; `why` is stored as null) and, for `follow_up`, `continues` (the discussion it continues). Proposals written before REL03 have neither.
 - The discussion a proposal starts (standing allowance or owner-accepted) records the same `selection`. `Discussion.selection` is absent on owner-form and pre-REL03 discussions.
 - `why` is model text, so it is stored only on the Jit reply record that produced it (`team_runs`, kind `jit_reply`, field `dispatchWhy`), next to the output it came from. The card's read model fills `selection.why` from there. Data deletion of that reply's output (and the quarantined-restore replay, which reuses the same lineage redaction) clears `dispatchWhy` and the `selection.why` copied into `dispatch.*` command receipts of that reply, so the card and a replayed receipt then show the selection without a reason. Backups classify `team_runs` as before.
-- `DispatchCardView` adds `selection`, `addable` (eligible specialists not in the started discussion) and `canInclude` (the discussion is not stopped and has room in its role budget).
+- `DispatchCardView` adds `selection`, `addable` (eligible specialists not in the started discussion) and `canInclude` (the discussion is not stopped, has no team reply yet and has room in its role budget).
 
 ## Web
 
@@ -65,7 +65,8 @@ The card under the dispatching reply shows one selection line:
 From the same team card the owner can correct the selection. Every control is a plain form post that works without script:
 
 - **Skip** a running role: the existing `team.control` `skip`.
-- **Call again** a skipped, stopped or excluded role, or **add** an eligible specialist who is not in the discussion: `team.control` `include` with `back=topic`, within the discussion's role budget.
+- **Call again** a skipped, stopped or excluded role, or **add** an eligible specialist who is not in the discussion: `team.control` `include` with `back=topic`, within the discussion's role budget. These controls appear only until the team reply exists. Jit answers for a team once (`settleDispatch`, `dispatch.answer`), so a later result could never reach that answer. After it, the owner corrects with a reply to an opinion, an `@name` or a follow-up, each of which starts a new dispatch and a new team reply.
+- The card and `team.control include` read the same projected participation state. A role stopped from its job page (`job.stop`) reads `stopped` even though its stored participation was not rewritten, so it can be included again. Its fenced job still cannot commit a late result.
 - **Reply** to one committed opinion: a form under that opinion posts `message.send` with `replyDiscussion` and `replyRole` (both or neither, otherwise `invalid_body`), so rule `reply` calls that role again.
 
 The held proposal card shows the same selection line, its hold reason (`dispatch.reason.invalid_selection`, `dispatch.reason.stale_selection`) and the existing accept-a-subset and dismiss forms.
@@ -84,7 +85,8 @@ All labels are dictionary keys in Thai and English.
 - A model selection naming a disabled role, or made before the team changed: a held proposal with no job admitted. The owner can still accept it, and the discussion keeps Jit's selection.
 - `why: "<img src=x onerror=alert(1)>"` rendered escaped and labelled in Thai and English; a `why` over 160 characters, non-string or empty, or an extra key, discards the entry.
 - Allowance 1 and a rule selecting 2 roles: `over_allowance`, held per BOT04, then accepted by the owner.
-- No script: accept, add, reply and call-again forms by plain POST.
+- No script: accept, add, reply and call-again forms by plain POST, before the team reply; once it exists the card offers neither add nor call again.
+- A role stopped through `job.stop` shows as stopped, and the card's call-again include is accepted and runs it again.
 - Deleting the reply that carried `why` clears it from the card; the proposal and discussion records never held it.
 
 `tests/team.test.ts` covers NFC and case matching, owner-form discussions not counting as open, and the owner router staying unchanged. `tests/jit-reply.test.ts` covers the closed proposal schema.
