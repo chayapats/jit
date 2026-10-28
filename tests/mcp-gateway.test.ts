@@ -13,7 +13,8 @@ import { processStream } from "../src/exec/podman-runtime";
 import { backupImageTables } from "../src/ops/backup";
 import type { ScriptedTools } from "../src/team/scripted-port";
 import type { ApplicationRunRequest } from "../src/team/types";
-import { answer, connection, decide, effectFixture, rid, send, setLevel, setRule, settle, texts, type EffectFixture, type EffectFixtureOptions } from "./fixtures/effects";
+import { answer, connection, decide, effectFixture, rid, send, setDeploy, setLevel, setRule, settle, texts, type EffectFixture, type EffectFixtureOptions } from "./fixtures/effects";
+import { stopDrain } from "../src/ops/lifecycle";
 
 const serverScript = join(import.meta.dir, "fixtures/mcp-server.ts");
 const fixtures: EffectFixture[] = [];
@@ -381,10 +382,11 @@ test("review fixes: a removed server stops at once, names are unique across serv
   w.setTools([readOnly("baz"), readOnly("bar_baz")]);
   const fooBar = await installed(w, { name: "foo-bar" });
   await installed(w, { name: "foo" });
-  // `foo-bar`/`baz` and `foo`/`bar_baz` both map to mcp_foo_bar_baz: one name never refers to two tools.
-  const names = (await w.run([])).names.filter(name => name.startsWith("mcp_"));
-  expect(names.filter(name => name === "mcp_foo_bar_baz")).toHaveLength(1);
-  expect(new Set(names).size).toBe(names.length);
+  // `foo-bar`/`baz` and `foo`/`bar_baz` both map to mcp_foo_bar_baz: both are dropped and recorded, the rest stay.
+  const names = (await w.run([])).names.filter(name => name.startsWith("mcp_")).sort();
+  expect(names).toEqual(["mcp_foo_bar_bar_baz", "mcp_foo_baz"]);
+  const recorded = w.f.app.mcpServers(w.f.auth.actor, w.f.project.id).flatMap(server => server.tools.filter(tool => tool.refused === "name_collision").map(tool => `${server.name}/${tool.name}`)).sort();
+  expect(recorded).toEqual(["foo-bar/baz", "foo/bar_baz"]);
   // The owner removes a server while a run is connected: its next read-only call is refused and never sent.
   const before = w.calls().length;
   const removed = await w.run([{ name: "mcp_foo_bar_bar_baz", input: {} }, () => {
@@ -402,8 +404,10 @@ test("review fixes: a removed server stops at once, names are unique across serv
   const receipt = accept(hang, proposal!);
   await Bun.sleep(20);
   expect(hang.f.mcp!.installing).toBe(true);
-  hang.f.mcp!.close();
-  await hang.f.mcp!.idle();
+  // The drain first waits for running installs within its deadline, then aborts what is left.
+  const drained = await stopDrain({ queue: hang.f.queue, store: hang.f.store, mcp: hang.f.mcp }, { timeoutMs: 50 });
+  expect(drained.outcome).not.toBe("unknown");
+  expect(hang.f.mcp!.installing).toBe(false);
   expect(hang.f.app.mcpServers(hang.f.auth.actor, hang.f.project.id).find(server => server.id === receipt.server!.id)).toMatchObject({ state: "failed", reason: "interrupted" });
 });
 
@@ -420,4 +424,16 @@ test("review fixes: in-box cards need no credential vault, and the box image shi
   expect(w.calls().map(call => call.arguments)).toEqual([{ body: "no vault" }]);
   const containerfile = readFileSync(join(import.meta.dir, "../ops/box/Containerfile"), "utf8");
   expect(containerfile.split("FROM base AS browser")[0]).toMatch(/\bnodejs npm\b/);
+});
+
+test("review fix: without a vault, credential effects still fail cleanly while in-box cards run", async () => {
+  const w = await world({ executor: { vault: null } });
+  setLevel(w.f, "full");
+  setDeploy(w.f, connection(w.f, "deploy_secret", `deploy-${rid()}`));
+  const run = await w.run([{ name: "effect_deploy", input: { target: "production" } }]);
+  const card = w.f.app.approvalCard(w.f.auth.actor, w.f.project.id, (JSON.parse(run.results[0]!.content) as { cardId: string }).cardId);
+  decide(w.f, card, "approve");
+  await settle(w.f);
+  expect(w.f.app.approvalCard(w.f.auth.actor, w.f.project.id, card.id)).toMatchObject({ state: "failed", reason: "connection_vault_not_configured" });
+  expect(w.f.fetches).toEqual([]);
 });

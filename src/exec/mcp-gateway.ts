@@ -189,11 +189,13 @@ export class McpGateway {
   pruneSidecars(): Promise<number> { return this.#options.runtime.pruneSidecars(); }
 
   /**
-   * Service drain: starts no install and aborts the ones in flight (they fail `interrupted`; the owner may accept
-   * again). Callers then wait for {@link idle} within their drain deadline.
+   * Service drain, in two steps under the drain deadline: `close()` starts no new install and lets running ones
+   * finish; `close({ abort: true })` then aborts what is still running (they fail `interrupted`; the owner may accept
+   * again) and closes every live server connection. Callers wait for {@link idle} after each step.
    */
-  close(): void {
+  close(options: { abort?: boolean } = {}): void {
     this.#closing = true;
+    if (!options.abort) return;
     for (const abort of this.#installs) abort.abort();
     for (const set of this.#live.values()) for (const connection of [...set]) connection.close();
   }
@@ -337,15 +339,21 @@ export class McpGateway {
     for (const server of servers) {
       try { connections.push(await this.#connect(server, input.handle)); } catch { /* Skipped for this run. */ }
     }
-    // Exposed names are unique across the whole run: `foo-bar`/`baz` and `foo`/`bar_baz` both map to
-    // `mcp_foo_bar_baz`, so a later server's colliding tool is left out rather than shadowing the first.
-    const definitions: ToolDefinition[] = [], exposed = new Set<string>();
+    // Exposed names must be unique across the whole run: `foo-bar`/`baz` and `foo`/`bar_baz` both map to
+    // `mcp_foo_bar_baz`. Every tool of a colliding name is dropped and recorded as `name_collision`, so one name never
+    // reaches two tools and neither server's tool silently shadows the other's.
+    const counts = new Map<string, number>();
+    for (const connection of connections) for (const tool of connection.listing) if (!tool.refused && tool.exposed) counts.set(tool.exposed, (counts.get(tool.exposed) ?? 0) + 1);
+    const definitions: ToolDefinition[] = [];
     for (const connection of connections) {
-      for (const tool of connection.listing) {
-        if (tool.refused || !tool.exposed || exposed.has(tool.exposed)) continue;
-        exposed.add(tool.exposed);
-        definitions.push(this.#definition(connection, tool, input));
-      }
+      let collided = false;
+      connection.listing = connection.listing.map(tool => {
+        if (tool.refused || !tool.exposed || (counts.get(tool.exposed) ?? 0) < 2) return tool;
+        collided = true;
+        return { ...tool, exposed: null, refused: "name_collision" };
+      });
+      if (collided) this.#store.transaction(tx => writeServerTools(tx, connection.server, connection.listing, this.#now()));
+      for (const tool of connection.listing) if (!tool.refused && tool.exposed) definitions.push(this.#definition(connection, tool, input));
     }
     let released = false;
     return { definitions, release: () => { if (released) return; released = true; for (const connection of connections) connection.close(); } };

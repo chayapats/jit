@@ -532,7 +532,7 @@ export async function stopDrain(handle: Pick<FullAppHandle, "queue" | "store"> &
   // app.approval_cards/v1: no new effect is claimed and in-flight ones are aborted; they must settle (as `unknown`)
   // before the store closes, or the drain reports `unknown` and the next boot reconciles them.
   handle.effects?.close();
-  // app.mcp_servers/v1: installs run outside the queue; none starts now and in-flight ones abort (`interrupted`).
+  // app.mcp_servers/v1: installs run outside the queue; none starts now, and running ones get the drain deadline.
   handle.mcp?.close();
   const deadline = Date.now() + options.timeoutMs;
   for (;;) {
@@ -548,10 +548,17 @@ export async function stopDrain(handle: Pick<FullAppHandle, "queue" | "store"> &
     await Bun.sleep(5);
   }
   try { await handle.queue.idle(); } catch { /* Settlement already fenced; report honestly below. */ }
-  for (const worker of [handle.effects, handle.mcp]) {
-    if (!worker) continue;
-    const settled = await Promise.race([worker.idle().then(() => true), Bun.sleep(Math.max(0, deadline - Date.now())).then(() => false)]);
-    if (!settled) return { outcome: "unknown", fencedJobs: interrupted.length, unknownDeliveries: countUnknownDeliveries(handle.store), nextAction: "terminate-supervised-process-and-reconcile" };
+  const settledBy = (work: Promise<unknown>, until: number) => Promise.race([work.then(() => true), Bun.sleep(Math.max(0, until - Date.now())).then(() => false)]);
+  if (handle.effects && !await settledBy(handle.effects.idle(), deadline)) {
+    return { outcome: "unknown", fencedJobs: interrupted.length, unknownDeliveries: countUnknownDeliveries(handle.store), nextAction: "terminate-supervised-process-and-reconcile" };
+  }
+  // Installs first get the rest of the deadline; whatever still runs is then aborted (`interrupted`) and must settle
+  // within a short grace, or the drain reports `unknown` and the next boot reconciles it.
+  if (handle.mcp && !await settledBy(handle.mcp.idle(), deadline)) {
+    handle.mcp.close({ abort: true });
+    if (!await settledBy(handle.mcp.idle(), Date.now() + 2_000)) {
+      return { outcome: "unknown", fencedJobs: interrupted.length, unknownDeliveries: countUnknownDeliveries(handle.store), nextAction: "terminate-supervised-process-and-reconcile" };
+    }
   }
   return interrupted.length === 0
     ? { outcome: "stopped", fencedJobs: 0, unknownDeliveries: countUnknownDeliveries(handle.store), nextAction: "none" }

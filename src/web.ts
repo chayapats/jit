@@ -25,7 +25,7 @@ import type { RoleProposalCommand } from "./team/role-proposals";
 import { defaultPanelTab, legacyRedirect, panelRows, panelTabs, searchLimits, settingsPageHandler, type PanelTab } from "./web-settings";
 import { searchItems, searchPage, settingsAccessPage, accessConfirmPage, settingsApprovalsPage, settingsConnectionsPage, settingsDataPage, settingsDispatchPage, settingsFeedPage, settingsTelegramPage, topicPanelPage, type PanelData } from "./web-navigation";
 import { dispatchLimits, type DispatchCommand } from "./team/jit-dispatch";
-import { effectKinds } from "./exec/approval-cards";
+import { autoApproveKinds, targetRuleKinds } from "./exec/approval-cards";
 import type { DecideCardCommand, SetAutoApproveCommand } from "./exec/approval-cards";
 import { createWebhookHandler, type WebhookHandlerOptions } from "./pr/webhook-route";
 import { webhookPathPrefix, type WebhookCommandKind } from "./pr/webhooks";
@@ -439,8 +439,8 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
           const confirmed = body.confirm === "on" || body.confirm === true;
           if (!confirmed) throw new AppError("invalid_body", 400);
           if (typeof body.projectId !== "string" || !/^[a-f0-9-]{36}$/.test(body.projectId)) throw new AppError("invalid_body");
-          if (typeof body.effectKind !== "string" || !(effectKinds as readonly string[]).includes(body.effectKind)) throw new AppError("invalid_body");
-          const kind = body.effectKind as (typeof effectKinds)[number];
+          if (typeof body.effectKind !== "string" || !(targetRuleKinds as readonly string[]).includes(body.effectKind)) throw new AppError("invalid_body");
+          const kind = body.effectKind as (typeof targetRuleKinds)[number];
           const text = (value: unknown) => typeof value === "string" ? value.trim() : "";
           const scope = kind === "effect.git_push"
             ? { remote: text(body.remote), branches: text(body.branches).split(",").map(s => s.trim()).filter(Boolean) }
@@ -460,12 +460,12 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "projectId", "effectKind"].includes(key))) throw new AppError("invalid_body");
         projectId ??= typeof body.projectId === "string" ? body.projectId : undefined;
         effectKind ??= typeof body.effectKind === "string" ? body.effectKind : undefined;
-        if (!projectId || !/^[a-f0-9-]{36}$/.test(projectId) || !effectKind || !(effectKinds as readonly string[]).includes(effectKind)) throw new AppError("invalid_body");
+        if (!projectId || !/^[a-f0-9-]{36}$/.test(projectId) || !effectKind || !(autoApproveKinds as readonly string[]).includes(effectKind)) throw new AppError("invalid_body");
         const current = app.effectSettings(auth.actor, projectId).rules.find(rule => rule.effectKind === effectKind);
         if (!current) throw new AppError("effect_target_not_found", 404);
         const revision = typeof body.expectedRevision === "string" && /^\d{1,15}$/.test(body.expectedRevision) ? Number(body.expectedRevision) : body.expectedRevision;
         const command = { kind: "approval.rule.set", requestId: body.requestId, projectId, expectedRevision: revision,
-          payload: { effectKind: effectKind as (typeof effectKinds)[number], scope: current.scope, enabled: false } } as SetAutoApproveCommand;
+          payload: { effectKind: effectKind as (typeof autoApproveKinds)[number], scope: current.scope, enabled: false } } as SetAutoApproveCommand;
         const receipt = app.execute(auth.actor, command);
         return api ? json(receipt) : respond(null, 303, { Location: "/settings/approvals" });
       }

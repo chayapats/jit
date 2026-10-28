@@ -5,7 +5,7 @@ import { AppError } from "../errors";
 import type { AppTransaction, TransactionStore } from "../store";
 import type { ApplicationRunRequest } from "../team/types";
 import { readEffectiveAccess } from "./access";
-import { createCard, type BrowserConfirmAction, type ConfirmReason } from "./approval-cards";
+import { createCard, readCard, type BrowserConfirmAction, type ConfirmReason } from "./approval-cards";
 import type { BoxSession } from "./box-manager";
 import type { BoxHandle, BoxStreams } from "./box-runtime";
 import { CdpClient, cdpRelayPath } from "./cdp-stream";
@@ -242,9 +242,20 @@ export class BrowserService {
     if (live) this.#closeLive(live);
   }
 
-  /** Closes every session idle for {@link browserIdleMs}; returns their projects. */
+  /**
+   * On the scheduler tick: releases cards that stopped waiting (expired, or decided elsewhere) and closes every session
+   * idle for {@link browserIdleMs}; returns the projects whose session closed.
+   */
   sweep(now = this.#now()): string[] {
     const idle = this.#options.idleMs ?? browserIdleMs, closed: string[] = [];
+    for (const live of [...this.#live.values()]) {
+      for (const cardId of [...live.pending]) {
+        const state = this.#store.read(tx => { try { return readCard(tx, live.projectId, cardId, now).state; } catch { return "missing"; } });
+        // An approved card is `executing` until its performer settles it.
+        if (state !== "pending" && state !== "executing") this.settleCard(live.projectId, cardId);
+      }
+      if (live.closed) closed.push(live.projectId);
+    }
     for (const live of [...this.#live.values()]) if (now - live.lastUsedAt >= idle) { this.#closeLive(live); closed.push(live.projectId); }
     return closed;
   }

@@ -199,14 +199,14 @@ export class ComputerService {
 
   /**
    * The `computer_confirm` performer: sends the approved input once, on the desktop session the card was made on.
-   * Nothing is sent when that session closed (`browser_session_closed`: the screen may show something else now),
+   * Nothing is sent when that session closed (`stale`: the screen may show something else now),
    * during a takeover or when the role no longer has `full`; a failure after the input was sent is `unknown`.
    */
   readonly perform: EffectPerformer = async (card, signal, allowed): Promise<EffectOutcome> => {
     const action = card.action as ComputerConfirmAction;
     try {
       if (this.#store.read(tx => takeoverActive(tx, card.projectId))) return { outcome: "failed", reason: "takeover_active", detail: {} };
-      if (!this.#browser.cardSessionOpen(card.projectId, card.id)) return { outcome: "failed", reason: "browser_session_closed", detail: {} };
+      if (!this.#browser.cardSessionOpen(card.projectId, card.id)) return { outcome: "failed", reason: "stale", detail: {} };
       if (!allowed() || signal.aborted) return { outcome: "failed", reason: "access_changed", detail: {} };
       const input: ComputerAction = action.operation === "click" ? { operation: "click", x: action.x!, y: action.y! }
         : action.operation === "type" ? { operation: "type", text: action.text! } : { operation: "key", keys: action.keys! };

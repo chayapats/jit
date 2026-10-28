@@ -219,6 +219,6 @@ test("review fix: a computer card holds its desktop session; once that session c
   expect(w.cdp.open()).toBe(0);
   decide(w.f, second!, "approve");
   await settle(w.f);
-  expect(w.f.app.approvalCard(w.f.auth.actor, w.f.project.id, second!.id)).toMatchObject({ state: "failed", reason: "browser_session_closed" });
+  expect(w.f.app.approvalCard(w.f.auth.actor, w.f.project.id, second!.id)).toMatchObject({ state: "failed", reason: "stale" });
   expect(w.desktop).toHaveLength(1);
 });

@@ -11,6 +11,7 @@ import type { BoxStreamRequest, StreamTarget } from "../src/exec/box-runtime";
 import { CdpClient, cdpRelayPath } from "../src/exec/cdp-stream";
 import { PodmanBoxRuntime, type CommandRunner } from "../src/exec/podman-runtime";
 import { ScreenshotStore, xdotoolCommand } from "../src/exec/takeover";
+import { cardLifetimeMs } from "../src/exec/approval-cards";
 import { backupImageTables } from "../src/ops/backup";
 import type { ScriptedTools } from "../src/team/scripted-port";
 import { answer, decide, effectFixture, rid, send, setLevel, settle, type EffectFixture } from "./fixtures/effects";
@@ -378,7 +379,41 @@ test("review fixes: a denied card releases its page at once, and a reset forgets
   expect(w.cdp.open()).toBe(1);
   decide(w.f, w.f.app.approvalCards(w.f.auth.actor, w.f.project.id)[0]!, "deny");
   expect(w.cdp.open()).toBe(0);
-  expect(w.f.app.boxScreenshots(w.f.auth.actor, w.f.project.id)).toHaveLength(1);
+  const [old] = w.f.app.boxScreenshots(w.f.auth.actor, w.f.project.id);
+  expect(w.f.app.boxScreenshot(w.f.auth.actor, w.f.project.id, old!.id).data).toEqual(fakePng);
   await w.f.app.execute(w.f.auth.actor, { kind: "execution.box.reset", requestId: rid(), projectId: w.f.project.id, expectedRevision: 0, payload: { wipeWorkspace: true } });
   expect(w.f.app.boxScreenshots(w.f.auth.actor, w.f.project.id)).toEqual([]);
+  await rejects(() => w.f.app.boxScreenshot(w.f.auth.actor, w.f.project.id, old!.id), "screenshot_not_found", 404);
+});
+
+test("review fix: an expired confirm card releases its page on the next tick", async () => {
+  const w = await browserWorld();
+  // Sessions would otherwise stay up for hours: only the card's expiry can release this one.
+  const live = await effectFixture({ browser: true, browserIdleMs: 4 * 60 * 60_000, stream: () => w.cdp.stream(),
+    script: async (request, _s, _o, tools) => { await tools.call("browser_open", { url: cart.url }); await tools.call("browser_click", { ref: "e2" }); return answer(request, JSON.stringify({ reply: "ok" })); } });
+  fixtures.push(live);
+  setLevel(live, "workspace");
+  send(live, "จ่ายเงิน");
+  await settle(live);
+  expect(w.cdp.open()).toBe(1);
+  expect(live.browser!.sweep(live.clock.now + 60_000)).toEqual([]);
+  expect(w.cdp.open()).toBe(1);
+  expect(live.browser!.sweep(live.clock.now + cardLifetimeMs)).toEqual([live.project.id]);
+  expect(w.cdp.open()).toBe(0);
+});
+
+test("the Web and Telegram card renderers show the new kinds without a password value", async () => {
+  const { summarizeApprovalAction } = await import("../src/web-proposal-card");
+  const { approvalDetailParts } = await import("../src/telegram/approval-messages");
+  const action = { kind: "browser_confirm", operation: "type", url: cart.url, element: { ref: "e5", tag: "input", name: "Password" }, formFields: ["email", "password"],
+    text: null, textDigest: "a".repeat(64), reasons: ["line_break"] } as const;
+  const web = summarizeApprovalAction(action as never), telegram = approvalDetailParts({ action } as never);
+  expect(web).toEqual([cart.url, "type · Password", "email, password", "••••••"]);
+  expect([...telegram.pinned, ...telegram.flexible].join("\n")).not.toContain("a".repeat(64));
+  expect(summarizeApprovalAction({ kind: "computer_confirm", operation: "key", x: null, y: null, text: null, keys: ["Return"], intent: "input", reasons: ["enter_key"] } as never))
+    .toEqual(["key Return", "input · enter_key"]);
+  for (const kind of ["mcp_tool", "browser_confirm", "computer_confirm"]) {
+    expect(dictionaries.en[`approval.kind_${kind}` as keyof typeof dictionaries.en]).toBeTruthy();
+    expect(dictionaries.th[`approval.kind_${kind}` as keyof typeof dictionaries.th]).toBeTruthy();
+  }
 });

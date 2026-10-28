@@ -39,6 +39,8 @@ export const inBoxKinds: readonly EffectKind[] = Object.freeze(["mcp_tool", "bro
 export function cardLevel(kind: EffectKind): "workspace" | "full" {
   return kind === "mcp_tool" || kind === "browser_confirm" ? "workspace" : "full";
 }
+/** Kinds whose rule scope is a remote or deploy target (the Settings › Approvals form); `mcp_tool` rules are per tool. */
+export const targetRuleKinds: readonly EffectKind[] = Object.freeze(["effect.git_push", "effect.github_pr_create", "effect.github_comment", "effect.github_pr_merge", "effect.deploy"]);
 /** Most bytes of the canonical arguments of one `mcp_tool` card. */
 export const maximumMcpArgumentBytes = 65_536;
 /** Most server/tool pairs one `mcp_tool` auto-approve rule names. */

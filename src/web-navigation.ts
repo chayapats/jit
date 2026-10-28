@@ -9,7 +9,7 @@ import type { ComputerSettings } from "./exec/computer";
 import { connectionKinds, type ConnectionKind, type ConnectionView } from "./exec/connections";
 import { accessBadge, escape, hiddenCommand, icon, jobStateLabels, prObservedState, prStatusLabels, shell, taskStatusText, time, type NavigationWorkspace } from "./web-layout";
 import { panelRows, panelTabLabels, panelTabs, paletteCommands, searchLimits, type PanelTab } from "./web-settings";
-import { effectKinds, type ApprovalCard, type AutoApproveRule } from "./exec/approval-cards";
+import { targetRuleKinds, type ApprovalCard, type AutoApproveRule } from "./exec/approval-cards";
 
 /** One ⌘K row. `href` is always a same-origin path; labels are dictionary text or escaped-on-render owner text. */
 export interface SearchItem { kind: "command" | "project" | "topic"; label: string; detail: string | null; href: string }
@@ -360,7 +360,8 @@ export function settingsApprovalsPage(workspace: NavigationWorkspace,
     }).join("");
     return `<li><h3>${escape(p.name)}</h3>${rows ? `<ul>${rows}</ul>` : `<p class="empty-list">${tr("approval.pending_none")}</p>`}</li>`;
   }).join("");
-  const kindOptions = effectKinds.map(kind => `<option value="${kind}">${escape(tr(`approval.kind_${kind.replace(/^effect\./, "")}` as MessageKey))}</option>`).join("");
+  // Only kinds whose scope this form can express; browser and computer confirms never get rules, MCP rules are per tool.
+  const kindOptions = targetRuleKinds.map(kind => `<option value="${kind}">${escape(tr(`approval.kind_${kind.replace(/^effect\./, "")}` as MessageKey))}</option>`).join("");
   const projectOptions = projects.map(p => `<option value="${p.id}">${escape(p.name)}</option>`).join("");
   return shell(tr("settings.approvals"), { workspace, csrf, section: "settings", settings: "approvals" }, `<div class="content settings-content">
     <section class="settings-section" aria-labelledby="approvals-pending"><h2 id="approvals-pending">${tr("approval.title")}</h2>${pendingList}</section>

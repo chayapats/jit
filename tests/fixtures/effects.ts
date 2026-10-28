@@ -44,6 +44,8 @@ export interface EffectFixtureOptions {
   mcp?: boolean;
   /** exec.browser/v1: boxes open with the profile (the browser image) and a browser service is wired in. */
   browser?: boolean;
+  /** Idle close of browser sessions (default 5 minutes). */
+  browserIdleMs?: number;
 }
 
 /** The pinned image MCP sidecars use in fixtures. */
@@ -68,7 +70,7 @@ export async function effectFixture(options: EffectFixtureOptions = {}) {
     executionDirectory: execution, ...(options.stream ? { stream: options.stream } : {}) });
   const boxes = new BoxManager(store, config, runtime, { now, ...(options.browser ? { profile: true } : {}) });
   const vault = new ConnectionVault(secrets, { forbidden: [state, backups, execution] });
-  const browser = options.browser ? new BrowserService(store, { boxes, runtime, now, commandMs: 1_000 }) : null;
+  const browser = options.browser ? new BrowserService(store, { boxes, runtime, now, commandMs: 1_000, ...(options.browserIdleMs ? { idleMs: options.browserIdleMs } : {}) }) : null;
   if (browser) boxes.onStopped(projectId => browser.close(projectId));
   const computer = browser ? new ComputerService(store, browser, { now }) : null;
   const mcp = options.mcp ? new McpGateway(store, { boxes, runtime, vault, sidecarImage: fixtureBoxImage, executionDirectory: execution, now, requestMs: 1_000, callMs: 5_000, installMs: 5_000 }) : null;
