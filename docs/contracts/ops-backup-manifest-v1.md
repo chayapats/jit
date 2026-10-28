@@ -174,7 +174,7 @@ included likewise.
 The loopback API setting (`local_api_settings`; schema 29, app.local_api/v1)
 records only whether the owner turned the API on; it is included likewise. The
 API token lives in `<data>/local-api/` files, never in the database or an image.
-Attention levels (`attention_levels`; schema 30, delivery.attention_levels/v1) and
+Attention levels (`attention_levels`; schema 31, delivery.attention_levels/v1) and
 work group notices (`work_groups`) hold a level per channel and identities only;
 they are included likewise.
 Activation (`TransactionStore.swapFrom`, used by OPS02 restore and upgrade

@@ -243,7 +243,7 @@ test("every existing page renders through the shell in Thai and English, dark an
     "/settings/team", `/projects/${project.id}/team`, `/projects/${project.id}/tasks`, `/projects/${project.id}/tasks/${task.id}`,
     `/projects/${project.id}/jobs`, `/projects/${project.id}/delivery`, `/projects/${project.id}/pr/reports`, `/projects/${project.id}/schedules`,
     `/projects/${project.id}/memory`, `/projects/${project.id}/memory/deletions`, `/projects/${project.id}/exports`,
-    "/settings/backups", "/settings/upgrades", "/settings/restores", "/settings", "/settings/telegram", "/settings/data", "/search", "/search?q=Topic",
+    "/settings/backups", "/settings/upgrades", "/settings/restores", "/settings", "/settings/telegram", "/settings/feed", "/settings/data", "/search", "/search?q=Topic",
     `/projects/${project.id}/topics/${topic.id}/panel`, ...["memory", "tasks", "jobs", "pr", "team"].map(tab => `/projects/${project.id}/topics/${topic.id}/panel?tab=${tab}`),
     `/projects/${project.id}/topics/00000000-0000-0000-0000-000000000000`,
   ];

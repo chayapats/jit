@@ -390,7 +390,7 @@ test("responsive snapshots at 360/390/430/1280 px: drawer, bottom composer and s
     // The composer stays at the bottom of the main column and clears the home indicator; inputs never zoom on focus.
     expect(at[".main-pane"]).toMatchObject({ height: "100dvh", "padding-left": "env(safe-area-inset-left)", "padding-right": "env(safe-area-inset-right)" });
     expect(at[".composer-wrap"]!.padding).toBe("10px 12px max(12px, env(safe-area-inset-bottom))");
-    // UX04 tokenized the size; the token is 16px, the size below which mobile browsers zoom on focus.
+    // 16px on phones keeps iOS from zooming the composer; ui.design_tokens/v1 (UX04) names it as a token.
     expect(at[".composer textarea"]!["font-size"]).toBe("var(--size-input-mobile)");
     expect(scaleTokens.size.input).toBe(16);
     expect(at[".app-header"]!["padding-top"]).toBe("max(10px, env(safe-area-inset-top))");

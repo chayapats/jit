@@ -21,6 +21,8 @@ import type { EnqueueJobCommand, ResumeJobCommand, JobCommand, JobReceipt } from
 import { mutateTeamConfiguration, readTeam, teamIdentity } from "./team/configuration";
 import { executeRoleProposal, roleProposalIdentity, type RoleProposalCommand, type RoleProposalReceipt } from "./team/role-proposals";
 import { listDiscussions, prepareControl, prepareDispatch, prepareStopAll, projectDiscussion, readDiscussion } from "./team/dispatch";
+import { feedIdentity, feedPath, feedTokenMatches, isFeedCommand, mintFeedToken, readFeedEvents, readScheduleFeed, writeScheduleFeed,
+  type FeedCommand, type FeedEvent, type FeedReceipt, type ScheduleFeed } from "./schedule-feed";
 import { allowanceIdentity, readDispatchAllowance, writeDispatchAllowance, type DispatchAllowance, type DispatchAllowanceReceipt, type SetDispatchAllowanceCommand } from "./team/allowance";
 import { dispatchIdentity, executeDispatchCommand, readDispatchCard, readDispatchCards, type DispatchCardView, type DispatchCommand, type DispatchReceipt } from "./team/jit-dispatch";
 import { acceptDecision, decisionIdentity, prepareSynthesis, readDecisionModel, supersedeDecision } from "./team/decisions";
@@ -584,6 +586,24 @@ export class Application {
     });
   }
 
+  /** app.schedule_feed/v1: whether the owner's `.ics` feed is on and whether titles include the purpose. Never the token. */
+  scheduleFeedSettings(actor: OwnerActor): ScheduleFeed {
+    return this.store.read(tx => { this.#requireOwner(tx, actor); return readScheduleFeed(tx); });
+  }
+
+  /**
+   * app.schedule_feed/v1 feed read. The path token is the only credential (calendar apps send no cookie), so there
+   * is no actor: a malformed, wrong or turned-off token answers null after a constant-time check. While a restore
+   * is incomplete this throws `restore_incomplete`. Reading writes nothing, admits nothing and creates no audit row.
+   */
+  scheduleFeed(token: string): { events: FeedEvent[]; includePurpose: boolean; language: UiPreferences["language"] } | null {
+    return this.store.read(tx => {
+      if (readRestoreGate(this.store.path)) throw new AppError("restore_incomplete", 423);
+      if (!feedTokenMatches(tx, token)) return null;
+      return { events: readFeedEvents(tx, this.#now()), includePurpose: readScheduleFeed(tx).includePurpose, language: readPreferences(tx).language };
+    });
+  }
+
   /** app.dispatch_allowance/v1: the project's current allowance, or the product default (revision 0). */
   dispatchAllowance(actor: OwnerActor, projectId: string): DispatchAllowance {
     requireId(projectId);
@@ -668,6 +688,7 @@ export class Application {
   execute(actor: OwnerActor, command: StopReplyCommand): ReplyReceipt;
   execute(actor: OwnerActor, command: RoleProposalCommand): RoleProposalReceipt;
   execute(actor: OwnerActor, command: SetDispatchAllowanceCommand): DispatchAllowanceReceipt;
+  execute(actor: OwnerActor, command: FeedCommand): FeedReceipt;
   execute(actor: OwnerActor, command: DispatchCommand): DispatchReceipt;
   execute(actor: OwnerActor, command: CreateTopicCommand): TopicReceipt;
   execute(actor: OwnerActor, command: SendMessageCommand): MessageReceipt;
@@ -690,8 +711,8 @@ export class Application {
   execute(actor: OwnerActor, command: ExportCommand): ExportReceipt;
   execute(actor: OwnerActor, command: UpgradeCommand): Promise<UpgradeReceipt>;
   execute(actor: OwnerActor, command: RestoreCommand): Promise<RestoreReceipt>;
-  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetAttentionCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | AttentionReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt>;
-  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetAttentionCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | AttentionReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt> {
+  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetAttentionCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | FeedCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | AttentionReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | FeedReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt>;
+  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetAttentionCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | FeedCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | AttentionReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | FeedReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt> {
     if (command?.kind?.startsWith("upgrade.")) return this.#upgradeCommand(actor, command as UpgradeCommand);
     if (command?.kind?.startsWith("restore.")) return this.#restoreCommand(actor, command as RestoreCommand);
     // ops.schema_migrations/v1 admission fence (held by an upgrade or, ops.quarantined_restore/v1, a restore):
@@ -733,6 +754,7 @@ export class Application {
     if (command?.kind === "role.proposal.accept" || command?.kind === "role.proposal.reject" || command?.kind === "role.proposal.revise") return this.#roleProposalCommand(actor, command);
     if (isPromotionCommand(command)) return this.#promotionCommand(actor, command);
     if (command?.kind === "dispatch.allowance.set") return this.#setAllowance(actor, command);
+    if (isFeedCommand(command)) return this.#feedCommand(actor, command);
     if (command?.kind === "dispatch.proposal.accept" || command?.kind === "dispatch.proposal.dismiss" || command?.kind === "dispatch.answer") return this.#dispatchCommand(actor, command);
     if (command?.kind === "job.enqueue" || command?.kind === "job.resume" || command?.kind === "job.stop") return this.#jobCommand(actor, command);
     if (command?.kind === "role.save" || command?.kind === "route.save" || command?.kind === "role.preview" ||
@@ -1906,6 +1928,25 @@ export class Application {
       tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
       tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);
       return result;
+    });
+  }
+
+  /**
+   * app.schedule_feed/v1: the only writer of the feed. Revisioned, idempotent by request id and audited. The
+   * receipt row stores `url: null`; the minted URL is returned once, from the transaction that stored its hash.
+   */
+  #feedCommand(actor: OwnerActor, command: FeedCommand): FeedReceipt {
+    const payloadHash = digest(feedIdentity(command));
+    return this.store.transaction(tx => {
+      this.#requireOwner(tx, actor);
+      const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
+      if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as FeedReceipt; }
+      const now = this.#now();
+      const token = command.kind === "feed.create" || command.kind === "feed.rotate" ? mintFeedToken() : "";
+      const feed = writeScheduleFeed(tx, command, token, now);
+      tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify({ feed, url: null } satisfies FeedReceipt), now);
+      tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, 'owner', ?)", command.kind, command.requestId, now);
+      return { feed, url: token ? `${this.config.origin}${feedPath(token)}` : null };
     });
   }
 

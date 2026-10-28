@@ -34,7 +34,7 @@ Application.execute(actor, SetAttentionCommand): { attention: AttentionSetting }
 
 ## Command and storage
 
-Schema 30 adds `attention_levels(channel PRIMARY KEY CHECK IN ('telegram','web'), level CHECK IN ('all','needs-me'), revision > 0, updated_at)` and `work_groups(id, project_id, topic_id, reply_id UNIQUE, state CHECK IN ('open','closed'), record_json, created_at, updated_at)`, both empty after migration (snapshot-before-DDL) and both classified `include` for backups. An upgraded installation therefore keeps `all` and opens no group for earlier replies.
+Schema 31 adds `attention_levels(channel PRIMARY KEY CHECK IN ('telegram','web'), level CHECK IN ('all','needs-me'), revision > 0, updated_at)` and `work_groups(id, project_id, topic_id, reply_id UNIQUE, state CHECK IN ('open','closed'), record_json, created_at, updated_at)`, both empty after migration (snapshot-before-DDL) and both classified `include` for backups. An upgraded installation therefore keeps `all` and opens no group for earlier replies.
 
 `attention.set` is revisioned per channel (the expected revision is that channel's row), idempotent by request id (`request_id_conflict` on a different payload), validated (`invalid_attention`: exact payload keys, known channel and level), audited, and refused during upgrade or restore fences like every owner command. It accepts the Web channel's owner session.
 

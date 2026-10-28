@@ -272,6 +272,8 @@ export const backupImageTables: Readonly<Record<string, "include" | "exclude" | 
   // Export artifacts (registry + bytes) never enter images, so a restore cannot resurrect
   // content deleted after an export; restored request ids replay as export_expired.
   export_artifact_bodies: "exclude",
+  // app.schedule_feed/v1 (schema 30): installation-scoped feed token hash; preserved from live on activation.
+  schedule_feed: "exclude",
   telegram_binding: "scrub", command_receipts: "scrub",
   app_state: "include", audit: "include", coordinator_syntheses: "include", decision_proposals: "include",
   deletion_ledger: "include", deletion_operations: "include", deletion_previews: "include",
@@ -296,7 +298,7 @@ export const backupImageTables: Readonly<Record<string, "include" | "exclude" | 
   chat_title_sources: "include",
   // app.local_api/v1 (schema 29): whether the owner turned the loopback API on; the token is never in the database.
   local_api_settings: "include",
-  // delivery.attention_levels/v1 (schema 30): per-channel notification level and identity-only work group notices.
+  // delivery.attention_levels/v1 (schema 31): per-channel notification level and identity-only work group notices.
   attention_levels: "include", work_groups: "include",
   project_team: "include", projects: "include", restore_quarantines: "include", roles: "include",
   schway_native_refs: "include", source_versions: "include", sources: "include",
