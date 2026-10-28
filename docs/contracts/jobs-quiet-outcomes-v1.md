@@ -40,6 +40,8 @@ All branches run inside the job `commit(result, mutate)` fence; a late result fr
 
 Clipping everywhere reuses the report rule: `Buffer.byteLength(text) <= config.messageBytes` else the first 512 code points plus `…(ตัดให้พอขนาดแจ้งเตือน)`. The failure notification carries only the bounded reason, never the raw model output. The schedule `purpose` inside the notice is passed through `redactCredentials` first: purpose text is owner-configured and may contain credential-like spans, which `commitDeliveryIntent` would otherwise reject, rolling back the failure commit and faulting the queue. Quota / `needs_login` / `route_unavailable` keep the unchanged `waiting` path with no commit.
 
+Since REL04 ([delivery.attention_levels/v1](delivery-attention-levels-v1.md)) the `report` intent is informational: while the Telegram level is `needs-me` the report commits its output source, occurrence and `lastResult` as above but with a null intent id, and the detail page shows `schedules.outcome_report_unnotified` ("บันทึกสรุปแล้ว ไม่แจ้งเตือน (เฉพาะเรื่องที่รอคุณ)" / "Summary saved, not notified (only what needs me)"). `failed` summaries and reminders are `needs_owner` and always notify.
+
 ## Never-quiet rule
 
 The only code path that can produce `no_update` is the typed branch of a `complete` run. Reminders (`scheduleReminderWork`) are untouched. Occurrences fenced or stopped by a schedule edit or revoke, or that never reach `run`, keep their current visible job state on the detail page and never get `outcome.kind = "no_update"`. `tickSchedules`, `dedupeKey` and the delivery outbox are unchanged. Owner-run or test summaries do not exist on `main` (schedule jobs cannot be started manually).

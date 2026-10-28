@@ -519,7 +519,7 @@ test("schema 30 installations migrate to the access tables with their data intac
   old.close();
   const config = readConfig({ JIT_DATABASE: path });
   const migrated = new TransactionStore(path); stores.push(migrated);
-  // Schema 31 adds the access tables; later schemas (32: REL07 webhook triggers, 33: EXE03 box resets, 34: EXE08 connections) migrate on top of them.
+  // Schema 31 adds the access tables; later schemas (32: REL07 webhook triggers, 33: EXE03 box resets, 34: EXE08 connections, 35: REL04 attention levels) migrate on top of them.
   expect(schemaVersion).toBeGreaterThanOrEqual(31);
   expect(migrated.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: schemaVersion });
   // The existing snapshot-before-DDL rule kept a private copy of the schema 30 file.

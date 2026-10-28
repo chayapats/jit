@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { MIN_MESSAGE_BYTES } from "../config";
 import { AppError } from "../errors";
-import { commitDeliveryIntent, readDeliveryIntent, registerDeliveryGuard, retireDeliveryIntent, scrubDeliveryIntentText, type DeliveryCurrentness, type DeliveryIntent, type DeliveryReceipt } from "../delivery";
+import { commitAttentionIntent, readDeliveryIntent, registerDeliveryGuard, retireDeliveryIntent, scrubDeliveryIntentText, type DeliveryCurrentness, type DeliveryIntent, type DeliveryReceipt } from "../delivery";
 import { containsCredential, redactCredentials } from "../security/credentials";
 import { neutralizeDestinations } from "../security/destinations";
 import { requireId } from "../sources";
@@ -452,9 +452,11 @@ export function admitReportAlerts(
         decide(finding.id, "already_notified", null, earlier.id);
         continue;
       }
-      let receipt: DeliveryReceipt;
+      let receipt: DeliveryReceipt | null;
       try {
-        receipt = withSavepoint(tx, "pr_alert_intent", () => commitDeliveryIntent(tx, {
+        // delivery.attention_levels/v1: a finding alert is informational; under `needs-me` the report keeps the finding
+        // and the decision records why no notification was created.
+        receipt = withSavepoint(tx, "pr_alert_intent", () => commitAttentionIntent(tx, {
           projectId: input.projectId,
           kind: "report",
           text: buildAlertPayload({
@@ -465,10 +467,16 @@ export function admitReportAlerts(
           dedupeKey,
           maxBytes,
           guard: PR_ALERT_GUARD,
+          attention: { class: "informational", item: null, workGroupId: null },
         }, now));
       } catch {
         held.push({ findingId: finding.id, reason: "admission_failed" });
         decide(finding.id, "held", "admission_failed", null);
+        continue;
+      }
+      if (!receipt) {
+        suppressed.push({ findingId: finding.id, reason: "attention_needs_me" });
+        decide(finding.id, "suppressed", "attention_needs_me", null);
         continue;
       }
       if (receipt.intent.status === "cancelled") {

@@ -8,11 +8,12 @@ import { allowanceCeiling, readDispatchAllowance } from "./allowance";
 import { readTeam } from "./configuration";
 import { readDecisionModel } from "./decisions";
 import { prepareDispatch, projectDiscussion, readDiscussion, readSpecialist } from "./dispatch";
-import { admitTeamReply, readReply, readReplyRecord, replyLimits, type JitReplyView, type ReplyNotAdmitted, type TeamReplyGap, type TeamReplyResult } from "./jit-reply";
+import { admitTeamReply, readReply, readReplyRecord, replyLimits, saveReplyRecord, type JitReplyView, type ReplyNotAdmitted, type TeamReplyGap, type TeamReplyResult } from "./jit-reply";
 import { roleKey, type RoutingSelection, type SelectionRule } from "./routing";
 import type { Discussion, DiscussionOrigin, DiscussionParticipation, SynthesisState, TeamPolicy } from "./types";
 import { promotionFrom } from "../promotion";
 import { blockedForRequest, citableResult, heldGaps, unblockAction } from "./specialist-results";
+import { evaluateWorkGroup, openWorkGroup, workGroupOfReply } from "./work-group";
 
 /** Lifecycle of one dispatch proposal. Only `admitted` (standing allowance) and `accepted` (owner) start work. */
 export type DispatchProposalState = "admitted" | "proposed" | "accepted" | "dismissed" | "empty";
@@ -89,6 +90,11 @@ export interface DispatchCardView {
    * role may run again (false once the team reply exists, since a later result would never reach it).
    */
   addable: { roleId: string; roleName: string }[]; canInclude: boolean;
+  /**
+   * app.topic_promotion/v1: the topic was promoted, so it is read-only. The card offers no form that writes into it
+   * (reply to an opinion, add, call again); every such command would be refused with `topic_promoted`.
+   */
+  readOnly: boolean;
   /** Why Jit could not start the team reply last time; null when it started or was never tried. */
   teamHold: ReplyNotAdmitted | null;
   discussion: { id: string; revision: number; origin: DiscussionOrigin | null; stoppedAll: boolean; coverageGap: string[]; roles: TeamCardRole[] } | null;
@@ -208,6 +214,8 @@ function startDiscussion(tx: AppTransaction, input: {
   discussion.origin = input.origin;
   if (input.held?.length) discussion.held = input.held.map(role => ({ ...role }));
   if (input.selection) discussion.selection = structuredClone(input.selection);
+  // delivery.attention_levels/v1: the discussion joins the work group its dispatching reply opened.
+  discussion.workGroupId = workGroupOfReply(tx, row.replyId);
   tx.run("UPDATE team_runs SET record_json = ? WHERE id = ?", JSON.stringify(discussion), discussion.id);
   return discussion;
 }
@@ -298,6 +306,16 @@ export function admitJitDispatch(tx: AppTransaction, input: {
   };
   tx.run(`INSERT INTO dispatch_proposals (id, project_id, topic_id, reply_id, revision, state, admission, allowance_revision, discussion_id, team_reply_id, record_json, created_at, updated_at)
     VALUES (?, ?, ?, ?, 1, 'proposed', NULL, ?, NULL, NULL, '{}', ?, ?)`, row.id, row.projectId, row.topicId, row.replyId, row.allowanceRevision, now, now);
+  // delivery.attention_levels/v1: a dispatch with at least one role opens the reply's work group, whether it starts
+  // now under the allowance or waits on the owner's card (including a stale or invalid selection); an accepted card
+  // continues the same group. A dispatch whose every named role is still blocked on this request
+  // (app.specialist_results/v2) is a blocked result for the owner, so it opens a group too.
+  if (record.roles.length || record.blocked?.length) {
+    const workGroupId = openWorkGroup(tx, { projectId: reply.projectId, topicId: reply.topicId, replyId: reply.id, now });
+    const replyRecord = readReplyRecord(tx, reply.projectId, reply.id);
+    replyRecord.workGroupId = workGroupId;
+    saveReplyRecord(tx, replyRecord);
+  }
   if (!record.roles.length) { row.state = "empty"; return saveRow(tx, row, record); }
   // app.routing_selection/v1: an invalid or stale selection never broadcasts; the owner decides from the card.
   if (stale) { record.reason = "stale_selection"; return saveRow(tx, row, record); }
@@ -375,6 +393,7 @@ function admitTeam(tx: AppTransaction, row: ProposalRow, discussion: Discussion,
   try {
     const replyId = withSavepoint(tx, "jit_team_admit", () => {
       const admitted = admitTeamReply(tx, { anchor: asAnchor(anchor), question: asAnchor(question), proposalId: row.id, discussionId: discussion.id, results, gaps,
+        workGroupId: discussion.workGroupId ?? workGroupOfReply(tx, row.replyId),
         requestId: input.requestId, config: input.config, queue: input.queue, generation: input.generation, now: input.now });
       if (admitted.reason) throw new TeamHold(admitted.reason);
       return admitted.id;
@@ -436,11 +455,15 @@ export function executeDispatchCommand(tx: AppTransaction, command: DispatchComm
     if (projectDiscussion(tx, discussion).participations.some(item => activity(tx, row.projectId, item) === "live")) throw new AppError("team_reply_not_ready", 409);
     const outcome = admitTeam(tx, row, discussion, { requestId: command.requestId, config, queue, generation, now });
     if (outcome === "empty") throw new AppError("team_reply_not_ready", 409);
+    // delivery.attention_levels/v1: the owner answered; a stall this resolves closes in this transaction.
+    evaluateWorkGroup(tx, workGroupOfReply(tx, row.replyId), config.team, now, "owner_answered");
     // A hold is recorded on the card (with its next action) and the owner may answer again later.
     return { proposal: readCard(tx, readProposalRow(tx, row.projectId, row.id), config.team) };
   }
   row.revision += 1; row.updatedAt = now;
   saveRow(tx, row, record);
+  // delivery.attention_levels/v1: accepting or dismissing the card resolves its notice in this transaction.
+  evaluateWorkGroup(tx, workGroupOfReply(tx, row.replyId), config.team, now, "owner_answered");
   return { proposal: readCard(tx, readProposalRow(tx, row.projectId, row.id), config.team) };
 }
 
@@ -457,6 +480,7 @@ function readCard(tx: AppTransaction, row: ProposalRow, policy: TeamPolicy): Dis
   const replyMessageId = anchor.id;
   let discussion: DispatchCardView["discussion"] = null, canAnswer = false, canStopAll = false, decision: DispatchCardView["decision"] = null;
   let addable: DispatchCardView["addable"] = [], canInclude = false;
+  const readOnly = !!promotionFrom(tx, row.projectId, row.topicId);
   const teamReply = row.teamReplyId ? readReply(tx, row.projectId, row.teamReplyId) : null;
   if (row.discussionId) {
     const stored = readDiscussion(tx, row.projectId, row.discussionId), projected = projectDiscussion(tx, stored);
@@ -475,7 +499,7 @@ function readCard(tx: AppTransaction, row: ProposalRow, policy: TeamPolicy): Dis
     // Owner controls on the card reuse `team.control` include, which admits a role only within the discussion's role budget.
     // Once the team reply exists a later result can no longer reach it (settleDispatch and `dispatch.answer` answer
     // once), so the card stops offering add and call-again; the owner corrects through a reply, @name or follow-up.
-    canInclude = !stored.stoppedAll && !row.teamReplyId && stored.participations.filter(item => item.state !== "excluded" && item.state !== "skipped").length < stored.limits.roles;
+    canInclude = !readOnly && !stored.stoppedAll && !row.teamReplyId && stored.participations.filter(item => item.state !== "excluded" && item.state !== "skipped").length < stored.limits.roles;
     if (canInclude) {
       addable = readTeam(tx, row.projectId, policy).roles
         .filter(role => role.kind === "specialist" && role.enabled && role.effective.route && !stored.participations.some(item => item.roleId === role.id))
@@ -486,7 +510,7 @@ function readCard(tx: AppTransaction, row: ProposalRow, policy: TeamPolicy): Dis
     id: row.id, projectId: row.projectId, topicId: row.topicId, replyId: row.replyId, replyMessageId, anchorSequence: anchor.sequence, revision: row.revision, state: row.state,
     admission: row.admission, allowanceRevision: row.allowanceRevision, reason: record.reason, roles: record.roles, dropped: record.dropped,
     acceptedRoleIds: record.acceptedRoleIds, blocked: (record.blocked ?? []).map(role => ({ ...role, unblock: unblockAction(tx, row.projectId, role.runId) })),
-    selection: selectionOf(tx, row, record), addable, canInclude, teamHold: record.teamHold ?? null, discussion, teamReply, canAnswer, canStopAll, decision, createdAt: row.createdAt,
+    selection: selectionOf(tx, row, record), addable, canInclude, readOnly, teamHold: record.teamHold ?? null, discussion, teamReply, canAnswer, canStopAll, decision, createdAt: row.createdAt,
   };
 }
 

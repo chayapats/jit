@@ -15,7 +15,7 @@ reconciliation), `delivery.outbox/v1` (unknown outcomes stay unknown),
 ## Versions
 
 - Target: exactly the schema this build migrates to
-  (`currentSupportedSchema` = `schemaVersion`, 34 at this revision; 23 adds
+  (`currentSupportedSchema` = `schemaVersion`, 35 at this revision; 23 adds
   the installation lifecycle ledger of app.deletion_ledger/v1, backfilled from
   existing tombstones and suppressions; 24 adds the empty `owner_preferences`
   table of ui.preferences/v1; 25 adds the empty `persona_revisions` and
@@ -35,7 +35,9 @@ reconciliation), `delivery.outbox/v1` (unknown outcomes stay unknown),
   and polls on its derived schedule; 33 adds the empty
   `execution_box_resets` table of exec.box_runtime/v1, so every upgraded project
   reads box reset revision 0; 34 adds the empty `connections` and `connection_audit`
-  tables of app.connections/v1, so an upgraded installation has no connection).
+  tables of app.connections/v1, so an upgraded installation has no connection; 35 adds the empty `attention_levels` and
+  `work_groups` tables of delivery.attention_levels/v1, so an upgraded installation keeps
+  the `all` level and opens no group for earlier replies).
 - Sources: `minUpgradeSourceSchema` (17) through the target. A recovery point
   needs the managed backup registry (schema 16) and the deletion ledger
   (schema 17); older installations are `manual_recovery_required`.
@@ -46,8 +48,8 @@ reconciliation), `delivery.outbox/v1` (unknown outcomes stay unknown),
   `SNAPSHOT_NATIVE_FORMAT_VERSION` (4) exactly. Anything else is
   `engine_unavailable` or `unsupported_engine`. The scripted default has no
   native port, so it cannot upgrade (fail closed, like backups).
-- Tested from/to: fixture installations at 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32 and 33 → 34, and
-  34 → 34 (no schema change; recovery point, validation and reconciliation
+- Tested from/to: fixture installations at 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33 and 34 → 35, and
+  35 → 35 (no schema change; recovery point, validation and reconciliation
   still run). No production historical release exists yet; fixtures are the
   evidence.
 

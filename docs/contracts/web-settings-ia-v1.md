@@ -8,7 +8,7 @@ Owner: Jit #97 (S09 UX02). Status: implemented on the issue branch. Spec: [S09](
 
 | Section | Page | What it holds |
 | --- | --- | --- |
-| General | `/settings` | Persona (`app.persona/v1`, from BOT01), appearance and language (`ui.preferences/v1`, unchanged) and font licences |
+| General | `/settings` | Persona (`app.persona/v1`, from BOT01), appearance and language (`ui.preferences/v1`, unchanged), the local API switch (`app.local_api/v1`), notification levels per channel (`#attention`, `delivery.attention_levels/v1`, from REL04) and font licences |
 | Team and models | `/settings/team` | Installation roles, default route and role routes |
 | Team dispatch | `/settings/dispatch` | Each project's dispatch allowance (`app.dispatch_allowance/v1`, from BOT04): one owner form per project |
 | Telegram | `/settings/telegram` | Binding and inbox status (read only), each project's notification requests |

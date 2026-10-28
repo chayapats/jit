@@ -93,7 +93,7 @@ Schema 25 adds the `jit_reply_job_change` trigger on `jobs`, `jit_reply_sources`
 
 ## Channels
 
-`message.send` is accepted from the Web only, as before. Telegram project commands do not send topic messages, so this slice adds no Telegram admission and delivers no reply to Telegram.
+`message.send` is accepted from the Web only, as before. Telegram project commands do not send topic messages, so this slice adds no Telegram admission and delivers no reply to Telegram. Since REL04 ([delivery.attention_levels/v1](delivery-attention-levels-v1.md)), a reply that dispatches specialists opens a work group (`workGroupId` on the reply, discussion and team reply records) that notifies once through the delivery outbox; a reply without a dispatch still creates no intent.
 
 ## S10 REL02 additions
 

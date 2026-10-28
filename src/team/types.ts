@@ -209,6 +209,8 @@ export interface Discussion {
   held?: { roleId: string; roleName: string; runId: string }[];
   /** app.routing_selection/v1: the fixed rule or model selection that chose a Jit-dispatched discussion's roles. */
   selection?: RoutingSelection;
+  /** delivery.attention_levels/v1: the work group of the Jit reply that started this discussion; absent otherwise. */
+  workGroupId?: string | null;
 }
 /** Who authorized a discussion that a Jit dispatch proposal asked for. Model output is never the authority. */
 export interface DiscussionOrigin {

@@ -614,3 +614,51 @@ test("stopping, skipping or excluding a role on a promoted topic never admits th
   await settle(f);
   expect(count(f, "jit_replies")).toBe(before);
 });
+
+test("promoting a topic resolves its dispatch card notice and closes the work group (REL04)", async () => {
+  const f = await fixture();
+  const projectId = general(f).projectId;
+  f.app.execute(f.auth.actor, { kind: "dispatch.allowance.set", requestId: rid(), projectId,
+    expectedRevision: f.app.dispatchAllowance(f.auth.actor, projectId).revision, payload: { enabled: false, maxRoles: 1 } });
+  // One reply both asks to call a specialist (waiting on the owner's card) and suggests a promotion.
+  f.outputs.push({ reply: "ขอเรียกทีมก่อนครับ", proposals: [{ kind: "dispatch", roles: ["เทคโนโลยี"] }, { kind: "promotion", name: "ฐานข้อมูลใหม่" }] });
+  const started = await chat(f, "ช่วยวางแผนฐานข้อมูล");
+  const dispatchCard = f.app.dispatchCards(f.auth.actor, projectId, started.topic.id, [started.reply.replyMessageId!]).get(started.reply.replyMessageId!)!;
+  expect(dispatchCard).toMatchObject({ state: "proposed", reason: "allowance_disabled" });
+  const notices = () => f.store.read(tx => tx.all<{ record_json: string }>("SELECT record_json FROM delivery_intents ORDER BY sequence"))
+    .map(row => JSON.parse(row.record_json) as { status: string; failureReason: string | null; attention?: { item: string | null } });
+  expect(notices()).toMatchObject([{ status: "waiting", attention: { item: `proposal:${dispatchCard.id}` } }]);
+  f.app.execute(f.auth.actor, promote(f, "accept", started.reply.promotionProposals[0]!));
+  expect(notices()).toMatchObject([{ status: "cancelled", failureReason: "owner_answered" }]);
+  expect(f.store.read(tx => tx.get<{ state: string; record_json: string }>("SELECT state, record_json FROM work_groups"))).toMatchObject({ state: "closed" });
+  expect(JSON.parse(f.store.read(tx => tx.get<{ record_json: string }>("SELECT record_json FROM work_groups")!.record_json)).closed).toBe("promoted");
+});
+
+test("REL03 a promoted origin's team card offers no reply, add or call-again form; the continuation does", async () => {
+  const f = await fixture();
+  const g = general(f);
+  f.outputs.push(proposal("แอปบันทึกรายจ่าย"));
+  // One eligible specialist: app.routing_selection/v1 rule `single` calls it, so the origin has a team card.
+  const started = await chat(f, "อยากทำแอปบันทึกรายจ่าย ช่วยดูโครงสร้างข้อมูลหน่อย");
+  const replyMessageId = started.reply.replyMessageId!;
+  const held = f.app.dispatchCards(f.auth.actor, g.projectId, started.topic.id, [replyMessageId]).get(replyMessageId)!;
+  expect(held).toMatchObject({ state: "proposed", selection: { rule: "single" }, readOnly: false });
+  // This fixture's reply worker has no queue, so the owner starts the team from the held card.
+  f.app.execute(f.auth.actor, { kind: "dispatch.proposal.accept", requestId: rid(), projectId: g.projectId, expectedRevision: held.revision,
+    payload: { proposalId: held.id, roleIds: held.roles.map(role => role.roleId) } });
+  await settle(f);
+  const before = f.app.dispatchCards(f.auth.actor, g.projectId, started.topic.id, [replyMessageId]).get(replyMessageId)!;
+  expect(before.discussion!.roles.map(role => role.state)).toEqual(["completed"]);
+  expect(await (await get(f, topicPath(g.projectId, started.topic.id))).text()).toContain(`class="team-form team-reply-to"`);
+  const view = started.reply.promotionProposals[0]!;
+  const html = await (await get(f, topicPath(g.projectId, started.topic.id))).text();
+  expect((await postForm(f, promotionPath(view, "accept"), form(html, promotionPath(view, "accept")))).status).toBe(303);
+  const after = f.app.dispatchCards(f.auth.actor, g.projectId, started.topic.id, [replyMessageId]).get(replyMessageId)!;
+  expect(after).toMatchObject({ readOnly: true, canInclude: false, addable: [] });
+  const origin = await (await get(f, topicPath(g.projectId, started.topic.id))).text();
+  expect(origin).not.toContain(`class="team-form team-reply-to"`);
+  expect(origin).not.toContain(`class="team-form team-add"`);
+  expect(origin).not.toMatch(/<input type="hidden" name="action" value="include">/);
+  // The read-only origin still shows the selection line and the opinion itself.
+  expect(origin).toContain(`data-selection-rule="single"`);
+});
