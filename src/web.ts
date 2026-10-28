@@ -23,15 +23,15 @@ import { setupPage, visibleStep } from "./web-setup";
 import type { JitReplyView, StopReplyCommand } from "./team/jit-reply";
 import type { RoleProposalCommand } from "./team/role-proposals";
 import { defaultPanelTab, legacyRedirect, panelRows, panelTabs, searchLimits, settingsPageHandler, type PanelTab } from "./web-settings";
-import { searchItems, searchPage, settingsAccessPage, accessConfirmPage, settingsDataPage, settingsDispatchPage, settingsFeedPage, settingsTelegramPage, topicPanelPage, type PanelData } from "./web-navigation";
+import { searchItems, searchPage, settingsAccessPage, accessConfirmPage, settingsConnectionsPage, settingsDataPage, settingsDispatchPage, settingsFeedPage, settingsTelegramPage, topicPanelPage, type PanelData } from "./web-navigation";
 import { dispatchLimits, type DispatchCommand } from "./team/jit-dispatch";
 import { createWebhookHandler, type WebhookHandlerOptions } from "./pr/webhook-route";
 import { webhookPathPrefix, type WebhookCommandKind } from "./pr/webhooks";
 import type { SetDispatchAllowanceCommand } from "./team/allowance";
 import { feedPathToken, renderScheduleFeed, type FeedCommand } from "./schedule-feed";
 import { accessConfirmToken, accessLevels, effectiveAccess, levelRank, type AccessCommand, type AccessLevel } from "./exec/access";
+import { normalizeSecret, type ConnectionCommand } from "./exec/connections";
 import type { ResetBoxCommand } from "./exec/box-commands";
-import type { ConnectionCommand } from "./exec/connections";
 
 /** ADR 0028 Content-Security-Policy: every page, asset and API response allows only this origin, and no inline script or eval. */
 export const contentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
@@ -514,6 +514,66 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
           return page(() => errorPage(tr(key as MessageKey)), error instanceof AppError ? error.status : 409);
         }
         return respond(null, 303, { Location: `/settings/access?project=${projectId}#access-${projectId}` });
+      }
+      // web.connections_settings/v1 (EXE11): owner credentials for approved effects. Secrets travel one way
+      // only: the forms post them, the commands consume them, and no response, redirect or log ever echoes one.
+      const connectionPageRoute = /^\/settings\/connections\/([a-f0-9-]{36})\/(secret|test|remove)$/.exec(url.pathname);
+      /** Maps an EXE08 command refusal to its owner-facing Settings sentence. */
+      const secretError = (error: unknown): string | null => error instanceof AppError && error.code === "connection_requires_web"
+        ? "connection.error_requires_web" : null;
+      if (url.pathname === "/settings/connections" && request.method === "GET") {
+        const tested = url.searchParams.getAll("tested"), result = url.searchParams.getAll("result");
+        // `?tested=<id>&result=<ok|failed>` echoes the test the owner just ran; anything else is rejected.
+        if (tested.length > 1 || result.length > 1 || tested.length !== result.length ||
+            (tested.length === 1 && (!/^[a-f0-9-]{36}$/.test(tested[0]!) || (result[0] !== "ok" && result[0] !== "failed"))))
+          throw new AppError("invalid_query");
+        return page(() => settingsConnectionsPage(nav(), app.connections(auth.actor).filter(view => view.removedAt === null),
+          app.workspace(auth.actor).projects, auth.csrf, tested.length ? { id: tested[0]!, ok: result[0] === "ok" } : null));
+      }
+      if (request.method === "POST" && (url.pathname === "/settings/connections" || connectionPageRoute)) {
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        const revisionNumber = (value: unknown) => typeof value === "string" && /^\d{1,15}$/.test(value) ? Number(value) : value;
+        if (!connectionPageRoute) {
+          // Create: kind, label, scope checkboxes (`scope-<id>`, none meaning every project) and one secret.
+          const scopeKeys = Object.keys(body).filter(key => key.startsWith("scope-"));
+          if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "kind", "label", "secret", ...scopeKeys].includes(key)) ||
+              scopeKeys.some(key => !/^scope-[a-f0-9-]{36}$/.test(key) || body[key] !== "on") ||
+              typeof body.kind !== "string" || typeof body.label !== "string" || typeof body.secret !== "string")
+            throw new AppError("invalid_body");
+          // Fail a weak secret before the row exists, so no empty connection is left behind.
+          normalizeSecret(body.secret);
+          const scope = [...new Set(scopeKeys.map(key => key.slice("scope-".length)))].sort();
+          try {
+            const created = app.execute(auth.actor, { kind: "connection.create", requestId: body.requestId, projectId: null,
+              expectedRevision: 0, payload: { kind: body.kind, label: body.label, projectScope: scope.length ? scope : null } } as ConnectionCommand);
+            app.execute(auth.actor, { kind: "connection.set_secret", requestId: crypto.randomUUID(), projectId: null,
+              expectedRevision: created.connection.revision,
+              payload: { connectionId: created.connection.id, secret: body.secret } } as ConnectionCommand);
+            return respond(null, 303, { Location: `/settings/connections#connection-${created.connection.id}` });
+          } catch (error) {
+            const key = secretError(error);
+            if (!key) throw error;
+            return page(() => errorPage(tr(key as MessageKey)), error instanceof AppError ? error.status : 403);
+          }
+        }
+        const connectionId = connectionPageRoute[1]!, verb = connectionPageRoute[2]!;
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", ...(verb === "secret" ? ["secret"] : verb === "remove" ? ["confirm"] : [])].includes(key))) throw new AppError("invalid_body");
+        // Removing needs the explicit checkbox; its absence (or any other value) refuses the removal.
+        if (verb === "remove" && body.confirm !== "on") throw new AppError("invalid_body");
+        if (verb === "secret" && typeof body.secret !== "string") throw new AppError("invalid_body");
+        const kind = verb === "secret" ? "connection.rotate" : verb === "test" ? "connection.test" : "connection.remove";
+        const command = { kind, requestId: body.requestId, projectId: null, expectedRevision: revisionNumber(body.expectedRevision),
+          payload: verb === "secret" ? { connectionId, secret: body.secret } : { connectionId } } as ConnectionCommand;
+        try {
+          const receipt = app.execute(auth.actor, command);
+          if (verb !== "test") return respond(null, 303, { Location: `/settings/connections#connection-${connectionId}` });
+          const ok = receipt.test?.state === "present";
+          return respond(null, 303, { Location: `/settings/connections?tested=${connectionId}&result=${ok ? "ok" : "failed"}#connection-${connectionId}` });
+        } catch (error) {
+          const key = secretError(error);
+          if (!key) throw error;
+          return page(() => errorPage(tr(key as MessageKey)), error instanceof AppError ? error.status : 403);
+        }
       }
       if (request.method === "GET" && claimRoute) {
         const revision = Number(url.searchParams.get("revision")), generation = Number(url.searchParams.get("generation"));

@@ -5,6 +5,7 @@ import type { TelegramStatus } from "./telegram/types";
 import type { DispatchAllowance } from "./team/allowance";
 import type { ScheduleFeed } from "./schedule-feed";
 import { accessLevels, levelRank, type AccessLevel, type ProjectAccess, type RoleAccess } from "./exec/access";
+import { connectionKinds, type ConnectionKind, type ConnectionView } from "./exec/connections";
 import { accessBadge, escape, hiddenCommand, icon, jobStateLabels, prObservedState, prStatusLabels, shell, taskStatusText, time, type NavigationWorkspace } from "./web-layout";
 import { panelRows, panelTabLabels, panelTabs, paletteCommands, searchLimits, type PanelTab } from "./web-settings";
 
@@ -248,4 +249,49 @@ export function settingsDispatchPage(workspace: NavigationWorkspace, list: { pro
     <section class="settings-section" aria-labelledby="dispatch-title"><h2 id="dispatch-title">${tr("settings.dispatch_title")}</h2><p>${tr("settings.dispatch_note")}</p>
     ${list.projects.length ? `<ul class="data-projects">${list.projects.map(row).join("")}</ul>` : `<p class="empty-list">${tr("settings.dispatch_no_projects")}</p>`}
     <nav class="pagination" aria-label="${tr("home.project_pages")}">${single ? `<a href="/settings/dispatch">${tr("common.view_all_projects")}</a>` : ""}${!single && offset > 0 ? `<a href="/settings/dispatch?offset=${Math.max(0, offset - pageSize)}">${tr("home.previous")}</a>` : ""}${!single && list.hasMore ? `<a href="/settings/dispatch?offset=${offset + pageSize}">${tr("common.next")}</a>` : ""}</nav></section></div>`, { breadcrumb: { title: tr("shell.settings"), href: "/settings" } });
+}
+
+/**
+ * Settings › Connections (web.connections_settings/v1, S11-D06): the owner's credentials for approved effects
+ * and MCP servers. Values are never rendered, pre-filled or shown: the create and rotate forms take a secret
+ * that the page never echoes, and every row only reports whether a secret is stored. `tested` carries the
+ * outcome of the test the owner just ran, from the redirect query, so the row can name its last test result.
+ */
+export function settingsConnectionsPage(workspace: NavigationWorkspace, list: ConnectionView[],
+  projects: NavigationWorkspace["projects"], csrf: string, tested: { id: string; ok: boolean } | null = null): string {
+  const names = new Map(projects.map(p => [p.id, p.name]));
+  const kindText = (kind: ConnectionKind) => tr(`connection.kind_${kind}` as MessageKey);
+  const scopeText = (scope: string[] | null) => scope === null ? tr("connection.scope_all")
+    : scope.map(id => escape(names.get(id) ?? id)).join(", ");
+  const row = (view: ConnectionView) => {
+    const lastTest = tested?.id === view.id
+      ? tested.ok ? tr("connection.last_test_ok") : tr("connection.last_test_failed")
+      : tr("connection.never_tested");
+    return `<li class="connection-row" id="connection-${view.id}"><h3>${escape(view.label)}</h3>
+      <dl class="settings-facts"><dt>${tr("connection.kind")}</dt><dd>${kindText(view.kind)}</dd>
+        <dt>${tr("connection.scope")}</dt><dd>${scopeText(view.projectScope)}</dd>
+        <dt>${tr("connection.created")}</dt><dd>${time(view.createdAt)}</dd>
+        ${view.rotatedAt !== null ? `<dt>${tr("connection.rotated")}</dt><dd>${time(view.rotatedAt)}</dd>` : ""}
+        <dt>${tr("connection.test")}</dt><dd>${lastTest}</dd></dl>
+      <form class="team-form connection-form" method="post" action="/settings/connections/${view.id}/secret">${hiddenCommand(csrf, view.revision)}
+        <label>${tr("connection.secret")}<input type="password" name="secret" autocomplete="off" required></label>
+        <button>${tr("connection.rotate")}</button></form>
+      <form class="team-form connection-form" method="post" action="/settings/connections/${view.id}/test">${hiddenCommand(csrf, view.revision)}
+        <button>${tr("connection.test")}</button></form>
+      <form class="team-form connection-form" method="post" action="/settings/connections/${view.id}/remove">${hiddenCommand(csrf, view.revision)}
+        <label class="choice"><input type="checkbox" name="confirm" required>${tr("connection.remove_confirm")}</label>
+        <button class="danger">${tr("connection.remove")}</button></form></li>`;
+  };
+  return shell(tr("settings.connections"), { workspace, csrf, section: "settings", settings: "connections" }, `<div class="content settings-content">
+    <section class="settings-section" aria-labelledby="connections-title"><h2 id="connections-title">${tr("connection.title")}</h2><p>${tr("connection.note")}</p>
+    <form class="team-form connection-form" method="post" action="/settings/connections">${hiddenCommand(csrf, 0)}
+      <label>${tr("connection.label")}<input name="label" required maxlength="80" autocomplete="off"></label>
+      <label>${tr("connection.kind")}<select name="kind" required>${connectionKinds.map(kind => `<option value="${kind}">${kindText(kind)}</option>`).join("")}</select></label>
+      <fieldset class="choice-group"><legend>${tr("connection.scope")}</legend>
+        ${projects.map(p => `<label class="choice"><input type="checkbox" name="scope-${p.id}">${escape(p.name)}</label>`).join("")}</fieldset>
+      <label>${tr("connection.secret")}<input type="password" name="secret" autocomplete="off" required></label>
+      <button class="primary">${tr("connection.create")}</button></form></section>
+    <section class="settings-section" aria-labelledby="connections-list-title"><h2 id="connections-list-title">${tr("settings.connections")}</h2>
+    ${list.length ? `<ul class="data-projects">${list.map(row).join("")}</ul>` : `<p class="empty-list" role="status">${tr("connection.note")}</p>`}</section></div>`,
+    { breadcrumb: { title: tr("shell.settings"), href: "/settings" } });
 }
