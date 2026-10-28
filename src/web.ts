@@ -2,7 +2,7 @@ import { Application, type CreateProjectCommand } from "./application";
 import { AppError } from "./errors";
 import type { CreateTopicCommand, SendMessageCommand, StartChatCommand } from "./conversation";
 import type { PromotionCommand } from "./promotion";
-import { workspacePage, projectPage, conversationPage, sourcePage, jobsPage, teamPage, previewPage, discussionPage, deliveryPage, deliveryDetailPage, prReportsPage, prReportPage, prWebhookSecretPage, tasksPage, taskPage, memoryPage, memoryClaimPage, memoryContextPage, schedulesPage, scheduleDetailPage, backupsPage, backupDetailPage, deletionsPage, deletionDetailPage, exportsPage, exportDetailPage, upgradesPage, upgradeDetailPage, restoresPage, restoreDetailPage, loginPage, errorPage } from "./web-layout";
+import { workspacePage, projectPage, conversationPage, boxLivePage, sourcePage, jobsPage, teamPage, previewPage, discussionPage, deliveryPage, deliveryDetailPage, prReportsPage, prReportPage, prWebhookSecretPage, tasksPage, taskPage, memoryPage, memoryClaimPage, memoryContextPage, schedulesPage, scheduleDetailPage, backupsPage, backupDetailPage, deletionsPage, deletionDetailPage, exportsPage, exportDetailPage, upgradesPage, upgradeDetailPage, restoresPage, restoreDetailPage, loginPage, errorPage } from "./web-layout";
 import type { ExtractMemoryCommand } from "./memory/types";
 import type { CorrectMemoryCommand } from "./memory/types";
 import type { ForgetMemoryCommand } from "./memory/types";
@@ -273,6 +273,11 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       const mcpProposalRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})\/mcp-proposals\/([a-f0-9-]{36})$/.exec(pathname);
       const settingsMcpAutoRoute = /^\/settings\/mcp\/([a-f0-9-]{36})\/tools\/([^/]+)\/auto$/.exec(pathname);
       const settingsMcpRemoveRoute = /^\/settings\/mcp\/([a-f0-9-]{36})\/remove$/.exec(pathname);
+      // web.box_live/v1 (EXE15): the script-free live view of the project box and the takeover forms.
+      const boxLiveRoute = /^\/projects\/([a-f0-9-]{36})\/box\/live$/.exec(pathname);
+      const boxShotRoute = /^\/projects\/([a-f0-9-]{36})\/box\/screenshot\/([a-f0-9-]{36})$/.exec(pathname);
+      const boxLatestRoute = /^\/projects\/([a-f0-9-]{36})\/box\/latest$/.exec(pathname);
+      const boxTakeoverRoute = /^\/projects\/([a-f0-9-]{36})\/box\/takeover\/(start|end|click|type|key)$/.exec(pathname);
       /** Finds an installed MCP server by id across every project the owner sees; null when gone. */
       /** Finds an installed MCP server by id across every project the owner sees; null when gone. */
       const findMcpServer = (serverId: string): { projectId: string; projectName: string; server: McpServerView } | null => {
@@ -653,6 +658,55 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
           payload: { serverId } } as McpCommand;
         const receipt = app.execute(auth.actor, command);
         return api ? json(receipt) : respond(null, 303, { Location: "/settings/mcp" });
+      }
+      if (request.method === "GET" && boxLiveRoute) {
+        // web.box_live/v1 (EXE15): the script-free live view over the merged EXE14 read API.
+        const projectId = boxLiveRoute[1]!;
+        const project = app.project(auth.actor, projectId);
+        const takeover = app.takeover(auth.actor, projectId);
+        const shots = app.boxScreenshots(auth.actor, projectId);
+        const access = app.projectAccess(auth.actor, projectId);
+        return page(() => boxLivePage(nav(), project, { screenshotId: shots[0]?.id ?? null,
+          takeover: { active: takeover.active, startedAt: takeover.startedAt, revision: takeover.revision, takeoverId: takeover.takeoverId },
+          level: access.level }, auth.csrf));
+      }
+      if (boxShotRoute) {
+        // web.box_live/v1: one stored screenshot. The owner session is required; screenshots are never cached.
+        if (request.method !== "GET") throw new AppError("method_not_allowed", 405);
+        const shot = app.boxScreenshot(auth.actor, boxShotRoute[1]!, boxShotRoute[2]!);
+        return respond(new Blob([Buffer.from(shot.data)]), 200, { "Content-Type": "image/png", "Cache-Control": "no-store" });
+      }
+      if (request.method === "GET" && boxLatestRoute) {
+        // web.box_live/v1: the script's poll endpoint (`{id: null}` before the first screenshot).
+        const shots = app.boxScreenshots(auth.actor, boxLatestRoute[1]!);
+        return json({ id: shots[0]?.id ?? null });
+      }
+      if (request.method === "POST" && boxTakeoverRoute) {
+        // web.box_live/v1: every takeover form posts here and lands back on the page. Click coordinates arrive
+        // as `shot.x`/`shot.y` from the `<input type="image" name="shot">`; keys arrive as owner words and are
+        // mapped to the xdotool names EXE14 classifies before the command runs.
+        const projectId = boxTakeoverRoute[1]!, action = boxTakeoverRoute[2]! as "start" | "end" | "click" | "type" | "key";
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        const fields = action === "start" ? [] : action === "end" ? ["takeoverId"]
+          : action === "click" ? ["takeoverId", "shot.x", "shot.y"] : action === "type" ? ["takeoverId", "text"] : ["takeoverId", "key"];
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", ...fields].includes(key))) throw new AppError("invalid_body");
+        const revision = typeof body.expectedRevision === "string" && /^\d{1,15}$/.test(body.expectedRevision) ? Number(body.expectedRevision) : body.expectedRevision;
+        const keyMap = { Enter: "Return", Tab: "Tab", Escape: "Escape", Backspace: "BackSpace", ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right" } as const;
+        if (action === "key" && (typeof body.key !== "string" || !Object.hasOwn(keyMap, body.key))) throw new AppError("invalid_body");
+        if (action === "type" && typeof body.text !== "string") throw new AppError("invalid_body");
+        const takeoverCommand = { kind: `takeover.${action}`, requestId: body.requestId, projectId, expectedRevision: revision,
+          payload: action === "start" ? {} : action === "end" ? { takeoverId: body.takeoverId }
+            : action === "click" ? { takeoverId: body.takeoverId, x: Number(body["shot.x"]), y: Number(body["shot.y"]) }
+            : action === "type" ? { takeoverId: body.takeoverId, text: body.text }
+            : { takeoverId: body.takeoverId, key: keyMap[body.key as keyof typeof keyMap] } } as TakeoverCommand | TakeoverInputCommand;
+        try {
+          await app.execute(auth.actor, takeoverCommand as TakeoverInputCommand);
+        } catch (error) {
+          const key = error instanceof AppError && error.code === "takeover_requires_web" ? "live.error_requires_web" : null;
+          if (!key) throw error;
+          return page(() => errorPage(tr(key as MessageKey)), error instanceof AppError ? error.status : 403);
+        }
+        return respond(null, 303, { Location: `/projects/${projectId}/box/live` });
       }
       if (boxRoute) {
         const projectId = boxRoute[1]!;
@@ -1442,6 +1496,9 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
           mcp: { proposals: app.mcpProposals(auth.actor, state.project.id).filter(proposal => proposal.topicId === state.topic.id),
             connections: app.connections(auth.actor).filter(view => view.kind === "mcp_env" && view.removedAt === null &&
               (view.projectScope === null || view.projectScope.includes(state.project.id))) },
+          // web.box_live/v1 (EXE15): the merged equivalent of EXE14's browser-capable view — boxes open with
+          // the project profile only when a browser image is configured, and only then the header links it.
+          boxLive: (config.execution.images?.browser ?? null) !== null,
         }));
       }
       if (request.method === "GET" && topicCollection) {

@@ -107,6 +107,8 @@ export const routeInventory: readonly { readonly from: string; readonly kind: "r
   { from: "/projects/:project", kind: "page" },
   { from: "/projects/:project/topics", kind: "page" },
   { from: "/projects/:project/topics/:topic", kind: "page" },
+  // web.box_live/v1 (EXE15): the script-free live view of the project box.
+  { from: "/projects/:project/box/live", kind: "page" },
   { from: "/projects/:project/topics/:topic/decisions", kind: "page" },
   { from: "/projects/:project/sources/:source", kind: "page" },
   { from: "/projects/:project/memory", kind: "panel", section: "memory" },
