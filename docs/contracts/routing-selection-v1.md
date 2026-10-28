@@ -66,6 +66,7 @@ From the same team card the owner can correct the selection. Every control is a 
 
 - **Skip** a running role: the existing `team.control` `skip`.
 - **Call again** a skipped, stopped or excluded role, or **add** an eligible specialist who is not in the discussion: `team.control` `include` with `back=topic`, within the discussion's role budget. These controls appear only until the team reply exists. Jit answers for a team once (`settleDispatch`, `dispatch.answer`), so a later result could never reach that answer. After it, the owner corrects with a reply to an opinion, an `@name` or a follow-up, each of which starts a new dispatch and a new team reply.
+- In a promoted (read-only) topic the card offers none of the reply, add or call-again forms (`DispatchCardView.readOnly`), since each would be refused with `topic_promoted`. Skip and stop-all stay.
 - The card and `team.control include` read the same projected participation state. A role stopped from its job page (`job.stop`) reads `stopped` even though its stored participation was not rewritten, so it can be included again. Its fenced job still cannot commit a late result.
 - **Reply** to one committed opinion: a form under that opinion posts `message.send` with `replyDiscussion` and `replyRole` (both or neither, otherwise `invalid_body`), so rule `reply` calls that role again.
 

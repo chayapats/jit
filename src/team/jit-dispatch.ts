@@ -90,6 +90,11 @@ export interface DispatchCardView {
    * role may run again (false once the team reply exists, since a later result would never reach it).
    */
   addable: { roleId: string; roleName: string }[]; canInclude: boolean;
+  /**
+   * app.topic_promotion/v1: the topic was promoted, so it is read-only. The card offers no form that writes into it
+   * (reply to an opinion, add, call again); every such command would be refused with `topic_promoted`.
+   */
+  readOnly: boolean;
   /** Why Jit could not start the team reply last time; null when it started or was never tried. */
   teamHold: ReplyNotAdmitted | null;
   discussion: { id: string; revision: number; origin: DiscussionOrigin | null; stoppedAll: boolean; coverageGap: string[]; roles: TeamCardRole[] } | null;
@@ -475,6 +480,7 @@ function readCard(tx: AppTransaction, row: ProposalRow, policy: TeamPolicy): Dis
   const replyMessageId = anchor.id;
   let discussion: DispatchCardView["discussion"] = null, canAnswer = false, canStopAll = false, decision: DispatchCardView["decision"] = null;
   let addable: DispatchCardView["addable"] = [], canInclude = false;
+  const readOnly = !!promotionFrom(tx, row.projectId, row.topicId);
   const teamReply = row.teamReplyId ? readReply(tx, row.projectId, row.teamReplyId) : null;
   if (row.discussionId) {
     const stored = readDiscussion(tx, row.projectId, row.discussionId), projected = projectDiscussion(tx, stored);
@@ -493,7 +499,7 @@ function readCard(tx: AppTransaction, row: ProposalRow, policy: TeamPolicy): Dis
     // Owner controls on the card reuse `team.control` include, which admits a role only within the discussion's role budget.
     // Once the team reply exists a later result can no longer reach it (settleDispatch and `dispatch.answer` answer
     // once), so the card stops offering add and call-again; the owner corrects through a reply, @name or follow-up.
-    canInclude = !stored.stoppedAll && !row.teamReplyId && stored.participations.filter(item => item.state !== "excluded" && item.state !== "skipped").length < stored.limits.roles;
+    canInclude = !readOnly && !stored.stoppedAll && !row.teamReplyId && stored.participations.filter(item => item.state !== "excluded" && item.state !== "skipped").length < stored.limits.roles;
     if (canInclude) {
       addable = readTeam(tx, row.projectId, policy).roles
         .filter(role => role.kind === "specialist" && role.enabled && role.effective.route && !stored.participations.some(item => item.roleId === role.id))
@@ -504,7 +510,7 @@ function readCard(tx: AppTransaction, row: ProposalRow, policy: TeamPolicy): Dis
     id: row.id, projectId: row.projectId, topicId: row.topicId, replyId: row.replyId, replyMessageId, anchorSequence: anchor.sequence, revision: row.revision, state: row.state,
     admission: row.admission, allowanceRevision: row.allowanceRevision, reason: record.reason, roles: record.roles, dropped: record.dropped,
     acceptedRoleIds: record.acceptedRoleIds, blocked: (record.blocked ?? []).map(role => ({ ...role, unblock: unblockAction(tx, row.projectId, role.runId) })),
-    selection: selectionOf(tx, row, record), addable, canInclude, teamHold: record.teamHold ?? null, discussion, teamReply, canAnswer, canStopAll, decision, createdAt: row.createdAt,
+    selection: selectionOf(tx, row, record), addable, canInclude, readOnly, teamHold: record.teamHold ?? null, discussion, teamReply, canAnswer, canStopAll, decision, createdAt: row.createdAt,
   };
 }
 

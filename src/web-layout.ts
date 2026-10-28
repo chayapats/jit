@@ -328,7 +328,7 @@ function dispatchCard(card: DispatchCardView, base: string, csrf: string, topicR
     <input type="hidden" name="replyDiscussion" value="${team.id}"><input type="hidden" name="replyRole" value="${role.roleId}">
     <label>${escape(fillText(tr("team_card.reply_label"), { name: role.roleName }))}<textarea name="text" rows="2" required></textarea></label><button>${escape(fillText(tr("team_card.reply_to"), { name: role.roleName }))}</button></form>`;
   const opinion = (role: TeamCardRole) => !role.opinion ? "" : role.opinion.text === null ? `<p class="team-role-note">${tr("team_card.opinion_unavailable")}</p>`
-    : `<details class="team-opinion"><summary>${tr("team_card.read_opinion")}</summary><div class="message-body">${literalContent(role.opinion.text)}</div>${replyForm(role)}</details>`;
+    : `<details class="team-opinion"><summary>${tr("team_card.read_opinion")}</summary><div class="message-body">${literalContent(role.opinion.text)}</div>${card.readOnly ? "" : replyForm(role)}</details>`;
   const add = card.addable.length ? `<form class="team-form team-add" method="post" action="/projects/${card.projectId}/team/discussions/${team.id}/controls">${hiddenCommand(csrf, team.revision)}
     <input type="hidden" name="action" value="include"><input type="hidden" name="back" value="topic"><label>${tr("team_card.add_role")}<select name="roleId">${card.addable.map(role => `<option value="${role.roleId}">${escape(role.roleName)}</option>`).join("")}</select></label><button>${tr("team_card.add")}</button></form>` : "";
   const rows = team.roles.map(role => `<li class="team-role" data-role-state="${role.activity === "waiting" ? "waiting" : role.state}"><div class="team-role-head"><span class="team-role-name">${escape(role.roleName)}</span>
