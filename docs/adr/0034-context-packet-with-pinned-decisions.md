@@ -13,7 +13,7 @@ FR-31 requires that the owner's live decisions survive long conversations, compa
   1. Purpose.
   2. Responsibilities, taken from the role text.
   3. The current request.
-  4. **Pinned decisions**: committed `owner_decisions` rows that are still live, with their ids and revisions. Topic decisions come first, then project decisions.
+  4. **Pinned decisions**: every committed `owner_decisions` row that is still live in scope (the topic's live decision, then the project's), with ids and revisions. This section has no count cap.
   5. Constraints, as defined in ADR 0020.
   6. Recent messages.
   7. A versioned summary that records `summaryRevision` and the source ids it covers.
@@ -28,4 +28,4 @@ FR-31 requires that the owner's live decisions survive long conversations, compa
 
 - Relying on native session history or compaction would lose decisions without any warning.
 - Pinning everything would overflow the budget.
-- Packets grow by the number of decision rows. The existing finite ceilings bound that growth, with at most 12 decisions per packet, and every omission is disclosed.
+- Packets grow by the number of live decision rows. Pinned decisions have **no count cap**: every live decision in scope is pinned, because FR-31 forbids dropping one. The existing 12-item ceiling of ADR 0020 applies to constraints only. Growth is bounded by the run's context byte budget; when the pinned decisions alone do not fit, the run is refused with `context_too_large` and a next action (supersede or close stale decisions, or raise the budget), and nothing is silently cut.
