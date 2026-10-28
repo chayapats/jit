@@ -1513,6 +1513,7 @@ export const en: Record<MessageKey, string> = {
   "attention.notice_proposal": "Jit asks to call {count} specialists and waits for you",
   "attention.notice_blocked": "Team work is blocked ({reason}) and waits for you",
   "attention.notice_hold": "The team finished, but Jit could not start its answer ({reason}); it waits for you",
+  "attention.notice_result_blocked": "{count} specialist results are blocked and wait for your unblock action",
   "attention.notice_open": "Open: {path}",
   "error.retry_key_expired": "This retry key is older than 24 hours. Use a new key to send again.",
   "error.receipt_not_found": "This receipt was not found.",

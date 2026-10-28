@@ -2311,7 +2311,7 @@ export class Application {
       const now = this.#now();
       const receipt = executePromotion(tx, command, now);
       // delivery.attention_levels/v1: the promoted origin is read-only, so its waiting card notices resolve here.
-      if (receipt.promotion) evaluateTopicWorkGroups(tx, receipt.proposal.projectId, receipt.proposal.topicId, now, "owner_answered");
+      if (receipt.promotion) evaluateTopicWorkGroups(tx, receipt.proposal.projectId, receipt.proposal.topicId, this.config.team, now, "owner_answered");
       this.#beforeCommit?.("project");
       tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(receipt), now);
       tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);

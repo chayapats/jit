@@ -29,6 +29,8 @@ const answer = (request: ApplicationRunRequest, output: string): ApplicationRunO
   ...fixtureOutcome("complete", output), usage: { calls: 1, rounds: 1, hops: 1, contextTokens: 0, outputTokens: 0, retries: 0, wallMs: 0, tokensUnknown: false },
   session: { adapter: "scripted", id: request.runId, context: request.context },
 });
+/** app.specialist_results/v2 `done` result (REL02): only a structured done result is citable by the team reply. */
+const done = (request: ApplicationRunRequest, text: string) => answer(request, JSON.stringify({ status: "done", result: text, evidence: "none", unblock: null }));
 const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(r => { resolve = r; }); return { promise, resolve }; };
 type Handler = (request: ApplicationRunRequest, signal: AbortSignal) => unknown | Promise<unknown>;
 const dispatching = (roles: string[]) => JSON.stringify({ reply: "ขอถามทีมก่อนนะครับ", proposals: [{ kind: "dispatch", roles }] });
@@ -62,7 +64,7 @@ async function fixture(options: Options = {}) {
   const clock = { now: epoch };
   const handlers: Handlers = {
     jit: options.jit ?? (r => answer(r, dispatching(three))),
-    specialist: options.specialist ?? (r => answer(r, "ความเห็นของผู้เชี่ยวชาญ")),
+    specialist: options.specialist ?? (r => done(r, "ความเห็นของผู้เชี่ยวชาญ")),
     team: options.team ?? (r => answer(r, JSON.stringify({ reply: "สรุปจากทีม: ทำแบบเรียบง่ายก่อน" }))),
   };
   const parts = compose(path, handlers, clock);
@@ -103,6 +105,14 @@ async function reopen(f: Fixture): Promise<Fixture> {
 function send(f: Fixture, text: string) {
   const topic = f.app.conversation(f.auth.actor, f.project.id, f.topic.id).topic;
   return f.app.execute(f.auth.actor, { kind: "message.send", projectId: f.project.id, requestId: rid(), expectedRevision: topic.revision, payload: { topicId: f.topic.id, text } });
+}
+/**
+ * Moves the fixture to a fresh topic, so the next message is a new request: REL03 deterministic routing would
+ * otherwise continue the previous discussion's roles in the same topic instead of offering Jit's proposal card.
+ */
+function moveToNewTopic(f: Fixture, title: string) {
+  const project = f.app.project(f.auth.actor, f.project.id);
+  f.topic = f.app.execute(f.auth.actor, { kind: "topic.create", projectId: f.project.id, requestId: rid(), expectedRevision: project.revision, payload: { title } }).topic;
 }
 /** Pumps until no admitted work remains and runs the service's work group sweep after each round. */
 async function drain(f: Fixture) { for (let i = 0; i < 8; i++) { f.queue.pump(); await f.queue.idle(); tickWorkGroups(f.store, f.config.team, f.clock.now); } }
@@ -154,11 +164,11 @@ test("a Jit reply that calls 3 specialists creates no intent until all settle, t
   expect(intents(f)).toHaveLength(0);
   // Each intermediate result commits without an intent, also across sweeps.
   for (const roleId of [f.techId, f.designId]) {
-    gates.get(roleId)!.resolve(answer(f.port.requests.find(r => r.roleId === roleId)!, "ความเห็นระหว่างทาง"));
+    gates.get(roleId)!.resolve(done(f.port.requests.find(r => r.roleId === roleId)!, "ความเห็นระหว่างทาง"));
     await ticks(); tickWorkGroups(f.store, f.config.team, f.clock.now);
     expect(intents(f)).toHaveLength(0);
   }
-  gates.get(f.marketingId)!.resolve(answer(f.port.requests.find(r => r.roleId === f.marketingId)!, "ความเห็นสุดท้าย"));
+  gates.get(f.marketingId)!.resolve(done(f.port.requests.find(r => r.roleId === f.marketingId)!, "ความเห็นสุดท้าย"));
   await ticks(); tickWorkGroups(f.store, f.config.team, f.clock.now);
   // Settled, but the team reply is still thinking: still nothing.
   expect(cardFor(f, reply.replyMessageId!).teamReply).toMatchObject({ state: "thinking" });
@@ -186,7 +196,7 @@ test("one specialist stopped and one skipped still notify once, and a late callb
   const gates = new Map<string, ReturnType<typeof deferred<ApplicationRunOutcome>>>();
   let techId = "";
   const f = await fixture({ specialist: request => {
-    if (request.roleId === techId) return answer(request, "ความเห็นด้านเทคนิค");
+    if (request.roleId === techId) return done(request, "ความเห็นด้านเทคนิค");
     const gate = deferred<ApplicationRunOutcome>(); gates.set(request.roleId, gate); return gate.promise;
   } });
   techId = f.techId;
@@ -212,7 +222,7 @@ test("one specialist stopped and one skipped still notify once, and a late callb
   expect(intents(f)).toHaveLength(1);
   expect(intents(f)[0]!.payload.text).toStartWith("จิตตอบในนามทีมแล้ว (1 คน)");
   // Late results from the stopped and skipped roles are fenced and change nothing.
-  for (const roleId of [f.designId, f.marketingId]) gates.get(roleId)!.resolve(answer(f.port.requests.find(r => r.roleId === roleId)!, "ผลที่มาช้า"));
+  for (const roleId of [f.designId, f.marketingId]) gates.get(roleId)!.resolve(done(f.port.requests.find(r => r.roleId === roleId)!, "ผลที่มาช้า"));
   await drain(f);
   expect(intents(f)).toHaveLength(1);
   expect(f.app.conversation(f.auth.actor, f.project.id, f.topic.id).items.some(m => m.text?.includes("ผลที่มาช้า"))).toBe(false);
@@ -257,7 +267,7 @@ test("needs-me: a plain team report creates no intent; a proposal card creates o
   });
   // A route wait is a blocked result: it notifies immediately, even while the group is still open.
   f.handlers.team = r => answer(r, JSON.stringify({ reply: "ทีมตอบ" }));
-  f.handlers.specialist = r => r.roleId === f.designId ? fixtureOutcome("quota") : answer(r, "ความเห็น");
+  f.handlers.specialist = r => r.roleId === f.designId ? fixtureOutcome("quota") : done(r, "ความเห็น");
   const fourth = send(f, "เรื่องที่สี่");
   await drain(f);
   const blocked = cardFor(f, replyFor(f, fourth.message.id).replyMessageId!);
@@ -270,7 +280,7 @@ test("needs-me: a plain team report creates no intent; a proposal card creates o
 test("switching all to needs-me mid-group never cancels an existing intent and filters only what comes next", async () => {
   const gate = deferred<ApplicationRunOutcome>();
   let gated = true;
-  const f = await fixture({ specialist: request => gated && request.roleId === f.marketingId ? gate.promise : answer(request, "ความเห็น") });
+  const f = await fixture({ specialist: request => gated && request.roleId === f.marketingId ? gate.promise : done(request, "ความเห็น") });
   // Group A completes under `all`: one informational intent.
   const a = send(f, "งานชุดแรก");
   gated = false;
@@ -284,7 +294,7 @@ test("switching all to needs-me mid-group never cancels an existing intent and f
   expect(cardFor(f, replyFor(f, b.message.id).replyMessageId!).discussion!.roles.some(role => role.state === "running")).toBe(true);
   setLevel(f, "telegram", "needs-me");
   expect(intents(f)[0]).toEqual(existing);
-  gate.resolve(answer(f.port.requests.find(r => r.roleId === f.marketingId && r.manifest.sources[0]!.reference.sourceId === b.message.source.sourceId)!, "ความเห็นช้า"));
+  gate.resolve(done(f.port.requests.find(r => r.roleId === f.marketingId && r.manifest.sources[0]!.reference.sourceId === b.message.source.sourceId)!, "ความเห็นช้า"));
   await drain(f);
   expect(cardFor(f, replyFor(f, b.message.id).replyMessageId!).teamReply).toMatchObject({ state: "answered" });
   // B's final was filtered; A's intent is untouched (not cancelled, same revision).
@@ -322,6 +332,7 @@ test("accepting a proposal on Web cancels its unsent Telegram intent; once sent,
   const worker = new DeliveryWorker(f.store, { sender, now: () => f.clock.now });
   try {
     worker.pump();
+    moveToNewTopic(f, "เรื่องใหม่");
     const second = send(f, "อีกเรื่องหนึ่ง");
     await drain(f);
     const pending = cardFor(f, replyFor(f, second.message.id).replyMessageId!);
@@ -356,7 +367,7 @@ test("dismissing the card, resuming a waiting role and stopping the team resolve
   // A role waiting on its route: resuming it answers the blocked notice.
   setAllowance(f, true, 3);
   let quota = true;
-  f.handlers.specialist = r => quota && r.roleId === f.designId ? fixtureOutcome("quota") : answer(r, "ความเห็น");
+  f.handlers.specialist = r => quota && r.roleId === f.designId ? fixtureOutcome("quota") : done(r, "ความเห็น");
   const second = send(f, "เรื่องที่ติด quota");
   await drain(f);
   const card = cardFor(f, replyFor(f, second.message.id).replyMessageId!);
@@ -412,7 +423,7 @@ test("restart while a group is open: after reopen and settlement there is exactl
 test("restart with an admitted specialist: the interrupted role notifies as blocked once, stopping it settles and the final follows once", async () => {
   const gate = deferred<ApplicationRunOutcome>();
   let hold = true;
-  const f = await fixture({ specialist: request => hold && request.roleId === f.designId ? gate.promise : answer(request, "ความเห็น") });
+  const f = await fixture({ specialist: request => hold && request.roleId === f.designId ? gate.promise : done(request, "ความเห็น") });
   try {
     const sent = send(f, "งานที่ถูกตัดกลางทาง");
     f.queue.pump(); await ticks(); f.queue.pump(); await ticks();
@@ -506,7 +517,7 @@ test("a role included again after the team reply keeps the group open; the final
   let included = false;
   const f = await fixture({
     jit: r => answer(r, dispatching(["เทคโนโลยี", "การตลาด"])),
-    specialist: r => r.roleId === f.marketingId ? (included ? again.promise : first.promise) : answer(r, "ความเห็น"),
+    specialist: r => r.roleId === f.marketingId ? (included ? again.promise : first.promise) : done(r, "ความเห็น"),
     team: () => team.promise,
   });
   try {
@@ -528,7 +539,7 @@ test("a role included again after the team reply keeps the group open; the final
     expect(card.discussion!.roles.some(role => role.roleId === f.marketingId && role.activity === "live")).toBe(true);
     expect(intents(f)).toHaveLength(0);
     expect(groups(f)[0]!.state).toBe("open");
-    again.resolve(answer(f.port.requests.filter(r => r.roleId === f.marketingId).at(-1)!, "ความเห็นที่เพิ่มมา"));
+    again.resolve(done(f.port.requests.filter(r => r.roleId === f.marketingId).at(-1)!, "ความเห็นที่เพิ่มมา"));
     first.resolve(fixtureOutcome("complete", "ผลเก่า"));
     await drain(f);
     expect(intents(f).map(intent => intent.attention!.item)).toEqual(["final:group"]);
@@ -546,4 +557,27 @@ test("the sweep rotates through every open group instead of re-reading the oldes
   for (let i = 0; i < 3; i++) { tickWorkGroups(f.store, f.config.team, f.clock.now, 1); seen.push(intents(f).length); }
   expect(seen).toEqual([1, 2, 3]);
   expect(new Set(intents(f).map(intent => intent.attention!.workGroupId)).size).toBe(3);
+});
+
+test("a team answer with a blocked specialist result waits on the owner, also under needs-me; asking again while still blocked notifies once more", async () => {
+  const blocked = (r: ApplicationRunRequest) => answer(r, JSON.stringify({ status: "blocked", result: "ยังเปิด repo ไม่ได้", evidence: "none", unblock: "ให้สิทธิ์อ่าน repo ก่อน" }));
+  const done = (r: ApplicationRunRequest) => answer(r, JSON.stringify({ status: "done", result: "ความเห็น", evidence: "none", unblock: null }));
+  let ref!: Fixture;
+  const f = ref = await fixture({ jit: r => answer(r, dispatching(["เทคโนโลยี", "ออกแบบ"])), specialist: r => r.roleId === ref.designId ? blocked(r) : done(r) });
+  setLevel(f, "telegram", "needs-me");
+  const first = send(f, "ช่วยดู repo นี้หน่อย");
+  await drain(f);
+  const card = cardFor(f, replyFor(f, first.message.id).replyMessageId!);
+  expect(card.teamReply!.team!.gaps.map(gap => gap.reason)).toEqual(["result_blocked"]);
+  expect(intents(f)).toHaveLength(1);
+  expect(intents(f)[0]).toMatchObject({ attention: { class: "needs_owner", item: "final:group" } });
+  expect(intents(f)[0]!.payload.text).toStartWith("ผลของผู้เชี่ยวชาญ 1 คนติดอยู่ รอคุณดำเนินการตามวิธีปลดล็อก");
+  // The same request again: the still-blocked role is held, not called, and shown as blocked; the group notifies once.
+  const second = send(f, "ช่วยดู repo นี้หน่อย");
+  await drain(f);
+  const held = cardFor(f, replyFor(f, second.message.id).replyMessageId!);
+  expect(held.blocked.map(role => role.roleId)).toEqual([f.designId]);
+  expect(intents(f)).toHaveLength(2);
+  expect(intents(f)[1]).toMatchObject({ attention: { class: "needs_owner", item: "final:group" } });
+  expect(groups(f).map(group => group.state)).toEqual(["closed", "closed"]);
 });

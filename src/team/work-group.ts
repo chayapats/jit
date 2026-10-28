@@ -56,9 +56,9 @@ export function openWorkGroup(tx: AppTransaction, input: { projectId: string; to
 }
 
 /** Evaluates every open group of one topic (for example in the transaction that promotes it). */
-export function evaluateTopicWorkGroups(tx: AppTransaction, projectId: string, topicId: string, now: number, reason: DeliveryResolution["reason"]): void {
+export function evaluateTopicWorkGroups(tx: AppTransaction, projectId: string, topicId: string, policy: TeamPolicy, now: number, reason: DeliveryResolution["reason"]): void {
   for (const row of tx.all<{ id: string }>("SELECT id FROM work_groups WHERE project_id = ? AND topic_id = ? AND state = 'open' ORDER BY created_at, id", projectId, topicId)) {
-    evaluateWorkGroup(tx, row.id, now, reason);
+    evaluateWorkGroup(tx, row.id, policy, now, reason);
   }
 }
 
@@ -112,6 +112,11 @@ function withSavepoint<T>(tx: AppTransaction, name: string, run: () => T): T {
 function observe(tx: AppTransaction, row: GroupRow, card: DispatchCardView): { stalls: Notice[]; final: Notice | null; closed: string | null } {
   const stalls: Notice[] = [];
   const job = (jobId: string) => readJob(tx, row.projectId, jobId);
+  // app.specialist_results/v2: every named role is still blocked on this request, so nothing ran and the card shows
+  // their unblock actions; that blocked result waits on the owner.
+  if (card.state === "empty" && card.blocked.length) {
+    return { stalls, final: { item: "final:group", class: "needs_owner", key: "attention.notice_result_blocked", values: { count: String(card.blocked.length) } }, closed: "final" };
+  }
   if (card.state === "empty" || card.state === "dismissed") return { stalls, final: null, closed: card.state };
   // A promoted origin is read-only (app.topic_promotion/v1): its card can no longer be accepted, and nobody can answer
   // there, so the group ends quietly and any notice still waiting on the owner resolves.
@@ -140,7 +145,12 @@ function observe(tx: AppTransaction, row: GroupRow, card: DispatchCardView): { s
     }
     if (open) return { stalls, final: null, closed: null };
     if (reply.state === "answered") {
-      return { stalls, final: { item: "final:group", class: "informational", key: "attention.notice_final", values: { count: String(reply.team?.citations.length ?? 0) } }, closed: "final" };
+      // app.specialist_results/v2: a team answer that carries blocked results (each with its unblock action) waits on
+      // the owner; an answer without them is informational.
+      const blocked = (reply.team?.gaps ?? []).filter(gap => gap.reason === "result_blocked").length;
+      return { stalls, final: blocked
+        ? { item: "final:group", class: "needs_owner", key: "attention.notice_result_blocked", values: { count: String(blocked) } }
+        : { item: "final:group", class: "informational", key: "attention.notice_final", values: { count: String(reply.team?.citations.length ?? 0) } }, closed: "final" };
     }
     if (reply.state === "failed") {
       return { stalls, final: { item: "final:group", class: "needs_owner", key: "attention.notice_failed", values: { reason: reply.reason ?? "worker_failed" } }, closed: "final" };

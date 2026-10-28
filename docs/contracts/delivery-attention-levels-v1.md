@@ -55,6 +55,7 @@ Web/PWA has no push transport (`web.pwa/v1`), and every outbox intent goes to Te
 | Schedule summary `no_update` | none (REL01: never an intent) | — |
 | PR finding alert (`pr.private_alerts/v1`) | `informational` | not created; the report keeps the finding and the alert decision records `suppressed` / `attention_needs_me` |
 | Work group final, team reply answered | `informational` | not created (recorded as `filtered`) |
+| Work group final, team reply answered with `result_blocked` gaps, or every named role still blocked on the request (`app.specialist_results/v2`) | `needs_owner` (blocked result) | created |
 | Work group final, team reply failed, or no specialist result | `needs_owner` (failure) | created |
 | Work group stall: dispatch proposal card waiting on the owner | `needs_owner` (proposal card) | created |
 | Work group stall: a role or the team reply waiting on its route or after an interruption | `needs_owner` (blocked result) | created |

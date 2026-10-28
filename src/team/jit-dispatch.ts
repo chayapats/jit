@@ -301,13 +301,17 @@ export function admitJitDispatch(tx: AppTransaction, input: {
   };
   tx.run(`INSERT INTO dispatch_proposals (id, project_id, topic_id, reply_id, revision, state, admission, allowance_revision, discussion_id, team_reply_id, record_json, created_at, updated_at)
     VALUES (?, ?, ?, ?, 1, 'proposed', NULL, ?, NULL, NULL, '{}', ?, ?)`, row.id, row.projectId, row.topicId, row.replyId, row.allowanceRevision, now, now);
-  if (!record.roles.length) { row.state = "empty"; return saveRow(tx, row, record); }
   // delivery.attention_levels/v1: a dispatch with at least one role opens the reply's work group, whether it starts
-  // now under the allowance or waits on the owner's card; an accepted card continues the same group.
-  const workGroupId = openWorkGroup(tx, { projectId: reply.projectId, topicId: reply.topicId, replyId: reply.id, now });
-  const replyRecord = readReplyRecord(tx, reply.projectId, reply.id);
-  replyRecord.workGroupId = workGroupId;
-  saveReplyRecord(tx, replyRecord);
+  // now under the allowance or waits on the owner's card (including a stale or invalid selection); an accepted card
+  // continues the same group. A dispatch whose every named role is still blocked on this request
+  // (app.specialist_results/v2) is a blocked result for the owner, so it opens a group too.
+  if (record.roles.length || record.blocked?.length) {
+    const workGroupId = openWorkGroup(tx, { projectId: reply.projectId, topicId: reply.topicId, replyId: reply.id, now });
+    const replyRecord = readReplyRecord(tx, reply.projectId, reply.id);
+    replyRecord.workGroupId = workGroupId;
+    saveReplyRecord(tx, replyRecord);
+  }
+  if (!record.roles.length) { row.state = "empty"; return saveRow(tx, row, record); }
   // app.routing_selection/v1: an invalid or stale selection never broadcasts; the owner decides from the card.
   if (stale) { record.reason = "stale_selection"; return saveRow(tx, row, record); }
   if (droppedAny) { record.reason = "invalid_selection"; return saveRow(tx, row, record); }

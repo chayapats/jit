@@ -1515,6 +1515,7 @@ export const th = {
   "attention.notice_proposal": "จิตขอเรียกผู้เชี่ยวชาญ {count} คน รอคุณยืนยัน",
   "attention.notice_blocked": "งานของทีมติดอยู่ ({reason}) รอคุณดำเนินการต่อ",
   "attention.notice_hold": "ทีมทำงานเสร็จแล้ว แต่จิตยังเริ่มตอบไม่ได้ ({reason}) รอคุณสั่งให้ตอบ",
+  "attention.notice_result_blocked": "ผลของผู้เชี่ยวชาญ {count} คนติดอยู่ รอคุณดำเนินการตามวิธีปลดล็อก",
   "attention.notice_open": "เปิดดู: {path}",
   "error.retry_key_expired": "retry key นี้เกิน 24 ชั่วโมงแล้ว ใช้ key ใหม่ถ้าต้องการส่งอีกครั้ง",
   "error.receipt_not_found": "ไม่พบ receipt นี้",
