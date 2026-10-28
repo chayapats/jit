@@ -348,11 +348,11 @@ export function settingsApprovalsPage(workspace: NavigationWorkspace,
     <section class="settings-section" aria-labelledby="approvals-rules"><h2 id="approvals-rules">${tr("approval.rules_title")}</h2>
     <ul class="data-projects">${rulesTables}</ul>
     <form class="team-form" method="post" action="/settings/approvals/rules">${hiddenCommand(csrf, 0)}
-      <label>project<select name="projectId" required>${projectOptions}</select></label>
-      <label>effectKind<select name="effectKind" required>${kindOptions}</select></label>
-      <label>remote<input name="remote" maxlength="32" placeholder="origin"></label>
-      <label>branches<input name="branches" maxlength="400" placeholder="main"></label>
-      <label>target<input name="target" maxlength="32" placeholder="production"></label>
+      <label>${tr("approval.field_project")}<select name="projectId" required>${projectOptions}</select></label>
+      <label>${tr("approval.field_effect_kind")}<select name="effectKind" required>${kindOptions}</select></label>
+      <label>${tr("approval.field_remote")}<input name="remote" maxlength="32" placeholder="origin"></label>
+      <label>${tr("approval.field_branches")}<input name="branches" maxlength="400" placeholder="main"></label>
+      <label>${tr("approval.field_target")}<input name="target" maxlength="32" placeholder="production"></label>
       <label class="choice"><input type="checkbox" name="confirm" value="on" required>${tr("approval.rule_confirm")}</label>
       <button class="primary">${tr("approval.rule_create")}</button></form></section></div>`, { breadcrumb: { title: tr("shell.settings"), href: "/settings" } });
 }
