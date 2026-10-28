@@ -870,8 +870,12 @@ const runRequestKeys = ["runId", "projectId", "topicId", "roleId", "purpose", "r
  * attempt generation. Returns a problem label, or null when the envelope holds.
  */
 function attemptEnvelopeProblem(attempt: unknown, row: { id: string; job_id: string }): string | null {
-  if (!isObject(attempt) || !exact(attempt, ["native", "data", "id", "jobId", "generation", "scheduler", "leaseUntil", "snapshot", "createdAt",
-    "state", "reason", "nativeState", "contextState", "transport"])) return "envelope_invalid";
+  const envelope = ["native", "data", "id", "jobId", "generation", "scheduler", "leaseUntil", "snapshot", "createdAt",
+    "state", "reason", "nativeState", "contextState", "transport"];
+  // exec.run_tools/v1 (schema 36): an attempt granted execution also records its level and role.
+  if (!isObject(attempt) || !(exact(attempt, envelope) || exact(attempt, [...envelope, "execution"]))) return "envelope_invalid";
+  if ("execution" in attempt && (!isObject(attempt.execution) || !exact(attempt.execution, ["level", "roleId"]) ||
+      !["workspace", "full"].includes(attempt.execution.level as string) || !(attempt.execution.roleId === null || typeof attempt.execution.roleId === "string"))) return "envelope_invalid";
   if (attempt.id !== row.id || attempt.jobId !== row.job_id || !isInt(attempt.generation, 1) || typeof attempt.scheduler !== "string" ||
       !attempt.scheduler || !isInt(attempt.leaseUntil) || !isInt(attempt.createdAt) || !attemptStates.includes(attempt.state as string) ||
       !(attempt.reason === null || isText(attempt.reason, 64)) || !attemptNativeStates.includes(attempt.nativeState as string) ||
@@ -888,7 +892,8 @@ function attemptEnvelopeProblem(attempt: unknown, row: { id: string; job_id: str
   }
   if (attempt.contextState === "none") return "native_without_context_state";
   const data = attempt.data;
-  if (!isObject(data) || !exact(data, runRequestKeys)) return "run_request_invalid";
+  // Requests admitted since exec.run_tools/v1 carry their frozen `execution` grant (null without one).
+  if (!isObject(data) || !(exact(data, runRequestKeys) || exact(data, [...runRequestKeys, "execution"]))) return "run_request_invalid";
   const context = native.context as { id: string; generation: number };
   const runContext = data.context, fence = data.fence;
   if (data.runId !== native.runId || data.projectId !== snapshot.projectId || !isObject(runContext) || !exact(runContext, ["id", "generation"]) ||

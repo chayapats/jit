@@ -16,6 +16,7 @@ import { scriptedPreviewWork } from "./team/preview";
 import type { ApplicationRunPort } from "./team/run-port";
 import { ScriptedRunPort } from "./team/scripted-port";
 import { SchwayRunPort, assertSchwayGate, type SchwayPortOptions } from "./team/schway-port";
+import type { RunBoxes, RunExecution } from "./exec/run-tools";
 
 export interface ComposeOptions {
   now?: () => number;
@@ -25,8 +26,12 @@ export interface ComposeOptions {
   schwayOptions?: SchwayPortOptions;
   /** Deterministic queue timers for tests. */
   timers?: SchedulerOptions["timers"];
-  /** exec.box_runtime/v1 capacity for execution-capable work (EXE03); absent when execution is not configured. */
-  boxes?: SchedulerOptions["boxes"];
+  /**
+   * exec.box_runtime/v1 capacity for execution-capable work (EXE03), and — when it can `open` a box (the service's
+   * `BoxManager`) — the boxes Jit replies and specialist runs execute in (exec.run_tools/v1). Absent when execution is
+   * not configured: no run then ever admits an execution tool.
+   */
+  boxes?: NonNullable<SchedulerOptions["boxes"]> & Partial<RunBoxes>;
 }
 
 /** The composed queue plus the team port the caller reconciles against. */
@@ -49,9 +54,12 @@ export interface ComposedQueue {
  */
 export function composeJobQueue(store: TransactionStore, config: AppConfig, options: ComposeOptions = {}): ComposedQueue {
   if (config.runPort === "schway") assertSchwayGate(store.path);
+  // exec.run_tools/v1: only the team port (Jit replies, specialists) may execute, and only when boxes can be opened.
+  const boxes = options.boxes;
+  const execution: RunExecution | undefined = boxes?.open ? { boxes: { open: (projectId, roleId) => boxes.open!(projectId, roleId) }, ...(options.now ? { now: options.now } : {}) } : undefined;
   const teamPort: ApplicationRunPort = config.runPort === "schway"
-    ? new SchwayRunPort(store, config.team, config.jobs.outputBytes, options.schwayOptions)
-    : new ScriptedRunPort(store, config.team, config.jobs.outputBytes);
+    ? new SchwayRunPort(store, config.team, config.jobs.outputBytes, { ...options.schwayOptions, ...(execution ? { execution } : {}) })
+    : new ScriptedRunPort(store, config.team, config.jobs.outputBytes, undefined, undefined, undefined, execution ? { execution } : {});
   const fixturePort: ApplicationRunPort = config.runPort === "schway"
     ? new ScriptedRunPort(store, config.team, config.jobs.outputBytes)
     : teamPort;

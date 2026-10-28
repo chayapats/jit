@@ -22,9 +22,11 @@ import type {
   HostSessionReference,
   HostSessionSnapshot,
   Model,
+  ToolDefinition,
 } from "schway/host";
 import { AppError } from "../errors";
 import { redactRegisteredSecrets } from "../security/secret-fingerprints";
+import { executionInstruction, openRunTools, requestGrant, runMaxTurns, runToolsFailure, type RunExecution, type RunTools } from "../exec/run-tools";
 import { requireId } from "../sources";
 import type { TransactionStore } from "../store";
 import type { ApplicationRunPort, ManagedContextOutcome, NativeRunInspection } from "./run-port";
@@ -84,6 +86,11 @@ export interface SchwayPortOptions {
   /** Fixture credential store for route-bound runs; never set in production. */
   authStore?: HostCredentialStore;
   now?: () => number;
+  /**
+   * exec.run_tools/v1: the project boxes. With it, a run whose request carries an execution grant admits Schway's
+   * core tools over the box backend; without it no run ever admits an execution tool.
+   */
+  execution?: RunExecution;
   /** Test-only interleaving hooks around native creation. */
   testHooks?: {
     /** Awaited right after the host opens, before the pre-creation fence recheck. */
@@ -129,6 +136,15 @@ export function schwayMaxAttempts(request: Pick<ApplicationRunRequest, "limits">
 }
 
 /**
+ * Worst-case Schway model calls for one attempt of the request: every turn
+ * ({@link runMaxTurns}) times every host attempt of that turn. A run without an
+ * execution grant has one turn, so this equals {@link schwayMaxAttempts}.
+ */
+export function schwayMaxCalls(request: Pick<ApplicationRunRequest, "limits" | "execution">): number {
+  return schwayMaxAttempts(request) * runMaxTurns(request);
+}
+
+/**
  * Maps a validated application request onto the exact Schway host call.
  * Throws `invalid_run_request` when the fixed snapshot exceeds host bounds;
  * evidence is never silently truncated. Model identifiers outside the pinned
@@ -143,6 +159,8 @@ export function describeEffectiveRun(request: ApplicationRunRequest): EffectiveS
     { name: "responsibility", content: request.instructions.responsibility },
     { name: "purpose", content: request.purpose },
     ...request.instructions.operator.map((content, index) => ({ name: `operator-${index + 1}`, content })),
+    // exec.run_tools/v1: the trusted statement of this run's frozen execution level and the effect-tool rule.
+    { name: "execution", content: executionInstruction(requestGrant(request)) },
   ];
   // Composite host ids carry the project scope: the same source or claim id
   // in two projects must never collapse to one native document.
@@ -178,10 +196,11 @@ export function describeEffectiveRun(request: ApplicationRunRequest): EffectiveS
     sources,
     inputText,
     limits: {
-      // Single-turn bridge: one model turn with transport retries bounded by
-      // maxAttempts. Anything needing more turns surfaces as max_turns
-      // instead of silently spending unreserved calls.
-      maxTurns: 1,
+      // Single-turn bridge without an execution grant: one model turn with
+      // transport retries bounded by maxAttempts. An execution run gets the
+      // turns its reserved call budget covers (exec.run_tools/v1). Anything
+      // needing more surfaces as max_turns instead of spending unreserved calls.
+      maxTurns: runMaxTurns(request),
       maxConcurrentTools: 1,
       contextWindow: clampInt(request.limits.contextTokens, 1, 2_000_000),
       maxInputChars: clampInt(totalBytes + 1024, 1024, 1_000_000),
@@ -299,7 +318,10 @@ export class SchwayRunPort implements ApplicationRunPort {
   /** Returns isolated evidence of the last 32 validated invocations, without unbounded retention. */
   get requests(): readonly ApplicationRunRequest[] { return structuredClone(this.#requests); }
 
-  private hostOptions(effective: EffectiveSchwayRun, lifecycle: boolean): Parameters<typeof createHost>[0] {
+  /** exec.run_tools/v1: true when this port can open project boxes; work then grants execution at admission. */
+  get execution(): RunExecution | undefined { return this.options.execution; }
+
+  private hostOptions(effective: EffectiveSchwayRun, lifecycle: boolean, definitions: readonly ToolDefinition[] = []): Parameters<typeof createHost>[0] {
     const dirs = schwayHostDirs(this.store.path);
     const selection: HostAuthSelection = { route: effective.auth.route, model: effective.auth.model };
     if (this.options.authFetch) selection.fetch = this.options.authFetch;
@@ -316,7 +338,8 @@ export class SchwayRunPort implements ApplicationRunPort {
             sections: effective.sections,
             sources: effective.sources,
           },
-      tools: { policy: "exact", hostedLookup: "off", definitions: [] },
+      // Exact registry: empty unless the run's execution grant admitted the core tools over its project box.
+      tools: { policy: "exact", hostedLookup: "off", definitions: lifecycle ? [] : definitions },
       limits: {
         maxTurns: lifecycle ? 1 : effective.limits.maxTurns,
         maxConcurrentTools: 1,
@@ -334,9 +357,9 @@ export class SchwayRunPort implements ApplicationRunPort {
     return this.openHost(describeLifecycleRun({ id: "00000000-0000-4000-8000-000000000000", generation: 1 }), true);
   }
 
-  private async openHost(effective: EffectiveSchwayRun, lifecycle: boolean): Promise<HostRuntime> {
+  private async openHost(effective: EffectiveSchwayRun, lifecycle: boolean, definitions: readonly ToolDefinition[] = []): Promise<HostRuntime> {
     assertSchwayGate(this.store.path);
-    const host = await createHost(this.hostOptions(effective, lifecycle));
+    const host = await createHost(this.hostOptions(effective, lifecycle, definitions));
     if (host.capabilities.releaseContract !== SCHWAY_RELEASE_CONTRACT) {
       await host.close().catch(() => {});
       throw new AppError("unsupported_schway_release");
@@ -431,12 +454,16 @@ export class SchwayRunPort implements ApplicationRunPort {
     observe({ kind: "progress", runId: snapshot.runId, text: `opening ${SCHWAY_RELEASE_CONTRACT} session; strict context, exact tools` });
     let host: HostRuntime | null = null;
     let session: HostSession | null = null;
+    let tools: RunTools | null = null;
     const finish = (outcome: ApplicationRunOutcome): ApplicationRunOutcome => {
       observe({ kind: "finished", runId: snapshot.runId, outcome: structuredClone(outcome) });
       return outcome;
     };
     try {
-      host = await this.openHost(effective, false);
+      // exec.run_tools/v1: a grant opens the project box (re-checking the level); no grant is the empty registry.
+      try { tools = await openRunTools(this.store, this.options.execution, snapshot); }
+      catch (error) { return finish({ ...classifyBridgeReason(runToolsFailure(error)), session: null }); }
+      host = await this.openHost(effective, false, tools.definitions);
       await this.options.testHooks?.afterOpenHost?.(host);
       // Recheck before reserving: retirement may have fenced the context
       // while the host was constructed, and no intent row exists yet to stop
@@ -497,6 +524,7 @@ export class SchwayRunPort implements ApplicationRunPort {
       try { session?.cancel(); } catch { /* Idle or already settled. */ }
       try { await session?.close(); } catch { /* Busy close leaves the lease for operator recovery. */ }
       try { await host?.close(); } catch { /* Host close is best effort after settlement. */ }
+      tools?.release();
     }
   }
 

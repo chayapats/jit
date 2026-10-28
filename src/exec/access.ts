@@ -88,6 +88,11 @@ export function effectiveAccess(project: Pick<ProjectAccess, "level" | "halted">
   return { level: project.halted ? "read" : combined, halted: project.halted, projectLevel: project.level, roleLevel: roleOverride };
 }
 
+/** The effective access of one role's work in a project now (the project alone when `roleId` is null). */
+export function readEffectiveAccess(tx: AppTransaction, projectId: string, roleId: string | null): EffectiveAccess {
+  return effectiveAccess(readAccessState(tx, projectId), roleId ? readRoleOverride(tx, projectId, roleId)?.level ?? null : null);
+}
+
 /**
  * The widening confirmation the Web confirmation page renders: SHA-256 hex of the JSON array
  * `[projectId, from, to, expectedRevision]`. It binds the owner's confirmation to one exact transition at one revision,
@@ -126,7 +131,11 @@ export type AccessCommand = SetAccessLevelCommand | RestrictRoleAccessCommand | 
  */
 export interface HaltOutcome { fencedJobIds: string[]; stoppedReplyIds: string[]; stoppedDiscussionIds: string[]; stoppedSynthesisIds: string[] }
 /** The receipt of every access command: the committed state, plus what a halt stopped. */
-export interface AccessReceipt { access: ProjectAccess; roles: RoleAccess[]; halt?: HaltOutcome }
+export interface AccessReceipt {
+  access: ProjectAccess; roles: RoleAccess[]; halt?: HaltOutcome;
+  /** exec.run_tools/v1: running execution jobs a narrowing fenced (`authorization_changed`); absent when none. */
+  narrowed?: { fencedJobIds: string[] };
+}
 
 const accessKinds = new Set(["access.level.set", "access.role.restrict", "execution.halt", "execution.resume"]);
 /** True when the command is one of the app.access_level/v1 kinds (shape is checked by {@link accessCommandIdentity}). */

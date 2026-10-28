@@ -10,6 +10,7 @@ import { contextPacketSections } from "./types";
 import { requireRoleRoute } from "./configuration";
 import { renderContextAnswer } from "../memory/context-answer";
 import { specialistResultInstruction } from "./specialist-results";
+import { openRunTools, runMaxTurns, runToolsFailure, validateGrant, type RunExecution, type RunTools, type ToolExecutionResult } from "../exec/run-tools";
 
 const reasons: RunReason[] = ["complete", "unknown_model", "route_unavailable", "quota", "needs_login", "cancelled", "max_rounds", "budget_exhausted", "invalid_result", "context_retired"];
 const emptyUsage = () => ({ calls: 0, rounds: 0, hops: 0, contextTokens: 0, outputTokens: 0, retries: 0, wallMs: 0, tokensUnknown: false });
@@ -51,6 +52,7 @@ export function validateRunRequest(request: ApplicationRunRequest, policy: TeamP
     if (claimIds.has(key)) throw new AppError("invalid_run_request");
     claimIds.add(key);
   }
+  validateGrant(request);
   if (request.manifest.context !== undefined) validateContextLayout(request, policy);
   validateJobLimits(request.limits, { roles: 10000, calls: 10000, rounds: 10000, hops: 10000, contextTokens: 1e9, outputTokens: 1e9, retries: 100, wallMs: 3600000 });
 }
@@ -176,7 +178,8 @@ function validUsage(result: ApplicationRunOutcome, request: ApplicationRunReques
     if (usage.tokensUnknown !== false) return false;
     return Object.entries(usage).every(([key, value]) => key === "tokensUnknown" || (value as number) <= request.limits[key as keyof JobLimits]);
   }
-  const maxCalls = Math.min(Math.max(1, Math.ceil(request.limits.retries + 1)), 10);
+  // Each model turn may take every host attempt; a run without an execution grant has exactly one turn.
+  const maxCalls = Math.min(Math.max(1, Math.ceil(request.limits.retries + 1)), 10) * runMaxTurns(request);
   const attempted = usage.calls >= 1 && usage.calls <= maxCalls &&
     usage.rounds === usage.calls && usage.retries === usage.calls - 1 && usage.hops === 0;
   if (result.reason === "complete") return attempted;
@@ -213,16 +216,47 @@ export function specialistFixtureResult(prefix: string, request: ApplicationRunR
   return JSON.stringify({ status: "done", result: withContextAnswer(prefix, request, room), evidence, unblock: null });
 }
 
+/**
+ * exec.run_tools/v1 for fixture scripts: the run's admitted tool registry, with Schway's exact-registry semantics.
+ * `call` of a tool that was not admitted settles as `Unknown tool: <name>` without reaching anything, exactly as the
+ * Schway host does; an admitted tool runs in the project box (a `FakeBoxRuntime` in tests).
+ */
+export interface ScriptedTools {
+  readonly names: readonly string[];
+  call(name: string, input: unknown): Promise<ToolExecutionResult>;
+}
+/** A fixture run script; `tools` is the run's admitted registry (empty without an execution grant). */
+export type RunScript = (request: ApplicationRunRequest, signal: AbortSignal, observe: (event: ApplicationRunEvent) => void, tools: ScriptedTools) => unknown | Promise<unknown>;
+
+function scriptedTools(opened: RunTools, signal: AbortSignal): ScriptedTools {
+  const byName = new Map(opened.definitions.map(definition => [definition.name, definition]));
+  return {
+    names: Object.freeze([...byName.keys()]),
+    async call(name, input) {
+      const definition = byName.get(name);
+      if (!definition) return { content: `Unknown tool: ${name}`, isError: true };
+      // The core tools resolve paths against the backend root; the workspace identity mirrors the host's.
+      const root = "/workspace";
+      try { return await definition.execute(input, { workspace: { root, launchCwd: root, extraRoots: [] }, signal }); }
+      catch (error) { return { content: error instanceof Error ? error.message : "Tool failed", isError: true }; }
+    },
+  };
+}
+
 /** Deterministic in-process fixture; it contains no network, SDK, discovery or model protocol loop. */
 export class ScriptedRunPort implements ApplicationRunPort {
   readonly adapter = "scripted" as const;
   readonly #requests: ApplicationRunRequest[] = [];
   readonly #native: ScriptedNativeLedger;
+  /** exec.run_tools/v1: present when this port can open project boxes; work then grants execution at admission. */
+  readonly execution: RunExecution | undefined;
   constructor(readonly store: TransactionStore, readonly policy: TeamPolicy, readonly outputBytes: number,
-    private readonly script: (request: ApplicationRunRequest, signal: AbortSignal, observe: (event: ApplicationRunEvent) => void) => unknown | Promise<unknown> = request => ({
+    private readonly script: RunScript = request => ({
       ...fixtureOutcome("complete", fixtureText(request, outputBytes)),
       usage: { ...emptyUsage(), calls: 1, rounds: 1, hops: 1 }, session: { adapter: "scripted", id: request.runId, context: request.context },
-    }), private readonly deleteFails: () => boolean = () => false, private readonly retireFails: () => boolean = () => false) {
+    }), private readonly deleteFails: () => boolean = () => false, private readonly retireFails: () => boolean = () => false,
+    options: { execution?: RunExecution } = {}) {
+    this.execution = options.execution;
     this.#native = new ScriptedNativeLedger(`${store.path}.scripted-native.sqlite`);
     const maximum = { roleLimit: 100, responsibilityBytes: 8192, sourceLimit: 32, contextBytes: 65536 };
     if (Object.keys(policy).sort().join(",") !== Object.keys(maximum).sort().join(",") ||
@@ -246,9 +280,16 @@ export class ScriptedRunPort implements ApplicationRunPort {
     this.#native.put(native);
     observe({ kind: "started", runId: snapshot.runId, context: { ...snapshot.context } });
     observe({ kind: "progress", runId: snapshot.runId, text: "provisional fixture progress" });
-    let result: ApplicationRunOutcome;
-    try { result = normalizeFixtureResult(await this.script(structuredClone(snapshot), signal, observe), snapshot, this.outputBytes); }
-    catch { result = fixtureOutcome("invalid_result"); }
+    let result: ApplicationRunOutcome = fixtureOutcome("invalid_result");
+    let tools: RunTools | null = null;
+    try {
+      try { tools = await openRunTools(this.store, this.execution, snapshot); }
+      catch (error) { tools = null; result = fixtureOutcome(runToolsFailure(error)); }
+      if (tools) {
+        try { result = normalizeFixtureResult(await this.script(structuredClone(snapshot), signal, observe, scriptedTools(tools, signal)), snapshot, this.outputBytes); }
+        catch { result = fixtureOutcome("invalid_result"); }
+      }
+    } finally { tools?.release(); }
     if (!active()) result = fixtureOutcome("context_retired");
     else if (signal.aborted) result = fixtureOutcome("cancelled");
     this.#native.put({ ...native, state: "finished", contextState: active() ? "active" : "retired" });

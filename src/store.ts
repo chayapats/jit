@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { commitDecisionMemorySource, retireDecisionMemorySource } from "./memory/decision-sources";
 
 /** Current application schema revision. Service packaging pins and checks this value. */
-export const schemaVersion = 35;
+export const schemaVersion = 36;
 
 /**
  * Installation-scoped state that never round-trips through backup images and
@@ -74,7 +74,7 @@ export class TransactionStore {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
           if (current === schemaVersion) return;
-          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34].includes(current)) throw new Error("Unsupported migration source");
+          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35].includes(current)) throw new Error("Unsupported migration source");
           if (existing) {
             const snapshot = `${path}.pre-v${current}-${crypto.randomUUID()}.sqlite`;
             const fd = openSync(snapshot, "wx", 0o600);
@@ -1028,6 +1028,28 @@ export class TransactionStore {
             );
             CREATE INDEX IF NOT EXISTS work_groups_open ON work_groups(state, created_at);
             PRAGMA user_version = 35;
+          `);
+          if (current < 36) this.#db.exec(`
+            -- exec.run_tools/v1 (EXE05, ADR 0036, schema 36): one bounded audit row per execution tool call. subject is the redacted
+            -- first 2 KiB of the command or path, never file content or output; rows are pruned per project.
+            CREATE TABLE IF NOT EXISTS execution_tool_calls (
+              sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+              id TEXT NOT NULL UNIQUE,
+              project_id TEXT NOT NULL,
+              run_id TEXT NOT NULL,
+              job_id TEXT NOT NULL,
+              role_id TEXT NOT NULL,
+              box TEXT NOT NULL,
+              level TEXT NOT NULL CHECK (level IN ('workspace', 'full')),
+              tool TEXT NOT NULL CHECK (length(tool) BETWEEN 1 AND 64),
+              subject TEXT NOT NULL CHECK (length(CAST(subject AS BLOB)) <= 2048),
+              status TEXT NOT NULL CHECK (status IN ('running', 'success', 'error', 'cancelled', 'refused')),
+              exit_code INTEGER,
+              started_at INTEGER NOT NULL,
+              duration_ms INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS execution_tool_calls_project ON execution_tool_calls (project_id, sequence);
+            PRAGMA user_version = 36;
           `);
         }).immediate();
         this.#db.exec("PRAGMA foreign_keys = ON;");

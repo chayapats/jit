@@ -1,3 +1,4 @@
+import type { RunExecution } from "../exec/run-tools";
 import type { ApplicationRunEvent, ApplicationRunOutcome, ApplicationRunRequest, ManagedContextReference } from "./types";
 
 /** Lifecycle acknowledgments distinguish fenced replay prevention from actual adapter-owned deletion. */
@@ -14,6 +15,11 @@ export interface NativeRunInspection {
 export interface ApplicationRunPort {
   /** Stable adapter identity for attempt ledgers and reconciliation matching. */
   readonly adapter: "scripted" | "schway";
+  /**
+   * exec.run_tools/v1: present when the port can open project boxes. Work grants execution at admission only through
+   * such a port; a port without it admits no execution tool for any request.
+   */
+  readonly execution?: RunExecution | undefined;
   /** Performs one bounded invocation on the exact supplied route; cancellation never authorizes fallback or late commits. */
   invoke(request: ApplicationRunRequest, signal: AbortSignal, observe: (event: ApplicationRunEvent) => void): Promise<ApplicationRunOutcome>;
   /** Paginates adapter-owned run/session references after restart, including native orphans. */

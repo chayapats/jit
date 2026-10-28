@@ -195,6 +195,9 @@ directories, so no image or export can contain one.
 Attention levels (`attention_levels`; schema 35, delivery.attention_levels/v1) and
 work group notices (`work_groups`) hold a level per channel and identities only;
 they are included likewise.
+The execution tool call audit (`execution_tool_calls`; schema 36, exec.run_tools/v1)
+is included: each row holds the redacted first 2 KiB of a command or path, never
+file content or command output.
 Activation (`TransactionStore.swapFrom`, used by OPS02 restore and upgrade
 activation) builds the complete replacement image before an atomic rename and
 always keeps the live installation's owner verifier, sessions,

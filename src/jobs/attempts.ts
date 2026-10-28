@@ -6,6 +6,12 @@ import type { Job, JobData, JobReason, JobStopOutcome } from "./types";
 export interface AttemptPreparation {
   native: { adapter: string; runId: string; sessionId: string; context: { id: string; generation: number } } | null;
   data: JobData;
+  /**
+   * exec.run_tools/v1: the execution level this attempt was granted at admission, for the role that runs it. Every
+   * reservation and result commit re-checks it (`authorization_changed` once the effective level falls below it or the
+   * project is halted). Absent for attempts without execution.
+   */
+  execution?: { level: "workspace" | "full"; roleId: string | null };
 }
 /** Immutable admission snapshot plus append-only lifecycle evidence; never replaced by a retry. */
 export interface JobAttempt extends AttemptPreparation {

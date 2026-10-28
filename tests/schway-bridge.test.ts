@@ -119,7 +119,9 @@ test("effective run maps strict context, exact tools and the selected route with
   const run = request(config);
   const effective = describeEffectiveRun(run);
   expect(effective.systemPrompt.length).toBeGreaterThan(0);
-  expect(effective.sections.map(s => s.name)).toEqual(["responsibility", "purpose", "operator-1"]);
+  // exec.run_tools/v1: the trusted execution section states the frozen level (read: no tools) and the effect rule.
+  expect(effective.sections.map(s => s.name)).toEqual(["responsibility", "purpose", "operator-1", "execution"]);
+  expect(effective.sections.at(-1)!.content).toContain("read. This run has no execution tools");
   expect(effective.sources).toHaveLength(1);
   expect(effective.inputText).toBe(run.purpose);
   expect(effective.auth).toEqual({ route: "grok", model: grok.model, authRoute: grok.authRoute });

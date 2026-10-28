@@ -16,7 +16,8 @@ import type { TelegramStatus } from "./telegram/types";
 import type { SessionReconciliation } from "./jobs/reconcile";
 import type { Job, JobStopOutcome } from "./jobs/types";
 import { readAttempts } from "./jobs/attempts";
-import { JobQueue, jobCommandIdentity, projectJob, readJob, readJobs, stopExecutionJobs } from "./jobs/queue";
+import { JobQueue, fenceNarrowedExecution, jobCommandIdentity, projectJob, readJob, readJobs, stopExecutionJobs } from "./jobs/queue";
+import { readToolCalls, type ToolCallView } from "./exec/run-tools";
 import {
   accessCommandIdentity, isAccessCommand, readProjectAccess, readRoleAccess, writeAccessLevel, writeHalt, writeResume, writeRoleRestriction,
   type AccessCommand, type AccessReceipt, type HaltExecutionCommand, type HaltOutcome, type ProjectAccess, type RoleAccess,
@@ -2071,18 +2072,22 @@ export class Application {
       const now = this.#now();
       let halt: HaltOutcome | undefined;
       const channel = this.#commandChannel(actor);
+      let narrowed: string[] = [];
       if (command.kind === "access.level.set") writeAccessLevel(tx, command, channel, this.config, now);
       else if (command.kind === "access.role.restrict") writeRoleRestriction(tx, command, channel, now);
       else if (command.kind === "execution.resume") writeResume(tx, command, channel, now);
       else { writeHalt(tx, command, channel, now); halt = this.#haltExecution(tx, command, now); }
-      const result: AccessReceipt = { access: readProjectAccess(tx, command.projectId, this.config), roles: readRoleAccess(tx, command.projectId), ...(halt ? { halt } : {}) };
+      // exec.run_tools/v1: a narrower level fences running attempts granted more than their role now has.
+      if (command.kind === "access.level.set" || command.kind === "access.role.restrict") narrowed = fenceNarrowedExecution(tx, command.projectId, now);
+      const result: AccessReceipt = { access: readProjectAccess(tx, command.projectId, this.config), roles: readRoleAccess(tx, command.projectId), ...(halt ? { halt } : {}),
+        ...(narrowed.length ? { narrowed: { fencedJobIds: narrowed } } : {}) };
       tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
       tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);
       this.#beforeCommit?.("receipt");
       return result;
     });
-    // Abort transports of attempts the halt fenced only after the fence committed.
-    if (command.kind === "execution.halt") this.#jobs?.cancelFenced();
+    // Abort transports of attempts the halt or a narrowing fenced only after the fence committed.
+    if (command.kind === "execution.halt" || result.narrowed) this.#jobs?.cancelFenced();
     // exec.box_runtime/v1: the kill switch stops the box; a narrower level stops a box running wider. Both after commit.
     if (this.#boxes) {
       const boxes = this.#boxes;
@@ -2118,6 +2123,16 @@ export class Application {
       this.#beforeCommit?.("receipt");
       return result;
     });
+  }
+
+  /**
+   * exec.run_tools/v1 read API (for EXE04, EXE09 and EXE15): the project's recent audited execution tool calls, newest
+   * first and bounded (at most 100 per page; `before` pages by sequence, `runId` narrows to one run). Subjects are the
+   * redacted first 2 KiB of a command or path; output is never stored. Any authenticated owner channel may read it.
+   */
+  toolCalls(actor: OwnerActor, projectId: string, options: { before?: number; limit?: number; runId?: string } = {}): ToolCallView[] {
+    requireId(projectId);
+    return this.store.read(tx => { this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, projectId); return readToolCalls(tx, projectId, options); });
   }
 
   /** exec.box_runtime/v1: the project's box reset revision and whether a box is held or busy in this process. */

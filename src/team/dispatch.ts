@@ -9,7 +9,8 @@ import type { AppConfig } from "../config";
 import { readTeam } from "./configuration";
 import { planDiscussionRoles } from "./router";
 import { fixtureOutcome, normalizePortResult, validateRunRequest } from "./scripted-port";
-import { portFailureOutcome, schwayMaxAttempts } from "./schway-port";
+import { portFailureOutcome, schwayMaxCalls } from "./schway-port";
+import { executionGrant } from "../exec/run-tools";
 import type { ApplicationRunPort } from "./run-port";
 import type {
   ApplicationRunRequest, Discussion, DiscussionParticipation, RunSourceManifest, SpecialistRun, TeamCommand, TeamReceipt,
@@ -400,6 +401,8 @@ export function specialistAnalysisWork(
   return {
     id: specialistWorkId, title: "วิเคราะห์บทบาทแยก", revision: 1, replay: "read",
     route: { provider: "jit-fixture", model: "scripted", authRoute: "internal" },
+    // exec.run_tools/v1: a port with boxes grants the specialist's effective level (capped by its role override).
+    executes: (tx, job) => valid(job.input) && !!port.execution && executionGrant(tx, job.projectId, readSpecialist(tx, job.projectId, job.input.runId).roleId) !== null,
     prepare: (tx, job, generation) => {
       if (!valid(job.input)) throw new AppError("invalid_job_input");
       const run = readSpecialist(tx, job.projectId, job.input.runId);
@@ -410,8 +413,11 @@ export function specialistAnalysisWork(
         tx.run("INSERT INTO team_contexts VALUES (?, 1, 'active')", request.context.id);
       }
       request.fence = { jobId: job.id, generation, ownerGeneration: job.authorization.generation };
+      // Frozen in the attempt snapshot at admission; model output never changes it.
+      request.execution = port.execution ? executionGrant(tx, job.projectId, request.roleId) : null;
       return { native: { adapter: port.adapter, runId: request.runId, sessionId: request.runId, context: request.context },
-        data: JSON.parse(jobData(request, config.team.contextBytes)) };
+        data: JSON.parse(jobData(request, config.team.contextBytes)),
+        ...(request.execution ? { execution: { level: request.execution.level, roleId: request.roleId } } : {}) };
     },
     isCurrent: (tx, job, attempt) => {
       const request = attempt.data as unknown as ApplicationRunRequest;
@@ -435,7 +441,7 @@ export function specialistAnalysisWork(
       if (port.adapter === "schway") {
         // Worst-case retry calls pre-reserved before dispatch; single-output
         // token accounting stays as committed, with measured overrun in usage.
-        const extra = schwayMaxAttempts(request) - 1;
+        const extra = schwayMaxCalls(request) - 1;
         if (extra > 0) reserve({ calls: extra, rounds: extra });
       }
       let outcome;
