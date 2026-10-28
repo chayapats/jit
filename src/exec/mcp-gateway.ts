@@ -168,6 +168,11 @@ export class McpGateway {
   readonly #options: McpGatewayOptions;
   readonly #now: () => number;
   readonly #running = new Set<Promise<unknown>>();
+  /** Aborts of in-flight installs, so a drain can stop them. */
+  readonly #installs = new Set<AbortController>();
+  /** Live server connections by server id, so removing a server ends them at once. */
+  readonly #live = new Map<string, Set<Connection>>();
+  #closing = false;
 
   constructor(store: TransactionStore, options: McpGatewayOptions) {
     this.#store = store;
@@ -183,6 +188,24 @@ export class McpGateway {
   /** Boot: removes sidecars a previous process left running (each connection's sidecar is its own). */
   pruneSidecars(): Promise<number> { return this.#options.runtime.pruneSidecars(); }
 
+  /**
+   * Service drain: starts no install and aborts the ones in flight (they fail `interrupted`; the owner may accept
+   * again). Callers then wait for {@link idle} within their drain deadline.
+   */
+  close(): void {
+    this.#closing = true;
+    for (const abort of this.#installs) abort.abort();
+    for (const set of this.#live.values()) for (const connection of [...set]) connection.close();
+  }
+
+  /** True while an install runs. */
+  get installing(): boolean { return this.#running.size > 0; }
+
+  /** After `mcp.server.remove` commits: every live connection of that server closes, so no run can call it again. */
+  serverRemoved(serverId: string): void {
+    for (const connection of [...this.#live.get(serverId) ?? []]) connection.close();
+  }
+
   /** Waits for every install this gateway started. */
   async idle(): Promise<void> { while (this.#running.size) await Promise.allSettled([...this.#running]); }
 
@@ -197,24 +220,29 @@ export class McpGateway {
   async #install(projectId: string, serverId: string): Promise<McpServerView> {
     const server = this.#store.read(tx => readMcpServer(tx, projectId, serverId));
     if (server.state !== "installing") return server;
-    const finish = (state: "installed" | "failed", reason: string | null, tools?: McpToolListing[]) =>
-      this.#store.transaction(tx => writeServerState(tx, server, server.revision, state, reason, this.#now(), tools));
+    const abort = new AbortController();
+    // An install the drain aborted fails `interrupted`, whatever step it reached.
+    const finish = (state: "installed" | "failed", reason: string | null, tools?: McpToolListing[]) => this.#store.transaction(tx => abort.signal.aborted
+      ? writeServerState(tx, server, server.revision, "failed", "interrupted", this.#now())
+      : writeServerState(tx, server, server.revision, state, reason, this.#now(), tools));
+    if (this.#closing) return finish("failed", "interrupted");
+    this.#installs.add(abort);
     let session: BoxSession;
     try { session = await this.#options.boxes.open(projectId, null); }
-    catch (error) { return finish("failed", codeOf(error, "box_unavailable")); }
+    catch (error) { this.#installs.delete(abort); return finish("failed", codeOf(error, "box_unavailable")); }
     try {
       const spec = server.spec;
       if (spec.source === "oci") await this.#options.runtime.pullImage(`${spec.package}@${spec.version}`);
       else if (!server.sidecar) {
         const directory = boxInstallDirectory(session.handle.workspaceRoot, spec.name);
-        const result = await session.backend.spawn({ command: installCommand(spec, directory), cwd: session.handle.workspaceRoot, timeoutMs: this.#options.installMs ?? 600_000 });
+        const result = await session.backend.spawn({ command: installCommand(spec, directory), cwd: session.handle.workspaceRoot, timeoutMs: this.#options.installMs ?? 600_000, signal: abort.signal });
         if (result.exitCode !== 0 || result.timedOut) return finish("failed", result.timedOut ? "install_timeout" : "install_failed");
       } else {
         // The sidecar installs into its own directory with no secret released; the box never mounts that directory.
         const sidecar = await this.#sidecar(server, session.handle);
         try {
           const stream = await this.#options.runtime.stream({ kind: "sidecar", handle: sidecar }, { argv: ["sh", "-c", installCommand(spec, sidecarInstallRoot)], workdir: sidecarInstallRoot });
-          const code = await this.#drain(stream, this.#options.installMs ?? 600_000);
+          const code = await this.#drain(stream, this.#options.installMs ?? 600_000, abort.signal);
           if (code !== 0) return finish("failed", code === null ? "install_timeout" : "install_failed");
         } finally { await this.#options.runtime.removeSidecar(sidecar).catch(() => undefined); }
       }
@@ -228,13 +256,17 @@ export class McpGateway {
       return finish("installed", null, connection.listing);
     } catch (error) {
       return finish("failed", codeOf(error, "install_failed") === "box_image_pull_failed" ? "image_pull_failed" : "install_failed");
-    } finally { session.release(); }
+    } finally { this.#installs.delete(abort); session.release(); }
   }
 
   /** Reads a stream to its end (output is discarded); the exit code, or null after `timeoutMs` (the stream is closed). */
-  async #drain(stream: BoxStream, timeoutMs: number): Promise<number | null> {
+  async #drain(stream: BoxStream, timeoutMs: number, signal: AbortSignal): Promise<number | null> {
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<null>(resolve => { timer = setTimeout(() => { stream.close(); resolve(null); }, timeoutMs); });
+    const timeout = new Promise<null>(resolve => {
+      const stop = () => { stream.close(); resolve(null); };
+      timer = setTimeout(stop, timeoutMs);
+      if (signal.aborted) stop(); else signal.addEventListener("abort", stop, { once: true });
+    });
     const run = (async () => { for await (const _ of stream.stdout) { /* Discarded: install output is never stored. */ } return stream.exited; })();
     try { return await Promise.race([run, timeout]); } finally { clearTimeout(timer); }
   }
@@ -272,7 +304,14 @@ export class McpGateway {
     let client: McpClient;
     try { client = await McpClient.connect(stream, { ...(this.#options.requestMs ? { requestMs: this.#options.requestMs } : {}), ...(this.#options.callMs ? { callMs: this.#options.callMs } : {}) }); }
     catch (error) { stream.close(); await cleanup(); throw error; }
-    const connection: Connection = { server, client, listing: [], close: () => { client.close(); void cleanup(); } };
+    const live = this.#live.get(server.id) ?? new Set<Connection>();
+    this.#live.set(server.id, live);
+    const connection: Connection = { server, client, listing: [], close: () => {
+      client.close(); void cleanup();
+      live.delete(connection);
+      if (!live.size && this.#live.get(server.id) === live) this.#live.delete(server.id);
+    } };
+    live.add(connection);
     try { connection.listing = await this.#list(connection); }
     catch (error) { connection.close(); throw error; }
     return connection;
@@ -298,10 +337,13 @@ export class McpGateway {
     for (const server of servers) {
       try { connections.push(await this.#connect(server, input.handle)); } catch { /* Skipped for this run. */ }
     }
-    const definitions: ToolDefinition[] = [];
+    // Exposed names are unique across the whole run: `foo-bar`/`baz` and `foo`/`bar_baz` both map to
+    // `mcp_foo_bar_baz`, so a later server's colliding tool is left out rather than shadowing the first.
+    const definitions: ToolDefinition[] = [], exposed = new Set<string>();
     for (const connection of connections) {
       for (const tool of connection.listing) {
-        if (tool.refused || !tool.exposed) continue;
+        if (tool.refused || !tool.exposed || exposed.has(tool.exposed)) continue;
+        exposed.add(tool.exposed);
         definitions.push(this.#definition(connection, tool, input));
       }
     }
@@ -322,6 +364,11 @@ export class McpGateway {
       effect: listed.readOnly ? "read-only" : "mutating",
       execute: async (args, ctx): Promise<ToolExecutionResult> => {
         if (!args || typeof args !== "object" || Array.isArray(args)) return fail("Arguments must be a JSON object.");
+        // Every call — read-only or gated — needs the server still installed at the revision this run started.
+        const now = this.#store.read(tx => { try { return readMcpServer(tx, request.projectId, connection.server.id); } catch { return null; } });
+        if (connection.client.closed || !now || now.state !== "installed" || now.revision !== connection.server.revision) {
+          return fail(`The MCP server ${serverName} was removed or reinstalled; it can no longer be called in this run.`);
+        }
         // Hints are re-read whenever the server says its listing changed; the current listing decides.
         if (connection.client.listStale) {
           try { await this.#list(connection); } catch { return fail(`The MCP server ${serverName} stopped responding.`); }

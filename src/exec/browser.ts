@@ -46,11 +46,13 @@ export const browserToolNames = Object.freeze(["browser_open", "browser_snapshot
 export interface ElementInfo { tag: string; type: string; name: string; inForm: boolean; submits: boolean; password: boolean; fields: string[]; url: string }
 
 /**
- * Runs on the element (`this`) through `Runtime.callFunctionOn`. The name comes from `aria-label`, the visible text or
- * the title — an input's value only for button-like inputs — so a typed password never becomes a name.
+ * Runs on the element (`this`) through `Runtime.callFunctionOn`. It describes the control a click on `this` activates:
+ * the closest enclosing button, link, input or select (a `<span>` inside a submit button is that button), so a click
+ * on a child can never hide a submit. The name comes from `aria-label`, the visible text or the title — an input's
+ * value only for button-like inputs — so a typed password never becomes a name.
  */
 export const describeElementFunction = `function () {
-  const el = this, tag = String(el.tagName || "").toLowerCase(), type = String(el.getAttribute && el.getAttribute("type") || "").toLowerCase();
+  const el = (this.closest && this.closest('button, input, select, textarea, a[href], [role="button"], [role="link"]')) || this, tag = String(el.tagName || "").toLowerCase(), type = String(el.getAttribute && el.getAttribute("type") || "").toLowerCase();
   const form = el.form || (el.closest ? el.closest("form") : null);
   const buttonLike = tag === "input" && ["submit", "button", "reset", "image"].includes(type);
   const label = (el.getAttribute && el.getAttribute("aria-label")) || (tag === "input" ? "" : el.innerText) || (buttonLike ? el.value : "") || (el.getAttribute && el.getAttribute("title")) || "";
@@ -58,6 +60,8 @@ export const describeElementFunction = `function () {
   const fields = form ? Array.from(form.elements || []).slice(0, 32).map(f => String(f.name || f.id || "").slice(0, 64)).filter(Boolean) : [];
   return { tag, type, name: String(label).replace(/\\s+/g, " ").trim().slice(0, 200), inForm: !!form, submits, password: type === "password", fields, url: String(location.href) };
 }`;
+/** True when `this` (the node a click point hits) is the target or inside it. */
+export const containsFunction = `function (target) { return !!target && (target === this || target.contains(this)); }`;
 /** Selects an option by value on a `<select>` and fires `input` and `change`. */
 export const selectOptionFunction = `function (value) {
   if (String(this.tagName).toLowerCase() !== "select") return false;
@@ -158,6 +162,11 @@ export class BrowserService {
   readonly #opening = new Map<string, Promise<Live>>();
   /** Password text of pending type cards, by card id: kept in memory only, never in a card, row or log. */
   readonly #secretInputs = new Map<string, string>();
+  /**
+   * Per-project input lock shared by agent input and the owner's takeover input, so the two never interleave; agent
+   * input re-checks the takeover inside the lock, right before it is sent.
+   */
+  readonly #inputLocks = new Map<string, Promise<unknown>>();
 
   constructor(store: TransactionStore, options: BrowserServiceOptions) {
     this.#store = store;
@@ -248,6 +257,51 @@ export class BrowserService {
 
   #takeover(projectId: string): boolean { return this.#store.read(tx => takeoverActive(tx, projectId)); }
 
+  /** Runs `body` holding the project's input lock (one input sequence at a time, agent or owner). */
+  async #locked<T>(projectId: string, body: () => Promise<T>): Promise<T> {
+    const previous = this.#inputLocks.get(projectId) ?? Promise.resolve();
+    const run = previous.catch(() => undefined).then(body);
+    const tail = run.catch(() => undefined);
+    this.#inputLocks.set(projectId, tail);
+    try { return await run; } finally { if (this.#inputLocks.get(projectId) === tail) this.#inputLocks.delete(projectId); }
+  }
+
+  /** Agent input: under the lock, refused `takeover_active` if the owner took over at any point before it is sent. */
+  #agentInput<T>(projectId: string, body: () => Promise<T>): Promise<T> {
+    return this.#locked(projectId, async () => {
+      if (this.#takeover(projectId)) throw new AppError("takeover_active", 409);
+      return body();
+    });
+  }
+
+  /**
+   * Keeps the project's live session (its page and display) for a pending card, so its approval can act on the same
+   * session. Returns false when no session is open.
+   */
+  pinCard(projectId: string, cardId: string): boolean {
+    const live = this.#live.get(projectId);
+    if (!live || live.closed) return false;
+    live.pending.add(cardId);
+    return true;
+  }
+
+  /** True while the session that was live when the card was made is still open. */
+  cardSessionOpen(projectId: string, cardId: string): boolean {
+    const live = this.#live.get(projectId);
+    return !!live && !live.closed && live.pending.has(cardId);
+  }
+
+  /**
+   * A card was decided (denied, run or failed): releases its hold on the session and any password it held, closing a
+   * session nothing else uses.
+   */
+  settleCard(projectId: string, cardId: string): void {
+    this.#secretInputs.delete(cardId);
+    const live = this.#live.get(projectId);
+    if (!live || !live.pending.delete(cardId)) return;
+    if (live.users === 0 && live.pending.size === 0) this.#closeLive(live);
+  }
+
   async #info(live: Live): Promise<{ url: string; title: string }> {
     const info = (await live.client.send("Target.getTargetInfo", { targetId: live.targetId })).targetInfo as { url?: unknown; title?: unknown } | undefined;
     return { url: typeof info?.url === "string" ? info.url : "", title: typeof info?.title === "string" ? info.title : "" };
@@ -272,6 +326,10 @@ export class BrowserService {
       password: value.password === true, fields: Array.isArray(value.fields) ? value.fields.slice(0, 32).map(field => String(field).slice(0, 64)) : [], url: String(value.url ?? ""), ...target };
   }
 
+  /**
+   * Clicks the centre of the element, after checking that the node at that point is the element or inside it: an
+   * element covered by another (a submit button over a link) is refused (`browser_click_obscured`), never clicked.
+   */
   async #click(live: Live, backendNodeId: number): Promise<void> {
     const options = { sessionId: live.sessionId };
     await live.client.send("DOM.scrollIntoViewIfNeeded", { backendNodeId }, options).catch(() => ({}));
@@ -279,6 +337,14 @@ export class BrowserService {
     const quad = model?.content;
     if (!Array.isArray(quad) || quad.length < 8) throw new AppError("browser_element_hidden", 409);
     const x = (quad[0]! + quad[2]! + quad[4]! + quad[6]!) / 4, y = (quad[1]! + quad[3]! + quad[5]! + quad[7]!) / 4;
+    const hit = (await live.client.send("DOM.getNodeForLocation", { x: Math.round(x), y: Math.round(y), includeUserAgentShadowDOM: false }, options)).backendNodeId;
+    if (typeof hit !== "number") throw new AppError("browser_click_obscured", 409);
+    if (hit !== backendNodeId) {
+      const target = await this.#object(live, `e${backendNodeId}`), receiver = await this.#object(live, `e${hit}`);
+      const inside = await live.client.send("Runtime.callFunctionOn", { objectId: receiver.objectId, functionDeclaration: containsFunction,
+        arguments: [{ objectId: target.objectId }], returnByValue: true }, options);
+      if ((inside.result as { value?: unknown } | undefined)?.value !== true) throw new AppError("browser_click_obscured", 409);
+    }
     await live.client.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y }, options);
     await live.client.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 }, options);
     await live.client.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 }, options);
@@ -325,7 +391,10 @@ export class BrowserService {
       async (args: unknown): Promise<ToolExecutionResult> => {
         if (this.#takeover(projectId)) return fail("takeover_active: the owner is controlling this browser. Do not send input; wait for them to end the takeover.");
         try { return await body(await session(), (args && typeof args === "object" ? args : {}) as Record<string, unknown>); }
-        catch (error) { return fail(`Browser call failed: ${codeOf(error, "browser_error")}.`); }
+        catch (error) {
+          if (codeOf(error, "") === "takeover_active") return fail("takeover_active: the owner is controlling this browser. Do not send input; wait for them to end the takeover.");
+          return fail(`Browser call failed: ${codeOf(error, "browser_error")}.`);
+        }
       };
     /** Pauses a confirm action: creates the card, performs nothing, keeps the page for the owner's decision. */
     const pause = (live: Live, action: BrowserConfirmAction, password: string | null): ToolExecutionResult => {
@@ -337,7 +406,7 @@ export class BrowserService {
         });
       } catch (error) { return fail(`Jit refused the browser action: ${codeOf(error, "invalid_effect_action")}.`); }
       if (password !== null) this.#secretInputs.set(card.id, password);
-      live.pending.add(card.id);
+      if (!live.closed) live.pending.add(card.id);
       return cardToolResult(card);
     };
     const definitions: ToolDefinition[] = [
@@ -379,7 +448,7 @@ export class BrowserService {
             return pause(live, { kind: "browser_confirm", operation: "click", url: info.url.slice(0, 2048), element: { ref: String(args.ref), tag: element.tag, name: element.name },
               formFields: element.fields, text: null, textDigest: null, reasons }, null);
           }
-          await this.#click(live, element.backendNodeId);
+          await this.#agentInput(projectId, () => this.#click(live, element.backendNodeId));
           return { content: JSON.stringify({ clicked: String(args.ref), name: element.name }) };
         }),
       },
@@ -399,7 +468,7 @@ export class BrowserService {
               formFields: element.fields, text: element.password ? null : text, textDigest: element.password ? createHash("sha256").update(text).digest("hex") : null, reasons },
             element.password ? text : null);
           }
-          await this.#type(live, element.backendNodeId, text);
+          await this.#agentInput(projectId, () => this.#type(live, element.backendNodeId, text));
           return { content: JSON.stringify({ typed: String(args.ref), characters: [...text].length }) };
         }),
       },
@@ -409,8 +478,8 @@ export class BrowserService {
         inputSchema: object({ ref: refSchema, value: { type: "string", maxLength: 1024 } }, ["ref", "value"]),
         execute: guarded(async (live, args) => {
           const target = await this.#object(live, String(args.ref ?? ""));
-          const result = await live.client.send("Runtime.callFunctionOn", { objectId: target.objectId, functionDeclaration: selectOptionFunction,
-            arguments: [{ value: String(args.value ?? "") }], returnByValue: true }, { sessionId: live.sessionId });
+          const result = await this.#agentInput(projectId, () => live.client.send("Runtime.callFunctionOn", { objectId: target.objectId, functionDeclaration: selectOptionFunction,
+            arguments: [{ value: String(args.value ?? "") }], returnByValue: true }, { sessionId: live.sessionId }));
           if ((result.result as { value?: unknown } | undefined)?.value !== true) return fail("That element is not a select, or it has no option with that value.");
           return { content: JSON.stringify({ selected: String(args.ref) }) };
         }),
@@ -450,19 +519,19 @@ export class BrowserService {
         return { outcome: "failed", reason: "input_unavailable", detail: {} };
       }
       if (!allowed() || signal.aborted) return { outcome: "failed", reason: "access_changed", detail: {} };
-      sent = true;
-      if (action.operation === "click") await this.#click(live, element.backendNodeId);
-      else await this.#type(live, element.backendNodeId, text!);
+      await this.#agentInput(card.projectId, async () => {
+        sent = true;
+        if (action.operation === "click") await this.#click(live, element.backendNodeId);
+        else await this.#type(live, element.backendNodeId, text!);
+      });
       live.lastUsedAt = this.#now();
       return { outcome: "succeeded", reason: null, detail: { operation: action.operation, element: action.element.ref } };
     } catch (error) {
-      return { outcome: sent ? "unknown" : "failed", reason: codeOf(error, sent ? "browser_error" : "browser_session_closed"), detail: {} };
+      // A refused click (covered element, takeover) dispatched nothing.
+      const code = codeOf(error, sent ? "browser_error" : "browser_session_closed");
+      return { outcome: sent && code !== "browser_click_obscured" ? "unknown" : "failed", reason: code, detail: {} };
     } finally {
-      this.#secretInputs.delete(card.id);
-      if (live) {
-        live.pending.delete(card.id);
-        if (live.users === 0 && live.pending.size === 0) this.#closeLive(live);
-      }
+      this.settleCard(card.projectId, card.id);
     }
   };
 
@@ -497,13 +566,19 @@ export class BrowserService {
     } finally { box.release(); }
   }
 
-  /** Sends one input to the virtual display with `xdotool` through the runner (owner takeover and computer-use). */
-  async desktopInput(projectId: string, roleId: string | null, input: DesktopInput, signal?: AbortSignal): Promise<void> {
+  /**
+   * Sends one input to the virtual display with `xdotool` through the runner: the owner's takeover input, or agent
+   * computer-use input (refused `takeover_active` during a takeover, checked under the input lock).
+   */
+  async desktopInput(projectId: string, roleId: string | null, input: DesktopInput, from: "agent" | "owner", signal?: AbortSignal): Promise<void> {
     const command = xdotoolCommand(input);
     const box = await this.#options.boxes.open(projectId, roleId);
-    try {
+    const send = async () => {
       const result = await box.backend.spawn({ command, cwd: box.handle.workspaceRoot, timeoutMs: 15_000, ...(signal ? { signal } : {}) });
       if (result.exitCode !== 0) throw new AppError("screen_unavailable", 409);
-    } finally { box.release(); }
+    };
+    // Owner input and agent input never interleave; agent input is refused once a takeover started.
+    try { await (from === "agent" ? this.#agentInput(projectId, send) : this.#locked(projectId, send)); }
+    finally { box.release(); }
   }
 }

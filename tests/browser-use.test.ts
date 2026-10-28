@@ -343,3 +343,42 @@ test("schema, backup policy and dictionaries cover exec.browser/v1 and app.takeo
   expect(backupImageTables.takeover_sessions).toBe("include");
   for (const key of Object.keys(dictionaries.en).filter(key => /^error\.(takeover_|invalid_takeover_|invalid_desktop_|browser_|screen_|screenshot_)/.test(key))) expect(dictionaries.th[key as keyof typeof dictionaries.th]).toBeTruthy();
 });
+
+test("review fixes: a covered target is never clicked, a child of a submit is classified as the submit, input re-checks the takeover", async () => {
+  const page: FixturePage = { url: "https://shop.example.test/covered", title: "Covered", elements: [
+    { id: 1, role: "link", name: "Read more", tag: "a", coveredBy: 2 },
+    { id: 2, role: "button", name: "Continue", tag: "button", form: "checkout" },
+    { id: 3, role: "StaticText", name: "Go", tag: "span", parent: 2 },
+    { id: 4, role: "link", name: "Help", tag: "a" },
+  ] };
+  const w = await browserWorld([page]);
+  setLevel(w.f, "workspace");
+  const out = await w.run([{ name: "browser_open", input: { url: page.url } }, { name: "browser_click", input: { ref: "e1" } }, { name: "browser_click", input: { ref: "e3" } }]);
+  // The link's centre is covered by the submit button: refused, nothing clicked, no card.
+  expect(out.results[1]).toMatchObject({ isError: true });
+  expect(out.results[1]!.content).toContain("browser_click_obscured");
+  // A span inside the submit button is that button: a card, not a click.
+  expect(out.json(2).state).toBe("pending_approval");
+  expect((w.f.app.approvalCards(w.f.auth.actor, w.f.project.id)[0]!.action as any)).toMatchObject({ element: { tag: "button", name: "Continue" }, reasons: ["submit_control"] });
+  expect(w.cdp.actions).toEqual([]);
+  // The owner takes over after the agent's call started (while Jit reads the element): the input is still refused.
+  w.cdp.before = method => {
+    if (method !== "Runtime.callFunctionOn" || w.f.app.takeover(w.f.auth.actor, w.f.project.id).active) return;
+    w.takeover("start");
+  };
+  const raced = await w.run([{ name: "browser_open", input: { url: page.url } }, { name: "browser_click", input: { ref: "e4" } }]);
+  expect(raced.results[1]!.content).toContain("takeover_active");
+  expect(w.cdp.actions).toEqual([]);
+});
+
+test("review fixes: a denied card releases its page at once, and a reset forgets the screenshots", async () => {
+  const w = await browserWorld();
+  setLevel(w.f, "workspace");
+  await w.run([{ name: "browser_open", input: { url: cart.url } }, { name: "browser_screenshot", input: {} }, { name: "browser_type", input: { ref: "e5", text: "hunter2-secret\n" } }]);
+  expect(w.cdp.open()).toBe(1);
+  decide(w.f, w.f.app.approvalCards(w.f.auth.actor, w.f.project.id)[0]!, "deny");
+  expect(w.cdp.open()).toBe(0);
+  expect(w.f.app.boxScreenshots(w.f.auth.actor, w.f.project.id)).toHaveLength(1);
+  await w.f.app.execute(w.f.auth.actor, { kind: "execution.box.reset", requestId: rid(), projectId: w.f.project.id, expectedRevision: 0, payload: { wipeWorkspace: true } });
+  expect(w.f.app.boxScreenshots(w.f.auth.actor, w.f.project.id)).toEqual([]);
+});

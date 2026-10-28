@@ -5,6 +5,7 @@ import { AppError } from "../src/errors";
 import { dictionaries } from "../src/i18n";
 import type { BoxStreamRequest, StreamTarget } from "../src/exec/box-runtime";
 import { cdpRelayPath } from "../src/exec/cdp-stream";
+import { browserIdleMs } from "../src/exec/browser";
 import { ComputerService, computerReasons, pressesEnter } from "../src/exec/computer";
 import { backupImageTables } from "../src/ops/backup";
 import type { ScriptedTools } from "../src/team/scripted-port";
@@ -201,4 +202,23 @@ test("schema, backup policy and dictionaries cover exec.computer/v1", () => {
     expect(dictionaries.th[key as keyof typeof dictionaries.th]).toBeTruthy();
     expect(dictionaries.en[key as keyof typeof dictionaries.en]).toBeTruthy();
   }
+});
+
+test("review fix: a computer card holds its desktop session; once that session closes, approval sends nothing", async () => {
+  const w = await desktopWorld();
+  setLevel(w.f, "full");
+  await w.run([click(3, 4, "input"), click(5, 6, "input")]);
+  // The run ended but the pending cards keep the session (and the screen they were made on).
+  expect(w.cdp.open()).toBe(1);
+  const [first, second] = w.f.app.approvalCards(w.f.auth.actor, w.f.project.id);
+  decide(w.f, first!, "approve");
+  await settle(w.f);
+  expect(w.desktop).toHaveLength(1);
+  // The session closes (idle): the other card can no longer act on another page or a new run's screen.
+  w.f.browser!.sweep(w.f.clock.now + browserIdleMs);
+  expect(w.cdp.open()).toBe(0);
+  decide(w.f, second!, "approve");
+  await settle(w.f);
+  expect(w.f.app.approvalCard(w.f.auth.actor, w.f.project.id, second!.id)).toMatchObject({ state: "failed", reason: "browser_session_closed" });
+  expect(w.desktop).toHaveLength(1);
 });

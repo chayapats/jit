@@ -7,6 +7,7 @@ import { dictionaries } from "../src/i18n";
 import { validateStreamRequest, type BoxStream, type BoxStreamRequest, type StreamTarget } from "../src/exec/box-runtime";
 import { mcpCommandIdentity, parseMcpProposal, specProblem, type McpProposalView } from "../src/exec/mcp";
 import { McpClient } from "../src/exec/mcp-client";
+import { EffectExecutor } from "../src/exec/effect-executor";
 import { exposedToolName, frameMcpResult, installCommand, listingOf, mcpResultBytes } from "../src/exec/mcp-gateway";
 import { processStream } from "../src/exec/podman-runtime";
 import { backupImageTables } from "../src/ops/backup";
@@ -51,7 +52,7 @@ interface McpWorld {
 }
 
 /** An installation with an MCP gateway whose servers are the fixture script behind the fake box pipe. */
-async function world(options: EffectFixtureOptions & { install?: "ok" | "fail"; silent?: boolean } = {}): Promise<McpWorld> {
+async function world(options: EffectFixtureOptions & { install?: "ok" | "fail" | "hang"; silent?: boolean } = {}): Promise<McpWorld> {
   const dir = mkdtempSync(join(tmpdir(), "jit-exe12-")); dirs.push(dir);
   const toolsPath = join(dir, "tools.json"), logPath = join(dir, "calls.log");
   writeFileSync(toolsPath, JSON.stringify([readOnly("read_note"), writes("write_note")])); writeFileSync(logPath, "");
@@ -64,6 +65,8 @@ async function world(options: EffectFixtureOptions & { install?: "ok" | "fail"; 
     exec: local => async (handle, request) => {
       const parsed = JSON.parse(new TextDecoder().decode(request.input)) as { op?: string; command?: string };
       if (parsed.op === "spawn" && parsed.command?.includes(" install ")) {
+        // A hanging install ends only when its exec is aborted (the drain).
+        if (options.install === "hang") return new Promise((_, reject) => request.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
         const exitCode = options.install === "fail" ? 1 : 0;
         return { exitCode: 0, stdout: new TextEncoder().encode(JSON.stringify({ v: 1, ok: true, result: { stdout: "", stderr: "", exitCode, timedOut: false } })), stderr: new Uint8Array() };
       }
@@ -118,7 +121,7 @@ function accept(w: McpWorld, proposal: Pick<McpProposalView, "id" | "revision">,
 
 /** Proposes, accepts and installs one server; returns it installed. */
 async function installed(w: McpWorld, overrides: Record<string, unknown> = {}, env: Record<string, string> = {}) {
-  const [proposal] = await propose(w, spec(overrides));
+  const proposal = (await propose(w, spec(overrides))).find(item => item.state === "proposed" && item.spec?.name === (overrides.name ?? "notes"));
   const receipt = accept(w, proposal!, env);
   await settle(w.f);
   return w.f.app.mcpServers(w.f.auth.actor, w.f.project.id).find(server => server.id === receipt.server!.id)!;
@@ -370,4 +373,51 @@ test("schema, backup policy and dictionaries cover app.mcp_servers/v1", () => {
   expect(backupImageTables.mcp_proposals).toBe("include");
   expect(backupImageTables.mcp_servers).toBe("include");
   for (const key of Object.keys(dictionaries.en).filter(key => /^error\.(mcp_|invalid_mcp_|box_image_|box_secret_)/.test(key))) expect(dictionaries.th[key as keyof typeof dictionaries.th]).toBeTruthy();
+});
+
+test("review fixes: a removed server stops at once, names are unique across servers, a drain aborts installs", { timeout: 20_000 }, async () => {
+  const w = await world();
+  setLevel(w.f, "workspace");
+  w.setTools([readOnly("baz"), readOnly("bar_baz")]);
+  const fooBar = await installed(w, { name: "foo-bar" });
+  await installed(w, { name: "foo" });
+  // `foo-bar`/`baz` and `foo`/`bar_baz` both map to mcp_foo_bar_baz: one name never refers to two tools.
+  const names = (await w.run([])).names.filter(name => name.startsWith("mcp_"));
+  expect(names.filter(name => name === "mcp_foo_bar_baz")).toHaveLength(1);
+  expect(new Set(names).size).toBe(names.length);
+  // The owner removes a server while a run is connected: its next read-only call is refused and never sent.
+  const before = w.calls().length;
+  const removed = await w.run([{ name: "mcp_foo_bar_bar_baz", input: {} }, () => {
+    w.f.app.execute(w.f.telegram, { kind: "mcp.server.remove", requestId: rid(), projectId: w.f.project.id, expectedRevision: fooBar.revision, payload: { serverId: fooBar.id } });
+  }, { name: "mcp_foo_bar_bar_baz", input: {} }]);
+  expect(removed.results[0]!.content).toContain("\"untrusted\":true");
+  expect(removed.results[1]).toMatchObject({ isError: true });
+  expect(removed.results[1]!.content).toContain("removed or reinstalled");
+  expect(w.calls().length).toBe(before + 1);
+
+  // The drain aborts an install in flight: it fails `interrupted` and nothing else starts.
+  const hang = await world({ install: "hang" });
+  setLevel(hang.f, "workspace");
+  const [proposal] = await propose(hang, spec());
+  const receipt = accept(hang, proposal!);
+  await Bun.sleep(20);
+  expect(hang.f.mcp!.installing).toBe(true);
+  hang.f.mcp!.close();
+  await hang.f.mcp!.idle();
+  expect(hang.f.app.mcpServers(hang.f.auth.actor, hang.f.project.id).find(server => server.id === receipt.server!.id)).toMatchObject({ state: "failed", reason: "interrupted" });
+});
+
+test("review fixes: in-box cards need no credential vault, and the box image ships npm for npm installs", async () => {
+  const w = await world();
+  setLevel(w.f, "workspace");
+  await installed(w);
+  const run = await w.run([{ name: "mcp_notes_write_note", input: { body: "no vault" } }]);
+  const cardId = (JSON.parse(run.results[0]!.content) as { cardId: string }).cardId;
+  // An executor without a vault still runs an approved MCP card (it releases no connection).
+  const vaultless = new EffectExecutor(w.f.store, { vault: null, boxes: w.f.boxes, mirrorRoot: null, now: () => w.f.clock.now, performers: { mcp_tool: w.f.mcp!.perform } });
+  w.f.store.transaction(tx => tx.run("UPDATE approval_cards SET state = 'executing', revision = revision + 1 WHERE id = ?", cardId));
+  expect(await vaultless.run(w.f.project.id, cardId)).toMatchObject({ state: "succeeded" });
+  expect(w.calls().map(call => call.arguments)).toEqual([{ body: "no vault" }]);
+  const containerfile = readFileSync(join(import.meta.dir, "../ops/box/Containerfile"), "utf8");
+  expect(containerfile.split("FROM base AS browser")[0]).toMatch(/\bnodejs npm\b/);
 });

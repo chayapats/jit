@@ -1,8 +1,9 @@
-import { describeElementFunction, selectOptionFunction } from "../../src/exec/browser";
+import { containsFunction, describeElementFunction, selectOptionFunction } from "../../src/exec/browser";
 import type { BoxStream } from "../../src/exec/box-runtime";
 
 /** One element of a fixture page. `form` names the form it belongs to; `field` is its form field name. */
-export interface FixtureElement { id: number; role: string; name: string; tag: string; type?: string; form?: string; field?: string; parent?: number; options?: string[] }
+/** `coveredBy` names an element drawn on top of this one: a click at its centre lands there. */
+export interface FixtureElement { id: number; role: string; name: string; tag: string; type?: string; form?: string; field?: string; parent?: number; options?: string[]; coveredBy?: number }
 export interface FixturePage { url: string; title: string; elements: FixtureElement[] }
 
 /** A PNG the fake browser "captures": the signature and a few bytes. */
@@ -19,6 +20,8 @@ export class FakeCdp {
   readonly streams: { closed: boolean; close(): void }[] = [];
   /** Methods that never answer (deadline tests). */
   readonly hang = new Set<string>();
+  /** Called with each command's method before it is answered (to change state mid-call). */
+  before: ((method: string) => void) | null = null;
   /** When set, the next answer is padded past 1 MiB (framing cap test). */
   oversizeNext = false;
   current: FixturePage = { url: "about:blank", title: "", elements: [] };
@@ -59,6 +62,7 @@ export class FakeCdp {
           buffer = buffer.slice(end + 1);
           if (this.hang.has(command.method)) continue;
           queueMicrotask(() => {
+            this.before?.(command.method);
             const answer = this.#answer(command, emit);
             if (this.oversizeNext) { this.oversizeNext = false; emit({ id: command.id, result: { pad: "x".repeat(1_100_000) } }); return; }
             emit("error" in answer ? { id: command.id, error: answer.error } : { id: command.id, result: answer.result });
@@ -72,7 +76,12 @@ export class FakeCdp {
 
   #element(id: unknown): FixtureElement | undefined { return this.current.elements.find(element => element.id === id); }
 
-  #describe(element: FixtureElement) {
+  /** Like the real function, the description is of the closest enclosing control. */
+  #describe(start: FixtureElement) {
+    let element = start;
+    for (let at: FixtureElement | undefined = start; at; at = at.parent === undefined ? undefined : this.#element(at.parent)) {
+      if (["button", "input", "select", "textarea", "a"].includes(at.tag)) { element = at; break; }
+    }
     const type = element.type ?? "";
     const submits = (element.tag === "button" && (type === "submit" || (type === "" && !!element.form))) || (element.tag === "input" && (type === "submit" || type === "image"));
     const fields = element.form ? this.current.elements.filter(other => other.form === element.form && other.field).map(other => other.field!) : [];
@@ -104,6 +113,12 @@ export class FakeCdp {
         const element = this.#element(Number(String(p.objectId).slice(4)));
         if (!element) return { error: { code: -32000, message: "No object" } };
         if (p.functionDeclaration === describeElementFunction) return { result: { result: { type: "object", value: this.#describe(element) } } };
+        if (p.functionDeclaration === containsFunction) {
+          const target = Number(String((p.arguments as { objectId: string }[])[0]!.objectId).slice(4));
+          let inside = false;
+          for (let at: FixtureElement | undefined = element; at; at = at.parent === undefined ? undefined : this.#element(at.parent)) if (at.id === target) inside = true;
+          return { result: { result: { type: "boolean", value: inside } } };
+        }
         if (p.functionDeclaration === selectOptionFunction) {
           const value = String((p.arguments as { value: unknown }[])[0]!.value);
           const ok = element.tag === "select" && (element.options ?? []).includes(value);
@@ -115,6 +130,10 @@ export class FakeCdp {
       case "DOM.getBoxModel": {
         const id = Number(p.backendNodeId), x = id * 10;
         return this.#element(id) ? { result: { model: { content: [x, 0, x + 10, 0, x + 10, 10, x, 10] } } } : { error: { code: -32000, message: "No node" } };
+      }
+      case "DOM.getNodeForLocation": {
+        const element = this.#element(Math.round((Number(p.x) - 5) / 10));
+        return element ? { result: { backendNodeId: element.coveredBy ?? element.id } } : { error: { code: -32000, message: "No node at location" } };
       }
       case "Input.dispatchMouseEvent":
         if (p.type === "mouseReleased") this.actions.push(`click e${Math.round((Number(p.x) - 5) / 10)}`);

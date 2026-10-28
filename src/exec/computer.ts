@@ -148,10 +148,12 @@ export class ComputerService {
             if (!input.current(tx)) throw new AppError("execution_access_changed");
             return createCard(tx, origin, pinned, this.#now(), { autoApprove: false });
           });
+          // The card holds the desktop session it was made on; its approval acts only on that session.
+          this.#browser.pinCard(projectId, card.id);
           return cardToolResult(card);
         } catch (error) { return fail(`Jit refused the computer action: ${codeOf(error, "invalid_effect_action")}.`); }
       }
-      await this.#browser.desktopInput(projectId, request.roleId, toInput(action), signal);
+      await this.#browser.desktopInput(projectId, request.roleId, toInput(action), "agent", signal);
       return { content: JSON.stringify({ done: action.operation, intent }) };
     };
     const definitions: ToolDefinition[] = [
@@ -196,22 +198,26 @@ export class ComputerService {
   }
 
   /**
-   * The `computer_confirm` performer: sends the approved input once. Nothing is sent during a takeover or when the role
-   * no longer has `full`; a failure after the input was sent is `unknown`.
+   * The `computer_confirm` performer: sends the approved input once, on the desktop session the card was made on.
+   * Nothing is sent when that session closed (`browser_session_closed`: the screen may show something else now),
+   * during a takeover or when the role no longer has `full`; a failure after the input was sent is `unknown`.
    */
   readonly perform: EffectPerformer = async (card, signal, allowed): Promise<EffectOutcome> => {
     const action = card.action as ComputerConfirmAction;
-    if (this.#store.read(tx => takeoverActive(tx, card.projectId))) return { outcome: "failed", reason: "takeover_active", detail: {} };
-    if (!allowed() || signal.aborted) return { outcome: "failed", reason: "access_changed", detail: {} };
-    const input: ComputerAction = action.operation === "click" ? { operation: "click", x: action.x!, y: action.y! }
-      : action.operation === "type" ? { operation: "type", text: action.text! } : { operation: "key", keys: action.keys! };
     try {
-      await this.#browser.desktopInput(card.projectId, card.roleId, toInput(input), signal);
+      if (this.#store.read(tx => takeoverActive(tx, card.projectId))) return { outcome: "failed", reason: "takeover_active", detail: {} };
+      if (!this.#browser.cardSessionOpen(card.projectId, card.id)) return { outcome: "failed", reason: "browser_session_closed", detail: {} };
+      if (!allowed() || signal.aborted) return { outcome: "failed", reason: "access_changed", detail: {} };
+      const input: ComputerAction = action.operation === "click" ? { operation: "click", x: action.x!, y: action.y! }
+        : action.operation === "type" ? { operation: "type", text: action.text! } : { operation: "key", keys: action.keys! };
+      await this.#browser.desktopInput(card.projectId, card.roleId, toInput(input), "agent", signal);
       return { outcome: "succeeded", reason: null, detail: { operation: action.operation } };
     } catch (error) {
       // The runner reports whether xdotool ran; a transport failure leaves the outcome unknown.
       const code = codeOf(error, "computer_error");
-      return { outcome: code === "screen_unavailable" || code === "access_level_insufficient" || code === "execution_halted" ? "failed" : "unknown", reason: code, detail: {} };
+      return { outcome: ["screen_unavailable", "access_level_insufficient", "execution_halted", "takeover_active"].includes(code) ? "failed" : "unknown", reason: code, detail: {} };
+    } finally {
+      this.#browser.settleCard(card.projectId, card.id);
     }
   };
 }

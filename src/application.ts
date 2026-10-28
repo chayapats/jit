@@ -2218,6 +2218,8 @@ export class Application {
       return receipt;
     });
     if (!replay && result.card?.state === "executing") void this.#effects?.run(command.projectId, result.card.id).catch(() => undefined);
+    // exec.browser/v1, exec.computer/v1: a denied confirm card releases the page it was holding (and any password).
+    if (!replay && result.card?.state === "denied" && (result.card.kind === "browser_confirm" || result.card.kind === "computer_confirm")) this.#browser?.settleCard(command.projectId, result.card.id);
     return result;
   }
 
@@ -2242,6 +2244,8 @@ export class Application {
       return receipt;
     });
     if (!replay && command.kind === "mcp.install.accept" && result.server) void this.#mcp?.install(command.projectId, result.server.id).catch(() => undefined);
+    // A removed server stops at once: its live connections close, so no running run can call it again.
+    if (!replay && command.kind === "mcp.server.remove") this.#mcp?.serverRemoved(command.payload.serverId);
     return result;
   }
 
@@ -2286,7 +2290,7 @@ export class Application {
       this.#beforeCommit?.("receipt");
       return result;
     });
-    if (!replay && input) await this.#browser!.desktopInput(command.projectId, null, input);
+    if (!replay && input) await this.#browser!.desktopInput(command.projectId, null, input, "owner");
     return receipt;
   }
 
@@ -2430,7 +2434,7 @@ export class Application {
     if (replay) return replay;
     if (!this.#boxes) throw new AppError("box_not_configured", 503);
     // The manager holds the reset — no admission, no open — until the receipt below has committed.
-    return this.#boxes.reset(command.projectId, command.payload.wipeWorkspace, {
+    const receipt = await this.#boxes.reset(command.projectId, command.payload.wipeWorkspace, {
       before: () => this.store.read(tx => { if (executionAttemptAdmitted(tx, command.projectId)) throw new AppError("box_busy", 409); }),
       commit: () => this.store.transaction(tx => {
         const raced = check(tx);
@@ -2444,6 +2448,9 @@ export class Application {
         return result;
       }),
     });
+    // exec.browser/v1: screenshots of the box before the reset are forgotten with it.
+    this.#browser?.screenshots.clear(command.projectId);
+    return receipt;
   }
 
   /**

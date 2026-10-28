@@ -299,10 +299,12 @@ export interface FullAppHandle {
   serviceConfig: ServiceConfig | null;
   /** exec.box_runtime/v1 project boxes, or null when the operator has not configured execution. */
   boxes: BoxManager | null;
-  /** app.approval_cards/v1 effect executor, or null without boxes and a connection vault; the drain waits for it. */
+  /** app.approval_cards/v1 effect executor, or null without boxes (credential effects also need the vault); the drain waits for it. */
   effects: EffectExecutor | null;
   /** exec.browser/v1 browser sessions (idle-swept on the tick), or null without boxes. */
   browser?: BrowserService | null;
+  /** app.mcp_servers/v1 gateway, or null without boxes; the drain stops its installs. */
+  mcp?: McpGateway | null;
   /** Boot reconciliation outcome; `reconciled: false` while an upgrade/restore fence holds. */
   boot: { reconciled: boolean; detail: string; upgrade: { id: string; state: string } | null;
     restore: { id: string; state: string; reason: string | null } | null };
@@ -376,7 +378,7 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
     // app.connections/v1: values live in the secrets directory, never beside the state, backups or boxes.
     const connections = config.execution.secretsDirectory ? new ConnectionVault(config.execution.secretsDirectory, {
       forbidden: [dirname(resolve(config.databasePath)), service?.stateDirectory, service?.backupDirectory, service?.ledgerPath, config.execution.directory] }) : null;
-    // app.approval_cards/v1: approved effects run once, outside every box, only where boxes and the vault exist.
+    // app.approval_cards/v1: approved effects run once, outside every box, only where boxes exist.
     // app.mcp_servers/v1: MCP servers run only in project boxes and their sidecars, so the gateway needs boxes.
     const streams = boxes ? boxStreamsOf(boxes.runtime) : null;
     const mcp = boxes && streams ? new McpGateway(store, { boxes, runtime: streams, vault: connections, sidecarImage: config.execution.images?.base ?? null,
@@ -386,7 +388,9 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
     if (boxes && browser) boxes.onStopped(projectId => browser.close(projectId));
     // exec.computer/v1: xdotool on the same virtual display, at `full` only.
     const computer = browser ? new ComputerService(store, browser, { now }) : null;
-    const effects = boxes && connections ? new EffectExecutor(store, { vault: connections, boxes, mirrorRoot: config.execution.directory, now,
+    // The executor exists wherever boxes do: in-box cards (MCP, browser, computer) need no vault, and without one the
+    // credential effects fail `connection_vault_not_configured` cleanly instead of every card being undecidable.
+    const effects = boxes ? new EffectExecutor(store, { vault: connections, boxes, mirrorRoot: config.execution.directory, now,
       performers: { ...(mcp ? { mcp_tool: mcp.perform } : {}), ...(browser ? { browser_confirm: browser.perform } : {}),
         ...(computer ? { computer_confirm: computer.perform } : {}) } }) : null;
     const compose = { now, prCacheRoot: input.prCacheRoot ?? (service ? resolve(service.stateDirectory, "pr-cache") : ".local/pr-cache"), ...(boxes ? { boxes } : {}),
@@ -418,7 +422,7 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
       channels = ServiceChannels.start(store, config, input.transports!, now);
     }
     const handle: FullAppHandle = {
-      store, app, service: managed, channels, config, serviceConfig: service, boxes, effects, browser,
+      store, app, service: managed, channels, config, serviceConfig: service, boxes, effects, browser, mcp,
       boot: { reconciled: booted.reconciled, detail: booted.detail, upgrade: booted.upgrade ? { id: booted.upgrade.id, state: booted.upgrade.state } : null,
         restore: booted.restore ? { id: booted.restore.id, state: booted.restore.state, reason: booted.restore.reason ?? null } : null },
       get queue() { return managed!.queue ?? composed.queue; },
@@ -517,7 +521,8 @@ export interface DrainResult {
  * interrupted or unknown, never as stopped or sent. The next start's
  * delivery worker and queue reconciliation consume the recovery metadata.
  */
-export async function stopDrain(handle: Pick<FullAppHandle, "queue" | "store"> & { channels?: ServiceChannels | null; effects?: EffectExecutor | null }, options: { timeoutMs: number }): Promise<DrainResult> {
+export async function stopDrain(handle: Pick<FullAppHandle, "queue" | "store"> & { channels?: ServiceChannels | null; effects?: EffectExecutor | null; mcp?: McpGateway | null },
+  options: { timeoutMs: number }): Promise<DrainResult> {
   if (!options || !Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 0 || options.timeoutMs > 300000) {
     throw new Error("invalid_drain_options");
   }
@@ -527,6 +532,8 @@ export async function stopDrain(handle: Pick<FullAppHandle, "queue" | "store"> &
   // app.approval_cards/v1: no new effect is claimed and in-flight ones are aborted; they must settle (as `unknown`)
   // before the store closes, or the drain reports `unknown` and the next boot reconciles them.
   handle.effects?.close();
+  // app.mcp_servers/v1: installs run outside the queue; none starts now and in-flight ones abort (`interrupted`).
+  handle.mcp?.close();
   const deadline = Date.now() + options.timeoutMs;
   for (;;) {
     const unsettled = handle.store.read(tx => {
@@ -541,8 +548,9 @@ export async function stopDrain(handle: Pick<FullAppHandle, "queue" | "store"> &
     await Bun.sleep(5);
   }
   try { await handle.queue.idle(); } catch { /* Settlement already fenced; report honestly below. */ }
-  if (handle.effects) {
-    const settled = await Promise.race([handle.effects.idle().then(() => true), Bun.sleep(Math.max(0, deadline - Date.now())).then(() => false)]);
+  for (const worker of [handle.effects, handle.mcp]) {
+    if (!worker) continue;
+    const settled = await Promise.race([worker.idle().then(() => true), Bun.sleep(Math.max(0, deadline - Date.now())).then(() => false)]);
     if (!settled) return { outcome: "unknown", fencedJobs: interrupted.length, unknownDeliveries: countUnknownDeliveries(handle.store), nextAction: "terminate-supervised-process-and-reconcile" };
   }
   return interrupted.length === 0

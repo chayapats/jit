@@ -110,7 +110,7 @@ test("web.access_settings/v1: an altered token or a stale revision is refused wi
   const p = project(f, "Token project");
   const token = accessConfirmToken(p.id, "read", "workspace", 0);
   const forged = await postForm(f, `/settings/access/${p.id}`,
-    { csrf: f.auth.csrf, requestId: rid(), expectedRevision: "0", level: "workspace", confirmToken: `${token.slice(0, -1)}0` });
+    { csrf: f.auth.csrf, requestId: rid(), expectedRevision: "0", level: "workspace", confirmToken: `${token.slice(0, -1)}${token.endsWith("0") ? "1" : "0"}` });
   expect(forged.status).toBe(409);
   expect(await forged.text()).toContain(dictionaries.en["access.error_confirm_required"]);
   expect(f.app.projectAccess(f.auth.actor, p.id).level).toBe("read");
