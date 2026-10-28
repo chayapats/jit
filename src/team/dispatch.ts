@@ -203,7 +203,7 @@ export function prepareDispatch(
   const responsibility = state.roles.filter(role => plan.selected.includes(role.id))
     .map(role => role.responsibility).sort((a, b) => Buffer.byteLength(JSON.stringify(b)) - Buffer.byteLength(JSON.stringify(a)))[0] ?? "";
   const { manifest } = assembleMemoryContext(tx, {
-    projectId: command.projectId, topicId: p.topicId, purpose: p.purpose, owner: { kind: "discussion", id: discussionId },
+    projectId: command.projectId, topicId: p.topicId, purpose: p.purpose, responsibility, owner: { kind: "discussion", id: discussionId },
     evidence: sources, claimSlots: config.team.sourceLimit - sources.length,
     bytes: contextByteRoom(config.team, { sources, purpose: p.purpose, responsibility, operator }),
     ownerGeneration: generation, now,

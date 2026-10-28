@@ -619,7 +619,7 @@ export function scheduleSummaryWork(store: TransactionStore, config: AppConfig, 
         }
       } catch { /* A withdrawn topic source degrades to claims-only context, disclosed by omission counts. */ }
       const { manifest } = assembleMemoryContext(tx, {
-        projectId: job.projectId, topicId: schedule.topicId, purpose: schedule.purpose,
+        projectId: job.projectId, topicId: schedule.topicId, purpose: schedule.purpose, responsibility: schedule.payload.text,
         owner: { kind: "schedule", id: occurrence.id }, evidence,
         claimSlots: Math.max(0, config.team.sourceLimit - evidence.length),
         bytes: contextByteRoom(config.team, { sources: evidence, purpose: schedule.purpose, responsibility: schedule.payload.text, operator: operatorInstructions }),

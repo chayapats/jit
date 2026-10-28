@@ -306,7 +306,8 @@ export class JobQueue {
             } catch (error) {
               // Fail this job only; a single oversized/invalid preparation must not disable the scheduler.
               if (!(error instanceof AppError)) throw error;
-              this.#transition(job, "blocked", "configuration_changed"); this.#save(tx, job, false); continue;
+              // app.context_packet/v1: pinned decisions that alone exceed the run's context bytes keep their own reason.
+              this.#transition(job, "blocked", error.code === "context_too_large" ? "context_too_large" : "configuration_changed"); this.#save(tx, job, false); continue;
             }
             const attempt: JobAttempt = { ...preparation, id: crypto.randomUUID(), jobId: job.id, generation: attemptGeneration,
               scheduler: this.#token, leaseUntil: Math.min(job.deadlineAt, this.#time() + this.#leaseMs), snapshot: structuredClone(job), createdAt: this.#time(),

@@ -21,7 +21,8 @@ export interface JobRoute { provider: string; model: string | null; authRoute: s
 export type JobState = "queued" | "admitted" | "waiting" | "succeeded" | "blocked" | "partial" | "failed";
 /** Safe finite reason codes instead of raw adapter/store diagnostics. */
 export type JobReason = "queued" | "running" | "complete" | "yielded" | "quota" | "needs_login" | "route_unavailable"
-  | "cancelled" | "revoked" | "superseded" | "source_retired" | "context_retired" | "lease_expired" | "budget_exhausted" | "deadline" | "worker_failed" | "interrupted" | "configuration_changed" | "authorization_changed" | "input_changed";
+  | "cancelled" | "revoked" | "superseded" | "source_retired" | "context_retired" | "lease_expired" | "budget_exhausted" | "deadline" | "worker_failed" | "interrupted" | "configuration_changed" | "authorization_changed" | "input_changed"
+  | "context_too_large";
 /** Committed owner-visible work, its immutable scope/configuration, and remaining reservation budgets. */
 export interface Job {
   id: string; projectId: string; revision: number; type: string; purpose: string;

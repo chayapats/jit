@@ -422,7 +422,7 @@ export function jobsPage(state: ReturnType<Application["jobs"]>, workspace: Work
   const reasons: Record<Job["reason"], string> = {
     cancelled: tr("jobs.cancelled_result_writing_closed"), revoked: tr("jobs.authorization_revoked"), superseded: tr("common.superseded"), source_retired: tr("jobs.source_retired"), context_retired: tr("jobs.context_retired"), lease_expired: tr("jobs.worker_authorization_expired"), queued: tr("jobs.waiting_for_queue_capacity"), running: tr("jobs.running_authorized_work"), complete: tr("jobs.evidence_recorded"), yielded: tr("jobs.paused_at_a_safe_point"),
     quota: tr("jobs.selected_route_is_still_over"), needs_login: tr("jobs.selected_route_requires_sign_in"), route_unavailable: tr("jobs.selected_route_isnt_ready_yet"), budget_exhausted: tr("jobs.job_budget_used_up"), deadline: tr("jobs.job_time_limit_reached"),
-    worker_failed: tr("jobs.completion_cant_be_confirmed_yet"), interrupted: tr("jobs.job_was_interrupted_check_the"), configuration_changed: tr("jobs.job_settings_changed"), authorization_changed: tr("jobs.referenced_authorization_changed"), input_changed: tr("jobs.source_data_changed") };
+    worker_failed: tr("jobs.completion_cant_be_confirmed_yet"), interrupted: tr("jobs.job_was_interrupted_check_the"), configuration_changed: tr("jobs.job_settings_changed"), authorization_changed: tr("jobs.referenced_authorization_changed"), input_changed: tr("jobs.source_data_changed"), context_too_large: tr("jobs.context_too_large") };
   const route = (job: { route: Job["route"] }) => job.route.provider === "jit-service" && job.route.model === null && job.route.authRoute === "internal" ? tr("jobs.internal_jit_service_no_model")
     : `${job.route.provider} / ${job.route.model ?? tr("jobs.no_model")} · ${job.route.authRoute}`;
   const inspection = (job: Job) => {
@@ -785,7 +785,7 @@ function correctionPanel(item: import("./memory/types").ClaimLookup, extra: Clai
 }
 
 const contextLayers = (): Record<import("./memory/types").ContextProvenanceEntry["layer"], string> => ({
-  project_constraint: tr("memory_context.current_tasks_and_decisions_project"), explicit_preference: tr("memory_context.what_youve_stated_in_this"),
+  pinned_decision: tr("memory_context.pinned_owner_decisions"), project_constraint: tr("memory_context.current_tasks_and_decisions_project"), explicit_preference: tr("memory_context.what_youve_stated_in_this"),
   source_evidence: tr("memory_context.sources_selected_for_this_run"), inference: tr("memory_context.inferences_not_requirements"),
 });
 function contextEntry(entry: import("./memory/types").MemoryContextView["entries"][number]): string {
@@ -810,6 +810,7 @@ function contextPanel(state: import("./memory/types").MemoryContextView, title: 
     o.constraints || o.claims || o.budget ? `${tr("memory_context.context_incomplete_omitted_tasks_decisio")} ${o.constraints} ${tr("memory_context.and_memory")} ${o.claims} ${tr("memory_context.items_due_to_budget")}` : "",
     o.loopGuard ? tr("memory_context.no_additional_memory_retrieved_because") : "",
     o.unavailable ? `${tr("memory_context.withdrawn_or_unavailable_memory")} ${o.unavailable} ${tr("memory_context.items_not_used")}` : "",
+    r.packet?.omissions.length ? `${tr("memory_context.packet_sections_trimmed")} ${r.packet.omissions.map(item => `${item.section} (${item.reason}${item.items ? ` ${item.items}` : ""})`).join(", ")}` : "",
     state.entries.some(entry => entry.layer !== "source_evidence") ? "" : tr("memory_context.no_project_state_or_memory"),
   ].filter(Boolean).map(text => `<p role="note">${escape(text)}</p>`).join("");
   const conflicts = r.conflicts.length ? `<h4>${tr("memory_context.conflicts_for_you_to_decide")}</h4><ul>${r.conflicts.map(item => `<li><a href="${claimUrl(item.claim.projectId, item.claim)}">${escape(item.claim.claimId)}</a> ↔ <a href="${claimUrl(item.claim.projectId, item.with)}">${escape(item.with.claimId)}</a>${item.included ? "" : tr("memory_context.other_side_not_in_this")}</li>`).join("")}</ul>` : "";

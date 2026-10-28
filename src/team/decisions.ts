@@ -365,7 +365,7 @@ export function prepareSynthesis(
     memoryContextOperator,
   ];
   const { manifest } = assembleMemoryContext(tx, {
-    projectId: command.projectId, topicId: stored.topicId, purpose: stored.purpose, owner: { kind: "synthesis", id: synthesisId },
+    projectId: command.projectId, topicId: stored.topicId, purpose: stored.purpose, responsibility: coordinator.responsibility, owner: { kind: "synthesis", id: synthesisId },
     evidence: sources, claimSlots: config.team.sourceLimit - sources.length,
     bytes: contextByteRoom(config.team, { sources, purpose, responsibility: coordinator.responsibility, operator }),
     ownerGeneration: generation, now,

@@ -1,6 +1,6 @@
 import type { JobLimits } from "../jobs/types";
 import type { SourceLookup, SourceReference } from "../sources";
-import type { ApplicationRunRequest } from "../team/types";
+import type { ApplicationRunRequest, ContextPacket } from "../team/types";
 
 /** Exact immutable derived-memory identity; it never identifies a task or owner decision. */
 export interface ClaimReference { claimId: string; revision: number; generation: number }
@@ -100,7 +100,7 @@ export interface MemoryReceipt { extraction: Omit<MemoryExtraction, "request">; 
 
 /** app.context_provenance/v1 entry: one exact item a run was allowed to use, with the layer it occupied. */
 export interface ContextProvenanceEntry {
-  layer: "project_constraint" | "explicit_preference" | "source_evidence" | "inference";
+  layer: "pinned_decision" | "project_constraint" | "explicit_preference" | "source_evidence" | "inference";
   scope: "project" | "cross_project";
   kind: "task" | "decision" | "source" | "claim";
   /** Origin project; cross_project entries keep the project that owns them. */
@@ -126,6 +126,8 @@ export interface MemoryContextRecord {
   omitted: { constraints: number; claims: number; unavailable: number; budget: boolean; loopGuard: boolean };
   snapshot: { assembledAt: number; ownerGeneration: number; projectRevision: number };
   derivation: { inputDepth: number; claimsUsed: number };
+  /** app.context_packet/v1 sections, omissions and budget; absent on records written before the packet existed. */
+  packet?: Pick<ContextPacket, "sections" | "omissions" | "budget" | "summary">;
   /** False when a finite ceiling dropped constraints/claims or the loop guard withheld memory. */
   complete: boolean;
 }

@@ -1191,7 +1191,9 @@ test("TEAM03 stop, expired budget and late synthesis do not create or replace an
   expect(after.proposal!.id).toBe(proposal.id);
   expect(after.proposal!.revision).toBe(1);
   expect(rows(f, "decision_proposals")).toBe(1);
-  expect(f.store.read(tx => tx.get<{ state: string; reason: string }>("SELECT state, reason FROM coordinator_syntheses WHERE id = ?", late.id))).toEqual({ state: "cancelled", reason: "late_after_decision" });
+  // app.context_packet/v1 (ADR 0034): the acceptance changes the pinned decisions, so the running synthesis is fenced
+  // as stale before it can finish; it never reaches the late_after_decision commit path.
+  expect(f.store.read(tx => tx.get<{ state: string; reason: string }>("SELECT state, reason FROM coordinator_syntheses WHERE id = ?", late.id))).toEqual({ state: "incomplete", reason: "superseded" });
 });
 
 test("TEAM03 malformed output, invented citations, majority and forged approval are not an owner decision", async () => {

@@ -33,10 +33,15 @@ export function renderContextAnswer(request: ApplicationRunRequest, maxBytes: nu
     `คำสั่งปัจจุบัน: ${short(request.purpose)}`,
     "ข้อผูกพันและมติปัจจุบัน (สถานะโครงการ ไม่ใช่ memory):",
   ];
+  // app.context_packet/v1: pinned decisions come first and are never trimmed; each keeps its id and revision.
+  const packet = context.packet, pinned = packet?.pinned ?? [];
+  for (const item of pinned) {
+    lines.push(`- ${item.scope === "topic" ? stateLabel.current : "มติของหัวข้ออื่นในโครงการ"}: ${short(item.conclusion)} · decision ${item.id} r${item.revision} (ปักไว้) · หลักฐาน ${cite(item.source)}`);
+  }
   for (const item of context.constraints) {
     lines.push(`- ${stateLabel[item.state]}: ${short(item.text)}${item.truncated ? " (ตัดข้อความ)" : ""} · ${item.kind} ${item.id} r${item.revision} · หลักฐาน ${cite(item.source)}`);
   }
-  if (!context.constraints.length) lines.push("- ไม่มีงานหรือมติที่ยังมีผลในโครงการนี้");
+  if (!context.constraints.length && !pinned.length) lines.push("- ไม่มีงานหรือมติที่ยังมีผลในโครงการนี้");
   const claims = request.manifest.claims.map((claim, index) => ({ claim, layer: context.claims[index]! }));
   const preferences = claims.filter(item => item.layer.layer === "explicit_preference");
   const inferences = claims.filter(item => item.layer.layer === "inference");
@@ -59,8 +64,9 @@ export function renderContextAnswer(request: ApplicationRunRequest, maxBytes: nu
     lines.push("ข้อขัดแย้งที่ต้องให้คุณตัดสิน (ไม่เลือกข้อใดเป็นความจริงเอง):");
     for (const pair of unique) lines.push(`- claim ${pair}`);
   }
-  const basis = context.constraints[0], preference = preferences[0], inference = inferences[0];
+  const basis = context.constraints[0], preference = preferences[0], inference = inferences[0], decision = pinned[0];
   if (unique.length) lines.push(`คำแนะนำ: ยังมีข้อขัดแย้ง ${unique.length} คู่ จึงถามคุณก่อนแนะนำ`);
+  else if (decision) lines.push(`คำแนะนำ: อิง${decision.scope === "topic" ? stateLabel.current : "มติของหัวข้ออื่นในโครงการ"} decision ${decision.id} — ${short(decision.conclusion, 80)}`);
   else if (basis) lines.push(`คำแนะนำ: อิง${stateLabel[basis.state]} ${basis.kind} ${basis.id} — ${short(basis.text, 80)}`);
   else if (preference) lines.push(`คำแนะนำ: อิงสิ่งที่คุณระบุไว้ claim ${preference.claim.claimId} — ${short(preference.claim.text, 80)}`);
   else if (inference) {
@@ -72,5 +78,6 @@ export function renderContextAnswer(request: ApplicationRunRequest, maxBytes: nu
   }
   if (omitted.loopGuard) lines.push("ขอบเขต: ไม่ดึง memory เพิ่ม เพราะอินพุตมาจากคำตอบที่ใช้ memory แล้ว (loop guard)");
   if (omitted.unavailable) lines.push(`ขอบเขต: memory ที่ถูกถอนหรือไม่พร้อมใช้ ${omitted.unavailable} รายการไม่ถูกนำมาใช้`);
+  if (packet?.omissions.length) lines.push(`ขอบเขต: ส่วนที่ตัดจาก context packet ${packet.omissions.map(item => `${item.section}/${item.reason}${item.items ? ` ${item.items}` : ""}`).join(", ")}`);
   return fit(lines, maxBytes);
 }
