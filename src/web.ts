@@ -2,7 +2,7 @@ import { Application, type CreateProjectCommand } from "./application";
 import { AppError } from "./errors";
 import type { CreateTopicCommand, SendMessageCommand, StartChatCommand } from "./conversation";
 import type { PromotionCommand } from "./promotion";
-import { workspacePage, projectPage, conversationPage, sourcePage, jobsPage, teamPage, previewPage, discussionPage, deliveryPage, deliveryDetailPage, prReportsPage, prReportPage, prWebhookSecretPage, tasksPage, taskPage, memoryPage, memoryClaimPage, memoryContextPage, schedulesPage, scheduleDetailPage, backupsPage, backupDetailPage, deletionsPage, deletionDetailPage, exportsPage, exportDetailPage, upgradesPage, upgradeDetailPage, restoresPage, restoreDetailPage, loginPage, errorPage } from "./web-layout";
+import { workspacePage, projectPage, conversationPage, boxLivePage, sourcePage, jobsPage, teamPage, previewPage, discussionPage, deliveryPage, deliveryDetailPage, prReportsPage, prReportPage, prWebhookSecretPage, tasksPage, taskPage, memoryPage, memoryClaimPage, memoryContextPage, schedulesPage, scheduleDetailPage, backupsPage, backupDetailPage, deletionsPage, deletionDetailPage, exportsPage, exportDetailPage, upgradesPage, upgradeDetailPage, restoresPage, restoreDetailPage, loginPage, errorPage } from "./web-layout";
 import type { ExtractMemoryCommand } from "./memory/types";
 import type { CorrectMemoryCommand } from "./memory/types";
 import type { ForgetMemoryCommand } from "./memory/types";
@@ -23,7 +23,7 @@ import { setupPage, visibleStep } from "./web-setup";
 import type { JitReplyView, StopReplyCommand } from "./team/jit-reply";
 import type { RoleProposalCommand } from "./team/role-proposals";
 import { defaultPanelTab, legacyRedirect, panelRows, panelTabs, searchLimits, settingsPageHandler, type PanelTab } from "./web-settings";
-import { searchItems, searchPage, settingsAccessPage, accessConfirmPage, settingsApprovalsPage, settingsConnectionsPage, settingsDataPage, settingsDispatchPage, settingsFeedPage, settingsTelegramPage, topicPanelPage, type PanelData } from "./web-navigation";
+import { searchItems, searchPage, settingsAccessPage, accessConfirmPage, settingsApprovalsPage, settingsConnectionsPage, settingsDataPage, settingsDispatchPage, settingsFeedPage, settingsMcpPage, settingsTelegramPage, topicPanelPage, type McpSettingsEntry, type PanelData } from "./web-navigation";
 import { dispatchLimits, type DispatchCommand } from "./team/jit-dispatch";
 import { autoApproveKinds, targetRuleKinds } from "./exec/approval-cards";
 import type { DecideCardCommand, SetAutoApproveCommand } from "./exec/approval-cards";
@@ -34,7 +34,7 @@ import { feedPathToken, renderScheduleFeed, type FeedCommand } from "./schedule-
 import { accessConfirmToken, accessLevels, effectiveAccess, levelRank, type AccessCommand, type AccessLevel } from "./exec/access";
 import { normalizeSecret, type ConnectionCommand } from "./exec/connections";
 import type { ResetBoxCommand } from "./exec/box-commands";
-import type { McpCommand } from "./exec/mcp";
+import type { McpCommand, McpInstallSpec, McpReceipt, McpServerView } from "./exec/mcp";
 import type { TakeoverCommand, TakeoverInputCommand } from "./exec/takeover";
 import type { SetComputerSettingsCommand } from "./exec/computer";
 
@@ -268,6 +268,29 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       const takeoverRoute = /^\/api\/projects\/([a-f0-9-]{36})\/takeover(?:\/(start|end|click|type|key))?$/.exec(pathname);
       const screenshotRoute = /^\/api\/projects\/([a-f0-9-]{36})\/box\/screenshots(?:\/([a-f0-9-]{36}))?$/.exec(pathname);
       const mcpRoute = /^\/api\/projects\/([a-f0-9-]{36})\/mcp(?:\/(proposals|servers)\/([a-f0-9-]{36})\/(accept|reject|revise|remove))?$/.exec(pathname);
+      // web.mcp_settings/v1 (EXE13): the proposal card posts one decision per revision; the settings page toggles
+      // per-tool auto-approve rules and removes servers.
+      const mcpProposalRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})\/mcp-proposals\/([a-f0-9-]{36})$/.exec(pathname);
+      const settingsMcpAutoRoute = /^\/settings\/mcp\/([a-f0-9-]{36})\/tools\/([^/]+)\/auto$/.exec(pathname);
+      const settingsMcpRemoveRoute = /^\/settings\/mcp\/([a-f0-9-]{36})\/remove$/.exec(pathname);
+      // web.box_live/v1 (EXE15): the script-free live view of the project box and the takeover forms.
+      const boxLiveRoute = /^\/projects\/([a-f0-9-]{36})\/box\/live$/.exec(pathname);
+      const boxShotRoute = /^\/projects\/([a-f0-9-]{36})\/box\/screenshot\/([a-f0-9-]{36})$/.exec(pathname);
+      const boxLatestRoute = /^\/projects\/([a-f0-9-]{36})\/box\/latest$/.exec(pathname);
+      const boxRefreshRoute = /^\/projects\/([a-f0-9-]{36})\/box\/refresh$/.exec(pathname);
+      const boxTakeoverRoute = /^\/projects\/([a-f0-9-]{36})\/box\/takeover\/(start|end|click|type|key)$/.exec(pathname);
+      /** Finds an installed MCP server by id across every project the owner sees; null when gone. */
+      /** Finds an installed MCP server by id across every project the owner sees; null when gone. */
+      const findMcpServer = (serverId: string): { projectId: string; projectName: string; server: McpServerView } | null => {
+        for (let offset = 0; ; offset += config.pageSize) {
+          const page = app.workspace(auth.actor, offset);
+          for (const p of page.projects) {
+            const server = app.mcpServers(auth.actor, p.id).find(item => item.id === serverId);
+            if (server) return { projectId: p.id, projectName: p.name, server };
+          }
+          if (!page.hasMore) return null;
+        }
+      };
       /** The topic page that holds a dispatch card, at its anchor. */
       const cardLocation = (card: { projectId: string; topicId: string; anchorSequence: number; id: string }) =>
         `/projects/${card.projectId}/topics/${card.topicId}?after=${Math.max(0, card.anchorSequence - 1)}#dispatch-${card.id}`;
@@ -546,6 +569,186 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const command = { kind: action === "remove" ? "mcp.server.remove" : `mcp.install.${action}`, requestId: body.requestId, projectId, expectedRevision: body.expectedRevision,
           payload: action === "remove" ? { serverId: id } : { proposalId: id, ...picked } } as McpCommand;
         return json(app.execute(auth.actor, command));
+      }
+      if (request.method === "POST" && mcpProposalRoute) {
+        // web.mcp_settings/v1 (EXE13): decide one install proposal revision from its card. Accept binds each env
+        // name to an `mcp_env` connection id through the `env_<NAME>` selects (an empty select binds nothing, so
+        // EXE12 names the missing variable); revise carries the owner's edited spec. The JSON path builds the
+        // same command as the card's forms.
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        const projectId = mcpProposalRoute[2]!, topicId = mcpProposalRoute[3]!, proposalId = mcpProposalRoute[4]!;
+        if (typeof body.decision !== "string" || !["accept", "reject", "revise"].includes(body.decision)) throw new AppError("invalid_body");
+        const decision = body.decision as "accept" | "reject" | "revise";
+        const envKeys = decision === "accept" ? Object.keys(body).filter(key => key.startsWith("env_")) : [];
+        const allowed = ["csrf", "requestId", "expectedRevision", "decision", ...envKeys,
+          ...(decision === "revise" ? ["name", "source", "package", "version", "command", "args", "env"] : [])];
+        if (Object.keys(body).some(key => !allowed.includes(key)) ||
+            envKeys.some(key => !/^env_[A-Z][A-Z0-9_]{0,63}$/.test(key) || typeof body[key] !== "string")) throw new AppError("invalid_body");
+        const revision = typeof body.expectedRevision === "string" && /^\d{1,15}$/.test(body.expectedRevision) ? Number(body.expectedRevision) : body.expectedRevision;
+        const env = Object.fromEntries(envKeys.filter(key => (body[key] as string).length > 0).map(key => [key.slice("env_".length), body[key]]));
+        let spec: McpInstallSpec | null = null;
+        if (decision === "revise") {
+          if (typeof body.name !== "string" || typeof body.source !== "string" || typeof body.package !== "string" ||
+              typeof body.version !== "string" || typeof body.command !== "string" || typeof body.args !== "string" || typeof body.env !== "string") throw new AppError("invalid_body");
+          let args: unknown;
+          try { args = JSON.parse(body.args); } catch { throw new AppError("invalid_body"); }
+          // The shape lands in EXE12, which refuses anything but an exactly pinned spec (`invalid_mcp_spec`).
+          spec = { name: body.name, source: body.source, package: body.package, version: body.version, command: body.command,
+            args: args as string[], env: body.env.split(",").map(name => name.trim()).filter(name => name.length > 0) } as McpInstallSpec;
+        }
+        const proposalCommand = { kind: decision === "accept" ? "mcp.install.accept" : decision === "reject" ? "mcp.install.reject" : "mcp.install.revise",
+          requestId: body.requestId, projectId, expectedRevision: revision,
+          payload: decision === "revise" ? { proposalId, spec } : { proposalId, ...(decision === "accept" ? { env } : {}) } } as McpCommand;
+        let receipt: McpReceipt;
+        try {
+          receipt = app.execute(auth.actor, proposalCommand);
+        } catch (error) {
+          // The card's own sentences for the two refusals an owner can hit here; anything else keeps its error.
+          const key = error instanceof AppError
+            ? ({ mcp_install_requires_web: "mcp.error_requires_web", access_level_insufficient: "mcp.error_level" } as Record<string, string>)[error.code] ?? null : null;
+          if (!key || api) throw error;
+          return page(() => errorPage(tr(key as MessageKey)), error instanceof AppError ? error.status : 409);
+        }
+        if (api) return json(receipt);
+        // Land on the page that holds the proposal's reply: walk the topic's pages for the reply sequence
+        // (a checked cursor from the read model, never from the request). Accept, reject and revise always
+        // return the proposal; remove has its own route.
+        const decided = receipt.proposal!;
+        let cursor: number | null = null, scanned = 0;
+        for (;;) {
+          const conv = app.conversation(auth.actor, projectId, topicId, scanned);
+          const views = app.replies(auth.actor, projectId, topicId, conv.items.map(item => item.id));
+          const found = [...views.values()].find(view => view.id === decided.replyId);
+          if (found?.replySequence != null) { cursor = Math.max(0, found.replySequence - 1); break; }
+          if (!conv.hasMore) break;
+          scanned = conv.nextAfter;
+        }
+        return respond(null, 303, { Location: `/projects/${projectId}/topics/${topicId}${cursor !== null ? `?after=${cursor}` : ""}#proposal-${proposalId}` });
+      }
+      if (url.pathname === "/settings/mcp" && request.method === "GET") {
+        // web.mcp_settings/v1 (EXE13): installed servers and their per-tool auto-approve rules, per project.
+        // The server list pages like the other settings lists; the picker spans every project the owner sees.
+        const raw = url.searchParams.get("offset") ?? "0";
+        if (!/^\d{1,7}$/.test(raw)) throw new AppError("invalid_offset");
+        const only = url.searchParams.getAll("project");
+        if (only.length > 1 || (only.length === 1 && !/^[a-f0-9-]{36}$/.test(only[0]!))) throw new AppError("invalid_query");
+        const offset = Number(raw), paged = app.workspace(auth.actor, offset);
+        const projects = only.length ? [app.project(auth.actor, only[0]!)] : paged.projects;
+        const all: { id: string; name: string }[] = [];
+        for (let scan = 0; ; scan += config.pageSize) {
+          const page = app.workspace(auth.actor, scan);
+          all.push(...page.projects.map(p => ({ id: p.id, name: p.name })));
+          if (!page.hasMore) break;
+        }
+        const entries: McpSettingsEntry[] = projects.flatMap(p => {
+          const rule = app.effectSettings(auth.actor, p.id).rules.find(item => item.effectKind === "mcp_tool") ?? null;
+          return app.mcpServers(auth.actor, p.id).map(server => ({ projectId: p.id, projectName: p.name, server, rule }));
+        });
+        return page(() => settingsMcpPage(nav(paged), entries, auth.csrf,
+          { all, single: only.length > 0, selected: only[0] ?? null, offset, pageSize: config.pageSize }));
+      }
+      if (request.method === "POST" && settingsMcpAutoRoute) {
+        // web.mcp_settings/v1: toggle one tool's auto-approve. The enabled set is stored per pair: the rule's
+        // scope holds exactly the pairs the owner enabled, so toggling one pair never touches another. A
+        // disabled pair never sits inside an enabled rule; an emptied rule is disabled (its inert scope is
+        // never trusted — the next toggle rebuilds from the enabled set).
+        const serverId = settingsMcpAutoRoute[1]!;
+        let tool: string;
+        try { tool = decodeURIComponent(settingsMcpAutoRoute[2]!); } catch { throw new AppError("invalid_body"); }
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "enabled"].includes(key)) ||
+            (body.enabled !== "on" && body.enabled !== "off")) throw new AppError("invalid_body");
+        const found = findMcpServer(serverId);
+        if (!found) throw new AppError("mcp_server_not_found", 404);
+        const listed = found.server.tools.find(item => item.name === tool);
+        if (!listed || listed.readOnly || listed.exposed === null) throw new AppError("invalid_body");
+        const revision = typeof body.expectedRevision === "string" && /^\d{1,15}$/.test(body.expectedRevision) ? Number(body.expectedRevision) : body.expectedRevision;
+        const current = app.effectSettings(auth.actor, found.projectId).rules.find(item => item.effectKind === "mcp_tool") ?? null;
+        const stored = ((current?.scope ?? {}) as { tools?: { server: string; tool: string }[] }).tools ?? [];
+        const enabledPairs = current?.enabled === true ? stored : [];
+        const pair = { server: found.server.name, tool };
+        const has = enabledPairs.some(item => item.server === pair.server && item.tool === pair.tool);
+        const next = body.enabled === "on"
+          ? (has ? enabledPairs : [...enabledPairs, pair])
+          : enabledPairs.filter(item => !(item.server === pair.server && item.tool === pair.tool));
+        const command = { kind: "approval.rule.set", requestId: body.requestId, projectId: found.projectId, expectedRevision: revision,
+          payload: { effectKind: "mcp_tool", scope: { tools: next.length ? next : (stored.length ? stored : [pair]) },
+            enabled: next.length > 0 } } as SetAutoApproveCommand;
+        const receipt = app.execute(auth.actor, command);
+        return api ? json(receipt) : respond(null, 303, { Location: `/settings/mcp#server-${serverId}` });
+      }
+      if (request.method === "POST" && settingsMcpRemoveRoute) {
+        // web.mcp_settings/v1: remove one installed server (a narrowing, like the EXE12 JSON path).
+        const serverId = settingsMcpRemoveRoute[1]!;
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision"].includes(key))) throw new AppError("invalid_body");
+        const found = findMcpServer(serverId);
+        if (!found) throw new AppError("mcp_server_not_found", 404);
+        const revision = typeof body.expectedRevision === "string" && /^\d{1,15}$/.test(body.expectedRevision) ? Number(body.expectedRevision) : body.expectedRevision;
+        const command = { kind: "mcp.server.remove", requestId: body.requestId, projectId: found.projectId, expectedRevision: revision,
+          payload: { serverId } } as McpCommand;
+        const receipt = app.execute(auth.actor, command);
+        return api ? json(receipt) : respond(null, 303, { Location: "/settings/mcp" });
+      }
+      if (request.method === "GET" && boxLiveRoute) {
+        // web.box_live/v1 (EXE15): the script-free live view over the merged EXE14 read API.
+        const projectId = boxLiveRoute[1]!;
+        const project = app.project(auth.actor, projectId);
+        const takeover = app.takeover(auth.actor, projectId);
+        const shots = app.boxScreenshots(auth.actor, projectId);
+        const access = app.projectAccess(auth.actor, projectId);
+        return page(() => boxLivePage(nav(), project, { screenshotId: shots[0]?.id ?? null,
+          takeover: { active: takeover.active, startedAt: takeover.startedAt, revision: takeover.revision, takeoverId: takeover.takeoverId },
+          level: access.level }, auth.csrf));
+      }
+      if (boxShotRoute) {
+        // web.box_live/v1: one stored screenshot. The owner session is required; screenshots are never cached.
+        if (request.method !== "GET") throw new AppError("method_not_allowed", 405);
+        const shot = app.boxScreenshot(auth.actor, boxShotRoute[1]!, boxShotRoute[2]!);
+        return respond(new Blob([Buffer.from(shot.data)]), 200, { "Content-Type": "image/png", "Cache-Control": "no-store" });
+      }
+      if (request.method === "GET" && boxLatestRoute) {
+        // web.box_live/v1: the script's poll endpoint (`{id: null}` before the first screenshot).
+        const shots = app.boxScreenshots(auth.actor, boxLatestRoute[1]!);
+        return json({ id: shots[0]?.id ?? null });
+      }
+      if (request.method === "POST" && boxTakeoverRoute) {
+        // web.box_live/v1: every takeover form posts here and lands back on the page. Click coordinates arrive
+        // as `shot.x`/`shot.y` from the `<input type="image" name="shot">`; keys arrive as owner words and are
+        // mapped to the xdotool names EXE14 classifies before the command runs.
+        const projectId = boxTakeoverRoute[1]!, action = boxTakeoverRoute[2]! as "start" | "end" | "click" | "type" | "key";
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        const fields = action === "start" ? [] : action === "end" ? ["takeoverId"]
+          : action === "click" ? ["takeoverId", "shot.x", "shot.y"] : action === "type" ? ["takeoverId", "text"] : ["takeoverId", "key"];
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", ...fields].includes(key))) throw new AppError("invalid_body");
+        const revision = typeof body.expectedRevision === "string" && /^\d{1,15}$/.test(body.expectedRevision) ? Number(body.expectedRevision) : body.expectedRevision;
+        const keyMap = { Enter: "Return", Tab: "Tab", Escape: "Escape", Backspace: "BackSpace", ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right" } as const;
+        if (action === "key" && (typeof body.key !== "string" || !Object.hasOwn(keyMap, body.key))) throw new AppError("invalid_body");
+        if (action === "type" && typeof body.text !== "string") throw new AppError("invalid_body");
+        const takeoverCommand = { kind: `takeover.${action}`, requestId: body.requestId, projectId, expectedRevision: revision,
+          payload: action === "start" ? {} : action === "end" ? { takeoverId: body.takeoverId }
+            : action === "click" ? { takeoverId: body.takeoverId, x: Number(body["shot.x"]), y: Number(body["shot.y"]) }
+            : action === "type" ? { takeoverId: body.takeoverId, text: body.text }
+            : { takeoverId: body.takeoverId, key: keyMap[body.key as keyof typeof keyMap] } } as TakeoverCommand | TakeoverInputCommand;
+        try {
+          await app.execute(auth.actor, takeoverCommand as TakeoverInputCommand);
+        } catch (error) {
+          const key = error instanceof AppError && error.code === "takeover_requires_web" ? "live.error_requires_web" : null;
+          if (!key) throw error;
+          return page(() => errorPage(tr(key as MessageKey)), error instanceof AppError ? error.status : 403);
+        }
+        // The stored screenshots are what the page, its Refresh link and the script poll read: capture a
+        // fresh one after every owner input so the owner never keeps seeing a stale image.
+        if (action === "click" || action === "type" || action === "key") await app.captureBoxScreen(auth.actor, projectId);
+        return respond(null, 303, { Location: `/projects/${projectId}/box/live` });
+      }
+      if (request.method === "POST" && boxRefreshRoute) {
+        // web.box_live/v1: the script-free "Refresh screen" form captures a fresh screenshot, then the page re-renders it.
+        const projectId = boxRefreshRoute[1]!;
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision"].includes(key))) throw new AppError("invalid_body");
+        await app.captureBoxScreen(auth.actor, projectId);
+        return respond(null, 303, { Location: `/projects/${projectId}/box/live` });
       }
       if (boxRoute) {
         const projectId = boxRoute[1]!;
@@ -1331,6 +1534,13 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
           synthesisLimits: dispatchLimits(config, 1), promotion,
           decision: app.decision(auth.actor, state.project.id, state.topic.id),
           approvals,
+          // app.mcp_servers/v1 (EXE13): this topic's install proposals with the connection selects they need.
+          mcp: { proposals: app.mcpProposals(auth.actor, state.project.id).filter(proposal => proposal.topicId === state.topic.id),
+            connections: app.connections(auth.actor).filter(view => view.kind === "mcp_env" && view.removedAt === null &&
+              (view.projectScope === null || view.projectScope.includes(state.project.id))) },
+          // web.box_live/v1 (EXE15): the merged equivalent of EXE14's browser-capable view — boxes open with
+          // the project profile only when a browser image is configured, and only then the header links it.
+          boxLive: (config.execution.images?.browser ?? null) !== null,
         }));
       }
       if (request.method === "GET" && topicCollection) {

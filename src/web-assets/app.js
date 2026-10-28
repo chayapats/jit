@@ -165,6 +165,37 @@ if (app && panel && panelToggle) {
   });
 }
 
+// Live view of the project box (web.box_live/v1). The page is complete without this script: the image shows,
+// the Refresh link reloads and every takeover control is a plain form post (forms are never intercepted here).
+// With script, the image swaps to the latest screenshot every second while the page is visible; hidden pages
+// stop polling. The latest id comes from the page's own JSON endpoint next to the screenshot URL.
+const live = document.querySelector('img[data-live-refresh], input[type="image"][data-live-refresh]');
+// Duck-typed (no HTMLImageElement): the contract harness evaluates this file with a stub DOM.
+if (live && typeof fetch === "function" && typeof live.dataset?.liveLatest === "string") {
+  const latestUrl = live.dataset.liveLatest;
+  const shotBase = live.currentSrc || live.src;
+  const prefix = shotBase.slice(0, Math.max(0, shotBase.lastIndexOf("/")));
+  let timer = 0, current = shotBase;
+  const poll = async () => {
+    if (document.visibilityState !== "visible" || typeof latestUrl !== "string" || !localPath(new URL(latestUrl, location.origin).pathname)) return;
+    try {
+      const response = await fetch(latestUrl, { credentials: "same-origin", headers: { accept: "application/json" } });
+      if (!response.ok) return;
+      const body = await response.json();
+      const id = typeof body?.id === "string" && /^[a-f0-9-]{36}$/.test(body.id) ? body.id : null;
+      if (!id) return;
+      const next = `${prefix}/${id}`;
+      if (next !== current) { current = next; live.src = next; }
+    } catch { /* The next tick retries; the Refresh link still works. */ }
+  };
+  const restart = () => {
+    window.clearInterval(timer);
+    if (document.visibilityState === "visible") timer = window.setInterval(poll, 1000);
+  };
+  document.addEventListener("visibilitychange", restart);
+  restart();
+}
+
 // ⌘K / Ctrl+K palette (web.settings_ia/v1). Without script the sidebar search link opens /search. Results come
 // from one bounded server query per pause in typing; nothing is preloaded or kept. Owner text enters the page
 // only through textContent. Enter opens the active row; with no active row the form submits to /search.

@@ -182,11 +182,12 @@ test("web.static_assets/v1: hashed, immutable, self-hosted assets with font lice
   }
   const js = new TextDecoder().decode(staticAssets.get("app.js")!.body);
   expect(js).not.toMatch(/\beval\s*\(|new Function|XMLHttpRequest|localStorage|sessionStorage|document\.cookie|innerHTML|outerHTML|insertAdjacentHTML|document\.write|method:/);
-  // The script reads only two same-origin pages (topic panel, bounded ⌘K query), always with the session's own credentials.
+  // The script reads only same-origin pages (topic panel, bounded ⌘K query, live-view latest screenshot),
+  // always with the session's own credentials.
   const fetches = [...js.matchAll(/\bfetch\(([^,]+), (\{[^}]*\})/g)];
-  expect(fetches.map(m => m[1])).toEqual(["href", "`/api/search?q=${encodeURIComponent(input.value)}`"]);
+  expect(fetches.map(m => m[1])).toEqual(["href", "latestUrl", "`/api/search?q=${encodeURIComponent(input.value)}`"]);
   for (const [, , options] of fetches) expect(options).toContain('credentials: "same-origin"');
-  expect(js.match(/\bfetch\(/g)).toHaveLength(2);
+  expect(js.match(/\bfetch\(/g)).toHaveLength(3);
   for (const path of ["/assets/app.css", "/assets/app.0000000000000000.css", "/assets/fonts/Inter-Variable.woff2", `${assetUrl("app.css")}x`]) {
     expect((await get(f, path, {}, false)).status).toBe(404);
   }
@@ -221,8 +222,9 @@ test("layout templates contain no hard-coded English or Thai text nodes", async 
   const literals = [...new Set(nodes)].filter(node => !/^[a-z_.]+\/v\d+$/.test(node) && !node.includes("(value)")).sort();
   expect(literals).toEqual(["Inter", "JetBrains Mono", "Noto Sans Thai", "quarantine (OPS02)"]);
   expect(source).not.toMatch(/[\u0E00-\u0E7F]/);
-  // Capitalised word literals in expressions are product names only, never labels.
-  expect([...new Set(source.match(/"[A-Z][a-z]+(?: [a-zA-Z]+)*"/g))].sort()).toEqual(['"Codex"', '"Grok"', '"Jit"']);
+  // Capitalised word literals in expressions are product names and takeover key names only, never labels.
+  // (The live-view key buttons are protocol values mapped to xdotool names in web.ts; their labels are dictionary keys.)
+  expect([...new Set(source.match(/"[A-Z][a-z]+(?: [a-zA-Z]+)*"/g))].sort()).toEqual(['"Backspace"', '"Codex"', '"Enter"', '"Escape"', '"Grok"', '"Jit"', '"Tab"']);
 });
 
 test("CSP is exactly ADR 0028 on pages, API, assets, redirects and errors", async () => {

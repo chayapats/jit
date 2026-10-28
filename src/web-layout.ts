@@ -8,10 +8,12 @@ import { currentLocale, systemText, tr, withLocale, type Locale, type MessageKey
 import { assetUrl } from "./web-assets";
 import { logoLockup, logoMark } from "./web-logo";
 import { colorTokens } from "./web-design";
-import { effectiveAccess, type ProjectAccess } from "./exec/access";
+import { effectiveAccess, type AccessLevel, type ProjectAccess } from "./exec/access";
+import type { ConnectionView } from "./exec/connections";
+import type { McpProposalView } from "./exec/mcp";
 import type { JitReplyView } from "./team/jit-reply";
 import { routesOf } from "./team/role-proposals";
-import { fillText, promotionProposalCard, proposalCard, roleProposalCard, approvalCard } from "./web-proposal-card";
+import { fillText, mcpInstallProposalCard, promotionProposalCard, proposalCard, roleProposalCard, approvalCard } from "./web-proposal-card";
 import type { ApprovalCard } from "./exec/approval-cards";
 import type { TopicPromotionView } from "./promotion";
 import type { Persona } from "./persona";
@@ -411,6 +413,10 @@ export function conversationPage(state: ReturnType<Application["conversation"]>,
   promotion?: TopicPromotionView;
   /** web.approval_cards/v1: approval cards of this topic, in thread order (EXE09). */
   approvals?: ApprovalCard[];
+  /** app.mcp_servers/v1: install proposal cards of this topic, in thread order (EXE13). */
+  mcp?: { proposals: McpProposalView[]; connections: ConnectionView[] };
+  /** web.box_live/v1: the box runs the browser image, so the header links the live view (EXE15). */
+  boxLive?: boolean;
 }): string {
   const { project, topic } = state, title = topic.title ?? tr("common.topic_unavailable"), base = `/projects/${project.id}/topics/${topic.id}`;
   const replies = dispatch?.replies ?? new Map<string, JitReplyView>();
@@ -437,6 +443,18 @@ export function conversationPage(state: ReturnType<Application["conversation"]>,
   const routes = dispatch ? routesOf(dispatch.team) : [];
   const proposals = (view: JitReplyView | undefined) => (view?.roleProposals.map(item => roleProposalCard(item, { topicBase: base, csrf, routes, defaultRoute: dispatch?.team.projectDefault ?? dispatch?.team.ownerDefault ?? null })).join("") ?? "") +
     (view?.promotionProposals.map(item => promotionProposalCard(item, { topicBase: base, csrf, originTitle: topic.title })).join("") ?? "");
+  // app.mcp_servers/v1 (EXE13): install proposal cards follow the Jit reply that carries them, in thread order
+  // like role proposals, with the project-scoped connection selects. A card whose reply fell off this page is
+  // not shown, the same as a role proposal card.
+  const mcpByReply = new Map<string, McpProposalView[]>();
+  for (const proposal of [...(dispatch?.mcp?.proposals ?? [])].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))) {
+    if (proposal.topicId !== topic.id) continue;
+    const list = mcpByReply.get(proposal.replyId) ?? [];
+    list.push(proposal);
+    mcpByReply.set(proposal.replyId, list);
+  }
+  const mcpCards = (view: JitReplyView | undefined) => (view && dispatch?.mcp
+    ? (mcpByReply.get(view.id) ?? []).map(item => mcpInstallProposalCard(item, { topicBase: base, csrf, connections: dispatch.mcp!.connections })).join("") : "");
   // app.topic_promotion/v1: a promoted origin is read-only and points to its continuation.
   const promotedTo = dispatch?.promotion?.promotedTo ?? null, continuedFrom = dispatch?.promotion?.continuedFrom ?? null;
   const continuation = promotedTo ? `/projects/${promotedTo.target.projectId}/topics/${promotedTo.target.topicId}` : "";
@@ -468,13 +486,51 @@ export function conversationPage(state: ReturnType<Application["conversation"]>,
       if (m.attribution.kind === "participant" && !jit && folded.has(m.attribution.runId)) return "";
       if (m.attribution.kind === "service" && m.attribution.service === "jit-promotion") return continuedBlock(m);
       return `<article id="message-${m.id}" class="message${m.attribution.kind === "owner" ? " message--owner" : jit || setupGreeting(m.attribution) ? " message--jit" : ""}" data-message-id="${m.id}">${jit || setupGreeting(m.attribution) ? `<div class="reply-head"><span class="jit-avatar">${logoMark({ size: 20 })}</span><span class="reply-name">${tr("jit.name")}</span></div>` : ""}<div class="message-body">${m.text === null ? `<p class="literal">${tr("common.source_unavailable")}</p>` : literalContent(m.text)}</div>
-      <div class="message-meta"><span>${escape(label(m))}</span><span class="committed">${icon("check")}${tr("common.saved")}</span><details><summary aria-label="${tr("topic.message_details_and_origin")}">${icon("info")}${tr("topic.details")}</summary><div class="message-detail">${time(m.committedAt)}<br>${sourceLink(project.id, m.source, tr("common.message_origin"))}${jit?.discardedTotal ? `<br>${tr("reply.discarded")}: ${jit.discardedTotal} · ${escape(jit.discarded.join(", "))}` : ""}</div></details></div>${jit?.team ? teamReplyMeta(jit, cardsById.get(jit.team.proposalId), project.id, csrf, dispatch?.synthesisLimits) : ""}</article>${proposals(jit)}${card ? dispatchCard(card, base, csrf, topic.revision) : ""}${reply && (m.attribution.kind === "owner" || reply.team) ? reply.state !== "answered" ? replyStatus(reply, base, project.id, csrf) : !onPage.has(reply.replyMessageId!) ? answeredElsewhere(reply) : "" : ""}`; }).join("") : `<div class="empty-chat"><div>${icon("chat")}<h2>${tr("topic.start_this_conversation")}</h2><p>${tr("topic.keep_ideas_questions_and_things")}</p></div></div>`}</section>
+      <div class="message-meta"><span>${escape(label(m))}</span><span class="committed">${icon("check")}${tr("common.saved")}</span><details><summary aria-label="${tr("topic.message_details_and_origin")}">${icon("info")}${tr("topic.details")}</summary><div class="message-detail">${time(m.committedAt)}<br>${sourceLink(project.id, m.source, tr("common.message_origin"))}${jit?.discardedTotal ? `<br>${tr("reply.discarded")}: ${jit.discardedTotal} · ${escape(jit.discarded.join(", "))}` : ""}</div></details></div>${jit?.team ? teamReplyMeta(jit, cardsById.get(jit.team.proposalId), project.id, csrf, dispatch?.synthesisLimits) : ""}</article>${proposals(jit)}${mcpCards(jit)}${card ? dispatchCard(card, base, csrf, topic.revision) : ""}${reply && (m.attribution.kind === "owner" || reply.team) ? reply.state !== "answered" ? replyStatus(reply, base, project.id, csrf) : !onPage.has(reply.replyMessageId!) ? answeredElsewhere(reply) : "" : ""}`; }).join("") : `<div class="empty-chat"><div>${icon("chat")}<h2>${tr("topic.start_this_conversation")}</h2><p>${tr("topic.keep_ideas_questions_and_things")}</p></div></div>`}</section>
       <nav class="pagination" aria-label="${tr("topic.message_history_pages")}">${after > 0 ? `<a href="${base}">${tr("common.first_page")}</a>` : ""}${state.hasMore ? `<a href="${base}?after=${state.nextAfter}">${tr("topic.next_messages")}</a>` : ""}</nav></div>`, {
-    breadcrumb: { title: project.name, href: `/projects/${project.id}` }, action: `<a class="header-action" href="/projects/${project.id}#new-topic" aria-label="${tr("common.new_topic")}">${icon("plus")}${tr("common.new_topic")}</a>${panelToggle(base)}${access ? accessBadge(access) : ""}${haltForm}`,
+    breadcrumb: { title: project.name, href: `/projects/${project.id}` }, action: `<a class="header-action" href="/projects/${project.id}#new-topic" aria-label="${tr("common.new_topic")}">${icon("plus")}${tr("common.new_topic")}</a>${panelToggle(base)}${dispatch?.boxLive ? `<a class="header-action" href="/projects/${project.id}/box/live">${tr("live.open")}</a>` : ""}${access ? accessBadge(access) : ""}${haltForm}`,
     panel: topicPanelSlot(),
     composer: promotedTo ? `<div class="composer-wrap"><div class="composer composer--closed" role="note"><p>${tr("promotion.read_only")}</p><a class="promotion-link" href="${continuation}">${tr("promotion.continue_here")}</a></div></div>`
       : `<div class="composer-wrap"><form class="composer" method="post" action="${base}/messages">${hiddenCommand(csrf, topic.revision)}<label class="sr-only" for="text">${tr("topic.your_message")}</label><textarea id="text" name="text" rows="2" maxlength="${messageBytes}" placeholder="${tr("topic.write_a_message_in_this")}" required aria-describedby="composer-note"></textarea><div class="composer-bottom"><span class="composer-topic">${icon("chat")} ${escape(title)}</span><button class="send-button" aria-label="${tr("topic.send_message")}" title="${tr("topic.send_message")}">${icon("arrow")}</button></div></form><p class="composer-note" id="composer-note">${tr("topic.jit_replies_note")}<span class="composer-keys"> · ${tr("topic.composer_keys")}</span></p></div>`,
   });
+}
+/**
+ * The live view of the project box (web.box_live/v1, EXE15, ADR 0039): the latest screenshot, the takeover
+ * state and the Start/End takeover buttons. Everything works without script: while a takeover is active the
+ * screenshot is an `<input type="image">` posting click coordinates, a text form posts typed text and key
+ * buttons post special keys. The local script only refreshes the image (see `data-live-refresh` in app.js).
+ */
+export interface BoxLiveView {
+  screenshotId: string | null;
+  // The merged EXE14 `TakeoverView` fields the forms post: the revision and the active takeover id. (The EXE15
+  // issue names only `active` and `startedAt`; without these the forms could not name the takeover they act on.)
+  takeover: { active: boolean; startedAt: number | null; revision: number; takeoverId: string | null };
+  level: AccessLevel;
+}
+export function boxLivePage(workspace: NavigationWorkspace, project: Project, view: BoxLiveView, csrf: string): string {
+  const base = `/projects/${project.id}/box`, live = `${base}/live`;
+  const shot = (id: string) => `${base}/screenshot/${id}`;
+  // The Refresh link reloads the stored image; the Refresh screen form captures a fresh one first (script-free).
+  const refresh = `<p><a href="${live}">${tr("live.refresh")}</a></p>`
+    + `<form method="post" action="${base}/refresh">${hiddenCommand(csrf, view.takeover.revision)}<button>${tr("live.refresh_screen")}</button></form>`;
+  const hiddenTakeover = view.takeover.takeoverId !== null ? `<input type="hidden" name="takeoverId" value="${view.takeover.takeoverId}">` : "";
+  const image = view.screenshotId
+    ? view.takeover.active
+      ? `<form method="post" action="${base}/takeover/click">${hiddenCommand(csrf, view.takeover.revision)}${hiddenTakeover}<input type="image" name="shot" src="${shot(view.screenshotId)}" alt="${tr("live.alt")}" width="1280" height="800" data-live-refresh data-live-latest="${base}/latest"></form>`
+      : `<img src="${shot(view.screenshotId)}" alt="${tr("live.alt")}" width="1280" height="800" data-live-refresh data-live-latest="${base}/latest">`
+    : `<p class="empty-list" role="status">${tr("live.no_screenshot")}</p>`;
+  const takeover = view.takeover.active
+    ? `<p role="status">${tr("live.takeover_active")}</p>`
+      + `<form class="team-form" method="post" action="${base}/takeover/type">${hiddenCommand(csrf, view.takeover.revision)}${hiddenTakeover}<label>${tr("live.type")}<input name="text" maxlength="2000" required autocomplete="off"></label><button class="primary">${tr("live.send")}</button></form>`
+      + `<form method="post" action="${base}/takeover/key">${hiddenCommand(csrf, view.takeover.revision)}${hiddenTakeover}`
+      + ([["Enter", "live.key_enter"], ["Tab", "live.key_tab"], ["Escape", "live.key_escape"], ["Backspace", "live.key_backspace"],
+        ["ArrowUp", "live.key_up"], ["ArrowDown", "live.key_down"], ["ArrowLeft", "live.key_left"], ["ArrowRight", "live.key_right"]] as const)
+        .map(([value, label]) => `<button type="submit" name="key" value="${value}">${tr(label)}</button>`).join("") + `</form>`
+      + `<form method="post" action="${base}/takeover/end">${hiddenCommand(csrf, view.takeover.revision)}${hiddenTakeover}<button class="danger">${tr("live.takeover_end")}</button></form>`
+    : (view.screenshotId ? `<form method="post" action="${base}/takeover/start">${hiddenCommand(csrf, view.takeover.revision)}<button class="primary">${tr("live.takeover_start")}</button></form>` : "");
+  return shell(tr("live.title"), { workspace, csrf, project, section: "project" }, `<div class="content live-content">
+    <section aria-labelledby="live-title"><h2 id="live-title">${tr("live.title")}</h2>${image}${refresh}${takeover}</section></div>`,
+    { breadcrumb: { title: project.name, href: `/projects/${project.id}` } });
 }
 /** Shows exact committed source content with scope/version metadata available for inspection. */
 export function sourcePage(source: SourceLookup, suppressed: boolean, project: Project, workspace: Workspace, csrf: string): string {
