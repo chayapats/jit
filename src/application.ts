@@ -43,7 +43,7 @@ import {
   attentionIdentity, commitDeliveryIntent, deliveryCommandIdentity, listDeliveryAttempts, listDeliveryIntents, readAttentionLevels, readDeliveryIntent,
   readDeliveryReport, resendDeliveryIntent, retireDeliveryReport, writeAttentionLevel, type AttentionLevels, type AttentionReceipt, type SetAttentionCommand,
 } from "./delivery";
-import { evaluateWorkGroup, workGroupOfJob } from "./team/work-group";
+import { evaluateTopicWorkGroups, evaluateWorkGroup, workGroupOfJob } from "./team/work-group";
 import { annotateReport, listReports, listReviewStates, prReportIdentity, readAnnotations, readReport, reportRunEvidence } from "./pr/report";
 import { admitReportAlerts, alertPolicyIdentity, evaluateReport, readAlertDecisions, readAlertPolicy, setAlertPolicy } from "./pr/alerts";
 import { readAlertLinks } from "./pr/alert-links";
@@ -2310,6 +2310,8 @@ export class Application {
       if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as PromotionReceipt; }
       const now = this.#now();
       const receipt = executePromotion(tx, command, now);
+      // delivery.attention_levels/v1: the promoted origin is read-only, so its waiting card notices resolve here.
+      if (receipt.promotion) evaluateTopicWorkGroups(tx, receipt.proposal.projectId, receipt.proposal.topicId, now, "owner_answered");
       this.#beforeCommit?.("project");
       tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(receipt), now);
       tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);

@@ -55,6 +55,13 @@ export function openWorkGroup(tx: AppTransaction, input: { projectId: string; to
   return id;
 }
 
+/** Evaluates every open group of one topic (for example in the transaction that promotes it). */
+export function evaluateTopicWorkGroups(tx: AppTransaction, projectId: string, topicId: string, now: number, reason: DeliveryResolution["reason"]): void {
+  for (const row of tx.all<{ id: string }>("SELECT id FROM work_groups WHERE project_id = ? AND topic_id = ? AND state = 'open' ORDER BY created_at, id", projectId, topicId)) {
+    evaluateWorkGroup(tx, row.id, now, reason);
+  }
+}
+
 /** The group a dispatching Jit reply opened, or null. */
 export function workGroupOfReply(tx: AppTransaction, replyId: string): string | null {
   return tx.get<{ id: string }>("SELECT id FROM work_groups WHERE reply_id = ?", replyId)?.id ?? null;
@@ -106,7 +113,11 @@ function observe(tx: AppTransaction, row: GroupRow, card: DispatchCardView): { s
   const stalls: Notice[] = [];
   const job = (jobId: string) => readJob(tx, row.projectId, jobId);
   if (card.state === "empty" || card.state === "dismissed") return { stalls, final: null, closed: card.state };
+  // A promoted origin is read-only (app.topic_promotion/v1): its card can no longer be accepted, and nobody can answer
+  // there, so the group ends quietly and any notice still waiting on the owner resolves.
+  const promoted = promotionFrom(tx, row.projectId, row.topicId) !== null;
   if (card.state === "proposed") {
+    if (promoted) return { stalls, final: null, closed: "promoted" };
     stalls.push({ item: `proposal:${card.id}`, class: "needs_owner", key: "attention.notice_proposal", values: { count: String(card.roles.length) } });
     return { stalls, final: null, closed: null };
   }
@@ -139,6 +150,7 @@ function observe(tx: AppTransaction, row: GroupRow, card: DispatchCardView): { s
   }
   if (discussion.stoppedAll) return { stalls, final: null, closed: "stopped" };
   if (open) return { stalls, final: null, closed: null };
+  if (promoted) return { stalls, final: null, closed: "promoted" };
   if (card.teamHold) {
     stalls.push({ item: `hold:${card.id}:${card.revision}`, class: "needs_owner", key: "attention.notice_hold", values: { reason: card.teamHold } });
     return { stalls, final: null, closed: null };
@@ -146,8 +158,6 @@ function observe(tx: AppTransaction, row: GroupRow, card: DispatchCardView): { s
   if (!discussion.roles.some(role => role.state === "completed" && role.opinion?.text != null)) {
     return { stalls, final: { item: "final:group", class: "needs_owner", key: "attention.notice_no_result", values: {} }, closed: "final" };
   }
-  // A promoted origin is read-only: nobody can answer there, so the group ends quietly.
-  if (promotionFrom(tx, row.projectId, row.topicId)) return { stalls, final: null, closed: "promoted" };
   // Settled with results but no team reply (its admission failed outside any hold): the card offers "answer now".
   stalls.push({ item: `answer:${card.id}`, class: "needs_owner", key: "attention.notice_hold", values: { reason: "not_started" } });
   return { stalls, final: null, closed: null };
