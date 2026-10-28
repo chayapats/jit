@@ -1,10 +1,11 @@
 import type { Application, Project, SearchResults } from "./application";
 import type { Topic } from "./conversation";
-import { dictionaries, tr } from "./i18n";
+import { dictionaries, tr, type MessageKey } from "./i18n";
 import type { TelegramStatus } from "./telegram/types";
 import type { DispatchAllowance } from "./team/allowance";
 import type { ScheduleFeed } from "./schedule-feed";
-import { escape, hiddenCommand, icon, jobStateLabels, prObservedState, prStatusLabels, shell, taskStatusText, time, type NavigationWorkspace } from "./web-layout";
+import { accessLevels, levelRank, type AccessLevel, type ProjectAccess, type RoleAccess } from "./exec/access";
+import { accessBadge, escape, hiddenCommand, icon, jobStateLabels, prObservedState, prStatusLabels, shell, taskStatusText, time, type NavigationWorkspace } from "./web-layout";
 import { panelRows, panelTabLabels, panelTabs, paletteCommands, searchLimits, type PanelTab } from "./web-settings";
 
 /** One ⌘K row. `href` is always a same-origin path; labels are dictionary text or escaped-on-render owner text. */
@@ -119,6 +120,77 @@ export function settingsTelegramPage(status: TelegramStatus, workspace: Navigati
     <section class="settings-section" aria-labelledby="notifications-title"><h2 id="notifications-title">${tr("common.notifications")}</h2><p>${tr("telegram.notifications_note")}</p>
     ${workspace.projects.length ? `<nav class="settings-links" aria-labelledby="notifications-title">${workspace.projects.map(p => `<a href="/projects/${p.id}/delivery">${icon("info")}<span>${escape(p.name)}</span></a>`).join("")}</nav>` : `<p class="empty-list">${tr("home.start_with_your_first_project")}</p>`}
     ${workspace.hasMore ? `<p><a href="/">${tr("common.view_all_projects")}</a></p>` : ""}</section></div>`, { breadcrumb: { title: tr("shell.settings"), href: "/settings" } });
+}
+
+/**
+ * Settings › Execution access (web.access_settings/v1, S11-D02): one owner form per project. A level is the
+ * project's revisioned execution permission; only the owner in Web may widen one, through the confirmation
+ * page. The `roles` map holds each project's latest restrict-only overrides; the page pairs them with the
+ * project's team roles (`list` rows) so every specialist limit posts its own override revision.
+ */
+export interface AccessProjectRow {
+  project: NavigationWorkspace["projects"][number]; teamRoles: { id: string; name: string }[];
+}
+export function settingsAccessPage(workspace: NavigationWorkspace, list: { projects: AccessProjectRow[]; hasMore: boolean; single: boolean },
+  access: ReadonlyMap<string, ProjectAccess>,
+  roles: ReadonlyMap<string, RoleAccess[]>,
+  csrf: string, offset: number, pageSize: number): string {
+  const single = list.single;
+  const levelText = (level: AccessLevel) => tr(`access.level_${level}` as MessageKey);
+  const row = ({ project: p, teamRoles }: AccessProjectRow) => {
+    const a = access.get(p.id);
+    if (!a) return "";
+    const overrides = new Map((roles.get(p.id) ?? []).map(item => [item.roleId, item]));
+    // accessLevels is ordered lowest first, so a slice around the rank is the lower/higher set.
+    const rank = levelRank(a.level);
+    const lower = accessLevels.slice(0, rank);
+    const higher = accessLevels.slice(rank + 1);
+    const narrow = lower.length ? `<form class="team-form access-form" method="post" action="/settings/access/${p.id}">${hiddenCommand(csrf, a.revision)}
+      <label>${tr("access.lower_to")}<select name="level" required>${lower.map(level => `<option value="${level}">${levelText(level)}</option>`).join("")}</select></label>
+      <button class="primary">${tr("access.lower_to")}</button></form>` : "";
+    const widen = higher.map(level => level === "full" && !a.fullAllowed
+      ? `<p class="team-role-note">${tr("access.full_unavailable")}</p>`
+      : `<a href="/settings/access/${p.id}/confirm?to=${level}&amp;rev=${a.revision}">${tr("access.raise_to")} ${levelText(level)}</a>`).join("");
+    const roleRows = teamRoles.map(role => {
+      const override = overrides.get(role.id);
+      const current = override?.level ?? null;
+      const options: (AccessLevel | "inherit")[] = ["inherit", "read", "workspace", ...(a.level === "full" ? ["full" as AccessLevel] : [])];
+      return `<li><form class="team-form access-form" method="post" action="/settings/access/${p.id}/roles">${hiddenCommand(csrf, override?.revision ?? 0)}
+        <input type="hidden" name="roleId" value="${role.id}">
+        <label>${tr("access.role_label")} · ${escape(role.name)}<select name="level" required>${options.map(option =>
+          `<option value="${option}"${(option === "inherit" ? current === null : option === current) ? " selected" : ""}>${option === "inherit" ? tr("access.role_inherit") : levelText(option)}</option>`).join("")}</select></label>
+        <button>${tr("settings.save")}</button></form></li>`;
+    }).join("");
+    const halt = a.halted
+      ? `<form class="team-form access-form" method="post" action="/settings/access/${p.id}/resume">${hiddenCommand(csrf, a.haltRevision)}<button class="primary">${tr("access.resume")}</button></form>`
+      : `<form class="team-form access-form" method="post" action="/settings/access/${p.id}/halt">${hiddenCommand(csrf, a.haltRevision)}<button class="danger">${tr("access.stop_everything")}</button></form>`;
+    return `<li class="access-row" id="access-${p.id}"><h3>${escape(p.name)}</h3><p>${accessBadge(a)}</p>
+      ${narrow}${widen ? `<nav class="settings-links" aria-label="${escape(p.name)}">${widen}</nav>` : ""}
+      ${roleRows ? `<ul class="access-roles">${roleRows}</ul>` : ""}
+      ${halt}</li>`;
+  };
+  return shell(tr("settings.access"), { workspace, csrf, section: "settings", settings: "access" }, `<div class="content settings-content">
+    <section class="settings-section" aria-labelledby="access-title"><h2 id="access-title">${tr("settings.access_title")}</h2><p>${tr("settings.access_note")}</p>
+    ${list.projects.length ? `<ul class="data-projects">${list.projects.map(row).join("")}</ul>` : `<p class="empty-list">${tr("settings.dispatch_no_projects")}</p>`}
+    <nav class="pagination" aria-label="${tr("home.project_pages")}">${single ? `<a href="/settings/access">${tr("common.view_all_projects")}</a>` : ""}${!single && offset > 0 ? `<a href="/settings/access?offset=${Math.max(0, offset - pageSize)}">${tr("home.previous")}</a>` : ""}${!single && list.hasMore ? `<a href="/settings/access?offset=${offset + pageSize}">${tr("common.next")}</a>` : ""}</nav></section></div>`, { breadcrumb: { title: tr("shell.settings"), href: "/settings" } });
+}
+
+/**
+ * Widening confirmation (web.access_settings/v1, S11-D02): what the higher level allows, bound to one exact
+ * revision. The form posts the token the confirmation page renders; any other token or a stale revision is
+ * refused with a translated error, never by widening.
+ */
+export function accessConfirmPage(workspace: NavigationWorkspace, project: NavigationWorkspace["projects"][number],
+  from: AccessLevel, to: AccessLevel, revision: number, token: string, csrf: string): string {
+  void from;
+  const explains = [1, 2, 3].map(n => tr(`access.explain_${to}_${n}` as MessageKey));
+  return shell(tr("access.confirm_title"), { workspace, csrf, section: "settings", settings: "access" }, `<div class="content settings-content">
+    <section class="settings-section" aria-labelledby="access-confirm-title"><h2 id="access-confirm-title">${tr("access.confirm_title")}</h2>
+    <p>${escape(project.name)}</p><ul>${explains.map(line => `<li>${line}</li>`).join("")}</ul>
+    <form class="team-form access-form" method="post" action="/settings/access/${project.id}">${hiddenCommand(csrf, revision)}
+      <input type="hidden" name="level" value="${to}"><input type="hidden" name="confirmToken" value="${token}">
+      <button class="primary">${tr("access.confirm_button")}</button><a href="/settings/access?project=${project.id}">${tr("access.cancel")}</a></form></section></div>`,
+    { breadcrumb: { title: tr("shell.settings"), href: "/settings" } });
 }
 
 /**

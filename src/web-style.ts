@@ -619,6 +619,11 @@ pre:last-child { margin-bottom: 0; }
 .job-status[data-state="blocked"], .job-status[data-state="partial"], .job-status[data-state="waiting"] { color: var(--warn); background: var(--warn-bg); border-color: var(--warn-line); }
 .job-status[data-state="admitted"], .job-status[data-state="running"], .job-status[data-state="proposed"], .job-status[data-state="queued"], .job-status[data-state="specialist"], .job-status[data-state="coordinator"] { color: var(--link); background: var(--info-bg); border-color: var(--info-line); }
 .job-status[data-state="disabled"], .job-status[data-state="skipped"], .job-status[data-state="excluded"] { color: var(--faint); background: transparent; }
+/* web.access_settings/v1 (S11-D02): the execution level badge. Text always names the level; colour never does alone. */
+.access-badge { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; max-width: 100%; font-size: var(--size-xs); font-weight: 600; line-height: 1.3; border: 1px solid var(--line); border-radius: var(--radius-pill); padding: 3px 8px; color: var(--fg-3); background: transparent; white-space: nowrap; }
+.access-badge[data-level="workspace"] { color: var(--warn); border-color: var(--warn-line); background: var(--warn-bg); }
+.access-badge[data-level="full"] { color: var(--danger); border-color: var(--danger-line); background: var(--danger-bg); }
+.access-strike { font-weight: 400; }
 .job-route { margin-top: 4px; color: var(--muted); }
 .job-card form { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
 .job-card form label { flex: 1 1 200px; }

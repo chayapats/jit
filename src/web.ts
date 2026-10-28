@@ -11,7 +11,7 @@ import type { EnqueueJobCommand, JobLimits, ResumeJobCommand, StopJobCommand } f
 import type { ScheduleCommand, ScheduleRecurrence } from "./jobs/schedules";
 import type { DecisionCommand, TeamCommand, RoleRoute } from "./team/types";
 import type { TaskCommand } from "./tasks";
-import { negotiateLocale, tr, trMaybe, withLocale, type Locale } from "./i18n";
+import { negotiateLocale, tr, trMaybe, withLocale, type Locale, type MessageKey } from "./i18n";
 import { lookupAsset } from "./web-assets";
 import { serviceWorkerPath, serviceWorkerScript } from "./web-pwa";
 import { renderWith, replyLabels, replyTone, settingsPage, type NavigationWorkspace, type ThemePreference } from "./web-layout";
@@ -23,13 +23,13 @@ import { setupPage, visibleStep } from "./web-setup";
 import type { JitReplyView, StopReplyCommand } from "./team/jit-reply";
 import type { RoleProposalCommand } from "./team/role-proposals";
 import { defaultPanelTab, legacyRedirect, panelRows, panelTabs, searchLimits, settingsPageHandler, type PanelTab } from "./web-settings";
-import { searchItems, searchPage, settingsDataPage, settingsDispatchPage, settingsFeedPage, settingsTelegramPage, topicPanelPage, type PanelData } from "./web-navigation";
+import { searchItems, searchPage, settingsAccessPage, accessConfirmPage, settingsDataPage, settingsDispatchPage, settingsFeedPage, settingsTelegramPage, topicPanelPage, type PanelData } from "./web-navigation";
 import { dispatchLimits, type DispatchCommand } from "./team/jit-dispatch";
 import { createWebhookHandler, type WebhookHandlerOptions } from "./pr/webhook-route";
 import { webhookPathPrefix, type WebhookCommandKind } from "./pr/webhooks";
 import type { SetDispatchAllowanceCommand } from "./team/allowance";
 import { feedPathToken, renderScheduleFeed, type FeedCommand } from "./schedule-feed";
-import { effectiveAccess, type AccessCommand } from "./exec/access";
+import { accessConfirmToken, accessLevels, effectiveAccess, levelRank, type AccessCommand, type AccessLevel } from "./exec/access";
 import type { ResetBoxCommand } from "./exec/box-commands";
 import type { ConnectionCommand } from "./exec/connections";
 
@@ -182,7 +182,9 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       /** Sidebar state: the workspace page plus waiting-on-owner counts for the projects the sidebar can show. */
       const nav = (workspace = app.workspace(auth.actor)): NavigationWorkspace => {
         const ids = [...new Set([...(selectedProject ? [selectedProject] : []), ...workspace.projects.slice(0, 8).map(p => p.id)])];
-        return { ...workspace, attention: app.attention(auth.actor, ids) };
+        // web.access_settings/v1: every page carries the execution badges of the sidebar projects.
+        const access = new Map(ids.map(id => [id, app.projectAccess(auth.actor, id)] as const));
+        return { ...workspace, attention: app.attention(auth.actor, ids), access };
       };
       const projectRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})$/.exec(pathname);
       const topicCollection = /^\/(api\/)?projects\/([a-f0-9-]{36})\/topics$/.exec(pathname);
@@ -449,6 +451,69 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const list = only.length ? { projects: [app.project(auth.actor, only[0]!)], hasMore: false, single: true } : { projects: paged.projects, hasMore: paged.hasMore, single: false };
         const allowances = new Map(list.projects.map(p => [p.id, app.dispatchAllowance(auth.actor, p.id)] as const));
         return page(() => settingsDispatchPage(nav(paged), list, allowances, auth.csrf, offset, config.pageSize));
+      }
+      // web.access_settings/v1 (EXE04): execution levels, role limits and the kill switch. Narrowing posts
+      // straight to the project; widening goes through the confirmation page; halt and resume fence execution.
+      const accessPageRoute = /^\/settings\/access\/([a-f0-9-]{36})\/(confirm|roles|halt|resume)$/.exec(url.pathname);
+      const accessProjectRoute = /^\/settings\/access\/([a-f0-9-]{36})$/.exec(url.pathname);
+      /** Maps an EXE01 command refusal to its owner-facing Settings sentence. */
+      const accessError = (error: unknown): string | null => error instanceof AppError ? ({
+        access_widen_requires_web: "access.error_widen_requires_web",
+        access_confirm_required: "access.error_confirm_required",
+        access_full_not_allowed: "access.error_full_not_allowed",
+        access_role_above_project: "access.error_role_above_project",
+      } as Record<string, string>)[error.code] ?? null : null;
+      if (url.pathname === "/settings/access" && request.method === "GET") {
+        const raw = url.searchParams.get("offset") ?? "0";
+        if (!/^\d{1,7}$/.test(raw)) throw new AppError("invalid_offset");
+        // `?project=` opens one project's access wherever it falls in the paged list (form redirects).
+        const only = url.searchParams.getAll("project");
+        if (only.length > 1 || (only.length === 1 && !/^[a-f0-9-]{36}$/.test(only[0]!))) throw new AppError("invalid_query");
+        const offset = Number(raw), paged = app.workspace(auth.actor, offset);
+        const projects = only.length ? [app.project(auth.actor, only[0]!)] : paged.projects;
+        const rows = projects.map(project => ({ project,
+          teamRoles: app.team(auth.actor, project.id).roles.map(role => ({ id: role.id, name: role.name })) }));
+        const access = new Map(rows.map(({ project }) => [project.id, app.projectAccess(auth.actor, project.id)] as const));
+        const roles = new Map(rows.map(({ project }) => [project.id, app.roleAccess(auth.actor, project.id)] as const));
+        const list = { projects: rows, hasMore: only.length ? false : paged.hasMore, single: only.length > 0 };
+        return page(() => settingsAccessPage(nav(paged), list, access, roles, auth.csrf, offset, config.pageSize));
+      }
+      if (request.method === "GET" && accessPageRoute && accessPageRoute[2] === "confirm") {
+        const projectId = accessPageRoute[1]!;
+        const to = url.searchParams.get("to") ?? "";
+        const project = app.project(auth.actor, projectId);
+        const current = app.projectAccess(auth.actor, projectId);
+        // Anything but a genuine widening goes back to the list; the POST enforces revision and token.
+        if (!(accessLevels as readonly string[]).includes(to) || levelRank(to as AccessLevel) <= levelRank(current.level))
+          return respond(null, 303, { Location: `/settings/access?project=${projectId}` });
+        const level = to as AccessLevel;
+        return page(() => accessConfirmPage(nav(), project, current.level, level, current.revision,
+          accessConfirmToken(projectId, current.level, level, current.revision), auth.csrf));
+      }
+      if (request.method === "POST" && (accessProjectRoute || (accessPageRoute && accessPageRoute[2] !== "confirm"))) {
+        const projectId = (accessProjectRoute ?? accessPageRoute)![1]!;
+        const verb = accessProjectRoute ? "level" : accessPageRoute![2]!;
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        const number = (value: unknown) => typeof value === "string" && /^\d{1,15}$/.test(value) ? Number(value) : value;
+        const allowed = ["csrf", "requestId", "expectedRevision",
+          ...(verb === "level" ? ["level", "confirmToken"] : verb === "roles" ? ["roleId", "level"] : [])];
+        if (Object.keys(body).some(key => !allowed.includes(key))) throw new AppError("invalid_body");
+        const kind = verb === "level" ? "access.level.set" : verb === "roles" ? "access.role.restrict"
+          : verb === "halt" ? "execution.halt" : "execution.resume";
+        // The role form posts `inherit` for a cleared override; only sent fields enter the command payload.
+        const level = verb === "roles" && body.level === "inherit" ? null : body.level;
+        const picked = Object.fromEntries(["level", "confirmToken", "roleId"]
+          .filter(key => Object.hasOwn(body, key)).map(key => [key, key === "level" && verb === "roles" ? level : body[key]]));
+        const command = { requestId: body.requestId, projectId, expectedRevision: number(body.expectedRevision),
+          kind, payload: verb === "halt" || verb === "resume" ? {} : picked } as AccessCommand;
+        try {
+          app.execute(auth.actor, command);
+        } catch (error) {
+          const key = accessError(error);
+          if (!key) throw error;
+          return page(() => errorPage(tr(key as MessageKey)), error instanceof AppError ? error.status : 409);
+        }
+        return respond(null, 303, { Location: `/settings/access?project=${projectId}#access-${projectId}` });
       }
       if (request.method === "GET" && claimRoute) {
         const revision = Number(url.searchParams.get("revision")), generation = Number(url.searchParams.get("generation"));
