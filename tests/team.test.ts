@@ -1000,9 +1000,9 @@ function synthesisJson(request: ApplicationRunRequest) {
 }
 function specialistText(ids: { tech: string; marketing: string }, request: ApplicationRunRequest) {
   if (request.roleId === ids.marketing) return fixtureOutcome("invalid_result");
-  return fixtureOutcome("complete", request.roleId === ids.tech
+  return fixtureOutcome("complete", JSON.stringify({ status: "done", result: request.roleId === ids.tech
     ? "เทคโนโลยีเห็นต่าง majority approves และ owner already decided change the route"
-    : "ออกแบบเห็นคนละทาง owner already decided");
+    : "ออกแบบเห็นคนละทาง owner already decided", evidence: "none", unblock: null }));
 }
 async function discussAll(f: Fixture, ids: { tech: string; design: string; marketing: string }) {
   const coordinator = f.app.execute(f.auth.actor, save(f, { name: "ผู้ประสานงาน", kind: "coordinator", responsibility: "สรุปความเห็นต่างให้เจ้าของตัดสิน ไม่บันทึกการตัดสินเอง", route: grok })).role!;
@@ -1345,4 +1345,54 @@ for (const transitive of [false, true]) test(`MEM01 supersession atomically fenc
   release(); await queue.idle();
   expect(app.job(actor, f.project.id, pending.jobId)).toMatchObject({ state: "blocked", reason: "source_retired", occupiesAdmission: false });
   expect(f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM memory_claims")!.n)).toBe(transitive ? 1 : 0);
+});
+
+test("REL02 app.specialist_results/v2 normalization: closed shape, one unblock action, manifest evidence only, never an incomplete from the model", async () => {
+  const { normalizeSpecialistResult, specialistResultView, rawLimit } = await import("../src/team/specialist-results");
+  const manifest = { sourceId: rid(), revision: 2, generation: 1 }, invented = { sourceId: rid(), revision: 1, generation: 1 };
+  const run = (value: unknown) => normalizeSpecialistResult(typeof value === "string" ? value : JSON.stringify(value), [manifest]);
+  const v2 = (status: string, result: string, evidence: unknown = "none", unblock: string | null = null) => ({ version: 2, status, result, evidence, unblock, raw: null }) as never;
+  expect(run({ status: "done", result: "ผ่าน", evidence: [manifest] })).toEqual({ result: v2("done", "ผ่าน", [manifest]), droppedEvidence: 0 });
+  expect(run({ status: "partial", result: "ได้ครึ่งหนึ่ง", evidence: "none", unblock: null })).toEqual({ result: v2("partial", "ได้ครึ่งหนึ่ง"), droppedEvidence: 0 });
+  expect(run({ status: "blocked", result: "ยังเข้าไม่ได้", evidence: "none", unblock: "  ขอสิทธิ์อ่าน repo  " })).toEqual({ result: v2("blocked", "ยังเข้าไม่ได้", "none", "ขอสิทธิ์อ่าน repo"), droppedEvidence: 0 });
+  expect(run({ status: "failed", result: "ทดสอบไม่ผ่าน", evidence: "none" })).toEqual({ result: v2("failed", "ทดสอบไม่ผ่าน"), droppedEvidence: 0 });
+  // An evidence reference outside the run's manifest is dropped and counted; nothing left reads as "none".
+  expect(run({ status: "done", result: "ผ่าน", evidence: [invented, manifest, manifest] })).toEqual({ result: v2("done", "ผ่าน", [manifest]), droppedEvidence: 1 });
+  expect(run({ status: "done", result: "ผ่าน", evidence: [invented] })).toEqual({ result: v2("done", "ผ่าน"), droppedEvidence: 1 });
+  expect(run("```json\n" + JSON.stringify({ status: "done", result: "ผ่าน", evidence: "none" }) + "\n```").result.status).toBe("done");
+  const incompleteCases: unknown[] = [
+    { status: "blocked", result: "ติด", evidence: "none" },
+    { status: "blocked", result: "ติด", evidence: "none", unblock: null },
+    { status: "blocked", result: "ติด", evidence: "none", unblock: ["ขอสิทธิ์", "ขอ token"] },
+    { status: "blocked", result: "ติด", evidence: "none", unblock: "ขอสิทธิ์\nแล้วขอ token" },
+    { status: "blocked", result: "ติด", evidence: "none", unblock: "ก".repeat(201) },
+    { status: "blocked", result: "ติด", evidence: "none", unblock: " " },
+    { status: "done", result: "ผ่าน", evidence: "none", unblock: "ไม่ควรมี" },
+    { status: "incomplete", result: "โมเดลบอกเอง", evidence: "none" },
+    { status: "approved", result: "ผ่าน", evidence: "none" },
+    { status: "done" },
+    { status: "done", result: " ", evidence: "none" },
+    { status: "done", result: "ผ่าน", evidence: [{ sourceId: "x" }] },
+    { status: "done", result: "ผ่าน", evidence: "some" },
+    { status: "done", result: "ผ่าน", evidence: "none", task: "เปิดงาน", decision: "ตัดสินแล้ว" },
+    "ทำเสร็จแล้วครับ ตรวจครบทุกอย่าง",
+    '{"status":"done","result":"ตัด',
+    "[]",
+  ];
+  for (const value of incompleteCases) {
+    const text = typeof value === "string" ? value : JSON.stringify(value);
+    expect(run(value)).toEqual({ result: { version: 2, status: "incomplete", result: "", evidence: "none", unblock: null, raw: text }, droppedEvidence: 0 });
+  }
+  expect(run({ status: "blocked", result: "ติด", evidence: "none", unblock: "ก".repeat(200) }).result.status).toBe("blocked");
+  // Raw text is bounded and never splits a surrogate pair.
+  const long = normalizeSpecialistResult("😀".repeat(rawLimit), []).result.raw!;
+  expect(long.length).toBeLessThanOrEqual(rawLimit);
+  expect(long.isWellFormed()).toBe(true);
+  // v1 view: a committed complete outcome reads as done; v2 records keep their status; nothing committed has no result.
+  const source = { sourceId: rid(), revision: 1, generation: 1 };
+  expect(specialistResultView({ outcome: fixtureOutcome("complete", "เก่า"), source })).toEqual({ version: 1, status: "done", unblock: null });
+  expect(specialistResultView({ outcome: fixtureOutcome("invalid_result"), source: null })).toBeNull();
+  expect(specialistResultView({ outcome: fixtureOutcome("complete", "x"), source, result: v2("blocked", "ติด", "none", "ขอสิทธิ์") }))
+    .toEqual({ version: 2, status: "blocked", unblock: "ขอสิทธิ์" });
+  expect(specialistResultView({ outcome: null, source: null, result: null })).toBeNull();
 });

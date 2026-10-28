@@ -11,6 +11,7 @@ import { prepareDispatch, projectDiscussion, readDiscussion, readSpecialist } fr
 import { admitTeamReply, readReply, replyLimits, type JitReplyView, type ReplyNotAdmitted, type TeamReplyGap, type TeamReplyResult } from "./jit-reply";
 import type { Discussion, DiscussionOrigin, DiscussionParticipation, SynthesisState } from "./types";
 import { promotionFrom } from "../promotion";
+import { blockedForRequest, citableResult, heldGaps, unblockAction } from "./specialist-results";
 
 /** Lifecycle of one dispatch proposal. Only `admitted` (standing allowance) and `accepted` (owner) start work. */
 export type DispatchProposalState = "admitted" | "proposed" | "accepted" | "dismissed" | "empty";
@@ -30,7 +31,15 @@ interface DispatchRecord {
   acceptedRoleIds: string[] | null;
   /** Why the latest team reply admission did not start (queue full, no route, …); the owner may answer again. */
   teamHold?: ReplyNotAdmitted | null;
+  /**
+   * app.specialist_results/v2: named roles Jit did not call again because their latest result for this same request
+   * is still blocked, with the unblock action to show instead. Absent on records written before v2.
+   */
+  blocked?: { roleId: string; roleName: string; runId: string }[];
 }
+
+/** A role held back from a dispatch because its latest result for the same request is blocked, with its unblock action. */
+export interface BlockedRole { roleId: string; roleName: string; runId: string; unblock: string | null }
 
 interface ProposalRow {
   id: string; projectId: string; topicId: string; replyId: string; revision: number; state: DispatchProposalState;
@@ -60,6 +69,8 @@ export interface DispatchCardView {
   state: DispatchProposalState; admission: "standing_allowance" | "owner" | null; allowanceRevision: number;
   reason: DispatchHoldReason | null; roles: { roleId: string; roleName: string }[]; dropped: DispatchRecord["dropped"];
   acceptedRoleIds: string[] | null;
+  /** Named roles Jit did not call again because they are still blocked on this request, with their unblock action. */
+  blocked: BlockedRole[];
   /** Why Jit could not start the team reply last time; null when it started or was never tried. */
   teamHold: ReplyNotAdmitted | null;
   discussion: { id: string; revision: number; origin: DiscussionOrigin | null; stoppedAll: boolean; coverageGap: string[]; roles: TeamCardRole[] } | null;
@@ -145,6 +156,15 @@ export function dispatchPurpose(text: string): string {
   return purpose.trim() || "Jit dispatch";
 }
 
+/** The owner message a Jit reply answered, and the discussion purpose it gives; null when its source is unavailable. */
+function ownerRequest(tx: AppTransaction, projectId: string, replyId: string) {
+  const reply = tx.get<{ messageId: string }>("SELECT message_id AS messageId FROM jit_replies WHERE id = ?", replyId)!;
+  const message = tx.get<{ sourceId: string; revision: number; generation: number }>(
+    "SELECT source_id AS sourceId, source_revision AS revision, source_generation AS generation FROM messages WHERE id = ?", reply.messageId)!;
+  const source = lookupSource(tx, projectId, message);
+  return source.state === "available" ? { source, purpose: dispatchPurpose(source.text) } : null;
+}
+
 /**
  * Starts the discussion through the existing `team.dispatch` router/dispatch path (prepareDispatch): the named roles
  * are the owner-side include list and every other eligible specialist is excluded, so the router can select only
@@ -152,14 +172,13 @@ export function dispatchPurpose(text: string): string {
  */
 function startDiscussion(tx: AppTransaction, input: {
   row: ProposalRow; roleIds: string[]; origin: DiscussionOrigin; requestId: string; config: AppConfig; queue: JobQueue | undefined; generation: number; now: number;
+  /** Named roles held back because they are still blocked on this request; they stay gaps of this discussion. */
+  held: DispatchRecord["blocked"];
 }): Discussion {
   const { row, config } = input;
-  const reply = tx.get<{ messageId: string }>("SELECT message_id AS messageId FROM jit_replies WHERE id = ?", row.replyId)!;
-  const message = tx.get<{ sourceId: string; revision: number; generation: number }>(
-    "SELECT source_id AS sourceId, source_revision AS revision, source_generation AS generation FROM messages WHERE id = ?", reply.messageId)!;
-  const source = lookupSource(tx, row.projectId, message);
-  if (source.state !== "available") throw new AppError("dispatch_source_unavailable", 409);
-  const purpose = dispatchPurpose(source.text);
+  const request = ownerRequest(tx, row.projectId, row.replyId);
+  if (!request) throw new AppError("dispatch_source_unavailable", 409);
+  const { source, purpose } = request;
   const team = readTeam(tx, row.projectId, config.team);
   const exclude = team.roles.filter(role => role.kind === "specialist" && role.enabled && role.effective.route && !input.roleIds.includes(role.id)).map(role => role.id);
   const project = tx.get<{ revision: number }>("SELECT revision FROM projects WHERE id = ?", row.projectId)!;
@@ -169,6 +188,7 @@ function startDiscussion(tx: AppTransaction, input: {
   }, config, input.queue, input.generation, input.now);
   const discussion = readDiscussion(tx, row.projectId, receipt.discussion!.id);
   discussion.origin = input.origin;
+  if (input.held?.length) discussion.held = input.held.map(role => ({ ...role }));
   tx.run("UPDATE team_runs SET record_json = ? WHERE id = ?", JSON.stringify(discussion), discussion.id);
   return discussion;
 }
@@ -208,6 +228,19 @@ export function admitJitDispatch(tx: AppTransaction, input: {
     } else if (matches.some(item => item.kind === "specialist")) record.dropped.disabled.push(matches.find(item => item.kind === "specialist")!.name);
     else record.dropped.coordinator++;
   }
+  // app.specialist_results/v2: a role whose latest result for this same request (topic and purpose) is still blocked
+  // is not called again; the card shows its unblock action instead. A different request is unaffected.
+  const purpose = ownerRequest(tx, reply.projectId, reply.id)?.purpose;
+  if (purpose !== undefined) {
+    const blocked: NonNullable<DispatchRecord["blocked"]> = [];
+    record.roles = record.roles.filter(role => {
+      const held = blockedForRequest(tx, { projectId: reply.projectId, topicId: reply.topicId, roleId: role.roleId, purpose });
+      if (!held) return true;
+      blocked.push({ ...role, runId: held.runId });
+      return false;
+    });
+    if (blocked.length) record.blocked = blocked;
+  }
   const allowance = readDispatchAllowance(tx, reply.projectId, config);
   const row: ProposalRow = {
     id: crypto.randomUUID(), projectId: reply.projectId, topicId: reply.topicId, replyId: reply.id, revision: 1, state: "proposed",
@@ -221,7 +254,7 @@ export function admitJitDispatch(tx: AppTransaction, input: {
   if (!input.queue || !input.queue.available(tx)) { record.reason = "scheduler_unavailable"; return saveRow(tx, row, record); }
   try {
     const discussion = withSavepoint(tx, "jit_dispatch", () => startDiscussion(tx, {
-      row, roleIds: record.roles.map(role => role.roleId), requestId: `allowance-${reply.id}`, config, queue: input.queue, generation: reply.generation, now,
+      row, roleIds: record.roles.map(role => role.roleId), requestId: `allowance-${reply.id}`, config, queue: input.queue, generation: reply.generation, now, held: record.blocked,
       origin: { kind: "standing-allowance", proposalId: row.id, replyId: reply.id, allowanceRevision: allowance.revision },
     }));
     row.state = "admitted"; row.admission = "standing_allowance"; row.discussionId = discussion.id;
@@ -251,12 +284,16 @@ function activity(tx: AppTransaction, projectId: string, item: DiscussionPartici
 function teamResults(tx: AppTransaction, discussion: Discussion): { results: TeamReplyResult[]; gaps: TeamReplyGap[] } {
   const results: TeamReplyResult[] = [], gaps: TeamReplyGap[] = [];
   for (const item of projectDiscussion(tx, discussion).participations) {
-    if (item.state === "completed" && item.output) {
+    // app.specialist_results/v2: blocked, failed and incomplete results are gaps; a blocked one carries its unblock action.
+    if (item.state === "completed" && item.output && !citableResult(item.result)) {
+      gaps.push({ roleId: item.roleId, roleName: item.roleName, reason: `result_${item.result!.status}`, ...item.result!.status === "blocked" ? { runId: item.runId } : {} });
+    } else if (item.state === "completed" && item.output) {
       const found = lookupSource(tx, discussion.projectId, item.output);
       if (found.state === "available") results.push({ roleId: item.roleId, roleName: item.roleName, reference: found.reference, text: found.text });
       else gaps.push({ roleId: item.roleId, roleName: item.roleName, reason: "source_unavailable" });
     } else if (item.state !== "skipped" && item.state !== "excluded") gaps.push({ roleId: item.roleId, roleName: item.roleName, reason: item.reason ?? item.state });
   }
+  for (const role of heldGaps(discussion)) gaps.push({ roleId: role.roleId, roleName: role.roleName, reason: "result_blocked", runId: role.runId });
   return { results, gaps };
 }
 
@@ -333,7 +370,7 @@ export function executeDispatchCommand(tx: AppTransaction, command: DispatchComm
     const offered = new Set(record.roles.map(role => role.roleId));
     if (command.payload.roleIds.some(id => !offered.has(id))) throw new AppError("dispatch_role_not_proposed", 409);
     const discussion = startDiscussion(tx, {
-      row, roleIds: command.payload.roleIds, requestId: command.requestId, config, queue, generation, now,
+      row, roleIds: command.payload.roleIds, requestId: command.requestId, config, queue, generation, now, held: record.blocked,
       origin: { kind: "owner-accepted", proposalId: row.id, replyId: row.replyId, allowanceRevision: row.allowanceRevision },
     });
     row.state = "accepted"; row.admission = "owner"; row.discussionId = discussion.id; record.acceptedRoleIds = [...command.payload.roleIds];
@@ -369,7 +406,8 @@ function readCard(tx: AppTransaction, row: ProposalRow): DispatchCardView {
     });
     discussion = { id: stored.id, revision: stored.revision, origin: stored.origin ?? null, stoppedAll: stored.stoppedAll === true, coverageGap: projected.coverageGap, roles };
     canStopAll = roles.some(item => item.activity !== "settled") || teamReply?.state === "thinking" || teamReply?.state === "blocked";
-    canAnswer = !row.teamReplyId && !roles.some(item => item.activity === "live") && roles.some(item => item.state === "completed" && item.opinion?.text !== null);
+    canAnswer = !row.teamReplyId && !roles.some(item => item.activity === "live") &&
+      roles.some(item => item.state === "completed" && citableResult(item.result) && item.opinion?.text !== null);
     const model = readDecisionModel(tx, row.projectId, row.topicId, stored.id);
     decision = { synthesis: model.synthesis?.state ?? null, proposalId: model.proposal?.id ?? null, proposalRevision: model.proposal?.revision ?? null,
       decided: model.decisions.some(entry => entry.decision.supersededBy === null) };
@@ -377,7 +415,7 @@ function readCard(tx: AppTransaction, row: ProposalRow): DispatchCardView {
   return {
     id: row.id, projectId: row.projectId, topicId: row.topicId, replyId: row.replyId, replyMessageId, anchorSequence: anchor.sequence, revision: row.revision, state: row.state,
     admission: row.admission, allowanceRevision: row.allowanceRevision, reason: record.reason, roles: record.roles, dropped: record.dropped,
-    acceptedRoleIds: record.acceptedRoleIds, teamHold: record.teamHold ?? null, discussion, teamReply, canAnswer, canStopAll, decision, createdAt: row.createdAt,
+    acceptedRoleIds: record.acceptedRoleIds, blocked: (record.blocked ?? []).map(role => ({ ...role, unblock: unblockAction(tx, row.projectId, role.runId) })), teamHold: record.teamHold ?? null, discussion, teamReply, canAnswer, canStopAll, decision, createdAt: row.createdAt,
   };
 }
 

@@ -18,6 +18,7 @@ import type {
   SynthesisCitation, SynthesisGap, SynthesisState,
 } from "./types";
 import { coordinatorSynthesisWorkId } from "./types";
+import { citableResult, heldGaps, unblockAction } from "./specialist-results";
 /** Trusted operator line that identifies a coordinator invocation. It is not an owner decision. */
 export const coordinatorSynthesisMarker = "Synthesize only the cited specialist results under the exact route and finite budgets; a synthesis is a recommendation, never an owner decision.";
 
@@ -223,6 +224,13 @@ function decisionLinks(proposal: DecisionProposal, links: SourceReference[]) {
   });
 }
 
+/** Read model only: a blocked gap shows the unblock action read from its specialist run record (app.specialist_results/v2). */
+function withUnblock(tx: AppTransaction, proposal: DecisionProposal): DecisionProposal {
+  if (!proposal.artifact.missing.some(gap => gap.runId)) return proposal;
+  return { ...proposal, artifact: { ...proposal.artifact, missing: proposal.artifact.missing.map(gap => gap.runId
+    ? { ...gap, unblock: unblockAction(tx, proposal.projectId, gap.runId) } : gap) } };
+}
+
 function projectSynthesis(tx: AppTransaction, synthesis: CoordinatorSynthesis): CoordinatorSynthesis {
   if (synthesis.state !== "queued" && synthesis.state !== "running") return synthesis;
   try {
@@ -250,10 +258,10 @@ export function readDecisionModel(tx: AppTransaction, projectId: string, topicId
   const decisionRows = discussionId
     ? tx.all<Parameters<typeof toDecision>[0]>(`${decisionSelect} WHERE project_id = ? AND topic_id = ? AND proposal_id IN (SELECT id FROM decision_proposals WHERE project_id = ? AND discussion_id = ?) ORDER BY revision`, projectId, topicId, projectId, discussionId)
     : tx.all<Parameters<typeof toDecision>[0]>(`${decisionSelect} WHERE project_id = ? AND topic_id = ? ORDER BY revision`, projectId, topicId);
-  const proposal = proposalRow ? toProposal(proposalRow) : null;
+  const proposal = proposalRow ? withUnblock(tx, toProposal(proposalRow)) : null;
   const decisions: DecisionHistoryEntry[] = decisionRows.map(row => {
     const decision = toDecision(row);
-    const itemProposal = readProposal(tx, projectId, decision.proposalId);
+    const itemProposal = withUnblock(tx, readProposal(tx, projectId, decision.proposalId));
     return { decision, proposal: itemProposal, evidence: resolveEvidence(tx, projectId, decisionLinks(itemProposal, decision.sourceLinks)) };
   });
   return {
@@ -343,12 +351,17 @@ export function prepareSynthesis(
   const allowed: SynthesisCitation[] = [];
   const gaps: SynthesisGap[] = [];
   for (const item of projected.participations) {
-    if (item.state === "completed" && item.output) {
+    // app.specialist_results/v2: a blocked, failed or incomplete result is a coverage gap, never a citable result.
+    if (item.state === "completed" && item.output && !citableResult(item.result)) {
+      gaps.push({ roleId: item.roleId, roleName: item.roleName, reason: `result_${item.result!.status}`, ...item.result!.status === "blocked" ? { runId: item.runId } : {} });
+    } else if (item.state === "completed" && item.output) {
       const source = lookupSource(tx, command.projectId, item.output);
       if (source.state !== "available") gaps.push({ roleId: item.roleId, roleName: item.roleName, reason: "source_unavailable" });
       else allowed.push({ roleId: item.roleId, roleName: item.roleName, route: item.route, reference: source.reference });
     } else if (!["skipped", "excluded"].includes(item.state)) gaps.push({ roleId: item.roleId, roleName: item.roleName, reason: item.reason ?? item.state });
   }
+  // Roles a Jit dispatch held back because they were still blocked on this request are gaps too.
+  for (const role of heldGaps(stored)) gaps.push({ roleId: role.roleId, roleName: role.roleName, reason: "result_blocked", runId: role.runId });
   if (allowed.length < 1 || allowed.length > config.team.sourceLimit) throw new AppError("synthesis_not_ready", 409);
   const sources = allowed.map(item => {
     const source = lookupSource(tx, command.projectId, item.reference);

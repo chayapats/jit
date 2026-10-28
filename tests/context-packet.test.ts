@@ -17,7 +17,8 @@ import { coordinatorSynthesisMarker, coordinatorSynthesisWork } from "../src/tea
 import { discussionPlanWork, specialistAnalysisWork } from "../src/team/dispatch";
 import { jitReplyMarker, jitReplyWork } from "../src/team/jit-reply";
 import { describeEffectiveRun } from "../src/team/schway-port";
-import { ScriptedRunPort, fixtureOutcome, withContextAnswer } from "../src/team/scripted-port";
+import { ScriptedRunPort, fixtureOutcome, specialistFixtureResult, withContextAnswer } from "../src/team/scripted-port";
+import { specialistResultInstruction } from "../src/team/specialist-results";
 import { contextPacketSections, type ApplicationRunRequest, type ContextPacket, type Discussion, type RoleRoute } from "../src/team/types";
 
 const roots: string[] = [], stores: TransactionStore[] = [], queues: JobQueue[] = [], releases: (() => void)[] = [];
@@ -45,6 +46,7 @@ function boot(config: Config, hooks: { reply: Script }, clock: { now: number }) 
       : request.instructions.operator.includes(coordinatorSynthesisMarker) ? fixtureOutcome("complete", JSON.stringify(synthesisJson(request)))
       : request.instructions.operator[0]?.startsWith("You are Jit") ? hooks.reply(request)
       : request.roleId === scheduleRunRoleId ? fixtureOutcome("complete", "สรุปตามกำหนด: งานหลักยังค้าง")
+      : request.instructions.operator.includes(specialistResultInstruction) ? fixtureOutcome("complete", specialistFixtureResult("ตอบจำลอง", request, config.jobs.outputBytes))
       : fixtureOutcome("complete", withContextAnswer("ตอบจำลอง", request, config.jobs.outputBytes)));
   const now = () => clock.now;
   let queue: JobQueue | undefined;

@@ -1493,4 +1493,13 @@ export const en: Record<MessageKey, string> = {
   "local_api.cli_thinking": "Jit is still thinking. Check again with jit status",
   "local_api.cli_waiting_on_owner": "Waiting on you:",
   "local_api.cli_failed": "Not done:",
+  // app.specialist_results/v2 (REL02)
+  "team.result_status_done": "Done",
+  "team.result_status_partial": "Partial",
+  "team.result_status_blocked": "Blocked",
+  "team.result_status_failed": "Failed",
+  "team.result_status_incomplete": "Incomplete result",
+  "team.unblock": "To unblock",
+  "dispatch.held_blocked": "Jit did not call these specialists again for the same request, because their latest result is still blocked",
+  "dispatch.empty_blocked_note": "The specialists Jit asked for are still blocked on this request, so nobody was called again. Do the step below first",
 };

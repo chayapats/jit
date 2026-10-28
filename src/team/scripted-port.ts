@@ -9,6 +9,7 @@ import type { ApplicationRunEvent, ApplicationRunOutcome, ApplicationRunRequest,
 import { contextPacketSections } from "./types";
 import { requireRoleRoute } from "./configuration";
 import { renderContextAnswer } from "../memory/context-answer";
+import { specialistResultInstruction } from "./specialist-results";
 
 const reasons: RunReason[] = ["complete", "unknown_model", "route_unavailable", "quota", "needs_login", "cancelled", "max_rounds", "budget_exhausted", "invalid_result", "context_retired"];
 const emptyUsage = () => ({ calls: 0, rounds: 0, hops: 0, contextTokens: 0, outputTokens: 0, retries: 0, wallMs: 0, tokensUnknown: false });
@@ -190,6 +191,28 @@ export function withContextAnswer(prefix: string, request: ApplicationRunRequest
   return request.manifest.context && room >= 256 ? `${prefix}\n${renderContextAnswer(request, room)}` : prefix;
 }
 
+/**
+ * Default fixture text. A specialist run asks for app.specialist_results/v2, so its fixture answers in that shape
+ * (status `done`, citing the manifest sources); every other run gets the prose fixture.
+ */
+function fixtureText(request: ApplicationRunRequest, outputBytes: number): string {
+  const prose = `ตัวอย่างจำลอง · ${request.purpose}\nบทบาท: ${request.instructions.responsibility}\nผลนี้เป็น fixture ไม่ได้เรียก Grok หรือ Codex`;
+  return request.instructions.operator.includes(specialistResultInstruction)
+    ? specialistFixtureResult(prose, request, outputBytes) : withContextAnswer(prose, request, outputBytes);
+}
+
+/**
+ * A `done` app.specialist_results/v2 fixture answer whose result is {@link withContextAnswer}'s text and whose
+ * evidence cites every manifest source, within the run's output ceiling.
+ */
+export function specialistFixtureResult(prefix: string, request: ApplicationRunRequest, outputBytes: number): string {
+  const evidence = request.manifest.sources.length ? request.manifest.sources.map(source => source.reference) : "none";
+  const shell = Buffer.byteLength(JSON.stringify({ status: "done", result: "", evidence, unblock: null }));
+  // JSON escaping can grow the text, so the prose gets half of the remaining room.
+  const room = Math.max(1, Math.floor((Math.min(outputBytes, request.limits.outputTokens * 4, 65000) - shell) / 2));
+  return JSON.stringify({ status: "done", result: withContextAnswer(prefix, request, room), evidence, unblock: null });
+}
+
 /** Deterministic in-process fixture; it contains no network, SDK, discovery or model protocol loop. */
 export class ScriptedRunPort implements ApplicationRunPort {
   readonly adapter = "scripted" as const;
@@ -197,7 +220,7 @@ export class ScriptedRunPort implements ApplicationRunPort {
   readonly #native: ScriptedNativeLedger;
   constructor(readonly store: TransactionStore, readonly policy: TeamPolicy, readonly outputBytes: number,
     private readonly script: (request: ApplicationRunRequest, signal: AbortSignal, observe: (event: ApplicationRunEvent) => void) => unknown | Promise<unknown> = request => ({
-      ...fixtureOutcome("complete", withContextAnswer(`ตัวอย่างจำลอง · ${request.purpose}\nบทบาท: ${request.instructions.responsibility}\nผลนี้เป็น fixture ไม่ได้เรียก Grok หรือ Codex`, request, outputBytes)),
+      ...fixtureOutcome("complete", fixtureText(request, outputBytes)),
       usage: { ...emptyUsage(), calls: 1, rounds: 1, hops: 1 }, session: { adapter: "scripted", id: request.runId, context: request.context },
     }), private readonly deleteFails: () => boolean = () => false, private readonly retireFails: () => boolean = () => false) {
     this.#native = new ScriptedNativeLedger(`${store.path}.scripted-native.sqlite`);

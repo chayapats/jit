@@ -1495,4 +1495,13 @@ export const th = {
   "local_api.cli_thinking": "จิตกำลังคิด ดูอีกครั้งด้วย jit status",
   "local_api.cli_waiting_on_owner": "รอคุณตัดสินใจ:",
   "local_api.cli_failed": "ไม่สำเร็จ:",
+  // app.specialist_results/v2 (REL02)
+  "team.result_status_done": "เสร็จ",
+  "team.result_status_partial": "ได้บางส่วน",
+  "team.result_status_blocked": "ติดขัด",
+  "team.result_status_failed": "ทำไม่สำเร็จ",
+  "team.result_status_incomplete": "ผลไม่ครบรูปแบบ",
+  "team.unblock": "สิ่งที่ต้องทำเพื่อไปต่อ",
+  "dispatch.held_blocked": "จิตไม่เรียกผู้เชี่ยวชาญเหล่านี้ซ้ำสำหรับคำขอเดิม เพราะผลล่าสุดยังติดขัดอยู่",
+  "dispatch.empty_blocked_note": "ผู้เชี่ยวชาญที่จิตขอเรียกยังติดขัดกับคำขอนี้ จึงไม่มีใครถูกเรียกซ้ำ ทำตามสิ่งที่ต้องทำด้านล่างก่อน",
 } as const;
