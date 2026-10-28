@@ -206,7 +206,10 @@ states) bound to its row and owning job; a non-null native identity
 `runId`, context, job and attempt generation (fence), and
 for Schway attempts that engaged transport an exact `schway_native_refs`
 row for that run with the same context and generation and a resolved session
-when finished; the staged non-deleted bridge set equals the recovery point's
+when finished (the bridge reserves that row before creating a session, so an
+engaged attempt without one is accepted only when it is `rejected` or
+`interrupted` and its context is no longer `active`: it was refused before the
+bridge, such as `budget_exhausted` at reserve); the staged non-deleted bridge set equals the recovery point's
 native refs),
 `ledger_preservation` (row-for-row against the sidecar), `staged_digest`.
 `validation.unknownOutbox` and `nativeRefs` are reported counts.

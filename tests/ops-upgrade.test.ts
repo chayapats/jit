@@ -972,6 +972,26 @@ test("orphaned, unbound or uncorrelated attempt native references fail validatio
   }
 });
 
+test("a Schway attempt refused before the bridge, rejected with its context retired, passes without a native ref", async () => {
+  // The OPS05 drill shape: budget_exhausted at reserve, so the bridge never reserved an intent row.
+  const target = "(SELECT max(rowid) FROM job_attempts WHERE json_extract(record_json, '$.native') IS NOT NULL)";
+  const engage = `UPDATE job_attempts SET record_json = json_set(record_json, '$.native.adapter', 'schway', '$.transport', 'settled', '$.nativeState', 'running', '$.state', 'rejected', '$.reason', 'interrupted') WHERE rowid = ${target}`;
+  const retire = `UPDATE team_contexts SET state = 'retired' WHERE id = (SELECT json_extract(record_json, '$.native.context.id') FROM job_attempts WHERE rowid = ${target})`;
+  for (const [statements, expected] of [[[engage, retire], true], [[engage], false]] as const) {
+    const f = await fixture();
+    await rich(f);
+    const prepared = (await prepare(f)).journal;
+    const migrated = (await stepCmd(f, "upgrade.migrate", prepared.id)).journal;
+    const db = new Database(migrated.stagedPath!);
+    for (const sql of statements) db.exec(sql);
+    db.close();
+    const validated = (await stepCmd(f, "upgrade.validate", prepared.id)).journal;
+    const check = validated.validation!.checks.find(c => c.name === "native_opaque_refs")!;
+    if (expected) expect(check.pass).toBe(true);
+    else expect(check.detail).toContain("native_ref_missing");
+  }
+});
+
 test("rollback over an unsafe staged artifact blocks as corrupt, keeps the fence and never touches the target", async () => {
   for (const unsafe of ["symlink", "directory"] as const) {
     const f = await fixture();

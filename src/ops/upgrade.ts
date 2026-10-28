@@ -1060,7 +1060,16 @@ export function validateUpgrade(ctx: UpgradeContext, journal: UpgradeJournal, re
           if (native.adapter === "schway") {
             const ref = refs.get(native.runId as string);
             const engaged = attempt.transport !== "none" || ["running", "finished"].includes(attempt.nativeState as string);
-            if (!ref) { if (engaged) return `attempt_${row.id}_native_ref_missing`; continue; }
+            if (!ref) {
+              // The bridge reserves its intent row before it creates a native session (SchwayRunPort.recordRef), so
+              // no row means no session was ever created. The queue marks an attempt running at dispatch, before the
+              // adapter runs, so a run refused before the bridge (budget_exhausted at reserve, a fence) looks engaged.
+              // That is acceptable only once the attempt lost commit authority and its context is no longer active.
+              const settled = ["rejected", "interrupted"].includes(attempt.state as string) &&
+                contexts.get(`${context.id}/${context.generation}`) !== "active";
+              if (engaged && !settled) return `attempt_${row.id}_native_ref_missing`;
+              continue;
+            }
             if (ref.context_id !== context.id || ref.generation !== context.generation) return `attempt_${row.id}_native_ref_mismatch`;
             if (attempt.nativeState === "finished" && ref.session_id === "") return `attempt_${row.id}_native_session_unresolved`;
           }
