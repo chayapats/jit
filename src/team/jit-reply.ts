@@ -10,6 +10,8 @@ import { personaInstructions, readPersona } from "../persona";
 import { commitOutputSource, lookupSource, requireId, type Attribution, type SourceReference } from "../sources";
 import type { AppTransaction, TransactionStore } from "../store";
 import { readTeam } from "./configuration";
+import { insertMcpProposal, mcpProposalInstruction, mcpProposalLimit, parseMcpProposal, type ParsedMcpProposal } from "../exec/mcp";
+import { readEffectiveAccess } from "../exec/access";
 import { configuredRoutes, parseRoleProposal, roleProposalInstructions, roleProposalLimit, roleProposalViews, type RoleProposal, type RoleProposalView } from "./role-proposals";
 import type { ApplicationRunPort } from "./run-port";
 import { normalizePortResult, validateRunRequest } from "./scripted-port";
@@ -356,8 +358,10 @@ function admitReply(tx: AppTransaction, input: ReplyAdmission): { id: string; re
   // app.topic_promotion/v1: only a reply to an owner message in an open General space topic may suggest a promotion.
   // app.communication_policy/v1 ends that line, so a reply with the persona's about-me line still fits in 8.
   const promotable = !teamInput && promotionOpen(tx, message.projectId, message.topicId);
+  // app.mcp_servers/v1: a message reply may propose an MCP install only where the owner could accept it (level ≥ workspace).
+  const installable = !teamInput && readEffectiveAccess(tx, message.projectId, jit.id).level !== "read";
   const fixedOperator = [teamInput ? teamReplyMarker : jitReplyMarker,
-    [...teamInput ? teamReplyPolicy : jitReplyPolicy, ...promotable ? [promotionInstruction] : [], communicationPolicyLine].join(" "),
+    [...teamInput ? teamReplyPolicy : jitReplyPolicy, ...promotable ? [promotionInstruction] : [], ...installable ? [mcpProposalInstruction] : [], communicationPolicyLine].join(" "),
     ...(teamInput ? [] : roleProposalInstructions(configuredRoutes(tx, message.projectId, config.team))), ...personaInstructions(persona)];
   // The metadata line is charged at an upper bound that holds for every split of the offered results into kept and
   // gaps, in any order: the line with empty lists plus, per list, the smaller of its cap and every candidate entry,
@@ -768,8 +772,15 @@ export function jitReplyWork(store: TransactionStore, config: AppConfig, port: A
       // app.topic_promotion/v1: at most one promotion proposal, and only in an open General space topic.
       let promotion: PromotionProposal | null = null;
       const promotable = !opened.team && store.read(tx => promotionOpen(tx, job.projectId, opened.topicId));
+      // app.mcp_servers/v1: at most two MCP install proposals; a dropped one (unpinned version, …) still shows its reason.
+      const mcpProposals: ParsedMcpProposal[] = [];
       // A team reply speaks for the team: it may neither re-dispatch nor propose roles.
-      const handlers = opened.team ? {} : { role: (item: unknown) => {
+      const handlers = opened.team ? {} : { mcp_install: (item: unknown) => {
+        if (mcpProposals.length >= mcpProposalLimit) return false;
+        const parsed = parseMcpProposal(item);
+        if (parsed) mcpProposals.push(parsed);
+        return !!parsed;
+      }, role: (item: unknown) => {
         if (roleProposals.length >= roleProposalLimit) return false;
         const proposal = parseRoleProposal(item, routes, config.team, now());
         if (proposal) roleProposals.push(proposal);
@@ -788,7 +799,7 @@ export function jitReplyWork(store: TransactionStore, config: AppConfig, port: A
         ? { state: "answered", reason: null, structured: parsed.structured, discarded: parsed.discarded, discardedTotal: parsed.discardedTotal }
         : { state: "failed", reason: parsed?.state === "failed" ? parsed.reason : outcome.reason, structured: false, discarded: [], discardedTotal: 0 };
       // Language-neutral technical evidence (codes only), the same on Thai and English pages.
-      const evidence = `jit-reply · ${outcome.mode} · ${result.state}${result.reason ? `/${result.reason}` : ""} · discarded ${result.discardedTotal}${result.discarded.length ? ` (${result.discarded.join(", ")})` : ""}${result.state === "answered" && roleProposals.length ? ` · proposals role:${roleProposals.length}` : ""}${result.state === "answered" && promotion ? " · proposals promotion:1" : ""}${opened.team ? ` · team cites ${opened.team.citations.length} gaps ${opened.team.gaps.length}` : ""}${result.state === "answered" && (dispatch as { names: string[] } | null)?.names.length ? ` · dispatch named ${(dispatch as { names: string[] } | null)?.names.length}` : ""}${result.state === "answered" && opened.routing ? ` · selection ${opened.routing.selection.rule} ${opened.routing.selection.roleIds.length}` : ""} · tools none · reply ${opened.id}`;
+      const evidence = `jit-reply · ${outcome.mode} · ${result.state}${result.reason ? `/${result.reason}` : ""} · discarded ${result.discardedTotal}${result.discarded.length ? ` (${result.discarded.join(", ")})` : ""}${result.state === "answered" && roleProposals.length ? ` · proposals role:${roleProposals.length}` : ""}${result.state === "answered" && promotion ? " · proposals promotion:1" : ""}${result.state === "answered" && mcpProposals.length ? ` · proposals mcp_install:${mcpProposals.length}` : ""}${opened.team ? ` · team cites ${opened.team.citations.length} gaps ${opened.team.gaps.length}` : ""}${result.state === "answered" && (dispatch as { names: string[] } | null)?.names.length ? ` · dispatch named ${(dispatch as { names: string[] } | null)?.names.length}` : ""}${result.state === "answered" && opened.routing ? ` · selection ${opened.routing.selection.rule} ${opened.routing.selection.roleIds.length}` : ""} · tools none · reply ${opened.id}`;
       const outcomeState = result.state === "answered" ? { state: "succeeded" as const, evidence } : { state: "partial" as const, evidence };
       const committed = commit(outcomeState, tx => {
         const current = readReplyRecord(tx, job.projectId, opened.id);
@@ -808,6 +819,7 @@ export function jitReplyWork(store: TransactionStore, config: AppConfig, port: A
           tx.run("UPDATE topics SET message_sequence = message_sequence + 1 WHERE project_id = ? AND id = ?", current.projectId, current.topicId);
           current.source = source; current.replyMessageId = messageId;
           if (roleProposals.length) current.roleProposals = roleProposals;
+          for (const parsed of mcpProposals) insertMcpProposal(tx, { projectId: current.projectId, topicId: current.topicId, replyId: current.id }, parsed, now());
           if (promotion) current.promotionProposal = promotion;
           const why = (dispatch as { why: string | null } | null)?.why;
           if (why) current.dispatchWhy = why;

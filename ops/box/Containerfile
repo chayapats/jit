@@ -6,7 +6,7 @@ FROM docker.io/library/debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e790
 LABEL org.opencontainers.image.source="https://github.com/chayapats/jit"
 RUN apt-get update && apt-get install -y --no-install-recommends \
   bash coreutils findutils grep sed gawk git ca-certificates ripgrep \
-  python3 python3-venv nodejs build-essential curl jq tzdata \
+  python3 python3-venv nodejs npm build-essential curl jq tzdata \
   && rm -rf /var/lib/apt/lists/*
 RUN useradd --uid 1000 --create-home --home-dir /home/box --shell /bin/bash box
 # jit.box.runner/v1 (EXE03): POSIX sh + jq, perl-base for process groups; no model, no network, mode 0555.
@@ -17,6 +17,9 @@ USER box
 FROM base AS browser
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends \
-  chromium xvfb xdotool openbox fonts-noto-core fonts-thai-tlwg \
+  chromium xvfb xdotool openbox scrot fonts-noto-core fonts-thai-tlwg \
   && rm -rf /var/lib/apt/lists/*
+# jit.box.cdp-stream/v1 (EXE14, ADR 0039): Xvfb :99 + Chromium on /profile with --remote-debugging-pipe, bridged to
+# stdin/stdout as NUL-framed CDP messages (1 MiB cap). No debugging port. python3 comes from the base stage.
+COPY --chmod=0555 ops/box/cdp-relay /opt/jit/cdp-relay
 USER box

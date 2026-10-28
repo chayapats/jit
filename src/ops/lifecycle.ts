@@ -12,6 +12,10 @@ import type { BoxManager } from "../exec/box-manager";
 import { createServiceBoxes } from "../exec/box-service";
 import { ConnectionVault } from "../exec/connections";
 import { EffectExecutor } from "../exec/effect-executor";
+import { boxStreamsOf } from "../exec/box-runtime";
+import { McpGateway } from "../exec/mcp-gateway";
+import { BrowserService } from "../exec/browser";
+import { ComputerService } from "../exec/computer";
 import { composeJobQueue } from "../composition";
 import type { ApplicationRunPort } from "../team/run-port";
 import { verifySchwayBridge } from "../team/schway-port";
@@ -295,8 +299,12 @@ export interface FullAppHandle {
   serviceConfig: ServiceConfig | null;
   /** exec.box_runtime/v1 project boxes, or null when the operator has not configured execution. */
   boxes: BoxManager | null;
-  /** app.approval_cards/v1 effect executor, or null without boxes and a connection vault; the drain waits for it. */
+  /** app.approval_cards/v1 effect executor, or null without boxes (credential effects also need the vault); the drain waits for it. */
   effects: EffectExecutor | null;
+  /** exec.browser/v1 browser sessions (idle-swept on the tick), or null without boxes. */
+  browser?: BrowserService | null;
+  /** app.mcp_servers/v1 gateway, or null without boxes; the drain stops its installs. */
+  mcp?: McpGateway | null;
   /** Boot reconciliation outcome; `reconciled: false` while an upgrade/restore fence holds. */
   boot: { reconciled: boolean; detail: string; upgrade: { id: string; state: string } | null;
     restore: { id: string; state: string; reason: string | null } | null };
@@ -370,10 +378,23 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
     // app.connections/v1: values live in the secrets directory, never beside the state, backups or boxes.
     const connections = config.execution.secretsDirectory ? new ConnectionVault(config.execution.secretsDirectory, {
       forbidden: [dirname(resolve(config.databasePath)), service?.stateDirectory, service?.backupDirectory, service?.ledgerPath, config.execution.directory] }) : null;
-    // app.approval_cards/v1: approved effects run once, outside every box, only where boxes and the vault exist.
-    const effects = boxes && connections ? new EffectExecutor(store, { vault: connections, boxes, mirrorRoot: config.execution.directory, now }) : null;
+    // app.approval_cards/v1: approved effects run once, outside every box, only where boxes exist.
+    // app.mcp_servers/v1: MCP servers run only in project boxes and their sidecars, so the gateway needs boxes.
+    const streams = boxes ? boxStreamsOf(boxes.runtime) : null;
+    const mcp = boxes && streams ? new McpGateway(store, { boxes, runtime: streams, vault: connections, sidecarImage: config.execution.images?.base ?? null,
+      executionDirectory: config.execution.directory, now }) : null;
+    // exec.browser/v1: browser sessions run in project boxes (the browser image when one is pinned) and end with the box.
+    const browser = boxes && streams ? new BrowserService(store, { boxes, runtime: streams, now, ...(config.execution.confirmWords ? { confirmWords: config.execution.confirmWords } : {}) }) : null;
+    if (boxes && browser) boxes.onStopped(projectId => browser.close(projectId));
+    // exec.computer/v1: xdotool on the same virtual display, at `full` only.
+    const computer = browser ? new ComputerService(store, browser, { now }) : null;
+    // The executor exists wherever boxes do: in-box cards (MCP, browser, computer) need no vault, and without one the
+    // credential effects fail `connection_vault_not_configured` cleanly instead of every card being undecidable.
+    const effects = boxes ? new EffectExecutor(store, { vault: connections, boxes, mirrorRoot: config.execution.directory, now,
+      performers: { ...(mcp ? { mcp_tool: mcp.perform } : {}), ...(browser ? { browser_confirm: browser.perform } : {}),
+        ...(computer ? { computer_confirm: computer.perform } : {}) } }) : null;
     const compose = { now, prCacheRoot: input.prCacheRoot ?? (service ? resolve(service.stateDirectory, "pr-cache") : ".local/pr-cache"), ...(boxes ? { boxes } : {}),
-      ...(effects ? { effects } : {}) };
+      ...(effects ? { effects } : {}), ...(mcp ? { mcp } : {}), ...(browser ? { browser } : {}), ...(computer ? { computer } : {}) };
     managed = ManagedService.forConfig(store, config, compose);
     const composed = composeJobQueue(store, config, compose);
     managed.adopt(composed);
@@ -384,6 +405,7 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
     const app = new Application(store, config, {
       service: managed, now, ...(service ? { backupDir: service.backupDirectory, ledgerPath: service.ledgerPath } : {}),
       ...(nativeSnapshot ? { nativeSnapshot } : {}), ...(boxes ? { boxes } : {}), ...(connections ? { connections } : {}), ...(effects ? { effects } : {}),
+      ...(mcp ? { mcp } : {}), ...(browser ? { browser } : {}),
     });
     const ledger = ledgerGate({ store, ledgerPath: service?.ledgerPath ?? null, now: now(), mode: "boot" });
     if (!ledger.trusted) return refuse([{ gate: "quarantine", state: "blocked", nextAction: ledger.nextAction, detail: ledger.reason }]);
@@ -393,12 +415,14 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
     const booted = await app.boot();
     // Boxes left running by a previous process count for capacity and the idle sweep.
     await boxes?.reconcile().catch(() => { /* Podman unavailable: boxes are re-ensured (and re-verified) on open. */ });
+    // app.mcp_servers/v1: sidecars of the previous process held released values; none may outlive it.
+    await mcp?.pruneSidecars().catch(() => { /* Podman unavailable: the next boot prunes again. */ });
     if (service && telegramEnabled(service)) {
       // Preflight proved the token reference and transport; a failure here still fails closed.
       channels = ServiceChannels.start(store, config, input.transports!, now);
     }
     const handle: FullAppHandle = {
-      store, app, service: managed, channels, config, serviceConfig: service, boxes, effects,
+      store, app, service: managed, channels, config, serviceConfig: service, boxes, effects, browser, mcp,
       boot: { reconciled: booted.reconciled, detail: booted.detail, upgrade: booted.upgrade ? { id: booted.upgrade.id, state: booted.upgrade.state } : null,
         restore: booted.restore ? { id: booted.restore.id, state: booted.restore.state, reason: booted.restore.reason ?? null } : null },
       get queue() { return managed!.queue ?? composed.queue; },
@@ -454,6 +478,8 @@ export function serveFullApp(handle: FullAppHandle, options: { drainTimeoutMs?: 
       }
     }
     // exec.box_runtime/v1 idle stop on the same tick; one sweep at a time.
+    // exec.browser/v1: a CDP stream idle for 5 minutes closes.
+    handle.browser?.sweep(Date.now());
     if (handle.boxes && !sweeping) {
       sweeping = true;
       void handle.boxes.sweep(Date.now()).catch(() => undefined).finally(() => { sweeping = false; });
@@ -495,7 +521,8 @@ export interface DrainResult {
  * interrupted or unknown, never as stopped or sent. The next start's
  * delivery worker and queue reconciliation consume the recovery metadata.
  */
-export async function stopDrain(handle: Pick<FullAppHandle, "queue" | "store"> & { channels?: ServiceChannels | null; effects?: EffectExecutor | null }, options: { timeoutMs: number }): Promise<DrainResult> {
+export async function stopDrain(handle: Pick<FullAppHandle, "queue" | "store"> & { channels?: ServiceChannels | null; effects?: EffectExecutor | null; mcp?: McpGateway | null },
+  options: { timeoutMs: number }): Promise<DrainResult> {
   if (!options || !Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 0 || options.timeoutMs > 300000) {
     throw new Error("invalid_drain_options");
   }
@@ -505,6 +532,8 @@ export async function stopDrain(handle: Pick<FullAppHandle, "queue" | "store"> &
   // app.approval_cards/v1: no new effect is claimed and in-flight ones are aborted; they must settle (as `unknown`)
   // before the store closes, or the drain reports `unknown` and the next boot reconciles them.
   handle.effects?.close();
+  // app.mcp_servers/v1: installs run outside the queue; none starts now, and running ones get the drain deadline.
+  handle.mcp?.close();
   const deadline = Date.now() + options.timeoutMs;
   for (;;) {
     const unsettled = handle.store.read(tx => {
@@ -519,9 +548,17 @@ export async function stopDrain(handle: Pick<FullAppHandle, "queue" | "store"> &
     await Bun.sleep(5);
   }
   try { await handle.queue.idle(); } catch { /* Settlement already fenced; report honestly below. */ }
-  if (handle.effects) {
-    const settled = await Promise.race([handle.effects.idle().then(() => true), Bun.sleep(Math.max(0, deadline - Date.now())).then(() => false)]);
-    if (!settled) return { outcome: "unknown", fencedJobs: interrupted.length, unknownDeliveries: countUnknownDeliveries(handle.store), nextAction: "terminate-supervised-process-and-reconcile" };
+  const settledBy = (work: Promise<unknown>, until: number) => Promise.race([work.then(() => true), Bun.sleep(Math.max(0, until - Date.now())).then(() => false)]);
+  if (handle.effects && !await settledBy(handle.effects.idle(), deadline)) {
+    return { outcome: "unknown", fencedJobs: interrupted.length, unknownDeliveries: countUnknownDeliveries(handle.store), nextAction: "terminate-supervised-process-and-reconcile" };
+  }
+  // Installs first get the rest of the deadline; whatever still runs is then aborted (`interrupted`) and must settle
+  // within a short grace, or the drain reports `unknown` and the next boot reconciles it.
+  if (handle.mcp && !await settledBy(handle.mcp.idle(), deadline)) {
+    handle.mcp.close({ abort: true });
+    if (!await settledBy(handle.mcp.idle(), Date.now() + 2_000)) {
+      return { outcome: "unknown", fencedJobs: interrupted.length, unknownDeliveries: countUnknownDeliveries(handle.store), nextAction: "terminate-supervised-process-and-reconcile" };
+    }
   }
   return interrupted.length === 0
     ? { outcome: "stopped", fencedJobs: 0, unknownDeliveries: countUnknownDeliveries(handle.store), nextAction: "none" }

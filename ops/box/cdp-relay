@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+# jit.box.cdp-stream/v1 relay (EXE14, ADR 0039). Shipped only in the `browser` image, mode 0555.
+#
+# Jit runs this once per browser session through `podman exec -i`. It makes sure the virtual display (Xvfb :99,
+# 1280x800, with a minimal window manager) runs, starts Chromium on the project profile with
+# --remote-debugging-pipe, and bridges Chromium's pipe file descriptors (3: commands in, 4: messages out) to its own
+# stdin/stdout using the CDP pipe framing: NUL-terminated JSON messages. A message over 1 MiB in either direction ends
+# the session. No debugging port is ever opened. When stdin closes (Jit closes the stream), or Chromium exits, the
+# relay kills Chromium and exits; the profile directory persists.
+#
+# Options (for the opt-in live test only): --profile DIR, --chromium PATH, --headless (no Xvfb; headless Chromium).
+import os
+import signal
+import subprocess
+import sys
+import threading
+import time
+
+MAX_MESSAGE = 1 << 20
+DISPLAY = ":99"
+
+
+def option(name, default):
+    if name in sys.argv:
+        index = sys.argv.index(name)
+        if index + 1 < len(sys.argv):
+            return sys.argv[index + 1]
+    return default
+
+
+PROFILE = option("--profile", "/profile")
+CHROMIUM = option("--chromium", "chromium")
+HEADLESS = "--headless" in sys.argv
+
+
+def ensure_display():
+    """Starts Xvfb :99 and openbox once per box; later sessions reuse them."""
+    if HEADLESS or os.path.exists("/tmp/.X11-unix/X99"):
+        return
+    quiet = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "start_new_session": True}
+    subprocess.Popen(["Xvfb", DISPLAY, "-screen", "0", "1280x800x24", "-nolisten", "tcp"], **quiet)
+    for _ in range(100):
+        if os.path.exists("/tmp/.X11-unix/X99"):
+            break
+        time.sleep(0.05)
+    subprocess.Popen(["openbox"], env={**os.environ, "DISPLAY": DISPLAY}, **quiet)
+
+
+def main():
+    ensure_display()
+    to_chrome_read, to_chrome_write = os.pipe()
+    from_chrome_read, from_chrome_write = os.pipe()
+
+    def child():
+        # Chromium reads commands on fd 3 and writes messages on fd 4. Every other relay descriptor is close-on-exec.
+        # Duplicate first, so a pipe end that already is fd 3 or 4 still becomes an inheritable copy there.
+        commands, messages = os.dup(to_chrome_read), os.dup(from_chrome_write)
+        os.dup2(commands, 3)
+        os.dup2(messages, 4)
+
+    argv = [CHROMIUM, "--remote-debugging-pipe", "--user-data-dir=" + PROFILE, "--no-first-run", "--no-default-browser-check",
+            "--disable-dev-shm-usage", "--disable-gpu", "--window-position=0,0", "--window-size=1280,800",
+            # The execution box is the sandbox: rootless, no capabilities, no new privileges; Chromium's own setuid
+            # sandbox cannot start there.
+            "--no-sandbox", "about:blank"]
+    if HEADLESS:
+        argv.insert(1, "--headless=new")
+    env = {**os.environ, "DISPLAY": DISPLAY}
+    chrome = subprocess.Popen(argv, preexec_fn=child, close_fds=False, env=env, stdin=subprocess.DEVNULL,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    os.close(to_chrome_read)
+    os.close(from_chrome_write)
+    done = threading.Event()
+
+    def stop(*_):
+        done.set()
+
+    def pump(read_fd, write, label):
+        buffer = b""
+        while not done.is_set():
+            try:
+                chunk = os.read(read_fd, 65536)
+            except OSError:
+                break
+            if not chunk:
+                break
+            buffer += chunk
+            while True:
+                end = buffer.find(b"\0")
+                if end < 0:
+                    break
+                message, buffer = buffer[:end], buffer[end + 1:]
+                if len(message) > MAX_MESSAGE:
+                    done.set()
+                    return
+                try:
+                    write(message + b"\0")
+                except OSError:
+                    done.set()
+                    return
+            if len(buffer) > MAX_MESSAGE:
+                done.set()
+                return
+        done.set()
+
+    def to_stdout(data):
+        sys.stdout.buffer.write(data)
+        sys.stdout.buffer.flush()
+
+    def to_chrome(data):
+        view = memoryview(data)
+        while view:
+            written = os.write(to_chrome_write, view)
+            view = view[written:]
+
+    signal.signal(signal.SIGTERM, stop)
+    threading.Thread(target=pump, args=(sys.stdin.fileno(), to_chrome, "in"), daemon=True).start()
+    threading.Thread(target=pump, args=(from_chrome_read, to_stdout, "out"), daemon=True).start()
+    while not done.is_set() and chrome.poll() is None:
+        done.wait(0.2)
+    try:
+        os.killpg(chrome.pid, signal.SIGKILL)
+    except OSError:
+        pass
+    chrome.wait()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

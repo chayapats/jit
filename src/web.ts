@@ -25,7 +25,7 @@ import type { RoleProposalCommand } from "./team/role-proposals";
 import { defaultPanelTab, legacyRedirect, panelRows, panelTabs, searchLimits, settingsPageHandler, type PanelTab } from "./web-settings";
 import { searchItems, searchPage, settingsAccessPage, accessConfirmPage, settingsApprovalsPage, settingsConnectionsPage, settingsDataPage, settingsDispatchPage, settingsFeedPage, settingsTelegramPage, topicPanelPage, type PanelData } from "./web-navigation";
 import { dispatchLimits, type DispatchCommand } from "./team/jit-dispatch";
-import { effectKinds } from "./exec/approval-cards";
+import { autoApproveKinds, targetRuleKinds } from "./exec/approval-cards";
 import type { DecideCardCommand, SetAutoApproveCommand } from "./exec/approval-cards";
 import { createWebhookHandler, type WebhookHandlerOptions } from "./pr/webhook-route";
 import { webhookPathPrefix, type WebhookCommandKind } from "./pr/webhooks";
@@ -34,6 +34,9 @@ import { feedPathToken, renderScheduleFeed, type FeedCommand } from "./schedule-
 import { accessConfirmToken, accessLevels, effectiveAccess, levelRank, type AccessCommand, type AccessLevel } from "./exec/access";
 import { normalizeSecret, type ConnectionCommand } from "./exec/connections";
 import type { ResetBoxCommand } from "./exec/box-commands";
+import type { McpCommand } from "./exec/mcp";
+import type { TakeoverCommand, TakeoverInputCommand } from "./exec/takeover";
+import type { SetComputerSettingsCommand } from "./exec/computer";
 
 /** ADR 0028 Content-Security-Policy: every page, asset and API response allows only this origin, and no inline script or eval. */
 export const contentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
@@ -257,6 +260,14 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       const boxRoute = /^\/api\/projects\/([a-f0-9-]{36})\/execution\/box(\/reset)?$/.exec(pathname);
       // app.connections/v1 JSON API (EXE08): metadata reads and the Web-only owner commands; the settings page is EXE11.
       const connectionRoute = /^\/api\/connections(?:\/([a-f0-9-]{36})\/(secret|rotate|remove|test))?$/.exec(pathname);
+      // app.mcp_servers/v1 JSON API (EXE12): proposals and servers, Web-only accept/revise; the cards and settings page are EXE13.
+      // app.takeover/v1 and exec.browser/v1 JSON API (EXE14): takeover state and Web-only owner commands, and the bounded
+      // screenshot store the live view (EXE15) reads.
+      // exec.computer/v1 JSON API (EXE16): the Web-only `computer.confirmEveryAction` toggle; the settings row lands with EXE04.
+      const computerRoute = /^\/api\/projects\/([a-f0-9-]{36})\/computer$/.exec(pathname);
+      const takeoverRoute = /^\/api\/projects\/([a-f0-9-]{36})\/takeover(?:\/(start|end|click|type|key))?$/.exec(pathname);
+      const screenshotRoute = /^\/api\/projects\/([a-f0-9-]{36})\/box\/screenshots(?:\/([a-f0-9-]{36}))?$/.exec(pathname);
+      const mcpRoute = /^\/api\/projects\/([a-f0-9-]{36})\/mcp(?:\/(proposals|servers)\/([a-f0-9-]{36})\/(accept|reject|revise|remove))?$/.exec(pathname);
       /** The topic page that holds a dispatch card, at its anchor. */
       const cardLocation = (card: { projectId: string; topicId: string; anchorSequence: number; id: string }) =>
         `/projects/${card.projectId}/topics/${card.topicId}?after=${Math.max(0, card.anchorSequence - 1)}#dispatch-${card.id}`;
@@ -428,8 +439,8 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
           const confirmed = body.confirm === "on" || body.confirm === true;
           if (!confirmed) throw new AppError("invalid_body", 400);
           if (typeof body.projectId !== "string" || !/^[a-f0-9-]{36}$/.test(body.projectId)) throw new AppError("invalid_body");
-          if (typeof body.effectKind !== "string" || !(effectKinds as readonly string[]).includes(body.effectKind)) throw new AppError("invalid_body");
-          const kind = body.effectKind as (typeof effectKinds)[number];
+          if (typeof body.effectKind !== "string" || !(targetRuleKinds as readonly string[]).includes(body.effectKind)) throw new AppError("invalid_body");
+          const kind = body.effectKind as (typeof targetRuleKinds)[number];
           const text = (value: unknown) => typeof value === "string" ? value.trim() : "";
           const scope = kind === "effect.git_push"
             ? { remote: text(body.remote), branches: text(body.branches).split(",").map(s => s.trim()).filter(Boolean) }
@@ -449,12 +460,12 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "projectId", "effectKind"].includes(key))) throw new AppError("invalid_body");
         projectId ??= typeof body.projectId === "string" ? body.projectId : undefined;
         effectKind ??= typeof body.effectKind === "string" ? body.effectKind : undefined;
-        if (!projectId || !/^[a-f0-9-]{36}$/.test(projectId) || !effectKind || !(effectKinds as readonly string[]).includes(effectKind)) throw new AppError("invalid_body");
+        if (!projectId || !/^[a-f0-9-]{36}$/.test(projectId) || !effectKind || !(autoApproveKinds as readonly string[]).includes(effectKind)) throw new AppError("invalid_body");
         const current = app.effectSettings(auth.actor, projectId).rules.find(rule => rule.effectKind === effectKind);
         if (!current) throw new AppError("effect_target_not_found", 404);
         const revision = typeof body.expectedRevision === "string" && /^\d{1,15}$/.test(body.expectedRevision) ? Number(body.expectedRevision) : body.expectedRevision;
         const command = { kind: "approval.rule.set", requestId: body.requestId, projectId, expectedRevision: revision,
-          payload: { effectKind: effectKind as (typeof effectKinds)[number], scope: current.scope, enabled: false } } as SetAutoApproveCommand;
+          payload: { effectKind: effectKind as (typeof autoApproveKinds)[number], scope: current.scope, enabled: false } } as SetAutoApproveCommand;
         const receipt = app.execute(auth.actor, command);
         return api ? json(receipt) : respond(null, 303, { Location: "/settings/approvals" });
       }
@@ -484,6 +495,58 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
           payload: action ? { connectionId, ...picked } : picked } as ConnectionCommand;
         return json(app.execute(auth.actor, command));
       }
+      if (computerRoute) {
+        const projectId = computerRoute[1]!;
+        if (request.method === "GET") return json({ computer: app.computerSettings(auth.actor, projectId) });
+        if (request.method !== "POST") throw new AppError("method_not_allowed", 405);
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "confirmEveryAction"].includes(key))) throw new AppError("invalid_body");
+        const command = { kind: "computer.settings.set", requestId: body.requestId, projectId, expectedRevision: body.expectedRevision,
+          payload: Object.hasOwn(body, "confirmEveryAction") ? { confirmEveryAction: body.confirmEveryAction } : {} } as SetComputerSettingsCommand;
+        return json(app.execute(auth.actor, command));
+      }
+      if (takeoverRoute) {
+        const projectId = takeoverRoute[1]!, action = takeoverRoute[2];
+        if (!action) {
+          if (request.method !== "GET") throw new AppError("method_not_allowed", 405);
+          return json({ takeover: app.takeover(auth.actor, projectId) });
+        }
+        if (request.method !== "POST") throw new AppError("method_not_allowed", 405);
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        const fields = action === "start" ? [] : action === "end" ? ["takeoverId"] : action === "click" ? ["takeoverId", "x", "y"] : action === "type" ? ["takeoverId", "text"] : ["takeoverId", "key"];
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", ...fields].includes(key))) throw new AppError("invalid_body");
+        const picked = Object.fromEntries(fields.filter(key => Object.hasOwn(body, key)).map(key => [key, body[key]]));
+        const command = { kind: `takeover.${action}`, requestId: body.requestId, projectId, expectedRevision: body.expectedRevision, payload: picked } as TakeoverCommand | TakeoverInputCommand;
+        return json(await app.execute(auth.actor, command as TakeoverInputCommand));
+      }
+      if (screenshotRoute) {
+        const projectId = screenshotRoute[1]!, screenshotId = screenshotRoute[2];
+        if (screenshotId) {
+          if (request.method !== "GET") throw new AppError("method_not_allowed", 405);
+          const shot = app.boxScreenshot(auth.actor, projectId, screenshotId);
+          return respond(new Blob([Buffer.from(shot.data)]), 200, { "Content-Type": "image/png", "Cache-Control": "no-store" });
+        }
+        if (request.method === "GET") return json({ screenshots: app.boxScreenshots(auth.actor, projectId) });
+        if (request.method !== "POST") throw new AppError("method_not_allowed", 405);
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        if (Object.keys(body).some(key => key !== "csrf")) throw new AppError("invalid_body");
+        return json({ screenshot: await app.captureBoxScreen(auth.actor, projectId) });
+      }
+      if (mcpRoute) {
+        const projectId = mcpRoute[1]!, target = mcpRoute[2], id = mcpRoute[3], action = mcpRoute[4];
+        if (!target) {
+          if (request.method !== "GET") throw new AppError("method_not_allowed", 405);
+          return json({ proposals: app.mcpProposals(auth.actor, projectId), servers: app.mcpServers(auth.actor, projectId) });
+        }
+        if (request.method !== "POST" || (target === "servers") !== (action === "remove")) throw new AppError("method_not_allowed", 405);
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        const fields = action === "accept" ? ["env"] : action === "revise" ? ["spec"] : [];
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", ...fields].includes(key))) throw new AppError("invalid_body");
+        const picked = Object.fromEntries(fields.filter(key => Object.hasOwn(body, key)).map(key => [key, body[key]]));
+        const command = { kind: action === "remove" ? "mcp.server.remove" : `mcp.install.${action}`, requestId: body.requestId, projectId, expectedRevision: body.expectedRevision,
+          payload: action === "remove" ? { serverId: id } : { proposalId: id, ...picked } } as McpCommand;
+        return json(app.execute(auth.actor, command));
+      }
       if (boxRoute) {
         const projectId = boxRoute[1]!;
         if (!boxRoute[2]) {
@@ -502,7 +565,8 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         if (request.method === "GET") {
           if (target !== "access") throw new AppError("method_not_allowed", 405);
           const access = app.projectAccess(auth.actor, projectId);
-          return json({ access, roles: app.roleAccess(auth.actor, projectId), effective: effectiveAccess(access, null) });
+          // exec.computer/v1: the access settings carry the project's computer-use row.
+          return json({ access, roles: app.roleAccess(auth.actor, projectId), effective: effectiveAccess(access, null), computer: app.computerSettings(auth.actor, projectId) });
         }
         const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
         const fields = target === "access" ? ["level", "confirmToken"] : target === "access/roles" ? ["roleId", "level"] : target === "execution/halt" ? ["reason"] : [];
@@ -526,7 +590,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       }
       // web.access_settings/v1 (EXE04): execution levels, role limits and the kill switch. Narrowing posts
       // straight to the project; widening goes through the confirmation page; halt and resume fence execution.
-      const accessPageRoute = /^\/settings\/access\/([a-f0-9-]{36})\/(confirm|roles|halt|resume)$/.exec(url.pathname);
+      const accessPageRoute = /^\/settings\/access\/([a-f0-9-]{36})\/(confirm|roles|halt|resume|computer)$/.exec(url.pathname);
       const accessProjectRoute = /^\/settings\/access\/([a-f0-9-]{36})$/.exec(url.pathname);
       /** Maps an EXE01 command refusal to its owner-facing Settings sentence. */
       const accessError = (error: unknown): string | null => error instanceof AppError ? ({
@@ -534,6 +598,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         access_confirm_required: "access.error_confirm_required",
         access_full_not_allowed: "access.error_full_not_allowed",
         access_role_above_project: "access.error_role_above_project",
+        computer_setting_requires_web: "error.computer_setting_requires_web",
       } as Record<string, string>)[error.code] ?? null : null;
       if (url.pathname === "/settings/access" && request.method === "GET") {
         const raw = url.searchParams.get("offset") ?? "0";
@@ -548,7 +613,8 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const access = new Map(rows.map(({ project }) => [project.id, app.projectAccess(auth.actor, project.id)] as const));
         const roles = new Map(rows.map(({ project }) => [project.id, app.roleAccess(auth.actor, project.id)] as const));
         const list = { projects: rows, hasMore: only.length ? false : paged.hasMore, single: only.length > 0 };
-        return page(() => settingsAccessPage(nav(paged), list, access, roles, auth.csrf, offset, config.pageSize));
+        const computer = new Map(rows.map(({ project }) => [project.id, app.computerSettings(auth.actor, project.id)] as const));
+        return page(() => settingsAccessPage(nav(paged), list, access, roles, auth.csrf, offset, config.pageSize, computer));
       }
       if (request.method === "GET" && accessPageRoute && accessPageRoute[2] === "confirm") {
         const projectId = accessPageRoute[1]!;
@@ -568,8 +634,11 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
         const number = (value: unknown) => typeof value === "string" && /^\d{1,15}$/.test(value) ? Number(value) : value;
         const allowed = ["csrf", "requestId", "expectedRevision",
-          ...(verb === "level" ? ["level", "confirmToken"] : verb === "roles" ? ["roleId", "level"] : [])];
+          ...(verb === "level" ? ["level", "confirmToken"] : verb === "roles" ? ["roleId", "level"] : verb === "computer" ? ["confirmEveryAction"] : [])];
         if (Object.keys(body).some(key => !allowed.includes(key))) throw new AppError("invalid_body");
+        // exec.computer/v1: an unticked checkbox is absent from the post and means off; only "on" turns it on.
+        const settingCommand = verb === "computer" ? { kind: "computer.settings.set", requestId: body.requestId, projectId, expectedRevision: number(body.expectedRevision),
+          payload: { confirmEveryAction: body.confirmEveryAction === undefined ? false : body.confirmEveryAction === "on" ? true : body.confirmEveryAction } } as SetComputerSettingsCommand : null;
         const kind = verb === "level" ? "access.level.set" : verb === "roles" ? "access.role.restrict"
           : verb === "halt" ? "execution.halt" : "execution.resume";
         // The role form posts `inherit` for a cleared override; only sent fields enter the command payload.
@@ -579,7 +648,8 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const command = { requestId: body.requestId, projectId, expectedRevision: number(body.expectedRevision),
           kind, payload: verb === "halt" || verb === "resume" ? {} : picked } as AccessCommand;
         try {
-          app.execute(auth.actor, command);
+          if (settingCommand) app.execute(auth.actor, settingCommand);
+          else app.execute(auth.actor, command);
         } catch (error) {
           const key = accessError(error);
           if (!key) throw error;

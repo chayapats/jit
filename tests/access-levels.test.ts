@@ -156,7 +156,9 @@ test("a new project reads read, revision 0, not halted; read, the JSON API and t
   expect(f.app.projectAccess(f.telegramActor, f.project.id).level).toBe("read");
   const response = await getJson(f, `/api/projects/${f.project.id}/access`);
   expect(response.status).toBe(200);
-  expect(await response.json()).toEqual({ access: access(f), roles: [], effective: { level: "read", halted: false, projectLevel: "read", roleLevel: null } });
+  // exec.computer/v1 (EXE16): the access settings carry the project's computer-use row, on by default.
+  expect(await response.json()).toEqual({ access: access(f), roles: [], effective: { level: "read", halted: false, projectLevel: "read", roleLevel: null },
+    computer: { projectId: f.project.id, revision: 0, confirmEveryAction: true, updatedAt: null } });
   // Read never admits execution: the guard every later execution ticket calls says so with the levels.
   const insufficient = rejects(() => f.store.read(tx => assertExecutionAllowed(tx, f.project.id, null, "workspace")), "access_level_insufficient", 409);
   expect(insufficient.detail).toEqual({ effective: "read", needed: "workspace" });

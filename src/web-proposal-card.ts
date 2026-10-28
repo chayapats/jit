@@ -26,6 +26,17 @@ export function summarizeApprovalAction(action: EffectAction): string[] {
       return [`${action.github.owner}/${action.github.repo} #${action.pullNumber}`, action.headSha.slice(0, 8), action.method];
     case "effect.deploy":
       return [`${action.target.name} (${action.target.url})`, action.ref ?? "-"];
+    // app.mcp_servers/v1 (EXE12): the server, tool and exact arguments the owner approves.
+    case "mcp_tool":
+      return [`${action.server.name} · ${action.tool}`, JSON.stringify(action.arguments).slice(0, 2000)];
+    // exec.browser/v1 (EXE14): the page, the element and the form's field names; a password value never appears.
+    case "browser_confirm":
+      return [action.url, `${action.operation} · ${action.element.name || action.element.tag}`, ...(action.formFields.length ? [action.formFields.join(", ")] : []),
+        ...(action.operation === "type" ? [action.text ?? "••••••"] : [])];
+    // exec.computer/v1 (EXE16): the exact desktop input, the model's declared intent and Jit's reasons.
+    case "computer_confirm":
+      return [action.operation === "click" ? `click ${action.x}, ${action.y}` : action.operation === "key" ? `key ${action.keys!.join(" ")}` : `type ${action.text!}`,
+        `${action.intent} · ${action.reasons.join(", ")}`];
   }
 }
 

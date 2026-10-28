@@ -16,7 +16,7 @@ import { scriptedPreviewWork } from "./team/preview";
 import type { ApplicationRunPort } from "./team/run-port";
 import { ScriptedRunPort } from "./team/scripted-port";
 import { SchwayRunPort, assertSchwayGate, type SchwayPortOptions } from "./team/schway-port";
-import type { RunBoxes, RunExecution } from "./exec/run-tools";
+import type { RunBoxes, RunBrowserTools, RunComputerTools, RunExecution, RunMcpTools } from "./exec/run-tools";
 import type { EffectRunner } from "./exec/effect-tools";
 
 export interface ComposeOptions {
@@ -35,6 +35,12 @@ export interface ComposeOptions {
   boxes?: NonNullable<SchedulerOptions["boxes"]> & Partial<RunBoxes>;
   /** app.effect_tools/v1 (EXE07): the effect executor; with boxes, a `full` run then also admits the effect tools. */
   effects?: EffectRunner;
+  /** app.mcp_servers/v1 (EXE12): the MCP gateway; with boxes, a `workspace` or `full` run also admits installed MCP tools. */
+  mcp?: RunMcpTools;
+  /** exec.browser/v1 (EXE14): browser tools for runs whose box is the browser image. */
+  browser?: RunBrowserTools;
+  /** exec.computer/v1 (EXE16): computer tools for `full` runs in the browser image. */
+  computer?: RunComputerTools;
 }
 
 /** The composed queue plus the team port the caller reconciles against. */
@@ -59,7 +65,9 @@ export function composeJobQueue(store: TransactionStore, config: AppConfig, opti
   if (config.runPort === "schway") assertSchwayGate(store.path);
   // exec.run_tools/v1: only the team port (Jit replies, specialists) may execute, and only when boxes can be opened.
   const boxes = options.boxes;
-  const execution: RunExecution | undefined = boxes?.open ? { boxes: { open: (projectId, roleId) => boxes.open!(projectId, roleId) }, ...(options.now ? { now: options.now } : {}), ...(options.effects ? { effects: options.effects } : {}) } : undefined;
+  const execution: RunExecution | undefined = boxes?.open ? { boxes: { open: (projectId, roleId) => boxes.open!(projectId, roleId) }, ...(options.now ? { now: options.now } : {}), ...(options.effects ? { effects: options.effects } : {}),
+    ...(options.mcp ? { mcp: options.mcp } : {}), ...(options.browser ? { browser: options.browser } : {}),
+    ...(options.computer ? { computer: options.computer } : {}) } : undefined;
   const teamPort: ApplicationRunPort = config.runPort === "schway"
     ? new SchwayRunPort(store, config.team, config.jobs.outputBytes, { ...options.schwayOptions, ...(execution ? { execution } : {}) })
     : new ScriptedRunPort(store, config.team, config.jobs.outputBytes, undefined, undefined, undefined, execution ? { execution } : {});

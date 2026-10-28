@@ -8,7 +8,10 @@ import type { ApprovalCard, AutoApproveScope, EffectKind } from "../../src/exec/
 import { BoxManager } from "../../src/exec/box-manager";
 import { ConnectionVault } from "../../src/exec/connections";
 import { EffectExecutor, type EffectExecutorOptions } from "../../src/exec/effect-executor";
-import { FakeBoxRuntime, type FakeBoxExec } from "../../src/exec/fake-box-runtime";
+import { FakeBoxRuntime, type FakeBoxExec, type FakeBoxStream } from "../../src/exec/fake-box-runtime";
+import { McpGateway } from "../../src/exec/mcp-gateway";
+import { BrowserService } from "../../src/exec/browser";
+import { ComputerService } from "../../src/exec/computer";
 import { JobQueue } from "../../src/jobs/queue";
 import { TransactionStore } from "../../src/store";
 import { discussionPlanWork, specialistAnalysisWork } from "../../src/team/dispatch";
@@ -35,7 +38,18 @@ export interface EffectFixtureOptions {
   script?: RunScript; fetch?: FetchReply; executor?: Partial<EffectExecutorOptions>; effects?: boolean;
   /** Wraps the box's runner handler (for gating one request). */
   exec?: (local: FakeBoxExec) => FakeBoxExec;
+  /** Long-lived pipes of the fake box and its sidecars (MCP servers, the CDP relay). */
+  stream?: FakeBoxStream;
+  /** app.mcp_servers/v1: wires an MCP gateway into the runs, the executor and the application. */
+  mcp?: boolean;
+  /** exec.browser/v1: boxes open with the profile (the browser image) and a browser service is wired in. */
+  browser?: boolean;
+  /** Idle close of browser sessions (default 5 minutes). */
+  browserIdleMs?: number;
 }
+
+/** The pinned image MCP sidecars use in fixtures. */
+export const fixtureBoxImage = `localhost/jit-box@sha256:${"b".repeat(64)}`;
 
 /**
  * An installation for EXE07: a `full`-capable project whose box is a local directory running the real runner, an
@@ -52,13 +66,18 @@ export async function effectFixture(options: EffectFixtureOptions = {}) {
   const store = new TransactionStore(config.databasePath);
   const clock = { now: epoch };
   const now = () => clock.now;
-  const runtime = new FakeBoxRuntime({ exec: options.exec ? options.exec(localExec(box)) : localExec(box), workspaceRoot: box.root, temporaryDirectory: box.tmp });
-  const boxes = new BoxManager(store, config, runtime, { now });
+  const runtime = new FakeBoxRuntime({ exec: options.exec ? options.exec(localExec(box)) : localExec(box), workspaceRoot: box.root, temporaryDirectory: box.tmp,
+    executionDirectory: execution, ...(options.stream ? { stream: options.stream } : {}) });
+  const boxes = new BoxManager(store, config, runtime, { now, ...(options.browser ? { profile: true } : {}) });
   const vault = new ConnectionVault(secrets, { forbidden: [state, backups, execution] });
+  const browser = options.browser ? new BrowserService(store, { boxes, runtime, now, commandMs: 1_000, ...(options.browserIdleMs ? { idleMs: options.browserIdleMs } : {}) }) : null;
+  if (browser) boxes.onStopped(projectId => browser.close(projectId));
+  const computer = browser ? new ComputerService(store, browser, { now }) : null;
+  const mcp = options.mcp ? new McpGateway(store, { boxes, runtime, vault, sidecarImage: fixtureBoxImage, executionDirectory: execution, now, requestMs: 1_000, callMs: 5_000, installMs: 5_000 }) : null;
   const fetches: FetchCall[] = [];
   const reply: FetchReply = options.fetch ?? (() => new Response(JSON.stringify({}), { status: 200 }));
   const executor = new EffectExecutor(store, {
-    vault, boxes, mirrorRoot: execution, now, tempRoot: root,
+    vault, boxes, mirrorRoot: execution, now, tempRoot: root, performers: { ...(mcp ? { mcp_tool: mcp.perform } : {}), ...(browser ? { browser_confirm: browser.perform } : {}), ...(computer ? { computer_confirm: computer.perform } : {}) },
     fetch: async (url, init) => {
       const headers = Object.fromEntries(Object.entries(init.headers as Record<string, string>));
       const call = { url, method: String(init.method), headers, body: init.body ? JSON.parse(String(init.body)) : null };
@@ -70,13 +89,14 @@ export async function effectFixture(options: EffectFixtureOptions = {}) {
   const script: RunScript = options.script ?? ((request, _s, _o, tools) => answer(request, JSON.stringify({ reply: tools.names.join(",") })));
   const seen: ApplicationRunRequest[] = [];
   const port = new ScriptedRunPort(store, config.team, config.jobs.outputBytes, (request, signal, observe, tools) => { seen.push(request); return script(request, signal, observe, tools); },
-    undefined, undefined, { execution: { boxes, now, ...(options.effects === false ? {} : { effects: executor }) } });
+    undefined, undefined, { execution: { boxes, now, ...(options.effects === false ? {} : { effects: executor }), ...(mcp ? { mcp } : {}), ...(browser ? { browser } : {}), ...(computer ? { computer } : {}) } });
   let queueRef: JobQueue | undefined;
   const current = () => queueRef;
   const queue = new JobQueue(store, config.jobs, [discussionPlanWork(), specialistAnalysisWork(store, config, port, now, current), jitReplyWork(store, config, port, now, current)],
     { now, timers: { set: () => 0, clear: () => {} }, boxes });
   queueRef = queue;
-  const app = new Application(store, config, { now, jobs: queue, boxes, connections: vault, backupDir: backups, ...(options.effects === false ? {} : { effects: executor }) });
+  const app = new Application(store, config, { now, jobs: queue, boxes, connections: vault, backupDir: backups, ...(options.effects === false ? {} : { effects: executor }),
+    ...(mcp ? { mcp } : {}), ...(browser ? { browser } : {}) });
   const password = "fixture-exe07-owner-password";
   await app.setupOwner(password); const token = await app.login(password), auth = app.authenticate(token);
   const telegram = app.issueAdapterActor(token, "telegram");
@@ -84,8 +104,8 @@ export async function effectFixture(options: EffectFixtureOptions = {}) {
   const topic = app.execute(auth.actor, { kind: "topic.create", projectId: project.id, requestId: rid(), expectedRevision: project.revision, payload: { title: "ส่งงาน" } }).topic;
   const jitId = app.execute(auth.actor, { kind: "role.save", projectId: null, requestId: rid(), expectedRevision: app.team(auth.actor).ownerRevision,
     payload: { roleId: null, name: "จิต", kind: "coordinator", responsibility: "ตอบเจ้าของและส่งงาน", enabled: true, route: grok } }).role!.id;
-  const close = async () => { queue.close(); await queue.idle(); await executor.idle(); store.close(); };
-  return { root, box, state, execution, secrets, config, store, clock, runtime, boxes, vault, executor, fetches, port, queue, app, auth, telegram, project, topic, jitId, seen, close, token };
+  const close = async () => { queue.close(); await queue.idle(); await executor.idle(); await mcp?.idle(); store.close(); };
+  return { root, box, state, execution, secrets, config, store, clock, runtime, boxes, vault, executor, mcp, browser, computer, fetches, port, queue, app, auth, telegram, project, topic, jitId, seen, close, token };
 }
 export type EffectFixture = Awaited<ReturnType<typeof effectFixture>>;
 
@@ -97,7 +117,7 @@ export function setLevel(f: EffectFixture, level: AccessLevel) {
 }
 
 /** A Web-created connection of `kind` holding `secret`; returns its id. */
-export function connection(f: EffectFixture, kind: "github_token" | "deploy_secret", secret: string): string {
+export function connection(f: EffectFixture, kind: "github_token" | "deploy_secret" | "mcp_env", secret: string): string {
   const created = f.app.execute(f.auth.actor, { kind: "connection.create", requestId: rid(), projectId: null, expectedRevision: 0, payload: { kind, label: `fixture ${kind}`, projectScope: null } }).connection;
   f.app.execute(f.auth.actor, { kind: "connection.set_secret", requestId: rid(), projectId: null, expectedRevision: created.revision, payload: { connectionId: created.id, secret } });
   return created.id;
@@ -130,7 +150,7 @@ export function send(f: EffectFixture, text: string) {
   const topic = f.app.conversation(f.auth.actor, f.project.id, f.topic.id).topic;
   return f.app.execute(f.auth.actor, { kind: "message.send", projectId: f.project.id, requestId: rid(), expectedRevision: topic.revision, payload: { topicId: f.topic.id, text } });
 }
-export async function settle(f: EffectFixture) { f.queue.pump(); await f.queue.idle(); await f.executor.idle(); }
+export async function settle(f: EffectFixture) { f.queue.pump(); await f.queue.idle(); await f.executor.idle(); await f.mcp?.idle(); }
 export const texts = (f: EffectFixture) => f.app.conversation(f.auth.actor, f.project.id, f.topic.id).items.map(item => (item as { text?: string }).text ?? "");
 export const cards = (f: EffectFixture) => f.app.approvalCards(f.auth.actor, f.project.id);
 

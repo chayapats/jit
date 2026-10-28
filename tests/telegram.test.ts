@@ -311,7 +311,7 @@ test("schema v6 migrates from published v5 without fabricating telegram history 
   `);
   old.close();
   const store = new TransactionStore(path); stores.push(store);
-  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 37 });
+  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 40 });
   expect(store.read(tx => tx.get("SELECT state FROM telegram_binding WHERE id = 1"))).toEqual({ state: "unbound" });
   expect(store.read(tx => tx.get("SELECT next_offset FROM telegram_poll WHERE id = 1"))).toEqual({ next_offset: 0 });
   expect(store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM telegram_inbox")!.n)).toBe(0);

@@ -39,5 +39,13 @@ export function approvalDetailParts(card: ApprovalCard): { pinned: string[]; fle
       };
     case "effect.deploy":
       return { pinned: [action.target.name, action.ref ?? "-"], flexible: [] };
+    case "mcp_tool":
+      return { pinned: [`${action.server.name} · ${action.tool}`], flexible: [JSON.stringify(action.arguments)] };
+    case "browser_confirm":
+      return { pinned: [action.url, `${action.operation} · ${action.element.name || action.element.tag}`, ...(action.operation === "type" ? [action.text ?? "••••••"] : [])],
+        flexible: action.formFields.length ? [action.formFields.join(", ")] : [] };
+    case "computer_confirm":
+      return { pinned: [action.operation === "click" ? `click ${action.x}, ${action.y}` : action.operation === "key" ? `key ${action.keys!.join(" ")}` : `type ${action.text!}`,
+        `${action.intent} · ${action.reasons.join(", ")}`], flexible: [] };
   }
 }

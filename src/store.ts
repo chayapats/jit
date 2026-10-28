@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { commitDecisionMemorySource, retireDecisionMemorySource } from "./memory/decision-sources";
 
 /** Current application schema revision. Service packaging pins and checks this value. */
-export const schemaVersion = 37;
+export const schemaVersion = 40;
 
 /**
  * Installation-scoped state that never round-trips through backup images and
@@ -17,6 +17,59 @@ export const schemaVersion = 37;
  * so a restore can never revive a rotated or turned-off feed URL.
  */
 export const installationScopedTables = Object.freeze(["owner", "sessions", "login_throttle", "ops_backups", "lifecycle_ledger", "lifecycle_checkpoint", "schedule_feed"] as const);
+
+/**
+ * Rebuilds `approval_cards` and `auto_approve_rules` with new kind CHECK lists, keeping every row (SQLite cannot alter
+ * a CHECK). Used by the S11 migrations that add card kinds (schema 38 onward). The rows are copied out to a temporary
+ * table and the table is recreated under its own name: no `ALTER TABLE … RENAME`, whose schema re-check (SQLite
+ * without legacy alter-table behaviour) fails on databases whose other triggers reference tables of older shapes.
+ */
+function rebuildCardKinds(cardKinds: readonly string[], ruleKinds: readonly string[]): string {
+  const list = (kinds: readonly string[]) => kinds.map(kind => `'${kind}'`).join(", ");
+  const cardColumns = "id, project_id, topic_id, run_id, job_id, role_id, kind, action_json, digest, revision, state, reason, decision_json, receipt_json, telegram_eligible, created_at, expires_at, updated_at, started_at";
+  const ruleColumns = "project_id, effect_kind, scope_json, revision, enabled, channel, created_at";
+  return `
+    CREATE TEMP TABLE approval_cards_copy AS SELECT ${cardColumns} FROM approval_cards;
+    DROP TABLE approval_cards;
+    CREATE TABLE approval_cards (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      topic_id TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      job_id TEXT NOT NULL,
+      role_id TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN (${list(cardKinds)})),
+      action_json TEXT NOT NULL,
+      digest TEXT NOT NULL CHECK (length(digest) = 64),
+      revision INTEGER NOT NULL CHECK (revision > 0),
+      state TEXT NOT NULL CHECK (state IN ('pending', 'approved', 'denied', 'expired', 'executing', 'succeeded', 'failed', 'unknown')),
+      reason TEXT,
+      decision_json TEXT,
+      receipt_json TEXT,
+      telegram_eligible INTEGER NOT NULL CHECK (telegram_eligible IN (0, 1)),
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      started_at INTEGER
+    );
+    INSERT INTO approval_cards (${cardColumns}) SELECT ${cardColumns} FROM temp.approval_cards_copy;
+    DROP TABLE temp.approval_cards_copy;
+    CREATE INDEX IF NOT EXISTS approval_cards_project ON approval_cards (project_id, created_at);
+    CREATE TEMP TABLE auto_approve_rules_copy AS SELECT ${ruleColumns} FROM auto_approve_rules;
+    DROP TABLE auto_approve_rules;
+    CREATE TABLE auto_approve_rules (
+      project_id TEXT NOT NULL,
+      effect_kind TEXT NOT NULL CHECK (effect_kind IN (${list(ruleKinds)})),
+      scope_json TEXT NOT NULL,
+      revision INTEGER NOT NULL CHECK (revision > 0),
+      enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+      channel TEXT NOT NULL CHECK (channel = 'web'),
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (project_id, effect_kind, revision)
+    );
+    INSERT INTO auto_approve_rules (${ruleColumns}) SELECT ${ruleColumns} FROM temp.auto_approve_rules_copy;
+    DROP TABLE temp.auto_approve_rules_copy;`;
+}
 
 /** Synchronous SQL operations scoped to an application transaction. */
 export interface AppTransaction {
@@ -69,12 +122,14 @@ export class TransactionStore {
       this.#db.exec("PRAGMA busy_timeout = 2000; PRAGMA foreign_keys = ON;");
       if (version < schemaVersion && (options.migrateExisting !== false || !existing)) {
         // SQLite table rebuilds must not delete referenced parents with enforcement enabled.
-        this.#db.exec("PRAGMA foreign_keys = OFF;");
+        // Modern ALTER TABLE semantics everywhere: Apple's SQLite build defaults to the legacy behaviour, Linux (CI, the
+        // Pi) does not, so migrations are always checked the way production runs them.
+        this.#db.exec("PRAGMA foreign_keys = OFF; PRAGMA legacy_alter_table = OFF;");
         this.#db.transaction(() => {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
           if (current === schemaVersion) return;
-          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36].includes(current)) throw new Error("Unsupported migration source");
+          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39].includes(current)) throw new Error("Unsupported migration source");
           if (existing) {
             const snapshot = `${path}.pre-v${current}-${crypto.randomUUID()}.sqlite`;
             const fd = openSync(snapshot, "wx", 0o600);
@@ -1111,6 +1166,81 @@ export class TransactionStore {
               PRIMARY KEY (project_id, name, revision)
             );
             PRAGMA user_version = 37;
+          `);
+          // app.mcp_servers/v1 (EXE12, ADR 0038, schema 38): MCP install proposals and installed servers, and the
+          // `mcp_tool` card and auto-approve kind. Earlier tables keep their rows; the CHECK lists are rebuilt.
+          if (current < 38) this.#db.exec(`
+            ${rebuildCardKinds(["effect.git_push", "effect.github_pr_create", "effect.github_comment", "effect.github_pr_merge", "effect.deploy", "mcp_tool"],
+              ["effect.git_push", "effect.github_pr_create", "effect.github_comment", "effect.github_pr_merge", "effect.deploy", "mcp_tool"])}
+            -- Append-only revisions of one proposal; the highest revision is current. spec_json is the validated
+            -- install spec (names of env variables only, never a value); dropped_json lists what was refused.
+            CREATE TABLE IF NOT EXISTS mcp_proposals (
+              project_id TEXT NOT NULL,
+              id TEXT NOT NULL,
+              revision INTEGER NOT NULL CHECK (revision > 0),
+              author TEXT NOT NULL CHECK (author IN ('jit', 'owner')),
+              state TEXT NOT NULL CHECK (state IN ('proposed', 'accepted', 'rejected', 'superseded', 'dropped')),
+              reason TEXT,
+              spec_json TEXT,
+              dropped_json TEXT NOT NULL,
+              topic_id TEXT NOT NULL,
+              reply_id TEXT NOT NULL,
+              server_id TEXT,
+              created_at INTEGER NOT NULL,
+              decided_at INTEGER,
+              PRIMARY KEY (id, revision)
+            );
+            CREATE INDEX IF NOT EXISTS mcp_proposals_project ON mcp_proposals (project_id, created_at);
+            -- One row per installed server revision. env_json binds env names to connection ids (never values);
+            -- tools_json is the latest listing (names, hints and schemas the server reported, bounded).
+            CREATE TABLE IF NOT EXISTS mcp_servers (
+              project_id TEXT NOT NULL,
+              id TEXT NOT NULL,
+              revision INTEGER NOT NULL CHECK (revision > 0),
+              name TEXT NOT NULL,
+              spec_json TEXT NOT NULL,
+              env_json TEXT NOT NULL,
+              state TEXT NOT NULL CHECK (state IN ('installing', 'installed', 'failed', 'removed')),
+              reason TEXT,
+              tools_json TEXT NOT NULL,
+              proposal_id TEXT NOT NULL,
+              created_at INTEGER NOT NULL,
+              updated_at INTEGER NOT NULL,
+              PRIMARY KEY (id, revision)
+            );
+            CREATE INDEX IF NOT EXISTS mcp_servers_project ON mcp_servers (project_id, name);
+            PRAGMA user_version = 38;
+          `);
+          // exec.browser/v1 and app.takeover/v1 (EXE14, ADR 0039, schema 39): the `browser_confirm` card kind (never
+          // auto-approved) and append-only owner takeover revisions; the latest revision of a project is its state.
+          if (current < 39) this.#db.exec(`
+            ${rebuildCardKinds(["effect.git_push", "effect.github_pr_create", "effect.github_comment", "effect.github_pr_merge", "effect.deploy", "mcp_tool", "browser_confirm"],
+              ["effect.git_push", "effect.github_pr_create", "effect.github_comment", "effect.github_pr_merge", "effect.deploy", "mcp_tool"])}
+            CREATE TABLE IF NOT EXISTS takeover_sessions (
+              project_id TEXT NOT NULL,
+              revision INTEGER NOT NULL CHECK (revision > 0),
+              takeover_id TEXT NOT NULL,
+              state TEXT NOT NULL CHECK (state IN ('active', 'ended')),
+              channel TEXT NOT NULL CHECK (channel = 'web'),
+              created_at INTEGER NOT NULL,
+              PRIMARY KEY (project_id, revision)
+            );
+            PRAGMA user_version = 39;
+          `);
+          // exec.computer/v1 (EXE16, ADR 0039, schema 40): the `computer_confirm` card kind (never auto-approved) and the
+          // Web-only project setting `computer.confirmEveryAction`; no row means the default, on.
+          if (current < 40) this.#db.exec(`
+            ${rebuildCardKinds(["effect.git_push", "effect.github_pr_create", "effect.github_comment", "effect.github_pr_merge", "effect.deploy", "mcp_tool", "browser_confirm",
+              "computer_confirm"], ["effect.git_push", "effect.github_pr_create", "effect.github_comment", "effect.github_pr_merge", "effect.deploy", "mcp_tool"])}
+            CREATE TABLE IF NOT EXISTS computer_settings (
+              project_id TEXT NOT NULL,
+              revision INTEGER NOT NULL CHECK (revision > 0),
+              confirm_every_action INTEGER NOT NULL CHECK (confirm_every_action IN (0, 1)),
+              channel TEXT NOT NULL CHECK (channel = 'web'),
+              created_at INTEGER NOT NULL,
+              PRIMARY KEY (project_id, revision)
+            );
+            PRAGMA user_version = 40;
           `);
         }).immediate();
         this.#db.exec("PRAGMA foreign_keys = ON;");
