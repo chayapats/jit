@@ -32,6 +32,104 @@ export interface OpsPolicy {
   drillDeadlineMs: number;
 }
 
+/**
+ * Operator execution-box settings (`ops.execution_config/v1`).
+ * `directory`/`secretsDirectory`/`images` are null when no execution
+ * variable is set, so callers can tell that execution is not configured.
+ * Numeric fields always carry defaults.
+ */
+export interface ExecutionConfig {
+  directory: string | null;
+  secretsDirectory: string | null;
+  images: { base: string; browser?: string } | null;
+  maxBoxes: number;
+  memoryMb: number;
+  cpus: number;
+  pidsLimit: number;
+  idleMinutes: number;
+  registryHosts: string[];
+  fullAllowed: boolean;
+}
+
+/** Default registry egress allowlist for `workspace` boxes (ADR 0036). */
+const defaultExecutionRegistryHosts = ["registry.npmjs.org", "pypi.org", "files.pythonhosted.org", "proxy.golang.org", "crates.io"];
+
+const executionImagePattern = /^[a-z0-9][a-z0-9._/-]{0,127}@sha256:[a-f0-9]{64}$/;
+const executionRegistryPattern = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
+const executionPathPattern = /^\/[A-Za-z0-9._@+\/-]{0,4095}$/;
+
+function parseExecutionConfig(env: Record<string, string | undefined>): ExecutionConfig {
+  const intIn = (key: string, fallback: number, min: number, max: number): number => {
+    const raw = env[key];
+    if (raw === undefined) return fallback;
+    const n = Number(raw);
+    if (!Number.isSafeInteger(n) || n < min || n > max) throw new Error(`Invalid ${key}`);
+    return n;
+  };
+  const dir = (key: string): string | null => {
+    const raw = env[key];
+    if (raw === undefined) return null;
+    if (!executionPathPattern.test(raw) || raw.endsWith("/") || /(^\/|\/)\.\.?(\/|$)/.test(raw)) throw new Error(`Invalid ${key}`);
+    return raw;
+  };
+  const image = (key: string): string | null => {
+    const raw = env[key];
+    if (raw === undefined) return null;
+    if (!executionImagePattern.test(raw)) throw new Error(`Invalid ${key}`);
+    return raw;
+  };
+  const directory = dir("JIT_EXECUTION_DIR");
+  const secretsDirectory = dir("JIT_EXECUTION_SECRETS_DIR");
+  const base = image("JIT_BOX_IMAGE_BASE");
+  const browser = image("JIT_BOX_IMAGE_BROWSER");
+  const maxBoxes = intIn("JIT_BOX_MAX", 2, 1, 8);
+  const memoryMb = intIn("JIT_BOX_MEMORY_MB", 2048, 256, 8192);
+  let cpus = 2;
+  {
+    const raw = env["JIT_BOX_CPUS"];
+    if (raw !== undefined) {
+      const n = Number(raw);
+      if (typeof raw !== "string" || raw.length === 0 || Number.isNaN(n) || n < 0.5 || n > 4) throw new Error("Invalid JIT_BOX_CPUS");
+      cpus = n;
+    }
+  }
+  const pidsLimit = intIn("JIT_BOX_PIDS", 512, 64, 4096);
+  const idleMinutes = intIn("JIT_BOX_IDLE_MINUTES", 30, 5, 240);
+  let registryHosts = [...defaultExecutionRegistryHosts];
+  {
+    const raw = env["JIT_BOX_REGISTRY_HOSTS"];
+    if (raw !== undefined) {
+      if (raw === "") registryHosts = [];
+      else {
+        const hosts = raw.split(",");
+        if (hosts.length > 32) throw new Error("Invalid JIT_BOX_REGISTRY_HOSTS");
+        for (const host of hosts) if (!executionRegistryPattern.test(host)) throw new Error("Invalid JIT_BOX_REGISTRY_HOSTS");
+        registryHosts = hosts;
+      }
+    }
+  }
+  let fullAllowed = false;
+  {
+    const raw = env["JIT_EXECUTION_FULL_ALLOWED"];
+    if (raw !== undefined) {
+      if (raw !== "0" && raw !== "1") throw new Error("Invalid JIT_EXECUTION_FULL_ALLOWED");
+      fullAllowed = raw === "1";
+    }
+  }
+  return {
+    directory,
+    secretsDirectory,
+    images: base === null ? null : browser === null ? { base } : { base, browser },
+    maxBoxes,
+    memoryMb,
+    cpus,
+    pidsLimit,
+    idleMinutes,
+    registryHosts,
+    fullAllowed,
+  };
+}
+
 /** Private deployment profile: wildcard/public binds are rejected by default. */
 function validatedHostname(value: string | undefined): string {
   const hostname = value ?? "127.0.0.1";
@@ -58,6 +156,8 @@ export interface AppConfig {
   team: TeamPolicy;
   telegram: TelegramPolicy;
   ops: OpsPolicy;
+  /** Operator execution-box settings; null paths mean execution is not configured. */
+  execution: ExecutionConfig;
 }
 
 /** Reads only Jit's declared settings and rejects malformed or unbounded values. */
@@ -138,5 +238,6 @@ export function readConfig(env: Record<string, string | undefined> = process.env
       retentionDays: atLeast("JIT_OPS_RETENTION_DAYS", positive("JIT_OPS_RETENTION_DAYS", 30, opsBounds.retentionDays.max), opsBounds.retentionDays.min),
       drillDeadlineMs: atLeast("JIT_OPS_DRILL_DEADLINE_MS", positive("JIT_OPS_DRILL_DEADLINE_MS", 120_000, opsBounds.drillDeadlineMs.max), opsBounds.drillDeadlineMs.min),
     },
+    execution: parseExecutionConfig(env),
   };
 }

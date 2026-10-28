@@ -1,0 +1,20 @@
+# syntax=docker/dockerfile:1
+# Pinned 2026-10-28: manifest-list digest for debian:bookworm-slim (amd64+arm64).
+# Verified with `docker buildx imagetools inspect docker.io/library/debian:bookworm-slim`
+# (image created 2026-10-27T00:00:00Z, podman not available in this env).
+FROM docker.io/library/debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3 AS base
+LABEL org.opencontainers.image.source="https://github.com/chayapats/jit"
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  bash coreutils findutils grep sed gawk git ca-certificates ripgrep \
+  python3 python3-venv nodejs build-essential curl jq tzdata \
+  && rm -rf /var/lib/apt/lists/*
+RUN useradd --uid 1000 --create-home --home-dir /home/box --shell /bin/bash box
+WORKDIR /workspace
+USER box
+
+FROM base AS browser
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  chromium xvfb xdotool openbox fonts-noto-core fonts-thai-tlwg \
+  && rm -rf /var/lib/apt/lists/*
+USER box

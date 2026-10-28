@@ -5,6 +5,8 @@ import { gatherDiagnostics, inspectDiagnostics } from "./ops/diagnostics";
 import { runLoadDrill } from "./ops/drill";
 import { exportOpsSummary, readLocalDrillConfig, readOpsRecord, writeOpsRecord } from "./ops/records";
 import { composeProfile, composeReleaseChecklist } from "./ops/report";
+import { boxDoctor } from "./ops/box-doctor";
+import { statSync } from "node:fs";
 
 /** Live ports for operator use. Tests inject scripted seams instead. */
 export interface OpsPorts {
@@ -12,12 +14,33 @@ export interface OpsPorts {
 }
 
 /**
- * Command boundary mirrors evidence-cli: only diagnose, drill and report.
+ * Command boundary mirrors evidence-cli: only diagnose, drill, report and box-doctor.
  * Output never includes raw errors, paths or secrets; failures use fixed codes.
  */
 export async function runOpsCommand(args: string[], root: string, ports: OpsPorts = {}): Promise<{ exitCode: number; output: unknown }> {
   const invalid = (nextAction: string) => ({ exitCode: 2, output: { error: "invalid-ops-command", nextAction } });
   try {
+    if (args[0] === "box-doctor" && args.length === 1) {
+      const config = readConfig();
+      const report = boxDoctor({
+        run: (cmd: string[]) => {
+          try {
+            const result = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe" });
+            return { exitCode: result.exitCode, stdout: new TextDecoder().decode(result.stdout as Uint8Array) };
+          } catch {
+            return { exitCode: 127, stdout: "" };
+          }
+        },
+        stat: (path: string) => {
+          try {
+            const stats = statSync(path);
+            return { uid: stats.uid, mode: stats.mode & 0o777, isDirectory: stats.isDirectory() };
+          } catch { return null; }
+        },
+        uid: process.getuid?.() ?? 0,
+      }, config.execution);
+      return { exitCode: report.ok ? 0 : 1, output: report };
+    }
     if (args[0] === "diagnose" && args.length === 1) {
       const config = readConfig();
       return { exitCode: 0, output: inspectDiagnostics(gatherDiagnostics(root, config)) };

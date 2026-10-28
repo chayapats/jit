@@ -45,6 +45,16 @@ export interface ServiceConfig {
    * fails closed. Default disabled: no delivery worker or poller starts.
    */
   channels?: { telegram: "disabled" | "enabled" };
+  /**
+   * Operator execution-box configuration (`ops.execution_config/v1`).
+   * Rendered as `JIT_EXECUTION_*` / `JIT_BOX_*` environment variables.
+   */
+  execution?: {
+    directory: string; secretsDirectory: string;
+    images: { base: string; browser?: string };
+    maxBoxes: number; memoryMb: number; cpus: number; pidsLimit: number; idleMinutes: number;
+    registryHosts: string[]; fullAllowed: boolean;
+  };
 }
 
 /** Secret reference name the Telegram channel reads its bot token through. */
@@ -57,6 +67,12 @@ export const serviceLogNamespace = "jit";
 const fail = (): never => { throw new Error("invalid_service_config"); };
 const userPattern = /^[a-z][a-z0-9_-]{0,31}$/;
 const refPattern = /^[a-z][a-z0-9_-]{0,63}$/;
+/** Box image reference: lowercase name plus a pinned `sha256` digest. */
+const imagePattern = /^[a-z0-9][a-z0-9._/-]{0,127}@sha256:[a-f0-9]{64}$/;
+/** Lowercase dotted hostname for an allowed package registry. */
+const registryHostPattern = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
+/** Default registry egress allowlist for `workspace` boxes (ADR 0036). */
+export const defaultRegistryHosts = ["registry.npmjs.org", "pypi.org", "files.pythonhosted.org", "proxy.golang.org", "crates.io"];
 /** Rendered into unit lines: no whitespace, `%` specifiers, quotes or control characters. */
 const pathPattern = /^\/[A-Za-z0-9._@+\/-]{0,4095}$/;
 const ipv4 = /^(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
@@ -144,7 +160,7 @@ export function parseServiceConfig(raw: unknown): ServiceConfig {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) fail();
   const c = raw as Record<string, unknown>;
   keysWithin(c, ["serviceUser", "executablePath", "workingDirectory", "stateDirectory", "ledgerPath", "backupDirectory",
-    "routes", "secretRefs", "network", "resources"], ["runPort", "channels"]);
+    "routes", "secretRefs", "network", "resources"], ["runPort", "channels", "execution"]);
   if (typeof c.serviceUser !== "string" || !userPattern.test(c.serviceUser) || c.serviceUser === "root") fail();
   const executablePath = absolutePath(c.executablePath);
   const workingDirectory = absolutePath(c.workingDirectory);
@@ -222,6 +238,53 @@ export function parseServiceConfig(raw: unknown): ServiceConfig {
     if (ch.telegram === "enabled" && !secretRefs.some(ref => ref.name === telegramSecretRef && ref.store === "credential-file")) fail();
     parsed.channels = { telegram: ch.telegram as "disabled" | "enabled" };
   }
+  if (c.execution !== undefined) {
+    const e = c.execution as Record<string, unknown>;
+    if (!e || typeof e !== "object" || Array.isArray(e)) fail();
+    keysWithin(e, ["directory", "secretsDirectory", "images"],
+      ["maxBoxes", "memoryMb", "cpus", "pidsLimit", "idleMinutes", "registryHosts", "fullAllowed"]);
+    const directory = absolutePath(e.directory);
+    const secretsDirectory = absolutePath(e.secretsDirectory);
+    const images = e.images as Record<string, unknown>;
+    if (!images || typeof images !== "object" || Array.isArray(images)) fail();
+    keysWithin(images, ["base"], ["browser"]);
+    if (typeof images.base !== "string" || !imagePattern.test(images.base)) fail();
+    if (images.browser !== undefined && (typeof images.browser !== "string" || !imagePattern.test(images.browser))) fail();
+    const maxBoxes = e.maxBoxes === undefined ? 2 : positiveInt(e.maxBoxes, 1, 8);
+    const memoryMb = e.memoryMb === undefined ? 2048 : positiveInt(e.memoryMb, 256, 8192);
+    let cpus = 2;
+    if (e.cpus !== undefined) {
+      if (typeof e.cpus !== "number" || Number.isNaN(e.cpus) || e.cpus < 0.5 || e.cpus > 4) fail();
+      cpus = e.cpus as number;
+    }
+    const pidsLimit = e.pidsLimit === undefined ? 512 : positiveInt(e.pidsLimit, 64, 4096);
+    const idleMinutes = e.idleMinutes === undefined ? 30 : positiveInt(e.idleMinutes, 5, 240);
+    let registryHosts = [...defaultRegistryHosts];
+    if (e.registryHosts !== undefined) {
+      if (!Array.isArray(e.registryHosts) || (e.registryHosts as unknown[]).length > 32) fail();
+      for (const host of e.registryHosts as unknown[]) {
+        if (typeof host !== "string" || !registryHostPattern.test(host)) fail();
+      }
+      registryHosts = [...(e.registryHosts as string[])];
+    }
+    let fullAllowed = false;
+    if (e.fullAllowed !== undefined) {
+      if (typeof e.fullAllowed !== "boolean") fail();
+      fullAllowed = e.fullAllowed as boolean;
+    }
+    const protectedDirs = [stateDirectory, backupDirectory, dirname(ledgerPath), workingDirectory, releases];
+    for (const dir of [directory, secretsDirectory]) {
+      for (const other of protectedDirs) {
+        if (inside(dir, other) || inside(other, dir)) fail();
+      }
+    }
+    if (inside(directory, secretsDirectory) || inside(secretsDirectory, directory)) fail();
+    parsed.execution = { directory, secretsDirectory,
+      images: images.browser === undefined
+        ? { base: images.base as string }
+        : { base: images.base as string, browser: images.browser as string },
+      maxBoxes, memoryMb, cpus, pidsLimit, idleMinutes, registryHosts, fullAllowed };
+  }
   return parsed;
 }
 
@@ -273,6 +336,20 @@ export function serviceEnvironment(config: ServiceConfig): [string, string][] {
   ];
   const token = telegramTokenPath(parsed);
   if (token) env.push(["JIT_TELEGRAM_BOT_TOKEN_PATH", token]);
+  if (parsed.execution) {
+    const e = parsed.execution;
+    env.push(["JIT_EXECUTION_DIR", e.directory]);
+    env.push(["JIT_EXECUTION_SECRETS_DIR", e.secretsDirectory]);
+    env.push(["JIT_BOX_IMAGE_BASE", e.images.base]);
+    if (e.images.browser !== undefined) env.push(["JIT_BOX_IMAGE_BROWSER", e.images.browser]);
+    env.push(["JIT_BOX_MAX", String(e.maxBoxes)]);
+    env.push(["JIT_BOX_MEMORY_MB", String(e.memoryMb)]);
+    env.push(["JIT_BOX_CPUS", String(e.cpus)]);
+    env.push(["JIT_BOX_PIDS", String(e.pidsLimit)]);
+    env.push(["JIT_BOX_IDLE_MINUTES", String(e.idleMinutes)]);
+    env.push(["JIT_BOX_REGISTRY_HOSTS", e.registryHosts.join(",")]);
+    env.push(["JIT_EXECUTION_FULL_ALLOWED", e.fullAllowed ? "1" : "0"]);
+  }
   return env;
 }
 
@@ -284,7 +361,7 @@ export interface ServicePlanChange {
 }
 
 const planFields = ["serviceUser", "executablePath", "workingDirectory", "stateDirectory", "ledgerPath",
-  "backupDirectory", "routes", "network", "resources", "runPort", "channels"] as const;
+  "backupDirectory", "routes", "network", "resources", "runPort", "channels", "execution"] as const;
 
 /**
  * Plan/validate mode: prints only allowlisted non-secret differences between two
@@ -316,7 +393,9 @@ function memoryMax(bytes: number): string {
 /** Paths the sandboxed unit may write: managed state, backups and the ledger checkpoint directory. */
 export function serviceWritablePaths(config: ServiceConfig): string[] {
   const parsed = parseServiceConfig(config);
-  return [...new Set([parsed.stateDirectory, parsed.backupDirectory, dirname(parsed.ledgerPath)])];
+  const paths = [parsed.stateDirectory, parsed.backupDirectory, dirname(parsed.ledgerPath)];
+  if (parsed.execution) paths.push(parsed.execution.directory, parsed.execution.secretsDirectory);
+  return [...new Set(paths)];
 }
 
 /** The service identity's user-session bus socket (Secret Service for Schway's native credential store). */
