@@ -24,7 +24,7 @@ resolveDeliveryIntent(tx, projectId, intentId, reason: "owner_answered" | "no_lo
 
 openWorkGroup(tx, { projectId, topicId, replyId, now }): string
 evaluateWorkGroup(tx, groupId, now, reason): void          // contained in a savepoint; never rolls back its caller
-tickWorkGroups(store, now): number                          // service start and every tick; nothing under a fence
+tickWorkGroups(store, now, limit = 200): number             // service start and every tick; rotating keyset pages; nothing under a fence
 
 Application.attentionLevels(actor): Record<AttentionChannel, AttentionSetting>
 Application.execute(actor, SetAttentionCommand): { attention: AttentionSetting }
@@ -67,7 +67,7 @@ Coordinator decision proposals and task proposals create no intent in this build
 - **Group.** A Jit reply whose dispatch proposal is recorded with at least one role opens one group (`work_groups`, unique per reply) in the reply's fenced commit, whether the discussion starts under the allowance or waits on the owner's card. The id is carried as `workGroupId` in the reply's, the discussion's and the team reply's `record_json`. A reply without a dispatch opens no group and, as before REL04, creates no intent.
 - **Evaluation.** `evaluateWorkGroup` reads committed state only, through the dispatch card read model (`readDispatchCard`). It runs inside the Jit reply commit, the specialist result commit (and its fenced fallback), `team.control`, `team.stop_all`, `jit.reply.stop`, `dispatch.proposal.*`, `dispatch.answer`, and `job.resume`/`job.stop` on a group job. The service also runs `tickWorkGroups` once at start and on every tick, which covers transitions the queue makes alone (a route wait, a deadline, a restart's interrupted work). Each notice key is decided once and the decision (`created` with its intent id, or `filtered`) is stored on the group row, so restarts, replayed callbacks and later level changes never add a second intent for a key.
 - **Intermediate events create nothing.** A specialist result, a skip, a stop, or a team reply that is thinking.
-- **Final (`final:group`).** Created once, when no participation is queued, running or waiting and the team reply's result is committed: `answered` is informational (`attention.notice_final`), `failed` is a failure (`attention.notice_failed`). A settled team with no result is a failure (`attention.notice_no_result`). The group then closes. A group the owner ended (dismissed card, `team.stop_all`, a stopped team reply) closes without a final notice; a promoted origin closes quietly.
+- **Final (`final:group`).** Created once, when no participation is queued, running or waiting (including a role the owner included again after the team reply started) and the team reply's result is committed: `answered` is informational (`attention.notice_final`), `failed` is a failure (`attention.notice_failed`). A settled team with no result is a failure (`attention.notice_no_result`). The group then closes. A group the owner ended (dismissed card, `team.stop_all`, a stopped team reply) closes without a final notice; a promoted origin closes quietly.
 - **Stalls.** `proposal:<proposalId>`, `job:<jobId>:<steps>` (a role or the team reply waiting), `hold:<proposalId>:<revision>` and `answer:<proposalId>` create their `needs_owner` notice immediately, while the group stays open. A job that waits again after a resume is a new key (`steps` advanced).
 - **Dedupe key.** `attention/<workGroupId>/<item>`. Payload kind `report`.
 - **Text.** A fixed dictionary sentence in the persona's language (`attention.notice_*`) with counts or reason codes, plus `attention.notice_open` with the page path `/projects/<p>/topics/<t>#dispatch-<proposalId>`. No model output, owner text, topic title or project name enters a notice, so data deletion has nothing to scrub there.
@@ -77,7 +77,7 @@ Coordinator decision proposals and task proposals create no intent in this build
 When a stall stops waiting, the evaluation that observes it resolves its intent in that same transaction with `resolveDeliveryIntent`:
 
 - unsent (`waiting`, `queued`, `claimed` before the sender was invoked) → `cancelled`, `failureReason` = the reason, attempts interrupted;
-- already sent, `unknown`, `failed` or in flight → outcome kept, `resolution = { reason, at }`, revision + 1; a `failed` intent loses its safe automatic retry. Nothing claims the remote message was withdrawn, and the delivery detail page says so (`delivery.resolved_*`).
+- already sent, `unknown`, `failed` or in flight → outcome kept, `resolution = { reason, at }`, revision + 1; a `failed` intent loses its safe automatic retry, and an in-flight send that comes back `telegram_unavailable` is not retried (`recordDeliveryResult` checks `resolution`). Nothing claims the remote message was withdrawn, and the delivery detail page says so (`delivery.resolved_*`).
 
 The reason is `owner_answered` when an owner command caused it (accept, dismiss, answer now, resume, stop, skip, stop-all, from any channel) and `no_longer_waiting` when the item closed by itself (for example a deadline). Final notices are never resolved by condition.
 

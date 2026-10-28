@@ -485,7 +485,8 @@ export function recordDeliveryResult(tx: AppTransaction, attemptId: string, resu
     messageRef = { chatId: attempt.chatId, messageId: result.messageId };
   } else if (result.outcome === "failed" && (result.reason === "telegram_rejected" || result.reason === "telegram_unavailable")) {
     outcome = "failed"; reason = result.reason; remote = "rejected"; status = "failed"; nextAction = "inspect_failure";
-    retryable = result.retryable === true && result.reason === "telegram_unavailable" && stale === null;
+    // A resolved intent (its item stopped waiting on the owner) never earns an automatic retry.
+    retryable = result.retryable === true && result.reason === "telegram_unavailable" && stale === null && !intent.resolution;
   }
   attempt.state = "settled"; attempt.outcome = outcome; attempt.reason = reason; attempt.messageRef = messageRef; attempt.stale = stale !== null;
   saveAttempt(tx, attempt);
