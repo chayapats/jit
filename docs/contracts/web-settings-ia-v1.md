@@ -12,6 +12,7 @@ Owner: Jit #97 (S09 UX02). Status: implemented on the issue branch. Spec: [S09](
 | Team and models | `/settings/team` | Installation roles, default route and role routes |
 | Team dispatch | `/settings/dispatch` | Each project's dispatch allowance (`app.dispatch_allowance/v1`, from BOT04): one owner form per project |
 | Telegram | `/settings/telegram` | Binding and inbox status (read only), each project's notification requests |
+| Calendar feed | `/settings/feed` | The read-only `.ics` schedule feed (`app.schedule_feed/v1`, from REL08): New URL, Turn off and the include-purpose option |
 | Backups | `/settings/backups`, `/settings/backups/:id` | `ops.backup_manifest/v1` inventory and detail |
 | Upgrades | `/settings/upgrades`, `/settings/upgrades/:id` | `ops.schema_migrations/v1` journals |
 | Restores | `/settings/restores`, `/settings/restores/:id` | `ops.quarantined_restore/v1` console |
