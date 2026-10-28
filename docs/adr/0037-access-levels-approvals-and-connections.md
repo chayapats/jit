@@ -34,11 +34,13 @@ S11-D02, D03, D08 and D09 give a project execution power without moving authorit
   - The outcome is recorded and a source is posted to the topic.
   - A crash during `executing` reconciles to `unknown`, which needs owner attention. It is never blindly retried, following ADR 0012's rule for unknown outcomes.
 - Auto-approve rules live in `auto_approve_rules(project_id, effect_kind, scope_json, revision, enabled)`. Only Web owner commands write them. A matching rule decides the card as `approved` with `channel: "auto-rule"` and the rule revision.
-- **Git push safety.** The executor never runs code or configuration from the box. Steps:
-  1. It creates a git bundle inside the box through the runner (`git bundle create`, with `core.hooksPath` disabled).
-  2. It copies the bundle out and verifies it.
+- **Git push safety.** The executor never runs code or configuration from the box, and it pushes exactly the commits the owner approved.
+  - The `effect.git_push` action pins its content when the card is created: the destination (owner-configured remote name and URL) and every ref update as `refs/heads/<branch>: <oldSha> → <newSha>`, with full 40-character SHAs read from the box at proposal time. The card shows these SHAs and the commit summaries. Later commits or branch moves in the box do not change the approved action.
+  Steps:
+  1. It creates a git bundle inside the box through the runner (`git bundle create`, with `core.hooksPath` disabled) containing the approved `<newSha>` values.
+  2. It copies the bundle out, runs `git bundle verify`, and checks with `git bundle list-heads` that the bundle contains every approved `<newSha>`. Any mismatch fails the card as `stale` and nothing is pushed; the agent must propose a new card.
   3. It fetches the bundle into a Jit-owned bare mirror at `<execution.directory>/<projectId>/mirror.git`, which has fixed configuration.
-  4. It pushes from the mirror with `-c core.hooksPath=/dev/null` and a credential from `GIT_ASKPASS`.
+  4. It pushes from the mirror with `-c core.hooksPath=/dev/null` and a credential from `GIT_ASKPASS`, using explicit refspecs `<newSha>:refs/heads/<branch>` and `--force-with-lease=refs/heads/<branch>:<oldSha>` (or `--force-with-lease=refs/heads/<branch>:` when creating a branch), so the remote is updated only to the approved SHA and only from the approved old state.
 - **GitHub API effects** call the REST API with the connection token. Only the endpoints the card names are allowed.
 - **Telegram.** Approval cards can be answered from Telegram through `telegram_callback_refs`, with new actions `approval.approve` and `approval.deny`. The bound owner chat is required and the ref expiry is never longer than the card's.
   - Telegram is refused for anything that widens power: widening a level, resume, auto-approve rules, MCP install acceptance, connection secrets and takeover.
