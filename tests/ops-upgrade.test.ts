@@ -22,7 +22,7 @@ import type { SourceReference } from "../src/sources";
 import { JobQueue } from "../src/jobs/queue";
 import { tickSchedules } from "../src/jobs/schedules";
 import { DeliveryWorker } from "../src/delivery";
-import { ScriptedRunPort, fixtureOutcome, withContextAnswer } from "../src/team/scripted-port";
+import { ScriptedRunPort, fixtureOutcome, specialistFixtureResult } from "../src/team/scripted-port";
 import type { ApplicationRunRequest, RoleRoute, TeamCommand } from "../src/team/types";
 import { coordinatorSynthesisMarker, coordinatorSynthesisWork } from "../src/team/decisions";
 import { discussionPlanWork, specialistAnalysisWork } from "../src/team/dispatch";
@@ -102,7 +102,7 @@ async function fixture(engine: Port | null = fixturePort()) {
   const config = readConfig({ JIT_DATABASE: join(root, "state.sqlite") }), clock = { now: epoch };
   const defaults = {
     extract: ((request: ApplicationRunRequest) => scriptedMemoryResult(request, true)) as Script,
-    specialist: ((request: ApplicationRunRequest) => fixtureOutcome("complete", withContextAnswer("ตอบจำลอง", request, config.jobs.outputBytes))) as Script,
+    specialist: ((request: ApplicationRunRequest) => fixtureOutcome("complete", specialistFixtureResult("ตอบจำลอง", request, config.jobs.outputBytes))) as Script,
   };
   const hooks = { ...defaults };
   const dirs = { backup: join(root, "backups"), upgrade: join(root, "upgrades") };
@@ -424,7 +424,7 @@ test("quiesce fences in-flight attempts; work that cannot settle fails prepare a
   say(f, a, "ข้อความ quiesce");
   let release: (() => void) | null = null;
   f.hooks.specialist = (request: ApplicationRunRequest, signal: AbortSignal) => new Promise<unknown>(resolve => {
-    release = () => resolve(fixtureOutcome("complete", withContextAnswer("ตอบจำลอง", request, f.config.jobs.outputBytes)));
+    release = () => resolve(fixtureOutcome("complete", specialistFixtureResult("ตอบจำลอง", request, f.config.jobs.outputBytes)));
     void signal; // Stalled adapter ignores cancellation.
   });
   f.rt.app.execute(actor(f), dispatch(f, a, "งานที่ค้าง"));

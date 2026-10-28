@@ -8,7 +8,7 @@ import { JobQueue } from "../src/jobs/queue";
 import { memoryExtractionMarker, memoryExtractionWork, scriptedMemoryResult } from "../src/memory/extract";
 import type { ClaimReference, ForgetMemoryCommand, MemoryClaim } from "../src/memory/types";
 import type { SourceReference } from "../src/sources";
-import { ScriptedRunPort, fixtureOutcome, withContextAnswer } from "../src/team/scripted-port";
+import { ScriptedRunPort, fixtureOutcome, specialistFixtureResult } from "../src/team/scripted-port";
 import type { ApplicationRunRequest, RoleRoute, TeamCommand } from "../src/team/types";
 import type { ApplicationRunPort } from "../src/team/run-port";
 import { coordinatorSynthesisMarker, coordinatorSynthesisWork } from "../src/team/decisions";
@@ -54,7 +54,7 @@ async function fixture() {
   const config = readConfig({ JIT_DATABASE: join(root, "state.sqlite") }), clock = { now: epoch }, flags = { retire: false };
   const defaults = {
     extract: ((request: ApplicationRunRequest) => scriptedMemoryResult(request, true)) as Script,
-    specialist: ((request: ApplicationRunRequest) => fixtureOutcome("complete", withContextAnswer("ตอบจำลอง", request, config.jobs.outputBytes))) as Script,
+    specialist: ((request: ApplicationRunRequest) => fixtureOutcome("complete", specialistFixtureResult("ตอบจำลอง", request, config.jobs.outputBytes))) as Script,
   };
   const hooks = { ...defaults };
   const rt = boot(config, hooks, clock, flags);

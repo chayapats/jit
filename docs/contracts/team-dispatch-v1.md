@@ -46,3 +46,5 @@ Owner `include` / `exclude` / `skip` / `stop` mutate participation without creat
 | Topic HTML | Optional dispatch panel; GET never relaunches analysis |
 
 Deterministic evidence: `tests/team.test.ts` (TEAM02 cases) with scripted adapters, fake clocks and no paid APIs. Exact artifact signatures are those exported above plus [specialist results](specialist-results-v1.md) and [run records](run-records-v1.md).
+
+S10 REL02: each projected participation carries `result` (`app.specialist_results/v2` status, or a status derived from a v1 record), `coverageGap` also lists completed roles whose result is blocked, failed or incomplete, specialist requests carry the result-shape and [communication policy](communication-policy-v1.md) operator lines, and a Jit dispatch does not call a role again for the same request while its latest result is blocked. See [specialist results v2](specialist-results-v1.md#v2-appspecialist_resultsv2).

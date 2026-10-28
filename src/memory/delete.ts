@@ -1239,7 +1239,13 @@ function redactDerivedRuns(tx: AppTransaction, sources: SourceEntry[]): void {
       const outcome = parsed.outcome as { output?: unknown } | null | undefined;
       const proposals = redactRoleProposals(parsed.roleProposals, () => redactedText);
       const promotion = redactPromotionProposal(parsed.promotionProposal, () => redactedText);
+      // app.specialist_results/v2 keeps the normalized result text, raw text and unblock action beside the outcome.
+      const result = parsed.kind === "specialist" ? parsed.result as { version?: unknown; result?: unknown; raw?: unknown; unblock?: unknown } | null | undefined : null;
+      const redactedResult = result && result.version === 2 ? { ...result,
+        ...(typeof result.result === "string" && result.result ? { result: redactedText } : {}),
+        ...(typeof result.raw === "string" ? { raw: redactedText } : {}), ...(typeof result.unblock === "string" ? { unblock: redactedText } : {}) } : null;
       const next = { ...parsed, ...(outcome && typeof outcome.output === "string" ? { outcome: { ...outcome, output: redactedText } } : {}),
+        ...(redactedResult ? { result: redactedResult } : {}),
         ...("progress" in parsed ? { progress: null } : {}), ...(proposals.changed ? { roleProposals: proposals.value } : {}),
         ...(promotion.changed ? { promotionProposal: promotion.value } : {}) };
       if (JSON.stringify(next) !== JSON.stringify(parsed)) tx.run(`UPDATE ${table} SET record_json = ? WHERE rowid = ?`, JSON.stringify(next), row.rowid_);

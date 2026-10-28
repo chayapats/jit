@@ -577,7 +577,7 @@ test("coordinator reserves exactly the worst-case retry budget", async () => {
   const teamPort = new SchwayRunPort(store, config.team, config.jobs.outputBytes, {
     model: {
       provider: "scripted", id: "budget",
-      async *stream() { invoked++; yield { type: "message_complete", message: { type: "assistant", id: rid(), content: [{ type: "text", text: "not synthesis json" }] } }; },
+      async *stream() { invoked++; yield { type: "message_complete", message: { type: "assistant", id: rid(), content: [{ type: "text", text: JSON.stringify({ status: "done", result: "not synthesis json", evidence: "none", unblock: null }) }] } }; },
     },
   });
   const now = () => 1800000000000;
@@ -820,7 +820,7 @@ test("production coordinator commits mode-labeled synthesis without fixture clai
             },
           };
         } else {
-          yield { type: "message_complete", message: { type: "assistant", id: rid(), content: [{ type: "text", text: "วิเคราะห์บทบาท" }] } };
+          yield { type: "message_complete", message: { type: "assistant", id: rid(), content: [{ type: "text", text: JSON.stringify({ status: "done", result: "วิเคราะห์บทบาท", evidence: "none", unblock: null }) }] } };
         }
       },
     },

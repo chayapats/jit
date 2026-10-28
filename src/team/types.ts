@@ -153,12 +153,31 @@ export type ApplicationRunEvent = { kind: "started"; runId: string; context: Man
 export type ParticipationState = "queued" | "running" | "completed" | "blocked" | "stopped" | "skipped" | "excluded";
 /** Router stop reasons are finite and never invent new billing/provider authority. */
 export type RouterStopReason = "complete" | "max_rounds" | "budget_exhausted";
+/** Status of one specialist result. `incomplete` is assigned by the service only and is never accepted from a model. */
+export type SpecialistResultStatus = "done" | "partial" | "blocked" | "failed" | "incomplete";
+/**
+ * app.specialist_results/v2 (ADR 0033): one specialist's normalized result. `blocked` carries exactly one `unblock`
+ * action; every other status has `unblock: null`. Evidence references are manifest sources of the run. Output that
+ * does not match the closed shape is `incomplete` with its bounded `raw` text kept for inspection; it never counts as
+ * done. A result is analysis only: it grants no authority and creates no task or decision.
+ */
+export interface SpecialistResultV2 {
+  version: 2; status: SpecialistResultStatus; result: string;
+  evidence: SourceReference[] | "none"; unblock: string | null; raw: string | null;
+}
+/**
+ * Read-only status of one committed specialist result. v2 records carry their normalized result; a v1 record from
+ * before app.specialist_results/v2 is derived from its outcome (complete → done) and is never rewritten.
+ */
+export interface ParticipationResult { version: 1 | 2; status: SpecialistResultStatus; unblock: string | null }
 /** One role's attributed analysis slot under a discussion; peer output is never trusted instruction. */
 export interface DiscussionParticipation {
   roleId: string; roleName: string; runId: string; jobId: string; purpose: string;
   state: ParticipationState; route: RoleRoute | null; output: SourceReference | null;
   reason: string | null; nextAction: string | null;
   progress: { text: string; provisional: true } | null;
+  /** Status of the committed result; null while none is committed. Absent on participations stored before v2. */
+  result?: ParticipationResult | null;
 }
 /** Bounded scripted router evidence retained with the discussion; unknown roles never become jobs. */
 export interface DiscussionRouter {
@@ -192,6 +211,15 @@ export interface SpecialistRun {
   request: ApplicationRunRequest; mode: "fixture" | "production"; createdAt: number;
   outcome: ApplicationRunOutcome | null; source: SourceReference | null;
   progress: { text: string; provisional: true } | null;
+  /**
+   * app.specialist_results/v2: the normalized result, set when a complete outcome commits; null otherwise. Absent on
+   * v1 records, which stay as written and are read through a derived view.
+   */
+  result?: SpecialistResultV2 | null;
+  /** Evidence references the model gave that are not manifest sources of this run; they were dropped. */
+  droppedEvidence?: number;
+  /** app.communication_policy/v1 version sent with this run. Absent on records written before the policy. */
+  policyVersion?: number;
 }
 
 /** Owner mutations use shared durable receipts; saving configuration never starts a run. */
@@ -225,7 +253,13 @@ export interface RolePreview {
 export interface TeamReceipt { revision: number; role?: Role; preview?: RolePreview; discussion?: Discussion }
 
 /** A role that produced no citable result; the coordinator must show this gap and must not call it consensus. */
-export interface SynthesisGap { roleId: string; roleName: string; reason: string }
+export interface SynthesisGap {
+  roleId: string; roleName: string; reason: string;
+  /** app.specialist_results/v2: the specialist run of a `result_blocked` gap, whose record holds the unblock action. */
+  runId?: string;
+  /** Read model only: the unblock action, read from that run record when shown. Never stored. */
+  unblock?: string | null;
+}
 /** One allowed specialist result revision. Model text cannot add roles or routes here. */
 export interface SynthesisCitation { roleId: string; roleName: string; route: RoleRoute | null; reference: SourceReference }
 /** One option inside a coordinator recommendation. It is not an owner decision. */
