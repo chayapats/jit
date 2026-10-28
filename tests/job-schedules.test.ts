@@ -402,7 +402,7 @@ test("schema v12 store migrates to v20 with new schedule tables and a private sn
   db.close();
   const before = new Set(readdirSync(f.root));
   const store = new TransactionStore(f.path); stores.push(store);
-  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 37 });
+  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 38 });
   expect(readdirSync(f.root).filter(name => !before.has(name) && name.includes(".pre-v12-"))).toHaveLength(1);
   // The v12-era memory context row survives the owner_kind widening rebuild.
   expect(store.read(tx => tx.get<{ record_json: string }>("SELECT record_json FROM memory_contexts WHERE id = ?", contextId)!.record_json))

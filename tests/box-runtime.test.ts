@@ -548,8 +548,9 @@ test("schema 32 installations migrate through the box reset table with their dat
 test("every owner-visible box string exists in Thai and English", () => {
   const keys = Object.keys(dictionaries.th).filter(key => /^(error\.(box_|invalid_box_)|jobs\.box_)/.test(key));
   expect(keys.sort()).toEqual(["error.box_busy", "error.box_capacity", "error.box_directory_unsafe", "error.box_hardening_mismatch", "error.box_image_missing",
-    "error.box_mount_mismatch", "error.box_network_unavailable", "error.box_not_configured", "error.box_proxy_unavailable", "error.box_reset_requires_web",
-    "error.box_runtime_unavailable", "error.invalid_box_command", "error.invalid_box_mode", "jobs.box_capacity"]);
+    "error.box_image_pull_failed", "error.box_image_unpinned", "error.box_mount_mismatch", "error.box_network_unavailable", "error.box_not_configured",
+    "error.box_proxy_unavailable", "error.box_reset_requires_web", "error.box_runtime_unavailable", "error.box_secret_refused", "error.invalid_box_command",
+    "error.invalid_box_mode", "jobs.box_capacity"]);
   for (const key of keys) expect(dictionaries.en[key as keyof typeof dictionaries.en]).toBeTruthy();
 });
 

@@ -26,6 +26,9 @@ export function summarizeApprovalAction(action: EffectAction): string[] {
       return [`${action.github.owner}/${action.github.repo} #${action.pullNumber}`, action.headSha.slice(0, 8), action.method];
     case "effect.deploy":
       return [`${action.target.name} (${action.target.url})`, action.ref ?? "-"];
+    // app.mcp_servers/v1 (EXE12): the server, tool and exact arguments the owner approves.
+    case "mcp_tool":
+      return [`${action.server.name} · ${action.tool}`, JSON.stringify(action.arguments).slice(0, 2000)];
   }
 }
 

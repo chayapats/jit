@@ -314,6 +314,9 @@ export const backupImageTables: Readonly<Record<string, "include" | "exclude" | 
   // app.approval_cards/v1 and app.auto_approve/v1 (schema 37): cards, rules and effect targets hold actions, digests,
   // receipts and connection ids only — never a connection value.
   approval_cards: "include", auto_approve_rules: "include", git_remotes: "include", deploy_targets: "include",
+  // app.mcp_servers/v1 (schema 38): install proposals and installed servers hold specs, env names and connection ids
+  // only — never a connection value; the installed packages live in the execution directory, never in an image.
+  mcp_proposals: "include", mcp_servers: "include",
   project_team: "include", projects: "include", restore_quarantines: "include", roles: "include",
   schway_native_refs: "include", source_versions: "include", sources: "include",
   task_events: "include", task_evidence_artifacts: "include", task_proposals: "include", tasks: "include",

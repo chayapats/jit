@@ -39,5 +39,7 @@ export function approvalDetailParts(card: ApprovalCard): { pinned: string[]; fle
       };
     case "effect.deploy":
       return { pinned: [action.target.name, action.ref ?? "-"], flexible: [] };
+    case "mcp_tool":
+      return { pinned: [`${action.server.name} · ${action.tool}`], flexible: [JSON.stringify(action.arguments)] };
   }
 }

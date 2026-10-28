@@ -12,6 +12,8 @@ import type { BoxManager } from "../exec/box-manager";
 import { createServiceBoxes } from "../exec/box-service";
 import { ConnectionVault } from "../exec/connections";
 import { EffectExecutor } from "../exec/effect-executor";
+import { boxStreamsOf } from "../exec/box-runtime";
+import { McpGateway } from "../exec/mcp-gateway";
 import { composeJobQueue } from "../composition";
 import type { ApplicationRunPort } from "../team/run-port";
 import { verifySchwayBridge } from "../team/schway-port";
@@ -371,9 +373,14 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
     const connections = config.execution.secretsDirectory ? new ConnectionVault(config.execution.secretsDirectory, {
       forbidden: [dirname(resolve(config.databasePath)), service?.stateDirectory, service?.backupDirectory, service?.ledgerPath, config.execution.directory] }) : null;
     // app.approval_cards/v1: approved effects run once, outside every box, only where boxes and the vault exist.
-    const effects = boxes && connections ? new EffectExecutor(store, { vault: connections, boxes, mirrorRoot: config.execution.directory, now }) : null;
+    // app.mcp_servers/v1: MCP servers run only in project boxes and their sidecars, so the gateway needs boxes.
+    const streams = boxes ? boxStreamsOf(boxes.runtime) : null;
+    const mcp = boxes && streams ? new McpGateway(store, { boxes, runtime: streams, vault: connections, sidecarImage: config.execution.images?.base ?? null,
+      executionDirectory: config.execution.directory, now }) : null;
+    const effects = boxes && connections ? new EffectExecutor(store, { vault: connections, boxes, mirrorRoot: config.execution.directory, now,
+      ...(mcp ? { performers: { mcp_tool: mcp.perform } } : {}) }) : null;
     const compose = { now, prCacheRoot: input.prCacheRoot ?? (service ? resolve(service.stateDirectory, "pr-cache") : ".local/pr-cache"), ...(boxes ? { boxes } : {}),
-      ...(effects ? { effects } : {}) };
+      ...(effects ? { effects } : {}), ...(mcp ? { mcp } : {}) };
     managed = ManagedService.forConfig(store, config, compose);
     const composed = composeJobQueue(store, config, compose);
     managed.adopt(composed);
@@ -384,6 +391,7 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
     const app = new Application(store, config, {
       service: managed, now, ...(service ? { backupDir: service.backupDirectory, ledgerPath: service.ledgerPath } : {}),
       ...(nativeSnapshot ? { nativeSnapshot } : {}), ...(boxes ? { boxes } : {}), ...(connections ? { connections } : {}), ...(effects ? { effects } : {}),
+      ...(mcp ? { mcp } : {}),
     });
     const ledger = ledgerGate({ store, ledgerPath: service?.ledgerPath ?? null, now: now(), mode: "boot" });
     if (!ledger.trusted) return refuse([{ gate: "quarantine", state: "blocked", nextAction: ledger.nextAction, detail: ledger.reason }]);

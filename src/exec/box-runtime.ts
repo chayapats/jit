@@ -133,3 +133,92 @@ export function requireBoxMode(mode: unknown): BoxMode {
   if (mode !== "workspace" && mode !== "full") throw new AppError("invalid_box_mode");
   return mode;
 }
+
+// ---------------------------------------------------------------------------
+// Long-lived streams and MCP sidecars (ADR 0038, ADR 0039)
+// ---------------------------------------------------------------------------
+
+/**
+ * A container a stream or runner call can reach: the project's box, or one MCP server sidecar of the project. A
+ * sidecar runs the same pinned box image (or a digest-pinned OCI server image) with the box hardening, the project's
+ * network mode, its own PID namespace and no workspace mount.
+ */
+export type StreamTarget = { kind: "box"; handle: BoxHandle } | { kind: "sidecar"; handle: SidecarHandle };
+
+/** One long-lived `podman exec -i` into a box or sidecar. */
+export interface BoxStreamRequest {
+  /** Program and arguments inside the container. */
+  readonly argv: readonly string[];
+  /** Non-secret variables, passed as `--env NAME=value`. */
+  readonly env?: Readonly<Record<string, string>>;
+  /**
+   * Secret variables (app.connections/v1 `mcp_env` values for a sidecar). Passed to Podman by name only
+   * (`--env NAME`), with the value in the `podman` client's own environment, so it never appears on a command line.
+   * Only a sidecar may receive them (`box_secret_refused` for the project box).
+   */
+  readonly secretEnv?: Readonly<Record<string, string>>;
+  readonly workdir?: string;
+}
+
+/** The open pipe of a {@link BoxStreamRequest}. Closing kills the `podman exec` client and ends `stdout`. */
+export interface BoxStream {
+  /** Writes bytes to the process's stdin; throws `box_stream_closed` once closed. */
+  write(bytes: Uint8Array): void;
+  /** The process's stdout, chunk by chunk, until it exits or the stream closes. */
+  readonly stdout: AsyncIterable<Uint8Array>;
+  /** The exit status of the exec client (or -1 when killed). */
+  readonly exited: Promise<number>;
+  close(): void;
+}
+
+/** One MCP server sidecar. `name` is `jit-mcp-<projectId>-<serverId>`. */
+export interface SidecarHandle { readonly projectId: string; readonly serverId: string; readonly name: string; readonly mode: BoxMode; readonly image: string }
+
+/** What a sidecar is created from. `volume` is the server's own install directory, mounted at `/mcp` only there. */
+export interface SidecarSpec { projectId: string; serverId: string; mode: BoxMode; image: string; volume: string | null }
+
+/** Mount point of a sidecar's install directory. */
+export const sidecarInstallRoot = "/mcp";
+
+/**
+ * exec.box_streams/v1 — long-lived pipes and sidecars next to {@link BoxRuntime}. Both runtimes implement it. Nothing
+ * here opens a listening port: every channel is a `podman exec -i` pipe.
+ */
+export interface BoxStreams {
+  /** Opens a long-lived exec in `target`. */
+  stream(target: StreamTarget, request: BoxStreamRequest): Promise<BoxStream>;
+  /** Creates (or replaces) and starts a hardened sidecar. */
+  ensureSidecar(spec: SidecarSpec): Promise<SidecarHandle>;
+  /** Removes a sidecar; removing an absent one is a no-op. */
+  removeSidecar(handle: Pick<SidecarHandle, "name">): Promise<void>;
+  /** Pulls a digest-pinned image (`name@sha256:…`); tags are refused (`box_image_unpinned`). */
+  pullImage(reference: string): Promise<void>;
+}
+
+/** `jit-mcp-<projectId>-<serverId>` after validating both ids. */
+export function sidecarName(projectId: string, serverId: string): string {
+  requireId(projectId); requireId(serverId);
+  return `jit-mcp-${projectId}-${serverId}`;
+}
+
+/** A digest-pinned OCI reference: `[host[:port]/]path@sha256:<64 hex>`. */
+export const pinnedImagePattern = /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]{1,5})?(\/[a-z0-9]+([._-][a-z0-9]+)*)+@sha256:[a-f0-9]{64}$|^[a-z0-9]+([._-][a-z0-9]+)*(\/[a-z0-9]+([._-][a-z0-9]+)*)*@sha256:[a-f0-9]{64}$/;
+
+/** Validates stream variable names and values (`invalid_box_stream`): POSIX names, no NUL, bounded. */
+export function validateStreamRequest(target: StreamTarget, request: BoxStreamRequest): void {
+  const invalid = () => new AppError("invalid_box_stream");
+  if (!Array.isArray(request.argv) || request.argv.length < 1 || request.argv.length > 64 ||
+      request.argv.some(arg => typeof arg !== "string" || arg.includes("\u0000") || Buffer.byteLength(arg) > 4096)) throw invalid();
+  for (const env of [request.env ?? {}, request.secretEnv ?? {}]) for (const [name, value] of Object.entries(env)) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name) || typeof value !== "string" || value.includes("\u0000") || Buffer.byteLength(value) > 16_384) throw invalid();
+  }
+  if (request.workdir !== undefined && (typeof request.workdir !== "string" || !request.workdir.startsWith("/") || request.workdir.includes("\u0000"))) throw invalid();
+  if (request.secretEnv && Object.keys(request.secretEnv).length && target.kind !== "sidecar") throw new AppError("box_secret_refused", 403);
+}
+
+/** The {@link BoxStreams} of a runtime that implements them (both shipped runtimes do), or null. */
+export function boxStreamsOf(runtime: BoxRuntime): BoxStreams | null {
+  const candidate = runtime as Partial<BoxStreams>;
+  return typeof candidate.stream === "function" && typeof candidate.ensureSidecar === "function" && typeof candidate.removeSidecar === "function" &&
+    typeof candidate.pullImage === "function" ? runtime as BoxRuntime & BoxStreams : null;
+}

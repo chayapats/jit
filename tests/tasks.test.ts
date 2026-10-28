@@ -234,7 +234,7 @@ test("schema v8 migrates to v9, keeps the previous project, and snapshots the ol
     PRAGMA user_version = 8;`);
   old.close();
   const store = new TransactionStore(path); stores.push(store);
-  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 37 });
+  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 38 });
   expect(store.read(tx => tx.get("SELECT name, revision FROM projects WHERE id = ?", projectId))).toEqual({ name: "kept-task", revision: 4 });
   expect(store.read(tx => tx.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tasks'"))).toEqual({ name: "tasks" });
   const snapshotName = readdirSync(root).find(name => name.includes(".pre-v8-"))!;

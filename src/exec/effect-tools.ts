@@ -31,7 +31,8 @@ const object = (properties: Record<string, unknown>, required: string[]) => ({ t
 const nameSchema = { type: "string", pattern: "^[a-z][a-z0-9-]{0,31}$" };
 const pendingNote = "Nothing has happened yet: the owner decides this approval card in Jit. Do not retry or work around it; continue or end your turn.";
 
-function result(card: ApprovalCard): ToolExecutionResult {
+/** The model-facing result of a proposed card: `pending_approval`, or `approved` when an owner rule decided it. */
+export function cardToolResult(card: ApprovalCard): ToolExecutionResult {
   return { content: JSON.stringify({ state: card.state === "executing" ? "approved" : "pending_approval", cardId: card.id, kind: card.kind, digest: card.digest,
     expiresAt: new Date(card.expiresAt).toISOString(), note: card.state === "executing" ? "An owner auto-approve rule approved this card; Jit runs it once and posts the outcome to this topic." : pendingNote }) };
 }
@@ -52,7 +53,7 @@ export function effectToolDefinitions(store: TransactionStore, request: Applicat
     }
     catch (error) { return fail(`Jit refused the effect: ${error instanceof AppError ? error.code : "invalid_effect_action"}.`); }
     if (card.state === "executing") void runner.run(card.projectId, card.id).catch(() => undefined);
-    return result(card);
+    return cardToolResult(card);
   };
   const remote = (name: unknown, github: boolean): GitRemote | ToolExecutionResult => {
     if (typeof name !== "string" || !NAME.test(name)) return fail("remote must be the name of a remote the owner configured.");

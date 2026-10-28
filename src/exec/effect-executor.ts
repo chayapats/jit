@@ -10,8 +10,8 @@ import { commitServiceOutput, requireId } from "../sources";
 import type { AppTransaction, TransactionStore } from "../store";
 import { assertExecutionAllowed } from "./access";
 import {
-  claimCard, failBeforeStart as failBefore, finishCard, readCard, readDeployTarget, readRemote, reconcileCards,
-  type ApprovalCard, type CardReceipt, type EffectAction, type GitHubTarget,
+  cardLevel, claimCard, failBeforeStart as failBefore, finishCard, inBoxKinds, readCard, readDeployTarget, readRemote, reconcileCards,
+  type ApprovalCard, type CardReceipt, type EffectAction, type EffectKind, type GitHubTarget,
 } from "./approval-cards";
 import { releaseConnection, type ConnectionVault } from "./connections";
 import type { RunBoxes } from "./run-tools";
@@ -37,10 +37,19 @@ export interface EffectExecutorOptions {
   beforePush?: (card: ApprovalCard) => void | Promise<void>;
   /** Most bytes of a git bundle copied out of the box (default 256 MiB). */
   bundleBytes?: number;
+  /**
+   * Performers of the in-box card kinds ({@link inBoxKinds}): an approved `mcp_tool` call runs through the MCP
+   * gateway in the box or its sidecar. A performer is called once, after the claim committed, and must re-check its
+   * own preconditions (level, takeover) right before it acts. Without one, such a card fails `performer_not_configured`.
+   */
+  performers?: Partial<Record<EffectKind, EffectPerformer>>;
 }
 
 /** What an effect attempt produced: the outcome and its technical evidence. */
-type Outcome = { outcome: "succeeded" | "failed" | "unknown"; reason: string | null; detail: Record<string, unknown> };
+export type EffectOutcome = { outcome: "succeeded" | "failed" | "unknown"; reason: string | null; detail: Record<string, unknown> };
+type Outcome = EffectOutcome;
+/** Runs one claimed in-box card. `allowed()` re-reads the level and halt; it must be true right before acting. */
+export type EffectPerformer = (card: ApprovalCard, signal: AbortSignal, allowed: () => boolean) => Promise<EffectOutcome>;
 
 const SHA = /^[0-9a-f]{40}$/;
 const clip = (value: string, max = 2000) => redactRegisteredSecrets(redactCredentials(value)).slice(0, max);
@@ -107,20 +116,20 @@ export class EffectExecutor {
 
   /**
    * After an access command commits (kill switch, narrowing): aborts the host work of every in-flight effect of the
-   * project whose role no longer has `full` in an unhalted project. An aborted push or call ends `unknown`.
+   * project whose role no longer has the card's level in an unhalted project. An aborted push or call ends `unknown`.
    */
   accessChanged(projectId: string): void {
     for (const [cardId, item] of this.#inFlight) {
       if (item.projectId !== projectId) continue;
-      const roleId = this.#store.read(tx => tx.get<{ roleId: string }>("SELECT role_id AS roleId FROM approval_cards WHERE id = ?", cardId)?.roleId);
-      try { this.#store.read(tx => assertExecutionAllowed(tx, projectId, roleId ?? null, "full")); } catch { item.abort.abort(); }
+      const row = this.#store.read(tx => tx.get<{ roleId: string; kind: EffectKind }>("SELECT role_id AS roleId, kind FROM approval_cards WHERE id = ?", cardId));
+      try { this.#store.read(tx => assertExecutionAllowed(tx, projectId, row?.roleId ?? null, row ? cardLevel(row.kind) : "full")); } catch { item.abort.abort(); }
     }
   }
 
-  /** True while the card may still cause its effect: not aborted, and the role keeps `full` in an unhalted project. */
+  /** True while the card may still cause its effect: not aborted, and the role keeps the card's level in an unhalted project. */
   #allowed(card: ApprovalCard, signal: AbortSignal): boolean {
     if (signal.aborted || this.#closing) return false;
-    try { this.#store.read(tx => assertExecutionAllowed(tx, card.projectId, card.roleId, "full")); return true; } catch { return false; }
+    try { this.#store.read(tx => assertExecutionAllowed(tx, card.projectId, card.roleId, cardLevel(card.kind))); return true; } catch { return false; }
   }
 
   /** Runs the card once if it is claimable; resolves with the card's final state. Never throws for an effect failure. */
@@ -149,7 +158,7 @@ export class EffectExecutor {
     if (!claimed) return this.#store.read(tx => readCard(tx, projectId, cardId));
     if ("failed" in claimed) return claimed.failed;
     const { card, secret } = claimed;
-    registerSecretFingerprint(secret);
+    if (secret) registerSecretFingerprint(secret);
     const abort = new AbortController();
     this.#inFlight.set(card.id, { projectId, abort });
     let outcome: Outcome;
@@ -177,9 +186,16 @@ export class EffectExecutor {
     const failBeforeStart = (card: ApprovalCard, reason: string, at: number) => { const failed = failBefore(tx, card, reason, at); postResult(tx, failed, at); return failed; };
     const card = readCard(tx, projectId, cardId);
     if (card.state !== "executing" || card.startedAt !== null) return null;
-    try { assertExecutionAllowed(tx, projectId, card.roleId, "full"); }
+    try { assertExecutionAllowed(tx, projectId, card.roleId, cardLevel(card.kind)); }
     catch { return { failed: failBeforeStart(card, "access_changed", now) }; }
     const action = card.action;
+    // In-box kinds release no connection here: an MCP sidecar receives its bound values from the gateway at spawn.
+    if (action.kind === "mcp_tool") {
+      if (!this.#options.performers?.[action.kind]) return { failed: failBeforeStart(card, "performer_not_configured", now) };
+      const started = claimCard(tx, projectId, cardId, now);
+      if (!started) throw new AppError("approval_card_not_pending", 409);
+      return { card: started, secret: "" };
+    }
     let connectionId: string;
     if (action.kind === "effect.deploy") {
       const target = readDeployTarget(tx, projectId, action.target.name);
@@ -202,6 +218,10 @@ export class EffectExecutor {
     const action = card.action;
     // Every external step re-checks the level and the halt right before it starts (ADR 0037).
     const allowed = () => this.#allowed(card, signal);
+    if (inBoxKinds.includes(action.kind)) {
+      if (!allowed()) return { outcome: "failed", reason: "access_changed", detail: {} };
+      return this.#options.performers![action.kind]!(card, signal, allowed);
+    }
     if (action.kind === "effect.git_push") return this.#push(card, action, secret, signal, allowed);
     if (!allowed()) return { outcome: "failed", reason: "access_changed", detail: {} };
     switch (action.kind) {
@@ -215,6 +235,8 @@ export class EffectExecutor {
           body => ({ sha: body.sha, merged: body.merged }), { 409: "stale", 405: "not_mergeable" });
       case "effect.deploy":
         return this.#http(signal, action.target.url, secret, "POST", { projectId: card.projectId, target: action.target.name, ref: action.ref, cardId: card.id }, null, () => ({}));
+      default:
+        return { outcome: "failed", reason: "performer_not_configured", detail: {} };
     }
   }
 
@@ -401,6 +423,7 @@ function subjectOf(card: ApprovalCard): string {
     case "effect.github_comment": return `${action.github.owner}/${action.github.repo} #${action.issueNumber}`;
     case "effect.github_pr_merge": return `${action.github.owner}/${action.github.repo} #${action.pullNumber} @${action.headSha.slice(0, 12)}`;
     case "effect.deploy": return `${action.target.name}${action.ref ? ` @${action.ref}` : ""}`;
+    case "mcp_tool": return `${action.server.name} ${action.tool}`;
   }
 }
 

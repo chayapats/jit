@@ -34,6 +34,7 @@ import { feedPathToken, renderScheduleFeed, type FeedCommand } from "./schedule-
 import { accessConfirmToken, accessLevels, effectiveAccess, levelRank, type AccessCommand, type AccessLevel } from "./exec/access";
 import { normalizeSecret, type ConnectionCommand } from "./exec/connections";
 import type { ResetBoxCommand } from "./exec/box-commands";
+import type { McpCommand } from "./exec/mcp";
 
 /** ADR 0028 Content-Security-Policy: every page, asset and API response allows only this origin, and no inline script or eval. */
 export const contentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
@@ -257,6 +258,8 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       const boxRoute = /^\/api\/projects\/([a-f0-9-]{36})\/execution\/box(\/reset)?$/.exec(pathname);
       // app.connections/v1 JSON API (EXE08): metadata reads and the Web-only owner commands; the settings page is EXE11.
       const connectionRoute = /^\/api\/connections(?:\/([a-f0-9-]{36})\/(secret|rotate|remove|test))?$/.exec(pathname);
+      // app.mcp_servers/v1 JSON API (EXE12): proposals and servers, Web-only accept/revise; the cards and settings page are EXE13.
+      const mcpRoute = /^\/api\/projects\/([a-f0-9-]{36})\/mcp(?:\/(proposals|servers)\/([a-f0-9-]{36})\/(accept|reject|revise|remove))?$/.exec(pathname);
       /** The topic page that holds a dispatch card, at its anchor. */
       const cardLocation = (card: { projectId: string; topicId: string; anchorSequence: number; id: string }) =>
         `/projects/${card.projectId}/topics/${card.topicId}?after=${Math.max(0, card.anchorSequence - 1)}#dispatch-${card.id}`;
@@ -482,6 +485,21 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const kind = !action ? "connection.create" : action === "secret" ? "connection.set_secret" : `connection.${action}`;
         const command = { kind, requestId: body.requestId, projectId: null, expectedRevision: action ? body.expectedRevision : 0,
           payload: action ? { connectionId, ...picked } : picked } as ConnectionCommand;
+        return json(app.execute(auth.actor, command));
+      }
+      if (mcpRoute) {
+        const projectId = mcpRoute[1]!, target = mcpRoute[2], id = mcpRoute[3], action = mcpRoute[4];
+        if (!target) {
+          if (request.method !== "GET") throw new AppError("method_not_allowed", 405);
+          return json({ proposals: app.mcpProposals(auth.actor, projectId), servers: app.mcpServers(auth.actor, projectId) });
+        }
+        if (request.method !== "POST" || (target === "servers") !== (action === "remove")) throw new AppError("method_not_allowed", 405);
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        const fields = action === "accept" ? ["env"] : action === "revise" ? ["spec"] : [];
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", ...fields].includes(key))) throw new AppError("invalid_body");
+        const picked = Object.fromEntries(fields.filter(key => Object.hasOwn(body, key)).map(key => [key, body[key]]));
+        const command = { kind: action === "remove" ? "mcp.server.remove" : `mcp.install.${action}`, requestId: body.requestId, projectId, expectedRevision: body.expectedRevision,
+          payload: action === "remove" ? { serverId: id } : { proposalId: id, ...picked } } as McpCommand;
         return json(app.execute(auth.actor, command));
       }
       if (boxRoute) {

@@ -3,8 +3,10 @@ import { lstatSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import type { ExecutionConfig } from "../config";
 import { AppError } from "../errors";
 import {
-  boxDirectories, boxEnvironment, boxInternalNetwork, boxName, boxRunnerPath, boxTemporaryDirectory, boxWorkspaceRoot, expectedBoxMounts, requireBoxMode, sameMounts,
+  boxDirectories, boxEnvironment, boxInternalNetwork, boxName, boxRunnerPath, boxTemporaryDirectory, boxWorkspaceRoot, expectedBoxMounts, pinnedImagePattern, requireBoxMode,
+  sameMounts, sidecarInstallRoot, sidecarName, validateStreamRequest,
   type BoxEnsureOptions, type BoxExecRequest, type BoxExecResult, type BoxHandle, type BoxMode, type BoxMount, type BoxRef, type BoxRuntime, type BoxStatus,
+  type BoxStream, type BoxStreamRequest, type BoxStreams, type SidecarHandle, type SidecarSpec, type StreamTarget,
 } from "./box-runtime";
 
 /** One CLI invocation for the injected command runner. Aborting `signal` or passing `timeoutMs` kills the process. */
@@ -38,6 +40,39 @@ export function podmanCommandRunner(serviceEnv: Record<string, string | undefine
   };
 }
 
+/**
+ * Opens one long-lived `podman <argv…>` with stdin and stdout pipes. `extraEnv` (secret values for `--env NAME`)
+ * joins the client allowlist; nothing else of the service environment reaches the process.
+ */
+export type StreamRunner = (argv: readonly string[], extraEnv: Readonly<Record<string, string>>) => BoxStream;
+
+/** The production {@link StreamRunner}: `Bun.spawn` of the `podman` client with the client allowlist environment. */
+export function podmanStreamRunner(serviceEnv: Record<string, string | undefined> = process.env, binary = "podman"): StreamRunner {
+  const base = Object.fromEntries(podmanClientEnvironment.flatMap(name => serviceEnv[name] === undefined ? [] : [[name, serviceEnv[name]!]]));
+  return (argv, extraEnv) => processStream(Bun.spawn([binary, ...argv], { env: { ...base, ...extraEnv }, stdin: "pipe", stdout: "pipe", stderr: "ignore" }));
+}
+
+/** Wraps a spawned process with stdin/stdout pipes as a {@link BoxStream} (also used by local test fixtures). */
+export function processStream(proc: { stdin: { write(bytes: Uint8Array): unknown; end(): unknown }; stdout: ReadableStream<Uint8Array>; exited: Promise<number>; kill(signal?: number | NodeJS.Signals): void }): BoxStream {
+  let closed = false;
+  const exited = proc.exited.catch(() => -1);
+  void exited.then(() => { closed = true; });
+  return {
+    write(bytes) {
+      if (closed) throw new AppError("box_stream_closed", 409);
+      try { proc.stdin.write(bytes); } catch { closed = true; throw new AppError("box_stream_closed", 409); }
+    },
+    stdout: proc.stdout,
+    exited,
+    close() {
+      if (closed) return;
+      closed = true;
+      try { proc.stdin.end(); } catch { /* Already closed. */ }
+      try { proc.kill("SIGKILL"); } catch { /* Already exited. */ }
+    },
+  };
+}
+
 /** The `podman container inspect` fields the runtime verifies. */
 interface Inspected {
   State?: { Running?: boolean };
@@ -56,6 +91,8 @@ export interface PodmanBoxRuntimeOptions {
   registryProxy?: (gateway: string) => Promise<string>;
   /** The service uid that must own the execution directories (defaults to the process uid). */
   uid?: number;
+  /** Opens long-lived `podman exec -i` pipes (MCP servers, the CDP relay); defaults to {@link podmanStreamRunner}. */
+  streams?: StreamRunner;
 }
 
 const commandMs = 120_000;
@@ -69,12 +106,13 @@ const tmpfs = ["/tmp:rw,nosuid,nodev,size=1g,mode=1777", "/run:rw,nosuid,nodev,s
  * `podman container inspect` must show exactly those mounts, no privilege, a read-only root and the mode's network;
  * a box that differs is removed and refused with `box_mount_mismatch` (or `box_hardening_mismatch`).
  */
-export class PodmanBoxRuntime implements BoxRuntime {
+export class PodmanBoxRuntime implements BoxRuntime, BoxStreams {
   readonly #config: ExecutionConfig;
   readonly #directory: string;
   readonly #run: CommandRunner;
   readonly #registryProxy: ((gateway: string) => Promise<string>) | undefined;
   readonly #uid: number | undefined;
+  readonly #streams: StreamRunner;
   #proxyUrl: Promise<string> | null = null;
 
   constructor(options: PodmanBoxRuntimeOptions) {
@@ -84,6 +122,7 @@ export class PodmanBoxRuntime implements BoxRuntime {
     this.#run = options.run ?? podmanCommandRunner();
     this.#registryProxy = options.registryProxy;
     this.#uid = options.uid ?? process.getuid?.();
+    this.#streams = options.streams ?? podmanStreamRunner();
   }
 
   async ensure(projectId: string, mode: BoxMode, options: BoxEnsureOptions = {}): Promise<BoxHandle> {
@@ -151,6 +190,63 @@ export class PodmanBoxRuntime implements BoxRuntime {
       return [{ projectId, name: `jit-box-${projectId}`, state: row.State === "running" ? "running" as const : "stopped" as const,
         mode: row.Labels?.["jit.box.mode"] === "full" ? "full" as const : "workspace" as const, profile: row.Labels?.["jit.box.profile"] === "1" }];
     });
+  }
+
+  /**
+   * exec.box_streams/v1: one long-lived `podman exec -i` in the box or a sidecar. Non-secret variables go on the
+   * command line; secret ones by name only, with their values in the client's environment (sidecars only).
+   */
+  async stream(target: StreamTarget, request: BoxStreamRequest): Promise<BoxStream> {
+    validateStreamRequest(target, request);
+    const name = target.kind === "box" ? boxName(target.handle.projectId) : sidecarName(target.handle.projectId, target.handle.serverId);
+    const argv = ["exec", "-i", "--workdir", request.workdir ?? "/"];
+    for (const [key, value] of Object.entries(request.env ?? {}).sort(([a], [b]) => a.localeCompare(b))) argv.push("--env", `${key}=${value}`);
+    for (const key of Object.keys(request.secretEnv ?? {}).sort()) argv.push("--env", key);
+    argv.push(name, ...request.argv);
+    return this.#streams(argv, request.secretEnv ?? {});
+  }
+
+  /**
+   * Creates a hardened MCP sidecar (removing any earlier one of the same name): the box flags, the mode's network and
+   * constant environment, no workspace mount, and only the server's own install directory at `/mcp` when given.
+   * Inspection must show exactly that mount set, no privilege and a read-only root (`box_mount_mismatch`,
+   * `box_hardening_mismatch`).
+   */
+  async ensureSidecar(spec: SidecarSpec): Promise<SidecarHandle> {
+    requireBoxMode(spec.mode);
+    const name = sidecarName(spec.projectId, spec.serverId);
+    if (spec.image !== this.#config.images!.base && spec.image !== this.#config.images!.browser && !pinnedImagePattern.test(spec.image)) throw new AppError("box_image_unpinned", 409);
+    let volume: string | null = null;
+    if (spec.volume !== null) {
+      const dirs = boxDirectories(this.#directory, spec.projectId);
+      if (!spec.volume.startsWith(`${dirs.project}/mcp/`)) throw new AppError("box_directory_unsafe", 503);
+      mkdirSync(spec.volume, { recursive: true, mode: 0o700 });
+      const stats = lstatSync(spec.volume);
+      if (stats.isSymbolicLink() || !stats.isDirectory() || (this.#uid !== undefined && stats.uid !== this.#uid)) throw new AppError("box_directory_unsafe", 503);
+      volume = realpathSync(spec.volume);
+    }
+    const env = boxEnvironment(spec.mode, spec.mode === "workspace" ? await this.#proxy() : null);
+    if (await this.#inspect(name)) await this.#remove(name);
+    const mounts = volume ? [{ source: volume, destination: sidecarInstallRoot }] : [];
+    const args = createArgs({ name, projectId: spec.projectId, mode: spec.mode, profile: false, image: spec.image, mounts, env, config: this.#config });
+    // A sidecar is labelled as one, not as the project's box, so `list` and capacity never mistake it for the box.
+    const create = args.map(arg => arg === "jit.box=1" ? "jit.mcp=1" : arg === boxWorkspaceRoot ? "/" : arg);
+    await this.#podman(create);
+    await this.#podman(["start", name]);
+    const info = await this.#inspect(name);
+    await this.#verify(name, info, spec.mode, mounts);
+    return Object.freeze({ projectId: spec.projectId, serverId: spec.serverId, name, mode: spec.mode, image: spec.image });
+  }
+
+  async removeSidecar(handle: Pick<SidecarHandle, "name">): Promise<void> {
+    if (!/^jit-mcp-[a-f0-9-]{36}-[a-f0-9-]{36}$/.test(handle.name)) throw new AppError("invalid_box_stream");
+    if (await this.#inspect(handle.name)) await this.#remove(handle.name);
+  }
+
+  async pullImage(reference: string): Promise<void> {
+    if (!pinnedImagePattern.test(reference)) throw new AppError("box_image_unpinned", 409);
+    const result = await this.#run(["pull", "--quiet", reference], { timeoutMs: 600_000 });
+    if (result.exitCode !== 0) throw new AppError("box_image_pull_failed", 503);
   }
 
   /** Creates the project, workspace (and profile) directories as owner-only, refusing symlinks and foreign owners. */

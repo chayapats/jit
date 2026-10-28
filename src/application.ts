@@ -24,6 +24,8 @@ import {
   type DeployTarget, type GitRemote, type RemoveEffectTargetCommand, type SetAutoApproveCommand, type SetEffectTargetCommand,
 } from "./exec/approval-cards";
 import type { EffectExecutor } from "./exec/effect-executor";
+import { applyMcpCommand, isMcpCommand, mcpCommandIdentity, readMcpProposals, readMcpServers, type McpCommand, type McpProposalView, type McpReceipt, type McpServerView } from "./exec/mcp";
+import type { McpGateway } from "./exec/mcp-gateway";
 import {
   accessCommandIdentity, isAccessCommand, readProjectAccess, readRoleAccess, writeAccessLevel, writeHalt, writeResume, writeRoleRestriction,
   type AccessCommand, type AccessReceipt, type HaltExecutionCommand, type HaltOutcome, type ProjectAccess, type RoleAccess,
@@ -224,6 +226,11 @@ export interface ApplicationOptions {
    * approval is `effects_not_configured` (denial still works) and no effect tool is admitted.
    */
   effects?: EffectExecutor;
+  /**
+   * app.mcp_servers/v1 (EXE12): the MCP gateway whose installer runs accepted servers. Without it an accepted server
+   * stays `installing` until a process with a gateway reconciles it as `failed` (`interrupted`).
+   */
+  mcp?: McpGateway;
 }
 
 /** The committed receipt of an app.approval_cards/v1, app.auto_approve/v1 or effect target command. */
@@ -238,6 +245,7 @@ export class Application {
   #boxes: BoxManager | undefined;
   #connections: ConnectionVault | undefined;
   #effects: EffectExecutor | undefined;
+  #mcp: McpGateway | undefined;
   #service: ApplicationOptions["service"];
   #upgradeFault: ApplicationOptions["upgradeFault"];
   #restoreFault: ApplicationOptions["restoreFault"];
@@ -261,6 +269,7 @@ export class Application {
     this.#boxes = options.boxes;
     this.#connections = options.connections;
     this.#effects = options.effects;
+    this.#mcp = options.mcp;
     // app.connections/v1: from boot on, an echo of any stored value in outgoing text is redacted.
     if (this.#connections) { const vault = this.#connections; store.read(tx => vault.fingerprintStored(tx)); }
     this.#service = options.service;
@@ -299,6 +308,8 @@ export class Application {
     const started = await this.#service.start();
     // app.approval_cards/v1: an effect that had started before the restart is `unknown`, never retried (ADR 0012).
     if (started.reconciled) this.#effects?.reconcile();
+    // app.mcp_servers/v1: an install interrupted by the restart fails `interrupted`; the owner may accept again.
+    if (started.reconciled) this.#mcp?.reconcile();
     const upgrade = started.reconciled ? completeAfterBootReconcile(this.#upgradeContext(null), started) : null;
     return { ...started, upgrade, restore };
   }
@@ -753,6 +764,7 @@ export class Application {
   execute(actor: OwnerActor, command: ResetBoxCommand): Promise<BoxResetReceipt>;
   execute(actor: OwnerActor, command: ConnectionCommand): ConnectionReceipt;
   execute(actor: OwnerActor, command: DecideCardCommand | SetAutoApproveCommand | SetEffectTargetCommand | RemoveEffectTargetCommand): ApprovalReceipt;
+  execute(actor: OwnerActor, command: McpCommand): McpReceipt;
   execute(actor: OwnerActor, command: DispatchCommand): DispatchReceipt;
   execute(actor: OwnerActor, command: CreateTopicCommand): TopicReceipt;
   execute(actor: OwnerActor, command: SendMessageCommand): MessageReceipt;
@@ -776,8 +788,8 @@ export class Application {
   execute(actor: OwnerActor, command: ExportCommand): ExportReceipt;
   execute(actor: OwnerActor, command: UpgradeCommand): Promise<UpgradeReceipt>;
   execute(actor: OwnerActor, command: RestoreCommand): Promise<RestoreReceipt>;
-  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetAttentionCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | FeedCommand | AccessCommand | ResetBoxCommand | ConnectionCommand | ApprovalCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | WebhookCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | AttentionReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | FeedReceipt | AccessReceipt | Promise<BoxResetReceipt> | ConnectionReceipt | ApprovalReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | WebhookReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt>;
-  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetAttentionCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | FeedCommand | AccessCommand | ResetBoxCommand | ConnectionCommand | ApprovalCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | WebhookCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | AttentionReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | FeedReceipt | AccessReceipt | Promise<BoxResetReceipt> | ConnectionReceipt | ApprovalReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | WebhookReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt> {
+  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetAttentionCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | FeedCommand | AccessCommand | ResetBoxCommand | ConnectionCommand | ApprovalCommand | McpCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | WebhookCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | AttentionReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | FeedReceipt | AccessReceipt | Promise<BoxResetReceipt> | ConnectionReceipt | ApprovalReceipt | McpReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | WebhookReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt>;
+  execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetAttentionCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | FeedCommand | AccessCommand | ResetBoxCommand | ConnectionCommand | ApprovalCommand | McpCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | WebhookCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | AttentionReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | FeedReceipt | AccessReceipt | Promise<BoxResetReceipt> | ConnectionReceipt | ApprovalReceipt | McpReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | WebhookReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt> {
     if (command?.kind?.startsWith("upgrade.")) return this.#upgradeCommand(actor, command as UpgradeCommand);
     if (command?.kind?.startsWith("restore.")) return this.#restoreCommand(actor, command as RestoreCommand);
     // ops.schema_migrations/v1 admission fence (held by an upgrade or, ops.quarantined_restore/v1, a restore):
@@ -825,6 +837,7 @@ export class Application {
     if (isBoxCommand(command)) return this.#boxResetCommand(actor, command);
     if (isConnectionCommand(command)) return this.#connectionCommand(actor, command);
     if (isApprovalCommand(command)) return this.#approvalCommand(actor, command);
+    if (isMcpCommand(command)) return this.#mcpCommand(actor, command);
     if (command?.kind === "dispatch.proposal.accept" || command?.kind === "dispatch.proposal.dismiss" || command?.kind === "dispatch.answer") return this.#dispatchCommand(actor, command);
     if (command?.kind === "job.enqueue" || command?.kind === "job.resume" || command?.kind === "job.stop") return this.#jobCommand(actor, command);
     if (command?.kind === "role.save" || command?.kind === "route.save" || command?.kind === "role.preview" ||
@@ -2185,6 +2198,42 @@ export class Application {
     });
     if (!replay && result.card?.state === "executing") void this.#effects?.run(command.projectId, result.card.id).catch(() => undefined);
     return result;
+  }
+
+  /**
+   * app.mcp_servers/v1 owner commands. `mcp.install.accept` and `mcp.install.revise` are Web only
+   * (`mcp_install_requires_web` for Telegram and the local API); reject and remove only take power away and are also
+   * accepted from Telegram. Each commits a receipt and audit row; an accepted server is handed to the installer after
+   * commit (a replay never installs again).
+   */
+  #mcpCommand(actor: OwnerActor, command: McpCommand): McpReceipt {
+    const payloadHash = digest(mcpCommandIdentity(command));
+    let replay = false;
+    const result = this.store.transaction(tx => {
+      this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, command.projectId);
+      const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
+      if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); replay = true; return JSON.parse(prior.result_json) as McpReceipt; }
+      const now = this.#now();
+      const receipt = applyMcpCommand(tx, command, this.#commandChannel(actor), now);
+      tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(receipt), now);
+      tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);
+      this.#beforeCommit?.("receipt");
+      return receipt;
+    });
+    if (!replay && command.kind === "mcp.install.accept" && result.server) void this.#mcp?.install(command.projectId, result.server.id).catch(() => undefined);
+    return result;
+  }
+
+  /** app.mcp_servers/v1 read model: the project's MCP install proposals, newest first (at most 50). */
+  mcpProposals(actor: OwnerActor, projectId: string): McpProposalView[] {
+    requireId(projectId);
+    return this.store.read(tx => { this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, projectId); return readMcpProposals(tx, projectId); });
+  }
+
+  /** app.mcp_servers/v1 read model: the project's MCP servers (not removed), with their latest tool listing. Never a value. */
+  mcpServers(actor: OwnerActor, projectId: string): McpServerView[] {
+    requireId(projectId);
+    return this.store.read(tx => { this.#requireOwner(tx, actor, ["web", "telegram"]); this.#project(tx, projectId); return readMcpServers(tx, projectId); });
   }
 
   /** app.approval_cards/v1 read model: the project's cards, newest first (at most 100), with lazy expiry. */

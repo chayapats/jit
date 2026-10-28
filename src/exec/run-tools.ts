@@ -8,6 +8,7 @@ import type { ApplicationRunRequest, RunExecutionGrant, RunReason } from "../tea
 import { assertExecutionAllowed, levelRank, readEffectiveAccess } from "./access";
 import type { BoxSession } from "./box-manager";
 import { effectToolDefinitions, type EffectRunner } from "./effect-tools";
+import type { McpRunInput } from "./mcp-gateway";
 
 /** The model-facing result of one tool call (Schway's own type, re-exported for fixture ports). */
 export type { ToolExecutionResult };
@@ -105,11 +106,15 @@ export function executionCurrent(tx: AppTransaction, request: ApplicationRunRequ
 
 /** Opens the project box for one role; `BoxManager` implements it (exec.box_runtime/v1). */
 export interface RunBoxes { open(projectId: string, roleId: string | null): Promise<BoxSession> }
+/** app.mcp_servers/v1: the MCP tools of one run, over its box (`McpGateway` implements it). */
+export interface RunMcpTools { openRun(input: McpRunInput): Promise<{ definitions: ToolDefinition[]; release(): void }> }
 /**
  * What a run port needs to admit execution tools. A port without it never admits any. With `effects` (the effect
  * executor), a `full` grant also admits the effect tools (app.effect_tools/v1); without it no effect tool exists.
+ * With `mcp` (the MCP gateway), a `workspace` or `full` grant also admits the tools of the project's installed MCP
+ * servers (app.mcp_servers/v1), read-only ones directly and every other one through an approval card.
  */
-export interface RunExecution { boxes: RunBoxes; now?: () => number; effects?: EffectRunner }
+export interface RunExecution { boxes: RunBoxes; now?: () => number; effects?: EffectRunner; mcp?: RunMcpTools }
 /** The admitted tool registry of one run; `release` returns the box session. */
 export interface RunTools { readonly definitions: readonly ToolDefinition[]; release(): void }
 
@@ -162,8 +167,16 @@ export async function openRunTools(store: TransactionStore, execution: RunExecut
   // The service environment never reaches the box: `bash` always runs with the box's own environment.
   const backend: ExecutionBackend = { ...inner, spawn: ({ env: _env, ...spawn }) => inner.spawn(spawn) };
   // app.effect_tools/v1: only a `full` grant with an effect executor admits the effect tools; they only create cards.
-  const admitted = [...coreToolDefinitions(backend),
-    ...(grant.level === "full" && execution.effects ? effectToolDefinitions(store, request, backend, execution.effects, now, tx => executionCurrent(tx, request)) : [])];
+  // app.mcp_servers/v1: installed servers start in this run's box (or their sidecars) and stop when the run releases.
+  let mcp: { definitions: ToolDefinition[]; release(): void } | null = null;
+  if (execution.mcp) {
+    try { mcp = await execution.mcp.openRun({ request, handle: session.handle, current: tx => executionCurrent(tx, request), ...(execution.effects ? { effects: execution.effects } : {}) }); }
+    catch { mcp = null; }
+  }
+  const core = coreToolDefinitions(backend), taken = new Set(core.map(tool => tool.name));
+  const admitted = [...core,
+    ...(grant.level === "full" && execution.effects ? effectToolDefinitions(store, request, backend, execution.effects, now, tx => executionCurrent(tx, request)) : []),
+    ...(mcp?.definitions ?? []).filter(tool => !taken.has(tool.name))];
   const definitions = admitted.map((definition): ToolDefinition => ({
     ...definition,
     async execute(input, ctx): Promise<ToolExecutionResult> {
@@ -192,7 +205,7 @@ export async function openRunTools(store: TransactionStore, execution: RunExecut
     },
   }));
   let released = false;
-  return { definitions: Object.freeze(definitions), release: () => { if (!released) { released = true; session.release(); } } };
+  return { definitions: Object.freeze(definitions), release: () => { if (!released) { released = true; mcp?.release(); session.release(); } } };
 }
 
 /** Status of one audited tool call. `refused` calls never reached the box. */
