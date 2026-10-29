@@ -497,7 +497,7 @@ export class Application {
     return this.store.read(tx => { this.#requireOwner(tx, actor, ["web"], false); return readPreferences(tx); });
   }
 
-  /** delivery.attention_levels/v1: the owner's notification level per channel, or the defaults (`all`, revision 0). */
+  /** delivery.attention_levels/v1: the owner's notification level per channel, or the defaults (`needs-me`, revision 0; S12-D06). */
   attentionLevels(actor: OwnerActor): AttentionLevels {
     return this.store.read(tx => { this.#requireOwner(tx, actor); return readAttentionLevels(tx); });
   }

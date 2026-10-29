@@ -184,7 +184,9 @@ test("within the allowance Jit calls the named specialists itself and answers wi
   const html = await page(f);
   expectNoInlineScript(html);
   expect(html).toContain(`id="dispatch-${card.id}"`);
-  expect(html).toContain("ทีม · 2 คน");
+  // S12-D06: one quiet summary line naming whom Jit asked; the counts stay in the status pill.
+  expect(html).toContain("ทีมตอบแล้ว: เทคโนโลยี, ออกแบบ");
+  expect(html).not.toContain("ทีม · 2 คน");
   expect(html).toContain("จิตเรียกเองภายในงบเรียกทีม ฉบับที่ 0 (ค่าเริ่มต้น)");
   expect(html.match(/ให้ความเห็นแล้ว/g)?.length).toBe(2);
   expect(html.match(/<details class="team-opinion"><summary>อ่านความเห็น<\/summary>/g)?.length).toBe(2);
@@ -201,7 +203,7 @@ test("within the allowance Jit calls the named specialists itself and answers wi
   // English uses the same structure with dictionary labels.
   await postJson(f, "/api/settings/preferences", { requestId: rid(), expectedRevision: f.app.preferences(f.auth.actor).revision, theme: "light", language: "en" });
   const english = await page(f);
-  expect(english).toContain("Team · 2 specialists");
+  expect(english).toContain("Answered by เทคโนโลยี, ออกแบบ");
   expect(english).toContain("Jit called them within the dispatch allowance, revision 0 (default)");
   expect(english).toContain("Save as a decision");
   expect(english).toContain("Read opinion");
@@ -961,6 +963,74 @@ test("REL02: injected policy text and an unproven done result change neither the
   expect(Object.isFrozen(teamCommunicationPolicy) && Object.isFrozen(teamCommunicationPolicy.lines)).toBe(true);
   const html = await page(f);
   expect(html.match(/data-result-status="incomplete"/g)?.length).toBe(2);
+});
+
+/** The opening tag of a dispatch card's team-run details and its one-line summary title. */
+function teamRun(html: string, cardId: string) {
+  const match = new RegExp(`<details class="team-card team-run" id="dispatch-${cardId}" data-dispatch-id="${cardId}"( open)?>\\s*<summary><span class="team-run-title">([^<]*)</span>`).exec(html);
+  if (!match) throw new Error(`no team card ${cardId}`);
+  return { open: match[1] === " open", title: match[2]! };
+}
+
+test("COMM02: a running team stays collapsed with one line naming whom Jit is asking; Jit's own reply is told to say so in one line", async () => {
+  const gate = deferred<ApplicationRunOutcome>();
+  const f = await fixture({ specialist: () => gate.promise });
+  try {
+    const sent = send(f, "ควรใช้ SQLite หรือ Postgres ดี");
+    f.queue.pump(); await ticks(); f.queue.pump(); await ticks();
+    const card = cardFor(f, replyFor(f, sent.message.id).replyMessageId!);
+    expect(card.discussion!.roles.every(role => role.activity === "live")).toBe(true);
+    const html = await page(f);
+    expectNoInlineScript(html);
+    expect(teamRun(html, card.id)).toEqual({ open: false, title: "กำลังถาม เทคโนโลยี, ออกแบบ" });
+    // The model branch of the dispatch line asks for one short line, and every operator line still fits.
+    const operator = jitRequests(f)[0]!.instructions.operator;
+    expect(operator.filter(line => line.includes("keep your reply to one short line saying whom you are asking"))).toHaveLength(1);
+    expect(operator.length).toBeLessThanOrEqual(8);
+    expect(operator.every(line => Buffer.byteLength(line) <= 2048)).toBe(true);
+    await postJson(f, "/api/settings/preferences", { requestId: rid(), expectedRevision: f.app.preferences(f.auth.actor).revision, theme: "dark", language: "en" });
+    expect(teamRun(await page(f), card.id).title).toBe("Asking เทคโนโลยี, ออกแบบ");
+  } finally {
+    gate.resolve(fixtureOutcome("complete", JSON.stringify({ status: "done", result: "ช้า", evidence: "none", unblock: null })));
+    await drain(f);
+  }
+});
+
+test("COMM02: a team card opens by itself only when something waits on the owner: a blocked result, a waiting role, or a stopped team without an answer stays closed", async () => {
+  let ref!: Fixture, blocked = "", quota = false;
+  const f = ref = await fixture({ specialist: request => quota && request.roleId === ref.designId ? fixtureOutcome("quota")
+    : request.roleId === blocked ? result(request, "ยังเปิด repo ไม่ได้", "blocked", { unblock: unblockText }) : result(request, "ความเห็น") });
+  // A blocked result waits on the owner's unblock action, so the card opens; the answered summary still names the team.
+  blocked = f.designId;
+  const first = send(f, "ช่วยดู repo นี้หน่อย");
+  await drain(f);
+  const blockedCard = cardFor(f, replyFor(f, first.message.id).replyMessageId!);
+  expect(blockedCard.teamReply).toMatchObject({ state: "answered" });
+  expect(teamRun(await page(f), blockedCard.id)).toEqual({ open: true, title: "ทีมตอบแล้ว: เทคโนโลยี, ออกแบบ" });
+  // A role waiting on its route waits on the owner too.
+  blocked = ""; quota = true;
+  const second = send(f, "อีกเรื่องหนึ่ง");
+  await drain(f);
+  const waitingCard = cardFor(f, replyFor(f, second.message.id).replyMessageId!);
+  expect(waitingCard.discussion!.roles.find(role => role.roleId === f.designId)).toMatchObject({ activity: "waiting" });
+  expect(teamRun(await page(f, `?after=${waitingCard.anchorSequence - 1}`), waitingCard.id)).toMatchObject({ open: true, title: "กำลังถาม เทคโนโลยี, ออกแบบ" });
+  // Stopping the team is the owner's own choice: nothing waits, so the card stays closed and says whom Jit asked.
+  f.app.execute(f.auth.actor, { kind: "team.stop_all", requestId: rid(), projectId: f.project.id,
+    expectedRevision: f.app.discussion(f.auth.actor, f.project.id, waitingCard.discussion!.id).discussion.revision, payload: { discussionId: waitingCard.discussion!.id } });
+  await drain(f);
+  const stopped = cardFor(f, replyFor(f, second.message.id).replyMessageId!);
+  expect(stopped.teamReply).toBeNull();
+  expect(teamRun(await page(f, `?after=${stopped.anchorSequence - 1}`), stopped.id)).toEqual({ open: false, title: "ถาม เทคโนโลยี, ออกแบบ แล้ว" });
+});
+
+test("COMM02: a fixed-rule dispatch tells Jit to answer in one line naming whom it asks, within the operator line limits", async () => {
+  const f = await fixture({ jit: r => answer(r, "ถามเทคโนโลยีให้แล้วครับ") });
+  send(f, "@เทคโนโลยี ช่วยดู schema หน่อย");
+  await drain(f);
+  const operator = jitRequests(f)[0]!.instructions.operator;
+  const fixed = operator.find(line => line.includes("fixed rule (named)"))!;
+  expect(fixed).toEndWith("When the service calls specialists after your reply, keep your reply to one short line saying whom you are asking.");
+  expect(operator.every(line => Buffer.byteLength(line) <= 2048)).toBe(true);
 });
 
 test("COMM01: a team reply is never offered a task suggestion, and one it returns anyway is discarded as proposal:task", async () => {

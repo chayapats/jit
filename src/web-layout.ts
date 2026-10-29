@@ -341,6 +341,15 @@ function dispatchCard(card: DispatchCardView, base: string, csrf: string, topicR
   const done = team.roles.filter(role => role.state === "completed" && citableResult(role.result)).length;
   const summary = [live ? `${tr("team_card.working")} ${live}` : "", waiting ? `${tr("team_card.waiting")} ${waiting}` : "", `${tr("team_card.done")} ${done}/${team.roles.length}`].filter(Boolean).join(" · ");
   const answered = card.teamReply?.state === "answered";
+  // S12-D06: team work stays quiet. The card is collapsed to one line naming whom Jit asks, and opens by itself only
+  // when something waits on the owner: a role or the team reply waiting on its route, a blocked result, a hold, or a
+  // team reply that failed or could not start. Names are owner configuration, escaped; no model text goes here.
+  const names = team.roles.map(role => role.roleName).join(", ");
+  const teamReplyStalled = card.teamReply?.state === "failed" || card.teamReply?.state === "blocked" || card.teamReply?.state === "not_admitted";
+  const needsOwner = waiting > 0 || card.blocked.length > 0 || (card.teamHold !== null && !card.teamReply) || team.roles.some(role => role.result?.status === "blocked") || teamReplyStalled;
+  // Nothing runs or waits any more and no answer is coming (stopped, failed or without results): Jit asked, past tense.
+  const settled = !answered && !live && !waiting && card.teamReply?.state !== "thinking" && card.teamReply?.state !== "blocked";
+  const title = tr(answered ? "team_card.answered_by" : settled ? "team_card.asked" : "team_card.asking");
   const origin = team.origin?.kind === "owner-accepted" ? tr("team_card.origin_owner")
     : `${tr("team_card.origin_allowance")} ${card.allowanceRevision}${card.allowanceRevision === 0 ? ` (${tr("settings.dispatch_default")})` : ""}`;
   // Skip, re-dispatch and add reuse the discussion's `team.control` (skip fences the job; include admits within the role budget).
@@ -372,8 +381,8 @@ function dispatchCard(card: DispatchCardView, base: string, csrf: string, topicR
     card.teamHold && !card.teamReply ? `<p class="team-role-note" role="status">${tr(`team_card.hold.${card.teamHold}` as MessageKey)}</p>` : "",
     !card.teamReply && !live && !waiting && !done ? `<p class="team-role-note">${tr("team_card.no_results")}</p>` : "",
   ].join("");
-  return `<details class="team-card team-run" id="dispatch-${card.id}" data-dispatch-id="${card.id}"${answered ? "" : " open"}>
-    <summary><span class="team-run-title">${tr("team_card.title")} · ${team.roles.length} ${tr("team_card.people")}</span><span class="job-status" data-state="${live ? "running" : waiting ? "waiting" : "completed"}">${summary}</span></summary>
+  return `<details class="team-card team-run" id="dispatch-${card.id}" data-dispatch-id="${card.id}"${needsOwner ? " open" : ""}>
+    <summary><span class="team-run-title">${escape(fillText(title, { names }))}</span><span class="job-status" data-state="${live ? "running" : waiting ? "waiting" : "completed"}">${summary}</span></summary>
     <p class="team-run-origin">${origin} · <a href="${allowanceHref(card.projectId)}">${tr("dispatch.allowance_link")}</a></p>${selectionLine(card)}${droppedLine}${blockedLine}
     <ul class="team-roles">${rows}</ul>${notes}<div class="reply-actions">${actions}</div></details>`;
 }

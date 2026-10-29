@@ -175,6 +175,8 @@ test("quota waits instead of failing", async () => {
 
 test("report path unchanged", async () => {
   const f = await fixture();
+  // A summary report is informational; since S12-D06 the default level (`needs-me`) filters it, so choose everything.
+  setTelegramLevel(f, "all");
   const created = f.app.execute(f.auth.actor, summary(f)).schedule;
   f.clock.now = epoch + 60_000;
   tickSchedules(f.store, f.queue, f.config, f.clock.now);
@@ -308,6 +310,19 @@ test("needs-me: a plain summary report is saved without an intent and a failed s
   expect(intents(f)[0]!.payload.text).toContain("repo unreachable");
   expect(intents(f)[0]).toMatchObject({ attention: { class: "needs_owner", item: null, workGroupId: null } });
   expect(f.app.schedule(f.auth.actor, f.project.id, failed.id).occurrences[0]).toMatchObject({ state: "failed", outcome: { kind: "failed" } });
+});
+
+test("S12-D06 default level: without a saved level a plain summary report is saved without an intent", async () => {
+  const f = await fixture();
+  expect(f.app.attentionLevels(f.auth.actor).telegram).toMatchObject({ level: "needs-me", revision: 0 });
+  const created = f.app.execute(f.auth.actor, summary(f)).schedule;
+  f.clock.now = epoch + 60_000;
+  tickSchedules(f.store, f.queue, f.config, f.clock.now);
+  await drain(f);
+  expect(intentCount(f)).toBe(0);
+  const occurrence = f.app.schedule(f.auth.actor, f.project.id, created.id).occurrences[0]!;
+  expect(occurrence).toMatchObject({ state: "complete", outcome: { kind: "report", reason: null }, deliveryIntentId: null });
+  expect(occurrence.outputSource).not.toBeNull();
 });
 
 test("needs-me never filters reminders, and returning to all notifies the next summary (REL04)", async () => {

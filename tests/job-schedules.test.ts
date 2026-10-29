@@ -314,6 +314,8 @@ test("edit supersedes pending attempts and prior unsent intents; manual job star
 
 test("summary reads permitted context through the run port and commits output evidence; the output cannot seed memory loops", async () => {
   const f = await fixture();
+  // A summary report is informational; since S12-D06 the default level (`needs-me`) creates no intent for it.
+  f.app.execute(f.auth.actor, { kind: "attention.set", requestId: crypto.randomUUID(), projectId: null, expectedRevision: 0, payload: { channel: "telegram", level: "all" } });
   const roomy = { ...limits, contextTokens: 64000, outputTokens: 4000 };
   const created = f.app.execute(f.auth.actor, summary(f, { recurrence: { kind: "once", at: epoch + 60_000 }, limits: roomy })).schedule;
   f.clock.now = epoch + 60_000;

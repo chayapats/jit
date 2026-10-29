@@ -103,7 +103,7 @@ function goodFindingsJson(): string {
   });
 }
 
-async function fixture(script?: (request: any, signal: AbortSignal, observe: (e: any) => void) => unknown) {
+async function fixture(script?: (request: any, signal: AbortSignal, observe: (e: any) => void) => unknown, level: "all" | null = "all") {
   const root = mkdtempSync(join(tmpdir(), "jit-pr-alerts-"));
   roots.push(root);
   const path = join(root, "app.sqlite");
@@ -126,6 +126,9 @@ async function fixture(script?: (request: any, signal: AbortSignal, observe: (e:
   await app.setupOwner(password);
   const token = await app.login(password);
   const auth = app.authenticate(token);
+  // delivery.attention_levels/v1: since S12-D06 the default is `needs-me`, which creates no informational finding
+  // alert. These cases are about alert mechanics, so the owner chose everything.
+  if (level) app.execute(auth.actor, { kind: "attention.set", requestId: crypto.randomUUID(), projectId: null, expectedRevision: 0, payload: { channel: "telegram", level } });
   const project = app.execute(auth.actor, {
     kind: "project.create", requestId: crypto.randomUUID(), projectId: null,
     expectedRevision: 0, payload: { name: "โครงการ alerts" },
@@ -454,6 +457,17 @@ function enqueueReview(f: F, monitorId: string, candidateId: string) {
     payload: { type: "pr.review", configurationRevision: 1, policyRevision: 1, purpose: "review", inputRevision: revision, input: { monitorId, candidateId }, priority: "background", limits: structuredClone(limits) },
   }).job;
 }
+
+test("S12-D06 default level: without a saved level a finding alert creates no intent, and the decision says why", async () => {
+  const f = await fixture(undefined, null);
+  expect(f.app.attentionLevels(f.auth.actor).telegram).toMatchObject({ level: "needs-me", revision: 0 });
+  const { report } = await prepareReport(f);
+  expect(intentsOf(f)).toHaveLength(0);
+  const decisions = f.store.read(tx => readAlertDecisions(tx, report.id));
+  expect(decisions[0]!.findings.find(d => d.findingId === "finding-1")).toMatchObject({ decision: "suppressed", reason: "attention_needs_me" });
+  // The report keeps the finding; only the notification was not created.
+  expect(f.app.prReport(f.auth.actor, f.project.id, report.id).report.findings.some((finding: { id: string }) => finding.id === "finding-1")).toBe(true);
+});
 
 test("report commit admits alerts transactionally with a stored decision; duplicate processing stays one intent", async () => {
   const f = await fixture();
