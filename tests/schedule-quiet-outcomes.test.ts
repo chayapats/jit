@@ -175,8 +175,6 @@ test("quota waits instead of failing", async () => {
 
 test("report path unchanged", async () => {
   const f = await fixture();
-  // A summary report is informational; since S12-D06 the default level (`needs-me`) filters it, so choose everything.
-  setTelegramLevel(f, "all");
   const created = f.app.execute(f.auth.actor, summary(f)).schedule;
   f.clock.now = epoch + 60_000;
   tickSchedules(f.store, f.queue, f.config, f.clock.now);
@@ -280,49 +278,26 @@ function setTelegramLevel(f: Fixture, level: "all" | "needs-me") {
     expectedRevision: f.app.attentionLevels(f.auth.actor).telegram.revision, payload: { channel: "telegram", level } }).attention;
 }
 
-test("needs-me: a plain summary report is saved without an intent and a failed summary still notifies (REL04)", async () => {
+for (const saved of [false, true]) test(`needs-me: owner-configured schedule reports notify once (saved=${saved})`, async () => {
   const f = await fixture();
-  setTelegramLevel(f, "needs-me");
+  if (saved) setTelegramLevel(f, "needs-me");
+  expect(f.app.attentionLevels(f.auth.actor).telegram).toMatchObject({ level: "needs-me", revision: saved ? 1 : 0 });
   f.control.next = () => fixtureOutcome("complete", '{"outcome":"report","text":"มีงานใหม่สองเรื่อง"}');
   const report = f.app.execute(f.auth.actor, summary(f)).schedule;
   f.clock.now = epoch + 60_000;
-  tickSchedules(f.store, f.queue, f.config, f.clock.now);
-  await drain(f);
-  expect(intentCount(f)).toBe(0);
-  // The report itself is kept: committed output source, complete occurrence, report outcome.
-  const occurrence = f.app.schedule(f.auth.actor, f.project.id, report.id).occurrences[0]!;
-  expect(occurrence).toMatchObject({ state: "complete", outcome: { kind: "report", reason: null }, deliveryIntentId: null, jobState: "succeeded" });
-  expect(occurrence.outputSource).not.toBeNull();
-  expect(readSchedule(f, report.id).lastResult).toMatchObject({ state: "succeeded", reason: "complete", deliveryIntentId: null });
-  expect(readSchedule(f, report.id).lastResult!.outputSource).toEqual(occurrence.outputSource);
-  const th = await (await f.web(request(f, `/projects/${f.project.id}/schedules/${report.id}`))).text();
-  expect(th).toContain("บันทึกสรุปแล้ว ไม่แจ้งเตือน (เฉพาะเรื่องที่รอคุณ)");
-  const en = await (await f.web(request(f, `/projects/${f.project.id}/schedules/${report.id}`, undefined, { "Accept-Language": "en" }))).text();
-  expect(en).toContain("Summary saved, not notified (only what needs me)");
-
-  // A REL01 failed summary waits on the owner, so it creates exactly one intent under needs-me.
-  f.control.next = () => fixtureOutcome("complete", '{"outcome":"failed","reason":"repo unreachable"}');
-  const failed = f.app.execute(f.auth.actor, summary(f, { recurrence: { kind: "once", at: f.clock.now + 60_000 } })).schedule;
-  f.clock.now += 60_000;
-  tickSchedules(f.store, f.queue, f.config, f.clock.now);
-  await drain(f);
+  tickSchedules(f.store, f.queue, f.config, f.clock.now); await drain(f);
   expect(intentCount(f)).toBe(1);
-  expect(intents(f)[0]!.payload.text).toContain("repo unreachable");
-  expect(intents(f)[0]).toMatchObject({ attention: { class: "needs_owner", item: null, workGroupId: null } });
-  expect(f.app.schedule(f.auth.actor, f.project.id, failed.id).occurrences[0]).toMatchObject({ state: "failed", outcome: { kind: "failed" } });
-});
-
-test("S12-D06 default level: without a saved level a plain summary report is saved without an intent", async () => {
-  const f = await fixture();
-  expect(f.app.attentionLevels(f.auth.actor).telegram).toMatchObject({ level: "needs-me", revision: 0 });
-  const created = f.app.execute(f.auth.actor, summary(f)).schedule;
-  f.clock.now = epoch + 60_000;
-  tickSchedules(f.store, f.queue, f.config, f.clock.now);
-  await drain(f);
-  expect(intentCount(f)).toBe(0);
-  const occurrence = f.app.schedule(f.auth.actor, f.project.id, created.id).occurrences[0]!;
-  expect(occurrence).toMatchObject({ state: "complete", outcome: { kind: "report", reason: null }, deliveryIntentId: null });
-  expect(occurrence.outputSource).not.toBeNull();
+  expect(intents(f)[0]).toMatchObject({ attention: { class: "needs_owner" } });
+  const occurrence = f.app.schedule(f.auth.actor, f.project.id, report.id).occurrences[0]!;
+  expect(occurrence).toMatchObject({ state: "complete", outcome: { kind: "report" }, deliveryIntentId: expect.any(String) });
+  tickSchedules(f.store, f.queue, f.config, f.clock.now); await drain(f);
+  expect(intentCount(f)).toBe(1);
+  f.control.next = () => fixtureOutcome("complete", '{"outcome":"failed","reason":"repo unreachable"}');
+  f.app.execute(f.auth.actor, summary(f, { recurrence: { kind: "once", at: f.clock.now + 60_000 } }));
+  f.clock.now += 60_000;
+  tickSchedules(f.store, f.queue, f.config, f.clock.now); await drain(f);
+  expect(intentCount(f)).toBe(2);
+  expect(intents(f)[1]).toMatchObject({ attention: { class: "needs_owner" } });
 });
 
 test("needs-me never filters reminders, and returning to all notifies the next summary (REL04)", async () => {
@@ -341,5 +316,5 @@ test("needs-me never filters reminders, and returning to all notifies the next s
   tickSchedules(f.store, f.queue, f.config, f.clock.now);
   await drain(f);
   expect(intents(f).map(intent => intent.payload.kind)).toEqual(["reminder", "report"]);
-  expect(intents(f)[1]).toMatchObject({ attention: { class: "informational" } });
+  expect(intents(f)[1]).toMatchObject({ attention: { class: "needs_owner" } });
 });

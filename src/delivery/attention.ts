@@ -8,7 +8,7 @@ import type { AttentionClass, DeliveryAttention, DeliveryReceipt } from "./types
  * delivery.attention_levels/v1 — the owner's per-channel choice of what creates notifications (REL04, ADR 0032, FR-28).
  *
  * One row per channel (schema 35, `attention_levels`). Without a row the level is `needs-me` at revision 0 (S12-D06:
- * team work stays quiet, so only what waits on the owner notifies until the owner picks `all`); a saved row keeps its
+ * team progress stays quiet; owner-configured schedule reports and PR alerts also count as needs_owner); a saved row keeps its
  * level and is never migrated. It changes only through the `attention.set` owner command, which is revisioned per channel and idempotent by request id like every
  * other command. The level filters which delivery intents are *created*; it never hides or deletes reports, decisions
  * or history, and changing it never cancels an intent that already exists.

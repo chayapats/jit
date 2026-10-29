@@ -103,7 +103,7 @@ function goodFindingsJson(): string {
   });
 }
 
-async function fixture(script?: (request: any, signal: AbortSignal, observe: (e: any) => void) => unknown, level: "all" | null = "all") {
+async function fixture(script?: (request: any, signal: AbortSignal, observe: (e: any) => void) => unknown, level: "all" | "needs-me" | null = null) {
   const root = mkdtempSync(join(tmpdir(), "jit-pr-alerts-"));
   roots.push(root);
   const path = join(root, "app.sqlite");
@@ -126,8 +126,6 @@ async function fixture(script?: (request: any, signal: AbortSignal, observe: (e:
   await app.setupOwner(password);
   const token = await app.login(password);
   const auth = app.authenticate(token);
-  // delivery.attention_levels/v1: since S12-D06 the default is `needs-me`, which creates no informational finding
-  // alert. These cases are about alert mechanics, so the owner chose everything.
   if (level) app.execute(auth.actor, { kind: "attention.set", requestId: crypto.randomUUID(), projectId: null, expectedRevision: 0, payload: { channel: "telegram", level } });
   const project = app.execute(auth.actor, {
     kind: "project.create", requestId: crypto.randomUUID(), projectId: null,
@@ -458,15 +456,14 @@ function enqueueReview(f: F, monitorId: string, candidateId: string) {
   }).job;
 }
 
-test("S12-D06 default level: without a saved level a finding alert creates no intent, and the decision says why", async () => {
-  const f = await fixture(undefined, null);
-  expect(f.app.attentionLevels(f.auth.actor).telegram).toMatchObject({ level: "needs-me", revision: 0 });
+for (const level of [null, "needs-me"] as const) test(`needs-me: owner-configured PR finding alerts notify once (saved=${level !== null})`, async () => {
+  const f = await fixture(undefined, level);
+  expect(f.app.attentionLevels(f.auth.actor).telegram).toMatchObject({ level: "needs-me", revision: level ? 1 : 0 });
   const { report } = await prepareReport(f);
-  expect(intentsOf(f)).toHaveLength(0);
-  const decisions = f.store.read(tx => readAlertDecisions(tx, report.id));
-  expect(decisions[0]!.findings.find(d => d.findingId === "finding-1")).toMatchObject({ decision: "suppressed", reason: "attention_needs_me" });
-  // The report keeps the finding; only the notification was not created.
-  expect(f.app.prReport(f.auth.actor, f.project.id, report.id).report.findings.some((finding: { id: string }) => finding.id === "finding-1")).toBe(true);
+  expect(intentsOf(f)).toHaveLength(1);
+  expect(intentsOf(f)[0]).toMatchObject({ attention: { class: "needs_owner" } });
+  f.store.transaction(tx => admitReportAlerts(tx, { projectId: f.project.id, reportId: report.id }, f.clock.now));
+  expect(intentsOf(f)).toHaveLength(1);
 });
 
 test("report commit admits alerts transactionally with a stored decision; duplicate processing stays one intent", async () => {

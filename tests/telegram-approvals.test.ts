@@ -47,8 +47,10 @@ const lastIntentText = (f: EffectFixture) => {
   return row ? (JSON.parse(row.record_json) as { payload: { text: string } }).payload.text : "";
 };
 
-test("(1) an eligible card → one intent with two buttons whose data starts with tg/1/", async () => {
+for (const saved of [false, true]) test(`(1) needs-me approval notifies once with two buttons (saved=${saved})`, async () => {
   const { f, propose } = await proposing();
+  if (saved) f.app.execute(f.auth.actor, { kind: "attention.set", requestId: rid(), projectId: null, expectedRevision: 0, payload: { channel: "telegram", level: "needs-me" } });
+  expect(f.app.attentionLevels(f.auth.actor).telegram).toMatchObject({ level: "needs-me", revision: saved ? 1 : 0 });
   setLevel(f, "full");
   setDeploy(f, connection(f, "deploy_secret", deployToken()));
   const card = await propose(effectToolNames["effect.deploy"], { target: "production" });

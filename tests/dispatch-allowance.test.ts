@@ -996,6 +996,15 @@ test("COMM02: a running team stays collapsed with one line naming whom Jit is as
   }
 });
 
+test("COMM02: settled specialist errors open the team card when there is no result", async () => {
+  const f = await fixture({ specialist: () => fixtureOutcome("invalid_result") });
+  const sent = send(f, "ช่วยดู repo นี้หน่อย"); await drain(f);
+  const card = cardFor(f, replyFor(f, sent.message.id).replyMessageId!);
+  expect(card.teamReply).toBeNull();
+  expect(card.discussion!.roles.every(role => role.activity === "settled" && role.state === "blocked" && !role.result)).toBe(true);
+  expect(teamRun(await page(f), card.id)).toMatchObject({ open: true });
+});
+
 test("COMM02: a team card opens by itself only when something waits on the owner: a blocked result, a waiting role, or a stopped team without an answer stays closed", async () => {
   let ref!: Fixture, blocked = "", quota = false;
   const f = ref = await fixture({ specialist: request => quota && request.roleId === ref.designId ? fixtureOutcome("quota")

@@ -40,7 +40,7 @@ All branches run inside the job `commit(result, mutate)` fence; a late result fr
 
 Clipping everywhere reuses the report rule: `Buffer.byteLength(text) <= config.messageBytes` else the first 512 code points plus `…(ตัดให้พอขนาดแจ้งเตือน)`. The failure notification carries only the bounded reason, never the raw model output. The schedule `purpose` inside the notice is passed through `redactCredentials` first: purpose text is owner-configured and may contain credential-like spans, which `commitDeliveryIntent` would otherwise reject, rolling back the failure commit and faulting the queue. Quota / `needs_login` / `route_unavailable` keep the unchanged `waiting` path with no commit.
 
-Since REL04 ([delivery.attention_levels/v1](delivery-attention-levels-v1.md)) the `report` intent is informational: while the Telegram level is `needs-me` the report commits its output source, occurrence and `lastResult` as above but with a null intent id, and the detail page shows `schedules.outcome_report_unnotified` ("บันทึกสรุปแล้ว ไม่แจ้งเตือน (เฉพาะเรื่องที่รอคุณ)" / "Summary saved, not notified (only what needs me)"). `failed` summaries and reminders are `needs_owner` and always notify.
+Owner decision 2026-10-29 ([delivery.attention_levels/v1](delivery-attention-levels-v1.md)): owner-configured summary `report` intents are `needs_owner`, because the owner explicitly requested the schedule. Reports, failed summaries and reminders notify under saved or unset `needs-me`, using the existing occurrence dedupe. `no_update` still creates no intent. Earlier reports suppressed by the previous classification remain in history; the level change creates no retroactive intent.
 
 ## Never-quiet rule
 

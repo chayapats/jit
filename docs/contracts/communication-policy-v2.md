@@ -38,7 +38,7 @@ Rule 7 has a closed proposal entry on [`app.jit_reply/v2`](jit-reply-v1.md#struc
 {"kind": "task", "title": "<string>", "summary": "<string>"}
 ```
 
-- Exactly the keys `kind`, `title` and `summary`. Both strings are trimmed, non-empty and well-formed. `title` is at most 200 UTF-16 code units (`taskSuggestionTitleChars`, the `task.propose` bound) on one line with no control characters; `summary` is at most 1200 (`taskSuggestionSummaryChars`) and may keep tabs and line breaks. `parseTaskSuggestion` returns the trimmed pair or null.
+- Exactly the keys `kind`, `title` and `summary`. Both strings are trimmed, non-empty and well-formed. `title` is at most 200 UTF-16 code units (`taskSuggestionTitleChars`, the `task.propose` bound) on one line with no control characters; `summary` is at most 1200 (`taskSuggestionSummaryChars`) and may keep tabs and line breaks. `parseTaskSuggestion` also uses the shared `validateTaskWording` command validator with the installation’s `messageBytes`: title ≤ 800 UTF-8 bytes and 200 UTF-16 code units, summary ≤ configured bytes, combined source ≤ 65536 bytes. It returns the trimmed pair or null.
 - At most one per reply. A second entry, an invalid one, and any entry on a team reply (which registers no `task` handler) are discarded as `proposal:task`; the reply text still commits.
 - Only message replies are offered it: `taskSuggestionInstruction` is on the proposal-kinds line of a reply to an owner message, never on a team reply.
 - On commit the record stores `taskSuggestion`; `JitReplyView.taskSuggestion` is that value on an `answered` reply and `null` otherwise. Job evidence adds ` · proposals task:1` and never the text.

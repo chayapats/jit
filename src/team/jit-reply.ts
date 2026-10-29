@@ -1,3 +1,4 @@
+import { validateTaskWording } from "../tasks";
 import { AppError } from "../errors";
 import { attemptAuthority, readAttempt } from "../jobs/attempts";
 import { parseReply, replyFormatInstruction } from "./reply-format";
@@ -229,16 +230,17 @@ const controlCharacters = /[\u0000-\u001f\u007f]/, summaryControls = /[\u0000-\u
 /**
  * One well-formed task suggestion `{"kind": "task", "title": string, "summary": string}` with exactly those keys, or
  * null. Both strings are trimmed, non-empty, well-formed and within {@link taskSuggestionTitleChars} /
- * {@link taskSuggestionSummaryChars} UTF-16 code units (the `task.propose` bound), so a saved suggestion always fits the
+ * {@link taskSuggestionSummaryChars} UTF-16 code units, and the destination command’s configured UTF-8 byte limits, so a saved suggestion fits the
  * owner's command; the title has no control characters and the summary none but tabs and line breaks. The result is
  * untrusted text for the owner's form only: it never creates, accepts or starts a task.
  */
-export function parseTaskSuggestion(item: unknown): TaskSuggestion | null {
+export function parseTaskSuggestion(item: unknown, maximumBytes = 4096): TaskSuggestion | null {
   if (!exact(item, ["kind", "title", "summary"]) || (item as { kind: unknown }).kind !== "task") return null;
   const { title, summary } = item as { title: unknown; summary: unknown };
   if (typeof title !== "string" || typeof summary !== "string") return null;
   const t = title.trim(), s = summary.trim();
   if (!t || !s || !t.isWellFormed() || !s.isWellFormed() || t.length > taskSuggestionTitleChars || s.length > taskSuggestionSummaryChars) return null;
+  try { validateTaskWording(t, s, maximumBytes); } catch { return null; }
   return controlCharacters.test(t) || summaryControls.test(s) ? null : { title: t, summary: s };
 }
 
@@ -834,7 +836,7 @@ export function jitReplyWork(store: TransactionStore, config: AppConfig, port: A
         return !!promotion;
       } } : {}, task: (item: unknown) => {
         if (taskSuggestion) return false;
-        taskSuggestion = parseTaskSuggestion(item);
+        taskSuggestion = parseTaskSuggestion(item, config.messageBytes);
         return !!taskSuggestion;
       }, suggestions: (item: unknown) => {
         if (suggestions) return false;

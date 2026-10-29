@@ -160,7 +160,7 @@ export function taskIdentity(command: TaskCommand, maximumBytes: number): string
     if (!exact(payload, keys) && !exact(payload, withSource)) throw new AppError("invalid_task_command");
     if (command.kind === "task.propose") requireId(payload.topicId);
     else requireId(payload.taskId);
-    boundWording(payload.title, payload.summary, maximumBytes);
+    validateTaskWording(payload.title, payload.summary, maximumBytes);
     if ("source" in payload) parseSource(payload.source);
   } else if (command.kind === "task.dismiss") {
     if (!exact(payload, ["taskId", "proposalId", "reason"])) throw new AppError("invalid_task_command");
@@ -361,7 +361,8 @@ interface TaskRow {
   pendingReasonJson: string | null; supersededBy: string | null; createdAt: number; updatedAt: number;
 }
 
-function boundWording(title: unknown, summary: unknown, maximumBytes: number): void {
+/** Validates task title and summary against the destination command’s UTF-8 byte and source limits. */
+export function validateTaskWording(title: unknown, summary: unknown, maximumBytes: number): void {
   requireText(title, 800);
   if (title.length > 200) throw new AppError("title_too_long");
   requireText(summary, maximumBytes);
@@ -532,7 +533,7 @@ function projectCurrentTask(tx: AppTransaction, row: TaskRow): TaskRecord {
 function propose(tx: AppTransaction, command: Extract<TaskCommand, { kind: "task.propose" }>, channel: TaskChannel, now: number, maximumBytes: number): TaskReceipt {
   requireTopic(tx, command.projectId, command.payload.topicId, command.expectedRevision);
   const { title, summary } = command.payload;
-  boundWording(title, summary, maximumBytes);
+  validateTaskWording(title, summary, maximumBytes);
   const cited = cite(tx, command.projectId, command.payload.topicId, title, summary, command.payload.source, now);
   const id = crypto.randomUUID();
   const proposalId = crypto.randomUUID();
@@ -545,7 +546,7 @@ function propose(tx: AppTransaction, command: Extract<TaskCommand, { kind: "task
 }
 function edit(tx: AppTransaction, task: TaskRow, command: Extract<TaskCommand, { kind: "task.edit" }>, channel: TaskChannel, now: number, maximumBytes: number): TaskReceipt {
   const { title, summary } = command.payload;
-  boundWording(title, summary, maximumBytes);
+  validateTaskWording(title, summary, maximumBytes);
   const cited = cite(tx, task.projectId, task.topicId, title, summary, command.payload.source, now);
   const proposal = insertProposal(tx, task, task.proposalRevision + 1, title, summary, cited, now);
   task.proposalRevision = proposal.revision; task.currentProposalId = proposal.id; task.title = title; task.summary = summary;

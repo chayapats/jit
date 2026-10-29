@@ -346,7 +346,8 @@ function dispatchCard(card: DispatchCardView, base: string, csrf: string, topicR
   // team reply that failed or could not start. Names are owner configuration, escaped; no model text goes here.
   const names = team.roles.map(role => role.roleName).join(", ");
   const teamReplyStalled = card.teamReply?.state === "failed" || card.teamReply?.state === "blocked" || card.teamReply?.state === "not_admitted";
-  const needsOwner = waiting > 0 || card.blocked.length > 0 || (card.teamHold !== null && !card.teamReply) || team.roles.some(role => role.result?.status === "blocked") || teamReplyStalled;
+  const settledFailure = team.roles.some(role => role.activity === "settled" && role.state === "blocked");
+  const needsOwner = !team.stoppedAll && (settledFailure || waiting > 0 || card.blocked.length > 0 || (card.teamHold !== null && !card.teamReply) || team.roles.some(role => role.result?.status === "blocked") || teamReplyStalled);
   // Nothing runs or waits any more and no answer is coming (stopped, failed or without results): Jit asked, past tense.
   const settled = !answered && !live && !waiting && card.teamReply?.state !== "thinking" && card.teamReply?.state !== "blocked";
   const title = tr(answered ? "team_card.answered_by" : settled ? "team_card.asked" : "team_card.asking");

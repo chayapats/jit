@@ -978,6 +978,24 @@ test("COMM01 parseTaskSuggestion is a closed schema: exact keys, trimmed non-emp
   ]) expect(parseTaskSuggestion(bad)).toBeNull();
 });
 
+test("COMM01 Thai task suggestions fit task.propose at the smallest configured byte limit", async () => {
+  const summaries = ["ก".repeat(341) + "x", "ก".repeat(341) + "xx", "ก".repeat(400)];
+  const f = await fixture({ env: { JIT_MESSAGE_BYTES: "1024" }, script: request => answer(request,
+    JSON.stringify({ reply: "ร่างงานแล้ว", proposals: [{ kind: "task", title: "งาน", summary: summaries.shift()! }] })) });
+  const first = send(f, "ช่วยวางแผน"); await settle(f);
+  const kept = replyFor(f, first.message.id);
+  expect(Buffer.byteLength(kept.taskSuggestion!.summary)).toBe(1024);
+  const html = await (await get(f, `/projects/${f.project.id}/topics/${f.topic.id}`)).text();
+  const card = html.slice(html.indexOf('class="team-card task-suggestion"'));
+  const action = `/projects/${f.project.id}/tasks`;
+  expect((await postForm(f, action, { ...form(card, action).fields, ...formText(card, action) })).status).toBe(303);
+  expect(taskCount(f)).toBe(1);
+  for (let i = 0; i < 2; i++) {
+    const sent = send(f, "อีกงาน"); await settle(f);
+    expect(replyFor(f, sent.message.id)).toMatchObject({ state: "answered", taskSuggestion: null, discarded: ["proposal:task"] });
+  }
+});
+
 test("COMM01 a reply's task suggestion pre-fills the owner's task form; nothing is stored until the owner saves it", async () => {
   const outputs = [
     JSON.stringify({ reply: "สั้นๆ", proposals: [{ kind: "task", title: "วางแผนย้ายฐานข้อมูล", summary: "ขั้นที่ 1 ... ขั้นที่ 3" }] }),

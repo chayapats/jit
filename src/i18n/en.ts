@@ -1661,7 +1661,7 @@ export const en: Record<MessageKey, string> = {
   "settings.local_api_revision": "Revision",
   "error.invalid_local_api": "The local API setting is not valid. Reload settings and try again.",
   "settings.attention": "Notification level",
-  "settings.attention_note": "Choose per channel what creates a notification: everything, or only what waits for you (questions, proposal cards, decisions awaiting your acceptance, failures and blocked work). The level never hides or deletes reports, decisions or history, and changing it never cancels a notification that already exists. One unit of work (a Jit reply and the team it called) notifies once, when nothing in it is still open. The default is only what needs you.",
+  "settings.attention_note": "Choose per channel what creates a notification: everything, or only what waits for you (questions, proposal cards, decisions awaiting your acceptance, failures and blocked work). The level never hides or deletes reports, decisions or history, and changing it never cancels a notification that already exists. One unit of work (a Jit reply and the team it called) notifies once, when nothing in it is still open. The default is only what needs you. Owner-configured schedule reports and PR finding alerts also notify at this level.",
   "settings.attention_channel_telegram": "Telegram",
   "settings.attention_channel_web": "Web/PWA",
   "settings.attention_web_note": "Web/PWA has no push notifications in this build. The level you choose applies once a Web notification channel exists.",

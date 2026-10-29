@@ -27,7 +27,7 @@ export interface DeliveryProvenance {
 
 /**
  * delivery.attention_levels/v1 classification. `needs_owner` is an item that waits on the owner (a question, a
- * proposal card, a decision awaiting acceptance, a failure or a blocked result); everything else is `informational`.
+ * proposal card, a decision awaiting acceptance, a failure or a blocked result), or an owner-configured schedule report or PR finding alert; everything else is `informational`.
  */
 export type AttentionClass = "needs_owner" | "informational";
 

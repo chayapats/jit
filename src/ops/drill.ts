@@ -350,9 +350,6 @@ async function drillOnce(config: LoadDrillConfig, ports: DrillPorts): Promise<Dr
     await app.setupOwner("drill-fixture-owner-password");
     const ownerToken = await app.login("drill-fixture-owner-password");
     const actor = app.authenticate(ownerToken).actor;
-    // delivery.attention_levels/v1: since S12-D06 a channel without a saved level is `needs-me`, which creates no
-    // informational PR alert or report intent. The drill measures every delivery path, so its owner chooses everything.
-    app.execute(actor, { kind: "attention.set", requestId: crypto.randomUUID(), projectId: null, expectedRevision: 0, payload: { channel: "telegram", level: "all" } });
     /** Owner command through the Application boundary; acknowledgment = receipt returned. */
     const command = <T>(run: () => T): T => {
       const t0 = Date.now();
