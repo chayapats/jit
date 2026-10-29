@@ -72,7 +72,7 @@ export class ReplyStreams {
   previews(projectId: string, topicId: string): ReplyPreview[] {
     const result: ReplyPreview[] = [];
     for (const entry of this.#active.values()) {
-      if (!this.#current(entry) || entry.projectId !== projectId || entry.topicId !== topicId) continue;
+      if (entry.projectId !== projectId || entry.topicId !== topicId || !this.#current(entry)) continue;
       const { id, attemptId, sequence, text } = entry;
       result.push({ id, projectId, topicId, attemptId, sequence, text, stalled: entry.now() - entry.lastDelta >= replyStallMs });
     }

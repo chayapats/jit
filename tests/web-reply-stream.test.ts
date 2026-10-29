@@ -21,7 +21,7 @@ function fixture() {
   const pending = new Map<number, { at: number; callback(): void }>();
   const timers = { set(callback: () => void, ms: number) { const id = ++next; pending.set(id, { at: now + ms, callback }); return id; },
     clear(id: unknown) { pending.delete(id as number); } };
-  const open = (changes: (cursor: number) => JitReplyView[] = () => [], cursor = 0) => replyEventStream({
+  const open = (changes: (cursor: number, limit: 1) => JitReplyView[] = () => [], cursor = 0) => replyEventStream({
     cursor, projectId: "project", topicId: "topic", signal: abort.signal, streams, changes,
     options: { intervalMs: 1000, polls: 120, timers }, durable: view => view, provisional: preview => preview,
   })!;
@@ -87,7 +87,7 @@ test("durable replay honours demand and per-event cursors; abort and expiry rele
   const f = fixture();
   const views = [1, 2, 3].map(cursor => ({ id: String(cursor), cursor, state: "answered" }) as JitReplyView);
   let reads = 0;
-  const changes = (cursor: number) => { reads++; return views.filter(view => view.cursor > cursor); };
+  const changes = (cursor: number, limit: 1) => { reads++; return views.filter(view => view.cursor > cursor).slice(0, limit); };
   const first = f.open(changes).getReader();
   await drain(); expect(reads).toBe(0); // Retry is queued: no demand for persisted data yet.
   await frame(first);
@@ -102,6 +102,61 @@ test("durable replay honours demand and per-event cursors; abort and expiry rele
   // At most one keep-alive is queued even when the connection expires without demand.
   await frame(idle); expect((await idle.read()).done).toBe(true);
   expect(life.pending.size).toBe(0);
+});
+
+test("topic readers never check unrelated draft authority, but recheck every matching draft", () => {
+  const f = fixture(), checks = [0, 0, 0];
+  let current = true;
+  const matching = identity();
+  f.streams.begin(matching, 4096, f.now, () => { checks[0]!++; return current; });
+  f.streams.begin({ ...identity(), projectId: "other-project" }, 4096, f.now, () => { checks[1]!++; return true; });
+  f.streams.begin({ ...identity(), topicId: "other-topic" }, 4096, f.now, () => { checks[2]!++; return true; });
+  checks.fill(0);
+  for (let reader = 0; reader < 5; reader++) {
+    expect(f.streams.previews("project", "topic").map(p => p.id)).toEqual([matching.id]);
+  }
+  expect(checks).toEqual([5, 0, 0]);
+  current = false;
+  expect(f.streams.previews("project", "topic")).toEqual([]);
+  expect(checks).toEqual([6, 0, 0]);
+  expect(f.streams.previews("other-project", "topic")).toHaveLength(1);
+  expect(checks).toEqual([6, 1, 0]);
+});
+
+test("durable replay projects each row once and holds at most one frame without reader demand", async () => {
+  const f = fixture();
+  const views = Array.from({ length: 25 }, (_, i) => ({ id: String(i + 1), cursor: i + 1, state: "answered" }) as JitReplyView);
+  let projected = 0;
+  const limits: number[] = [];
+  const changes = (cursor: number, limit: 1) => {
+    limits.push(limit);
+    const page = views.filter(view => view.cursor > cursor).slice(0, limit);
+    projected += page.length; return page;
+  };
+  const reader = f.open(changes).getReader();
+  await drain(); expect(projected).toBe(0);
+  await frame(reader); await drain();
+  expect(projected).toBe(1);
+  f.streams.wake(); f.advance(1000); await drain();
+  expect(projected).toBe(1); // A slow reader has one queued frame and no cached page.
+  for (const view of views) expect(data(await frame(reader)).cursor).toBe(view.cursor);
+  await drain();
+  expect(projected).toBe(25);
+  expect(limits.every(limit => limit === 1)).toBe(true);
+  await reader.cancel();
+  projected = 0;
+  const resumed = f.open(changes, 17).getReader(); await frame(resumed);
+  for (const view of views.slice(17)) expect(data(await frame(resumed)).cursor).toBe(view.cursor);
+  expect(projected).toBe(8);
+  await resumed.cancel();
+});
+
+test("an oversized durable frame closes the stream without queuing the body", async () => {
+  const f = fixture();
+  const reader = f.open(() => [{ cursor: 1, reason: "x".repeat(262_144) } as JitReplyView]).getReader();
+  expect(await frame(reader)).toContain("retry:");
+  expect((await reader.read()).done).toBe(true);
+  expect(f.pending.size).toBe(0);
 });
 
 test("preview and reader bounds cannot grow with unbounded work or connections", async () => {

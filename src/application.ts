@@ -647,14 +647,16 @@ export class Application {
   }
 
   /**
-   * app.jit_reply/v1 event replay: replies of one topic whose persisted state changed after `cursor`, in cursor
-   * order. The topic event stream is built only from this read, so reconnecting never starts work.
+   * app.jit_reply/v2 event replay: replies of one topic whose persisted state changed after `cursor`, in cursor
+   * order. The optional limit narrows the configured page size (e.g. one row per SSE demand).
+   * The topic event stream is built only from this read, so reconnecting never starts work.
    */
-  replyStream(actor: OwnerActor, projectId: string, topicId: string, cursor: number): JitReplyView[] {
+  replyStream(actor: OwnerActor, projectId: string, topicId: string, cursor: number, limit = this.config.pageSize): JitReplyView[] {
     requireId(projectId); requireId(topicId); requireCursor(cursor);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > this.config.pageSize) throw new AppError("invalid_limit");
     return this.store.read(tx => {
       this.#requireOwner(tx, actor); this.#project(tx, projectId); readTopic(tx, projectId, topicId);
-      return readReplyChanges(tx, projectId, topicId, cursor, this.config.pageSize);
+      return readReplyChanges(tx, projectId, topicId, cursor, limit);
     });
   }
 

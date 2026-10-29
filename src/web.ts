@@ -303,9 +303,9 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const raw = request.headers.get("last-event-id") ?? url.searchParams.get("cursor") ?? "0";
         if (!/^\d{1,16}$/.test(raw)) throw new AppError("invalid_cursor");
         const cursor = Number(raw);
-        app.replyStream(auth.actor, projectId, topicId, cursor);
+        app.replyStream(auth.actor, projectId, topicId, cursor, 1);
         const body = replyEventStream({ cursor, projectId, topicId, signal: request.signal, streams: replyStreams(app.store), options: streamOptions,
-          changes: after => app.replyStream(auth.actor, projectId, topicId, after), durable: replyEvent,
+          changes: (after, limit) => app.replyStream(auth.actor, projectId, topicId, after, limit), durable: replyEvent,
           provisional: preview => ({ ...preview, provisional: true,
             label: renderWith(ui, () => tr(preview.stalled ? "reply.still_working" : preview.text ? "reply.streaming" : "reply.state.thinking")) }),
         });

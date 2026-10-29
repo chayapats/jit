@@ -92,8 +92,9 @@ if (chat && typeof EventSource === "function") {
   const stream = new EventSource(`${base}${base.includes("?") ? "&" : "?"}cursor=${encodeURIComponent(chat.dataset.replyCursor ?? "0")}`);
   const show = (node, text) => { if (!node) return; node.textContent = text ?? ""; node.hidden = !text; };
   const previewVersions = new Map(), unconfirmed = new Set();
-  let grace = 0;
+  let grace = 0, confirmation = 0, disconnected = false;
   const stopGrace = () => { if (grace) window.clearTimeout(grace); grace = 0; };
+  const stopConfirmation = () => { if (confirmation) window.clearTimeout(confirmation); confirmation = 0; };
   const region = chat.closest?.(".scroll-region") ?? null;
   // Pinned while the owner is within a few lines of the end; scrolling up stops the follow until they come back.
   const follow = update => {
@@ -148,23 +149,31 @@ if (chat && typeof EventSource === "function") {
   stream.addEventListener("error", () => {
     for (const id of previewVersions.keys()) unconfirmed.add(id);
     previewVersions.clear();
-    stopGrace();
+    stopConfirmation();
+    const firstDisconnect = !disconnected;
+    disconnected = true;
     // CLOSED (2): the browser will not retry (refused, signed out or over the reader limit), so point to Refresh now.
     if (stream.readyState === 2) { for (const card of liveCards()) gap(card, "closed"); return; }
-    grace = window.setTimeout(() => { grace = 0; for (const card of liveCards()) gap(card, "reconnecting"); }, graceMs);
+    // Retry failures belong to the same outage; only a successful open resets its deadline.
+    if (firstDisconnect) grace = window.setTimeout(() => {
+      grace = 0;
+      if (stream.readyState !== 2) for (const card of liveCards()) gap(card, "reconnecting");
+    }, graceMs);
   });
   stream.addEventListener("open", () => {
     stopGrace();
+    stopConfirmation();
+    disconnected = false;
     for (const card of liveCards()) gap(card, null);
     if (!unconfirmed.size) return;
     // A reconnect receives every current snapshot at once; a draft none confirms belongs to an attempt that has ended.
-    grace = window.setTimeout(() => {
+    confirmation = window.setTimeout(() => {
       for (const id of unconfirmed) {
         const card = document.getElementById(`reply-${id}`);
         if (card?.dataset.replyState === "thinking") follow(() => clearDraft(card));
       }
       unconfirmed.clear();
-      grace = 0;
+      confirmation = 0;
     }, graceMs);
   });
   stream.addEventListener("reply", event => {
@@ -201,7 +210,7 @@ if (chat && typeof EventSource === "function") {
     if (changed && data.state !== "thinking") {
       announce(card, data.state === "answered" ? card.querySelector("[data-reply-announce]")?.dataset.answered : [data.label, data.next].filter(Boolean).join(" "));
     }
-    if (!liveCards().length) { stopGrace(); stream.close(); }
+    if (!liveCards().length) { stopGrace(); stopConfirmation(); stream.close(); }
   });
 }
 

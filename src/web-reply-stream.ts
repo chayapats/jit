@@ -14,7 +14,7 @@ export interface ReplyStreamOptions {
  */
 export function replyEventStream(input: {
   cursor: number; projectId: string; topicId: string; signal: AbortSignal; streams: ReplyStreams;
-  options: ReplyStreamOptions; changes(cursor: number): JitReplyView[];
+  options: ReplyStreamOptions; changes(cursor: number, limit: 1): JitReplyView[];
   durable(view: JitReplyView): unknown; provisional(preview: ReplyPreview): unknown;
 }): ReadableStream<Uint8Array> | null {
   const { options } = input;
@@ -39,7 +39,8 @@ export function replyEventStream(input: {
     flushing = true;
     try {
       if (dirty) {
-        const view = input.changes(cursor)[0];
+        // Project only the row this reader can send; rebuilding a whole page per frame is quadratic.
+        const view = input.changes(cursor, 1)[0];
         if (view) {
           const frame = `id: ${view.cursor}\nevent: reply\ndata: ${JSON.stringify(input.durable(view))}\n\n`;
           cursor = view.cursor; send(frame);
