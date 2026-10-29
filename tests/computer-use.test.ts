@@ -1,4 +1,4 @@
-import { uploadText, sendFiles } from "./fixtures/attachment-run";
+import { uploadText, sendFiles, copyFromConcurrentRun, corruptAttachmentText } from "./fixtures/attachment-run";
 import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -26,7 +26,7 @@ function rejects(action: () => unknown, code: string, status?: number): AppError
   throw new Error(`expected ${code}`);
 }
 
-type Call = { name: string; input: unknown } | (() => void);
+type Call = { name: string; input: unknown } | (() => void | Promise<void>);
 /** A browser-image box on the fake clock whose desktop input (xdotool through the runner) is recorded. */
 async function desktopWorld() {
   const cdp = new FakeCdp();
@@ -52,7 +52,7 @@ async function desktopWorld() {
     script: async (request, _s, _o, tools) => {
       names = [...tools.names];
       for (const call of queued.splice(0)) {
-        if (typeof call === "function") call();
+        if (typeof call === "function") await call();
         else results.push(await tools.call(call.name, call.input));
       }
       return answer(request, JSON.stringify({ reply: "ทำแล้ว" }));
@@ -235,4 +235,20 @@ for (const confirmed of [false, true]) test(`ATT04 computer_type guards full tex
   expect(cards).toHaveLength(1); expect(cards[0]!.kind).toBe(confirmed ? "computer_confirm" : "outbound_release");
   expect(cards[0]!.action.outbound?.attachmentId).toBe(file.id);
   decide(w.f, cards[0]!, "approve"); await w.f.executor.idle(); expect(w.desktop).toHaveLength(1);
+});
+
+for (const corrupt of [false, true]) for (const confirmed of [false, true]) test(`ATT05 run A computer input guards run B's later copy; confirm=${confirmed}, refresh failure=${corrupt}`, async () => {
+  const w = await desktopWorld(); setLevel(w.f, "full");
+  const marker = "PRIVATE_LATER_COPY_COMPUTER_194_stay_inside";
+  let fileId = "", runA = "";
+  await w.run([async () => {
+    const request = w.f.seen[0]!; runA = request.runId; expect(request.attachments ?? []).toEqual([]);
+    fileId = (await copyFromConcurrentRun(w.f, marker)).id;
+    if (corrupt) corruptAttachmentText(w.f, fileId);
+  }, type((corrupt ? "ok" : marker) + (confirmed ? "\n" : ""), "input")]);
+  expect(w.desktop).toHaveLength(0);
+  const cards = w.f.app.approvalCards(w.f.auth.actor, w.f.project.id);
+  expect(cards).toHaveLength(1);
+  expect(cards[0]).toMatchObject({ runId: runA, kind: confirmed ? "computer_confirm" : "outbound_release", state: "pending", telegramEligible: false });
+  expect(cards[0]!.action.outbound).toMatchObject(corrupt ? { reason: "corpus_refresh_failed" } : { attachmentId: fileId });
 });

@@ -6,7 +6,7 @@ import { AppError } from "../errors";
 import { redactCredentials, redactCredentialSlice } from "../security/credentials";
 import { redactRegisteredSecrets } from "../security/secret-fingerprints";
 import { serviceToolCurrent } from "../security/service-tools";
-import type { PrivateContextEntry } from "../security/outbound-guard";
+import { buildOutboundCorpus, type OutboundCorpus, type PrivateContextEntry } from "../security/outbound-guard";
 import type { AppTransaction, TransactionStore } from "../store";
 import type { ApplicationRunRequest } from "../team/types";
 import { runAttachmentCurrent, type RunAttachmentRef } from "./run-references";
@@ -79,17 +79,44 @@ export function materializeRunAttachments(store: TransactionStore, request: Appl
   });
 }
 
-/** Full stored text of carried references and, with a grant, present box copies; nothing is truncated to a prompt excerpt. */
+function outboundTextRows(tx: AppTransaction, request: ApplicationRunRequest): TextRow[] {
+  const ids = new Set((request.attachments ?? []).filter(ref => runAttachmentCurrent(tx, request, ref)).map(ref => ref.attachmentId));
+  // Intent commits before a write: another run may already read bytes while the row is still `removing`.
+  const copies = new Set(request.execution ? tx.all<{ id: string }>("SELECT attachment_id AS id FROM attachment_box_copies WHERE project_id = ? AND state IN ('present','removing')", request.projectId).map(row => row.id) : []);
+  for (const id of copies) ids.add(id);
+  return [...ids].sort().flatMap(id => {
+    const row = rowOf(tx, request.projectId, id);
+    // Unverifiable tracked copies must hold outbound calls until cleanup finishes, even after source retirement.
+    if (copies.has(id) && (!row || row.state !== "ready")) throw new AppError("attachment_unavailable", 410);
+    return row?.state === "ready" && row.kind !== "image" ? [row] : [];
+  });
+}
+
+/** Full stored text of carried references and current granted-box copies, including writes in progress. */
 export function attachmentOutboundEntries(store: TransactionStore, request: ApplicationRunRequest): PrivateContextEntry[] {
-  return store.read(tx => {
-    const ids = new Set((request.attachments ?? []).filter(ref => runAttachmentCurrent(tx, request, ref)).map(ref => ref.attachmentId));
-    if (request.execution && tx.get("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'attachment_box_copies'")) for (const row of tx.all<{ id: string }>("SELECT attachment_id AS id FROM attachment_box_copies WHERE project_id = ? AND state = 'present'", request.projectId)) ids.add(row.id);
-    return [...ids].flatMap(id => {
-      const row = rowOf(tx, request.projectId, id);
-      if (!row || row.state !== "ready" || row.kind === "image") return [];
-      // Missing/corrupt text fails closed at registry construction; it never weakens a guard to an empty corpus.
-      return [{ text: storedText(store, request.projectId, row).toString("utf8"), attachmentId: id }];
-    });
+  return store.read(tx => outboundTextRows(tx, request).map(row => ({ text: storedText(store, request.projectId, row).toString("utf8"), attachmentId: row.id })));
+}
+
+/**
+ * Rechecks copy identities and text revisions in SQLite at every outbound check. Immutable text/indexes are cached
+ * by identity/hash/size, and observed revisions stay protected for the rest of this run. Errors propagate so callers
+ * must hold the call for owner approval; they must never fall back to a stale corpus.
+ */
+export function attachmentOutboundCorpus(store: TransactionStore, request: ApplicationRunRequest): () => OutboundCorpus {
+  const observed = new Map<string, OutboundCorpus["entries"][number]>();
+  let corpus: OutboundCorpus = { entries: [] };
+  return () => store.read(tx => {
+    const additions = new Map<string, OutboundCorpus["entries"][number]>();
+    for (const row of outboundTextRows(tx, request)) {
+      const revision = JSON.stringify([row.id, row.textHash, row.textBytes]);
+      if (!observed.has(revision)) additions.set(revision, buildOutboundCorpus([{ text: storedText(store, request.projectId, row).toString("utf8"), attachmentId: row.id }]).entries[0]!);
+    }
+    // Publish a refresh only after every new source was verified successfully. A failed refresh is retried next call.
+    if (additions.size) {
+      for (const [revision, entry] of additions) observed.set(revision, entry);
+      corpus = { entries: [...observed.values()] };
+    }
+    return corpus;
   });
 }
 

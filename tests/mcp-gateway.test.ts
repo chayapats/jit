@@ -1,4 +1,4 @@
-import { uploadText, sendFiles } from "./fixtures/attachment-run";
+import { uploadText, sendFiles, copyFromConcurrentRun, corruptAttachmentText } from "./fixtures/attachment-run";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -49,7 +49,7 @@ interface McpWorld {
   /** Every stream opened, with the environment the process actually received. */
   streams: { target: string; argv: string[]; env: Record<string, string>; secretEnv: Record<string, string> }[];
   /** One Jit run calling `calls` in order; a function entry runs between calls (to change the server's listing mid-run). */
-  run(calls: ({ name: string; input: unknown } | (() => void))[], reply?: string): Promise<{ results: Awaited<ReturnType<ScriptedTools["call"]>>[]; names: string[] }>;
+  run(calls: ({ name: string; input: unknown } | (() => void | Promise<void>))[], reply?: string): Promise<{ results: Awaited<ReturnType<ScriptedTools["call"]>>[]; names: string[] }>;
   requests: ApplicationRunRequest[];
 }
 
@@ -59,7 +59,7 @@ async function world(options: EffectFixtureOptions & { install?: "ok" | "fail" |
   const toolsPath = join(dir, "tools.json"), logPath = join(dir, "calls.log");
   writeFileSync(toolsPath, JSON.stringify([readOnly("read_note"), writes("write_note")])); writeFileSync(logPath, "");
   const streams: McpWorld["streams"] = [];
-  let queued: ({ name: string; input: unknown } | (() => void))[] = [], results: Awaited<ReturnType<ScriptedTools["call"]>>[] = [], names: string[] = [], reply = "ok";
+  let queued: ({ name: string; input: unknown } | (() => void | Promise<void>))[] = [], results: Awaited<ReturnType<ScriptedTools["call"]>>[] = [], names: string[] = [], reply = "ok";
   const requests: ApplicationRunRequest[] = [];
   const f = await effectFixture({
     ...options, mcp: true,
@@ -86,7 +86,7 @@ async function world(options: EffectFixtureOptions & { install?: "ok" | "fail" |
       requests.push(request);
       names = [...tools.names];
       for (const call of queued.splice(0)) {
-        if (typeof call === "function") call();
+        if (typeof call === "function") await call();
         else results.push(await tools.call(call.name, call.input));
       }
       return answer(request, reply);
@@ -452,4 +452,22 @@ for (const readonly of [true, false]) test(`ATT04 nested MCP values refuse full 
   expect(cards).toHaveLength(1); expect(cards[0]!.kind).toBe(readonly ? "outbound_release" : "mcp_tool");
   expect(cards[0]!.action.outbound?.attachmentId).toBe(file.id); expect(cards[0]!.state).toBe("pending");
   decide(w.f, cards[0]!, "approve"); await w.f.executor.idle(); expect(w.calls()).toHaveLength(1);
+});
+
+for (const corrupt of [false, true]) for (const readonly of [true, false]) test(`ATT05 run A MCP guards run B's later copy; readOnly=${readonly}, refresh failure=${corrupt}`, async () => {
+  const w = await world(); setLevel(w.f, "workspace");
+  w.setTools([readonly ? readOnly("note") : writes("note")]); await installed(w);
+  if (!readonly) setRule(w.f, "mcp_tool", { tools: [{ server: "notes", tool: "note" }] });
+  const marker = "PRIVATE_LATER_COPY_MCP_194_stay_inside";
+  let fileId = "", runA = "";
+  await w.run([async () => {
+    const request = w.requests.at(-1)!; runA = request.runId; expect(request.attachments ?? []).toEqual([]);
+    fileId = (await copyFromConcurrentRun(w.f, marker)).id;
+    if (corrupt) corruptAttachmentText(w.f, fileId);
+  }, { name: exposedToolName("notes", "note"), input: { nested: [{ value: corrupt ? "ok" : marker }] } }]);
+  expect(w.calls()).toHaveLength(0);
+  const cards = w.f.app.approvalCards(w.f.auth.actor, w.f.project.id);
+  expect(cards).toHaveLength(1);
+  expect(cards[0]).toMatchObject({ runId: runA, kind: readonly ? "outbound_release" : "mcp_tool", state: "pending", telegramEligible: false });
+  expect(cards[0]!.action.outbound).toMatchObject(corrupt ? { reason: "corpus_refresh_failed" } : { attachmentId: fileId });
 });

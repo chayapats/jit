@@ -56,12 +56,21 @@ function blob(store: TransactionStore, projectId: string, copy: Copy): Buffer {
 }
 // The script runs only inside the box, through spawn. No file label is interpolated as shell code. Directory
 // descriptors pin every component so another box process cannot redirect rm through a swapped symlink.
-const pruneScript = `import os,sys,json,subprocess
-root,keep,ids,create=sys.argv[1],set(json.loads(sys.argv[2])),json.loads(sys.argv[3]),sys.argv[4]=='1'
+const pruneScript = `import os,sys,json,subprocess,hashlib,stat
+root,list_name,digest,create=sys.argv[1],sys.argv[2],sys.argv[3],sys.argv[4]=='1'
 flags=os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW
 fd=os.open(root,flags)
 fds=[fd]
 try:
+ try:
+  with os.fdopen(os.open(list_name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=fd),'rb') as source:
+   info=os.fstat(source.fileno())
+   if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1: raise RuntimeError('invalid_copy_list')
+   data=source.read(16*1024*1024+1)
+  if len(data)>16*1024*1024 or hashlib.sha256(data).hexdigest()!=digest: raise RuntimeError('copy_list_changed')
+  payload=json.loads(data);keep=set(payload['keep']);ids=payload['ids']
+ finally:
+  os.unlink(list_name,dir_fd=fd)
  for part in ['.jit','attachments']:
   try: child=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd)
   except FileNotFoundError:
@@ -98,8 +107,13 @@ export class AttachmentBoxCopies implements AttachmentCopyCleanup {
   constructor(readonly store: TransactionStore, readonly owner: AttachmentBoxOwner, readonly now: () => number = Date.now) {}
 
   async #prune(handle: BoxHandle, keep: string[], ids: readonly string[] | null, create = false): Promise<void> {
-    const result = await createBoxBackend(this.owner.runtime, handle).spawn({ cwd: handle.workspaceRoot, timeoutMs: 30_000,
-      command: `python3 -I -S -c ${quote(pruneScript)} ${[handle.workspaceRoot, JSON.stringify(keep), JSON.stringify(ids), create ? "1" : "0"].map(quote).join(" ")}` });
+    const backend = createBoxBackend(this.owner.runtime, handle);
+    // Lists travel in runner write data, never bash -c/exec argv. Pin their digest so a box process cannot change
+    // cleanup authority between write and spawn. Only copy identities/names enter this short-lived box file.
+    const data = JSON.stringify({ keep, ids }), name = `.jit-copy-list-${crypto.randomUUID()}.json`;
+    await backend.writeFileAtomically(join(handle.workspaceRoot, name), data, { observed: null });
+    const result = await backend.spawn({ cwd: handle.workspaceRoot, timeoutMs: 30_000,
+      command: `python3 -I -S -c ${quote(pruneScript)} ${[handle.workspaceRoot, name, createHash("sha256").update(data).digest("hex"), create ? "1" : "0"].map(quote).join(" ")}` });
     if (result.exitCode !== 0 || result.timedOut) throw new AppError("attachment_copy_cleanup_failed", 503);
   }
 

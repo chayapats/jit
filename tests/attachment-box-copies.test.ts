@@ -4,7 +4,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, sy
 import { dirname, join } from "node:path";
 import { Database } from "bun:sqlite";
 import { attachmentBoxBytes, attachmentBoxName } from "../src/attachments/box-copies";
-import { attachmentOutboundEntries } from "../src/attachments/run-content";
+import { attachmentOutboundCorpus, attachmentOutboundEntries } from "../src/attachments/run-content";
 import { reconcileForgottenAttachments, retireAttachments } from "../src/attachments/lifecycle";
 import { backupImageTables } from "../src/ops/backup";
 import { TransactionStore, schemaVersion } from "../src/store";
@@ -14,7 +14,9 @@ import { dictionaries } from "../src/i18n";
 import type { DeletionReceipt, DeletionConfirmReceipt } from "../src/memory/delete";
 import type { FakeBoxExec } from "../src/exec/fake-box-runtime";
 import { answer, effectFixture, rid, setLevel, settle, type EffectFixture } from "./fixtures/effects";
-import { uploadText, sendFiles } from "./fixtures/attachment-run";
+import { uploadText, sendFiles, copyFromConcurrentRun, corruptAttachmentText } from "./fixtures/attachment-run";
+import { WebTools } from "../src/web-tools";
+import { WebProviderRegistry } from "../src/web-tools/providers";
 import type { RunScript } from "../src/team/scripted-port";
 
 const fixtures: EffectFixture[] = [];
@@ -22,7 +24,7 @@ afterEach(async () => { for (const f of fixtures.splice(0)) { await f.close(); r
 const sha = (data: string | Uint8Array) => createHash("sha256").update(data).digest("hex");
 
 // Deterministic fake of the runner's existing read/write/spawn protocol. No Podman, SSH or host execution.
-function runner(control: { refuseRemoval?: boolean; onWrite?: () => Promise<void> } = {}): FakeBoxExec {
+function runner(control: { refuseRemoval?: boolean; onWrite?: (path: string) => Promise<void> } = {}): FakeBoxExec {
   return async (_handle, request) => {
     const q = JSON.parse(new TextDecoder().decode(request.input));
     let result: unknown = {};
@@ -30,14 +32,17 @@ function runner(control: { refuseRemoval?: boolean; onWrite?: () => Promise<void
       if (q.op === "write") {
         const data = Buffer.from(q.data, "base64"); if (data.length > attachmentBoxBytes) throw Object.assign(new Error(), { code: "EFBIG" });
         if (q.createParents) mkdirSync(dirname(q.path), { recursive: true });
-        await control.onWrite?.(); writeFileSync(q.path, data);
+        await control.onWrite?.(q.path); writeFileSync(q.path, data);
       } else if (q.op === "read") {
         const data = readFileSync(q.path), end = Math.min(data.length, q.offset + q.length);
         result = { data: data.subarray(q.offset, end).toString("base64"), eof: end === data.length };
       } else if (q.op === "spawn") {
         expect(q.command).toStartWith("python3 -I -S -c "); expect(q.command).toContain("/bin/rm");
+        expect(Buffer.byteLength(q.command)).toBeLessThan(8192);
         const args = / '([^']*)' '([^']*)' '([^']*)' '([01])'$/.exec(q.command)!;
-        const root = args[1]!, keep = new Set<string>(JSON.parse(args[2]!)), ids: string[] | null = JSON.parse(args[3]!), create = args[4] === "1";
+        const root = args[1]!, listPath = join(root, args[2]!), data = readFileSync(listPath);
+        rmSync(listPath); expect(sha(data)).toBe(args[3]!);
+        const payload = JSON.parse(data.toString()), keep = new Set<string>(payload.keep), ids: string[] | null = payload.ids, create = args[4] === "1";
         let path = root;
         for (const part of [".jit", "attachments"]) {
           path = join(path, part);
@@ -224,11 +229,117 @@ test("the runner fixture preserves binary writes and executes verified rm throug
 });
 
 test("deletion during the runner write removes late bytes and never exposes tools to the model", async () => {
-  let observed = false, writes = 0;
-  const control: { onWrite?: () => Promise<void> } = {};
+  let observed = false;
+  const control: Parameters<typeof runner>[0] = {};
   const f = await world(request => { observed = true; return answer(request, "must not run"); }, control);
   setLevel(f, "workspace"); const a = await uploadText(f, "late bytes");
-  control.onWrite = async () => { if (++writes === 2) f.store.transaction(tx => retireAttachments(tx, f.project.id, [a.id], "delete", f.clock.now)); };
+  control.onWrite = async path => { if (path.endsWith(`${a.id}-notes.txt`)) f.store.transaction(tx => retireAttachments(tx, f.project.id, [a.id], "delete", f.clock.now)); };
   sendFiles(f, [a.id]); await settle(f);
   expect(observed).toBe(false); expect(files(f)).toEqual([]); expect(state(f, a.id)).toBe("removed"); expect(f.boxes.busy(f.project.id)).toBe(false);
+});
+
+for (const tool of ["web_search", "web_fetch"] as const) for (const corrupt of [false, true]) test(`ATT05 run A ${tool} guards run B's later copy; refresh failure=${corrupt}`, async () => {
+  const marker = "PRIVATE_LATER_COPY_WEB_194_stay_inside", transports: string[] = [];
+  let web: WebTools, runA = "", fileId = "";
+  const f = await world(async request => {
+    if (runA) return answer(request, "Run B copied its attachment.");
+    runA = request.runId; expect(request.attachments ?? []).toEqual([]);
+    const definition = web.buildWebTools({ ...request, web: true }).find(item => item.name === tool)!;
+    const ctx = { workspace: null as never, signal: new AbortController().signal };
+    const input = (text: string) => tool === "web_search" ? { query: text } : { url: `https://public.example/?q=${text}` };
+    expect((await definition.execute(input("weather"), ctx)).isError).not.toBe(true);
+    fileId = (await copyFromConcurrentRun(f, marker)).id;
+    if (corrupt) corruptAttachmentText(f, fileId);
+    expect((await definition.execute(input(corrupt ? "ok" : marker), ctx)).isError).toBe(true);
+    return answer(request, "Run A held its outbound call.");
+  });
+  const providers = new WebProviderRegistry().register("scripted", () => ({ id: "scripted", async search(query) {
+    transports.push(query); return [{ title: "Weather", url: "https://public.example/weather", snippet: "sunny" }];
+  } }));
+  web = new WebTools(f.store, { providers, now: () => f.clock.now, fetchOptions: { resolve: async () => [{ address: "1.1.1.1", family: 4 }],
+    connect: async url => { transports.push(url); return new Response("<p>sunny</p>", { headers: { "content-type": "text/html" } }); } } });
+  f.app.execute(f.auth.actor, { kind: "web.provider.set", requestId: rid(), projectId: null, expectedRevision: 0, payload: { id: "scripted", connectionId: null } });
+  setLevel(f, "workspace"); sendFiles(f, []); await settle(f);
+  expect(transports).toEqual([tool === "web_search" ? "weather" : "https://public.example/?q=weather"]);
+  const cards = f.app.approvalCards(f.auth.actor, f.project.id);
+  expect(cards).toHaveLength(1);
+  expect(cards[0]).toMatchObject({ runId: runA, kind: "outbound_release", state: "pending", telegramEligible: false, action: { tool } });
+  expect(cards[0]!.action.outbound).toMatchObject(corrupt ? { reason: "corpus_refresh_failed" } : { attachmentId: fileId });
+  expect(JSON.stringify(f.store.read(tx => tx.all("SELECT subject FROM web_tool_calls WHERE status = 'blocked-private-context'")))).not.toContain(marker);
+});
+
+test("large keep and removal lists travel through runner write data, with bounded spawn argv", async () => {
+  // Real runner fixture: this exceeds Linux's per-argument limit for both old JSON lists.
+  const listSizes: number[] = [];
+  const f = await effectFixture({ exec: local => async (handle, request) => {
+    const q = JSON.parse(new TextDecoder().decode(request.input));
+    if (q.op === "spawn") expect(Buffer.byteLength(q.command)).toBeLessThan(8192);
+    if (q.op === "write" && q.path.includes(".jit-copy-list-")) listSizes.push(Buffer.from(q.data, "base64").length);
+    return local(handle, request);
+  } }); fixtures.push(f); setLevel(f, "workspace");
+  const a = await uploadText(f, "small copy"); sendFiles(f, [a.id]); await settle(f);
+  const ids = Array.from({ length: 4000 }, () => rid()), name = "a".repeat(110) + ".txt";
+  const row = f.store.read(tx => tx.get<Record<string, string | number | null>>("SELECT * FROM attachments WHERE id = ?", a.id)!);
+  const names = ids.map(id => attachmentBoxName({ id, name, extension: "txt" }));
+  expect(Buffer.byteLength(JSON.stringify(names))).toBeGreaterThan(128 * 1024);
+  expect(Buffer.byteLength(JSON.stringify(ids))).toBeGreaterThan(128 * 1024);
+  f.store.transaction(tx => {
+    for (const id of ids) {
+      const copy = { ...row, id, display_name: name }, columns = Object.keys(copy);
+      tx.run(`INSERT INTO attachments (${columns.join(",")}) VALUES (${columns.map(() => "?").join(",")})`, ...columns.map(key => copy[key as keyof typeof copy]!));
+      tx.run("INSERT INTO attachment_box_copies VALUES (?, ?, 'present', 10, 0, 0)", f.project.id, id);
+    }
+  });
+  const path = join(f.box.root, ".jit", "attachments");
+  for (const name of [names[0]!, names.at(-1)!]) writeFileSync(join(path, name), "kept");
+  writeFileSync(join(path, "orphan"), "remove");
+  const session = await f.boxes.open(f.project.id, null); session.release();
+  expect(readdirSync(path).sort()).toEqual([`${a.id}-notes.txt`, names[0]!, names.at(-1)!].sort());
+  await f.boxes.attachmentCopies.reconcile(f.project.id, ids);
+  expect(readdirSync(path)).toEqual([`${a.id}-notes.txt`]);
+  expect(f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM attachment_box_copies WHERE state = 'removed'")!.n)).toBe(ids.length);
+  expect(readdirSync(f.box.root).filter(name => name.startsWith(".jit-copy-list-"))).toEqual([]);
+  expect(listSizes.filter(size => size > 128 * 1024)).toHaveLength(2);
+});
+
+test("copy intent is guarded before present; cached indexes survive removal and unchanged sources are not reread", async () => {
+  const marker = "PRIVATE_COPY_WRITE_INTENT_194_stay_inside";
+  const control: Parameters<typeof runner>[0] = {};
+  let runA = "", checkedIntent = false;
+  const f = await world(async request => {
+    if (runA) return answer(request, "Run B finished.");
+    runA = request.runId;
+    const refresh = attachmentOutboundCorpus(f.store, request), initial = refresh(), guard = runOutboundGuard(f.store, request);
+    expect(refresh()).toBe(initial);
+    control.onWrite = async path => {
+      if (!path.includes("/attachments/")) return;
+      const row = f.store.read(tx => tx.get<{ state: string }>("SELECT state FROM attachment_box_copies WHERE project_id = ?", f.project.id));
+      expect(row?.state).toBe("removing"); expect(guard(marker)).not.toBeNull(); checkedIntent = true;
+    };
+    const file = await copyFromConcurrentRun(f, marker);
+    const current = refresh(); expect(current).not.toBe(initial); expect(refresh()).toBe(current);
+    corruptAttachmentText(f, file.id); // Immutable revision unchanged: reuse the already verified index.
+    expect(refresh()).toBe(current); expect(guard(marker)).not.toBeNull();
+    await f.boxes.attachmentCopies.reconcile(f.project.id, [file.id]);
+    expect(refresh()).toBe(current); expect(guard(marker)).not.toBeNull();
+    return answer(request, "Run A retained observed bytes.");
+  }, control);
+  setLevel(f, "workspace"); sendFiles(f, []); await settle(f); expect(checkedIntent).toBe(true);
+});
+
+test("a box process changing a written copy list fails closed before pruning", async () => {
+  let tamper = false;
+  const f = await effectFixture({ exec: local => async (handle, request) => {
+    const q = JSON.parse(new TextDecoder().decode(request.input));
+    if (tamper && q.op === "spawn" && q.command.startsWith("python3 -I -S -c ")) {
+      const args = / '([^']*)' '([^']*)' '([^']*)' '([01])'$/.exec(q.command)!;
+      writeFileSync(join(handle.workspaceRoot, args[2]!), JSON.stringify({ keep: [], ids: null }));
+    }
+    return local(handle, request);
+  } }); fixtures.push(f); setLevel(f, "workspace");
+  const file = await uploadText(f, "must survive forged list"); sendFiles(f, [file.id]); await settle(f);
+  tamper = true;
+  await expect(f.boxes.open(f.project.id, null)).rejects.toMatchObject({ code: "attachment_copy_cleanup_failed" });
+  expect(readFileSync(join(f.box.root, ".jit", "attachments", `${file.id}-notes.txt`), "utf8")).toBe("must survive forged list");
+  expect(readdirSync(f.box.root).filter(name => name.startsWith(".jit-copy-list-"))).toEqual([]);
 });
