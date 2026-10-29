@@ -46,7 +46,7 @@ function depsFor(scenario: string): BoxDoctorDeps {
     }
     if (cmd[0] === "podman" && cmd[1] === "image") {
       if (scenario === "image-missing") return { exitCode: 1, stdout: "" };
-      return { exitCode: 0, stdout: "" };
+      return { exitCode: 0, stdout: cmd[2] === "inspect" ? (scenario === "sanitizer-old" ? "1" : "2") : "" };
     }
     return { exitCode: 0, stdout: "" };
   };
@@ -76,6 +76,7 @@ function assertShape(scenario: string, expectedOk: boolean, failingNames: string
     "execution-configured",
     "image-base-present",
     "image-browser-present",
+    "sanitizer-image",
     "execution-directory",
     "secrets-directory",
   ]);
@@ -129,3 +130,5 @@ test("all-ok passes", () => {
   expect(report.checks.every(c => c.ok)).toBe(true);
   expect(report.checks.every(c => c.nextAction === null)).toBe(true);
 });
+
+test("old base image requests a rebuild and digest pin without running a container", () => { assertShape("sanitizer-old", false, ["sanitizer-image"]); });

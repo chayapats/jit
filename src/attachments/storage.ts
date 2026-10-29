@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { closeSync, constants, fchmodSync, fsyncSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, statfsSync, unlinkSync, writeSync, rmSync } from "node:fs";
+import { closeSync, constants, fchmodSync, fsyncSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readSync, readFileSync, readdirSync, statfsSync, unlinkSync, writeSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { AppError } from "../errors";
 import { requireId } from "../sources";
@@ -8,7 +8,7 @@ import type { AttachmentLimits } from "./limits";
 import { attachmentBlobReferenced, attachmentProjectBytes, readAttachment, writeAttachmentEvent, type AttachmentView } from "./records";
 import { attachmentDisplayName, AttachmentSniffer } from "./types";
 
-/** Deterministic I/O seams; absent sanitizer capability refuses PDF/WebP until ATT02 wires its reachable-runtime probe. */
+/** Deterministic I/O seams; absent isolated-sanitizer capability refuses PDF/WebP. */
 export interface AttachmentStorageOptions {
   now?: () => number; diskFree?: (directory: string) => number; sanitizerAvailable?: () => boolean;
   forbiddenDirectories?: readonly (string | null)[];
@@ -16,6 +16,8 @@ export interface AttachmentStorageOptions {
 }
 /** One file stream, reusable by ATT03's ordered multipart reader after it has verified CSRF and scope. */
 export interface AttachmentUpload { body: ReadableStream<Uint8Array> | null; encodedName: string | null; contentLength?: string | null }
+/** Maximum original blobs compared per upload; an overflow disables the quota dedupe exception entirely. */
+export const attachmentDedupeCandidates = 16;
 const hashPattern = /^[a-f0-9]{64}$/;
 const projectPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const active = new Map<string, { stages: Set<string>; reserved: number }>();
@@ -29,8 +31,8 @@ function safeDirectory(path: string): void {
     try { fsyncSync(parent); } finally { closeSync(parent); }
   }
 }
-function writeAll(fd: number, bytes: Uint8Array): void {
-  let at = 0; while (at < bytes.length) { const n = writeSync(fd, bytes, at, bytes.length - at); if (!n) throw new Error("attachment_write_failed"); at += n; }
+function writeAll(fd: number, bytes: Uint8Array, written: (bytes: number) => void): void {
+  let at = 0; while (at < bytes.length) { const n = writeSync(fd, bytes, at, bytes.length - at); if (!n) throw new Error("attachment_write_failed"); at += n; written(n); }
 }
 function verifyBlob(path: string, hash: string, bytes: number): void {
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -90,8 +92,8 @@ export class AttachmentStorage {
       // or denying a duplicate just because its original already consumes the last quota byte.
       const remaining = this.store.read(tx => this.limits.projectBytes - attachmentProjectBytes(tx, projectId));
       let candidates = this.store.read(tx => tx.all<{ hash: string; bytes: number }>(`SELECT sha256 AS hash, max(bytes) AS bytes FROM attachments
-        WHERE project_id = ? AND state != 'deleted' AND sha256 IS NOT NULL AND bytes > ? GROUP BY sha256`, projectId, remaining));
-      if (declared !== null) candidates = candidates.filter(c => c.bytes === declared);
+        WHERE project_id = ? AND state != 'deleted' AND sha256 IS NOT NULL AND bytes > ? AND (? IS NULL OR bytes = ?) GROUP BY sha256 LIMIT ?`, projectId, remaining, declared, declared, attachmentDedupeCandidates + 1));
+      if (candidates.length > attachmentDedupeCandidates) candidates = [];
       if (declared !== null && declared > remaining && !candidates.length) throw new AppError("attachment_quota_exceeded", 413, { limit: "project_bytes" });
       if (!input.body) throw new AppError("invalid_attachment_upload");
       stage = join(this.root, ".staging", crypto.randomUUID());
@@ -117,7 +119,7 @@ export class AttachmentStorage {
         if (next > remaining && !candidates.length) throw new AppError("attachment_quota_exceeded", 413, { limit: "project_bytes" });
         // The probe is checked during the stream as well, to catch non-Jit writers consuming the reserve.
         if (this.#diskFree(this.root) - value.length < this.limits.diskReserveBytes) throw new AppError("attachment_disk_reserve", 507);
-        writeAll(fd, value); digest.update(value); sniffer.push(value); bytes = next;
+        writeAll(fd, value, n => { reservation -= n; this.#state.reserved -= n; }); digest.update(value); sniffer.push(value); bytes = next;
       }
       if (declared !== null && bytes !== declared) throw new AppError("invalid_attachment_upload");
       const type = sniffer.finish(name);
@@ -162,6 +164,72 @@ export class AttachmentStorage {
       if (stage) { this.#state.stages.delete(stage); if (!committed || verified) { try { unlinkSync(stage); } catch { /* Sweep retries abandoned staging files. */ } } }
       this.#state.reserved -= reservation;
     }
+  }
+  /** Creates a protected per-job copy, never mounting the content store or a name supplied by an owner. */
+  sanitizerWork(projectId: string, hash: string, bytes: number, outputBytes = 0): { directory: string; input: string; output: string; release(): void } {
+    this.#writable(); this.#directories(projectId, hash);
+    const root = join(this.root, ".work"); safeDirectory(root);
+    const directory = join(root, crypto.randomUUID()); safeDirectory(directory); this.#state.stages.add(directory);
+    const input = join(directory, "in"), output = join(directory, "out");
+    let reservation = 0;
+    try {
+      if (this.#diskFree(this.root) - this.#state.reserved - bytes - outputBytes < this.limits.diskReserveBytes) throw new Error("sanitizer_unavailable");
+      reservation = outputBytes; this.#state.reserved += reservation;
+      safeDirectory(input); safeDirectory(output);
+      verifyBlob(this.blobPath(projectId, hash), hash, bytes);
+      const source = openSync(this.blobPath(projectId, hash), constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        const target = openSync(join(input, "input"), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+        try {
+          const chunk = Buffer.alloc(65536); let copied = 0;
+          for (;;) {
+            const n = readSync(source, chunk, 0, chunk.length, null); if (!n) break;
+            if (copied + n > bytes || this.#diskFree(this.root) - this.#state.reserved - n < this.limits.diskReserveBytes) throw new Error("sanitizer_unavailable");
+            writeAll(target, chunk.subarray(0, n), () => {}); copied += n;
+          }
+          if (copied !== bytes) throw new Error("sanitize_output_invalid");
+          fsyncSync(target);
+        } finally { closeSync(target); }
+      } finally { closeSync(source); }
+      return { directory, input, output, release: () => { rmSync(directory, { recursive: true, force: true }); this.#state.stages.delete(directory); this.#state.reserved -= reservation; reservation = 0; } };
+    } catch (error) { rmSync(directory, { recursive: true, force: true }); this.#state.stages.delete(directory); this.#state.reserved -= reservation; throw error; }
+  }
+  /** Reads only a bounded regular output file without following symlinks; used after every parser has stopped. */
+  sanitizerOutput(path: string, cap: number): Buffer {
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const st = fstatSync(fd);
+      if (!st.isFile() || st.nlink !== 1 || st.size > cap) throw new Error("sanitize_output_invalid");
+      const bytes = readFileSync(fd);
+      if (bytes.length !== st.size || bytes.length > cap) throw new Error("sanitize_output_invalid");
+      return bytes;
+    } finally { closeSync(fd); }
+  }
+  /** Publishes validated derivative bytes under the writer transaction; failed commits leave sweepable orphans. */
+  publishDerivative(projectId: string, bytes: Uint8Array): string {
+    this.#writable();
+    const hash = createHash("sha256").update(bytes).digest("hex"); this.#directories(projectId, hash);
+    const stage = join(this.root, ".staging", crypto.randomUUID());
+    const fd = openSync(stage, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    this.#state.stages.add(stage);
+    try {
+      if (this.#diskFree(this.root) - this.#state.reserved - bytes.length < this.limits.diskReserveBytes) throw new Error("sanitizer_unavailable");
+      writeAll(fd, bytes, () => {}); fsyncSync(fd);
+      const path = this.blobPath(projectId, hash);
+      try { linkSync(stage, path); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+      verifyBlob(path, hash, bytes.length);
+      const dir = openSync(dirname(path), constants.O_RDONLY | constants.O_NOFOLLOW);
+      try { fsyncSync(dir); } finally { closeSync(dir); }
+      return hash;
+    } finally { closeSync(fd); unlinkSync(stage); this.#state.stages.delete(stage); }
+  }
+  /** Removes one original/derivative only when no live row references it and no backup is being staged. */
+  removeUnreferenced(projectId: string, hash: string): void {
+    this.store.transaction(tx => {
+      this.#writable(); if (this.options.backupActive?.() || attachmentBlobReferenced(tx, projectId, hash)) return;
+      this.#directories(projectId, hash);
+      try { unlinkSync(this.blobPath(projectId, hash)); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    });
   }
   /** Expires only unbound staged rows, then removes unreferenced blobs and >10 minute abandoned work. Safe with gate off. */
   sweep(): { expired: number; removed: number } {

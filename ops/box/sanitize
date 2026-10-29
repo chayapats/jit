@@ -1,0 +1,138 @@
+#!/usr/bin/python3
+"""One untrusted attachment, no network, no authority. Invoked only in a disposable hardened container."""
+import json
+import os
+import re
+import resource
+import signal
+import stat
+import struct
+import subprocess
+import sys
+import warnings
+from pathlib import Path
+
+IMAGE_BYTES = 16 * 1024 * 1024
+TEXT_BYTES = 2 * 1024 * 1024
+
+
+def bounded_command(argv, cap):
+    """Read at most cap+1 bytes and kill the parser before it can fill disk or host pipes."""
+    with subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as proc:
+        output = bytearray()
+        while len(output) <= cap:
+            part = proc.stdout.read(min(65536, cap + 1 - len(output)))
+            if not part:
+                break
+            output.extend(part)
+        cut = len(output) > cap
+        if cut:
+            proc.kill()
+        code = proc.wait()
+        if code != 0 and not cut:
+            raise ValueError("pdf_extract_failed")
+        return bytes(output[:cap]), cut
+
+
+def sanitize(kind, pixels, source, out):
+    if kind == "pdf":
+        info, cut = bounded_command(["pdfinfo", str(source)], 65536)
+        match = re.search(rb"(?m)^Pages:\s+(\d+)\s*$", info)
+        if cut or not match or int(match[1]) < 1:
+            raise ValueError("pdf_extract_failed")
+        pages = int(match[1])
+        text, cut = bounded_command(["pdftotext", "-f", "1", "-l", str(min(50, pages)), "-enc", "UTF-8", str(source), "-"], TEXT_BYTES)
+        # Only a cut UTF-8 tail may be discarded; malformed complete output is a failure.
+        try:
+            text = text.decode("utf-8", errors="strict").encode("utf-8")
+        except UnicodeDecodeError as error:
+            if not cut or error.reason != "unexpected end of data" or error.end != len(text):
+                raise
+            text = text[:error.start].decode("utf-8", errors="strict").encode("utf-8")
+        if not text.strip():
+            text = b""
+        if b"\0" in text:
+            raise ValueError("pdf_extract_failed")
+        (out / "text.txt").write_bytes(text)
+        return {"ok": True, "pages": min(50, pages), "truncated": cut or pages > 50}
+    from PIL import Image
+    Image.MAX_IMAGE_PIXELS = pixels
+    warnings.simplefilter("error", Image.DecompressionBombWarning)
+    try:
+        with Image.open(source) as image:
+            if image.format != {"png": "PNG", "jpeg": "JPEG", "webp": "WEBP"}[kind]:
+                raise ValueError("image_decode_failed")
+            width, height = image.size
+            if width * height > pixels:
+                raise ValueError("image_too_many_pixels")
+            image.load()
+            mode = "RGB" if kind == "jpeg" else "RGBA"
+            # A fresh canvas carries no source info, EXIF, GPS, ICC, comments or trailing payload.
+            clean = Image.new(mode, image.size)
+            clean.paste(image.convert(mode))
+        ext, fmt = ("jpg", "JPEG") if kind == "jpeg" else ("png", "PNG")
+        clean.save(out / ("clean." + ext), format=fmt)
+        clean.thumbnail((2048, 2048), Image.Resampling.LANCZOS)
+        clean.save(out / ("model." + ext), format=fmt)
+        return {"ok": True, "width": width, "height": height, "truncated": False}
+    except (Image.DecompressionBombError, Image.DecompressionBombWarning):
+        raise ValueError("image_too_many_pixels") from None
+
+
+def stream_outputs(kind, out):
+    """Length-prefixed files, never an archive; the host independently checks names, count and byte bounds."""
+    caps = {"result.json": 2048, "text.txt": TEXT_BYTES} if kind == "pdf" else {
+        "result.json": 2048,
+        "clean.jpg" if kind == "jpeg" else "clean.png": IMAGE_BYTES,
+        "model.jpg" if kind == "jpeg" else "model.png": IMAGE_BYTES,
+    }
+    names = []
+    with os.scandir(out) as entries:
+        for entry in entries:
+            if entry.name not in caps or len(names) >= len(caps):
+                raise ValueError("sanitize_output_invalid")
+            names.append(entry.name)
+    for name in names:
+        fd = os.open(out / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as file:
+            info = os.fstat(file.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > caps[name]:
+                raise ValueError("sanitize_output_invalid")
+            data = file.read(caps[name] + 1)
+            if len(data) != info.st_size:
+                raise ValueError("sanitize_output_invalid")
+        encoded = name.encode("ascii")
+        sys.stdout.buffer.write(bytes([len(encoded)]) + encoded + struct.pack(">I", len(data)))
+        sys.stdout.buffer.write(data)
+
+
+def main():
+    os.umask(0o077)
+    resource.setrlimit(resource.RLIMIT_FSIZE, (IMAGE_BYTES, IMAGE_BYTES))
+    kind, pixels, seconds = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+    stream = sys.argv[-1] == "--stream"
+    if stream:
+        sys.argv.pop()
+    # The external deadline also kills/removes the container; this alarm bounds an orphan after a service crash.
+    signal.alarm(seconds)
+    # Optional paths exist for deterministic fake-runtime fixtures; production passes only kind, pixel cap and deadline.
+    source = Path(sys.argv[4]) if len(sys.argv) > 4 else Path("/in/input")
+    out = Path(sys.argv[5]) if len(sys.argv) > 5 else Path("/out")
+    result = {"ok": False, "reason": "pdf_extract_failed" if kind == "pdf" else "image_decode_failed"}
+    try:
+        result = sanitize(kind, pixels, source, out)
+    except MemoryError:
+        result = {"ok": False, "reason": "sanitize_out_of_memory"}
+    except Exception as error:
+        if str(error) == "image_too_many_pixels":
+            result["reason"] = "image_too_many_pixels"
+    (out / "result.json").write_text(json.dumps(result), encoding="utf-8")
+    if stream:
+        try:
+            stream_outputs(kind, out)
+        except (OSError, ValueError):
+            sys.exit(65)
+
+
+if __name__ == "__main__":
+    main()

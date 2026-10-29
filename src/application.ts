@@ -1,3 +1,5 @@
+import { AttachmentSanitizer } from "./attachments/sanitizer";
+import type { AttachmentSanitizerRuntime } from "./attachments/sanitizer-runtime";
 import { AttachmentStorage, type AttachmentStorageOptions, type AttachmentUpload } from "./attachments/storage";
 import { readAttachment, readAttachmentEvents, writeAttachmentEvent, type AttachmentView, type AttachmentEventView } from "./attachments/records";
 import { bindAttachments, discardStagedAttachment, readMessageAttachments } from "./attachments/binding";
@@ -201,6 +203,8 @@ import { ledgerCheckpointPathFor, syncLedgerCheckpoint, type TrustedLedger } fro
 
 /** Injectable clock and transaction fault seam for deterministic persistence checks. */
 export interface ApplicationOptions {
+  /** Service-supplied isolated runtime; absent means metadata-strip fallback, never a host decoder. */
+  attachmentSanitizer?: AttachmentSanitizerRuntime | null;
   /** app.attachments/v1 deterministic storage/capability probes; production defaults fail closed. */
   attachments?: Pick<AttachmentStorageOptions, "diskFree" | "sanitizerAvailable">;
   now?: () => number;
@@ -292,6 +296,8 @@ export class Application {
   /** Backup ids whose files are staged but not yet committed; reconciliation never removes them. */
   #stagingBackups = new Set<string>();
   #attachments: AttachmentStorage;
+  #sanitizer: AttachmentSanitizer;
+  #sanitizerAvailable = false;
 
   constructor(readonly store: TransactionStore, readonly config: AppConfig, options: ApplicationOptions = {}) {
     this.#now = options.now ?? Date.now;
@@ -310,7 +316,7 @@ export class Application {
     this.#restoreFault = options.restoreFault;
     this.#ledgerPath = options.ledgerPath ?? ledgerCheckpointPathFor(store.path);
     this.#backupDir = ownBackupDir(store.path, options.backupDir);
-    this.#attachments = new AttachmentStorage(store, config.attachments, { ...options.attachments, now: this.#now,
+    this.#attachments = new AttachmentStorage(store, config.attachments, { sanitizerAvailable: () => this.#sanitizerAvailable, ...options.attachments, now: this.#now,
       forbiddenDirectories: [this.#backupDir, config.execution.directory],
       backupActive: () => this.#stagingBackups.size > 0, assertWritable: () => {
         if (this.#upgradeBusy || upgradeFenced(store.path) || readRestoreGate(store.path)) throw new AppError("service_unavailable", 503);
@@ -326,6 +332,10 @@ export class Application {
     ] };
     options.jobs?.setDeletionEnvironment(this.#deletionEnvironment);
     options.service?.setDeletionEnvironment?.(this.#deletionEnvironment);
+    this.#sanitizer = new AttachmentSanitizer(this.#attachments, options.attachmentSanitizer ?? null, { now: this.#now,
+      assertCurrent: () => { this.store.read(tx => this.#jobs?.assertOwner(tx)); },
+      onSettled: () => { this.#jobs?.pump(); } });
+
     this.#exportLimits = {
       maxExports: Math.min(exportRetention.maxExports, Math.max(1, options.exportLimits?.maxExports ?? exportRetention.maxExports)),
       maxBytes: Math.min(exportRetention.maxBytes, Math.max(1, options.exportLimits?.maxBytes ?? exportRetention.maxBytes)),
@@ -796,10 +806,14 @@ export class Application {
 
   /** Streams one staged file after verified Web CSRF/Origin; revalidates session and scope before each chunk and at commit. */
   uploadAttachment(actor: OwnerActor, projectId: string, topicId: string, upload: AttachmentUpload): Promise<AttachmentView> {
-    return this.#attachments.upload(projectId, topicId, upload, tx => {
+    const authorize = (tx: AppTransaction) => {
       this.#requireOwner(tx, actor); this.#project(tx, projectId); readTopic(tx, projectId, topicId);
       if (readGeneralSpace(tx)?.projectId === projectId && !setupComplete(tx)) throw new AppError("setup_incomplete", 409);
-    });
+    };
+    this.store.read(authorize);
+    const ingest = () => this.#attachments.upload(projectId, topicId, upload, authorize);
+    if (!this.#sanitizer.runtime || !this.config.attachments.enabled) return ingest();
+    return this.#sanitizer.available().then(available => { this.#sanitizerAvailable = available; return ingest(); });
   }
 
   /** Reads scoped attachment metadata even when ingestion is disabled; never returns file content. */
@@ -954,6 +968,12 @@ export class Application {
       throw new AppError("service_unavailable", 503);
     }
   }
+
+  /** Service-only bounded pending-row processing; respects lifecycle and scheduler ownership fences with the gate off. */
+  processAttachments(): Promise<number> { return this.#sanitizer.pump(); }
+
+  /** Cancels isolated parsers and waits for cleanup before service storage closes. */
+  closeAttachmentSanitizer(): Promise<void> { return this.#sanitizer.close(); }
 
   /** Resolves an exact source reference under an explicit authorized project and never fetches missing content. */
   source(actor: OwnerActor, projectId: string, reference: SourceReference): SourceLookup {

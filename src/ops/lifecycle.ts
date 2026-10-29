@@ -1,3 +1,4 @@
+import { PodmanAttachmentSanitizer } from "../attachments/sanitizer-runtime";
 import { attachmentRequestBytes, attachmentLimitsForDirectories } from "../attachments/limits";
 import { realpathSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -412,6 +413,7 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
     const nativeSnapshot = backupNativePortFor(config, store);
     // Constructing the Application first resolves durable upgrade intent left by a crash.
     const app = new Application(store, config, {
+      attachmentSanitizer: config.execution.images ? new PodmanAttachmentSanitizer(config.execution.images.base, store.path, config.attachments) : null,
       service: managed, now, ...(service ? { backupDir: service.backupDirectory, ledgerPath: service.ledgerPath } : {}),
       ...(nativeSnapshot ? { nativeSnapshot } : {}), ...(boxes ? { boxes } : {}), ...(connections ? { connections } : {}), ...(effects ? { effects } : {}),
       ...(mcp ? { mcp } : {}), ...(browser ? { browser } : {}),
@@ -471,6 +473,12 @@ export function serveFullApp(handle: FullAppHandle, options: { drainTimeoutMs?: 
   let lastAttachmentSweep = Date.now();
   const attachments = () => { try { handle.app.sweepAttachments(); } catch { /* Fenced or storage unavailable: retry on the next sweep. */ } };
   attachments();
+  let sanitizing = false;
+  const sanitize = () => {
+    if (sanitizing) return; sanitizing = true;
+    void handle.app.processAttachments().catch(() => undefined).finally(() => { sanitizing = false; });
+  };
+  sanitize();
   let sweeping = false;
   // delivery.attention_levels/v1: recompute open work groups from committed state once at start (restart safety)
   // and on every tick (route waits, deadlines and interrupted work happen inside the queue alone).
@@ -478,6 +486,7 @@ export function serveFullApp(handle: FullAppHandle, options: { drainTimeoutMs?: 
   groups();
   const timer = setInterval(() => {
     if (Date.now() - lastAttachmentSweep >= 60_000) { lastAttachmentSweep = Date.now(); attachments(); }
+    sanitize();
     const queue = handle.service.queue;
     if (queue) {
       try { queue.pump(); tickSchedules(handle.store, queue, config, Date.now()); } catch { /* Queue refuses acknowledgments after a storage/ownership failure or under an upgrade fence. */ }
@@ -511,6 +520,7 @@ export function serveFullApp(handle: FullAppHandle, options: { drainTimeoutMs?: 
       // requests get a short grace period, then idle keep-alive connections are closed.
       await Promise.race([server.stop(), Bun.sleep(2000)]);
       await server.stop(true);
+      await handle.app.closeAttachmentSanitizer();
       let result: DrainResult;
       try { result = await stopDrain(handle, { timeoutMs: drainTimeoutMs }); }
       finally { handle.service.close(); try { handle.store.close(); } catch { /* Already closed. */ } }

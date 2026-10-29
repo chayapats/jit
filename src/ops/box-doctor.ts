@@ -1,3 +1,4 @@
+import { en } from "../i18n/en";
 import type { AppConfig } from "../config";
 
 /** One `box-doctor` result row. `nextAction` is null only for passing checks. */
@@ -8,7 +9,7 @@ export interface DoctorCheck {
   nextAction: string | null;
 }
 
-/** `ops.box_doctor/v1` report: ten ordered checks, `ok` only when all pass. */
+/** `ops.box_doctor/v1` report: eleven ordered checks, `ok` only when all pass. */
 export interface DoctorReport {
   ok: boolean;
   checks: DoctorCheck[];
@@ -58,6 +59,7 @@ const checkNames = [
   "execution-configured",
   "image-base-present",
   "image-browser-present",
+  "sanitizer-image",
   "execution-directory",
   "secrets-directory",
 ] as const;
@@ -151,6 +153,12 @@ export function boxDoctor(deps: BoxDoctorDeps, config: AppConfig["execution"]): 
     if (probe.exitCode === 0) checks.push(pass("image-browser-present", `browser image ${config.images.browser} is present`));
     else checks.push(fail("image-browser-present", `browser image ${config.images.browser} is missing`, "build-box-images"));
   }
+
+  const sanitizerImage = config.images?.base;
+  const sanitizer = sanitizerImage ? deps.run(["podman", "image", "inspect", "--format", '{{ index .Config.Labels "jit.sanitize.version" }}', sanitizerImage]) : null;
+  checks.push(sanitizer?.exitCode === 0 && sanitizer.stdout.trim() === "2"
+    ? pass("sanitizer-image", en["attachments.sanitizer_image_ready"])
+    : fail("sanitizer-image", en["attachments.sanitizer_image_missing"], "rebuild-base-image-and-pin-digest"));
 
   const dirCheck = (name: "execution-directory" | "secrets-directory", path: string | null): DoctorCheck => {
     if (path === null) return fail(name, `${name} is not configured`, "configure-execution-block");
