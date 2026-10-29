@@ -2,7 +2,7 @@
 
 Owner: Jit #176 INST01. `ops.installer/v1` implements S12-D11/D13, S13-D03/D09,
 NFR-07 and NFR-09, using `ops.service_package/v1`, `app.owner_identity/v1` and
-`app.setup/v1`. Engineering decisions: ADR 0041. It does not certify real-host
+`app.setup/v1`. Engineering decisions: ADR 0042. It does not certify real-host
 readiness, authorize model inference, or bypass `ops.schema_migrations/v1`.
 
 ## Entry points and consent
