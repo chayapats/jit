@@ -1,8 +1,11 @@
 import { AttachmentStorage, type AttachmentStorageOptions, type AttachmentUpload } from "./attachments/storage";
-import { readAttachment, readAttachmentEvents, type AttachmentView, type AttachmentEventView } from "./attachments/records";
+import { readAttachment, readAttachmentEvents, writeAttachmentEvent, type AttachmentView, type AttachmentEventView } from "./attachments/records";
+import { bindAttachments, discardStagedAttachment, readMessageAttachments } from "./attachments/binding";
+import { openServedBlob, previewable, servedFileName, type ServedAttachment } from "./attachments/serving";
 import { liveProjectSql, requireLiveProject } from "./project-lifecycle";
 import { previewBoxData, wipeBoxData } from "./exec/box-data";
 import { createHash, timingSafeEqual } from "node:crypto";
+import { closeSync } from "node:fs";
 import { AppError } from "./errors";
 import { requireOwnerSetup, removeOwnerSetupLink } from "./ops/owner-setup";
 import type { AppConfig } from "./config";
@@ -814,6 +817,144 @@ export class Application {
   /** Service-only staged GC and orphan sweep; respects upgrade/restore fences and in-flight backups, including with gate off. */
   sweepAttachments(): { expired: number; removed: number } { return this.#attachments.sweep(); }
 
+  /**
+   * app.attachments/v1 (ATT03): what the composer may offer. `enabled` is the ingestion gate; `sanitizer` says whether
+   * the container sanitizer is reachable, without which WebP and PDF are refused at upload. Configuration only.
+   */
+  attachmentComposer(): { enabled: boolean; messageFiles: number; fileBytes: number; sanitizer: boolean } {
+    const limits = this.config.attachments;
+    return { enabled: limits.enabled, messageFiles: limits.messageFiles, fileBytes: limits.fileBytes, sanitizer: this.#attachments.options.sanitizerAvailable?.() ?? false };
+  }
+
+  /**
+   * The attachments bound to the given messages of one topic, keyed by message id (tombstones included). A read that
+   * works with the gate off, so existing files still render. Metadata only; never file content.
+   */
+  messageAttachments(actor: OwnerActor, projectId: string, topicId: string, messageIds: readonly string[]): Map<string, AttachmentView[]> {
+    requireId(projectId); requireId(topicId);
+    return this.store.read(tx => { this.#requireOwner(tx, actor); this.#project(tx, projectId); readTopic(tx, projectId, topicId);
+      return readMessageAttachments(tx, projectId, topicId, messageIds); });
+  }
+
+  /**
+   * The no-script `?send=1` replay check (ATT03), read before any file part: the committed `message.send` receipt with
+   * this request id, or null. A request id already used by another command, or by a message in another topic, is
+   * 409 `request_id_conflict`, so a resubmitted form never uploads files it cannot bind.
+   */
+  sendReplay(actor: OwnerActor, projectId: string, topicId: string, requestId: string): MessageReceipt | null {
+    requireId(projectId); requireId(topicId);
+    if (typeof requestId !== "string" || !/^[a-zA-Z0-9_-]{8,128}$/.test(requestId)) throw new AppError("invalid_conversation_command");
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor);
+      const row = tx.get<{ result: string; kind: string | null }>(`SELECT r.result_json AS result, (SELECT a.command_kind FROM audit a
+        WHERE a.actor_id = 'owner' AND a.request_id = r.request_id) AS kind FROM command_receipts r WHERE r.actor_id = 'owner' AND r.request_id = ?`, requestId);
+      if (!row) return null;
+      const receipt = row.kind === "message.send" ? JSON.parse(row.result) as MessageReceipt : null;
+      if (!receipt || receipt.message.projectId !== projectId || receipt.message.topicId !== topicId) throw new AppError("request_id_conflict", 409);
+      return receipt;
+    });
+  }
+
+  /**
+   * Discards one staged attachment (the composer chip ×, ATT03) with an idempotent request id: the same request id
+   * and revision return the same result. Allowed with the gate off, so nothing that exists becomes undeletable.
+   */
+  discardAttachment(actor: OwnerActor, projectId: string, topicId: string, id: string, input: { requestId: string; expectedRevision: number }): { attachment: AttachmentView } {
+    for (const value of [projectId, topicId, id]) requireId(value);
+    if (typeof input.requestId !== "string" || !/^[a-zA-Z0-9_-]{8,128}$/.test(input.requestId) ||
+      !Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 1) throw new AppError("invalid_attachment_command");
+    const payloadHash = digest(JSON.stringify(["attachment.discard", projectId, topicId, id, input.expectedRevision]));
+    this.#attachmentWritable(actor);
+    return this.store.transaction(tx => {
+      this.#requireOwner(tx, actor);
+      const receipt = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", input.requestId);
+      if (receipt) {
+        if (receipt.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409);
+        return JSON.parse(receipt.result_json) as { attachment: AttachmentView };
+      }
+      this.#project(tx, projectId); readTopic(tx, projectId, topicId);
+      const now = this.#now();
+      const result = { attachment: discardStagedAttachment(tx, { projectId, topicId, id, expectedRevision: input.expectedRevision, now }) };
+      tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", input.requestId, payloadHash, JSON.stringify(result), now);
+      tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', 'attachment.discard', ?, ?, ?)", input.requestId, projectId, now);
+      return result;
+    });
+  }
+
+  /**
+   * Discards the files a failed no-script send staged (ATT03), so a refused message does not hold quota until the staged
+   * lifetime ends. Best effort: an id that is already bound or gone is left alone. Never touches a bound attachment.
+   */
+  abandonStagedAttachments(actor: OwnerActor, projectId: string, topicId: string, ids: readonly string[]): void {
+    if (!ids.length) return;
+    this.#attachmentWritable(actor);
+    this.store.transaction(tx => {
+      this.#requireOwner(tx, actor); this.#project(tx, projectId);
+      const now = this.#now();
+      for (const id of ids) {
+        try { discardStagedAttachment(tx, { projectId, topicId, id, expectedRevision: null, now }); }
+        catch (error) { if (!(error instanceof AppError)) throw error; }
+      }
+    });
+  }
+
+  /**
+   * Opens the bytes behind `preview` or `download` (S13-D05, ATT03) after the owner and scope checks; the caller streams
+   * and closes the returned descriptor. A rejected or deleted attachment is 410 `attachment_unavailable`.
+   * - `preview` serves only the `clean` file of a `ready` image re-encoded by the container (PNG or JPEG with a
+   *   matching signature), otherwise 404 `attachment_preview_unavailable`; an original or fallback image never.
+   *   Previews are not audited.
+   * - `download` serves `clean` when it exists, otherwise the original of a PDF or text file. An image is never served
+   *   before it is sanitized (409 `attachment_processing`). Each download writes a `download` event in the same
+   *   transaction that opened the file.
+   */
+  attachmentContent(actor: OwnerActor, projectId: string, topicId: string, id: string, variant: "preview" | "download"): ServedAttachment {
+    for (const value of [projectId, topicId, id]) requireId(value);
+    if (variant === "download") this.#attachmentWritable(actor);
+    // The descriptor lives outside the callback so a failed commit (or a retried callback) never leaks it.
+    let opened: number | null = null;
+    const release = () => { if (opened !== null) { try { closeSync(opened); } catch { /* already closed */ } opened = null; } };
+    const open = (tx: AppTransaction): ServedAttachment => {
+      release();
+      this.#requireOwner(tx, actor); this.#project(tx, projectId); readTopic(tx, projectId, topicId);
+      const row = tx.get<{ state: string; kind: string; sanitizedBy: string | null; name: string | null; mediaType: string; sha256: string | null; bytes: number;
+        cleanSha256: string | null; cleanMediaType: string | null; cleanBytes: number | null }>(`SELECT state, kind, sanitized_by AS sanitizedBy, display_name AS name,
+        media_type AS mediaType, sha256, bytes, clean_sha256 AS cleanSha256, clean_media_type AS cleanMediaType, clean_bytes AS cleanBytes
+        FROM attachments WHERE id = ? AND project_id = ? AND topic_id = ?`, id, projectId, topicId);
+      if (!row) throw new AppError("attachment_not_found", 404);
+      if (row.state === "rejected" || row.state === "deleted" || row.name === null) throw new AppError("attachment_unavailable", 410);
+      let hash: string, bytes: number, mediaType: string;
+      if (variant === "preview") {
+        if (row.kind !== "image" || row.state !== "ready" || row.sanitizedBy !== "container" || !row.cleanSha256 || !row.cleanBytes ||
+          !previewable(row.cleanMediaType)) throw new AppError("attachment_preview_unavailable", 404);
+        hash = row.cleanSha256; bytes = row.cleanBytes; mediaType = row.cleanMediaType!;
+      } else if (row.cleanSha256 && row.cleanBytes && row.cleanMediaType) {
+        hash = row.cleanSha256; bytes = row.cleanBytes; mediaType = row.cleanMediaType;
+      } else if (row.kind === "image") {
+        throw new AppError("attachment_processing", 409);
+      } else if (row.sha256) {
+        hash = row.sha256; bytes = row.bytes; mediaType = row.mediaType;
+      } else throw new AppError("attachment_unavailable", 410);
+      const fd = openServedBlob(this.#attachments.blobPath(projectId, hash), bytes, variant === "preview" ? mediaType : null);
+      opened = fd;
+      if (variant === "download") writeAttachmentEvent(tx, { projectId, attachmentId: id, kind: "download", status: "ok", bytes, createdAt: this.#now() });
+      return { fd, bytes, mediaType, name: servedFileName(row.name, mediaType) };
+    };
+    try {
+      const served = variant === "download" ? this.store.transaction(open) : this.store.read(open);
+      opened = null;
+      return served;
+    } catch (error) { release(); throw error; }
+  }
+
+  /** Attachment writes outside `execute` (discard, download audit) honour the same upgrade and restore fences. */
+  #attachmentWritable(actor: OwnerActor): void {
+    if (this.#upgradeBusy || upgradeFenced(this.store.path) || readRestoreGate(this.store.path)) {
+      this.store.read(tx => this.#requireOwner(tx, actor, ["web"], false));
+      throw new AppError("service_unavailable", 503);
+    }
+  }
+
   /** Resolves an exact source reference under an explicit authorized project and never fetches missing content. */
   source(actor: OwnerActor, projectId: string, reference: SourceReference): SourceLookup {
     requireId(projectId); requireReference(reference);
@@ -957,6 +1098,10 @@ export class Application {
       this.#project(tx, command.projectId!);
       const now = this.#now();
       const result = mutateConversation(tx, command as ConversationCommand, now);
+      // app.attachments/v1 (ATT03): staged files become bound to the message in its own transaction.
+      const attachmentIds = command.kind === "message.send" ? command.payload.attachmentIds ?? [] : [];
+      if (attachmentIds.length) bindAttachments(tx, { projectId: command.projectId!, topicId: (command as SendMessageCommand).payload.topicId,
+        messageId: (result as MessageReceipt).message.id, ids: attachmentIds, messageFiles: this.config.attachments.messageFiles, now });
       // app.jit_reply/v1: the message and its one reply admission commit together (ADR 0029). A chat started from
       // the home composer is a new topic plus its first message, answered the same way.
       if (command.kind === "message.send" || command.kind === "chat.start") admitJitReply(tx, { message: (result as MessageReceipt | ChatReceipt).message, requestId: command.requestId,

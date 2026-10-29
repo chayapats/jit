@@ -42,6 +42,7 @@ import type { TakeoverCommand, TakeoverInputCommand } from "./exec/takeover";
 import type { SetComputerSettingsCommand } from "./exec/computer";
 import { replyStreams } from "./team/reply-stream";
 import { replyEventStream, type ReplyStreamOptions } from "./web-reply-stream";
+import { attachmentAction } from "./web-attachment-routes";
 export type { ReplyStreamOptions } from "./web-reply-stream";
 
 /** ADR 0028 Content-Security-Policy: every page, asset and API response allows only this origin, and no inline script or eval. */
@@ -202,10 +203,18 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       // New settings page paths render through the installation page handlers; commands keep their own paths.
       const pathname = (request.method === "GET" ? settingsPageHandler(url.pathname) : null) ?? url.pathname;
       // app.attachments/v1: this route alone bypasses payload(); all preflight guards precede the first body read.
-      const attachmentRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})\/attachments(?:\/([a-f0-9-]{36}))?$/.exec(pathname);
+      const attachmentRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})\/attachments(?:\/([a-f0-9-]{36})(?:\/(preview|download|discard))?)?$/.exec(pathname);
       if (attachmentRoute) {
-        const [, projectId, topicId, id] = attachmentRoute;
-        if (request.method === "GET" && id) return json({ attachment: app.attachment(auth.actor, projectId!, topicId!, id) });
+        const [, projectId, topicId, id, action] = attachmentRoute;
+        if (request.method === "GET" && id && !action) return json({ attachment: app.attachment(auth.actor, projectId!, topicId!, id) });
+        // ATT03: the no-script `?send=1` composer (gate on), discard, preview and download.
+        if (action || (request.method === "POST" && !id && url.search === "?send=1" && config.attachments.enabled)) {
+          const response = await attachmentAction({ app, config, request, url, api, auth, json, respond, payload,
+            transportHeaders: { "Referrer-Policy": headers["Referrer-Policy"], ...(secure ? { "Strict-Transport-Security": "max-age=31536000" } : {}) } },
+            projectId!, topicId!, id, action);
+          if (response) return response;
+          throw new AppError("not_found", 404);
+        }
         if (request.method === "POST" && !id) {
           if (!config.attachments.enabled) throw new AppError("attachments_disabled", 404);
           app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token"));
@@ -1574,13 +1583,19 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const state = app.conversation(auth.actor, topicRoute[2]!, topicRoute[3]!, after());
         const replies = app.replies(auth.actor, state.project.id, state.topic.id, state.items.map(item => item.id));
         const promotion = app.promotion(auth.actor, state.project.id, state.topic.id);
-        if (api) return json({ ...state, replies: [...replies.values()], promotion });
+        // app.attachments/v1 (ATT03): attachment metadata of the page's messages, keyed by message id (never content).
+        if (api) return json({ ...state, replies: [...replies.values()], promotion,
+          attachments: Object.fromEntries(app.messageAttachments(auth.actor, state.project.id, state.topic.id, state.items.map(item => item.id))) });
         const team = app.team(auth.actor, state.project.id);
         const discussions = app.discussions(auth.actor, state.project.id, state.topic.id);
         const cards = app.dispatchCards(auth.actor, state.project.id, state.topic.id, state.items.map(item => item.id));
         // web.approval_cards/v1: topic-filtered query before the limit, so a pending card
         // never disappears behind newer cards in other topics.
         const approvals = app.topicApprovalCards(auth.actor, state.project.id, state.topic.id);
+        // app.attachments/v1 (ATT03): existing chips render with the gate off; the attach control only with it on.
+        const composer = app.attachmentComposer();
+        const attachments = { byMessage: app.messageAttachments(auth.actor, state.project.id, state.topic.id, state.items.map(item => item.id)),
+          composer: composer.enabled ? { ...composer, pageSize: config.pageSize } : null };
         return page(() => conversationPage(state, nav(), app.topics(auth.actor, state.project.id).items, auth.csrf, after(), config.messageBytes, {
           team, discussions, limits: config.jobs.maximum, dispatchAvailable: team.previewAvailable, replies, cards,
           synthesisLimits: dispatchLimits(config, 1), promotion,
@@ -1593,6 +1608,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
           // web.box_live/v1 (EXE15): the merged equivalent of EXE14's browser-capable view — boxes open with
           // the project profile only when a browser image is configured, and only then the header links it.
           boxLive: (config.execution.images?.browser ?? null) !== null,
+          attachments,
         }));
       }
       if (request.method === "GET" && topicCollection) {
@@ -1689,8 +1705,10 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         if (topicCollection || messageRoute) {
           if (messageRoute && !config.attachments.enabled && body.attachmentIds !== undefined &&
               (!Array.isArray(body.attachmentIds) || body.attachmentIds.length > 0)) throw new AppError("attachments_disabled", 404);
+          // app.attachments/v1: only a JSON body carries `attachmentIds`; the no-script composer posts to `?send=1`.
+          const jsonBody = request.headers.get("content-type")?.split(";")[0]?.trim() === "application/json";
           // app.routing_selection/v1: a reply to one specialist's opinion names its participation (both fields or neither).
-          const allowed = ["csrf", "requestId", "expectedRevision", ...topicCollection ? ["title"] : ["text", "replyDiscussion", "replyRole"]];
+          const allowed = ["csrf", "requestId", "expectedRevision", ...topicCollection ? ["title"] : ["text", "replyDiscussion", "replyRole", ...jsonBody ? ["attachmentIds"] : []]];
           if (Object.keys(body).some(key => !allowed.includes(key))) throw new AppError("invalid_body");
           const revision = typeof body.expectedRevision === "string" && /^\d{1,15}$/.test(body.expectedRevision)
             ? Number(body.expectedRevision) : body.expectedRevision;
@@ -1703,7 +1721,8 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
           if ((body.replyDiscussion === undefined) !== (body.replyRole === undefined)) throw new AppError("invalid_body");
           const command: SendMessageCommand = { kind: "message.send", projectId: messageRoute![2]!, requestId: body.requestId as string,
             expectedRevision: revision as number, payload: { topicId: messageRoute![3]!, text: body.text as string,
-              ...body.replyDiscussion !== undefined ? { replyTo: { discussionId: body.replyDiscussion as string, roleId: body.replyRole as string } } : {} } };
+              ...body.replyDiscussion !== undefined ? { replyTo: { discussionId: body.replyDiscussion as string, roleId: body.replyRole as string } } : {},
+              ...body.attachmentIds !== undefined ? { attachmentIds: body.attachmentIds as string[] } : {} } };
           const receipt = app.execute(auth.actor, command);
           return api ? json(receipt) : respond(null, 303, { "Location": `/projects/${receipt.message.projectId}/topics/${receipt.message.topicId}?after=${Math.max(0, receipt.message.sequence - config.pageSize)}#message-${receipt.message.id}` });
         }
@@ -1725,7 +1744,9 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       const recovery = detail && typeof detail.projectId === "string" && /^[a-f0-9-]{36}$/.test(detail.projectId) && typeof detail.path === "string" && detail.path.startsWith(`/projects/${detail.projectId}/`)
         ? { href: detail.path, proposal: typeof detail.taskId === "string", topic: rejection.code === "topic_promoted" } : undefined;
       // Error text comes only from the dictionaries, keyed by the fixed error code; unknown codes get the generic message.
-      return api ? json({ error: rejection.code, ...(detail ? { detail } : {}) }, rejection.status) : page(() => errorPage(trMaybe(`error.${rejection.code}`) ?? tr("error.default"),
+      // app.attachments/v1: one code, two limits; the per-message file count has its own sentence.
+      const textKey = rejection.code === "attachment_quota_exceeded" && detail?.limit === "message_files" ? "attachment_quota_exceeded_files" : rejection.code;
+      return api ? json({ error: rejection.code, ...(detail ? { detail } : {}) }, rejection.status) : page(() => errorPage(trMaybe(`error.${textKey}`) ?? tr("error.default"),
         recovery && { href: recovery.href, label: tr(recovery.proposal ? "error.recovery_open_proposal" : recovery.topic ? "error.recovery_open_topic" : "error.recovery_open_list") }), rejection.status);
     }
   };

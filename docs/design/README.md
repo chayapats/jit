@@ -88,6 +88,13 @@ Derived tones (`--line-strong` and the tinted status borders) are `color-mix` va
 
 Composer, message (owner bubble or Jit plain text), team card (collapsible, per-role state with stop and skip), proposal card (role, dispatch or promotion, with accept, edit and dismiss), decision chip, status pill with text, command palette, drawer, right panel, setup steps, toast. Each component exists in dark, light, Thai and English.
 
+Attachments (ATT03, [app.attachments/v1](../contracts/app-attachments-v1.md)):
+- **Composer:** while `JIT_ATTACHMENTS` is on, a paperclip sits at the left of the bottom bar. Files can be picked, pasted (a screenshot) or dropped anywhere on the page, and the composer frame turns dashed with "Drop files here to attach" while a drag hovers.
+- **Upload chips:** each file becomes a chip above the bar showing a kind icon (or the server's re-encoded thumbnail), the name, the size, its state in words (uploading with a percentage and a thin progress line, waiting for the safety check, ready, or not attached with the reason) and a × button.
+- **Notices:** the provider notice appears under the chips and in the composer note. On a host without the container sanitizer, the note also says why PDF and WebP are off.
+- **Transcript:** under a message, chips show a 48 px thumbnail (re-encoded images only, opening in a new tab) or a kind icon, the name, kind and size, the state in words and a download button. PDFs are never shown inline.
+- **No-script and mobile:** without script, the browser's own file input replaces the paperclip and chips. On mobile, the upload chips scroll sideways.
+
 The proposal card is `proposalCard` in `src/web-proposal-card.ts` (BOT03). It sits under the Jit reply that carries it. It shows a kind line, the title, a status pill in words, the revision and its author, the fields, a warning-ruled list of what was dropped from Jit's suggestion and an authority note. Actions are plain form posts. BOT03 renders role proposals with it ([app.role_proposals/v1](../contracts/role-proposals-v1.md)), and later kinds pass their own fields and actions. BOT05's promotion card (`promotionProposalCard`) shows the new project name, the origin topic and what accepting does; accepting opens the new topic, whose first block is an expandable "ต่อจากทั่วไป" / "Continued from General" quote of the origin at the linked revision, while the origin shows a read-only banner and a closed composer.
 
 ## Voice

@@ -24,7 +24,7 @@ export interface StaticAsset {
   readonly body: Uint8Array<ArrayBuffer>;
 }
 
-export type AssetName = "app.css" | "app.js" | "favicon.svg" | "inter.woff2" | "noto-sans-thai.woff2" | "jetbrains-mono.woff2"
+export type AssetName = "app.css" | "app.js" | "attachments.js" | "favicon.svg" | "inter.woff2" | "noto-sans-thai.woff2" | "jetbrains-mono.woff2"
   | "icon-192.png" | "icon-512.png" | "icon-maskable-512.png" | "apple-touch-icon.png" | "manifest.webmanifest"
   | "OFL-Inter.txt" | "OFL-NotoSansThai.txt" | "OFL-JetBrainsMono.txt";
 
@@ -55,6 +55,8 @@ function buildTable(): ReadonlyMap<AssetName, StaticAsset> {
     // The stylesheet embeds the hashed font URLs, so its own hash changes whenever a font does.
     asset("app.css", encode(styleSheet({ inter: fonts.inter.path, thai: fonts.thai.path, mono: fonts.mono.path }))),
     asset("app.js", file("app.js")),
+    // app.attachments/v1 (ATT03): the composer's upload module, loaded only on topic pages while the gate is on.
+    asset("attachments.js", file("attachments.js")),
     asset("favicon.svg", encode(faviconSvg)),
     ...icons.map(icon => icon.asset),
     // web.pwa/v1: the manifest names the hashed icons, so its own hash changes whenever an icon does.
