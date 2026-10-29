@@ -9,7 +9,7 @@ The person authorized to configure an installation, accept obligations and grant
 _Avoid_: Agent, inferred identity from message text.
 
 **Project**:
-A software initiative whose conversations, decisions, obligations and authorized resources belong together.
+A software initiative whose conversations, decisions, obligations and authorized resources belong together. Its stable identity survives display-name changes and deletion; deleted projects retain unavailable identity references.
 _Avoid_: Provider session, current shell directory.
 
 **Project group**:

@@ -1,3 +1,4 @@
+import { readActiveRole, roleActive } from "./configuration";
 import { AppError } from "../errors";
 import { readTopic } from "../conversation";
 import { JobQueue, jobData, validateJobLimits } from "../jobs/queue";
@@ -65,13 +66,14 @@ export function scriptedPreviewWork(store: TransactionStore, config: AppConfig, 
         request.runId = crypto.randomUUID(); request.context = { id: crypto.randomUUID(), generation: 1 };
         tx.run("INSERT INTO team_contexts VALUES (?, 1, 'active')", request.context.id);
       }
+      readActiveRole(tx, request.roleId);
       request.fence = { jobId: job.id, generation, ownerGeneration: job.authorization.generation };
 
       return { native: { adapter: port.adapter, runId: request.runId, sessionId: request.runId, context: request.context }, data: JSON.parse(jobData(request, config.team.contextBytes)) };
     },
     isCurrent: (tx, job, attempt) => {
       const request = attempt.data as unknown as ApplicationRunRequest;
-      return request.fence.jobId === job.id && request.fence.generation === attempt.generation &&
+      return roleActive(tx, request.roleId) && request.fence.jobId === job.id && request.fence.generation === attempt.generation &&
         request.fence.ownerGeneration === job.authorization.generation &&
         tx.get<{ state: string }>("SELECT state FROM team_contexts WHERE id = ? AND generation = ?", request.context.id, request.context.generation)?.state === "active" && sourceCurrent(tx, request);
     },

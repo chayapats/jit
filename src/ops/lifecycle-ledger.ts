@@ -44,6 +44,8 @@ export interface LedgerDeletion {
   id: string; operationId: string; projectId: string; kind: "source" | "claim";
   sourceId: string | null; claimId: string | null; revision: number; generation: number; deletedAt: number;
 }
+/** Whole-project tombstone in the installation ledger, including empty projects; no display data is retained. */
+export interface LedgerProjectDeletion { id: string; operationId: string; projectId: string; kind: "project"; revision: number; generation: number; deletedAt: number }
 /** Suppression entry record (identity of one owner forget; reason and overlaps are never recorded). */
 export interface LedgerSuppression { id: string; projectId: string; claimId: string; fromRevision: number; fromGeneration: number; createdAt: number }
 export interface LedgerSuppressedClaim { suppressionId: string; projectId: string; claimId: string }
@@ -232,7 +234,8 @@ function recordMarker(store: TransactionStore, path: string, head: number, count
 export function ledgerView(entries: readonly LifecycleLedgerEntry[]) {
   const pick = <T>(kind: LifecycleEntryKind) => entries.filter(e => e.kind === kind).map(e => e.record as unknown as T);
   return {
-    deletions: pick<LedgerDeletion>("deletion"),
+    deletions: pick<LedgerDeletion>("deletion").filter(d => d.kind === "source" || d.kind === "claim"),
+    projectDeletions: pick<LedgerProjectDeletion>("deletion").filter(d => d.kind === "project"),
     suppressions: pick<LedgerSuppression>("suppression"),
     suppressedClaims: pick<LedgerSuppressedClaim>("suppressed_claim"),
     suppressedSources: pick<LedgerSuppressedSource>("suppressed_source"),

@@ -292,12 +292,12 @@ export function settingsFeedPage(feed: ScheduleFeed, workspace: NavigationWorksp
 }
 
 /** Settings › Project data: each project's export and deletion pages (their URLs and commands are unchanged). */
-export function settingsDataPage(workspace: NavigationWorkspace, csrf: string, offset: number, pageSize: number): string {
+export function settingsDataPage(workspace: NavigationWorkspace, csrf: string, offset: number, pageSize: number, operations: import("./memory/delete").DeletionOperation[] = []): string {
   return shell(tr("settings.data"), { workspace, csrf, section: "settings", settings: "data" }, `<div class="content settings-content">
     <section class="settings-section" aria-labelledby="data-title"><h2 id="data-title">${tr("settings.data")}</h2><p>${tr("settings.data_note")}</p>
     ${workspace.projects.length ? `<ul class="data-projects">${workspace.projects.map(p => `<li><h3>${escape(p.name)}</h3><p>${time(p.createdAt)}</p>
       <nav class="settings-links" aria-label="${escape(p.name)}"><a href="/projects/${p.id}/exports">${icon("arrow")}<span>${tr("exports.export_data")}</span></a><a href="/projects/${p.id}/memory/deletions">${icon("close")}<span>${tr("deletions.delete_data")}</span></a></nav></li>`).join("")}</ul>` : `<p class="empty-list">${tr("home.start_with_your_first_project")}</p>`}
-    <nav class="pagination" aria-label="${tr("home.project_pages")}">${offset > 0 ? `<a href="/settings/data?offset=${Math.max(0, offset - pageSize)}">${tr("home.previous")}</a>` : ""}${workspace.hasMore ? `<a href="/settings/data?offset=${offset + pageSize}">${tr("common.next")}</a>` : ""}</nav></section></div>`, { breadcrumb: { title: tr("shell.settings"), href: "/settings" } });
+    <nav class="pagination" aria-label="${tr("home.project_pages")}">${offset > 0 ? `<a href="/settings/data?offset=${Math.max(0, offset - pageSize)}">${tr("home.previous")}</a>` : ""}${workspace.hasMore ? `<a href="/settings/data?offset=${offset + pageSize}">${tr("common.next")}</a>` : ""}</nav></section>${operations.length ? `<section class="settings-section"><h2>${tr("project.delete_operations")}</h2><ul>${operations.map(op => `<li><a href="/projects/${op.projectId}/delete/${op.id}">${escape(op.id)}</a> · ${escape(op.state)}${op.reason ? ` · ${escape(op.reason)}` : ""}</li>`).join("")}</ul></section>` : ""}</div>`, { breadcrumb: { title: tr("shell.settings"), href: "/settings" } });
 }
 
 /**

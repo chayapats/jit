@@ -200,7 +200,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
           return json({ attachment }, 201);
         }
       }
-      const selectedProject = /^\/projects\/([a-f0-9-]{36})(?:\/|$)/.exec(pathname)?.[1];
+      const selectedProject = /\/delete(?:\/|$)/.test(pathname) ? undefined : /^\/projects\/([a-f0-9-]{36})(?:\/|$)/.exec(pathname)?.[1];
       /** Sidebar state: the workspace page plus waiting-on-owner counts for the projects the sidebar can show. */
       const nav = (workspace = app.workspace(auth.actor)): NavigationWorkspace => {
         const ids = [...new Set([...(selectedProject ? [selectedProject] : []), ...workspace.projects.slice(0, 8).map(p => p.id)])];
@@ -208,6 +208,8 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const access = new Map(ids.map(id => [id, app.projectAccess(auth.actor, id)] as const));
         return { ...workspace, attention: app.attention(auth.actor, ids), access };
       };
+      const projectDeleteRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/delete(?:\/([a-f0-9-]{36}))?$/.exec(pathname);
+      const projectRenameRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/rename$/.exec(pathname);
       const projectRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})$/.exec(pathname);
       const topicCollection = /^\/(api\/)?projects\/([a-f0-9-]{36})\/topics$/.exec(pathname);
       const topicRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})$/.exec(pathname);
@@ -229,7 +231,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       const scheduleRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/schedules\/([a-f0-9-]{36})$/.exec(pathname);
       const scheduleAction = /^\/(api\/)?projects\/([a-f0-9-]{36})\/schedules\/([a-f0-9-]{36})\/(pause|resume|revoke|edit)$/.exec(pathname);
       const teamRoute = /^\/(?:api\/)?(?:projects\/([a-f0-9-]{36})\/)?team$/.exec(pathname);
-      const teamAction = /^\/(?:api\/)?(?:projects\/([a-f0-9-]{36})\/)?team\/(roles|routes|previews|discussions)$/.exec(pathname);
+      const teamAction = /^\/(?:api\/)?(?:projects\/([a-f0-9-]{36})\/)?team\/(roles|routes|previews|discussions|archive)$/.exec(pathname);
       const previewRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/team\/previews\/([a-f0-9-]{36})$/.exec(pathname);
       const discussionRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/team\/discussions\/([a-f0-9-]{36})$/.exec(pathname);
       const discussionControl = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/team\/discussions\/([a-f0-9-]{36})\/controls$/.exec(pathname);
@@ -1009,6 +1011,35 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const state = app.memoryContext(auth.actor, contextRoute[1]!, contextRoute[2]!);
         return api ? json(state) : page(() => memoryContextPage(state, nav(), auth.csrf));
       }
+      if (request.method === "GET" && projectDeleteRoute?.[2]) {
+        const { project, preview } = app.deletionPreview(auth.actor, projectDeleteRoute[1]!, projectDeleteRoute[2]);
+        const { operation } = app.deletionOperation(auth.actor, project.id, projectDeleteRoute[2]);
+        if ((!preview || preview.scope.kind !== "project") && (!operation || operation.scope.kind !== "project")) throw new AppError("deletion_not_found", 404);
+        return api ? json({ project, preview, operation }) : page(() => deletionDetailPage({ project, preview, operation }, nav(), auth.csrf));
+      }
+      if (request.method === "POST" && projectDeleteRoute && !projectDeleteRoute[2]) {
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        const projectId = projectDeleteRoute[1]!, form = request.headers.get("content-type")?.split(";")[0]?.trim() === "application/x-www-form-urlencoded";
+        const allowed = ["csrf", "requestId", "expectedRevision", "mode", ...(body.mode === "preview" ? [] : body.mode === "confirm" ? ["previewId", "inventoryDigest", "projectName", "acknowledged", "acknowledgedWholeSession"] : ["operationId"])];
+        if (Object.keys(body).some(key => !allowed.includes(key))) throw new AppError("invalid_body");
+        const expectedRevision = typeof body.expectedRevision === "string" && /^\d{1,15}$/.test(body.expectedRevision) ? Number(body.expectedRevision) : body.expectedRevision as number;
+        const base = { projectId, requestId: body.requestId as string, expectedRevision };
+        if (body.mode === "preview") {
+          const result = app.execute(auth.actor, { ...base, kind: "project.delete.preview", payload: { scope: { kind: "project", projectId } } }) as import("./memory/delete").DeletionReceipt;
+          return api ? json(result) : respond(null, 303, { Location: `/projects/${projectId}/delete/${result.preview.id}` });
+        }
+        if (body.mode === "confirm") {
+          const result = app.execute(auth.actor, { ...base, kind: "project.delete.confirm", payload: { previewId: body.previewId as string, inventoryDigest: body.inventoryDigest as string,
+            projectName: body.projectName as string, acknowledged: form ? body.acknowledged === "on" : body.acknowledged === true,
+            acknowledgedWholeSession: form ? body.acknowledgedWholeSession === "on" : body.acknowledgedWholeSession === true } });
+          return api ? json(result) : respond(null, 303, { Location: "/" });
+        }
+        if (body.mode === "retry") {
+          const result = app.execute(auth.actor, { ...base, kind: "project.delete.retry", payload: { operationId: body.operationId as string } });
+          return api ? json(result) : respond(null, 303, { Location: `/projects/${projectId}/delete/${body.operationId}` });
+        }
+        throw new AppError("invalid_body");
+      }
       if (request.method === "GET" && deletionsRoute) {
         const { project, operations } = app.deletionOperations(auth.actor, deletionsRoute[2]!);
         const inspector = app.memory(auth.actor, deletionsRoute[2]!);
@@ -1243,7 +1274,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const raw = url.searchParams.get("offset") ?? "0";
         if (!/^\d{1,7}$/.test(raw)) throw new AppError("invalid_offset");
         const offset = Number(raw);
-        return page(() => settingsDataPage(nav(app.workspace(auth.actor, offset)), auth.csrf, offset, config.pageSize));
+        return page(() => settingsDataPage(nav(app.workspace(auth.actor, offset)), auth.csrf, offset, config.pageSize, app.projectDeletionOperations(auth.actor)));
       }
       if (["/search", "/api/search"].includes(url.pathname) && request.method === "GET") {
         // web.settings_ia/v1 ⌘K: one bounded, read-only query; the browser never receives a preloaded index.
@@ -1402,21 +1433,34 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const receipt = app.execute(auth.actor, command);
         return api ? json(receipt) : respond(null, 303, { Location: `/projects/${decisionRoute![1]}/topics/${decisionRoute![2]}#owner-decision` });
       }
+      if (request.method === "POST" && projectRenameRoute) {
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "name"].includes(key))) throw new AppError("invalid_body");
+        const revision = typeof body.expectedRevision === "string" && /^\d{1,15}$/.test(body.expectedRevision) ? Number(body.expectedRevision) : body.expectedRevision;
+        try {
+          const receipt = app.execute(auth.actor, { kind: "project.rename", projectId: projectRenameRoute[2]!, requestId: body.requestId as string,
+            expectedRevision: revision as number, payload: { name: body.name as string } });
+          return api ? json(receipt) : respond(null, 303, { Location: `/projects/${projectRenameRoute[2]}` });
+        } catch (error) {
+          if (!api && error instanceof AppError && error.code === "stale_revision") return respond(null, 303, { Location: `/projects/${projectRenameRoute[2]}#rename` });
+          throw error;
+        }
+      }
       if (request.method === "POST" && teamAction) {
         const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
         const projectId = teamAction[1] ?? null, action = teamAction[2]!, form = request.headers.get("content-type")?.split(";")[0]?.trim() === "application/x-www-form-urlencoded";
-        if ((action === "roles" && projectId !== null) || ((action === "previews" || action === "discussions") && projectId === null)) throw new AppError("not_found", 404);
+        if (((action === "roles" || action === "archive") && projectId !== null) || ((action === "previews" || action === "discussions") && projectId === null)) throw new AppError("not_found", 404);
         const number = (value: unknown) => typeof value === "string" && /^\d{1,15}$/.test(value) ? Number(value) : value;
         const data = (value: unknown) => { if (!form) return value; try { return JSON.parse(value as string); } catch { throw new AppError("invalid_body"); } };
-        const allowed = action === "discussions" ? ["csrf", "requestId", "expectedRevision", "topicId", "purpose", "sources", "include", "exclude", "limits"]
+        const allowed = action === "archive" ? ["csrf", "requestId", "expectedRevision", "roleId"] : action === "discussions" ? ["csrf", "requestId", "expectedRevision", "topicId", "purpose", "sources", "include", "exclude", "limits"]
           : ["csrf", "requestId", "expectedRevision", "roleId", ...(action === "previews" ? ["topicId", "purpose", "sources", "limits"] : [...(form ? ["provider", "model", "authRoute"] : ["route"]), ...(action === "roles" ? ["name", "kind", "responsibility", "enabled"] : [])])];
         if (Object.keys(body).some(key => !allowed.includes(key))) throw new AppError("invalid_body");
         const roleId = form && body.roleId === "" ? null : body.roleId;
-        const route = form ? body.provider === "" ? null : completeRoute(body as { provider: unknown }, config.routeModels) : body.route;
+        const route = action === "archive" ? null : form ? body.provider === "" ? null : completeRoute(body as { provider: unknown }, config.routeModels) : body.route;
         const enabled = form ? body.enabled === "true" ? true : body.enabled === "false" ? false : undefined : body.enabled;
-        const command = { kind: action === "roles" ? "role.save" : action === "routes" ? "route.save" : action === "discussions" ? "team.dispatch" : "role.preview",
+        const command = { kind: action === "archive" ? "role.archive" : action === "roles" ? "role.save" : action === "routes" ? "route.save" : action === "discussions" ? "team.dispatch" : "role.preview",
           requestId: body.requestId, expectedRevision: number(body.expectedRevision), projectId,
-          payload: action === "discussions" ? { topicId: body.topicId, purpose: body.purpose, sources: data(body.sources), include: data(body.include ?? (form ? "[]" : [])), exclude: data(body.exclude ?? (form ? "[]" : [])), limits: data(body.limits) }
+          payload: action === "archive" ? { roleId } : action === "discussions" ? { topicId: body.topicId, purpose: body.purpose, sources: data(body.sources), include: data(body.include ?? (form ? "[]" : [])), exclude: data(body.exclude ?? (form ? "[]" : [])), limits: data(body.limits) }
             : action === "previews" ? { roleId, topicId: body.topicId, purpose: body.purpose, sources: data(body.sources), limits: data(body.limits) }
             : action === "roles" ? { roleId, name: body.name, kind: body.kind, responsibility: body.responsibility, enabled, route } : { roleId, route } } as TeamCommand;
         const receipt = app.execute(auth.actor, command);
@@ -1562,11 +1606,11 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       }
       if (request.method === "GET" && topicCollection) {
         const state = app.topics(auth.actor, topicCollection[2]!, after());
-        return api ? json(state) : page(() => projectPage(state, nav(), auth.csrf, after()));
+        return api ? json(state) : page(() => projectPage(state, nav(), auth.csrf, after(), app.generalSpace(auth.actor)?.projectId ?? null));
       }
       if (request.method === "GET" && projectRoute) {
         const project = app.project(auth.actor, projectRoute[2]!);
-        return api ? json(project) : page(() => projectPage(app.topics(auth.actor, project.id, after()), nav(), auth.csrf, after()));
+        return api ? json(project) : page(() => projectPage(app.topics(auth.actor, project.id, after()), nav(), auth.csrf, after(), app.generalSpace(auth.actor)?.projectId ?? null));
       }
       if (request.method === "GET" && ["/", "/api/projects"].includes(url.pathname)) {
         // FR-23: an installation that has not finished setup starts at setup, not at the workspace. The JSON list is unchanged.

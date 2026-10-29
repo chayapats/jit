@@ -1,5 +1,6 @@
+import { requireLiveProject } from "../project-lifecycle";
 import { reconcileContext, reconcileSessions } from "./reconcile";
-import { reconcileDeletions } from "../memory/delete";
+import { reconcileDeletions, type DeletionEnvironment } from "../memory/delete";
 import type { ApplicationRunPort } from "../team/run-port";
 import type { ManagedContextReference } from "../team/types";
 import { attemptAuthority, invalidateJob, readAttempt, readAttempts, saveAttempt, stopFullyObserved, unsettledTransportAttempts, type AttemptPreparation, type JobAttempt } from "./attempts";
@@ -190,6 +191,7 @@ export class JobQueue {
   #timers: NonNullable<SchedulerOptions["timers"]>;
   #active = new Map<string, { attemptId: string; abort: AbortController; timer: unknown; promise: Promise<unknown> }>();
   #closing = false; #fault = false; #leaseMs: number;
+  #deletionEnvironment: DeletionEnvironment = {};
   #lifecyclePort: ApplicationRunPort | null = null; #deletions: Promise<void> = Promise.resolve();
   #boxes: SchedulerOptions["boxes"];
 
@@ -303,6 +305,7 @@ export class JobQueue {
     const p = command.payload, entry = this.#definitions.get(p.type);
     if (!entry || p.configurationRevision !== entry.definition.revision || p.policyRevision !== this.policy.revision || typeof p.purpose !== "string" || !p.purpose.trim() || p.purpose.length > 300 ||
         !positive(p.inputRevision) || !["interactive", "background"].includes(p.priority)) throw new AppError("invalid_job_command");
+    requireLiveProject(tx, command.projectId);
     validateJobLimits(p.limits, this.policy.maximum);
     const project = tx.get<{ revision: number }>("SELECT revision FROM projects WHERE id = ?", command.projectId);
     if (project?.revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
@@ -442,6 +445,9 @@ export class JobQueue {
     return sessions;
   }
 
+  /** Registers service-owned project cleanup hooks; functions never enter durable jobs or model context. */
+  setDeletionEnvironment(environment: DeletionEnvironment): void { this.#deletionEnvironment = environment; }
+
   /**
    * app.data_lifecycle/v1: requests one serialized, budgeted managed-delete pass through the port
    * last passed to `reconcile`. Without a reconciled port (or while closing) nothing is dispatched;
@@ -452,7 +458,7 @@ export class JobQueue {
     if (!port || this.#closing || this.#fault) return this.#deletions;
     const next = this.#deletions.then(async () => {
       if (this.#closing || !this.store.read(tx => this.#owns(tx))) return;
-      await reconcileDeletions(this.store, port, this.#time());
+      await reconcileDeletions(this.store, port, this.#time(), undefined, this.#deletionEnvironment);
     }).catch(() => { /* Operation records keep the honest pending/blocked state. */ });
     this.#deletions = next;
     return next;
@@ -479,6 +485,7 @@ export class JobQueue {
   }
 
   #current(tx: AppTransaction, original: Job, attempt: JobAttempt): JobReason | null {
+    try { requireLiveProject(tx, original.projectId); } catch { return "source_retired"; }
     const reason = attemptAuthority(tx, attempt, this.#time()); if (reason) return reason;
     const current = readJob(tx, original.projectId, original.id), entry = this.#definitions.get(current.type);
     if (current.state !== "admitted" || current.steps !== original.steps) return "interrupted";

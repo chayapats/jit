@@ -11,6 +11,8 @@ export const coordinatorSynthesisWorkId = "team.coordinator-synthesis";
 export interface RoleRoute { provider: "grok" | "codex"; model: string; authRoute: string }
 /** One owner-configured responsibility, independent of a model, session or execution permission. */
 export interface Role {
+  /** Set by role.archive; archived roles are invisible to readTeam. Absent or null means active. */
+  archivedAt?: number | null;
   id: string; sequence: number; revision: number; name: string; kind: "specialist" | "coordinator";
   responsibility: string; enabled: boolean; route: RoleRoute | null; createdAt: number; updatedAt: number;
 }
@@ -251,6 +253,9 @@ export type TeamCommand = {
   kind: "role.save"; requestId: string; projectId: null; expectedRevision: number;
   payload: { roleId: string | null; name: string; kind: Role["kind"]; responsibility: string; enabled: boolean; route: RoleRoute | null };
 } | {
+  kind: "role.archive"; requestId: string; projectId: null; expectedRevision: number;
+  payload: { roleId: string };
+} | {
   kind: "route.save"; requestId: string; projectId: string | null; expectedRevision: number;
   payload: { roleId: string | null; route: RoleRoute | null };
 } | {
@@ -309,7 +314,9 @@ export interface CoordinatorSynthesis {
 export interface OwnerDecision {
   id: string; projectId: string; topicId: string; proposalId: string; proposalRevision: number; revision: number;
   actorId: "owner"; channel: "web"; optionId: string | null; conclusion: string; rationale: string;
-  sourceLinks: SourceReference[]; supersededBy: string | null; createdAt: number;
+  sourceLinks: SourceReference[];
+  /** Replacement decision ID, or project:<id> when explicit whole-project deletion closes this decision. */
+  supersededBy: string | null; createdAt: number;
 }
 /** A source link resolved against the registry. Unavailable content is not replaced. */
 export interface ResolvedEvidence {

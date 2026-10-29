@@ -1,3 +1,4 @@
+import { projectDeleted } from "../project-lifecycle";
 import type { ExecutionBackend } from "schway/host";
 import type { AppConfig } from "../config";
 import { AppError } from "../errors";
@@ -92,6 +93,7 @@ export class BoxManager {
   /** Seeds the running set from the runtime after a restart, so capacity counts boxes left running. */
   async reconcile(): Promise<void> {
     for (const box of await this.runtime.list()) {
+      if (this.store.read(tx => projectDeleted(tx, box.projectId))) { await this.stopDeletedProject(box.projectId); continue; }
       if (box.state !== "running" || this.#slots.has(box.projectId) || !box.mode) continue;
       // The next open re-ensures (and so re-verifies) the box; until then it counts for capacity and the idle sweep.
       const handle = Object.freeze({ projectId: box.projectId, name: box.name, mode: box.mode, profile: box.profile === true,
@@ -130,6 +132,8 @@ export class BoxManager {
       for (let attempt = 0; ; attempt++) {
         const generation = this.#accessGeneration.get(projectId) ?? 0;
         while (own.opening) await own.opening.catch(() => undefined);
+        // A queued open (including one requesting a different profile) must not start another ensure after deletion.
+        mode = this.#mode(projectId, roleId);
         if (!own.handle || own.verified === false || own.handle.mode !== mode || own.handle.profile !== (options.profile === true)) {
           const opening = this.runtime.ensure(projectId, mode, options);
           own.opening = opening;
@@ -223,6 +227,20 @@ export class BoxManager {
     if (slot) return this.#stopSlot(projectId, slot);
     await this.runtime.stop({ projectId });
     this.#stopped(projectId);
+  }
+
+  /** Stops a tombstoned project's box after any concurrent ensure settles; the shared project gate denies new opens. */
+  async stopDeletedProject(projectId: string): Promise<void> {
+    const slot = this.#slots.get(projectId);
+    this.#accessGeneration.set(projectId, (this.#accessGeneration.get(projectId) ?? 0) + 1);
+    await slot?.opening?.catch(() => undefined);
+    await this.stop(projectId);
+  }
+
+  /** After deletion's project fence, waits for an in-flight ensure, stops and resets the box with workspace/profile wipe. */
+  async wipeDeletedProject(projectId: string): Promise<void> {
+    await this.stopDeletedProject(projectId);
+    await this.runtime.reset({ projectId }, { wipeWorkspace: true });
   }
 
   /**

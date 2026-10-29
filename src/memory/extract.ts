@@ -1,3 +1,4 @@
+import { readActiveRole, roleActive } from "../team/configuration";
 import { AppError } from "../errors";
 import type { AppConfig } from "../config";
 import { readTopic } from "../conversation";
@@ -172,6 +173,7 @@ export function memoryExtractionWork(store: TransactionStore, config: AppConfig,
       const request = structuredClone(extraction.request);
       // Contexts start at admission. A queued extraction survives restart without an unowned context being retired.
       request.context = { id: crypto.randomUUID(), generation: 1 }; request.runId = crypto.randomUUID();
+      readActiveRole(tx, request.roleId);
       request.fence = { jobId: job.id, generation, ownerGeneration: job.authorization.generation };
       tx.run("INSERT INTO team_contexts VALUES (?, 1, 'active')", request.context.id);
       return { native: { adapter: "scripted", runId: request.runId, sessionId: request.runId, context: request.context }, data: JSON.parse(jobData(request, config.team.contextBytes)) };
@@ -179,7 +181,7 @@ export function memoryExtractionWork(store: TransactionStore, config: AppConfig,
     isCurrent: (tx, job, attempt) => {
       try {
         const request = attempt.data as unknown as ApplicationRunRequest;
-        if (request.fence.jobId !== job.id || request.fence.generation !== attempt.generation || request.fence.ownerGeneration !== job.authorization.generation ||
+        if (!roleActive(tx, request.roleId) || request.fence.jobId !== job.id || request.fence.generation !== attempt.generation || request.fence.ownerGeneration !== job.authorization.generation ||
             tx.get<{ state: string }>("SELECT state FROM team_contexts WHERE id = ? AND generation = ?", request.context.id, request.context.generation)?.state !== "active") return false;
         return request.manifest.sources.every(source => eligibleMemorySource(tx, source.projectId, source.reference).text === source.text) &&
           request.manifest.claims.every(ref => { const claim = lookupActiveClaim(tx, ref.projectId, { claimId: ref.claimId, revision: ref.revision, generation: ref.generation }); return claim.state === "available" && claim.claim.text === ref.text; });

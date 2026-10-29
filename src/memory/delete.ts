@@ -1,3 +1,6 @@
+import { projectDeleted } from "../project-lifecycle";
+import { readGeneralSpace } from "../setup";
+import { projectDeletionInventory, purgeProjectPayloads, type ProjectDeletionInventory, type ProjectCollateralContributor, type ProjectCollateralScope } from "./project-delete";
 import { createHash } from "node:crypto";
 import { lstatSync, realpathSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -37,17 +40,21 @@ export const deletePolicy = Object.freeze({ previewMs: 15 * 60 * 1000, maxAttemp
 export const redactedText = "(memory ไม่พร้อมใช้งาน)";
 /** One explicit owner-authorized local scope: an exact committed source lineage. */
 export interface DeleteScope { kind: "source"; projectId: string; source: SourceReference }
+/** The owner-authorized project scope includes every source generation and project-owned record. */
+export interface ProjectDeleteScope { kind: "project"; projectId: string }
+/** Source deletion and whole-project deletion share one inventory, confirmation and reconciliation pipeline. */
+export type DeletionScope = DeleteScope | ProjectDeleteScope;
 
 export interface DeletePreviewCommand {
-  kind: "memory.delete.preview"; requestId: string; projectId: string; expectedRevision: number;
-  payload: { scope: DeleteScope };
+  kind: "memory.delete.preview" | "project.delete.preview"; requestId: string; projectId: string; expectedRevision: number;
+  payload: { scope: DeletionScope };
 }
 export interface DeleteConfirmCommand {
-  kind: "memory.delete.confirm"; requestId: string; projectId: string; expectedRevision: number;
-  payload: { previewId: string; acknowledged: boolean; acknowledgedWholeSession: boolean };
+  kind: "memory.delete.confirm" | "project.delete.confirm"; requestId: string; projectId: string; expectedRevision: number;
+  payload: { previewId: string; acknowledged: boolean; acknowledgedWholeSession: boolean; inventoryDigest?: string; projectName?: string };
 }
 export interface DeleteRetryCommand {
-  kind: "memory.delete.retry"; requestId: string; projectId: string; expectedRevision: number;
+  kind: "memory.delete.retry" | "project.delete.retry"; requestId: string; projectId: string; expectedRevision: number;
   payload: { operationId: string };
 }
 export type DeleteCommand = DeletePreviewCommand | DeleteConfirmCommand | DeleteRetryCommand;
@@ -78,10 +85,12 @@ export interface DeletionNativeSession {
 
 export interface DeletionPreview {
   id: string; contract: typeof deletePreviewContract;
-  projectId: string; scope: DeleteScope;
+  projectId: string; scope: DeletionScope;
   projectRevision: number;
   expiresAt: number; createdAt: number;
   affected: {
+    /** Complete project-owned identity inventory, present only for project deletion. */
+    project?: ProjectDeletionInventory;
     /** The scope lineage plus every descendant output (recorded memory derivation or run output). */
     sources: { projectId: string; source: SourceReference; relation: "scope" | "derived_output" | "quoted_copy" }[];
     claims: { projectId: string; reference: ClaimReference }[];
@@ -97,12 +106,13 @@ export interface DeletionPreview {
     exports: { id: string; projectId: string; createdAt: number; evidence: "coverage" | "affected_project" }[];
     /**
      * Owner tasks/decisions linked by lineage, lexical overlap or an exact quoted copy of an affected payload, by identity
-     * and revision only (no title or other payload is persisted). Deletion never completes or cancels them. An active
+     * and revision only (no title or other payload is persisted). Whole-project confirmation explicitly closes its own
+     * obligations; per-source and cross-project copies keep their blockers. An active
      * task or current decision holding a copy is `blocked_owner_copy` (a named blocker until the owner edits, closes or
      * supersedes it); a superseded decision's copy is `redacted`; everything else is `retained_unchanged`.
      */
     obligations: { kind: "task" | "decision"; id: string; revision: number; evidence: "lineage" | "lexical" | "quoted_copy";
-      effect: "retained_unchanged" | "blocked_owner_copy" | "redacted" }[];
+      effect: "retained_unchanged" | "blocked_owner_copy" | "redacted" | "closed_and_deleted" }[];
     /**
      * Task proposal revisions whose exact source generation is affected. Historical (or inactive-task) proposal
      * payloads are redacted; the current proposal of an active task is a named blocker (edit or close the task first).
@@ -160,7 +170,7 @@ export interface DeletionLocalScope {
 
 export interface DeletionOperation {
   id: string; contract: typeof deleteOperationContract;
-  projectId: string; previewId: string; scope: DeleteScope;
+  projectId: string; previewId: string; scope: DeletionScope;
   state: "pending" | "complete" | "failed" | "blocked";
   /** Managed-delete passes consumed (automatic reconcile and owner retry share one budget). */
   attempts: number; maxAttempts: number;
@@ -169,6 +179,9 @@ export interface DeletionOperation {
   /** App-owned export files holding affected data; the operation is never complete while one remains. */
   exports: DeletionExportScope[];
   scopes: DeletionLocalScope[];
+  /** Project-specific local cleanup; a pending WAL checkpoint or contributor prevents completion. */
+  databasePurge?: "pending" | "purged";
+  collateral?: ProjectCollateralScope[];
   backupsRetained: string[];
   residuals: string[];
   reason: string | null; nextAction: string;
@@ -176,7 +189,7 @@ export interface DeletionOperation {
 }
 
 /** Trusted service-owned locations the inventory may inspect (never read from persisted JSON). */
-export interface DeletionEnvironment { backupDir?: string }
+export interface DeletionEnvironment { backupDir?: string; contributors?: readonly ProjectCollateralContributor[] }
 
 export interface DeletionReceipt { preview: DeletionPreview; duplicate: boolean }
 export interface DeletionConfirmReceipt { operation: DeletionOperation; duplicate: boolean }
@@ -184,7 +197,8 @@ export interface DeletionConfirmReceipt { operation: DeletionOperation; duplicat
 const exact = (value: unknown, keys: string[]) => !!value && typeof value === "object" && !Array.isArray(value) &&
   Object.keys(value).sort().join(",") === [...keys].sort().join(",");
 
-function requireScope(scope: DeleteScope): void {
+function requireScope(scope: DeletionScope): void {
+  if (scope?.kind === "project" && exact(scope, ["kind", "projectId"])) { requireId(scope.projectId); return; }
   if (!exact(scope, ["kind", "projectId", "source"]) || scope.kind !== "source") throw new AppError("invalid_memory_delete");
   requireId(scope.projectId);
   requireReference(scope.source);
@@ -198,17 +212,19 @@ export function deleteCommandIdentity(command: DeleteCommand, contextBytes: numb
       typeof command.requestId !== "string" || !/^[a-zA-Z0-9_-]{8,128}$/.test(command.requestId) ||
       !Number.isSafeInteger(command.expectedRevision) || command.expectedRevision < 1) throw new AppError("invalid_memory_delete");
   requireId(command.projectId);
-  if (command.kind === "memory.delete.preview") {
+  if (command.kind === "memory.delete.preview" || command.kind === "project.delete.preview") {
     if (!exact(command.payload, ["scope"])) throw new AppError("invalid_memory_delete");
     requireScope(command.payload.scope);
+    if ((command.kind === "project.delete.preview") !== (command.payload.scope.kind === "project")) throw new AppError("invalid_memory_delete");
     if (command.payload.scope.projectId !== command.projectId) throw new AppError("invalid_memory_delete");
-  } else if (command.kind === "memory.delete.confirm") {
-    if (!exact(command.payload, ["previewId", "acknowledged", "acknowledgedWholeSession"])) throw new AppError("invalid_memory_delete");
+  } else if (command.kind === "memory.delete.confirm" || command.kind === "project.delete.confirm") {
+    if (!exact(command.payload, ["previewId", "acknowledged", "acknowledgedWholeSession", ...(command.kind === "project.delete.confirm" ? ["inventoryDigest", "projectName"] : [])])) throw new AppError("invalid_memory_delete");
     requireId(command.payload.previewId);
+    if (command.kind === "project.delete.confirm" && (typeof command.payload.inventoryDigest !== "string" || !/^[a-f0-9]{64}$/.test(command.payload.inventoryDigest) || typeof command.payload.projectName !== "string")) throw new AppError("invalid_memory_delete");
     if (typeof command.payload.acknowledged !== "boolean" || typeof command.payload.acknowledgedWholeSession !== "boolean") {
       throw new AppError("invalid_memory_delete");
     }
-  } else if (command.kind === "memory.delete.retry") {
+  } else if (command.kind === "memory.delete.retry" || command.kind === "project.delete.retry") {
     if (!exact(command.payload, ["operationId"])) throw new AppError("invalid_memory_delete");
     requireId(command.payload.operationId);
   } else throw new AppError("invalid_memory_delete");
@@ -344,6 +360,7 @@ interface Inventory {
   /** Payload texts for the quoted-copy fallback; internal to the transaction, never persisted in a preview. */
   scrub: { long: string[]; short: string[] };
   blockers: Set<string>;
+  project?: ProjectDeletionInventory;
 }
 
 function jobEvidence(tx: AppTransaction, blockers: Set<string>): Map<string, JobEvidence> {
@@ -445,10 +462,13 @@ function addDerived(tx: AppTransaction, sources: Map<string, SourceEntry>, row: 
  * by lineage, not text), citing jobs and their managed native sessions, retained copies and obligations.
  * Unreadable rows and scan ceilings become named blockers; nothing relevant is silently omitted.
  */
-function buildInventory(tx: AppTransaction, scope: DeleteScope, env: DeletionEnvironment = {}): Inventory {
+function buildInventory(tx: AppTransaction, scope: DeletionScope, env: DeletionEnvironment = {}): Inventory {
   const blockers = new Set<string>();
-  const lineage: SourceReference = { ...scope.source };
-  const sources = new Map<string, SourceEntry>([[sourceKey(lineage), { projectId: scope.projectId, source: lineage, relation: "scope" }]]);
+  const sources = new Map<string, SourceEntry>();
+  if (scope.kind === "source") sources.set(sourceKey(scope.source), { projectId: scope.projectId, source: { ...scope.source }, relation: "scope" });
+  else scanTable<{ sourceId: string; revision: number; generation: number }>(tx, "source_versions", "source_id AS sourceId, revision, generation", row => {
+    sources.set(sourceKey(row), { projectId: scope.projectId, source: { sourceId: row.sourceId, revision: row.revision, generation: row.generation }, relation: "scope" });
+  }, { blockers }, "source_id IN (SELECT id FROM sources WHERE project_id = ?)", [scope.projectId]);
   const claims = new Map<string, ClaimRow>();
   const contexts = new Map<string, ContextRow>();
   const claimRows: ClaimRow[] = [];
@@ -459,7 +479,12 @@ function buildInventory(tx: AppTransaction, scope: DeleteScope, env: DeletionEnv
       claimRows.push({ projectId: row.projectId, claim });
     } catch { blockers.add("unreadable_record:memory_claims"); }
   }, { blockers });
+  if (scope.kind === "project") for (const entry of claimRows) if (entry.projectId === scope.projectId) claims.set(entry.claim.claimId, entry);
+  if (scope.kind === "project") scanTable<ContextRow>(tx, "memory_contexts", "id, 1 AS generation, project_id AS projectId, owner_kind AS ownerKind, owner_id AS ownerId", row => contexts.set(row.id, row), { blockers }, "project_id = ?", [scope.projectId]);
   const jobs = jobEvidence(tx, blockers);
+  if (scope.kind === "project") scanTable<{ id: string }>(tx, "jobs", "id", row => {
+    if (!jobs.has(row.id)) jobs.set(row.id, { jobId: row.id, projectId: scope.projectId, manifests: [], runIds: new Set(), contexts: new Map(), dispatched: new Set(), extractionSources: [], opaque: false });
+  }, { blockers }, "project_id = ?", [scope.projectId]);
   const intents = deliveryIntentRows(tx, blockers);
   const occurrenceLinks: { output: SourceReference; intentId: string }[] = [];
   scanTable<{ json: string }>(tx, "job_schedule_occurrences", "record_json AS json", row => {
@@ -510,7 +535,7 @@ function buildInventory(tx: AppTransaction, scope: DeleteScope, env: DeletionEnv
          JOIN sources s ON s.id = c.title_source_id WHERE c.message_source_id IN (${marks(batch.length)})`, ...batch)) addDerived(tx, sources, row);
     }
     const runIds = new Set<string>();
-    for (const job of jobs.values()) if (jobCites(job, sources, claims)) for (const runId of job.runIds) runIds.add(runId);
+    for (const job of jobs.values()) if ((scope.kind === "project" && job.projectId === scope.projectId) || jobCites(job, sources, claims)) for (const runId of job.runIds) runIds.add(runId);
     for (const batch of chunks([...runIds])) {
       for (const row of tx.all<{ sourceId: string; projectId: string; revision: number; generation: number }>(
         `SELECT s.id AS sourceId, s.project_id AS projectId, v.revision, v.generation FROM source_versions v JOIN sources s ON s.id = v.source_id
@@ -543,7 +568,7 @@ function buildInventory(tx: AppTransaction, scope: DeleteScope, env: DeletionEnv
     }
     if (sources.size + claims.size === before) break;
   }
-  const citing = [...jobs.values()].filter(job => jobCites(job, sources, claims));
+  const citing = [...jobs.values()].filter(job => (scope.kind === "project" && job.projectId === scope.projectId) || jobCites(job, sources, claims));
   const pendingJobs: Inventory["pendingJobs"] = [];
   for (const job of citing) {
     const row = tx.get<{ state: string; projectId: string }>("SELECT state, project_id AS projectId FROM jobs WHERE id = ?", job.jobId);
@@ -584,25 +609,36 @@ function buildInventory(tx: AppTransaction, scope: DeleteScope, env: DeletionEnv
     backups: retainedBackups(tx, allSources, blockers, env),
     exports: retainedExports(tx, allSources, [...claims.values()], blockers),
     obligations: obligationsFor(tx, scope, allSources, blockers),
-    taskProposals: taskProposalsFor(tx, allSources, blockers),
-    taskEvidence: taskEvidenceFor(tx, allSources, blockers),
+    taskProposals: taskProposalsFor(tx, allSources, blockers, scope),
+    taskEvidence: taskEvidenceFor(tx, allSources, blockers, scope),
     deliveries: [],
     scrub: { long: [], short: [] },
     blockers,
   };
+  if (scope.kind === "project") {
+    inventory.project = projectDeletionInventory(tx, scope.projectId, env.contributors ?? [], blockers);
+    // Even an empty project can have an export, and every local delivery belongs to the delete scope.
+    inventory.exports = retainedExports(tx, allSources, [...claims.values()], blockers, scope.projectId);
+  }
   inventory.scrub = payloadNeedles(tx, allSources, [...claims.values()], inventory.taskProposals);
   if (inventory.scrub.long.length > deleteScrubPolicy.maxTerms) blockers.add("scrub_set_exceeds_bound");
   else for (const blocker of unreadableScrubTargets(tx, inventory.scrub.long)) blockers.add(blocker);
   const keys = new Set(allSources.map(entry => sourceKey(entry.source)));
   for (const intent of intents.values()) {
-    const linked = keys.has(sourceKey(intent.source));
+    const linked = keys.has(sourceKey(intent.source)) || (scope.kind === "project" && intent.projectId === scope.projectId);
     if (!linked && !inventory.scrub.long.some(term => intent.text.includes(term))) continue;
     inventory.deliveries.push({ intentId: intent.id, reportId: intent.reportId, projectId: intent.projectId, status: intent.status,
       evidence: linked ? "provenance" : "quoted_text", effect: TERMINAL_DELIVERY.has(intent.status) ? "redact_keep_state" : "cancel_and_redact" });
   }
   if (inventory.scrub.short.length && shortPayloadCopied(tx, inventory.scrub.short, keys, new Set(citing.map(job => job.jobId)),
     new Set(inventory.deliveries.map(d => d.intentId)), new Set(inventory.deliveries.map(d => d.reportId)))) blockers.add("short_payload_unlinked_copy");
-  ownerCopies(tx, inventory);
+  ownerCopies(tx, inventory, scope);
+  if (scope.kind === "project") for (const obligation of inventory.obligations) {
+    const local = obligation.kind === "task"
+      ? inventory.project?.tasks.some(t => t.id === obligation.id && activeTaskStates.includes(t.state))
+      : inventory.project?.decisions?.some(d => d.id === obligation.id);
+    if (local) obligation.effect = "closed_and_deleted";
+  }
   // Lists confirmation acts on (or the owner must see in full) block when they exceed display bounds; backups are disclosure only.
   const sizes: [string, number, number][] = [["sources", sources.size, deletePreviewBounds.sources], ["claims", claims.size, deletePreviewBounds.claims],
     ["contexts", contexts.size, deletePreviewBounds.contexts], ["pendingJobs", pendingJobs.length, deletePreviewBounds.pendingJobs],
@@ -676,7 +712,7 @@ function shortPayloadCopied(tx: AppTransaction, short: string[], affected: Set<s
   return found;
 }
 
-function obligationsFor(tx: AppTransaction, scope: DeleteScope, sources: SourceEntry[], blockers: Set<string>): DeletionPreview["affected"]["obligations"] {
+function obligationsFor(tx: AppTransaction, scope: DeletionScope, sources: SourceEntry[], blockers: Set<string>): DeletionPreview["affected"]["obligations"] {
   const out = new Map<string, DeletionPreview["affected"]["obligations"][number]>();
   const add = (kind: "task" | "decision", id: string, revision: number, evidence: "lineage" | "lexical") => {
     if (!out.has(`${kind}:${id}`) || evidence === "lineage") out.set(`${kind}:${id}`, { kind, id, revision, evidence, effect: "retained_unchanged" });
@@ -690,7 +726,7 @@ function obligationsFor(tx: AppTransaction, scope: DeleteScope, sources: SourceE
        WHERE d.superseded_by IS NULL AND p.source_id IN (${marks(batch.length)})`, ...batch)) add("decision", row.id, row.revision, "lineage");
   }
   // Lexical overlap is disclosure only; every active row is checked, not a prefix.
-  const query = lexicalTerms(sourceText(tx, scope.source));
+  const query = scope.kind === "source" ? lexicalTerms(sourceText(tx, scope.source)) : new Set<string>();
   scanTable<{ id: string; title: string; summary: string; revision: number }>(tx, "tasks", "id, title, summary, task_revision AS revision", row => {
     if (lexicalScore(query, `${row.title}\n${row.summary}`) >= 3) add("task", row.id, row.revision, "lexical");
   }, { blockers }, `project_id = ? AND ${active}`, [scope.projectId]);
@@ -755,7 +791,7 @@ function ownerCopyTerms(tx: AppTransaction, inventory: Pick<Inventory, "sources"
  * `active_task_current_proposal` blocker, any other is redacted at confirm. A current decision quoting a payload adds
  * `owner_decision_copy:<id>`; a superseded one is redacted. Nothing payload-bearing enters the preview.
  */
-function ownerCopies(tx: AppTransaction, inventory: Inventory): void {
+function ownerCopies(tx: AppTransaction, inventory: Inventory, scope: DeletionScope): void {
   const terms = ownerCopyTerms(tx, inventory);
   const linked = new Set(inventory.taskProposals.map(p => p.proposalId));
   const mark = (kind: "task" | "decision", id: string, revision: number, effect: "blocked_owner_copy" | "redacted",
@@ -774,10 +810,10 @@ function ownerCopies(tx: AppTransaction, inventory: Inventory): void {
   scanTable<{ id: string; taskId: string; revision: number; title: string; summary: string }>(tx, "task_proposals",
     "id, task_id AS taskId, revision, title, summary", row => {
       if (linked.has(row.id) || !holdsCopy(terms, [row.title, row.summary])) return;
-      const task = tx.get<{ state: string; currentId: string; revision: number }>(
-        "SELECT state, current_proposal_id AS currentId, task_revision AS revision FROM tasks WHERE id = ?", row.taskId);
+      const task = tx.get<{ state: string; currentId: string; revision: number; projectId: string }>(
+        "SELECT state, current_proposal_id AS currentId, task_revision AS revision, project_id AS projectId FROM tasks WHERE id = ?", row.taskId);
       const current = task?.currentId === row.id, active = activeTaskStates.includes(task?.state ?? "");
-      const effect = current && active ? "blocked_active_task" as const : "redacted" as const;
+      const effect = current && active && !(scope.kind === "project" && task?.projectId === scope.projectId) ? "blocked_active_task" as const : "redacted" as const;
       if (effect === "blocked_active_task") {
         inventory.blockers.add(`active_task_current_proposal:${row.taskId}`);
         mark("task", row.taskId, task!.revision, "blocked_owner_copy");
@@ -785,28 +821,29 @@ function ownerCopies(tx: AppTransaction, inventory: Inventory): void {
       inventory.taskProposals.push({ taskId: row.taskId, taskState: task?.state ?? "missing", proposalId: row.id, revision: row.revision,
         current, evidence: "quoted_text", effect });
     }, { blockers: inventory.blockers });
-  scanTable<{ id: string; revision: number; conclusion: string; rationale: string; supersededBy: string | null }>(tx, "owner_decisions",
-    "id, revision, conclusion, rationale, superseded_by AS supersededBy", row => {
+  scanTable<{ id: string; revision: number; conclusion: string; rationale: string; supersededBy: string | null; projectId: string }>(tx, "owner_decisions",
+    "id, revision, conclusion, rationale, superseded_by AS supersededBy, project_id AS projectId", row => {
       if (!holdsCopy(terms, [row.conclusion, row.rationale])) return;
-      if (row.supersededBy === null) inventory.blockers.add(`owner_decision_copy:${row.id}`);
-      mark("decision", row.id, row.revision, row.supersededBy === null ? "blocked_owner_copy" : "redacted");
+      const blocked = row.supersededBy === null && !(scope.kind === "project" && row.projectId === scope.projectId);
+      if (blocked) inventory.blockers.add(`owner_decision_copy:${row.id}`);
+      mark("decision", row.id, row.revision, blocked ? "blocked_owner_copy" : "redacted");
     }, { blockers: inventory.blockers });
 }
 
 /** Every task proposal revision (current or historical) citing an affected exact source generation. */
-function taskProposalsFor(tx: AppTransaction, sources: SourceEntry[], blockers: Set<string>): DeletionPreview["affected"]["taskProposals"] {
+function taskProposalsFor(tx: AppTransaction, sources: SourceEntry[], blockers: Set<string>, scope: DeletionScope): DeletionPreview["affected"]["taskProposals"] {
   const keys = new Set(sources.map(entry => sourceKey(entry.source)));
   const out: DeletionPreview["affected"]["taskProposals"] = [];
   for (const batch of chunks([...new Set(sources.map(entry => entry.source.sourceId))])) {
     for (const row of tx.all<{ id: string; taskId: string; revision: number; sourceId: string; sourceRevision: number; sourceGeneration: number;
-      state: string | null; currentId: string | null }>(
+      state: string | null; currentId: string | null; projectId: string | null }>(
       `SELECT p.id, p.task_id AS taskId, p.revision, p.source_id AS sourceId, p.source_revision AS sourceRevision, p.source_generation AS sourceGeneration,
-         t.state, t.current_proposal_id AS currentId FROM task_proposals p LEFT JOIN tasks t ON t.id = p.task_id
+         t.state, t.current_proposal_id AS currentId, t.project_id AS projectId FROM task_proposals p LEFT JOIN tasks t ON t.id = p.task_id
        WHERE p.source_id IN (${marks(batch.length)})`, ...batch)) {
       if (!keys.has(sourceKey({ sourceId: row.sourceId, revision: row.sourceRevision, generation: row.sourceGeneration }))) continue;
       const current = row.currentId === row.id;
       const active = ["proposed", "accepted", "ready_for_review"].includes(row.state ?? "");
-      const effect = current && active ? "blocked_active_task" as const : "redacted" as const;
+      const effect = current && active && !(scope.kind === "project" && row.projectId === scope.projectId) ? "blocked_active_task" as const : "redacted" as const;
       if (effect === "blocked_active_task") blockers.add(`active_task_current_proposal:${row.taskId}`);
       out.push({ taskId: row.taskId, taskState: row.state ?? "missing", proposalId: row.id, revision: row.revision, current, evidence: "provenance", effect });
     }
@@ -815,21 +852,21 @@ function taskProposalsFor(tx: AppTransaction, sources: SourceEntry[], blockers: 
 }
 
 /** Every task evidence artifact citing an affected exact source generation; the latest one of an active task blocks. */
-function taskEvidenceFor(tx: AppTransaction, sources: SourceEntry[], blockers: Set<string>): DeletionPreview["affected"]["taskEvidence"] {
+function taskEvidenceFor(tx: AppTransaction, sources: SourceEntry[], blockers: Set<string>, scope: DeletionScope): DeletionPreview["affected"]["taskEvidence"] {
   const keys = new Set(sources.map(entry => sourceKey(entry.source)));
   const out: DeletionPreview["affected"]["taskEvidence"] = [];
   for (const batch of chunks([...new Set(sources.map(entry => entry.source.sourceId))])) {
     for (const row of tx.all<{ id: string; taskId: string; revision: number; sourceId: string; sourceRevision: number; sourceGeneration: number;
-      state: string | null; taskRevision: number | null; latestRevision: number }>(
+      state: string | null; taskRevision: number | null; latestRevision: number; projectId: string | null }>(
       `SELECT e.id, e.task_id AS taskId, e.revision, e.source_id AS sourceId, e.source_revision AS sourceRevision, e.source_generation AS sourceGeneration,
-         t.state, t.task_revision AS taskRevision,
+         t.state, t.task_revision AS taskRevision, t.project_id AS projectId,
          (SELECT max(l.revision) FROM task_evidence_artifacts l WHERE l.task_id = e.task_id) AS latestRevision
        FROM task_evidence_artifacts e LEFT JOIN tasks t ON t.id = e.task_id
        WHERE e.source_id IN (${marks(batch.length)})`, ...batch)) {
       if (!keys.has(sourceKey({ sourceId: row.sourceId, revision: row.sourceRevision, generation: row.sourceGeneration }))) continue;
       const latest = row.revision === row.latestRevision;
       const active = ["proposed", "accepted", "ready_for_review"].includes(row.state ?? "");
-      const effect = latest && active ? "blocked_active_task" as const : "reference_unavailable" as const;
+      const effect = latest && active && !(scope.kind === "project" && row.projectId === scope.projectId) ? "blocked_active_task" as const : "reference_unavailable" as const;
       if (effect === "blocked_active_task") blockers.add(`active_task_evidence:${row.taskId}`);
       out.push({ taskId: row.taskId, taskState: row.state ?? "missing", taskRevision: row.taskRevision ?? 0, artifactId: row.id,
         revision: row.revision, latest, effect });
@@ -870,10 +907,11 @@ function retainedBackups(tx: AppTransaction, sources: SourceEntry[], blockers: S
  * task/proposal/decision text is serialized too, so complete-but-nonmatching coverage is never proof of absence;
  * exports are regenerable and retention-bounded. Failed exports published no artifact.
  */
-function retainedExports(tx: AppTransaction, sources: SourceEntry[], claims: ClaimRow[], blockers: Set<string>): DeletionPreview["affected"]["exports"] {
+function retainedExports(tx: AppTransaction, sources: SourceEntry[], claims: ClaimRow[], blockers: Set<string>, projectId?: string): DeletionPreview["affected"]["exports"] {
   const keys = new Set(sources.map(s => sourceKey(s.source)));
   const claimIds = new Set(claims.map(c => c.claim.claimId));
   const projects = new Set([...sources.map(entry => entry.projectId), ...claims.map(entry => entry.projectId)]);
+  if (projectId) projects.add(projectId);
   const items: DeletionPreview["affected"]["exports"] = [];
   try {
     scanTable<{ id: string; projectId: string }>(tx, "export_artifacts", "id, project_id AS projectId", row => {
@@ -915,13 +953,13 @@ function dropExportRegistration(tx: AppTransaction, projectId: string, id: strin
 }
 
 /** Whole-session requirement: shared topic identity, unresolvable orphans, or dispatched sessions holding collateral. */
-function wholeSessionFor(tx: AppTransaction, scope: DeleteScope, sessions: DeletionNativeSession[]): DeletionPreview["wholeSession"] {
+function wholeSessionFor(tx: AppTransaction, scope: DeletionScope, sessions: DeletionNativeSession[]): DeletionPreview["wholeSession"] {
   const reasons: string[] = [], sessionScope: string[] = [];
-  const descriptor = tx.get<{ descriptor: string }>("SELECT descriptor_json AS descriptor FROM source_versions WHERE source_id = ? AND revision = ? AND generation = ?",
-    scope.source.sourceId, scope.source.revision, scope.source.generation);
+  const descriptor = scope.kind === "source" ? tx.get<{ descriptor: string }>("SELECT descriptor_json AS descriptor FROM source_versions WHERE source_id = ? AND revision = ? AND generation = ?",
+    scope.source.sourceId, scope.source.revision, scope.source.generation) : null;
   let descriptorKind = "message";
   try { descriptorKind = (JSON.parse(descriptor?.descriptor ?? "{}") as { kind?: string }).kind ?? "message"; } catch { /* Identity stays descriptive. */ }
-  if (descriptorKind === "topic") { reasons.push("topic_identity_shared"); sessionScope.push(`topic:${scope.source.sourceId}`); }
+  if (scope.kind === "source" && descriptorKind === "topic") { reasons.push("topic_identity_shared"); sessionScope.push(`topic:${scope.source.sourceId}`); }
   const live = sessions.filter(session => session.appState !== "deleted");
   const missing = live.filter(session => session.appState === "missing");
   if (missing.length) {
@@ -942,11 +980,12 @@ function wholeSessionFor(tx: AppTransaction, scope: DeleteScope, sessions: Delet
 }
 
 /** Canonical digest of everything confirmation acts on; any identity, revision or lifecycle change forces a fresh preview. */
-function inventoryDigest(tx: AppTransaction, scope: DeleteScope, inventory: Inventory, wholeSession: DeletionPreview["wholeSession"]): string {
+function inventoryDigest(tx: AppTransaction, scope: DeletionScope, inventory: Inventory, wholeSession: DeletionPreview["wholeSession"]): string {
   const sorted = (items: string[]) => [...items].sort();
   const availability = (entry: SourceEntry) => tx.get<{ availability: string }>("SELECT availability FROM sources WHERE id = ?", entry.source.sourceId)?.availability ?? "missing";
   const canonical = {
-    scope: `${scope.projectId}/${sourceKey(scope.source)}`,
+    scope: scope.kind === "source" ? `${scope.projectId}/${sourceKey(scope.source)}` : `project:${scope.projectId}`,
+    project: inventory.project,
     sources: sorted([...inventory.sources.values()].map(e => `${e.projectId}/${sourceKey(e.source)}/${e.relation}/${availability(e)}`)),
     claims: sorted([...inventory.claims.values()].map(e => `${e.projectId}/${e.claim.claimId}:${e.claim.revision}:${e.claim.generation}/${e.claim.status}`)),
     contexts: sorted([...inventory.contexts.keys()]),
@@ -986,6 +1025,10 @@ export function prepareDeletionPreview(tx: AppTransaction, command: DeletePrevie
   deleteCommandIdentity(command, 65536);
   const scope = command.payload.scope;
   if (projectRevision !== command.expectedRevision) throw new AppError("stale_revision", 409);
+  if (scope.kind === "project") {
+    if (readGeneralSpace(tx)?.projectId === scope.projectId) throw new AppError("general_space_delete_refused", 409);
+    if (projectDeleted(tx, scope.projectId)) throw new AppError("project_deleted", 409);
+  } else {
   if (deletedSource(tx, scope.source)) throw new AppError("memory_already_deleted", 409);
   const current = tx.get<{ revision: number; generation: number; availability: string }>(
     "SELECT current_revision AS revision, generation, availability FROM sources WHERE id = ? AND project_id = ?",
@@ -995,6 +1038,7 @@ export function prepareDeletionPreview(tx: AppTransaction, command: DeletePrevie
     throw new AppError("memory_delete_stale_scope", 409);
   }
   if (current.availability !== "available") throw new AppError("memory_delete_unavailable", 409);
+  }
   const inventory = buildInventory(tx, scope, env);
   const sources = bounded([...inventory.sources.values()], deletePreviewBounds.sources);
   const claims = bounded([...inventory.claims.values()], deletePreviewBounds.claims);
@@ -1010,9 +1054,10 @@ export function prepareDeletionPreview(tx: AppTransaction, command: DeletePrevie
   const wholeSession = wholeSessionFor(tx, scope, inventory.sessions);
   const preview: DeletionPreview = {
     id: crypto.randomUUID(), contract: deletePreviewContract,
-    projectId: command.projectId, scope: { kind: "source", projectId: scope.projectId, source: { ...scope.source } },
+    projectId: command.projectId, scope: structuredClone(scope),
     projectRevision, expiresAt: now + deletePolicy.previewMs, createdAt: now,
     affected: {
+      ...(inventory.project ? { project: inventory.project } : {}),
       sources: sources.items.map(entry => ({ projectId: entry.projectId, source: { ...entry.source }, relation: entry.relation })),
       claims: claims.items.map(entry => ({ projectId: entry.projectId,
         reference: { claimId: entry.claim.claimId, revision: entry.claim.revision, generation: entry.claim.generation } })),
@@ -1331,13 +1376,13 @@ function redactDerivedRuns(tx: AppTransaction, sources: SourceEntry[]): void {
   }
 }
 
-function localScopes(operation: Pick<DeletionOperation, "tombstones" | "backupsRetained" | "exports">): DeletionLocalScope[] {
+function localScopes(operation: Pick<DeletionOperation, "tombstones" | "backupsRetained" | "exports" | "databasePurge">): DeletionLocalScope[] {
   const sources = operation.tombstones.filter(t => t.kind === "source").length, claims = operation.tombstones.length - sources;
   const exports = operation.exports;
   const exportState: DeletionLocalScope["state"] = !exports.length ? "none" : exports.some(e => e.state === "failed") ? "failed"
     : exports.some(e => e.state === "pending") ? "pending" : "purged";
   return [
-    { scope: "app_store", state: "purged", detail: `${sources} source generations and ${claims} claims purged; manifests, attempts and receipts redacted` },
+    { scope: "app_store", state: operation.databasePurge === "pending" ? "pending" : "purged", detail: `${sources} source generations and ${claims} claims purged; manifests, attempts and receipts redacted` },
     operation.backupsRetained.length
       ? { scope: "retained_backups", state: "retained", detail: `${operation.backupsRetained.length} backups may keep the deleted data until retention purge` }
       : { scope: "retained_backups", state: "none", detail: "no recorded backup was taken after this data was committed" },
@@ -1368,6 +1413,14 @@ export function confirmDeletion(tx: AppTransaction, command: DeleteConfirmComman
   }
   if (!command.payload.acknowledged) throw new AppError("memory_delete_ambiguous", 409);
   if (preview.wholeSession.required && !command.payload.acknowledgedWholeSession) throw new AppError("memory_delete_ambiguous", 409);
+  if ((command.kind === "project.delete.confirm") !== (preview.scope.kind === "project")) throw new AppError("invalid_memory_delete");
+  if (preview.scope.kind === "project") {
+    if (readGeneralSpace(tx)?.projectId === command.projectId) throw new AppError("general_space_delete_refused", 409);
+    if (projectDeleted(tx, command.projectId)) throw new AppError("project_deleted", 409);
+    if (command.payload.inventoryDigest !== preview.inventoryDigest) throw new AppError("memory_delete_stale_preview", 409);
+    const name = tx.get<{ name: string }>("SELECT name FROM projects WHERE id = ?", command.projectId)?.name;
+    if (command.payload.projectName !== name) throw new AppError("project_delete_name_mismatch", 409);
+  } else {
   const lineage = preview.scope.source;
   if (deletedSource(tx, lineage)) throw new AppError("memory_already_deleted", 409);
   const current = tx.get<{ revision: number; generation: number; availability: string }>(
@@ -1375,6 +1428,7 @@ export function confirmDeletion(tx: AppTransaction, command: DeleteConfirmComman
     lineage.sourceId, preview.scope.projectId);
   if (!current || current.revision !== lineage.revision || current.generation !== lineage.generation || current.availability !== "available") {
     throw new AppError("memory_delete_stale_preview", 409);
+  }
   }
   const inventory = buildInventory(tx, preview.scope, env);
   if (typeof preview.inventoryDigest !== "string" ||
@@ -1470,6 +1524,18 @@ export function confirmDeletion(tx: AppTransaction, command: DeleteConfirmComman
   // App-owned exports: SQLite artifacts (registry + body rows) are deleted in this transaction; format-1
   // legacy files are purged right after commit.
   const exports = inventory.exports.map(entry => dropExportRegistration(tx, entry.projectId, entry.id, now, "awaiting_legacy_file_purge"));
+  if (preview.scope.kind === "project") {
+    for (const item of inventory.project?.collateral ?? []) {
+      const contributor = env.contributors?.find(c => c.key === item.key);
+      if (!contributor) throw new AppError("project_delete_contributor_unavailable", 409);
+      contributor.confirm(tx, command.projectId, item, operationId, now);
+    }
+    const record = { id: operationId, operationId, projectId: command.projectId, kind: "project", sourceId: null, claimId: null, revision: projectRevision, generation: 1, deletedAt: now, collateral: inventory.project?.collateral ?? [] };
+    tx.run("INSERT INTO lifecycle_ledger (kind, entry_key, subject, project_id, record_json, recorded_at) VALUES ('deletion', ?, ?, ?, ?, ?)",
+      `project_deletion:${command.projectId}`, `project:${command.projectId}`, command.projectId, JSON.stringify(record), now);
+    purgeProjectPayloads(tx, command.projectId, now);
+    tx.run("UPDATE app_state SET revision = revision + 1 WHERE id = 1");
+  }
   const contexts: DeletionContextScope[] = sessions.map(session => ({
     id: session.id, generation: session.generation,
     state: session.appState === "missing" ? "missing" : "pending", attempts: 0,
@@ -1480,11 +1546,12 @@ export function confirmDeletion(tx: AppTransaction, command: DeleteConfirmComman
   const operation: DeletionOperation = aggregate({
     id: operationId, contract: deleteOperationContract,
     projectId: command.projectId, previewId: preview.id,
-    scope: { kind: "source", projectId: preview.scope.projectId, source: { ...lineage } },
+    scope: structuredClone(preview.scope),
+    ...(preview.scope.kind === "project" ? { databasePurge: "pending" as const, collateral: (inventory.project?.collateral ?? []).map(item => ({ ...item, state: "pending" as const, attempts: 0, reason: null })) } : {}),
     state: "pending", attempts: 0, maxAttempts: deletePolicy.maxAttempts,
     tombstones, contexts, exports, scopes: [],
     backupsRetained,
-    residuals: ["telegram_delivery_copies_not_deleted", "provider_session_copies_not_deleted", "retained_backups_require_retention_purge"],
+    residuals: ["telegram_delivery_copies_not_deleted", "provider_session_copies_not_deleted", "retained_backups_require_retention_purge", ...(preview.scope.kind === "project" ? ["execution_workspaces_retained"] : [])],
     reason: null, nextAction: "", createdAt: now, updatedAt: now,
   }, now);
   tx.run("INSERT INTO deletion_operations (id, project_id, preview_id, state, attempts, record_json) VALUES (?, ?, ?, ?, ?, ?)",
@@ -1498,6 +1565,9 @@ function aggregate(raw: DeletionOperation, now: number): DeletionOperation {
   const scoped = (next: DeletionOperation) => ({ ...next, scopes: localScopes(next), updatedAt: now });
   const native = operation.contexts.filter(context => context.state !== "deleted");
   const files = operation.exports.filter(entry => entry.state !== "purged");
+  const collateral = operation.collateral?.filter(entry => entry.state !== "purged") ?? [];
+  if (collateral.some(entry => entry.state === "failed")) return scoped({ ...operation, state: "failed", reason: "project_collateral_purge_failed", nextAction: "inspect_project_cleanup" });
+  if (!native.length && !files.length && (collateral.length || operation.databasePurge === "pending")) return scoped({ ...operation, state: "pending", reason: collateral.length ? "project_collateral_pending" : "database_checkpoint_pending", nextAction: "reconcile_project_cleanup" });
   if (!native.length && !files.length) return scoped({ ...operation, state: "complete", reason: null, nextAction: "inspect_completed_deletion" });
   if (native.length && operation.attempts >= operation.maxAttempts) {
     return scoped({ ...operation, state: "failed", reason: "retry_budget_exhausted", nextAction: "inspect_blocked_scope_and_retry_manually" });
@@ -1528,6 +1598,7 @@ export function retryDeletion(tx: AppTransaction, command: DeleteRetryCommand, n
   deleteCommandIdentity(command, 65536);
   const operation = readDeletionOperation(tx, command.projectId, command.payload.operationId);
   if (!operation || operation.projectId !== command.projectId) throw new AppError("deletion_not_found", 404);
+  if ((command.kind === "project.delete.retry") !== (operation.scope.kind === "project")) throw new AppError("invalid_memory_delete");
   if (operation.state === "complete") return operation;
   const synced = aggregate(syncDeletedContexts(tx, operation, now), now);
   if (synced.state === "complete" || synced.state === "failed") { saveOperation(tx, synced); return synced; }
@@ -1665,19 +1736,84 @@ export function reconstructLegacyExportScopes(store: TransactionStore, now: numb
   });
 }
 
+/** Completes the app-store scope only after a successful truncating checkpoint has removed pre-purge WAL frames. */
+export function finalizeProjectDatabasePurge(store: TransactionStore, now: number, operationId?: string): void {
+  const pending = store.read(tx => tx.all<{ id: string; record_json: string }>("SELECT id, record_json FROM deletion_operations WHERE state IN ('pending', 'blocked')").some(row => (!operationId || row.id === operationId) && (JSON.parse(row.record_json) as DeletionOperation).databasePurge === "pending"));
+  if (!pending || !store.purgePayloadPages()) return;
+  store.transaction(tx => {
+    const ids = operationId ? [operationId] : tx.all<{ id: string }>("SELECT id FROM deletion_operations WHERE state IN ('pending', 'blocked')").map(r => r.id);
+    for (const id of ids) {
+      const operation = readOperationRow(tx, id);
+      if (operation?.scope.kind !== "project" || operation.databasePurge !== "pending") continue;
+      saveOperation(tx, aggregate({ ...operation, databasePurge: "purged" }, now));
+    }
+  });
+}
+
+async function reconcileProjectCollateral(store: TransactionStore, operationId: string, env: DeletionEnvironment, now: number): Promise<void> {
+  const operation = store.read(tx => readOperationRow(tx, operationId));
+  if (!operation || operation.scope.kind !== "project") return;
+  for (const item of operation.collateral ?? []) {
+    if (item.state !== "pending") continue;
+    const reserved = store.transaction(tx => {
+      const current = readOperationRow(tx, operationId)!;
+      const scope = current.collateral?.find(c => c.key === item.key);
+      if (!scope || scope.state !== "pending") return false;
+      scope.attempts++;
+      if (scope.attempts > current.maxAttempts) { scope.state = "failed"; scope.reason = "retry_budget_exhausted"; }
+      saveOperation(tx, aggregate(current, now));
+      return scope.state === "pending";
+    });
+    if (!reserved) continue;
+    let reason: string | null = null;
+    try {
+      const contributor = env.contributors?.find(c => c.key === item.key);
+      if (!contributor) throw new AppError("project_delete_contributor_unavailable");
+      await contributor.reconcile(operation.projectId, item);
+    } catch (error) { reason = error instanceof AppError ? error.code : "project_collateral_purge_failed"; }
+    store.transaction(tx => {
+      const current = readOperationRow(tx, operationId)!;
+      const scope = current.collateral!.find(c => c.key === item.key)!;
+      if (scope.state !== "pending") return;
+      scope.reason = reason;
+      scope.state = !reason ? "purged" : scope.attempts >= current.maxAttempts ? "failed" : "pending";
+      saveOperation(tx, aggregate(current, now));
+    });
+  }
+}
+
+/** Reconstructs project cleanup from the installation ledger when an older restore image predates the operation. */
+export function reconstructProjectDeletionOperations(store: TransactionStore, now: number): void {
+  store.transaction(tx => {
+    for (const row of tx.all<{ projectId: string; json: string }>("SELECT project_id AS projectId, record_json AS json FROM lifecycle_ledger WHERE kind = 'deletion' AND subject LIKE 'project:%' ORDER BY sequence")) {
+      const record = JSON.parse(row.json) as { operationId: string; deletedAt: number; collateral?: ProjectCollateralScope[] };
+      if (!tx.get("SELECT 1 FROM projects WHERE id = ?", row.projectId) || tx.get("SELECT 1 FROM deletion_operations WHERE id = ?", record.operationId)) continue;
+      const operation = aggregate({ id: record.operationId, contract: deleteOperationContract, projectId: row.projectId, previewId: record.operationId,
+        scope: { kind: "project", projectId: row.projectId }, state: "pending", attempts: 0, maxAttempts: deletePolicy.maxAttempts,
+        tombstones: [], contexts: [], exports: [], scopes: [], backupsRetained: [], residuals: ["retained_backups_require_retention_purge", "external_copies_not_deleted", "execution_workspaces_retained"],
+        databasePurge: "pending", collateral: (record.collateral ?? []).map(item => ({ ...item, state: "pending", attempts: 0, reason: null })),
+        reason: null, nextAction: "reconcile_project_cleanup", createdAt: record.deletedAt, updatedAt: now }, now);
+      tx.run("INSERT INTO deletion_operations (id, project_id, preview_id, state, attempts, record_json) VALUES (?, ?, ?, ?, 0, ?)", operation.id, row.projectId, operation.previewId, operation.state, JSON.stringify(operation));
+    }
+  });
+}
+
 /**
  * Service lifecycle helper: one budgeted pass per pending/blocked operation through the managed
  * run-port delete path (never native byte edits). Each pass reserves an attempt before dispatch, so
  * restarts and owner retries share `maxAttempts`; reservations are never refunded after uncertainty.
  */
 export async function reconcileDeletions(store: TransactionStore, port: ApplicationRunPort, now: number,
-  exportRoot = defaultExportRoot(store)): Promise<DeletionOperation[]> {
+  exportRoot = defaultExportRoot(store), env: DeletionEnvironment = {}): Promise<DeletionOperation[]> {
+  reconstructProjectDeletionOperations(store, now);
   reconstructLegacyExportScopes(store, now);
   const pending = store.read(tx => tx.all<{ id: string }>(
     "SELECT id FROM deletion_operations WHERE state IN ('pending', 'blocked') ORDER BY rowid LIMIT 100").map(row => row.id));
   const results: DeletionOperation[] = [];
   for (const id of pending) {
     purgeDeletedExports(store, now, id, exportRoot);
+    await reconcileProjectCollateral(store, id, env, now);
+    finalizeProjectDatabasePurge(store, now, id);
     const { operation, dispatch } = store.transaction(tx => reservePass(tx, id, now));
     if (!dispatch.length) { if (operation) results.push(operation); continue; }
     const outcomes: PassOutcome[] = [];
@@ -1739,7 +1875,7 @@ export function lifecycleSafeManifests<T>(tx: AppTransaction, value: T): T {
 
 /** Preview expiry sweep; never deletes ledger tombstones or completed operations. */
 export function pruneExpiredPreviews(tx: AppTransaction, now: number): number {
-  const rows = tx.all<{ id: string }>("SELECT id FROM deletion_previews WHERE expires_at < ? LIMIT 500", now);
+  const rows = tx.all<{ id: string }>("SELECT p.id FROM deletion_previews p WHERE p.expires_at < ? AND NOT EXISTS (SELECT 1 FROM deletion_operations o WHERE o.preview_id = p.id AND o.project_id = p.project_id) LIMIT 500", now);
   for (const row of rows) tx.run("DELETE FROM deletion_previews WHERE id = ?", row.id);
   return rows.length;
 }
@@ -1768,7 +1904,7 @@ export interface ContextCitation { id: string; generation: number; projectId: st
  * closed: treated like deleted), `suppressed` when it cited forgotten material. Unaffected contexts are
  * omitted. Inventory blockers (unreadable rows, scan ceilings) are returned and must block activation.
  */
-export function contextCitations(tx: AppTransaction, deleted: { sources: Set<string>; claims: Set<string> },
+export function contextCitations(tx: AppTransaction, deleted: { sources: Set<string>; claims: Set<string>; projects?: Set<string> },
   suppressed: { sources: Set<string>; claims: Set<string> }): { contexts: ContextCitation[]; blockers: string[] } {
   const blockers = new Set<string>();
   const jobs = jobEvidence(tx, blockers);
@@ -1781,7 +1917,7 @@ export function contextCitations(tx: AppTransaction, deleted: { sources: Set<str
   for (const job of jobs.values()) {
     if (!job.contexts.size) continue;
     const opaque = job.opaque || (!job.manifests.length && !job.extractionSources.length);
-    const verdict: ContextCitation["cites"] | null = hits(job, deleted) ? "deleted" : opaque ? "unknown" : hits(job, suppressed) ? "suppressed" : null;
+    const verdict: ContextCitation["cites"] | null = (deleted.projects?.has(job.projectId) || hits(job, deleted)) ? "deleted" : opaque ? "unknown" : hits(job, suppressed) ? "suppressed" : null;
     if (!verdict) continue;
     for (const context of job.contexts.values()) {
       const current = found.get(context.id);

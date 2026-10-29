@@ -1,3 +1,5 @@
+import { requireLiveProject } from "../project-lifecycle";
+import { readActiveRole } from "../team/configuration";
 import { createHash } from "node:crypto";
 import { AppError } from "../errors";
 import type { AppConfig } from "../config";
@@ -218,7 +220,7 @@ export function writeAccessLevel(tx: AppTransaction, command: SetAccessLevelComm
  * (0 before any).
  */
 export function writeRoleRestriction(tx: AppTransaction, command: RestrictRoleAccessCommand, channel: string, now: number): RoleAccess {
-  if (!tx.get("SELECT id FROM roles WHERE id = ?", command.payload.roleId)) throw new AppError("role_not_found", 404);
+  readActiveRole(tx, command.payload.roleId);
   const project = readAccessState(tx, command.projectId), current = readRoleOverride(tx, command.projectId, command.payload.roleId);
   const to = command.payload.level;
   // A missing or cleared override is no cap at all, above every level.
@@ -262,6 +264,8 @@ export function writeResume(tx: AppTransaction, command: ResumeExecutionCommand,
  * `needed`. Returns the effective level otherwise.
  */
 export function assertExecutionAllowed(tx: AppTransaction, projectId: string, roleId: string | null, needed: AccessLevel): AccessLevel {
+  requireLiveProject(tx, projectId);
+  if (roleId) readActiveRole(tx, roleId);
   const state = readAccessState(tx, projectId);
   if (state.halted) throw new AppError("execution_halted", 409);
   const effective = effectiveAccess(state, roleId ? readRoleOverride(tx, projectId, roleId)?.level ?? null : null).level;

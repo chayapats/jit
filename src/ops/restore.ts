@@ -1,3 +1,4 @@
+import { purgeProjectPayloads } from "../memory/project-delete";
 import { redactRoleProposals } from "../team/role-proposals";
 import { redactPromotionProposal } from "../promotion";
 import { createHash, randomUUID } from "node:crypto";
@@ -174,6 +175,8 @@ export class SimulatedRestoreCrash extends Error {
 }
 
 export interface RestoreContext {
+  /** Trusted external collateral cleanup, shared with ordinary project deletion reconciliation. */
+  deletionEnvironment?: import("../memory/delete").DeletionEnvironment;
   store: TransactionStore;
   restoreDir: string;
   backupDir: string;
@@ -738,15 +741,17 @@ function scheduleRestoreDeletion(tx: AppTransaction, projectId: string, contexts
   return operationId;
 }
 
-/** Every deletion operation (any state, budget-exhausted included) whose contexts still hold native data. */
+/** Every deletion operation (budget-exhausted included) still holding native or project-local collateral. */
 function undeletedOperations(tx: AppTransaction): { id: string; state: string; projectId: string; contexts: { id: string; generation: number }[] }[] {
   return tx.all<{ id: string; state: string; projectId: string; json: string }>(
     "SELECT id, state, project_id AS projectId, record_json AS json FROM deletion_operations WHERE state IN ('pending', 'blocked', 'failed')")
     .flatMap(op => {
       try {
-        const contexts = ((JSON.parse(op.json) as DeletionOperation).contexts ?? []).filter(c => undeletedStates.has(c.state))
+        const operation = JSON.parse(op.json) as DeletionOperation;
+        const localPending = operation.databasePurge === "pending" || operation.collateral?.some(c => c.state !== "purged") || operation.exports?.some(e => e.state !== "purged");
+        const contexts = (operation.contexts ?? []).filter(c => undeletedStates.has(c.state))
           .filter(c => tx.get<{ state: string }>("SELECT state FROM team_contexts WHERE id = ? AND generation = ?", c.id, c.generation)?.state !== "deleted");
-        return contexts.length ? [{ id: op.id, state: op.state, projectId: op.projectId, contexts: contexts.map(c => ({ id: c.id, generation: c.generation })) }] : [];
+        return contexts.length || localPending ? [{ id: op.id, state: op.state, projectId: op.projectId, contexts: contexts.map(c => ({ id: c.id, generation: c.generation })) }] : [];
       } catch { return [{ id: op.id, state: op.state, projectId: op.projectId, contexts: [] }]; }
     });
 }
@@ -777,6 +782,16 @@ function replayLedger(staged: TransactionStore, entries: LifecycleLedgerEntry[],
     const needle = (value: unknown) => { if (typeof value === "string" && Array.from(value).length >= 8 && value !== redactedText) needles.add(value); };
     const deletedClaims = new Set<string>(), deletedSources = new Set<string>(), suppressedClaims = new Set<string>(), suppressedSources = new Set<string>();
     const projects = new Set<string>();
+    for (const d of view.projectDeletions) {
+      if (!projectExists(d.projectId)) { replay.notInImage++; continue; }
+      projects.add(d.projectId);
+      for (const row of tx.all<{ sourceId: string; revision: number; generation: number; text: string | null }>("SELECT v.source_id AS sourceId, v.revision, v.generation, v.content_text AS text FROM source_versions v JOIN sources s ON s.id = v.source_id WHERE s.project_id = ?", d.projectId)) {
+        deletedSources.add(`${row.sourceId}:${row.revision}:${row.generation}`); needle(row.text);
+      }
+      for (const row of tx.all<{ id: string }>("SELECT id FROM memory_claims WHERE project_id = ?", d.projectId)) deletedClaims.add(row.id);
+      purgeProjectPayloads(tx, d.projectId, now);
+      replay.appliedDeletions++;
+    }
     for (const d of view.deletions) {
       if (d.kind === "source") deletedSources.add(`${d.sourceId}:${d.revision}:${d.generation}`); else deletedClaims.add(d.claimId!);
       if (!projectExists(d.projectId)) { replay.notInImage++; continue; }
@@ -842,7 +857,7 @@ function replayLedger(staged: TransactionStore, entries: LifecycleLedgerEntry[],
     }
     // Derived invalidation: the deletion inventory's own job evidence (runs, syntheses, extractions, attempts) classifies
     // every managed native context; opaque or manifest-less owners are unknown and handled like deleted (fail closed).
-    const citations = contextCitations(tx, { sources: deletedSources, claims: deletedClaims }, { sources: suppressedSources, claims: suppressedClaims });
+    const citations = contextCitations(tx, { sources: deletedSources, claims: deletedClaims, projects: new Set(view.projectDeletions.map(d => d.projectId)) }, { sources: suppressedSources, claims: suppressedClaims });
     if (citations.blockers.length) throw new AppError("restore_context_inventory_blocked", 409);
     const contextAction = new Map(citations.contexts.map(c => [c.id, c]));
     replay.contexts.unknownCitation = citations.contexts.filter(c => c.cites === "unknown").length;
@@ -1132,6 +1147,10 @@ export function validateRestore(ctx: RestoreContext, journal: RestoreJournal, re
       });
       check(checks, "ledger_applied", () => {
         let missing = 0;
+        for (const d of view.projectDeletions) {
+          const project = tx.get<{ name: string }>("SELECT name FROM projects WHERE id = ?", d.projectId);
+          if (project && (project.name !== redactedText || tx.get("SELECT 1 FROM source_versions WHERE source_id IN (SELECT id FROM sources WHERE project_id = ?) AND content_text IS NOT NULL LIMIT 1", d.projectId))) missing++;
+        }
         for (const d of view.deletions) {
           if (!tx.get("SELECT 1 FROM projects WHERE id = ?", d.projectId)) continue;
           if (!tx.get("SELECT 1 FROM deletion_ledger WHERE id = ?", d.id)) { missing++; continue; }
@@ -1182,7 +1201,7 @@ export function validateRestore(ctx: RestoreContext, journal: RestoreJournal, re
           for (const c of op.contexts) scheduled.add(`${c.id}:${c.generation}`);
           nativePending.push({ operationId: op.id, contexts: op.contexts.length, state: op.state });
         }
-        const citations = contextCitations(tx, { sources: deletedSources, claims: deletedClaims }, { sources: suppressedSources, claims: suppressed });
+        const citations = contextCitations(tx, { sources: deletedSources, claims: deletedClaims, projects: new Set(view.projectDeletions.map(d => d.projectId)) }, { sources: suppressedSources, claims: suppressed });
         if (citations.blockers.length) return `context_inventory_${citations.blockers.slice(0, 4).join(",")}`;
         let active = 0, unscheduled = 0;
         for (const citation of citations.contexts) {
@@ -1387,7 +1406,7 @@ export async function completeRestoreActivation(ctx: RestoreContext, journal: Re
       // Sessions and managed deletions reconcile through the team port while nothing can be admitted.
       await ctx.service.fencedLifecycle(async port => {
         await reconcileSessions(ctx.store, port, ctx.now());
-        await reconcileDeletions(ctx.store, port, ctx.now());
+        await reconcileDeletions(ctx.store, port, ctx.now(), undefined, ctx.deletionEnvironment);
       });
     } catch (error) { detail = error instanceof AppError ? error.code : "native_reconcile_failed"; }
     const open = ctx.store.transaction(tx => {

@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import { lstatSync, mkdirSync, realpathSync, rmSync } from "node:fs";
+import { lstatSync, mkdirSync, realpathSync } from "node:fs";
 import type { ExecutionConfig } from "../config";
 import { AppError } from "../errors";
 import { requireId } from "../sources";
+import { wipeBoxData } from "./box-data";
 import {
   boxDirectories, boxEnvironment, boxInternalNetwork, boxName, boxRunnerPath, boxTemporaryDirectory, boxUserId, boxWorkspaceRoot, expectedBoxMounts, pinnedImagePattern, requireBoxMode,
   sameMounts, sidecarInstallRoot, sidecarName, validateStreamRequest,
@@ -181,8 +182,7 @@ export class PodmanBoxRuntime implements BoxRuntime, BoxStreams {
     const name = boxName(ref.projectId);
     if (await this.#inspect(name)) await this.#remove(name);
     if (options.wipeWorkspace) {
-      const dirs = boxDirectories(this.#directory, ref.projectId);
-      for (const path of [dirs.workspace, dirs.profile]) { this.#refuseLink(path); rmSync(path, { recursive: true, force: true }); }
+      wipeBoxData(this.#directory, ref.projectId);
     }
   }
 
@@ -289,11 +289,6 @@ export class PodmanBoxRuntime implements BoxRuntime, BoxStreams {
     return { workspace: realpathSync(dirs.workspace), profile: profile ? realpathSync(dirs.profile) : dirs.profile };
   }
 
-  #refuseLink(path: string): void {
-    try { if (lstatSync(path).isSymbolicLink()) throw new AppError("box_directory_unsafe", 503); }
-    catch (error) { if (error instanceof AppError) throw error; }
-  }
-
   /** Refuses (and removes) a box whose inspected configuration is not exactly what Jit creates. */
   async #verify(name: string, info: Inspected | null, mode: BoxMode, expected: BoxMount[]): Promise<void> {
     if (!info) throw new AppError("box_runtime_unavailable", 503);
@@ -315,7 +310,13 @@ export class PodmanBoxRuntime implements BoxRuntime, BoxStreams {
   }
 
   async #inspect(name: string): Promise<Inspected | null> {
-    const exists = await this.#run(["container", "exists", name], { timeoutMs: commandMs });
+    let exists: CommandResult;
+    try { exists = await this.#run(["container", "exists", name], { timeoutMs: commandMs }); }
+    catch (error) {
+      // Hosts without a Podman executable still support idempotent cleanup of their local box data.
+      if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return null;
+      throw error;
+    }
     if (exists.exitCode === 1) return null;
     if (exists.exitCode !== 0) throw new AppError("box_runtime_unavailable", 503);
     const parsed = parseJson(await this.#podman(["container", "inspect", name])) as Inspected[];

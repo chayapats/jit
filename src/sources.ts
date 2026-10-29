@@ -1,3 +1,4 @@
+import { requireLiveProject, projectDeleted } from "./project-lifecycle";
 import { AppError } from "./errors";
 import type { AppTransaction } from "./store";
 
@@ -47,6 +48,7 @@ export function requireReference(reference: SourceReference): void {
 
 function insert(tx: AppTransaction, projectId: string, descriptor: SourceDescriptor, attribution: Attribution,
   text: string | null, committedAt: number): SourceReference {
+  requireLiveProject(tx, projectId);
   requireId(projectId);
   if (!Number.isSafeInteger(committedAt) || committedAt < 0) throw new AppError("invalid_commit_time");
   const reference: SourceReference = { sourceId: crypto.randomUUID(), revision: 1, generation: 1 };
@@ -126,6 +128,7 @@ export function lookupSource(tx: AppTransaction, projectId: string, reference: S
     reference.sourceId, projectId);
   const unavailable = (reason: Extract<SourceLookup, { state: "unavailable" }>["reason"]): SourceLookup =>
     ({ state: "unavailable", projectId, reference: { ...reference }, current: row ? { ...row } : null, reason });
+  if (projectDeleted(tx, projectId)) return unavailable("source_unavailable");
   if (!row) return unavailable("source_not_found");
   if (row.generation !== reference.generation) return unavailable("generation_unavailable");
   const version = tx.get<{ descriptor: string; attribution: string; text: string | null; committedAt: number }>(
