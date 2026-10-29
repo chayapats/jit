@@ -249,7 +249,9 @@ export function replyLabels(view: Pick<JitReplyView, "state" | "nextAction">): {
 /**
  * The reply placeholder under an owner message until Jit's committed reply exists. Without script it is a
  * complete status with a refresh link and a stop form; the script only updates its text from the event stream.
- * Provisional progress is labelled as unsaved and never rendered as a message.
+ * Provisional progress is labelled as unsaved and never rendered as a message. The draft and the committed text
+ * share one slot and typography, and the unsaved line becomes the saved line, so a commit does not move the card.
+ * The streamed text is not a live region; one polite status line announces start, connection and finish instead.
  */
 function replyStatus(view: JitReplyView, base: string, projectId: string, csrf: string): string {
   const labels = replyLabels(view), stoppable = view.state === "thinking" || view.state === "blocked";
@@ -257,9 +259,9 @@ function replyStatus(view: JitReplyView, base: string, projectId: string, csrf: 
   const here = `${base}?after=${Math.max(0, view.messageSequence - 1)}#reply-${view.id}`;
   return `<article class="message message--jit reply-status" id="reply-${view.id}" data-reply-id="${view.id}" data-reply-state="${view.state}">
     <div class="reply-head"><span class="jit-avatar"${view.state === "thinking" ? ' data-state="thinking"' : ""} data-reply-avatar>${logoMark({ size: 20 })}</span><span class="reply-name">${tr("jit.name")}</span><span class="job-status" data-state="${replyTone[view.state]}" data-reply-label>${escape(labels.state)}</span></div>
-    <div class="message-body" aria-live="polite"><p class="literal reply-progress" data-reply-progress${view.progress ? "" : " hidden"}>${escape(view.progress?.text ?? "")}</p><p class="reply-provisional" data-reply-provisional${view.progress ? "" : " hidden"}>${tr("reply.provisional")}</p><p class="literal reply-text" data-reply-text hidden></p>
-    <p class="reply-next" data-reply-next${labels.next ? "" : " hidden"}>${escape(labels.next ?? "")}</p><p class="reply-proposals" data-reply-proposals hidden><a href="${here}">${tr("proposal.reply_has_proposals")}</a></p></div>
-    <div class="reply-actions">${stoppable ? `<form method="post" action="${base}/replies/${view.id}/stop" data-reply-stop>${hiddenCommand(csrf, view.revision)}<button>${tr("reply.stop")}</button></form>` : ""}${view.jobId && view.state !== "thinking" ? `<a href="/projects/${projectId}/jobs/${view.jobId}#job-${view.jobId}">${tr("reply.view_job")}</a>` : ""}<a class="reply-refresh" href="${here}" data-reply-refresh>${tr("reply.refresh")}</a></div></article>`;
+    <div class="message-body"><p class="literal reply-progress" data-reply-progress${view.progress ? "" : " hidden"}>${escape(view.progress?.text ?? "")}</p><p class="literal reply-text" data-reply-text hidden></p><p class="reply-provisional" data-reply-provisional${view.progress ? "" : " hidden"}>${tr("reply.provisional")}</p><p class="reply-saved" data-reply-saved hidden>${icon("check")}${tr("common.saved")}</p>
+    <p class="reply-connection" data-reply-connection data-reconnecting="${tr("reply.reconnecting")}" data-closed="${tr("reply.connection_closed")}" hidden>${tr("reply.reconnecting")}</p><p class="reply-next" data-reply-next${labels.next ? "" : " hidden"}>${escape(labels.next ?? "")}</p><p class="reply-proposals" data-reply-proposals hidden><a href="${here}">${tr("proposal.reply_has_proposals")}</a></p></div>
+    <p class="sr-only" role="status" data-reply-announce data-answered="${tr("reply.announce_answered")}"></p><div class="reply-actions">${stoppable ? `<form method="post" action="${base}/replies/${view.id}/stop" data-reply-stop>${hiddenCommand(csrf, view.revision)}<button>${tr("reply.stop")}</button></form>` : ""}${view.jobId && view.state !== "thinking" ? `<a href="/projects/${projectId}/jobs/${view.jobId}#job-${view.jobId}">${tr("reply.view_job")}</a>` : ""}<a class="reply-refresh" href="${here}" data-reply-refresh>${tr("reply.refresh")}</a></div></article>`;
 }
 const roleTone: Record<string, string> = { queued: "queued", running: "running", completed: "completed", blocked: "blocked", waiting: "waiting", stopped: "stopped", skipped: "skipped", excluded: "excluded" };
 const reasonKeys = new Set(["cancelled", "deadline", "lease_expired", "quota", "needs_login", "route_unavailable", "budget_exhausted", "source_unavailable", "invalid_result", "input_changed", "worker_failed"]);

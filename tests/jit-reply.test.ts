@@ -16,6 +16,8 @@ import { ScriptedRunPort, fixtureOutcome } from "../src/team/scripted-port";
 import type { ApplicationRunEvent, ApplicationRunOutcome, ApplicationRunRequest, RoleRoute } from "../src/team/types";
 import { createWebHandler, type ReplyStreamOptions } from "../src/web";
 import { assetUrl } from "../src/web-assets";
+import { styleSheet } from "../src/web-style";
+import { replyStreams, replyStallMs } from "../src/team/reply-stream";
 
 const roots: string[] = [], stores: TransactionStore[] = [], queues: JobQueue[] = [], releases: (() => void)[] = [];
 afterEach(async () => {
@@ -36,7 +38,7 @@ const answer = (request: ApplicationRunRequest, output: string): ApplicationRunO
 const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(r => { resolve = r; }); return { promise, resolve }; };
 
 const stream: ReplyStreamOptions = { intervalMs: 1, polls: 3 };
-interface Options { script?: Script; wrap?: (port: ScriptedRunPort) => ApplicationRunPort; coordinator?: boolean; path?: string; env?: Record<string, string>; streamTimers?: ReplyStreamOptions["timers"] }
+interface Options { script?: Script; wrap?: (port: ScriptedRunPort) => ApplicationRunPort; coordinator?: boolean; path?: string; env?: Record<string, string>; streamTimers?: ReplyStreamOptions["timers"]; streamOptions?: ReplyStreamOptions }
 /** Stream pacing the test drives by hand: ticks run only when flushed, never on a wall-clock timer. */
 function manualStreamTimers() {
   const pending = new Map<number, () => void>();
@@ -52,7 +54,7 @@ function manualStreamTimers() {
         const callbacks = [...pending.values()];
         pending.clear();
         for (const callback of callbacks) callback();
-        await Promise.resolve();
+        for (let step = 0; step < 200; step++) await Promise.resolve();
       }
     },
   };
@@ -68,7 +70,7 @@ async function fixture(options: Options = {}) {
   const port = options.wrap?.(scripted) ?? scripted;
   const queue = new JobQueue(store, config.jobs, [jitReplyWork(store, config, port, () => now), memoryExtractionWork(store, config, scripted, () => now)], { now: () => now }); queues.push(queue);
   const app = new Application(store, config, { now: () => now, jobs: queue });
-  const web = createWebHandler(app, { stream: options.streamTimers ? { ...stream, timers: options.streamTimers } : stream });
+  const web = createWebHandler(app, { stream: options.streamOptions ?? (options.streamTimers ? { ...stream, timers: options.streamTimers } : stream) });
   if (options.path) {
     const token = await app.login(password), auth = app.authenticate(token);
     return { root, path, config, store, app, queue, port: scripted, token, auth, web, project: null as never, topic: null as never, coordinatorId: "", advance: (ms: number) => { now += ms; } };
@@ -115,12 +117,14 @@ function form(html: string, action: string | RegExp) {
   }
   throw new Error(`no form for ${action}`);
 }
-function events(text: string) {
+function allEvents(text: string) {
   return text.split("\n\n").filter(block => block.includes("data: ")).map(block => {
     const field = (name: string) => block.split("\n").find(line => line.startsWith(`${name}: `))?.slice(name.length + 2) ?? null;
     return { id: Number(field("id")), event: field("event"), data: JSON.parse(field("data")!) };
   });
 }
+const events = (text: string) => allEvents(text).filter(event => event.event === "reply");
+const previews = (text: string) => allEvents(text).filter(event => event.event === "reply-preview");
 function expectNoInlineScript(html: string) {
   for (const [tag, body] of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)) {
     expect(body).toBe("");
@@ -179,10 +183,11 @@ test("one owner message gets one committed, attributed Jit reply; replay, refres
   expect(messages(f)).toHaveLength(4); expect(jobCount(f)).toBe(2);
 });
 
-test("progress is persisted as provisional until commit; a stream cut midway shows a failure and no reply", async () => {
+test("provisional deltas stay in memory only; a stream cut midway shows a failure and no reply", async () => {
   const gate = deferred<void>();
+  releases.push(() => gate.resolve());
   const f = await fixture({ script: async (_request, _signal, observe) => {
-    observe({ kind: "progress", runId: _request.runId, text: "กำลังร่างคำตอบ…" });
+    observe({ kind: "delta", runId: _request.runId, text: "กำลังร่างคำตอบ…" });
     await gate.promise;
     throw new Error("stream dropped");
   } });
@@ -190,15 +195,16 @@ test("progress is persisted as provisional until commit; a stream cut midway sho
   f.queue.pump();
   await Bun.sleep(5);
   const live = replyFor(f, sent.message.id);
-  expect(live).toMatchObject({ state: "thinking", progress: { text: "กำลังร่างคำตอบ…", provisional: true }, source: null, replyMessageId: null });
+  expect(live).toMatchObject({ state: "thinking", progress: null, source: null, replyMessageId: null });
+  expect(f.store.read(tx => tx.get<{ record_json: string }>("SELECT record_json FROM team_runs WHERE id = ?", live.id)!.record_json)).not.toContain("กำลังร่างคำตอบ…");
   expect(messages(f)).toHaveLength(1);
   const page = await (await get(f, `/projects/${f.project.id}/topics/${f.topic.id}`)).text();
-  expect(page).toContain("กำลังร่างคำตอบ…");
-  expect(page).toContain("ข้อความระหว่างคิด ยังไม่บันทึก");
+  expect(page).not.toContain("กำลังร่างคำตอบ…");
+  expect(page).toContain("ร่างคำตอบ ยังไม่บันทึก");
   expect(page).toContain(`data-reply-stream="/projects/${f.project.id}/topics/${f.topic.id}/events"`);
   expect(page).toContain('data-state="thinking"');
-  const streamed = events(await (await get(f, `/projects/${f.project.id}/topics/${f.topic.id}/events`)).text());
-  expect(streamed.at(-1)!.data).toMatchObject({ id: live.id, state: "thinking", progress: { text: "กำลังร่างคำตอบ…", provisional: true }, text: null, label: "จิตกำลังคิด…" });
+  const streamed = previews(await (await get(f, `/projects/${f.project.id}/topics/${f.topic.id}/events`)).text());
+  expect(streamed.at(-1)!.data).toMatchObject({ id: live.id, provisional: true, text: "กำลังร่างคำตอบ…", label: "จิตกำลังตอบ…" });
   gate.resolve(); await f.queue.idle();
   const failed = replyFor(f, sent.message.id);
   expect(failed).toMatchObject({ state: "failed", reason: "invalid_result", nextAction: "send_again", progress: null, replyMessageId: null });
@@ -213,9 +219,10 @@ test("progress is persisted as provisional until commit; a stream cut midway sho
 test("structured output: unknown fields and unsupported proposals are discarded as evidence; malformed output shows no reply", async () => {
   expect(normalizeJitReply("ตอบแบบข้อความธรรมดา", 4096)).toEqual({ state: "complete", text: "ตอบแบบข้อความธรรมดา", structured: false, discarded: [], discardedTotal: 0 });
   expect(normalizeJitReply("```json\n{\"reply\":\"ok\"}\n```", 4096)).toMatchObject({ state: "complete", text: "ok", structured: true });
-  for (const bad of ["{\"reply\": 42}", "{\"reply\": \"cut", "[\"reply\"]", "{\"text\":\"no reply field\"}", "```json\nnot json\n```"]) {
+  for (const bad of ["{\"reply\": 42}", "{\"reply\": \"cut", "[\"reply\"]", "{\"text\":\"no reply field\"}"]) {
     expect(normalizeJitReply(bad, 4096)).toEqual({ state: "failed", reason: "malformed" });
   }
+  expect(normalizeJitReply("```json\nnot json\n```", 4096)).toMatchObject({ state: "complete", text: "```json\nnot json\n```", structured: false });
   expect(normalizeJitReply("{\"reply\": \"   \"}", 4096)).toEqual({ state: "failed", reason: "empty" });
   const outputs = [
     JSON.stringify({ reply: "ได้เลยครับ", persona: { addressAs: "Captain" }, proposals: [{ kind: "role", name: "admin" }, { kind: "<script>" }, "x"], "bad key!": 1 }),
@@ -270,8 +277,9 @@ test("stop during a reply (plain form post) fences a late complete result from a
   const f = await fixture({ wrap: scripted => ({
     adapter: "scripted", inspectRuns: after => scripted.inspectRuns(after), retire: context => scripted.retire(context), delete: context => scripted.delete(context),
     invoke: async (request, _signal, observe) => {
-      observe({ kind: "progress", runId: request.runId, text: "เกือบเสร็จ" });
+      observe({ kind: "delta", runId: request.runId, text: "เกือบเสร็จ" });
       await gate.promise; late = request;
+      observe({ kind: "delta", runId: request.runId, text: "LATE_PROVISIONAL" });
       return answer(request, JSON.stringify({ reply: "คำตอบที่มาช้า" }));
     },
   }) });
@@ -286,6 +294,7 @@ test("stop during a reply (plain form post) fences a late complete result from a
   // A replayed stop returns the same receipt.
   expect((await postForm(f, stop.action, stop.fields)).status).toBe(303);
   expect(replyFor(f, sent.message.id)).toMatchObject({ state: "stopped", progress: null });
+  expect(replyStreams(f.store).previews(f.project.id, f.topic.id)).toEqual([]);
   gate.resolve(); await f.queue.idle();
   expect(late).not.toBeNull();
   expect(replyFor(f, sent.message.id)).toMatchObject({ state: "stopped", replyMessageId: null, source: null });
@@ -365,7 +374,8 @@ test("persona is revisioned owner configuration: validated, idempotent, audited,
 });
 
 test("no-script flow: form post sends, the page shows the thinking state, refresh shows Jit's reply in Thai and English", async () => {
-  const f = await fixture();
+  const prose = 'สวัสดีครับ จิตพร้อมช่วย\n```ts\nconst example = "<safe>";\n```\nหลังโค้ด';
+  const f = await fixture({ script: request => answer(request, prose + '\n```jit-proposals\n{"version":2,"proposals":[]}\n```') });
   const url = `/projects/${f.project.id}/topics/${f.topic.id}`;
   const page = await (await get(f, url)).text();
   expect(page).toContain("จิตตอบทุกข้อความในหัวข้อนี้");
@@ -388,6 +398,10 @@ test("no-script flow: form post sends, the page shows the thinking state, refres
   const answered = await (await get(f, url)).text();
   expect(answered).toContain('class="message message--jit"');
   expect(answered).toContain("สวัสดีครับ จิตพร้อมช่วย");
+  expect(messages(f).at(-1)!.text).toBe(prose);
+  expect(answered).toContain('<pre><code>const example = &quot;&lt;safe&gt;&quot;;</code></pre>');
+  expect(answered).toContain('<p class="literal">หลังโค้ด</p>');
+  expect(answered).not.toContain("jit-proposals");
   expect(answered).toContain("จิต · ตัวอย่างจำลอง");
   expect(answered).not.toContain('data-reply-state="thinking"');
   f.app.execute(f.auth.actor, { kind: "ui.preferences.set", requestId: rid(), projectId: null, expectedRevision: 0, payload: { theme: "light", language: "en" } });
@@ -420,8 +434,9 @@ test("without an enabled coordinator route the message commits and the page name
 
 test("the SSE stream replays persisted state from a cursor and a reconnect after the answer adds nothing new", async () => {
   const gate = deferred<void>();
+  releases.push(() => gate.resolve());
   const f = await fixture({ script: async (request, _signal, observe) => {
-    observe({ kind: "progress", runId: request.runId, text: "ขั้นที่ 1" });
+    observe({ kind: "delta", runId: request.runId, text: "ขั้นที่ 1" });
     await gate.promise;
     return answer(request, JSON.stringify({ reply: "เสร็จแล้ว <img src=x onerror=alert(1)>" }));
   } });
@@ -434,8 +449,9 @@ test("the SSE stream replays persisted state from a cursor and a reconnect after
   expect(queued).toHaveLength(1);
   expect(queued[0]!.data).toMatchObject({ messageId: sent.message.id, state: "thinking", progress: null });
   f.queue.pump(); await Bun.sleep(5);
-  const running = events(await (await get(f, url, { "last-event-id": String(queued[0]!.id) })).text());
-  expect(running.at(-1)!.data).toMatchObject({ state: "thinking", progress: { text: "ขั้นที่ 1", provisional: true } });
+  const runningText = await (await get(f, url, { "last-event-id": String(queued[0]!.id) })).text();
+  const running = events(runningText);
+  expect(previews(runningText).at(-1)!.data).toMatchObject({ provisional: true, text: "ขั้นที่ 1" });
   gate.resolve(); await f.queue.idle();
   const final = events(await (await get(f, url, { "last-event-id": String(running.at(-1)!.id) })).text());
   expect(final).toHaveLength(1);
@@ -469,32 +485,52 @@ test("reopening the store shows the same replies, states and messages", async ()
 });
 
 test("app.js contract: the event stream updates reply text with textContent and closes when no reply is live", async () => {
+  const node = (extra: Record<string, unknown> = {}) => ({ textContent: "", hidden: true, dataset: {} as Record<string, string>, ...extra });
   const card = (id: string) => {
-    const node = (extra: Record<string, unknown> = {}) => ({ textContent: "", hidden: true, dataset: {} as Record<string, string>, ...extra });
-    const parts = { label: node(), avatar: node({ dataset: { state: "thinking" } }), progress: node(), provisional: node({ textContent: "provisional" }), next: node(), text: node() };
+    const parts = { label: node(), avatar: node({ dataset: { state: "thinking" } }), progress: node(), provisional: node({ textContent: "provisional" }),
+      saved: node({ textContent: "saved" }), next: node(), text: node(), proposals: node(),
+      connection: node({ textContent: "reconnecting", dataset: { reconnecting: "reconnecting", closed: "closed" } }),
+      announce: node({ hidden: false, dataset: { answered: "Jit has finished replying" } }) };
     let stopRemoved = false;
     const selectors: Record<string, unknown> = { "[data-reply-label]": parts.label, "[data-reply-avatar]": parts.avatar, "[data-reply-progress]": parts.progress,
-      "[data-reply-provisional]": parts.provisional, "[data-reply-next]": parts.next, "[data-reply-text]": parts.text, "[data-reply-stop]": { remove: () => { stopRemoved = true; } } };
-    return { id, parts, dataset: { replyState: "thinking" } as Record<string, string>, querySelector: (s: string) => selectors[s] ?? null, removed: () => stopRemoved };
+      "[data-reply-provisional]": parts.provisional, "[data-reply-saved]": parts.saved, "[data-reply-next]": parts.next, "[data-reply-text]": parts.text,
+      "[data-reply-proposals]": parts.proposals, "[data-reply-connection]": parts.connection, "[data-reply-announce]": parts.announce,
+      "[data-reply-stop]": { remove: () => { stopRemoved = true; } } };
+    return { id, parts, dataset: { replyId: id, replyState: "thinking" } as Record<string, string>, querySelector: (s: string) => selectors[s] ?? null, removed: () => stopRemoved };
   };
-  const one = card("11111111-1111-1111-1111-111111111111");
-  const chat = { dataset: { replyStream: "/projects/p/topics/t/events", replyCursor: "7" } };
-  const sources: { url: string; listeners: Record<string, (event: { data: string }) => void>; closed: boolean }[] = [];
+  const one = card("11111111-1111-1111-1111-111111111111"), two = card("22222222-2222-2222-2222-222222222222");
+  // The scroll region grows with the reply text on the page; the browser clamps scrollTop to its range.
+  let top = 0;
+  const region = {
+    clientHeight: 400,
+    get scrollHeight() { return 400 + [one, two].reduce((n, c) => n + c.parts.progress.textContent.length + c.parts.text.textContent.length, 0); },
+    get scrollTop() { return top; }, set scrollTop(value: number) { top = Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight)); },
+  };
+  const chat = { dataset: { replyStream: "/projects/p/topics/t/events", replyCursor: "7" }, closest: (s: string) => s === ".scroll-region" ? region : null };
+  const timers = new Map<number, { ms: number; at: number; run(): void }>();
+  let timerId = 0, now = 0;
+  const advance = (ms: number) => {
+    now += ms;
+    for (const [id, timer] of [...timers]) if (timer.at <= now) { timers.delete(id); timer.run(); }
+  };
+  const runTimers = () => advance(Math.max(0, ...[...timers.values()].map(t => t.at - now)));
+  const sources: { url: string; listeners: Record<string, (event: { data: string }) => void>; closed: boolean; readyState: number }[] = [];
   class FakeEventSource {
-    listeners: Record<string, (event: { data: string }) => void> = {}; closed = false;
+    listeners: Record<string, (event: { data: string }) => void> = {}; closed = false; readyState = 0;
     constructor(readonly url: string) { sources.push(this); }
     addEventListener(type: string, fn: (event: { data: string }) => void) { this.listeners[type] = fn; }
-    close() { this.closed = true; }
+    close() { this.closed = true; this.readyState = 2; }
   }
   const globals: Record<string, unknown> = {
     document: {
       documentElement: { dataset: {} },
       querySelector: (s: string) => s === "[data-reply-stream]" ? chat : null,
-      querySelectorAll: (s: string) => s === "[data-reply-id]" ? [one] : [],
-      getElementById: (id: string) => id === `reply-${one.id}` ? one : null,
+      querySelectorAll: (s: string) => s === "[data-reply-id]" ? [one, two] : [],
+      getElementById: (id: string) => [one, two].find(c => `reply-${c.id}` === id) ?? null,
       addEventListener: () => {},
     },
-    window: { addEventListener: () => {} }, location: { hash: "", pathname: "/", search: "" }, history: { replaceState: () => {} },
+    window: { addEventListener: () => {}, setTimeout: (run: () => void, ms: number) => { timers.set(++timerId, { ms, at: now + ms, run }); return timerId; }, clearTimeout: (id: number) => { timers.delete(id); } },
+    location: { hash: "", pathname: "/", search: "" }, history: { replaceState: () => {} },
     CSS: { supports: () => true }, EventSource: FakeEventSource,
   };
   const saved = new Map(Object.keys(globals).map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
@@ -502,25 +538,172 @@ test("app.js contract: the event stream updates reply text with textContent and 
   try {
     await import(`../src/web-assets/app.js?case=${crypto.randomUUID()}`);
     expect(sources.map(s => s.url)).toEqual(["/projects/p/topics/t/events?cursor=7"]);
-    const fire = (data: unknown) => sources[0]!.listeners.reply!({ data: typeof data === "string" ? data : JSON.stringify(data) });
+    const source = sources[0]!;
+    const fire = (data: unknown) => source.listeners.reply!({ data: typeof data === "string" ? data : JSON.stringify(data) });
+    const preview = (data: unknown) => source.listeners["reply-preview"]!({ data: JSON.stringify(data) });
+    const transport = (type: "open" | "error", readyState: number) => { source.readyState = readyState; source.listeners[type]!({ data: "" }); };
+    transport("open", 1);
     fire("not json"); fire({ id: "../../x", state: "answered" });
     expect(one.dataset.replyState).toBe("thinking");
+    // A legacy v1 durable progress slot still renders as unsaved text.
     fire({ id: one.id, state: "thinking", progress: { text: "<b>ร่าง</b>", provisional: true }, label: "คิด", tone: "running", next: null, text: null });
     expect(one.parts.progress).toMatchObject({ textContent: "<b>ร่าง</b>", hidden: false });
     expect(one.parts.provisional).toMatchObject({ textContent: "provisional", hidden: false });
     expect(one.parts.label).toMatchObject({ textContent: "คิด", dataset: { state: "running" } });
-    expect(sources[0]!.closed).toBe(false);
+    expect(one.parts.announce.textContent).toBe("");
+
+    // Snapshots replace the draft; only a change of phase is announced, never each token.
+    const attemptId = rid();
+    preview({ id: one.id, attemptId, sequence: 0, text: "", stalled: false, label: "กำลังคิด" });
+    expect(one.parts.progress.hidden).toBe(true);
+    expect(one.parts.announce.textContent).toBe("");
+    preview({ id: one.id, attemptId, sequence: 2, text: "<b>streamed</b>", stalled: false, label: "กำลังตอบ" });
+    expect(one.parts.progress).toMatchObject({ textContent: "<b>streamed</b>", hidden: false });
+    expect(one.parts.provisional.hidden).toBe(false);
+    expect(one.dataset.replyPhase).toBe("streaming");
+    expect(one.parts.announce.textContent).toBe("กำลังตอบ");
+    one.parts.announce.textContent = "";
+    preview({ id: one.id, attemptId, sequence: 1, text: "older" });
+    expect(one.parts.progress.textContent).toBe("<b>streamed</b>");
+    preview({ id: one.id, attemptId, sequence: 3, text: "<b>streamed</b> more", stalled: false, label: "กำลังตอบ" });
+    expect(one.parts.announce.textContent).toBe("");
+    preview({ id: one.id, attemptId, sequence: 3, text: "<b>streamed</b> more", stalled: true, label: "ยังทำงานอยู่" });
+    expect(one.parts.label.textContent).toBe("ยังทำงานอยู่");
+    expect(one.parts.label.dataset.state).toBe("running"); // A stall keeps the calm running tone.
+    expect(one.dataset.replyPhase).toBe("stalled");
+    expect(one.parts.announce.textContent).toBe("ยังทำงานอยู่");
+
+    // The view follows the stream only while the owner is at the bottom.
+    region.scrollTop = region.scrollHeight;
+    preview({ id: one.id, attemptId, sequence: 4, text: "a".repeat(200), stalled: false, label: "กำลังตอบ" });
+    expect(region.scrollTop).toBe(region.scrollHeight - region.clientHeight);
+    region.scrollTop = 0;
+    preview({ id: one.id, attemptId, sequence: 5, text: "a".repeat(300), stalled: false, label: "กำลังตอบ" });
+    expect(region.scrollTop).toBe(0);
+    region.scrollTop = region.scrollHeight;
+    preview({ id: one.id, attemptId, sequence: 6, text: "a".repeat(400), stalled: false, label: "กำลังตอบ" });
+    expect(region.scrollTop).toBe(region.scrollHeight - region.clientHeight);
+
+    // A routine reconnect keeps the draft and shows nothing; the snapshot after it confirms the draft.
+    one.parts.announce.textContent = "";
+    transport("error", 0);
+    expect(one.parts.progress).toMatchObject({ textContent: "a".repeat(400), hidden: false });
+    expect(one.dataset.replyGap).toBeUndefined();
+    expect(one.parts.connection.hidden).toBe(true);
+    expect([...timers.values()].map(t => t.ms)).toEqual([3000]);
+    transport("open", 1);
+    preview({ id: one.id, attemptId, sequence: 6, text: "a".repeat(400), stalled: false, label: "กำลังตอบ" });
+    runTimers();
+    expect(one.parts.progress.textContent).toBe("a".repeat(400));
+    expect(one.parts.announce.textContent).toBe("");
+
+    // Retry failures every second must keep the first disconnect's deadline, even after the hint appears.
+    transport("error", 0);
+    const deadline = [...timers.values()][0]!.at;
+    for (let i = 0; i < 2; i++) {
+      advance(1000); transport("error", 0);
+      expect([...timers.values()].map(t => t.at)).toEqual([deadline]);
+    }
+    advance(999);
+    expect(one.parts.connection.hidden).toBe(true);
+    advance(1);
+    expect(one.dataset.replyGap).toBe("reconnecting");
+    expect(one.parts.connection).toMatchObject({ textContent: "reconnecting", hidden: false });
+    expect(one.parts.progress.hidden).toBe(false);
+    expect(one.parts.announce.textContent).toBe("reconnecting");
+    advance(1000); transport("error", 0);
+    expect(timers.size).toBe(0);
+    expect(one.dataset.replyGap).toBe("reconnecting");
+    transport("open", 1);
+    expect(one.dataset.replyGap).toBeUndefined();
+    expect(one.parts.connection.hidden).toBe(true);
+    // No snapshot confirms the draft after reconnecting: its attempt has ended, so the draft is cleared.
+    runTimers();
+    expect(one.parts.progress.hidden).toBe(true);
+    expect(one.parts.provisional.hidden).toBe(true);
+    expect(one.dataset.replyPhase).toBeUndefined();
+
+    // A new attempt streams again; a stream the browser will not retry points to Refresh at once.
+    const retried = rid();
+    preview({ id: one.id, attemptId: retried, sequence: 1, text: "reconnected", stalled: false, label: "กำลังตอบ" });
+    expect(one.parts.progress.textContent).toBe("reconnected");
+    expect(one.parts.announce.textContent).toBe("กำลังตอบ");
+    transport("error", 2);
+    expect(timers.size).toBe(0);
+    expect(one.dataset.replyGap).toBe("closed");
+    expect(one.parts.connection).toMatchObject({ textContent: "closed", hidden: false });
+    expect(one.parts.progress.textContent).toBe("reconnected");
+
+    // A blocked reply names its next action; the stream stays open while another reply is live.
+    fire({ id: two.id, state: "blocked", progress: null, label: "ตอบไม่ได้ตอนนี้", tone: "blocked", next: "รอโควตา", text: null });
+    expect(two.parts.announce.textContent).toBe("ตอบไม่ได้ตอนนี้ รอโควตา");
+    expect(two.parts.saved.hidden).toBe(true);
+    expect(source.closed).toBe(false);
+
+    // Commit: the committed text takes the draft's slot, the unsaved line becomes the saved line, and the finish is announced.
     fire({ id: one.id, state: "answered", progress: null, label: "ตอบแล้ว", tone: "succeeded", next: null, text: "<img src=x onerror=alert(1)>" });
     expect(one.dataset.replyState).toBe("answered");
     expect(one.parts.text).toMatchObject({ textContent: "<img src=x onerror=alert(1)>", hidden: false });
     expect(one.parts.progress.hidden).toBe(true);
     expect(one.parts.provisional.hidden).toBe(true);
+    expect(one.parts.saved.hidden).toBe(false);
+    expect(one.parts.connection.hidden).toBe(true);
+    expect(one.dataset.replyGap).toBeUndefined();
     expect(one.parts.avatar.dataset.state).toBeUndefined();
+    expect(one.parts.announce.textContent).toBe("Jit has finished replying");
     expect(one.removed()).toBe(true);
-    expect(sources[0]!.closed).toBe(true);
+    preview({ id: one.id, attemptId: retried, sequence: 99, text: "late" });
+    expect(one.parts.progress.hidden).toBe(true);
+    expect(source.closed).toBe(false);
+    fire({ id: two.id, state: "stopped", progress: null, label: "หยุดแล้ว", tone: "stopped", next: "ส่งอีกครั้ง", text: null });
+    expect(two.parts.announce.textContent).toBe("หยุดแล้ว ส่งอีกครั้ง");
+    expect(source.closed).toBe(true);
   } finally {
     for (const [key, descriptor] of saved) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete (globalThis as Record<string, unknown>)[key]; }
   }
+});
+
+test("reply card markup: the draft is not a live region; one polite status line and calm connection hints in Thai and English", async () => {
+  const gate = deferred<void>();
+  releases.push(() => gate.resolve());
+  const f = await fixture({ script: async (request, _signal, observe) => {
+    observe({ kind: "delta", runId: request.runId, text: "ร่างที่ยังไม่บันทึก" });
+    await gate.promise;
+    return answer(request, "เสร็จแล้ว");
+  } });
+  const url = `/projects/${f.project.id}/topics/${f.topic.id}`;
+  send(f, "สวัสดี");
+  f.queue.pump(); await Bun.sleep(5);
+  const card = async () => /<article class="message message--jit reply-status"[\s\S]*?<\/article>/.exec(await (await get(f, url)).text())![0];
+  const thai = await card();
+  // The streamed draft is never server-rendered, and the draft and committed slots are adjacent so a commit swaps in place.
+  expect(thai).not.toContain("ร่างที่ยังไม่บันทึก");
+  expect(thai).not.toContain("aria-live");
+  expect(thai).toContain('<div class="message-body"><p class="literal reply-progress" data-reply-progress hidden></p><p class="literal reply-text" data-reply-text hidden></p><p class="reply-provisional" data-reply-provisional hidden>ร่างคำตอบ ยังไม่บันทึก</p><p class="reply-saved" data-reply-saved hidden>');
+  expect(thai).toContain('<p class="sr-only" role="status" data-reply-announce data-answered="จิตตอบเสร็จแล้ว"></p>');
+  expect(thai).toContain('data-reconnecting="กำลังเชื่อมต่อใหม่… จิตยังทำงานต่อระหว่างนี้" data-closed="อัปเดตสดหยุดแล้ว — กด “ดูสถานะล่าสุด” เพื่อดูคำตอบ" hidden>');
+  expect(thai).toContain("บันทึกแล้ว</p>");
+  f.app.execute(f.auth.actor, { kind: "ui.preferences.set", requestId: rid(), projectId: null, expectedRevision: 0, payload: { theme: "light", language: "en" } });
+  const english = await card();
+  expect(english).toContain(">Draft reply, not saved yet</p>");
+  expect(english).toContain('data-answered="Jit has finished replying"');
+  expect(english).toContain('data-reconnecting="Reconnecting… Jit keeps working in the meantime" data-closed="Live updates stopped — select “See the latest status” for the reply"');
+  expect(english).toContain(">Saved</p>");
+  expect(english).not.toMatch(/[฀-๿]/);
+  gate.resolve(); await f.queue.idle();
+  expect(replyFor(f, messages(f)[0]!.id).state).toBe("answered");
+});
+
+test("reply stylesheet: draft and committed text share one typography; the dot breathes only while thinking and stops under reduced motion", () => {
+  const css = styleSheet({ inter: "/i", thai: "/t", mono: "/m" });
+  expect(css).toContain(".reply-progress, .reply-text { font-size: var(--size-chat); color: var(--fg); }");
+  // .literal + .literal spacing would otherwise push the committed text down when it replaces the draft.
+  expect(css).toContain(".reply-status .reply-progress + .reply-text { margin-top: 0; }");
+  expect(css).toMatch(/\.reply-status\[data-reply-state="thinking"\] \.reply-progress::after \{[^}]*animation: jit-breath var\(--motion-breath\) ease-in-out infinite; \}/);
+  expect(css).toContain(".reply-status[data-reply-gap] .reply-progress { color: var(--fg-2); }");
+  expect(css).toContain(".reply-status[data-reply-gap] .reply-progress::after { display: none; }");
+  expect(css).toContain(".reply-status .reply-actions { min-height: 32px; }");
+  expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\) \{\s*\*, \*::before, \*::after \{[^}]*animation: none !important/);
 });
 
 test("the stream reports queue-only transitions and acknowledges each change with its own cursor", async () => {
@@ -569,18 +752,30 @@ test("many live replies stream without a growing URL, across more than one page 
   const f = await fixture({ env: { JIT_PAGE_SIZE: "10", JIT_JOB_CONCURRENCY: "8", JIT_JOB_ROUTE_CONCURRENCY: "8" }, streamTimers: pacing.timers });
   const url = `/projects/${f.project.id}/topics/${f.topic.id}`;
   const sent = Array.from({ length: 25 }, (_, index) => send(f, `ข้อความที่ ${index}`));
+  expect(f.app.replyStream(f.auth.actor, f.project.id, f.topic.id, 0)).toHaveLength(10);
+  expect(f.app.replyStream(f.auth.actor, f.project.id, f.topic.id, 0, 1)).toHaveLength(1);
+  for (const limit of [0, -1, 11, 1.5, NaN]) expect(() => f.app.replyStream(f.auth.actor, f.project.id, f.topic.id, 0, limit)).toThrow("invalid_limit");
+  const replay = f.app.replyStream.bind(f.app), projected: number[] = [];
+  f.app.replyStream = (...args: Parameters<Application["replyStream"]>) => {
+    expect(args[4]).toBe(1);
+    const rows = replay(...args); projected.push(rows.length); return rows;
+  };
   const page = await (await get(f, `${url}?after=15`)).text();
   expect(page).toContain(`data-reply-stream="${url}/events"`);
   // Stream pacing is driven by hand: the first tick ran when the response opened, the rest run here.
   const firstResponse = await get(f, `${url}/events`);
+  const firstText = firstResponse.text();
   await pacing.flush();
-  const first = events(await firstResponse.text());
+  const first = events(await firstText);
   expect(first.map(e => e.data.messageId)).toEqual(sent.map(s => s.message.id));
   expect(new Set(first.map(e => e.id)).size).toBe(25);
+  expect(Math.max(...projected)).toBe(1);
+  expect(projected.reduce((sum, count) => sum + count, 0)).toBe(26); // 25 delivered plus the initial scope check.
   while (f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM jobs WHERE state IN ('queued', 'admitted')")!.n)) await settle(f);
   const doneResponse = await get(f, `${url}/events`, { "last-event-id": String(first.at(-1)!.id) });
+  const doneText = doneResponse.text();
   await pacing.flush();
-  const done = events(await doneResponse.text());
+  const done = events(await doneText);
   expect(new Set(done.filter(e => e.data.state === "answered").map(e => e.data.messageId)).size).toBe(25);
 });
 
@@ -754,4 +949,75 @@ test("REL03 the dispatch proposal is a closed schema of roles plus an optional w
   const handlers = { dispatch: (item: unknown) => !!dispatchNames(item) };
   expect(normalizeJitReply(JSON.stringify({ reply: "ok", proposals: [{ kind: "dispatch", roles: ["x"], why: "<b>" + "y".repeat(200) }] }), 4096, handlers))
     .toMatchObject({ state: "complete", discarded: ["proposal:dispatch"] });
+});
+
+test("STR01: adapter deltas push immediately, metadata stays hidden, commit replaces the preview and receipts stay stable", async () => {
+  const entered = deferred<void>(), gate = deferred<void>();
+  releases.push(() => gate.resolve());
+  let emit!: (text: string) => void;
+  const code = '\n```ts\nconst x = 1;\n```\nหลังโค้ด';
+  const committedText = "คำตอบที่บันทึก" + code;
+  const output = committedText + '\n```jit-proposals\n{"version":2,"proposals":[{"kind":"future","secret":"HIDDEN_METADATA"}],"future":true}\n```';
+  const f = await fixture({ streamOptions: { intervalMs: 1000, polls: 120, timers: manualStreamTimers().timers },
+    script: async (request, _signal, observe) => {
+      emit = text => observe({ kind: "delta", runId: request.runId, text });
+      entered.resolve(); await gate.promise; return answer(request, output);
+    } });
+  const requestId = rid(), sent = send(f, "ขอคำตอบ", requestId);
+  const expectedRevision = f.app.conversation(f.auth.actor, f.project.id, f.topic.id).topic.revision - 1;
+  f.queue.pump(); await entered.promise;
+  const reply = replyFor(f, sent.message.id), url = `/projects/${f.project.id}/topics/${f.topic.id}/events`;
+  const response = await get(f, `${url}?cursor=${reply.cursor}`), reader = response.body!.getReader();
+  const next = async () => {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) throw new Error("unexpected end of stream");
+      const parsed = allEvents(new TextDecoder().decode(chunk.value));
+      if (parsed.length) return parsed[0]!;
+    }
+  };
+  expect((await next()).data.text).toBe("");
+  const delivery = next(); emit("ร่างที่ยังไม่บันทึก");
+  expect((await delivery).data).toMatchObject({ text: "ร่างที่ยังไม่บันทึก", provisional: true });
+  const codeDelivery = next(); emit(code);
+  expect((await codeDelivery).data.text).toBe("ร่างที่ยังไม่บันทึก" + code);
+  const persisted = f.store.read(tx => tx.get<{ record_json: string }>("SELECT record_json FROM team_runs WHERE id = ?", reply.id)!.record_json);
+  expect(persisted).not.toContain("ร่างที่ยังไม่บันทึก");
+  expect(f.app.source(f.auth.actor, f.project.id, sent.message.source)).toMatchObject({ text: "ขอคำตอบ" });
+  const metadata = next(); emit('\n`'); emit('`'); emit('`jit-proposals\n{"version":2,"proposals":["HIDDEN_METADATA"]}\n```');
+  expect((await metadata).data.text).toBe("ร่างที่ยังไม่บันทึก" + code);
+  expect(replyStreams(f.store).previews(f.project.id, f.topic.id)[0]!.text).not.toContain("HIDDEN_METADATA");
+  const committed = next(); gate.resolve(); await f.queue.idle();
+  const final = await committed;
+  expect(final.event).toBe("reply");
+  expect(final.data).toMatchObject({ state: "answered", text: committedText, progress: null });
+  expect(final.id).toBeGreaterThan(reply.cursor);
+  const view = replyFor(f, sent.message.id);
+  expect(view).toMatchObject({ state: "answered", revision: 2, discarded: ["proposal:future", "field:future"], discardedTotal: 2 });
+  expect(f.app.source(f.auth.actor, f.project.id, view.source!)).toMatchObject({ text: committedText });
+  expect(replyStreams(f.store).previews(f.project.id, f.topic.id)).toEqual([]);
+  expect(messages(f).map(message => message.text)).toEqual(["ขอคำตอบ", committedText]);
+  expect(f.app.execute(f.auth.actor, { kind: "message.send", projectId: f.project.id, requestId, expectedRevision,
+    payload: { topicId: f.topic.id, text: "ขอคำตอบ" } })).toEqual(sent);
+  expect(jobCount(f)).toBe(1);
+  await reader.cancel();
+});
+
+test("STR01: an expired attempt loses its preview and cannot commit even when the adapter ignores cancellation", async () => {
+  const entered = deferred<void>(), gate = deferred<void>(); releases.push(() => gate.resolve());
+  let emit!: (text: string) => void;
+  const f = await fixture({ wrap: port => ({ adapter: "scripted", inspectRuns: after => port.inspectRuns(after), retire: context => port.retire(context), delete: context => port.delete(context),
+    invoke: async (request, _signal, observe) => {
+      emit = text => observe({ kind: "delta", runId: request.runId, text });
+      emit("EXPIRED_PREVIEW"); entered.resolve(); await gate.promise;
+      return answer(request, "late complete");
+    } }) });
+  const sent = send(f, "รอคำตอบ"); f.queue.pump(); await entered.promise;
+  expect(replyStreams(f.store).previews(f.project.id, f.topic.id)[0]!.text).toBe("EXPIRED_PREVIEW");
+  f.advance(60_001); emit("STALE_DELTA");
+  expect(replyStreams(f.store).previews(f.project.id, f.topic.id)).toEqual([]);
+  gate.resolve(); await f.queue.idle();
+  expect(replyFor(f, sent.message.id)).toMatchObject({ state: "failed", replyMessageId: null, source: null, progress: null });
+  expect(messages(f).map(message => message.text)).toEqual(["รอคำตอบ"]);
+  expect(f.store.read(tx => tx.get<{ record_json: string }>("SELECT record_json FROM team_runs WHERE id = ?", replyFor(f, sent.message.id).id)!.record_json)).not.toContain("EXPIRED_PREVIEW");
 });

@@ -71,7 +71,7 @@ Derived tones (`--line-strong` and the tinted status borders) are `color-mix` va
 
 - Radius: 8 px for controls, 14 px for cards, 24 px for the composer, full pill for chips and buttons.
 - Spacing on a 4 px base. The chat column is at most 720 px wide.
-- Motion: 160 ms ease-out for UI transitions, 240 ms for the drawer and panels, 4.8 s for breathing. The ตั้งจิต ceremony is one 1.6 s sequence: the halo draws in, then the dot rises and settles. All motion stops under reduced motion.
+- Motion: 160 ms ease-out for UI transitions, 240 ms for the drawer and panels, 4.8 s for breathing. The ตั้งจิต ceremony is one 1.6 s sequence: the halo draws in, then the dot rises and settles. The streaming dot after Jit's draft reuses the breathing. All motion stops under reduced motion.
 
 ## Layout
 
@@ -191,3 +191,16 @@ These show a scripted fixture installation (`tests/fixtures/ux03.ts`) at 390 px.
 The install icons, from left to right: `any` (512 px, with transparent corners shown grey), `maskable` and the iOS touch icon:
 
 ![UX03 install icons](assets/ux03-icons.png)
+
+## STR01 streaming reply
+
+Jit's reply streams into the place where the committed message will land ([web.reply_stream/v2](../contracts/web-reply-stream-v2.md#owner-experience-and-no-script)):
+
+- **Draft.** The draft has the same size, colour and spacing as the committed text. A small dot after the last character breathes like the mark's จุดตั้งจิต and is static under reduced motion. Under the draft, a quiet line reads "ร่างคำตอบ ยังไม่บันทึก" / "Draft reply, not saved yet".
+- **Commit.** The committed text takes the draft's slot, and the line becomes "✓ บันทึกแล้ว" / "✓ Saved". The actions row keeps its height when Stop goes away, so nothing moves.
+- **Pauses.** "จิตยังทำงานอยู่…" (no new text for 10 s) keeps the calm running pill. A reconnect is routine and silent. Only a gap longer than 3 s dims the draft and adds a muted hint, "กำลังเชื่อมต่อใหม่… จิตยังทำงานต่อระหว่างนี้". A stream that will not retry points to "ดูสถานะล่าสุด". None of these use error colours.
+- **Scrolling and screen readers.** The view follows the stream only while the owner is at the bottom. Screen readers hear one polite line per phase change (replying, still working, connection, finished), never each token.
+
+The image shows a scripted fixture at 390 px. From left to right, in dark Thai: thinking, still working and reconnecting. Then, in light English: replying, committed, and live updates stopped.
+
+![STR01 streaming states, mobile](assets/str01-stream-matrix.png)

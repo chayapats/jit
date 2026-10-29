@@ -161,6 +161,8 @@ export interface ApplicationRunOutcome {
 }
 /** Finite typed observations carry no credential, authorization-changing command or raw SDK event. */
 export type ApplicationRunEvent = { kind: "started"; runId: string; context: ManagedContextReference }
+  | { kind: "delta"; runId: string; text: string }
+  | { kind: "delta_reset"; runId: string }
   | { kind: "progress"; runId: string; text: string }
   | { kind: "finished"; runId: string; outcome: ApplicationRunOutcome };
 

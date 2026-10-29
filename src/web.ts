@@ -38,18 +38,13 @@ import type { ResetBoxCommand } from "./exec/box-commands";
 import type { McpCommand, McpInstallSpec, McpReceipt, McpServerView } from "./exec/mcp";
 import type { TakeoverCommand, TakeoverInputCommand } from "./exec/takeover";
 import type { SetComputerSettingsCommand } from "./exec/computer";
+import { replyStreams } from "./team/reply-stream";
+import { replyEventStream, type ReplyStreamOptions } from "./web-reply-stream";
+export type { ReplyStreamOptions } from "./web-reply-stream";
 
 /** ADR 0028 Content-Security-Policy: every page, asset and API response allows only this origin, and no inline script or eval. */
 export const contentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
 
-/**
- * Topic event stream pacing (ADR 0028). The stream polls persisted reply state; it never starts work.
- * It closes after `polls` ticks so the browser reconnects with `Last-Event-ID` and the session is rechecked.
- */
-export interface ReplyStreamOptions {
-  intervalMs: number; polls: number;
-  timers?: { set(callback: () => void, ms: number): unknown; clear(handle: unknown): void };
-}
 const defaultStream: ReplyStreamOptions = { intervalMs: 1000, polls: 120 };
 /** web.pwa/v1 worker body, filled in once with this version's asset allowlist. */
 const serviceWorker = new TextEncoder().encode(serviceWorkerScript());
@@ -59,7 +54,6 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
   // app.webhook_triggers/v1: signed senders on the VPN reach this one path without a session, Origin or CSRF.
   const webhooks = createWebhookHandler(app, options.webhook);
   const streamOptions = options.stream ?? defaultStream;
-  const streamTimers = streamOptions.timers ?? { set: (fn: () => void, ms: number) => setTimeout(fn, ms), clear: (handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>) };
   const { config } = app;
   const expectedHost = new URL(config.origin).host;
   const secure = config.origin.startsWith("https:");
@@ -322,44 +316,18 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
           proposals: view.roleProposals.length + view.promotionProposals.length };
       };
       if (request.method === "GET" && streamRoute) {
-        // ADR 0028: one authenticated SSE stream per open topic, fed only from persisted reply state. Every
-        // reply-affecting change (record, progress, job transition) moves the reply cursor; each event carries the
-        // cursor of its own change, so a reconnect with Last-Event-ID resumes right after the last delivered one.
+        // web.reply_stream/v2: push committed changes and attempt-scoped provisional snapshots independently.
         const projectId = streamRoute[1]!, topicId = streamRoute[2]!;
         const raw = request.headers.get("last-event-id") ?? url.searchParams.get("cursor") ?? "0";
         if (!/^\d{1,16}$/.test(raw)) throw new AppError("invalid_cursor");
-        let cursor = Number(raw);
-        app.replyStream(auth.actor, projectId, topicId, cursor);
-        const encoder = new TextEncoder(), seen = new Map<string, string>();
-        let handle: unknown = null, closed = false, ticks = 0, quiet = 0;
-        const body = new ReadableStream<Uint8Array>({
-          start(controller) {
-            const finish = () => { if (closed) return; closed = true; try { controller.close(); } catch { /* Already closed by the client. */ } };
-            const tick = () => {
-              if (closed) return;
-              let chunk = ticks === 0 ? `retry: ${Math.max(1000, streamOptions.intervalMs * 2)}\n\n` : "";
-              try {
-                // A page holds at most pageSize changes; the next tick continues from the advanced cursor.
-                for (const view of app.replyStream(auth.actor, projectId, topicId, cursor)) {
-                  cursor = Math.max(cursor, view.cursor);
-                  const data = JSON.stringify(replyEvent(view));
-                  if (seen.get(view.id) === data) continue;
-                  seen.set(view.id, data);
-                  chunk += `id: ${cursor}\nevent: reply\ndata: ${data}\n\n`;
-                }
-              } catch { finish(); return; }
-              quiet = chunk ? 0 : quiet + 1;
-              // A comment keeps idle proxies and the server's idle timeout from closing a quiet stream.
-              if (quiet >= 5) { chunk = ": keep-alive\n\n"; quiet = 0; }
-              if (chunk) controller.enqueue(encoder.encode(chunk));
-              ticks += 1;
-              if (ticks >= streamOptions.polls) finish();
-              else handle = streamTimers.set(tick, streamOptions.intervalMs);
-            };
-            tick();
-          },
-          cancel() { closed = true; if (handle !== null) streamTimers.clear(handle); },
+        const cursor = Number(raw);
+        app.replyStream(auth.actor, projectId, topicId, cursor, 1);
+        const body = replyEventStream({ cursor, projectId, topicId, signal: request.signal, streams: replyStreams(app.store), options: streamOptions,
+          changes: (after, limit) => app.replyStream(auth.actor, projectId, topicId, after, limit), durable: replyEvent,
+          provisional: preview => ({ ...preview, provisional: true,
+            label: renderWith(ui, () => tr(preview.stalled ? "reply.still_working" : preview.text ? "reply.streaming" : "reply.state.thinking")) }),
         });
+        if (!body) throw new AppError("reply_stream_limit", 429);
         return new Response(body, { status: 200, headers: { ...headers, "Content-Type": "text/event-stream; charset=utf-8", "X-Accel-Buffering": "no" } });
       }
       if (request.method === "POST" && replyStopRoute) {
