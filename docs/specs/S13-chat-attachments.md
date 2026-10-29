@@ -2,7 +2,7 @@
 
 Tracker: https://github.com/chayapats/jit/issues/187 · Schway: https://github.com/chayapats/schway/issues/436 · Decision: [ADR 0040](../adr/0040-chat-attachments.md) · Contract: [app.attachments/v1](../contracts/app-attachments-v1.md)
 
-Owner: Jit. สถานะ: **confirmed** owner ยืนยันทุกข้อตามที่แนะนำเมื่อ 2026-10-29 และสั่งให้แตก ticket Parent: [S12](S12-fluid-conversation.md) ใช้หลัก just works และ D13 (ไม่ผูกกับ Pi) ที่มาคือ review แบบอ่านอย่างเดียวของ `origin/main` `cb1a99c` กับ Schway `ac63557` เมื่อ 2026-10-29
+Owner: Jit. สถานะ: **done** owner ยืนยันทุกข้อตามที่แนะนำเมื่อ 2026-10-29 ticket ทุกตัว merge แล้วในวันเดียวกัน (ดูตาราง Tickets) และ owner สั่งให้เปิด attachments เป็นค่าเริ่มต้น (S13-D-gate) Parent: [S12](S12-fluid-conversation.md) ใช้หลัก just works และ D13 (ไม่ผูกกับ Pi) ที่มาคือ review แบบอ่านอย่างเดียวของ `origin/main` `cb1a99c` กับ Schway `ac63557` เมื่อ 2026-10-29
 
 ## Problem Statement
 
@@ -67,16 +67,29 @@ Grok bot รับรูป, PDF และไฟล์ข้อความใ�
 
 ลำดับ: ATT00 → ATT01 → ATT02 ‖ ATT03 → ATT04 (ทำพร้อมหรือหลัง #173) → ATT06 (ทำพร้อม #177) → ATT05 → ATT07 (หลัง Schway release) ประมาณงาน ~15–19 วันทำงาน ถ้าทำ MVP แค่ข้อความ + รูป ไม่รวม PDF ใช้ ~8–10 วัน
 
-| Ticket | ผลลัพธ์ | Blocked by |
+| Ticket | ผลลัพธ์ | Blocked by | สถานะ |
+| --- | --- | --- | --- |
+| [#189](https://github.com/chayapats/jit/issues/189) ATT00 | ADR 0040 + `app.attachments/v1` ยกเลิกข้อห้ามเรื่องไฟล์แนบ | — | merged (#200) |
+| [#190](https://github.com/chayapats/jit/issues/190) ATT01 | Upload แบบ staged, ตรวจชนิดไฟล์, quota และดิสก์สำรอง | #189 | merged (#204) |
+| [#191](https://github.com/chayapats/jit/issues/191) ATT02 | Sanitizer นอก process ที่ไม่มี network | #190 | merged (#207) |
+| [#192](https://github.com/chayapats/jit/issues/192) ATT03 | Composer, transcript และ route สำหรับเปิดดูอย่างปลอดภัย | #190 (preview ต้องรอ #191) | merged (#209) |
+| [#193](https://github.com/chayapats/jit/issues/193) ATT04 | จิตอ่านไฟล์ได้ (`read_attachment` ทุกระดับ) พร้อม exfiltration guard | #191, #192, #173 | merged (#219) |
+| [#194](https://github.com/chayapats/jit/issues/194) ATT05 | Copy เข้า box โดยไม่เพิ่ม mount | #193 | merged (#226) |
+| [#195](https://github.com/chayapats/jit/issues/195) ATT06 | Lifecycle: delete, forget, backup, export, restore | #190, #192 | merged (#213) |
+| [#196](https://github.com/chayapats/jit/issues/196) ATT07 | รูปถึง model เฉพาะ route ที่ probe ผ่าน | schway#436, #193 | merged (#227) |
+
+
+**ปิดครบแล้ว 2026-10-29:** ticket ทุกตัวในตารางนี้ merge แล้ว Schway image input (schway#436) merge แล้ว และ pin เข้า Jit ผ่าน #220
+
+**Follow-ups ที่เกิดระหว่างทำ (ไม่ขวางการปิด S13):**
+
+| Ticket | ผลลัพธ์ | สถานะ |
 | --- | --- | --- |
-| [#189](https://github.com/chayapats/jit/issues/189) ATT00 | ADR 0040 + `app.attachments/v1` ยกเลิกข้อห้ามเรื่องไฟล์แนบ | — |
-| [#190](https://github.com/chayapats/jit/issues/190) ATT01 | Upload แบบ staged, ตรวจชนิดไฟล์, quota และดิสก์สำรอง | #189 |
-| [#191](https://github.com/chayapats/jit/issues/191) ATT02 | Sanitizer นอก process ที่ไม่มี network | #190 |
-| [#192](https://github.com/chayapats/jit/issues/192) ATT03 | Composer, transcript และ route สำหรับเปิดดูอย่างปลอดภัย | #190 (preview ต้องรอ #191) |
-| [#193](https://github.com/chayapats/jit/issues/193) ATT04 | จิตอ่านไฟล์ได้ (`read_attachment` ทุกระดับ) พร้อม exfiltration guard | #191, #192, #173 |
-| [#194](https://github.com/chayapats/jit/issues/194) ATT05 | Copy เข้า box โดยไม่เพิ่ม mount | #193 |
-| [#195](https://github.com/chayapats/jit/issues/195) ATT06 | Lifecycle: delete, forget, backup, export, restore | #190, #192 |
-| [#196](https://github.com/chayapats/jit/issues/196) ATT07 | รูปถึง model เฉพาะ route ที่ probe ผ่าน | schway#436, #193 |
+| [#205](https://github.com/chayapats/jit/issues/205) ATT01-F | การจองพื้นที่ดิสก์ไม่นับซ้ำ และจำกัดจำนวนไฟล์ที่เทียบหาไฟล์ซ้ำ | merged (#207) |
+| [#216](https://github.com/chayapats/jit/issues/216) COMM03-F | คำตอบที่รอคิวอัปเดตสถานะทันที | merged (#219) |
+| [#224](https://github.com/chayapats/jit/issues/224) OPS09 | Container (SearXNG, sanitizer, box) ทำงานใน service unit ที่ hardened ผ่าน `podman.socket` ของ user (พบจาก live upgrade บนเครื่องอ้างอิง) | merged (#228) |
+| [#229](https://github.com/chayapats/jit/issues/229) ATT07-F | Test พิสูจน์เพดาน quota ของ image probe (เจอและแก้ reader ของ Codex ที่ไม่หยุดเมื่อ abort) | merged (#230) |
+| [#222](https://github.com/chayapats/jit/issues/222) EVID01 | หลักฐาน live แบบ opt-in (sanitizer จริง, composer ใน browser จริง, image probe ต่อ route) | ready-for-human |
 
 ## Out of scope
 
