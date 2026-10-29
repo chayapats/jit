@@ -10,12 +10,13 @@ import { TransactionStore } from "../src/store";
 import { listDiscussions } from "../src/team/dispatch";
 import { memoryExtractionMarker, memoryExtractionWork, scriptedMemoryResult } from "../src/memory/extract";
 import { commitOutputSource } from "../src/sources";
-import { dispatchNames, jitReplyMarker, jitReplyWork, jitReplyWorkId, normalizeJitReply, parseTaskSuggestion, taskSuggestionInstruction, type JitReplyView } from "../src/team/jit-reply";
+import { dispatchNames, jitReplyMarker, jitReplyWork, jitReplyWorkId, normalizeJitReply, parseSuggestions, parseTaskSuggestion, suggestionsInstruction, taskSuggestionInstruction, type JitReplyView } from "../src/team/jit-reply";
 import type { ApplicationRunPort } from "../src/team/run-port";
 import { ScriptedRunPort, fixtureOutcome } from "../src/team/scripted-port";
 import type { ApplicationRunEvent, ApplicationRunOutcome, ApplicationRunRequest, RoleRoute } from "../src/team/types";
 import { createWebHandler, type ReplyStreamOptions } from "../src/web";
 import { assetUrl } from "../src/web-assets";
+import { chipsAllowed } from "../src/web-layout";
 import { styleSheet } from "../src/web-style";
 import { replyStreams, replyStallMs } from "../src/team/reply-stream";
 
@@ -1146,3 +1147,190 @@ test("STR01: an expired attempt loses its preview and cannot commit even when th
   expect(messages(f).map(message => message.text)).toEqual(["รอคำตอบ"]);
   expect(f.store.read(tx => tx.get<{ record_json: string }>("SELECT record_json FROM team_runs WHERE id = ?", replyFor(f, sent.message.id).id)!.record_json)).not.toContain("EXPIRED_PREVIEW");
 });
+
+const chipsOf = (html: string) => [...html.matchAll(/<div class="reply-chips" role="group" aria-label="[^"]*">([\s\S]*?)<\/div>/g)]
+  .map(match => [...match[1]!.matchAll(/<button class="chip">([^<]*)<\/button>/g)].map(button => button[1]!));
+const suggesting = (reply: string, replies: unknown[]) => JSON.stringify({ reply, proposals: [{ kind: "suggestions", replies }] });
+
+test("COMM04 parseSuggestions is a closed schema of 1 to 3 distinct, trimmed, single-line replies of at most 80 code points", () => {
+  expect(parseSuggestions({ kind: "suggestions", replies: [" ok "] })).toEqual(["ok"]);
+  expect(parseSuggestions({ kind: "suggestions", replies: ["ขอแบบละเอียด", "ยกตัวอย่าง", "สรุปสั้นๆ"] })).toEqual(["ขอแบบละเอียด", "ยกตัวอย่าง", "สรุปสั้นๆ"]);
+  expect(parseSuggestions({ kind: "suggestions", replies: ["ก".repeat(80)] })).toEqual(["ก".repeat(80)]);
+  expect(parseSuggestions({ kind: "suggestions", replies: ["😀".repeat(80)] })).toEqual(["😀".repeat(80)]);
+  for (const bad of [
+    { kind: "suggestions", replies: ["a", "b", "c", "d"] }, { kind: "suggestions", replies: [] }, { kind: "suggestions", replies: ["x".repeat(81)] },
+    { kind: "suggestions", replies: ["\ud800"] }, { kind: "suggestions", replies: ["two\nlines"] }, { kind: "suggestions", replies: ["tab\there"] },
+    { kind: "suggestions", replies: ["a", " a "] }, { kind: "suggestions", replies: ["ok"], approve: true }, { kind: "suggestions", replies: [1] },
+    { kind: "suggestions", replies: ["   "] }, { kind: "suggestions", replies: "ok" }, { kind: "suggestions" }, { kind: "suggestion", replies: ["ok"] }, null,
+  ]) expect(parseSuggestions(bad)).toBeNull();
+  // Through normalization, a declined entry is discarded by kind only and the reply text is kept.
+  const handlers = { suggestions: (item: unknown) => !!parseSuggestions(item) };
+  expect(normalizeJitReply(suggesting("ตอบแล้ว", ["a", "a"]), 4096, handlers)).toEqual({ state: "complete", text: "ตอบแล้ว", structured: true, discarded: ["proposal:suggestions"], discardedTotal: 1 });
+});
+
+test("COMM04 chips under Jit's answer are escaped owner forms; a tap posts exactly that text and Jit answers it", async () => {
+  const outputs = [suggesting("สรุปแล้วครับ", ["ขอแบบละเอียด", "<b>x</b>"])];
+  const f = await fixture({ script: request => answer(request, outputs.shift() ?? JSON.stringify({ reply: "รายละเอียดครับ" })) });
+  const url = `/projects/${f.project.id}/topics/${f.topic.id}`;
+  const sent = send(f, "สรุปให้หน่อย"); await settle(f);
+  const view = replyFor(f, sent.message.id);
+  expect(view).toMatchObject({ state: "answered", suggestions: ["ขอแบบละเอียด", "<b>x</b>"], discarded: [] });
+  const evidence = f.app.job(f.auth.actor, f.project.id, view.jobId!).evidence!;
+  expect(evidence).toContain(" · suggestions 2");
+  expect(evidence).not.toContain("ขอแบบละเอียด");
+  expect(evidence).not.toContain("<b>");
+  // Message replies are offered the entry with its exact text, once.
+  const operator = f.port.requests.find(request => request.instructions.operator[0] === jitReplyMarker)!.instructions.operator;
+  expect(operator.filter(line => line.includes(suggestionsInstruction))).toHaveLength(1);
+  const html = await (await get(f, url)).text();
+  expectNoInlineScript(html);
+  expect(chipsOf(html)).toEqual([["ขอแบบละเอียด", "&lt;b&gt;x&lt;/b&gt;"]]);
+  expect(html).toContain('<div class="reply-chips" role="group" aria-label="ตอบต่อแบบเร็ว">');
+  expect(html).not.toContain("<b>x</b>");
+  expect(html).toContain('<input type="hidden" name="text" value="&lt;b&gt;x&lt;/b&gt;">');
+  // The chips follow the answer they belong to, before the composer.
+  expect(html.indexOf('class="reply-chips"')).toBeGreaterThan(html.indexOf(`id="message-${view.replyMessageId}"`));
+  expect(html.indexOf('class="reply-chips"')).toBeLessThan(html.indexOf('class="composer"'));
+  // English uses the dictionary label.
+  f.app.execute(f.auth.actor, { kind: "ui.preferences.set", requestId: rid(), projectId: null, expectedRevision: 0, payload: { theme: "dark", language: "en" } });
+  expect(await (await get(f, url)).text()).toContain('<div class="reply-chips" role="group" aria-label="Quick replies">');
+  // No script: the chip is the owner's own message.send form; nothing else rides on it.
+  const chip = form(html, `${url}/messages`);
+  expect(chip.fields).toMatchObject({ text: "ขอแบบละเอียด", csrf: f.auth.csrf });
+  expect(Object.keys(chip.fields).sort()).toEqual(["csrf", "expectedRevision", "requestId", "text"]);
+  const posted = await postForm(f, chip.action, chip.fields);
+  expect(posted.status).toBe(303);
+  const owner = messages(f).at(-1)!;
+  expect(owner).toMatchObject({ text: "ขอแบบละเอียด", attribution: { kind: "owner" } });
+  // While the new reply is live, no chips show anywhere; once it answers, the old chips are gone too.
+  const thinking = await (await get(f, url)).text();
+  expect(chipsOf(thinking)).toEqual([]);
+  await settle(f);
+  expect(replyFor(f, owner.id)).toMatchObject({ state: "answered", suggestions: [] });
+  const after = await (await get(f, url)).text();
+  expect(chipsOf(after)).toEqual([]);
+  expect(after).not.toContain("ขอแบบละเอียด</button>");
+});
+
+test("COMM04 chips show only under the newest answer and never beside a proposal card; invalid entries are discarded and the text commits", async () => {
+  const outputs = [
+    suggesting("คำตอบแรก", ["ต่อเลย"]),
+    JSON.stringify({ reply: "คำตอบที่สอง", proposals: [{ kind: "suggestions", replies: ["ไปต่อ"] }, { kind: "suggestions", replies: ["ซ้ำ"] }] }),
+    // A role proposal waits on the owner, so its reply shows no chips.
+    JSON.stringify({ reply: "เสนอผู้เชี่ยวชาญ", proposals: [{ kind: "role", name: "ความปลอดภัย", responsibility: "ตรวจความเสี่ยง", route: grok }, { kind: "suggestions", replies: ["สร้างเลย"] }] }),
+    // A task suggestion is a card too.
+    JSON.stringify({ reply: "เก็บเป็นงาน", proposals: [{ kind: "task", title: "งาน", summary: "สรุป" }, { kind: "suggestions", replies: ["บันทึกเลย"] }] }),
+    suggesting("ตอบได้แต่ chips ใช้ไม่ได้", ["x".repeat(81)]),
+  ];
+  const f = await fixture({ script: request => answer(request, outputs.shift()!) });
+  const url = `/projects/${f.project.id}/topics/${f.topic.id}`;
+  const first = send(f, "ข้อแรก"); await settle(f);
+  expect(chipsOf(await (await get(f, url)).text())).toEqual([["ต่อเลย"]]);
+  const second = send(f, "ข้อสอง"); await settle(f);
+  expect(replyFor(f, second.message.id)).toMatchObject({ suggestions: ["ไปต่อ"], discarded: ["proposal:suggestions"] });
+  // Only the newest answer has chips; the first reply's are gone.
+  expect(chipsOf(await (await get(f, url)).text())).toEqual([["ไปต่อ"]]);
+  expect(replyFor(f, first.message.id).suggestions).toEqual(["ต่อเลย"]);
+  const third = send(f, "ข้อสาม"); await settle(f);
+  expect(replyFor(f, third.message.id)).toMatchObject({ suggestions: ["สร้างเลย"], roleProposals: [{ state: "proposed" }] });
+  expect(chipsOf(await (await get(f, url)).text())).toEqual([]);
+  const fourth = send(f, "ข้อสี่"); await settle(f);
+  expect(replyFor(f, fourth.message.id)).toMatchObject({ suggestions: ["บันทึกเลย"], taskSuggestion: { title: "งาน" } });
+  expect(chipsOf(await (await get(f, url)).text())).toEqual([]);
+  const fifth = send(f, "ข้อห้า"); await settle(f);
+  expect(replyFor(f, fifth.message.id)).toMatchObject({ state: "answered", suggestions: [], discarded: ["proposal:suggestions"] });
+  expect(messages(f).at(-1)!.text).toBe("ตอบได้แต่ chips ใช้ไม่ได้");
+  expect(chipsOf(await (await get(f, url)).text())).toEqual([]);
+});
+
+test("COMM04 chipsAllowed: no chips beside a dispatch or MCP card, in a promoted origin or while an approval waits", () => {
+  const view = { state: "answered", suggestions: ["ต่อ"], taskSuggestion: null, roleProposals: [], promotionProposals: [] } as unknown as JitReplyView;
+  const clear = { dispatchCard: false, mcpCard: false, promoted: false, approvalPending: false };
+  expect(chipsAllowed(view, clear)).toBe(true);
+  for (const key of Object.keys(clear) as (keyof typeof clear)[]) expect(chipsAllowed(view, { ...clear, [key]: true })).toBe(false);
+  expect(chipsAllowed({ ...view, state: "failed" } as JitReplyView, clear)).toBe(false);
+  expect(chipsAllowed({ ...view, suggestions: [] } as JitReplyView, clear)).toBe(false);
+  expect(chipsAllowed({ ...view, roleProposals: [{ state: "accepted" }] } as unknown as JitReplyView, clear)).toBe(true);
+  expect(chipsAllowed({ ...view, promotionProposals: [{ state: "proposed" }] } as unknown as JitReplyView, clear)).toBe(false);
+});
+
+test("COMM04 with script: the stream carries allowed chips and app.js fills the hidden slot in place once nothing is live", async () => {
+  const gate = deferred<void>();
+  releases.push(() => gate.resolve());
+  const f = await fixture({ script: async request => { await gate.promise; return answer(request, suggesting("สรุปแล้วครับ", ["ขอแบบละเอียด"])); } });
+  const url = `/projects/${f.project.id}/topics/${f.topic.id}`;
+  const sent = send(f, "สรุปให้หน่อย");
+  f.queue.pump();
+  // The thinking page holds one hidden slot of ready forms after the live reply; without script it stays hidden.
+  const thinking = await (await get(f, url)).text();
+  const slot = /<div class="reply-chips" role="group" aria-label="[^"]*" data-reply-chips="([a-f0-9-]{36})" hidden>([\s\S]*?)<\/div>/.exec(thinking)!;
+  expect(slot[1]).toBe(replyFor(f, sent.message.id).id);
+  const slotForms = [...slot[2]!.matchAll(/<form method="post" action="([^"]+)" hidden>/g)];
+  expect(slotForms.map(match => match[1])).toEqual([`${url}/messages`, `${url}/messages`, `${url}/messages`]);
+  expect(new Set([...slot[2]!.matchAll(/name="requestId" value="([^"]+)"/g)].map(match => match[1])).size).toBe(3);
+  gate.resolve(); await settle(f);
+  const replayed = events(await (await get(f, `${url}/events`, { "last-event-id": "0" })).text());
+  expect(replayed.at(-1)!.data).toMatchObject({ state: "answered", suggestions: ["ขอแบบละเอียด"] });
+
+  // app.js against a stub DOM: the answered event fills the slot through value and textContent and removes spare forms.
+  const node = (extra: Record<string, unknown> = {}) => ({ textContent: "", hidden: true, dataset: {} as Record<string, string>, ...extra });
+  const parts = { text: node(), saved: node(), label: node(), announce: node({ dataset: { answered: "done" } }) };
+  const card = { dataset: { replyId: "11111111-1111-1111-1111-111111111111", replyState: "thinking" } as Record<string, string>,
+    querySelector: (selector: string) => ({ "[data-reply-text]": parts.text, "[data-reply-saved]": parts.saved, "[data-reply-label]": parts.label, "[data-reply-announce]": parts.announce } as Record<string, unknown>)[selector] ?? null };
+  const chipForm = () => {
+    const input = { value: "" }, button = { textContent: "" };
+    const formNode = { hidden: true, removed: false, input, button, remove() { this.removed = true; },
+      querySelector: (selector: string) => selector === 'input[name="text"]' ? input : selector === "button" ? button : null };
+    return formNode;
+  };
+  const forms = [chipForm(), chipForm(), chipForm()];
+  const slotNode = { hidden: true, querySelectorAll: (selector: string) => selector === "form" ? forms.filter(item => !item.removed) : [] };
+  const sources: { listeners: Record<string, (event: { data: string }) => void>; closed: boolean }[] = [];
+  class FakeEventSource {
+    listeners: Record<string, (event: { data: string }) => void> = {}; closed = false; readyState = 1;
+    constructor(readonly url: string) { sources.push(this); }
+    addEventListener(type: string, fn: (event: { data: string }) => void) { this.listeners[type] = fn; }
+    close() { this.closed = true; }
+  }
+  const chat = { dataset: { replyStream: "/projects/p/topics/t/events", replyCursor: "0" }, closest: () => null };
+  const globals: Record<string, unknown> = {
+    document: {
+      documentElement: { dataset: {} },
+      querySelector: (selector: string) => selector === "[data-reply-stream]" ? chat : selector === `[data-reply-chips="${card.dataset.replyId}"]` ? slotNode : null,
+      querySelectorAll: (selector: string) => selector === "[data-reply-id]" ? [card] : [],
+      getElementById: (id: string) => id === `reply-${card.dataset.replyId}` ? card : null,
+      addEventListener: () => {},
+    },
+    window: { addEventListener: () => {}, setTimeout: () => 0, clearTimeout: () => {} },
+    location: { hash: "", pathname: "/", search: "" }, history: { replaceState: () => {} }, CSS: { supports: () => true }, EventSource: FakeEventSource,
+  };
+  const saved = new Map(Object.keys(globals).map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  for (const [key, value] of Object.entries(globals)) Object.defineProperty(globalThis, key, { value, configurable: true, writable: true });
+  try {
+    await import(`../src/web-assets/app.js?case=${crypto.randomUUID()}`);
+    sources[0]!.listeners.reply!({ data: JSON.stringify({ id: card.dataset.replyId, state: "answered", label: "ตอบแล้ว", tone: "succeeded", next: null, text: "สรุปแล้วครับ", suggestions: ["<b>ขอแบบละเอียด</b>"] }) });
+    expect(slotNode.hidden).toBe(false);
+    expect(forms[0]).toMatchObject({ hidden: false, removed: false, input: { value: "<b>ขอแบบละเอียด</b>" }, button: { textContent: "<b>ขอแบบละเอียด</b>" } });
+    expect(forms.slice(1).every(item => item.removed)).toBe(true);
+    expect(sources[0]!.closed).toBe(true);
+  } finally {
+    for (const [key, descriptor] of saved) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete (globalThis as Record<string, unknown>)[key]; }
+  }
+});
+
+test("COMM04 deleting the reply's output takes its chips with it", async () => {
+  const f = await fixture({ script: request => answer(request, suggesting("คำตอบที่จะลบ", ["ข้อความที่จะถูกลบ"])) });
+  const sent = send(f, "ช่วยตอบ"); await settle(f);
+  const view = replyFor(f, sent.message.id);
+  expect(view.suggestions).toEqual(["ข้อความที่จะถูกลบ"]);
+  const revision = () => f.app.project(f.auth.actor, f.project.id).revision;
+  const preview = f.app.execute(f.auth.actor, { kind: "memory.delete.preview", requestId: rid(), projectId: f.project.id, expectedRevision: revision(),
+    payload: { scope: { kind: "source", projectId: f.project.id, source: { ...view.source! } } } }) as { preview: { id: string; blockers?: string[] } };
+  f.app.execute(f.auth.actor, { kind: "memory.delete.confirm", requestId: rid(), projectId: f.project.id, expectedRevision: revision(),
+    payload: { previewId: preview.preview.id, acknowledged: true, acknowledgedWholeSession: true } });
+  expect(replyFor(f, sent.message.id).suggestions).toEqual([]);
+  const record = f.store.read(tx => tx.get<{ record_json: string }>("SELECT record_json FROM team_runs WHERE id = ?", view.id)!.record_json);
+  expect(record).not.toContain("ข้อความที่จะถูกลบ");
+  expect(await (await get(f, `/projects/${f.project.id}/topics/${f.topic.id}`)).text()).not.toContain("ข้อความที่จะถูกลบ");
+});
+

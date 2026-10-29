@@ -54,6 +54,12 @@ export const taskSuggestionSummaryChars = 1200;
 export const taskSuggestionInstruction = `Optional "proposals" entry {"kind":"task","title":string,"summary":string} (at most one; title at most ${taskSuggestionTitleChars} characters on one line, summary at most ${taskSuggestionSummaryChars}) suggests a task for long or multi-step work; it creates nothing until the owner saves it.`;
 /** One task suggestion kept on an answered message reply. Untrusted model text: shown escaped, never an obligation. */
 export interface TaskSuggestion { title: string; summary: string }
+/** S12-D08: most reply suggestions (chips) one answer may offer. */
+export const suggestionLimit = 3;
+/** S12-D08: longest reply suggestion, in code points. */
+export const suggestionChars = 80;
+/** S12-D08: a message reply may offer reply chips; a tap sends exactly that text as the owner's own message. */
+export const suggestionsInstruction = `Optional "proposals" entry {"kind":"suggestions","replies":[string]} (at most one): 1 to 3 short replies of at most 80 characters that the owner may want to send next, written as the owner would type them. Offer them only after a complete answer; never use them to ask for approval, permission or confirmation of any action.`;
 /** Stored job purpose and work title. It equals the `system.jit_reply_purpose` entry, so pages translate it. */
 export const jitReplyPurpose = "จิตตอบข้อความ";
 
@@ -91,6 +97,12 @@ interface JitReplyRecord {
    * Absent when none was kept, on team replies and on records written before COMM01; data deletion removes it.
    */
   taskSuggestion?: TaskSuggestion;
+  /**
+   * S12-D08: the replies a message reply suggested the owner might send next (chips), untrusted model text. A chip is
+   * an ordinary owner message when tapped and grants nothing. Absent when none was kept, on team replies and on
+   * records written before COMM04; data deletion removes it.
+   */
+  suggestions?: string[];
   /**
    * app.routing_selection/v1: the fixed rule that chose specialists when the owner's message was admitted. The run is
    * told the choice and is not offered a dispatch proposal; the service admits the roles when the reply commits.
@@ -145,6 +157,8 @@ export interface JitReplyView {
   promotionProposals: PromotionProposalView[];
   /** S12-D05: the task an answered message reply suggested, for the owner's pre-filled form; null in every other state. */
   taskSuggestion: TaskSuggestion | null;
+  /** S12-D08: an answered message reply's suggested next owner messages (chips); empty in every other state. */
+  suggestions: string[];
   /** A team reply (app.dispatch_allowance/v1) answers Jit's dispatching message; null for a reply to an owner message. */
   team: TeamReplyContext | null;
 }
@@ -226,6 +240,21 @@ export function parseTaskSuggestion(item: unknown): TaskSuggestion | null {
   const t = title.trim(), s = summary.trim();
   if (!t || !s || !t.isWellFormed() || !s.isWellFormed() || t.length > taskSuggestionTitleChars || s.length > taskSuggestionSummaryChars) return null;
   return controlCharacters.test(t) || summaryControls.test(s) ? null : { title: t, summary: s };
+}
+
+/**
+ * One well-formed reply suggestions entry `{"kind": "suggestions", "replies": [string, ...]}` with exactly those keys,
+ * or null. `replies` holds 1 to {@link suggestionLimit} strings; each, after trimming, is non-empty, at most
+ * {@link suggestionChars} code points, well-formed, free of control characters and distinct from the others. Returns
+ * the trimmed strings: untrusted text the page shows escaped, which becomes an owner message only when the owner taps it.
+ */
+export function parseSuggestions(item: unknown): string[] | null {
+  if (!exact(item, ["kind", "replies"]) || (item as { kind: unknown }).kind !== "suggestions") return null;
+  const replies = (item as { replies: unknown }).replies;
+  if (!Array.isArray(replies) || replies.length < 1 || replies.length > suggestionLimit || replies.some(reply => typeof reply !== "string")) return null;
+  const trimmed = (replies as string[]).map(reply => reply.trim());
+  if (trimmed.some(reply => !reply || !reply.isWellFormed() || Array.from(reply).length > suggestionChars || controlCharacters.test(reply))) return null;
+  return new Set(trimmed).size === trimmed.length ? trimmed : null;
 }
 
 /** Reads one reply record. app.role_proposals/v1 keeps its proposal revisions here. */
@@ -368,7 +397,7 @@ function admitReply(tx: AppTransaction, input: ReplyAdmission): { id: string; re
   const fixedOperator = [teamInput ? teamReplyMarker : jitReplyMarker,
     [...teamInput ? teamReplyPolicy : jitReplyPolicy, communicationPolicyLine].join(" "),
     ...(teamInput ? [] : [[roleSentence!, ...promotable ? [promotionInstruction] : [], ...installable ? [mcpProposalInstruction] : [],
-      taskSuggestionInstruction].join(" "), routesLine!]),
+      taskSuggestionInstruction, suggestionsInstruction].join(" "), routesLine!]),
     ...personaInstructions(persona)];
   // The metadata line is charged at an upper bound that holds for every split of the offered results into kept and
   // gaps, in any order: the line with empty lists plus, per list, the smaller of its cap and every candidate entry,
@@ -587,7 +616,7 @@ function project(tx: AppTransaction, row: { id: string; projectId: string; topic
   if (!row.runId) {
     return { ...base, jobId: null, revision: 1, state: "not_admitted", reason: row.reason, nextAction: notAdmittedAction(tx, row),
       progress: null, replyMessageId: null, source: null, mode: null, route: null, personaRevision: null, discarded: [], discardedTotal: 0, roleProposals: [],
-      promotionProposals: [], taskSuggestion: null, team: dispatchAnchored(tx, row.id) };
+      promotionProposals: [], taskSuggestion: null, suggestions: [], team: dispatchAnchored(tx, row.id) };
   }
   const record = readReplyRecord(tx, row.projectId, row.runId);
   const common = { ...base, jobId: record.jobId, revision: record.revision, route: record.request.route, personaRevision: record.personaRevision,
@@ -595,11 +624,12 @@ function project(tx: AppTransaction, row: { id: string; projectId: string; topic
     roleProposals: roleProposalViews(record, record.roleProposals, sequenceOf(tx, record.replyMessageId)),
     promotionProposals: promotionProposalViews(record, record.promotionProposal, sequenceOf(tx, record.replyMessageId),
       record.promotionProposal ? promotionFrom(tx, record.projectId, record.topicId) : null),
-    taskSuggestion: null as TaskSuggestion | null,
+    taskSuggestion: null as TaskSuggestion | null, suggestions: [] as string[],
     team: record.team ? { ...record.team, gaps: record.team.gaps.map(gap => gap.runId ? { ...gap, unblock: unblockAction(tx, row.projectId, gap.runId) } : gap) } : null };
   if (record.result?.state === "answered") {
     return { ...common, state: "answered", reason: null, nextAction: null, progress: null, replyMessageId: record.replyMessageId, source: record.source,
-      replySequence: sequenceOf(tx, record.replyMessageId), taskSuggestion: record.taskSuggestion ? { ...record.taskSuggestion } : null };
+      replySequence: sequenceOf(tx, record.replyMessageId), taskSuggestion: record.taskSuggestion ? { ...record.taskSuggestion } : null,
+      suggestions: [...record.suggestions ?? []] };
   }
   if (record.result) return { ...common, state: "failed", reason: record.result.reason, nextAction: "send_again", progress: null, replyMessageId: null, source: null };
   const job = readJob(tx, row.projectId, record.jobId);
@@ -781,7 +811,9 @@ export function jitReplyWork(store: TransactionStore, config: AppConfig, port: A
       const mcpProposals: ParsedMcpProposal[] = [];
       // S12-D05: at most one task suggestion, which only pre-fills the owner's task form.
       let taskSuggestion: TaskSuggestion | null = null;
-      // A team reply speaks for the team: it may neither re-dispatch, propose roles nor suggest a task.
+      // S12-D08: at most one suggestions entry; a chip becomes an owner message only when the owner taps it.
+      let suggestions: string[] | null = null;
+      // A team reply speaks for the team: it may neither re-dispatch, propose roles, suggest a task nor offer chips.
       const handlers = opened.team ? {} : { mcp_install: (item: unknown) => {
         if (mcpProposals.length >= mcpProposalLimit) return false;
         const parsed = parseMcpProposal(item);
@@ -804,13 +836,17 @@ export function jitReplyWork(store: TransactionStore, config: AppConfig, port: A
         if (taskSuggestion) return false;
         taskSuggestion = parseTaskSuggestion(item);
         return !!taskSuggestion;
+      }, suggestions: (item: unknown) => {
+        if (suggestions) return false;
+        suggestions = parseSuggestions(item);
+        return !!suggestions;
       } };
       const parsed = outcome.state === "complete" && outcome.output ? normalizeJitReply(outcome.output, outputBytes, handlers) : null;
       const result: NonNullable<JitReplyRecord["result"]> = parsed?.state === "complete"
         ? { state: "answered", reason: null, structured: parsed.structured, discarded: parsed.discarded, discardedTotal: parsed.discardedTotal }
         : { state: "failed", reason: parsed?.state === "failed" ? parsed.reason : outcome.reason, structured: false, discarded: [], discardedTotal: 0 };
       // Language-neutral technical evidence (codes only), the same on Thai and English pages.
-      const evidence = `jit-reply · ${outcome.mode} · ${result.state}${result.reason ? `/${result.reason}` : ""} · discarded ${result.discardedTotal}${result.discarded.length ? ` (${result.discarded.join(", ")})` : ""}${result.state === "answered" && roleProposals.length ? ` · proposals role:${roleProposals.length}` : ""}${result.state === "answered" && promotion ? " · proposals promotion:1" : ""}${result.state === "answered" && mcpProposals.length ? ` · proposals mcp_install:${mcpProposals.length}` : ""}${result.state === "answered" && taskSuggestion ? " · proposals task:1" : ""}${opened.team ? ` · team cites ${opened.team.citations.length} gaps ${opened.team.gaps.length}` : ""}${result.state === "answered" && (dispatch as { names: string[] } | null)?.names.length ? ` · dispatch named ${(dispatch as { names: string[] } | null)?.names.length}` : ""}${result.state === "answered" && opened.routing ? ` · selection ${opened.routing.selection.rule} ${opened.routing.selection.roleIds.length}` : ""} · tools none · reply ${opened.id}`;
+      const evidence = `jit-reply · ${outcome.mode} · ${result.state}${result.reason ? `/${result.reason}` : ""} · discarded ${result.discardedTotal}${result.discarded.length ? ` (${result.discarded.join(", ")})` : ""}${result.state === "answered" && roleProposals.length ? ` · proposals role:${roleProposals.length}` : ""}${result.state === "answered" && promotion ? " · proposals promotion:1" : ""}${result.state === "answered" && mcpProposals.length ? ` · proposals mcp_install:${mcpProposals.length}` : ""}${result.state === "answered" && taskSuggestion ? " · proposals task:1" : ""}${result.state === "answered" && suggestions ? ` · suggestions ${(suggestions as string[]).length}` : ""}${opened.team ? ` · team cites ${opened.team.citations.length} gaps ${opened.team.gaps.length}` : ""}${result.state === "answered" && (dispatch as { names: string[] } | null)?.names.length ? ` · dispatch named ${(dispatch as { names: string[] } | null)?.names.length}` : ""}${result.state === "answered" && opened.routing ? ` · selection ${opened.routing.selection.rule} ${opened.routing.selection.roleIds.length}` : ""} · tools none · reply ${opened.id}`;
       const outcomeState = result.state === "answered" ? { state: "succeeded" as const, evidence } : { state: "partial" as const, evidence };
       const committed = commit(outcomeState, tx => {
         const current = readReplyRecord(tx, job.projectId, opened.id);
@@ -833,6 +869,7 @@ export function jitReplyWork(store: TransactionStore, config: AppConfig, port: A
           for (const parsed of mcpProposals) insertMcpProposal(tx, { projectId: current.projectId, topicId: current.topicId, replyId: current.id }, parsed, now());
           if (promotion) current.promotionProposal = promotion;
           if (taskSuggestion) current.taskSuggestion = taskSuggestion;
+          if (suggestions) current.suggestions = suggestions;
           const why = (dispatch as { why: string | null } | null)?.why;
           if (why) current.dispatchWhy = why;
           tx.run("UPDATE jit_replies SET reply_message_id = ?, reply_source_id = ? WHERE id = ?", messageId, source.sourceId, current.id);

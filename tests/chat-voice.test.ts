@@ -12,7 +12,7 @@ import { promotionInstruction } from "../src/promotion";
 import { setupCheckWork, type SetupCommand } from "../src/setup";
 import { TransactionStore } from "../src/store";
 import { communicationPolicyLine, teamCommunicationPolicy } from "../src/team/communication-policy";
-import { jitReplyMarker, jitReplyWork, taskSuggestionInstruction } from "../src/team/jit-reply";
+import { jitReplyMarker, jitReplyWork, suggestionsInstruction, taskSuggestionInstruction } from "../src/team/jit-reply";
 import { ScriptedRunPort, fixtureOutcome } from "../src/team/scripted-port";
 import type { ApplicationRunOutcome, ApplicationRunRequest, RoleRoute } from "../src/team/types";
 import { createWebHandler } from "../src/web";
@@ -194,7 +194,7 @@ test("worst case (General space topic, access workspace, about-me, a long roster
   for (const line of operator) expect(Buffer.byteLength(line)).toBeLessThanOrEqual(2048);
   // Every optional entry is offered once, together on the proposal-kinds line; the policy line ends with the policy.
   expect(operator[1]!.endsWith(communicationPolicyLine)).toBe(true);
-  for (const instruction of [promotionInstruction, mcpProposalInstruction, taskSuggestionInstruction]) {
+  for (const instruction of [promotionInstruction, mcpProposalInstruction, taskSuggestionInstruction, suggestionsInstruction]) {
     expect(operator.filter(line => line.includes(instruction))).toEqual([operator[2]!]);
   }
   expect(operator.some(line => /\(\+\d+ more\)/.test(line))).toBe(true);

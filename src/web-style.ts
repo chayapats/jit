@@ -401,6 +401,10 @@ kbd { font: 500 var(--size-xs)/1.6 var(--font-sans); color: var(--fg-2); border:
 .reply-actions button { min-height: 32px; padding: 4px 14px; border: 1px solid var(--line-strong); border-radius: var(--radius-pill); background: transparent; color: var(--fg); font: inherit; cursor: pointer; }
 @media (hover: hover) and (pointer: fine) { .reply-actions button:hover { background: var(--surface-3); } }
 .reply-actions a { color: var(--muted); }
+/* S12-D08 reply chips: quiet outlined pills under Jit's newest answer, like .choice; long Thai text wraps, never scrolls sideways. */
+.reply-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 12px; }
+.reply-chips form { margin: 0; max-width: 100%; }
+.chip { background: transparent; padding: 6px 14px; font-weight: 400; white-space: normal; text-align: start; overflow-wrap: anywhere; max-width: 100%; }
 /* Proposal card (BOT03 role; shared by later proposal kinds): a team card under the Jit reply that carries it. */
 .proposal-card { margin: -8px 0 22px; max-width: min(100%, 68ch); }
 .proposal-card > header .eyebrow { margin-bottom: 2px; font-size: var(--size-xs); }

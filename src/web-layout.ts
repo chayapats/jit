@@ -11,7 +11,7 @@ import { colorTokens } from "./web-design";
 import { effectiveAccess, type AccessLevel, type ProjectAccess } from "./exec/access";
 import type { ConnectionView } from "./exec/connections";
 import type { McpProposalView } from "./exec/mcp";
-import type { JitReplyView } from "./team/jit-reply";
+import { suggestionLimit, type JitReplyView } from "./team/jit-reply";
 import { routesOf } from "./team/role-proposals";
 import { fillText, mcpInstallProposalCard, promotionProposalCard, proposalCard, roleProposalCard, approvalCard } from "./web-proposal-card";
 import type { ApprovalCard } from "./exec/approval-cards";
@@ -421,6 +421,39 @@ export function taskSuggestionCard(view: JitReplyView, projectId: string, topic:
 }
 
 /**
+ * S12-D08 rules (a), (d), (e) and (f) for reply chips: an answered reply with suggestions that carries no waiting role
+ * or promotion proposal, task suggestion, MCP or dispatch card, in a topic that is not a promoted origin and has no
+ * pending approval card. Where the reply sits (newest answer, nothing live) is the page's part, rules (b) and (c).
+ */
+export function chipsAllowed(view: JitReplyView, context: { dispatchCard: boolean; mcpCard: boolean; promoted: boolean; approvalPending: boolean }): boolean {
+  return view.state === "answered" && view.suggestions.length > 0 && !view.taskSuggestion &&
+    !view.roleProposals.some(item => item.state === "proposed") && !view.promotionProposals.some(item => item.state === "proposed") &&
+    !context.dispatchCard && !context.mcpCard && !context.promoted && !context.approvalPending;
+}
+
+/** One chip: a plain form that posts exactly its escaped text through the owner's own `message.send` route. */
+const chipForm = (text: string, base: string, csrf: string, topicRevision: number, hidden = false) =>
+  `<form method="post" action="${base}/messages"${hidden ? " hidden" : ""}>${hiddenCommand(csrf, topicRevision)}<input type="hidden" name="text" value="${escape(text)}"><button class="chip">${escape(text)}</button></form>`;
+
+/**
+ * S12-D08 reply chips under Jit's newest answer. A tap posts exactly that text as the owner's next message, with the
+ * same CSRF token, a fresh request id and the topic revision the composer uses, so it is the owner typing it: it grants
+ * nothing, approves nothing and changes no configuration. Suggestion text is untrusted and escaped.
+ */
+export function replyChips(suggestions: readonly string[], base: string, csrf: string, topicRevision: number): string {
+  return `<div class="reply-chips" role="group" aria-label="${tr("reply.suggestions_label")}">${suggestions.map(text => chipForm(text, base, csrf, topicRevision)).join("")}</div>`;
+}
+
+/**
+ * Hidden chip slot after the newest live reply, for web.reply_stream/v2: the script fills it in place when that reply
+ * commits with chips the service allowed (the `suggestions` of its `reply` event) and nothing else is live. Each form
+ * already holds its own request id. Without script it stays hidden, and a reload renders {@link replyChips} instead.
+ */
+function replyChipSlot(replyId: string, base: string, csrf: string, topicRevision: number): string {
+  return `<div class="reply-chips" role="group" aria-label="${tr("reply.suggestions_label")}" data-reply-chips="${replyId}" hidden>${Array.from({ length: suggestionLimit }, () => chipForm("", base, csrf, topicRevision, true)).join("")}</div>`;
+}
+
+/**
  * Topic right panel toggle (web.settings_ia/v1). The panel is closed by default. Without script the link opens the
  * panel as its own page; the enhancement script loads that page's `.panel-body` into the empty aside instead.
  */
@@ -515,11 +548,22 @@ export function conversationPage(state: ReturnType<Application["conversation"]>,
   const approvals = [...(dispatch?.approvals ?? [])].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
     .map(card => approvalCard(card, { topicBase: base, csrf })).join("");
   const attach = dispatch?.attachments?.composer ?? null;
+  // S12-D08 reply chips: only under the newest answer on the last page, after the owner's newest message, while no
+  // reply is live (rules (b) and (c)); chipsAllowed covers the rest. Chips never sit beside a waiting approval.
+  const lastOwner = Math.max(0, ...state.items.filter(item => item.attribution.kind === "owner").map(item => item.sequence));
+  const newestAnswer = Math.max(0, ...[...committedReplies.values()].map(view => view.replySequence ?? 0));
+  const approvalPending = (dispatch?.approvals ?? []).some(card => card.topicId === topic.id && card.state === "pending");
+  const newest = (view: JitReplyView) => !state.hasMore && view.replySequence === newestAnswer && view.messageSequence >= lastOwner;
+  const chips = (view: JitReplyView | undefined) => view && !live.length && newest(view) && chipsAllowed(view, {
+    dispatchCard: cards.has(view.replyMessageId!), mcpCard: mcpByReply.has(view.id), promoted: !!promotedTo, approvalPending }) ? replyChips(view.suggestions, base, csrf, topic.revision) : "";
+  // A live reply to the owner's newest message gets a hidden slot the stream may fill when it answers.
+  const chipSlot = (view: JitReplyView) => (view.state === "thinking" || view.state === "blocked") && !view.team && !state.hasMore && !promotedTo && !approvalPending &&
+    view.messageSequence >= lastOwner ? replyChipSlot(view.id, base, csrf, topic.revision) : "";
   return shell(title, { workspace, csrf, project, topics, topic, section: "topic" }, `<div class="content chat-content"${live.length ? ` data-reply-stream="${base}/events" data-reply-cursor="${cursor}"` : ""}>${promotedBanner}${dispatchPanel}${decision}${proposeTask}${approvals}<section aria-label="${tr("topic.message_history")}">${state.items.length ? state.items.map(m => { const jit = committedReplies.get(m.id), reply = replies.get(m.id), card = cards.get(m.id);
       if (m.attribution.kind === "participant" && !jit && folded.has(m.attribution.runId)) return "";
       if (m.attribution.kind === "service" && m.attribution.service === "jit-promotion") return continuedBlock(m);
       return `<article id="message-${m.id}" class="message${m.attribution.kind === "owner" ? " message--owner" : jit || setupGreeting(m.attribution) ? " message--jit" : ""}" data-message-id="${m.id}">${jit || setupGreeting(m.attribution) ? `<div class="reply-head"><span class="jit-avatar">${logoMark({ size: 20 })}</span><span class="reply-name">${tr("jit.name")}</span></div>` : ""}<div class="message-body">${m.text === null ? `<p class="literal">${tr("common.source_unavailable")}</p>` : literalContent(m.text)}</div>${messageAttachmentList(base, dispatch?.attachments?.byMessage.get(m.id) ?? [])}
-      <div class="message-meta"><span>${escape(label(m))}</span><span class="committed">${icon("check")}${tr("common.saved")}</span><details><summary aria-label="${tr("topic.message_details_and_origin")}">${icon("info")}${tr("topic.details")}</summary><div class="message-detail">${time(m.committedAt)}<br>${sourceLink(project.id, m.source, tr("common.message_origin"))}${jit?.discardedTotal ? `<br>${tr("reply.discarded")}: ${jit.discardedTotal} · ${escape(jit.discarded.join(", "))}` : ""}</div></details></div>${jit?.team ? teamReplyMeta(jit, cardsById.get(jit.team.proposalId), project.id, csrf, dispatch?.synthesisLimits) : ""}</article>${proposals(jit)}${mcpCards(jit)}${card ? dispatchCard(card, base, csrf, topic.revision) : ""}${reply && (m.attribution.kind === "owner" || reply.team) ? reply.state !== "answered" ? replyStatus(reply, base, project.id, csrf) : !onPage.has(reply.replyMessageId!) ? answeredElsewhere(reply) : "" : ""}`; }).join("") : `<div class="empty-chat"><div>${icon("chat")}<h2>${tr("topic.start_this_conversation")}</h2><p>${tr("topic.keep_ideas_questions_and_things")}</p></div></div>`}</section>
+      <div class="message-meta"><span>${escape(label(m))}</span><span class="committed">${icon("check")}${tr("common.saved")}</span><details><summary aria-label="${tr("topic.message_details_and_origin")}">${icon("info")}${tr("topic.details")}</summary><div class="message-detail">${time(m.committedAt)}<br>${sourceLink(project.id, m.source, tr("common.message_origin"))}${jit?.discardedTotal ? `<br>${tr("reply.discarded")}: ${jit.discardedTotal} · ${escape(jit.discarded.join(", "))}` : ""}</div></details></div>${jit?.team ? teamReplyMeta(jit, cardsById.get(jit.team.proposalId), project.id, csrf, dispatch?.synthesisLimits) : ""}</article>${proposals(jit)}${mcpCards(jit)}${card ? dispatchCard(card, base, csrf, topic.revision) : ""}${chips(jit)}${reply && (m.attribution.kind === "owner" || reply.team) ? reply.state !== "answered" ? replyStatus(reply, base, project.id, csrf) + chipSlot(reply) : !onPage.has(reply.replyMessageId!) ? answeredElsewhere(reply) : "" : ""}`; }).join("") : `<div class="empty-chat"><div>${icon("chat")}<h2>${tr("topic.start_this_conversation")}</h2><p>${tr("topic.keep_ideas_questions_and_things")}</p></div></div>`}</section>
       <nav class="pagination" aria-label="${tr("topic.message_history_pages")}">${after > 0 ? `<a href="${base}">${tr("common.first_page")}</a>` : ""}${state.hasMore ? `<a href="${base}?after=${state.nextAfter}">${tr("topic.next_messages")}</a>` : ""}</nav></div>`, {
     breadcrumb: { title: project.name, href: `/projects/${project.id}` }, action: `<a class="header-action" href="/projects/${project.id}#new-topic" aria-label="${tr("common.new_topic")}">${icon("plus")}${tr("common.new_topic")}</a>${panelToggle(base)}${dispatch?.boxLive ? `<a class="header-action" href="/projects/${project.id}/box/live">${tr("live.open")}</a>` : ""}${access ? accessBadge(access) : ""}${haltForm}`,
     panel: topicPanelSlot(),

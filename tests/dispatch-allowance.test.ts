@@ -11,7 +11,7 @@ import { backupImageTables } from "../src/ops/backup";
 import { TransactionStore } from "../src/store";
 import { coordinatorSynthesisMarker, coordinatorSynthesisWork } from "../src/team/decisions";
 import { discussionPlanWork, readDiscussion, specialistAnalysisWork, specialistAttemptOutputTokens } from "../src/team/dispatch";
-import { jitReplyMarker, jitReplyWork, taskSuggestionInstruction, teamReplyMarker, type JitReplyView } from "../src/team/jit-reply";
+import { jitReplyMarker, jitReplyWork, suggestionsInstruction, taskSuggestionInstruction, teamReplyMarker, type JitReplyView } from "../src/team/jit-reply";
 import { ScriptedRunPort, fixtureOutcome } from "../src/team/scripted-port";
 import { communicationPolicyLine, teamCommunicationPolicy } from "../src/team/communication-policy";
 import { dispatchPurpose } from "../src/team/jit-dispatch";
@@ -1048,6 +1048,26 @@ test("COMM01: a team reply is never offered a task suggestion, and one it return
   expect(html).not.toContain("task-suggestion");
   expect(html).not.toContain("งานจากทีม");
   expect(count(f, "SELECT count(*) AS n FROM tasks")).toBe(0);
+});
+
+test("COMM04: team replies never carry chips, and a dispatching reply shows none beside its team card", async () => {
+  const chips = { kind: "suggestions", replies: ["ถามต่อ"] };
+  const f = await fixture({
+    jit: r => answer(r, JSON.stringify({ reply: "ขอถามทีมก่อนนะครับ", proposals: [{ kind: "dispatch", roles: ["เทคโนโลยี", "ออกแบบ"] }, chips] })),
+    team: r => answer(r, JSON.stringify({ reply: "สรุปจากทีม", proposals: [chips] })),
+  });
+  const sent = send(f, "ควรใช้ SQLite หรือ Postgres ดี");
+  await drain(f);
+  const reply = replyFor(f, sent.message.id), card = cardFor(f, reply.replyMessageId!);
+  expect(reply.suggestions).toEqual(["ถามต่อ"]);
+  expect(card.teamReply).toMatchObject({ state: "answered", suggestions: [], discarded: ["proposal:suggestions"] });
+  const jitRequest = f.port.requests.find(r => r.instructions.operator[0] === jitReplyMarker)!;
+  const teamRequest = f.port.requests.find(r => r.instructions.operator[0] === teamReplyMarker)!;
+  expect(jitRequest.instructions.operator.filter(line => line.includes(suggestionsInstruction))).toHaveLength(1);
+  expect(teamRequest.instructions.operator.some(line => line.includes(suggestionsInstruction) || line.includes('"kind":"suggestions"'))).toBe(false);
+  const html = await page(f);
+  expect(html).not.toContain('class="reply-chips"');
+  expect(html).not.toContain("ถามต่อ");
 });
 
 test("REL02: a v1 specialist record from before the change still renders on the team card and is never rewritten", async () => {

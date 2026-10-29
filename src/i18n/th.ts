@@ -1217,6 +1217,7 @@ export const th = {
   "reply.view_answer": "ดูคำตอบของจิต",
   "reply.task_suggestion_title": "จิตเสนอให้เก็บเป็นงาน",
   "reply.task_suggestion_note": "ยังไม่มีงานจนกว่าคุณกดบันทึก แก้ชื่อหรือสรุปก่อนได้",
+  "reply.suggestions_label": "ตอบต่อแบบเร็ว",
   "proposal.state.proposed": "รอคุณตัดสิน",
   "proposal.state.accepted": "สร้างแล้ว",
   "proposal.state.rejected": "ไม่เอา",

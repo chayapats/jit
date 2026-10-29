@@ -1215,6 +1215,7 @@ export const en: Record<MessageKey, string> = {
   "reply.view_answer": "See Jit’s answer",
   "reply.task_suggestion_title": "Jit suggests saving this as a task",
   "reply.task_suggestion_note": "Nothing is saved until you press Save. You can edit the title and summary first.",
+  "reply.suggestions_label": "Quick replies",
   "proposal.state.proposed": "Waiting on you",
   "proposal.state.accepted": "Created",
   "proposal.state.rejected": "Dismissed",

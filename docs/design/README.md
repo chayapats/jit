@@ -211,3 +211,11 @@ Jit's reply streams into the place where the committed message will land ([web.r
 The image shows a scripted fixture at 390 px. From left to right, in dark Thai: thinking, still working and reconnecting. Then, in light English: replying, committed, and live updates stopped.
 
 ![STR01 streaming states, mobile](assets/str01-stream-matrix.png)
+
+## S12 one voice: short replies, quiet team, reply chips
+
+COMM01, COMM02 and COMM04 (S12-D05, D06, D08) keep the conversation to one short, calm voice.
+
+- **Short replies.** Jit answers first, in a few short sentences, with no headings, preambles or "anything else?" sign-offs ([app.communication_policy/v2](../contracts/communication-policy-v2.md)). Long or multi-step work gets one line in chat, plus a task suggestion card under it: an open team card titled "จิตเสนอให้เก็บเป็นงาน" / "Jit suggests saving this as a task", holding the usual propose-as-task form already filled in, and the note that nothing is saved until the owner presses save.
+- **Quiet team.** When Jit calls specialists, its reply is one line saying whom it is asking. The team card stays collapsed to one summary line: "กำลังถาม เทคโนโลยี, ออกแบบ" while the team works, "ทีมตอบแล้ว: เทคโนโลยี, ออกแบบ" after the team answer, and "ถาม … แล้ว" when the team stopped without one. The status pill keeps the counts in words. The card opens by itself only when something waits on the owner (a route wait, a blocked result, a hold or a failed team answer). Notifications default to "Only what needs me" ([dispatch allowance](../contracts/dispatch-allowance-v1.md#quiet-team-work-s12-d06)).
+- **Reply chips.** Under Jit's newest answer, 1–3 suggested replies sit as quiet outlined pills (the `.choice` look: `--line-strong` border, pill radius, `--size-sm`). Long Thai text wraps inside the pill and never scrolls the page sideways. A tap sends exactly that text as the owner's message. Chips never appear beside a proposal, task, MCP, dispatch or approval card, or while any reply is live ([reply chips](../contracts/jit-reply-v1.md#s12-comm04-reply-chips)). With script, the chips appear in place when the streamed answer is saved.
