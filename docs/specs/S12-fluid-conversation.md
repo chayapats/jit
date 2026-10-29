@@ -2,7 +2,7 @@
 
 Tracker: https://github.com/chayapats/jit/issues/170
 
-Owner: Jit. สถานะ: **confirmed** owner ยืนยันทุกข้อ (D01–D13) เมื่อ 2026-10-29 และสั่งให้แตก ticket D01 ทำแล้วใน [#169](https://github.com/chayapats/jit/issues/169) ส่วน ticket ที่เหลืออยู่ใน issue [#170](https://github.com/chayapats/jit/issues/170) Parent: [MVP spec](00-mvp.md) ต่อยอดจาก [S09](S09-main-bot-and-chat-first-ui.md), [S10](S10-reliability-and-owner-integrations.md) และ [S11](S11-execution-access-and-tools.md)
+Owner: Jit. สถานะ: **done** owner ยืนยันทุกข้อ (D01–D13) เมื่อ 2026-10-29 ticket ทุกตัว merge แล้วในวันเดียวกัน (ดูตาราง Tickets) D01 ทำใน [#169](https://github.com/chayapats/jit/issues/169) parent คือ issue [#170](https://github.com/chayapats/jit/issues/170) Parent: [MVP spec](00-mvp.md) ต่อยอดจาก [S09](S09-main-bot-and-chat-first-ui.md), [S10](S10-reliability-and-owner-integrations.md) และ [S11](S11-execution-access-and-tools.md)
 
 แหล่งแนวคิด: [nightly-labs/openbot](https://github.com/nightly-labs/openbot) (PolyForm Noncommercial ใช้ได้เฉพาะแนวคิด ห้ามคัดลอกโค้ดหรือข้อความ) และ [CopilotKit/OpenDuet](https://github.com/CopilotKit/OpenDuet) (MIT) แต่ spec นี้ยืมแค่แนวคิดจากทั้งสองโครงการ
 
@@ -65,23 +65,36 @@ Owner ลองใช้ Jit บน Pi เมื่อ 2026-10-29 แล้ว�
 
 ## Tickets
 
-| Ticket | Tier | ผลลัพธ์ | Decision | Blocked by |
-| --- | --- | --- | --- | --- |
-| [#169](https://github.com/chayapats/jit/issues/169) | Frontier | Answer first (ทำแล้ว) | D01 | — |
-| [#173](https://github.com/chayapats/jit/issues/173) WEB01 | Frontier | จิตค้นและอ่านเว็บได้ทันที ผ่าน `web_search`/`web_fetch` แบบอ่านอย่างเดียว | D03, D04 | schway#433, schway#434 |
-| [#178](https://github.com/chayapats/jit/issues/178) WEB02 | Frontier | SearXNG ที่ Jit ดูแลเองเป็นค่าเริ่มต้น | D09 | #173 |
-| [#184](https://github.com/chayapats/jit/issues/184) WEB03 | Standard | ตั้งค่า › การค้นเว็บ: เลือก provider และใส่ key ครั้งเดียว | D09 | #173, #178 |
-| [#174](https://github.com/chayapats/jit/issues/174) STR01 | Frontier | Stream คำตอบทีละ token | D02 | — |
-| [#175](https://github.com/chayapats/jit/issues/175) SIGN01 | Frontier | Login Codex/Grok จาก Web | D10 | schway#435 |
-| [#176](https://github.com/chayapats/jit/issues/176) INST01 | Frontier | ติดตั้งคำสั่งเดียว จบด้วยลิงก์ตั้งค่า | D11 | — |
-| [#177](https://github.com/chayapats/jit/issues/177) LIFE02 | Frontier | ลบโครงการแบบ preview → confirm | D12 | — |
-| [#181](https://github.com/chayapats/jit/issues/181) LIFE01 | Standard | เปลี่ยนชื่อโครงการ | D12 | — |
-| [#182](https://github.com/chayapats/jit/issues/182) LIFE03 | Standard | ลบ (archive) role | D12 | — |
-| [#179](https://github.com/chayapats/jit/issues/179) COMM01 | Standard | เสียงแชตสั้น งานยาวกลายเป็นการ์ด | D05 | — |
-| [#180](https://github.com/chayapats/jit/issues/180) COMM02 | Standard | ทีมทำงานเงียบๆ การ์ดพับไว้ แจ้งเตือนเฉพาะเรื่องที่ต้องให้ owner ทำ | D06 | — |
-| [#183](https://github.com/chayapats/jit/issues/183) COMM03 | Standard | ข้อความระหว่างจิตกำลังตอบขึ้น "รอคิว" แล้วตอบตามลำดับ | D07 | — |
-| [#186](https://github.com/chayapats/jit/issues/186) CTX01 | Frontier | คำตอบที่รอคิวเห็นคำตอบก่อนหน้า (context assemble ตอนเริ่ม attempt) | D07 | #183 |
-| [#185](https://github.com/chayapats/jit/issues/185) COMM04 | Standard | Reply chips 2–3 ปุ่ม | D08 | — |
+| Ticket | Tier | ผลลัพธ์ | Decision | Blocked by | สถานะ |
+| --- | --- | --- | --- | --- | --- |
+| [#169](https://github.com/chayapats/jit/issues/169) | Frontier | Answer first (ทำแล้ว) | D01 | — | merged (#171) |
+| [#173](https://github.com/chayapats/jit/issues/173) WEB01 | Frontier | จิตค้นและอ่านเว็บได้ทันที ผ่าน `web_search`/`web_fetch` แบบอ่านอย่างเดียว | D03, D04 | schway#433, schway#434 | merged (#217) |
+| [#178](https://github.com/chayapats/jit/issues/178) WEB02 | Frontier | SearXNG ที่ Jit ดูแลเองเป็นค่าเริ่มต้น | D09 | #173 | merged (#218) |
+| [#184](https://github.com/chayapats/jit/issues/184) WEB03 | Standard | ตั้งค่า › การค้นเว็บ: เลือก provider และใส่ key ครั้งเดียว | D09 | #173, #178 | merged (#218) |
+| [#174](https://github.com/chayapats/jit/issues/174) STR01 | Frontier | Stream คำตอบทีละ token | D02 | — | merged (#203) |
+| [#175](https://github.com/chayapats/jit/issues/175) SIGN01 | Frontier | Login Codex/Grok จาก Web | D10 | schway#435 | merged (#214) |
+| [#176](https://github.com/chayapats/jit/issues/176) INST01 | Frontier | ติดตั้งคำสั่งเดียว จบด้วยลิงก์ตั้งค่า | D11 | — | merged (#202) |
+| [#177](https://github.com/chayapats/jit/issues/177) LIFE02 | Frontier | ลบโครงการแบบ preview → confirm | D12 | — | merged (#201) |
+| [#181](https://github.com/chayapats/jit/issues/181) LIFE01 | Standard | เปลี่ยนชื่อโครงการ | D12 | — | merged (#201) |
+| [#182](https://github.com/chayapats/jit/issues/182) LIFE03 | Standard | ลบ (archive) role | D12 | — | merged (#201) |
+| [#179](https://github.com/chayapats/jit/issues/179) COMM01 | Standard | เสียงแชตสั้น งานยาวกลายเป็นการ์ด | D05 | — | merged (#210) |
+| [#180](https://github.com/chayapats/jit/issues/180) COMM02 | Standard | ทีมทำงานเงียบๆ การ์ดพับไว้ แจ้งเตือนเฉพาะเรื่องที่ต้องให้ owner ทำ | D06 | — | merged (#210) |
+| [#183](https://github.com/chayapats/jit/issues/183) COMM03 | Standard | ข้อความระหว่างจิตกำลังตอบขึ้น "รอคิว" แล้วตอบตามลำดับ | D07 | — | merged (#215) |
+| [#186](https://github.com/chayapats/jit/issues/186) CTX01 | Frontier | คำตอบที่รอคิวเห็นคำตอบก่อนหน้า (context assemble ตอนเริ่ม attempt) | D07 | #183 | merged (#215) |
+| [#185](https://github.com/chayapats/jit/issues/185) COMM04 | Standard | Reply chips 2–3 ปุ่ม | D08 | — | merged (#210) |
+
+
+**ปิดครบแล้ว 2026-10-29:** ticket ทุกตัวในตารางนี้ merge แล้ว ส่วน Schway prerequisite (schway#431–#436) merge แล้ว และ pin เข้า Jit ผ่าน #212 กับ #220
+
+**Follow-ups ที่เกิดระหว่างทำ (ไม่ขวางการปิด S12):**
+
+| Ticket | ผลลัพธ์ | สถานะ |
+| --- | --- | --- |
+| [#206](https://github.com/chayapats/jit/issues/206) OPS08 | Service CLI ที่รันเป็น root รันได้เฉพาะ release snapshot ที่ root เป็นเจ้าของ (จาก security review ของ INST01) | merged (#208) |
+| [#211](https://github.com/chayapats/jit/issues/211) OPS08-F | `service upgrade` ตรวจปลายทางก่อนขอ password | merged (#218) |
+| [#216](https://github.com/chayapats/jit/issues/216) COMM03-F | คำตอบที่รอคิวอัปเดตสถานะทันทีเมื่อคำตอบก่อนหน้าหยุดหรือ commit | กำลังทำ (รวมกับ ATT04 #193) |
+| [#221](https://github.com/chayapats/jit/issues/221) UX04b | Route picker แสดงรายชื่อ model จริงของบัญชีที่ sign-in แล้ว (#167 phase 2, ใช้ `schway.host.model-catalog/v1`) | ready-for-agent |
+| [#222](https://github.com/chayapats/jit/issues/222) EVID01 | หลักฐาน live แบบ opt-in บนเครื่องอ้างอิง (install, sign-in, SearXNG, sanitizer, browser, voice, image probe) | ready-for-human |
 
 ## Out of scope
 
