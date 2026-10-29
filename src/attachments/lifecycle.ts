@@ -39,6 +39,7 @@ export function retireAttachments(tx: AppTransaction, projectId: string, ids: re
     const row = tx.get<{ state: string }>("SELECT state FROM attachments WHERE project_id = ? AND id = ?", projectId, id);
     if (!row || row.state === "deleted") continue;
     retiredIds.push(id);
+    tx.run("UPDATE attachment_box_copies SET state = 'removing', updated_at = ? WHERE project_id = ? AND attachment_id = ? AND state = 'present'", now, projectId, id);
     tx.run(`UPDATE attachments SET state = 'deleted', revision = revision + 1, reason = ?, display_name = NULL, sha256 = NULL,
       clean_sha256 = NULL, model_sha256 = NULL, text_sha256 = NULL, updated_at = ?, deleted_at = ? WHERE id = ?`, reason, now, now, id);
     tx.run("UPDATE sources SET availability = 'unavailable' WHERE id = ? AND project_id = ?", id, projectId);

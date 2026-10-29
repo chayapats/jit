@@ -1,4 +1,4 @@
-import { attachmentOutboundEntries } from "../attachments/run-content";
+import { attachmentOutboundCorpus } from "../attachments/run-content";
 import { runAttachmentCurrent } from "../attachments/run-references";
 import { writeAttachmentEvent } from "../attachments/records";
 import { createCard, type ApprovalCard, type EffectAction, type OutboundReleaseAction } from "../exec/approval-cards";
@@ -7,7 +7,7 @@ import { contextCurrent } from "../memory/context";
 import { lookupSource } from "../sources";
 import type { AppTransaction, TransactionStore } from "../store";
 import type { ApplicationRunRequest } from "../team/types";
-import { buildOutboundCorpus, findVerbatimSpan, type OutboundMatch } from "./outbound-guard";
+import { buildOutboundCorpus, findVerbatimSpan, type OutboundMatch, type PrivateContextEntry } from "./outbound-guard";
 import { serviceToolCurrent } from "./service-tools";
 
 /** Exact string values only, recursively including nested MCP arrays/objects; keys never substitute for outbound values. */
@@ -16,11 +16,26 @@ export function outboundValues(value: unknown): string[] {
   if (Array.isArray(value)) return value.flatMap(outboundValues);
   return value && typeof value === "object" ? Object.values(value).flatMap(outboundValues) : [];
 }
-/** Full attachment and private-context corpus shared by every guarded channel of one run. */
+/** Shared live-copy guards, with attachment-only attribution for content-free web auditing. Refresh errors hold even short input. */
+export function runOutboundGuards(store: TransactionStore, request: ApplicationRunRequest, extra: readonly PrivateContextEntry[] = []) {
+  const corpus = buildOutboundCorpus([...request.manifest.sources, ...request.manifest.claims,
+    ...(request.manifest.context?.constraints ?? []), ...(request.manifest.context?.packet?.pinned ?? []).map(item => ({ text: `${item.conclusion}\n${item.rationale}` })), { text: request.purpose }, ...extra]);
+  const refresh = attachmentOutboundCorpus(store, request);
+  // Protect text already visible at tool opening, too. A failed initial refresh is retried and held at call time.
+  try { refresh(); } catch { /* The check below routes failures to the existing owner-only card path. */ }
+  const check = (value: unknown, attachmentsOnly: boolean): OutboundMatch | null => {
+    let attachments;
+    try { attachments = refresh(); }
+    catch { return { span: "[attachment corpus unavailable]", chars: 24, reason: "corpus_refresh_failed" }; }
+    const entries = { entries: [...attachments.entries, ...(attachmentsOnly ? corpus.entries.filter(entry => entry.attachmentId) : corpus.entries)] };
+    for (const text of outboundValues(value)) { const match = findVerbatimSpan(entries, text); if (match) return match; }
+    return null;
+  };
+  return { guard: (value: unknown) => check(value, false), attachmentGuard: (value: unknown) => check(value, true) };
+}
+/** Full private-context guard; every invocation refreshes shared-box copies before matching or allowing a call. */
 export function runOutboundGuard(store: TransactionStore, request: ApplicationRunRequest): (value: unknown) => OutboundMatch | null {
-  const corpus = buildOutboundCorpus([...attachmentOutboundEntries(store, request), ...request.manifest.sources, ...request.manifest.claims,
-    ...(request.manifest.context?.constraints ?? []), ...(request.manifest.context?.packet?.pinned ?? []).map(item => ({ text: `${item.conclusion}\n${item.rationale}` })), { text: request.purpose }]);
-  return value => { for (const text of outboundValues(value)) { const match = findVerbatimSpan(corpus, text); if (match) return match; } return null; };
+  return runOutboundGuards(store, request).guard;
 }
 /** Adds a digest-bound disclosure marker to a card the call already requires; it never grants authority. */
 export function markOutboundAction<T extends EffectAction>(action: T, match: OutboundMatch | null): T {

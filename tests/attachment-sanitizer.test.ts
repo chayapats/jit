@@ -38,7 +38,7 @@ async function localParser(job: SanitizeJob) {
 async function fixture(runtime: AttachmentSanitizerRuntime | null = null) {
   const dir = mkdtempSync(join(tmpdir(), "jit-sanitize-")); dirs.push(dir);
   const path = join(dir, "jit.sqlite"), store = new TransactionStore(path); stores.push(store);
-  const config = readConfig({ JIT_DATABASE: path }, host); config.attachments = { ...config.attachments, enabled: true, diskReserveBytes: 1000 };
+  const config = readConfig({ JIT_DATABASE: path }, host); config.attachments = { ...config.attachments, diskReserveBytes: 1000 };
   let now = 1_800_000_000_000;
   const app = new Application(store, config, { now: () => now++, attachmentSanitizer: runtime, attachments: { diskFree: () => 1e10 } });
   await app.setupOwner("fixture-sanitizer-owner-password"); const actor = app.authenticate(await app.login("fixture-sanitizer-owner-password")).actor;

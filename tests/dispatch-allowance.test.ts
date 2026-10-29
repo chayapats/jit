@@ -111,6 +111,10 @@ function get(f: Fixture, path: string, headers: Record<string, string> = {}) {
   return f.web(new Request(`${origin}${path}`, { headers: { cookie: `jit_session=${f.token}`, ...headers } }));
 }
 function postForm(f: Fixture, path: string, fields: Record<string, string>) {
+  if (path.endsWith("/attachments?send=1")) {
+    const body = new FormData(); for (const [name, value] of Object.entries(fields)) body.append(name, value);
+    return f.web(new Request(`${origin}${path}`, { method: "POST", body, headers: { origin, cookie: `jit_session=${f.token}` } }));
+  }
   return f.web(new Request(`${origin}${path}`, { method: "POST", body: new URLSearchParams(fields).toString(),
     headers: { "content-type": "application/x-www-form-urlencoded", origin, cookie: `jit_session=${f.token}` } }));
 }
@@ -134,7 +138,7 @@ const page = async (f: Fixture, query = "") => (await get(f, `/projects/${f.proj
 function expectNoInlineScript(html: string) {
   for (const [tag, body] of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)) {
     expect(body).toBe("");
-    expect(tag).toBe(`<script type="module" src="${assetUrl("app.js")}"></script>`);
+    expect([`<script type="module" src="${assetUrl("app.js")}"></script>`, `<script type="module" src="${assetUrl("attachments.js")}"></script>`]).toContain(tag);
   }
   expect(html).not.toMatch(/\son[a-z]+\s*=/i);
 }
@@ -651,7 +655,7 @@ test("specialist results do not make an open composer stale; a long message with
   const sent = send(f, text);
   f.queue.pump(); await ticks();
   const html = await page(f);
-  const composer = form(html, `/projects/${f.project.id}/topics/${f.topic.id}/messages`);
+  const composer = form(html, `/projects/${f.project.id}/topics/${f.topic.id}/attachments?send=1`);
   f.queue.pump(); await ticks();
   gate.resolve(answer(f.port.requests.find(r => r.roleId === f.designId)!, "ความเห็น UX"));
   await drain(f);

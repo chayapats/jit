@@ -165,7 +165,8 @@ export function serviceAppConfig(config: AppConfig, service: ServiceConfig | nul
   if (!service) return config;
   const parsed = parseServiceConfig(service);
   return { ...config, searxngEnabled: config.searxngEnabled && parsed.searxngEnabled !== false, databasePath: serviceDatabasePath(parsed), hostname: parsed.network.bindHost, port: parsed.network.port,
-    attachments: attachmentLimitsForDirectories(config.attachments, parsed.stateDirectory, parsed.backupDirectory),
+    attachments: { ...attachmentLimitsForDirectories(config.attachments, parsed.stateDirectory, parsed.backupDirectory),
+      enabled: parsed.attachmentsEnabled ?? config.attachments.enabled },
     origin: serviceOrigin(parsed), runPort: parsed.runPort ?? config.runPort, routeModels: serviceRouteModels(parsed),
     telegram: { ...config.telegram, botTokenPath: telegramTokenPath(parsed) ?? config.telegram.botTokenPath } };
 }

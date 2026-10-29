@@ -12,6 +12,11 @@ export interface BoxBackendOptions {
   callMs?: number;
 }
 
+/** Jit's runner backend also accepts binary derivatives; Schway's text-only public backend remains compatible. */
+export interface BoxBackend extends ExecutionBackend {
+  writeFileAtomically(path: string, content: string | Uint8Array, options?: Parameters<ExecutionBackend["writeFileAtomically"]>[2]): Promise<void>;
+}
+
 /** Bytes per `read` request; the runner's fixed chunk limit. */
 export const boxReadChunkBytes = 1_048_576;
 const spawnGraceMs = 30_000;
@@ -30,7 +35,7 @@ function abortError(): Error {
   return error;
 }
 const decode = (base64: string) => Uint8Array.from(Buffer.from(base64, "base64"));
-const encode = (text: string) => Buffer.from(text, "utf8").toString("base64");
+const encode = (content: string | Uint8Array) => (typeof content === "string" ? Buffer.from(content, "utf8") : Buffer.from(content)).toString("base64");
 const knownCodes = new Set(["ENOENT", "EACCES", "EPERM", "EISDIR", "ENOTDIR", "ECHANGED", "EINVAL", "EFBIG", "E2BIG", "EIO", "EPROTO", "ETIMEDOUT"]);
 /** Runner limits a result can hit; an incomplete listing is an error, never a result that looks complete. */
 const maxEntries = 10_000, maxFiles = 50_000;
@@ -96,7 +101,7 @@ export function globBase(pattern: string): string {
  * - Runner failures reject with a Node-style `code` (`ENOENT`, `EACCES`, `EISDIR`, `ENOTDIR`, `ECHANGED`, …); a
  *   runner or transport failure is `EIO`.
  */
-export function createBoxBackend(runtime: Pick<BoxRuntime, "exec">, handle: BoxHandle, options: BoxBackendOptions = {}): ExecutionBackend {
+export function createBoxBackend(runtime: Pick<BoxRuntime, "exec">, handle: BoxHandle, options: BoxBackendOptions = {}): BoxBackend {
   const redact = options.redact ?? (text => text);
   const callMs = options.callMs ?? 90_000;
   const observations = new WeakMap<ExecutionFileObservation, string>();

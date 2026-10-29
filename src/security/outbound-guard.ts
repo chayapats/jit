@@ -16,7 +16,7 @@ export function normalizeOutbound(text: string): string {
 }
 
 /** A directly confirmed match, or a potential outgoing span held conservatively when verification runs out. */
-export interface OutboundMatch { span: string; attachmentId?: string; chars: number; reason?: "verification_budget_exhausted" }
+export interface OutboundMatch { span: string; attachmentId?: string; chars: number; reason?: "verification_budget_exhausted" | "corpus_refresh_failed" }
 /** Maximum candidate code-point comparisons per outgoing value, shared by both normalization interpretations. */
 export const outboundVerificationBudget = 64 * 1024;
 /** Run-local corpus; sampled 12-code-point windows bound index space to roughly 1/13 of source length. */

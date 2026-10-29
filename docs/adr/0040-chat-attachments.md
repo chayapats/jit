@@ -35,8 +35,8 @@ Each choice is labelled. **Confirmed** means an owner decision in S13. **Propose
 
 ### Feature gate
 
-- `JIT_ATTACHMENTS` is off by default. It can be turned on only after #193 (ATT04, Jit reads attachments) and #195 (ATT06, lifecycle) have merged (Confirmed, S13 Tickets). This way no release can store files that it cannot delete.
-- **Proposed:** a code constant `attachmentsReleasable` enforces the gate. While it is false, config load refuses `JIT_ATTACHMENTS=1`. Tests inject configuration, so ATT01–ATT05 can be built with the gate on. The later of ATT04 and ATT06 to merge sets the constant to true.
+- **Confirmed owner decision — 2026-10-29 (S13-D-gate):** attachments are **on by default** once ATT04/ATT06 have merged. This supersedes the earlier S13 D-gate/Feature gate default-off decision. With no setting, uploads are enabled. `JIT_ATTACHMENTS=0` disables ingestion. An explicit service-config `attachmentsEnabled` value wins over the environment (`false` disables, `true` enables); omission preserves the environment choice or the default.
+- **Implemented — 2026-10-29 (ATT05):** ATT04 #193 (`31bb200`) and ATT06 #195 (`0423008`) have merged, satisfying the release interlock (`attachmentsReleasable = true`). The later owner default-on decision replaces the initial opt-in release-gate implementation. Hosts without the container sanitizer retain text and PNG/JPEG only, no preview, and PDF/WebP refusal with a reason. Existing-file reads and lifecycle remain available with ingestion off. ATT07 capability/probe gates are unchanged.
 - **Proposed:** the gate controls ingestion only. While it is off:
   - the upload routes answer 404;
   - `message.send` refuses `attachmentIds`;
@@ -152,6 +152,7 @@ Each choice is labelled. **Confirmed** means an owner decision in S13. **Propose
   - Both sides are normalized: NFC, case folding, collapsed whitespace, no format characters, and URLs percent-decoded.
   - **ATT04 fix-round engineering decision:** cap candidate verification at 65,536 code-point comparisons per outgoing value, shared across normal and form-value interpretations. Exhaustion returns a conservative hold with `reason: verification_budget_exhausted` and a potential outgoing span, rather than claiming a confirmed source match or allowing the call. Every guarded channel uses the same owner-only release or existing marked-card path. Directly confirmed matches still require at least 24 normalized code points.
   - The corpus is the full text of every attachment the run carries. A granted run's corpus also includes every attachment with a copy in the box, because a later run can `cat` an old copy.
+  - **ATT05 fix-round engineering decision — 2026-10-29:** every outbound check re-reads current project copy identities and text revisions from SQLite, including `removing` write intents as well as `present` copies. This protects run A when concurrent run B adds a copy after A's tools opened. Verified text/indexes are cached by attachment id, text hash and size, and observed revisions remain in A's corpus until A ends. No new schema revision is needed. Any query, file verification or index refresh failure returns a conservative `corpus_refresh_failed` hold through the same Web-only approval/marked-card path, including outgoing values shorter than 24 characters; stale cache is never an allow fallback. Web search/fetch (including redirects and released-read redirects), MCP, browser, computer and effect markers share this implementation.
   - "Ask once" means the first refused call of a run creates one `outbound_release` approval card, and later matches in that run are refused without a new card. If the call would already create a card (a non-read-only MCP tool, a browser or computer confirm action, an effect tool), that card is marked as containing file text instead.
   - The card is Web-only, never auto-approved and single-use. Approving it makes the effect executor perform exactly that one call and post the result to the topic as untrusted data (ADR 0037 cards do not block a run).
 - **Outbound channels.** "Guarded" means the guard checks the channel. "Owner-gated" means an approval card shows the exact content first. "Residual" means a risk this design does not close, stated plainly:
@@ -181,7 +182,10 @@ Each choice is labelled. **Confirmed** means an owner decision in S13. **Propose
   - Copies are tracked in `attachment_box_copies`.
   - The runner has no delete operation. Removal therefore runs `rm` through the runner when the box is running. When the box is stopped, Jit removes the copy host-side while the box manager holds the project, after checking that no path component is a symlink.
   - Every box open also removes copies that no live attachment owns.
+  - **ATT05 fix-round engineering decision — 2026-10-29:** keep/removal lists travel through the runner `write` op into a randomly named temporary file in the workspace, never inside `bash -c` argv. The isolated prune script verifies the service-supplied SHA-256 before acting, rejects symlinks/non-regular files and unlinks the list via the pinned workspace descriptor. The file contains only box-visible copy names/identities. The command size stays fixed when project copy counts grow; transport or digest failures leave cleanup pending.
   - A copy a process made elsewhere in the workspace is not tracked (residual).
+
+**ATT05 implementation note — 2026-10-29:** schema 45 tracks copy identities and lifecycle state, with no paths, hashes or bytes of content in SQLite. The runner adapter accepts binary derivatives through its existing base64 `write` operation; Schway's text-only backend contract and `expectedBoxMounts` stay unchanged. A `removing` intent precedes each new write, and a bounded runner read-back verifies SHA-256 before `present`; existing matching copies are reused. Every box open prunes unowned entries, including crash/restore orphans. Box-manager project holds serialize this work and block opens/resets during stopped host cleanup. Running removal pins no-symlink directories inside the box and invokes `/bin/rm` through `spawn`, then verifies absence. ATT06 uses that same verified cleanup for delete, forget and project deletion. Workspace/Full notices render in Settings, the widening confirmation and the composer in Thai and English, including when ingestion is off. These controls leave the outbound-channel residuals above unchanged: registry tunnels at Workspace, unrestricted network at Full, forced `git add` and copies made elsewhere by box processes.
 
 ### Images to models (D10)
 
@@ -240,8 +244,7 @@ Each choice is labelled. **Confirmed** means an owner decision in S13. **Propose
 
 ## Open questions
 
-1. **Default of `JIT_ATTACHMENTS` once releasable.** S13 says off by default and allowed on after ATT04 and ATT06. "Just works" argues for on.
-   - Recommendation: the PR that sets `attachmentsReleasable` keeps the default off. The owner flips the default in a one-line follow-up after one live check on a reference host.
+1. **Default of `JIT_ATTACHMENTS` once releasable — resolved by owner decision 2026-10-29.** Default on; explicit environment/service opt-out remains available. This supersedes the earlier default-off decision (see Feature gate).
 2. **Upgrade recovery points versus the attachment bound** (see Consequences). This ADR keeps them fail-closed.
    - The alternative is an explicitly recorded exclusion for upgrade recovery points only, which is not silent. Restoring such a point would then need the live blobs to still exist.
    - Recommendation: keep fail-closed, and revisit with measured attachment volumes from real installs.

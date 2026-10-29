@@ -139,7 +139,7 @@ test("guard normalizes Unicode, format characters, whitespace and percent-encode
 test("missing public capability fails closed with the preflight action", () => {
   expect(() => assertWebToolsCapability({})).toThrow("install-supported-schway-web-tools");
   assertWebToolsCapability();
-  expect(schemaVersion).toBe(44);
+  expect(schemaVersion).toBe(45);
 });
 
 test("a read-level reply searches and fetches through exact function tools with escaped evidence, audit, Details and live progress", async () => {

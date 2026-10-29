@@ -1,4 +1,4 @@
-import { uploadText, sendFiles } from "./fixtures/attachment-run";
+import { uploadText, sendFiles, copyFromConcurrentRun, corruptAttachmentText } from "./fixtures/attachment-run";
 import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -454,4 +454,21 @@ test("ATT04 one outbound_release is shared by browser and computer, and narrowin
   const held = w.f.app.approvalCards(w.f.auth.actor, w.f.project.id); expect(held).toHaveLength(1); expect(held[0]!.outboundBlocks).toBe(2);
   expect(result.results[1]!.content).toContain("outbound_blocked"); expect(w.desktop).toEqual([]);
   setLevel(w.f, "read"); rejects(() => decide(w.f, held[0]!, "approve"), "access_level_insufficient");
+});
+
+for (const tool of ["browser_open", "browser_type"] as const) for (const corrupt of [false, true]) test(`ATT05 run A ${tool} guards run B's later copy; refresh failure=${corrupt}`, async () => {
+  const w = await browserWorld(); setLevel(w.f, "workspace");
+  const marker = "PRIVATE_LATER_COPY_BROWSER_194_stay_inside";
+  let fileId = "", navigations = 0, runA = "";
+  w.cdp.before = method => { if (method === "Page.navigate") navigations++; };
+  await w.run([{ name: "browser_open", input: { url: cart.url } }, { name: "browser_snapshot", input: {} }, async () => {
+    const request = w.f.seen[0]!; runA = request.runId; expect(request.attachments ?? []).toEqual([]);
+    fileId = (await copyFromConcurrentRun(w.f, marker)).id;
+    if (corrupt) corruptAttachmentText(w.f, fileId);
+  }, { name: tool, input: tool === "browser_open" ? { url: `https://x.example/?q=${corrupt ? "ok" : marker}` } : { ref: "e4", text: corrupt ? "ok" : marker } }]);
+  expect(navigations).toBe(1); expect(w.cdp.actions).toHaveLength(0);
+  const cards = w.f.app.approvalCards(w.f.auth.actor, w.f.project.id);
+  expect(cards).toHaveLength(1);
+  expect(cards[0]).toMatchObject({ runId: runA, kind: "outbound_release", state: "pending", telegramEligible: false, action: { tool } });
+  expect(cards[0]!.action.outbound).toMatchObject(corrupt ? { reason: "corpus_refresh_failed" } : { attachmentId: fileId });
 });

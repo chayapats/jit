@@ -2,8 +2,8 @@ import { statfsSync } from "node:fs";
 import { totalmem } from "node:os";
 import { dirname } from "node:path";
 
-/** Release interlock: only the later of ATT04 and ATT06 may enable production ingestion. */
-export const attachmentsReleasable = false;
+/** S13 release interlock satisfied by merged ATT04/ATT06; default-on per owner decision 2026-10-29. */
+export const attachmentsReleasable = true;
 const parsedEnvironments = new WeakMap<AttachmentLimits, Record<string, string | undefined>>();
 const MiB = 1024 * 1024, GiB = 1024 * MiB;
 /** Detected host capacities, injectable so configuration tests never depend on the test machine. */
@@ -28,7 +28,7 @@ export function attachmentHost(dataDirectory: string, backupDirectory: string): 
 }
 /** Reads the closed env settings; env wins over host-scaled defaults and the release gate fails closed. */
 export function attachmentLimits(env: Record<string, string | undefined>, host: AttachmentHost): AttachmentLimits {
-  const gate = env.JIT_ATTACHMENTS ?? "0";
+  const gate = env.JIT_ATTACHMENTS ?? "1";
   if (!["0", "1"].includes(gate) || (gate === "1" && !attachmentsReleasable)) throw new Error("Invalid JIT_ATTACHMENTS");
   for (const n of Object.values(host)) if (!Number.isSafeInteger(n) || n <= 0) throw new Error("Invalid attachment host capacity");
   const int = (key: string, fallback: number, min: number, max: number) => {

@@ -123,6 +123,8 @@ export const th = {
   "error.attachment_quota_exceeded_files": "แนบไฟล์เกินจำนวนที่ส่งได้ในข้อความเดียว กรุณาเอาบางไฟล์ออกแล้วส่งใหม่",
   "error.invalid_attachment_command": "คำสั่งไฟล์แนบไม่ถูกต้อง กรุณาโหลดหัวข้อใหม่แล้วลองอีกครั้ง",
   "attachments.attach": "แนบไฟล์",
+  "attachments.box_notice_workspace": "Workspace: process ใน box อ่านสำเนาไฟล์แนบที่ล้างแล้วได้ registry proxy ที่อนุญาตไม่ตรวจเนื้อหา process จึงส่งเนื้อหาไฟล์ไปยัง registry เหล่านั้นได้ สำเนาที่ทำไว้ที่อื่นใน workspace ไม่ถูกติดตาม และการบังคับ git add อาจนำไฟล์เข้า commit",
+  "attachments.box_notice_full": "Full: process ใน box ใช้ network ได้เต็มและส่งสำเนาไฟล์แนบที่ล้างแล้วไปที่ใดก็ได้ สำเนาที่ทำไว้ที่อื่นใน workspace ไม่ถูกติดตาม และการบังคับ git add อาจนำไฟล์เข้า commit",
   "attachments.provider_notice": "ไฟล์จะถูกส่งให้ผู้ให้บริการ model",
   "attachments.limits": "แนบได้สูงสุด {count} ไฟล์ ไฟล์ละไม่เกิน {size}",
   "attachments.pdf_needs_sanitizer": "เครื่องนี้ยังไม่มี container sanitizer จึงปิดรับ PDF และ WebP ไว้ ให้ผู้ดูแล rebuild และ pin base image ก่อน",

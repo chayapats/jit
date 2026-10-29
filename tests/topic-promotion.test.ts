@@ -124,6 +124,10 @@ function get(f: Fixture, path: string) {
   return f.web(new Request(`${origin}${path}`, { headers: { cookie: `jit_session=${f.token}` } }));
 }
 function postForm(f: Fixture, path: string, fields: Record<string, string>) {
+  if (path.endsWith("/attachments?send=1")) {
+    const body = new FormData(); for (const [name, value] of Object.entries(fields)) body.append(name, value);
+    return f.web(new Request(`${origin}${path}`, { method: "POST", body, headers: { origin, cookie: `jit_session=${f.token}` } }));
+  }
   return f.web(new Request(`${origin}${path}`, { method: "POST", body: new URLSearchParams(fields).toString(),
     headers: { "content-type": "application/x-www-form-urlencoded", origin, cookie: `jit_session=${f.token}` } }));
 }
@@ -147,7 +151,7 @@ function form(html: string, action: string) {
 function expectNoInlineScript(html: string) {
   for (const [tag, body] of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)) {
     expect(body).toBe("");
-    expect(tag).toBe(`<script type="module" src="${assetUrl("app.js")}"></script>`);
+    expect([`<script type="module" src="${assetUrl("app.js")}"></script>`, `<script type="module" src="${assetUrl("attachments.js")}"></script>`]).toContain(tag);
   }
   expect(html).not.toMatch(/\son[a-z]+\s*=/i);
 }
@@ -228,7 +232,7 @@ test("accepting the current promotion revision creates one project and topic lin
   expect(f.app.job(f.auth.actor, g.projectId, started.reply.jobId!).evidence).toContain("proposals promotion:1");
   expect(projectIds(f)).toEqual([g.projectId]);
   const before = f.app.conversation(f.auth.actor, g.projectId, started.topic.id);
-  const messageForm = form(await (await get(f, topicPath(g.projectId, started.topic.id))).text(), `${topicPath(g.projectId, started.topic.id)}/messages`);
+  const messageForm = form(await (await get(f, topicPath(g.projectId, started.topic.id))).text(), `${topicPath(g.projectId, started.topic.id)}/attachments?send=1`);
 
   // Accept by plain form post, exactly as the card renders it.
   let html = await (await get(f, topicPath(g.projectId, started.topic.id))).text();
@@ -267,11 +271,12 @@ test("accepting the current promotion revision creates one project and topic lin
   expect(html).toContain(dictionaries.th["promotion.promoted_title"]);
   expect(html).toContain(dictionaries.th["promotion.read_only"]);
   expect(html).not.toContain(`action="${topicPath(g.projectId, started.topic.id)}/messages"`);
+  expect(html).not.toContain(`action="${topicPath(g.projectId, started.topic.id)}/attachments?send=1"`);
   expect(html).not.toContain('id="team-dispatch"');
   expect(html).toContain(`href="${topicPath(promoted.target.projectId, promoted.target.topicId)}"`);
   expect(card(f, view)).toMatchObject({ state: "accepted", promotion: { id: promoted.id, projectId: promoted.target.projectId, topicId: promoted.target.topicId } });
   rejects(() => f.app.execute(f.auth.actor, { kind: "message.send", projectId: g.projectId, requestId: rid(), expectedRevision: before.topic.revision, payload: { topicId: started.topic.id, text: "ต่ออีกนิด" } }), "topic_promoted");
-  const stale = await postForm(f, `${topicPath(g.projectId, started.topic.id)}/messages`, { ...messageForm, text: "จากฟอร์มเก่า" });
+  const stale = await postForm(f, `${topicPath(g.projectId, started.topic.id)}/attachments?send=1`, { ...messageForm, text: "จากฟอร์มเก่า" });
   expect(stale.status).toBe(409);
   const page = await stale.text();
   expect(page).toContain(dictionaries.th["error.topic_promoted"]);
@@ -515,7 +520,9 @@ test("home, card, read-only origin and continuation render in Thai and English w
     for (const html of pages) {
       expectNoInlineScript(html);
       expect(html).not.toMatch(/\b(?:home|promotion)\.[a-z_]+\b/);
-      expect(html).not.toMatch(/\{(?:project|revision|count)\}/);
+      // The hidden attachment dictionary intentionally keeps templates for client-side interpolation.
+      const rendered = html.replace(/<ul class="attach-text" data-attach-text hidden>[\s\S]*?<\/ul>/g, "");
+      expect(rendered).not.toMatch(/\{(?:project|revision|count)\}/);
     }
     for (const q of queues.splice(0)) { q.close(); await q.idle(); }
     for (const s of stores.splice(0)) s.close();

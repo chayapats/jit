@@ -26,7 +26,7 @@ function sniff(bytes: Uint8Array, name: string, step = 1) { const s = new Attach
 function reason(fn: () => unknown, value: string) { try { fn(); throw new Error("expected rejection"); } catch (e) { expect(e).toBeInstanceOf(AppError); expect((e as AppError).detail?.reason).toBe(value); } }
 async function fixture(options: ApplicationOptions = {}) {
   const path = join(dir(), "jit.sqlite"), config = readConfig({ JIT_DATABASE: path }, host);
-  config.attachments = { ...config.attachments, enabled: true, fileBytes: 1000, projectBytes: 2000, diskReserveBytes: 1000 };
+  config.attachments = { ...config.attachments, fileBytes: 1000, projectBytes: 2000, diskReserveBytes: 1000 };
   const store = new TransactionStore(path); stores.push(store); let now = 1_800_000_000_000;
   const app = new Application(store, config, { now: () => now, ...options, attachments: { diskFree: () => 100_000, ...options.attachments } });
   await app.setupOwner("fixture-attachment-owner-password");
@@ -50,9 +50,13 @@ function stream(chunks: Uint8Array[]) {
 }
 
 test("release interlock and exact host-scaled env bounds are deterministic", () => {
-  expect(attachmentsReleasable).toBe(false);
-  for (const gate of ["1", "true", "", "2"]) expect(() => attachmentLimits({ JIT_ATTACHMENTS: gate }, host)).toThrow("Invalid JIT_ATTACHMENTS");
-  const normal = attachmentLimits({}, host); expect(normal).toMatchObject({ enabled: false, fileBytes: 10 * 1024 ** 2, messageFiles: 5,
+  expect(attachmentsReleasable).toBe(true);
+  expect(attachmentLimits({ JIT_ATTACHMENTS: "1" }, host).enabled).toBe(true);
+  expect(attachmentLimits({ JIT_ATTACHMENTS: "0" }, host).enabled).toBe(false);
+  expect(readConfig({}, host).attachments.enabled).toBe(true);
+  expect(readConfig({ JIT_ATTACHMENTS: "1" }, host).attachments.enabled).toBe(true);
+  for (const gate of ["true", "", "2"]) expect(() => attachmentLimits({ JIT_ATTACHMENTS: gate }, host)).toThrow("Invalid JIT_ATTACHMENTS");
+  const normal = attachmentLimits({}, host); expect(normal).toMatchObject({ enabled: true, fileBytes: 10 * 1024 ** 2, messageFiles: 5,
     projectBytes: 500 * 1024 ** 2, diskReserveBytes: 2 * 1024 ** 3, stagedHours: 24, sanitizerMemoryMB: 512, backupBytes: 2 * 1024 ** 3, imagePixels: 40_000_000 });
   const small = attachmentLimits({}, { memoryBytes: 2 * 1024 ** 3, dataFilesystemBytes: 512 * 1024 ** 2, backupFilesystemBytes: 1024 ** 3 });
   expect(small).toMatchObject({ projectBytes: 50 * 1024 ** 2, sanitizerMemoryMB: 256, imagePixels: 20_000_000, backupBytes: 256 * 1024 ** 2 });
@@ -225,7 +229,7 @@ test("source migration preserves references and bound attachments use an availab
     INSERT INTO sources SELECT id, project_id, kind, current_revision, generation, availability FROM old; DROP TABLE old;`);
   const path = join(dir(), "legacy.sqlite"); const bytes = legacy.serialize(); legacy.close(); bytes[18] = 1; bytes[19] = 1; writeFileSync(path, bytes);
   const migrated = new TransactionStore(path); stores.push(migrated);
-  expect(migrated.read(tx => tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version)).toBe(44); expect(schemaVersion).toBe(44);
+  expect(migrated.read(tx => tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version)).toBe(schemaVersion);
   const newSourceId = crypto.randomUUID();
   migrated.transaction(tx => tx.run("INSERT INTO sources VALUES (?, ?, 'attachment', 1, 1, 'available')", newSourceId, f.p.id));
   expect(migrated.read(tx => tx.get("SELECT kind FROM sources WHERE id = ?", newSourceId))).toEqual({ kind: "attachment" });

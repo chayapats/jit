@@ -128,3 +128,8 @@ function attachmentChip(base: string, view: AttachmentView): string {
 export function attachmentBackupNotice(usage?: { bytes: number; bound: number; notice: boolean }): string {
   return usage?.notice ? `<span class="attach-note"> · ${escape(fillText(tr("attachments.backup_bound_notice"), { bytes: formatBytes(usage.bytes), bound: formatBytes(usage.bound) }))}</span>` : "";
 }
+
+/** Residual disclosure at Workspace/Full, including when ingestion is disabled but existing copies remain. */
+export function attachmentBoxNotice(level: "read" | "workspace" | "full" | undefined): string {
+  return level === "workspace" || level === "full" ? `<span class="attach-note"> · ${tr(`attachments.box_notice_${level}`)}</span>` : "";
+}

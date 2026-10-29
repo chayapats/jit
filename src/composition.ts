@@ -68,7 +68,8 @@ export function composeJobQueue(store: TransactionStore, config: AppConfig, opti
   if (config.runPort === "schway") assertSchwayGate(store.path);
   // exec.run_tools/v1: only the team port (Jit replies, specialists) may execute, and only when boxes can be opened.
   const boxes = options.boxes;
-  const execution: RunExecution | undefined = boxes?.open ? { boxes: { open: (projectId, roleId) => boxes.open!(projectId, roleId) }, ...(options.now ? { now: options.now } : {}), ...(options.effects ? { effects: options.effects } : {}),
+  const execution: RunExecution | undefined = boxes?.open ? { boxes: { open: (projectId, roleId) => boxes.open!(projectId, roleId),
+    ...(boxes.prepareAttachments ? { prepareAttachments: (session, request, current) => boxes.prepareAttachments!(session, request, current) } : {}) }, ...(options.now ? { now: options.now } : {}), ...(options.effects ? { effects: options.effects } : {}),
     ...(options.mcp ? { mcp: options.mcp } : {}), ...(options.browser ? { browser: options.browser } : {}),
     ...(options.computer ? { computer: options.computer } : {}) } : undefined;
   const teamPort: ApplicationRunPort = config.runPort === "schway"

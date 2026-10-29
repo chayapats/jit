@@ -1,4 +1,5 @@
 import type { ReadinessView } from "./exec/readiness-cache";
+import { attachmentBoxNotice } from "./web-attachments";
 import type { WebProviderSelection } from "./web-tools/providers";
 import type { SearxngStatus } from "./web-tools/searxng";
 import type { PodmanReadiness } from "./exec/podman-client";
@@ -186,7 +187,7 @@ export function settingsAccessPage(workspace: NavigationWorkspace, list: { proje
     const confirmEvery = settings ? `<form class="team-form access-form" method="post" action="/settings/access/${p.id}/computer">${hiddenCommand(csrf, settings.revision)}
       <label><input type="checkbox" name="confirmEveryAction"${settings.confirmEveryAction ? " checked" : ""}> ${tr("access.computer_confirm_every")}</label>
       <p class="team-role-note">${tr("access.computer_note")}</p><button>${tr("settings.save")}</button></form>` : "";
-    return `<li class="access-row" id="access-${p.id}"><h3>${escape(p.name)}</h3><p>${accessBadge(a)}</p>
+    return `<li class="access-row" id="access-${p.id}"><h3>${escape(p.name)}</h3><p>${accessBadge(a)}${attachmentBoxNotice(a.level)}</p>
       ${narrow}${widen ? `<nav class="settings-links" aria-label="${escape(p.name)}">${widen}</nav>` : ""}
       ${roleRows ? `<ul class="access-roles">${roleRows}</ul>` : ""}
       ${webForm}${confirmEvery}${halt}</li>`;
@@ -208,7 +209,7 @@ export function accessConfirmPage(workspace: NavigationWorkspace, project: Navig
   const explains = [1, 2, 3].map(n => tr(`access.explain_${to}_${n}` as MessageKey));
   return shell(tr("access.confirm_title"), { workspace, csrf, section: "settings", settings: "access" }, `<div class="content settings-content">
     <section class="settings-section" aria-labelledby="access-confirm-title"><h2 id="access-confirm-title">${tr("access.confirm_title")}</h2>
-    <p>${escape(project.name)}</p><ul>${explains.map(line => `<li>${line}</li>`).join("")}</ul>
+    <p>${escape(project.name)}${attachmentBoxNotice(to)}</p><ul>${explains.map(line => `<li>${line}</li>`).join("")}</ul>
     <form class="team-form access-form" method="post" action="/settings/access/${project.id}">${hiddenCommand(csrf, revision)}
       <input type="hidden" name="level" value="${to}"><input type="hidden" name="confirmToken" value="${token}">
       <button class="primary">${tr("access.confirm_button")}</button><a href="/settings/access?project=${project.id}">${tr("access.cancel")}</a></form></section></div>`,
