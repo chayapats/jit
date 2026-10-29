@@ -25,6 +25,7 @@ import type { RoleProposalCommand } from "./team/role-proposals";
 import { defaultPanelTab, legacyRedirect, panelRows, panelTabs, searchLimits, settingsPageHandler, type PanelTab } from "./web-settings";
 import { searchItems, searchPage, settingsAccessPage, accessConfirmPage, settingsApprovalsPage, settingsConnectionsPage, settingsDataPage, settingsDispatchPage, settingsFeedPage, settingsMcpPage, settingsTelegramPage, topicPanelPage, type McpSettingsEntry, type PanelData } from "./web-navigation";
 import { dispatchLimits, type DispatchCommand } from "./team/jit-dispatch";
+import { completeRoute } from "./team/route-options";
 import { autoApproveKinds, targetRuleKinds } from "./exec/approval-cards";
 import type { DecideCardCommand, SetAutoApproveCommand } from "./exec/approval-cards";
 import { createWebhookHandler, type WebhookHandlerOptions } from "./pr/webhook-route";
@@ -1169,7 +1170,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         // The wake step previews the other language without saving anything; its form saves the choice.
         const lang = url.searchParams.get("lang");
         const locale: Locale = shown === "wake" && (lang === "th" || lang === "en") ? lang : ui.locale;
-        return respond(renderWith({ ...ui, locale }, () => setupPage(setup, auth.csrf, shown)), 200, { "Content-Language": locale, "Vary": "Accept-Language, Cookie" });
+        return respond(renderWith({ ...ui, locale }, () => setupPage(setup, auth.csrf, shown, config.routeModels)), 200, { "Content-Language": locale, "Vary": "Accept-Language, Cookie" });
       }
       if (request.method === "POST" && setupAction) {
         const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
@@ -1183,7 +1184,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         // Browsers send CRLF line breaks in a textarea; the persona stores LF.
         const text = (value: unknown) => typeof value === "string" ? value.replace(/\r\n?/g, "\n") : value;
         const kind = step === "connect-continue" ? "setup.connect.continue" : step === "personality-skip" ? "setup.personality.skip" : `setup.${step}`;
-        const data = step === "connect" ? { route: form ? { provider: body.provider, model: body.model, authRoute: body.authRoute } : body.route }
+        const data = step === "connect" ? { route: form ? completeRoute(body as { provider: unknown }, config.routeModels) : body.route }
           : Object.fromEntries(fields[step]!.map(key => [key, text(body[key])]));
         const command = { kind, requestId: body.requestId, projectId: null, expectedRevision: revision, payload: data } as SetupCommand;
         let receipt: ReturnType<Application["setup"]>;
@@ -1284,7 +1285,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       }
       if (request.method === "GET" && teamRoute) {
         const state = app.team(auth.actor, teamRoute[1] ?? null);
-        return api ? json(state) : page(() => teamPage(state, nav(), auth.csrf, config.jobs.maximum, url.searchParams.get("preset") ?? undefined));
+        return api ? json(state) : page(() => teamPage(state, nav(), auth.csrf, config.jobs.maximum, url.searchParams.get("preset") ?? undefined, config.routeModels));
       }
       if (request.method === "GET" && previewRoute) {
         const state = app.preview(auth.actor, previewRoute[1]!, previewRoute[2]!);
@@ -1395,7 +1396,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
           : ["csrf", "requestId", "expectedRevision", "roleId", ...(action === "previews" ? ["topicId", "purpose", "sources", "limits"] : [...(form ? ["provider", "model", "authRoute"] : ["route"]), ...(action === "roles" ? ["name", "kind", "responsibility", "enabled"] : [])])];
         if (Object.keys(body).some(key => !allowed.includes(key))) throw new AppError("invalid_body");
         const roleId = form && body.roleId === "" ? null : body.roleId;
-        const route = form ? body.provider === "" ? null : { provider: body.provider, model: body.model, authRoute: body.authRoute } : body.route;
+        const route = form ? body.provider === "" ? null : completeRoute(body as { provider: unknown }, config.routeModels) : body.route;
         const enabled = form ? body.enabled === "true" ? true : body.enabled === "false" ? false : undefined : body.enabled;
         const command = { kind: action === "roles" ? "role.save" : action === "routes" ? "route.save" : action === "discussions" ? "team.dispatch" : "role.preview",
           requestId: body.requestId, expectedRevision: number(body.expectedRevision), projectId,

@@ -185,6 +185,14 @@ kbd { font: 500 var(--size-xs)/1.6 var(--font-sans); color: var(--fg-2); border:
 .choice:has(input:checked) { background: var(--fg); color: var(--on-fg); border-color: var(--fg); }
 .choice:has(input:focus-visible) { outline: 2px solid var(--fg); outline-offset: 2px; }
 .choice input { accent-color: currentColor; margin: 0; }
+.route-choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+.route-choices legend { grid-column: 1 / -1; }
+.route-choice { border-radius: var(--radius-card); padding: 10px 14px; }
+.route-choice-text { display: grid; gap: 2px; }
+.route-choice-text small { font-size: var(--size-xs); }
+.choice:has(input:checked) .route-choice-text small { color: var(--on-fg); }
+.route-model summary { cursor: pointer; font-size: var(--size-sm); color: var(--fg-2); }
+.route-model[open] summary { margin-bottom: 8px; }
 .settings-links { display: grid; gap: 2px; }
 .settings-links a { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 8px 10px; border-radius: var(--radius-control); color: var(--fg); }
 @media (hover: hover) and (pointer: fine) { .settings-links a:hover { background: var(--surface-3); } }

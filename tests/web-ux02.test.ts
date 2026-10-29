@@ -9,6 +9,7 @@ import { TransactionStore } from "../src/store";
 import { createWebHandler } from "../src/web";
 import { legacyRedirect, panelTabs, paletteCommands, routeInventory, searchLimits, settingsPageHandler, settingsSections } from "../src/web-settings";
 import { markSetupComplete } from "./fixtures/setup";
+import { builtInModels } from "../src/team/route-options";
 
 const password = "fixture-owner-password";
 const origin = "http://localhost:3000";
@@ -134,6 +135,12 @@ test("settings pages keep every command on its original endpoint with the same a
   const response = await postForm(f, "/team/roles", { ...fields, name: "Reviewer", kind: "specialist", responsibility: "Checks correctness", enabled: "true", provider: "", model: "", authRoute: "" });
   expect([response.status, response.headers.get("location")]).toEqual([303, "/settings/team"]);
   expect(f.store.read(tx => tx.all<{ command_kind: string }>("SELECT command_kind FROM audit WHERE command_kind = 'role.save'"))).toHaveLength(1);
+  // #167: the route picker sends no alias; a provider alone saves the recommended model with the provider as alias.
+  const picker = await (await get(f, "/settings/team")).text();
+  expect(picker).not.toContain('name="authRoute"');
+  const routeForm = form(picker, "/team/routes");
+  expect((await postForm(f, "/team/routes", { ...routeForm, roleId: "", provider: "codex", model: "" })).status).toBe(303);
+  expect(f.app.team(f.auth.actor, null).ownerDefault).toEqual({ provider: "codex", model: builtInModels.codex, authRoute: "codex" });
   // The same form replayed is a stale revision, exactly as before the move.
   expect((await postForm(f, "/team/roles", { ...fields, requestId: crypto.randomUUID(), name: "Other", kind: "specialist", responsibility: "x", enabled: "true", provider: "", model: "", authRoute: "" })).status).toBe(409);
   // Settings sub-navigation lists every section, in Thai and English.

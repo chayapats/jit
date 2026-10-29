@@ -4,6 +4,7 @@ import type { ConnectionView } from "./exec/connections";
 import type { McpProposalView } from "./exec/mcp";
 import { sameRoute, type RoleProposalView } from "./team/role-proposals";
 import type { RoleRoute } from "./team/types";
+import { routeText } from "./team/route-options";
 import { promotionNameChars, type PromotionProposalView } from "./promotion";
 import { canonicalJson, type ApprovalCard, type EffectAction } from "./exec/approval-cards";
 
@@ -113,7 +114,6 @@ export function proposalCard(card: ProposalCard): string {
     ${dropped}${card.note ? `<p class="proposal-note">${escape(card.note)}</p>` : ""}${card.actions}${card.footer}</article>`;
 }
 
-const routeText = (route: RoleRoute) => `${route.provider} / ${route.model} · ${route.authRoute}`;
 /** A null route inherits the default; the label names that default, or says there is none. */
 const routeLabel = (route: RoleRoute | null, fallback: RoleRoute | null) => route ? routeText(route)
   : fallback ? `${tr("proposal.route_default")} (${routeText(fallback)})` : tr("proposal.route_default_missing");

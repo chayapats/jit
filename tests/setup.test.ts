@@ -15,6 +15,7 @@ import { ScriptedRunPort, fixtureOutcome } from "../src/team/scripted-port";
 import type { ApplicationRunOutcome, ApplicationRunRequest, RoleRoute } from "../src/team/types";
 import { createWebHandler } from "../src/web";
 import { assetUrl, lookupAsset } from "../src/web-assets";
+import { builtInModels } from "../src/team/route-options";
 
 const roots: string[] = [], stores: TransactionStore[] = [], queues: JobQueue[] = [];
 afterEach(async () => {
@@ -221,6 +222,22 @@ test("the whole setup works as plain form posts, ends in the General space and J
   const sent = f.app.execute(f.auth.actor, { kind: "message.send", projectId: general.projectId, requestId: rid(), expectedRevision: topic.revision, payload: { topicId: general.topicId, text: "hello" } });
   await settle(f);
   expect(f.app.replies(f.auth.actor, general.projectId, general.topicId, [sent.message.id]).get(sent.message.id)!.state).toBe("answered");
+});
+
+test("the connect step needs only a provider: the model is recommended and the alias is the provider (#167)", async () => {
+  const f = await fixture();
+  await step(f, "wake", {}, "/setup?lang=en");
+  const page = await (await get(f, "/setup?step=connect")).text();
+  expect(page).not.toContain('name="authRoute"');
+  expect(page).toContain(`value="codex"`);
+  expect(page).toContain(builtInModels.codex);
+  expect((await step(f, "connect", { provider: "codex" }, "/setup?step=connect")).status).toBe(303);
+  expect(f.app.setup(f.auth.actor).connection.route).toEqual({ provider: "codex", model: builtInModels.codex, authRoute: "codex" });
+  await settle(f);
+  // Another model from the fold is saved exactly; a form without a provider is still refused.
+  expect((await step(f, "connect", { provider: "grok", model: "grok-5-exact" }, "/setup?step=connect")).status).toBe(303);
+  expect(f.app.setup(f.auth.actor).connection.route).toEqual({ provider: "grok", model: "grok-5-exact", authRoute: "grok" });
+  expect((await step(f, "connect", { provider: "" }, "/setup?step=connect")).status).toBe(400);
 });
 
 test("Thai greeting uses the address, self-reference and polite particle the owner chose", () => {
