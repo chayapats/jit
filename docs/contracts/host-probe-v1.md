@@ -113,7 +113,7 @@ Export is a projection for review before sharing.
 ## Schway integration
 
 Live inference runs on the pinned supported host (`schway/host@1.0.0-rc.2`,
-revision `6532e76`, `schway.host.release/v2`; see
+revision `2068b71`, `schway.host.release/v2`; see
 [schway-bridge-v1](schway-bridge-v1.md)). Each `infer` call opens one runtime
 with strict context, an exact empty tool registry, single-turn/single-attempt
 bounds and the live deadline, then submits one route-bound request and closes.

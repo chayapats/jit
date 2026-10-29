@@ -98,7 +98,7 @@ test("pinned artifact gate reports the exact vendored release", () => {
 });
 
 test("vendored tarball matches the pinned sha256", () => {
-  const bytes = readFileSync(join(import.meta.dir, "../vendor/schway-1.0.0-rc.2-6532e76.tgz"));
+  const bytes = readFileSync(join(import.meta.dir, "../vendor/schway-1.0.0-rc.2-2068b71.tgz"));
   expect(createHash("sha256").update(bytes).digest("hex")).toBe(SCHWAY_PINNED_TARBALL_SHA256);
 });
 
@@ -109,7 +109,10 @@ test("pinned host advertises the S12 web-tools and device sign-in contracts", as
   expect(capabilities.releaseContract).toBe("schway.host.release/v2");
   expect(capabilities.webToolsContract).toBe("schway.host.web-tools/v1");
   expect(capabilities.deviceSignInContract).toBe("schway.host.device-sign-in/v1");
-  for (const name of ["createWebFetchTool", "createWebSearchTool", "beginDeviceSignIn"]) {
+  // S13-D10 (ATT07 #196) and the route picker list (#167 phase 2).
+  expect(capabilities.imageInputContract).toBe("schway.host.image-input/v1");
+  expect(capabilities.modelCatalog).toBe("schway.host.model-catalog/v1");
+  for (const name of ["createWebFetchTool", "createWebSearchTool", "beginDeviceSignIn", "listRouteModels"]) {
     expect(typeof (host as unknown as Record<string, unknown>)[name]).toBe("function");
   }
 });
