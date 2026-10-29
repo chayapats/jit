@@ -911,7 +911,11 @@ export class Application {
   attachmentContent(actor: OwnerActor, projectId: string, topicId: string, id: string, variant: "preview" | "download"): ServedAttachment {
     for (const value of [projectId, topicId, id]) requireId(value);
     if (variant === "download") this.#attachmentWritable(actor);
+    // The descriptor lives outside the callback so a failed commit (or a retried callback) never leaks it.
+    let opened: number | null = null;
+    const release = () => { if (opened !== null) { try { closeSync(opened); } catch { /* already closed */ } opened = null; } };
     const open = (tx: AppTransaction): ServedAttachment => {
+      release();
       this.#requireOwner(tx, actor); this.#project(tx, projectId); readTopic(tx, projectId, topicId);
       const row = tx.get<{ state: string; kind: string; sanitizedBy: string | null; name: string | null; mediaType: string; sha256: string | null; bytes: number;
         cleanSha256: string | null; cleanMediaType: string | null; cleanBytes: number | null }>(`SELECT state, kind, sanitized_by AS sanitizedBy, display_name AS name,
@@ -932,12 +936,15 @@ export class Application {
         hash = row.sha256; bytes = row.bytes; mediaType = row.mediaType;
       } else throw new AppError("attachment_unavailable", 410);
       const fd = openServedBlob(this.#attachments.blobPath(projectId, hash), bytes, variant === "preview" ? mediaType : null);
-      try {
-        if (variant === "download") writeAttachmentEvent(tx, { projectId, attachmentId: id, kind: "download", status: "ok", bytes, createdAt: this.#now() });
-      } catch (error) { closeSync(fd); throw error; }
+      opened = fd;
+      if (variant === "download") writeAttachmentEvent(tx, { projectId, attachmentId: id, kind: "download", status: "ok", bytes, createdAt: this.#now() });
       return { fd, bytes, mediaType, name: servedFileName(row.name, mediaType) };
     };
-    return variant === "download" ? this.store.transaction(open) : this.store.read(open);
+    try {
+      const served = variant === "download" ? this.store.transaction(open) : this.store.read(open);
+      opened = null;
+      return served;
+    } catch (error) { release(); throw error; }
   }
 
   /** Attachment writes outside `execute` (discard, download audit) honour the same upgrade and restore fences. */

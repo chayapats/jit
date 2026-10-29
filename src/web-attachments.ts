@@ -74,7 +74,7 @@ export function attachmentComposerNote(view: AttachmentComposerView): string {
 /** Client strings and icons for `attachments.js`, then its module tag. Hidden, static, server-localised text only. */
 export function attachmentComposerScript(): string {
   const keys: MessageKey[] = ["attachments.remove", "attachments.state_uploading", "attachments.state_pending", "attachments.state_ready",
-    "attachments.state_rejected", "attachments.state_failed", "attachments.no_preview_fallback", "attachments.uploaded", "attachments.wait_uploads",
+    "attachments.state_rejected", "attachments.state_failed", "attachments.no_preview_fallback", "attachments.uploaded", "attachments.wait_uploads", "attachments.wait_send",
     "attachments.too_many", "attachments.too_large", "attachments.upload_failed", "attachments.send_failed", "attachments.drop_here",
     "attachments.open_preview", "error.attachments_disabled", "error.invalid_attachment_upload", "error.attachment_too_large",
     "error.attachment_quota_exceeded", "error.attachment_quota_exceeded_files", "error.attachment_disk_reserve", "error.attachment_type_unsupported",

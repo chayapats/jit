@@ -161,6 +161,8 @@ if (form && input && chips && typeof XMLHttpRequest === "function" && topicPath(
     xhr.send(entry.file);
   };
   const add = files => {
+    // The send request carries the files staged when Send was pressed; a file added now would be dropped on success.
+    if (sending) { showStatus(text("attachments.wait_send")); return; }
     showStatus("");
     for (const { file, name } of files) {
       if (active().length >= maxFiles) { showStatus(text("attachments.too_many", { count: maxFiles })); break; }

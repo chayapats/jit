@@ -43,6 +43,7 @@ export const en: Record<MessageKey, string> = {
   "attachments.state_deleted": "File deleted",
   "attachments.uploaded": "Attached {name}",
   "attachments.wait_uploads": "Wait for the uploads to finish before sending",
+  "attachments.wait_send": "Wait until this message is sent, then attach more files",
   "attachments.too_many": "You can attach up to {count} files per message",
   "attachments.too_large": "Larger than {size}",
   "attachments.upload_failed": "Upload failed. Try again.",

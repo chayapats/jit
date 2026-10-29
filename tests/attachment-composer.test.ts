@@ -535,7 +535,7 @@ test("attachments.js contract: picks, pastes and drops upload one file per reque
   const strings: Record<string, string> = Object.fromEntries(Object.entries({
     "attachments.remove": "Remove {name}", "attachments.state_uploading": "Uploading", "attachments.state_pending": "Waiting for the safety check",
     "attachments.state_ready": "Ready to send", "attachments.state_failed": "Not attached", "attachments.too_large": "Larger than {size}",
-    "attachments.too_many": "Up to {count}", "attachments.wait_uploads": "Wait for uploads", "attachments.uploaded": "Attached {name}",
+    "attachments.too_many": "Up to {count}", "attachments.wait_uploads": "Wait for uploads", "attachments.wait_send": "Wait for send", "attachments.uploaded": "Attached {name}",
     "attachments.send_failed": "Not sent", "attachments.drop_here": "Drop here", "error.attachment_type_unsupported": "Unsupported",
     "reason.svg": "SVG files are not accepted", "error.default": "Invalid", "error.stale_revision": "Reload",
   }));
@@ -629,7 +629,19 @@ test("attachments.js contract: picks, pastes and drops upload one file per reque
     expect(xhrs[2]!.aborted).toBe(true);
     // Send: JSON message.send with the form's request id and the staged ids only.
     prevented = false;
-    await form.fire("submit", { preventDefault: () => { prevented = true; } });
+    let releaseSend!: () => void;
+    const realFetch = globalThis.fetch;
+    (globalThis as any).fetch = (url: string, init: any) => new Promise(resolve => { releaseSend = () => resolve((realFetch as any)(url, init)); });
+    const inFlight = form.fire("submit", { preventDefault: () => { prevented = true; } });
+    await Bun.sleep(0);
+    // While the send is in flight, a newly dropped file is refused instead of being silently left out of the message.
+    const uploadsBefore = xhrs.length;
+    for (const fn of documentListeners.drop ?? []) await fn({ dataTransfer: { types: ["Files"], files: [blob("c", "c.txt")] }, preventDefault: () => {} });
+    expect(xhrs).toHaveLength(uploadsBefore);
+    expect(status.textContent).toBe("Wait for send");
+    releaseSend();
+    await inFlight;
+    (globalThis as any).fetch = realFetch;
     expect(prevented).toBe(true);
     const sent = fetches.find(call => call.url === `/api${topic}/messages`)!;
     expect(sent.init.method).toBe("POST");

@@ -45,6 +45,7 @@ export const th = {
   "attachments.state_deleted": "ไฟล์ถูกลบแล้ว",
   "attachments.uploaded": "แนบ {name} แล้ว",
   "attachments.wait_uploads": "รอให้อัปโหลดไฟล์เสร็จก่อนส่ง",
+  "attachments.wait_send": "รอให้ส่งข้อความนี้เสร็จก่อน แล้วค่อยแนบไฟล์เพิ่ม",
   "attachments.too_many": "แนบได้สูงสุด {count} ไฟล์ต่อข้อความ",
   "attachments.too_large": "ไฟล์ใหญ่เกิน {size}",
   "attachments.upload_failed": "อัปโหลดไม่สำเร็จ กรุณาลองใหม่",
