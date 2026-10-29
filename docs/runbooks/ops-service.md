@@ -27,9 +27,23 @@ For a remote host, use already configured private HTTPS ingress; an optional
 owner-run VPN one-liner is `sudo tailscale serve --bg http://127.0.0.1:3000`
 (VPN installation/enrollment is separate). Configure the service's HTTPS origin
 using the existing private-ingress contract before using that address, because
-Host/Origin checks remain enforced. No public port is opened by the installer.
+Host/Origin checks remain enforced. Installer health uses HTTP on the configured
+local/private listener with the HTTPS origin's Host header; ingress DNS/routing
+is not needed on the server for installation. No public port is opened by the installer.
 Never save the printed link, cookies, passwords or unlock value in evidence.
 Provider Web sign-in is SIGN01 #175; INST01 acceptance ends at the setup link.
+
+The installer checks root-owned non-symlink Bun/config/system/release parents
+without group/other write. Local `--source` inputs must be protected from `jit`
+(including all ancestors); shared writable directories are refused. It snapshots
+trusted bootstrap code as root, installs/seals dependencies as `jit`, then copies
+staging to new root-owned inodes and validates the original content pin and
+runtime hashes there. The installed release and every parent are root-owned;
+`jit` only reads/traverses code. Root lifecycle uses the bootstrap's dependency-free
+service-package API, so service-built imports are never run as root. Keyring,
+user-unit, schema and ledger-seed operations run only as `jit`. An unsafe existing
+layout stops with a named next action; use trusted operator recovery rather than
+chowning an attacker-writable tree in place.
 
 A re-run preserves existing config/keyring/data and repairs compatible releases.
 A schema change reports `schema-upgrade`; use the owner-authorized staged
@@ -64,7 +78,12 @@ Opt-in live acceptance is **not run by the implementation agent**:
    owner supplies this evidence. This procedure does not authorize SSH or a live run.
 
 - A dedicated non-root, non-login service identity (for example `jit`, shell `/usr/sbin/nologin`, home outside `/home`). The package never creates users.
-- Directories owned by that identity, mode 0700: state (for example `/var/lib/jit/state`), backups (`/var/lib/jit/backups`); a working directory (`/var/lib/jit/work`); a releases parent (`/opt/jit`).
+- Service-owned directories, mode 0700: state (for example `/var/lib/jit/state`), backups (`/var/lib/jit/backups`) and working directory (`/var/lib/jit/work`).
+- A root-owned releases parent (`/opt/jit`, 0755, no service write).
+- All privileged CLI code, dependencies, Bun and their ancestors must be root-owned
+  and not writable by group/other. An artifact content/dependency hash alone does
+  not establish this. Run manual builds/dependency installs as a trusted operator,
+  never the `jit` identity that the service runs under.
 - The pinned Bun at an absolute path (`bun --version` must equal the manifest pin).
 - Private access: bind loopback behind configured private ingress (for example a VPN `serve`/reverse proxy terminating HTTPS), or an address on the VPN interface with an explicit HTTPS `network.origin` (required for any non-loopback bind). No public ingress is installed or exposed by the package.
 - Credentials: the Telegram bot token, when used, is a 0600 file owned by the identity. Keyring-backed references stay `verify-secret-store` until OPS05 proves service-context access.
@@ -78,14 +97,23 @@ bun ops/package/bun-build.ts install-deps <outDir>   # on the target host/arch; 
 ```
 
 - Review `manifest.json`: app, Bun, lockfile, schema, engine contract, build arch and content hash must match the tested revision. `piValidation` stays `pending`; a desktop build never proves ARM64.
-- `install-deps` is the only step that may fetch packages, and only when the owner runs it. Run it on the host that will execute the artifact.
+- `install-deps` is the only step that may fetch packages, and only when the owner runs it. Run it on the host that will execute the artifact, as a trusted unprivileged operator whose source/output trees and ancestors are not writable by `jit`.
+- Before any sudo command, copy the complete artifact (including dependencies)
+  into a fresh root-only directory under a verified root-owned `/opt/jit`, using
+  a copy that does not dereference symlinks. While that parent is still 0700,
+  reject every symlink/special file, assign root:root throughout, remove all
+  group/other write bits, validate content/dependency hashes from the protected
+  copy and verify root-owned/non-writable ancestors up to `/`. Only then grant
+  read/traverse access (0755 directories, 0644/0755 files). Use this protected
+  snapshot as `<root-owned artifact>` below, and a pinned root-owned Bun binary.
+  Do not rename/chown a service-writable tree in place: open descriptors survive.
 
 ## 2. Write and plan trusted configuration
 
 Create ignored `.local/service-config.json` (fields in the contract). Configure exactly one `ledgerPath` for the installation and never hand-edit that file after the service has established it. Then:
 
 ```sh
-sudo bun src/main.ts service plan --config .local/service-config.json --artifact <outDir> --bun <abs bun>
+sudo <abs root-owned bun> <root-owned artifact>/src/main.ts service plan --config .local/service-config.json --artifact <root-owned artifact> --bun <abs root-owned bun>
 ```
 
 - Run as root: access is checked as the service identity with `runuser -u <identity> -- test ...` (state, backups, ledger, working directory, release parent, config directory, credential files).
@@ -95,7 +123,7 @@ sudo bun src/main.ts service plan --config .local/service-config.json --artifact
 ## 3. Install
 
 ```sh
-sudo bun src/main.ts service install --config .local/service-config.json --artifact <outDir> --bun <abs bun>
+sudo <abs root-owned bun> <root-owned artifact>/src/main.ts service install --config .local/service-config.json --artifact <root-owned artifact> --bun <abs root-owned bun>
 ```
 
 - Run as root. Creates `/etc/jit` as root:<service gid> 0750 and writes `/etc/jit/service-config.json` (root:<service gid>, 0640), `/etc/systemd/system/jit.service` (0644), `/etc/systemd/journald@jit.conf` (0644), stages `/opt/jit/releases/<artifactId>`, points the active-release symlink, seeds the ledger placeholder only if absent (owned by the service identity, 0600), `daemon-reload` and `enable`. It does not start the service.
@@ -105,9 +133,9 @@ sudo bun src/main.ts service install --config .local/service-config.json --artif
 ```sh
 sudo -u <identity> JIT_DATABASE=<stateDirectory>/app.sqlite \
   <abs bun> /opt/jit/current/src/main.ts setup          # trusted local owner provisioning (once; interactive password)
-sudo bun src/main.ts service start
-sudo bun src/main.ts service status                     # or as a member of the service group: /etc/jit is root:<gid> 0750
-sudo bun src/main.ts service stop
+sudo <abs root-owned bun> <root-owned artifact>/src/main.ts service start
+sudo <abs root-owned bun> <root-owned artifact>/src/main.ts service status                     # or as a member of the service group: /etc/jit is root:<gid> 0750
+sudo <abs root-owned bun> <root-owned artifact>/src/main.ts service stop
 journalctl --namespace=jit -u jit.service                # bounded by journald@jit.conf
 ```
 
@@ -123,10 +151,20 @@ journalctl --namespace=jit -u jit.service                # bounded by journald@j
 ```sh
 bun ops/package/bun-build.ts <new checkout> <newDir> jit.schway.bridge/v1
 bun ops/package/bun-build.ts install-deps <newDir>
-sudo <abs bun> <newDir>/src/main.ts service upgrade --artifact <newDir> --password-stdin
+# Build/install dependencies as the trusted operator, then snapshot/seal as in §1.
+sudo <abs root-owned bun> <root-owned new artifact>/src/main.ts service upgrade --artifact <root-owned new artifact> --password-stdin
 ```
 
-- Run the upgrade from the new build: it validates the artifact, refuses an older-than-state artifact or a quarantined ledger, stops the unit, runs the new build's owner `upgrade` (ops.schema_migrations/v1: fence, verified recovery point in the configured backup directory, staged migration, validation, activation), switches the release, starts and health-checks.
+- The earlier manual pattern of building as `jit` beneath
+  `/var/lib/jit/artifacts/<sha>` and then running its `src/main.ts` with sudo is
+  affected by the same root escalation: that identity can alter code or imports
+  before/during invocation, and can replace even root-owned children via its
+  writable parents. Do not use it. The service CLI has no general executable-tree
+  ownership gate yet; enforcing that for all manual install/upgrade callers is a
+  follow-up. The installer enforces its own protected path and does not invoke
+  the staged CLI as root. The inner schema `upgrade` already runs as the service
+  identity; that does not protect the initial root CLI import.
+- Run the upgrade from the protected new build: it validates the artifact, refuses an older-than-state artifact or a quarantined ledger, stops the unit, runs the new build's owner `upgrade` (ops.schema_migrations/v1: fence, verified recovery point in the configured backup directory, staged migration, validation, activation), switches the release, starts and health-checks.
 - `upgrade-failed`: the prior release stays active; inspect the upgrade journal (Web `/upgrades`).
 - `rolled-back`: health failed and the prior release was compatible with the state; it is active again.
 - `activation-unhealthy`: health failed after a schema change; the service stays stopped. Return to the prior version only through an OPS02 quarantined restore of `recoveryBackupId`. Never point the symlink back by hand.
@@ -135,8 +173,8 @@ sudo <abs bun> <newDir>/src/main.ts service upgrade --artifact <newDir> --passwo
 ## 6. Disable or remove
 
 ```sh
-sudo bun src/main.ts service disable      # stop and disable boot start
-sudo bun src/main.ts service uninstall    # also remove unit and journald files
+sudo <abs root-owned bun> <root-owned artifact>/src/main.ts service disable      # stop and disable boot start
+sudo <abs root-owned bun> <root-owned artifact>/src/main.ts service uninstall    # also remove unit and journald files
 ```
 
 - Configuration, releases, state, backups, the ledger and secret references are preserved. Deleting managed data requires a distinct authorized operation.

@@ -24,6 +24,15 @@ constant is used as a host assumption. Unsupported architecture/32-bit userland
 fails before mutation.
 
 `--source /absolute/path` selects a trusted local source/service artifact.
+Every local package input and ancestor must belong to root or the invoking sudo
+owner, without group/other write or symlinks. A `jit`-owned source or an artifact
+under its mutable home is refused. The owner-entered bootstrap is opened before
+sudo; the privileged shell copies package inputs into a root-owned snapshot
+before executing Bun, excluding checkout dependencies, `.env` and `bunfig`.
+`/opt/jit/current` is resolved once only after checking its root-owned link and
+parent; its resolved source must satisfy the same checks. Uninstall uses the
+selected/downloaded release bootstrap, never implicitly executes an older
+installed installer from `current`.
 `--dry-run --root /absolute/disposable/root` requires `host.json` of the
 `HostFacts` shape. It simulates identity, packages, supervisor and health, writes
 only inside that root, rejects symlink parents, never invokes sudo/systemctl,
@@ -32,8 +41,12 @@ fixture rather than live host evidence.
 
 ## Provisioning and resources
 
-The root bootstrap performs approved administrative steps; `jit.service`,
-dependency installation, the setup-link helper, Podman and box-doctor run as the
+The root bootstrap performs approved administrative steps from its root-owned
+snapshot with a minimal environment and protected cwd. It uses the existing
+dependency-free service-package API for install/start/stop/uninstall, never a
+service-built CLI or `node_modules` as root. `jit.service`, dependency installation
+and sealing, all home/keyring/user-unit writes, ledger seeding, schema inspection,
+the setup-link helper, Podman and box-doctor run as the
 dedicated non-root, non-login `jit` user. Host commands have finite timeouts;
 raw command output is captured/discarded. Failures stop with the step name and
 a concrete next action. A re-run repeats safe steps and preserves durable data.
@@ -41,7 +54,7 @@ a concrete next action. A re-run repeats safe steps and preserves durable data.
 | State | Initial value / contract |
 | --- | --- |
 | Identity | `jit`, non-root UID/GID, non-login shell, home `/var/lib/jit`, mode 0700 |
-| Bun | 1.4.2 at `/opt/jit/bin/bun`; x64 baseline or arm64, glibc/musl assets, SHA-256 pinned in bootstrap; atomic replacement |
+| Bun | 1.4.2 at `/opt/jit/bin/bun`; x64 baseline or arm64, glibc/musl assets, SHA-256 pinned in bootstrap; atomic replacement through a fresh root-owned temporary file; protected root-owned parents |
 | Data | `/var/lib/jit/state`, backups, work, ledger and keyring directories 0700; all home path components traversable by the service identity |
 | Attachments | `/var/lib/jit/state/attachments` mode 0700, outside Web root; ATT01 owns runtime quotas/reserve enforcement |
 | Service config | `/etc/jit/service-config.json`, root:service GID 0640, directory 0750; existing trusted field values retained, formatting canonicalized by the service package |
@@ -79,7 +92,18 @@ publishing. The bootstrap inside both outputs pins downloads to that release
 tag. The archive contains the bootstrap and the unchanged service artifact in
 `artifact/`, with no dependencies or credentials. The host installs locked,
 script-disabled dependencies as the service identity and seals them through
-the existing package contract before `service install` and `service start`.
+the existing package contract. Root first locks staging directories top-down to
+prevent symlink/path swaps during copy, rejecting foreign-owned entries; it then
+copies staging to new inodes behind a 0700
+root-owned directory, rejects all links/special files (including manifests and
+dependency records), sets root:root/no group-or-other-write throughout, then
+validates runtime hashes and the original content pin there. Only then is the
+copy exposed for service read/traverse access and passed to the service-package
+install API. Every parent up to `/` is root-owned, non-symlink and not writable
+by group/other. Existing unsafe managed parents, Bun/config/system paths or
+release targets fail closed. Open staging descriptors cannot change the copy.
+The install API's `skipLedgerSeed` mode refuses a missing seed instead of writing
+inside the mutable home as root.
 Publish the three assets together; the HTTPS release and checksum share the
 same trust origin, not a separate signature authority.
 
@@ -90,6 +114,11 @@ OPS06/OPS07 owner-authorized staged-upgrade next action. There is no in-place
 migration, password input in the installer, fabricated owner actor, or schema
 rollback. Compatible-code health failures stop with the old immutable releases
 retained for recovery; the installer does not promise automatic rollback.
+
+Local health polls `http://<bindHost>:<port>/login` (bracketed IPv6) with
+`Host: <configured origin host[:port]>`, manual redirects and a total 20-second
+bound. HTTPS origins never cause an ingress request; the printed setup link still
+uses the configured origin.
 
 After bounded local health verification, one optional **pre-pull pinned images**
 step consumes `ops/package/installer/pinned-images.json`, an array of
@@ -137,7 +166,11 @@ the setup link.
 Deterministic tests cover fake-root cancellation/install/repair/uninstall, host
 sizes, reserve failure, optional degradation, subid collisions, staged-release
 portability without dependencies, failure recovery, one-time link expiry and
-races, Origin/CSRF, password policy, restart and existing-owner refusal.
+races, Origin/CSRF, password policy, restart and existing-owner refusal. Fake-root
+security fixtures verify root execution/import copies and every parent have no
+service write access, retained staging descriptors cannot mutate them, resealed
+code/metadata/dependency symlinks fail, and IPv4/IPv6 probes use local HTTP with
+an HTTPS origin's Host. They use the fixture uid as simulated root, never sudo.
 `bun run typecheck`, full `bun test` and `shellcheck install.sh` are required.
 Fresh Ubuntu 24.04 x64 and arm64 Pi 5 acceptance stays unchecked until the owner
 opts in and records sanitized evidence using the ops-service runbook. Never

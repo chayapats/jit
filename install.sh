@@ -51,11 +51,25 @@ if [ -z "$source_dir" ] && [ -f "$0" ]; then
   if [ -f "$candidate/ops/package/installer/main.ts" ]; then source_dir=$candidate; fi
   if [ -f "$candidate/artifact/ops/package/installer/main.ts" ]; then source_dir=$candidate/artifact; fi
 fi
-if [ -z "$source_dir" ] && [ "$uninstall" = true ] && [ -f /opt/jit/current/ops/package/installer/main.ts ]; then source_dir=/opt/jit/current; fi
 if [ -n "$source_dir" ]; then
   case "$source_dir" in /*) ;; *) failed ;; esac
   [ -f "$source_dir/ops/package/installer/main.ts" ] || failed
 fi
+
+trusted_input() {
+  checked=$1
+  while :; do
+    [ ! -L "$checked" ] && [ -e "$checked" ] || failed
+    owner=$(stat -c %u "$checked")
+    [ "$owner" = 0 ] || [ "$owner" = "$input_owner" ] || failed
+    permissions=$(stat -c %a "$checked")
+    [ "$((0$permissions & 022))" = 0 ] || failed
+    [ "$checked" != / ] || break
+    checked=$(dirname -- "$checked")
+  done
+  unsafe=$(find "$1" \( -type l -o \( ! -type d ! -type f \) -o \( ! -uid 0 ! -uid "$input_owner" \) -o -perm /022 \) -print -quit)
+  [ -z "$unsafe" ] || failed
+}
 
 step=detect-host
 next='use 64-bit Linux x64/arm64 with systemd; install core dependencies manually on other distributions'
@@ -138,7 +152,7 @@ if [ "$(id -u)" != 0 ]; then
   # Re-exec a private copy after approval; no second installer prompt.
   if [ -f "$0" ]; then installer_script=$0
   else
-    scratch=$(mktemp -d)
+    scratch=$(mktemp -d "${HOME}/.jit-install.XXXXXXXX")
     installer_script=$scratch/install.sh
     # stdin is the remainder of a piped script, so fetch the complete bootstrap instead.
     curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 120 "$release_url/install.sh" -o "$installer_script" || failed
@@ -146,11 +160,39 @@ if [ "$(id -u)" != 0 ]; then
   set -- --yes
   if [ -n "$source_dir" ]; then set -- "$@" --source "$source_dir"; fi
   if [ "$uninstall" = true ]; then set -- "$@" --uninstall; fi
-  sudo sh "$installer_script" "$@" || failed
+  input_owner=$(id -u)
+  installer_script=$(CDPATH='' cd -- "$(dirname -- "$installer_script")" && pwd)/$(basename -- "$installer_script")
+  trusted_input "$installer_script"
+  # Open the owner's bootstrap before sudo; root never follows a mutable script pathname.
+  # This redirect intentionally runs as the owner, before sudo.
+  # shellcheck disable=SC2024
+  sudo sh -s -- "$@" <"$installer_script" || failed
   exit 0
 fi
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
+# Privileged runtime inputs must have protected ancestors. Do not repair an
+# untrusted directory in place: an attacker could already hold it open.
+root_path() {
+  checked=$1
+  while :; do
+    [ ! -L "$checked" ] || failed
+    if [ -e "$checked" ]; then
+      [ "$(stat -c %u "$checked")" = 0 ] || failed
+      permissions=$(stat -c %a "$checked")
+      [ "$((0$permissions & 022))" = 0 ] || failed
+    fi
+    [ "$checked" != / ] || break
+    checked=$(dirname -- "$checked")
+  done
+}
+step=trusted-paths
+next='use root-owned non-symlink /opt/jit, Bun and system/config parents without group/other write; do not reuse service-owned code'
+for protected in /opt/jit/bin/bun /opt/jit/releases /etc/jit/service-config.json /etc/systemd/system/jit.service /etc/systemd/journald@jit.conf; do root_path "$protected"; done
+install -d -m 755 /opt/jit /opt/jit/bin /opt/jit/releases
+scratch=$(mktemp -d /opt/jit/.install.XXXXXXXX)
+# Bun must not discover cwd-local .env/bunfig/preloads from the invoking account.
+cd /
 step=dependencies
 next='restore package registry access, or install curl, unzip, CA certificates, util-linux, useradd, dbus user sessions and gnome-keyring; re-run'
 if [ "$uninstall" = false ]; then
@@ -169,8 +211,6 @@ step='bun-runtime'
 next='verify Bun release access and SHA-256 pins; re-run with a supported libc/architecture'
 bun=/opt/jit/bin/bun
 if [ "$uninstall" = false ]; then
-  scratch=$(mktemp -d /var/tmp/jit-install.XXXXXXXX)
-  chmod 755 "$scratch"
   case "$arch" in
     x64) asset='bun-linux-x64-baseline'; digest=c678040f14fe0440eb839d37cbd0ce4c051a32da72806ac97de6a6aab6bf728f ;;
     arm64) asset='bun-linux-aarch64'; digest=54328bbc2d9c8e0c9f892c544d66c57a83b84139e34909e5ee81758f1ac8fda7 ;;
@@ -184,18 +224,16 @@ if [ "$uninstall" = false ]; then
   curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 180 "https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/$asset.zip" -o "$scratch/bun.zip" || failed
   printf '%s  %s\n' "$digest" "$scratch/bun.zip" | sha256sum -c - >/dev/null 2>&1 || failed
   unzip -q "$scratch/bun.zip" -d "$scratch" || failed
-  install -d -m 755 /opt/jit /opt/jit/bin
   # Never truncate a binary in use by an existing service.
-  install -m 755 "$scratch/$asset/bun" /opt/jit/bin/bun.new || failed
-  mv -f /opt/jit/bin/bun.new "$bun" || failed
+  bun_next=$(mktemp /opt/jit/bin/.bun.XXXXXXXX)
+  install -m 755 "$scratch/$asset/bun" "$bun_next" || failed
+  mv -fT "$bun_next" "$bun" || failed
 fi
-[ "$("$bun" --version)" = 1.4.2 ] || failed
+[ "$(env -i PATH="$PATH" HOME=/root "$bun" --version)" = 1.4.2 ] || failed
 
 step=release
 next='publish/verify jit-install.tar.gz and its SHA-256 sidecar, or run ./install.sh from a release tarball'
 if [ -z "$source_dir" ]; then
-  [ -n "$scratch" ] || scratch=$(mktemp -d /var/tmp/jit-install.XXXXXXXX)
-  chmod 755 "$scratch"
   curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 180 "$release_url/jit-install.tar.gz" -o "$scratch/jit-install.tar.gz" || failed
   curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 120 "$release_url/jit-install.tar.gz.sha256" -o "$scratch/checksum" || failed
   digest=$(awk 'NR==1 {print $1}' "$scratch/checksum")
@@ -206,5 +244,35 @@ if [ -z "$source_dir" ]; then
   (umask 022; tar -xzf "$scratch/jit-install.tar.gz" --no-same-owner --no-same-permissions -C "$scratch/release") || failed
   source_dir=$scratch/release/artifact
 fi
-if "$bun" "$source_dir/ops/package/installer/main.ts" apply --root / --source "$source_dir" --uninstall "$uninstall" --family "$family" --arch "$arch" --ram-mb "$ram_mb" --cpus "$cpus" --disk-total "$disk_total" --disk-free "$disk_free"; then exit 0; fi
+# Local input is trusted only when root or the invoking sudo owner controls
+# every ancestor and file. /opt/jit/current is the sole permitted link and is
+# resolved once; its link and parent must themselves belong to root.
+if [ "$source_dir" = /opt/jit/current ]; then
+  root_path /opt/jit
+  [ "$(stat -c %u /opt/jit/current)" = 0 ] || failed
+  source_dir=$(readlink -f /opt/jit/current) || failed
+fi
+input_owner=${SUDO_UID:-0}
+# Copy only package inputs from a checkout; never include user node_modules,
+# bunfig, .env, .local or Git metadata in the privileged bootstrap.
+trusted_input "$source_dir/ops/package"
+mkdir -m 755 "$scratch/source"
+for entry in package.json bun.lock src ops/package vendor; do
+  trusted_input "$source_dir/$entry"
+  # Only the single ops parent can be missing; every ancestor is already protected.
+  # shellcheck disable=SC2174
+  mkdir -p -m 755 "$scratch/source/$(dirname -- "$entry")"
+  cp -R -P --preserve=mode -- "$source_dir/$entry" "$scratch/source/$entry" || failed
+done
+for entry in manifest.json dependencies.json node_modules; do
+  if [ -e "$source_dir/manifest.json" ] && [ -e "$source_dir/$entry" ]; then
+    trusted_input "$source_dir/$entry"
+    cp -R -P --preserve=mode -- "$source_dir/$entry" "$scratch/source/$entry" || failed
+  fi
+done
+unsafe=$(find "$scratch/source" \( -type l -o \( ! -type d ! -type f \) -o ! -uid 0 -o -perm /022 \) -print -quit)
+[ -z "$unsafe" ] || failed
+source_dir=$scratch/source
+chmod 755 "$scratch"
+if env -i PATH="$PATH" HOME=/root "$bun" "$source_dir/ops/package/installer/main.ts" apply --root / --source "$source_dir" --uninstall "$uninstall" --family "$family" --arch "$arch" --ram-mb "$ram_mb" --cpus "$cpus" --disk-total "$disk_total" --disk-free "$disk_free"; then exit 0; fi
 reported=true; exit 1

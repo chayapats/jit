@@ -28,7 +28,39 @@ existing staged-upgrade next action rather than adding an installer authority or
 requesting the owner's password in the terminal. The installer does not provide
 automatic same-schema release rollback; immutable previous releases remain.
 
-Give the service identity a Secret Service user unit using systemd file stdin
+Keep privileged execution separate from service-writable build output. The shell
+checks protected parents, copies only trusted root/sudo-owner package inputs
+into a root-owned bootstrap snapshot, and runs pinned root-owned Bun from `/`
+with a minimal environment. Reject symlinks, non-root managed parents and
+group/other write instead of trying to repair them while an attacker can race.
+Dependency installation, sealing, keyring/user-unit writes, ledger seeding and
+schema inspection all run as `jit`. Transfer fresh staging bottom-up; lock its
+directories top-down before copying to prevent pathname/symlink races while root
+reads it. Copy its result into new inodes behind a private root directory, make
+the complete copy
+root:root with no group/other write, and validate both runtime hashes and the
+original pre-staging content pin there. The installed release has the same
+protection and the service needs read/traverse access only.
+
+Root lifecycle calls the trusted bootstrap's dependency-free service-package
+API; it never executes staged `src/main.ts` or imports service-produced
+`node_modules`. This also prevents a compromised `jit` identity from turning a
+forged dependency seal into root code. The installer disables privileged ledger
+seeding; a missing service-created seed fails closed. Only schema upgrades lazily
+load the full lifecycle/engine graph; this changes no upgrade semantics.
+
+Health polls HTTP on `bindHost:port` with the configured origin's Host header,
+manual redirects and the existing 20-second bound. HTTPS private ingress is only
+the browser origin; the host need not resolve or route through that ingress.
+
+The manual `sudo <newDir>/src/main.ts service upgrade` entry point has the same
+risk when `<newDir>` or an ancestor belongs to `jit`, including artifacts under
+`/var/lib/jit/artifacts/<sha>`. Use a trusted operator-built root-owned snapshot
+and root-owned Bun for manual operations. General service CLI ownership gates
+remain a follow-up; the installer does not invoke that unsafe entry path.
+
+Give the service identity a Secret Service user unit, written as that identity,
+using systemd file stdin
 for a generated, persistent 0600 unlock value. Preserve the existing keyring and
 verify its collection is unlocked. This is credential-store availability only,
 not provider login/readiness. The unlock file is necessarily stored beside the

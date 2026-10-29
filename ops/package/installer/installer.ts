@@ -1,9 +1,11 @@
 import { chmodSync, chownSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statfsSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
-import { buildPackage, installArtifactDependencies, validateArtifact } from "../bun-build";
+import { buildPackage, validateArtifact } from "../bun-build";
+import { assertRootPath, assertRootTree, freezeInstallerArtifact, giveInstallerStaging } from "./trusted-paths";
 import { parseServiceConfig, renderJournaldConfig, renderServiceUnit, serviceEnvironment, type ServiceConfig } from "../service-config";
-import { spawnRunner, type CommandRunner } from "../../../src/ops/supervisor";
+import { spawnRunner, SystemdSupervisor, type CommandRunner } from "../../../src/ops/supervisor";
+import { disableService, installService } from "../../../src/ops/service-package";
 import { TransactionStore } from "../../../src/store";
 import { openReadOnlyStore } from "../../../src/ops/readonly-store";
 import { issueOwnerSetupLink } from "../../../src/ops/owner-setup";
@@ -11,6 +13,51 @@ import { builtInModels } from "../../../src/team/route-options";
 import pins from "./pinned-images.json";
 
 const MiB = 1024 ** 2, GiB = 1024 ** 3;
+
+function homeDirectories(home: string): string[] {
+  return ["state", "backups", "work", "ledger", "state/attachments", ".config", ".config/systemd", ".config/systemd/user", ".local", ".local/share", ".local/share/keyrings"].map(path => join(home, path));
+}
+
+function keyringUnit(home: string): string {
+  return `[Unit]\nDescription=Jit service Secret Service (boot unlock)\nRequires=dbus.socket\nAfter=dbus.socket\n[Service]\nType=dbus\nBusName=org.freedesktop.secrets\nExecStart=/usr/bin/gnome-keyring-daemon --foreground --components=secrets --unlock\nStandardInput=file:${join(home, "keyring-unlock")}\nStandardOutput=null\nStandardError=null\nRestart=on-failure\nUMask=0077\n[Install]\nWantedBy=default.target\n`;
+}
+
+/** Runs only as the service identity: all writes below its mutable home, including boot unlock and ledger seed. */
+export function prepareInstallerHome(home: string): void {
+  if (process.getuid?.() === 0) throw new Error("service-identity-required");
+  for (const path of homeDirectories(home)) {
+    mkdirSync(path, { recursive: true, mode: 0o700 });
+    if (!lstatSync(path).isDirectory()) throw new Error("unsafe_home_path");
+    chmodSync(path, 0o700);
+  }
+  const unlock = join(home, "keyring-unlock");
+  try { writeFileSync(unlock, randomBytes(32).toString("hex"), { flag: "wx", mode: 0o600 }); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+  const stats = lstatSync(unlock);
+  if (!stats.isFile() || stats.uid !== process.getuid?.() || (stats.mode & 0o777) !== 0o600) throw new Error("unsafe_unlock_file");
+  const unit = join(home, ".config/systemd/user/gnome-keyring-daemon.service");
+  const temp = `${unit}.${randomBytes(8).toString("hex")}`;
+  try { writeFileSync(temp, keyringUnit(home), { flag: "wx", mode: 0o644 }); renameSync(temp, unit); }
+  finally { rmSync(temp, { force: true }); }
+  try { writeFileSync(join(home, "ledger/checkpoint.json"), JSON.stringify({ ledger: "jit.deletion.ledger/v1", revision: 1 }) + "\n", { flag: "wx", mode: 0o600 }); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+}
+
+/** Reads mutable installation state only under the service uid; the privileged bootstrap receives a schema number. */
+export function installerSchemaVersion(home: string): number | null {
+  if (process.getuid?.() === 0) throw new Error("service-identity-required");
+  const store = openReadOnlyStore(join(home, "state/app.sqlite"));
+  return store?.read(tx => tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version) ?? null;
+}
+
+/** Probes HTTP on the local/private listener with the configured origin's Host, independently of ingress reachability. */
+export async function installerHealth(config: ServiceConfig, request: typeof fetch = fetch, timeoutMs = 5000): Promise<boolean> {
+  const bind = config.network.bindHost.includes(":") ? `[${config.network.bindHost}]` : config.network.bindHost;
+  const origin = config.network.origin ?? `http://${bind}:${config.network.port}`;
+  return (await request(`http://${bind}:${config.network.port}/login`, {
+    headers: { host: new URL(origin).host }, redirect: "manual", signal: AbortSignal.timeout(timeoutMs),
+  })).status === 200;
+}
 
 /** Hardware detection supplied by the POSIX bootstrap; dry runs read this shape only from their fake root. */
 export interface HostFacts { family: string; arch: string; ramMb: number; cpus: number; diskBytes: number; freeBytes: number }
@@ -71,8 +118,8 @@ export class InstallerFailure extends Error {
 }
 
 /**
- * Applies a single already-approved installer plan. Production requires Linux root but all Jit commands run as
- * the dedicated identity. Dry runs only write a disposable fake root and simulate every external command.
+ * Applies a single already-approved installer plan. Root administrative commands use only protected code;
+ * dependency/state/keyring helpers run as the dedicated identity. Dry runs simulate every external command.
  * Re-runs preserve config/data, repair units and replace compatible artifacts; schema changes retain OPS06 gates.
  */
 export async function runInstaller(options: InstallerOptions): Promise<{ events: string[]; config: ServiceConfig; defaults: InstallerDefaults }> {
@@ -82,7 +129,8 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
   const safe = (path: string) => {
     if (root !== "/" && !path.startsWith(root + "/")) throw new InstallerFailure("paths", "use a path inside the fake root");
     for (let parent = path; parent !== dirname(parent); parent = dirname(parent)) {
-      if (existsSync(parent) && lstatSync(parent).isSymbolicLink()) throw new InstallerFailure("paths", "replace the unexpected symlink before re-running");
+      try { if (lstatSync(parent).isSymbolicLink()) throw new InstallerFailure("paths", "replace the unexpected symlink before re-running"); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
       if (dry && parent === root) break;
     }
   };
@@ -92,7 +140,10 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
     const temp = `${path}.${randomBytes(8).toString("hex")}`;
     try { writeFileSync(temp, text, { flag: "wx", mode }); renameSync(temp, path); } finally { rmSync(temp, { force: true }); }
   };
-  const run = options.run ?? spawnRunner;
+  const runner = options.run ?? spawnRunner;
+  const run: CommandRunner = (argv, settings) => runner(argv, {
+    ...settings, cwd: settings.cwd ?? "/", env: settings.env ?? { PATH: "/usr/sbin:/usr/bin:/sbin:/bin" },
+  });
   const call = async (argv: string[], timeoutMs = 120_000) => {
     if (dry) return { exitCode: options.simulation?.failStep === "optional-images" && argv.includes("pull") ? 1 : 0, stdout: "", timedOut: false };
     try { return await run(argv, { timeoutMs }); }
@@ -110,6 +161,12 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
   };
   const configPath = at("/etc/jit/service-config.json"), home = at("/var/lib/jit");
   safe(configPath);
+  if (!dry) {
+    try {
+      for (const path of [configPath, options.bunPath, at("/opt/jit/releases"), at("/etc/systemd/system/jit.service"), at("/etc/systemd/journald@jit.conf"), at("/etc/subuid"), at("/etc/subgid"), at("/var/lib/cni")]) assertRootPath(path);
+      assertRootTree(resolve(options.source));
+    } catch { throw new InstallerFailure("trusted-paths", "use root-owned executable/config/system parents without symlinks or group/other write, then re-run from a trusted release"); }
+  }
   const desired = parseServiceConfig(existsSync(configPath) ? JSON.parse(readFileSync(configPath, "utf8")) : {
     serviceUser: "jit", executablePath: at("/opt/jit/current"), workingDirectory: join(home, "work"), stateDirectory: join(home, "state"),
     ledgerPath: join(home, "ledger/checkpoint.json"), backupDirectory: join(home, "backups"), secretRefs: [],
@@ -134,11 +191,19 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
       }
       return;
     }
-    // Use the staged build's installed dependencies, never import the unsealed source into a service process.
-    await must([options.bunPath, join(commandArtifact, "src/main.ts"), "service", ...args,
-      ...args.includes("--bun") ? [] : ["--bun", options.bunPath]]);
+    // Privileged lifecycle uses this trusted bootstrap's dependency-free public API. Never import code or
+    // dependencies produced by the service identity, even if it forges a new dependency seal before the copy.
+    assertRootTree(resolve(options.source)); assertRootPath(options.bunPath); assertRootPath(configPath);
+    const host = { run, bunPath: options.bunPath, unitDir: at("/etc/systemd/system"), journaldDir: at("/etc/systemd"), configDir: at("/etc/jit"), skipLedgerSeed: true };
+    const supervisor = new SystemdSupervisor(run);
+    const command = args[0];
+    const accepted = command === "install" ? (await installService({ service: desired, artifactDir: args[args.indexOf("--artifact") + 1]!, host })).ok
+      : command === "stop" ? await supervisor.stop() : command === "start" ? await supervisor.start()
+      : command === "uninstall" ? (await disableService({ service: desired, host, remove: true })).disabled : false;
+    if (!accepted) throw new InstallerFailure(currentStep, next);
   };
   let ownedStaging: string | null = null;
+  let frozenContainer: string | null = null;
   try {
     if (options.uninstall) {
       step("uninstall", "stop the installed unit with the service package, then re-run --uninstall");
@@ -148,7 +213,7 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
         if (!Number.isSafeInteger(uid) || uid < 1) throw new InstallerFailure(currentStep, next);
         const userUnit = join(home, ".config/systemd/user/gnome-keyring-daemon.service");
         if (existsSync(userUnit)) await must(asUser(["systemctl", "--user", "disable", "--now", "gnome-keyring-daemon.service"]));
-        rmSync(userUnit, { force: true });
+        await must(asUser(["rm", "-f", "--", userUnit]));
         await must(asUser(["systemctl", "--user", "daemon-reload"]));
       }
       options.out?.("Uninstalled service units. Data, identity, Bun, releases, config, keyring and unlock file are retained.");
@@ -170,10 +235,7 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
     }
     dir(home);
     step("directories", "remove unexpected symlinks or repair directory ownership, then re-run");
-    for (const path of [desired.stateDirectory, desired.backupDirectory, desired.workingDirectory, dirname(desired.ledgerPath), join(desired.stateDirectory, "attachments"),
-      join(home, ".config"), join(home, ".config/systemd"), join(home, ".config/systemd/user"), join(home, ".local"), join(home, ".local/share"), join(home, ".local/share/keyrings")]) {
-      dir(path); if (!dry) chownSync(path, uid, gid);
-    }
+    if (dry) for (const path of homeDirectories(home)) dir(path);
     if (!dry) chownSync(home, uid, gid);
     dir(at("/opt/jit"), 0o755); dir(at("/opt/jit/bin"), 0o755); dir(at("/opt/jit/releases"), 0o755); dir(at("/var/lib/cni"), 0o755);
     const available = dry ? options.simulation?.podman !== false : (await call(["podman", "--version"])).exitCode === 0;
@@ -184,12 +246,12 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
       write(subuid, ranges.subuid, 0o644); write(subgid, ranges.subgid, 0o644);
     }
     step("keyring", "repair the jit user manager/Secret Service; preserve its existing unlock file and keyring, then re-run");
-    const unlock = join(home, "keyring-unlock"); safe(unlock);
-    if (!existsSync(unlock)) write(unlock, randomBytes(32).toString("hex"));
-    if (!lstatSync(unlock).isFile() || (lstatSync(unlock).mode & 0o777) !== 0o600) throw new InstallerFailure(currentStep, next);
+    if (!dry) await must(asUser([options.bunPath, join(commandArtifact, "ops/package/installer/main.ts"), "prepare-home", "--home", home]));
+    const unlock = join(home, "keyring-unlock"); if (dry) safe(unlock);
+    if (dry && !existsSync(unlock)) write(unlock, randomBytes(32).toString("hex"));
+    if (dry && (!lstatSync(unlock).isFile() || (lstatSync(unlock).mode & 0o777) !== 0o600)) throw new InstallerFailure(currentStep, next);
     const userUnit = join(home, ".config/systemd/user/gnome-keyring-daemon.service");
-    write(userUnit, `[Unit]\nDescription=Jit service Secret Service (boot unlock)\nRequires=dbus.socket\nAfter=dbus.socket\n[Service]\nType=dbus\nBusName=org.freedesktop.secrets\nExecStart=/usr/bin/gnome-keyring-daemon --foreground --components=secrets --unlock\nStandardInput=file:${unlock}\nStandardOutput=null\nStandardError=null\nRestart=on-failure\nUMask=0077\n[Install]\nWantedBy=default.target\n`, 0o644);
-    if (!dry) { chownSync(unlock, uid, gid); chownSync(userUnit, uid, gid); }
+    if (dry) write(userUnit, keyringUnit(home), 0o644);
     await must(["loginctl", "enable-linger", "jit"]);
     await must(["systemctl", "start", `user@${uid}.service`]);
     await must(asUser(["systemctl", "--user", "daemon-reload"]));
@@ -206,13 +268,19 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
       else buildPackage({ srcDir: artifact, outDir: staging, engineContract: "jit.schway.bridge/v1", engineRevision: null });
       artifact = staging;
       // No package scripts, root credentials or host environment reach dependency installation.
-      const dependencyRunner: CommandRunner = async (argv, opts) => run(asUser(argv), { ...opts, env: { ...opts.env, PATH: "/usr/sbin:/usr/bin:/sbin:/bin", HOME: home } });
-      await must(["chown", "-R", `${uid}:${gid}`, artifact]);
-      if (!validateArtifact(artifact, { runtime: true }).ok) await installArtifactDependencies(artifact, { bunPath: options.bunPath, run: dependencyRunner, env: { HOME: home, PATH: "/usr/sbin:/usr/bin:/sbin:/bin" } });
+      const expected = validateArtifact(artifact);
+      if (!expected.ok || !expected.manifest) throw new InstallerFailure(currentStep, next);
+      const dependenciesReady = validateArtifact(artifact, { runtime: true }).ok;
+      giveInstallerStaging(artifact, uid, gid);
+      if (!dependenciesReady) await must(asUser([options.bunPath, join(commandArtifact, "ops/package/bun-build.ts"), "install-deps", artifact]), 600_000);
+      const frozen = freezeInstallerArtifact(artifact, at("/opt/jit/releases"), expected.manifest);
+      frozenContainer = frozen.container; artifact = frozen.artifact;
       const checked = validateArtifact(artifact, { runtime: true });
       if (!checked.ok || !checked.manifest) throw new InstallerFailure(currentStep, next);
       commandArtifact = artifact;
-      const db = join(desired.stateDirectory, "app.sqlite"), schema = openReadOnlyStore(db)?.read(tx => tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version) ?? null;
+      const schemaText = await must(asUser([options.bunPath, join(commandArtifact, "ops/package/installer/main.ts"), "schema-version", "--home", home]));
+      const schema = schemaText.trim() === "none" ? null : Number(schemaText.trim());
+      if (schema !== null && (!Number.isSafeInteger(schema) || schema < 1)) throw new InstallerFailure(currentStep, next);
       if (schema !== null && schema !== checked.manifest.schemaVersion) throw new InstallerFailure("schema-upgrade", "complete the owner-authorized OPS06/OPS07 staged upgrade before re-running; no in-place migration is allowed");
       const remaining = statfsSync(desired.stateDirectory);
       if (remaining.bavail * remaining.bsize < defaults.diskReserveBytes) throw new InstallerFailure("disk-reserve", "free disk space above the displayed reserve and re-run");
@@ -228,6 +296,12 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
       containers: available ? "runtime-present-images-require-configuration" : "unavailable", images: configuredImages }, null, 2));
     step("service-install", "inspect service plan and the bounded journald namespace, then re-run");
     if (existsSync(at("/etc/systemd/system/jit.service"))) await service(["stop", "--config", configPath]);
+    if (!dry) {
+      const checked = validateArtifact(artifact, { runtime: true });
+      if (!checked.ok || !checked.manifest) throw new InstallerFailure(currentStep, next);
+      const target = join(at("/opt/jit/releases"), checked.manifest.artifactId);
+      assertRootPath(target); if (existsSync(target)) assertRootTree(target);
+    }
     await service(["install", "--config", configPath, "--artifact", artifact, "--bun", options.bunPath]);
     step("state-initialize", "repair the service-owned state directory and re-run; existing state is never migrated at boot");
     if (!dry) {
@@ -243,7 +317,7 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
       const deadline = Date.now() + 20_000;
       let healthy = false;
       while (Date.now() < deadline) {
-        try { healthy = (await fetch(`${origin}/login`, { redirect: "manual", signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())) })).status === 200; } catch { /* Not listening yet. */ }
+        try { healthy = await installerHealth(desired, fetch, Math.max(1, deadline - Date.now())); } catch { /* Not listening yet. */ }
         if (healthy) break;
         await Bun.sleep(Math.min(500, Math.max(0, deadline - Date.now())));
       }
@@ -276,6 +350,7 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
     throw new InstallerFailure(currentStep, next);
   } finally {
     if (ownedStaging) rmSync(ownedStaging, { recursive: true, force: true });
+    if (frozenContainer) rmSync(frozenContainer, { recursive: true, force: true });
   }
 }
 

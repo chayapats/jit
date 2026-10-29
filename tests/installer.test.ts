@@ -1,10 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { installerDefaults, pinnedImages, runInstaller, subordinateIds, type HostFacts, type InstallerOptions } from "../ops/package/installer/installer";
+import { dirname, join, resolve } from "node:path";
+import { installerDefaults, installerHealth, pinnedImages, prepareInstallerHome, runInstaller, subordinateIds, type HostFacts, type InstallerOptions } from "../ops/package/installer/installer";
 import { buildInstallerRelease } from "../ops/package/installer/release";
-import { validateArtifact } from "../ops/package/bun-build";
+import { artifactContentHash, buildPackage, installArtifactDependencies, validateArtifact } from "../ops/package/bun-build";
+import { assertRootPath, assertRootTree, freezeInstallerArtifact } from "../ops/package/installer/trusted-paths";
 
 const roots: string[] = [], source = resolve(import.meta.dir, ".."), GiB = 1024 ** 3;
 const facts: HostFacts = { family: "ubuntu", arch: "x64", ramMb: 8192, cpus: 4, diskBytes: 100 * GiB, freeBytes: 80 * GiB };
@@ -17,6 +18,86 @@ function fixture(overrides: Partial<HostFacts> = {}) {
     run: async argv => { calls.push(argv); throw new Error("fake root must never execute a host command"); } };
   return { root, lines, calls, options, at: (path: string) => join(root, path) };
 }
+
+async function stagedFixture() {
+  const f = fixture(), staging = f.at("staging"), releases = f.at("opt/jit/releases");
+  const manifest = buildPackage({ srcDir: source, outDir: staging, engineContract: "jit.schway.bridge/v1", engineRevision: null });
+  await installArtifactDependencies(staging, { bunPath: process.execPath, env: {}, run: async argv => {
+    if (argv[1] === "install") { mkdirSync(join(staging, "node_modules/example"), { recursive: true }); writeFileSync(join(staging, "node_modules/example/index.js"), "export default 1;\n"); }
+    return { exitCode: 0, stdout: Bun.version, timedOut: false };
+  } });
+  mkdirSync(releases, { recursive: true });
+  return { ...f, staging, releases, manifest, policy: { root: f.root, uid: process.getuid!() } };
+}
+
+test("fake-root privileged release uses protected new inodes including dependencies and every ancestor", async () => {
+  const f = await stagedFixture(), file = join(f.staging, "src/main.ts"), fd = openSync(file, "r+");
+  try {
+    const frozen = freezeInstallerArtifact(f.staging, f.releases, f.manifest, f.policy);
+    expect(() => assertRootTree(frozen.artifact, f.policy)).not.toThrow();
+    const walk = (path: string) => {
+      const stats = lstatSync(path);
+      expect(stats.uid).toBe(f.policy.uid); expect(stats.mode & 0o022).toBe(0); expect(stats.isSymbolicLink()).toBe(false);
+      if (stats.isDirectory()) for (const name of readdirSync(path)) walk(join(path, name));
+    };
+    walk(frozen.artifact);
+    for (let path = frozen.artifact; path !== f.root; path = dirname(path)) expect(lstatSync(path).mode & 0o022).toBe(0);
+    const pinned = readFileSync(join(frozen.artifact, "src/main.ts"), "utf8");
+    expect(lstatSync(join(frozen.artifact, "src/main.ts")).ino).not.toBe(lstatSync(file).ino);
+    writeSync(fd, "attacker", 0, "utf8");
+    writeFileSync(join(f.staging, "node_modules/example/index.js"), "attacker");
+    expect(readFileSync(join(frozen.artifact, "src/main.ts"), "utf8")).toBe(pinned);
+    expect(validateArtifact(frozen.artifact, { runtime: true }).ok).toBe(true);
+    chmodSync(f.releases, 0o775);
+    expect(() => assertRootTree(frozen.artifact, f.policy)).toThrow("unsafe_root_path");
+  } finally { closeSync(fd); }
+});
+
+test("fake-root release rejects staging mutation, resealed code, metadata links, dangling links and writable ancestors", async () => {
+  const f = await stagedFixture();
+  writeFileSync(join(f.staging, "src/main.ts"), "attacker");
+  expect(() => freezeInstallerArtifact(f.staging, f.releases, f.manifest, f.policy)).toThrow("release_copy_invalid");
+  const resealed = { ...f.manifest, contentHash: artifactContentHash(f.staging, f.manifest) };
+  writeFileSync(join(f.staging, "manifest.json"), JSON.stringify(resealed));
+  expect(() => freezeInstallerArtifact(f.staging, f.releases, f.manifest, f.policy)).toThrow("release_copy_invalid");
+  for (const name of ["manifest.json", "dependencies.json", "node_modules/example/index.js"]) {
+    const target = join(f.staging, name), saved = readFileSync(target); rmSync(target);
+    symlinkSync(join(f.root, "missing"), target);
+    expect(() => freezeInstallerArtifact(f.staging, f.releases, f.manifest, f.policy)).toThrow("unsafe_root_path");
+    rmSync(target); writeFileSync(target, saved);
+  }
+  symlinkSync(join(f.root, "missing"), f.at("dangling"));
+  expect(() => assertRootPath(f.at("dangling/code.ts"), f.policy)).toThrow("unsafe_root_path");
+  expect(() => assertRootPath(f.releases, { ...f.policy, uid: f.policy.uid + 1 })).toThrow("unsafe_root_path");
+  chmodSync(f.at("opt"), 0o777);
+  expect(() => freezeInstallerArtifact(f.staging, f.releases, f.manifest, f.policy)).toThrow("unsafe_root_path");
+});
+
+test("installer health reaches IPv4/IPv6 HTTP listener with HTTPS origin Host and never follows ingress redirects", async () => {
+  const f = fixture(), { config } = await runInstaller(f.options);
+  for (const bindHost of ["127.0.0.1", "::1"]) {
+    const network = { ...config.network, bindHost, origin: "https://private.example:8443" };
+    const request = (async (url: string | URL | Request, init?: RequestInit) => {
+      expect(url).toBe(`http://${bindHost === "::1" ? "[::1]" : bindHost}:3000/login`);
+      expect(new Headers(init?.headers).get("host")).toBe("private.example:8443");
+      expect(init?.redirect).toBe("manual"); expect(init?.signal).toBeInstanceOf(AbortSignal);
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+    expect(await installerHealth({ ...config, network }, request)).toBe(true);
+    expect(await installerHealth({ ...config, network }, (async () => new Response(null, { status: 302 })) as unknown as typeof fetch)).toBe(false);
+  }
+});
+
+test("keyring and ledger preparation stays in the service identity and preserves the unlock value", () => {
+  const f = fixture(), home = f.at("home"); mkdirSync(home);
+  prepareInstallerHome(home);
+  const unlock = readFileSync(join(home, "keyring-unlock"), "utf8");
+  expect(lstatSync(join(home, "keyring-unlock")).mode & 0o777).toBe(0o600);
+  expect(lstatSync(join(home, "ledger/checkpoint.json")).mode & 0o777).toBe(0o600);
+  prepareInstallerHome(home); expect(readFileSync(join(home, "keyring-unlock"), "utf8")).toBe(unlock);
+  rmSync(join(home, "keyring-unlock")); symlinkSync(f.at("missing"), join(home, "keyring-unlock"));
+  expect(() => prepareInstallerHome(home)).toThrow("unsafe_unlock_file"); expect(existsSync(f.at("missing"))).toBe(false);
+});
 
 test("host defaults scale RAM/CPU/disk on x64 and arm64 without Pi constants", () => {
   const ordinary = installerDefaults(facts), small = installerDefaults({ ...facts, arch: "arm64", ramMb: 1024, cpus: 1, diskBytes: 8 * GiB, freeBytes: 4 * GiB });

@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { installerDefaults, installerOwnerLink, runInstaller, InstallerFailure, type HostFacts } from "./installer";
+import { installerDefaults, installerOwnerLink, installerSchemaVersion, prepareInstallerHome, runInstaller, InstallerFailure, type HostFacts } from "./installer";
 import { parseServiceConfig } from "../service-config";
 
 const args = process.argv.slice(2), command = args.shift();
@@ -10,7 +10,11 @@ try {
     if (!args[i]?.startsWith("--") || flags.has(args[i]!) || !args[i + 1]) throw new Error("invalid-installer-arguments");
     flags.set(args[i]!, args[i + 1]!);
   }
-  if (command === "owner-link" || command === "initialize-state") {
+  if (command === "prepare-home" || command === "schema-version") {
+    if (flags.size !== 1 || flags.get("--home") !== "/var/lib/jit") throw new Error("invalid-installer-arguments");
+    if (command === "prepare-home") prepareInstallerHome(flags.get("--home")!);
+    else console.log(installerSchemaVersion(flags.get("--home")!) ?? "none");
+  } else if (command === "owner-link" || command === "initialize-state") {
     if (flags.size !== 1 || !flags.has("--config")) throw new Error("invalid-installer-arguments");
     const link = installerOwnerLink(parseServiceConfig(JSON.parse(readFileSync(flags.get("--config")!, "utf8"))), command === "owner-link");
     if (link) process.stdout.write(link + "\n"); // Captured by installer; never sent to journald or another log.
