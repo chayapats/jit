@@ -28,8 +28,8 @@ const securityHeaders = { "cache-control": "private, no-store", "x-content-type-
 async function fixture(options: ApplicationOptions = {}) {
   const dir = mkdtempSync(join(tmpdir(), "jit-att03-")); dirs.push(dir);
   const path = join(dir, "jit.sqlite"), config = readConfig({ JIT_DATABASE: path }, host);
-  // Ingestion stays off by default; fixtures explicitly enable it with small deterministic limits.
-  config.attachments = { ...config.attachments, enabled: true, fileBytes: 1000, projectBytes: 4000, diskReserveBytes: 1000 };
+  // Exercise default-on ingestion with small deterministic limits; opt-out cases set enabled=false explicitly.
+  config.attachments = { ...config.attachments, fileBytes: 1000, projectBytes: 4000, diskReserveBytes: 1000 };
   const store = new TransactionStore(path); stores.push(store); let now = 1_800_000_000_000;
   const app = new Application(store, config, { now: () => now, ...options, attachments: { diskFree: () => 100_000, ...options.attachments } });
   await app.setupOwner("fixture-attachment-owner-password");

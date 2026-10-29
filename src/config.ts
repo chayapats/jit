@@ -163,7 +163,7 @@ export interface AppConfig {
   databasePath: string;
   /** Managed search defaults on; environment or service-config opt-out wins, independently of execution boxes. */
   searxngEnabled: boolean;
-  /** app.attachments/v1: ingestion gate and host-scaled storage/sanitizer limits. */
+  /** app.attachments/v1: default-on ingestion (explicit env/service opt-out) and host-scaled storage/sanitizer limits. */
   attachments: AttachmentLimits;
   origin: string;
   hostname: string;

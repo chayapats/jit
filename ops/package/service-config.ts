@@ -41,7 +41,7 @@ export interface ServiceConfig {
   runPort?: "scripted" | "schway";
   /** Managed keyless search defaults on; false here or JIT_SEARXNG_ENABLED=0 disables it. */
   searxngEnabled?: boolean;
-  /** Explicit chat attachment ingestion opt-in, rendered as JIT_ATTACHMENTS; omitted stays off by default. */
+  /** Chat attachment ingestion defaults on; an explicit value overrides the environment and renders as JIT_ATTACHMENTS. */
   attachmentsEnabled?: boolean;
   /**
    * Opt-in channels. `telegram: "enabled"` requires the `telegram-bot-token`

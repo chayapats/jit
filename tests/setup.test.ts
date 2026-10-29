@@ -107,7 +107,7 @@ const command = (f: Fixture, kind: SetupCommand["kind"], payload: unknown, reque
 function expectNoInlineScript(html: string) {
   for (const [tag, body] of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)) {
     expect(body).toBe("");
-    expect(tag).toBe(`<script type="module" src="${assetUrl("app.js")}"></script>`);
+    expect([`<script type="module" src="${assetUrl("app.js")}"></script>`, `<script type="module" src="${assetUrl("attachments.js")}"></script>`]).toContain(tag);
   }
   expect(html).not.toMatch(/\son[a-z]+\s*=/i);
 }

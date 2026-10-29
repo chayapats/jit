@@ -10,9 +10,9 @@ const service: ServiceConfig = {
   resources: { memoryMaxBytes: 536870912, maxRestarts: 3, restartWindowSeconds: 300, logBytes: 1048576, retentionDays: 30 },
 };
 
-test("satisfied S13 gate keeps uploads off unless the environment or service configuration explicitly enables them", async () => {
+test("owner decision 2026-10-29 defaults uploads on; explicit service configuration wins over environment opt-out/in", async () => {
   for (const [environment, configured, enabled] of [
-    [undefined, undefined, false], ["0", undefined, false], ["1", undefined, true],
+    [undefined, undefined, true], ["0", undefined, false], ["1", undefined, true],
     [undefined, true, true], [undefined, false, false], ["1", false, false], ["0", true, true],
   ] as const) {
     const config = readConfig(environment === undefined ? {} : { JIT_ATTACHMENTS: environment });

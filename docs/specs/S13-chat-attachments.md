@@ -33,6 +33,7 @@ Grok bot รับรูป, PDF และไฟล์ข้อความใ�
 | S13-D08 | **Backup:** ถ้าขนาดรวมของไฟล์แนบเกินเพดาน backup ให้ backup ล้มเหลวพร้อมบอกเหตุผล ไม่ตัดไฟล์ออกเงียบๆ<br>**Backup:** รวมไฟล์แนบใน backup เป็น artifact ที่จำกัดขนาด export มีแค่ metadata เป็นค่าเริ่มต้น และ restore replay ต้องไม่ดึงไฟล์ที่ลบไปแล้วกลับมา ทางเลือกคือไม่รวมไฟล์ใน backup แล้วบันทึกไว้ใน manifest | **owner ยืนยัน 2026-10-29:** รวมใน backup ส่วน export มีแค่ metadata |
 | S13-D09 | **เพดานเริ่มต้น:** 10 MB/ไฟล์, 5 ไฟล์/ข้อความ, 500 MB/โครงการ, ปฏิเสธเมื่อดิสก์เหลือน้อยกว่า 2 GB และล้างไฟล์ staged ที่อายุเกิน 24 ชม. ทุกค่าปรับตามเครื่องได้ (S12-D13) | **owner ยืนยัน 2026-10-29** |
 | S13-D10 | **รูปถึง model:** ส่ง `input_image` เฉพาะ PNG/JPEG ที่ encode ใหม่แล้ว (xAI รับแค่ jpg/png) และเฉพาะ route ที่ผ่าน live probe แล้ว รูปจากเครื่องที่ไม่มี container ไม่ส่งให้ model ถ้า route ยังไม่ผ่าน จิตบอกตรงๆ ว่า "route นี้ยังมองรูปไม่ได้" ไม่เดาเนื้อหารูป ต้องรอ Schway เพิ่ม image content (https://github.com/chayapats/schway/issues/436) | **owner ยืนยัน 2026-10-29** |
+| S13-D-gate | **Feature gate:** เปิด attachments เป็นค่าเริ่มต้นเมื่อ ATT04/ATT06 merge แล้ว การไม่ตั้งค่าเปิด uploads; `JIT_ATTACHMENTS=0` หรือ service config `attachmentsEnabled: false` ปิด uploads โดยค่า service config ที่ระบุชัดเจนมีลำดับเหนือ environment เครื่องที่ไม่มี container sanitizer คง fallback: ข้อความและ PNG/JPEG เท่านั้น ไม่มี preview และปฏิเสธ PDF/WebP พร้อมเหตุผล | **owner note 2026-10-29:** supersedes ค่า default-off ของ D-gate/Feature gate เดิม |
 
 ## ช่องทางส่งข้อมูลออก ([ADR 0040](../adr/0040-chat-attachments.md))
 
@@ -62,7 +63,7 @@ Grok bot รับรูป, PDF และไฟล์ข้อความใ�
 
 ## Tickets
 
-**Feature gate:** `JIT_ATTACHMENTS` ปิดเป็นค่าเริ่มต้น และเปิดได้หลัง ATT04 (#193) กับ ATT06 (#195) merge แล้วเท่านั้น จะได้ไม่มี release ที่เก็บไฟล์ซึ่งลบไม่ได้
+**Feature gate — owner decision 2026-10-29 (S13-D-gate):** supersedes ค่า default-off เดิม หลัง ATT04 (#193) และ ATT06 (#195) merge แล้ว attachments เปิดเป็นค่าเริ่มต้นเมื่อไม่ตั้งค่า `JIT_ATTACHMENTS=0` ปิด uploads และ service config `attachmentsEnabled` ที่ระบุชัดเจนชนะ environment (`false` ปิด, `true` เปิด) เครื่องที่ไม่มี container sanitizer คง fallback ข้อความกับ PNG/JPEG แบบไม่มี preview และปฏิเสธ PDF/WebP พร้อมเหตุผล
 
 ลำดับ: ATT00 → ATT01 → ATT02 ‖ ATT03 → ATT04 (ทำพร้อมหรือหลัง #173) → ATT06 (ทำพร้อม #177) → ATT05 → ATT07 (หลัง Schway release) ประมาณงาน ~15–19 วันทำงาน ถ้าทำ MVP แค่ข้อความ + รูป ไม่รวม PDF ใช้ ~8–10 วัน
 

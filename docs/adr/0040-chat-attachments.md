@@ -35,8 +35,8 @@ Each choice is labelled. **Confirmed** means an owner decision in S13. **Propose
 
 ### Feature gate
 
-- `JIT_ATTACHMENTS` is off by default. It can be turned on only after #193 (ATT04, Jit reads attachments) and #195 (ATT06, lifecycle) have merged (Confirmed, S13 Tickets). This way no release can store files that it cannot delete.
-- **Implemented — 2026-10-29 (ATT05 release-gate change):** ATT04 #193 (`31bb200`) and ATT06 #195 (`0423008`) have merged, satisfying the S13 condition. `attachmentsReleasable = true` now permits explicit opt-in. `JIT_ATTACHMENTS` still defaults to `0`; only `JIT_ATTACHMENTS=1` or service config `attachmentsEnabled: true` enables uploads. An explicit service value overrides the environment; omission preserves the environment choice. Existing-file reads and lifecycle remain available with ingestion off. This change does not enable ATT07 images to models or flip the default.
+- **Confirmed owner decision — 2026-10-29 (S13-D-gate):** attachments are **on by default** once ATT04/ATT06 have merged. This supersedes the earlier S13 D-gate/Feature gate default-off decision. With no setting, uploads are enabled. `JIT_ATTACHMENTS=0` disables ingestion. An explicit service-config `attachmentsEnabled` value wins over the environment (`false` disables, `true` enables); omission preserves the environment choice or the default.
+- **Implemented — 2026-10-29 (ATT05):** ATT04 #193 (`31bb200`) and ATT06 #195 (`0423008`) have merged, satisfying the release interlock (`attachmentsReleasable = true`). The later owner default-on decision replaces the initial opt-in release-gate implementation. Hosts without the container sanitizer retain text and PNG/JPEG only, no preview, and PDF/WebP refusal with a reason. Existing-file reads and lifecycle remain available with ingestion off. ATT07 capability/probe gates are unchanged.
 - **Proposed:** the gate controls ingestion only. While it is off:
   - the upload routes answer 404;
   - `message.send` refuses `attachmentIds`;
@@ -244,7 +244,7 @@ Each choice is labelled. **Confirmed** means an owner decision in S13. **Propose
 
 ## Open questions
 
-1. **Default of `JIT_ATTACHMENTS` once releasable — resolved 2026-10-29.** The ATT05 release-gate change keeps the S13 default off. Any future default-on change requires a separate owner decision; it is outside ATT05.
+1. **Default of `JIT_ATTACHMENTS` once releasable — resolved by owner decision 2026-10-29.** Default on; explicit environment/service opt-out remains available. This supersedes the earlier default-off decision (see Feature gate).
 2. **Upgrade recovery points versus the attachment bound** (see Consequences). This ADR keeps them fail-closed.
    - The alternative is an explicitly recorded exclusion for upgrade recovery points only, which is not silent. Restoring such a point would then need the live blobs to still exist.
    - Recommendation: keep fail-closed, and revisit with measured attachment volumes from real installs.

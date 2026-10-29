@@ -37,6 +37,10 @@ function get(f: Fixture, path: string, headers: Record<string, string> = {}, sig
   return f.web(new Request(`${origin}${path}`, { headers: { ...(signedIn ? { cookie: `jit_session=${f.token}` } : {}), ...headers } }));
 }
 function postForm(f: Fixture, path: string, fields: Record<string, string>, headers: Record<string, string> = {}, token: string | null = f.token) {
+  if (path.endsWith("/attachments?send=1")) {
+    const body = new FormData(); for (const [name, value] of Object.entries(fields)) body.append(name, value);
+    return f.web(new Request(`${origin}${path}`, { method: "POST", body, headers: { origin, ...(token ? { cookie: `jit_session=${token}` } : {}), ...headers } }));
+  }
   return f.web(new Request(`${origin}${path}`, { method: "POST", body: new URLSearchParams(fields).toString(),
     headers: { "content-type": "application/x-www-form-urlencoded", origin, ...(token ? { cookie: `jit_session=${token}` } : {}), ...headers } }));
 }
@@ -74,7 +78,7 @@ function expectNoInlineScript(html: string) {
   const scripts = [...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)];
   for (const [tag, body] of scripts) {
     expect(body).toBe("");
-    expect(tag).toBe(`<script type="module" src="${assetUrl("app.js")}"></script>`);
+    expect([`<script type="module" src="${assetUrl("app.js")}"></script>`, `<script type="module" src="${assetUrl("attachments.js")}"></script>`]).toContain(tag);
   }
   expect(html.match(/<script\b/g)?.length ?? 0).toBe(scripts.length);
   expect(html).not.toMatch(/\son[a-z]+\s*=/i);
@@ -267,7 +271,8 @@ test("every existing page renders through the shell in Thai and English, dark an
           expect(html).toContain('href="/settings"');
           expect(html).toContain('<a class="menu-button" href="#sidebar"');
         }
-        expect(html).not.toMatch(keyPattern);
+        // Attachment client templates use data-key identifiers; their rendered text must still be translated.
+        expect(html.replace(/ data-key="[^"]*"/g, "")).not.toMatch(keyPattern);
         expectNoInlineScript(html);
         expect(html).not.toContain(hostile);
         if (language === "en") {
@@ -361,7 +366,7 @@ test("core flows work by plain form post through the new shell with no script", 
   expect(response.status).toBe(303);
   const topicPath = response.headers.get("location")!;
   html = await (await get(session, topicPath)).text();
-  next = form(html, /\/messages$/);
+  next = form(html, /\/attachments\?send=1$/);
   response = await postForm(session, next.action, { ...next.fields, text: "Sent without script" });
   expect(response.status).toBe(303);
   html = await (await get(session, response.headers.get("location")!)).text();

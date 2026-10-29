@@ -250,7 +250,7 @@ test("the card works without script: form posts edit, create and dismiss in Thai
   let page = await (await get(f, topicPath(f))).text();
   for (const [tag, body] of page.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)) {
     expect(body).toBe("");
-    expect(tag).toBe(`<script type="module" src="${assetUrl("app.js")}"></script>`);
+    expect([`<script type="module" src="${assetUrl("app.js")}"></script>`, `<script type="module" src="${assetUrl("attachments.js")}"></script>`]).toContain(tag);
   }
   expect(page).toContain("จิตเสนอ specialist ใหม่");
   expect(page).toContain("รอคุณตัดสิน");

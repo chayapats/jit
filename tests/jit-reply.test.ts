@@ -104,6 +104,10 @@ function get(f: Fixture, path: string, headers: Record<string, string> = {}) {
   return f.web(new Request(`${origin}${path}`, { headers: { cookie: `jit_session=${f.token}`, ...headers } }));
 }
 function postForm(f: Fixture, path: string, fields: Record<string, string>) {
+  if (path.endsWith("/attachments?send=1")) {
+    const body = new FormData(); for (const [name, value] of Object.entries(fields)) body.append(name, value);
+    return f.web(new Request(`${origin}${path}`, { method: "POST", body, headers: { origin, cookie: `jit_session=${f.token}` } }));
+  }
   return f.web(new Request(`${origin}${path}`, { method: "POST", body: new URLSearchParams(fields).toString(),
     headers: { "content-type": "application/x-www-form-urlencoded", origin, cookie: `jit_session=${f.token}` } }));
 }
@@ -139,7 +143,7 @@ const previews = (text: string) => allEvents(text).filter(event => event.event =
 function expectNoInlineScript(html: string) {
   for (const [tag, body] of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)) {
     expect(body).toBe("");
-    expect(tag).toBe(`<script type="module" src="${assetUrl("app.js")}"></script>`);
+    expect([`<script type="module" src="${assetUrl("app.js")}"></script>`, `<script type="module" src="${assetUrl("attachments.js")}"></script>`]).toContain(tag);
   }
   expect(html).not.toMatch(/\son[a-z]+\s*=/i);
 }
@@ -647,7 +651,7 @@ test("no-script flow: form post sends, the page shows the thinking state, refres
   expect(page).toContain("จิตตอบทุกข้อความในหัวข้อนี้");
   expect(page).toContain('class="composer-keys"');
   expect(page).not.toContain("data-reply-stream");
-  const composer = form(page, `${url}/messages`);
+  const composer = form(page, `${url}/attachments?send=1`);
   const posted = await postForm(f, composer.action, { ...composer.fields, text: "<b>สวัสดี</b>" });
   expect(posted.status).toBe(303);
   // Browser refresh after the redirect is a GET; resubmitting the same form replays the receipt.
@@ -676,7 +680,7 @@ test("no-script flow: form post sends, the page shows the thinking state, refres
   expect(english).toContain("Jit replies to every message in this topic");
   // A message sent while the scheduler is missing still commits and names the next action.
   f.queue.close(); await f.queue.idle();
-  const later = form(english, `${url}/messages`);
+  const later = form(english, `${url}/attachments?send=1`);
   expect((await postForm(f, later.action, { ...later.fields, text: "second" })).status).toBe(303);
   const offline = await (await get(f, url)).text();
   expect(offline).toContain("Jit hasn’t replied to this message");
