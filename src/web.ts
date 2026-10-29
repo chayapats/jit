@@ -1642,7 +1642,8 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const attachments = { byMessage: app.messageAttachments(auth.actor, state.project.id, state.topic.id, state.items.map(item => item.id)),
           composer: composer.enabled ? { ...composer, pageSize: config.pageSize } : null };
         return page(() => conversationPage(state, nav(), app.topics(auth.actor, state.project.id).items, auth.csrf, after(), config.messageBytes, {
-          webCalls: app.webCalls(auth.actor, state.project.id).reduce((map, call) => { const list = map.get(call.runId) ?? []; list.push(call); map.set(call.runId, list); return map; }, new Map<string, ReturnType<Application["webCalls"]>>()),
+          webCalls: new Map(discussions.flatMap(discussion => discussion.participations.map(role =>
+            [role.runId, app.webCalls(auth.actor, state.project.id, role.runId)] as const))),
           team, discussions, limits: config.jobs.maximum, dispatchAvailable: team.previewAvailable, replies, cards,
           synthesisLimits: dispatchLimits(config, 1), promotion,
           decision: app.decision(auth.actor, state.project.id, state.topic.id),

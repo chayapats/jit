@@ -122,7 +122,7 @@ export class WebTools {
         progress(definition.name === "web_search" ? "web.searching" : "web.reading");
         try {
           const actual = definition.name === "web_fetch" ? this.#definitions(request.projectId, url => {
-            if (url.href !== new URL(subject).href) this.store.transaction(tx => tx.run("INSERT INTO web_tool_calls (id, project_id, topic_id, run_id, job_id, tool, subject, status, created_at) VALUES (?, ?, ?, ?, ?, 'web_fetch', ?, 'redirect', ?)", crypto.randomUUID(), request.projectId, request.topicId, request.runId, request.fence.jobId, redactRegisteredSecrets(url.href), now()));
+            this.#redirect(request, subject, url, now());
             const match = guard(url.href);
             if (match) this.#hold(request, "web_fetch", url.href, match);
             return !match && !ctx.signal?.aborted && this.store.read(tx => serviceToolCurrent(tx, request));
@@ -137,6 +137,10 @@ export class WebTools {
         finally { progress("web.finished"); }
       } };
     });
+  }
+  #redirect(request: Pick<ApplicationRunRequest, "projectId" | "topicId" | "runId" | "fence">, subject: string, url: URL, now: number): void {
+    if (url.href !== new URL(subject).href) this.store.transaction(tx => tx.run("INSERT INTO web_tool_calls (id, project_id, topic_id, run_id, job_id, tool, subject, status, created_at) VALUES (?, ?, ?, ?, ?, 'web_fetch', ?, 'redirect', ?)",
+      crypto.randomUUID(), request.projectId, request.topicId, request.runId, request.fence.jobId, redactRegisteredSecrets(url.href), now));
   }
   #source(request: Pick<ApplicationRunRequest, "projectId" | "runId" | "topicId" | "fence">, tool: string, subject: string, content: string, now: number): void {
     this.store.transaction(tx => {
@@ -164,9 +168,13 @@ export class WebTools {
     const contextLive = () => this.store.read(tx => contextCurrent(tx, request.projectId, request.manifest) === null && request.manifest.sources.every(source => lookupSource(tx, source.projectId, source.reference).state === "available"));
     if (!contextLive()) return { outcome: "failed", reason: "web_context_changed", detail: {} };
     const guard = outboundGuard(this.#corpus(request));
-    const definition = this.#definitions(card.projectId, url => current() && contextLive() && (url.href === new URL(action.subject).href || !guard(url.href))).find(item => item.name === action.tool);
+    const now = this.options.now ?? Date.now;
+    const definition = this.#definitions(card.projectId, url => {
+      this.#redirect(request, action.subject, url, now());
+      return current() && contextLive() && (url.href === new URL(action.subject).href || !guard(url.href));
+    }).find(item => item.name === action.tool);
     if (!definition) return { outcome: "failed", reason: "web_provider_unavailable", detail: {} };
-    const id = crypto.randomUUID(), now = this.options.now ?? Date.now;
+    const id = crypto.randomUUID();
     this.store.transaction(tx => tx.run("INSERT INTO web_tool_calls (id, project_id, topic_id, run_id, job_id, tool, subject, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)", id, card.projectId, card.topicId, card.runId, card.jobId, action.tool, redactRegisteredSecrets(action.subject), now()));
     let result: ToolExecutionResult;
     try { result = await definition.execute({ [action.tool === "web_search" ? "query" : "url"]: action.subject }, { workspace: null as never, signal }); }

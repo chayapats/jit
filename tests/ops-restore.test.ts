@@ -29,6 +29,9 @@ import type { ApplicationRunPort } from "../src/team/run-port";
 import { ScriptedRunPort, fixtureOutcome, specialistFixtureResult } from "../src/team/scripted-port";
 import type { ApplicationRunRequest, RoleRoute, TeamCommand } from "../src/team/types";
 import { createWebHandler } from "../src/web";
+import { WebTools, readWebCalls } from "../src/web-tools";
+import { WebProviderRegistry } from "../src/web-tools/providers";
+import { readCards } from "../src/exec/approval-cards";
 import type { ServiceConfig } from "../ops/package/service-config";
 
 /**
@@ -209,6 +212,75 @@ test("compat matrix: direct, staged migrate and reject before touching data; eng
 // ---------------------------------------------------------------------------
 // Latest ledger replay end to end
 // ---------------------------------------------------------------------------
+
+for (const lifecycle of ["delete", "forget"] as const) test(`restore replays ${lifecycle} over a blocked retry release with no successful web source`, async () => {
+  const f = await fixture(), p = project(f, "Retry web privacy", "Retry history");
+  const marker = "RESTORE_RETRY_PRIVATE_MARKER_173", tool = lifecycle === "delete" ? "web_fetch" : "web_search";
+  const subject = lifecycle === "delete" ? `https://public.test/?q=${marker}` : [...Buffer.from(marker)].map(byte => `%${byte.toString(16)}`).join("");
+  const source = say(f, p, `Keep this private: ${marker}`);
+  const claim = lifecycle === "forget" ? (await remember(f, p, source))[0]! : null;
+  const fetched: string[] = [];
+  const searches: string[] = [];
+  const providers = new WebProviderRegistry().register("restore_fixture", () => ({ id: "restore_fixture", async search(query) { searches.push(query); return []; } }));
+  f.rt.app.execute(actor(f), { kind: "web.provider.set", requestId: rid(), projectId: null, expectedRevision: 0, payload: { id: "restore_fixture", connectionId: null } });
+  const web = new WebTools(f.rt.store, { providers, now: () => f.clock.now, fetchOptions: {
+    resolve: async () => [{ address: "1.1.1.1", family: 4 }], connect: async url => { fetched.push(url); return new Response("public evidence"); },
+  } });
+  let tries = 0;
+  const requests: ApplicationRunRequest[] = [];
+  f.hooks.specialist = async request => {
+    requests.push(structuredClone(request));
+    if (++tries === 1) return fixtureOutcome("quota");
+    await web.buildWebTools(request).find(definition => definition.name === tool)!.execute({ [tool === "web_search" ? "query" : "url"]: subject }, { workspace: null as never, signal: new AbortController().signal });
+    return fixtureOutcome("complete", specialistFixtureResult("Retry completed", request, f.config.jobs.outputBytes));
+  };
+  f.rt.app.execute(actor(f), dispatch(f, p, "Read public evidence", [source])); await drain(f);
+  const role = f.rt.app.discussions(actor(f), p.id, p.topic.id)[0]!.participations[0]!;
+  const job = f.rt.app.job(actor(f), p.id, role.jobId);
+  expect(job.state).toBe("waiting");
+  await queue(f).reconcile(f.rt.port);
+  f.rt.app.execute(actor(f), { kind: "job.resume", requestId: rid(), projectId: p.id, expectedRevision: job.revision, payload: { jobId: job.id } });
+  await drain(f);
+  expect(requests).toHaveLength(2);
+  expect(requests[1]!.runId).not.toBe(role.runId);
+  expect(fetched).toEqual([]);
+  expect(f.rt.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM web_run_sources WHERE job_id = ?", job.id)!.n)).toBe(0);
+  const card = f.rt.store.read(tx => readCards(tx, p.id))[0]!;
+  expect(card.runId).toBe(requests[1]!.runId);
+  // Cover a pending URL card and a denied encoded-query card with a persisted receipt copy.
+  if (lifecycle === "forget") f.rt.app.execute(actor(f), { kind: "approval.decide", requestId: rid(), projectId: p.id, expectedRevision: card.revision,
+    payload: { cardId: card.id, digest: card.digest, decision: "deny" } });
+  const html = await (await createWebHandler(f.rt.app)(new Request(`http://localhost:3000/projects/${p.id}/topics/${p.topic.id}`, { headers: { cookie: `jit_session=${f.token}` } }))).text();
+  expect(html).toContain(`${tool} · ${subject} · blocked-private-context`);
+  expect(f.rt.store.read(tx => readWebCalls(tx, p.id, role.runId))).toHaveLength(1);
+  const control = project(f, "Unaffected web read", "Public evidence"), publicUrl = "https://public.test/control";
+  f.hooks.specialist = async request => {
+    await web.buildWebTools(request).find(tool => tool.name === "web_fetch")!.execute({ url: publicUrl }, { workspace: null as never, signal: new AbortController().signal });
+    return fixtureOutcome("complete", specialistFixtureResult("Public result", request, f.config.jobs.outputBytes));
+  };
+  f.rt.app.execute(actor(f), dispatch(f, control, "Public control", [control.topic.source])); await drain(f);
+  expect(f.rt.store.read(tx => readWebCalls(tx, control.id))).toMatchObject([{ subject: publicUrl, status: "success" }]);
+  const backup = await backupNow(f);
+  if (claim) forget(f, p, claim); else {
+    deleteSource(f, p, source);
+    await reconcileDeletions(f.rt.store, f.rt.port as unknown as ApplicationRunPort, f.clock.now);
+  }
+  const privateCopies = () => f.rt.store.read(tx => JSON.stringify([
+    tx.all("SELECT action_json, receipt_json FROM approval_cards WHERE project_id = ?", p.id),
+    tx.all("SELECT subject FROM web_tool_calls WHERE project_id = ?", p.id),
+    tx.all("SELECT result_json FROM command_receipts WHERE json_extract(result_json, '$.card.id') = ?", card.id),
+  ]));
+  const assertRedacted = () => { for (const text of [marker, subject, marker.toLowerCase().slice(0, 24)]) expect(privateCopies()).not.toContain(text); };
+  assertRedacted();
+  expect((await restoreThrough(f, backup.id)).state).toBe("complete");
+  await relogin(f);
+  assertRedacted();
+  expect(f.rt.store.read(tx => readWebCalls(tx, p.id, role.runId))[0]!.subject).toBe("[deleted]");
+  expect(f.rt.store.read(tx => readCards(tx, p.id))[0]!.action).toMatchObject({ subject: "[deleted]", matchedSpan: "[deleted]" });
+  expect(fetched).toEqual([publicUrl]);
+  expect(searches).toEqual([]);
+  expect(f.rt.store.read(tx => readWebCalls(tx, control.id))).toMatchObject([{ subject: publicUrl, status: "success" }]);
+});
 
 test("older backup restored after delete and forget: removed payload never reaches context, extraction, reports or notifications", async () => {
   const f = await fixture();

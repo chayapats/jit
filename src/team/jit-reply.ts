@@ -23,7 +23,7 @@ import { readEffectiveAccess } from "../exec/access";
 import { configuredRoutes, parseRoleProposal, roleProposalInstructions, roleProposalLimit, roleProposalViews, type RoleProposal, type RoleProposalView } from "./role-proposals";
 import type { ApplicationRunPort } from "./run-port";
 import { normalizePortResult, validateRunRequest } from "./scripted-port";
-import { portFailureOutcome, schwayMaxCalls } from "./schway-port";
+import { portFailureOutcome, schwayMaxCalls, schwayMaxRounds } from "./schway-port";
 import type { ApplicationRunOutcome, ApplicationRunRequest, ContextPacketOmission, MemoryContextLayout, RoleRoute } from "./types";
 import { admitJitDispatch } from "./jit-dispatch";
 import { communicationPolicyLine, teamCommunicationPolicy } from "./communication-policy";
@@ -866,8 +866,7 @@ export function jitReplyWork(store: TransactionStore, config: AppConfig, port: A
       const outputTokens = Math.min(replyAttemptOutputTokens, job.limits.outputTokens);
       reserve({ contextTokens: Math.ceil(Buffer.byteLength(jobData(request, config.team.contextBytes)) / 4), outputTokens });
       if (port.adapter === "schway") {
-        const extra = schwayMaxCalls(request) - 1;
-        if (extra > 0) reserve({ calls: extra, rounds: extra });
+        reserve({ calls: schwayMaxCalls(request) - 1, rounds: schwayMaxRounds(request) - 1 });
       }
       const outputBytes = Math.min(config.jobs.outputBytes, outputTokens * 4, 65000);
       const preview = replyStreams(store).begin({ id: opened.id, projectId: opened.projectId, topicId: opened.topicId, attemptId: attempt.id },

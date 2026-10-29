@@ -67,12 +67,16 @@ export function validateGrant(request: Pick<ApplicationRunRequest, "execution" |
 
 /**
  * Model turns the run may take: 1 without execution or selected web reads, otherwise as many as the run's call
- * budget covers for every attempt and every host retry of each turn (also reserving web calls), between 1 and {@link executionMaxTurns}.
+ * and round budgets cover for every attempt and every host retry of each turn (also reserving web calls), between 1 and {@link executionMaxTurns}.
  */
 export function runMaxTurns(request: Pick<ApplicationRunRequest, "execution" | "limits" | "web">): number {
   if (!requestGrant(request) && !request.web) return 1;
   const attempts = Math.min(10, Math.max(1, request.limits.retries + 1));
-  return Math.min(executionMaxTurns, Math.max(1, Math.floor(request.limits.calls / ((request.limits.retries + 1) * attempts * (request.web ? 2 : 1)))));
+  const modelAttempts = (request.limits.retries + 1) * attempts;
+  return Math.min(executionMaxTurns, Math.max(1, Math.min(
+    Math.floor(request.limits.calls / (modelAttempts * (request.web ? 2 : 1))),
+    Math.floor(request.limits.rounds / modelAttempts),
+  )));
 }
 
 const effectRule = "External effects (git push, pull request create, comment or merge, deploy, sending as the owner, payments and remote deletion) " +

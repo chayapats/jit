@@ -938,6 +938,18 @@ test("a symlinked staged copy blocks the attempt as corrupt and never touches it
   expect(f.rt.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM projects")!.n)).toBe(1);
 });
 
+test("upgrade accepts frozen attempts carrying web, execution and attachment selections together", async () => {
+  const f = await fixture(); await rich(f);
+  f.rt.store.transaction(tx => tx.run(`UPDATE job_attempts SET record_json = json_set(record_json,
+    '$.data.web', json('true'), '$.data.execution', json('null'), '$.data.attachments', json('[]'))
+    WHERE json_extract(record_json, '$.native') IS NOT NULL`));
+  const prepared = (await prepare(f)).journal;
+  await stepCmd(f, "upgrade.migrate", prepared.id);
+  const validated = (await stepCmd(f, "upgrade.validate", prepared.id)).journal;
+  expect(validated.state).toBe("ready");
+  expect(validated.validation!.checks.filter(check => !check.pass)).toEqual([]);
+});
+
 test("orphaned, unbound or uncorrelated attempt native references fail validation and block activation", async () => {
   const cases: [string, string][] = [
     // Context identity missing from team_contexts.
@@ -952,6 +964,8 @@ test("orphaned, unbound or uncorrelated attempt native references fail validatio
     // A native reference whose data is not the admitted run request.
     [`UPDATE job_attempts SET record_json = json_set(record_json, '$.data', 'opaque') WHERE rowid = (SELECT max(rowid) FROM job_attempts WHERE json_extract(record_json, '$.native') IS NOT NULL)`, "run_request_invalid"],
     [`UPDATE job_attempts SET record_json = json_set(record_json, '$.data', json('null')) WHERE rowid = (SELECT max(rowid) FROM job_attempts WHERE json_extract(record_json, '$.native') IS NOT NULL)`, "run_request_invalid"],
+    [`UPDATE job_attempts SET record_json = json_set(record_json, '$.data.web', 'enabled') WHERE rowid = (SELECT max(rowid) FROM job_attempts WHERE json_extract(record_json, '$.native') IS NOT NULL)`, "run_request_invalid"],
+    [`UPDATE job_attempts SET record_json = json_set(record_json, '$.data.attachments', json('{}')) WHERE rowid = (SELECT max(rowid) FROM job_attempts WHERE json_extract(record_json, '$.native') IS NOT NULL)`, "run_request_invalid"],
     // The run request's fence must belong to this job and attempt generation.
     [`UPDATE job_attempts SET record_json = json_set(record_json, '$.data.fence.generation', 999) WHERE rowid = (SELECT max(rowid) FROM job_attempts WHERE json_extract(record_json, '$.native') IS NOT NULL)`, "fence_mismatch"],
     // A dispatched Schway attempt without its durable bridge correlation.

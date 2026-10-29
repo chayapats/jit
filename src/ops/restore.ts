@@ -836,7 +836,10 @@ function replayLedger(staged: TransactionStore, entries: LifecycleLedgerEntry[],
       if (tx.get<{ n: number }>("SELECT count(*) AS n FROM deletion_ledger")!.n > before) replay.appliedDeletions++;
     }
     for (const c of view.suppressedClaims) suppressedClaims.add(c.claimId);
-    for (const s of view.suppressedSources) suppressedSources.add(`${s.sourceId}:${s.revision}:${s.generation}`);
+    for (const s of view.suppressedSources) {
+      suppressedSources.add(`${s.sourceId}:${s.revision}:${s.generation}`);
+      purgeWebReadPayloads(tx, { sourceId: s.sourceId, revision: s.revision, generation: s.generation });
+    }
     for (const s of view.suppressions) {
       suppressedClaims.add(s.claimId);
       const claims = view.suppressedClaims.filter(c => c.suppressionId === s.id);

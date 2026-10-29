@@ -1,3 +1,4 @@
+import { purgeWebReadPayloads } from "../web-tools/lifecycle";
 import { attachmentSources, replayAttachmentLifecycle, attachmentInventory } from "../attachments/lifecycle";
 import { AppError } from "../errors";
 import { invalidatePendingJob, jobData } from "../jobs/queue";
@@ -292,6 +293,7 @@ export function prepareSuppression(tx: AppTransaction, command: ForgetMemoryComm
     tx.run("INSERT OR IGNORE INTO memory_suppressed_claims VALUES (?, ?, ?)", suppressionId, entry.projectId, entry.claim.claimId);
   }
   for (const source of sources) {
+    purgeWebReadPayloads(tx, source.source);
     tx.run("INSERT OR IGNORE INTO memory_suppressed_sources VALUES (?, ?, ?, ?, ?)",
       suppressionId, source.projectId, source.source.sourceId, source.source.revision, source.source.generation);
   }

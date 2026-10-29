@@ -11,7 +11,7 @@ import type { AppConfig } from "../config";
 import { readTeam } from "./configuration";
 import { planDiscussionRoles } from "./router";
 import { fixtureOutcome, normalizePortResult, validateRunRequest } from "./scripted-port";
-import { portFailureOutcome, schwayMaxAttempts, schwayMaxCalls } from "./schway-port";
+import { portFailureOutcome, schwayMaxAttempts, schwayMaxCalls, schwayMaxRounds } from "./schway-port";
 import { executionGrant } from "../exec/run-tools";
 import type { ApplicationRunPort } from "./run-port";
 import type {
@@ -195,19 +195,19 @@ function enqueueSpecialist(
 }
 
 /**
- * Smallest `calls` and `rounds` a Schway-routed specialist job can run with: admission spends one of each and the
- * attempt pre-reserves one more per host retry ({@link schwayMaxCalls}), so anything lower is blocked as
- * `budget_exhausted` before the bridge is invoked. The scripted port reserves nothing extra.
+ * Smallest model-call/round allowance for a Schway specialist: admission spends one of each and the attempt
+ * pre-reserves every host retry. Web-enabled admission additionally requires one call, without another model round.
+ * The scripted port reserves nothing extra.
  */
 export function schwayDispatchMinimum(limits: Pick<JobLimits, "retries">): number {
   return schwayMaxAttempts({ limits: limits as JobLimits });
 }
 
 /** Refuses Schway dispatch limits the retry pre-reserve can never satisfy, naming the minimum for the chosen retries. */
-function assertSchwayRetryRoom(limits: JobLimits): void {
-  const minimum = schwayDispatchMinimum(limits);
-  if (limits.calls < minimum || limits.rounds < minimum) {
-    throw new AppError("dispatch_limits_below_retry_minimum", 400, { retries: limits.retries, minimumCalls: minimum, minimumRounds: minimum });
+function assertSchwayRetryRoom(limits: JobLimits, web: boolean): void {
+  const minimumRounds = schwayDispatchMinimum(limits), minimumCalls = minimumRounds + (web ? 1 : 0);
+  if (limits.calls < minimumCalls || limits.rounds < minimumRounds) {
+    throw new AppError("dispatch_limits_below_retry_minimum", 400, { retries: limits.retries, minimumCalls, minimumRounds });
   }
 }
 
@@ -221,7 +221,7 @@ export function prepareDispatch(
   const p = command.payload;
   readTopic(tx, command.projectId, p.topicId);
   validateJobLimits(p.limits, config.jobs.maximum);
-  if (config.runPort === "schway") assertSchwayRetryRoom(p.limits);
+  if (config.runPort === "schway") assertSchwayRetryRoom(p.limits, readWebSettings(tx, command.projectId).enabled);
   if (!Array.isArray(p.include) || !Array.isArray(p.exclude) || p.include.length > config.team.roleLimit ||
       p.exclude.length > config.team.roleLimit) throw new AppError("invalid_team_command");
   const state = readTeam(tx, command.projectId, config.team);
@@ -463,8 +463,7 @@ export function specialistAnalysisWork(
       if (port.adapter === "schway") {
         // Worst-case retry calls pre-reserved before dispatch; single-output
         // token accounting stays as committed, with measured overrun in usage.
-        const extra = schwayMaxCalls(request) - 1;
-        if (extra > 0) reserve({ calls: extra, rounds: extra });
+        reserve({ calls: schwayMaxCalls(request) - 1, rounds: schwayMaxRounds(request) - 1 });
       }
       let outcome;
       try {

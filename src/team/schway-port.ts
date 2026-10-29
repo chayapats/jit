@@ -149,7 +149,12 @@ export function schwayMaxAttempts(request: Pick<ApplicationRunRequest, "limits">
  * With neither execution nor web reads, this equals {@link schwayMaxAttempts}.
  */
 export function schwayMaxCalls(request: Pick<ApplicationRunRequest, "limits" | "execution" | "web">): number {
-  return schwayMaxAttempts(request) * runMaxTurns(request) + webCallLimit(request);
+  return schwayMaxRounds(request) + webCallLimit(request);
+}
+
+/** Worst-case model rounds for one attempt; service-owned web calls do not spend model rounds. */
+export function schwayMaxRounds(request: Pick<ApplicationRunRequest, "limits" | "execution" | "web">): number {
+  return schwayMaxAttempts(request) * runMaxTurns(request);
 }
 
 /**
