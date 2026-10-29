@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { createHost, createImageContent, hostCapabilities, type HostAuthFetch, type HostCredentialStore, type HostImageProbeRecord, type HostRuntime, type HostSession, type Model } from "schway/host";
 
 /** Deterministic test seams only; production uses the selected subscription and Schway's native secure store. */
-export interface ImageProbeOptions { model?: Model; fetch?: HostAuthFetch; store?: HostCredentialStore }
+export interface ImageProbeOptions { model?: Model; fetch?: HostAuthFetch; store?: HostCredentialStore; timers?: { set(callback: () => void, ms: number): unknown; clear(handle: unknown): void } }
 /** Explicitly authorized probe input; its fence runs at byte release, provider transport and credential writes. */
 export interface ImageProbeSelection { route: "grok" | "codex"; model: string; revision: string; databasePath: string; signal: AbortSignal; assertCurrent(): void; now(): number }
 
@@ -14,7 +14,8 @@ export async function runImageProbe(selection: ImageProbeSelection, options: Ima
   let host: HostRuntime | undefined, session: HostSession | undefined;
   let unsupported = false;
   const deadline = new AbortController(), signal = AbortSignal.any([selection.signal, deadline.signal]);
-  const timer = setTimeout(() => deadline.abort(), 120_000);
+  const timers = options.timers ?? { set: (callback: () => void, ms: number) => setTimeout(callback, ms), clear: (handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>) };
+  const timer = timers.set(() => deadline.abort(), 120_000);
   const current = () => { signal.throwIfAborted(); selection.assertCurrent(); };
   try {
     current();
@@ -40,17 +41,22 @@ export async function runImageProbe(selection: ImageProbeSelection, options: Ima
       if ([400, 404, 415, 422].includes(response.status)) unsupported = true;
       if (!response.body) return response;
       const reader = response.body.getReader();
+      // A transport may leave read() pending after signal abort.
+      // Cancel the reader explicitly so the total deadline also bounds stalled bodies.
+      const cancelReader = () => { void reader.cancel().catch(() => {}); };
+      signal.addEventListener("abort", cancelReader, { once: true });
+      if (signal.aborted) cancelReader();
       const stream = new ReadableStream<Uint8Array>({
         async pull(controller) {
           try {
             current(); const chunk = await reader.read(); current();
-            if (chunk.done) { controller.close(); reader.releaseLock(); return; }
+            if (chunk.done) { signal.removeEventListener("abort", cancelReader); controller.close(); reader.releaseLock(); return; }
             responseBytes += chunk.value.length;
             if (responseBytes > 256 * 1024) { deadline.abort(); await reader.cancel(); throw new Error("probe_budget"); }
             controller.enqueue(chunk.value);
-          } catch (error) { deadline.abort(); void reader.cancel().catch(() => {}); controller.error(error); }
+          } catch (error) { deadline.abort(); signal.removeEventListener("abort", cancelReader); void reader.cancel().catch(() => {}); controller.error(error); }
         },
-        cancel: reason => reader.cancel(reason),
+        cancel: reason => { signal.removeEventListener("abort", cancelReader); return reader.cancel(reason); },
       }, { highWaterMark: 0 });
       return new Response(stream, { status: response.status, statusText: response.statusText, headers: response.headers });
     };
@@ -76,7 +82,7 @@ export async function runImageProbe(selection: ImageProbeSelection, options: Ima
     return record;
   } catch { return { ...record, verdict: unsupported ? "unsupported" : "inconclusive" }; }
   finally {
-    deadline.abort(); clearTimeout(timer);
+    deadline.abort(); timers.clear(timer);
     try { session?.cancel(); } catch { /* Best effort. */ }
     try { await session?.close(); } catch { /* Best effort. */ }
     try { if (session) await host?.deleteSession(session.reference); } catch { /* Native records contain references only. */ }

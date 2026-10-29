@@ -3,7 +3,7 @@ import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { HostImageProbeRecord, Model, ModelRequest } from "schway/host";
+import type { HostCredentialStore, HostImageProbeRecord, Model, ModelRequest } from "schway/host";
 import { Application } from "../src/application";
 import { readImageProbes } from "../src/attachments/image-probes";
 import { prepareModelImages } from "../src/attachments/model-images";
@@ -266,4 +266,104 @@ test(`${count} inline images respect Schway's five-image bound without silent om
   if (count === 5) expect(turns).toBe(1);
   if (count === 5) expect(captures[0]!.items.flatMap(item => item.type === "user" ? item.content : []).filter(part => part.type === "image")).toHaveLength(5);
   expect(f.store.read(tx => tx.all("SELECT 1 FROM attachment_events WHERE kind = 'send_model'"))).toHaveLength(count === 5 ? 5 : 0);
+});
+
+/** Probe-owned deadline only: native timers never need to elapse in these fixtures. */
+class ProbeClock {
+  now = 0;
+  pending = new Map<unknown, { at: number; callback: () => void }>();
+  timers = {
+    set: (callback: () => void, ms: number) => { const id = {}; this.pending.set(id, { at: this.now + ms, callback }); return id; },
+    clear: (id: unknown) => { this.pending.delete(id); },
+  };
+  advance(ms: number) {
+    this.now += ms;
+    for (const [id, timer] of this.pending) if (timer.at <= this.now) { this.pending.delete(id); timer.callback(); }
+  }
+}
+const probeDeferred = () => {
+  let resolve!: () => void;
+  const promise = new Promise<void>(r => { resolve = r; });
+  return { promise, resolve };
+};
+
+for (const route of ["grok", "codex"] as const)
+for (const scenario of ["never-ending", "oversized", "cumulative", "retry", "refresh-rejected", "mid-probe-refresh", ...(route === "grok" ? ["refresh-pressure" as const] : [])] as const)
+test(`${route} probe bounds: ${scenario} stops without durable passing evidence`, async () => {
+  const f = await world(), clock = new ProbeClock(), reading = probeDeferred();
+  let inference = 0, tokens = 0, writes = 0, cancelled = 0, pulls = 0, responseBytes = 0;
+  let transportSignal: AbortSignal | undefined;
+  const inferenceBodies: string[] = [];
+  let credential = JSON.stringify({ accessToken: "fixture-access", refreshToken: "fixture-refresh", expiresAt: 4_000_000_000_000, obtainedAt: 0 });
+  const store: HostCredentialStore = { get: async () => credential, set: async (_key, value) => { writes++; credential = value; }, delete: async () => true };
+  const app = new Application(f.store, f.config, { now: () => f.clock.now + clock.now, imageProbe: { store, timers: clock.timers,
+    fetch: async (target, init) => {
+      transportSignal = init?.signal ?? undefined;
+      if (String(target).toLowerCase().includes("token")) {
+        tokens++;
+        if (scenario === "refresh-rejected") return new Response('{}', { status: 401 });
+        return Response.json({ access_token: "fixture-renewed", refresh_token: "fixture-refresh", expires_in: scenario === "refresh-pressure" ? -1 : 3600 });
+      }
+      inference++; inferenceBodies.push(String(init?.body));
+      if (scenario === "refresh-pressure") return inference % 2 ? new Response('{}', { status: 401 }) : sse(inference === 2 ? "582731" : "wrong");
+      if (scenario === "retry") return new Response('{}', { status: 503 });
+      if (scenario === "refresh-rejected") return new Response('{}', { status: 401 });
+      if (scenario === "never-ending") return new Response(new ReadableStream<Uint8Array>({
+        pull() { pulls++; reading.resolve(); return new Promise<void>(() => {}); },
+        cancel() { cancelled++; },
+      }, { highWaterMark: 0 }), { headers: { "content-type": "text/event-stream" } });
+      if (scenario === "oversized") return new Response(new ReadableStream<Uint8Array>({
+        pull(controller) { pulls++; const chunk = new TextEncoder().encode(`: ${"x".repeat(65530)}\n\n`); responseBytes += chunk.length; controller.enqueue(chunk); },
+        cancel() { cancelled++; },
+      }, { highWaterMark: 0 }), { headers: { "content-type": "text/event-stream" } });
+      if (scenario === "mid-probe-refresh" && inference === 1) {
+        // The first successful image expires the credential before native replay.
+        credential = JSON.stringify({ accessToken: "fixture-access", refreshToken: "fixture-refresh", expiresAt: 1, obtainedAt: 0 });
+        return sse("582731");
+      }
+      if (scenario === "mid-probe-refresh") return new Response('{}', { status: 503 });
+      const response = sse(inference === 1 ? "582731" : "914026");
+      const bytes = new TextEncoder().encode(`: ${"x".repeat(140 * 1024)}\n\n${await response.text()}`);
+      responseBytes += bytes.length;
+      return new Response(bytes, { headers: { "content-type": "text/event-stream" } });
+    },
+  } });
+  try {
+    const token = await app.login("fixture-exe07-owner-password"), auth = app.authenticate(token);
+    if (route === "codex") app.execute(auth.actor, { kind: "route.save", requestId: rid(), projectId: null,
+      expectedRevision: app.team(auth.actor).ownerRevision, payload: { roleId: null, route: { provider: route, model: "fixture-grok-exact", authRoute: "owner-codex" } } });
+    if (scenario === "refresh-rejected" || scenario === "refresh-pressure") credential = JSON.stringify({ accessToken: "fixture-access", refreshToken: "fixture-refresh", expiresAt: 1, obtainedAt: 0 });
+    const command = { requestId: rid(), projectId: null, expectedRevision: app.team(auth.actor).ownerRevision, provider: route, model: "fixture-grok-exact", confirmed: true as const };
+    let settled = false;
+    const pending = app.probeImages(auth.actor, command).then(result => { settled = true; return result; });
+    if (scenario === "never-ending") {
+      await reading.promise;
+      clock.advance(119_999); await Promise.resolve();
+      expect(settled).toBe(false); expect(transportSignal?.aborted).toBe(false);
+      clock.advance(1);
+    }
+    const result = await pending;
+    expect(result.imageProbe).toMatchObject({ state: "failed", record: { verdict: "inconclusive" } });
+    expect(inference).toBeLessThanOrEqual(4); expect(tokens).toBeLessThanOrEqual(4);
+    // One initial PNG submission and one JPEG submission with PNG replay; retries reuse each body.
+    expect(new Set(inferenceBodies).size).toBeLessThanOrEqual(2);
+    expect(inferenceBodies.filter(body => body.includes("data:image/jpeg;base64,")).length).toBeLessThanOrEqual(2);
+    expect(app.imageProbeState(auth.actor).routes.every(row => !row.passed)).toBe(true);
+    const records = f.store.read(tx => tx.all<{ result_json: string }>("SELECT result_json FROM command_receipts WHERE request_id = ?", command.requestId));
+    expect(records).toHaveLength(1);
+    expect(JSON.parse(records[0]!.result_json).imageProbe).toEqual(result.imageProbe);
+    expect(f.store.read(tx => readImageProbes(tx, SCHWAY_PINNED_REVISION)).every(record => record.verdict !== "pass")).toBe(true);
+    // Replaying the confirmed command cannot spend quota again.
+    const counts = [inference, tokens];
+    expect(await app.probeImages(auth.actor, command)).toEqual(result);
+    expect([inference, tokens]).toEqual(counts);
+    expect(clock.pending.size).toBe(0);
+    if (scenario === "never-ending") { expect(clock.now).toBe(120_000); expect(inference).toBe(1); expect(cancelled).toBe(1); expect(transportSignal?.aborted).toBe(true); }
+    if (scenario === "oversized") { expect(inference).toBe(1); expect(pulls).toBe(5); expect(cancelled).toBe(1); expect(responseBytes).toBeGreaterThan(256 * 1024); }
+    if (scenario === "cumulative") { expect(inference).toBe(2); expect(responseBytes).toBeGreaterThan(256 * 1024); }
+    if (scenario === "retry") expect(inference).toBe(1);
+    if (scenario === "refresh-pressure") { expect(inference).toBe(4); expect(tokens).toBe(3); expect(writes).toBe(3); }
+    if (scenario === "refresh-rejected") { expect(tokens).toBe(1); expect(inference).toBe(0); expect(writes).toBe(0); }
+    if (scenario === "mid-probe-refresh") { expect(inference).toBe(2); expect(tokens).toBe(1); expect(writes).toBe(1); }
+  } finally { await app.closeDeviceSignIns(); }
 });
