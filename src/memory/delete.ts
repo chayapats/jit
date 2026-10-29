@@ -1335,7 +1335,11 @@ function redactDerivedRuns(tx: AppTransaction, sources: SourceEntry[]): void {
         ...("progress" in parsed ? { progress: null } : {}), ...(proposals.changed ? { roleProposals: proposals.value } : {}),
         ...(promotion.changed ? { promotionProposal: promotion.value } : {}),
         // app.routing_selection/v1: Jit's dispatch `why` is model text from the same output.
-        ...(typeof parsed.dispatchWhy === "string" ? { dispatchWhy: null } : {}) };
+        ...(typeof parsed.dispatchWhy === "string" ? { dispatchWhy: null } : {}),
+        // S12-D05 / S12-D08: a task suggestion and reply chips are model text from the same output that only pre-fill
+        // an owner form, so they go entirely.
+        ...(parsed.kind === "jit_reply" && "taskSuggestion" in parsed ? { taskSuggestion: undefined } : {}),
+        ...(parsed.kind === "jit_reply" && "suggestions" in parsed ? { suggestions: undefined } : {}) };
       if (JSON.stringify(next) !== JSON.stringify(parsed)) tx.run(`UPDATE ${table} SET record_json = ? WHERE rowid = ?`, JSON.stringify(next), row.rowid_);
     }, null);
   }

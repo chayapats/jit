@@ -61,7 +61,7 @@ A scheduled run whose typed outcome is `no_update`: it keeps its run record but 
 _Avoid_: Hidden failure, text marker in prose.
 
 **Attention level**:
-The owner's per-channel choice of what creates notifications: `all`, or `needs-me` for items that wait on the owner.
+The owner's per-channel choice of what creates notifications: `all`, or `needs-me` for items that wait on the owner and owner-configured schedule reports and PR finding alerts.
 _Avoid_: Mute that hides reports or decisions.
 
 **Work group**:

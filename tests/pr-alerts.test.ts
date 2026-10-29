@@ -103,7 +103,7 @@ function goodFindingsJson(): string {
   });
 }
 
-async function fixture(script?: (request: any, signal: AbortSignal, observe: (e: any) => void) => unknown) {
+async function fixture(script?: (request: any, signal: AbortSignal, observe: (e: any) => void) => unknown, level: "all" | "needs-me" | null = null) {
   const root = mkdtempSync(join(tmpdir(), "jit-pr-alerts-"));
   roots.push(root);
   const path = join(root, "app.sqlite");
@@ -126,6 +126,7 @@ async function fixture(script?: (request: any, signal: AbortSignal, observe: (e:
   await app.setupOwner(password);
   const token = await app.login(password);
   const auth = app.authenticate(token);
+  if (level) app.execute(auth.actor, { kind: "attention.set", requestId: crypto.randomUUID(), projectId: null, expectedRevision: 0, payload: { channel: "telegram", level } });
   const project = app.execute(auth.actor, {
     kind: "project.create", requestId: crypto.randomUUID(), projectId: null,
     expectedRevision: 0, payload: { name: "โครงการ alerts" },
@@ -454,6 +455,16 @@ function enqueueReview(f: F, monitorId: string, candidateId: string) {
     payload: { type: "pr.review", configurationRevision: 1, policyRevision: 1, purpose: "review", inputRevision: revision, input: { monitorId, candidateId }, priority: "background", limits: structuredClone(limits) },
   }).job;
 }
+
+for (const level of [null, "needs-me"] as const) test(`needs-me: owner-configured PR finding alerts notify once (saved=${level !== null})`, async () => {
+  const f = await fixture(undefined, level);
+  expect(f.app.attentionLevels(f.auth.actor).telegram).toMatchObject({ level: "needs-me", revision: level ? 1 : 0 });
+  const { report } = await prepareReport(f);
+  expect(intentsOf(f)).toHaveLength(1);
+  expect(intentsOf(f)[0]).toMatchObject({ attention: { class: "needs_owner" } });
+  f.store.transaction(tx => admitReportAlerts(tx, { projectId: f.project.id, reportId: report.id }, f.clock.now));
+  expect(intentsOf(f)).toHaveLength(1);
+});
 
 test("report commit admits alerts transactionally with a stored decision; duplicate processing stays one intent", async () => {
   const f = await fixture();

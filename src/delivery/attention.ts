@@ -7,8 +7,9 @@ import type { AttentionClass, DeliveryAttention, DeliveryReceipt } from "./types
 /**
  * delivery.attention_levels/v1 — the owner's per-channel choice of what creates notifications (REL04, ADR 0032, FR-28).
  *
- * One row per channel (schema 35, `attention_levels`). Without a row the level is `all` at revision 0. It changes only
- * through the `attention.set` owner command, which is revisioned per channel and idempotent by request id like every
+ * One row per channel (schema 35, `attention_levels`). Without a row the level is `needs-me` at revision 0 (S12-D06:
+ * team progress stays quiet; owner-configured schedule reports and PR alerts also count as needs_owner); a saved row keeps its
+ * level and is never migrated. It changes only through the `attention.set` owner command, which is revisioned per channel and idempotent by request id like every
  * other command. The level filters which delivery intents are *created*; it never hides or deletes reports, decisions
  * or history, and changing it never cancels an intent that already exists.
  */
@@ -34,10 +35,10 @@ export const attentionLevelChoices: readonly AttentionLevel[] = Object.freeze(["
  */
 export const outboxChannel: AttentionChannel = "telegram";
 
-/** Reads one channel's level, or the default (`all`, revision 0). */
+/** Reads one channel's level, or the default (`needs-me`, revision 0) when the owner never saved one. */
 export function readAttentionLevel(tx: AppTransaction, channel: AttentionChannel): AttentionSetting {
   const row = tx.get<{ level: AttentionLevel; revision: number; updated_at: number }>("SELECT level, revision, updated_at FROM attention_levels WHERE channel = ?", channel);
-  return row ? { channel, level: row.level, revision: row.revision, updatedAt: row.updated_at } : { channel, level: "all", revision: 0, updatedAt: null };
+  return row ? { channel, level: row.level, revision: row.revision, updatedAt: row.updated_at } : { channel, level: "needs-me", revision: 0, updatedAt: null };
 }
 
 /** Reads both channels' levels. */

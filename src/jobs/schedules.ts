@@ -728,10 +728,10 @@ export function scheduleSummaryWork(store: TransactionStore, config: AppConfig, 
         if (request.manifest.context) {
           tx.run("INSERT OR IGNORE INTO memory_derived_sources VALUES (?, ?, ?, ?)", ref.sourceId, job.projectId, request.manifest.context.recordId, depth);
         }
-        // delivery.attention_levels/v1: a plain summary is informational; under `needs-me` it is saved without an intent.
+        // Owner-configured reports are explicitly requested notices, including under needs-me.
         const delivery = commitAttentionIntent(tx, { projectId: job.projectId, kind: "report", text: clip(text),
           dedupeKey: dedupeKey(input.scheduleId, input.scheduleRevision, input.scheduledInstant), maxBytes: config.messageBytes,
-          attention: { class: "informational", item: null, workGroupId: null } }, now());
+          attention: { class: "needs_owner", item: null, workGroupId: null } }, now());
         found.occurrence.deliveryIntentId = delivery?.intent.id ?? null;
         found.occurrence.outputSource = ref;
         found.occurrence.state = "complete";

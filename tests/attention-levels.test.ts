@@ -123,6 +123,8 @@ const intents = (f: Fixture): DeliveryIntent[] =>
   f.store.read(tx => tx.all<{ record_json: string }>("SELECT record_json FROM delivery_intents ORDER BY sequence").map(row => JSON.parse(row.record_json) as DeliveryIntent));
 const groups = (f: Fixture) => f.store.read(tx => tx.all<{ id: string; state: string; record_json: string }>("SELECT id, state, record_json FROM work_groups ORDER BY created_at"))
   .map(row => ({ id: row.id, state: row.state, record: JSON.parse(row.record_json) as { items: Record<string, { class: string; decision: string; intentId: string | null; resolved: boolean }>; closed: string | null } }));
+// S12-D06: without a saved level the default is `needs-me`, so a case that expects the informational final notice
+// saves `all` first.
 const setLevel = (f: Fixture, channel: "telegram" | "web", level: "all" | "needs-me") => f.app.execute(f.auth.actor, { kind: "attention.set", requestId: rid(), projectId: null,
   expectedRevision: f.app.attentionLevels(f.auth.actor)[channel].revision, payload: { channel, level } }).attention;
 const setAllowance = (f: Fixture, enabled: boolean, maxRoles: number) => f.app.execute(f.auth.actor, { kind: "dispatch.allowance.set", requestId: rid(), projectId: f.project.id,
@@ -150,6 +152,7 @@ function bindTelegram(f: Fixture) {
 test("a Jit reply that calls 3 specialists creates no intent until all settle, then exactly one after the team reply commits", async () => {
   const gates = new Map<string, ReturnType<typeof deferred<ApplicationRunOutcome>>>();
   const f = await fixture({ specialist: request => { const gate = deferred<ApplicationRunOutcome>(); gates.set(request.roleId, gate); return gate.promise; } });
+  setLevel(f, "telegram", "all");
   const sent = send(f, "ควรใช้ SQLite หรือ Postgres ดี");
   f.queue.pump(); await ticks(); f.queue.pump(); await ticks();
   const reply = replyFor(f, sent.message.id);
@@ -199,6 +202,7 @@ test("one specialist stopped and one skipped still notify once, and a late callb
     if (request.roleId === techId) return done(request, "ความเห็นด้านเทคนิค");
     const gate = deferred<ApplicationRunOutcome>(); gates.set(request.roleId, gate); return gate.promise;
   } });
+  setLevel(f, "telegram", "all");
   techId = f.techId;
   const release = () => { for (const gate of gates.values()) gate.resolve(fixtureOutcome("complete", "ผลที่มาช้า")); };
   try {
@@ -281,6 +285,7 @@ test("switching all to needs-me mid-group never cancels an existing intent and f
   const gate = deferred<ApplicationRunOutcome>();
   let gated = true;
   const f = await fixture({ specialist: request => gated && request.roleId === f.marketingId ? gate.promise : done(request, "ความเห็น") });
+  setLevel(f, "telegram", "all");
   // Group A completes under `all`: one informational intent.
   const a = send(f, "งานชุดแรก");
   gated = false;
@@ -308,6 +313,7 @@ test("switching all to needs-me mid-group never cancels an existing intent and f
 
 test("accepting a proposal on Web cancels its unsent Telegram intent; once sent, it is marked resolved", async () => {
   const f = await fixture();
+  setLevel(f, "telegram", "all");
   setAllowance(f, true, 1);
   // Unsent (Telegram not bound, so the intent waits): accepting cancels it in the same transaction.
   const first = send(f, "ช่วยดูหลายด้าน");
@@ -357,6 +363,7 @@ test("accepting a proposal on Web cancels its unsent Telegram intent; once sent,
 
 test("dismissing the card, resuming a waiting role and stopping the team resolve their notices", async () => {
   const f = await fixture();
+  setLevel(f, "telegram", "all");
   setAllowance(f, true, 1);
   const first = send(f, "เรื่องที่ปัดตก");
   await drain(f);
@@ -400,6 +407,7 @@ test("dismissing the card, resuming a waiting role and stopping the team resolve
 
 test("restart while a group is open: after reopen and settlement there is exactly one intent", async () => {
   const f = await fixture();
+  setLevel(f, "telegram", "all");
   const sent = send(f, "งานก่อนรีสตาร์ต");
   // Only the Jit reply runs; its commit queues the specialists, which never start before the restart.
   f.queue.pump(); await f.queue.idle();
@@ -424,6 +432,7 @@ test("restart with an admitted specialist: the interrupted role notifies as bloc
   const gate = deferred<ApplicationRunOutcome>();
   let hold = true;
   const f = await fixture({ specialist: request => hold && request.roleId === f.designId ? gate.promise : done(request, "ความเห็น") });
+  setLevel(f, "telegram", "all");
   try {
     const sent = send(f, "งานที่ถูกตัดกลางทาง");
     f.queue.pump(); await ticks(); f.queue.pump(); await ticks();
@@ -447,7 +456,7 @@ test("restart with an admitted specialist: the interrupted role notifies as bloc
 test("attention.set: revisioned per channel, idempotent, validated, audited; settings form and JSON with CSRF; th/en labels", async () => {
   const f = await fixture();
   expect(f.app.attentionLevels(f.auth.actor)).toEqual({
-    telegram: { channel: "telegram", level: "all", revision: 0, updatedAt: null }, web: { channel: "web", level: "all", revision: 0, updatedAt: null } });
+    telegram: { channel: "telegram", level: "needs-me", revision: 0, updatedAt: null }, web: { channel: "web", level: "needs-me", revision: 0, updatedAt: null } });
   const command = { kind: "attention.set" as const, requestId: rid(), projectId: null, expectedRevision: 0, payload: { channel: "web" as const, level: "needs-me" as const } };
   const receipt = f.app.execute(f.auth.actor, command);
   expect(receipt).toEqual({ attention: { channel: "web", level: "needs-me", revision: 1, updatedAt: f.clock.now } });
@@ -520,6 +529,7 @@ test("a role included again after the team reply keeps the group open; the final
     specialist: r => r.roleId === f.marketingId ? (included ? again.promise : first.promise) : done(r, "ความเห็น"),
     team: () => team.promise,
   });
+  setLevel(f, "telegram", "all");
   try {
     const sent = send(f, "ช่วยดูสองด้าน");
     f.queue.pump(); await ticks(); f.queue.pump(); await ticks();
@@ -580,4 +590,34 @@ test("a team answer with a blocked specialist result waits on the owner, also un
   expect(intents(f)).toHaveLength(2);
   expect(intents(f)[1]).toMatchObject({ attention: { class: "needs_owner", item: "final:group" } });
   expect(groups(f).map(group => group.state)).toEqual(["closed", "closed"]);
+});
+
+test("S12-D06 default level: with no saved level a finished team creates no intent, while a blocked result still notifies", async () => {
+  const blocked = (r: ApplicationRunRequest) => answer(r, JSON.stringify({ status: "blocked", result: "ยังเปิด repo ไม่ได้", evidence: "none", unblock: "ให้สิทธิ์อ่าน repo ก่อน" }));
+  let ref!: Fixture, block = false;
+  const f = ref = await fixture({ jit: r => answer(r, dispatching(["เทคโนโลยี", "ออกแบบ"])), specialist: r => block && r.roleId === ref.designId ? blocked(r) : done(r, "ความเห็น") });
+  expect(f.app.attentionLevels(f.auth.actor).telegram).toMatchObject({ level: "needs-me", revision: 0 });
+  // A team that answers cleanly is quiet: the final notice is decided once, as filtered.
+  const first = send(f, "เรื่องแรก");
+  await drain(f);
+  expect(cardFor(f, replyFor(f, first.message.id).replyMessageId!).teamReply).toMatchObject({ state: "answered" });
+  expect(intents(f)).toHaveLength(0);
+  expect(groups(f)[0]).toMatchObject({ state: "closed", record: { items: { "final:group": { class: "informational", decision: "filtered", intentId: null } } } });
+  // A blocked result waits on the owner, so it notifies under the default too.
+  block = true;
+  const second = send(f, "ช่วยดู repo นี้หน่อย");
+  await drain(f);
+  expect(intents(f)).toHaveLength(1);
+  expect(intents(f)[0]).toMatchObject({ attention: { class: "needs_owner", item: "final:group" } });
+  // The settings page shows the default as chosen, and saying everything brings the final notice back.
+  const html = await (await get(f, "/settings")).text();
+  expect(html).toMatch(/name="level" value="needs-me" checked/);
+  expect(html).toContain("ค่าเริ่มต้นคือแจ้งเฉพาะเรื่องที่รอคุณ");
+  setLevel(f, "telegram", "all");
+  block = false;
+  const third = send(f, "เรื่องที่สาม");
+  await drain(f);
+  expect(cardFor(f, replyFor(f, third.message.id).replyMessageId!).teamReply).toMatchObject({ state: "answered" });
+  expect(intents(f)).toHaveLength(2);
+  expect(intents(f)[1]).toMatchObject({ attention: { class: "informational", item: "final:group" } });
 });

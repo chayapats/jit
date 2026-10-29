@@ -16,7 +16,7 @@ import type { TaskCommand } from "./tasks";
 import { negotiateLocale, tr, trMaybe, withLocale, type Locale, type MessageKey } from "./i18n";
 import { lookupAsset } from "./web-assets";
 import { serviceWorkerPath, serviceWorkerScript } from "./web-pwa";
-import { renderWith, replyLabels, replyTone, settingsPage, type NavigationWorkspace, type ThemePreference } from "./web-layout";
+import { chipsAllowed, renderWith, replyLabels, replyTone, settingsPage, type NavigationWorkspace, type ThemePreference } from "./web-layout";
 import type { SetPreferencesCommand } from "./preferences";
 import type { SetLocalApiCommand } from "./local-api/settings";
 import type { SetPersonaCommand } from "./persona";
@@ -339,13 +339,23 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       /** The topic page that holds a dispatch card, at its anchor. */
       const cardLocation = (card: { projectId: string; topicId: string; anchorSequence: number; id: string }) =>
         `/projects/${card.projectId}/topics/${card.topicId}?after=${Math.max(0, card.anchorSequence - 1)}#dispatch-${card.id}`;
-      /** One app.jit_reply/v1 event: persisted state plus localised labels, so the script holds no strings. */
+      /**
+       * S12-D08: the chips a committed reply may show in place, under the same rules (a), (d)–(f) as the page; the
+       * page's hidden slot (newest reply, last page) and the script (nothing else live) cover (b) and (c).
+       */
+      const streamChips = (view: JitReplyView): string[] => view.state === "answered" && view.suggestions.length && view.replyMessageId && chipsAllowed(view, {
+        dispatchCard: app.dispatchCards(auth.actor, view.projectId, view.topicId, [view.replyMessageId]).has(view.replyMessageId),
+        mcpCard: app.mcpProposals(auth.actor, view.projectId).some(proposal => proposal.replyId === view.id),
+        promoted: app.promotion(auth.actor, view.projectId, view.topicId).promotedTo !== null,
+        approvalPending: app.topicApprovalCards(auth.actor, view.projectId, view.topicId).some(card => card.state === "pending"),
+      }) ? view.suggestions : [];
+      /** One app.jit_reply/v2 event: persisted state plus localised labels, so the script holds no strings. */
       const replyEvent = (view: JitReplyView) => {
         const labels = renderWith(ui, () => replyLabels(view));
         const found = view.state === "answered" && view.source ? app.source(auth.actor, view.projectId, view.source) : null;
         return { id: view.id, messageId: view.messageId, state: view.state, reason: view.reason, revision: view.revision, progress: view.progress,
           replyMessageId: view.replyMessageId, text: found?.state === "available" ? found.text : null, tone: replyTone[view.state], label: labels.state, next: labels.next,
-          proposals: view.roleProposals.length + view.promotionProposals.length };
+          proposals: view.roleProposals.length + view.promotionProposals.length + (view.taskSuggestion ? 1 : 0), suggestions: streamChips(view) };
       };
       if (request.method === "GET" && streamRoute) {
         // web.reply_stream/v2: push committed changes and attempt-scoped provisional snapshots independently.

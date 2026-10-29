@@ -11,7 +11,7 @@ import { colorTokens } from "./web-design";
 import { effectiveAccess, type AccessLevel, type ProjectAccess } from "./exec/access";
 import type { ConnectionView } from "./exec/connections";
 import type { McpProposalView } from "./exec/mcp";
-import type { JitReplyView } from "./team/jit-reply";
+import { suggestionLimit, type JitReplyView } from "./team/jit-reply";
 import { routesOf } from "./team/role-proposals";
 import { fillText, mcpInstallProposalCard, promotionProposalCard, proposalCard, roleProposalCard, approvalCard } from "./web-proposal-card";
 import type { ApprovalCard } from "./exec/approval-cards";
@@ -341,6 +341,16 @@ function dispatchCard(card: DispatchCardView, base: string, csrf: string, topicR
   const done = team.roles.filter(role => role.state === "completed" && citableResult(role.result)).length;
   const summary = [live ? `${tr("team_card.working")} ${live}` : "", waiting ? `${tr("team_card.waiting")} ${waiting}` : "", `${tr("team_card.done")} ${done}/${team.roles.length}`].filter(Boolean).join(" · ");
   const answered = card.teamReply?.state === "answered";
+  // S12-D06: team work stays quiet. The card is collapsed to one line naming whom Jit asks, and opens by itself only
+  // when something waits on the owner: a role or the team reply waiting on its route, a blocked result, a hold, or a
+  // team reply that failed or could not start. Names are owner configuration, escaped; no model text goes here.
+  const names = team.roles.map(role => role.roleName).join(", ");
+  const teamReplyStalled = card.teamReply?.state === "failed" || card.teamReply?.state === "blocked" || card.teamReply?.state === "not_admitted";
+  const settledFailure = team.roles.some(role => role.activity === "settled" && role.state === "blocked");
+  const needsOwner = !team.stoppedAll && (settledFailure || waiting > 0 || card.blocked.length > 0 || (card.teamHold !== null && !card.teamReply) || team.roles.some(role => role.result?.status === "blocked") || teamReplyStalled);
+  // Nothing runs or waits any more and no answer is coming (stopped, failed or without results): Jit asked, past tense.
+  const settled = !answered && !live && !waiting && card.teamReply?.state !== "thinking" && card.teamReply?.state !== "blocked";
+  const title = tr(answered ? "team_card.answered_by" : settled ? "team_card.asked" : "team_card.asking");
   const origin = team.origin?.kind === "owner-accepted" ? tr("team_card.origin_owner")
     : `${tr("team_card.origin_allowance")} ${card.allowanceRevision}${card.allowanceRevision === 0 ? ` (${tr("settings.dispatch_default")})` : ""}`;
   // Skip, re-dispatch and add reuse the discussion's `team.control` (skip fences the job; include admits within the role budget).
@@ -372,8 +382,8 @@ function dispatchCard(card: DispatchCardView, base: string, csrf: string, topicR
     card.teamHold && !card.teamReply ? `<p class="team-role-note" role="status">${tr(`team_card.hold.${card.teamHold}` as MessageKey)}</p>` : "",
     !card.teamReply && !live && !waiting && !done ? `<p class="team-role-note">${tr("team_card.no_results")}</p>` : "",
   ].join("");
-  return `<details class="team-card team-run" id="dispatch-${card.id}" data-dispatch-id="${card.id}"${answered ? "" : " open"}>
-    <summary><span class="team-run-title">${tr("team_card.title")} · ${team.roles.length} ${tr("team_card.people")}</span><span class="job-status" data-state="${live ? "running" : waiting ? "waiting" : "completed"}">${summary}</span></summary>
+  return `<details class="team-card team-run" id="dispatch-${card.id}" data-dispatch-id="${card.id}"${needsOwner ? " open" : ""}>
+    <summary><span class="team-run-title">${escape(fillText(title, { names }))}</span><span class="job-status" data-state="${live ? "running" : waiting ? "waiting" : "completed"}">${summary}</span></summary>
     <p class="team-run-origin">${origin} · <a href="${allowanceHref(card.projectId)}">${tr("dispatch.allowance_link")}</a></p>${selectionLine(card)}${droppedLine}${blockedLine}
     <ul class="team-roles">${rows}</ul>${notes}<div class="reply-actions">${actions}</div></details>`;
 }
@@ -398,6 +408,50 @@ function teamReplyMeta(view: JitReplyView, card: DispatchCardView | undefined, p
   }
   const unblocks = team.gaps.map(item => unblockLine(item.roleName, item.unblock)).join("");
   return `<div class="team-reply-meta" data-team-reply="${view.id}"><p>${tr("team_reply.cites")}: ${cites}</p><p>${gap}</p>${unblocks}${action ? `<div class="reply-actions">${action}</div>` : ""}</div>`;
+}
+
+/**
+ * S12-D05 task suggestion under an answered Jit reply: the existing propose-as-task form (`topic.propose_as_task`), pre-filled with Jit's
+ * escaped title and summary. Only the owner's post of this form runs `task.propose` (origin `owner`); until then
+ * nothing is stored. Returns "" when the reply suggests no task. Plain form post, so it works without script.
+ */
+export function taskSuggestionCard(view: JitReplyView, projectId: string, topic: { id: string; revision: number }, csrf: string, summaryBytes?: number): string {
+  const suggestion = view.taskSuggestion;
+  if (!suggestion) return "";
+  return `<details class="team-card task-suggestion" open><summary>${tr("reply.task_suggestion_title")}</summary><form class="team-form" method="post" action="/projects/${projectId}/tasks">${hiddenCommand(csrf, topic.revision)}<input type="hidden" name="topicId" value="${topic.id}"><label>${tr("common.task_title")}<input name="title" required maxlength="200" value="${escape(suggestion.title)}"></label><label>${tr("common.summary")}<textarea name="summary" required${summaryBytes ? ` maxlength="${summaryBytes}"` : ""}>${escape(suggestion.summary)}</textarea></label><button class="primary">${tr("common.save_as_proposal")}</button><small>${tr("reply.task_suggestion_note")}</small></form></details>`;
+}
+
+/**
+ * S12-D08 rules (a), (d), (e) and (f) for reply chips: an answered reply with suggestions that carries no waiting role
+ * or promotion proposal, task suggestion, MCP or dispatch card, in a topic that is not a promoted origin and has no
+ * pending approval card. Where the reply sits (newest answer, nothing live) is the page's part, rules (b) and (c).
+ */
+export function chipsAllowed(view: JitReplyView, context: { dispatchCard: boolean; mcpCard: boolean; promoted: boolean; approvalPending: boolean }): boolean {
+  return view.state === "answered" && view.suggestions.length > 0 && !view.taskSuggestion &&
+    !view.roleProposals.some(item => item.state === "proposed") && !view.promotionProposals.some(item => item.state === "proposed") &&
+    !context.dispatchCard && !context.mcpCard && !context.promoted && !context.approvalPending;
+}
+
+/** One chip: a plain form that posts exactly its escaped text through the owner's own `message.send` route. */
+const chipForm = (text: string, base: string, csrf: string, topicRevision: number, hidden = false) =>
+  `<form method="post" action="${base}/messages"${hidden ? " hidden" : ""}>${hiddenCommand(csrf, topicRevision)}<input type="hidden" name="text" value="${escape(text)}"><button class="chip">${escape(text)}</button></form>`;
+
+/**
+ * S12-D08 reply chips under Jit's newest answer. A tap posts exactly that text as the owner's next message, with the
+ * same CSRF token, a fresh request id and the topic revision the composer uses, so it is the owner typing it: it grants
+ * nothing, approves nothing and changes no configuration. Suggestion text is untrusted and escaped.
+ */
+export function replyChips(suggestions: readonly string[], base: string, csrf: string, topicRevision: number): string {
+  return `<div class="reply-chips" role="group" aria-label="${tr("reply.suggestions_label")}">${suggestions.map(text => chipForm(text, base, csrf, topicRevision)).join("")}</div>`;
+}
+
+/**
+ * Hidden chip slot after the newest live reply, for web.reply_stream/v2: the script fills it in place when that reply
+ * commits with chips the service allowed (the `suggestions` of its `reply` event) and nothing else is live. Each form
+ * already holds its own request id. Without script it stays hidden, and a reload renders {@link replyChips} instead.
+ */
+function replyChipSlot(replyId: string, base: string, csrf: string, topicRevision: number): string {
+  return `<div class="reply-chips" role="group" aria-label="${tr("reply.suggestions_label")}" data-reply-chips="${replyId}" hidden>${Array.from({ length: suggestionLimit }, () => chipForm("", base, csrf, topicRevision, true)).join("")}</div>`;
 }
 
 /**
@@ -452,7 +506,9 @@ export function conversationPage(state: ReturnType<Application["conversation"]>,
   // app.role_proposals/v1 cards follow the Jit reply that carries them; the edit form lists configured routes only.
   const routes = dispatch ? routesOf(dispatch.team) : [];
   const proposals = (view: JitReplyView | undefined) => (view?.roleProposals.map(item => roleProposalCard(item, { topicBase: base, csrf, routes, defaultRoute: dispatch?.team.projectDefault ?? dispatch?.team.ownerDefault ?? null })).join("") ?? "") +
-    (view?.promotionProposals.map(item => promotionProposalCard(item, { topicBase: base, csrf, originTitle: topic.title })).join("") ?? "");
+    (view?.promotionProposals.map(item => promotionProposalCard(item, { topicBase: base, csrf, originTitle: topic.title })).join("") ?? "") +
+    // S12-D05: a read-only (promoted) topic takes no new task proposals from its page, like every other composer form.
+    (view && !promotedTo ? taskSuggestionCard(view, project.id, topic, csrf, messageBytes) : "");
   // app.mcp_servers/v1 (EXE13): install proposal cards follow the Jit reply that carries them, in thread order
   // like role proposals, with the project-scoped connection selects. A card whose reply fell off this page is
   // not shown, the same as a role proposal card.
@@ -493,11 +549,22 @@ export function conversationPage(state: ReturnType<Application["conversation"]>,
   const approvals = [...(dispatch?.approvals ?? [])].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id))
     .map(card => approvalCard(card, { topicBase: base, csrf })).join("");
   const attach = dispatch?.attachments?.composer ?? null;
+  // S12-D08 reply chips: only under the newest answer on the last page, after the owner's newest message, while no
+  // reply is live (rules (b) and (c)); chipsAllowed covers the rest. Chips never sit beside a waiting approval.
+  const lastOwner = Math.max(0, ...state.items.filter(item => item.attribution.kind === "owner").map(item => item.sequence));
+  const newestAnswer = Math.max(0, ...[...committedReplies.values()].map(view => view.replySequence ?? 0));
+  const approvalPending = (dispatch?.approvals ?? []).some(card => card.topicId === topic.id && card.state === "pending");
+  const newest = (view: JitReplyView) => !state.hasMore && view.replySequence === newestAnswer && view.messageSequence >= lastOwner;
+  const chips = (view: JitReplyView | undefined) => view && !live.length && newest(view) && chipsAllowed(view, {
+    dispatchCard: cards.has(view.replyMessageId!), mcpCard: mcpByReply.has(view.id), promoted: !!promotedTo, approvalPending }) ? replyChips(view.suggestions, base, csrf, topic.revision) : "";
+  // A live reply to the owner's newest message gets a hidden slot the stream may fill when it answers.
+  const chipSlot = (view: JitReplyView) => (view.state === "thinking" || view.state === "blocked") && !view.team && !state.hasMore && !promotedTo && !approvalPending &&
+    view.messageSequence >= lastOwner ? replyChipSlot(view.id, base, csrf, topic.revision) : "";
   return shell(title, { workspace, csrf, project, topics, topic, section: "topic" }, `<div class="content chat-content"${live.length ? ` data-reply-stream="${base}/events" data-reply-cursor="${cursor}"` : ""}>${promotedBanner}${dispatchPanel}${decision}${proposeTask}${approvals}<section aria-label="${tr("topic.message_history")}">${state.items.length ? state.items.map(m => { const jit = committedReplies.get(m.id), reply = replies.get(m.id), card = cards.get(m.id);
       if (m.attribution.kind === "participant" && !jit && folded.has(m.attribution.runId)) return "";
       if (m.attribution.kind === "service" && m.attribution.service === "jit-promotion") return continuedBlock(m);
       return `<article id="message-${m.id}" class="message${m.attribution.kind === "owner" ? " message--owner" : jit || setupGreeting(m.attribution) ? " message--jit" : ""}" data-message-id="${m.id}">${jit || setupGreeting(m.attribution) ? `<div class="reply-head"><span class="jit-avatar">${logoMark({ size: 20 })}</span><span class="reply-name">${tr("jit.name")}</span></div>` : ""}<div class="message-body">${m.text === null ? `<p class="literal">${tr("common.source_unavailable")}</p>` : literalContent(m.text)}</div>${messageAttachmentList(base, dispatch?.attachments?.byMessage.get(m.id) ?? [])}
-      <div class="message-meta"><span>${escape(label(m))}</span><span class="committed">${icon("check")}${tr("common.saved")}</span><details><summary aria-label="${tr("topic.message_details_and_origin")}">${icon("info")}${tr("topic.details")}</summary><div class="message-detail">${time(m.committedAt)}<br>${sourceLink(project.id, m.source, tr("common.message_origin"))}${jit?.discardedTotal ? `<br>${tr("reply.discarded")}: ${jit.discardedTotal} · ${escape(jit.discarded.join(", "))}` : ""}</div></details></div>${jit?.team ? teamReplyMeta(jit, cardsById.get(jit.team.proposalId), project.id, csrf, dispatch?.synthesisLimits) : ""}</article>${proposals(jit)}${mcpCards(jit)}${card ? dispatchCard(card, base, csrf, topic.revision) : ""}${reply && (m.attribution.kind === "owner" || reply.team) ? reply.state !== "answered" ? replyStatus(reply, base, project.id, csrf) : !onPage.has(reply.replyMessageId!) ? answeredElsewhere(reply) : "" : ""}`; }).join("") : `<div class="empty-chat"><div>${icon("chat")}<h2>${tr("topic.start_this_conversation")}</h2><p>${tr("topic.keep_ideas_questions_and_things")}</p></div></div>`}</section>
+      <div class="message-meta"><span>${escape(label(m))}</span><span class="committed">${icon("check")}${tr("common.saved")}</span><details><summary aria-label="${tr("topic.message_details_and_origin")}">${icon("info")}${tr("topic.details")}</summary><div class="message-detail">${time(m.committedAt)}<br>${sourceLink(project.id, m.source, tr("common.message_origin"))}${jit?.discardedTotal ? `<br>${tr("reply.discarded")}: ${jit.discardedTotal} · ${escape(jit.discarded.join(", "))}` : ""}</div></details></div>${jit?.team ? teamReplyMeta(jit, cardsById.get(jit.team.proposalId), project.id, csrf, dispatch?.synthesisLimits) : ""}</article>${proposals(jit)}${mcpCards(jit)}${card ? dispatchCard(card, base, csrf, topic.revision) : ""}${chips(jit)}${reply && (m.attribution.kind === "owner" || reply.team) ? reply.state !== "answered" ? replyStatus(reply, base, project.id, csrf) + chipSlot(reply) : !onPage.has(reply.replyMessageId!) ? answeredElsewhere(reply) : "" : ""}`; }).join("") : `<div class="empty-chat"><div>${icon("chat")}<h2>${tr("topic.start_this_conversation")}</h2><p>${tr("topic.keep_ideas_questions_and_things")}</p></div></div>`}</section>
       <nav class="pagination" aria-label="${tr("topic.message_history_pages")}">${after > 0 ? `<a href="${base}">${tr("common.first_page")}</a>` : ""}${state.hasMore ? `<a href="${base}?after=${state.nextAfter}">${tr("topic.next_messages")}</a>` : ""}</nav></div>`, {
     breadcrumb: { title: project.name, href: `/projects/${project.id}` }, action: `<a class="header-action" href="/projects/${project.id}#new-topic" aria-label="${tr("common.new_topic")}">${icon("plus")}${tr("common.new_topic")}</a>${panelToggle(base)}${dispatch?.boxLive ? `<a class="header-action" href="/projects/${project.id}/box/live">${tr("live.open")}</a>` : ""}${access ? accessBadge(access) : ""}${haltForm}`,
     panel: topicPanelSlot(),

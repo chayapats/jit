@@ -115,6 +115,21 @@ if (chat && typeof EventSource === "function") {
     node.hidden = false;
     announce(card, node.textContent);
   };
+  // S12-D08 reply chips: the page puts a hidden slot of ready forms (each with its own request id) after the newest live
+  // reply. Chips the service allowed for that answer fill it once nothing else is live; text goes in through
+  // value/textContent only, and a tap is the same plain form post as without script.
+  const pendingChips = new Map();
+  const fillChips = (id, replies) => {
+    const slot = document.querySelector(`[data-reply-chips="${id}"]`);
+    if (!slot) return;
+    let shown = 0;
+    for (const [index, form] of [...slot.querySelectorAll("form")].entries()) {
+      const text = replies[index], input = form.querySelector('input[name="text"]'), button = form.querySelector("button");
+      if (typeof text !== "string" || !text || !input || !button) { form.remove(); continue; }
+      input.value = text; button.textContent = text; form.hidden = false; shown++;
+    }
+    slot.hidden = shown === 0;
+  };
   const clearDraft = card => {
     show(card.querySelector("[data-reply-progress]"), "");
     const provisional = card.querySelector("[data-reply-provisional]");
@@ -210,7 +225,11 @@ if (chat && typeof EventSource === "function") {
     if (changed && data.state !== "thinking") {
       announce(card, data.state === "answered" ? card.querySelector("[data-reply-announce]")?.dataset.answered : [data.label, data.next].filter(Boolean).join(" "));
     }
-    if (!liveCards().length) { stopGrace(); stopConfirmation(); stream.close(); }
+    if (data.state === "answered" && Array.isArray(data.suggestions) && data.suggestions.length) pendingChips.set(data.id, data.suggestions);
+    if (!liveCards().length) {
+      if (pendingChips.size) follow(() => { for (const [id, replies] of pendingChips) fillChips(id, replies); pendingChips.clear(); });
+      stopGrace(); stopConfirmation(); stream.close();
+    }
   });
 }
 

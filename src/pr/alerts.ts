@@ -454,8 +454,7 @@ export function admitReportAlerts(
       }
       let receipt: DeliveryReceipt | null;
       try {
-        // delivery.attention_levels/v1: a finding alert is informational; under `needs-me` the report keeps the finding
-        // and the decision records why no notification was created.
+        // Owner-configured PR monitors explicitly request finding alerts, including under needs-me.
         receipt = withSavepoint(tx, "pr_alert_intent", () => commitAttentionIntent(tx, {
           projectId: input.projectId,
           kind: "report",
@@ -467,7 +466,7 @@ export function admitReportAlerts(
           dedupeKey,
           maxBytes,
           guard: PR_ALERT_GUARD,
-          attention: { class: "informational", item: null, workGroupId: null },
+          attention: { class: "needs_owner", item: null, workGroupId: null },
         }, now));
       } catch {
         held.push({ findingId: finding.id, reason: "admission_failed" });
