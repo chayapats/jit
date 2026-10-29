@@ -125,7 +125,11 @@ export function executionCurrent(tx: AppTransaction, request: ApplicationRunRequ
 }
 
 /** Opens the project box for one role; `BoxManager` implements it (exec.box_runtime/v1). */
-export interface RunBoxes { open(projectId: string, roleId: string | null): Promise<BoxSession> }
+export interface RunBoxes {
+  open(projectId: string, roleId: string | null): Promise<BoxSession>;
+  /** ATT05 service hook; called before tool construction, with the attempt and access fence. */
+  prepareAttachments?(session: BoxSession, request: ApplicationRunRequest, current: (tx: AppTransaction) => boolean): Promise<void>;
+}
 /** app.mcp_servers/v1: the MCP tools of one run, over its box (`McpGateway` implements it). */
 export interface RunMcpTools { openRun(input: McpRunInput): Promise<{ definitions: ToolDefinition[]; release(): void }> }
 /**
@@ -188,6 +192,8 @@ export async function openRunTools(store: TransactionStore, execution: RunExecut
     throw new AppError("access_level_insufficient", 409, { effective: session.handle.mode, needed: grant.level });
   }
   const now = execution.now ?? Date.now;
+  try { await execution.boxes.prepareAttachments?.(session, request, tx => executionCurrent(tx, request)); }
+  catch (error) { session.release(); throw error; }
   const inner = session.backend;
   // The service environment never reaches the box: `bash` always runs with the box's own environment.
   const backend: ExecutionBackend = { ...inner, spawn: ({ env: _env, ...spawn }) => inner.spawn(spawn) };

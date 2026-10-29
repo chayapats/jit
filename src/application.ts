@@ -356,10 +356,16 @@ export class Application {
         if (this.#upgradeBusy || upgradeFenced(store.path) || readRestoreGate(store.path)) throw new AppError("service_unavailable", 503);
       } });
 
+    const attachmentCopies = options.attachmentCopies ?? options.boxes?.attachmentCopies ?? {
+      reconcile: async (projectId: string, ids: readonly string[]) => {
+        if (store.read(tx => ids.some(id => tx.get("SELECT 1 FROM attachment_box_copies WHERE project_id = ? AND attachment_id = ? AND state IN ('present','removing')", projectId, id))))
+          throw new AppError("attachment_copy_cleanup_failed", 503);
+      },
+    };
     this.#deletionEnvironment = { backupDir: this.#backupDir,
-      attachmentCleanup: { reconcile: async (projectId, ids) => { await this.#sanitizer.settleForDeletion(); await options.attachmentCopies?.reconcile(projectId, ids); this.#attachments.purgeDeleted(); } }, contributors: [
+      attachmentCleanup: { reconcile: async (projectId, ids) => { await this.#sanitizer.settleForDeletion(); await attachmentCopies.reconcile(projectId, ids); this.#attachments.purgeDeleted(); } }, contributors: [
       ...(options.deletionContributors ?? []),
-      attachmentProjectContributor(this.#attachments, { reconcile: async (projectId, ids) => { await this.#sanitizer.settleForDeletion(); await options.attachmentCopies?.reconcile(projectId, ids); } }),
+      attachmentProjectContributor(this.#attachments, { reconcile: async (projectId, ids) => { await this.#sanitizer.settleForDeletion(); await attachmentCopies.reconcile(projectId, ids); } }),
       { key: "execution_box", preview: (_tx: AppTransaction, projectId: string) => previewBoxData(this.config.execution.directory, projectId),
         confirm: () => {}, reconcile: async (projectId: string) => {
           await this.#boxes?.wipeDeletedProject(projectId);

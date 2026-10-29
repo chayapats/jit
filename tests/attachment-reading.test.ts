@@ -193,8 +193,7 @@ test("full attachment text, including text beyond inline, and present box copies
   expect(entries[0]!.text).toEndWith(marker);
   const request = structuredClone(f.port.requests[0]!);
   f.store.transaction(tx => {
-    tx.run("CREATE TABLE attachment_box_copies (project_id TEXT, attachment_id TEXT, state TEXT)");
-    tx.run("INSERT INTO attachment_box_copies VALUES (?, ?, 'present')", f.project.id, a.id);
+    tx.run("INSERT INTO attachment_box_copies VALUES (?, ?, 'present', 0, 0, 0)", f.project.id, a.id);
   });
   request.attachments = []; request.execution = { level: "workspace", boxProjectId: f.project.id };
   expect(attachmentOutboundEntries(f.store, request)[0]!.text).toEndWith(marker);

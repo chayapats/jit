@@ -1682,6 +1682,6 @@ for (const version of [42, 43]) test(`COMM03-F: migration from schema ${version}
   old.transaction(tx => { tx.run("DROP TRIGGER jit_reply_queue_dependency_change"); tx.run(`PRAGMA user_version = ${version}`); }); old.close();
   const reopened = new TransactionStore(path); stores.push(reopened);
   expect(reopened.read(tx => tx.get("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = 'jit_reply_queue_dependency_change'"))).not.toBeNull();
-  expect(reopened.read(tx => tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version)).toBe(44);
+  expect(reopened.read(tx => tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version)).toBe(45);
   expect(reopened.read(tx => tx.all<{ name: string }>("PRAGMA table_info(web_tool_calls)")).some(column => column.name === "fallback")).toBe(true);
 });

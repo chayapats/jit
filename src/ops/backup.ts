@@ -267,6 +267,8 @@ function ensureDir(dir: string): void {
  * classified before it can enter a backup.
  */
 export const backupImageTables: Readonly<Record<string, "include" | "exclude" | "scrub">> = Object.freeze({
+  // ATT05: copy identities only; every box open reconciles these against the live attachments and workspace.
+  attachment_box_copies: "include",
   attachments: "include", attachment_events: "include",
   owner: "exclude", sessions: "exclude", login_throttle: "exclude",
   job_scheduler: "exclude", delivery_worker: "exclude",

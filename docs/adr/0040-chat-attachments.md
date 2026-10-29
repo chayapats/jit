@@ -183,6 +183,8 @@ Each choice is labelled. **Confirmed** means an owner decision in S13. **Propose
   - Every box open also removes copies that no live attachment owns.
   - A copy a process made elsewhere in the workspace is not tracked (residual).
 
+**ATT05 implementation note — 2026-10-29:** schema 45 tracks copy identities and lifecycle state, with no paths, hashes or bytes of content in SQLite. The runner adapter accepts binary derivatives through its existing base64 `write` operation; Schway's text-only backend contract and `expectedBoxMounts` stay unchanged. A `removing` intent precedes each new write, and a bounded runner read-back verifies SHA-256 before `present`; existing matching copies are reused. Every box open prunes unowned entries, including crash/restore orphans. Box-manager project holds serialize this work and block opens/resets during stopped host cleanup. Running removal pins no-symlink directories inside the box and invokes `/bin/rm` through `spawn`, then verifies absence. ATT06 uses that same verified cleanup for delete, forget and project deletion. Workspace/Full notices render in Settings, the widening confirmation and the composer in Thai and English, including when ingestion is off. These controls leave the outbound-channel residuals above unchanged: registry tunnels at Workspace, unrestricted network at Full, forced `git add` and copies made elsewhere by box processes.
+
 ### Images to models (D10)
 
 - **Confirmed (D10):**

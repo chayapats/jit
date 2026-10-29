@@ -1,14 +1,15 @@
 import { projectDeleted } from "../project-lifecycle";
-import type { ExecutionBackend } from "schway/host";
+import { AttachmentBoxCopies } from "../attachments/box-copies";
+import type { ApplicationRunRequest } from "../team/types";
 import type { AppConfig } from "../config";
 import { AppError } from "../errors";
 import type { AppTransaction, TransactionStore } from "../store";
 import { assertExecutionAllowed, effectiveAccess, levelRank, readProjectAccess, type AccessLevel } from "./access";
-import { createBoxBackend, type BoxBackendOptions } from "./box-backend";
+import { createBoxBackend, type BoxBackend, type BoxBackendOptions } from "./box-backend";
 import { boxTemporaryDirectory, boxWorkspaceRoot, type BoxHandle, type BoxMode, type BoxRuntime } from "./box-runtime";
 
 /** One open use of a project's box. `release` must be called once the caller is done with the backend. */
-export interface BoxSession { readonly handle: BoxHandle; readonly backend: ExecutionBackend; release(): void }
+export interface BoxSession { readonly handle: BoxHandle; readonly backend: BoxBackend; release(): void }
 
 /** Options of {@link BoxManager}. */
 export interface BoxManagerOptions {
@@ -48,6 +49,9 @@ interface Slot {
  */
 export class BoxManager {
   readonly #closeRuntime: (() => Promise<void>) | undefined;
+  /** ATT05 copies share this manager's project holds and existing runner; no attachment mount is added. */
+  readonly attachmentCopies: AttachmentBoxCopies;
+  readonly #holds = new Map<string, Promise<void>>();
   readonly #slots = new Map<string, Slot>();
   /** Bumped by every access change of a project; an open that saw another generation re-checks before it returns. */
   readonly #accessGeneration = new Map<string, number>();
@@ -63,6 +67,27 @@ export class BoxManager {
     this.#onCapacity = options.onCapacity;
     this.#backend = options.backend ?? {};
     this.#profile = options.profile === true;
+    this.attachmentCopies = new AttachmentBoxCopies(store, { runtime, directory: config.execution.directory,
+      hold: (projectId, action) => this.holdProject(projectId, action) }, this.#now);
+  }
+
+  /** Holds a project against new opens and resets while service-owned copy work verifies its outcome. */
+  async holdProject<T>(projectId: string, action: () => Promise<T>): Promise<T> {
+    const prior = this.#holds.get(projectId);
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    this.#holds.set(projectId, held);
+    try {
+      await prior;
+      await this.#slots.get(projectId)?.opening?.catch(() => undefined);
+      if (this.#slots.get(projectId)?.resetting) throw new AppError("box_busy", 409);
+      return await action();
+    } finally { if (this.#holds.get(projectId) === held) this.#holds.delete(projectId); release(); }
+  }
+
+  /** Materializes only current granted-run attachments before any execution or MCP tool is offered. */
+  prepareAttachments(session: BoxSession, request: ApplicationRunRequest, current: (tx: AppTransaction) => boolean): Promise<void> {
+    return this.attachmentCopies.copy(session, request, current);
   }
 
   /** Releases the runtime's service-owned proxy after callers have drained; never deletes project data. */
@@ -122,10 +147,13 @@ export class BoxManager {
    * `box_capacity` when every slot is held by other projects.
    */
   async open(projectId: string, roleId: string | null, requested: { profile?: boolean } = {}): Promise<BoxSession> {
+    while (this.#holds.has(projectId)) await this.#holds.get(projectId);
     const options = { profile: requested.profile ?? this.#profile };
     let mode = this.#mode(projectId, roleId);
     let slot = this.#slots.get(projectId);
     while (slot?.stopping) { await slot.stopping.catch(() => undefined); slot = this.#slots.get(projectId); }
+    while (this.#holds.has(projectId)) await this.#holds.get(projectId);
+    slot = this.#slots.get(projectId);
     if (slot?.resetting) throw new AppError("box_busy", 409);
     if (!slot?.handle && !slot?.opening) {
       const holders = this.store.read(tx => this.#holders(tx));
@@ -139,6 +167,8 @@ export class BoxManager {
       for (let attempt = 0; ; attempt++) {
         const generation = this.#accessGeneration.get(projectId) ?? 0;
         while (own.opening) await own.opening.catch(() => undefined);
+        // A queued open must respect a cleanup hold acquired while it waited for another ensure.
+        while (this.#holds.has(projectId)) await this.#holds.get(projectId);
         // A queued open (including one requesting a different profile) must not start another ensure after deletion.
         mode = this.#mode(projectId, roleId);
         if (!own.handle || own.verified === false || own.handle.mode !== mode || own.handle.profile !== (options.profile === true)) {
@@ -180,7 +210,7 @@ export class BoxManager {
         return this.runtime.exec(target, request);
       },
     };
-    return {
+    const session: BoxSession = {
       handle,
       backend: createBoxBackend(guarded, handle, this.#backend),
       release: () => {
@@ -188,12 +218,15 @@ export class BoxManager {
         released = true; own.busy--; own.lastUsedAt = this.#now();
       },
     };
+    try { await this.attachmentCopies.opened(handle); }
+    catch (error) { session.release(); throw error; }
+    return session;
   }
 
   /** True while any open session uses the project's box or a reset or stop is in progress. */
   busy(projectId: string): boolean {
     const slot = this.#slots.get(projectId);
-    return !!slot && (slot.busy > 0 || slot.resetting || !!slot.opening || !!slot.stopping);
+    return this.#holds.has(projectId) || !!slot && (slot.busy > 0 || slot.resetting || !!slot.opening || !!slot.stopping);
   }
 
   /** Projects whose box Jit currently holds (running, opening or stopping), sorted. */
@@ -248,6 +281,11 @@ export class BoxManager {
   async wipeDeletedProject(projectId: string): Promise<void> {
     await this.stopDeletedProject(projectId);
     await this.runtime.reset({ projectId }, { wipeWorkspace: true });
+    this.#copiesWiped(projectId);
+  }
+
+  #copiesWiped(projectId: string): void {
+    this.store.transaction(tx => tx.run("UPDATE attachment_box_copies SET state = 'wiped', updated_at = ? WHERE project_id = ?", this.#now(), projectId));
   }
 
   /**
@@ -280,6 +318,7 @@ export class BoxManager {
       steps.before?.();
       slot.handle = null;
       await this.runtime.reset({ projectId }, { wipeWorkspace });
+      if (wipeWorkspace) this.#copiesWiped(projectId);
       this.#stopped(projectId);
       return steps.commit();
     } finally {

@@ -120,6 +120,8 @@ export const en: Record<MessageKey, string> = {
   "error.attachment_quota_exceeded_files": "This message has more files than one message can carry. Remove some, then send again.",
   "error.invalid_attachment_command": "The attachment command is not valid. Reload the topic and try again.",
   "attachments.attach": "Attach files",
+  "attachments.box_notice_workspace": "Workspace: sanitized attachment copies are available to box processes. The allowed registry proxy does not inspect content, so processes can send file contents to those registries. Copies made elsewhere in the workspace are not tracked; forced git add can include them in commits.",
+  "attachments.box_notice_full": "Full: box processes have full network access and can send sanitized attachment copies anywhere. Copies made elsewhere in the workspace are not tracked; forced git add can include them in commits.",
   "attachments.provider_notice": "Files are sent to the model provider",
   "attachments.limits": "Up to {count} files, {size} each",
   "attachments.pdf_needs_sanitizer": "This host has no container sanitizer, so PDF and WebP files are turned off. Ask the operator to rebuild and pin the base image.",

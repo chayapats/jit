@@ -112,7 +112,7 @@ test("WEB03 JSON save never returns the key and migration 42 to 43 preserves exi
   f.app.execute(f.auth.actor, { kind: "connection.create", requestId: rid(), projectId: null, expectedRevision: 0, payload: { kind: "github_token", label: "GitHub", projectScope: null } });
   const copy = join(f.root, "schema42.sqlite"); const snapshot = new Database(f.store.path); snapshot.query("VACUUM INTO ?").run(copy); snapshot.close();
   const old = new Database(copy); old.exec("ALTER TABLE web_tool_calls DROP COLUMN fallback; PRAGMA user_version = 42;"); old.close();
-  const migrated = new TransactionStore(copy); try { expect(migrated.read(tx => tx.all<{ kind: string }>("SELECT kind FROM connections ORDER BY kind")).map(x => x.kind)).toEqual(["github_token", "mcp_env", "web_search_key"]); expect(migrated.read(tx => tx.get<{ user_version: number }>("PRAGMA user_version"))!.user_version).toBe(44); } finally { migrated.close(); }
+  const migrated = new TransactionStore(copy); try { expect(migrated.read(tx => tx.all<{ kind: string }>("SELECT kind FROM connections ORDER BY kind")).map(x => x.kind)).toEqual(["github_token", "mcp_env", "web_search_key"]); expect(migrated.read(tx => tx.get<{ user_version: number }>("PRAGMA user_version"))!.user_version).toBe(45); } finally { migrated.close(); }
 });
 
 
