@@ -120,7 +120,7 @@ export class TransactionStore {
     try {
       const version = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
       if (version > schemaVersion) throw new Error("Database schema is newer than this application");
-      this.#db.exec("PRAGMA busy_timeout = 2000; PRAGMA foreign_keys = ON;");
+      this.#db.exec("PRAGMA busy_timeout = 2000; PRAGMA foreign_keys = ON; PRAGMA secure_delete = ON;");
       if (version < schemaVersion && (options.migrateExisting !== false || !existing)) {
         // SQLite table rebuilds must not delete referenced parents with enforcement enabled.
         // Modern ALTER TABLE semantics everywhere: Apple's SQLite build defaults to the legacy behaviour, Linux (CI, the
@@ -1273,6 +1273,11 @@ export class TransactionStore {
     }).immediate();
   }
 
+  /** Verifies a truncating WAL checkpoint after secure_delete payload updates; busy readers keep cleanup pending. */
+  purgePayloadPages(): boolean {
+    try { this.#db.exec("VACUUM"); return this.#tx.get<{ busy: number }>("PRAGMA wal_checkpoint(TRUNCATE)")?.busy === 0; } catch { return false; }
+  }
+
   /** Consistent app snapshot bytes after a WAL checkpoint; never copies a live WAL blindly. */
   snapshotBytes(): Uint8Array {
     try { this.#db.exec("PRAGMA wal_checkpoint(TRUNCATE);"); } catch { /* Checkpoint best-effort; serialize stays consistent. */ }
@@ -1343,7 +1348,7 @@ export class TransactionStore {
     try { const dir = openSync(dirname(this.path), "r"); try { fsyncSync(dir); } finally { closeSync(dir); } } catch { /* Directory fsync is best-effort on some filesystems. */ }
     const reopened = new Database(this.path, { create: true, strict: true });
     try {
-      reopened.exec("PRAGMA busy_timeout = 2000; PRAGMA foreign_keys = ON;");
+      reopened.exec("PRAGMA busy_timeout = 2000; PRAGMA foreign_keys = ON; PRAGMA secure_delete = ON;");
       reopened.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;");
       chmodSync(this.path, 0o600);
     } catch (error) {

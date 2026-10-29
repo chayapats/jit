@@ -1,3 +1,4 @@
+import { liveProjectSql } from "./project-lifecycle";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { AppError } from "./errors";
 import type { AppTransaction } from "./store";
@@ -176,7 +177,7 @@ export function readFeedEvents(tx: AppTransaction, now: number): FeedEvent[] {
     push({ schedule, left, event: { scheduleId: schedule.id, revision: schedule.revision, instant: next.utc, stamp: schedule.updatedAt,
       kind: schedule.kind, projectName, purpose: schedule.purpose } });
   };
-  for (const project of tx.all<{ id: string; name: string }>("SELECT id, name FROM projects ORDER BY created_at, id")) {
+  for (const project of tx.all<{ id: string; name: string }>(`SELECT p.id, p.name FROM projects p WHERE ${liveProjectSql("p")} ORDER BY p.created_at, p.id`)) {
     for (const schedule of listSchedules(tx, project.id)) {
       if (schedule.state !== "active" || schedule.occurrencesRemaining <= 0) continue;
       advance(schedule, project.name, now, schedule.occurrencesRemaining - (dueRange(schedule, now) ? 1 : 0));

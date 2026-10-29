@@ -1,3 +1,4 @@
+import { requireLiveProject } from "../project-lifecycle";
 import { readActiveRole } from "../team/configuration";
 import { createHash } from "node:crypto";
 import { AppError } from "../errors";
@@ -263,6 +264,7 @@ export function writeResume(tx: AppTransaction, command: ResumeExecutionCommand,
  * `needed`. Returns the effective level otherwise.
  */
 export function assertExecutionAllowed(tx: AppTransaction, projectId: string, roleId: string | null, needed: AccessLevel): AccessLevel {
+  requireLiveProject(tx, projectId);
   if (roleId) readActiveRole(tx, roleId);
   const state = readAccessState(tx, projectId);
   if (state.halted) throw new AppError("execution_halted", 409);

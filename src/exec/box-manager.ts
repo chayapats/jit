@@ -1,3 +1,4 @@
+import { projectDeleted } from "../project-lifecycle";
 import type { ExecutionBackend } from "schway/host";
 import type { AppConfig } from "../config";
 import { AppError } from "../errors";
@@ -92,6 +93,7 @@ export class BoxManager {
   /** Seeds the running set from the runtime after a restart, so capacity counts boxes left running. */
   async reconcile(): Promise<void> {
     for (const box of await this.runtime.list()) {
+      if (this.store.read(tx => projectDeleted(tx, box.projectId))) { await this.stopDeletedProject(box.projectId); continue; }
       if (box.state !== "running" || this.#slots.has(box.projectId) || !box.mode) continue;
       // The next open re-ensures (and so re-verifies) the box; until then it counts for capacity and the idle sweep.
       const handle = Object.freeze({ projectId: box.projectId, name: box.name, mode: box.mode, profile: box.profile === true,
@@ -223,6 +225,14 @@ export class BoxManager {
     if (slot) return this.#stopSlot(projectId, slot);
     await this.runtime.stop({ projectId });
     this.#stopped(projectId);
+  }
+
+  /** Stops a tombstoned project's box after any concurrent ensure settles; the shared project gate denies new opens. */
+  async stopDeletedProject(projectId: string): Promise<void> {
+    const slot = this.#slots.get(projectId);
+    this.#accessGeneration.set(projectId, (this.#accessGeneration.get(projectId) ?? 0) + 1);
+    await slot?.opening?.catch(() => undefined);
+    await this.stop(projectId);
   }
 
   /**

@@ -1,3 +1,4 @@
+import type { DeletionEnvironment } from "../memory/delete";
 import type { AppConfig } from "../config";
 import { composeJobQueue, type ComposeOptions, type ComposedQueue } from "../composition";
 import { AppError } from "../errors";
@@ -38,6 +39,7 @@ export interface ManagedServiceOptions {
  */
 export class ManagedService implements UpgradeServiceControl {
   #current: ComposedQueue | undefined;
+  #deletionEnvironment: DeletionEnvironment = {};
   #drainMs: number;
   #sleep: (ms: number) => Promise<void>;
 
@@ -55,8 +57,21 @@ export class ManagedService implements UpgradeServiceControl {
   /** Adopts an already composed queue (startFullApp composes synchronously). */
   adopt(composed: ComposedQueue): this {
     if (composed.queue.store !== this.store) throw new AppError("invalid_job_store", 500);
+    composed.queue.setDeletionEnvironment(this.#deletionEnvironment);
     this.#current = composed;
     return this;
+  }
+
+  /** Carries service-owned deletion hooks across boot, upgrade and restore queue recomposition. */
+  setDeletionEnvironment(environment: DeletionEnvironment): void {
+    this.#deletionEnvironment = environment;
+    this.#current?.queue.setDeletionEnvironment(environment);
+  }
+
+  #compose(): ComposedQueue {
+    const composed = this.compose();
+    composed.queue.setDeletionEnvironment(this.#deletionEnvironment);
+    return composed;
   }
 
   /** Current scheduler; closed while an upgrade holds the service quiesced. */
@@ -69,7 +84,7 @@ export class ManagedService implements UpgradeServiceControl {
    * and admission stays fenced until the upgrade activates or rolls back.
    */
   async start(): Promise<UpgradeResumeResult> {
-    if (!this.#current) this.#current = this.compose();
+    if (!this.#current) this.#current = this.#compose();
     if (upgradeFenced(this.store.path)) return { reconciled: false, detail: "upgrade_fence_held" };
     await this.#current.queue.reconcile(this.#current.teamPort);
     return { reconciled: true, detail: "jobs_sessions_reconciled" };
@@ -99,7 +114,7 @@ export class ManagedService implements UpgradeServiceControl {
     const previous = this.#current;
     try { previous?.queue.close(); } catch { /* Already closed or store swapped. */ }
     let next: ComposedQueue;
-    try { next = this.compose(); }
+    try { next = this.#compose(); }
     catch (error) { return { reconciled: false, detail: error instanceof AppError ? error.code : "scheduler_unavailable" }; }
     try {
       await next.queue.reconcile(next.teamPort);
@@ -126,7 +141,7 @@ export class ManagedService implements UpgradeServiceControl {
    */
   async fencedLifecycle<T>(run: (port: ApplicationRunPort) => Promise<T>): Promise<T> {
     try { this.#current?.queue.close(); } catch { /* Already closed or store swapped. */ }
-    const composed = this.compose();
+    const composed = this.#compose();
     try { return await run(composed.teamPort); }
     finally {
       try { composed.queue.close(); await composed.queue.idle(); } catch { /* Teardown only. */ }

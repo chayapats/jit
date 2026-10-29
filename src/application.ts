@@ -1,5 +1,6 @@
 import { AttachmentStorage, type AttachmentStorageOptions, type AttachmentUpload } from "./attachments/storage";
 import { readAttachment, readAttachmentEvents, type AttachmentView, type AttachmentEventView } from "./attachments/records";
+import { liveProjectSql, requireLiveProject } from "./project-lifecycle";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { AppError } from "./errors";
 import type { AppConfig } from "./config";
@@ -86,7 +87,7 @@ import {
 import { fenceUnavailableExtractions, memoryIdentity, prepareExtraction } from "./memory/extract";
 import { correctionIdentity, correctionImpact, prepareCorrection, readCorrection } from "./memory/correct";
 import {
-  confirmDeletion, deleteCommandIdentity, lifecycleSafeManifests, listDeletionOperations, prepareDeletionPreview, purgeDeletedExports, readDeletionLedger,
+  confirmDeletion, finalizeProjectDatabasePurge, deleteCommandIdentity, lifecycleSafeManifests, listDeletionOperations, prepareDeletionPreview, purgeDeletedExports, readDeletionLedger,
   readDeletionOperation, readDeletionPreview, retryDeletion, type DeleteCommand, type DeletionConfirmReceipt,
   type DeletionOperation, type DeletionPreview, type DeletionReceipt,
 } from "./memory/delete";
@@ -217,7 +218,7 @@ export interface ApplicationOptions {
    * upgrade can quiesce a supplied `jobs` queue but leaves reconciliation to
    * the next service boot (journal `activated`).
    */
-  service?: RestoreServiceControl & { readonly queue?: JobQueue | undefined; start?(): Promise<UpgradeResumeResult> };
+  service?: RestoreServiceControl & { readonly queue?: JobQueue | undefined; start?(): Promise<UpgradeResumeResult>; setDeletionEnvironment?(environment: import("./memory/delete").DeletionEnvironment): void };
   /** Deterministic fault seam at upgrade journal boundaries (tests only). */
   upgradeFault?(point: UpgradeFaultPoint): void;
   /** Deterministic fault seam at restore journal boundaries (tests only). */
@@ -232,6 +233,8 @@ export interface ApplicationOptions {
    * `box_not_configured`, and the kill switch has no box to stop.
    */
   boxes?: BoxManager;
+  /** Service-owned external collateral for project deletion; ATT06 supplies attachment lifecycle here. */
+  deletionContributors?: readonly import("./memory/project-delete").ProjectCollateralContributor[];
   /**
    * app.connections/v1 (EXE08): the secret files of owner connections. Without it every connection command is
    * `connection_vault_not_configured`. Stored values are fingerprinted for redaction when the application starts.
@@ -275,6 +278,7 @@ export class Application {
   /** True while an asynchronous upgrade or restore command runs; other mutating commands are refused. */
   #upgradeBusy = false;
   #backupDir: string;
+  #deletionEnvironment: import("./memory/delete").DeletionEnvironment;
   #exportLimits: ExportLimits;
   #restoreDir: string;
   #upgradeDir: string;
@@ -307,6 +311,13 @@ export class Application {
         if (this.#upgradeBusy || upgradeFenced(store.path) || readRestoreGate(store.path)) throw new AppError("service_unavailable", 503);
       } });
 
+    this.#deletionEnvironment = { backupDir: this.#backupDir, contributors: [
+      ...(options.deletionContributors ?? []),
+      ...(this.#boxes ? [{ key: "execution_box", preview: (_tx: AppTransaction, projectId: string) => ({ count: 1, bytes: 0, digest: digest(projectId), identities: [projectId] }),
+        confirm: () => {}, reconcile: async (projectId: string) => { await this.#boxes!.stopDeletedProject(projectId); } }] : []),
+    ] };
+    options.jobs?.setDeletionEnvironment(this.#deletionEnvironment);
+    options.service?.setDeletionEnvironment?.(this.#deletionEnvironment);
     this.#exportLimits = {
       maxExports: Math.min(exportRetention.maxExports, Math.max(1, options.exportLimits?.maxExports ?? exportRetention.maxExports)),
       maxBytes: Math.min(exportRetention.maxBytes, Math.max(1, options.exportLimits?.maxBytes ?? exportRetention.maxBytes)),
@@ -439,7 +450,7 @@ export class Application {
     return this.store.read(tx => {
       this.#requireOwner(tx, actor, ["web", "telegram"]);
       const rows = tx.all<Project>(`SELECT p.id, p.name, p.revision, g.id AS groupId, p.created_at AS createdAt
-        FROM projects p JOIN project_groups g ON g.project_id = p.id ORDER BY p.created_at, p.id LIMIT ? OFFSET ?`,
+        FROM projects p JOIN project_groups g ON g.project_id = p.id WHERE ${liveProjectSql("p")} ORDER BY p.created_at, p.id LIMIT ? OFFSET ?`,
       this.config.pageSize + 1, offset);
       return { revision: tx.get<{ revision: number }>("SELECT revision FROM app_state WHERE id = 1")!.revision,
         projects: rows.slice(0, this.config.pageSize), hasMore: rows.length > this.config.pageSize };
@@ -576,7 +587,7 @@ export class Application {
       this.#requireOwner(tx, actor);
       if (!needle) return { query: needle, projects: [], topics: [], more: { projects: false, topics: false } };
       const projects = tx.all<Project>(`SELECT p.id, p.name, p.revision, g.id AS groupId, p.created_at AS createdAt
-        FROM projects p JOIN project_groups g ON g.project_id = p.id WHERE instr(lower(p.name), lower(?)) > 0
+        FROM projects p JOIN project_groups g ON g.project_id = p.id WHERE ${liveProjectSql("p")} AND instr(lower(p.name), lower(?)) > 0
         ORDER BY p.created_at DESC, p.id LIMIT ?`, needle, limits.projects + 1);
       // Candidates are bounded (4× the topic limit) and projected through the normal topic read, so an unavailable
       // title is never returned and does not use up a result slot.
@@ -584,7 +595,7 @@ export class Application {
       const rows = tx.all<{ id: string; projectId: string; projectName: string }>(`SELECT t.id, t.project_id AS projectId, p.name AS projectName
         FROM topics t JOIN projects p ON p.id = t.project_id JOIN sources s ON s.id = t.source_id
         JOIN source_versions v ON v.source_id = t.source_id AND v.revision = t.source_revision AND v.generation = t.source_generation
-        WHERE s.availability = 'available' AND v.content_text IS NOT NULL AND instr(lower(v.content_text), lower(?)) > 0
+        WHERE ${liveProjectSql("p")} AND s.availability = 'available' AND v.content_text IS NOT NULL AND instr(lower(v.content_text), lower(?)) > 0
         ORDER BY t.created_at DESC, t.id LIMIT ?`, needle, scan);
       const visible = rows.map(row => ({ project: { id: row.projectId, name: row.projectName }, topic: readTopic(tx, row.projectId, row.id) }))
         .filter(item => item.topic.title !== null);
@@ -874,7 +885,7 @@ export class Application {
     if (command?.kind === "export.create") return this.#exportCommand(actor, command);
     if (command?.kind === "backup.create") return this.#createBackup(actor, command);
     if (command?.kind === "backup.prune") return this.#pruneBackups(actor, command);
-    if (command?.kind === "memory.delete.preview" || command?.kind === "memory.delete.confirm" || command?.kind === "memory.delete.retry") return this.#deleteCommand(actor, command);
+    if (command?.kind === "memory.delete.preview" || command?.kind === "memory.delete.confirm" || command?.kind === "memory.delete.retry" || command?.kind === "project.delete.preview" || command?.kind === "project.delete.confirm" || command?.kind === "project.delete.retry") return this.#deleteCommand(actor, command);
     if (command?.kind === "memory.extract") return this.#memoryCommand(actor, command);
     if (command?.kind === "memory.correct") return this.#correctCommand(actor, command);
     if (command?.kind === "memory.forget") return this.#forgetCommand(actor, command);
@@ -1002,7 +1013,7 @@ export class Application {
     requireId(projectId); requireId(previewId);
     return this.store.read(tx => {
       this.#requireOwner(tx, actor);
-      return { project: this.#project(tx, projectId), preview: readDeletionPreview(tx, projectId, previewId) };
+      return { project: this.#project(tx, projectId, true), preview: readDeletionPreview(tx, projectId, previewId) };
     });
   }
 
@@ -1011,7 +1022,7 @@ export class Application {
     requireId(projectId); requireId(operationId);
     return this.store.read(tx => {
       this.#requireOwner(tx, actor);
-      return { project: this.#project(tx, projectId), operation: readDeletionOperation(tx, projectId, operationId) };
+      return { project: this.#project(tx, projectId, true), operation: readDeletionOperation(tx, projectId, operationId) };
     });
   }
 
@@ -1020,7 +1031,16 @@ export class Application {
     requireId(projectId);
     return this.store.read(tx => {
       this.#requireOwner(tx, actor);
-      return { project: this.#project(tx, projectId), operations: listDeletionOperations(tx, projectId) };
+      return { project: this.#project(tx, projectId, true), operations: listDeletionOperations(tx, projectId) };
+    });
+  }
+
+  /** Lists recent whole-project cleanup operations, including tombstones hidden from project navigation. */
+  projectDeletionOperations(actor: OwnerActor): DeletionOperation[] {
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor);
+      return tx.all<{ record_json: string }>("SELECT record_json FROM deletion_operations WHERE json_extract(record_json, '$.scope.kind') = 'project' ORDER BY rowid DESC LIMIT 50")
+        .map(row => JSON.parse(row.record_json) as DeletionOperation);
     });
   }
 
@@ -1280,7 +1300,7 @@ export class Application {
 
   #restoreContext(actor: OwnerActor | null): RestoreContext {
     return {
-      store: this.store, restoreDir: this.#restoreDir, backupDir: this.#backupDir, ledgerPath: this.#ledgerPath,
+      store: this.store, deletionEnvironment: this.#deletionEnvironment, restoreDir: this.#restoreDir, backupDir: this.#backupDir, ledgerPath: this.#ledgerPath,
       port: this.#nativeSnapshot, jitVersion: this.#jitVersion, now: this.#now, service: this.#upgradeService(),
       authorize: tx => { if (actor) this.#requireOwner(tx, actor, ["web"], false); },
       ...(this.#restoreFault ? { fault: this.#restoreFault } : {}),
@@ -1339,7 +1359,7 @@ export class Application {
     // Private commit metadata: only a newly created or re-armed operation earns post-commit work. Receipt
     // replays and duplicate confirmations never queue a pass (the replayed receipt keeps duplicate:false).
     const { result, operationId } = this.store.transaction(tx => {
-      this.#requireOwner(tx, actor); const project = this.#project(tx, command.projectId);
+      this.#requireOwner(tx, actor); const project = this.#project(tx, command.projectId, command.kind.startsWith("project.delete."));
       const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
       if (prior) {
         if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409);
@@ -1348,17 +1368,17 @@ export class Application {
       const now = this.#now();
       let operationId: string | null = null;
       let result: DeletionReceipt | DeletionConfirmReceipt | DeletionOperation;
-      if (command.kind === "memory.delete.preview") {
-        result = { preview: prepareDeletionPreview(tx, command, project.revision, now, { backupDir: this.#backupDir }), duplicate: false } satisfies DeletionReceipt;
-      } else if (command.kind === "memory.delete.confirm") {
-        const confirmed = confirmDeletion(tx, command, project.revision, now, { backupDir: this.#backupDir });
+      if (command.kind === "memory.delete.preview" || command.kind === "project.delete.preview") {
+        result = { preview: prepareDeletionPreview(tx, command, project.revision, now, this.#deletionEnvironment), duplicate: false } satisfies DeletionReceipt;
+      } else if (command.kind === "memory.delete.confirm" || command.kind === "project.delete.confirm") {
+        const confirmed = confirmDeletion(tx, command, project.revision, now, this.#deletionEnvironment);
         if (!confirmed.duplicate) operationId = confirmed.operation.id;
         result = confirmed;
-      } else {
+      } else if (command.kind === "memory.delete.retry" || command.kind === "project.delete.retry") {
         const retried = retryDeletion(tx, command, now);
         if (retried.state === "pending" && retried.reason === "retry_requested") operationId = retried.id;
         result = retried;
-      }
+      } else throw new AppError("invalid_memory_delete");
       this.#beforeCommit?.("memory");
       tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(result), now);
       tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId, now);
@@ -1366,10 +1386,16 @@ export class Application {
     });
     this.#jobs?.cancelFenced();
     if (operationId) {
+      if (command.kind === "project.delete.confirm") {
+        this.#effects?.accessChanged(command.projectId);
+        this.#browser?.accessChanged(command.projectId);
+        for (const server of this.store.read(tx => tx.all<{ id: string }>("SELECT id FROM mcp_servers WHERE project_id = ?", command.projectId))) this.#mcp?.serverRemoved(server.id);
+      }
       // app.deletion_ledger/v1: the committed tombstones are in the installation ledger; refresh its checkpoint.
       this.#syncLedger();
       // Committed: purge app-owned export files now, then hand native contexts to one budgeted pass.
       try { purgeDeletedExports(this.store, this.#now(), operationId); } catch { /* Per-file state stays pending for reconcile. */ }
+      finalizeProjectDatabasePurge(this.store, this.#now(), operationId);
       void this.#jobs?.reconcilePendingDeletions();
     }
     return result;
@@ -2746,7 +2772,8 @@ export class Application {
     if (!row) throw new AppError("authentication_required", 401);
   }
 
-  #project(tx: AppTransaction, projectId: string): Project {
+  #project(tx: AppTransaction, projectId: string, includeDeleted = false): Project {
+    if (!includeDeleted) requireLiveProject(tx, projectId);
     const project = tx.get<Project>(`SELECT p.id, p.name, p.revision, g.id AS groupId, p.created_at AS createdAt
       FROM projects p JOIN project_groups g ON g.project_id = p.id WHERE p.id = ?`, projectId);
     if (!project) throw new AppError("project_not_found", 404);

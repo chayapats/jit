@@ -200,7 +200,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
           return json({ attachment }, 201);
         }
       }
-      const selectedProject = /^\/projects\/([a-f0-9-]{36})(?:\/|$)/.exec(pathname)?.[1];
+      const selectedProject = /\/delete(?:\/|$)/.test(pathname) ? undefined : /^\/projects\/([a-f0-9-]{36})(?:\/|$)/.exec(pathname)?.[1];
       /** Sidebar state: the workspace page plus waiting-on-owner counts for the projects the sidebar can show. */
       const nav = (workspace = app.workspace(auth.actor)): NavigationWorkspace => {
         const ids = [...new Set([...(selectedProject ? [selectedProject] : []), ...workspace.projects.slice(0, 8).map(p => p.id)])];
@@ -208,6 +208,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const access = new Map(ids.map(id => [id, app.projectAccess(auth.actor, id)] as const));
         return { ...workspace, attention: app.attention(auth.actor, ids), access };
       };
+      const projectDeleteRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/delete(?:\/([a-f0-9-]{36}))?$/.exec(pathname);
       const projectRenameRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/rename$/.exec(pathname);
       const projectRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})$/.exec(pathname);
       const topicCollection = /^\/(api\/)?projects\/([a-f0-9-]{36})\/topics$/.exec(pathname);
@@ -1010,6 +1011,35 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const state = app.memoryContext(auth.actor, contextRoute[1]!, contextRoute[2]!);
         return api ? json(state) : page(() => memoryContextPage(state, nav(), auth.csrf));
       }
+      if (request.method === "GET" && projectDeleteRoute?.[2]) {
+        const { project, preview } = app.deletionPreview(auth.actor, projectDeleteRoute[1]!, projectDeleteRoute[2]);
+        const { operation } = app.deletionOperation(auth.actor, project.id, projectDeleteRoute[2]);
+        if ((!preview || preview.scope.kind !== "project") && (!operation || operation.scope.kind !== "project")) throw new AppError("deletion_not_found", 404);
+        return api ? json({ project, preview, operation }) : page(() => deletionDetailPage({ project, preview, operation }, nav(), auth.csrf));
+      }
+      if (request.method === "POST" && projectDeleteRoute && !projectDeleteRoute[2]) {
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        const projectId = projectDeleteRoute[1]!, form = request.headers.get("content-type")?.split(";")[0]?.trim() === "application/x-www-form-urlencoded";
+        const allowed = ["csrf", "requestId", "expectedRevision", "mode", ...(body.mode === "preview" ? [] : body.mode === "confirm" ? ["previewId", "inventoryDigest", "projectName", "acknowledged", "acknowledgedWholeSession"] : ["operationId"])];
+        if (Object.keys(body).some(key => !allowed.includes(key))) throw new AppError("invalid_body");
+        const expectedRevision = typeof body.expectedRevision === "string" && /^\d{1,15}$/.test(body.expectedRevision) ? Number(body.expectedRevision) : body.expectedRevision as number;
+        const base = { projectId, requestId: body.requestId as string, expectedRevision };
+        if (body.mode === "preview") {
+          const result = app.execute(auth.actor, { ...base, kind: "project.delete.preview", payload: { scope: { kind: "project", projectId } } }) as import("./memory/delete").DeletionReceipt;
+          return api ? json(result) : respond(null, 303, { Location: `/projects/${projectId}/delete/${result.preview.id}` });
+        }
+        if (body.mode === "confirm") {
+          const result = app.execute(auth.actor, { ...base, kind: "project.delete.confirm", payload: { previewId: body.previewId as string, inventoryDigest: body.inventoryDigest as string,
+            projectName: body.projectName as string, acknowledged: form ? body.acknowledged === "on" : body.acknowledged === true,
+            acknowledgedWholeSession: form ? body.acknowledgedWholeSession === "on" : body.acknowledgedWholeSession === true } });
+          return api ? json(result) : respond(null, 303, { Location: "/" });
+        }
+        if (body.mode === "retry") {
+          const result = app.execute(auth.actor, { ...base, kind: "project.delete.retry", payload: { operationId: body.operationId as string } });
+          return api ? json(result) : respond(null, 303, { Location: `/projects/${projectId}/delete/${body.operationId}` });
+        }
+        throw new AppError("invalid_body");
+      }
       if (request.method === "GET" && deletionsRoute) {
         const { project, operations } = app.deletionOperations(auth.actor, deletionsRoute[2]!);
         const inspector = app.memory(auth.actor, deletionsRoute[2]!);
@@ -1244,7 +1274,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const raw = url.searchParams.get("offset") ?? "0";
         if (!/^\d{1,7}$/.test(raw)) throw new AppError("invalid_offset");
         const offset = Number(raw);
-        return page(() => settingsDataPage(nav(app.workspace(auth.actor, offset)), auth.csrf, offset, config.pageSize));
+        return page(() => settingsDataPage(nav(app.workspace(auth.actor, offset)), auth.csrf, offset, config.pageSize, app.projectDeletionOperations(auth.actor)));
       }
       if (["/search", "/api/search"].includes(url.pathname) && request.method === "GET") {
         // web.settings_ia/v1 ⌘K: one bounded, read-only query; the browser never receives a preloaded index.

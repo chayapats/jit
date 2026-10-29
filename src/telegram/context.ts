@@ -1,3 +1,4 @@
+import { liveProjectSql } from "../project-lifecycle";
 import { AppError } from "../errors";
 import type { AppTransaction } from "../store";
 import { ensureTelegramProjectSchema } from "./schema";
@@ -63,5 +64,5 @@ export interface ProjectChoice { id: string; name: string; revision: number }
 
 /** Lists installation projects for explicit owner selection; names never authorize. */
 export function listProjectChoices(tx: AppTransaction, limit: number): ProjectChoice[] {
-  return tx.all<ProjectChoice>(`SELECT p.id, p.name, p.revision FROM projects p ORDER BY p.created_at, p.id LIMIT ?`, limit);
+  return tx.all<ProjectChoice>(`SELECT p.id, p.name, p.revision FROM projects p WHERE ${liveProjectSql("p")} ORDER BY p.created_at, p.id LIMIT ?`, limit);
 }

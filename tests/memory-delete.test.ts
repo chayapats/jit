@@ -1,3 +1,4 @@
+import { markSetupComplete } from "./fixtures/setup";
 import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -175,7 +176,7 @@ test("preview shows bounded collateral, confirm fences purges and lifecycle deni
   const discussion = f.rt.app.execute(actor(f), dispatch(f, a, "วิเคราะห์ก่อนลบ"));
   const preview = asPreview(f.rt.app.execute(actor(f), previewCommand(f, a, s1)));
   expect(preview.duplicate).toBe(false);
-  expect(preview.preview.scope.source).toEqual(s1);
+  expect(preview.preview.scope.kind === "source" && preview.preview.scope.source).toEqual(s1);
   expect(preview.preview.projectRevision).toBe(projectRevision(f, a));
   expect(preview.preview.affected.claims.map(c => c.reference.claimId)).toContain(c1!.claimId);
   expect(preview.preview.affected.pendingJobs.map(j => j.id)).toContain(discussion.discussion!.jobId);
@@ -1331,4 +1332,229 @@ test("deletion previews report verified backup integrity, never the persisted ma
   // Without a trusted backup directory nothing is verified: entries read as unchecked.
   const unverified = f.rt.store.transaction(tx => prepareDeletionPreview(tx, previewCommand(f, a, s1), projectRevision(f, a), f.clock.now));
   expect(unverified.affected.backups.every(b => b.state === "unchecked")).toBe(true);
+});
+
+function projectPreview(f: Fixture, p: Project) {
+  return f.rt.app.execute(actor(f), { kind: "project.delete.preview", requestId: rid(), projectId: p.id, expectedRevision: projectRevision(f, p), payload: { scope: { kind: "project", projectId: p.id } } }) as DeletionReceipt;
+}
+function projectConfirm(f: Fixture, p: Project, preview: DeletionReceipt["preview"], name: string) {
+  return { kind: "project.delete.confirm" as const, requestId: rid(), projectId: p.id, expectedRevision: preview.projectRevision,
+    payload: { previewId: preview.id, inventoryDigest: preview.inventoryDigest, projectName: name, acknowledged: true, acknowledgedWholeSession: true } };
+}
+
+test("LIFE02 project preview covers every source generation and owned metadata; confirm hides identity and purges database/WAL text", async () => {
+  const f = await fixture(), name = "project-name-canary-177", a = project(f, name, "project-topic-canary-177");
+  const s = say(f, a, "project-message-canary-177");
+  f.rt.store.transaction(tx => {
+    tx.run("UPDATE source_versions SET descriptor_json = ? WHERE source_id = ?", JSON.stringify({ kind: "message", label: "descriptor-canary-177" }), s.sourceId);
+    tx.run("INSERT INTO source_versions SELECT source_id, 2, generation, descriptor_json, attribution_json, ?, committed_at FROM source_versions WHERE source_id = ?", "historical-canary-177", s.sourceId);
+    tx.run("UPDATE sources SET current_revision = 2 WHERE id = ?", s.sourceId);
+  });
+  const { preview } = projectPreview(f, a);
+  expect(preview.scope).toEqual({ kind: "project", projectId: a.id });
+  expect(preview.affected.sources.filter(e => e.projectId === a.id)).toHaveLength(3);
+  expect(preview.affected.project).toMatchObject({ topics: [{ id: a.topic.id, revision: 2 }], messages: [{ id: expect.any(String) }] });
+  expect(preview.blockers).toEqual([]);
+  const result = f.rt.app.execute(actor(f), projectConfirm(f, a, preview, name)) as DeletionConfirmReceipt;
+  expect(f.rt.app.workspace(actor(f)).projects).toEqual([]);
+  expect(f.rt.app.search(actor(f), "canary", { query: 100, projects: 10, topics: 10 }).projects).toEqual([]);
+  expect(() => f.rt.app.project(actor(f), a.id)).toThrow("project_deleted");
+  expect(f.rt.store.read(tx => tx.get("SELECT id FROM projects WHERE id = ?", a.id))).not.toBeNull();
+  expect(f.rt.app.deletionOperation(actor(f), a.id, result.operation.id).operation?.state).toBe("complete");
+  for (const marker of [name, "project-topic-canary-177", "project-message-canary-177", "historical-canary-177", "descriptor-canary-177"]) {
+    for (const path of [f.config.databasePath, `${f.config.databasePath}-wal`]) if (existsSync(path)) expect(readFileSync(path).includes(Buffer.from(marker))).toBe(false);
+  }
+});
+
+test("LIFE02 project confirms bind name and digest; message drift is stale even without a project revision change; duplicates survive expiry/reopen", async () => {
+  const f = await fixture(), a = project(f, "Delete name", "A topic");
+  say(f, a, "First project message");
+  const { preview } = projectPreview(f, a);
+  const c = projectConfirm(f, a, preview, "Delete name");
+  expect(() => f.rt.app.execute(actor(f), { ...c, payload: { ...c.payload, projectName: "wrong" } })).toThrow("project_delete_name_mismatch");
+  expect(() => f.rt.app.execute(actor(f), { ...c, payload: { ...c.payload, inventoryDigest: "f".repeat(64) } })).toThrow("memory_delete_stale_preview");
+  say(f, a, "A message after preview");
+  expect(() => f.rt.app.execute(actor(f), c)).toThrow("memory_delete_stale_preview");
+  const fresh = projectPreview(f, a).preview, accepted = projectConfirm(f, a, fresh, "Delete name");
+  const first = f.rt.app.execute(actor(f), accepted) as DeletionConfirmReceipt;
+  await restart(f); f.clock.now += 16 * 60_000;
+  expect(f.rt.app.execute(actor(f), accepted)).toEqual(first);
+  const duplicate = f.rt.app.execute(actor(f), { ...accepted, requestId: rid(), expectedRevision: 999, payload: { ...accepted.payload, projectName: "", acknowledged: false } }) as DeletionConfirmReceipt;
+  expect(duplicate.duplicate).toBe(true); expect(duplicate.operation.id).toBe(first.operation.id);
+});
+
+test("LIFE02 project deletion refuses General and owner blockers with identities and reasons", async () => {
+  const f = await fixture(), a = project(f, "Protected", "Protected topic");
+  f.rt.store.transaction(tx => tx.run("INSERT INTO general_space VALUES (1, ?, ?, NULL, ?)", a.id, a.topic.id, epoch));
+  markSetupComplete(f.rt.store);
+  expect(() => projectPreview(f, a)).toThrow("general_space_delete_refused");
+  const b = project(f, "Blocked project", "Blocked topic");
+  const proposed = f.rt.app.execute(actor(f), { kind: "task.propose", requestId: rid(), projectId: b.id, expectedRevision: topicRevision(f, b),
+    payload: { topicId: b.topic.id, title: "Owner task canary", summary: "Owner still needs this obligation" } });
+  const { preview } = projectPreview(f, b);
+  expect(preview.blockers).toContain(`active_task_current_proposal:${proposed.task.id}`);
+  expect(() => f.rt.app.execute(actor(f), projectConfirm(f, b, preview, "Blocked project"))).toThrow("memory_delete_blocked");
+  expect(JSON.stringify(preview)).not.toContain("Owner task canary");
+});
+
+test("LIFE02 project deletion rollback is atomic; restart reconciles native cleanup and cross-project memory collateral", async () => {
+  const f = await fixture(), a = project(f, "Origin project", "Origin project topic"), b = project(f, "Keep project", "Keep project topic");
+  const source = say(f, a, "cross-project-lifecycle-canary-177");
+  await remember(f, a, source);
+  f.rt.app.execute(actor(f), dispatch(f, b, "cross-project-lifecycle-canary-177")); await drain(f);
+  const { preview } = projectPreview(f, a);
+  expect(preview.affected.claims.some(c => c.projectId === a.id)).toBe(true);
+  expect(preview.affected.sources.some(s => s.projectId === b.id)).toBe(true);
+  expect(preview.affected.nativeSessions.length).toBeGreaterThan(0);
+  const command = projectConfirm(f, a, preview, "Origin project");
+  const fragile = new Application(f.rt.store, f.config, { jobs: f.rt.queue, now: () => f.clock.now, beforeCommit: stage => { if (stage === "memory") throw new Error("project deletion crash"); } });
+  expect(() => fragile.execute(fragile.authenticate(f.token).actor, command)).toThrow("project deletion crash");
+  expect(f.rt.app.project(actor(f), a.id).name).toBe("Origin project");
+  const confirmed = f.rt.app.execute(actor(f), command) as DeletionConfirmReceipt;
+  expect(confirmed.operation.state).toBe("pending");
+  await restart(f); await f.rt.queue.reconcile(f.rt.teamPort);
+  expect(f.rt.app.deletionOperation(actor(f), a.id, confirmed.operation.id).operation?.state).toBe("complete");
+  expect(f.rt.app.workspace(actor(f)).projects.map(p => p.id)).toEqual([b.id]);
+  expect(f.rt.app.deletionLedger(actor(f)).tombstones.some(e => e.projectId === a.id)).toBe(true);
+});
+
+test("LIFE02 confirms stop schedules, PR monitors, discussions and pending deliveries before any late work", async () => {
+  const f = await fixture(), a = project(f, "Stopped project", "Stopped project topic");
+  const schedule = f.rt.app.execute(actor(f), { kind: "schedule.create", projectId: a.id, requestId: rid(), expectedRevision: projectRevision(f, a),
+    payload: { topicId: a.topic.id, kind: "reminder", purpose: "schedule-purpose-canary-177", timezone: "UTC", recurrence: { kind: "interval", everyMs: 60_000 }, enabled: true, route: null,
+      limits: { ...f.config.jobs.maximum }, occurrenceBudget: 2, misfire: "coalesce", text: "schedule-text-canary-177" } }).schedule;
+  const delivery = commitDelivery(f, a, "pending-delivery-canary-177");
+  const discussion = f.rt.app.execute(actor(f), dispatch(f, a, "discussion-purpose-canary-177")).discussion!;
+  const { mutateMonitor } = await import("../src/pr/authority");
+  const monitor = f.rt.store.transaction(tx => mutateMonitor(tx, { kind: "pr.monitor.enable", requestId: rid(), projectId: a.id, expectedRevision: projectRevision(f, a),
+    payload: { repository: { host: "github.com", owner: "fixture", name: "project-repository-canary-177" }, apiBase: "https://api.github.com", allowed: { issues: true, specs: true, ci: true }, acceptPolicyVersion: 1 } }, f.clock.now)).monitor;
+  const { preview } = projectPreview(f, a);
+  expect(preview.affected.project?.schedules).toContainEqual({ id: schedule.id, revision: 1, state: "active" });
+  expect(preview.affected.project?.prMonitors).toContainEqual({ id: monitor.id, revision: 1, state: "active" });
+  expect(preview.affected.pendingJobs.length).toBeGreaterThan(0);
+  f.rt.app.execute(actor(f), projectConfirm(f, a, preview, "Stopped project"));
+  await drain(f);
+  expect(f.rt.store.read(tx => JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM job_schedules WHERE id = ?", schedule.id)!.record_json))).toMatchObject({ state: "revoked", nextRun: null });
+  expect(f.rt.store.read(tx => tx.get<{ state: string }>("SELECT state FROM pr_monitors WHERE id = ?", monitor.id)!.state)).toBe("revoked");
+  expect(f.rt.store.read(tx => JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM team_runs WHERE id = ?", discussion.id)!.record_json))).toMatchObject({ stoppedAll: true });
+  expect(f.rt.store.read(tx => JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM delivery_intents WHERE id = ?", delivery.intent.id)!.record_json).status)).toBe("cancelled");
+  expect(f.rt.port.requests).toHaveLength(0);
+  for (const marker of ["schedule-purpose-canary-177", "schedule-text-canary-177", "pending-delivery-canary-177", "discussion-purpose-canary-177", "project-repository-canary-177"]) expect(Buffer.from(f.rt.store.snapshotBytes()).includes(Buffer.from(marker))).toBe(false);
+});
+
+test("LIFE02 collateral extension binds preview and confirmation and cannot complete without durable cleanup after restart", async () => {
+  const f = await fixture(), a = project(f, "Collateral project", "Collateral project topic");
+  let version = 1, confirms = 0, cleanups = 0, failing = true;
+  const { createHash } = await import("node:crypto");
+  const contributor: import("../src/memory/project-delete").ProjectCollateralContributor = {
+    key: "fixture_collateral", preview: () => ({ count: 2, bytes: 123, digest: createHash("sha256").update(String(version)).digest("hex"), identities: [a.id] }),
+    confirm: () => { confirms++; }, reconcile: async () => { cleanups++; if (failing) throw new Error("fixture cleanup unavailable"); },
+  };
+  const app = new Application(f.rt.store, f.config, { jobs: f.rt.queue, now: () => f.clock.now, deletionContributors: [contributor] });
+  const owner = app.authenticate(f.token).actor;
+  const prepare = () => (app.execute(owner, { kind: "project.delete.preview", requestId: rid(), projectId: a.id, expectedRevision: projectRevision(f, a), payload: { scope: { kind: "project", projectId: a.id } } }) as DeletionReceipt).preview;
+  const old = prepare(); version++;
+  expect(() => app.execute(owner, projectConfirm(f, a, old, "Collateral project"))).toThrow("memory_delete_stale_preview");
+  const preview = prepare();
+  expect(preview.affected.project?.collateral[0]).toMatchObject({ key: "fixture_collateral", count: 2, bytes: 123 });
+  const c = projectConfirm(f, a, preview, "Collateral project"), result = app.execute(owner, c) as DeletionConfirmReceipt;
+  expect(confirms).toBe(1);
+  await f.rt.queue.reconcile(f.rt.teamPort);
+  expect(app.deletionOperation(owner, a.id, result.operation.id).operation?.state).toBe("pending");
+  expect(cleanups).toBe(1);
+  await restart(f); // Unregistered contributor is an honest pending cleanup, never an empty successful scope.
+  await f.rt.queue.reconcile(f.rt.teamPort);
+  expect(f.rt.app.deletionOperation(actor(f), a.id, result.operation.id).operation?.collateral?.[0]?.reason).toBe("project_delete_contributor_unavailable");
+  failing = false;
+  new Application(f.rt.store, f.config, { jobs: f.rt.queue, now: () => f.clock.now, deletionContributors: [contributor] });
+  await f.rt.queue.reconcilePendingDeletions();
+  expect(f.rt.app.deletionOperation(actor(f), a.id, result.operation.id).operation?.state).toBe("complete");
+  expect(confirms).toBe(1); expect(cleanups).toBe(2);
+});
+
+test("LIFE02 project deletion Web forms preview then require exact name/digest and redirect Home without script", async () => {
+  const f = await fixture(), a = project(f, "Web deletion <project>", "Web deletion topic");
+  const web = createWebHandler(f.rt.app), req = webRequest(f);
+  const page = await (await web(req(`/projects/${a.id}`))).text();
+  expect(page).toContain(`action="/projects/${a.id}/delete"`);
+  const body = { mode: "preview", requestId: rid(), expectedRevision: String(projectRevision(f, a)), csrf: f.rt.app.authenticate(f.token).csrf };
+  const post = (data: Record<string, string>) => web(new Request(`http://localhost:3000/projects/${a.id}/delete`, { method: "POST", headers: { cookie: `jit_session=${f.token}`, origin: "http://localhost:3000", "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(data) }));
+  expect((await post({ ...body, csrf: "" })).status).toBe(403);
+  expect((await post({ ...body, extra: "x" })).status).toBe(400);
+  const response = await post(body); expect(response.status).toBe(303);
+  const location = response.headers.get("location")!, previewId = location.split("/").at(-1)!;
+  const html = await (await web(req(location))).text();
+  expect(html).toContain('name="projectName"'); expect(html).toContain('name="inventoryDigest"'); expect(html).toContain("Web deletion &lt;project&gt;");
+  const preview = f.rt.app.deletionPreview(actor(f), a.id, previewId).preview!;
+  const confirmed = await post({ mode: "confirm", requestId: rid(), expectedRevision: String(preview.projectRevision), csrf: body.csrf, previewId, inventoryDigest: preview.inventoryDigest, projectName: "Web deletion <project>", acknowledged: "on", acknowledgedWholeSession: "on" });
+  expect(confirmed.status).toBe(303); expect(confirmed.headers.get("location")).toBe("/");
+  const operation = f.rt.app.projectDeletionOperations(actor(f))[0]!;
+  expect((await web(req(`/projects/${a.id}/delete/${operation.id}`))).status).toBe(200);
+  expect(await (await web(req("/settings/data"))).text()).toContain(operation.id);
+});
+
+test("LIFE02 box stop failure remains pending across restart and tombstones deny every box open", async () => {
+  const f = await fixture(), a = project(f, "Box lifecycle", "Box lifecycle topic");
+  const { FakeBoxRuntime } = await import("../src/exec/fake-box-runtime"), { BoxManager } = await import("../src/exec/box-manager");
+  class Runtime extends FakeBoxRuntime {
+    fail = true;
+    override async stop(ref: { projectId: string }) { if (this.fail) throw new Error("fixture box stop unavailable"); await super.stop(ref); }
+  }
+  const runtime = new Runtime(); await runtime.ensure(a.id, "workspace");
+  const boxes = new BoxManager(f.rt.store, f.config, runtime); await boxes.reconcile();
+  f.rt.app = new Application(f.rt.store, f.config, { jobs: f.rt.queue, boxes, now: () => f.clock.now });
+  const { preview } = projectPreview(f, a);
+  expect(preview.affected.project?.collateral).toContainEqual(expect.objectContaining({ key: "execution_box", count: 1 }));
+  const result = f.rt.app.execute(actor(f), projectConfirm(f, a, preview, "Box lifecycle")) as DeletionConfirmReceipt;
+  await f.rt.queue.reconcile(f.rt.teamPort);
+  expect(f.rt.app.deletionOperation(actor(f), a.id, result.operation.id).operation?.state).toBe("pending");
+  await expect(boxes.open(a.id, null)).rejects.toThrow("project_deleted");
+  runtime.fail = false; await restart(f);
+  const reopened = new BoxManager(f.rt.store, f.config, runtime);
+  f.rt.app = new Application(f.rt.store, f.config, { jobs: f.rt.queue, boxes: reopened, now: () => f.clock.now });
+  await f.rt.queue.reconcile(f.rt.teamPort);
+  expect((await runtime.status(a.id)).state).toBe("stopped");
+  expect(f.rt.app.deletionOperation(actor(f), a.id, result.operation.id).operation?.state).toBe("complete");
+  expect(runtime.wipes(a.id)).toBe(0);
+});
+
+test("LIFE02 a busy WAL reader prevents completion; confirmed previews survive expiry pruning for duplicate confirms", async () => {
+  const f = await fixture(), a = project(f, "Checkpoint project", "Checkpoint topic");
+  say(f, a, "checkpoint-message-canary-177");
+  const { preview } = projectPreview(f, a), c = projectConfirm(f, a, preview, "Checkpoint project");
+  const { Database } = await import("bun:sqlite"), reader = new Database(f.config.databasePath);
+  reader.exec("BEGIN"); reader.query("SELECT count(*) FROM sources").get();
+  f.rt.store.read(tx => tx.run("PRAGMA busy_timeout = 1"));
+  let result: DeletionConfirmReceipt;
+  try {
+    result = f.rt.app.execute(actor(f), c) as DeletionConfirmReceipt;
+    expect(f.rt.app.deletionOperation(actor(f), a.id, result.operation.id).operation).toMatchObject({ state: "pending", databasePurge: "pending" });
+  } finally { reader.exec("ROLLBACK"); reader.close(); }
+  await f.rt.queue.reconcile(f.rt.teamPort);
+  expect(f.rt.app.deletionOperation(actor(f), a.id, result!.operation.id).operation).toMatchObject({ state: "complete", databasePurge: "purged" });
+  f.clock.now += 16 * 60_000;
+  const { pruneExpiredPreviews } = await import("../src/memory/delete");
+  f.rt.store.transaction(tx => pruneExpiredPreviews(tx, f.clock.now));
+  expect(f.rt.app.execute(actor(f), { ...c, requestId: rid() })).toMatchObject({ duplicate: true, operation: { id: result!.operation.id } });
+});
+
+test("LIFE02 a source-less in-flight project run is fenced and its late output never returns to the store", async () => {
+  const f = await fixture(), a = project(f, "Inflight project", "Inflight topic");
+  let release!: (value: unknown) => void, started!: () => void;
+  const invoked = new Promise<void>(resolve => { started = resolve; });
+  f.hooks.specialist = () => { started(); return new Promise(resolve => { release = resolve; }); };
+  await f.rt.queue.reconcile(f.rt.teamPort);
+  const discussion = f.rt.app.execute(actor(f), dispatch(f, a, "Source-less analysis", [])).discussion!;
+  for (let i = 0; i < 40 && !release; i++) { f.rt.queue.pump(); await Bun.sleep(0); }
+  await invoked;
+  try {
+    const { preview } = projectPreview(f, a);
+    expect(preview.affected.nativeSessions.length).toBeGreaterThan(0);
+    const result = f.rt.app.execute(actor(f), projectConfirm(f, a, preview, "Inflight project")) as DeletionConfirmReceipt;
+    await f.rt.queue.reconcilePendingDeletions();
+    expect(f.rt.app.deletionOperation(actor(f), a.id, result.operation.id).operation?.state).toBe("complete");
+  } finally { release(fixtureOutcome("complete", "late-project-output-canary-177")); }
+  await drain(f);
+  expect(jobState(f, a.id, discussion.participations[0]!.jobId).state).toBe("blocked");
+  expect(Buffer.from(f.rt.store.snapshotBytes()).includes(Buffer.from("late-project-output-canary-177"))).toBe(false);
 });
