@@ -341,6 +341,7 @@ export function serviceEnvironment(config: ServiceConfig): [string, string][] {
     ["JIT_RUN_PORT", parsed.runPort ?? "scripted"],
   ];
   if (parsed.searxngEnabled !== undefined) env.push(["JIT_SEARXNG_ENABLED", parsed.searxngEnabled ? "1" : "0"]);
+  if (!parsed.execution) env.push(["JIT_EXECUTION_SECRETS_DIR", `${parsed.stateDirectory}.connections`]);
   const token = telegramTokenPath(parsed);
   if (token) env.push(["JIT_TELEGRAM_BOT_TOKEN_PATH", token]);
   if (parsed.execution) {
@@ -402,6 +403,7 @@ export function serviceWritablePaths(config: ServiceConfig): string[] {
   const parsed = parseServiceConfig(config);
   const paths = [parsed.stateDirectory, parsed.backupDirectory, dirname(parsed.ledgerPath)];
   if (parsed.execution) paths.push(parsed.execution.directory, parsed.execution.secretsDirectory);
+  else paths.push(`${parsed.stateDirectory}.connections`);
   return [...new Set(paths)];
 }
 

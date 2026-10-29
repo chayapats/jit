@@ -1,4 +1,6 @@
-import type { WebSettings } from "./web-tools/settings";
+import type { WebProviderSelection } from "./web-tools/providers";
+import type { SearxngStatus } from "./web-tools/searxng";
+import { webSearchKeyLabels, type WebSettings } from "./web-tools/settings";
 import type { Application, Project, SearchResults } from "./application";
 import type { Topic } from "./conversation";
 import { dictionaries, tr, type MessageKey } from "./i18n";
@@ -440,4 +442,34 @@ export function settingsApprovalsPage(workspace: NavigationWorkspace,
       <label>${tr("approval.field_target")}<input name="target" maxlength="32" placeholder="production"></label>
       <label class="choice"><input type="checkbox" name="confirm" value="on" required>${tr("approval.rule_confirm")}</label>
       <button class="primary">${tr("approval.rule_create")}</button></form></section></div>`, { breadcrumb: { title: tr("shell.settings"), href: "/settings" } });
+}
+
+/** Script-free provider selection; renders metadata only, with one-way key forms and D09 disclosure in either locale. */
+export function settingsWebSearchPage(workspace: NavigationWorkspace, settings: WebProviderSelection, keyConnections: ConnectionView[],
+  status: SearxngStatus, csrf: string, tested: "ok" | "failed" | null = null, error: MessageKey | null = null): string {
+  const current = settings.fallback ? "searxng" : settings.id;
+  const cards = (["searxng", "tavily", "exa"] as const).map(id => {
+    const label = id === "searxng" ? null : webSearchKeyLabels[id];
+    const stored = keyConnections.filter(c => c.kind === "web_search_key" && c.removedAt === null && c.secret === "set" && c.projectScope === null && c.label === label)
+      .sort((a, b) => b.createdAt - a.createdAt)[0];
+    const state = id === "searxng" ? `${tr(status.state === "ready" ? "web_search.status_ready" : "web_search.status_unavailable")}${status.reason ? ` — ${tr(`searxng.reason_${status.reason}`)}` : ""}`
+      : tr(stored ? "web_search.key_stored" : "web_search.key_none");
+    return `<label class="choice"><input type="radio" name="provider" value="${id}"${current === id ? " checked" : ""} required><span>${tr(`web_search.provider_${id}`)}<small>${state}</small></span></label>`;
+  }).join("");
+  const keys = keyConnections.filter(c => c.kind === "web_search_key" && c.removedAt === null && c.secret === "set" && c.projectScope === null && Object.values(webSearchKeyLabels).some(label => label === c.label))
+    .map(c => `<section class="settings-section"><h3>${escape(c.label)} · ${tr("web_search.key_stored")}</h3>
+      <form class="team-form" method="post" action="/settings/connections/${c.id}/secret">${hiddenCommand(csrf, c.revision)}<input type="hidden" name="returnTo" value="web-search">
+        <label>${tr("web_search.api_key")}<input type="password" name="secret" autocomplete="off" required></label><button>${tr("web_search.replace_key")}</button></form>
+      <form class="team-form" method="post" action="/settings/connections/${c.id}/remove">${hiddenCommand(csrf, c.revision)}<input type="hidden" name="returnTo" value="web-search">
+        <label class="choice"><input type="checkbox" name="confirm" required>${tr("connection.remove_confirm")}</label><button class="danger">${tr("web_search.remove_key")}</button></form></section>`).join("");
+  return shell(tr("settings.web_search"), { workspace, csrf, section: "settings", settings: "web_search" }, `<div class="content settings-content">
+    <section class="settings-section"><h2>${tr("web_search.title")}</h2><p>${tr("web_search.intro")}</p><p>${tr("web_search.provider_searxng_note")}</p>
+    ${settings.fallback ? `<p role="status">${tr("web_search.key_removed_fallback")}</p>` : ""}
+    ${tested ? `<p role="status">${tr(tested === "ok" ? "web_search.test_ok" : "web_search.test_failed")}</p>` : ""}
+    ${error ? `<p class="error" role="alert">${tr(error)}</p>` : ""}
+    <form class="team-form" method="post" action="/settings/web-search">${hiddenCommand(csrf, settings.revision)}
+      <fieldset class="route-choices"><legend>${tr("settings.web_search")}</legend>${cards}</fieldset>
+      <label>${tr("web_search.api_key")}<input type="password" name="apiKey" autocomplete="off"></label><p>${tr("web_search.api_key_note")}</p><button class="primary">${tr("web_search.save")}</button></form>
+    <form class="team-form" method="post" action="/settings/web-search/test">${hiddenCommand(csrf, settings.revision)}<button>${tr("web_search.test")}</button></form></section>${keys}</div>`,
+    { breadcrumb: { title: tr("shell.settings"), href: "/settings" } });
 }

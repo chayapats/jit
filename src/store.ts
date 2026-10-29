@@ -5,7 +5,7 @@ import { dirname } from "node:path";
 import { commitDecisionMemorySource, retireDecisionMemorySource } from "./memory/decision-sources";
 
 /** Current application schema revision. Service packaging pins and checks this value. */
-export const schemaVersion = 42;
+export const schemaVersion = 43;
 
 /**
  * Installation-scoped state that never round-trips through backup images and
@@ -132,7 +132,7 @@ export class TransactionStore {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
           if (current === schemaVersion) return;
-          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41].includes(current)) throw new Error("Unsupported migration source");
+          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42].includes(current)) throw new Error("Unsupported migration source");
           if (existing) {
             const snapshot = `${path}.pre-v${current}-${crypto.randomUUID()}.sqlite`;
             const fd = openSync(snapshot, "wx", 0o600);
@@ -1270,6 +1270,11 @@ export class TransactionStore {
               revision INTEGER NOT NULL, generation INTEGER NOT NULL, job_id TEXT NOT NULL, PRIMARY KEY (run_id, source_id));
             PRAGMA user_version = 42;
           `);
+          if (current < 43) {
+            if (!this.#tx.all<{ name: string }>("PRAGMA table_info(web_tool_calls)").some(column => column.name === "fallback"))
+              this.#db.exec("ALTER TABLE web_tool_calls ADD COLUMN fallback TEXT CHECK (fallback IS NULL OR fallback = 'key_missing');");
+            this.#db.exec("PRAGMA user_version = 43;");
+          }
         }).immediate();
         this.#db.exec("PRAGMA foreign_keys = ON;");
       }

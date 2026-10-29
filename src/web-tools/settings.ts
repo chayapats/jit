@@ -2,6 +2,9 @@ import { AppError } from "../errors";
 import { requireId } from "../sources";
 import type { AppTransaction } from "../store";
 
+/** Stable vault metadata labels used to locate reusable vendor keys; display text belongs to the dictionaries. */
+export const webSearchKeyLabels = Object.freeze({ tavily: "Tavily", exa: "Exa" });
+
 /** Revisioned project switch; revision zero means the default, enabled. */
 export interface WebSettings { enabled: boolean; revision: number }
 /** Installation provider metadata only; a credential is always a connection reference. */
@@ -46,9 +49,11 @@ export function writeWebCommand(tx: AppTransaction, command: WebCommand, channel
     return { web: readWebSettings(tx, command.projectId) };
   }
   if (readWebProvider(tx).revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
+  const keyed = command.payload.id === "tavily" || command.payload.id === "exa";
+  if ((command.payload.id === "searxng" && command.payload.connectionId !== null) || (keyed && command.payload.connectionId === null)) throw new AppError("web_search_key_missing", 409);
   if (command.payload.connectionId !== null) {
-    const row = tx.get<{ kind: string; removed: number | null }>("SELECT kind, removed_at AS removed FROM connections WHERE id = ?", command.payload.connectionId);
-    if (!row || row.removed !== null || row.kind !== "web_search_key") throw new AppError("web_connection_unavailable", 409);
+    const row = tx.get<{ kind: string; removed: number | null; secret: string }>("SELECT kind, removed_at AS removed, secret_state AS secret FROM connections WHERE id = ?", command.payload.connectionId);
+    if (!row || row.removed !== null || row.kind !== "web_search_key" || (keyed && row.secret !== "set")) throw new AppError("web_search_key_missing", 409);
   }
   tx.run("INSERT INTO web_provider VALUES (?, ?, ?, ?)", command.expectedRevision + 1, command.payload.id, command.payload.connectionId, now);
   return { provider: readWebProvider(tx) };

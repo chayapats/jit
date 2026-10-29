@@ -391,8 +391,8 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
     // exec.box_runtime/v1: a box stop pumps the queue so work waiting as box_capacity is admitted.
     const boxes = createServiceBoxes(store, config, { onCapacity: () => { try { managed?.queue?.pump(); } catch { /* The next tick retries. */ } } });
     // app.connections/v1: values live in the secrets directory, never beside the state, backups or boxes.
-    const connections = config.execution.secretsDirectory ? new ConnectionVault(config.execution.secretsDirectory, {
-      forbidden: [dirname(resolve(config.databasePath)), service?.stateDirectory, service?.backupDirectory, service?.ledgerPath, config.execution.directory] }) : null;
+    const connections = new ConnectionVault(config.execution.secretsDirectory ?? `${dirname(resolve(config.databasePath))}.connections`, {
+      forbidden: [dirname(resolve(config.databasePath)), service?.stateDirectory, service?.backupDirectory, service?.ledgerPath, config.execution.directory] });
     // app.approval_cards/v1: approved effects run once, outside every box, only where boxes exist.
     // app.mcp_servers/v1: MCP servers run only in project boxes and their sidecars, so the gateway needs boxes.
     const streams = boxes ? boxStreamsOf(boxes.runtime) : null;

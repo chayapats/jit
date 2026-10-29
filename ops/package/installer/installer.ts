@@ -15,7 +15,7 @@ import pins from "./pinned-images.json";
 const MiB = 1024 ** 2, GiB = 1024 ** 3;
 
 function homeDirectories(home: string): string[] {
-  return ["state", "backups", "work", "ledger", "state/attachments", ".config", ".config/systemd", ".config/systemd/user", ".local", ".local/share", ".local/share/keyrings"].map(path => join(home, path));
+  return ["state", "state.connections", "backups", "work", "ledger", "state/attachments", ".config", ".config/systemd", ".config/systemd/user", ".local", ".local/share", ".local/share/keyrings"].map(path => join(home, path));
 }
 
 function keyringUnit(home: string): string {

@@ -30,7 +30,7 @@ import { setupPage, visibleStep } from "./web-setup";
 import type { JitReplyView, StopReplyCommand } from "./team/jit-reply";
 import type { RoleProposalCommand } from "./team/role-proposals";
 import { defaultPanelTab, legacyRedirect, panelRows, panelTabs, searchLimits, settingsPageHandler, type PanelTab } from "./web-settings";
-import { searchItems, searchPage, settingsAccessPage, accessConfirmPage, settingsApprovalsPage, settingsConnectionsPage, settingsDataPage, settingsDispatchPage, settingsFeedPage, settingsMcpPage, settingsTelegramPage, topicPanelPage, type McpSettingsEntry, type PanelData } from "./web-navigation";
+import { searchItems, searchPage, settingsAccessPage, accessConfirmPage, settingsApprovalsPage, settingsConnectionsPage, settingsWebSearchPage, settingsDataPage, settingsDispatchPage, settingsFeedPage, settingsMcpPage, settingsTelegramPage, topicPanelPage, type McpSettingsEntry, type PanelData } from "./web-navigation";
 import { dispatchLimits, type DispatchCommand } from "./team/jit-dispatch";
 import { completeRoute } from "./team/route-options";
 import { autoApproveKinds, targetRuleKinds } from "./exec/approval-cards";
@@ -895,6 +895,41 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         }
         return respond(null, 303, { Location: `/settings/access?project=${projectId}#access-${projectId}` });
       }
+      // WEB03: same owner/session/Origin/CSRF boundary as all settings; no secret is read back.
+      const webSearchApi = url.pathname === "/api/settings/web-search";
+      if (webSearchApi || url.pathname === "/settings/web-search" || url.pathname === "/settings/web-search/test") {
+        const render = async (tested: "ok" | "failed" | null = null, error: MessageKey | null = null, status = 200) => {
+          const builtin = await app.searxngStatus(auth.actor);
+          return page(() => settingsWebSearchPage(nav(), app.webSearch(auth.actor), app.connections(auth.actor), builtin, auth.csrf, tested, error), status);
+        };
+        if (request.method === "GET" && url.pathname !== "/settings/web-search/test") {
+          const tested = url.searchParams.getAll("tested");
+          if ([...url.searchParams.keys()].some(key => key !== "tested") || tested.length > 1 || (tested.length && (webSearchApi || !["ok", "failed"].includes(tested[0]!)))) throw new AppError("invalid_query");
+          return webSearchApi ? json({ webSearch: app.webSearch(auth.actor) }) : await render(tested[0] as "ok" | "failed" ?? null);
+        }
+        if (request.method === "POST") {
+          const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+          const testing = url.pathname === "/settings/web-search/test";
+          if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", ...(!testing ? ["provider", "apiKey"] : [])].includes(key))) throw new AppError("invalid_body");
+          const revision = typeof body.expectedRevision === "string" && /^\d{1,15}$/.test(body.expectedRevision) ? Number(body.expectedRevision) : body.expectedRevision;
+          if (!Number.isSafeInteger(revision) || (revision as number) < 0 || typeof body.requestId !== "string" || (!testing && (typeof body.provider !== "string" || !["searxng", "tavily", "exa"].includes(body.provider) || (body.apiKey !== undefined && typeof body.apiKey !== "string")))) throw new AppError("invalid_body");
+          try {
+            if (testing) {
+              const tested = await app.testWebSearch(auth.actor, revision as number);
+              return respond(null, 303, { Location: `/settings/web-search?tested=${tested}` });
+            }
+            const saved = app.saveWebSearch(auth.actor, { requestId: body.requestId, expectedRevision: revision as number, provider: body.provider as "searxng" | "tavily" | "exa", ...(body.apiKey === undefined ? {} : { apiKey: body.apiKey as string }) });
+            return webSearchApi ? json({ webSearch: saved }) : respond(null, 303, { Location: "/settings/web-search" });
+          } catch (error) {
+            if (!(error instanceof AppError) || webSearchApi) throw error;
+            if (error.code === "stale_revision") return respond(null, 303, { Location: "/settings/web-search" });
+            const key = ({ web_search_key_missing: "error.web_search_key_missing", invalid_web_search: "error.invalid_web_search", invalid_web_command: "error.invalid_web_search", invalid_connection_secret: "error.invalid_connection_secret", web_settings_requires_web: "error.web_settings_requires_web", connection_requires_web: "connection.error_requires_web", connection_vault_not_configured: "error.web_search_vault", connection_vault_unsafe: "error.web_search_vault" } as Record<string, MessageKey>)[error.code];
+            if (!key) throw error;
+            return await render(null, key, error.status);
+          }
+        }
+        throw new AppError("not_found", 404);
+      }
       // web.connections_settings/v1 (EXE11): owner credentials for approved effects. Secrets travel one way
       // only: the forms post them, the commands consume them, and no response, redirect or log ever echoes one.
       const connectionPageRoute = /^\/settings\/connections\/([a-f0-9-]{36})\/(secret|test|remove)$/.exec(url.pathname);
@@ -959,7 +994,8 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
           }
         }
         const connectionId = connectionPageRoute[1]!, verb = connectionPageRoute[2]!;
-        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", ...(verb === "secret" ? ["secret"] : verb === "remove" ? ["confirm"] : [])].includes(key))) throw new AppError("invalid_body");
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "returnTo", ...(verb === "secret" ? ["secret"] : verb === "remove" ? ["confirm"] : [])].includes(key))) throw new AppError("invalid_body");
+        if (body.returnTo !== undefined && body.returnTo !== "web-search") throw new AppError("invalid_body");
         // Removing needs the explicit checkbox; its absence (or any other value) refuses the removal.
         if (verb === "remove" && body.confirm !== "on") throw new AppError("invalid_body");
         if (verb === "secret" && typeof body.secret !== "string") throw new AppError("invalid_body");
@@ -973,7 +1009,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
           payload: verb === "secret" ? { connectionId, secret: body.secret } : { connectionId } } as ConnectionCommand;
         try {
           const receipt = app.execute(auth.actor, command);
-          if (verb !== "test") return respond(null, 303, { Location: `/settings/connections#connection-${connectionId}` });
+          if (verb !== "test") return respond(null, 303, { Location: body.returnTo === "web-search" ? "/settings/web-search" : `/settings/connections#connection-${connectionId}` });
           const ok = receipt.test?.state === "present";
           return respond(null, 303, { Location: `/settings/connections?tested=${connectionId}&result=${ok ? "ok" : "failed"}#connection-${connectionId}` });
         } catch (error) {

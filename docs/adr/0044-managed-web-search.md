@@ -48,6 +48,6 @@ Engineering choices (WEB02 #178):
   service identity compromise remain outside deterministic fixture evidence.
 
 WEB03 #184 reuses schema 42's `web_provider`, `web.provider.set`, registry and
-`web_search_key`. No duplicate table/command or migration is required. A legacy
+`web_search_key`. No duplicate table/command is required. Migration 43 adds only the nullable `key_missing` fallback audit marker. Fresh installer homes prepare a sibling service-only connections vault even when execution images are absent. A legacy
 null selection means Built-in. Missing/removed selected keys fall back only to
 Built-in, visibly and with an audit marker; no other vendor or billing fallback.
