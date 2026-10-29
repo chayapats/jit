@@ -79,6 +79,59 @@ async function fixture(calls: { name: string; arguments: Record<string, string> 
   return { root, config, app, store, auth, token, project, topic, web, effects, queue, port, model, searches, fetched, captured, progress, select, send, role, dispatch, providers };
 }
 
+for (const scenario of ["small", "large", "older", "shared"] as const) test(`attachment admission uses the offered read tool predicate: ${scenario}`, async () => {
+  const f = await fixture([], undefined, true, 256_000);
+  f.app.execute(f.auth.actor, { kind: "web.settings.set", requestId: rid(), projectId: f.project.id, expectedRevision: 0, payload: { enabled: false } });
+  f.config.attachments.enabled = true; f.config.attachments.diskReserveBytes = 1;
+  const ids: string[] = [];
+  for (let i = 0; i < (scenario === "shared" ? 3 : 1); i++) {
+    const file = await f.app.uploadAttachment(f.auth.actor, f.project.id, f.topic.id, {
+      body: new Blob([scenario === "large" ? "a".repeat(40000) : scenario === "shared" ? "a".repeat(32768) : "A small note."]).stream(), encodedName: `note${i}.txt`,
+    });
+    ids.push(file.id);
+  }
+  const sent = f.app.execute(f.auth.actor, { kind: "message.send", requestId: rid(), projectId: f.project.id,
+    expectedRevision: f.app.conversation(f.auth.actor, f.project.id, f.topic.id).topic.revision,
+    payload: { topicId: f.topic.id, text: "Read the note", attachmentIds: ids } });
+  const sources = [sent.message.source];
+  if (scenario === "older") sources.push(f.app.execute(f.auth.actor, { kind: "message.send", requestId: rid(), projectId: f.project.id,
+    expectedRevision: f.app.conversation(f.auth.actor, f.project.id, f.topic.id).topic.revision,
+    payload: { topicId: f.topic.id, text: "Read the earlier note" } }).message.source);
+  const dispatch = (calls: number, rounds: number) => f.app.execute(f.auth.actor, { kind: "team.dispatch", requestId: rid(), projectId: f.project.id,
+    expectedRevision: f.app.project(f.auth.actor, f.project.id).revision, payload: { topicId: f.topic.id, purpose: "Read attachment",
+      sources, include: [f.role.role!.id], exclude: [],
+      limits: { ...f.config.jobs.maximum, roles: 1, hops: 1, retries: 1, calls, rounds } } });
+  if (scenario === "large" || scenario === "shared") {
+    expect(() => dispatch(2, 2)).toThrow(expect.objectContaining({
+      code: "dispatch_limits_below_retry_minimum", detail: { retries: 1, minimumCalls: 8, minimumRounds: 8 },
+    }));
+    dispatch(8, 8);
+  } else dispatch(2, 2);
+  f.queue.pump(); await f.queue.idle();
+  const participation = f.app.discussions(f.auth.actor, f.project.id, f.topic.id)[0]!.participations[0]!;
+  expect(participation.state).toBe("completed");
+  expect(f.captured).toHaveLength(1);
+  expect(f.captured[0]!.tools?.map(tool => tool.name) ?? []).toEqual(scenario === "large" || scenario === "shared" ? ["read_attachment"] : []);
+  const usage = f.store.read(tx => JSON.parse(tx.get<{ json: string }>("SELECT json_extract(record_json, '$.outcome.usage') AS json FROM team_runs WHERE id = ?", participation.runId)!.json));
+  expect(usage).toMatchObject({ calls: 1, rounds: 1 });
+});
+
+for (const large of [false, true]) test(`reply reserves tool turns only for attachment continuation: large=${large}`, async () => {
+  const f = await fixture([], undefined, false, 256_000);
+  f.app.execute(f.auth.actor, { kind: "web.settings.set", requestId: rid(), projectId: f.project.id, expectedRevision: 0, payload: { enabled: false } });
+  f.config.attachments.enabled = true; f.config.attachments.diskReserveBytes = 1;
+  const file = await f.app.uploadAttachment(f.auth.actor, f.project.id, f.topic.id, {
+    body: new Blob([large ? "a".repeat(40000) : "A small note."]).stream(), encodedName: "note.txt",
+  });
+  const reply = await f.send("Read attachment", [file.id]);
+  expect(reply.state).toBe("answered");
+  const job = f.app.job(f.auth.actor, f.project.id, reply.jobId!);
+  expect(job.limits.calls).toBe(large ? 64 : 4);
+  expect(job.limits.rounds).toBe(large ? 64 : 4);
+  expect(f.captured).toHaveLength(1);
+  expect(f.captured[0]!.tools?.map(tool => tool.name) ?? []).toEqual(large ? ["read_attachment"] : []);
+});
+
 test("web-enabled specialist admission names separate call and round minima before admitting undersized work", async () => {
   const f = await fixture([], undefined, true);
   try { f.dispatch({ calls: 2, rounds: 2, retries: 1 }); throw new Error("dispatch admitted"); }

@@ -128,18 +128,21 @@ export function attachmentContextTokens(request: Pick<ApplicationRunRequest, "at
     + images * (1024 + Math.ceil(MAX_IMAGE_DIMENSION ** 2 / 256)) * Math.max(1, turns);
 }
 
+/** Whether ready attachment text exceeds the initial per-file and shared inline budgets, regardless of turn limits. */
+export function needsAttachmentRead(tx: AppTransaction, request: Pick<ApplicationRunRequest, "projectId" | "attachments">): boolean {
+  let room = attachmentInlineBytes * 2;
+  return (request.attachments ?? []).some(ref => {
+    const row = rowOf(tx, request.projectId, ref.attachmentId);
+    if (!row || row.kind === "image" || row.state !== "ready") return false;
+    const inline = ref.inline ? Math.min(row.textBytes ?? 0, attachmentInlineBytes, room) : 0;
+    room -= inline;
+    return (row.textBytes ?? 0) > inline;
+  });
+}
+
 /** The fenced read-only service tool at every level; no box or network is opened and every invocation records one content-free read event. */
 export function attachmentToolDefinitions(store: TransactionStore, request: ApplicationRunRequest, turns: number, now = Date.now): ToolDefinition[] {
-  const continuation = store.read(tx => {
-    let room = attachmentInlineBytes * 2;
-    return (request.attachments ?? []).some(ref => {
-      const row = rowOf(tx, request.projectId, ref.attachmentId);
-      if (!row || row.kind === "image" || row.state !== "ready") return false;
-      const inline = ref.inline ? Math.min(row.textBytes ?? 0, attachmentInlineBytes, room) : 0;
-      room -= inline;
-      return (row.textBytes ?? 0) > inline;
-    });
-  });
+  const continuation = store.read(tx => needsAttachmentRead(tx, request));
   if (turns < 2 || !continuation) return [];
   let calls = 0;
   return [{ name: "read_attachment", description: attachmentInstruction,

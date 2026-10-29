@@ -1,3 +1,4 @@
+import { needsAttachmentRead } from "../attachments/run-content";
 import { attachmentsPending, collectRunAttachments, runAttachmentCurrent } from "../attachments/run-references";
 import { attachmentContextTokens } from "../attachments/run-content";
 import { attachmentMaxTurns } from "../exec/run-tools";
@@ -239,7 +240,7 @@ export function prepareDispatch(
   if (config.runPort === "schway") {
     const web = readWebSettings(tx, command.projectId).enabled;
     const tools = web || plan.selected.some(roleId => executionGrant(tx, command.projectId, roleId) !== null) ||
-      collectRunAttachments(tx, { projectId: command.projectId, topicId: p.topicId }, sources).some(ref => ref.inline && ref.kind !== "image");
+      needsAttachmentRead(tx, { projectId: command.projectId, attachments: collectRunAttachments(tx, { projectId: command.projectId, topicId: p.topicId }, sources).filter(ref => ref.inline) });
     assertSchwayRetryRoom(p.limits, web, tools);
   }
   const discussionId = crypto.randomUUID();
