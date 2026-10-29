@@ -1,3 +1,4 @@
+import { searxngImage } from "../web-tools/searxng";
 import { en } from "../i18n/en";
 import type { AppConfig } from "../config";
 
@@ -9,7 +10,7 @@ export interface DoctorCheck {
   nextAction: string | null;
 }
 
-/** `ops.box_doctor/v1` report: eleven ordered checks, `ok` only when all pass. */
+/** `ops.box_doctor/v1` report: twelve ordered checks, `ok` only when all pass. */
 export interface DoctorReport {
   ok: boolean;
   checks: DoctorCheck[];
@@ -60,6 +61,7 @@ const checkNames = [
   "image-base-present",
   "image-browser-present",
   "sanitizer-image",
+  "searxng",
   "execution-directory",
   "secrets-directory",
 ] as const;
@@ -68,7 +70,7 @@ const checkNames = [
  * Checks host readiness for rootless Podman boxes.
  * Pure except for the injected `run`/`stat`; never calls Podman directly.
  */
-export function boxDoctor(deps: BoxDoctorDeps, config: AppConfig["execution"]): DoctorReport {
+export function boxDoctor(deps: BoxDoctorDeps, config: AppConfig["execution"], searxngEnabled = true): DoctorReport {
   const checks: DoctorCheck[] = [];
   const fail = (name: string, detail: string, nextAction: string): DoctorCheck => ({ name, ok: false, detail, nextAction });
   const pass = (name: string, detail: string): DoctorCheck => ({ name, ok: true, detail, nextAction: null });
@@ -159,6 +161,11 @@ export function boxDoctor(deps: BoxDoctorDeps, config: AppConfig["execution"]): 
   checks.push(sanitizer?.exitCode === 0 && sanitizer.stdout.trim() === "2"
     ? pass("sanitizer-image", en["attachments.sanitizer_image_ready"])
     : fail("sanitizer-image", en["attachments.sanitizer_image_missing"], "rebuild-base-image-and-pin-digest"));
+
+  const searchImage = installed && info?.rootless && searxngEnabled ? deps.run(["podman", "image", "exists", searxngImage]) : null;
+  checks.push(!searxngEnabled ? pass("searxng", en["searxng.reason_disabled"]) : searchImage?.exitCode === 0
+    ? pass("searxng", en["web_search.status_ready"])
+    : fail("searxng", en["web_search.status_unavailable"], "open-settings-web-search"));
 
   const dirCheck = (name: "execution-directory" | "secrets-directory", path: string | null): DoctorCheck => {
     if (path === null) return fail(name, `${name} is not configured`, "configure-execution-block");

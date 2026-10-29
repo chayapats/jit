@@ -367,3 +367,30 @@ test("operator config rejects wildcard binds by default", () => {
   expect(readConfig({}).hostname).toBe("127.0.0.1");
   expect(readConfig({ JIT_HOST: "10.20.30.40" }).hostname).toBe("10.20.30.40");
 });
+
+for (const [name, file, env] of [
+  ["file off, environment unset", false, undefined],
+  ["file off, environment on", false, "1"],
+  ["file on, environment off", true, "0"],
+] as const) {
+  test(`WEB02 service boot honors either Built-in opt-out: ${name}`, async () => {
+    const { service, config } = setup();
+    const started = await startFullApp({
+      config: readConfig({ JIT_DATABASE: config.databasePath, ...(env === undefined ? {} : { JIT_SEARXNG_ENABLED: env }) }),
+      service: { ...service, searxngEnabled: file },
+    });
+    expect(started.ok).toBe(true);
+    if (!started.ok) throw Error("service boot refused");
+    try {
+      expect(started.handle.config.searxngEnabled).toBe(false);
+      const provider = started.handle.web!.searxng;
+      expect(await provider.status()).toEqual({ state: "unavailable", reason: "disabled" });
+      // Disabled admission must not even probe the host runtime.
+      let runtimeCalls = 0;
+      provider.runtime.status = async () => { runtimeCalls++; throw Error("unexpected runtime access"); };
+      await expect(provider.search("disabled fixture", { limit: 1, signal: new AbortController().signal }))
+        .rejects.toMatchObject({ code: "searxng_unavailable" });
+      expect(runtimeCalls).toBe(0);
+    } finally { await stopDrain(started.handle, { timeoutMs: 5000 }); }
+  });
+}

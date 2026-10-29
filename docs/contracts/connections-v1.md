@@ -8,7 +8,7 @@ Uses `app.access_level/v1` (channel attribution), `ops.execution_config/v1` (`ex
 
 `src/exec/connections.ts`; schema 34 `connections(id, kind, label, project_scope_json, revision, secret_state, created_at, rotated_at, removed_at)` and append-only `connection_audit(sequence, connection_id, action, purpose, channel, created_at)`.
 
-- **Kinds.** `github_token`, `deploy_secret`, `mcp_env`.
+- **Kinds.** `github_token`, `deploy_secret`, `mcp_env`, `web_search_key` (schema 42).
 - **Values are never in SQLite.** Each lives in `<execution.secretsDirectory>/<connectionId>`. `ConnectionVault` keeps the directory 0700 and owned by the service uid, writes each value atomically (`O_CREAT|O_EXCL|O_NOFOLLOW` staging file with mode 0600, fsync, rename — a symlink at the path is replaced, never followed) and reads one only after `lstat` and `fstat` agree on a regular, service-owned file of mode 0600 or narrower, opened with `O_NOFOLLOW`. A symlink, another owner or a wider mode is `connection_vault_unsafe` (503). The vault refuses a directory inside or containing the state, backup, ledger or execution directories — comparing both lexical and real locations — and any vault path reached through a symlinked component, so a symlinked parent cannot alias values into a box, backup or export (ADR 0025).
 - **No read-back.** `Application.connections(actor)` and every receipt carry metadata only (`secret: "empty" | "set"`). The receipt identity of `set_secret`/`rotate` omits the value, so no digest of a value is stored either.
 
@@ -34,7 +34,7 @@ HTTP (JSON; same session, Origin and CSRF rules as the other owner APIs): `GET /
 releaseConnection(tx, connectionId, purpose, vault, { projectId?, now? }): { connectionId, kind, secret }
 ```
 
-The only reader of a value. It has no route, command or read model. `purpose` must be `effect:<cardId>` (the effect executor, EXE07) or `mcp:<serverId>` (MCP sidecar spawn, EXE12); anything else is `connection_purpose_invalid` and nothing is read or recorded. A removed or empty connection is `connection_unavailable`; with `projectId`, a connection scoped to other projects is `connection_out_of_scope`. Every release appends a `released` audit row with the purpose in `tx`, so a rolled-back use leaves no row.
+The only reader of a value. It has no route, command or read model. `purpose` must be `effect:<cardId>` (the effect executor, EXE07) or `mcp:<serverId>` (MCP sidecar spawn, EXE12), or `web:<providerId>` (WEB01 search); anything else is `connection_purpose_invalid` and nothing is read or recorded. A removed or empty connection is `connection_unavailable`; with `projectId`, a connection scoped to other projects is `connection_out_of_scope`. Every release appends a `released` audit row with the purpose in `tx`, so a rolled-back use leaves no row.
 
 ## Redaction guard
 
@@ -53,3 +53,5 @@ The only reader of a value. It has no route, command or read model. `purpose` mu
 
 - Redaction matches a value as stored (or one line of it); an encoded or split echo (base64, a value cut across two messages) is not recognised.
 - A crash between writing a value file and committing its revision leaves the file ahead of the row; the next `set_secret` or `rotate` overwrites it.
+
+[Web search settings](web-search-settings-v1.md) reuse these one-way vault commands and metadata.

@@ -21,7 +21,7 @@ async function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "jit-ux02-")); directories.push(dir);
   const path = join(dir, "app.sqlite");
   const store = new TransactionStore(path); stores.push(store);
-  const app = new Application(store, readConfig({ JIT_DATABASE: path }), { now: () => Date.UTC(2027, 0, 15, 8) });
+  const app = new Application(store, readConfig({ JIT_DATABASE: path, JIT_SEARXNG_ENABLED: "0" }), { now: () => Date.UTC(2027, 0, 15, 8) });
   await app.setupOwner(password);
   markSetupComplete(store);
   const token = await app.login(password);

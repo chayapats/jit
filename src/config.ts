@@ -161,6 +161,8 @@ function validatedHostname(value: string | undefined): string {
 /** Finite local-development limits; operators must measure them before a pilot. */
 export interface AppConfig {
   databasePath: string;
+  /** Managed search defaults on; environment or service-config opt-out wins, independently of execution boxes. */
+  searxngEnabled: boolean;
   /** app.attachments/v1: ingestion gate and host-scaled storage/sanitizer limits. */
   attachments: AttachmentLimits;
   origin: string;
@@ -216,9 +218,11 @@ export function readConfig(env: Record<string, string | undefined> = process.env
   const pollBackoffMs = positive("JIT_TELEGRAM_POLL_BACKOFF_MS", 1_000, 60_000);
   const maxPollBackoffMs = positive("JIT_TELEGRAM_MAX_POLL_BACKOFF_MS", 30_000, 300_000);
   if (maxPollBackoffMs < pollBackoffMs) throw new Error("Invalid JIT_TELEGRAM_MAX_POLL_BACKOFF_MS");
+  if (env.JIT_SEARXNG_ENABLED !== undefined && !["0", "1"].includes(env.JIT_SEARXNG_ENABLED)) throw new Error("Invalid JIT_SEARXNG_ENABLED");
   const databasePath = resolve(env.JIT_DATABASE ?? ".local/jit.sqlite");
   return {
     databasePath,
+    searxngEnabled: env.JIT_SEARXNG_ENABLED !== "0",
     attachments: attachmentLimits(env, host ?? attachmentHost(dirname(databasePath), `${databasePath}.backups`)),
     runPort,
     origin: origin.origin,

@@ -159,10 +159,11 @@ export function serviceRouteModels(service: ServiceConfig): RouteModels {
   return { codex: model("codex"), grok: model("grok") };
 }
 
+/** Resolves service state before composition; either service or environment opt-out disables managed search. */
 export function serviceAppConfig(config: AppConfig, service: ServiceConfig | null): AppConfig {
   if (!service) return config;
   const parsed = parseServiceConfig(service);
-  return { ...config, databasePath: serviceDatabasePath(parsed), hostname: parsed.network.bindHost, port: parsed.network.port,
+  return { ...config, searxngEnabled: config.searxngEnabled && parsed.searxngEnabled !== false, databasePath: serviceDatabasePath(parsed), hostname: parsed.network.bindHost, port: parsed.network.port,
     attachments: attachmentLimitsForDirectories(config.attachments, parsed.stateDirectory, parsed.backupDirectory),
     origin: serviceOrigin(parsed), runPort: parsed.runPort ?? config.runPort, routeModels: serviceRouteModels(parsed),
     telegram: { ...config.telegram, botTokenPath: telegramTokenPath(parsed) ?? config.telegram.botTokenPath } };
@@ -312,6 +313,7 @@ export interface FullAppHandle {
   /** Trusted installation configuration, or null under the development profile. */
   serviceConfig: ServiceConfig | null;
   /** exec.box_runtime/v1 project boxes, or null when the operator has not configured execution. */
+  web?: WebTools;
   boxes: BoxManager | null;
   /** app.approval_cards/v1 effect executor, or null without boxes (credential effects also need the vault); the drain waits for it. */
   effects: EffectExecutor | null;
@@ -390,8 +392,8 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
     // exec.box_runtime/v1: a box stop pumps the queue so work waiting as box_capacity is admitted.
     const boxes = createServiceBoxes(store, config, { onCapacity: () => { try { managed?.queue?.pump(); } catch { /* The next tick retries. */ } } });
     // app.connections/v1: values live in the secrets directory, never beside the state, backups or boxes.
-    const connections = config.execution.secretsDirectory ? new ConnectionVault(config.execution.secretsDirectory, {
-      forbidden: [dirname(resolve(config.databasePath)), service?.stateDirectory, service?.backupDirectory, service?.ledgerPath, config.execution.directory] }) : null;
+    const connections = new ConnectionVault(config.execution.secretsDirectory ?? `${dirname(resolve(config.databasePath))}.connections`, {
+      forbidden: [dirname(resolve(config.databasePath)), service?.stateDirectory, service?.backupDirectory, service?.ledgerPath, config.execution.directory] });
     // app.approval_cards/v1: approved effects run once, outside every box, only where boxes exist.
     // app.mcp_servers/v1: MCP servers run only in project boxes and their sidecars, so the gateway needs boxes.
     const streams = boxes ? boxStreamsOf(boxes.runtime) : null;
@@ -404,7 +406,7 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
     const computer = browser ? new ComputerService(store, browser, { now }) : null;
     // The executor exists wherever boxes do: in-box cards (MCP, browser, computer) need no vault, and without one the
     // credential effects fail `connection_vault_not_configured` cleanly instead of every card being undecidable.
-    const web = new WebTools(store, { ...(connections ? { vault: connections } : {}), now, outputBytes: config.jobs.outputBytes });
+    const web = new WebTools(store, { searxngEnabled: config.searxngEnabled, ...(connections ? { vault: connections } : {}), now, outputBytes: config.jobs.outputBytes });
     const effects = new EffectExecutor(store, { vault: connections, boxes, mirrorRoot: config.execution.directory, now,
       performers: { outbound_release: web.perform, ...(mcp ? { mcp_tool: mcp.perform } : {}), ...(browser ? { browser_confirm: browser.perform } : {}),
         ...(computer ? { computer_confirm: computer.perform } : {}) } });
@@ -421,7 +423,7 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
       attachmentSanitizer: config.execution.images ? new PodmanAttachmentSanitizer(config.execution.images.base, store.path, config.attachments) : null,
       service: managed, now, ...(service ? { backupDir: service.backupDirectory, ledgerPath: service.ledgerPath } : {}),
       ...(nativeSnapshot ? { nativeSnapshot } : {}), ...(boxes ? { boxes } : {}), ...(connections ? { connections } : {}), ...(effects ? { effects } : {}),
-      ...(mcp ? { mcp } : {}), ...(browser ? { browser } : {}),
+      web, ...(mcp ? { mcp } : {}), ...(browser ? { browser } : {}),
     });
     const ledger = ledgerGate({ store, ledgerPath: service?.ledgerPath ?? null, now: now(), mode: "boot" });
     if (!ledger.trusted) return refuse([{ gate: "quarantine", state: "blocked", nextAction: ledger.nextAction, detail: ledger.reason }]);
@@ -438,7 +440,7 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
       channels = ServiceChannels.start(store, config, input.transports!, now);
     }
     const handle: FullAppHandle = {
-      store, app, service: managed, channels, config, serviceConfig: service, boxes, effects, browser, mcp,
+      store, app, service: managed, channels, config, serviceConfig: service, boxes, effects, browser, mcp, web,
       boot: { reconciled: booted.reconciled, detail: booted.detail, upgrade: booted.upgrade ? { id: booted.upgrade.id, state: booted.upgrade.state } : null,
         restore: booted.restore ? { id: booted.restore.id, state: booted.restore.state, reason: booted.restore.reason ?? null } : null },
       get queue() { return managed!.queue ?? composed.queue; },
@@ -529,7 +531,7 @@ export function serveFullApp(handle: FullAppHandle, options: { drainTimeoutMs?: 
       await handle.app.closeAttachmentSanitizer();
       let result: DrainResult;
       try { result = await stopDrain(handle, { timeoutMs: drainTimeoutMs }); }
-      finally { handle.service.close(); try { handle.store.close(); } catch { /* Already closed. */ } }
+      finally { await handle.web?.searxng.close().catch(() => {}); handle.service.close(); try { handle.store.close(); } catch { /* Already closed. */ } }
       return result;
     })(),
   };

@@ -1,7 +1,7 @@
 import { DeviceSignIns, type SignInCommand, type SignInOptions, type SignInReceipt, type SignInView, type ProviderReadiness } from "./device-sign-in";
 import { recommendedModel, type RouteProvider } from "./team/route-options";
-import { readWebCalls, type WebCall } from "./web-tools";
-import { isWebCommand, readWebSettings, webCommandIdentity, writeWebCommand, type WebCommand, type WebReceipt, type WebSettings } from "./web-tools/settings";
+import { WebTools, readWebCalls, type WebCall } from "./web-tools";
+import { isWebCommand, readWebProvider, readWebSettings, webSearchKeyLabels, webCommandIdentity, writeWebCommand, type WebCommand, type WebReceipt, type WebProviderSetting, type WebSettings } from "./web-tools/settings";
 import { AttachmentSanitizer } from "./attachments/sanitizer";
 import type { AttachmentSanitizerRuntime } from "./attachments/sanitizer-runtime";
 import { reconcileForgottenAttachments, attachmentProjectContributor, replayAttachmentLifecycle, type AttachmentCopyCleanup } from "./attachments/lifecycle";
@@ -56,7 +56,7 @@ import {
 import { boxCommandIdentity, executionAttemptAdmitted, isBoxCommand, readBoxResets, writeBoxReset, type BoxResetReceipt, type BoxView, type ResetBoxCommand } from "./exec/box-commands";
 import type { BoxManager } from "./exec/box-manager";
 import {
-  applyConnectionCommand, connectionCommandIdentity, isConnectionCommand, readConnections, requireConnectionChannel,
+  normalizeSecret, applyConnectionCommand, connectionCommandIdentity, isConnectionCommand, readConnections, requireConnectionChannel,
   type ConnectionCommand, type ConnectionReceipt, type ConnectionVault, type ConnectionView,
 } from "./exec/connections";
 import type { EnqueueJobCommand, ResumeJobCommand, JobCommand, JobReceipt } from "./jobs/types";
@@ -210,6 +210,8 @@ import { ledgerCheckpointPathFor, syncLedgerCheckpoint, type TrustedLedger } fro
 
 /** Injectable clock and transaction fault seam for deterministic persistence checks. */
 export interface ApplicationOptions {
+  /** Shared process-owned web service; tests may supply deterministic providers. */
+  web?: WebTools;
   /** Fixture protocol/store/clock for Web device sign-in; absent in production. */
   signIn?: SignInOptions;
   /** Service-supplied isolated runtime; absent means metadata-strip fallback, never a host decoder. */
@@ -290,6 +292,7 @@ export class Application {
   #jobsOption: JobQueue | undefined;
   #boxes: BoxManager | undefined;
   #connections: ConnectionVault | undefined;
+  #web: WebTools;
   #effects: EffectExecutor | undefined;
   #mcp: McpGateway | undefined;
   #browser: BrowserService | undefined;
@@ -321,6 +324,7 @@ export class Application {
     this.#jobsOption = options.jobs;
     this.#boxes = options.boxes;
     this.#connections = options.connections;
+    this.#web = options.web ?? new WebTools(store, { searxngEnabled: config.searxngEnabled, ...(options.connections ? { vault: options.connections } : {}) });
     this.#effects = options.effects;
     this.#mcp = options.mcp;
     this.#browser = options.browser;
@@ -2637,7 +2641,8 @@ export class Application {
   #webCommand(actor: OwnerActor, command: WebCommand): WebReceipt {
     const payloadHash = digest(webCommandIdentity(command));
     return this.store.transaction(tx => {
-      this.#requireOwner(tx, actor, ["web"]);
+      this.#requireOwner(tx, actor, ["web", "telegram"]);
+      if (this.#commandChannel(actor) !== "web") throw new AppError("web_settings_requires_web", 403);
       if (command.projectId !== null) this.#project(tx, command.projectId);
       const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
       if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as WebReceipt; }
@@ -2647,6 +2652,52 @@ export class Application {
       this.#beforeCommit?.("receipt");
       return receipt;
     });
+  }
+
+  /** Revisioned installation selection plus explicit effective Built-in fallback; never includes a key. */
+  webSearch(actor: OwnerActor) {
+    this.store.read(tx => this.#requireOwner(tx, actor, ["web"]));
+    return this.#web.selection();
+  }
+
+  /** One owner save reuses connection receipts and WEB01's revisioned provider command; no secret enters identity/audit. */
+  saveWebSearch(actor: OwnerActor, input: { requestId: string; expectedRevision: number; provider: "searxng" | "tavily" | "exa"; apiKey?: string }): WebProviderSetting {
+    this.store.read(tx => this.#requireOwner(tx, actor, ["web"]));
+    if (!/^[a-zA-Z0-9_-]{8,110}$/.test(input.requestId) || !["searxng", "tavily", "exa"].includes(input.provider) || !Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0 || (input.apiKey !== undefined && typeof input.apiKey !== "string")) throw new AppError("invalid_web_search");
+    let connectionId: string | null = null;
+    if (input.provider !== "searxng") {
+      const label = webSearchKeyLabels[input.provider];
+      if (input.apiKey?.trim()) {
+        normalizeSecret(input.apiKey);
+        const created = this.execute(actor, { kind: "connection.create", requestId: `${input.requestId}-create`, projectId: null, expectedRevision: 0,
+          payload: { kind: "web_search_key", label, projectScope: null } });
+        connectionId = created.connection.id;
+        this.execute(actor, { kind: "connection.set_secret", requestId: `${input.requestId}-secret`, projectId: null, expectedRevision: created.connection.revision,
+          payload: { connectionId, secret: input.apiKey } });
+      } else {
+        connectionId = this.connections(actor).filter(c => c.kind === "web_search_key" && c.label === label && c.secret === "set" && c.removedAt === null && c.projectScope === null)
+          .sort((a, b) => b.createdAt - a.createdAt)[0]?.id ?? null;
+      }
+      if (!connectionId) throw new AppError("web_search_key_missing", 409);
+    }
+    const receipt = this.#webCommand(actor, { kind: "web.provider.set", requestId: input.requestId, projectId: null, expectedRevision: input.expectedRevision,
+      payload: { id: input.provider, connectionId } });
+    return (receipt as { provider: WebProviderSetting }).provider;
+  }
+
+  /** Explicit Web owner test; checks the selected revision before releasing a key or sending the fixed public query. */
+  async testWebSearch(actor: OwnerActor, expectedRevision: number): Promise<"ok" | "failed"> {
+    this.store.read(tx => {
+      this.#requireOwner(tx, actor, ["web"]);
+      if (readWebProvider(tx).revision !== expectedRevision) throw new AppError("stale_revision", 409);
+    });
+    return this.#web.test();
+  }
+
+  /** Built-in readiness without a search, image pull or container start; Web owner only. */
+  async searxngStatus(actor: OwnerActor) {
+    this.store.read(tx => this.#requireOwner(tx, actor, ["web"]));
+    return this.#web.searxng.status();
   }
 
   /** Owner-visible query/URL audit metadata, scoped to this project and optionally one run. */

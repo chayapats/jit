@@ -71,7 +71,7 @@ async function fixture(calls: { name: string; arguments: Record<string, string> 
   const dispatch = (limits: Partial<typeof config.jobs.maximum>) => app.execute(auth.actor, { kind: "team.dispatch", requestId: rid(), projectId: project.id,
     expectedRevision: app.project(auth.actor, project.id).revision, payload: { topicId: topic.id, purpose: "Read public evidence", sources: [topic.source],
       include: [role.role!.id], exclude: [], limits: { ...config.jobs.maximum, roles: 1, hops: 1, ...limits } } });
-  return { root, app, store, auth, token, project, topic, web, effects, queue, port, model, searches, fetched, captured, progress, select, send, role, dispatch };
+  return { root, app, store, auth, token, project, topic, web, effects, queue, port, model, searches, fetched, captured, progress, select, send, role, dispatch, providers };
 }
 
 test("web-enabled specialist admission names separate call and round minima before admitting undersized work", async () => {
@@ -138,7 +138,7 @@ test("guard normalizes Unicode, format characters, whitespace and percent-encode
 test("missing public capability fails closed with the preflight action", () => {
   expect(() => assertWebToolsCapability({})).toThrow("install-supported-schway-web-tools");
   assertWebToolsCapability();
-  expect(schemaVersion).toBe(42);
+  expect(schemaVersion).toBe(43);
 });
 
 test("a read-level reply searches and fetches through exact function tools with escaped evidence, audit, Details and live progress", async () => {
@@ -167,11 +167,11 @@ test("a read-level reply searches and fetches through exact function tools with 
   expect(preview.affected.sources.some(item => item.source.sourceId === view.source?.sourceId)).toBe(true);
 });
 
-test("unconfigured search still offers fetch and explains why search is absent; disabling the project offers no tools", async () => {
+test("default search offers managed search and fetch with its privacy/repair instructions; disabling the project offers no tools", async () => {
   const f = await fixture();
   await f.send();
-  expect(f.captured[0]!.tools?.map(tool => tool.name)).toEqual(["web_fetch"]);
-  expect(JSON.stringify(f.captured[0])).toContain("Web search is not set up yet");
+  expect(f.captured[0]!.tools?.map(tool => tool.name)).toEqual(["web_search", "web_fetch"]);
+  expect(JSON.stringify(f.captured[0])).toContain("/settings/web-search");
   f.app.execute(f.auth.actor, { kind: "web.settings.set", requestId: rid(), projectId: f.project.id, expectedRevision: 0, payload: { enabled: false } });
   await f.send("Second question");
   expect(f.captured.at(-1)!.tools ?? []).toEqual([]);
@@ -334,4 +334,16 @@ test("provider protocol errors, oversized bodies and cancellation expose no resp
   const abort = new AbortController(); abort.abort();
   const provider = createExaProvider("fixture-key-173", async (_url, init) => { expect(init.signal?.aborted).toBe(true); throw new Error("fixture-key-173"); });
   await expect(provider.search("weather", { limit: 1, signal: abort.signal })).rejects.toThrow("web_provider_unavailable");
+});
+
+
+test("WEB03 missing selected key falls back to Built-in on a run and records key_missing in its audit", async () => {
+  const f = await fixture([{ name: "web_search", arguments: { query: "Bangkok weather" } }]);
+  f.providers.register("searxng", () => ({ id: "searxng", async search(query) { f.searches.push(query); return [{ title: "Weather", url: "https://weather.test", snippet: "sunny" }]; } }));
+  const id = rid();
+  f.store.transaction(tx => tx.run("INSERT INTO connections VALUES (?, 'web_search_key', 'Tavily', NULL, 1, 'set', 1, NULL, NULL)", id));
+  f.app.execute(f.auth.actor, { kind: "web.provider.set", requestId: rid(), projectId: null, expectedRevision: 0, payload: { id: "tavily", connectionId: id } });
+  f.store.transaction(tx => tx.run("UPDATE connections SET removed_at = 2, secret_state = 'empty' WHERE id = ?", id));
+  await f.send(); expect(f.searches).toEqual(["Bangkok weather"]);
+  expect(f.app.webCalls(f.auth.actor, f.project.id)).toMatchObject([{ tool: "web_search", status: "success", fallback: "key_missing" }]);
 });

@@ -151,7 +151,7 @@ test("serviceEnvironment without execution contains no JIT_BOX_* variable", () =
   try {
     const env = serviceEnvironment(baseService(l.dirs));
     expect(env.some(([k]) => k.startsWith("JIT_BOX_"))).toBe(false);
-    expect(env.some(([k]) => k.startsWith("JIT_EXECUTION_"))).toBe(false);
+    expect(env.filter(([k]) => k.startsWith("JIT_EXECUTION_"))).toEqual([["JIT_EXECUTION_SECRETS_DIR", `${baseService(l.dirs).stateDirectory}.connections`]]);
   } finally { l.cleanup(); }
 });
 

@@ -332,15 +332,32 @@ function releaseTarget(activePath: string): string | null {
   try { return lstatSync(activePath).isSymbolicLink() ? resolve(dirname(activePath), readlinkSync(activePath)) : null; } catch { return null; }
 }
 
-/** Copies a validated artifact into the immutable releases directory (idempotent per artifact id). */
-function stageRelease(service: ServiceConfig, artifactDir: string, manifest: BuildManifest, policy?: RootPathPolicy): string {
-  const releases = serviceReleasesDirectory(service);
-  const target = join(releases, manifest.artifactId);
+/** Checks a release destination without creating, copying or changing it; staging repeats this check to close the password-input gap. */
+export function assertReleaseDestination(service: ServiceConfig, artifactDir: string, policy?: RootPathPolicy): string {
+  if (policy) assertRootTree(artifactDir, policy);
+  const validation = validateArtifact(artifactDir, { runtime: true });
+  if (!validation.ok || !validation.manifest || validation.manifest.engineContract !== "jit.schway.bridge/v1") throw new Error("release_copy_invalid");
+  return releaseDestination(service, validation.manifest, policy);
+}
+
+function releaseDestination(service: ServiceConfig, manifest: BuildManifest, policy?: RootPathPolicy): string {
+  const target = join(serviceReleasesDirectory(service), manifest.artifactId);
   if (policy) {
-    assertRootTree(artifactDir, policy);
     assertRootPath(target, policy);
     if (existsSync(target)) assertRootTree(target, policy);
   }
+  if (existsSync(target)) {
+    const copied = validateArtifact(target, { runtime: true });
+    if (!copied.ok || copied.manifest?.artifactId !== manifest.artifactId) throw new Error("release_copy_invalid");
+  }
+  return target;
+}
+
+/** Copies a validated artifact into the immutable releases directory (idempotent per artifact id). */
+function stageRelease(service: ServiceConfig, artifactDir: string, manifest: BuildManifest, policy?: RootPathPolicy): string {
+  if (policy) assertRootTree(artifactDir, policy);
+  const releases = serviceReleasesDirectory(service);
+  const target = releaseDestination(service, manifest, policy);
   mkdirSync(releases, { recursive: true, mode: 0o755 });
   chmodSync(releases, 0o755);
   if (!existsSync(target)) {

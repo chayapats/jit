@@ -1,3 +1,4 @@
+import { searxngImage } from "../src/web-tools/searxng";
 import { afterEach, expect, test } from "bun:test";
 import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -135,8 +136,8 @@ test("missing Podman and unavailable optional images never block core installati
   expect(existsSync(f.at("/etc/subuid"))).toBe(false); expect(f.calls).toHaveLength(0);
 });
 
-test("image list is digest-only, extensible and empty until real images exist; invalid optional list is skipped", async () => {
-  expect(pinnedImages()).toEqual([]);
+test("image list is digest-only, extensible and includes the managed search pin; invalid optional list is skipped", async () => {
+  expect(pinnedImages()).toContainEqual({ feature: "search", ref: searxngImage });
   expect(() => pinnedImages([{ feature: "search", ref: "searxng:latest" }])).toThrow("invalid-image-list");
   const f = fixture(); await runInstaller({ ...f.options, simulation: { images: [{ feature: "search", ref: "searxng:latest" }] } });
   expect(f.lines.join("\n")).toContain("skipping pre-pull"); expect(f.lines.at(-1)).toContain("Dry run complete");
