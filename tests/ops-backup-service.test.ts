@@ -80,7 +80,7 @@ test("startFullApp in schway mode backs up real native sessions into the configu
       expect(artifact.path.startsWith(backup + "/")).toBe(true);
       expect(sha(readFileSync(artifact.path))).toBe(artifact.hash);
     }
-    expect(readdirSync(backup)).toHaveLength(2);
+    expect(readdirSync(backup)).toHaveLength(3);
     expect(readdirSync(state).some(name => name.endsWith(".backups"))).toBe(false);
   } finally {
     await stopDrain(started.handle, { timeoutMs: 5000 });

@@ -121,7 +121,7 @@ A durable native conversation with workspace identity and conversation branches,
 _Avoid_: Group chat, durable job execution.
 
 **Managed backup**:
-A committed local backup inventory entry with a credential-free application image and opaque native session snapshots, inspectable but never activated without quarantined restore.
+A committed local backup inventory entry with a credential-free application image, bounded attachment artifacts and opaque native session snapshots, inspectable but never activated without quarantined restore.
 _Avoid_: Database copy, export, credential backup.
 
 **Installation upgrade**:

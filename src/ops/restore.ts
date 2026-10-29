@@ -1,9 +1,13 @@
+import { replayAttachmentLifecycle, type AttachmentDeletionScope } from "../attachments/lifecycle";
+import { collectAttachmentBlobs, copyAttachmentBlob, readAttachmentIndex } from "../attachments/backup";
+import { AttachmentStorage } from "../attachments/storage";
+import { attachmentHost, attachmentLimits } from "../attachments/limits";
 import { purgeProjectPayloads } from "../memory/project-delete";
 import { redactRoleProposals } from "../team/role-proposals";
 import { redactPromotionProposal } from "../promotion";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { AppError } from "../errors";
 import { requireId } from "../sources";
 import { TransactionStore, type AppTransaction } from "../store";
@@ -17,7 +21,7 @@ import {
   contextCitations, reconcileDeletions, redactReplayedLineage, redactedText, refreshOperationState, scrubFreeTextOccurrences, scrubOutputSources, type DeletionOperation,
 } from "../memory/delete";
 import type { ApplicationRunPort } from "../team/run-port";
-import { assertRestorableBackup, jitAppVersion, validateManifestRecord, verifyBackupArtifacts, type BackupManifest, type BackupNativePort } from "./backup";
+import { readBackupManifest, assertRestorableBackup, jitAppVersion, validateManifestRecord, verifyBackupArtifacts, type BackupManifest, type BackupNativePort } from "./backup";
 import { ledgerView, syncLedgerCheckpoint, type LifecycleLedgerEntry, type TrustedLedger } from "./lifecycle-ledger";
 import {
   currentSupportedSchema, inspectUpgradeEngine, managedStateDigest, managedTables, minSupportedSchema, tableDigest,
@@ -175,6 +179,8 @@ export class SimulatedRestoreCrash extends Error {
 }
 
 export interface RestoreContext {
+  /** Quiesces and cleans parser copies under the service lifecycle before any post-activation sweep. */
+  settleAttachments?(): Promise<void>;
   /** Trusted external collateral cleanup, shared with ordinary project deletion reconciliation. */
   deletionEnvironment?: import("../memory/delete").DeletionEnvironment;
   store: TransactionStore;
@@ -724,15 +730,15 @@ function openDeletionContexts(tx: AppTransaction): Set<string> {
 /** Context states that still hold native data (a `missing` context was reported absent by the engine). */
 const undeletedStates = new Set(["pending", "delete_failed", "retire_failed"]);
 
-/** Opens one budgeted app.data_lifecycle/v1 deletion operation for restored contexts (managed delete through the run port). */
-function scheduleRestoreDeletion(tx: AppTransaction, projectId: string, contexts: { id: string; generation: number }[], now: number, reason: string): string {
+/** Opens one budgeted app.data_lifecycle/v1 operation for restored contexts and/or attachment copies, reconciled before fence release. */
+function scheduleRestoreDeletion(tx: AppTransaction, projectId: string, contexts: { id: string; generation: number }[], now: number, reason: string, attachments: AttachmentDeletionScope[] = []): string {
   const operationId = randomUUID();
   const operation = {
     id: operationId, contract: "app.data_deletion_operation/v1", projectId, previewId: `restore-replay:${operationId}`,
     scope: { kind: "source", projectId, source: { sourceId: "restore-ledger-replay", revision: 1, generation: 1 } },
     state: "pending", attempts: 0, maxAttempts: 5, tombstones: [],
     contexts: contexts.map(c => ({ ...c, state: "pending", attempts: 0, reason, nextAction: "reconcile_managed_delete_then_verify", updatedAt: now })),
-    exports: [], scopes: [], backupsRetained: [],
+    exports: [], scopes: [], backupsRetained: [], attachments,
     residuals: ["telegram_delivery_copies_not_deleted", "provider_session_copies_not_deleted", "retained_backups_require_retention_purge"],
     reason: "native_sessions_pending_managed_delete", nextAction: "reconcile_managed_delete_then_verify", createdAt: now, updatedAt: now,
   };
@@ -743,17 +749,21 @@ function scheduleRestoreDeletion(tx: AppTransaction, projectId: string, contexts
 
 /** Every deletion operation (budget-exhausted included) still holding native or project-local collateral. */
 function undeletedOperations(tx: AppTransaction): { id: string; state: string; projectId: string; contexts: { id: string; generation: number }[] }[] {
-  return tx.all<{ id: string; state: string; projectId: string; json: string }>(
+  const forget = tx.all<{ id: string; projectId: string; json: string }>("SELECT id, project_id AS projectId, record_json AS json FROM memory_suppressions").flatMap(row => {
+    const record = JSON.parse(row.json) as import("../memory/types").MemorySuppression;
+    return record.attachments?.some(a => a.state !== "purged") ? [{ id: row.id, projectId: row.projectId, state: "pending", contexts: [] }] : [];
+  });
+  return [...forget, ...tx.all<{ id: string; state: string; projectId: string; json: string }>(
     "SELECT id, state, project_id AS projectId, record_json AS json FROM deletion_operations WHERE state IN ('pending', 'blocked', 'failed')")
     .flatMap(op => {
       try {
         const operation = JSON.parse(op.json) as DeletionOperation;
-        const localPending = operation.databasePurge === "pending" || operation.collateral?.some(c => c.state !== "purged") || operation.exports?.some(e => e.state !== "purged");
+        const localPending = operation.attachments?.some(a => a.state !== "purged") || operation.databasePurge === "pending" || operation.collateral?.some(c => c.state !== "purged") || operation.exports?.some(e => e.state !== "purged");
         const contexts = (operation.contexts ?? []).filter(c => undeletedStates.has(c.state))
           .filter(c => tx.get<{ state: string }>("SELECT state FROM team_contexts WHERE id = ? AND generation = ?", c.id, c.generation)?.state !== "deleted");
         return contexts.length || localPending ? [{ id: op.id, state: op.state, projectId: op.projectId, contexts: contexts.map(c => ({ id: c.id, generation: c.generation })) }] : [];
       } catch { return [{ id: op.id, state: op.state, projectId: op.projectId, contexts: [] }]; }
-    });
+    })];
 }
 
 /**
@@ -854,6 +864,11 @@ function replayLedger(staged: TransactionStore, entries: LifecycleLedgerEntry[],
       for (const c of withdrawn) tx.run("INSERT OR IGNORE INTO memory_suppressed_claims VALUES (?, ?, ?)", s.id, c.projectId, c.claimId);
       for (const c of lineage) tx.run("INSERT OR IGNORE INTO memory_suppressed_sources VALUES (?, ?, ?, ?, ?)", s.id, c.projectId, c.sourceId, c.revision, c.generation);
       replay.appliedSuppressions++;
+    }
+    // An older image has no cleanup scopes for a later forget/delete. Rebuild them from the rows
+    // replay retires, including drafts and ledger-only suppressions, before their blob references vanish.
+    for (const scope of replayAttachmentLifecycle(tx, now, true)) {
+      replay.deleteOperations.push(scheduleRestoreDeletion(tx, scope.projectId, [], now, "restore_attachment_replay", [scope]));
     }
     // Derived invalidation: the deletion inventory's own job evidence (runs, syntheses, extractions, attempts) classifies
     // every managed native context; opaque or manifest-less owners are unknown and handled like deleted (fail closed).
@@ -1343,6 +1358,15 @@ export async function activateRestore(ctx: RestoreContext, journal: RestoreJourn
   if (liveDigest !== journal.live.digest) return block("restore_stale_live", "live_changed_since_prepare", "discard_and_prepare_again");
   try { quarantineDigest = withQuarantine(journal.quarantinePath, false, staged => staged.read(managedStateDigest)); } catch { quarantineDigest = null; }
   if (quarantineDigest !== journal.quarantineDigest) return block("restore_quarantine_changed", "quarantine_changed_since_validate", "apply_ledger_again_then_validate");
+  // Only ledger-surviving rows may publish into the live store. Old live blobs remain until atomic activation.
+  const manifest = ctx.store.read(tx => readBackupManifest(tx, journal.backupId));
+  const index = new Map(readAttachmentIndex(manifest.attachments, ctx.backupDir, manifest.id).map(b => [`${b.projectId}/${b.sha256}`, b]));
+  withQuarantine(journal.quarantinePath, false, staged => staged.read(tx => {
+    for (const blob of collectAttachmentBlobs(tx).blobs) {
+      if (index.get(`${blob.projectId}/${blob.sha256}`)?.bytes !== blob.bytes) throw new AppError("backup_integrity_failed", 409);
+      copyAttachmentBlob(join(ctx.backupDir, "attachments"), join(dirname(resolve(ctx.store.path)), "attachments"), blob);
+    }
+  }));
   // From the intent on, only restore status and remediation are served until the restore is complete.
   writeRestoreGate(ctx.store.path, journal.id);
   const intent = save(ctx.restoreDir, { ...journal, state: "activating", steps: step(journal, "activation_intent", now, true, "intent_persisted"),
@@ -1388,6 +1412,9 @@ export async function completeRestoreActivation(ctx: RestoreContext, journal: Re
     current = save(ctx.restoreDir, { ...current, activation: { ...current.activation, sessionsRevoked: true },
       steps: step(current, "generation_fence", ctx.now(), true, "sessions_revoked"), updatedAt: ctx.now() });
   }
+  await ctx.settleAttachments?.();
+  const liveAttachments = new AttachmentStorage(ctx.store, attachmentLimits({}, attachmentHost(dirname(ctx.store.path), ctx.backupDir)));
+  liveAttachments.purgeDeleted();
   ctx.fault?.("activated");
   if (!current.activation.nativeReconciled) {
     if (!ctx.service.fencedLifecycle) {

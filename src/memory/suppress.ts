@@ -1,3 +1,4 @@
+import { attachmentSources, replayAttachmentLifecycle, attachmentInventory } from "../attachments/lifecycle";
 import { AppError } from "../errors";
 import { invalidatePendingJob, jobData } from "../jobs/queue";
 import { requireId, requireText, type SourceReference } from "../sources";
@@ -139,6 +140,7 @@ export function suppressionImpact(tx: AppTransaction, projectId: string, referen
       reference: { claimId: entry.claim.claimId, revision: entry.claim.revision, generation: entry.claim.generation } })),
     contexts: contexts.map(row => ({ id: row.id, generation: row.generation ?? 1, projectId: row.projectId, ownerKind: row.ownerKind, ownerId: row.ownerId })),
     pendingJobs: dedupeJobs([...pendingReferencing(tx, ids, suppressedKeys(sources)), ...lineage.pendingJobs]),
+    attachments: [...new Set(sources.map(e => e.projectId))].map(id => attachmentInventory(tx, id, sources.map(e => e.source.sourceId))).reduce((n, a) => ({ count: n.count + a.count, bytes: n.bytes + a.bytes }), { count: 0, bytes: 0 }),
     overlaps: overlapTitles(tx, projectId, claim.claim.text),
     note: forgetNote };
 }
@@ -166,6 +168,7 @@ function suppressedLineage(tx: AppTransaction, withdrawn: Map<string, Withdrawn>
   for (const entry of [...sources]) for (const twin of chatTitleTwins(tx, entry.source)) bind(twin);
   // Jit replies, specialist results, role previews and coordinator syntheses that were given a forgotten source,
   // directly or through an earlier output, may copy it: their outputs join the suppressed lineage.
+  for (const entry of attachmentSources(tx, sources.map(e => e.source.sourceId))) bind(entry);
   const lineage = forgetLineage(tx, sources.map(entry => entry.source));
   for (const output of lineage.outputs) bind(output);
   return { sources, lineage };
@@ -250,8 +253,8 @@ function fencedContexts(tx: AppTransaction, jobIds: Set<string>): SuppressedCont
  * command. The claim, its transitive dependents and same-source siblings become
  * forgotten across projects; their old source lineage is bound in
  * memory_suppressed_sources so extraction, retrieval and context assembly can never
- * rebuild them (generation-fenced). Raw sources stay readable through ordinary
- * source reads. Queued and running work that admitted withdrawn material is fenced
+ * rebuild them (generation-fenced). Raw message sources stay readable through ordinary
+ * source reads; reached attachment files are retired and removed. Queued and running work that admitted withdrawn material is fenced
  * in the same transaction; native session retirement continues through the existing
  * jobs.session_reconcile lifecycle. Tasks, decisions, roles and standing
  * authorizations are never modified here.
@@ -275,6 +278,7 @@ export function prepareSuppression(tx: AppTransaction, command: ForgetMemoryComm
   const suppression: MemorySuppression = { id: suppressionId, projectId: command.projectId, claimId: target.claimId,
     fromRevision: target.revision, fromGeneration: target.generation,
     withdrawn: listed, sources, contexts: [], overlaps,
+    attachments: [...new Set(sources.map(e => e.projectId))].map(projectId => ({ ...attachmentInventory(tx, projectId, sources.map(e => e.source.sourceId)), projectId, state: "pending" as const, attempts: 0, reason: null })).filter(a => a.count > 0),
     reason: p.reason, acknowledged: p.acknowledged,
     ownerRevision, projectRevision, createdAt: now };
   // The final suppressed set is recorded first, so every fence below (and the currentness checks it relies on) sees
@@ -291,6 +295,7 @@ export function prepareSuppression(tx: AppTransaction, command: ForgetMemoryComm
     tx.run("INSERT OR IGNORE INTO memory_suppressed_sources VALUES (?, ?, ?, ?, ?)",
       suppressionId, source.projectId, source.source.sourceId, source.source.revision, source.source.generation);
   }
+  replayAttachmentLifecycle(tx, now);
   const fenced = dedupeJobs([...pendingReferencing(tx, ids, suppressedKeys(sources)), ...lineage.pendingJobs]);
   const fencedJobs = new Set(fenced.map(job => job.id));
   for (const job of fenced) invalidatePendingJob(tx, job.projectId, job.id, "source_retired", now);
@@ -324,7 +329,7 @@ export function suppressionLedger(tx: AppTransaction, projectId: string, claimId
     const lifecycle = record ? (JSON.parse(record.record_json) as { lifecycle: string }).lifecycle : "not_requested";
     return { ...context, appState, lifecycle };
   });
-  const complete = contexts.every(context => context.lifecycle === "retired" || context.lifecycle === "deleted");
+  const complete = (suppression.attachments ?? []).every(a => a.state === "purged") && contexts.every(context => context.lifecycle === "retired" || context.lifecycle === "deleted");
   return { suppression, retire: { state: complete ? "complete" : "incomplete", contexts },
     note: complete ? "บริบทที่ได้รับผลกระทบ retire ครบแล้ว งานถัดไปเริ่มจากต้นฉบับที่อนุญาตเท่านั้น"
       : "ยัง retire บริบทไม่ครบ ตรวจงานที่ถูก fence และรัน reconcile ซ้ำ ห้ามอ้างว่าลืมครบจนกว่า ledger จะ complete" };

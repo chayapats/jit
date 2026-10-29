@@ -259,13 +259,13 @@ test("retention bounds prune oldest first, record pruned ids and delete files on
   expect(listed.some(m => m.retention.pruned.length > 0)).toBe(true);
   // Pruned backups lose image and native files; retained ones keep both.
   for (const id of ids.slice(0, 2)) expect(managedFiles(f.backupDir).some(n => n.startsWith(id))).toBe(false);
-  expect(managedFiles(f.backupDir)).toHaveLength(backupRetention.maxBackups * 2);
+  expect(managedFiles(f.backupDir)).toHaveLength(backupRetention.maxBackups * 3);
   // Explicit prune keeps the newest `keep` and removes files after commit.
   const pruned = f.app.execute(f.auth.actor, { kind: "backup.prune", requestId: rid(), projectId: null,
     expectedRevision: f.app.workspace(f.auth.actor).revision, payload: { keep: 3 } });
   expect(pruned.manifest.retention.pruned).toHaveLength(backupRetention.maxBackups - 3);
   expect(pruned.manifest.jitVersion).toBe(jitAppVersion);
-  expect(managedFiles(f.backupDir)).toHaveLength(6);
+  expect(managedFiles(f.backupDir)).toHaveLength(9);
 });
 
 test("a failure after victims are chosen keeps every committed backup file and removes only the new attempt", async () => {
@@ -397,7 +397,7 @@ test("ordinary backup image excludes every credential and secret-bearing value",
     expect((image.query("SELECT count(*) AS n FROM projects").get() as { n: number }).n).toBe(1);
   } finally { image.close(); }
   expect(receipt.manifest.credentials).toEqual({ included: false, excludedTables: ["delivery_worker", "export_artifacts", "job_scheduler", "lifecycle_checkpoint", "lifecycle_ledger", "login_throttle", "ops_backups", "owner", "schedule_feed", "sessions"],
-    scrubbed: ["telegram_binding.challenge_nonce", "webhook_triggers.sealed_secret", "command_receipts.result_json"], restore: "owner_credential_setup_required" });
+    scrubbed: ["telegram_binding.challenge_nonce", "webhook_triggers.sealed_secret", "approval_cards.outbound_release", "command_receipts.result_json"], restore: "owner_credential_setup_required" });
   expect(scanBackupSecrets(receipt.manifest, [passwordHash, tokenHash, f.token, nonce])).toEqual([]);
   // The live installation still holds its credentials.
   expect(f.app.authenticate(f.token).actor.ownerId).toBe("owner");

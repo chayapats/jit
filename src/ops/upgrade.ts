@@ -167,6 +167,8 @@ export interface UpgradeContext {
   jitVersion: string;
   now(): number;
   inflight: Set<string>;
+  /** Same attachment budget as manual backup creation. */
+  attachmentBound?: number;
   service: UpgradeServiceControl;
   /** Re-verifies the authorized owner inside each transaction that commits upgrade work. */
   authorize(tx: AppTransaction): void;
@@ -667,7 +669,7 @@ export async function prepareUpgrade(ctx: UpgradeContext, input: { request: Upgr
     ctx.fault?.("quiesced");
     phase = "snapshot";
     const manifest = await stageManagedBackup<BackupManifest>({
-      store: ctx.store, backupDir: ctx.backupDir, port: ctx.port, jitVersion: ctx.jitVersion, now: ctx.now, inflight: ctx.inflight,
+      store: ctx.store, backupDir: ctx.backupDir, port: ctx.port, jitVersion: ctx.jitVersion, now: ctx.now, inflight: ctx.inflight, attachmentBound: ctx.attachmentBound,
       guard: tx => { ctx.authorize(tx); return null; },
       record: (_tx, committed) => committed,
     });

@@ -4,6 +4,16 @@
  * Values are plain text: no markup and none of < > & " ' (renderers insert them unescaped).
  */
 export const th = {
+  "attachments.backup_bound_notice": "ไฟล์แนบใช้ {bytes} จากเพดาน backup {bound} ลบไฟล์หรือเพิ่มเพดานก่อน backup หรือ upgrade",
+  "error.attachment_backup_active": "backup ยังใช้ไฟล์อยู่ รอให้เสร็จแล้วลอง cleanup อีกครั้ง",
+  "error.attachment_cleanup_unavailable": "ระบบ cleanup ไฟล์แนบยังใช้ไม่ได้ เริ่ม service ที่ตั้งค่าไว้ใหม่แล้วลองอีกครั้ง",
+  "error.attachment_purge_failed": "ยังมีไฟล์แนบค้างอยู่ ตรวจสิทธิ์ที่เก็บไฟล์แล้วลอง cleanup อีกครั้ง",
+  "error.attachment_inventory_too_large": "รายการไฟล์แนบเกินขอบเขตที่รองรับ ลบไฟล์ก่อนลอง backup อีกครั้ง",
+  "error.attachment_blob_corrupt": "ตรวจสอบ blob ของไฟล์แนบไม่ผ่าน เลือก backup ที่ตรวจสอบได้แล้วลองอีกครั้ง",
+  "error.attachment_blob_missing": "ไม่พบ blob ของไฟล์แนบ นำสำเนาที่ตรวจสอบแล้วกลับมาหรือลบไฟล์แนบนั้นก่อนลองอีกครั้ง",
+  "error.attachment_index_missing": "ไม่พบ attachment index ของ backup เลือก backup อื่นที่ตรวจสอบแล้ว",
+  "error.attachment_index_corrupt": "ตรวจสอบ attachment index ของ backup ไม่ผ่าน เลือก backup อื่นที่ตรวจสอบแล้ว",
+  "error.backup_attachments_too_large": "ขนาดไฟล์แนบ ({bytes} bytes) เกินเพดาน backup ({bound} bytes) ลบไฟล์หรือเพิ่ม JIT_BACKUP_ATTACHMENT_BYTES แล้วลองอีกครั้ง",
   "error.attachments_disabled": "ยังไม่ได้เปิดรับไฟล์แนบ กรุณาส่งข้อความแทน",
   "error.invalid_attachment_upload": "ข้อมูลอัปโหลดไม่ถูกต้อง กรุณาเลือกไฟล์แล้วลองใหม่",
   "error.attachment_too_large": "ไฟล์ใหญ่เกินเพดาน กรุณาเลือกไฟล์ที่เล็กลงแล้วลองใหม่",

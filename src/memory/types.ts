@@ -44,7 +44,7 @@ export interface CorrectionImpact {
 /** Owner-approved correction result; the replacement is readable through the ordinary claim query. */
 export interface CorrectionReceipt { correction: MemoryCorrection; replacement: ClaimReference }
 /** One explicit owner authorization to forget one exact claim revision with acknowledged scope.
- *  Forgetting never cancels tasks, never withdraws decisions and never deletes raw sources. */
+ *  Forgetting never cancels tasks or withdraws decisions; message text stays readable, while reached attachment files are erased. */
 export interface ForgetMemoryCommand {
   kind: "memory.forget"; requestId: string; projectId: string; expectedRevision: number;
   payload: { claim: ClaimReference; reason: string; acknowledged: boolean };
@@ -57,6 +57,8 @@ export interface SuppressedSourceIdentity { projectId: string; source: SourceRef
 export interface SuppressedContextIdentity { id: string; generation: number }
 /** Durable owner-approved forget; the receipt of app.memory_suppression/v1. */
 export interface MemorySuppression {
+  /** File cleanup is independent of native session retirement and must finish before complete forgetting. */
+  attachments?: import("../attachments/lifecycle").AttachmentDeletionScope[];
   id: string; projectId: string; claimId: string; fromRevision: number; fromGeneration: number;
   withdrawn: SuppressedClaimIdentity[]; sources: SuppressedSourceIdentity[]; contexts: SuppressedContextIdentity[];
   overlaps: { kind: "task" | "decision"; id: string; title: string }[];
@@ -65,6 +67,7 @@ export interface MemorySuppression {
 }
 /** Inspector preview: what one forget would withdraw or retire before the owner confirms. */
 export interface SuppressionImpact {
+  attachments?: { count: number; bytes: number };
   claim: ClaimLookup;
   suppression: MemorySuppression | null;
   dependents: { projectId: string; reference: ClaimReference; text: string | null }[];
