@@ -62,6 +62,26 @@ Owner ลองใช้ Jit บน Pi เมื่อ 2026-10-29 แล้ว�
 8. Jit: ลบหรือเปลี่ยนชื่อโครงการ และลบ role (D12)
 9. Jit: communication policy ฉบับใหม่ ครอบคลุมเสียงแชต การ์ดทีม chips และคิว (D05–D08)
 
+## Tickets
+
+| Ticket | Tier | ผลลัพธ์ | Decision | Blocked by |
+| --- | --- | --- | --- | --- |
+| [#169](https://github.com/chayapats/jit/issues/169) | Frontier | Answer first (ทำแล้ว) | D01 | — |
+| [#173](https://github.com/chayapats/jit/issues/173) WEB01 | Frontier | จิตค้นและอ่านเว็บได้ทันที ผ่าน `web_search`/`web_fetch` แบบอ่านอย่างเดียว | D03, D04 | schway#433, schway#434 |
+| [#178](https://github.com/chayapats/jit/issues/178) WEB02 | Frontier | SearXNG ที่ Jit ดูแลเองเป็นค่าเริ่มต้น | D09 | #173 |
+| [#184](https://github.com/chayapats/jit/issues/184) WEB03 | Standard | ตั้งค่า › การค้นเว็บ: เลือก provider และใส่ key ครั้งเดียว | D09 | #173, #178 |
+| [#174](https://github.com/chayapats/jit/issues/174) STR01 | Frontier | Stream คำตอบทีละ token | D02 | — |
+| [#175](https://github.com/chayapats/jit/issues/175) SIGN01 | Frontier | Login Codex/Grok จาก Web | D10 | schway#435 |
+| [#176](https://github.com/chayapats/jit/issues/176) INST01 | Frontier | ติดตั้งคำสั่งเดียว จบด้วยลิงก์ตั้งค่า | D11 | — |
+| [#177](https://github.com/chayapats/jit/issues/177) LIFE02 | Frontier | ลบโครงการแบบ preview → confirm | D12 | — |
+| [#181](https://github.com/chayapats/jit/issues/181) LIFE01 | Standard | เปลี่ยนชื่อโครงการ | D12 | — |
+| [#182](https://github.com/chayapats/jit/issues/182) LIFE03 | Standard | ลบ (archive) role | D12 | — |
+| [#179](https://github.com/chayapats/jit/issues/179) COMM01 | Standard | เสียงแชตสั้น งานยาวกลายเป็นการ์ด | D05 | — |
+| [#180](https://github.com/chayapats/jit/issues/180) COMM02 | Standard | ทีมทำงานเงียบๆ การ์ดพับไว้ แจ้งเตือนเฉพาะเรื่องที่ต้องให้ owner ทำ | D06 | — |
+| [#183](https://github.com/chayapats/jit/issues/183) COMM03 | Standard | ข้อความระหว่างจิตกำลังตอบขึ้น "รอคิว" แล้วตอบตามลำดับ | D07 | — |
+| [#186](https://github.com/chayapats/jit/issues/186) CTX01 | Frontier | คำตอบที่รอคิวเห็นคำตอบก่อนหน้า (context assemble ตอนเริ่ม attempt) | D07 | #183 |
+| [#185](https://github.com/chayapats/jit/issues/185) COMM04 | Standard | Reply chips 2–3 ปุ่ม | D08 | — |
+
 ## Out of scope
 
 Telegram transport (ยังไม่มี live transport), ให้ LLM reviewer อนุมัติ action แทน owner (ขัดหลัก authority) และการบันทึก memory โดยไม่ผ่านการยืนยันของ owner
