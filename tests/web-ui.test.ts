@@ -182,12 +182,12 @@ test("web.static_assets/v1: hashed, immutable, self-hosted assets with font lice
   }
   const js = new TextDecoder().decode(staticAssets.get("app.js")!.body);
   expect(js).not.toMatch(/\beval\s*\(|new Function|XMLHttpRequest|localStorage|sessionStorage|document\.cookie|innerHTML|outerHTML|insertAdjacentHTML|document\.write|method:/);
-  // The script reads only same-origin pages (topic panel, bounded ⌘K query, live-view latest screenshot),
+  // The script reads only same-origin pages (topic panel, bounded ⌘K query, live-view latest screenshot, device sign-in status),
   // always with the session's own credentials.
   const fetches = [...js.matchAll(/\bfetch\(([^,]+), (\{[^}]*\})/g)];
-  expect(fetches.map(m => m[1])).toEqual(["href", "latestUrl", "`/api/search?q=${encodeURIComponent(input.value)}`"]);
+  expect(fetches.map(m => m[1])).toEqual(["href", "latestUrl", "`/api/search?q=${encodeURIComponent(input.value)}`", "signIn.dataset.statusUrl"]);
   for (const [, , options] of fetches) expect(options).toContain('credentials: "same-origin"');
-  expect(js.match(/\bfetch\(/g)).toHaveLength(3);
+  expect(js.match(/\bfetch\(/g)).toHaveLength(4);
   for (const path of ["/assets/app.css", "/assets/app.0000000000000000.css", "/assets/fonts/Inter-Variable.woff2", `${assetUrl("app.css")}x`]) {
     expect((await get(f, path, {}, false)).status).toBe(404);
   }

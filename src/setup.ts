@@ -289,10 +289,10 @@ export function setupCheckLimits(maximum: JobLimits): JobLimits {
 }
 
 /** Admits one route check job unless one is already queued or running for the same route. */
-function startCheck(tx: AppTransaction, record: SetupRecord, input: SetupContext, requestId: string): void {
+function startCheck(tx: AppTransaction, record: SetupRecord, input: SetupContext, requestId: string, force = false): void {
   const { config, queue, generation, now } = input;
   const current = connection(tx, record, config);
-  if (current.status === "checking") return;
+  if (current.status === "checking" && !force) return;
   // A check of an earlier route that is still queued or running is stopped; its late result is fenced anyway.
   const previous = record.check?.jobId ? readJob(tx, record.check.projectId, record.check.jobId) : null;
   if (previous && queue?.available(tx) && (previous.state === "queued" || previous.state === "admitted" || previous.state === "waiting")) {
@@ -319,7 +319,7 @@ function startCheck(tx: AppTransaction, record: SetupRecord, input: SetupContext
 }
 
 /** Trusted inputs for one setup command transaction. */
-export interface SetupContext { config: AppConfig; queue: JobQueue | undefined; generation: number; now: number }
+export interface SetupContext { config: AppConfig; queue: JobQueue | undefined; generation: number; now: number; deferCheck?: boolean }
 
 /**
  * Applies one validated setup command inside the caller's owner command transaction (receipt and audit are the
@@ -345,7 +345,7 @@ export function applySetup(tx: AppTransaction, command: SetupCommand, input: Set
     case "setup.connect":
       requires("wake");
       saveRoute(tx, command.requestId, command.payload.route, config, now);
-      startCheck(tx, record, input, command.requestId);
+      if (!input.deferCheck) startCheck(tx, record, input, command.requestId);
       break;
     case "setup.check":
       requires("wake");
@@ -383,6 +383,14 @@ export function applySetup(tx: AppTransaction, command: SetupCommand, input: Set
     ON CONFLICT(id) DO UPDATE SET revision = excluded.revision, record_json = excluded.record_json, completed_at = excluded.completed_at`,
   revision, JSON.stringify(record), command.kind === "setup.complete" ? now : null);
   return { setup: readSetup(tx, config) };
+}
+
+/** Refresh the existing exact-route check after owner sign-in, including from settings after setup. */
+export function checkSignedInRoute(tx: AppTransaction, route: RoleRoute, input: SetupContext, requestId: string): void {
+  const row = readRow(tx);
+  if (!sameRoute(readSetup(tx, input.config).connection.route, route)) return;
+  startCheck(tx, row.record, input, requestId, true);
+  tx.run("UPDATE setup_state SET record_json = ? WHERE id = 1", JSON.stringify(row.record));
 }
 
 const validInput = (input: unknown): input is { checkId: string } => {

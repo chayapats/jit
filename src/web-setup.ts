@@ -1,3 +1,5 @@
+import type { ProviderReadiness } from "./device-sign-in";
+import { signInForms } from "./web-sign-in";
 import { currentLocale, tr, type MessageKey } from "./i18n";
 import type { Persona } from "./persona";
 import type { ConnectionStatus, SetupConnection, SetupStep, SetupView } from "./setup";
@@ -71,11 +73,11 @@ function wakeStep(setup: SetupView, csrf: string): string {
     <form method="post" action="/setup/wake">${hiddenCommand(csrf, setup.revision)}<input type="hidden" name="language" value="${locale}"><button class="primary">${tr("setup.wake_start")}</button></form>`;
 }
 
-function connectStep(setup: SetupView, csrf: string, models: RouteModels): string {
+function connectStep(setup: SetupView, csrf: string, models: RouteModels, readiness?: ProviderReadiness): string {
   const route = setup.connection.route;
   return `<div class="setup-head"><h1>${tr("setup.connect_title")}</h1><p>${tr("setup.connect_text")}</p></div>
-    <form class="team-form setup-form" method="post" action="/setup/connect">${hiddenCommand(csrf, setup.revision)}
-      ${routePicker({ route, models, legend: tr("setup.provider"), layout: "cards" })}
+    ${readiness ? signInForms(csrf, setup.revision, "setup") : ""}<form class="team-form setup-form" method="post" action="/setup/connect">${hiddenCommand(csrf, setup.revision)}
+      ${routePicker({ route, models, legend: tr("setup.provider"), layout: "cards", ...(readiness ? { readiness } : {}) })}
       <p class="setup-meta">${tr("setup.account_note")}</p>
       <button class="primary">${route ? tr("setup.connect_save_again") : tr("setup.connect_save")}</button></form>
     ${connectionStatus(setup.connection, csrf, setup.revision)}
@@ -127,8 +129,8 @@ function ceremonyStep(setup: SetupView, csrf: string): string {
 }
 
 /** The setup page for one step, in the request's language and theme. */
-export function setupPage(setup: SetupView, csrf: string, shown: SetupStep, models: RouteModels = noRouteModels): string {
-  const body = shown === "wake" ? wakeStep(setup, csrf) : shown === "connect" ? connectStep(setup, csrf, models) : shown === "know" ? knowStep(setup, csrf)
+export function setupPage(setup: SetupView, csrf: string, shown: SetupStep, models: RouteModels = noRouteModels, readiness?: ProviderReadiness): string {
+  const body = shown === "wake" ? wakeStep(setup, csrf) : shown === "connect" ? connectStep(setup, csrf, models, readiness) : shown === "know" ? knowStep(setup, csrf)
     : shown === "personality" ? personalityStep(setup, csrf) : ceremonyStep(setup, csrf);
   return documentPage(`${tr(`setup.step.${shown}` as MessageKey)} · ${tr("setup.title")}`, `<main class="setup" id="main-content"><div class="setup-card" data-step="${shown}">
     <header class="setup-top">${logoLockup({ height: 28, label: "Jit" })}<p class="setup-eyebrow">${tr("setup.title")}</p></header>${progress(setup, shown)}${body}</div></main>`);

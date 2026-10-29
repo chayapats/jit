@@ -106,3 +106,91 @@ BOT05 owns the chat-first home, new chats landing in the General space, refusing
 - **Backups and composition.** Backup classification, and the worker registered in the composed queue.
 
 `tests/ops-upgrade.test.ts` migrates fixtures at schemas 17–25 to 26.
+
+## Web device sign-in (SIGN01, S12-D10)
+
+Engineering decisions: [ADR 0043](../adr/0043-web-device-sign-in.md). Uses
+`schway.host.device-sign-in/v1`; credentials remain entirely in Schway's native
+secure store under the service identity (Secret Service on Linux).
+
+`Application.execute(actor, command)` accepts the Web-only owner commands:
+
+```ts
+{
+  kind: "setup.sign_in" | "setup.sign_in.cancel",
+  requestId: string, // UUID; the start UUID also identifies the flow
+  projectId: null,
+  expectedRevision: number, // setup revision, or owner-team revision in settings
+  payload: {
+    provider: "codex" | "grok",
+    surface: "setup" | "settings",
+    flowId: string | null // null for start, exact flow UUID for cancel
+  }
+}
+```
+
+The asynchronous receipt is `{ signIn: { id, expiresAt, state }, approval? }`.
+`approval: { userCode, verificationUri }` exists only in the first start response;
+no receipt serialization, GET or replay contains it. Only flow id, expiry and
+state are persisted in `command_receipts`. States are `starting`, `pending`,
+`busy`, `ready`, `expired`, `denied`, `cancelled`, `provider-error`, `store-error`
+and `cleanup-required`. The last two show the existing blocked presentation with
+an explicit secure-store unlock/recovery action. No raw error is retained.
+
+`Application.providerReadiness(actor)` reads both providers locally without
+network or inference. `configured-unverified` labels the account Ready, separately
+from verified inference; `needs-login`/`rejected` labels Sign in needed; quota
+evidence from the existing exact-route check labels Quota exhausted. Unavailable
+stores/integrations remain blocked. The scripted profile never inspects a native
+store just to render a page. A process-owned `cleanup-required` readiness flag
+takes precedence over readable leftover credentials and older quota evidence,
+including during replacement/cancelled flows. It shows the blocked label and
+secure-store recovery action until a successful guarded commit clears it.
+
+Setup's Sign in button explicitly selects its provider with #167's route defaults
+(or preserves an existing model/alias on that provider), deferring inference until
+sign-in succeeds. In Settings › Team, sign-in never changes a route. On ready,
+`checkSignedInRoute` refreshes the existing bounded check only if the exact
+captured route is still current and the initiating owner session remains valid.
+It never advances setup, selects another route or changes billing.
+
+- `POST /[api/]setup/sign-in`: form/JSON fields `provider`, `surface`, `requestId`,
+  `expectedRevision` and CSRF. Initial HTML returns 200 with the approval page;
+  it uses no-store and no-referrer headers. JSON returns the same ephemeral receipt.
+- `GET /[api/]setup/sign-in/:provider/:flowId?surface=setup|settings`: safe status,
+  a refresh link, cancel form while pending, and retry after terminal outcomes.
+- `POST /[api/]setup/sign-in/:provider/:flowId/cancel`: `surface`, revision,
+  request id and CSRF. HTML redirects to the safe status URL.
+- Every mutation uses session, exact fields, Origin, CSRF, receipts and audit.
+  Local API, Telegram and fabricated/model actors are rejected.
+- Local store reads have a five-second deadline. Schway's start deadline is 30 seconds; polling ends by the earlier provider
+  expiry or ten minutes. The Web enhancement reads status every 1.5 seconds with
+  a five-second request timeout and returns to provider cards on ready. Transient
+  HTTP/network errors retry with exponential backoff (three to ten seconds),
+  bounded by the same deadline. Definitive HTTP errors show a localized error
+  and refresh retry. Plain
+  forms and manual refresh work without JavaScript.
+- Shutdown cancels flows and awaits their start and polling cleanup for at most
+  30 seconds before closing the application store. After a crash,
+  an unknown pending flow is cancelled/retryable; codes are never reconstructed.
+
+### Opt-in reference-host evidence
+
+On a fresh supported Linux reference host, install the exact PR build through the
+normal installation path and open the Web setup URL as owner. Keep host addresses
+and evidence in ignored `.local` records. Do not run live sign-in in deterministic
+CI or copy another account's credentials.
+
+1. With the service identity's Secret Service available and no provider login,
+   verify both cards say Sign in needed without inference. Choose Codex's Sign in,
+   open the displayed verification link on the owner's browser/phone, and approve.
+2. Verify the card becomes Ready, the automatic bounded check uses that exact
+   route/model, and Jit replies after completing setup, with no SSH or terminal
+   login. Repeat for Grok if the owner opts in to its subscription/quota use.
+3. With disposable consented flows, verify deny, cancel, expiry, concurrent busy,
+   locked Secret Service, and service restart all show the documented retry or
+   store-recovery action. Test one flow without JavaScript and one with it.
+4. Inspect reviewed, sanitized state/log/export summaries for absence of code,
+   verification link and credentials. Record build SHA, host profile, selected
+   route/model, readiness and inference separately. Record renewal/reboot as
+   untested unless independently observed. Never publish a code, token or address.

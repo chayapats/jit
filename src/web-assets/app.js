@@ -2,8 +2,7 @@
 // Every page is complete without this file. It adds behaviour only: it never posts data itself and
 // never stores owner content (the service worker it registers caches only static assets). Forms still submit
 // through the normal form post (the setup ceremony only delays its own form's submit to play the animation).
-// The only reads it makes are two same-origin GETs that already work as pages: the topic panel page and the
-// bounded ⌘K query.
+// Reads stay on the same origin: topic panels, search, live screenshots and credential-free sign-in status.
 
 const root = document.documentElement;
 root.dataset.enhanced = "true";
@@ -428,4 +427,39 @@ if (palette && typeof palette.showModal === "function") {
   });
   // A click on the backdrop (the dialog element itself, outside its content) closes the palette.
   palette.addEventListener("click", event => { if (event.target === palette) palette.close(); });
+}
+
+// Device sign-in: same-origin status reads only. Approval stays on the original page until settlement.
+const signIn = document.querySelector("[data-sign-in][data-status-url]");
+if (signIn && localPath(signIn.dataset.statusUrl) && localPath(signIn.dataset.statusPage)) {
+  let stopped = false, failures = 0;
+  const deadline = Number(signIn.dataset.deadline);
+  const showError = () => {
+    const error = signIn.querySelector("[data-sign-in-error]");
+    stopped = true;
+    if (error) error.hidden = false;
+    else location.replace(signIn.dataset.statusPage);
+  };
+  const schedule = () => {
+    if (!stopped) window.setTimeout(poll, Math.max(0, Math.min(1500 * 2 ** failures, 10_000, deadline - Date.now())));
+  };
+  const poll = async () => {
+    if (stopped) return;
+    if (Date.now() >= deadline) { location.replace(signIn.dataset.statusPage); return; }
+    try {
+      const response = await fetch(signIn.dataset.statusUrl, { credentials: "same-origin", cache: "no-store", headers: { accept: "application/json" }, signal: AbortSignal.timeout(Math.max(1, Math.min(5000, deadline - Date.now()))) });
+      if (stopped) return;
+      if (!response.ok) {
+        if (![408, 429].includes(response.status) && response.status < 500) { showError(); return; }
+        throw new Error("transient-status-error");
+      }
+      const body = await response.json();
+      if (stopped) return;
+      if (body?.signIn && !["starting", "pending"].includes(body.signIn.state)) { location.replace(body.signIn.state === "ready" && localPath(signIn.dataset.readyPage) ? signIn.dataset.readyPage : signIn.dataset.statusPage); return; }
+      failures = 0;
+    } catch { failures = Math.min(failures + 1, 3); }
+    schedule();
+  };
+  window.addEventListener("pagehide", () => { stopped = true; }, { once: true });
+  schedule();
 }
