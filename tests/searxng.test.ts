@@ -120,3 +120,19 @@ for (const phase of ["startup", "query"] as const) {
     expect(f.stats().starts).toBe(1);
   });
 }
+
+test("Podman 4.9 inspect (per-capability CapDrop, null cap arrays) is proven by the container's own capability sets", async () => {
+  const runtime = (capBnd: string) => new PodmanSearxngRuntime("fixture", async argv => {
+    const value = argv[0] === "container"
+      ? [{ ImageName: searxngImage, BoundingCaps: null, EffectiveCaps: null, Mounts: [],
+        HostConfig: { Privileged: false, ReadonlyRootfs: true, CapAdd: [], CapDrop: ["CAP_CHOWN", "CAP_KILL", "CAP_SETUID"], SecurityOpt: ["no-new-privileges"], NetworkMode: "slirp4netns" } }]
+      : null;
+    const stdout = argv.includes("/proc/1/status")
+      ? `CapPrm:\t0000000000000000\nCapEff:\t0000000000000000\nCapBnd:\t${capBnd}\nCapAmb:\t0000000000000000\n`
+      : value ? JSON.stringify(value) : "";
+    return { exitCode: 0, stdout: Buffer.from(stdout), stderr: new Uint8Array() };
+  }, async () => {});
+  expect(await runtime("0000000000000000").running()).toBe(true);
+  // The default bounding set (no --cap-drop=ALL) must not pass.
+  expect(await runtime("00000000800405fb").running()).toBe(false);
+});

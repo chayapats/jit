@@ -123,14 +123,20 @@ test("both locales explain missing executable versus stopped API with an actiona
   }
 });
 
-function proxyFixture() {
+function proxyFixture(podman49?: { capBnd: string; forwarding: string }) {
   const calls: string[][] = []; let ip = "10.89.0.2", fail: string | null = null, invalid = false, stop!: (code: number) => void, bundle = "";
   const run: CommandRunner = async args => {
     calls.push([...args]);
     if (fail && args.includes(fail)) return result("", 125);
     if (args[0] === "network" && args[1] === "inspect") return result([{ internal: false, driver: "bridge" }]);
+    // Podman 4.9.3 inspect: CapDrop per capability, null cap arrays, no HostConfig.Sysctls (#224 live finding).
+    if (podman49 && args[0] === "exec" && args.includes("/proc/1/status")) return { exitCode: 0, stdout: Buffer.from(`CapPrm:\t0000000000000000\nCapEff:\t0000000000000000\nCapBnd:\t${podman49.capBnd}\nCapAmb:\t0000000000000000\n`), stderr: Buffer.alloc(0) };
+    if (podman49 && args[0] === "exec" && args[2] === "sh") return { exitCode: 0, stdout: Buffer.from(podman49.forwarding), stderr: Buffer.alloc(0) };
     if (args[0] === "container") return result([{ ImageName: image, Config: { User: "1000:1000" }, State: { Running: true }, Mounts: [],
-      HostConfig: { Privileged: invalid, ReadonlyRootfs: true, CapDrop: ["ALL"], SecurityOpt: ["no-new-privileges"], Sysctls: { "net.ipv4.ip_forward": "0", "net.ipv6.conf.all.forwarding": "0" } },
+      ...(podman49 ? { BoundingCaps: null, EffectiveCaps: null } : {}),
+      HostConfig: podman49
+        ? { Privileged: invalid, ReadonlyRootfs: true, CapAdd: [], CapDrop: ["CAP_CHOWN", "CAP_KILL", "CAP_SETUID"], SecurityOpt: ["no-new-privileges"] }
+        : { Privileged: invalid, ReadonlyRootfs: true, CapDrop: ["ALL"], SecurityOpt: ["no-new-privileges"], Sysctls: { "net.ipv4.ip_forward": "0", "net.ipv6.conf.all.forwarding": "0" } },
       NetworkSettings: { Networks: { "jit-box-internal": { IPAddress: ip }, "jit-registry-egress": {} } } }]);
     return result("", args[1] === "exists" ? 1 : 0);
   };
@@ -188,4 +194,16 @@ test("remote mode targets the identity socket by URL without passing the runtime
   expect(client.argv).toEqual(["--remote", "--url", "unix:///run/user/999/podman/podman.sock"]);
   expect(client.env).toEqual({ PATH: "/usr/bin:/bin", HOME: "/var/lib/jit" });
   expect(podmanClient({ JIT_PODMAN_MODE: "local", XDG_RUNTIME_DIR: "/run/user/999" }).env.XDG_RUNTIME_DIR).toBe("/run/user/999");
+});
+
+test("Podman 4.9 inspect (per-capability CapDrop, no Sysctls) is proven inside the proxy container; a live capability or forwarding refuses it", async () => {
+  const ok = proxyFixture({ capBnd: "0000000000000000", forwarding: "0\n0\n" });
+  expect(await ok.proxy.url()).toBe("http://10.89.0.2:3128");
+  expect(ok.calls).toContainEqual(["exec", "jit-registry-proxy", "cat", "/proc/1/status"]);
+  await ok.proxy.close();
+  for (const bad of [{ capBnd: "00000000800405fb", forwarding: "0\n0\n" }, { capBnd: "0000000000000000", forwarding: "1\n0\n" }]) {
+    const f = proxyFixture(bad);
+    await expect(f.proxy.url()).rejects.toMatchObject({ code: "box_proxy_unavailable" });
+    expect(f.calls.at(-1)).toEqual(["rm", "--force", "--ignore", "jit-registry-proxy"]);
+  }
 });
