@@ -1,4 +1,7 @@
 import { RouteCatalog, type RouteCatalogs } from "./team/route-catalog";
+import { readImageProbes, imageRoutePassed, type ImageProbeReceipt } from "./attachments/image-probes";
+import { runImageProbe, type ImageProbeOptions } from "./evidence/image-probe";
+import { SCHWAY_PINNED_REVISION } from "./team/schway-port";
 import { DeviceSignIns, type SignInCommand, type SignInOptions, type SignInReceipt, type SignInView, type ProviderReadiness } from "./device-sign-in";
 import { recommendedModel, type RouteProvider } from "./team/route-options";
 import { WebTools, readWebCalls, type WebCall } from "./web-tools";
@@ -62,7 +65,7 @@ import {
 } from "./exec/connections";
 import type { EnqueueJobCommand, ResumeJobCommand, JobCommand, JobReceipt } from "./jobs/types";
 import { mutateTeamConfiguration, readTeam, teamIdentity } from "./team/configuration";
-import { executeRoleProposal, roleProposalIdentity, type RoleProposalCommand, type RoleProposalReceipt } from "./team/role-proposals";
+import { executeRoleProposal, roleProposalIdentity, routesOf, type RoleProposalCommand, type RoleProposalReceipt } from "./team/role-proposals";
 import { listDiscussions, prepareControl, prepareDispatch, prepareStopAll, projectDiscussion, readDiscussion } from "./team/dispatch";
 import { feedIdentity, feedPath, feedTokenMatches, isFeedCommand, mintFeedToken, readFeedEvents, readScheduleFeed, writeScheduleFeed,
   type FeedCommand, type FeedEvent, type FeedReceipt, type ScheduleFeed } from "./schedule-feed";
@@ -215,6 +218,8 @@ export interface ApplicationOptions {
   web?: WebTools;
   /** Fixture protocol/store/clock for Web device sign-in; absent in production. */
   signIn?: SignInOptions;
+  /** Deterministic image probe transport/model fixtures; absent in production. */
+  imageProbe?: ImageProbeOptions;
   /** Service-supplied isolated runtime; absent means metadata-strip fallback, never a host decoder. */
   attachmentSanitizer?: AttachmentSanitizerRuntime | null;
   /** app.attachments/v1 deterministic storage/capability probes; production defaults fail closed. */
@@ -287,6 +292,10 @@ export interface ApprovalReceipt { card?: ApprovalCard; rule?: AutoApproveRule; 
 export class Application {
   #signIns: DeviceSignIns;
   #routeCatalog: RouteCatalog;
+  #imageProbeOptions: ImageProbeOptions | undefined;
+  #imageProbeControllers = new Map<string, AbortController>();
+  #imageProbesClosed = false;
+  #imageProbeTasks = new Set<Promise<ImageProbeReceipt>>();
   #signInReadinessEnabled: boolean;
   #actors = new WeakMap<OwnerActor, string>();
   #now: () => number;
@@ -319,6 +328,7 @@ export class Application {
 
   constructor(readonly store: TransactionStore, readonly config: AppConfig, options: ApplicationOptions = {}) {
     this.#now = options.now ?? Date.now;
+    this.#imageProbeOptions = options.imageProbe;
     this.#signIns = new DeviceSignIns(options.signIn);
     this.#routeCatalog = new RouteCatalog(options.signIn);
     this.#signInReadinessEnabled = config.runPort === "schway" || options.signIn !== undefined;
@@ -839,8 +849,69 @@ export class Application {
     return metadata && !["starting", "pending"].includes(metadata.state) ? metadata : live;
   }
 
-  /** Fence all device credential writes during service shutdown and settle native cleanup. */
-  closeDeviceSignIns(): Promise<void> { return this.#signIns.close(); }
+  /** Fence provider actions during shutdown, abort image probes and settle device credential cleanup. */
+  async closeDeviceSignIns(): Promise<void> {
+    this.#imageProbesClosed = true;
+    for (const controller of this.#imageProbeControllers.values()) controller.abort();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.all([this.#signIns.close(), Promise.race([
+        Promise.allSettled([...this.#imageProbeTasks]), new Promise<void>(resolve => { timer = setTimeout(resolve, 30_000); }),
+      ])]);
+    } finally { if (timer) clearTimeout(timer); }
+  }
+
+  /** Web-only image capability evidence for the displayed team routes; reads never spend quota. */
+  imageProbeState(actor: OwnerActor, projectId: string | null = null) {
+    return this.store.read(tx => {
+      this.#requireOwner(tx, actor);
+      if (this.#commandChannel(actor) !== "web") throw new AppError("channel_not_authorized", 403);
+      if (projectId) this.#project(tx, projectId);
+      const team = readTeam(tx, projectId, this.config.team), probes = readImageProbes(tx, SCHWAY_PINNED_REVISION);
+      return { revision: projectId ? team.projectRevision : team.ownerRevision, routes: routesOf(team).map(route => ({ route,
+        passed: imageRoutePassed(probes, route), record: probes.find(record => record.route === route.provider && record.model === route.model) ?? null })) };
+    });
+  }
+
+  /** One explicitly confirmed Web action probes a configured exact route/model once. Receipts precede dispatch; replay/crash never starts another live call. */
+  async probeImages(actor: OwnerActor, command: { requestId: string; projectId: string | null; expectedRevision: number; provider: "grok" | "codex"; model: string; confirmed: boolean }, signal?: AbortSignal): Promise<ImageProbeReceipt> {
+    requireId(command.requestId);
+    if (command.projectId !== null) requireId(command.projectId);
+    if (command.confirmed !== true || !["codex", "grok"].includes(command.provider) || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(command.model) || !Number.isSafeInteger(command.expectedRevision)) throw new AppError("invalid_image_probe");
+    const assertCurrent = () => {
+      this.store.read(tx => { this.#requireOwner(tx, actor); if (this.#commandChannel(actor) !== "web") throw new AppError("channel_not_authorized", 403); });
+      if (this.#imageProbesClosed || this.#upgradeBusy || upgradeFenced(this.store.path)) throw new AppError("service_unavailable", 503);
+      const state = this.imageProbeState(actor, command.projectId);
+      if (state.revision !== command.expectedRevision || !state.routes.some(({ route }) => route.provider === command.provider && route.model === command.model)) throw new AppError("stale_revision", 409);
+    };
+    const hash = createHash("sha256").update(JSON.stringify(["attachments.image_probe", command.projectId, command.expectedRevision, command.provider, command.model])).digest("hex");
+    assertCurrent();
+    let fresh = false;
+    const receipt = this.store.transaction(tx => {
+      const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
+      if (prior) { if (prior.payload_hash !== hash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as ImageProbeReceipt; }
+      if ((this.config.runPort !== "schway" && !this.#imageProbeOptions) || this.#imageProbeControllers.size) throw new AppError("image_probe_unavailable", 409);
+      const record = { contract: "schway.host.image-input/v1" as const, route: command.provider, model: command.model, testedAt: new Date(this.#now()).toISOString(), revision: SCHWAY_PINNED_REVISION, verdict: "inconclusive" as const };
+      const receipt: ImageProbeReceipt = { imageProbe: { state: "running", record } };
+      tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, hash, JSON.stringify(receipt), this.#now());
+      tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', 'attachments.image_probe', ?, ?, ?)", command.requestId, command.projectId ?? "owner", this.#now());
+      fresh = true; return receipt;
+    });
+    if (!fresh) return receipt;
+    const controller = new AbortController(); this.#imageProbeControllers.set(command.requestId, controller);
+    const task = (async (): Promise<ImageProbeReceipt> => {
+      try {
+        let record = await runImageProbe({ route: command.provider, model: command.model, revision: SCHWAY_PINNED_REVISION, databasePath: this.store.path,
+          signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal, assertCurrent, now: this.#now }, this.#imageProbeOptions);
+        try { assertCurrent(); if (signal?.aborted || controller.signal.aborted) throw new Error(); } catch { record = { ...record, verdict: "inconclusive" }; }
+        const result: ImageProbeReceipt = { imageProbe: { state: record.verdict === "pass" ? "complete" : "failed", record } };
+        this.store.transaction(tx => tx.run("UPDATE command_receipts SET result_json = ? WHERE actor_id = 'owner' AND request_id = ?", JSON.stringify(result), command.requestId));
+        return result;
+      } finally { this.#imageProbeControllers.delete(command.requestId); }
+    })();
+    this.#imageProbeTasks.add(task);
+    try { return await task; } finally { this.#imageProbeTasks.delete(task); }
+  }
 
   /** app.general_space/v1: the installation's one General space, or null before setup creates it. */
   generalSpace(actor: OwnerActor): GeneralSpace | null {

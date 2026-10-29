@@ -1,3 +1,4 @@
+import { imageProbeCards } from "./web-image-probes";
 import { fillText } from "./web-proposal-card";
 import { signInPage, signInPath } from "./web-sign-in";
 import type { SignInCommand } from "./device-sign-in";
@@ -1411,13 +1412,24 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const receipt = app.execute(auth.actor, command);
         return api ? json(receipt) : respond(null, 303, { Location: "/settings#appearance" });
       }
+      const imageProbeRoute = /^\/(?:api\/)?(?:projects\/([a-f0-9-]{36})\/)?team\/image-probe$/.exec(url.pathname);
+      if (imageProbeRoute) {
+        if (request.method === "GET") return json(app.imageProbeState(auth.actor, imageProbeRoute[1] ?? null));
+        const body = await payload(request);
+        app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "provider", "model", "confirmed"].includes(key))) throw new AppError("invalid_body");
+        const revision = typeof body.expectedRevision === "string" && /^\d{1,15}$/.test(body.expectedRevision) ? Number(body.expectedRevision) : body.expectedRevision;
+        const result = await app.probeImages(auth.actor, { requestId: body.requestId as string, projectId: imageProbeRoute[1] ?? null,
+          expectedRevision: revision as number, provider: body.provider as "grok" | "codex", model: body.model as string, confirmed: body.confirmed === true || body.confirmed === "true" }, request.signal);
+        return api ? json(result) : respond(null, 303, { Location: imageProbeRoute[1] ? `/projects/${imageProbeRoute[1]}/team` : "/settings/team" });
+      }
       if (request.method === "GET" && teamRoute) {
         const state = app.team(auth.actor, teamRoute[1] ?? null);
         const [readiness, catalogs] = await Promise.all([
           !api && !state.project ? app.providerReadiness(auth.actor) : undefined,
           !api ? app.routeCatalogs(auth.actor) : undefined,
         ]);
-        return api ? json(state) : page(() => teamPage(state, nav(), auth.csrf, config.jobs.maximum, url.searchParams.get("preset") ?? undefined, config.routeModels, readiness, catalogs));
+        return api ? json(state) : page(() => teamPage(state, nav(), auth.csrf, config.jobs.maximum, url.searchParams.get("preset") ?? undefined, config.routeModels, readiness, catalogs, imageProbeCards(app.imageProbeState(auth.actor, teamRoute[1] ?? null), auth.csrf, teamRoute[1] ?? null)));
       }
       if (request.method === "GET" && previewRoute) {
         const state = app.preview(auth.actor, previewRoute[1]!, previewRoute[2]!);

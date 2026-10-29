@@ -1,6 +1,6 @@
-# Chat attachments, v1 (ATT01–ATT03 and ATT06 implemented; remaining slices planned)
+# Chat attachments, v1 (ATT01–ATT04, ATT06 and ATT07 implemented; ATT05 planned)
 
-Owner: Jit #187 (Spec S13). Status: **ATT01–ATT03 (#190–#192) implemented; ATT04, ATT05 and ATT07 planned; ATT06 implemented**. ATT00 (#189) wrote the design anchor. ATT01 ships ingestion, metadata, audit reads and staged collection; production ingestion remains release-gated. Each item names the ticket that implements it. That ticket replaces "planned" with the shipped signature and its evidence, and calls out any deviation in its PR. Decision: [ADR 0040](../adr/0040-chat-attachments.md). Spec: [S13](../specs/S13-chat-attachments.md) (S13-D01–D10). Requirements: FR-13, FR-15, FR-17, NFR-05, NFR-07, NFR-10, NFR-11, NFR-14.
+Owner: Jit #187 (Spec S13). Status: **ATT01–ATT04 (#190–#193), ATT06 (#195) and ATT07 (#196) implemented; ATT05 planned**. ATT00 (#189) wrote the design anchor. ATT01 ships ingestion, metadata, audit reads and staged collection; production ingestion remains release-gated. Each item names the ticket that implements it. That ticket replaces "planned" with the shipped signature and its evidence, and calls out any deviation in its PR. Decision: [ADR 0040](../adr/0040-chat-attachments.md). Spec: [S13](../specs/S13-chat-attachments.md) (S13-D01–D10). Requirements: FR-13, FR-15, FR-17, NFR-05, NFR-07, NFR-10, NFR-11, NFR-14.
 
 Delivers `app.attachments/v1`. Uses `app.conversation/v1` and `app.source_records/v1` ([app-conversation-v1](app-conversation-v1.md)), `app.data_lifecycle/v1` and `app.deletion_ledger/v1` ([data-lifecycle-v1](data-lifecycle-v1.md)), `ops.backup_manifest/v1`, `ops.project_export/v1`, `ops.quarantined_restore/v1`, `exec.run_tools/v1`, `exec.box_runtime/v1`, `jit.box.runner/v1`, `app.approval_cards/v1` and `app.web_tools/v1` (#173). Images need `schway` image content ([schway#436](https://github.com/chayapats/schway/issues/436)) in a pinned release.
 
@@ -345,3 +345,48 @@ ATT02 evidence: `tests/attachment-sanitizer.test.ts` uses a fake runtime with ti
 
 
 ATT04 evidence: `tests/attachment-reading.test.ts` covers byte-bounded inline and continuation frames, identity-only persistence, Read with web disabled and no box, pending/rejected files, PDF derivatives, unsupported images, registered-secret boundary redaction, attempt/lifecycle fences and planted authority instructions. `tests/web-tools.test.ts` exercises multi-turn reads through the production Schway bridge with a scripted model. The web, browser, computer, MCP and approval-card suites prove that full-text markers cannot reach a transport before a single-use Web approval, including card reuse, cross-channel ask-once, query/form `+` decoding, access narrowing and payload scrubbing. The ingestion release constant remains false; the orchestrator enables it separately.
+
+### ATT07 shipped image input and opt-in probe
+
+`HostInput.images` contains only reference metadata for live ≤2048 px PNG/JPEG
+model derivatives sanitized by a container. Only inline images from the newest
+owner message are submitted (maximum five); older and ineligible images retain
+explicit unavailable-content metadata. The resolver rereads and verifies bytes
+at each send boundary, checking the run's live authority and source generation.
+The route transport checks the same authority before starting a provider send.
+Each byte release writes `send_model` with `part: image` and the selected
+route/model. No Jit request, receipt, audit or Schway native artifact stores
+image bytes; the attachment blob/backup stores remain the only durable bytes.
+
+`GET /team/image-probe` (also `/api/team/image-probe`, and project-scoped
+`/projects/:p/team/image-probe`) reads configured routes and current evidence
+without any provider access. Team settings renders a quota disclosure and a
+required confirmation checkbox per exact route/model.
+
+`POST` to the same path accepts `{ requestId, expectedRevision, provider, model,
+confirmed: true }` plus CSRF. It is genuine-Web-owner only, with the normal
+session/Origin/body bounds and the displayed team revision. It returns
+`{ imageProbe: { state: running | complete | failed, record: HostImageProbeRecord } }`.
+Plain forms redirect back to Team settings. Unconfirmed, unconfigured or stale
+actions never probe. A durable receipt/audit precedes dispatch; request-id
+replay never calls the provider again. A running or failed latest record
+supersedes an older pass. Records match exact route/model and the current
+Schway revision and are validated by `hostCapabilities(records)`; absent,
+malformed, old-pin and non-passing records never enable images. No records ship
+with this build and no login/text probe grants image support.
+
+The opt-in probe sends only bundled synthetic PNG/JPEG challenges using the
+public Schway host API, with exact answer checks and replay on the second call.
+It is limited to two host submissions, 120 s, 256 KiB cumulative response bytes,
+and four inference/four token sends including native refresh. It has no tools,
+owner files, outer retry or route/billing fallback. Interrupted/crashed actions
+remain non-passing and never resume automatically. Host image refusals normalize
+to localized `images_unsupported` / `images_unavailable`; the text readiness
+bridge handles either safely even though neither result has `auth`.
+
+Owner procedure: open **Settings → Team**, or a project's **Team** page; choose
+the displayed exact route/model, read the quota notice, check confirmation and
+press **Run image probe** once. Review the result and test date on that card.
+Repeat for every route/model used with images, and after changing the Schway
+pin. A failed/inconclusive result keeps image input disabled. This procedure is
+opt-in; ATT07's deterministic suite does not run it against a live provider.

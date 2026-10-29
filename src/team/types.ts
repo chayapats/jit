@@ -145,7 +145,7 @@ export interface ApplicationRunRequest {
 }
 /** Normalized reasons retain incomplete/blocked/cancelled states without raw provider diagnostics or route fallback. */
 export type RunReason = "complete" | "unknown_model" | "route_unavailable" | "quota" | "needs_login" | "cancelled"
-  | "max_rounds" | "budget_exhausted" | "invalid_result" | "context_retired";
+  | "max_rounds" | "budget_exhausted" | "invalid_result" | "context_retired" | "images_unsupported" | "images_unavailable";
 /** Usage reports are finite nonnegative measurements, distinct from permission to spend any resource. */
 export interface ApplicationRunUsage {
   // calls includes admitted web reads; rounds and retries count model attempts.

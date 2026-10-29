@@ -13,7 +13,7 @@ import { renderContextAnswer } from "../memory/context-answer";
 import { specialistResultInstruction } from "./specialist-results";
 import { openRunTools, runMaxTurns, runToolsFailure, validateGrant, webCallLimit, type RunExecution, type RunTools, type ToolExecutionResult } from "../exec/run-tools";
 
-const reasons: RunReason[] = ["complete", "unknown_model", "route_unavailable", "quota", "needs_login", "cancelled", "max_rounds", "budget_exhausted", "invalid_result", "context_retired"];
+const reasons: RunReason[] = ["complete", "unknown_model", "route_unavailable", "quota", "needs_login", "cancelled", "max_rounds", "budget_exhausted", "invalid_result", "context_retired", "images_unsupported", "images_unavailable"];
 const emptyUsage = () => ({ calls: 0, rounds: 0, hops: 0, contextTokens: 0, outputTokens: 0, retries: 0, wallMs: 0, tokensUnknown: false });
 /** Constructs finite, safe fixture outcomes without raw provider errors or live-readiness claims. */
 export function fixtureOutcome(reason: RunReason, output: string | null = null): ApplicationRunOutcome {

@@ -1,3 +1,4 @@
+import { prepareModelImages } from "../attachments/model-images";
 import { runAttachmentCurrent } from "../attachments/run-references";
 import { materializeRunAttachments, attachmentInstruction } from "../attachments/run-content";
 import { WebTools, assertWebToolsCapability, type WebToolsOptions } from "../web-tools";
@@ -7,6 +8,7 @@ import { lstatSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   HostError,
+  HostImageError,
   RELEASE_CONTRACT,
   SNAPSHOT_CONTRACT,
   createHost,
@@ -14,6 +16,8 @@ import {
 } from "schway/host";
 import type {
   AssistantMessage,
+  HostImageOptions,
+  HostImagesRejected,
   HostAuthFetch,
   HostAuthRunResult,
   HostAuthSelection,
@@ -103,6 +107,8 @@ export interface SchwayPortOptions {
   webOptions?: WebToolsOptions;
   /** Test-only interleaving hooks around native creation. */
   testHooks?: {
+    /** Scripted image-rejection result; no provider call when supplied. */
+    imagesRejected?: HostImagesRejected;
     /** Awaited right after the host opens, before the pre-creation fence recheck. */
     afterOpenHost?: (host: HostRuntime) => Promise<void>;
     /** Awaited right after the native session exists, before the fence recheck. */
@@ -337,10 +343,14 @@ export class SchwayRunPort implements ApplicationRunPort {
   /** exec.run_tools/v1: true when this port can open project boxes; work then grants execution at admission. */
   get execution(): RunExecution | undefined { return this.options.execution; }
 
-  private hostOptions(effective: EffectiveSchwayRun, lifecycle: boolean, definitions: readonly ToolDefinition[] = []): Parameters<typeof createHost>[0] {
+  private hostOptions(effective: EffectiveSchwayRun, lifecycle: boolean, definitions: readonly ToolDefinition[] = [], images?: HostImageOptions, guardSend?: (start: () => Promise<Response>) => Promise<Response>): Parameters<typeof createHost>[0] {
     const dirs = schwayHostDirs(this.store.path);
     const selection: HostAuthSelection = { route: effective.auth.route, model: effective.auth.model };
     if (this.options.authFetch) selection.fetch = this.options.authFetch;
+    if (images && guardSend) selection.fetch = (target, init) => guardSend(() => {
+      if (init?.signal?.aborted) throw new HostImageError("images-unavailable");
+      return (this.options.authFetch ?? fetch)(target, init);
+    });
     if (this.options.authStore) selection.store = this.options.authStore;
     return {
       workspaceRoot: dirs.workspaceRoot,
@@ -365,6 +375,7 @@ export class SchwayRunPort implements ApplicationRunPort {
         maxAttempts: lifecycle ? 1 : effective.limits.maxAttempts,
       },
       auth: selection,
+      ...(images ? { images } : {}),
     };
   }
 
@@ -373,10 +384,10 @@ export class SchwayRunPort implements ApplicationRunPort {
     return this.openHost(describeLifecycleRun({ id: "00000000-0000-4000-8000-000000000000", generation: 1 }), true);
   }
 
-  private async openHost(effective: EffectiveSchwayRun, lifecycle: boolean, definitions: readonly ToolDefinition[] = []): Promise<HostRuntime> {
+  private async openHost(effective: EffectiveSchwayRun, lifecycle: boolean, definitions: readonly ToolDefinition[] = [], images?: HostImageOptions, guardSend?: (start: () => Promise<Response>) => Promise<Response>): Promise<HostRuntime> {
     assertSchwayGate(this.store.path);
-    const host = await createHost(this.hostOptions(effective, lifecycle, definitions));
-    if (host.capabilities.releaseContract !== SCHWAY_RELEASE_CONTRACT) {
+    const host = await createHost(this.hostOptions(effective, lifecycle, definitions, images, guardSend));
+    if (host.capabilities.releaseContract !== SCHWAY_RELEASE_CONTRACT || (images && host.capabilities.imageInputContract !== "schway.host.image-input/v1")) {
       await host.close().catch(() => {});
       throw new AppError("unsupported_schway_release");
     }
@@ -426,6 +437,8 @@ export class SchwayRunPort implements ApplicationRunPort {
     if (result.outcome === "cancelled") return { ...classifyBridgeReason("cancelled"), usage };
     if (result.outcome === "max_turns") return { ...classifyBridgeReason("max_rounds"), usage };
     if (result.outcome === "limit_exceeded") return { ...classifyBridgeReason("budget_exhausted"), usage };
+    if (result.outcome === "images-unsupported") return { ...classifyBridgeReason("images_unsupported"), usage };
+    if (result.outcome === "images-unavailable") return { ...classifyBridgeReason("images_unavailable"), usage };
     return { ...classifyBridgeReason("invalid_result"), usage };
   }
 
@@ -448,8 +461,8 @@ export class SchwayRunPort implements ApplicationRunPort {
     if (result.outcome === "cancelled") return { ...classifyBridgeReason("cancelled"), usage };
     if (result.outcome === "max_turns") return { ...classifyBridgeReason("max_rounds"), usage };
     if (result.outcome === "limit_exceeded") return { ...classifyBridgeReason("budget_exhausted"), usage };
-    // schway.host.image-input/v1: Jit sends no images until ATT07 (#196), so an image refusal here is an
-    // unexpected host result and fails closed; ATT07 maps it to its own owner-visible reason.
+    if (result.outcome === "images-unsupported") return { ...classifyBridgeReason("images_unsupported"), usage };
+    if (result.outcome === "images-unavailable") return { ...classifyBridgeReason("images_unavailable"), usage };
     if (!("auth" in result)) return { ...classifyBridgeReason("invalid_result"), usage };
     return { ...classifyBridgeReason(mapAuthStatus(result.auth.status)), usage };
   }
@@ -467,9 +480,14 @@ export class SchwayRunPort implements ApplicationRunPort {
     if (fenced()) return { ...classifyBridgeReason("context_retired"), session: null };
     if (signal.aborted) return { ...classifyBridgeReason("cancelled"), session: null };
     const effective = describeEffectiveRun(snapshot);
+    let imageInput: ReturnType<typeof prepareModelImages> | undefined;
+    if (snapshot.attachments?.some(ref => ref.kind === "image")) {
+      try { imageInput = prepareModelImages(this.store, snapshot, SCHWAY_PINNED_REVISION, this.options.now); }
+      catch { return classifyBridgeReason("images_unavailable"); }
+    }
     if (snapshot.attachments?.length) {
-      effective.sources.push(...materializeRunAttachments(this.store, snapshot, this.options.now));
-      effective.sections.push({ name: "attachments", content: attachmentInstruction });
+      effective.sources.push(...materializeRunAttachments(this.store, snapshot, this.options.now, imageInput?.sentIds));
+      effective.sections.push({ name: "attachments", content: attachmentInstruction + " Only image parts actually supplied in this input are visible; all other images are unavailable. Never guess their contents." });
       effective.limits.maxInputChars = Math.min(1_000_000, effective.limits.maxInputChars + effective.sources.filter(source => source.id.startsWith("attachment/")).reduce((n, source) => n + source.content.length, 0) + 4096);
     }
     const web = this.options.web ?? new WebTools(this.store, { ...this.options.webOptions, outputBytes: this.outputBytes });
@@ -493,7 +511,7 @@ export class SchwayRunPort implements ApplicationRunPort {
         const language = this.store.read(tx => readPersona(tx).language);
         observe({ kind: "progress", runId: snapshot.runId, text: dictionaries[language][key as keyof typeof dictionaries.en] ?? key });
       });
-      host = await this.openHost(effective, false, [...tools.definitions.filter(tool => tool.name !== "web_search" && tool.name !== "web_fetch"), ...webDefinitions]);
+      host = await this.openHost(effective, false, [...tools.definitions.filter(tool => tool.name !== "web_search" && tool.name !== "web_fetch"), ...webDefinitions], imageInput?.options, imageInput?.images.length ? imageInput.guardSend : undefined);
       await this.options.testHooks?.afterOpenHost?.(host);
       // Recheck before reserving: retirement may have fenced the context
       // while the host was constructed, and no intent row exists yet to stop
@@ -543,10 +561,10 @@ export class SchwayRunPort implements ApplicationRunPort {
       let outcome: ApplicationRunOutcome;
       if (this.options.model) {
         outcome = this.mapSubmitResult(
-          await session.submit({ text: effective.inputText }, this.options.model, { signal, onProgress }), snapshot,
+          this.options.testHooks?.imagesRejected ?? await session.submit({ text: effective.inputText, ...(imageInput?.images.length ? { images: imageInput.images } : {}) }, this.options.model, { signal, onProgress, imageRoute: snapshot.route.provider }), snapshot,
         );
       } else {
-        outcome = this.mapRouteResult(await session.submitWithRoute({ text: effective.inputText }, { signal, onProgress }), snapshot);
+        outcome = this.mapRouteResult(this.options.testHooks?.imagesRejected ?? await session.submitWithRoute({ text: effective.inputText, ...(imageInput?.images.length ? { images: imageInput.images } : {}) }, { signal, onProgress }), snapshot);
       }
       this.recordRef(snapshot, session.reference, "finished");
       if (fenced()) return finish({ ...classifyBridgeReason("context_retired"), session: null });
@@ -556,6 +574,7 @@ export class SchwayRunPort implements ApplicationRunPort {
     } catch (error) {
       if (fenced()) return finish({ ...classifyBridgeReason("context_retired"), session: null });
       if (signal.aborted || (error instanceof Error && error.name === "AbortError")) return finish({ ...classifyBridgeReason("cancelled"), session: null });
+      if (error instanceof HostImageError) return finish(classifyBridgeReason(error.code === "images-unsupported" ? "images_unsupported" : "images_unavailable"));
       throw error;
     } finally {
       try { session?.cancel(); } catch { /* Idle or already settled. */ }

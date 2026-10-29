@@ -2,6 +2,21 @@ import type { MessageKey } from "./index";
 
 /** ui.i18n_dictionary/v1 — English. Must define every key of the Thai dictionary; values are plain text. */
 export const en: Record<MessageKey, string> = {
+  "attachments.image_probe_result_pass": "Passed",
+  "attachments.image_probe_result_unsupported": "Unsupported",
+  "attachments.image_probe_result_inconclusive": "Inconclusive",
+  "attachments.image_probe_title": "Image capability",
+  "attachments.image_probe_note": "Test each exact route and model with synthetic PNG and JPEG images, including replay. This uses a small amount of quota. Changing route, model or Schway revision requires matching probe evidence.",
+  "attachments.image_probe_confirm": "I confirm this one live probe and its quota use.",
+  "attachments.image_probe_run": "Run image probe",
+  "attachments.image_probe_pass": "This route and model passed the image probe.",
+  "attachments.images_unavailable": "Image input is unavailable or exceeds its limits. Attach a smaller PNG/JPEG and try again.",
+  "error.invalid_image_probe": "Confirm one image probe for a configured route and model.",
+  "error.image_probe_unavailable": "Wait for the current image probe, or enable the Schway run port.",
+  "attachments.image_requires_probe": "Images are sent only on routes with a passing image probe.",
+  "team_card.reason.images_unsupported": "This route cannot see images yet. Run its image probe in Team settings.",
+  "team_card.reason.images_unavailable": "The attached image is unavailable. Attach it again.",
+
   "web_search.title": "How Jit searches the web",
   "web_search.intro": "Jit uses built-in search with no setup. You can choose a key-based service if you prefer.",
   "web_search.provider_searxng": "Built-in (default)",
