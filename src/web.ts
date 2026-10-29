@@ -790,7 +790,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         if (!boxRoute[2]) {
           if (request.method !== "GET") throw new AppError("method_not_allowed", 405);
           const box = app.boxStatus(auth.actor, projectId);
-          return json({ box, runtime: await app.boxRuntimeStatus() });
+          return json({ box, runtime: app.boxRuntimeStatus() });
         }
         if (request.method !== "POST") throw new AppError("method_not_allowed", 405);
         const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
@@ -853,7 +853,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const roles = new Map(rows.map(({ project }) => [project.id, app.roleAccess(auth.actor, project.id)] as const));
         const list = { projects: rows, hasMore: only.length ? false : paged.hasMore, single: only.length > 0 };
         const computer = new Map(rows.map(({ project }) => [project.id, app.computerSettings(auth.actor, project.id)] as const));
-        const runtimeStatus = await app.boxRuntimeStatus();
+        const runtimeStatus = app.boxRuntimeStatus();
         return page(() => settingsAccessPage(nav(paged), list, access, roles, auth.csrf, offset, config.pageSize, computer, new Map(rows.map(({ project }) => [project.id, app.webSettings(auth.actor, project.id)])), runtimeStatus));
       }
       if (request.method === "GET" && accessPageRoute && accessPageRoute[2] === "confirm") {
@@ -902,7 +902,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       const webSearchApi = url.pathname === "/api/settings/web-search";
       if (webSearchApi || url.pathname === "/settings/web-search" || url.pathname === "/settings/web-search/test") {
         const render = async (tested: "ok" | "failed" | null = null, error: MessageKey | null = null, status = 200) => {
-          const builtin = await app.searxngStatus(auth.actor);
+          const builtin = app.searxngStatus(auth.actor);
           return page(() => settingsWebSearchPage(nav(), app.webSearch(auth.actor), app.connections(auth.actor), builtin, auth.csrf, tested, error), status);
         };
         if (request.method === "GET" && url.pathname !== "/settings/web-search/test") {
@@ -1692,7 +1692,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         // never disappears behind newer cards in other topics.
         const approvals = app.topicApprovalCards(auth.actor, state.project.id, state.topic.id);
         // app.attachments/v1 (ATT03): existing chips render with the gate off; the attach control only with it on.
-        const runtimeStatus = config.attachments.enabled ? await app.attachmentRuntimeStatus() : undefined;
+        const runtimeStatus = config.attachments.enabled ? app.attachmentRuntimeStatus() : undefined;
         const composer = app.attachmentComposer();
         const attachments = { byMessage: app.messageAttachments(auth.actor, state.project.id, state.topic.id, state.items.map(item => item.id)),
           composer: composer.enabled ? { ...composer, ...(runtimeStatus ? { runtimeStatus } : {}), pageSize: config.pageSize } : null };

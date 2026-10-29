@@ -1,3 +1,4 @@
+import { invalidateReadiness } from "../exec/readiness-cache";
 import { join } from "node:path";
 import { opendirSync } from "node:fs";
 import { stripAttachmentMetadata } from "./fallback";
@@ -26,7 +27,11 @@ export class AttachmentSanitizer {
   constructor(readonly storage: AttachmentStorage, readonly runtime: AttachmentSanitizerRuntime | null,
     readonly options: { now?: () => number; assertCurrent?: () => void; onSettled?: () => void } = {}) {}
   /** Probes only the rootless runtime and pinned image; no container or attachment bytes are opened. */
-  async available(): Promise<boolean> { return !this.#closed && !!this.runtime && await this.runtime.available(); }
+  async available(): Promise<boolean> {
+    const available = !this.#closed && !!this.runtime && await this.runtime.available();
+    if (!available && this.runtime) invalidateReadiness(this.runtime);
+    return available;
+  }
   /** Processes a bounded batch; overlapping callers share the installation's current batch. Safe with ingestion off. */
   pump(maximum = 8): Promise<number> {
     if (this.#closed || this.#deletionPauses) return Promise.resolve(0);
@@ -78,7 +83,7 @@ export class AttachmentSanitizer {
         work = this.storage.sanitizerWork(row.projectId, row.sha256, row.bytes, container ? sanitizerOutputBudget(row.kind) : 0);
         if (container) {
           try { await this.runtime!.run({ input: work.input, output: work.output, kind: this.#kind(row), pixels: this.storage.limits.imagePixels }, this.#abort.signal); }
-          catch (error) { if ((error as Error).message === "sanitizer_cleanup_failed") safe = false; throw error; }
+          catch (error) { invalidateReadiness(this.runtime!); if ((error as Error).message === "sanitizer_cleanup_failed") safe = false; throw error; }
           this.#current(); result = this.#outputs(row, work.output);
         } else {
           if (row.mediaType !== "image/png" && row.mediaType !== "image/jpeg") throw new Error("sanitizer_unavailable");

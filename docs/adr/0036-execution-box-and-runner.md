@@ -81,3 +81,9 @@ rootless/cgroup prerequisites and image/configuration failures. Web explains
 the repair in `th` and `en`; host provisioning/rebinding requires an operator
 command. Deterministic fixtures prove argv and rendered sandbox preservation;
 the opt-in check in the execution runbook is the live acceptance gate.
+
+### OPS09 fix round — nonblocking readiness projections
+
+Engineering choice (2026-10-29, #224 / PR #228): topic, Web search settings and access/box status readers use an in-memory cache per runtime instance. Cold readers return `checking`; expired readers return the last result and trigger one background refresh. Ready results live for 30 seconds, unavailable results for 5 seconds, measured from probe completion. Rejected probes become a sanitized runtime-unavailable result. There is no polling timer or container startup from a page render.
+
+Real command failures invalidate the corresponding runtime cache (including sanitizer availability failures and managed search failures). Invalidation fences an in-flight probe's publication, while retaining single-flight until it settles. Explicit owner search tests and real operations retain their independent readiness checks; this projection grants no execution authority.

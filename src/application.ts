@@ -1,3 +1,4 @@
+import { cachedReadiness, type ReadinessView } from "./exec/readiness-cache";
 import { RouteCatalog, type RouteCatalogs } from "./team/route-catalog";
 import { readImageProbes, imageRoutePassed, type ImageProbeReceipt } from "./attachments/image-probes";
 import { runImageProbe, type ImageProbeOptions } from "./evidence/image-probe";
@@ -974,18 +975,25 @@ export class Application {
     return { backupUsage: this.attachmentBackupUsage(), enabled: limits.enabled, messageFiles: limits.messageFiles, fileBytes: limits.fileBytes, sanitizer: this.#attachments.options.sanitizerAvailable?.() ?? false };
   }
 
-  /** Probes the isolated sanitizer without starting a parser; fake runtimes may retain their boolean contract. */
-  async attachmentRuntimeStatus(): Promise<PodmanReadiness> {
+  /** Reads cached sanitizer readiness immediately; refreshes in the background without starting a parser. */
+  attachmentRuntimeStatus(): ReadinessView<PodmanReadiness> {
     const runtime = this.#sanitizer.runtime;
-    const status = runtime?.status ? await runtime.status() : { state: "unavailable" as const, reason: "runtime" as const };
-    this.#sanitizerAvailable = runtime?.status ? status.state === "ready" : await this.#sanitizer.available();
-    return status;
+    if (!runtime) return { state: "unavailable", reason: "runtime" };
+    const cached = cachedReadiness(runtime, async () => {
+      const status = runtime.status ? await runtime.status() : await runtime.available()
+        ? { state: "ready" as const, reason: null } : { state: "unavailable" as const, reason: "runtime" as const };
+      return status;
+    }, this.#now);
+    this.#sanitizerAvailable = cached.state === "ready";
+    return cached;
   }
 
-  /** Reports the configured box backend's availability without creating a box or granting execution authority. */
-  async boxRuntimeStatus(): Promise<PodmanReadiness | undefined> {
+  /** Reads cached box readiness immediately without creating a box or granting execution authority. */
+  boxRuntimeStatus(): ReadinessView<PodmanReadiness> | undefined {
     const runtime = this.#boxes?.runtime;
-    return runtime && "readiness" in runtime && typeof runtime.readiness === "function" ? runtime.readiness() : undefined;
+    if (!runtime || !("readiness" in runtime) || typeof runtime.readiness !== "function") return undefined;
+    const probe = runtime.readiness.bind(runtime) as () => Promise<PodmanReadiness>;
+    return cachedReadiness(runtime, probe, this.#now);
   }
 
   /**
@@ -2789,10 +2797,10 @@ export class Application {
     return this.#web.test();
   }
 
-  /** Built-in readiness without a search, image pull or container start; Web owner only. */
-  async searxngStatus(actor: OwnerActor) {
+  /** Cached built-in readiness with background refresh; Web owner only, without a search, pull or start. */
+  searxngStatus(actor: OwnerActor) {
     this.store.read(tx => this.#requireOwner(tx, actor, ["web"]));
-    return this.#web.searxng.status();
+    return this.#web.searxng.cachedStatus(this.#now);
   }
 
   /** Owner-visible query/URL audit metadata, scoped to this project and optionally one run. */

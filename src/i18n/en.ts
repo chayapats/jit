@@ -44,6 +44,7 @@ export const en: Record<MessageKey, string> = {
   "searxng.reason_disabled": "Built-in search is disabled by the service configuration.",
   "searxng.reason_podman": "Podman is not installed. Install Podman and rootless networking, then re-run service install or upgrade.",
   "searxng.reason_socket": "The Podman API socket for the service identity is not running. Enable its user podman.socket and restart Jit.",
+  "podman.checking": "Checking container readiness…",
   "podman.reason_podman": "Podman is not installed. Install it and re-run service install or upgrade.",
   "podman.reason_socket": "The Podman API socket for the service identity is not running. Enable it, then restart Jit to reconnect the socket directory.",
   "podman.reason_rootless": "The container backend needs rootless Podman, cgroup v2 and cpu/memory/pids controllers. Follow docs/runbooks/execution-box.md.",

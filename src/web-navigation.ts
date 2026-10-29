@@ -1,3 +1,4 @@
+import type { ReadinessView } from "./exec/readiness-cache";
 import type { WebProviderSelection } from "./web-tools/providers";
 import type { SearxngStatus } from "./web-tools/searxng";
 import type { PodmanReadiness } from "./exec/podman-client";
@@ -143,7 +144,7 @@ export interface AccessProjectRow {
 export function settingsAccessPage(workspace: NavigationWorkspace, list: { projects: AccessProjectRow[]; hasMore: boolean; single: boolean },
   access: ReadonlyMap<string, ProjectAccess>,
   roles: ReadonlyMap<string, RoleAccess[]>,
-  csrf: string, offset: number, pageSize: number, computer: ReadonlyMap<string, ComputerSettings> = new Map(), web: ReadonlyMap<string, WebSettings> = new Map(), runtimeStatus?: PodmanReadiness): string {
+  csrf: string, offset: number, pageSize: number, computer: ReadonlyMap<string, ComputerSettings> = new Map(), web: ReadonlyMap<string, WebSettings> = new Map(), runtimeStatus?: ReadinessView<PodmanReadiness>): string {
   const single = list.single;
   const levelText = (level: AccessLevel) => tr(`access.level_${level}` as MessageKey);
   const row = ({ project: p, teamRoles }: AccessProjectRow) => {
@@ -448,13 +449,13 @@ export function settingsApprovalsPage(workspace: NavigationWorkspace,
 
 /** Script-free provider selection; renders metadata only, with one-way key forms and D09 disclosure in either locale. */
 export function settingsWebSearchPage(workspace: NavigationWorkspace, settings: WebProviderSelection, keyConnections: ConnectionView[],
-  status: SearxngStatus, csrf: string, tested: "ok" | "failed" | null = null, error: MessageKey | null = null): string {
+  status: ReadinessView<SearxngStatus>, csrf: string, tested: "ok" | "failed" | null = null, error: MessageKey | null = null): string {
   const current = settings.fallback ? "searxng" : settings.id;
   const cards = (["searxng", "tavily", "exa"] as const).map(id => {
     const label = id === "searxng" ? null : webSearchKeyLabels[id];
     const stored = keyConnections.filter(c => c.kind === "web_search_key" && c.removedAt === null && c.secret === "set" && c.projectScope === null && c.label === label)
       .sort((a, b) => b.createdAt - a.createdAt)[0];
-    const state = id === "searxng" ? `${tr(status.state === "ready" ? "web_search.status_ready" : "web_search.status_unavailable")}${status.reason ? ` — ${tr(`searxng.reason_${status.reason}`)}` : ""}`
+    const state = id === "searxng" ? status.state === "checking" ? tr("podman.checking") : `${tr(status.state === "ready" ? "web_search.status_ready" : "web_search.status_unavailable")}${status.reason ? ` — ${tr(`searxng.reason_${status.reason}`)}` : ""}`
       : tr(stored ? "web_search.key_stored" : "web_search.key_none");
     return `<label class="choice"><input type="radio" name="provider" value="${id}"${current === id ? " checked" : ""} required><span>${tr(`web_search.provider_${id}`)}<small>${state}</small></span></label>`;
   }).join("");

@@ -1,3 +1,4 @@
+import { readinessCommands } from "./readiness-cache";
 import { createHash } from "node:crypto";
 import { lstatSync, mkdirSync, realpathSync } from "node:fs";
 import type { ExecutionConfig } from "../config";
@@ -121,6 +122,7 @@ export class PodmanBoxRuntime implements BoxRuntime, BoxStreams {
   readonly #config: ExecutionConfig;
   readonly #directory: string;
   readonly #run: CommandRunner;
+  readonly #probeRun: CommandRunner;
   readonly #registryProxy: ((gateway: string) => Promise<string>) | RegistryProxyPort | undefined;
   readonly #uid: number | undefined;
   readonly #streams: StreamRunner;
@@ -130,14 +132,15 @@ export class PodmanBoxRuntime implements BoxRuntime, BoxStreams {
     if (!options.config.directory || !options.config.images) throw new AppError("box_not_configured", 503);
     this.#config = options.config;
     this.#directory = options.config.directory;
-    this.#run = options.run ?? podmanCommandRunner();
+    this.#probeRun = options.run ?? podmanCommandRunner();
+    this.#run = readinessCommands(this, this.#probeRun);
     this.#registryProxy = options.registryProxy;
     this.#uid = options.uid ?? process.getuid?.();
     this.#streams = options.streams ?? podmanStreamRunner();
   }
 
   /** Read-only backend readiness; distinguishes the executable from the API socket and isolation prerequisites. */
-  readiness(): Promise<PodmanReadiness> { return podmanReadiness(this.#run); }
+  readiness(): Promise<PodmanReadiness> { return podmanReadiness(this.#probeRun); }
 
   async ensure(projectId: string, mode: BoxMode, options: BoxEnsureOptions = {}): Promise<BoxHandle> {
     requireBoxMode(mode);

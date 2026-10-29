@@ -663,3 +663,22 @@ test("attachments.js contract: picks, pastes and drops upload one file per reque
     for (const [key, descriptor] of saved) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete (globalThis as Record<string, unknown>)[key]; }
   }
 });
+
+test("a blocked sanitizer probe never delays the topic page or its composer", async () => {
+  let finish!: (status: import("../src/exec/podman-client").PodmanReadiness) => void;
+  let calls = 0;
+  const f = await fixture({ attachmentSanitizer: {
+    status: () => { calls++; return new Promise(resolve => { finish = resolve; }); },
+    available: async () => true, reset: async () => {}, run: async () => {},
+  } });
+  try {
+    const response = await f.get(f.base);
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain(th["podman.checking"]);
+    expect(html).toContain('name="text"');
+    expect(calls).toBe(1);
+    expect((await f.get(f.base)).status).toBe(200);
+    expect(calls).toBe(1);
+  } finally { finish?.({ state: "ready", reason: null }); }
+});

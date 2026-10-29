@@ -1,3 +1,4 @@
+import { readinessCommands } from "../exec/readiness-cache";
 import { createHash } from "node:crypto";
 import { podmanClient, podmanReadiness, type PodmanReadiness } from "../exec/podman-client";
 import { pinnedImagePattern } from "../exec/box-runtime";
@@ -54,10 +55,12 @@ export function sanitizerCommandRunner(binary = "podman", serviceEnv: Record<str
  */
 export class PodmanAttachmentSanitizer implements AttachmentSanitizerRuntime {
   readonly name: string;
+  readonly command: SanitizerCommandRunner;
   constructor(readonly image: string, installation: string, readonly limits: AttachmentLimits,
-    readonly command: SanitizerCommandRunner = sanitizerCommandRunner(),
+    readonly probeCommand: SanitizerCommandRunner = sanitizerCommandRunner(),
     readonly timer: (callback: () => void, ms: number) => () => void = (callback, ms) => { const t = setTimeout(callback, ms); return () => clearTimeout(t); }) {
     if (!pinnedImagePattern.test(image)) throw new Error("sanitizer_unavailable");
+    this.command = readinessCommands(this, probeCommand);
     this.name = `jit-sanitize-${createHash("sha256").update(installation).digest("hex").slice(0, 32)}`;
   }
   async available(): Promise<boolean> {
@@ -65,10 +68,10 @@ export class PodmanAttachmentSanitizer implements AttachmentSanitizerRuntime {
   }
   /** Reports a missing executable, stopped API, host isolation failure or missing sanitizer image independently. */
   async status(): Promise<PodmanReadiness> {
-    const readiness = await podmanReadiness(this.command);
+    const readiness = await podmanReadiness(this.probeCommand);
     if (readiness.state !== "ready") return readiness;
     try {
-      const image = await this.command(["image", "inspect", "--format", "json", this.image], { timeoutMs: 5000 });
+      const image = await this.probeCommand(["image", "inspect", "--format", "json", this.image], { timeoutMs: 5000 });
       return image.exitCode === 0 && JSON.parse(new TextDecoder().decode(image.stdout))[0]?.Config?.Labels?.["jit.sanitize.version"] === "2"
         ? readiness : { state: "unavailable", reason: "runtime" };
     } catch { return { state: "unavailable", reason: "runtime" }; }

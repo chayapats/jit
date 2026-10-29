@@ -1,3 +1,4 @@
+import { cachedReadiness, invalidateReadiness, readinessCommands } from "../exec/readiness-cache";
 import { randomBytes, createHash } from "node:crypto";
 import { totalmem } from "node:os";
 import type { SearchProvider, SearchResult } from "schway/host";
@@ -56,11 +57,13 @@ const health = "import urllib.request; o=urllib.request.build_opener(urllib.requ
 /** Rootless Podman adapter with container-local loopback only; the service identity's exec channel is the sole ingress. */
 export class PodmanSearxngRuntime implements SearxngRuntime {
   readonly #name: string;
-  constructor(installation: string, readonly run: CommandRunner = podmanCommandRunner(), readonly pause: (ms: number) => Promise<unknown> = Bun.sleep) {
+  readonly run: CommandRunner;
+  constructor(installation: string, readonly probeRun: CommandRunner = podmanCommandRunner(), readonly pause: (ms: number) => Promise<unknown> = Bun.sleep) {
+    this.run = readinessCommands(this, probeRun);
     this.#name = `jit-searxng-${createHash("sha256").update(installation).digest("hex").slice(0, 16)}`;
   }
   async status(): Promise<SearxngStatus> {
-    return podmanReadiness(this.run);
+    return podmanReadiness(this.probeRun);
   }
   async running(): Promise<boolean> {
     const inspect = await this.run(["container", "inspect", this.#name], { timeoutMs: 2000 });
@@ -133,6 +136,11 @@ export class ManagedSearxng implements SearchProvider {
     const status = await this.runtime.status();
     return status.state === "ready" && this.#failed ? { state: "unavailable", reason: "runtime" } : status;
   }
+  /** Immediate page projection; explicit status/tests and real searches still probe independently. */
+  cachedStatus(now = Date.now) {
+    if (this.options.enabled === false) return { state: "unavailable" as const, reason: "disabled" as const };
+    return cachedReadiness(this.runtime, () => this.status(), now);
+  }
   #lock<T>(fn: () => Promise<T>): Promise<T> { const next = this.#tail.then(fn); this.#tail = next.catch(() => {}); return next; }
   async search(query: string, options: { limit: number; signal: AbortSignal }): Promise<readonly SearchResult[]> {
     if (!query.trim() || Buffer.byteLength(query) > 8192 || !Number.isSafeInteger(options.limit) || options.limit < 1 || options.limit > 20) throw new AppError("invalid_web_search");
@@ -155,7 +163,7 @@ export class ManagedSearxng implements SearchProvider {
         const result = await this.runtime.search(query, options.limit, signal);
         this.#failed = false;
         return result;
-      } catch { this.#failed = true; throw new AppError("searxng_unavailable", 503); }
+      } catch { invalidateReadiness(this.runtime); this.#failed = true; throw new AppError("searxng_unavailable", 503); }
       finally { if (this.#started && !this.#closed) this.#idle = clock.set(() => { void this.#lock(async () => { await this.runtime.stop(); this.#started = false; }).catch(() => {}); }, this.options.idleMs ?? 300_000); }
     });
     // Settle the caller promptly, but retain serialization until the queued work

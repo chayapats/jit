@@ -46,6 +46,7 @@ export const th = {
   "searxng.reason_disabled": "ตัวค้นในเครื่องปิดอยู่ในการตั้งค่าของ service",
   "searxng.reason_podman": "ยังไม่ได้ติดตั้ง Podman ให้ติดตั้ง Podman และ rootless networking แล้วรัน service install หรือ upgrade อีกครั้ง",
   "searxng.reason_socket": "Podman API socket ของ service identity ยังไม่ทำงาน ให้เปิด user podman.socket แล้ว restart Jit",
+  "podman.checking": "กำลังตรวจความพร้อมของ container…",
   "podman.reason_podman": "ยังไม่ได้ติดตั้ง Podman ให้ติดตั้งแล้วรัน service install หรือ upgrade อีกครั้ง",
   "podman.reason_socket": "Podman API socket ของ service identity ยังไม่ทำงาน ให้เปิด socket แล้ว restart Jit เพื่อเชื่อม socket directory อีกครั้ง",
   "podman.reason_rootless": "container backend ต้องใช้ rootless Podman, cgroup v2 และ controllers cpu/memory/pids ทำตาม docs/runbooks/execution-box.md",

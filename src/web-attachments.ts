@@ -1,3 +1,4 @@
+import type { ReadinessView } from "./exec/readiness-cache";
 import type { AttachmentView } from "./attachments/records";
 import { tr, trMaybe, type MessageKey } from "./i18n";
 import { assetUrl } from "./web-assets";
@@ -15,7 +16,7 @@ import { podmanNotice } from "./web-podman";
  */
 
 /** What the topic composer offers while `JIT_ATTACHMENTS` is on. */
-export interface AttachmentComposerView { messageFiles: number; fileBytes: number; sanitizer: boolean; runtimeStatus?: PodmanReadiness; backupUsage?: { bytes: number; bound: number; notice: boolean }; pageSize: number }
+export interface AttachmentComposerView { messageFiles: number; fileBytes: number; sanitizer: boolean; runtimeStatus?: ReadinessView<PodmanReadiness>; backupUsage?: { bytes: number; bound: number; notice: boolean }; pageSize: number }
 
 const paths = {
   clip: '<path d="m20.5 11.5-8.2 8.2a5 5 0 0 1-7-7l8.6-8.6a3.3 3.3 0 0 1 4.7 4.7l-8.6 8.6a1.7 1.7 0 0 1-2.4-2.4l7.9-7.9"/>',
