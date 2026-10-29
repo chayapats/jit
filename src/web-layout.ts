@@ -259,7 +259,7 @@ export function replyLabels(view: Pick<JitReplyView, "state" | "nextAction">): {
  * The streamed text is not a live region; one polite status line announces start, connection and finish instead.
  */
 function webReadDetails(view: Pick<JitReplyView, "webCalls"> | undefined): string {
-  return view?.webCalls?.length ? `<details><summary>${tr("web.details")}</summary><ul>${view.webCalls.map(call => `<li>${escape(call.tool)} · ${escape(call.subject)} · ${escape(call.status)} · ${call.bytes} B</li>`).join("")}</ul></details>` : "";
+  return view?.webCalls?.length ? `<details><summary>${tr("web.details")}</summary><ul>${view.webCalls.map(call => `<li>${escape(call.tool)} · ${escape(call.subject)} · ${escape(call.status)} · ${call.bytes} B</li>`).join("")}</ul><a href="/settings/web-search">${tr("settings.web_search")}</a></details>` : "";
 }
 
 function replyStatus(view: JitReplyView, base: string, projectId: string, csrf: string): string {

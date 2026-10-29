@@ -1,1 +1,3 @@
-[]
+[
+  { "feature": "search", "ref": "docker.io/searxng/searxng@sha256:268a4b460136dcefc8f2e896b6098ba3f770c8218dbbddcb86811b06b06816f1" }
+]

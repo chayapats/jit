@@ -167,11 +167,11 @@ test("a read-level reply searches and fetches through exact function tools with 
   expect(preview.affected.sources.some(item => item.source.sourceId === view.source?.sourceId)).toBe(true);
 });
 
-test("unconfigured search still offers fetch and explains why search is absent; disabling the project offers no tools", async () => {
+test("default search offers managed search and fetch with its privacy/repair instructions; disabling the project offers no tools", async () => {
   const f = await fixture();
   await f.send();
-  expect(f.captured[0]!.tools?.map(tool => tool.name)).toEqual(["web_fetch"]);
-  expect(JSON.stringify(f.captured[0])).toContain("Web search is not set up yet");
+  expect(f.captured[0]!.tools?.map(tool => tool.name)).toEqual(["web_search", "web_fetch"]);
+  expect(JSON.stringify(f.captured[0])).toContain("/settings/web-search");
   f.app.execute(f.auth.actor, { kind: "web.settings.set", requestId: rid(), projectId: f.project.id, expectedRevision: 0, payload: { enabled: false } });
   await f.send("Second question");
   expect(f.captured.at(-1)!.tools ?? []).toEqual([]);

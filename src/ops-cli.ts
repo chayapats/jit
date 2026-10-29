@@ -93,7 +93,7 @@ export async function runOpsCommand(args: string[], root: string, ports: OpsPort
           } catch { return null; }
         },
         uid: process.getuid?.() ?? 0,
-      }, config.execution);
+      }, config.execution, config.searxngEnabled);
       return { exitCode: report.ok ? 0 : 1, output: report };
     }
     if (args[0] === "drill" && (args.length === 3 || args.length === 5) && args[1] === "--scenario") {

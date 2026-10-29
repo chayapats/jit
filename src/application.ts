@@ -1,6 +1,6 @@
 import { DeviceSignIns, type SignInCommand, type SignInOptions, type SignInReceipt, type SignInView, type ProviderReadiness } from "./device-sign-in";
 import { recommendedModel, type RouteProvider } from "./team/route-options";
-import { readWebCalls, type WebCall } from "./web-tools";
+import { WebTools, readWebCalls, type WebCall } from "./web-tools";
 import { isWebCommand, readWebSettings, webCommandIdentity, writeWebCommand, type WebCommand, type WebReceipt, type WebSettings } from "./web-tools/settings";
 import { AttachmentSanitizer } from "./attachments/sanitizer";
 import type { AttachmentSanitizerRuntime } from "./attachments/sanitizer-runtime";
@@ -210,6 +210,8 @@ import { ledgerCheckpointPathFor, syncLedgerCheckpoint, type TrustedLedger } fro
 
 /** Injectable clock and transaction fault seam for deterministic persistence checks. */
 export interface ApplicationOptions {
+  /** Shared process-owned web service; tests may supply deterministic providers. */
+  web?: WebTools;
   /** Fixture protocol/store/clock for Web device sign-in; absent in production. */
   signIn?: SignInOptions;
   /** Service-supplied isolated runtime; absent means metadata-strip fallback, never a host decoder. */
@@ -290,6 +292,7 @@ export class Application {
   #jobsOption: JobQueue | undefined;
   #boxes: BoxManager | undefined;
   #connections: ConnectionVault | undefined;
+  #web: WebTools;
   #effects: EffectExecutor | undefined;
   #mcp: McpGateway | undefined;
   #browser: BrowserService | undefined;
@@ -321,6 +324,7 @@ export class Application {
     this.#jobsOption = options.jobs;
     this.#boxes = options.boxes;
     this.#connections = options.connections;
+    this.#web = options.web ?? new WebTools(store, { searxngEnabled: config.searxngEnabled, ...(options.connections ? { vault: options.connections } : {}) });
     this.#effects = options.effects;
     this.#mcp = options.mcp;
     this.#browser = options.browser;
@@ -2647,6 +2651,12 @@ export class Application {
       this.#beforeCommit?.("receipt");
       return receipt;
     });
+  }
+
+  /** Built-in readiness without a search, image pull or container start; Web owner only. */
+  async searxngStatus(actor: OwnerActor) {
+    this.store.read(tx => this.#requireOwner(tx, actor, ["web"]));
+    return this.#web.searxng.status();
   }
 
   /** Owner-visible query/URL audit metadata, scoped to this project and optionally one run. */

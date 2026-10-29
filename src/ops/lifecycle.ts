@@ -312,6 +312,7 @@ export interface FullAppHandle {
   /** Trusted installation configuration, or null under the development profile. */
   serviceConfig: ServiceConfig | null;
   /** exec.box_runtime/v1 project boxes, or null when the operator has not configured execution. */
+  web?: WebTools;
   boxes: BoxManager | null;
   /** app.approval_cards/v1 effect executor, or null without boxes (credential effects also need the vault); the drain waits for it. */
   effects: EffectExecutor | null;
@@ -404,7 +405,7 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
     const computer = browser ? new ComputerService(store, browser, { now }) : null;
     // The executor exists wherever boxes do: in-box cards (MCP, browser, computer) need no vault, and without one the
     // credential effects fail `connection_vault_not_configured` cleanly instead of every card being undecidable.
-    const web = new WebTools(store, { ...(connections ? { vault: connections } : {}), now, outputBytes: config.jobs.outputBytes });
+    const web = new WebTools(store, { searxngEnabled: config.searxngEnabled, ...(connections ? { vault: connections } : {}), now, outputBytes: config.jobs.outputBytes });
     const effects = new EffectExecutor(store, { vault: connections, boxes, mirrorRoot: config.execution.directory, now,
       performers: { outbound_release: web.perform, ...(mcp ? { mcp_tool: mcp.perform } : {}), ...(browser ? { browser_confirm: browser.perform } : {}),
         ...(computer ? { computer_confirm: computer.perform } : {}) } });
@@ -421,7 +422,7 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
       attachmentSanitizer: config.execution.images ? new PodmanAttachmentSanitizer(config.execution.images.base, store.path, config.attachments) : null,
       service: managed, now, ...(service ? { backupDir: service.backupDirectory, ledgerPath: service.ledgerPath } : {}),
       ...(nativeSnapshot ? { nativeSnapshot } : {}), ...(boxes ? { boxes } : {}), ...(connections ? { connections } : {}), ...(effects ? { effects } : {}),
-      ...(mcp ? { mcp } : {}), ...(browser ? { browser } : {}),
+      web, ...(mcp ? { mcp } : {}), ...(browser ? { browser } : {}),
     });
     const ledger = ledgerGate({ store, ledgerPath: service?.ledgerPath ?? null, now: now(), mode: "boot" });
     if (!ledger.trusted) return refuse([{ gate: "quarantine", state: "blocked", nextAction: ledger.nextAction, detail: ledger.reason }]);
@@ -438,7 +439,7 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
       channels = ServiceChannels.start(store, config, input.transports!, now);
     }
     const handle: FullAppHandle = {
-      store, app, service: managed, channels, config, serviceConfig: service, boxes, effects, browser, mcp,
+      store, app, service: managed, channels, config, serviceConfig: service, boxes, effects, browser, mcp, web,
       boot: { reconciled: booted.reconciled, detail: booted.detail, upgrade: booted.upgrade ? { id: booted.upgrade.id, state: booted.upgrade.state } : null,
         restore: booted.restore ? { id: booted.restore.id, state: booted.restore.state, reason: booted.restore.reason ?? null } : null },
       get queue() { return managed!.queue ?? composed.queue; },
@@ -529,7 +530,7 @@ export function serveFullApp(handle: FullAppHandle, options: { drainTimeoutMs?: 
       await handle.app.closeAttachmentSanitizer();
       let result: DrainResult;
       try { result = await stopDrain(handle, { timeoutMs: drainTimeoutMs }); }
-      finally { handle.service.close(); try { handle.store.close(); } catch { /* Already closed. */ } }
+      finally { await handle.web?.searxng.close().catch(() => {}); handle.service.close(); try { handle.store.close(); } catch { /* Already closed. */ } }
       return result;
     })(),
   };

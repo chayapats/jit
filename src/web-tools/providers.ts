@@ -31,8 +31,10 @@ export class WebProviderRegistry {
   }
 }
 /** Explicitly selected key-based adapters; WEB02 registers the managed keyless default. No provider is selected implicitly. */
-export function defaultWebProviders(transport?: WebSearchTransport): WebProviderRegistry {
-  return new WebProviderRegistry()
+export function defaultWebProviders(transport?: WebSearchTransport, builtin?: SearchProvider): WebProviderRegistry {
+  const registry = new WebProviderRegistry()
     .register("tavily", secret => createTavilyProvider(secret ?? "", transport))
     .register("exa", secret => createExaProvider(secret ?? "", transport));
+  if (builtin) registry.register("searxng", () => builtin);
+  return registry;
 }

@@ -77,6 +77,7 @@ function assertShape(scenario: string, expectedOk: boolean, failingNames: string
     "image-base-present",
     "image-browser-present",
     "sanitizer-image",
+    "searxng",
     "execution-directory",
     "secrets-directory",
   ]);
@@ -93,7 +94,7 @@ function assertShape(scenario: string, expectedOk: boolean, failingNames: string
 }
 
 test("podman missing fails installed and dependents", () => {
-  assertShape("missing", false, ["podman-installed", "podman-version>=4.4", "rootless", "cgroup-v2", "controllers"]);
+  assertShape("missing", false, ["searxng", "podman-installed", "podman-version>=4.4", "rootless", "cgroup-v2", "controllers"]);
 });
 
 test("podman 4.3 fails version", () => {
@@ -101,7 +102,7 @@ test("podman 4.3 fails version", () => {
 });
 
 test("rootless false fails rootless", () => {
-  assertShape("rootless-false", false, ["rootless"]);
+  assertShape("rootless-false", false, ["searxng", "rootless"]);
 });
 
 test("cgroup v1 fails cgroup-v2", () => {

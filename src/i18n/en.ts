@@ -2,6 +2,13 @@ import type { MessageKey } from "./index";
 
 /** ui.i18n_dictionary/v1 — English. Must define every key of the Thai dictionary; values are plain text. */
 export const en: Record<MessageKey, string> = {
+  "settings.web_search": "Web search",
+  "web_search.status_ready": "Ready",
+  "web_search.status_unavailable": "Built-in search is unavailable on this machine",
+  "searxng.reason_disabled": "Built-in search is disabled by the service configuration.",
+  "searxng.reason_podman": "Rootless Podman is unavailable. Choose Tavily or Exa and enter a key in Web search settings.",
+  "searxng.reason_rootless": "Built-in search needs rootless Podman with cgroup v2 and memory, CPU and PID controllers.",
+  "searxng.reason_runtime": "The built-in search container could not start. Try again or choose a provider in Web search settings.",
   "attachments.backup_bound_notice": "Attachment storage uses {bytes} of the {bound} backup limit. Delete files or increase the limit before backup or upgrade.",
   "error.attachment_backup_active": "A backup still uses the files. Wait for it to finish, then retry cleanup.",
   "error.attachment_cleanup_unavailable": "Attachment cleanup is unavailable. Restart the configured service and retry.",

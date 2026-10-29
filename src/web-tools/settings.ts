@@ -16,9 +16,10 @@ export function readWebSettings(tx: AppTransaction, projectId: string): WebSetti
   const row = tx.get<{ enabled: number; revision: number }>("SELECT enabled, revision FROM web_settings WHERE project_id = ? ORDER BY revision DESC LIMIT 1", projectId);
   return { enabled: row ? row.enabled === 1 : true, revision: row?.revision ?? 0 };
 }
-/** Reads the installation's selected provider; no row means search is not set up. */
+/** Reads the installation's selected provider; no row (or legacy null) means managed Built-in search. */
 export function readWebProvider(tx: AppTransaction): WebProviderSetting {
-  return tx.get<WebProviderSetting>("SELECT provider_id AS id, connection_id AS connectionId, revision FROM web_provider ORDER BY revision DESC LIMIT 1") ?? { id: null, connectionId: null, revision: 0 };
+  const row = tx.get<WebProviderSetting>("SELECT provider_id AS id, connection_id AS connectionId, revision FROM web_provider ORDER BY revision DESC LIMIT 1");
+  return row ? { ...row, id: row.id ?? "searxng" } : { id: "searxng", connectionId: null, revision: 0 };
 }
 /** Recognizes only the two owner configuration commands. */
 export function isWebCommand(value: { kind?: unknown }): value is WebCommand { return value.kind === "web.settings.set" || value.kind === "web.provider.set"; }

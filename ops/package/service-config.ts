@@ -39,6 +39,8 @@ export interface ServiceConfig {
   };
   /** Application run adapter rendered as `JIT_RUN_PORT` (default `scripted`). */
   runPort?: "scripted" | "schway";
+  /** Managed keyless search is on by default; false disables its container. */
+  searxngEnabled?: boolean;
   /**
    * Opt-in channels. `telegram: "enabled"` requires the `telegram-bot-token`
    * credential-file reference and a supported transport; otherwise startup
@@ -160,7 +162,7 @@ export function parseServiceConfig(raw: unknown): ServiceConfig {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) fail();
   const c = raw as Record<string, unknown>;
   keysWithin(c, ["serviceUser", "executablePath", "workingDirectory", "stateDirectory", "ledgerPath", "backupDirectory",
-    "routes", "secretRefs", "network", "resources"], ["runPort", "channels", "execution"]);
+    "routes", "secretRefs", "network", "resources"], ["runPort", "channels", "execution", "searxngEnabled"]);
   if (typeof c.serviceUser !== "string" || !userPattern.test(c.serviceUser) || c.serviceUser === "root") fail();
   const executablePath = absolutePath(c.executablePath);
   const workingDirectory = absolutePath(c.workingDirectory);
@@ -225,6 +227,10 @@ export function parseServiceConfig(raw: unknown): ServiceConfig {
   const parsed: ServiceConfig = { serviceUser: c.serviceUser as string, executablePath, workingDirectory, stateDirectory,
     ledgerPath, backupDirectory, routes, secretRefs,
     network: { bindHost, port, vpnInterface: n.vpnInterface as string | null, ...(origin !== undefined ? { origin } : {}) }, resources };
+  if (c.searxngEnabled !== undefined) {
+    if (typeof c.searxngEnabled !== "boolean") fail();
+    parsed.searxngEnabled = c.searxngEnabled as boolean;
+  }
   if (c.runPort !== undefined) {
     if (c.runPort !== "scripted" && c.runPort !== "schway") fail();
     parsed.runPort = c.runPort as "scripted" | "schway";
@@ -334,6 +340,7 @@ export function serviceEnvironment(config: ServiceConfig): [string, string][] {
     ["JIT_ORIGIN", serviceOrigin(parsed)],
     ["JIT_RUN_PORT", parsed.runPort ?? "scripted"],
   ];
+  if (parsed.searxngEnabled !== undefined) env.push(["JIT_SEARXNG_ENABLED", parsed.searxngEnabled ? "1" : "0"]);
   const token = telegramTokenPath(parsed);
   if (token) env.push(["JIT_TELEGRAM_BOT_TOKEN_PATH", token]);
   if (parsed.execution) {
@@ -361,7 +368,7 @@ export interface ServicePlanChange {
 }
 
 const planFields = ["serviceUser", "executablePath", "workingDirectory", "stateDirectory", "ledgerPath",
-  "backupDirectory", "routes", "network", "resources", "runPort", "channels", "execution"] as const;
+  "backupDirectory", "routes", "network", "resources", "runPort", "channels", "execution", "searxngEnabled"] as const;
 
 /**
  * Plan/validate mode: prints only allowlisted non-secret differences between two

@@ -4,6 +4,13 @@
  * Values are plain text: no markup and none of < > & " ' (renderers insert them unescaped).
  */
 export const th = {
+  "settings.web_search": "การค้นเว็บ",
+  "web_search.status_ready": "พร้อมใช้งาน",
+  "web_search.status_unavailable": "เครื่องนี้ยังใช้ตัวค้นในเครื่องไม่ได้",
+  "searxng.reason_disabled": "ตัวค้นในเครื่องปิดอยู่ในการตั้งค่าของ service",
+  "searxng.reason_podman": "เครื่องนี้ยังใช้ rootless Podman ไม่ได้ เลือก Tavily หรือ Exa แล้วใส่ key ในหน้าการค้นเว็บได้",
+  "searxng.reason_rootless": "ตัวค้นในเครื่องต้องใช้ rootless Podman กับ cgroup v2 และ controller ของ memory, CPU และ PID",
+  "searxng.reason_runtime": "เริ่ม container ของตัวค้นในเครื่องไม่ได้ ลองอีกครั้งหรือเลือก provider ในหน้าการค้นเว็บ",
   "attachments.backup_bound_notice": "ไฟล์แนบใช้ {bytes} จากเพดาน backup {bound} ลบไฟล์หรือเพิ่มเพดานก่อน backup หรือ upgrade",
   "error.attachment_backup_active": "backup ยังใช้ไฟล์อยู่ รอให้เสร็จแล้วลอง cleanup อีกครั้ง",
   "error.attachment_cleanup_unavailable": "ระบบ cleanup ไฟล์แนบยังใช้ไม่ได้ เริ่ม service ที่ตั้งค่าไว้ใหม่แล้วลองอีกครั้ง",

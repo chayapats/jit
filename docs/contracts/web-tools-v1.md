@@ -8,9 +8,9 @@ S12-D03/D04/D09/D13, S13-D07 and ADRs 0019, 0037 and 0040 govern this service-ow
 
 CTX01 reply admission captures that selection and its limits in the request stub. The first fenced attempt atomically assembles the packet, lineage and attempt snapshot; web tools and their private-context corpus use that exact frozen packet. Retries and explicit resumes reuse it with fresh attempt identities.
 
-`web.settings.set` and `web.provider.set` are Web owner commands with revision checks, receipt replay and audit. `web_provider` stores only an installation provider id and optional `web_search_key` connection id. Trusted service code registers factories in `WebProviderRegistry`; only a selected factory receives its scoped vault value through an audited `web:<providerId>` release. Tool input cannot select providers. There is no fallback or route/billing change.
+`web.settings.set` and `web.provider.set` are Web owner commands with revision checks, receipt replay and audit. `web_provider` stores only an installation provider id and optional `web_search_key` connection id. Trusted service code registers factories in `WebProviderRegistry`; only a selected factory receives its scoped vault value through an audited `web:<providerId>` release. Tool input cannot select providers. No model route/billing change is allowed. WEB03 permits only a visible Built-in fallback when an owner removes or empties a selected search key.
 
-WEB01 ships bounded Tavily and Exa adapters but selects no installation provider by default. With no provider selected, `web_fetch` remains available, `web_search` is absent and a trusted operator line says search is not set up. WEB02 #178 installs and registers the managed keyless SearXNG backend; WEB03 #184 supplies provider selection/configuration UI. Neither a live provider call nor a key is required by WEB01 tests.
+WEB02 #178 registers managed keyless SearXNG as the default (including legacy null selections). Both web tools remain offered when Podman is missing; search returns a clear unavailable result with a path to `/settings/web-search`. WEB03 #184 supplies provider selection/configuration UI. Neither a live provider call nor a key is required by deterministic tests. See [ops.searxng/v1](searxng-v1.md) and [ADR 0044](../adr/0044-managed-web-search.md).
 
 ## Guard, budgets and owner visibility
 
