@@ -208,6 +208,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const access = new Map(ids.map(id => [id, app.projectAccess(auth.actor, id)] as const));
         return { ...workspace, attention: app.attention(auth.actor, ids), access };
       };
+      const projectRenameRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/rename$/.exec(pathname);
       const projectRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})$/.exec(pathname);
       const topicCollection = /^\/(api\/)?projects\/([a-f0-9-]{36})\/topics$/.exec(pathname);
       const topicRoute = /^\/(api\/)?projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})$/.exec(pathname);
@@ -1402,6 +1403,19 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const receipt = app.execute(auth.actor, command);
         return api ? json(receipt) : respond(null, 303, { Location: `/projects/${decisionRoute![1]}/topics/${decisionRoute![2]}#owner-decision` });
       }
+      if (request.method === "POST" && projectRenameRoute) {
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "name"].includes(key))) throw new AppError("invalid_body");
+        const revision = typeof body.expectedRevision === "string" && /^\d{1,15}$/.test(body.expectedRevision) ? Number(body.expectedRevision) : body.expectedRevision;
+        try {
+          const receipt = app.execute(auth.actor, { kind: "project.rename", projectId: projectRenameRoute[2]!, requestId: body.requestId as string,
+            expectedRevision: revision as number, payload: { name: body.name as string } });
+          return api ? json(receipt) : respond(null, 303, { Location: `/projects/${projectRenameRoute[2]}` });
+        } catch (error) {
+          if (!api && error instanceof AppError && error.code === "stale_revision") return respond(null, 303, { Location: `/projects/${projectRenameRoute[2]}#rename` });
+          throw error;
+        }
+      }
       if (request.method === "POST" && teamAction) {
         const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
         const projectId = teamAction[1] ?? null, action = teamAction[2]!, form = request.headers.get("content-type")?.split(";")[0]?.trim() === "application/x-www-form-urlencoded";
@@ -1562,11 +1576,11 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       }
       if (request.method === "GET" && topicCollection) {
         const state = app.topics(auth.actor, topicCollection[2]!, after());
-        return api ? json(state) : page(() => projectPage(state, nav(), auth.csrf, after()));
+        return api ? json(state) : page(() => projectPage(state, nav(), auth.csrf, after(), app.generalSpace(auth.actor)?.projectId ?? null));
       }
       if (request.method === "GET" && projectRoute) {
         const project = app.project(auth.actor, projectRoute[2]!);
-        return api ? json(project) : page(() => projectPage(app.topics(auth.actor, project.id, after()), nav(), auth.csrf, after()));
+        return api ? json(project) : page(() => projectPage(app.topics(auth.actor, project.id, after()), nav(), auth.csrf, after(), app.generalSpace(auth.actor)?.projectId ?? null));
       }
       if (request.method === "GET" && ["/", "/api/projects"].includes(url.pathname)) {
         // FR-23: an installation that has not finished setup starts at setup, not at the workspace. The JSON list is unchanged.
