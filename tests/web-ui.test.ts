@@ -224,7 +224,7 @@ test("layout templates contain no hard-coded English or Thai text nodes", async 
   expect(source).not.toMatch(/[\u0E00-\u0E7F]/);
   // Capitalised word literals in expressions are product names and takeover key names only, never labels.
   // (The live-view key buttons are protocol values mapped to xdotool names in web.ts; their labels are dictionary keys.)
-  expect([...new Set(source.match(/"[A-Z][a-z]+(?: [a-zA-Z]+)*"/g))].sort()).toEqual(['"Backspace"', '"Codex"', '"Enter"', '"Escape"', '"Grok"', '"Jit"', '"Tab"']);
+  expect([...new Set(source.match(/"[A-Z][a-z]+(?: [a-zA-Z]+)*"/g))].sort()).toEqual(['"Backspace"', '"Enter"', '"Escape"', '"Jit"', '"Tab"']);
 });
 
 test("CSP is exactly ADR 0028 on pages, API, assets, redirects and errors", async () => {

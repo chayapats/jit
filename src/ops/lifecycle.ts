@@ -18,6 +18,7 @@ import { BrowserService } from "../exec/browser";
 import { ComputerService } from "../exec/computer";
 import { composeJobQueue } from "../composition";
 import type { ApplicationRunPort } from "../team/run-port";
+import type { RouteModels } from "../team/route-options";
 import { verifySchwayBridge } from "../team/schway-port";
 import { TransactionStore, schemaVersion } from "../store";
 import { createWebHandler } from "../web";
@@ -149,11 +150,17 @@ function realpathOrNull(path: string): string | null {
  * service configuration, so the unit's environment and the service file
  * cannot disagree about which state is served.
  */
+/** Models the operator configured per provider; route forms recommend them (#167). Unknown route names are ignored. */
+export function serviceRouteModels(service: ServiceConfig): RouteModels {
+  const model = (provider: string) => service.routes.find(r => r.route === provider && r.configured)?.model ?? null;
+  return { codex: model("codex"), grok: model("grok") };
+}
+
 export function serviceAppConfig(config: AppConfig, service: ServiceConfig | null): AppConfig {
   if (!service) return config;
   const parsed = parseServiceConfig(service);
   return { ...config, databasePath: serviceDatabasePath(parsed), hostname: parsed.network.bindHost, port: parsed.network.port,
-    origin: serviceOrigin(parsed), runPort: parsed.runPort ?? config.runPort,
+    origin: serviceOrigin(parsed), runPort: parsed.runPort ?? config.runPort, routeModels: serviceRouteModels(parsed),
     telegram: { ...config.telegram, botTokenPath: telegramTokenPath(parsed) ?? config.telegram.botTokenPath } };
 }
 

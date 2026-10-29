@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import type { JobPolicy } from "./jobs/types";
 import type { TeamPolicy } from "./team/types";
+import { noRouteModels, type RouteModels } from "./team/route-options";
 import { opsBounds } from "./ops/limits";
 
 /**
@@ -177,6 +178,8 @@ export interface AppConfig {
   ops: OpsPolicy;
   /** Operator execution-box settings; null paths mean execution is not configured. */
   execution: ExecutionConfig;
+  /** Operator-configured model per provider (service config `routes[].model`); route forms recommend it (#167). */
+  routeModels: RouteModels;
 }
 
 /** Reads only Jit's declared settings and rejects malformed or unbounded values. */
@@ -258,5 +261,6 @@ export function readConfig(env: Record<string, string | undefined> = process.env
       drillDeadlineMs: atLeast("JIT_OPS_DRILL_DEADLINE_MS", positive("JIT_OPS_DRILL_DEADLINE_MS", 120_000, opsBounds.drillDeadlineMs.max), opsBounds.drillDeadlineMs.min),
     },
     execution: parseExecutionConfig(env),
+    routeModels: noRouteModels,
   };
 }

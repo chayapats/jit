@@ -14,6 +14,7 @@ import { ScriptedRunPort, fixtureOutcome } from "../src/team/scripted-port";
 import type { ApplicationRunOutcome, ApplicationRunRequest, RoleRoute } from "../src/team/types";
 import { createWebHandler } from "../src/web";
 import { assetUrl } from "../src/web-assets";
+import { routeText } from "../src/team/route-options";
 
 /**
  * app.role_proposals/v1 (BOT03, S09-AC02): Jit's role proposals through the public command boundary with a
@@ -383,7 +384,7 @@ test("a role without its own route needs a default: the card asks for a route an
   // A default set later is named on the card and lets the same revision through; withdrawing it blocks again.
   setOwnerDefault(f, codex);
   page = await (await get(f, topicPath(f))).text();
-  expect(page).toContain(`route เริ่มต้น (${codex.provider} / ${codex.model} · ${codex.authRoute})`);
+  expect(page).toContain(`route เริ่มต้น (${routeText(codex)})`);
   const accept = form(page, proposalPath(f, proposal, "accept"));
   setOwnerDefault(f, null);
   const refused = await postForm(f, proposalPath(f, proposal, "accept"), accept);

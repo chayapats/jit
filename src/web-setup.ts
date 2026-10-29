@@ -5,6 +5,8 @@ import { setupSteps } from "./setup";
 import { scaleTokens } from "./web-design";
 import { documentPage, escape, hiddenCommand, icon } from "./web-layout";
 import { logoLockup, logoMark } from "./web-logo";
+import { routePicker } from "./web-route-picker";
+import { noRouteModels, routeText, type RouteModels } from "./team/route-options";
 
 /**
  * app.setup/v1 Web pages (the setup ceremony of S09-D07, docs/design/README.md). One server-rendered page per step, outside the
@@ -32,8 +34,7 @@ export function visibleStep(setup: SetupView, requested: string | null): SetupSt
   return asked >= 0 && asked <= current ? setupSteps[asked]! : setup.step;
 }
 
-const routeText = (connection: SetupConnection) => connection.route
-  ? `${connection.route.provider === "grok" ? "Grok" : "Codex"} · ${connection.route.model} · ${connection.route.authRoute}` : tr("setup.no_route");
+const connectionRouteText = (connection: SetupConnection) => connection.route ? routeText(connection.route) : tr("setup.no_route");
 const choice = (name: string, value: string, label: string, current: string) =>
   `<label class="choice"><input type="radio" name="${name}" value="${value}"${value === current ? " checked" : ""}>${label}</label>`;
 const back = (step: SetupStep) => `<a class="setup-back" href="/setup?step=${step}">${tr("setup.back")}</a>`;
@@ -57,7 +58,7 @@ function connectionStatus(connection: SetupConnection, csrf: string, revision: n
     check?.jobId && check.projectId ? `<a href="/projects/${check.projectId}/jobs/${check.jobId}#job-${check.jobId}">${tr("setup.view_check_job")}</a>` : "",
   ].filter(Boolean).join("");
   return `<section class="setup-connection" id="connection" aria-labelledby="connection-title"><h2 id="connection-title">${tr("setup.connection_state")}</h2>
-    <p class="setup-connection-head"><span class="job-status" data-state="${connectionTone[connection.status]}">${escape(labels.state)}</span><span class="setup-route">${escape(routeText(connection))}</span></p>
+    <p class="setup-connection-head"><span class="job-status" data-state="${connectionTone[connection.status]}">${escape(labels.state)}</span><span class="setup-route">${escape(connectionRouteText(connection))}</span></p>
     <p class="setup-note" role="status">${escape(labels.note)}</p>${labels.next ? `<p class="setup-next">${escape(labels.next)}</p>` : ""}
     ${connection.mode ? `<p class="setup-meta">${tr("setup.check_mode")} ${connection.mode === "production" ? tr("setup.mode_production") : tr("setup.mode_fixture")}</p>` : ""}
     ${actions ? `<div class="setup-actions">${actions}</div>` : ""}</section>`;
@@ -70,14 +71,12 @@ function wakeStep(setup: SetupView, csrf: string): string {
     <form method="post" action="/setup/wake">${hiddenCommand(csrf, setup.revision)}<input type="hidden" name="language" value="${locale}"><button class="primary">${tr("setup.wake_start")}</button></form>`;
 }
 
-function connectStep(setup: SetupView, csrf: string): string {
+function connectStep(setup: SetupView, csrf: string, models: RouteModels): string {
   const route = setup.connection.route;
-  const provider = route?.provider ?? "grok";
   return `<div class="setup-head"><h1>${tr("setup.connect_title")}</h1><p>${tr("setup.connect_text")}</p></div>
     <form class="team-form setup-form" method="post" action="/setup/connect">${hiddenCommand(csrf, setup.revision)}
-      <label>${tr("setup.provider")}<select name="provider"><option value="grok"${provider === "grok" ? " selected" : ""}>${"Grok"}</option><option value="codex"${provider === "codex" ? " selected" : ""}>${"Codex"}</option></select></label>
-      <label>${tr("setup.model")}<input name="model" maxlength="120" required autocomplete="off" spellcheck="false" value="${escape(route?.model ?? "")}"></label>
-      <label>${tr("setup.auth_route")}<input name="authRoute" maxlength="64" required autocomplete="off" spellcheck="false" value="${escape(route?.authRoute ?? "")}"><small>${tr("setup.auth_route_note")}</small></label>
+      ${routePicker({ route, models, legend: tr("setup.provider"), layout: "cards" })}
+      <p class="setup-meta">${tr("setup.account_note")}</p>
       <button class="primary">${route ? tr("setup.connect_save_again") : tr("setup.connect_save")}</button></form>
     ${connectionStatus(setup.connection, csrf, setup.revision)}
     <div class="setup-foot">${back("wake")}${setup.connection.status === "missing" ? "" : `<div class="setup-continue">${setup.connection.status === "verified" ? "" : `<p class="setup-meta">${tr("setup.continue_unverified")}</p>`}${action("connect-continue", csrf, setup.revision, tr("setup.continue"), "", true)}</div>`}</div>`;
@@ -112,7 +111,7 @@ function summary(setup: SetupView): string {
   const labels = connectionLabels(setup.connection);
   const row = (label: string, value: string) => `<div><dt>${label}</dt><dd>${value}</dd></div>`;
   return `<dl class="setup-summary">
-    ${row(tr("setup.summary_route"), `${escape(routeText(setup.connection))} <span class="job-status" data-state="${connectionTone[setup.connection.status]}">${escape(labels.state)}</span>`)}
+    ${row(tr("setup.summary_route"), `${escape(connectionRouteText(setup.connection))} <span class="job-status" data-state="${connectionTone[setup.connection.status]}">${escape(labels.state)}</span>`)}
     ${row(tr("settings.persona_address"), escape(persona.addressAs || tr("setup.address_placeholder")))}
     ${row(tr("settings.persona_self"), escape(persona.selfReference || tr("setup.self_placeholder")))}
     ${row(tr("setup.jit_language"), persona.language === "en" ? tr("settings.language_en") : tr("settings.language_th"))}
@@ -128,8 +127,8 @@ function ceremonyStep(setup: SetupView, csrf: string): string {
 }
 
 /** The setup page for one step, in the request's language and theme. */
-export function setupPage(setup: SetupView, csrf: string, shown: SetupStep): string {
-  const body = shown === "wake" ? wakeStep(setup, csrf) : shown === "connect" ? connectStep(setup, csrf) : shown === "know" ? knowStep(setup, csrf)
+export function setupPage(setup: SetupView, csrf: string, shown: SetupStep, models: RouteModels = noRouteModels): string {
+  const body = shown === "wake" ? wakeStep(setup, csrf) : shown === "connect" ? connectStep(setup, csrf, models) : shown === "know" ? knowStep(setup, csrf)
     : shown === "personality" ? personalityStep(setup, csrf) : ceremonyStep(setup, csrf);
   return documentPage(`${tr(`setup.step.${shown}` as MessageKey)} · ${tr("setup.title")}`, `<main class="setup" id="main-content"><div class="setup-card" data-step="${shown}">
     <header class="setup-top">${logoLockup({ height: 28, label: "Jit" })}<p class="setup-eyebrow">${tr("setup.title")}</p></header>${progress(setup, shown)}${body}</div></main>`);
