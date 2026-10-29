@@ -1,3 +1,4 @@
+import { holdOutboundCall, markOutboundAction, runOutboundGuard } from "../security/run-outbound";
 import type { ToolDefinition, ToolExecutionResult } from "schway/host";
 import { AppError } from "../errors";
 import { requireId } from "../sources";
@@ -119,7 +120,7 @@ export class ComputerService {
 
   /** The computer tools of one run: only for a `full` grant in a browser-image box. */
   openRun(input: ComputerRunInput): { definitions: ToolDefinition[]; release(): void } {
-    const { request } = input, projectId = request.projectId;
+    const { request } = input, projectId = request.projectId, outbound = runOutboundGuard(this.#store, request);
     if (request.execution?.level !== "full" || input.handle.mode !== "full" || !input.handle.profile) return { definitions: [], release: () => {} };
     let desktop: { release(): void } | null = null, released = false;
     const origin = { projectId, topicId: request.topicId, runId: request.runId, jobId: request.fence.jobId, roleId: request.roleId };
@@ -146,12 +147,19 @@ export class ComputerService {
         try {
           const card = this.#store.transaction(tx => {
             if (!input.current(tx)) throw new AppError("execution_access_changed");
-            return createCard(tx, origin, pinned, this.#now(), { autoApprove: false });
+            return createCard(tx, origin, markOutboundAction(pinned, outbound(pinned.text)), this.#now(), { autoApprove: false });
           });
           // The card holds the desktop session it was made on; its approval acts only on that session.
           this.#browser.pinCard(projectId, card.id);
           return cardToolResult(card);
         } catch (error) { return fail(`Jit refused the computer action: ${codeOf(error, "invalid_effect_action")}.`); }
+      }
+      const match = action.operation === "type" ? outbound(action.text) : null;
+      if (match && action.operation === "type") {
+        const card = holdOutboundCall(this.#store, request, { tool: "computer_type", subject: action.text, level: "full", providerRevision: 0,
+          release: { kind: "computer_confirm", operation: "type", x: null, y: null, text: action.text, keys: null, intent: intent as ComputerIntent, reasons: ["outbound_text"] } }, match, this.#now());
+        if (card) { this.#browser.pinCard(projectId, card.id); return cardToolResult(card); }
+        return fail("outbound_blocked: the first outbound call is already held for Web approval.");
       }
       await this.#browser.desktopInput(projectId, request.roleId, toInput(action), "agent", signal);
       return { content: JSON.stringify({ done: action.operation, intent }) };
@@ -203,7 +211,7 @@ export class ComputerService {
    * during a takeover or when the role no longer has `full`; a failure after the input was sent is `unknown`.
    */
   readonly perform: EffectPerformer = async (card, signal, allowed): Promise<EffectOutcome> => {
-    const action = card.action as ComputerConfirmAction;
+    const action = (card.action.kind === "outbound_release" ? card.action.release : card.action) as ComputerConfirmAction;
     try {
       if (this.#store.read(tx => takeoverActive(tx, card.projectId))) return { outcome: "failed", reason: "takeover_active", detail: {} };
       if (!this.#browser.cardSessionOpen(card.projectId, card.id)) return { outcome: "failed", reason: "stale", detail: {} };

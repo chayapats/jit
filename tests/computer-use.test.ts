@@ -1,3 +1,4 @@
+import { uploadText, sendFiles } from "./fixtures/attachment-run";
 import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -221,4 +222,17 @@ test("review fix: a computer card holds its desktop session; once that session c
   await settle(w.f);
   expect(w.f.app.approvalCard(w.f.auth.actor, w.f.project.id, second!.id)).toMatchObject({ state: "failed", reason: "stale" });
   expect(w.desktop).toHaveLength(1);
+});
+
+
+for (const confirmed of [false, true]) test(`ATT04 computer_type guards full text; existing confirm card marker=${confirmed}`, async () => {
+  const w = await desktopWorld(); setLevel(w.f, "full");
+  const marker = "PRIVATE_ATTACHMENT_COMPUTER_193_never_send";
+  const file = await uploadText(w.f, "prefix ".repeat(6000) + marker); sendFiles(w.f, [file.id]);
+  await w.run([{ name: "computer_type", input: { text: marker + (confirmed ? "\n" : ""), intent: "input" } }]);
+  expect(w.desktop).toHaveLength(0);
+  const cards = w.f.app.approvalCards(w.f.auth.actor, w.f.project.id);
+  expect(cards).toHaveLength(1); expect(cards[0]!.kind).toBe(confirmed ? "computer_confirm" : "outbound_release");
+  expect(cards[0]!.action.outbound?.attachmentId).toBe(file.id);
+  decide(w.f, cards[0]!, "approve"); await w.f.executor.idle(); expect(w.desktop).toHaveLength(1);
 });

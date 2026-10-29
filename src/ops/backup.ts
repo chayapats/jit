@@ -399,7 +399,7 @@ export function captureBackupImage(tx: AppTransaction, store: Pick<TransactionSt
       scrubbed.push("webhook_triggers.sealed_secret");
     }
     if (tables.includes("approval_cards")) {
-      image.exec("UPDATE approval_cards SET action_json = '{}', decision_json = NULL, receipt_json = NULL WHERE kind = 'outbound_release'");
+      image.exec("UPDATE approval_cards SET action_json = '{}', decision_json = NULL, receipt_json = NULL WHERE kind = 'outbound_release' OR json_extract(action_json, '$.outbound') IS NOT NULL");
       scrubbed.push("approval_cards.outbound_release");
     }
     // Approval payloads copied into receipts and run records follow the same metadata-only rule.

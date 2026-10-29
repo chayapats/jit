@@ -50,12 +50,13 @@ export function approvalCard(view: ApprovalCard, options: { topicBase: string; c
   const kindSuffix = view.kind.replace(/^effect\./, "");
   const kindKey = `approval.kind_${kindSuffix}` as MessageKey;
   const title = tr(kindKey);
-  const summary = summarizeApprovalAction(view.action);
+  const summary = summarizeApprovalAction(view.action) ?? [];
+  if (view.action.outbound) summary.push(`${tr("web.matched_span")}: ${view.action.outbound.span}`);
   const actionJson = canonicalJson(view.action);
   const now = options.now ?? Date.now();
   const minutes = Math.max(0, Math.ceil((view.expiresAt - now) / 60_000));
   const meta = `${tr("approval.title")} · ${fillText(tr("approval.expires_in"), { minutes: String(minutes) })}`;
-  const fields = summary.map(line => `<dt>${escape(title)}</dt><dd>${escape(line)}</dd>`).join("");
+  const fields = (view.action.outbound ? `<dt>${escape(title)}</dt><dd class="error">${tr("attachments.outbound_marker")} (${view.outboundBlocks ?? 1})</dd>` : "") + summary.map(line => `<dt>${escape(title)}</dt><dd>${view.action.outbound && line.endsWith(view.action.outbound.span) ? escape(line.slice(0, -view.action.outbound.span.length)) + `<mark>${escape(view.action.outbound.span)}</mark>` : escape(line)}</dd>`).join("");
   const details = `<details><summary>${tr("approval.details")}</summary><pre>${escape(actionJson)}</pre></details>`;
   const open = view.state === "pending";
   if (!open) {

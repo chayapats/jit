@@ -81,3 +81,6 @@ export function redactRegisteredSecrets(text: string, replacement = "[credential
   }
   return out + text.slice(at);
 }
+
+/** Character offsets of registered secret spans in the supplied text, for callers that must redact a byte-window without leaking split values. */
+export function registeredSecretSpans(text: string): readonly (readonly [number, number])[] { return spans(text); }

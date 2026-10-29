@@ -1,3 +1,4 @@
+import { outboundReleasePerformer } from "../../src/security/run-outbound";
 import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -77,7 +78,7 @@ export async function effectFixture(options: EffectFixtureOptions = {}) {
   const fetches: FetchCall[] = [];
   const reply: FetchReply = options.fetch ?? (() => new Response(JSON.stringify({}), { status: 200 }));
   const executor = new EffectExecutor(store, {
-    vault, boxes, mirrorRoot: execution, now, tempRoot: root, performers: { ...(mcp ? { mcp_tool: mcp.perform } : {}), ...(browser ? { browser_confirm: browser.perform } : {}), ...(computer ? { computer_confirm: computer.perform } : {}) },
+    vault, boxes, mirrorRoot: execution, now, tempRoot: root, performers: { outbound_release: outboundReleasePerformer(store, { web: async () => ({ outcome: "failed", reason: "fixture_web_disabled", detail: {} }), ...(browser ? { browser: browser.perform } : {}), ...(computer ? { computer: computer.perform } : {}), ...(mcp ? { mcp: mcp.perform } : {}) }), ...(mcp ? { mcp_tool: mcp.perform } : {}), ...(browser ? { browser_confirm: browser.perform } : {}), ...(computer ? { computer_confirm: computer.perform } : {}) },
     fetch: async (url, init) => {
       const headers = Object.fromEntries(Object.entries(init.headers as Record<string, string>));
       const call = { url, method: String(init.method), headers, body: init.body ? JSON.parse(String(init.body)) : null };

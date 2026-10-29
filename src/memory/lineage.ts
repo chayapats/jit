@@ -11,7 +11,7 @@ const key = (ref: SourceReference) => `${ref.sourceId}:${ref.revision}:${ref.gen
 /** One recorded run that was given some sources: its committed output source, or its job while that job is pending. */
 interface Producer { id: string; projectId: string; output: string | null; jobId: string | null; jobState: string | null }
 
-type ManifestRecord = { kind?: string; request?: { manifest?: { sources?: unknown } }; manifest?: { sources?: unknown }; source?: { sourceId?: unknown } | null };
+type ManifestRecord = { kind?: string; request?: { manifest?: { sources?: unknown }; attachments?: { attachmentId: string; revision: number; generation: number }[] }; manifest?: { sources?: unknown }; source?: { sourceId?: unknown } | null };
 
 function manifestSources(value: unknown): SourceReference[] | null {
   if (!Array.isArray(value)) return null;
@@ -46,6 +46,7 @@ function producerIndex(tx: AppTransaction): Map<string, Producer[]> {
     const discussion = record?.kind === "discussion";
     const refs = manifestSources(discussion ? record.manifest?.sources : record?.request?.manifest?.sources);
     if (!refs) continue;
+    refs.push(...(record.request?.attachments ?? []).map(ref => ({ sourceId: ref.attachmentId, revision: ref.revision, generation: ref.generation })));
     refs.push(...tx.all<SourceReference>("SELECT source_id AS sourceId, revision, generation FROM web_run_sources WHERE job_id = ?", row.jobId));
     const output = !discussion && typeof record.source?.sourceId === "string" ? record.source.sourceId : null;
     add(refs, { id: `run:${row.id}`, projectId: row.projectId, output, jobId: row.jobId, jobState: row.jobState });

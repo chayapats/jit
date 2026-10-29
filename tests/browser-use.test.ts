@@ -1,3 +1,4 @@
+import { uploadText, sendFiles } from "./fixtures/attachment-run";
 import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -416,4 +417,41 @@ test("the Web and Telegram card renderers show the new kinds without a password 
     expect(dictionaries.en[`approval.kind_${kind}` as keyof typeof dictionaries.en]).toBeTruthy();
     expect(dictionaries.th[`approval.kind_${kind}` as keyof typeof dictionaries.th]).toBeTruthy();
   }
+});
+
+
+for (const confirmed of [false, true]) test(`ATT04 browser_type guards attachment text; existing confirm card marker=${confirmed}`, async () => {
+  const w = await browserWorld(); setLevel(w.f, "workspace");
+  const marker = "PRIVATE_ATTACHMENT_BROWSER_193_do_not_send";
+  const file = await uploadText(w.f, "prefix ".repeat(6000) + marker); sendFiles(w.f, [file.id]);
+  const run = await w.run([{ name: "browser_open", input: { url: cart.url } }, { name: "browser_snapshot", input: {} },
+    { name: "browser_type", input: { ref: "e4", text: marker + (confirmed ? "\n" : "") } }]);
+  expect(w.cdp.actions).toHaveLength(0);
+  const cards = w.f.app.approvalCards(w.f.auth.actor, w.f.project.id);
+  expect(cards).toHaveLength(1); expect(cards[0]!.kind).toBe(confirmed ? "browser_confirm" : "outbound_release");
+  expect(cards[0]!.action.outbound?.attachmentId).toBe(file.id); expect(cards[0]!.telegramEligible).toBe(false);
+  decide(w.f, cards[0]!, "approve"); await w.f.executor.idle();
+  expect(w.cdp.actions.some(input => JSON.stringify(input).includes(marker))).toBe(true);
+});
+
+test("ATT04 browser_open URL is held once and repeated matches send no navigation", async () => {
+  const marker = "PRIVATE_ATTACHMENT_BROWSER_URL_193_keep_inside";
+  const w = await browserWorld(); setLevel(w.f, "workspace");
+  const file = await uploadText(w.f, marker); sendFiles(w.f, [file.id]);
+  let navigations = 0; w.cdp.before = method => { if (method === "Page.navigate") navigations++; };
+  await w.run([{ name: "browser_open", input: { url: `https://x.example/?q=${marker}` } }, { name: "browser_open", input: { url: `https://x.example/?again=${marker}` } }]);
+  expect(navigations).toBe(0);
+  const cards = w.f.app.approvalCards(w.f.auth.actor, w.f.project.id);
+  expect(cards).toHaveLength(1); expect(cards[0]!.action).toMatchObject({ kind: "outbound_release", tool: "browser_open", level: "workspace" });
+});
+
+
+test("ATT04 one outbound_release is shared by browser and computer, and narrowing refuses its channel level", async () => {
+  const marker = "PRIVATE_ATTACHMENT_MULTICHANNEL_193_stay_here";
+  const w = await browserWorld(); setLevel(w.f, "full");
+  const file = await uploadText(w.f, marker); sendFiles(w.f, [file.id]);
+  const result = await w.run([{ name: "browser_open", input: { url: `https://x.example/?q=${marker}` } }, { name: "computer_type", input: { text: marker, intent: "input" } }]);
+  const held = w.f.app.approvalCards(w.f.auth.actor, w.f.project.id); expect(held).toHaveLength(1); expect(held[0]!.outboundBlocks).toBe(2);
+  expect(result.results[1]!.content).toContain("outbound_blocked"); expect(w.desktop).toEqual([]);
+  setLevel(w.f, "read"); rejects(() => decide(w.f, held[0]!, "approve"), "access_level_insufficient");
 });

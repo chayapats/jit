@@ -1,3 +1,4 @@
+import { holdOutboundCall, markOutboundAction, runOutboundGuard } from "../security/run-outbound";
 import { createHash } from "node:crypto";
 import type { ToolDefinition, ToolExecutionResult } from "schway/host";
 import { defaultConfirmWords } from "../config";
@@ -388,7 +389,7 @@ export class BrowserService {
    */
   openRun(input: BrowserRunInput): { definitions: ToolDefinition[]; release(): void } {
     if (!input.handle.profile) return { definitions: [], release: () => {} };
-    const { request } = input, projectId = request.projectId;
+    const { request } = input, projectId = request.projectId, outbound = runOutboundGuard(this.#store, request);
     let live: Live | null = null, released = false;
     const origin = { projectId, topicId: request.topicId, runId: request.runId, jobId: request.fence.jobId, roleId: request.roleId };
     const session = async (): Promise<Live> => {
@@ -413,7 +414,7 @@ export class BrowserService {
       try {
         card = this.#store.transaction(tx => {
           if (!input.current(tx)) throw new AppError("execution_access_changed");
-          return createCard(tx, origin, action, this.#now(), { autoApprove: false });
+          return createCard(tx, origin, markOutboundAction(action, (() => { const match = outbound(password ?? action.text); return match && password !== null ? { ...match, span: "[password field]" } : match; })()), this.#now(), { autoApprove: false });
         });
       } catch (error) { return fail(`Jit refused the browser action: ${codeOf(error, "invalid_effect_action")}.`); }
       if (password !== null) this.#secretInputs.set(card.id, password);
@@ -429,6 +430,14 @@ export class BrowserService {
           let url: URL;
           try { url = new URL(String(args.url ?? "")); } catch { return fail("url must be an absolute http(s) URL."); }
           if (url.protocol !== "http:" && url.protocol !== "https:") return fail("url must be an absolute http(s) URL.");
+          const match = outbound(url.href);
+          if (match) {
+            const info = await this.#info(live);
+            const card = holdOutboundCall(this.#store, request, { tool: "browser_open", subject: url.href, level: "workspace", providerRevision: 0,
+              release: { kind: "browser_open", url: url.href, pageUrl: info.url } }, match, this.#now());
+            if (card) { live.pending.add(card.id); return cardToolResult(card); }
+            return fail("outbound_blocked: the first outbound call is already held for Web approval.");
+          }
           const loaded = live.client.waitFor(event => event.method === "Page.loadEventFired" && event.sessionId === live.sessionId).catch(() => null);
           const navigated = await live.client.send("Page.navigate", { url: url.href }, { sessionId: live.sessionId });
           if (typeof navigated.errorText === "string" && navigated.errorText) return fail(`Navigation failed: ${navigated.errorText.slice(0, 200)}`);
@@ -479,6 +488,15 @@ export class BrowserService {
               formFields: element.fields, text: element.password ? null : text, textDigest: element.password ? createHash("sha256").update(text).digest("hex") : null, reasons },
             element.password ? text : null);
           }
+          const match = outbound(text);
+          if (match) {
+            const info = await this.#info(live);
+            const card = holdOutboundCall(this.#store, request, { tool: "browser_type", subject: element.password ? "[password field]" : text, level: "workspace", providerRevision: 0,
+              release: { kind: "browser_confirm", operation: "type", url: info.url.slice(0, 2048), element: { ref: String(args.ref), tag: element.tag, name: element.name },
+                formFields: element.fields, text: element.password ? null : text, textDigest: element.password ? createHash("sha256").update(text).digest("hex") : null, reasons: ["outbound_text"] } }, element.password ? { ...match, span: "[password field]" } : match, this.#now());
+            if (card) { if (element.password) this.#secretInputs.set(card.id, text); live.pending.add(card.id); return cardToolResult(card); }
+            return fail("outbound_blocked: the first outbound call is already held for Web approval.");
+          }
           await this.#agentInput(projectId, () => this.#type(live, element.backendNodeId, text));
           return { content: JSON.stringify({ typed: String(args.ref), characters: [...text].length }) };
         }),
@@ -514,13 +532,20 @@ export class BrowserService {
    * input was dispatched is `unknown`, never retried.
    */
   readonly perform: EffectPerformer = async (card, signal, allowed): Promise<EffectOutcome> => {
-    const action = card.action as BrowserConfirmAction;
+    const action = (card.action.kind === "outbound_release" ? card.action.release : card.action) as BrowserConfirmAction;
     const live = this.#live.get(card.projectId);
     let sent = false;
     try {
       if (this.#takeover(card.projectId)) return { outcome: "failed", reason: "takeover_active", detail: {} };
       if (!live || live.closed || !live.pending.has(card.id)) return { outcome: "failed", reason: "browser_session_closed", detail: {} };
       const info = await this.#info(live);
+      if (card.action.kind === "outbound_release" && card.action.release?.kind === "browser_open") {
+        const held = card.action.release;
+        if (info.url !== held.pageUrl) return { outcome: "failed", reason: "stale", detail: {} };
+        if (!allowed() || signal.aborted) return { outcome: "failed", reason: "access_changed", detail: {} };
+        await this.#agentInput(card.projectId, async () => { sent = true; await live.client.send("Page.navigate", { url: held.url }, { sessionId: live.sessionId }); });
+        return { outcome: "succeeded", reason: null, detail: { untrustedData: JSON.stringify({ url: held.url, untrusted: true }) } };
+      }
       if (info.url !== action.url) return { outcome: "failed", reason: "stale", detail: {} };
       let element;
       try { element = await this.#describe(live, action.element.ref); } catch { return { outcome: "failed", reason: "stale", detail: {} }; }

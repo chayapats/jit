@@ -1,3 +1,4 @@
+import { AttachmentStorage } from "../src/attachments/storage";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -437,6 +438,8 @@ test("CTX01 attachment hook retains live identities in lineage and fences a late
     record.request.attachments = [{ attachmentId, revision: 1, generation: 1, kind: "text", inline: true }];
     saveReplyRecord(tx, record);
   });
+  const emptyHash = new AttachmentStorage(f.store, readConfig({ JIT_DATABASE: f.store.path }).attachments).publishDerivative(f.project.id, new Uint8Array());
+  f.store.transaction(tx => tx.run("UPDATE attachments SET sha256 = ?, text_sha256 = ?, text_bytes = 0 WHERE id = ?", emptyHash, emptyHash, attachmentId));
   f.queue.pump(); await entered.promise;
   expect(f.port.requests[0]!.attachments).toHaveLength(1);
   expect(f.store.read(tx => tx.get("SELECT 1 FROM jit_reply_sources WHERE reply_id = ? AND source_id = ?", view.id, attachmentId))).not.toBeNull();

@@ -1,3 +1,4 @@
+import { materializeRunAttachments } from "../attachments/run-content";
 import { ScriptedNativeLedger } from "../jobs/scripted-ledger";
 import { AppError } from "../errors";
 import { jobData, validateJobLimits } from "../jobs/queue";
@@ -58,7 +59,7 @@ export function validateRunRequest(request: ApplicationRunRequest, policy: TeamP
     for (const ref of request.attachments) {
       requireId(ref?.attachmentId);
       requireReference({ sourceId: ref.attachmentId, revision: ref.revision, generation: ref.generation });
-      if (!["image", "pdf", "text"].includes(ref.kind) || typeof ref.inline !== "boolean" || ids.has(ref.attachmentId)) throw new AppError("invalid_run_request");
+      if (Object.keys(ref).sort().join(",") !== "attachmentId,generation,inline,kind,revision" || !["image", "pdf", "text"].includes(ref.kind) || typeof ref.inline !== "boolean" || ids.has(ref.attachmentId)) throw new AppError("invalid_run_request");
       ids.add(ref.attachmentId);
     }
   }
@@ -234,15 +235,17 @@ export function specialistFixtureResult(prefix: string, request: ApplicationRunR
  */
 export interface ScriptedTools {
   readonly names: readonly string[];
+  /** Ephemeral framed attachment sources, never persisted in ApplicationRunRequest. */
+  readonly attachments: readonly { id: string; revision: string; content: string }[];
   call(name: string, input: unknown): Promise<ToolExecutionResult>;
 }
-/** A fixture run script; `tools` is the run's admitted registry (empty without an execution grant). */
+/** A fixture run script; `tools` is the run's admitted box and service registry. */
 export type RunScript = (request: ApplicationRunRequest, signal: AbortSignal, observe: (event: ApplicationRunEvent) => void, tools: ScriptedTools) => unknown | Promise<unknown>;
 
-function scriptedTools(opened: RunTools, signal: AbortSignal): ScriptedTools {
+function scriptedTools(opened: RunTools, signal: AbortSignal, attachments: ScriptedTools["attachments"]): ScriptedTools {
   const byName = new Map(opened.definitions.map(definition => [definition.name, definition]));
   return {
-    names: Object.freeze([...byName.keys()]),
+    names: Object.freeze([...byName.keys()]), attachments,
     async call(name, input) {
       const definition = byName.get(name);
       if (!definition) return { content: `Unknown tool: ${name}`, isError: true };
@@ -297,7 +300,7 @@ export class ScriptedRunPort implements ApplicationRunPort {
       try { tools = await openRunTools(this.store, this.execution, snapshot); }
       catch (error) { tools = null; result = fixtureOutcome(runToolsFailure(error)); }
       if (tools) {
-        try { result = normalizeFixtureResult(await this.script(structuredClone(snapshot), signal, observe, scriptedTools(tools, signal)), snapshot, this.outputBytes); }
+        try { result = normalizeFixtureResult(await this.script(structuredClone(snapshot), signal, observe, scriptedTools(tools, signal, materializeRunAttachments(this.store, snapshot, this.execution?.now))), snapshot, this.outputBytes); }
         catch { result = fixtureOutcome("invalid_result"); }
       }
     } finally { tools?.release(); }

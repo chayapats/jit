@@ -1,3 +1,5 @@
+import { writeAttachmentEvent } from "../attachments/records";
+import type { OutboundMatch } from "../security/outbound-guard";
 import { createHash } from "node:crypto";
 import { AppError } from "../errors";
 import { requireId } from "../sources";
@@ -36,8 +38,8 @@ export const inBoxKinds: readonly EffectKind[] = Object.freeze(["mcp_tool", "bro
  * `browser_confirm` card the level browser tools run at (ADR 0039). A `computer_confirm` card needs `full`, like
  * computer-use itself.
  */
-export function cardLevel(kind: EffectKind): "read" | "workspace" | "full" {
-  if (kind === "outbound_release") return "read";
+export function cardLevel(kind: EffectKind, action?: EffectAction): "read" | "workspace" | "full" {
+  if (kind === "outbound_release") return action?.kind === "outbound_release" ? action.level ?? "read" : "read";
   return kind === "mcp_tool" || kind === "browser_confirm" ? "workspace" : "full";
 }
 /** Kinds whose rule scope is a remote or deploy target (the Settings › Approvals form); `mcp_tool` rules are per tool. */
@@ -74,7 +76,7 @@ const text = (value: unknown, max: number, allowEmpty = false): value is string 
 export interface PinnedRemote { name: string; url: string; revision: number }
 /** One pinned ref update: `refs/heads/<branch>: <oldSha> → <newSha>`; `oldSha: null` creates the branch. */
 export interface RefUpdate { ref: string; oldSha: string | null; newSha: string }
-export type EffectAction =
+export type EffectAction = (
   | { kind: "effect.git_push"; remote: PinnedRemote; repository: string; updates: RefUpdate[]; commits: { sha: string; summary: string }[] }
   | { kind: "effect.github_pr_create"; remote: PinnedRemote; github: GitHubTarget; base: string; head: string; title: string; body: string; draft: boolean }
   | { kind: "effect.github_comment"; remote: PinnedRemote; github: GitHubTarget; issueNumber: number; body: string }
@@ -83,18 +85,23 @@ export type EffectAction =
   | McpToolAction
   | BrowserConfirmAction
   | ComputerConfirmAction
-  | OutboundReleaseAction;
-/** One exact held web read; provider revision and context generation prevent later configuration or deletion from changing it. */
+  | OutboundReleaseAction) & { outbound?: OutboundMatch };
+/** One exact held outbound service call; provider revision and context generation prevent later configuration or deletion from changing it. */
 export interface OutboundReleaseAction {
-  kind: "outbound_release"; tool: "web_search" | "web_fetch"; subject: string; matchedSpan: string;
+  kind: "outbound_release"; tool: "web_search" | "web_fetch" | "browser_open" | "browser_type" | "computer_type" | "mcp_tool"; subject: string; matchedSpan: string;
+  level?: "read" | "workspace" | "full";
+  release?: McpToolAction | BrowserConfirmAction | ComputerConfirmAction | BrowserOpenAction;
+  outbound?: OutboundMatch;
   providerRevision: number; contextId: string; contextGeneration: number; ownerGeneration: number;
 }
+/** Exact held navigation, bound to the existing browser session and its current page. */
+export interface BrowserOpenAction { kind: "browser_open"; url: string; pageUrl: string }
 /** The intent a model declares for a computer action. Untrusted: it can only add a card, never remove one (ADR 0039). */
 export type ComputerIntent = "input" | "navigate" | "submit" | "confirm";
 export const computerIntents: readonly ComputerIntent[] = Object.freeze(["input", "navigate", "submit", "confirm"]);
 /** Why Jit put a computer action behind a card. */
-export type ComputerReason = "declared_submit" | "declared_confirm" | "enter_key" | "line_break" | "confirm_every_action";
-export const computerReasonCodes: readonly ComputerReason[] = Object.freeze(["declared_submit", "declared_confirm", "enter_key", "line_break", "confirm_every_action"]);
+export type ComputerReason = "declared_submit" | "declared_confirm" | "enter_key" | "line_break" | "confirm_every_action" | "outbound_text";
+export const computerReasonCodes: readonly ComputerReason[] = Object.freeze(["declared_submit", "declared_confirm", "enter_key", "line_break", "confirm_every_action", "outbound_text"]);
 /** exec.computer/v1 (EXE16): one paused desktop action with its exact input, the declared intent and Jit's reasons. */
 export interface ComputerConfirmAction {
   kind: "computer_confirm"; operation: "click" | "type" | "key";
@@ -104,8 +111,8 @@ export interface ComputerConfirmAction {
 /** app.mcp_servers/v1 (EXE12): one call of a gated MCP tool with its exact arguments, pinned to the server revision. */
 export interface McpToolAction { kind: "mcp_tool"; server: { id: string; name: string; revision: number }; tool: string; arguments: Record<string, unknown> }
 /** Why Jit classified a browser action as a confirm action (ADR 0039). */
-export type ConfirmReason = "submit_control" | "confirm_word" | "line_break";
-export const confirmReasons: readonly ConfirmReason[] = Object.freeze(["submit_control", "confirm_word", "line_break"]);
+export type ConfirmReason = "submit_control" | "confirm_word" | "line_break" | "outbound_text";
+export const confirmReasons: readonly ConfirmReason[] = Object.freeze(["submit_control", "confirm_word", "line_break", "outbound_text"]);
 /**
  * exec.browser/v1 (EXE14): one paused browser confirm action, pinned to the page URL and the element. For text typed
  * into a password field the card holds only `textDigest` (SHA-256), never the value.
@@ -147,12 +154,26 @@ export function validateAction(action: EffectAction): void {
     if (!value || !GITHUB_PART.test(value.owner) || !GITHUB_PART.test(value.repo) || !validApiBase(value.apiBase)) throw invalid();
   };
   if (!action || typeof action !== "object") throw invalid();
+  if (action.outbound && (!Number.isSafeInteger(action.outbound.chars) || action.outbound.chars < 24 || !text(action.outbound.span, 256))) throw invalid();
+  if (action.outbound?.attachmentId) requireId(action.outbound.attachmentId);
   switch (action.kind) {
     case "outbound_release":
-      if ((action.tool !== "web_search" && action.tool !== "web_fetch") || !text(action.subject, 8192) || !text(action.matchedSpan, 256) ||
+      if (!["web_search", "web_fetch", "browser_open", "browser_type", "computer_type", "mcp_tool"].includes(action.tool) || !text(action.subject, maximumMcpArgumentBytes) || !text(action.matchedSpan, 256) ||
           !Number.isSafeInteger(action.providerRevision) || action.providerRevision < 0 || !Number.isSafeInteger(action.contextGeneration) || action.contextGeneration < 1 ||
           !Number.isSafeInteger(action.ownerGeneration) || action.ownerGeneration < 1) throw invalid();
       requireId(action.contextId);
+      if (action.tool === "web_search" || action.tool === "web_fetch") {
+        if (action.level !== undefined && action.level !== "read" || action.release !== undefined) throw invalid();
+      } else {
+        const level = action.tool === "computer_type" ? "full" : "workspace";
+        if (action.level !== level || !action.release) throw invalid();
+        const kind = action.tool === "browser_type" ? "browser_confirm" : action.tool === "computer_type" ? "computer_confirm" : action.tool;
+        if (action.release.kind !== kind) throw invalid();
+        if (action.release.kind === "browser_open") {
+          for (const url of [action.release.url, action.release.pageUrl]) { try { if (!["http:", "https:", "about:"].includes(new URL(url).protocol)) throw invalid(); } catch { throw invalid(); } }
+          if (action.release.url.length > 2048 || action.release.pageUrl.length > 2048) throw invalid();
+        } else validateAction(action.release);
+      }
       return;
     case "effect.git_push": {
       remote(action.remote);
@@ -414,7 +435,7 @@ export function writeAutoApproveRule(tx: AppTransaction, command: SetAutoApprove
  * pushed branch, the GitHub remote, or the deploy target. Rules are evaluated by the service, never by a model.
  */
 export function matchingRule(tx: AppTransaction, projectId: string, action: EffectAction): AutoApproveRule | null {
-  if (!autoApproveKinds.includes(action.kind)) return null;
+  if (action.outbound || !autoApproveKinds.includes(action.kind)) return null;
   const rule = readAutoApproveRule(tx, projectId, action.kind);
   if (!rule?.enabled) return null;
   const scope = rule.scope as Record<string, unknown>;
@@ -442,6 +463,8 @@ export interface ApprovalCard {
   kind: EffectKind; action: EffectAction; digest: string; revision: number; state: CardState; reason: string | null;
   decision: CardDecision | null; receipt: CardReceipt | null; telegramEligible: boolean;
   createdAt: number; expiresAt: number; updatedAt: number; startedAt: number | null;
+  /** Content-free count of all matched calls held by this card. */
+  outboundBlocks?: number;
 }
 
 interface CardRow {
@@ -466,7 +489,7 @@ export function readCard(tx: AppTransaction, projectId: string, cardId: string, 
   requireId(cardId);
   const row = tx.get<CardRow>("SELECT * FROM approval_cards WHERE project_id = ? AND id = ?", projectId, cardId);
   if (!row) throw new AppError("approval_card_not_found", 404);
-  return project(row, now);
+  return { ...project(row, now), outboundBlocks: tx.get<{ count: number }>("SELECT count(*) AS count FROM attachment_events WHERE run_id = ? AND kind = 'outbound_block' AND json_extract(detail_json, '$.cardId') = ?", row.run_id, row.id)!.count };
 }
 /**
  * The project's cards, newest first, at most `limit` (1–100). `state` filters by the state the reader sees: with
@@ -483,7 +506,7 @@ export function readCards(tx: AppTransaction, projectId: string, options: { now?
   else if (options.state && now !== null && options.state === "expired") { filter += "AND (state = 'expired' OR (state = 'pending' AND expires_at <= ?))"; args.push(now); }
   else if (options.state) { filter += "AND state = ?"; args.push(options.state); }
   args = [...args, limit];
-  return tx.all<CardRow>(`SELECT * FROM approval_cards WHERE project_id = ? ${filter} ORDER BY created_at DESC, id DESC LIMIT ?`, ...args).map(row => project(row, now));
+  return tx.all<CardRow>(`SELECT * FROM approval_cards WHERE project_id = ? ${filter} ORDER BY created_at DESC, id DESC LIMIT ?`, ...args).map(row => ({ ...project(row, now), outboundBlocks: tx.get<{ count: number }>("SELECT count(*) AS count FROM attachment_events WHERE run_id = ? AND kind = 'outbound_block' AND json_extract(detail_json, '$.cardId') = ?", row.run_id, row.id)!.count }));
 }
 
 function transition(tx: AppTransaction, card: ApprovalCard, state: CardState, now: number, extra: { reason?: string | null; decision?: CardDecision; receipt?: CardReceipt; startedAt?: number } = {}): ApprovalCard {
@@ -503,7 +526,7 @@ export function expireCards(tx: AppTransaction, projectId: string, now: number):
 
 /** Whether a card may be decided from Telegram: exactly one action (one ref for a push). */
 export function telegramEligible(action: EffectAction): boolean {
-  return action.kind !== "outbound_release" && (action.kind !== "effect.git_push" || action.updates.length === 1);
+  return !action.outbound && action.kind !== "outbound_release" && (action.kind !== "effect.git_push" || action.updates.length === 1);
 }
 
 /** Who and what proposed a card: the run, its job, topic and role. */
@@ -518,14 +541,16 @@ export interface CardOrigin { projectId: string; topicId: string; runId: string;
 export function createCard(tx: AppTransaction, origin: CardOrigin, action: EffectAction, now: number, options: { autoApprove: boolean }): ApprovalCard {
   for (const id of [origin.projectId, origin.topicId, origin.runId, origin.jobId, origin.roleId]) requireId(id);
   validateAction(action);
-  assertExecutionAllowed(tx, origin.projectId, origin.roleId, cardLevel(action.kind));
+  assertExecutionAllowed(tx, origin.projectId, origin.roleId, cardLevel(action.kind, action));
   const id = crypto.randomUUID();
   tx.run(`INSERT INTO approval_cards (id, project_id, topic_id, run_id, job_id, role_id, kind, action_json, digest, revision, state, reason, decision_json, receipt_json,
     telegram_eligible, created_at, expires_at, updated_at, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'pending', NULL, NULL, NULL, ?, ?, ?, ?, NULL)`,
     id, origin.projectId, origin.topicId, origin.runId, origin.jobId, origin.roleId, action.kind, canonicalJson(action), actionDigest(action),
     telegramEligible(action) ? 1 : 0, now, now + cardLifetimeMs, now);
   const card = readCard(tx, origin.projectId, id);
-  const rule = options.autoApprove ? matchingRule(tx, origin.projectId, action) : null;
+  if (action.outbound) writeAttachmentEvent(tx, { projectId: origin.projectId, attachmentId: action.outbound.attachmentId ?? null, kind: "outbound_block", status: "refused", reason: "outbound_blocked",
+    runId: origin.runId, jobId: origin.jobId, detail: { channel: action.kind, count: action.outbound.chars, cardId: id }, createdAt: now });
+  const rule = options.autoApprove && !action.outbound ? matchingRule(tx, origin.projectId, action) : null;
   if (!rule) return card;
   return transition(tx, card, "executing", now, { reason: null, decision: { decision: "approve", channel: "auto-rule", ruleRevision: rule.revision, decidedAt: now } });
 }
@@ -549,7 +574,7 @@ export function decideCard(tx: AppTransaction, command: DecideCardCommand, chann
   const decision: CardDecision = { decision: command.payload.decision, channel, ruleRevision: null, decidedAt: now };
   if (command.payload.decision === "deny") return transition(tx, card, "denied", now, { reason: "denied", decision });
   if (!options.executor) throw new AppError("effects_not_configured", 503);
-  assertExecutionAllowed(tx, card.projectId, card.roleId, cardLevel(card.kind));
+  assertExecutionAllowed(tx, card.projectId, card.roleId, cardLevel(card.kind, card.action));
   return transition(tx, card, "executing", now, { reason: null, decision });
 }
 

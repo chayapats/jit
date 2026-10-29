@@ -1,3 +1,4 @@
+import { uploadText, sendFiles } from "./fixtures/attachment-run";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -436,4 +437,19 @@ test("review fix: without a vault, credential effects still fail cleanly while i
   await settle(w.f);
   expect(w.f.app.approvalCard(w.f.auth.actor, w.f.project.id, card.id)).toMatchObject({ state: "failed", reason: "connection_vault_not_configured" });
   expect(w.f.fetches).toEqual([]);
+});
+
+
+for (const readonly of [true, false]) test(`ATT04 nested MCP values refuse full attachment text; readOnly=${readonly} uses one marked card`, async () => {
+  const w = await world(); setLevel(w.f, "workspace");
+  w.setTools([readonly ? readOnly("note") : writes("note")]); await installed(w);
+  if (!readonly) setRule(w.f, "mcp_tool", { tools: [{ server: "notes", tool: "note" }] });
+  const marker = "PRIVATE_ATTACHMENT_MCP_193_never_send_this";
+  const file = await uploadText(w.f, "prefix ".repeat(6000) + marker); sendFiles(w.f, [file.id]);
+  await w.run([{ name: exposedToolName("notes", "note"), input: { nested: [{ value: marker }] } }]);
+  expect(w.calls()).toHaveLength(0);
+  const cards = w.f.app.approvalCards(w.f.auth.actor, w.f.project.id);
+  expect(cards).toHaveLength(1); expect(cards[0]!.kind).toBe(readonly ? "outbound_release" : "mcp_tool");
+  expect(cards[0]!.action.outbound?.attachmentId).toBe(file.id); expect(cards[0]!.state).toBe("pending");
+  decide(w.f, cards[0]!, "approve"); await w.f.executor.idle(); expect(w.calls()).toHaveLength(1);
 });

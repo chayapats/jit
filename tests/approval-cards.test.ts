@@ -1,3 +1,5 @@
+import { uploadText, sendFiles } from "./fixtures/attachment-run";
+import { retireAttachments } from "../src/attachments/lifecycle";
 import { afterEach, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
 import { dirname } from "node:path";
@@ -298,4 +300,20 @@ test("card lists filter by the state the owner sees, and a late decision records
   expect(f.store.read(tx => tx.get<{ state: string; reason: string }>("SELECT state, reason FROM approval_cards WHERE id = ?", cardId))).toEqual({ state: "expired", reason: "expired" });
   expect(f.app.approvalCards(f.auth.actor, f.project.id, { state: "expired" }).map(card => card.id)).toEqual([cardId]);
   expect(f.fetches).toEqual([]);
+});
+
+
+test("ATT04 a matched effect uses its existing card, bypasses no approval rule and deletion scrubs its payload", async () => {
+  const marker = "PRIVATE_ATTACHMENT_EFFECT_193_never_send_this";
+  const f = await effectFixture({ script: async (request, _s, _o, tools) => {
+    await tools.call("effect_github_comment", { remote: "origin", issueNumber: 1, body: marker });
+    return answer(request, "Waiting for the owner.");
+  } }); fixtures.push(f); setLevel(f, "full");
+  setRemote(f, connection(f, "github_token", "fixture-credential-without-live-use")); setRule(f, "effect.github_comment", { remote: "origin" });
+  const file = await uploadText(f, marker); sendFiles(f, [file.id]); await settle(f);
+  const held = cards(f); expect(held).toHaveLength(1); expect(held[0]!.kind).toBe("effect.github_comment");
+  expect(held[0]!.state).toBe("pending"); expect(held[0]!.action.outbound?.attachmentId).toBe(file.id); expect(f.fetches).toEqual([]);
+  f.store.transaction(tx => retireAttachments(tx, f.project.id, [file.id], "delete", f.clock.now));
+  expect(JSON.stringify(f.app.approvalCard(f.auth.actor, f.project.id, held[0]!.id))).not.toContain(marker);
+  expect(f.app.approvalCard(f.auth.actor, f.project.id, held[0]!.id).reason).toBe("source_retired");
 });

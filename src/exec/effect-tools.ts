@@ -1,3 +1,4 @@
+import { markOutboundAction, runOutboundGuard } from "../security/run-outbound";
 import type { ExecutionBackend, ToolDefinition, ToolExecutionResult } from "schway/host";
 import { AppError } from "../errors";
 import type { AppTransaction, TransactionStore } from "../store";
@@ -41,6 +42,7 @@ export function cardToolResult(card: ApprovalCard): ToolExecutionResult {
 export function effectToolDefinitions(store: TransactionStore, request: ApplicationRunRequest, backend: ExecutionBackend, runner: EffectRunner, now: () => number,
   current: (tx: AppTransaction) => boolean): ToolDefinition[] {
   const origin = { projectId: request.projectId, topicId: request.topicId, runId: request.runId, jobId: request.fence.jobId, roleId: request.roleId };
+  const outbound = runOutboundGuard(store, request);
   const propose = (action: EffectAction): ToolExecutionResult => {
     let card: ApprovalCard;
     try {
@@ -48,7 +50,7 @@ export function effectToolDefinitions(store: TransactionStore, request: Applicat
       // fenced while it was reading SHAs can neither create a card nor start an auto-approved effect.
       card = store.transaction(tx => {
         if (!current(tx)) throw new AppError("execution_access_changed");
-        return createCard(tx, origin, action, now(), { autoApprove: true });
+        return createCard(tx, origin, markOutboundAction(action, outbound(action)), now(), { autoApprove: true });
       });
     }
     catch (error) { return fail(`Jit refused the effect: ${error instanceof AppError ? error.code : "invalid_effect_action"}.`); }

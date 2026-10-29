@@ -1,4 +1,4 @@
-import { containsRegisteredSecret, redactRegisteredSecrets } from "./secret-fingerprints";
+import { containsRegisteredSecret, redactRegisteredSecrets, registeredSecretSpans } from "./secret-fingerprints";
 
 /**
  * Shared credential detector for untrusted or outbound text (PR evidence, model output, outbox
@@ -73,4 +73,21 @@ export function redactCredentials(text: string, replacement = "[credential-redac
     pattern.lastIndex = 0;
   }
   return out;
+}
+
+/** Redacts a UTF-16 slice using matches from the entire document, so a chunk boundary cannot expose part of a credential. */
+export function redactCredentialSlice(text: string, start: number, end: number): string {
+  const found: [number, number][] = registeredSecretSpans(text).map(([a, b]) => [a, b]);
+  for (const { pattern } of CREDENTIAL_PATTERNS) {
+    pattern.lastIndex = 0;
+    for (const match of text.matchAll(pattern)) found.push([match.index, match.index + match[0].length]);
+    pattern.lastIndex = 0;
+  }
+  let out = "", at = start;
+  for (const [a, b] of found.sort((a, b) => a[0] - b[0] || b[1] - a[1])) {
+    if (b <= at || a >= end) continue;
+    out += text.slice(at, Math.max(at, a)) + (a >= at || at === start ? "[credential-redacted]" : "");
+    at = Math.min(end, b);
+  }
+  return redactRegisteredSecrets(redactCredentials(out + text.slice(at, end)));
 }

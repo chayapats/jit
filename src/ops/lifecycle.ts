@@ -1,3 +1,4 @@
+import { outboundReleasePerformer } from "../security/run-outbound";
 import { WebTools, assertWebToolsCapability } from "../web-tools";
 import { PodmanAttachmentSanitizer } from "../attachments/sanitizer-runtime";
 import { attachmentRequestBytes, attachmentLimitsForDirectories } from "../attachments/limits";
@@ -408,7 +409,7 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
     // credential effects fail `connection_vault_not_configured` cleanly instead of every card being undecidable.
     const web = new WebTools(store, { searxngEnabled: config.searxngEnabled, ...(connections ? { vault: connections } : {}), now, outputBytes: config.jobs.outputBytes });
     const effects = new EffectExecutor(store, { vault: connections, boxes, mirrorRoot: config.execution.directory, now,
-      performers: { outbound_release: web.perform, ...(mcp ? { mcp_tool: mcp.perform } : {}), ...(browser ? { browser_confirm: browser.perform } : {}),
+      performers: { outbound_release: outboundReleasePerformer(store, { web: web.perform, ...(browser ? { browser: browser.perform } : {}), ...(computer ? { computer: computer.perform } : {}), ...(mcp ? { mcp: mcp.perform } : {}) }), ...(mcp ? { mcp_tool: mcp.perform } : {}), ...(browser ? { browser_confirm: browser.perform } : {}),
         ...(computer ? { computer_confirm: computer.perform } : {}) } });
     const compose = { now, web, prCacheRoot: input.prCacheRoot ?? (service ? resolve(service.stateDirectory, "pr-cache") : ".local/pr-cache"), ...(boxes ? { boxes } : {}),
       ...(effects ? { effects } : {}), ...(mcp ? { mcp } : {}), ...(browser ? { browser } : {}), ...(computer ? { computer } : {}) };
