@@ -12,7 +12,7 @@ import type { ResetBoxCommand } from "../src/exec/box-commands";
 import { BoxManager } from "../src/exec/box-manager";
 import { boxEnvironmentNames, boxProxyNames } from "../src/exec/box-runtime";
 import { FakeBoxRuntime } from "../src/exec/fake-box-runtime";
-import { PodmanBoxRuntime, type CommandRunner } from "../src/exec/podman-runtime";
+import { boxLayoutVersion, PodmanBoxRuntime, type CommandRunner } from "../src/exec/podman-runtime";
 import { startRegistryProxy } from "../src/exec/registry-proxy";
 import { dictionaries } from "../src/i18n";
 import { JobQueue } from "../src/jobs/queue";
@@ -123,7 +123,8 @@ test("create applies every hardening flag; workspace uses the internal network a
   await f.runtime.ensure(projectB, "full");
   const full = f.podman.calls.filter(call => call[0] === "create")[1]!;
   expect(full.some(arg => arg.startsWith("--network"))).toBe(false);
-  expect(full.some(arg => /PROXY/i.test(arg))).toBe(false);
+  expect(full.filter((_, i) => full[i - 1] === "--env").some(arg => /PROXY/i.test(arg))).toBe(false);
+  expect(full).toContain("--http-proxy=false");
   expect(full).toContain("--cap-drop=ALL");
   // The runner is the only command Jit ever execs.
   await f.runtime.exec(handle, { input: new TextEncoder().encode("{}"), timeoutMs: 1000 });
@@ -185,13 +186,14 @@ test("#163 a proxy port names its URL before the box exists and is ensured only 
   expect((await failing.status(projectA)).state).toBe("absent");
 });
 
-test("#163 a box from an older container layout (no layout label) is recreated on its next open", async () => {
+for (const oldLayout of [null, "2"]) test(`OPS09 recreates a box with the old ${oldLayout ?? "missing"} layout on its next open`, async () => {
   const f = podmanFixture();
   await f.runtime.ensure(projectB, "full");
   const box = f.podman.containers.get(`jit-box-${projectB}`)!;
-  const at = box.args.indexOf("jit.box.layout=2");
+  const at = box.args.indexOf(`jit.box.layout=${boxLayoutVersion}`);
   expect(at).toBeGreaterThan(0);
-  box.args.splice(at - 1, 2);
+  if (oldLayout) box.args[at] = `jit.box.layout=${oldLayout}`;
+  else box.args.splice(at - 1, 2);
   await f.runtime.ensure(projectB, "full");
   expect(f.podman.calls.filter(call => call[0] === "rm")).toHaveLength(1);
   expect(f.podman.calls.filter(call => call[0] === "create")).toHaveLength(2);

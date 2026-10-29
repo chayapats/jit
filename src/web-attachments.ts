@@ -1,8 +1,11 @@
+import type { ReadinessView } from "./exec/readiness-cache";
 import type { AttachmentView } from "./attachments/records";
 import { tr, trMaybe, type MessageKey } from "./i18n";
 import { assetUrl } from "./web-assets";
 import { escape } from "./web-layout";
 import { fillText } from "./web-proposal-card";
+import type { PodmanReadiness } from "./exec/podman-client";
+import { podmanNotice } from "./web-podman";
 
 /**
  * web.attachments/v1 presentation for app.attachments/v1 (ATT03, ADR 0040): the composer's attach control and the
@@ -13,7 +16,7 @@ import { fillText } from "./web-proposal-card";
  */
 
 /** What the topic composer offers while `JIT_ATTACHMENTS` is on. */
-export interface AttachmentComposerView { messageFiles: number; fileBytes: number; sanitizer: boolean; backupUsage?: { bytes: number; bound: number; notice: boolean }; pageSize: number }
+export interface AttachmentComposerView { messageFiles: number; fileBytes: number; sanitizer: boolean; runtimeStatus?: ReadinessView<PodmanReadiness>; backupUsage?: { bytes: number; bound: number; notice: boolean }; pageSize: number }
 
 const paths = {
   clip: '<path d="m20.5 11.5-8.2 8.2a5 5 0 0 1-7-7l8.6-8.6a3.3 3.3 0 0 1 4.7 4.7l-8.6 8.6a1.7 1.7 0 0 1-2.4-2.4l7.9-7.9"/>',
@@ -68,7 +71,7 @@ export function attachmentComposerControl(view: AttachmentComposerView): string 
 
 /** The composer note's attachment sentences: the provider notice always, and why PDF and WebP are off without a sanitizer. */
 export function attachmentComposerNote(view: AttachmentComposerView): string {
-  return `<span class="attach-note"> · ${tr("attachments.provider_notice")}${view.sanitizer ? "" : ` · ${tr("attachments.pdf_needs_sanitizer")}`}${attachmentBackupNotice(view.backupUsage)}</span>`;
+  return `<span class="attach-note"> · ${tr("attachments.provider_notice")}${view.sanitizer ? "" : ` · ${tr("attachments.pdf_needs_sanitizer")} ${podmanNotice(view.runtimeStatus)}`}${attachmentBackupNotice(view.backupUsage)}</span>`;
 }
 
 /** Client strings and icons for `attachments.js`, then its module tag. Hidden, static, server-localised text only. */

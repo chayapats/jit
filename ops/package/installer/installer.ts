@@ -10,6 +10,8 @@ import { TransactionStore } from "../../../src/store";
 import { openReadOnlyStore } from "../../../src/ops/readonly-store";
 import { issueOwnerSetupLink } from "../../../src/ops/owner-setup";
 import { builtInModels } from "../../../src/team/route-options";
+import { en } from "../../../src/i18n/en";
+import { th } from "../../../src/i18n/th";
 import pins from "./pinned-images.json";
 
 const MiB = 1024 ** 2, GiB = 1024 ** 3;
@@ -145,7 +147,7 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
     ...settings, cwd: settings.cwd ?? "/", env: settings.env ?? { PATH: "/usr/sbin:/usr/bin:/sbin:/bin" },
   });
   const call = async (argv: string[], timeoutMs = 120_000) => {
-    if (dry) return { exitCode: options.simulation?.failStep === "optional-images" && argv.includes("pull") ? 1 : 0, stdout: "", timedOut: false };
+    if (dry) return { exitCode: (options.simulation?.failStep === "optional-images" && argv.includes("pull")) || (options.simulation?.failStep === "optional-podman-socket" && argv.includes("podman.socket")) ? 1 : 0, stdout: "", timedOut: false };
     try { return await run(argv, { timeoutMs }); }
     catch { return { exitCode: 127, stdout: "", timedOut: false }; }
   };
@@ -256,6 +258,11 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
     await must(["systemctl", "start", `user@${uid}.service`]);
     await must(asUser(["systemctl", "--user", "daemon-reload"]));
     await must(asUser(["systemctl", "--user", "enable", "--now", "gnome-keyring-daemon.service"]));
+    step("optional-podman-socket", "enable the jit identity's user podman.socket and restart jit.service (docs/runbooks/execution-box.md)");
+    if (!available || (await call(asUser(["systemctl", "--user", "enable", "--now", "podman.socket"]))).exitCode !== 0) {
+      const key = available ? "podman.reason_socket" : "podman.reason_podman";
+      options.out?.(`Chat-only: ${en[key]} / ${th[key]}${available ? " As jit: systemctl --user enable --now podman.socket; then restart jit.service." : ""}`);
+    }
     if (!dry) {
       const locked = await must(asUser(["busctl", "--user", "get-property", "org.freedesktop.secrets", "/org/freedesktop/secrets/collection/login", "org.freedesktop.Secret.Collection", "Locked"]));
       if (locked.trim() !== "b false") throw new InstallerFailure(currentStep, next);
@@ -326,13 +333,13 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
     // These two steps are optional by contract, including malformed/future image lists and missing Podman.
     step("optional-images", "add published digest-pinned images to the release image list");
     for (const image of configuredImages) {
-      if (!available || (await call(asUser(["podman", "pull", image.ref]), 120_000)).exitCode !== 0) options.out?.(`Optional image unavailable: ${image.feature}`);
+      if (!available || (await call(asUser(["podman", "--remote", "--url", `unix:///run/user/${uid}/podman/podman.sock`, "pull", image.ref]), 120_000)).exitCode !== 0) options.out?.(`Optional image unavailable: ${image.feature}`);
     }
     if (!available) options.out?.("Container features unavailable: Podman is absent. Chat-only installation is ready.");
     else if (!configuredImages.length && !desired.execution) options.out?.("Container features unavailable: no published image pins in this release (WEB02/ATT02 follow-ups).");
     step("optional-box-doctor", "configure an execution image and re-run box-doctor when container features are needed");
     if (!dry) {
-      const env = Object.fromEntries(serviceEnvironment(desired));
+      const env = Object.fromEntries([...serviceEnvironment(desired), ["JIT_PODMAN_MODE", "remote"], ["JIT_SERVICE_USER", desired.serviceUser]]);
       const result = await call(asUser(["env", ...Object.entries(env).map(([key, value]) => `${key}=${value}`), options.bunPath, join(desired.executablePath, "src/ops-cli.ts"), "box-doctor"]));
       if (result.exitCode !== 0) options.out?.("Optional box-doctor: container features unavailable; core setup is ready.");
     }

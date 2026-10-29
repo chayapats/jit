@@ -413,20 +413,18 @@ export function serviceSessionBusPath(uid: number): string {
 }
 
 /**
- * Unit lines that let a `schway` run port reach the service identity's own
- * Secret Service: `ProtectHome=true` hides `/run/user`, so the unit instead
- * empties the home trees (`ProtectHome=tmpfs`), binds back only that
- * identity's session bus socket, names it in the environment and orders
- * after the identity's lingering user manager (which unlocks its keyring at
- * session start). Scripted mode keeps `ProtectHome=true` and no bus.
+ * Exposes only the identity's rootless Podman socket directory through otherwise empty home trees.
+ * Every installed unit selects the remote client and orders after its lingering user manager.
+ * Schway additionally receives its existing Secret Service session-bus bind; scripted mode does not.
  */
 function sessionBusUnit(parsed: ServiceConfig, uid: number | undefined): { ordering: string; protection: string; environment: [string, string][] } {
-  if (parsed.runPort !== "schway" || uid === undefined) return { ordering: "", protection: "ProtectHome=true", environment: [] };
+  if (uid === undefined) return { ordering: "", protection: "ProtectHome=true", environment: [] };
   const bus = serviceSessionBusPath(uid);
   return {
     ordering: `After=user@${uid}.service\nWants=user@${uid}.service\n`,
-    protection: `ProtectHome=tmpfs\nBindPaths=${bus}`,
-    environment: [["XDG_RUNTIME_DIR", `/run/user/${uid}`], ["DBUS_SESSION_BUS_ADDRESS", `unix:path=${bus}`]],
+    protection: `ProtectHome=tmpfs\nBindPaths=-/run/user/${uid}/podman${parsed.runPort === "schway" ? `\nBindPaths=${bus}` : ""}`,
+    environment: [["JIT_PODMAN_MODE", "remote"], ["JIT_SERVICE_USER", parsed.serviceUser], ["XDG_RUNTIME_DIR", `/run/user/${uid}`],
+      ...(parsed.runPort === "schway" ? [["DBUS_SESSION_BUS_ADDRESS", `unix:path=${bus}`] as [string, string]] : [])],
   };
 }
 
@@ -434,16 +432,15 @@ function sessionBusUnit(parsed: ServiceConfig, uid: number | undefined): { order
  * Renders the supervised unit from the checked-in template. Rejects wildcard
  * binds again at render time; the unit carries opaque secret references only
  * as file paths, never values. `appDir` defaults to the active-release path so
- * an upgrade switches releases without rewriting the unit. Install resolves
- * the identity's numeric UID and primary GID; a `schway` run port needs the
- * UID for the session bus lines (`sessionBusUnit`). Without a resolved UID (a
- * plan already blocked on identity) the scripted hardening is rendered.
+ * code-only activation can switch releases. Install resolves the identity's UID, primary GID and home.
+ * Only the user API directory and existing Schway bus are bound back; default container storage
+ * stays inaccessible. An unresolved-UID plan is blocked and receives no socket exception or remote environment.
  */
-export async function renderServiceUnit(config: ServiceConfig, exec: { bunPath: string; appDir?: string; configPath?: string; gid?: number; uid?: number }): Promise<string> {
+export async function renderServiceUnit(config: ServiceConfig, exec: { bunPath: string; appDir?: string; configPath?: string; gid?: number; uid?: number; home?: string }): Promise<string> {
   const parsed = parseServiceConfig(config);
   const appDir = exec?.appDir ?? parsed.executablePath;
   const configPath = exec?.configPath ?? join(parsed.stateDirectory, "service-config.json");
-  for (const path of [exec?.bunPath, appDir, configPath]) absolutePath(path);
+  for (const path of [exec?.bunPath, appDir, configPath, exec.home ?? "/var/lib/jit"]) absolutePath(path);
   for (const id of [exec.gid, exec.uid]) {
     if (id !== undefined && (!Number.isSafeInteger(id) || id < 1 || id > 4294967294)) throw new Error("invalid_service_config");
   }
@@ -454,13 +451,14 @@ export async function renderServiceUnit(config: ServiceConfig, exec: { bunPath: 
     .replaceAll("{{UNIT_ORDERING}}", bus.ordering)
     .replaceAll("{{HOME_PROTECTION}}", bus.protection)
     .replaceAll("{{SERVICE_USER}}", parsed.serviceUser)
+    .replaceAll("{{SERVICE_HOME}}", exec.home ?? "/var/lib/jit")
     .replaceAll("{{SERVICE_GROUP}}", exec.gid !== undefined ? String(exec.gid) : parsed.serviceUser)
     .replaceAll("{{BUN_PATH}}", exec.bunPath)
     .replaceAll("{{APP_DIR}}", appDir)
     .replaceAll("{{CONFIG_PATH}}", configPath)
     .replaceAll("{{WORKING_DIR}}", parsed.workingDirectory)
     .replaceAll("{{ENVIRONMENT}}", [...serviceEnvironment(parsed), ...bus.environment].map(([k, v]) => `Environment=${k}=${v}`).join("\n"))
-    .replaceAll("{{WRITABLE_PATHS}}", serviceWritablePaths(parsed).join(" "))
+    .replaceAll("{{WRITABLE_PATHS}}", [...serviceWritablePaths(parsed), ...(exec.uid === undefined ? [] : [`-/run/user/${exec.uid}/podman`])].join(" "))
     .replaceAll("{{MEMORY_MAX}}", memoryMax(parsed.resources.memoryMaxBytes))
     .replaceAll("{{STOP_TIMEOUT}}", String(stopSeconds + 15))
     .replaceAll("{{LOG_NAMESPACE}}", serviceLogNamespace)

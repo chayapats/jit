@@ -8,7 +8,7 @@ import { PodmanAttachmentSanitizer } from "../src/attachments/sanitizer-runtime"
 // Owner-run only on a disposable rootless Linux host; deterministic CI never builds or invokes a container.
 const live = process.env.JIT_LIVE_PODMAN === "1" && !!process.env.JIT_LIVE_BOX_IMAGE;
 (live ? test : test.skip)("opt-in real base image strips fixture metadata and produces a model derivative", async () => {
-  const directory = mkdtempSync(join(tmpdir(), "jit-live-sanitize-"));
+  const directory = mkdtempSync(join(process.env.JIT_LIVE_CONTAINER_ROOT ?? tmpdir(), "jit-live-sanitize-"));
   const input = join(directory, "in"), output = join(directory, "out");
   mkdirSync(input, { mode: 0o700 }); mkdirSync(output, { mode: 0o700 });
   const runtime = new PodmanAttachmentSanitizer(process.env.JIT_LIVE_BOX_IMAGE!, directory, readConfig({}).attachments);

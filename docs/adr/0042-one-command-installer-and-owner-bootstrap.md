@@ -104,3 +104,35 @@ bootstrap responses. The setup token is distinct from owner session authority;
 only completed owner creation followed by normal login issues a session.
 No password is entered/stored in the terminal. SIGN01 owns the later account
 login. VM/Pi acceptance remains opt-in owner evidence and is not run by this slice.
+
+## 2026-10-29 — OPS09 (#224): user Podman socket and activation entry
+
+The confirmed hardened-unit decision is retained. Installer, `service install`
+and `service upgrade` idempotently enable linger, start the service identity's
+user manager and enable/start its user `podman.socket`. They never run rootful
+containers. Optional socket/executable failure leaves chat available and reports
+the distinct cause and repair command. Upgrade re-renders/reloads the descriptor
+for existing installs; compatible health rollback restores the previous descriptor.
+
+Every resolved-UID unit sets `JIT_PODMAN_MODE=remote`, `JIT_SERVICE_USER` and
+`XDG_RUNTIME_DIR`, binds only `/run/user/<uid>/podman` back into
+`ProtectHome=tmpfs` and grants write access only to that directory in addition
+to the existing managed paths. The optional bind allows chat on hosts without
+Podman. Default container storage below the resolved service home is
+inaccessible; no storage or setuid-helper exception is granted. Schway still
+receives only its existing session-bus bind. The user socket must exist before
+the service starts; after repairing an absent socket directory, restart Jit to
+rebind it. Custom Podman graphroots must be excluded by the operator's unit
+policy too, outside all Jit managed/writable paths.
+
+Keep client configuration readable under the existing read-only filesystem:
+Podman loads `containers.conf` before connecting to the API, and an inaccessible
+config directory can fail that load. Only storage is hidden; no writable
+configuration exception is added. See the [Podman config loader](https://github.com/containers/common/blob/v0.57.3/pkg/config/new.go).
+
+The root CLI now accepts the sole managed invocation alias
+`/opt/jit/current/src/main.ts`. It checks the protected parent and root-owned
+link before reading its direct, fully protected target, and requires that
+target to equal the running release. Arbitrary aliases, symlinked targets,
+mutable/foreign ancestors, dependencies and configuration remain refused.
+The original invocation still comes from `/proc/self/cmdline` before imports.

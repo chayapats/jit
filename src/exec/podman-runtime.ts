@@ -1,9 +1,11 @@
+import { readinessCommands } from "./readiness-cache";
 import { createHash } from "node:crypto";
 import { lstatSync, mkdirSync, realpathSync } from "node:fs";
 import type { ExecutionConfig } from "../config";
 import { AppError } from "../errors";
 import { requireId } from "../sources";
 import { wipeBoxData } from "./box-data";
+import { podmanClient, podmanReadiness, type PodmanClient, type PodmanReadiness } from "./podman-client";
 import {
   boxDirectories, boxEnvironment, boxInternalNetwork, boxName, boxRunnerPath, boxTemporaryDirectory, boxUserId, boxWorkspaceRoot, expectedBoxMounts, pinnedImagePattern, requireBoxMode,
   sameMounts, sidecarInstallRoot, sidecarName, validateStreamRequest,
@@ -15,22 +17,20 @@ import {
 export interface CommandRequest { readonly stdin?: Uint8Array; readonly signal?: AbortSignal; readonly timeoutMs: number }
 export interface CommandResult { exitCode: number; stdout: Uint8Array; stderr: Uint8Array }
 /** Runs `podman <argv…>`. Production uses {@link podmanCommandRunner}; tests inject a scripted runner. */
-export type CommandRunner = (argv: readonly string[], request: CommandRequest) => Promise<CommandResult>;
-
-/** Client variables rootless Podman needs; the rest of the service environment never reaches the `podman` process. */
-const podmanClientEnvironment = ["PATH", "HOME", "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "DBUS_SESSION_BUS_ADDRESS", "LANG"];
+export type CommandRunner = ((argv: readonly string[], request: CommandRequest) => Promise<CommandResult>) & { readonly client?: PodmanClient };
 
 /**
- * Runs the `podman` CLI as the service user: rootless, no socket and no daemon API. The child environment is the
- * small client allowlist above, so no `JIT_*` variable or credential path reaches Podman (or, through it, a box).
+ * Runs the explicitly selected local or Unix-socket remote client with a small environment allowlist.
+ * No service secret or JIT variable reaches the client or a container; a remote failure never retries locally.
  */
 export function podmanCommandRunner(serviceEnv: Record<string, string | undefined> = process.env, binary = "podman"): CommandRunner {
-  const env = Object.fromEntries(podmanClientEnvironment.flatMap(name => serviceEnv[name] === undefined ? [] : [[name, serviceEnv[name]!]]));
-  return async (argv, request) => {
-    const proc = Bun.spawn([binary, ...argv], { env, stdin: request.stdin ? "pipe" : "ignore", stdout: "pipe", stderr: "pipe" });
+  const client = podmanClient(serviceEnv);
+  const run: CommandRunner = async (argv, request) => {
+    const proc = Bun.spawn([binary, ...client.argv, ...argv], { env: client.env, stdin: request.stdin ? "pipe" : "ignore", stdout: "pipe", stderr: "pipe" });
     const kill = () => { try { proc.kill("SIGKILL"); } catch { /* Already exited. */ } };
     const timer = setTimeout(kill, request.timeoutMs);
     request.signal?.addEventListener("abort", kill, { once: true });
+    if (request.signal?.aborted) kill();
     try {
       if (request.stdin && proc.stdin) { proc.stdin.write(request.stdin); await proc.stdin.end(); }
       const [stdout, stderr, exitCode] = await Promise.all([new Response(proc.stdout).bytes(), new Response(proc.stderr).bytes(), proc.exited]);
@@ -40,6 +40,7 @@ export function podmanCommandRunner(serviceEnv: Record<string, string | undefine
       request.signal?.removeEventListener("abort", kill);
     }
   };
+  return Object.assign(run, { client });
 }
 
 /**
@@ -48,10 +49,10 @@ export function podmanCommandRunner(serviceEnv: Record<string, string | undefine
  */
 export type StreamRunner = (argv: readonly string[], extraEnv: Readonly<Record<string, string>>) => BoxStream;
 
-/** The production {@link StreamRunner}: `Bun.spawn` of the `podman` client with the client allowlist environment. */
-export function podmanStreamRunner(serviceEnv: Record<string, string | undefined> = process.env, binary = "podman"): StreamRunner {
-  const base = Object.fromEntries(podmanClientEnvironment.flatMap(name => serviceEnv[name] === undefined ? [] : [[name, serviceEnv[name]!]]));
-  return (argv, extraEnv) => processStream(Bun.spawn([binary, ...argv], { env: { ...base, ...extraEnv }, stdin: "pipe", stdout: "pipe", stderr: "ignore" }));
+/** The production stream client with the environment allowlist. Only the service-owned proxy opts into bounded host-only refusal logs. */
+export function podmanStreamRunner(serviceEnv: Record<string, string | undefined> = process.env, binary = "podman", stderr: "ignore" | "inherit" = "ignore"): StreamRunner {
+  const client = podmanClient(serviceEnv);
+  return (argv, extraEnv) => processStream(Bun.spawn([binary, ...client.argv, ...argv], { env: { ...client.env, ...extraEnv }, stdin: "pipe", stdout: "pipe", stderr }));
 }
 
 /** Wraps a spawned process with stdin/stdout pipes as a {@link BoxStream} (also used by local test fixtures). */
@@ -121,20 +122,25 @@ export class PodmanBoxRuntime implements BoxRuntime, BoxStreams {
   readonly #config: ExecutionConfig;
   readonly #directory: string;
   readonly #run: CommandRunner;
+  readonly #probeRun: CommandRunner;
   readonly #registryProxy: ((gateway: string) => Promise<string>) | RegistryProxyPort | undefined;
   readonly #uid: number | undefined;
   readonly #streams: StreamRunner;
-  #proxyUrl: Promise<{ url: string; gateway: string }> | null = null;
+  #proxyGateway: Promise<string> | null = null;
 
   constructor(options: PodmanBoxRuntimeOptions) {
     if (!options.config.directory || !options.config.images) throw new AppError("box_not_configured", 503);
     this.#config = options.config;
     this.#directory = options.config.directory;
-    this.#run = options.run ?? podmanCommandRunner();
+    this.#probeRun = options.run ?? podmanCommandRunner();
+    this.#run = readinessCommands(this, this.#probeRun);
     this.#registryProxy = options.registryProxy;
     this.#uid = options.uid ?? process.getuid?.();
     this.#streams = options.streams ?? podmanStreamRunner();
   }
+
+  /** Read-only backend readiness; distinguishes the executable from the API socket and isolation prerequisites. */
+  readiness(): Promise<PodmanReadiness> { return podmanReadiness(this.#probeRun); }
 
   async ensure(projectId: string, mode: BoxMode, options: BoxEnsureOptions = {}): Promise<BoxHandle> {
     requireBoxMode(mode);
@@ -332,18 +338,19 @@ export class PodmanBoxRuntime implements BoxRuntime, BoxStreams {
   }
 
   /** The internal network (created once, `--internal`: no default route) and the proxy URL on its gateway. */
-  #proxy(): Promise<{ url: string; gateway: string }> {
-    return this.#proxyUrl ??= (async () => {
+  async #proxy(): Promise<{ url: string; gateway: string }> {
+    const gateway = await (this.#proxyGateway ??= (async () => {
       const exists = await this.#run(["network", "exists", boxInternalNetwork], { timeoutMs: commandMs });
       if (exists.exitCode !== 0) await this.#podman(["network", "create", "--internal", "--label", "jit.box=1", boxInternalNetwork]);
       const networks = parseJson(await this.#podman(["network", "inspect", boxInternalNetwork])) as { internal?: boolean; subnets?: { gateway?: string }[] }[];
       const network = Array.isArray(networks) ? networks[0] : undefined;
       const gateway = network?.subnets?.[0]?.gateway;
       if (network?.internal !== true || !gateway || !/^[0-9a-f.:]+$/.test(gateway)) throw new AppError("box_network_unavailable", 503);
-      const port = this.#registryProxy;
-      if (!port) throw new AppError("box_proxy_unavailable", 503);
-      return { url: typeof port === "function" ? await port(gateway) : port.url(gateway), gateway };
-    })().catch(error => { this.#proxyUrl = null; throw error; });
+      return gateway;
+    })().catch(error => { this.#proxyGateway = null; throw error; }));
+    const port = this.#registryProxy;
+    if (!port) throw new AppError("box_proxy_unavailable", 503);
+    return { url: typeof port === "function" ? await port(gateway) : port.url(gateway), gateway };
   }
 
   async #podman(argv: string[]): Promise<Uint8Array> {
@@ -364,9 +371,10 @@ function parseJson(bytes: Uint8Array): unknown {
 
 /**
  * Version of the container layout a box was created with (flags that are not in its labels or environment). A box
- * from an older layout is recreated on its next open; v2 maps the service uid onto `box` (#163).
+ * from an older layout is recreated on its next open; v2 mapped the service uid onto `box` (#163),
+ * v3 disables implicit API-server proxy environment inheritance (OPS09).
  */
-export const boxLayoutVersion = "2";
+export const boxLayoutVersion = "3";
 
 /** The exact `podman create` arguments of one box (exported for the hardening-flag tests). */
 export function createArgs(input: {
@@ -376,7 +384,7 @@ export function createArgs(input: {
   const args = ["create", "--name", input.name, "--pull=never",
     "--label", "jit.box=1", "--label", `jit.box.project=${input.projectId}`, "--label", `jit.box.mode=${input.mode}`, "--label", `jit.box.profile=${input.profile ? "1" : "0"}`,
     "--label", `jit.box.env=${environmentDigest(input.env)}`, "--label", `jit.box.layout=${boxLayoutVersion}`,
-    "--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only", ...tmpfs.flatMap(spec => ["--tmpfs", spec]),
+    "--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only", "--http-proxy=false", ...tmpfs.flatMap(spec => ["--tmpfs", spec]),
     `--pids-limit=${input.config.pidsLimit}`, `--memory=${input.config.memoryMb}m`, `--cpus=${input.config.cpus}`, `--userns=keep-id:uid=${boxUserId},gid=${boxUserId}`,
     "--log-driver=none", "--stop-timeout=2", "--workdir", boxWorkspaceRoot];
   if (input.mode === "workspace") args.push(`--network=${boxInternalNetwork}`);

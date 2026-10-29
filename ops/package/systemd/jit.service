@@ -33,6 +33,9 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 {{HOME_PROTECTION}}
+# The rootless API belongs to the identity's user manager. Only its socket
+# directory is exposed; the system unit never needs container storage/setuid.
+InaccessiblePaths=-{{SERVICE_HOME}}/.local/share/containers
 ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true

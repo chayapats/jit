@@ -25,7 +25,17 @@ export function serviceInvocationPath(argv: string[], raw = readFileSync("/proc/
 
 /** Validates the running CLI before application imports, its invocation path, Bun and ancestor dependency/config lookup locations. */
 export function assertServiceRuntime(runtimeDir: string, bunPath: string, policy: RootPathPolicy = {}, entryPath?: string): void {
-  if (entryPath) assertRootTree(entryPath, policy);
+  if (entryPath) {
+    const activation = join(resolve(policy.root ?? "/"), "opt/jit/current");
+    if (resolve(entryPath) === join(activation, "src/main.ts")) {
+      // This is the sole admitted alias. Check its parent/link before reading the direct protected target,
+      // and bind it to the release whose bootstrap code is running, not an arbitrary root-owned tree.
+      assertServiceRelease(activation, policy);
+      const target = resolve(dirname(activation), readlinkSync(activation));
+      if (target !== resolve(runtimeDir)) throw new UnsafeRootPath(entryPath);
+      assertRootTree(join(target, "src/main.ts"), policy);
+    } else assertRootTree(entryPath, policy);
+  }
   assertRootPath(bunPath, policy);
   assertRootTree(runtimeDir, policy);
   const boundary = resolve(policy.root ?? "/");

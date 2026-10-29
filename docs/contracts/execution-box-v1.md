@@ -32,6 +32,31 @@ interface BoxRuntime {
 
 ## Registry allowlist proxy
 
+### 2026-10-29 — OPS09 installed remote API (#224)
+
+Installed command and stream runners explicitly select the service identity's
+Unix rootless API (`JIT_PODMAN_MODE=remote`); local development uses
+`--remote=false`. No remote failure retries locally. Readiness distinguishes
+missing Podman, unreachable socket, rootless/cgroup prerequisites and runtime
+image/configuration problems. The existing stdin, bounds, secret-env and exact
+container-mount contracts remain in force. Every container sets
+`--http-proxy=false` to exclude the API server's ambient proxy environment.
+
+The local-only namespace approach below remains for development. Remote
+`ContainerRegistryProxy` instead uses a mount-free, resource-capped pinned-base
+container on internal and egress bridges with both IP forwarding sysctls zero,
+non-root user, dropped capabilities, read-only root and no-new-privileges. The
+same CONNECT/443 allowlist runs through remote `exec -i`; the base's existing
+Node executes an in-memory bundle of trusted source. There is no new image pin.
+Only the proxy joins the egress bridge. Workspace boxes remain internal-only
+and receive its inspected internal IP; a changed IP changes their environment
+digest/recreates them. Proxy startup/hardening failures refuse execution.
+The service removes the proxy after drain and fences prior orphans before
+recreation. The proxy has a separate 128 MiB / 0.5 CPU / 64 pid ceiling.
+
+See the dated ADR 0036 note for the full command mapping and the execution
+runbook for opt-in hardened-unit acceptance; deterministic tests use fixtures.
+
 `src/exec/registry-proxy.ts` `startRegistryProxy({ hostname, port, hosts, log?, connectUpstream? })`: HTTP `CONNECT` only, tunnelled only to a host in `config.execution.registryHosts` on port 443. Another host, port or IP literal is `403`, a plain-HTTP method `405`, a malformed head `400`. Each refusal logs one line with the host name (or the method) only — never a path, query or header. The service starts it lazily on the internal network gateway with the first `workspace` box (`src/exec/box-service.ts`); on rootless Podman it runs inside the rootless network namespace (see Risks).
 
 ## `exec.box_backend/v1`

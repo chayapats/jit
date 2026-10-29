@@ -29,7 +29,8 @@ async function fixture() {
     if (failing) throw Error("fixture transport"); return Response.json({ results: [{ title: "Fixture", url: "https://example.test", content: "fixture", highlights: ["fixture"] }] });
   }, builtin);
   const tools = new WebTools(store, { providers, vault, searxng: builtin });
-  const app = new Application(store, config, { connections: vault, web: tools });
+  let now = 1_800_000_000_000;
+  const app = new Application(store, config, { now: () => now, connections: vault, web: tools });
   await app.setupOwner(password); markSetupComplete(store); const token = await app.login(password), auth = app.authenticate(token);
   app.execute(auth.actor, { kind: "ui.preferences.set", requestId: rid(), projectId: null, expectedRevision: 0, payload: { language: "en", theme: "system" } });
   const web = createWebHandler(app);
@@ -40,13 +41,19 @@ async function fixture() {
     body: json ? JSON.stringify(body) : new URLSearchParams(body as Record<string, string>).toString(),
   }));
   const save = (provider: string, apiKey?: string, expectedRevision = app.webSearch(auth.actor).revision, requestId = rid(), json = false) => post({ requestId, expectedRevision, provider, ...(apiKey === undefined ? {} : { apiKey }) }, json ? "/api/settings/web-search" : "/settings/web-search", json);
-  return { root, store, app, vault, tools, providers, auth, queries, headers, get, post, save, fail: () => { failing = true; }, missingPodman: () => { missingPodman = true; } };
+  return { root, store, app, vault, tools, providers, auth, queries, headers, get, post, save, runtime, advance: (ms: number) => { now += ms; }, fail: () => { failing = true; }, missingPodman: () => { missingPodman = true; } };
 }
 test("WEB03 fresh page is Built-in, private query notice is explicit in both locales, missing Podman has a one-click repair path", async () => {
   const f = await fixture();
   expect(f.app.webSearch(f.auth.actor)).toMatchObject({ id: "searxng", connectionId: null, revision: 0, fallback: null });
   let html = await (await f.get()).text(); expect(html).toContain('value="searxng" checked'); expect(html).toContain(dictionaries.en["web_search.provider_searxng_note"]); expect(f.queries).toEqual([]);
-  f.missingPodman(); html = await (await f.get()).text(); expect(html).toContain(dictionaries.en["searxng.reason_podman"]); expect(html).toContain('value="tavily"');
+  expect(html).toContain(dictionaries.en["podman.checking"]);
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  f.missingPodman(); f.advance(30_000);
+  html = await (await f.get()).text();
+  expect(html).toContain(dictionaries.en["web_search.status_ready"]);
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  html = await (await f.get()).text(); expect(html).toContain(dictionaries.en["searxng.reason_podman"]); expect(html).toContain('value="tavily"');
   f.app.execute(f.auth.actor, { kind: "ui.preferences.set", requestId: rid(), projectId: null, expectedRevision: 1, payload: { language: "th", theme: "system" } });
   html = await (await f.get()).text(); expect(html).toContain(dictionaries.th["web_search.provider_searxng_note"]);
 });
@@ -113,4 +120,18 @@ test("WEB03 Test returns on its deadline even when a queued provider ignores can
   const controller = new AbortController(); let calls = 0;
   const tested = testWebSearch({ id: "fixture", async search(query, options) { calls++; expect(query).toBe("jit connectivity check"); expect(options.limit).toBe(1); return new Promise(() => {}); } }, controller.signal);
   controller.abort(); expect(await tested).toBe("failed"); expect(calls).toBe(1);
+});
+
+
+test("WEB03 a blocked readiness probe leaves settings and provider controls usable", async () => {
+  const f = await fixture(); let calls = 0;
+  let finish!: (status: Awaited<ReturnType<SearxngRuntime["status"]>>) => void;
+  f.runtime.status = () => { calls++; return new Promise(resolve => { finish = resolve; }); };
+  try {
+    const response = await f.get(); expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain(dictionaries.en["podman.checking"]);
+    expect(html).toContain('value="tavily"');
+    expect((await f.get()).status).toBe(200); expect(calls).toBe(1);
+  } finally { finish?.({ state: "ready", reason: null }); }
 });

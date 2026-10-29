@@ -12,6 +12,8 @@ export interface BoxSession { readonly handle: BoxHandle; readonly backend: Exec
 
 /** Options of {@link BoxManager}. */
 export interface BoxManagerOptions {
+  /** Stops service-owned proxy resources after execution has drained; project workspaces are retained. */
+  closeRuntime?: () => Promise<void>;
   now?: () => number;
   /** Called after a box stops or is reset, so the queue can admit work waiting as `box_capacity`. */
   onCapacity?: () => void;
@@ -45,6 +47,7 @@ interface Slot {
  *   narrowing) stops it regardless.
  */
 export class BoxManager {
+  readonly #closeRuntime: (() => Promise<void>) | undefined;
   readonly #slots = new Map<string, Slot>();
   /** Bumped by every access change of a project; an open that saw another generation re-checks before it returns. */
   readonly #accessGeneration = new Map<string, number>();
@@ -55,11 +58,15 @@ export class BoxManager {
   readonly #stopListeners = new Set<(projectId: string) => void>();
 
   constructor(readonly store: TransactionStore, readonly config: AppConfig, readonly runtime: BoxRuntime, options: BoxManagerOptions = {}) {
+    this.#closeRuntime = options.closeRuntime;
     this.#now = options.now ?? Date.now;
     this.#onCapacity = options.onCapacity;
     this.#backend = options.backend ?? {};
     this.#profile = options.profile === true;
   }
+
+  /** Releases the runtime's service-owned proxy after callers have drained; never deletes project data. */
+  async close(): Promise<void> { await this.#closeRuntime?.(); }
 
   /** Called after a project's box stopped or was reset (browser sessions close with it). Returns the unsubscribe. */
   onStopped(listener: (projectId: string) => void): () => void {

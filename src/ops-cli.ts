@@ -9,6 +9,7 @@ import { boxDoctor } from "./ops/box-doctor";
 import { runBoxDrill, type BoxDrillHost, type BoxDrillInput } from "./ops/box-drill";
 import { BoxManager } from "./exec/box-manager";
 import { serviceBoxRuntime } from "./exec/box-service";
+import { podmanClient } from "./exec/podman-client";
 import { redactRegisteredSecrets } from "./security/secret-fingerprints";
 import { readFileSync } from "node:fs";
 import { statSync } from "node:fs";
@@ -22,7 +23,9 @@ export interface OpsPorts {
 
 function spawnText(cmd: string[]): string {
   try {
-    const result = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe" });
+    const client = cmd[0] === "podman" ? podmanClient() : null;
+    const result = Bun.spawnSync(client ? [cmd[0]!, ...client.argv, ...cmd.slice(1)] : cmd,
+      { ...(client ? { env: client.env } : {}), stdout: "pipe", stderr: "pipe" });
     return result.exitCode === 0 ? new TextDecoder().decode(result.stdout as Uint8Array) : "";
   } catch { return ""; }
 }
@@ -80,7 +83,7 @@ export async function runOpsCommand(args: string[], root: string, ports: OpsPort
       const report = boxDoctor({
         run: (cmd: string[]) => {
           try {
-            const result = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe" });
+            const result = Bun.spawnSync(cmd, { env: podmanClient().env, stdout: "pipe", stderr: "pipe" });
             return { exitCode: result.exitCode, stdout: new TextDecoder().decode(result.stdout as Uint8Array) };
           } catch {
             return { exitCode: 127, stdout: "" };

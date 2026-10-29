@@ -1,3 +1,4 @@
+import { cachedReadiness, type ReadinessView } from "./exec/readiness-cache";
 import { RouteCatalog, type RouteCatalogs } from "./team/route-catalog";
 import { readImageProbes, imageRoutePassed, type ImageProbeReceipt } from "./attachments/image-probes";
 import { runImageProbe, type ImageProbeOptions } from "./evidence/image-probe";
@@ -7,6 +8,7 @@ import { recommendedModel, type RouteProvider } from "./team/route-options";
 import { WebTools, readWebCalls, type WebCall } from "./web-tools";
 import { isWebCommand, readWebProvider, readWebSettings, webSearchKeyLabels, webCommandIdentity, writeWebCommand, type WebCommand, type WebReceipt, type WebProviderSetting, type WebSettings } from "./web-tools/settings";
 import { AttachmentSanitizer } from "./attachments/sanitizer";
+import type { PodmanReadiness } from "./exec/podman-client";
 import type { AttachmentSanitizerRuntime } from "./attachments/sanitizer-runtime";
 import { reconcileForgottenAttachments, attachmentProjectContributor, replayAttachmentLifecycle, type AttachmentCopyCleanup } from "./attachments/lifecycle";
 import { sweepBackupAttachmentBlobs } from "./attachments/backup";
@@ -971,6 +973,27 @@ export class Application {
   attachmentComposer(): { enabled: boolean; messageFiles: number; fileBytes: number; sanitizer: boolean; backupUsage: { bytes: number; bound: number; notice: boolean } } {
     const limits = this.config.attachments;
     return { backupUsage: this.attachmentBackupUsage(), enabled: limits.enabled, messageFiles: limits.messageFiles, fileBytes: limits.fileBytes, sanitizer: this.#attachments.options.sanitizerAvailable?.() ?? false };
+  }
+
+  /** Reads cached sanitizer readiness immediately; refreshes in the background without starting a parser. */
+  attachmentRuntimeStatus(): ReadinessView<PodmanReadiness> {
+    const runtime = this.#sanitizer.runtime;
+    if (!runtime) return { state: "unavailable", reason: "runtime" };
+    const cached = cachedReadiness(runtime, async () => {
+      const status = runtime.status ? await runtime.status() : await runtime.available()
+        ? { state: "ready" as const, reason: null } : { state: "unavailable" as const, reason: "runtime" as const };
+      return status;
+    }, this.#now);
+    this.#sanitizerAvailable = cached.state === "ready";
+    return cached;
+  }
+
+  /** Reads cached box readiness immediately without creating a box or granting execution authority. */
+  boxRuntimeStatus(): ReadinessView<PodmanReadiness> | undefined {
+    const runtime = this.#boxes?.runtime;
+    if (!runtime || !("readiness" in runtime) || typeof runtime.readiness !== "function") return undefined;
+    const probe = runtime.readiness.bind(runtime) as () => Promise<PodmanReadiness>;
+    return cachedReadiness(runtime, probe, this.#now);
   }
 
   /**
@@ -2774,10 +2797,10 @@ export class Application {
     return this.#web.test();
   }
 
-  /** Built-in readiness without a search, image pull or container start; Web owner only. */
-  async searxngStatus(actor: OwnerActor) {
+  /** Cached built-in readiness with background refresh; Web owner only, without a search, pull or start. */
+  searxngStatus(actor: OwnerActor) {
     this.store.read(tx => this.#requireOwner(tx, actor, ["web"]));
-    return this.#web.searxng.status();
+    return this.#web.searxng.cachedStatus(this.#now);
   }
 
   /** Owner-visible query/URL audit metadata, scoped to this project and optionally one run. */

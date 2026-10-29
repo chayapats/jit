@@ -1,14 +1,16 @@
+import { cachedReadiness, invalidateReadiness, readinessCommands } from "../exec/readiness-cache";
 import { randomBytes, createHash } from "node:crypto";
 import { totalmem } from "node:os";
 import type { SearchProvider, SearchResult } from "schway/host";
 import { AppError } from "../errors";
 import { ConnectionVault } from "../exec/connections";
 import { podmanCommandRunner, type CommandRunner } from "../exec/podman-runtime";
+import { podmanReadiness } from "../exec/podman-client";
 
 /** Official multi-architecture index, release 2026.10.28-c360868e5 (amd64/arm64/arm). */
 export const searxngImage = "docker.io/searxng/searxng@sha256:268a4b460136dcefc8f2e896b6098ba3f770c8218dbbddcb86811b06b06816f1";
 /** Sanitized operator status; diagnostics and provider response bodies never cross this boundary. */
-export type SearxngStatus = { state: "ready"; reason: null } | { state: "unavailable"; reason: "disabled" | "podman" | "rootless" | "runtime" };
+export type SearxngStatus = { state: "ready"; reason: null } | { state: "unavailable"; reason: "disabled" | "podman" | "socket" | "rootless" | "runtime" };
 /** Fakeable service-owned runtime; it has no workspace, state or credential mounts. */
 export interface SearxngRuntime {
   status(): Promise<SearxngStatus>;
@@ -55,17 +57,13 @@ const health = "import urllib.request; o=urllib.request.build_opener(urllib.requ
 /** Rootless Podman adapter with container-local loopback only; the service identity's exec channel is the sole ingress. */
 export class PodmanSearxngRuntime implements SearxngRuntime {
   readonly #name: string;
-  constructor(installation: string, readonly run: CommandRunner = podmanCommandRunner(), readonly pause: (ms: number) => Promise<unknown> = Bun.sleep) {
+  readonly run: CommandRunner;
+  constructor(installation: string, readonly probeRun: CommandRunner = podmanCommandRunner(), readonly pause: (ms: number) => Promise<unknown> = Bun.sleep) {
+    this.run = readinessCommands(this, probeRun);
     this.#name = `jit-searxng-${createHash("sha256").update(installation).digest("hex").slice(0, 16)}`;
   }
   async status(): Promise<SearxngStatus> {
-    try {
-      const info = await this.run(["info", "--format", "json"], { timeoutMs: 5000 });
-      if (info.exitCode !== 0) return { state: "unavailable", reason: "podman" };
-      const value = JSON.parse(new TextDecoder().decode(info.stdout));
-      return value?.host?.security?.rootless === true && value?.host?.cgroupVersion === "v2" && ["memory", "cpu", "pids"].every(c => value?.host?.cgroupControllers?.includes(c))
-        ? { state: "ready", reason: null } : { state: "unavailable", reason: "rootless" };
-    } catch { return { state: "unavailable", reason: "podman" }; }
+    return podmanReadiness(this.probeRun);
   }
   async running(): Promise<boolean> {
     const inspect = await this.run(["container", "inspect", this.#name], { timeoutMs: 2000 });
@@ -84,7 +82,7 @@ export class PodmanSearxngRuntime implements SearxngRuntime {
     const present = await this.run(["image", "exists", searxngImage], { timeoutMs: 5000, signal });
     if (present.exitCode !== 0) await this.#command(["pull", "--quiet", searxngImage], signal, undefined, 120_000);
     await this.#command(["create", "--name", this.#name, "--pull=never", "--image-volume=ignore", "--label", "jit.searxng=1",
-      "--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only", "--userns=keep-id:uid=977,gid=977", "--user=977:977",
+      "--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only", "--http-proxy=false", "--userns=keep-id:uid=977,gid=977", "--user=977:977",
       "--pids-limit=128", `--memory=${memoryMb}m`, "--cpus=1", "--log-driver=none", "--stop-timeout=2",
       ...["/tmp:rw,nosuid,nodev,size=64m,mode=1777", "/run:rw,nosuid,nodev,size=16m,mode=1777", "/etc/searxng:rw,nosuid,nodev,noexec,size=1m,mode=0700,uid=977,gid=977", "/var/cache/searxng:rw,nosuid,nodev,noexec,size=32m,mode=0700,uid=977,gid=977"].flatMap(v => ["--tmpfs", v]),
       "--env", "PYTHONDONTWRITEBYTECODE=1", "--env", "SEARXNG_SETTINGS_PATH=/etc/searxng/settings.yml",
@@ -138,6 +136,11 @@ export class ManagedSearxng implements SearchProvider {
     const status = await this.runtime.status();
     return status.state === "ready" && this.#failed ? { state: "unavailable", reason: "runtime" } : status;
   }
+  /** Immediate page projection; explicit status/tests and real searches still probe independently. */
+  cachedStatus(now = Date.now) {
+    if (this.options.enabled === false) return { state: "unavailable" as const, reason: "disabled" as const };
+    return cachedReadiness(this.runtime, () => this.status(), now);
+  }
   #lock<T>(fn: () => Promise<T>): Promise<T> { const next = this.#tail.then(fn); this.#tail = next.catch(() => {}); return next; }
   async search(query: string, options: { limit: number; signal: AbortSignal }): Promise<readonly SearchResult[]> {
     if (!query.trim() || Buffer.byteLength(query) > 8192 || !Number.isSafeInteger(options.limit) || options.limit < 1 || options.limit > 20) throw new AppError("invalid_web_search");
@@ -160,7 +163,7 @@ export class ManagedSearxng implements SearchProvider {
         const result = await this.runtime.search(query, options.limit, signal);
         this.#failed = false;
         return result;
-      } catch { this.#failed = true; throw new AppError("searxng_unavailable", 503); }
+      } catch { invalidateReadiness(this.runtime); this.#failed = true; throw new AppError("searxng_unavailable", 503); }
       finally { if (this.#started && !this.#closed) this.#idle = clock.set(() => { void this.#lock(async () => { await this.runtime.stop(); this.#started = false; }).catch(() => {}); }, this.options.idleMs ?? 300_000); }
     });
     // Settle the caller promptly, but retain serialization until the queued work

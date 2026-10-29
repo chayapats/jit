@@ -77,6 +77,26 @@ message. For an available runtime, subordinate-ID allocation considers both
 files, preserves existing usable service ranges, and appends an unused 65536-ID
 range. Linger, the user manager and `/var/lib/cni` follow the operational runbooks.
 
+### 2026-10-29 — OPS09 user API contract (#224)
+
+After linger/user-manager setup the installer enables and starts the identity's
+`systemctl --user enable --now podman.socket`, as that identity. Optional pulls
+and box-doctor use the explicitly selected remote API; no container command
+enters the hardened service's local rootless namespace. Missing Podman and
+unavailable API are distinct chat-only results, each with a next action.
+`service install` and `service upgrade` repair this idempotently too; upgrade
+rewrites/reloads the unit before activation. Core setup, schema authority,
+credential handling and uninstall preservation remain the existing contracts.
+
+The rendered unit retains all sandbox directives, exposes only the optional
+user socket directory (and the existing Schway session bus), sets
+`JIT_PODMAN_MODE=remote` plus `XDG_RUNTIME_DIR` and hides default container
+storage. It grants no access to container storage or setuid helpers.
+Socket repair after an absent bind requires a Jit restart. Hosts using a custom
+graphroot must exclude that path in unit policy and keep it outside Jit managed
+directories. The managed activation CLI entry is accepted under the full OPS08
+checks described in ADR 0042; arbitrary symlink invocations stay refused.
+
 The service identity's user unit starts GNOME Secret Service on its own D-Bus.
 A cryptographically random unlock value is created once at 0600 and supplied
 through systemd `StandardInput=file:` to `gnome-keyring-daemon --unlock` at boot;

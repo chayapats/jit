@@ -425,7 +425,7 @@ test("supported upgrade stops, runs the new build's owner upgrade, switches the 
   expect(JSON.stringify(result)).not.toContain(password);
   expect(readFileSync(u.l.service.ledgerPath)).toEqual(ledgerBefore);
   const verbs = u.fake.calls.filter(c => c[0] === "systemctl" && c[1] !== "show").map(c => c[1]);
-  expect(verbs.slice(-2)).toEqual(["stop", "start"]);
+  expect(verbs.slice(-3)).toEqual(["stop", "daemon-reload", "start"]);
 }, 60_000);
 
 test("a failed owner upgrade keeps the prior release active; nothing is switched", async () => {
@@ -581,14 +581,14 @@ test("the rendered unit sets the bot token reference path, never the token, when
   expect(unit).not.toContain("FIXTURE_TOKEN_VALUE");
 });
 
-test("schway mode renders only the identity's session bus for its Secret Service; plan blocks without that bus; scripted mode is unchanged", async () => {
+test("all units expose only the Podman socket directory; schway additionally requires the identity's session bus", async () => {
   const l = layout();
   const art = await artifact(l.root, "artifact");
   const scripted = await renderServiceUnit(l.service, { bunPath: process.execPath, configPath: "/etc/jit/service-config.json", gid, uid });
-  expect(scripted).toContain("ProtectHome=true\n");
+  expect(scripted).toContain("ProtectHome=tmpfs\n");
   expect(scripted).not.toContain("DBUS_SESSION_BUS_ADDRESS");
-  expect(scripted).not.toContain("BindPaths=");
-  expect(scripted).not.toContain("user@");
+  expect(scripted).toContain(`BindPaths=-/run/user/${uid}/podman\n`);
+  expect(scripted).toContain(`After=user@${uid}.service`);
 
   const schway = { ...l.service, runPort: "schway" as const };
   writeFileSync(l.source, JSON.stringify(schway), { mode: 0o600 });
@@ -605,7 +605,7 @@ test("schway mode renders only the identity's session bus for its Secret Service
   expect(plan.checks.find(c => c.check === "session-bus")!.detail).toContain("unverified");
   const unit = plan.files.find(f => f.path.endsWith("jit.service"))!.content!;
   expect(unit).toContain(`Wants=network-online.target\nAfter=user@${uid}.service\nWants=user@${uid}.service\n`);
-  expect(unit).toContain(`ProtectHome=tmpfs\nBindPaths=/run/user/${uid}/bus\n`);
+  expect(unit).toContain(`ProtectHome=tmpfs\nBindPaths=-/run/user/${uid}/podman\nBindPaths=/run/user/${uid}/bus\n`);
   expect(unit).not.toContain("ProtectHome=true");
   expect(unit).toContain(`Environment=XDG_RUNTIME_DIR=/run/user/${uid}\n`);
   expect(unit).toContain(`Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${uid}/bus\n`);
@@ -773,10 +773,10 @@ test("a root-run status judges state ownership against the configured identity, 
   // The test process owns the state, playing the service identity resolved through getent.
   expect((await status(0)).service.blockedGates).not.toContain("config");
   expect(fake.calls).toContainEqual(["getent", "passwd", l.service.serviceUser]);
-  // A non-root caller keeps the running-uid check and never resolves the identity.
+  // A non-root caller keeps the running-uid ownership check; the identity lookup only selects its Podman socket.
   fake.calls.length = 0;
   expect((await status(uid)).service.blockedGates).not.toContain("config");
-  expect(fake.calls.some(c => c[0] === "getent")).toBe(false);
+  expect(fake.calls.some(c => c[0] === "runuser")).toBe(false);
   // State owned by someone other than the identity stays blocked under root.
   fake.identity = `${l.service.serviceUser}:x:${uid + 1}:${gid}::/var/lib/jit:/usr/sbin/nologin`;
   expect((await status(0)).service.blockedGates).toContain("config");
@@ -1130,7 +1130,7 @@ test("OPS08 non-root keeps existing status behavior for a service-writable runti
   operator.deps.uid = uid || 1000; operator.foreign.add(operator.deps.runtimeDir);
   const result = await operator.invoke(["status", "--config", l.source, "--artifact", artifact]);
   expect(result.exitCode).toBe(0); expect(result.output).not.toHaveProperty("error");
-  expect(operator.fake.calls.some(argv => argv[0] === "getent")).toBe(false);
+  expect(operator.fake.calls.some(argv => argv[0] === "runuser")).toBe(false);
 });
 
 test("OPS08 protected snapshot installs and upgrades from fresh inodes despite retained build descriptors", async () => {
@@ -1224,3 +1224,57 @@ test("OPS08-F normal upgrade reads the password exactly once and later checks st
   expect(refused).toMatchObject({ exitCode: 2, output: { error: "unsafe_root_path" } }); expect(passwords).toBe(1);
   expect(race.fake.calls.some(argv => argv[0] === "systemctl" && argv[1] === "stop")).toBe(false);
 }, 60_000);
+
+test("OPS09 install and existing-install upgrade enable the user socket and render every sandbox directive", async () => {
+  const u = await installedForUpgrade(), original = u.fake.run;
+  const run: CommandRunner = async (argv, opts) => {
+    if (argv.includes("podman") || argv[0] === "loginctl" || argv.includes("podman.socket") || argv[2]?.startsWith("user@")) {
+      u.fake.calls.push(argv); return { exitCode: 0, stdout: "", timedOut: false };
+    }
+    return original(argv, opts);
+  };
+  u.host.run = run;
+  u.host.chown = recordChown;
+  await original(["systemctl", "stop", "jit.service"], { timeoutMs: 1000 });
+  const installed = await installService({ service: u.l.service, artifactDir: u.second, host: u.host });
+  expect(installed.plan.checks.filter(check => !check.ok)).toEqual([]);
+  expect(installed.ok).toBe(true); expect(installed.podman?.state).toBe("ready");
+  expect(u.fake.calls).toContainEqual(["loginctl", "enable-linger", u.l.service.serviceUser]);
+  expect(u.fake.calls.some(args => args.includes("podman.socket") && args[0] === "runuser" && args.includes("--user"))).toBe(true);
+  // Simulate the old installed descriptor and release before a real upgrade.
+  const unitPath = join(u.l.dirs.unit, "jit.service");
+  writeFileSync(unitPath, readFileSync(unitPath, "utf8").replace(/^Environment=JIT_PODMAN_MODE=.*\n/m, "").replace(/^BindPaths=-.*podman\n/m, ""));
+  const first = join(u.l.dirs.opt, "releases", u.a.artifactId);
+  rmSync(u.l.service.executablePath); symlinkSync(first, u.l.service.executablePath);
+  u.fake.upgrade = async () => evidence("activated");
+  const upgraded = await upgradePackage({ service: u.l.service, artifactDir: u.second, host: u.host, ownerPassword: password, health: async () => true });
+  expect(upgraded).toMatchObject({ outcome: "upgraded", podman: { state: "ready" } });
+  const unit = readFileSync(unitPath, "utf8");
+  for (const line of ["NoNewPrivileges=true", "ProtectSystem=strict", "RestrictSUIDSGID=true", "PrivateTmp=true", "ProtectKernelTunables=true", "ProtectControlGroups=true", "UMask=0077", "KillMode=mixed", "LimitNOFILE=4096", "TasksMax=256", "Environment=JIT_PODMAN_MODE=remote", `BindPaths=-/run/user/${uid}/podman`]) expect(unit).toContain(line);
+  expect(unit).toContain(`-/run/user/${uid}/podman\nUMask`);
+  expect(unit).toContain("InaccessiblePaths=-/var/lib/jit/.local/share/containers");
+  // The remote client still loads containers.conf before connecting; the normal strict filesystem makes it read-only.
+  expect(unit.match(/^InaccessiblePaths=.*/m)?.[0]).not.toContain(".config/containers");
+  expect(unit.match(/^ReadWritePaths=.*/m)?.[0]).not.toContain(".local/share/containers"); expect(unit).not.toContain(`ReadWritePaths=/var/lib/jit `);
+  expect(u.fake.calls.filter(args => args.includes("podman.socket"))).toHaveLength(2);
+}, 30_000);
+
+test("OPS09 only the protected managed activation entry is admitted by the root bootstrap", () => {
+  const l = layout(), operator = rootOperator(l), activation = join(l.root, "opt/jit/current");
+  mkdirSync(join(operator.deps.runtimeDir, "src")); writeFileSync(join(operator.deps.runtimeDir, "src/main.ts"), "// fixture");
+  mkdirSync(join(l.root, "opt/jit"), { recursive: true }); symlinkSync(operator.deps.runtimeDir, activation);
+  const entry = join(activation, "src/main.ts");
+  expect(() => assertServiceRuntime(operator.deps.runtimeDir, operator.deps.bunPath, operator.policy, entry)).not.toThrow();
+  operator.foreign.add(activation);
+  expect(() => assertServiceRuntime(operator.deps.runtimeDir, operator.deps.bunPath, operator.policy, entry)).toThrow("unsafe_root_path");
+  operator.foreign.delete(activation); chmodSync(join(l.root, "opt/jit"), 0o777);
+  expect(() => assertServiceRuntime(operator.deps.runtimeDir, operator.deps.bunPath, operator.policy, entry)).toThrow("unsafe_root_path");
+  chmodSync(join(l.root, "opt/jit"), 0o755); chmodSync(join(operator.deps.runtimeDir, "src/main.ts"), 0o666);
+  expect(() => assertServiceRuntime(operator.deps.runtimeDir, operator.deps.bunPath, operator.policy, entry)).toThrow("unsafe_root_path");
+  chmodSync(join(operator.deps.runtimeDir, "src/main.ts"), 0o644);
+  symlinkSync(operator.deps.runtimeDir, join(l.root, "alias"));
+  expect(() => assertServiceRuntime(operator.deps.runtimeDir, operator.deps.bunPath, operator.policy, join(l.root, "alias/src/main.ts"))).toThrow("unsafe_root_path");
+  const other = join(l.root, "other"); mkdirSync(join(other, "src"), { recursive: true }); writeFileSync(join(other, "src/main.ts"), "// other");
+  rmSync(activation); symlinkSync(other, activation);
+  expect(() => assertServiceRuntime(operator.deps.runtimeDir, operator.deps.bunPath, operator.policy, entry)).toThrow("unsafe_root_path");
+});
