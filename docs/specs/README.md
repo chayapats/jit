@@ -10,6 +10,7 @@
 | [S09](S09-main-bot-and-chat-first-ui.md) / [issue](https://github.com/chayapats/jit/issues/90) | Jit | Jit main bot, role proposals, dispatch allowance, General space และ chat-first Web สองภาษา |
 | [S10](S10-reliability-and-owner-integrations.md) / [issue](https://github.com/chayapats/jit/issues/111) | Jit | quiet/failed runs, deterministic routing, notify-once, result contract, context packet, local API/CLI, signed webhooks และ `.ics` feed (openbot-inspired) |
 | [S11](S11-execution-access-and-tools.md) / [issue](https://github.com/chayapats/jit/issues/123) | Jit | Access levels, execution box (rootless Podman), approval cards, connections, MCP, browser-use และ computer-use; Schway contract [schway#429](https://github.com/chayapats/schway/issues/429) |
+| [S12](S12-fluid-conversation.md) / [issue](https://github.com/chayapats/jit/issues/170) | Jit | Draft: answer first (D01 done in #169), streaming, read-only web search/fetch, short chat voice, quiet team work, reply chips (concepts from openbot/OpenDuet) |
 
 ขอบเขต S03–S08 ใน [roadmap](../product/07-roadmap.md) ถูกแตกจาก MVP เป็น [implementation backlog](../tickets/README.md) ครบแล้ว แต่ละ ticket ระบุ FR/NFR, acceptance, test seam และ versioned contract prerequisites การยังไม่มีผล feasibility ไม่ขัดขวาง deterministic feature work แต่ห้ามอ้างว่า host/account support หรือ dependency ผ่านแล้ว
 

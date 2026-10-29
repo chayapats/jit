@@ -20,7 +20,7 @@ import type { ApplicationRunOutcome, ApplicationRunRequest, ContextPacketOmissio
 import { admitJitDispatch } from "./jit-dispatch";
 import { communicationPolicyLine, teamCommunicationPolicy } from "./communication-policy";
 import { unblockAction } from "./specialist-results";
-import { selectRoles, selectionWhy, selectionWhyLimit, type FixedSelection, type ParticipationReference } from "./routing";
+import { followUpCandidate, selectRoles, selectionWhy, selectionWhyLimit, type FixedSelection, type FollowUpCandidate, type ParticipationReference } from "./routing";
 import { evaluateWorkGroup, workGroupOfReply } from "./work-group";
 import { executionGrant, executionMaxTurns } from "../exec/run-tools";
 import { generalProjectId, parsePromotionProposal, promotionFrom, promotionInstruction, promotionProposalViews, type PromotionProposal, type PromotionProposalView } from "../promotion";
@@ -82,6 +82,11 @@ interface JitReplyRecord {
    * told the choice and is not offered a dispatch proposal; the service admits the roles when the reply commits.
    */
   routing?: FixedSelection;
+  /**
+   * #169: the open discussion this owner message directly follows. Jit is told about it; a dispatch Jit proposes for a
+   * subset of its roles continues it. It never calls anyone by itself.
+   */
+  followUp?: FollowUpCandidate;
   /**
    * app.routing_selection/v1: the `why` of this reply's model dispatch proposal, untrusted model text. It lives only
    * here, with the output it came from, so data deletion of the reply redacts it too; cards read it from here.
@@ -296,6 +301,8 @@ interface ReplyAdmission {
   team?: { proposalId: string; discussionId: string; question: ReplyAnchor; results: TeamReplyResult[]; gaps: TeamReplyGap[]; workGroupId: string | null };
   /** A message reply whose specialists a fixed rule already chose (app.routing_selection/v1). */
   routing?: FixedSelection | null;
+  /** #169: the open discussion a message reply directly follows, offered to Jit as context only. */
+  followUp?: FollowUpCandidate | null;
 }
 
 /** Longest UTF-8 byte length of one service-written operator line (app.run_port/v1 accepts 2048). */
@@ -334,6 +341,7 @@ function boundedNames(names: readonly string[], budget: number): string {
 function admitReply(tx: AppTransaction, input: ReplyAdmission): { id: string; reason: ReplyNotAdmitted | null } {
   const { message, config, queue, now, team: teamInput } = input;
   const routing = teamInput ? null : input.routing ?? null;
+  const followUp = teamInput || routing ? null : input.followUp ?? null;
   const replyId = crypto.randomUUID();
   const notAdmitted = (reason: ReplyNotAdmitted) => {
     tx.run("INSERT INTO jit_replies (id, project_id, topic_id, message_id, run_id, reason, cursor, created_at) VALUES (?, ?, ?, ?, NULL, ?, ?, ?)",
@@ -352,7 +360,7 @@ function admitReply(tx: AppTransaction, input: ReplyAdmission): { id: string; re
     ? `Committed specialist results (service-recorded), in manifest order after the history: ${boundedNames(kept.map(item => item.roleName), operatorLineBytes / 2 - 120)}. Roles without a result: ${boundedNames(missing.map(gap => `${gap.roleName} (${gap.reason})`), operatorLineBytes / 2 - 120)}.`
     : routing
       ? `The service already chose specialists by a fixed rule (${routing.selection.rule}) and calls them after your reply when the owner's dispatch allowance covers them; do not propose a dispatch. Chosen specialists (owner-configured, service-recorded): ${boundedNames(routing.selection.roleIds.map(id => team.roles.find(role => role.id === id)?.name ?? id), operatorLineBytes - 520)}.`
-      : `Optional "proposals" entry {"kind":"dispatch","roles":[names],"why":string} (at most one) that asks the service to call existing specialists for read-only analysis when the question needs them; "why" is one short reason of at most ${selectionWhyLimit} characters, shown to the owner as your reasoning. The service checks the entry against the owner's configuration and dispatch allowance, and the owner confirms anything beyond it. Specialists you may name (owner-configured, service-recorded): ${boundedNames(roster, operatorLineBytes - 720)}.`;
+      : `Answer the owner yourself by default. Optional "proposals" entry {"kind":"dispatch","roles":[names],"why":string} (at most one) asks the service to call existing specialists for read-only analysis; propose it only when the owner asks for the team or the question clearly needs a specialist's separate analysis, never for greetings, small talk, quick questions or anything you can answer well yourself. "why" is one short reason of at most ${selectionWhyLimit} characters, shown to the owner as your reasoning. The service checks the entry against the owner's configuration and dispatch allowance, and the owner confirms anything beyond it. Specialists you may name (owner-configured, service-recorded): ${boundedNames(roster, operatorLineBytes - 1200)}.${followUp ? ` An open team discussion in this topic, with ${boundedNames(followUp.roleIds.map(id => team.roles.find(role => role.id === id)?.name ?? id), 240)}, answered just before this message; propose them again only if the owner asks that team to continue.` : ""}`;
   // Policy lines go as one operator line: run requests hold at most 8, and role proposals (app.role_proposals/v1)
   // and dispatch proposals each add instruction lines to a message reply.
   // app.topic_promotion/v1: only a reply to an owner message in an open General space topic may suggest a promotion.
@@ -489,6 +497,7 @@ function admitReply(tx: AppTransaction, input: ReplyAdmission): { id: string; re
     kind: "jit_reply", id: replyId, projectId: message.projectId, topicId: message.topicId, messageId: message.id, jobId: job.id, roleId: jit.id,
     personaRevision: persona.revision, policyVersion: teamCommunicationPolicy.version, request, revision: 1, createdAt: now, updatedAt: now,
     outcome: null, result: null, source: null, replyMessageId: null, progress: null, ...(routing ? { routing: structuredClone(routing) } : {}),
+    ...(followUp ? { followUp: structuredClone(followUp) } : {}),
     ...(teamInput ? { team: { proposalId: teamInput.proposalId, discussionId: teamInput.discussionId,
       citations: results.map(item => ({ roleId: item.roleId, roleName: item.roleName, reference: { ...item.reference } })), gaps: gaps.map(gap => ({ ...gap })) } } : {}),
     ...(teamInput?.workGroupId ? { workGroupId: teamInput.workGroupId } : {}),
@@ -518,7 +527,10 @@ export function admitJitReply(tx: AppTransaction, input: {
   // app.routing_selection/v1: fixed rules first, with no model call; null leaves the choice to Jit's dispatch proposal.
   const routing = selectRoles(tx, { message: { id: input.message.id, sequence: input.message.sequence, text: input.message.text, replyTo: input.replyTo ?? null },
     topic: { id: input.message.topicId }, project: { id: input.message.projectId }, config: input.config });
-  admitReply(tx, { ...input, routing });
+  // #169: without an explicit owner choice, an open discussion this message follows is context for Jit, not a call.
+  const followUp = routing ? null : followUpCandidate(tx, { message: { sequence: input.message.sequence },
+    topic: { id: input.message.topicId }, project: { id: input.message.projectId }, config: input.config });
+  admitReply(tx, { ...input, routing, followUp });
 }
 
 /**
@@ -836,7 +848,7 @@ export function jitReplyWork(store: TransactionStore, config: AppConfig, port: A
               selection: { rule: current.routing.selection.rule, roleIds: current.routing.selection.roleIds, continues: current.routing.continues } });
           } else if (proposal) {
             admitJitDispatch(tx, { reply: replyRef, config, queue: queue(), now: now(),
-              selection: { rule: "model", names: proposal.names, configuration: request.configuration } });
+              selection: { rule: "model", names: proposal.names, configuration: request.configuration, followUp: current.followUp ?? null } });
           }
           // delivery.attention_levels/v1: a proposal card stalls on the owner at once; a team reply ends its group.
           evaluateWorkGroup(tx, current.workGroupId ?? workGroupOfReply(tx, current.id), config.team, now(), "no_longer_waiting");

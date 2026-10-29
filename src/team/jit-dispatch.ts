@@ -9,7 +9,7 @@ import { readTeam } from "./configuration";
 import { readDecisionModel } from "./decisions";
 import { prepareDispatch, projectDiscussion, readDiscussion, readSpecialist } from "./dispatch";
 import { admitTeamReply, readReply, readReplyRecord, replyLimits, saveReplyRecord, type JitReplyView, type ReplyNotAdmitted, type TeamReplyGap, type TeamReplyResult } from "./jit-reply";
-import { roleKey, type RoutingSelection, type SelectionRule } from "./routing";
+import { roleKey, type FollowUpCandidate, type RoutingSelection, type SelectionRule } from "./routing";
 import type { Discussion, DiscussionOrigin, DiscussionParticipation, SynthesisState, TeamPolicy } from "./types";
 import { promotionFrom } from "../promotion";
 import { blockedForRequest, citableResult, heldGaps, unblockAction } from "./specialist-results";
@@ -45,7 +45,7 @@ interface DispatchRecord {
   blocked?: { roleId: string; roleName: string; runId: string }[];
   /** app.routing_selection/v1: how the roles were chosen; absent on proposals written before it. */
   selection?: RoutingSelection;
-  /** The discussion a `follow_up` selection continues; that discussion no longer counts as open. */
+  /** The discussion this dispatch continues (a `follow_up` before #169, a model proposal for the same team since); it no longer counts as open. */
   continues?: string | null;
 }
 
@@ -222,7 +222,7 @@ function startDiscussion(tx: AppTransaction, input: {
 
 /** A dispatch selection to admit: Jit's model proposal (names are lookup keys only) or a fixed rule's role ids. */
 export type DispatchSelectionInput =
-  | { rule: "model"; names: readonly string[]; configuration: { ownerRevision: number; projectRevision: number } }
+  | { rule: "model"; names: readonly string[]; configuration: { ownerRevision: number; projectRevision: number }; followUp?: FollowUpCandidate | null }
   | { rule: Exclude<SelectionRule, "model">; roleIds: readonly string[]; continues: string | null };
 
 /**
@@ -271,6 +271,9 @@ export function admitJitDispatch(tx: AppTransaction, input: {
     }
     // `why` stays on the reply record with the model output it came from (data deletion redacts it there).
     record.selection = { rule: "model", roleIds: record.roles.map(role => role.roleId), why: null };
+    // #169: a proposal for roles of the open discussion this message follows continues it instead of opening another.
+    const followUp = selection.followUp;
+    if (followUp && record.roles.length && record.roles.every(role => followUp.roleIds.includes(role.roleId))) record.continues = followUp.discussionId;
   } else {
     for (const id of selection.roleIds) {
       const role = team.roles.find(item => item.id === id);

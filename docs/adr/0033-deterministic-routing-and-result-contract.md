@@ -16,6 +16,8 @@ FR-27, FR-29 and FR-30 make team work cheaper, more predictable and easier to ac
   4. A project with exactly one eligible specialist.
 
   Each rule records `selection: { rule, roleIds }`.
+
+  **Revised 2026-10-29 (#169, owner instruction "fix it at the root").** Rules 3 and 4 decided *whether* to call the team, not only *who*. On the Pi, a leftover pilot role was called on every owner message under rule 4. Only rules 1 and 2, which are explicit owner intent, now call specialists without Jit. Rule 3 becomes context for Jit's own proposal: a proposal for the same team continues that discussion. Rule 4 is removed. Jit answers by default and proposes a dispatch only when the owner asks for the team or the question clearly needs separate specialist analysis. This matches openbot's orchestrator rule "answer yourself; delegate only when a teammate's tools, accounts or long work are needed".
 - **Model selection otherwise.** The existing Jit reply proposes dispatch as described in ADR 0030. That run has no tools. Its output must match a closed schema of roles plus a short `why` of at most 160 characters. The service still validates names against configuration and against the allowance. An invalid or stale selection becomes a held proposal and never broadcasts.
 - **Visible reason.** A selection made by the model adds one line to the team card: "Jit chose X because …". The `why` text is shown escaped, as untrusted data. From the same card the owner can skip, add or re-dispatch. A deterministic selection shows only the rule name.
 - **Result contract `app.specialist_results/v2`.**

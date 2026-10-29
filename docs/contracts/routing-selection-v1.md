@@ -16,16 +16,26 @@ selectRoles(tx, { message: { id; sequence; text; replyTo? }, topic: { id }, proj
   { selection: RoutingSelection; continues: string | null } | null;
 ```
 
-`selectRoles` runs inside the owner's `message.send` (or `chat.start`) transaction, before the Jit reply is admitted. It applies four fixed rules in ADR 0033 order and makes no model call. It returns null when no rule applies.
+`selectRoles` runs inside the owner's `message.send` (or `chat.start`) transaction, before the Jit reply is admitted. It applies the fixed rules below in order and makes no model call. It returns null when no rule applies. Since #169 only explicit owner intent selects without Jit: rules 3 and 4 no longer select (see "Answer first").
 
 | Order | Rule | Applies when | Roles |
 | --- | --- | --- | --- |
 | 1 | `named` | The text has an `@name` that matches exactly one enabled, routed specialist. The match is NFC, case-insensitive and exact; the longest configured name wins, so names may contain spaces. A mention starts at an `@` that is not inside a word or an address (`a@b` is not a mention) and ends at a word boundary. | Every such specialist, in order of mention. A mention shared by several eligible specialists is ambiguous: the service does not guess, so only an explicit `reply` target may still apply and otherwise the model path decides. Mentions of the coordinator, of disabled or unrouted roles, or of no configured role are ignored. |
 | 2 | `reply` | `replyTo` names a participation of a discussion in this topic, and that role is still an eligible specialist. | That role. |
-| 3 | `follow_up` | The topic has exactly one open Jit-dispatched discussion, its team reply has committed, and no other owner message came after that team reply. A discussion is open unless it was stopped (`team.stop_all`), the owner has a current decision on it, or a later `follow_up` continued it (`continues`). Discussions the owner started from the dispatch form have no dispatch card and do not count. | Its participants that the owner did not skip or exclude and that are still eligible. |
-| 4 | `single` | The project has exactly one eligible specialist. | That specialist. |
+| 3 | `follow_up` (context only since #169) | The topic has exactly one open Jit-dispatched discussion, its team reply has committed, and no other owner message came after that team reply. A discussion is open unless it was stopped (`team.stop_all`), the owner has a current decision on it, or a later dispatch continued it (`continues`). Discussions the owner started from the dispatch form have no dispatch card and do not count. | Its participants that the owner did not skip or exclude and that are still eligible. |
+| 4 | `single` (removed in #169) | The project had exactly one eligible specialist. | Nobody now. |
 
 An invalid `replyTo` rejects the whole command with `reply_target_not_found` (404) before anything is written: the discussion must exist in this project and topic and the role must take part in it. A malformed one is `invalid_conversation_command`. `replyTo` is owner input; model text never supplies it.
+
+### Answer first (#169)
+
+Rule 4 called the only specialist on every owner message, small talk included, and rule 3 called the previous team again on the next message after any team reply. Neither asked whether the message needed the team. Since #169:
+
+- Only `named` and `reply` select specialists without Jit.
+- Rule 3's condition is computed by `followUpCandidate` and stored on the reply record as `followUp: { discussionId, roleIds }`. It calls nobody. The reply run gets one more sentence in its dispatch line naming that discussion's specialists, and says to propose them again only if the owner asks that team to continue. When Jit's model proposal is admitted and every admitted role belongs to `followUp.roleIds`, the proposal records `continues: followUp.discussionId`, so the chain stays one open discussion.
+- Rule 4 is gone.
+- The dispatch line starts with "Answer the owner yourself by default." It allows a dispatch proposal only when the owner asks for the team or the question clearly needs a specialist's separate analysis, never for greetings, small talk, quick questions or anything Jit can answer well itself.
+- Records written before #169 keep `follow_up` and `single`; cards still render them with their dictionary labels.
 
 ### With a fixed rule
 
@@ -81,8 +91,8 @@ All labels are dictionary keys in Thai and English.
 - `@database` with one role named Database: rule `named`, the reply run is not offered a dispatch, and its proposal is discarded. The card and discussion record the rule; the standing-allowance origin is unchanged. Addresses, in-word `@`, prefixes and unknown names are not mentions.
 - `@db` matching two roles: no rule, the model path.
 - A reply to a participation: rule `reply`. A role outside the discussion or a discussion in another topic is rejected and writes nothing.
-- A follow-up after the only open discussion's team reply: rule `follow_up`, which continues the chain. With two open discussions, or after a second owner message, or after stop-all, the model path decides.
-- One eligible specialist: rule `single`.
+- A follow-up after the only open discussion's team reply: no rule. Jit is told about the open discussion. A proposal for the same roles continues it, and a reply Jit answers itself calls nobody. With two open discussions, or after a second owner message, or after stop-all, Jit is not told (#169).
+- One eligible specialist and a message that names nobody: no rule, and nobody is called unless Jit proposes it (#169).
 - A model selection naming a disabled role, or made before the team changed: a held proposal with no job admitted. The owner can still accept it, and the discussion keeps Jit's selection.
 - `why: "<img src=x onerror=alert(1)>"` rendered escaped and labelled in Thai and English; a `why` over 160 characters, non-string or empty, or an extra key, discards the entry.
 - Allowance 1 and a rule selecting 2 roles: `over_allowance`, held per BOT04, then accepted by the owner.
