@@ -1,3 +1,5 @@
+import { DeviceSignIns, type SignInCommand, type SignInOptions, type SignInReceipt, type SignInView, type ProviderReadiness } from "./device-sign-in";
+import { recommendedModel, type RouteProvider } from "./team/route-options";
 import { AttachmentSanitizer } from "./attachments/sanitizer";
 import type { AttachmentSanitizerRuntime } from "./attachments/sanitizer-runtime";
 import { reconcileForgottenAttachments, attachmentProjectContributor, replayAttachmentLifecycle, type AttachmentCopyCleanup } from "./attachments/lifecycle";
@@ -18,7 +20,7 @@ import { TransactionStore, type AppTransaction } from "./store";
 import { preferencesIdentity, readPreferences, writePreferences, type PreferencesReceipt, type SetPreferencesCommand, type UiPreferences } from "./preferences";
 import { localApiIdentity, readLocalApi, writeLocalApi, type LocalApiReceipt, type LocalApiSettings, type SetLocalApiCommand } from "./local-api/settings";
 import { personaIdentity, readPersona, writePersona, type Persona, type PersonaReceipt, type SetPersonaCommand } from "./persona";
-import { applySetup, isSetupCommand, readGeneralSpace, readSetup, setupCheckWorkId, setupComplete, setupIdentity, type GeneralSpace, type SetupCommand, type SetupReceipt, type SetupView } from "./setup";
+import { checkSignedInRoute, applySetup, isSetupCommand, readGeneralSpace, readSetup, setupCheckWorkId, setupComplete, setupIdentity, type GeneralSpace, type SetupCommand, type SetupReceipt, type SetupView } from "./setup";
 import { jitReplyWorkId, admitJitReply, readRepliesFor, readReply, readReplyChanges, stopReply, stopReplyIdentity, type JitReplyView, type ReplyReceipt, type StopReplyCommand } from "./team/jit-reply";
 import { conversationIdentity, mutateConversation, readMessages, readTopic, readTopics, requireCursor,
   type ChatReceipt, type ConversationCommand, type CreateTopicCommand, type SendMessageCommand, type StartChatCommand, type Topic, type TopicReceipt, type MessageReceipt } from "./conversation";
@@ -65,7 +67,7 @@ import { allowanceIdentity, readDispatchAllowance, writeDispatchAllowance, type 
 import { dispatchIdentity, executeDispatchCommand, readDispatchCard, readDispatchCards, type DispatchCardView, type DispatchCommand, type DispatchReceipt } from "./team/jit-dispatch";
 import { acceptDecision, decisionIdentity, prepareSynthesis, readDecisionModel, supersedeDecision } from "./team/decisions";
 import { preparePreview, readPreview } from "./team/preview";
-import type { DecisionCommand, DecisionReadModel, DecisionReceipt, TeamCommand, TeamReceipt } from "./team/types";
+import type { RoleRoute, DecisionCommand, DecisionReadModel, DecisionReceipt, TeamCommand, TeamReceipt } from "./team/types";
 import { coordinatorSynthesisWorkId } from "./team/types";
 import {
   attentionIdentity, commitDeliveryIntent, deliveryCommandIdentity, listDeliveryAttempts, listDeliveryIntents, readAttentionLevels, readDeliveryIntent,
@@ -206,6 +208,8 @@ import { ledgerCheckpointPathFor, syncLedgerCheckpoint, type TrustedLedger } fro
 
 /** Injectable clock and transaction fault seam for deterministic persistence checks. */
 export interface ApplicationOptions {
+  /** Fixture protocol/store/clock for Web device sign-in; absent in production. */
+  signIn?: SignInOptions;
   /** Service-supplied isolated runtime; absent means metadata-strip fallback, never a host decoder. */
   attachmentSanitizer?: AttachmentSanitizerRuntime | null;
   /** app.attachments/v1 deterministic storage/capability probes; production defaults fail closed. */
@@ -276,6 +280,8 @@ export interface ApprovalReceipt { card?: ApprovalCard; rule?: AutoApproveRule; 
 
 /** Owns identity validation and revisioned app commands independently of Web or model transports. */
 export class Application {
+  #signIns: DeviceSignIns;
+  #signInReadinessEnabled: boolean;
   #actors = new WeakMap<OwnerActor, string>();
   #now: () => number;
   #beforeCommit: ApplicationOptions["beforeCommit"];
@@ -306,6 +312,8 @@ export class Application {
 
   constructor(readonly store: TransactionStore, readonly config: AppConfig, options: ApplicationOptions = {}) {
     this.#now = options.now ?? Date.now;
+    this.#signIns = new DeviceSignIns(options.signIn);
+    this.#signInReadinessEnabled = config.runPort === "schway" || options.signIn !== undefined;
     this.#beforeCommit = options.beforeCommit;
     if (options.jobs && options.jobs.store !== store) throw new AppError("invalid_job_store");
     this.#jobsOption = options.jobs;
@@ -794,6 +802,31 @@ export class Application {
     return this.store.read(tx => { this.#requireOwner(tx, actor); return readSetup(tx, this.config); });
   }
 
+  /** Web-only local store readiness; no inference or credential values leave Schway. */
+  async providerReadiness(actor: OwnerActor): Promise<ProviderReadiness> {
+    this.store.read(tx => { this.#requireOwner(tx, actor); if (this.#commandChannel(actor) !== "web") throw new AppError("channel_not_authorized", 403); });
+    const readiness = this.#signInReadinessEnabled ? await this.#signIns.readiness(this.config.routeModels) : { codex: "integration-unavailable" as const, grok: "integration-unavailable" as const };
+    const connection = this.setup(actor).connection;
+    // A prior exact-route quota result remains observed evidence; local credential reads cannot clear it.
+    if (connection.status === "blocked" && connection.reason === "quota" && connection.route) return { ...readiness, [connection.route.provider]: "quota-exceeded" };
+    return readiness;
+  }
+
+  /** Web-only credential-free status. Unknown/restarted flow ids are cancelled with an explicit retry. */
+  signInStatus(actor: OwnerActor, provider: RouteProvider, id: string): SignInView {
+    this.store.read(tx => { this.#requireOwner(tx, actor); if (this.#commandChannel(actor) !== "web") throw new AppError("channel_not_authorized", 403); });
+    if (!["codex", "grok"].includes(provider)) throw new AppError("invalid_setup_command");
+    requireId(id);
+    const live = this.#signIns.read(provider, id);
+    if (live.state !== "cancelled" || live.expiresAt !== null) return live;
+    const stored = this.store.read(tx => tx.get<{ result_json: string }>("SELECT result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", id));
+    const metadata = stored ? (JSON.parse(stored.result_json) as SignInReceipt).signIn : null;
+    return metadata && !["starting", "pending"].includes(metadata.state) ? metadata : live;
+  }
+
+  /** Fence all device credential writes during service shutdown and settle native cleanup. */
+  closeDeviceSignIns(): Promise<void> { return this.#signIns.close(); }
+
   /** app.general_space/v1: the installation's one General space, or null before setup creates it. */
   generalSpace(actor: OwnerActor): GeneralSpace | null {
     return this.store.read(tx => { this.#requireOwner(tx, actor, ["web", "telegram"]); return readGeneralSpace(tx); });
@@ -1020,6 +1053,7 @@ export class Application {
   execute(actor: OwnerActor, command: SetAttentionCommand): AttentionReceipt;
   execute(actor: OwnerActor, command: SetPersonaCommand): PersonaReceipt;
   execute(actor: OwnerActor, command: SetupCommand): SetupReceipt;
+  execute(actor: OwnerActor, command: SignInCommand): Promise<SignInReceipt>;
   execute(actor: OwnerActor, command: StopReplyCommand): ReplyReceipt;
   execute(actor: OwnerActor, command: RoleProposalCommand): RoleProposalReceipt;
   execute(actor: OwnerActor, command: SetDispatchAllowanceCommand): DispatchAllowanceReceipt;
@@ -1055,8 +1089,8 @@ export class Application {
   execute(actor: OwnerActor, command: ExportCommand): ExportReceipt;
   execute(actor: OwnerActor, command: UpgradeCommand): Promise<UpgradeReceipt>;
   execute(actor: OwnerActor, command: RestoreCommand): Promise<RestoreReceipt>;
-  execute(actor: OwnerActor, command: CreateProjectCommand | RenameProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetAttentionCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | FeedCommand | AccessCommand | ResetBoxCommand | ConnectionCommand | ApprovalCommand | McpCommand | TakeoverCommand | TakeoverInputCommand | SetComputerSettingsCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | WebhookCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | AttentionReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | FeedReceipt | AccessReceipt | Promise<BoxResetReceipt> | ConnectionReceipt | ApprovalReceipt | McpReceipt | TakeoverReceipt | Promise<TakeoverInputReceipt> | ComputerSettingsReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | WebhookReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt>;
-  execute(actor: OwnerActor, command: CreateProjectCommand | RenameProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetAttentionCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | FeedCommand | AccessCommand | ResetBoxCommand | ConnectionCommand | ApprovalCommand | McpCommand | TakeoverCommand | TakeoverInputCommand | SetComputerSettingsCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | WebhookCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | AttentionReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | FeedReceipt | AccessReceipt | Promise<BoxResetReceipt> | ConnectionReceipt | ApprovalReceipt | McpReceipt | TakeoverReceipt | Promise<TakeoverInputReceipt> | ComputerSettingsReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | WebhookReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt> {
+  execute(actor: OwnerActor, command: CreateProjectCommand | RenameProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetAttentionCommand | SetPersonaCommand | SetupCommand | SignInCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | FeedCommand | AccessCommand | ResetBoxCommand | ConnectionCommand | ApprovalCommand | McpCommand | TakeoverCommand | TakeoverInputCommand | SetComputerSettingsCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | WebhookCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | AttentionReceipt | PersonaReceipt | SetupReceipt | Promise<SignInReceipt> | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | FeedReceipt | AccessReceipt | Promise<BoxResetReceipt> | ConnectionReceipt | ApprovalReceipt | McpReceipt | TakeoverReceipt | Promise<TakeoverInputReceipt> | ComputerSettingsReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | WebhookReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt>;
+  execute(actor: OwnerActor, command: CreateProjectCommand | RenameProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetAttentionCommand | SetPersonaCommand | SetupCommand | SignInCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | FeedCommand | AccessCommand | ResetBoxCommand | ConnectionCommand | ApprovalCommand | McpCommand | TakeoverCommand | TakeoverInputCommand | SetComputerSettingsCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | WebhookCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | AttentionReceipt | PersonaReceipt | SetupReceipt | Promise<SignInReceipt> | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | FeedReceipt | AccessReceipt | Promise<BoxResetReceipt> | ConnectionReceipt | ApprovalReceipt | McpReceipt | TakeoverReceipt | Promise<TakeoverInputReceipt> | ComputerSettingsReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | WebhookReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt> {
     if (command?.kind === "message.send" && !this.config.attachments.enabled) {
       const ids = (command.payload as unknown as { attachmentIds?: unknown })?.attachmentIds;
       if (ids !== undefined && (!Array.isArray(ids) || ids.length > 0)) {
@@ -1101,6 +1135,7 @@ export class Application {
     if (command?.kind === "local_api.set") return this.#setLocalApi(actor, command);
     if (command?.kind === "attention.set") return this.#setAttention(actor, command);
     if (command?.kind === "persona.set") return this.#setPersona(actor, command);
+    if (command?.kind === "setup.sign_in" || command?.kind === "setup.sign_in.cancel") return this.#signInCommand(actor, command);
     if (isSetupCommand(command)) return this.#setupCommand(actor, command);
     if (command?.kind === "jit.reply.stop") return this.#stopReply(actor, command);
     if (command?.kind === "role.proposal.accept" || command?.kind === "role.proposal.reject" || command?.kind === "role.proposal.revise") return this.#roleProposalCommand(actor, command);
@@ -2824,6 +2859,67 @@ export class Application {
       return receipt;
     });
     this.#jobs?.cancelFenced();
+    return result;
+  }
+
+  /** Admit a Web owner sign-in once, persisting metadata only before starting any provider work. */
+  async #signInCommand(actor: OwnerActor, command: SignInCommand): Promise<SignInReceipt> {
+    const exact = (value: unknown, keys: string[]) => !!value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).sort().join(",") === keys.sort().join(",");
+    if (!exact(command, ["kind", "requestId", "projectId", "expectedRevision", "payload"]) || command.projectId !== null ||
+        typeof command.requestId !== "string" || !/^[a-zA-Z0-9_-]{8,128}$/.test(command.requestId) ||
+        !Number.isSafeInteger(command.expectedRevision) || command.expectedRevision < 0 ||
+        !exact(command.payload, ["provider", "surface", "flowId"]) || !["codex", "grok"].includes(command.payload.provider) ||
+        !["setup", "settings"].includes(command.payload.surface) ||
+        (command.kind === "setup.sign_in" ? command.payload.flowId !== null : typeof command.payload.flowId !== "string")) throw new AppError("invalid_setup_command");
+    requireId(command.requestId);
+    if (command.payload.flowId !== null) requireId(command.payload.flowId);
+    const { provider, surface, flowId } = command.payload;
+    const payloadHash = createHash("sha256").update(JSON.stringify([command.kind, command.expectedRevision, provider, surface, flowId])).digest("hex");
+    const assertCurrent = () => {
+      this.store.read(tx => { this.#requireOwner(tx, actor); if (this.#commandChannel(actor) !== "web") throw new AppError("channel_not_authorized", 403); });
+      if (this.#upgradeBusy || upgradeFenced(this.store.path)) throw new AppError("service_unavailable", 503);
+    };
+    assertCurrent();
+    let fresh = false;
+    let captured: RoleRoute | null = null;
+    const metadata = this.store.transaction(tx => {
+      this.#requireOwner(tx, actor);
+      const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
+      if (prior) {
+        if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409);
+        return (JSON.parse(prior.result_json) as SignInReceipt).signIn;
+      }
+      const setup = readSetup(tx, this.config), now = this.#now();
+      if ((surface === "setup" ? setup.revision : readTeam(tx, null, this.config.team).ownerRevision) !== command.expectedRevision) throw new AppError("stale_revision", 409);
+      const busy = command.kind === "setup.sign_in" && this.#signIns.busy(provider);
+      if (surface === "setup" && command.kind === "setup.sign_in" && !busy) {
+        // The button names this provider explicitly. Keep an already-selected custom model/alias on the same route.
+        captured = setup.connection.route?.provider === provider ? setup.connection.route : { provider, model: recommendedModel(provider, this.config.routeModels), authRoute: provider };
+        applySetup(tx, { kind: "setup.connect", requestId: command.requestId, projectId: null, expectedRevision: setup.revision, payload: { route: captured } },
+          { config: this.config, queue: this.#jobs, generation: tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'")!.generation, now, deferCheck: true });
+      } else captured = setup.connection.route?.provider === provider ? setup.connection.route : null;
+      const signIn: SignInView = { id: flowId ?? command.requestId, expiresAt: null, state: busy ? "busy" : command.kind === "setup.sign_in.cancel" ? "cancelled" : "starting" };
+      tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify({ signIn }), now);
+      tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, 'owner', ?)", command.kind, command.requestId, now);
+      this.#beforeCommit?.("receipt"); fresh = true;
+      return signIn;
+    });
+    if (!fresh) return { signIn: ["starting", "pending"].includes(metadata.state) ? this.#signIns.read(provider, metadata.id) : metadata };
+    const save = (signIn: SignInView) => {
+      try { this.store.transaction(tx => tx.run("UPDATE command_receipts SET result_json = ? WHERE actor_id = 'owner' AND request_id = ?", JSON.stringify({ signIn }), command.requestId)); }
+      catch { /* Shutdown has fenced credential writes; no raw storage errors leave the flow. */ }
+    };
+    if (command.kind === "setup.sign_in.cancel") { const signIn = this.#signIns.cancel(provider, metadata.id); save(signIn); return { signIn }; }
+    if (metadata.state === "busy") return { signIn: metadata };
+    const result = await this.#signIns.start(provider, metadata.id, assertCurrent, save, () => {
+      if (!captured) return;
+      this.store.transaction(tx => {
+        this.#requireOwner(tx, actor);
+        checkSignedInRoute(tx, captured!, { config: this.config, queue: this.#jobs,
+          generation: tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'")!.generation, now: this.#now() }, command.requestId);
+      });
+      this.#jobs?.cancelFenced();
+    });
     return result;
   }
 

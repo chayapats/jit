@@ -1,4 +1,7 @@
 import { fillText } from "./web-proposal-card";
+import { signInPage, signInPath } from "./web-sign-in";
+import type { SignInCommand } from "./device-sign-in";
+import type { RouteProvider } from "./team/route-options";
 import { Application, type CreateProjectCommand } from "./application";
 import { AppError } from "./errors";
 import { ownerSetupCsrf } from "./ops/owner-setup";
@@ -1218,6 +1221,33 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         if (!api && result.quarantine.activation.sessionsRevoked) return respond(null, 303, { Location: "/login" });
         return api ? json(result) : respond(null, 303, { Location: `/settings/restores/${result.quarantine.id}` });
       }
+      // Device sign-in is Web owner authority only. Approval appears in this POST response once, never on GET.
+      const signInRoute = /^\/(?:api\/)?setup\/sign-in(?:\/(codex|grok)\/([a-f0-9-]{36})(\/cancel)?)?$/.exec(url.pathname);
+      if (signInRoute) {
+        const provider = signInRoute[1] as RouteProvider | undefined, id = signInRoute[2];
+        const surfaceOf = (value: unknown): "setup" | "settings" => {
+          if (value !== "setup" && value !== "settings") throw new AppError("invalid_setup_command");
+          return value;
+        };
+        const revision = (surface: "setup" | "settings") => surface === "setup" ? app.setup(auth.actor).revision : app.team(auth.actor).ownerRevision;
+        const reply = (receipt: Parameters<typeof signInPage>[0], selected: RouteProvider, surface: "setup" | "settings") =>
+          api ? json(receipt) : respond(renderWith(ui, () => signInPage(receipt, selected, surface, auth.csrf, revision(surface))), 200,
+            { "Content-Language": ui.locale, "Referrer-Policy": "no-referrer", "Vary": "Accept-Language, Cookie" });
+        if (request.method === "GET" && provider && id && !signInRoute[3]) {
+          const surface = surfaceOf(url.searchParams.get("surface"));
+          return reply({ signIn: app.signInStatus(auth.actor, provider, id) }, provider, surface);
+        }
+        if (request.method !== "POST" || id && !signInRoute[3]) throw new AppError("not_found", 404);
+        const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
+        if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", "surface", ...(id ? [] : ["provider"])].includes(key))) throw new AppError("invalid_body");
+        const surface = surfaceOf(body.surface), selected = (provider ?? body.provider) as RouteProvider;
+        const command = { kind: id ? "setup.sign_in.cancel" : "setup.sign_in", requestId: body.requestId, projectId: null,
+          expectedRevision: typeof body.expectedRevision === "string" && /^\d{1,15}$/.test(body.expectedRevision) ? Number(body.expectedRevision) : body.expectedRevision,
+          payload: { provider: selected, surface, flowId: id ?? null } } as SignInCommand;
+        const receipt = await app.execute(auth.actor, command);
+        if (id && !api) return respond(null, 303, { Location: signInPath(selected, id, surface), "Referrer-Policy": "no-referrer" });
+        return reply(receipt, selected, surface);
+      }
       // app.setup/v1 ("ตั้งจิต"): one page per step and one form post per step. A finished setup is never shown again.
       const setupAction = /^\/(api\/)?setup\/(wake|connect|check|connect-continue|know|personality|personality-skip|complete)$/.exec(url.pathname);
       if (request.method === "GET" && (url.pathname === "/setup" || url.pathname === "/api/setup")) {
@@ -1228,7 +1258,8 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         // The wake step previews the other language without saving anything; its form saves the choice.
         const lang = url.searchParams.get("lang");
         const locale: Locale = shown === "wake" && (lang === "th" || lang === "en") ? lang : ui.locale;
-        return respond(renderWith({ ...ui, locale }, () => setupPage(setup, auth.csrf, shown, config.routeModels)), 200, { "Content-Language": locale, "Vary": "Accept-Language, Cookie" });
+        const readiness = shown === "connect" ? await app.providerReadiness(auth.actor) : undefined;
+        return respond(renderWith({ ...ui, locale }, () => setupPage(setup, auth.csrf, shown, config.routeModels, readiness)), 200, { "Content-Language": locale, "Vary": "Accept-Language, Cookie" });
       }
       if (request.method === "POST" && setupAction) {
         const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
@@ -1343,7 +1374,8 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       }
       if (request.method === "GET" && teamRoute) {
         const state = app.team(auth.actor, teamRoute[1] ?? null);
-        return api ? json(state) : page(() => teamPage(state, nav(), auth.csrf, config.jobs.maximum, url.searchParams.get("preset") ?? undefined, config.routeModels));
+        const readiness = !api && !state.project ? await app.providerReadiness(auth.actor) : undefined;
+        return api ? json(state) : page(() => teamPage(state, nav(), auth.csrf, config.jobs.maximum, url.searchParams.get("preset") ?? undefined, config.routeModels, readiness));
       }
       if (request.method === "GET" && previewRoute) {
         const state = app.preview(auth.actor, previewRoute[1]!, previewRoute[2]!);

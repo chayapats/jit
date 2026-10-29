@@ -2,8 +2,7 @@
 // Every page is complete without this file. It adds behaviour only: it never posts data itself and
 // never stores owner content (the service worker it registers caches only static assets). Forms still submit
 // through the normal form post (the setup ceremony only delays its own form's submit to play the animation).
-// The only reads it makes are two same-origin GETs that already work as pages: the topic panel page and the
-// bounded ⌘K query.
+// Reads stay on the same origin: topic panels, search, live screenshots and credential-free sign-in status.
 
 const root = document.documentElement;
 root.dataset.enhanced = "true";
@@ -428,4 +427,23 @@ if (palette && typeof palette.showModal === "function") {
   });
   // A click on the backdrop (the dialog element itself, outside its content) closes the palette.
   palette.addEventListener("click", event => { if (event.target === palette) palette.close(); });
+}
+
+// Device sign-in: same-origin status reads only. Approval stays on the original page until settlement.
+const signIn = document.querySelector("[data-sign-in][data-status-url]");
+if (signIn && localPath(signIn.dataset.statusUrl) && localPath(signIn.dataset.statusPage)) {
+  let stopped = false;
+  const poll = async () => {
+    if (stopped) return;
+    if (Date.now() >= Number(signIn.dataset.deadline)) { location.replace(signIn.dataset.statusPage); return; }
+    try {
+      const response = await fetch(signIn.dataset.statusUrl, { credentials: "same-origin", cache: "no-store", headers: { accept: "application/json" }, signal: AbortSignal.timeout(5000) });
+      if (!response.ok) return;
+      const body = await response.json();
+      if (body?.signIn && !["starting", "pending"].includes(body.signIn.state)) { location.replace(body.signIn.state === "ready" && localPath(signIn.dataset.readyPage) ? signIn.dataset.readyPage : signIn.dataset.statusPage); return; }
+    } catch { /* The no-script refresh and cancellation controls remain available. */ }
+    if (!stopped) window.setTimeout(poll, 1500);
+  };
+  window.addEventListener("pagehide", () => { stopped = true; }, { once: true });
+  window.setTimeout(poll, 1500);
 }

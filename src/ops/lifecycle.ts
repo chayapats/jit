@@ -520,6 +520,7 @@ export function serveFullApp(handle: FullAppHandle, options: { drainTimeoutMs?: 
       // requests get a short grace period, then idle keep-alive connections are closed.
       await Promise.race([server.stop(), Bun.sleep(2000)]);
       await server.stop(true);
+      await handle.app.closeDeviceSignIns();
       await handle.app.closeAttachmentSanitizer();
       let result: DrainResult;
       try { result = await stopDrain(handle, { timeoutMs: drainTimeoutMs }); }
