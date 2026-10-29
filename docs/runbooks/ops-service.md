@@ -4,6 +4,65 @@ Owner-executable checklist for the packaged service (`ops.service_package/v1`, d
 
 ## 0. Host prerequisites (owner, not automated)
 
+### One-command installation (INST01)
+
+For a fresh default-layout installation, [ops.installer/v1](../contracts/ops-installer-v1.md)
+automates these prerequisites after showing the complete plan and asking once:
+
+```sh
+curl -fsSL https://github.com/chayapats/jit/releases/latest/download/install.sh | sh
+# Or, from an extracted release:
+./install.sh                 # --yes skips the one plan confirmation
+./install.sh --uninstall     # preserves all data, credentials and releases
+```
+
+The bootstrap distributed in a release pins its archive URL to that release's
+tag. Release owners prepare the three assets with
+`bun ops/package/installer/release.ts <checkout> <fresh-output> <release-tag>`
+and publish them together; building them does not publish a release.
+
+The service binds only `127.0.0.1:3000`. It prints a single-use setup link; open
+it on the host, create the owner password in Web, then continue to ตั้งจิต.
+For a remote host, use already configured private HTTPS ingress; an optional
+owner-run VPN one-liner is `sudo tailscale serve --bg http://127.0.0.1:3000`
+(VPN installation/enrollment is separate). Configure the service's HTTPS origin
+using the existing private-ingress contract before using that address, because
+Host/Origin checks remain enforced. No public port is opened by the installer.
+Never save the printed link, cookies, passwords or unlock value in evidence.
+Provider Web sign-in is SIGN01 #175; INST01 acceptance ends at the setup link.
+
+A re-run preserves existing config/keyring/data and repairs compatible releases.
+A schema change reports `schema-upgrade`; use the owner-authorized staged
+upgrade below before retrying. No owner password is requested by the installer.
+Missing Podman/images produce an explicit chat-only result. Optional pre-pulls
+use only published digest entries, initially none (WEB02/ATT02 follow-ups).
+
+Opt-in live acceptance is **not run by the implementation agent**:
+
+1. Owner authorizes a fresh Ubuntu 24.04 x64 VM and an arm64 Pi 5, both with
+   systemd; use a local console/private browser, never public ingress. Record
+   commit SHA, release asset SHA-256, OS/arch and detected RAM/CPU/disk in ignored
+   `.local` evidence. Do not record installation addresses or raw output publicly.
+2. Build/publish the tested release assets, run the one command, inspect its
+   plan, approve once, and record only step outcomes. Verify service UID is
+   non-root and the listener is loopback-only; inspect permissions with
+   `stat -c '%a %U' /var/lib/jit/state/attachments /var/lib/jit/keyring-unlock`
+   (0700/0600), without reading either file's contents.
+3. Open the printed link privately, choose the password only in Web, verify
+   redirect to `/setup`, then verify the same link is refused. On a disposable
+   fresh installation, let a separate link expire for 15 minutes and verify
+   refusal/re-run rotation. Never attach token-bearing screenshots or URLs.
+4. Re-run and verify the same database/config/keyring survive; the existing
+   owner receives `/login`. Reboot within the owner's window and verify Jit,
+   the user bus and unlocked login collection return without terminal unlock.
+5. On disposable installations, exercise missing Podman, a forced optional
+   image failure, insufficient reserve, retry after a named failure and
+   `--uninstall`; verify data/backups/attachments/keyring/config remain. Record
+   sanitized pass/blocked + next action per architecture, never raw journals.
+6. Leave “chat after Web sign-in” blocked on SIGN01 #175. Do not perform login
+   or inference as evidence for INST01 or mark either host accepted until the
+   owner supplies this evidence. This procedure does not authorize SSH or a live run.
+
 - A dedicated non-root, non-login service identity (for example `jit`, shell `/usr/sbin/nologin`, home outside `/home`). The package never creates users.
 - Directories owned by that identity, mode 0700: state (for example `/var/lib/jit/state`), backups (`/var/lib/jit/backups`); a working directory (`/var/lib/jit/work`); a releases parent (`/opt/jit`).
 - The pinned Bun at an absolute path (`bun --version` must equal the manifest pin).

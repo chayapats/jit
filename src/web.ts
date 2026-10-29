@@ -1,5 +1,7 @@
 import { Application, type CreateProjectCommand } from "./application";
 import { AppError } from "./errors";
+import { ownerSetupCsrf } from "./ops/owner-setup";
+import { ownerSetupPage } from "./web-owner-setup";
 import type { CreateTopicCommand, SendMessageCommand, StartChatCommand } from "./conversation";
 import type { PromotionCommand } from "./promotion";
 import { workspacePage, projectPage, conversationPage, boxLivePage, sourcePage, jobsPage, teamPage, previewPage, discussionPage, deliveryPage, deliveryDetailPage, prReportsPage, prReportPage, prWebhookSecretPage, tasksPage, taskPage, memoryPage, memoryClaimPage, memoryContextPage, schedulesPage, scheduleDetailPage, backupsPage, backupDetailPage, deletionsPage, deletionDetailPage, exportsPage, exportDetailPage, upgradesPage, upgradeDetailPage, restoresPage, restoreDetailPage, loginPage, errorPage } from "./web-layout";
@@ -136,7 +138,8 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
     };
     /** Renders an HTML page in the request's language and theme. */
     const page = (render: () => string, status = 200) =>
-      respond(renderWith(ui, render), status, { "Content-Language": ui.locale, "Vary": "Accept-Language, Cookie" });
+      respond(renderWith(ui, render), status, { "Content-Language": ui.locale, "Vary": "Accept-Language, Cookie",
+        ...(url.pathname === "/owner/setup" ? { "Referrer-Policy": "no-referrer" } : {}) });
     try {
       if (url.host !== expectedHost || (request.headers.has("host") && request.headers.get("host") !== expectedHost)) {
         throw new AppError("origin_rejected", 403);
@@ -163,6 +166,26 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       // web.settings_ia/v1: moved installation pages answer GET with a permanent redirect to their settings page.
       const moved = request.method === "GET" ? legacyRedirect(url.pathname) : null;
       if (moved) return respond(null, 308, { Location: `${moved}${url.search}` });
+      if (url.pathname === "/owner/setup") {
+        const setupName = secure ? "__Host-jit_setup" : "jit_setup";
+        const setupCookie = (value: string, age: number) => `${setupName}=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${age}${secure ? "; Secure" : ""}`;
+        const setupHeaders = { "Referrer-Policy": "no-referrer" };
+        const linked = request.method === "GET" ? url.searchParams.get("token") : null;
+        const cookies = (request.headers.get("cookie") ?? "").split(";").map(part => part.trim()).filter(part => part.startsWith(`${setupName}=`));
+        const capability = linked ?? (cookies.length === 1 ? cookies[0]!.slice(setupName.length + 1) : "");
+        app.checkOwnerSetup(capability);
+        if (linked !== null) return respond(null, 303, { ...setupHeaders, Location: "/owner/setup", "Set-Cookie": setupCookie(capability, 900) });
+        if (request.method === "GET") return new Response(renderWith(ui, () => ownerSetupPage(ownerSetupCsrf(capability))), {
+          headers: { ...headers, ...setupHeaders, "Content-Type": "text/html; charset=utf-8", "Content-Language": ui.locale } });
+        const body = await payload(request);
+        app.verifyCsrf(ownerSetupCsrf(capability), body.csrf);
+        if (typeof body.password !== "string" || body.password !== body.confirm) throw new AppError("owner_setup_password_mismatch");
+        await app.completeOwnerSetup(capability, body.password);
+        const session = await app.login(body.password);
+        const response = respond(null, 303, { ...setupHeaders, Location: "/setup", "Set-Cookie": cookie(session, config.sessionSeconds) });
+        response.headers.append("Set-Cookie", setupCookie("", 0));
+        return response;
+      }
       if (request.method === "GET" && url.pathname === "/login") {
         return page(() => loginPage());
       }
