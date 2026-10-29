@@ -142,7 +142,10 @@ network or inference. `configured-unverified` labels the account Ready, separate
 from verified inference; `needs-login`/`rejected` labels Sign in needed; quota
 evidence from the existing exact-route check labels Quota exhausted. Unavailable
 stores/integrations remain blocked. The scripted profile never inspects a native
-store just to render a page.
+store just to render a page. A process-owned `cleanup-required` readiness flag
+takes precedence over readable leftover credentials and older quota evidence,
+including during replacement/cancelled flows. It shows the blocked label and
+secure-store recovery action until a successful guarded commit clears it.
 
 Setup's Sign in button explicitly selects its provider with #167's route defaults
 (or preserves an existing model/alias on that provider), deferring inference until
@@ -162,9 +165,13 @@ It never advances setup, selects another route or changes billing.
   Local API, Telegram and fabricated/model actors are rejected.
 - Local store reads have a five-second deadline. Schway's start deadline is 30 seconds; polling ends by the earlier provider
   expiry or ten minutes. The Web enhancement reads status every 1.5 seconds with
-  a five-second request timeout and returns to provider cards on ready. Plain
+  a five-second request timeout and returns to provider cards on ready. Transient
+  HTTP/network errors retry with exponential backoff (three to ten seconds),
+  bounded by the same deadline. Definitive HTTP errors show a localized error
+  and refresh retry. Plain
   forms and manual refresh work without JavaScript.
-- Shutdown cancels flows before closing the application store. After a crash,
+- Shutdown cancels flows and awaits their start and polling cleanup for at most
+  30 seconds before closing the application store. After a crash,
   an unknown pending flow is cancelled/retryable; codes are never reconstructed.
 
 ### Opt-in reference-host evidence

@@ -12,7 +12,7 @@ export interface SignInCommand {
   payload: { provider: RouteProvider; surface: "setup" | "settings"; flowId: string | null };
 }
 /** Safe local readiness, separate from the existing inference check. */
-export type ProviderReadiness = Readonly<Record<RouteProvider, HostAuthStatusCode>>;
+export type ProviderReadiness = Readonly<Record<RouteProvider, HostAuthStatusCode | "cleanup-required">>;
 /** Deterministic host seams only; production uses Schway's native secure store as the service identity. */
 export interface SignInOptions { store?: HostCredentialStore; fetch?: HostAuthFetch; clock?: HostClock }
 
@@ -22,11 +22,12 @@ const nativeClock: HostClock = { now: Date.now, sleep: (ms, signal) => new Promi
   const timer = setTimeout(() => { signal?.removeEventListener("abort", abort); resolve(); }, ms);
   timer.unref(); signal?.addEventListener("abort", abort, { once: true });
 }) };
-interface Flow { view: SignInView; controller: AbortController; deadline: AbortController; handle?: HostDeviceSignIn; settled: boolean; done?: Promise<void> }
+interface Flow { view: SignInView; controller: AbortController; deadline: AbortController; handle?: HostDeviceSignIn; settled: boolean; starting?: Promise<SignInReceipt>; done?: Promise<void> }
 
 /** Process-owned, bounded device flows. Handles stay private; only the initial caller receives approval data. */
 export class DeviceSignIns {
   #flows = new Map<RouteProvider, Flow>();
+  #recoveryRequired = new Set<RouteProvider>();
   #closed = false;
   #clock: HostClock;
   constructor(private options: SignInOptions = {}) { this.#clock = options.clock ?? nativeClock; }
@@ -49,7 +50,11 @@ export class DeviceSignIns {
   /** Read both stores locally without network or inference; failures retain safe host categories. */
   async readiness(models: RouteModels): Promise<ProviderReadiness> {
     const rows = await Promise.all(routeProviders.map(async route => {
-      try { return [route, await this.#readLocal(route, recommendedModel(route, models))] as const; }
+      if (this.#recoveryRequired.has(route)) return [route, "cleanup-required"] as const;
+      try {
+        const local = await this.#readLocal(route, recommendedModel(route, models));
+        return [route, this.#recoveryRequired.has(route) ? "cleanup-required" : local] as const;
+      }
       catch { return [route, "store-unavailable"] as const; }
     }));
     return Object.fromEntries(rows) as ProviderReadiness;
@@ -67,7 +72,17 @@ export class DeviceSignIns {
     if (this.busy(provider)) return { signIn: { id, expiresAt: null, state: "busy" } };
     const flow: Flow = { view: { id, expiresAt: this.#clock.now() + 600_000, state: "starting" }, controller: new AbortController(), deadline: new AbortController(), settled: false };
     this.#flows.set(provider, flow);
-    const publish = (state: SignInView["state"]) => { flow.view.state = state; changed({ ...flow.view }); };
+    // Register the start before any caller/host callback can initiate shutdown.
+    flow.starting = Promise.resolve().then(() => this.#startFlow(provider, flow, assertCurrent, changed, ready));
+    return flow.starting;
+  }
+  async #startFlow(provider: RouteProvider, flow: Flow, assertCurrent: () => void, changed: (view: SignInView) => void, ready: () => void): Promise<SignInReceipt> {
+    const publish = (state: SignInView["state"]) => {
+      if (state === "cleanup-required") this.#recoveryRequired.add(provider);
+      // Only a successful guarded credential commit proves recovery; retries/cancellation do not.
+      else if (state === "ready") this.#recoveryRequired.delete(provider);
+      flow.view.state = state; changed({ ...flow.view });
+    };
     const stop = (state: "expired" | "cancelled") => {
       if (flow.settled) return;
       flow.controller.abort(); flow.handle?.cancel(); publish(state);
@@ -113,10 +128,16 @@ export class DeviceSignIns {
     if (flow?.view.id === id && !flow.settled) { flow.controller.abort(); flow.handle?.cancel(); flow.view.state = "cancelled"; }
     return this.read(provider, id);
   }
-  /** Service shutdown fences writes before waiting for native cancellation cleanup. */
+  /** Fence writes and await both start and native cancellation cleanup, bounded to 30 seconds. */
   async close(): Promise<void> {
     this.#closed = true;
     for (const [provider, flow] of this.#flows) this.cancel(provider, flow.view.id);
-    await Promise.allSettled([...this.#flows.values()].map(flow => flow.done));
+    const timer = new AbortController();
+    try {
+      await Promise.race([
+        Promise.allSettled([...this.#flows.values()].map(async flow => { await flow.starting; await flow.done; })),
+        this.#clock.sleep(30_000, timer.signal),
+      ]);
+    } finally { timer.abort(); }
   }
 }

@@ -11,7 +11,7 @@ import { setupCheckMarker, setupCheckWork } from "../src/setup";
 import { JobQueue } from "../src/jobs/queue";
 import { ScriptedRunPort, fixtureOutcome } from "../src/team/scripted-port";
 import type { ApplicationRunRequest } from "../src/team/types";
-import type { SignInCommand, SignInReceipt } from "../src/device-sign-in";
+import { DeviceSignIns, type SignInCommand, type SignInReceipt } from "../src/device-sign-in";
 import { dictionaries, withLocale } from "../src/i18n";
 import { signInPage } from "../src/web-sign-in";
 
@@ -37,7 +37,7 @@ class Clock implements HostClock {
   async advance(ms: number) { this.time += ms; for (const wait of [...this.waits]) if (wait.at <= this.time) wait.resolve(); await flush(); }
 }
 interface Protocol { result: "pending" | "success" | "denied" | "expired" | "error"; starts: number; requests: string[] }
-async function fixture(options: { failStore?: boolean; uncertain?: boolean; failRead?: boolean; path?: string; clock?: Clock; writeGate?: Promise<void>; expiresIn?: number; hungRead?: boolean; quota?: boolean } = {}) {
+async function fixture(options: { failStore?: boolean; uncertain?: boolean; failRead?: boolean; path?: string; clock?: Clock; writeGate?: Promise<void>; expiresIn?: number; hungRead?: boolean; hungStart?: boolean; quota?: boolean } = {}) {
   const root = options.path ? join(options.path, "..") : mkdtempSync(join(tmpdir(), "jit-sign01-"));
   if (!options.path) roots.push(root);
   const path = options.path ?? join(root, "state.sqlite"), clock = options.clock ?? new Clock();
@@ -49,10 +49,16 @@ async function fixture(options: { failStore?: boolean; uncertain?: boolean; fail
     delete: async identity => { if (options.uncertain) throw new Error(tokenSecret); return values.delete(identity.account); },
   };
   const protocol: Protocol = { result: "pending", starts: 0, requests: [] };
-  const authFetch: HostAuthFetch = async input => {
+  let startAborted = false;
+  const authFetch: HostAuthFetch = async (input, init) => {
     const url = String(input); protocol.requests.push(url);
     if (/usercode|device\/code|device_authorization|device\/authorization/.test(url)) {
       protocol.starts++;
+      if (options.hungStart) await new Promise<never>((_, reject) => {
+        const abort = () => { startAborted = true; reject(new Error("aborted")); };
+        init!.signal!.addEventListener("abort", abort, { once: true });
+        if (init!.signal!.aborted) abort();
+      });
       return Response.json({ user_code: code, device_auth_id: "private-device-id", device_code: "private-device-id", verification_uri: link, interval: 1, expires_in: options.expiresIn ?? 60 });
     }
     if (url.endsWith("/oauth/token")) return Response.json({ access_token: tokenSecret, refresh_token: "REFRESH-SECRET-175", expires_in: 3600 });
@@ -78,7 +84,7 @@ async function fixture(options: { failStore?: boolean; uncertain?: boolean; fail
     expectedRevision: surface === "setup" ? app.setup(auth.actor).revision : app.team(auth.actor).ownerRevision, payload: { provider, surface, flowId },
   });
   const wake = () => app.execute(auth.actor, { kind: "setup.wake", requestId: crypto.randomUUID(), projectId: null, expectedRevision: app.setup(auth.actor).revision, payload: { language: "en" } });
-  return { root, path, store, app, auth, clock, protocol, queue, requests, values, get, post, command, wake };
+  return { root, path, store, app, auth, clock, protocol, queue, requests, values, get, post, command, wake, startAborted: () => startAborted };
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 const status = (f: Fixture, receipt: SignInReceipt, provider: "codex" | "grok" = "codex") => f.app.signInStatus(f.auth.actor, provider, receipt.signIn.id);
@@ -146,6 +152,67 @@ for (const uncertain of [false, true]) test(`store failure is blocked with clean
   const html = withLocale("en", () => signInPage({ signIn: status(f, receipt) }, "codex", "setup", f.auth.csrf, f.app.setup(f.auth.actor).revision));
   expect(html).toContain(dictionaries.en[uncertain ? "signin.recover_store" : "signin.unlock_store"]);
   expect(metadata(f)).not.toContain(tokenSecret); if (!uncertain) expect(f.values.size).toBe(0);
+});
+
+test("readable leftover credentials stay blocked across retries until a guarded commit recovers the store", async () => {
+  const options = { failStore: true, uncertain: true };
+  const f = await fixture(options); f.wake();
+  const failed = await f.app.execute(f.auth.actor, f.command());
+  f.protocol.result = "success"; await f.clock.advance(1000);
+  expect(status(f, failed).state).toBe("cleanup-required"); expect(f.values.size).toBe(1);
+  expect(await f.app.providerReadiness(f.auth.actor)).toEqual({ codex: "cleanup-required", grok: "needs-login" });
+  for (const path of ["/setup?step=connect", "/settings/team"]) {
+    const html = await (await f.get(path)).text();
+    expect(html).toContain(dictionaries.en["signin.readiness.blocked"]);
+    expect(html).toContain(dictionaries.en["signin.recover_store"]);
+    expect(html).not.toContain(`>${dictionaries.en["signin.readiness.ready"]}<`);
+  }
+  f.protocol.result = "pending";
+  const cancelled = await f.app.execute(f.auth.actor, f.command());
+  await f.app.execute(f.auth.actor, f.command("codex", "setup", cancelled.signIn.id)); await flush();
+  expect((await f.app.providerReadiness(f.auth.actor)).codex).toBe("cleanup-required");
+  options.failStore = false; options.uncertain = false;
+  const recovered = await f.app.execute(f.auth.actor, f.command());
+  expect((await f.app.providerReadiness(f.auth.actor)).codex).toBe("cleanup-required");
+  f.protocol.result = "success"; await f.clock.advance(1000);
+  expect(status(f, recovered).state).toBe("ready");
+  expect((await f.app.providerReadiness(f.auth.actor)).codex).toBe("configured-unverified");
+});
+
+test("shutdown aborts a hung provider start and awaits its terminal receipt before returning", async () => {
+  const f = await fixture({ hungStart: true }); f.wake();
+  const command = f.command();
+  const started = f.app.execute(f.auth.actor, command);
+  await flush(); expect(f.protocol.starts).toBe(1);
+  await f.app.closeDeviceSignIns();
+  expect(f.startAborted()).toBe(true);
+  expect(f.store.read(tx => tx.get<{ result_json: string }>("SELECT result_json FROM command_receipts WHERE request_id = ?", command.requestId))!.result_json).toContain('"state":"cancelled"');
+  expect((await started).signIn.state).toBe("cancelled");
+  expect(f.values.size).toBe(0); expect(f.requests).toHaveLength(0); expect(f.clock.waits.size).toBe(0);
+});
+
+test("shutdown also settles the starting flow during its local store preflight", async () => {
+  const clock = new Clock();
+  const signIns = new DeviceSignIns({ clock, store: { get: () => new Promise(() => {}), set: async () => {}, delete: async () => false } });
+  const started = signIns.start("codex", crypto.randomUUID(), () => {}, () => {}, () => {});
+  await signIns.close();
+  expect((await started).signIn.state).toBe("cancelled"); expect(signIns.busy("codex")).toBe(false); expect(clock.waits.size).toBe(0);
+});
+
+test("shutdown bounds waiting for an uncooperative store write while retaining its late-write fence", async () => {
+  let release!: () => void;
+  const writeGate = new Promise<void>(resolve => { release = resolve; });
+  const f = await fixture({ writeGate }); f.wake();
+  const receipt = await f.app.execute(f.auth.actor, f.command());
+  f.protocol.result = "success"; await f.clock.advance(1000);
+  let closed = false;
+  const closing = f.app.closeDeviceSignIns().then(() => { closed = true; });
+  await flush(); expect(closed).toBe(false);
+  await f.clock.advance(29_999); expect(closed).toBe(false);
+  await f.clock.advance(1); await closing;
+  expect(closed).toBe(true);
+  release(); await flush();
+  expect(status(f, receipt).state).toBe("cancelled"); expect(f.values.size).toBe(0); expect(f.requests).toHaveLength(0);
 });
 
 test("restart cancels a pending flow, replay cannot restore a code and retry starts a fresh flow", async () => {
@@ -245,27 +312,77 @@ test("both locales render every terminal state with retry and no inline script o
   }
 });
 
-test("JS status enhancement keeps the one-time code on pending, redirects on ready and stops on page exit", async () => {
-  const callbacks: (() => Promise<void>)[] = [], events = new Map<string, () => void>(), navigated: string[] = [], reads: string[] = [];
-  const state = { value: "pending" };
-  const dataset = { statusUrl: "/api/setup/sign-in/codex/00000000-0000-4000-8000-000000000175?surface=setup", statusPage: "/setup/sign-in/codex/00000000-0000-4000-8000-000000000175?surface=setup", readyPage: "/setup?step=connect#connection", deadline: String(Date.now() + 60_000) };
+async function withSignInDom(run: (dom: {
+  dataset: { statusUrl: string; statusPage: string; readyPage: string; deadline: string };
+  callbacks: { callback: () => Promise<void>; ms: number }[]; events: Map<string, () => void>; navigated: string[]; reads: string[];
+  error: { hidden: boolean }; response: { value: Response | Error }; now: { value: number }; poll(): Promise<void>;
+}) => Promise<void>) {
+  const callbacks: { callback: () => Promise<void>; ms: number }[] = [], events = new Map<string, () => void>(), navigated: string[] = [], reads: string[] = [];
+  const now = { value: 1_900_000_000_000 }, error = { hidden: true }, response = { value: Response.json({ signIn: { state: "pending" } }) as Response | Error };
+  const dataset = { statusUrl: "/api/setup/sign-in/codex/00000000-0000-4000-8000-000000000175?surface=setup", statusPage: "/setup/sign-in/codex/00000000-0000-4000-8000-000000000175?surface=setup", readyPage: "/setup?step=connect#connection", deadline: String(now.value + 60_000) };
   const globals = {
-    document: { documentElement: { dataset: {} }, getElementById: () => null, querySelector: (selector: string) => selector === "[data-sign-in][data-status-url]" ? { dataset } : null, querySelectorAll: () => [], addEventListener: () => {} },
-    window: { setTimeout: (callback: () => Promise<void>) => { callbacks.push(callback); }, addEventListener: (name: string, callback: () => void) => events.set(name, callback) },
+    document: { documentElement: { dataset: {} }, getElementById: () => null, querySelector: (selector: string) => selector === "[data-sign-in][data-status-url]" ? { dataset, querySelector: () => error } : null, querySelectorAll: () => [], addEventListener: () => {} },
+    window: { setTimeout: (callback: () => Promise<void>, ms: number) => { callbacks.push({ callback, ms }); }, addEventListener: (name: string, callback: () => void) => events.set(name, callback) },
     location: { replace: (path: string) => navigated.push(path) },
-    fetch: async (path: string) => { reads.push(path); return Response.json({ signIn: { state: state.value } }); },
+    fetch: async (path: string) => { reads.push(path); if (response.value instanceof Error) throw response.value; return response.value.clone(); },
+    Date: { now: () => now.value },
     isSecureContext: false,
   };
   const descriptors = new Map(Object.keys(globals).map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
   try {
     for (const [key, value] of Object.entries(globals)) Object.defineProperty(globalThis, key, { value, configurable: true, writable: true });
     await import(`../src/web-assets/app.js?signin=${crypto.randomUUID()}`);
-    await callbacks.shift()!(); expect(navigated).toEqual([]); expect(callbacks).toHaveLength(1);
-    state.value = "ready"; await callbacks.shift()!(); expect(navigated).toEqual([dataset.readyPage]);
-    expect(reads).toEqual([dataset.statusUrl, dataset.statusUrl]); expect(JSON.stringify(reads)).not.toContain(code);
-    events.get("pagehide")!();
+    await run({ dataset, callbacks, events, navigated, reads, error, response, now, poll: async () => { const next = callbacks.shift()!; now.value += next.ms; await next.callback(); } });
   } finally {
     for (const [key, descriptor] of descriptors) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete (globalThis as Record<string, unknown>)[key]; }
+  }
+}
+
+test("JS status enhancement keeps the one-time code on pending, redirects on ready and stops on page exit", async () => {
+  await withSignInDom(async dom => {
+    await dom.poll(); expect(dom.navigated).toEqual([]); expect(dom.callbacks).toHaveLength(1);
+    dom.response.value = Response.json({ signIn: { state: "ready" } }); await dom.poll(); expect(dom.navigated).toEqual([dom.dataset.readyPage]);
+    expect(dom.reads).toEqual([dom.dataset.statusUrl, dom.dataset.statusUrl]); expect(JSON.stringify(dom.reads)).not.toContain(code);
+  });
+  await withSignInDom(async dom => {
+    dom.events.get("pagehide")!(); await dom.poll(); expect(dom.reads).toHaveLength(0); expect(dom.callbacks).toHaveLength(0);
+  });
+});
+
+for (const status of [408, 429, 503]) test(`JS status polling retries HTTP ${status} with backoff and returns to the provider page on ready`, async () => {
+  await withSignInDom(async dom => {
+    dom.response.value = new Response(null, { status });
+    await dom.poll(); expect(dom.navigated).toEqual([]); expect(dom.callbacks[0]!.ms).toBe(3000);
+    await dom.poll(); expect(dom.callbacks[0]!.ms).toBe(6000);
+    await dom.poll(); expect(dom.callbacks[0]!.ms).toBe(10_000);
+    await dom.poll(); expect(dom.callbacks[0]!.ms).toBe(10_000);
+    dom.response.value = Response.json({ signIn: { state: "pending" } });
+    await dom.poll(); expect(dom.callbacks[0]!.ms).toBe(1500);
+    dom.response.value = Response.json({ signIn: { state: "ready" } });
+    await dom.poll(); expect(dom.navigated).toEqual([dom.dataset.readyPage]); expect(dom.callbacks).toHaveLength(0); expect(dom.error.hidden).toBe(true);
+  });
+});
+
+test("JS network failures back off only until the existing deadline", async () => {
+  await withSignInDom(async dom => {
+    dom.response.value = new TypeError("network unavailable");
+    await dom.poll(); expect(dom.callbacks[0]!.ms).toBe(3000);
+    dom.now.value = Number(dom.dataset.deadline) - 4000;
+    await dom.poll(); expect(dom.callbacks[0]!.ms).toBe(1000);
+    const reads = dom.reads.length;
+    await dom.poll(); expect(dom.navigated).toEqual([dom.dataset.statusPage]); expect(dom.reads).toHaveLength(reads); expect(dom.callbacks).toHaveLength(0);
+  });
+});
+
+for (const status of [401, 404]) test(`JS HTTP ${status} shows the server-localized status error with a refresh retry`, async () => {
+  await withSignInDom(async dom => {
+    dom.response.value = new Response(null, { status });
+    await dom.poll(); expect(dom.error.hidden).toBe(false); expect(dom.callbacks).toHaveLength(0);
+  });
+  for (const locale of ["th", "en"] as const) {
+    const html = withLocale(locale, () => signInPage({ signIn: { id: crypto.randomUUID(), state: "pending", expiresAt: 1_900_000_060_000 } }, "codex", "setup", "csrf", 0));
+    expect(html).toContain(`data-sign-in-error role="alert" hidden>${dictionaries[locale]["signin.status_error"]} <a href="/setup/sign-in/`);
+    expect(html).toContain(dictionaries[locale]["setup.refresh"]);
   }
 });
 
@@ -283,6 +400,19 @@ test("quota cards reuse the exact-route check result without another inference",
   f.queue.pump(); await f.queue.idle();
   expect((await f.app.providerReadiness(f.auth.actor)).codex).toBe("quota-exceeded");
   expect(await (await f.get("/setup?step=connect")).text()).toContain(dictionaries.en["signin.readiness.quota"]);
+  expect(f.requests).toHaveLength(1);
+});
+
+test("store recovery guidance takes precedence over an older exact-route quota observation", async () => {
+  const options = { quota: true, failStore: false, uncertain: false };
+  const f = await fixture(options); f.wake();
+  await f.app.execute(f.auth.actor, f.command()); f.protocol.result = "success"; await f.clock.advance(1000);
+  f.queue.pump(); await f.queue.idle();
+  expect((await f.app.providerReadiness(f.auth.actor)).codex).toBe("quota-exceeded");
+  options.failStore = true; options.uncertain = true;
+  await f.app.execute(f.auth.actor, f.command("codex", "settings")); await f.clock.advance(1000);
+  expect((await f.app.providerReadiness(f.auth.actor)).codex).toBe("cleanup-required");
+  expect(await (await f.get("/settings/team")).text()).toContain(dictionaries.en["signin.recover_store"]);
   expect(f.requests).toHaveLength(1);
 });
 

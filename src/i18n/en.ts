@@ -24,6 +24,7 @@ export const en: Record<MessageKey, string> = {
   "signin.expires": "Expires",
   "signin.unlock_store": "The secure store is unavailable. Unlock the service identity’s Secret Service, then retry.",
   "signin.recover_store": "Credential cleanup is uncertain. Recover the service identity’s Secret Service before retrying.",
+  "signin.status_error": "Sign-in status could not be read. Refresh to retry.",
   "signin.readiness.ready": "Ready",
   "signin.readiness.needed": "Sign in needed",
   "signin.readiness.quota": "Quota exhausted",

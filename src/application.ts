@@ -808,7 +808,7 @@ export class Application {
     const readiness = this.#signInReadinessEnabled ? await this.#signIns.readiness(this.config.routeModels) : { codex: "integration-unavailable" as const, grok: "integration-unavailable" as const };
     const connection = this.setup(actor).connection;
     // A prior exact-route quota result remains observed evidence; local credential reads cannot clear it.
-    if (connection.status === "blocked" && connection.reason === "quota" && connection.route) return { ...readiness, [connection.route.provider]: "quota-exceeded" };
+    if (connection.status === "blocked" && connection.reason === "quota" && connection.route && readiness[connection.route.provider] !== "cleanup-required") return { ...readiness, [connection.route.provider]: "quota-exceeded" };
     return readiness;
   }
 

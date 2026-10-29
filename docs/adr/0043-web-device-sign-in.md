@@ -36,7 +36,10 @@ billing authority.
   and after Schway store writes through `credentialWriteGuard`; revoked sessions,
   upgrade/restore fences and shutdown cannot authorize a late write. Native
   cleanup uncertainty remains an explicit blocked state, with store recovery
-  guidance rather than a success claim.
+  guidance rather than a success claim. Recovery-required state is independent
+  of credential reads and replacement flows; only a successful guarded commit
+  clears it. Shutdown tracks the start promise before invoking host work, aborts
+  it and waits for start plus polling cleanup for at most 30 seconds.
 - Ready means credentials were committed, not inference access. A ready flow
   admits the existing bounded setup route check only if Jit's exact captured
   route is still current and the initiating owner's authority remains live.
@@ -46,7 +49,9 @@ billing authority.
 - Plain HTML forms and a manually refreshed status page cover the full flow.
   The local script reads credential-free status every 1.5 seconds until the
   deadline, with a five-second request timeout, and returns to the provider cards
-  on ready. Refresh/replay loses the one-time approval display; the page warns
+  on ready. Transient HTTP/network errors back off from three seconds to at most
+  ten seconds within that same deadline; definitive HTTP errors show a localized
+  error with a manual refresh retry. Refresh/replay loses the one-time approval display; the page warns
   the owner to open the verification page first. Busy offers a return/wait/retry
   action. Unknown pending ids after restart become cancelled and retryable;
   stored terminal outcomes remain terminal. No flow is resumed automatically.

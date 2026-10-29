@@ -26,6 +26,7 @@ export const th = {
   "signin.expires": "หมดอายุ",
   "signin.unlock_store": "คลังข้อมูลลับยังใช้ไม่ได้ ให้ปลดล็อก Secret Service ของ service แล้วลองอีกครั้ง",
   "signin.recover_store": "ยังยืนยันการล้างข้อมูลไม่ได้ ให้ตรวจและกู้คืน Secret Service ก่อนลองอีกครั้ง",
+  "signin.status_error": "อ่านสถานะการเข้าสู่ระบบไม่ได้ ให้รีเฟรชเพื่อลองอีกครั้ง",
   "signin.readiness.ready": "พร้อม",
   "signin.readiness.needed": "ต้องเข้าสู่ระบบ",
   "signin.readiness.quota": "โควตาหมด",

@@ -5,6 +5,7 @@ import type { ProviderReadiness, SignInReceipt } from "./device-sign-in";
 
 /** Local readiness labels make no inference claim; unavailable stores remain explicitly blocked. */
 export function readinessLabel(status: ProviderReadiness[RouteProvider]): string {
+  if (status === "cleanup-required") return `${tr("signin.readiness.blocked")} · ${tr("signin.recover_store")}`;
   const key = status === "configured-unverified" ? "ready" : status === "quota-exceeded" ? "quota" : status === "needs-login" || status === "rejected" ? "needed" : "blocked";
   return tr(`signin.readiness.${key}` as MessageKey);
 }
@@ -33,7 +34,7 @@ export function signInPage(receipt: SignInReceipt, provider: RouteProvider, surf
   return documentPage(tr("signin.title"), `<main class="setup" id="main-content"><section class="setup-card" data-sign-in${pending ? ` data-ready-page="${surface === "setup" ? "/setup?step=connect#connection" : "/settings/team"}" data-deadline="${signIn.expiresAt ?? 0}" data-status-url="/api${escape(path)}" data-status-page="${escape(path)}"` : ""}>
     <h1>${tr("signin.title")} · ${escape(providerLabel(provider))}</h1><p class="job-status" data-state="${pending ? "running" : signIn.state === "ready" ? "succeeded" : "blocked"}" role="status" data-sign-in-state>${tr(`signin.state.${signIn.state}` as MessageKey)}</p>${code}
     ${signIn.expiresAt ? `<p>${tr("signin.expires")} <time datetime="${new Date(signIn.expiresAt).toISOString()}">${new Date(signIn.expiresAt).toISOString()}</time></p>` : ""}
-    ${pending ? `<a href="${escape(path)}">${tr("setup.refresh")}</a><form method="post" action="/setup/sign-in/${provider}/${signIn.id}/cancel">${hiddenCommand(csrf, revision)}<input type="hidden" name="surface" value="${surface}"><button>${tr("signin.cancel")}</button></form>` : `${signInForms(csrf, revision, surface)}${signInButton(provider)}`}
+    ${pending ? `<p data-sign-in-error role="alert" hidden>${tr("signin.status_error")} <a href="${escape(path)}">${tr("setup.refresh")}</a></p><a href="${escape(path)}">${tr("setup.refresh")}</a><form method="post" action="/setup/sign-in/${provider}/${signIn.id}/cancel">${hiddenCommand(csrf, revision)}<input type="hidden" name="surface" value="${surface}"><button>${tr("signin.cancel")}</button></form>` : `${signInForms(csrf, revision, surface)}${signInButton(provider)}`}
     ${signIn.state === "store-error" || signIn.state === "cleanup-required" ? `<p class="setup-next">${tr(signIn.state === "cleanup-required" ? "signin.recover_store" : "signin.unlock_store")}</p>` : ""}
     <p><a href="${surface === "setup" ? "/setup?step=connect" : "/settings/team"}">${tr("signin.back")}</a></p></section></main>`);
 }

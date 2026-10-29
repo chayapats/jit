@@ -432,18 +432,34 @@ if (palette && typeof palette.showModal === "function") {
 // Device sign-in: same-origin status reads only. Approval stays on the original page until settlement.
 const signIn = document.querySelector("[data-sign-in][data-status-url]");
 if (signIn && localPath(signIn.dataset.statusUrl) && localPath(signIn.dataset.statusPage)) {
-  let stopped = false;
+  let stopped = false, failures = 0;
+  const deadline = Number(signIn.dataset.deadline);
+  const showError = () => {
+    const error = signIn.querySelector("[data-sign-in-error]");
+    stopped = true;
+    if (error) error.hidden = false;
+    else location.replace(signIn.dataset.statusPage);
+  };
+  const schedule = () => {
+    if (!stopped) window.setTimeout(poll, Math.max(0, Math.min(1500 * 2 ** failures, 10_000, deadline - Date.now())));
+  };
   const poll = async () => {
     if (stopped) return;
-    if (Date.now() >= Number(signIn.dataset.deadline)) { location.replace(signIn.dataset.statusPage); return; }
+    if (Date.now() >= deadline) { location.replace(signIn.dataset.statusPage); return; }
     try {
-      const response = await fetch(signIn.dataset.statusUrl, { credentials: "same-origin", cache: "no-store", headers: { accept: "application/json" }, signal: AbortSignal.timeout(5000) });
-      if (!response.ok) return;
+      const response = await fetch(signIn.dataset.statusUrl, { credentials: "same-origin", cache: "no-store", headers: { accept: "application/json" }, signal: AbortSignal.timeout(Math.max(1, Math.min(5000, deadline - Date.now()))) });
+      if (stopped) return;
+      if (!response.ok) {
+        if (![408, 429].includes(response.status) && response.status < 500) { showError(); return; }
+        throw new Error("transient-status-error");
+      }
       const body = await response.json();
+      if (stopped) return;
       if (body?.signIn && !["starting", "pending"].includes(body.signIn.state)) { location.replace(body.signIn.state === "ready" && localPath(signIn.dataset.readyPage) ? signIn.dataset.readyPage : signIn.dataset.statusPage); return; }
-    } catch { /* The no-script refresh and cancellation controls remain available. */ }
-    if (!stopped) window.setTimeout(poll, 1500);
+      failures = 0;
+    } catch { failures = Math.min(failures + 1, 3); }
+    schedule();
   };
   window.addEventListener("pagehide", () => { stopped = true; }, { once: true });
-  window.setTimeout(poll, 1500);
+  schedule();
 }
