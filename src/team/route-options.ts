@@ -2,10 +2,11 @@ import type { RoleRoute } from "./types";
 
 /**
  * Route picker defaults for owner forms (#167). The owner chooses a provider; the model and the auth route alias are
- * filled in unless the owner opens "use another model". Nothing here probes credentials, lists account models or
- * switches a route: an explicit provider choice is still required (FR-13).
+ * filled in unless the owner opens "use another model". Catalog selections arrive as explicit model IDs.
+ * Nothing here probes credentials or switches a route: an explicit provider choice is still required (FR-13).
  */
 
+/** Subscription provider identity accepted by route forms and the host catalog. */
 export type RouteProvider = RoleRoute["provider"];
 
 /** Providers offered by every route form, in display order. */
@@ -16,13 +17,13 @@ export const providerLabel = (provider: string): string => provider === "codex" 
 
 /**
  * Models used when the operator configured none. They restate Schway's documented per-route fallbacks
- * (`ROUTE_FALLBACK_MODELS`), which are not on its public host surface; schway#432 proposes exporting the
- * account's real model list.
+ * (`ROUTE_FALLBACK_MODELS`), used when the account catalog is unavailable.
  */
 export const builtInModels: Readonly<Record<RouteProvider, string>> = Object.freeze({ codex: "gpt-6-astra", grok: "grok-4.7" });
 
 /** Operator-configured model per provider (service config `routes[].model`); null means none was configured. */
 export type RouteModels = Readonly<Record<RouteProvider, string | null>>;
+/** No operator model overrides; forms retain built-in defaults when the catalog is unavailable. */
 export const noRouteModels: RouteModels = Object.freeze({ codex: null, grok: null });
 
 /** The model a form uses when the owner leaves the model empty. */

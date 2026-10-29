@@ -52,6 +52,7 @@ async function fixture(options: { failStore?: boolean; uncertain?: boolean; fail
   let startAborted = false;
   const authFetch: HostAuthFetch = async (input, init) => {
     const url = String(input); protocol.requests.push(url);
+    if (url.includes("/codex/models")) return Response.json({ models: [{ slug: "gpt-fixture-catalog", visibility: "list" }] });
     if (/usercode|device\/code|device_authorization|device\/authorization/.test(url)) {
       protocol.starts++;
       if (options.hungStart) await new Promise<never>((_, reject) => {
@@ -426,4 +427,21 @@ test("Settings refreshes the selected route check after the setup ceremony witho
   await f.app.execute(f.auth.actor, f.command("codex", "settings")); await flush();
   f.queue.pump(); await f.queue.idle();
   expect(f.requests).toHaveLength(2); expect(f.app.setup(f.auth.actor)).toMatchObject({ complete: true, revision });
+});
+
+test("UX04b sign-in success and cancel invalidate cached catalog failures; a route check invalidates listed models", async () => {
+  const f = await fixture(); f.wake();
+  expect((await f.app.routeCatalogs(f.auth.actor)).codex?.status).toBe("needs-login");
+  const receipt = await f.app.execute(f.auth.actor, f.command());
+  f.protocol.result = "success"; await f.clock.advance(1000);
+  expect(status(f, receipt).state).toBe("ready");
+  expect((await f.app.routeCatalogs(f.auth.actor)).codex?.models?.[0]?.id).toBe("gpt-fixture-catalog");
+  const count = () => f.protocol.requests.filter(url => url.includes("/codex/models")).length;
+  expect(count()).toBe(1);
+  await f.app.routeCatalogs(f.auth.actor); expect(count()).toBe(1);
+  f.app.execute(f.auth.actor, { kind: "setup.check", requestId: crypto.randomUUID(), projectId: null, expectedRevision: f.app.setup(f.auth.actor).revision, payload: {} });
+  await f.app.routeCatalogs(f.auth.actor); expect(count()).toBe(2);
+  const next = await f.app.execute(f.auth.actor, f.command("codex", "settings"));
+  await f.app.execute(f.auth.actor, f.command("codex", "settings", next.signIn.id));
+  await f.app.routeCatalogs(f.auth.actor); expect(count()).toBe(3);
 });

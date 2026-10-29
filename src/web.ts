@@ -1297,13 +1297,14 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const lang = url.searchParams.get("lang");
         const locale: Locale = shown === "wake" && (lang === "th" || lang === "en") ? lang : ui.locale;
         const readiness = shown === "connect" ? await app.providerReadiness(auth.actor) : undefined;
-        return respond(renderWith({ ...ui, locale }, () => setupPage(setup, auth.csrf, shown, config.routeModels, readiness)), 200, { "Content-Language": locale, "Vary": "Accept-Language, Cookie" });
+        const catalogs = shown === "connect" ? await app.routeCatalogs(auth.actor) : undefined;
+        return respond(renderWith({ ...ui, locale }, () => setupPage(setup, auth.csrf, shown, config.routeModels, readiness, catalogs)), 200, { "Content-Language": locale, "Vary": "Accept-Language, Cookie" });
       }
       if (request.method === "POST" && setupAction) {
         const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
         const step = setupAction[2]!, form = request.headers.get("content-type")?.split(";")[0]?.trim() === "application/x-www-form-urlencoded";
         const fields: Record<string, readonly string[]> = {
-          wake: ["language"], connect: form ? ["provider", "model", "authRoute"] : ["route"], check: [], "connect-continue": [],
+          wake: ["language"], connect: form ? ["provider", "model", "model_codex", "model_grok", "authRoute"] : ["route"], check: [], "connect-continue": [],
           know: ["addressAs", "selfReference", "language", "particle"], personality: ["personality", "aboutMe"], "personality-skip": [], complete: [],
         };
         if (Object.keys(body).some(key => !["csrf", "requestId", "expectedRevision", ...fields[step]!].includes(key))) throw new AppError("invalid_body");
@@ -1311,7 +1312,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         // Browsers send CRLF line breaks in a textarea; the persona stores LF.
         const text = (value: unknown) => typeof value === "string" ? value.replace(/\r\n?/g, "\n") : value;
         const kind = step === "connect-continue" ? "setup.connect.continue" : step === "personality-skip" ? "setup.personality.skip" : `setup.${step}`;
-        const data = step === "connect" ? { route: form ? completeRoute(body as { provider: unknown }, config.routeModels) : body.route }
+        const data = step === "connect" ? { route: form ? completeRoute({ ...body, provider: body.provider, model: body.model || body[`model_${body.provider}`] }, config.routeModels) : body.route }
           : Object.fromEntries(fields[step]!.map(key => [key, text(body[key])]));
         const command = { kind, requestId: body.requestId, projectId: null, expectedRevision: revision, payload: data } as SetupCommand;
         let receipt: ReturnType<Application["setup"]>;
@@ -1413,7 +1414,8 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       if (request.method === "GET" && teamRoute) {
         const state = app.team(auth.actor, teamRoute[1] ?? null);
         const readiness = !api && !state.project ? await app.providerReadiness(auth.actor) : undefined;
-        return api ? json(state) : page(() => teamPage(state, nav(), auth.csrf, config.jobs.maximum, url.searchParams.get("preset") ?? undefined, config.routeModels, readiness));
+        const catalogs = !api ? await app.routeCatalogs(auth.actor) : undefined;
+        return api ? json(state) : page(() => teamPage(state, nav(), auth.csrf, config.jobs.maximum, url.searchParams.get("preset") ?? undefined, config.routeModels, readiness, catalogs));
       }
       if (request.method === "GET" && previewRoute) {
         const state = app.preview(auth.actor, previewRoute[1]!, previewRoute[2]!);
@@ -1534,10 +1536,10 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const number = (value: unknown) => typeof value === "string" && /^\d{1,15}$/.test(value) ? Number(value) : value;
         const data = (value: unknown) => { if (!form) return value; try { return JSON.parse(value as string); } catch { throw new AppError("invalid_body"); } };
         const allowed = action === "archive" ? ["csrf", "requestId", "expectedRevision", "roleId"] : action === "discussions" ? ["csrf", "requestId", "expectedRevision", "topicId", "purpose", "sources", "include", "exclude", "limits"]
-          : ["csrf", "requestId", "expectedRevision", "roleId", ...(action === "previews" ? ["topicId", "purpose", "sources", "limits"] : [...(form ? ["provider", "model", "authRoute"] : ["route"]), ...(action === "roles" ? ["name", "kind", "responsibility", "enabled"] : [])])];
+          : ["csrf", "requestId", "expectedRevision", "roleId", ...(action === "previews" ? ["topicId", "purpose", "sources", "limits"] : [...(form ? ["provider", "model", "model_codex", "model_grok", "authRoute"] : ["route"]), ...(action === "roles" ? ["name", "kind", "responsibility", "enabled"] : [])])];
         if (Object.keys(body).some(key => !allowed.includes(key))) throw new AppError("invalid_body");
         const roleId = form && body.roleId === "" ? null : body.roleId;
-        const route = action === "archive" ? null : form ? body.provider === "" ? null : completeRoute(body as { provider: unknown }, config.routeModels) : body.route;
+        const route = action === "archive" ? null : form ? body.provider === "" ? null : completeRoute({ ...body, provider: body.provider, model: body.model || body[`model_${body.provider}`] }, config.routeModels) : body.route;
         const enabled = form ? body.enabled === "true" ? true : body.enabled === "false" ? false : undefined : body.enabled;
         const command = { kind: action === "archive" ? "role.archive" : action === "roles" ? "role.save" : action === "routes" ? "route.save" : action === "discussions" ? "team.dispatch" : "role.preview",
           requestId: body.requestId, expectedRevision: number(body.expectedRevision), projectId,

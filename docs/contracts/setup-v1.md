@@ -194,3 +194,19 @@ CI or copy another account's credentials.
    verification link and credentials. Record build SHA, host profile, selected
    route/model, readiness and inference separately. Record renewal/reboot as
    untested unless independently observed. Never publish a code, token or address.
+
+### Account model catalog (UX04b)
+
+Web route forms use the public `schway.host.model-catalog/v1` metadata catalog,
+with a five-second deadline and a process-local ten-minute per-provider cache.
+Sign-in success/cancellation and explicit connection checks invalidate that
+provider. No inference, token renewal or quota probe is performed by listing.
+Missing capability retains the configured/built-in recommendation; unavailable
+catalogs retain that fallback and show SIGN01 readiness text.
+
+Each available provider has a `model_codex`/`model_grok` select, recommended first.
+The form parser uses only the selected provider's value. Nonempty `model` from
+"Use another model" takes precedence, then the select, then phase-one defaults.
+These are plain form controls and require no JavaScript. Saved IDs remain selected
+even outside the current list; listing never writes configuration. JSON command
+shapes and model validation remain unchanged: the catalog is not an allowlist.
