@@ -1,6 +1,6 @@
 ---
 status: accepted
-scope: INST01 engineering choices; implements S12-D11/D13 and S13-D03/D09
+scope: INST01 and OPS08 engineering choices; implements S12-D11/D13 and S13-D03/D09
 ---
 
 # One-command Linux provisioning and first-owner Web capability
@@ -56,8 +56,26 @@ the browser origin; the host need not resolve or route through that ingress.
 The manual `sudo <newDir>/src/main.ts service upgrade` entry point has the same
 risk when `<newDir>` or an ancestor belongs to `jit`, including artifacts under
 `/var/lib/jit/artifacts/<sha>`. Use a trusted operator-built root-owned snapshot
-and root-owned Bun for manual operations. General service CLI ownership gates
-remain a follow-up; the installer does not invoke that unsafe entry path.
+and root-owned Bun for manual operations. OPS08 (#206) now applies the same
+trust primitive to all root-run service CLI commands. Move dependency-free path/tree assertions into `ops/package/trusted-paths.ts`
+and keep the installer exports compatible; bootstrap `src/main.ts` checks before
+loading the unchanged application command module. Recover the original Linux
+script path from `/proc/self/cmdline`, since Bun resolves `argv[1]` through
+symlinks; command-line parsing is fixture-injectable and unsupported wrappers
+fail closed. This is needed because a gate inside the lifecycle CLI would run after its application/dependency imports.
+Validate source and installed config, Bun, units/drop-ins, journals and release
+parents too. Validate a managed root-owned activation link only after its parent,
+then read its direct protected target; do not admit arbitrary symlink aliases.
+Protected ancestors prevent service-user pathname swaps between check and use;
+staging validates both existing destinations and new copies before execution.
+Root subprocesses use the system PATH and a protected default cwd. Non-root
+commands retain existing behavior; uid/boundary/metadata and runtime directory
+are injectable fixture seams only. The error is CLI-only English and names the
+path plus the runbook's exact protected-copy command. Builds may run as `jit`;
+root executes a fresh inode copy, never an in-place chown of builder output.
+The operator still trusts build provenance before invoking any bootstrap.
+The installer retains its dependency-free API, and OPS06 recovery semantics and
+service-identity schema upgrade execution remain unchanged.
 
 Give the service identity a Secret Service user unit, written as that identity,
 using systemd file stdin

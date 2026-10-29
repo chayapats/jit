@@ -102,8 +102,12 @@ copy exposed for service read/traverse access and passed to the service-package
 install API. Every parent up to `/` is root-owned, non-symlink and not writable
 by group/other. Existing unsafe managed parents, Bun/config/system paths or
 release targets fail closed. Open staging descriptors cannot change the copy.
-The install API's `skipLedgerSeed` mode refuses a missing seed instead of writing
-inside the mutable home as root.
+OPS08 also enforces protected release/config/unit paths for every root-run
+manual service CLI command; non-root development behavior is unchanged. Its
+bootstrap checks before application imports and its staging checks protect the
+copy it executes. The installer retains this snapshot flow and dependency-free
+API; it does not use the manual CLI. The install API's `skipLedgerSeed` mode
+refuses a missing seed instead of writing inside the mutable home as root.
 Publish the three assets together; the HTTPS release and checksum share the
 same trust origin, not a separate signature authority.
 

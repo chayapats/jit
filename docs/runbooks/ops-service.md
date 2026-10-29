@@ -82,8 +82,9 @@ Opt-in live acceptance is **not run by the implementation agent**:
 - A root-owned releases parent (`/opt/jit`, 0755, no service write).
 - All privileged CLI code, dependencies, Bun and their ancestors must be root-owned
   and not writable by group/other. An artifact content/dependency hash alone does
-  not establish this. Run manual builds/dependency installs as a trusted operator,
-  never the `jit` identity that the service runs under.
+  not establish this. Builds/dependency installs may run as `jit` or another
+  unprivileged operator; root executes only the protected snapshot below. The
+  operator must trust and review the build inputs and resulting release.
 - The pinned Bun at an absolute path (`bun --version` must equal the manifest pin).
 - Private access: bind loopback behind configured private ingress (for example a VPN `serve`/reverse proxy terminating HTTPS), or an address on the VPN interface with an explicit HTTPS `network.origin` (required for any non-loopback bind). No public ingress is installed or exposed by the package.
 - Credentials: the Telegram bot token, when used, is a 0600 file owned by the identity. Keyring-backed references stay `verify-secret-store` until OPS05 proves service-context access.
@@ -97,23 +98,74 @@ bun ops/package/bun-build.ts install-deps <outDir>   # on the target host/arch; 
 ```
 
 - Review `manifest.json`: app, Bun, lockfile, schema, engine contract, build arch and content hash must match the tested revision. `piValidation` stays `pending`; a desktop build never proves ARM64.
-- `install-deps` is the only step that may fetch packages, and only when the owner runs it. Run it on the host that will execute the artifact, as a trusted unprivileged operator whose source/output trees and ancestors are not writable by `jit`.
-- Before any sudo command, copy the complete artifact (including dependencies)
-  into a fresh root-only directory under a verified root-owned `/opt/jit`, using
-  a copy that does not dereference symlinks. While that parent is still 0700,
-  reject every symlink/special file, assign root:root throughout, remove all
-  group/other write bits, validate content/dependency hashes from the protected
-  copy and verify root-owned/non-writable ancestors up to `/`. Only then grant
-  read/traverse access (0755 directories, 0644/0755 files). Use this protected
-  snapshot as `<root-owned artifact>` below, and a pinned root-owned Bun binary.
-  Do not rename/chown a service-writable tree in place: open descriptors survive.
+- `install-deps` is the only step that may fetch packages, and only when the owner runs it. Run it on the target host/arch as `jit` or another unprivileged builder. Do not execute the build output with sudo.
+
+### Trusted operator-built, root-owned snapshot (OPS08)
+
+The operator must trust the source and dependencies: ownership checks do not
+certify their provenance. Before the copy, verify `/`, `/opt`, `/opt/jit` and
+`/opt/jit/bin/bun` are root-owned, non-symlink and without group/other write.
+Use the pinned Bun version. Never repair an attacker-writable source by chowning
+it in place: retained descriptors and hardlinks can still change those inodes.
+
+After building, run this copy-and-validate procedure. `newDir` is the absolute
+build output, including sealed host dependencies. `mktemp` creates a fresh 0700
+root-owned parent; keep it private until every check succeeds. Stop on any
+failure and discard that snapshot; do not resume with a partly checked tree.
+
+```sh
+set -eu
+newDir=/absolute/path/to/newDir
+snapshot="$(sudo mktemp -d /opt/jit/operator-release.XXXXXXXX)"
+sudo cp -R --no-dereference -- "$newDir" "$snapshot/artifact"
+# A private copy has new inodes; no source descriptor can modify it.
+sudo find "$snapshot/artifact" ! -type f ! -type d -print -exec false {} +
+sudo chown -hR root:root "$snapshot/artifact"
+sudo find "$snapshot/artifact" -type d -exec chmod 0755 {} +
+sudo find "$snapshot/artifact" -type f -perm /111 -exec chmod 0755 {} +
+sudo find "$snapshot/artifact" -type f ! -perm /111 -exec chmod 0644 {} +
+(cd / && sudo env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /opt/jit/bin/bun --no-env-file -e '
+  const dir = process.argv[1];
+  const { assertRootTree } = await import(`${dir}/ops/package/trusted-paths.ts`);
+  assertRootTree(dir);
+  const { validateArtifact } = await import(`${dir}/ops/package/bun-build.ts`);
+  if (!validateArtifact(dir, { runtime: true }).ok) throw new Error("invalid_release_snapshot");
+' "$snapshot/artifact")
+sudo chmod 0755 "$snapshot"
+```
+
+Use `$snapshot/artifact` as `<root-owned artifact>` below. Every root-run
+`service` command, including `plan`, `status`, `stop` and `uninstall`, checks the
+running release/imports, an explicit `--artifact`, Bun, source/installed config,
+unit/drop-ins, journald and release paths before use. Symlinks, foreign ownership
+or group/other write fail with `unsafe_root_path`, the exact failing path and
+`sudo cp -R --no-dereference -- "$newDir" "$snapshot/artifact"` as the next copy
+command. Config/unit path errors also require replacing those inputs with
+protected files. The managed root-owned `current` link is checked separately
+and only its checked, direct target is read; invoke the CLI from the snapshot's
+direct path, never through `current`. Development/non-root commands retain
+their existing behavior. The dependency-free bootstrap checks the release before
+loading application imports and recovers the original Linux invocation path
+from `/proc/self/cmdline` because Bun resolves `argv[1]` through symlinks. Use
+the direct invocation shown here; unsupported wrappers fail closed. The operator
+must still choose trusted bootstrap code and Bun before invocation.
+
+For a first install, copy the reviewed, secret-free configuration into protected
+storage too:
+
+```sh
+sudo install -o root -g root -m 0600 .local/service-config.json "$snapshot/service-config.json"
+```
+
+Use that absolute file as `<root-owned config>` for plan/install; `.local` is not
+a privileged config input.
 
 ## 2. Write and plan trusted configuration
 
-Create ignored `.local/service-config.json` (fields in the contract). Configure exactly one `ledgerPath` for the installation and never hand-edit that file after the service has established it. Then:
+Create ignored `.local/service-config.json` (fields in the contract), review it and copy it into the protected snapshot as in §1. Configure exactly one `ledgerPath` for the installation and never hand-edit that file after the service has established it. Then:
 
 ```sh
-sudo <abs root-owned bun> <root-owned artifact>/src/main.ts service plan --config .local/service-config.json --artifact <root-owned artifact> --bun <abs root-owned bun>
+sudo <abs root-owned bun> <root-owned artifact>/src/main.ts service plan --config <root-owned config> --artifact <root-owned artifact> --bun <abs root-owned bun>
 ```
 
 - Run as root: access is checked as the service identity with `runuser -u <identity> -- test ...` (state, backups, ledger, working directory, release parent, config directory, credential files).
@@ -123,7 +175,7 @@ sudo <abs root-owned bun> <root-owned artifact>/src/main.ts service plan --confi
 ## 3. Install
 
 ```sh
-sudo <abs root-owned bun> <root-owned artifact>/src/main.ts service install --config .local/service-config.json --artifact <root-owned artifact> --bun <abs root-owned bun>
+sudo <abs root-owned bun> <root-owned artifact>/src/main.ts service install --config <root-owned config> --artifact <root-owned artifact> --bun <abs root-owned bun>
 ```
 
 - Run as root. Creates `/etc/jit` as root:<service gid> 0750 and writes `/etc/jit/service-config.json` (root:<service gid>, 0640), `/etc/systemd/system/jit.service` (0644), `/etc/systemd/journald@jit.conf` (0644), stages `/opt/jit/releases/<artifactId>`, points the active-release symlink, seeds the ledger placeholder only if absent (owned by the service identity, 0600), `daemon-reload` and `enable`. It does not start the service.
@@ -148,22 +200,43 @@ journalctl --namespace=jit -u jit.service                # bounded by journald@j
 
 ## 5. Upgrade and rollback
 
+One procedure: build as `jit` or another unprivileged operator, copy into a fresh
+root-owned snapshot, validate that copy, then run the new snapshot directly.
+This complete block includes the §1 snapshot procedure. Do not run an
+artifact beneath a service-owned home with sudo, even when its hashes pass.
+
 ```sh
-bun ops/package/bun-build.ts <new checkout> <newDir> jit.schway.bridge/v1
-bun ops/package/bun-build.ts install-deps <newDir>
-# Build/install dependencies as the trusted operator, then snapshot/seal as in §1.
-sudo <abs root-owned bun> <root-owned new artifact>/src/main.ts service upgrade --artifact <root-owned new artifact> --password-stdin
+set -eu
+checkout=/absolute/path/to/new-checkout
+newDir=/absolute/path/to/newDir
+bun "$checkout/ops/package/bun-build.ts" "$checkout" "$newDir" jit.schway.bridge/v1
+bun "$checkout/ops/package/bun-build.ts" install-deps "$newDir"
+snapshot="$(sudo mktemp -d /opt/jit/operator-release.XXXXXXXX)"
+sudo cp -R --no-dereference -- "$newDir" "$snapshot/artifact"
+# A private copy has new inodes; no source descriptor can modify it.
+sudo find "$snapshot/artifact" ! -type f ! -type d -print -exec false {} +
+sudo chown -hR root:root "$snapshot/artifact"
+sudo find "$snapshot/artifact" -type d -exec chmod 0755 {} +
+sudo find "$snapshot/artifact" -type f -perm /111 -exec chmod 0755 {} +
+sudo find "$snapshot/artifact" -type f ! -perm /111 -exec chmod 0644 {} +
+(cd / && sudo env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /opt/jit/bin/bun --no-env-file -e '
+  const dir = process.argv[1];
+  const { assertRootTree } = await import(`${dir}/ops/package/trusted-paths.ts`);
+  assertRootTree(dir);
+  const { validateArtifact } = await import(`${dir}/ops/package/bun-build.ts`);
+  if (!validateArtifact(dir, { runtime: true }).ok) throw new Error("invalid_release_snapshot");
+' "$snapshot/artifact")
+sudo chmod 0755 "$snapshot"
+(cd / && sudo env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /opt/jit/bin/bun --no-env-file \
+  "$snapshot/artifact/src/main.ts" service upgrade --artifact "$snapshot/artifact" \
+  --bun /opt/jit/bin/bun --password-stdin)
 ```
 
-- The earlier manual pattern of building as `jit` beneath
-  `/var/lib/jit/artifacts/<sha>` and then running its `src/main.ts` with sudo is
-  affected by the same root escalation: that identity can alter code or imports
-  before/during invocation, and can replace even root-owned children via its
-  writable parents. Do not use it. The service CLI has no general executable-tree
-  ownership gate yet; enforcing that for all manual install/upgrade callers is a
-  follow-up. The installer enforces its own protected path and does not invoke
-  the staged CLI as root. The inner schema `upgrade` already runs as the service
-  identity; that does not protect the initial root CLI import.
+The installed root-owned `/etc/jit/service-config.json` is used by default.
+The owner password still goes through the existing terminal/stdin path, never
+argv, environment or a recorded command. The installer already makes protected
+snapshots and continues to use its dependency-free API.
+
 - Run the upgrade from the protected new build: it validates the artifact, refuses an older-than-state artifact or a quarantined ledger, stops the unit, runs the new build's owner `upgrade` (ops.schema_migrations/v1: fence, verified recovery point in the configured backup directory, staged migration, validation, activation), switches the release, starts and health-checks.
 - `upgrade-failed`: the prior release stays active; inspect the upgrade journal (Web `/upgrades`).
 - `rolled-back`: health failed and the prior release was compatible with the state; it is active again.

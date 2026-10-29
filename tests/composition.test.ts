@@ -144,7 +144,7 @@ test("composition: startFullApp and serve share one factory with identical worke
     expect(composed.queue.choices()).toEqual(fromLifecycle);
   }
   // serve starts only through startFullApp, whose queue comes from the shared factory owned by the managed service lifecycle.
-  const main = readFileSync(join(import.meta.dir, "..", "src", "main.ts"), "utf8");
+  const main = readFileSync(join(import.meta.dir, "..", "src", "app-cli.ts"), "utf8");
   expect(main).toContain("await serveCommand(config, process.argv.slice(3))");
   const serve = readFileSync(join(import.meta.dir, "..", "src", "ops", "serve.ts"), "utf8");
   expect(serve).toContain("await startFullApp({ config, service,");
