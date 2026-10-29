@@ -10,10 +10,12 @@
 A self-hosted AI team for your software projects.<br>
 Chat with one assistant, bring in specialists when needed, and pick up where you left off the next day.
 
+[![GitHub stars](https://img.shields.io/github/stars/chayapats/jit?style=flat-square&logo=github&color=0a0a0a)](https://github.com/chayapats/jit/stargazers)
 [![License: MIT](https://img.shields.io/badge/license-MIT-0a0a0a?style=flat-square)](LICENSE)
 [![Bun](https://img.shields.io/badge/Bun-%E2%89%A51.4.2-0a0a0a?style=flat-square&logo=bun)](https://bun.sh)
 [![TypeScript](https://img.shields.io/badge/TypeScript-7-0a0a0a?style=flat-square&logo=typescript)](tsconfig.json)
 [![Runs on Linux x64 and arm64](https://img.shields.io/badge/runs%20on-Linux%20x64%20%7C%20arm64-0a0a0a?style=flat-square&logo=linux)](docs/runbooks/ops-service.md)
+[![Greptile: The War on Bugs](https://www.greptile.com/badge.svg)](https://www.greptile.com/?utm_source=oss_badge&utm_medium=readme&utm_campaign=greptile_for_open_source)
 
 **English** · [ไทย](README.th.md)
 

@@ -10,10 +10,12 @@
 ทีม AI ส่วนตัวสำหรับโครงการซอฟต์แวร์ ที่รันบนเครื่องของคุณเอง<br>
 คุยกับผู้ช่วยหลักคนเดียว เรียกผู้เชี่ยวชาญมาช่วยเมื่อจำเป็น แล้วกลับมาทำต่อได้ในวันถัดไป
 
+[![GitHub stars](https://img.shields.io/github/stars/chayapats/jit?style=flat-square&logo=github&color=0a0a0a)](https://github.com/chayapats/jit/stargazers)
 [![License: MIT](https://img.shields.io/badge/license-MIT-0a0a0a?style=flat-square)](LICENSE)
 [![Bun](https://img.shields.io/badge/Bun-%E2%89%A51.4.2-0a0a0a?style=flat-square&logo=bun)](https://bun.sh)
 [![TypeScript](https://img.shields.io/badge/TypeScript-7-0a0a0a?style=flat-square&logo=typescript)](tsconfig.json)
 [![Runs on Linux x64 and arm64](https://img.shields.io/badge/runs%20on-Linux%20x64%20%7C%20arm64-0a0a0a?style=flat-square&logo=linux)](docs/runbooks/ops-service.md)
+[![Greptile: The War on Bugs](https://www.greptile.com/badge.svg)](https://www.greptile.com/?utm_source=oss_badge&utm_medium=readme&utm_campaign=greptile_for_open_source)
 
 [English](README.md) · **ไทย**
 
