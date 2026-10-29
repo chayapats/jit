@@ -1,4 +1,5 @@
 import { cachedReadiness, invalidateReadiness, readinessCommands } from "../exec/readiness-cache";
+import { dropsAllCapabilities } from "../exec/container-checks";
 import { randomBytes, createHash } from "node:crypto";
 import { totalmem } from "node:os";
 import type { SearchProvider, SearchResult } from "schway/host";
@@ -71,9 +72,10 @@ export class PodmanSearxngRuntime implements SearxngRuntime {
     const [info] = JSON.parse(new TextDecoder().decode(inspect.stdout));
     if (info?.ImageName !== searxngImage || info?.HostConfig?.Privileged !== false || info?.HostConfig?.ReadonlyRootfs !== true ||
         info?.HostConfig?.SecurityOpt?.includes("no-new-privileges") !== true || (info?.HostConfig?.CapAdd ?? []).length ||
-        !((info?.HostConfig?.CapDrop ?? []).some((v: string) => v.toUpperCase() === "ALL") || (Array.isArray(info?.BoundingCaps) && info.BoundingCaps.length === 0 && Array.isArray(info?.EffectiveCaps) && info.EffectiveCaps.length === 0)) ||
         Object.keys(info?.HostConfig?.PortBindings ?? {}).length || ["host", "container"].some(v => info?.HostConfig?.NetworkMode?.startsWith(v)) ||
         (info?.Mounts ?? []).some((m: { Type: string }) => m.Type !== "tmpfs")) return false;
+    // Podman 4.9 lists CapDrop per capability and omits BoundingCaps, so the proof may read PID 1's sets (#224).
+    if (!await dropsAllCapabilities(this.run, this.#name, info)) return false;
     const result = await this.run(["exec", this.#name, python, "-c", health], { timeoutMs: 2000 });
     return result.exitCode === 0;
   }

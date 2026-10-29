@@ -2,6 +2,7 @@ import { isIP } from "node:net";
 import { AppError } from "../errors";
 import { boxInternalNetwork, pinnedImagePattern, type BoxStream } from "./box-runtime";
 import { podmanCommandRunner, podmanStreamRunner, type CommandRunner, type StreamRunner } from "./podman-runtime";
+import { dropsAllCapabilities, forwardingDisabled } from "./container-checks";
 
 const egressNetwork = "jit-registry-egress", name = "jit-registry-proxy";
 
@@ -35,14 +36,17 @@ export class ContainerRegistryProxy {
         const [info] = JSON.parse(new TextDecoder().decode(await this.#command(["container", "inspect", name])));
         const host = info?.HostConfig, networks = info?.NetworkSettings?.Networks ?? {};
         const ip = networks[boxInternalNetwork]?.IPAddress;
-        const noCaps = (host?.CapDrop ?? []).some((cap: string) => cap.toUpperCase() === "ALL") ||
-          (Array.isArray(info?.BoundingCaps) && info.BoundingCaps.length === 0 && Array.isArray(info?.EffectiveCaps) && info.EffectiveCaps.length === 0);
+        // Podman 4.9 lists CapDrop per capability, omits BoundingCaps and has no HostConfig.Sysctls in inspect, so
+        // capabilities and forwarding are proven inside the running container when inspect cannot prove them (#224).
+        const noCaps = await dropsAllCapabilities(this.run, name, info, 15_000);
+        const noForwarding = (host?.Sysctls?.["net.ipv4.ip_forward"] === "0" && host?.Sysctls?.["net.ipv6.conf.all.forwarding"] === "0") ||
+          await forwardingDisabled(this.run, name, 15_000);
         if (info?.ImageName !== this.image || info?.State?.Running !== true || info?.Config?.User !== "1000:1000" || typeof ip !== "string" || isIP(ip) !== 4 ||
             Object.keys(networks).sort().join(",") !== [boxInternalNetwork, egressNetwork].sort().join(",") ||
             host?.Privileged !== false || host?.ReadonlyRootfs !== true || (host?.CapAdd ?? []).length ||
             !noCaps || host?.SecurityOpt?.includes("no-new-privileges") !== true ||
             Object.keys(host?.PortBindings ?? {}).length || (info?.Mounts ?? []).some((m: { Type?: string }) => m.Type !== "tmpfs") ||
-            host?.Sysctls?.["net.ipv4.ip_forward"] !== "0" || host?.Sysctls?.["net.ipv6.conf.all.forwarding"] !== "0") throw new AppError("box_proxy_unavailable", 503);
+            !noForwarding) throw new AppError("box_proxy_unavailable", 503);
         const stream = this.streams(["exec", "-i", name, "node", "-e", await this.bundle(), JSON.stringify(this.hosts)], {});
         const live = { stream, ip, alive: true }; this.#live = live;
         void stream.exited.then(() => { live.alive = false; });
