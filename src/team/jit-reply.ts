@@ -738,7 +738,7 @@ export function readRepliesFor(tx: AppTransaction, projectId: string, topicId: s
  * app.jit_reply/v2: replies of one topic whose persisted state changed after `cursor`, in change order (SSE replay).
  * The reply record, the reply row and (through the schema 25 `jit_reply_job_change` trigger) every update of the
  * reply's job move the cursor, so this covers transitions the queue makes alone: a stop from the job page, a
- * deadline, a budget rejection.
+ * deadline, a budget rejection. Schema 43 also advances the queued successor when an earlier job changes its wait dependency.
  */
 export function readReplyChanges(tx: AppTransaction, projectId: string, topicId: string, cursor: number, limit: number): JitReplyView[] {
   return tx.all<Parameters<typeof project>[1]>(`SELECT ${replyColumns} FROM jit_replies WHERE project_id = ? AND topic_id = ? AND cursor > ? ORDER BY cursor LIMIT ?`,

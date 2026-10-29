@@ -5,7 +5,7 @@ import { dirname } from "node:path";
 import { commitDecisionMemorySource, retireDecisionMemorySource } from "./memory/decision-sources";
 
 /** Current application schema revision. Service packaging pins and checks this value. */
-export const schemaVersion = 43;
+export const schemaVersion = 44;
 
 /**
  * Installation-scoped state that never round-trips through backup images and
@@ -1274,6 +1274,40 @@ export class TransactionStore {
             if (!this.#tx.all<{ name: string }>("PRAGMA table_info(web_tool_calls)").some(column => column.name === "fallback"))
               this.#db.exec("ALTER TABLE web_tool_calls ADD COLUMN fallback TEXT CHECK (fallback IS NULL OR fallback = 'key_missing');");
             this.#db.exec("PRAGMA user_version = 43;");
+          }
+          if (current < 44) {
+            // COMM03-F: queued is derived from earlier jobs. Only the first unmasked queued successor can
+            // change when a predecessor enters/leaves the live set; other replies/topics retain their cursor.
+            if (this.#tx.get("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'jobs'")) this.#db.exec(`
+              CREATE TRIGGER IF NOT EXISTS jit_reply_queue_dependency_change AFTER UPDATE OF state ON jobs
+              WHEN json_extract(NEW.record_json, '$.type') = 'team.jit-reply'
+                AND (OLD.state IN ('queued', 'admitted', 'waiting')) <> (NEW.state IN ('queued', 'admitted', 'waiting'))
+              BEGIN
+                UPDATE jit_replies SET cursor = (SELECT coalesce(max(cursor), 0) + 1 FROM jit_replies)
+                WHERE id IN (
+                  SELECT later.id FROM jit_replies changed
+                  JOIN team_runs changed_run ON changed_run.id = changed.run_id
+                  JOIN messages changed_message ON changed_message.id = changed.message_id
+                  JOIN jit_replies later ON later.project_id = changed.project_id AND later.topic_id = changed.topic_id
+                  JOIN messages later_message ON later_message.id = later.message_id
+                  JOIN team_runs later_run ON later_run.id = later.run_id
+                  JOIN jobs later_job ON later_job.id = later_run.job_id
+                  WHERE changed_run.job_id = NEW.id AND later_message.sequence > changed_message.sequence
+                    AND later_job.state = 'queued' AND json_extract(later_job.record_json, '$.reason') <> 'attachments_pending'
+                    AND json_extract(later_run.record_json, '$.result') IS NULL
+                    AND NOT EXISTS (
+                      SELECT 1 FROM jit_replies earlier
+                      JOIN messages earlier_message ON earlier_message.id = earlier.message_id
+                      JOIN team_runs earlier_run ON earlier_run.id = earlier.run_id
+                      JOIN jobs earlier_job ON earlier_job.id = earlier_run.job_id
+                      WHERE earlier.project_id = later.project_id AND earlier.topic_id = later.topic_id
+                        AND earlier_message.sequence < later_message.sequence AND earlier_job.id <> NEW.id
+                        AND earlier_job.state IN ('queued', 'admitted', 'waiting')
+                    )
+                );
+              END;
+            `);
+            this.#db.exec("PRAGMA user_version = 44;");
           }
         }).immediate();
         this.#db.exec("PRAGMA foreign_keys = ON;");
