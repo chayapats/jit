@@ -38,7 +38,9 @@ Engineering choices (WEB02 #178):
   at most within a 45-second cancellation deadline; never retry a submitted query.
   Five minutes idle stops/removes the container, serialized with search. Service
   shutdown stops it. Memory is one eighth of host RAM, clamped to 256–1024 MiB.
-- `searxngEnabled: false` in service config (`JIT_SEARXNG_ENABLED=0`) opts out.
+- `searxngEnabled: false` in service config or `JIT_SEARXNG_ENABLED=0` opts out.
+  Either opt-out wins before WebTools composition; file `true` cannot override
+  environment `0`, and environment `1` cannot override file `false`.
   Missing Podman/rootless cgroup support is a sanitized unavailable status; chat
   Details links directly to Settings > Web search. `box-doctor` checks the image.
 - Residual: SearXNG needs outbound internet and can reach other hosts, including

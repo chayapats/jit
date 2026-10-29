@@ -142,7 +142,8 @@ export class ManagedSearxng implements SearchProvider {
   async search(query: string, options: { limit: number; signal: AbortSignal }): Promise<readonly SearchResult[]> {
     if (!query.trim() || Buffer.byteLength(query) > 8192 || !Number.isSafeInteger(options.limit) || options.limit < 1 || options.limit > 20) throw new AppError("invalid_web_search");
     const signal = AbortSignal.any([options.signal, AbortSignal.timeout(45_000)]), clock = this.options.timers ?? timers;
-    return this.#lock(async () => {
+    const pending = this.#lock(async () => {
+      if (signal.aborted) throw new AppError("searxng_unavailable", 503);
       clock.clear(this.#idle);
       try {
         signal.throwIfAborted();
@@ -155,11 +156,23 @@ export class ManagedSearxng implements SearchProvider {
           }
           if (!this.#started) throw new AppError("searxng_unavailable", 503);
         }
+        signal.throwIfAborted();
         const result = await this.runtime.search(query, options.limit, signal);
         this.#failed = false;
         return result;
       } catch { this.#failed = true; throw new AppError("searxng_unavailable", 503); }
       finally { if (this.#started && !this.#closed) this.#idle = clock.set(() => { void this.#lock(async () => { await this.runtime.stop(); this.#started = false; }).catch(() => {}); }, this.options.idleMs ?? 300_000); }
+    });
+    // Settle the caller promptly, but retain serialization until the queued work
+    // finishes or skips its aborted slot. Aborting must never release an active lock.
+    return new Promise((resolve, reject) => {
+      const abort = () => reject(new AppError("searxng_unavailable", 503));
+      signal.addEventListener("abort", abort, { once: true });
+      if (signal.aborted) { signal.removeEventListener("abort", abort); abort(); }
+      pending.then(
+        result => { signal.removeEventListener("abort", abort); resolve(result); },
+        error => { signal.removeEventListener("abort", abort); reject(error); },
+      );
     });
   }
   /** Stops this process's container and refuses subsequent searches; no image, file or host state is deleted. */

@@ -39,7 +39,7 @@ export interface ServiceConfig {
   };
   /** Application run adapter rendered as `JIT_RUN_PORT` (default `scripted`). */
   runPort?: "scripted" | "schway";
-  /** Managed keyless search is on by default; false disables its container. */
+  /** Managed keyless search defaults on; false here or JIT_SEARXNG_ENABLED=0 disables it. */
   searxngEnabled?: boolean;
   /**
    * Opt-in channels. `telegram: "enabled"` requires the `telegram-bot-token`

@@ -7,12 +7,19 @@
 validates 1–20 results and 8 KiB query input, honors cancellation, bounds JSON to
 256 KiB and requires container-local health. Diagnostics/response failures are
 sanitized to `searxng_unavailable`; no query is logged by the container or relay.
+Cancellation (including the 45-second deadline) settles the caller even while
+queued. The aborted slot skips runtime work when reached; an active slot retains
+the lock until runtime work completes, so cancellation cannot overlap queries.
 Queries still appear in the existing owner-visible WEB01 audit by design.
 
 The optional installer image list pre-pulls the same digest under the service
 identity; failed optional pulls do not prevent chat. Lazy first use can pull the
 pin. `searxngEnabled: false` / `JIT_SEARXNG_ENABLED=0` disables Built-in regardless
-of project access. Rootless Podman/cgroup v2 with memory/cpu/pids controllers is
+of project access. Before constructing WebTools, `serviceAppConfig` combines the
+parsed environment setting with the service file: either opt-out wins. Thus file
+`false` disables search with the environment unset or `1`, and environment `0`
+keeps it disabled even when the file says `true`. An omitted file setting retains
+the environment value (default enabled). Rootless Podman/cgroup v2 with memory/cpu/pids controllers is
 required, independently of whether execution boxes are configured.
 
 [ADR 0044](../adr/0044-managed-web-search.md) defines the pin, memory scaling,

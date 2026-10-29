@@ -161,7 +161,7 @@ function validatedHostname(value: string | undefined): string {
 /** Finite local-development limits; operators must measure them before a pilot. */
 export interface AppConfig {
   databasePath: string;
-  /** Managed search opt-out; defaults on, independently of execution boxes. */
+  /** Managed search defaults on; environment or service-config opt-out wins, independently of execution boxes. */
   searxngEnabled: boolean;
   /** app.attachments/v1: ingestion gate and host-scaled storage/sanitizer limits. */
   attachments: AttachmentLimits;

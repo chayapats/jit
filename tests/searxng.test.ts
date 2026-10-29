@@ -88,3 +88,31 @@ test.skipIf(process.env.JIT_LIVE_SEARXNG !== "1")("WEB02 opt-in live search (ser
   try { expect((await provider.search("SearXNG documentation", { limit: 1, signal: signal() })).length).toBeGreaterThan(0); } finally { await provider.close(); }
 }, 60_000);
 function randomSecret() { return crypto.randomUUID().replaceAll("-", "") + crypto.randomUUID().replaceAll("-", ""); }
+
+for (const phase of ["startup", "query"] as const) {
+  test(`WEB02 queued cancellation settles while ${phase} is blocked and preserves the lock`, async () => {
+    const f = fake(), entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
+    const original = f.runtime.start;
+    const queries: string[] = [];
+    if (phase === "startup") f.runtime.start = async (...args) => { entered.resolve(); await gate.promise; await original(...args); };
+    f.runtime.search = async query => {
+      queries.push(query);
+      if (phase === "query" && query === "first") { entered.resolve(); await gate.promise; }
+      return [];
+    };
+    const first = f.provider.search("first", { limit: 1, signal: signal() });
+    await entered.promise;
+    const controller = new AbortController();
+    const cancelled = f.provider.search("cancelled", { limit: 1, signal: controller.signal });
+    const rejected = cancelled.then(() => { throw Error("cancelled search resolved"); }, error => error);
+    const last = f.provider.search("last", { limit: 1, signal: signal() });
+    try {
+      controller.abort();
+      // This must settle before releasing the preceding runtime operation.
+      expect(await rejected).toMatchObject({ code: "searxng_unavailable" });
+      expect(queries).toEqual(phase === "query" ? ["first"] : []);
+    } finally { gate.resolve(); await first; await last; await f.provider.close(); }
+    expect(queries).toEqual(["first", "last"]);
+    expect(f.stats().starts).toBe(1);
+  });
+}
