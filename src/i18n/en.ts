@@ -2017,4 +2017,5 @@ export const en: Record<MessageKey, string> = {
   "error.attachment_call_budget": "This run has used its attachment read call budget.",
   "error.invalid_attachment_read": "Use a nonnegative byte offset and maxBytes between 1 and 65536.",
   "error.outbound_blocked": "Private text was held for one Web approval card. No call was sent.",
+  "run.final_answer": "The final model turn is reserved for your answer. When no tools are offered, answer now using only the evidence already available, in the required response format. Cite the sources actually read. If evidence is incomplete or a tool failed, say plainly what you checked and what remains unknown. Never invent facts, figures, citations or successful actions. Do not request more tools.",
 };

@@ -186,6 +186,8 @@ export const replyAttemptOutputTokens = 1024;
 /**
  * Bounded fixed limits for one reply, clamped to the installation maximum. Budgets cover the first attempt
  * and every allowed retry, because each attempt (including an owner resume) is admitted and reserves its own share.
+ * A tool-capable reply's model-turn ceiling includes its final tool-free answer; web reads fit the shared call ceiling
+ * through runMaxTurns rather than increasing the installation maximum.
  */
 export function replyLimits(maximum: JobLimits, contextBytes: number, execution = false, attachments = false): JobLimits {
   const retries = Math.min(2, maximum.retries), attempts = retries + 1;

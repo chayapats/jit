@@ -57,7 +57,7 @@ class SchwayRunPort implements ApplicationRunPort {
 ```
 
 `SchwayPortOptions` carries test seams only (`model`, `authFetch`, `authStore`,
-`now`). Production sets none: route runs use the default OS credential store
+`now`, `clock`). Production sets none: route runs use the default OS credential store
 and fixture-free protocol transport.
 
 ## Behavior
@@ -92,11 +92,16 @@ and fixture-free protocol transport.
   purpose and operator sections (mode-neutral wording: nothing tells the
   model it is scripted or live); manifest sources/claims become untrusted
   source documents with bounded ids, unique per project and kind before any
-  observation or logging. Exact empty tool registry, hosted lookup
-  off. Finite limits map from the request budgets (context/input windows,
-  deadline, attempts); the bridge executes bounded single-turn runs
-  (`maxTurns: 1`), so anything needing more turns surfaces as `max_turns`
-  instead of silently spending unreserved calls. Schway mode pins route
+  observation or logging. Tool definitions come only from service-owned selections and execution grants; hosted lookup
+  stays off. Finite limits map from the request budgets (context/input windows,
+  deadline, attempts). Tool-capable runs reserve the last model turn for answering:
+  at most `runMaxTurns - 1` turns use tools, then `max_turns` triggers one bounded
+  tool-free submission on the same native ancestry through public `openSession`.
+  Its exact registry is empty, its `maxTurns` is one, its deadline is only the
+  original time remaining, and combined usage counts both submissions. Early answers
+  spend no continuation call. One-turn budgets offer no tools. See [web-tools-v1](web-tools-v1.md)
+  for the call/round arithmetic, admission minima and incomplete-evidence instruction.
+  Schway mode pins route
   concurrency to one until a process-stable public credential-store handle
   exists, keeping the shared renewal lifecycle single-flight. Committed
   coordinator summaries label the actual evidence mode.
@@ -136,7 +141,8 @@ and fixture-free protocol transport.
   of ten attempts fail before any native work instead of being silently
   capped. Because admission spends one call and one round and the attempt
   pre-reserves the rest, `team.dispatch` in Schway mode refuses limits whose
-  `calls` or `rounds` are below `retries + 1` with
+  `calls` or `rounds` are below `retries + 1` for runs without tools, or below
+  the two-turn reservation across job admissions for tool-capable runs, with
   `dispatch_limits_below_retry_minimum` (detail `retries`, `minimumCalls`,
   `minimumRounds`) before any job is admitted; the scripted port is unchanged.
   Single-output token accounting stays as committed with measured

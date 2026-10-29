@@ -109,6 +109,28 @@ async function settle(f: Fixture) { f.queue.pump(); await f.queue.idle(); }
 const boxOps = (f: Fixture) => f.runtime.calls.filter(call => call.op !== "status" && call.op !== "list");
 const replyRequest = (f: Fixture, replyId: string) => f.store.read(tx => (JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM team_runs WHERE id = ?", replyId)!.record_json) as { request: ApplicationRunRequest }).request);
 
+test("WEB01-F granted execution loops finish with one reserved tool-free answer", async () => {
+  const captured: ModelRequest[] = [];
+  const model: Model = { provider: "scripted", id: "execution-final-turn", async *stream(request) {
+    captured.push(request);
+    yield { type: "message_complete", message: { type: "assistant", id: rid(), content: request.tools?.length
+      ? [{ type: "tool_call", id: rid(), name: "ls", arguments: { path: "." } }]
+      : [{ type: "text", text: "I listed the workspace. That evidence is insufficient to verify the requested change." }] } };
+  } };
+  const f = await fixture({ model, env: { JIT_JOB_RETRIES: "1", JIT_JOB_CALLS: "8", JIT_JOB_ROUNDS: "8" } });
+  f.app.execute(f.auth.actor, { kind: "web.settings.set", requestId: rid(), projectId: f.project.id, expectedRevision: 0, payload: { enabled: false } });
+  setLevel(f, "workspace");
+  const { message } = send(f, "Inspect the workspace."); await settle(f);
+  const reply = replyFor(f, message.id), request = replyRequest(f, reply.id);
+  expect(reply.state).toBe("answered"); expect(runMaxTurns(request)).toBe(2);
+  expect(captured).toHaveLength(2); expect(captured[0]!.tools!.map(tool => tool.name)).toEqual(coreTools);
+  expect(captured[1]!.tools ?? []).toEqual([]); expect(captured[1]!.items.filter(item => item.type === "tool_result")).toHaveLength(1);
+  expect(f.app.toolCalls(f.auth.actor, f.project.id)).toMatchObject([{ tool: "ls", status: "success", level: "workspace" }]);
+  expect(texts(f).at(-1)).toContain("insufficient");
+  expect(f.boxes.busy(f.project.id)).toBe(false);
+  expect(f.app.job(f.auth.actor, f.project.id, reply.jobId!).remaining).toMatchObject({ calls: 4, rounds: 4 });
+});
+
 test("a read run admits zero execution tools: bash is an unknown tool, and nothing reaches a box", async () => {
   let called: Awaited<ReturnType<ScriptedTools["call"]>> | null = null;
   const f = await fixture({ script: async (request, _s, _o, tools) => {

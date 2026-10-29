@@ -74,10 +74,12 @@ export function validateGrant(request: Pick<ApplicationRunRequest, "execution" |
 export function runMaxTurns(request: Pick<ApplicationRunRequest, "execution" | "limits" | "web" | "attachments">): number {
   if (!requestGrant(request) && !request.web && !request.attachments?.length) return 1;
   const attempts = Math.min(10, Math.max(1, request.limits.retries + 1));
-  const modelAttempts = (request.limits.retries + 1) * attempts;
+  const admissions = request.limits.retries + 1;
+  const modelAttempts = admissions * attempts;
   const contextTurns = !requestGrant(request) && !request.web ? attachmentContextTurns(request) : executionMaxTurns;
   return Math.min(!requestGrant(request) && request.attachments?.length ? 8 : executionMaxTurns, Math.max(1, Math.min(
-    Math.floor(request.limits.calls / (modelAttempts * (request.web ? 2 : 1))),
+    // Each admission reserves every model attempt plus at most turns - 1 web reads. The last turn answers.
+    Math.floor((request.limits.calls + (request.web ? admissions : 0)) / (modelAttempts + (request.web ? admissions : 0))),
     Math.floor(request.limits.rounds / modelAttempts),
     contextTurns,
   )));
@@ -280,7 +282,7 @@ export function readToolCalls(tx: AppTransaction, projectId: string, options: { 
     ...(options.runId !== undefined ? [projectId, before, options.runId, limit] : [projectId, before, limit]));
 }
 
-/** Tool calls reserved alongside model turns for a web-enabled run; parallel calls cannot exceed this counter. */
+/** Web reads reserved alongside model turns, leaving the last model turn tool-free; parallel reads share this counter. */
 export function webCallLimit(request: Pick<ApplicationRunRequest, "execution" | "limits" | "web" | "attachments">): number {
-  return request.web ? runMaxTurns(request) : 0;
+  return request.web ? Math.max(0, runMaxTurns(request) - 1) : 0;
 }

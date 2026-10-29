@@ -13,9 +13,12 @@ import { purgeWebReadPayloads } from "../src/web-tools/lifecycle";
 import { EffectExecutor } from "../src/exec/effect-executor";
 import { readCards, decideCard, matchingRule } from "../src/exec/approval-cards";
 import { JobQueue } from "../src/jobs/queue";
+import { invalidateJob } from "../src/jobs/attempts";
+import { runMaxTurns, webCallLimit } from "../src/exec/run-tools";
 import { TransactionStore, schemaVersion } from "../src/store";
 import { jitReplyWork } from "../src/team/jit-reply";
-import { SchwayRunPort, verifySchwayBridge } from "../src/team/schway-port";
+import { SchwayRunPort, schwayMaxCalls, schwayMaxRounds, verifySchwayBridge, type SchwayPortOptions } from "../src/team/schway-port";
+import type { ApplicationRunRequest } from "../src/team/types";
 import { discussionPlanWork, specialistAnalysisWork } from "../src/team/dispatch";
 import { outboundGuard, normalizeOutbound } from "../src/security/outbound-guard";
 import { WebTools, assertWebToolsCapability, readWebCalls } from "../src/web-tools";
@@ -31,7 +34,7 @@ const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0)) await close(); });
 const marker = "PRIVATE_MARKER_173_never_send_this_value";
 
-async function fixture(calls: { name: string; arguments: Record<string, string> }[] = [], page = "<p>Bangkok weather: sunny.</p>", specialist = false, contextTokens = 64_000) {
+async function fixture(calls: { name: string; arguments: Record<string, string> }[] = [], page = "<p>Bangkok weather: sunny.</p>", specialist = false, contextTokens = 64_000, options: Pick<SchwayPortOptions, "clock" | "authFetch" | "authStore"> & { route?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), "jit-web01-"));
   const config = readConfig({ JIT_DATABASE: join(root, "state.sqlite"), JIT_JOB_RETRIES: "1", JIT_JOB_CONTEXT_TOKENS: String(contextTokens), ...(specialist ? { JIT_RUN_PORT: "schway" } : {}) });
   const store = new TransactionStore(config.databasePath);
@@ -51,7 +54,8 @@ async function fixture(calls: { name: string; arguments: Record<string, string> 
       ? [{ type: "tool_call", id: rid(), ...call }]
       : [{ type: "text", text: specialist ? '{"status":"done","result":"Bangkok: sunny.","evidence":"https://weather.test/today"}' : '{"reply":"Bangkok: sunny. https://weather.test/today"}' }] } };
   } };
-  const port = new SchwayRunPort(store, config.team, config.jobs.outputBytes, { model, web });
+  const { route, ...portOptions } = options;
+  const port = new SchwayRunPort(store, config.team, config.jobs.outputBytes, { ...(!route ? { model } : {}), web, ...portOptions });
   const queue = new JobQueue(store, config.jobs, [jitReplyWork(store, config, port), discussionPlanWork(), specialistAnalysisWork(store, config, port)]);
   const effects = new EffectExecutor(store, { vault: null, boxes: null, mirrorRoot: null, performers: { outbound_release: web.perform } });
   const app = new Application(store, config, { jobs: queue, effects });
@@ -78,15 +82,15 @@ async function fixture(calls: { name: string; arguments: Record<string, string> 
 test("web-enabled specialist admission names separate call and round minima before admitting undersized work", async () => {
   const f = await fixture([], undefined, true);
   try { f.dispatch({ calls: 2, rounds: 2, retries: 1 }); throw new Error("dispatch admitted"); }
-  catch (error) { expect(error).toMatchObject({ code: "dispatch_limits_below_retry_minimum", detail: { minimumCalls: 3, minimumRounds: 2 } }); }
+  catch (error) { expect(error).toMatchObject({ code: "dispatch_limits_below_retry_minimum", detail: { minimumCalls: 10, minimumRounds: 8 } }); }
   expect(f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM jobs")!.n)).toBe(0);
   expect(f.captured).toHaveLength(0);
-  f.dispatch({ calls: 3, rounds: 2, retries: 1 });
+  f.dispatch({ calls: 10, rounds: 8, retries: 1 });
   f.queue.pump(); await f.queue.idle();
   const participation = f.app.discussions(f.auth.actor, f.project.id, f.topic.id)[0]!.participations[0]!;
   expect(participation.state).toBe("completed");
   expect(f.captured).toHaveLength(1);
-  expect(f.app.job(f.auth.actor, f.project.id, participation.jobId).remaining).toMatchObject({ calls: 0, rounds: 0 });
+  expect(f.app.job(f.auth.actor, f.project.id, participation.jobId).remaining).toMatchObject({ calls: 5, rounds: 4 });
 });
 
 test("a specialist web read counts calls separately while model rounds and web allowance stay within the reserved budgets", async () => {
@@ -98,7 +102,7 @@ test("a specialist web read counts calls separately while model rounds and web a
   expect(f.searches).toEqual(["Bangkok weather now"]);
   const usage = f.store.read(tx => JSON.parse(tx.get<{ json: string }>("SELECT json_extract(record_json, '$.outcome.usage') AS json FROM team_runs WHERE id = ?", role.runId)!.json));
   expect(usage).toMatchObject({ calls: 3, rounds: 2 });
-  expect(f.app.job(f.auth.actor, f.project.id, role.jobId).remaining).toMatchObject({ calls: 58, rounds: 4 });
+  expect(f.app.job(f.auth.actor, f.project.id, role.jobId).remaining).toMatchObject({ calls: 59, rounds: 4 });
 });
 
 test("CTX01 freezes web selection at admission and guards against private text first added by an earlier queued answer", async () => {
@@ -401,4 +405,220 @@ test("ATT04 production bridge reads continuation bytes over multiple model turns
   expect(reply.state).toBe("answered"); expect(f.captured).toHaveLength(3);
   expect(JSON.stringify(f.captured[2])).toContain(marker);
   expect(f.store.read(tx => tx.all("SELECT status FROM attachment_events WHERE attachment_id = ? AND kind = 'read'", file.id))).toEqual([{ status: "ok" }, { status: "ok" }]);
+});
+
+function loopUntilAnswer(f: Awaited<ReturnType<typeof fixture>>, tool: string, args: Record<string, unknown>, before?: (request: ModelRequest) => void) {
+  f.model.stream = async function* (request) {
+    f.captured.push(request); before?.(request);
+    const available = !!request.tools?.length;
+    yield { type: "text_delta", text: available ? "Provisional tool-phase text." : "Answer preview." };
+    yield { type: "usage", usage: { inputTokens: 10, outputTokens: 5 } };
+    yield { type: "message_complete", message: { type: "assistant", id: rid(), content: available
+      ? [{ type: "tool_call", id: rid(), name: tool, arguments: args }]
+      : [{ type: "text", text: '{"reply":"I checked the available evidence but could not establish today’s figure. It remains unknown. https://weather.test/today"}' }] } };
+  };
+}
+
+function storedRun(f: Awaited<ReturnType<typeof fixture>>, id: string) {
+  return f.store.read(tx => JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM team_runs WHERE id = ?", id)!.record_json)) as {
+    request: ApplicationRunRequest; outcome: { usage: { calls: number; rounds: number; retries: number; contextTokens: number; outputTokens: number }; reason: string };
+  };
+}
+
+test("WEB01-F tool-loop replies commit an honest answer in the reserved last turn with native evidence and exact empty tools", async () => {
+  const f = await fixture(); f.select();
+  loopUntilAnswer(f, "web_search", { query: "Bangkok current weather" });
+  const reply = await f.send("Find today’s figure with sources.");
+  const { request, outcome } = storedRun(f, reply.id), turns = runMaxTurns(request);
+  expect(reply.state).toBe("answered");
+  expect(f.captured).toHaveLength(turns);
+  expect(f.searches).toHaveLength(webCallLimit(request));
+  expect(f.captured.at(-1)!.tools ?? []).toEqual([]);
+  expect(f.captured.at(-1)!.hostedTools ?? []).toEqual([]);
+  const evidence = f.captured.at(-1)!.items.filter(item => item.type === "tool_result");
+  expect(evidence).toHaveLength(turns - 1);
+  expect(JSON.stringify(evidence)).toContain("https://weather.test/today");
+  expect(f.captured.at(-1)!.context.find(section => section.name === "final-answer")!.content).toContain("ห้ามเดา");
+  expect(outcome.usage).toMatchObject({ calls: turns * 2 - 1, rounds: turns, retries: turns - 1, contextTokens: turns * 10, outputTokens: turns * 5 });
+  expect(outcome.usage.calls).toBeLessThanOrEqual(schwayMaxCalls(request));
+  expect(outcome.usage.rounds).toBeLessThanOrEqual(schwayMaxRounds(request));
+  const text = f.app.conversation(f.auth.actor, f.project.id, f.topic.id).items.at(-1)!.text;
+  expect(text).toContain("It remains unknown"); expect(text).not.toContain("Provisional");
+  expect(replyStreams(f.store).previews(f.project.id, f.topic.id)).toEqual([]);
+  expect(f.store.read(tx => tx.all("SELECT state FROM schway_native_refs WHERE run_id = ?", request.runId))).toEqual([{ state: "finished" }]);
+});
+
+for (const toolsUsed of [0, 1]) test(`WEB01-F an early answer after ${toolsUsed} tools spends no continuation call`, async () => {
+  const f = await fixture(Array.from({ length: toolsUsed }, () => ({ name: "web_search", arguments: { query: "Bangkok current weather" } })));
+  f.select();
+  const reply = await f.send();
+  expect(reply.state).toBe("answered"); expect(f.captured).toHaveLength(toolsUsed + 1);
+  expect(f.captured.at(-1)!.tools!.length).toBeGreaterThan(0);
+  expect(storedRun(f, reply.id).outcome.usage).toMatchObject({ rounds: toolsUsed + 1, calls: toolsUsed * 2 + 1 });
+});
+
+test("WEB01-F read_attachment loops finish with a tool-free answer and retain the attachment context reservation", async () => {
+  const f = await fixture([], undefined, false, 256_000);
+  f.app.execute(f.auth.actor, { kind: "web.settings.set", requestId: rid(), projectId: f.project.id, expectedRevision: 0, payload: { enabled: false } });
+  f.config.attachments.diskReserveBytes = 1;
+  const file = await f.app.uploadAttachment(f.auth.actor, f.project.id, f.topic.id, { body: new Blob(["a".repeat(100_000)]).stream(), encodedName: "long.txt" });
+  loopUntilAnswer(f, "read_attachment", { id: file.id, offset: 32768, maxBytes: 1024 });
+  const reply = await f.send("Read the file and report any missing evidence.", [file.id]);
+  const { request, outcome } = storedRun(f, reply.id), turns = runMaxTurns(request);
+  expect(reply.state).toBe("answered"); expect(f.captured).toHaveLength(turns);
+  expect(f.captured[0]!.tools!.map(tool => tool.name)).toEqual(["read_attachment"]);
+  expect(f.captured.at(-1)!.tools ?? []).toEqual([]);
+  expect(f.captured.at(-1)!.items.filter(item => item.type === "tool_result")).toHaveLength(turns - 1);
+  expect(f.store.read(tx => tx.all("SELECT status FROM attachment_events WHERE kind = 'read' AND attachment_id = ?", file.id))).toEqual(Array.from({ length: turns - 1 }, () => ({ status: "ok" })));
+  expect(outcome.usage).toMatchObject({ calls: turns, rounds: turns });
+  expect(outcome.usage.calls).toBeLessThanOrEqual(schwayMaxCalls(request));
+});
+
+test("WEB01-F a stale attempt at the tool/answer boundary cannot start or commit a continuation", async () => {
+  const f = await fixture(); f.select();
+  loopUntilAnswer(f, "web_search", { query: "Bangkok current weather" }, () => {
+    const request = f.port.requests[0]!;
+    if (f.captured.length === runMaxTurns(request) - 1) f.store.transaction(tx => invalidateJob(tx, request.fence.jobId, "input_changed", Date.now()));
+  });
+  const reply = await f.send();
+  expect(reply.state).not.toBe("answered");
+  expect(f.captured).toHaveLength(runMaxTurns(f.port.requests[0]!) - 1);
+  expect(f.captured.every(request => !!request.tools?.length)).toBe(true);
+  expect(f.app.conversation(f.auth.actor, f.project.id, f.topic.id).items).toHaveLength(1);
+  expect(replyStreams(f.store).previews(f.project.id, f.topic.id)).toEqual([]);
+});
+
+test("WEB01-F budget boundaries cover all reserved turns and web calls across retries", async () => {
+  const f = await fixture(); await f.send();
+  const request = f.port.requests[0]!;
+  for (let retries = 0; retries <= 9; retries++) {
+    const admissions = retries + 1;
+    for (const web of [false, true]) for (let calls = admissions; calls <= 160; calls++) {
+      const candidate = { ...request, web, execution: { level: "workspace" as const, boxProjectId: request.projectId },
+        limits: { ...request.limits, retries, calls, rounds: 160 } };
+      const turns = runMaxTurns(candidate);
+      expect(webCallLimit(candidate)).toBe(web ? turns - 1 : 0);
+      expect(schwayMaxCalls(candidate)).toBeLessThanOrEqual(calls);
+      expect(schwayMaxRounds(candidate)).toBeLessThanOrEqual(candidate.limits.rounds);
+      if (turns > 1) {
+        expect(schwayMaxCalls(candidate) * admissions).toBeLessThanOrEqual(calls);
+        expect(schwayMaxRounds(candidate) * admissions).toBeLessThanOrEqual(candidate.limits.rounds);
+      }
+    }
+  }
+  for (const [calls, rounds, turns] of [[9, 8, 1], [10, 7, 1], [10, 8, 2]] as const) {
+    expect(runMaxTurns({ ...request, limits: { ...request.limits, retries: 1, calls, rounds } })).toBe(turns);
+  }
+});
+
+test("WEB01-F a one-turn boundary offers no tools and still answers without an extra call", async () => {
+  const f = await fixture([], undefined, true); f.select();
+  const candidate = f.port;
+  // Directly exercise the frozen run shape at the boundary; no tools means no admission fence is needed to read.
+  f.model.stream = async function* (request) {
+    f.captured.push(request);
+    yield { type: "message_complete", message: { type: "assistant", id: rid(), content: [{ type: "text", text: "No lookup budget was available; today’s figure is unknown." }] } };
+  };
+  f.dispatch({ calls: 10, rounds: 8, retries: 1 }); f.queue.pump(); await f.queue.idle();
+  const captured = f.port.requests[0]!;
+  const request = { ...captured, runId: rid(), limits: { ...captured.limits, retries: 1, calls: 2, rounds: 2 } };
+  f.captured.length = 0;
+  const outcome = await candidate.invoke(request, new AbortController().signal, () => {});
+  expect(outcome).toMatchObject({ reason: "complete", usage: { calls: 1, rounds: 1 } });
+  expect(f.captured).toHaveLength(1); expect(f.captured[0]!.tools ?? []).toEqual([]);
+  expect(f.searches).toEqual([]);
+});
+
+test("WEB01-F tool-free route continuation uses submitWithRoute with the same route and persisted evidence", async () => {
+  const payloads: { tools?: unknown[]; input?: unknown[] }[] = [];
+  const f = await fixture([], undefined, false, 64_000, {
+    route: true,
+    authStore: { get: async () => JSON.stringify({ accessToken: "fixture-final-turn", obtainedAt: Date.now(), expiresAt: Date.now() + 3_600_000 }), set: async () => {}, delete: async () => true },
+    authFetch: async (_url, init) => {
+      const payload = JSON.parse(String(init?.body)); payloads.push(payload);
+      const item = payload.tools?.length
+        ? { id: rid(), type: "function_call", call_id: rid(), name: "web_search", arguments: JSON.stringify({ query: "Bangkok current weather" }), status: "completed" }
+        : { id: rid(), type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: "I checked the source but today’s figure remains unknown. https://weather.test/today", annotations: [] }] };
+      const event = (type: string, data: unknown) => `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
+      return new Response([
+        event("response.output_item.added", { type: "response.output_item.added", output_index: 0, item }),
+        ...(item.type === "message" ? [event("response.output_text.delta", { type: "response.output_text.delta", item_id: item.id, output_index: 0, content_index: 0, delta: item.content![0]!.text })] : []),
+        event("response.output_item.done", { type: "response.output_item.done", output_index: 0, item }),
+        event("response.completed", { type: "response.completed", response: { id: rid(), status: "completed", output: [item], usage: { input_tokens: 10, output_tokens: 5 } } }),
+      ].join(""), { headers: { "content-type": "text/event-stream" } });
+    },
+  });
+  f.select(); const reply = await f.send();
+  expect(reply.state).toBe("answered");
+  const { request, outcome } = storedRun(f, reply.id), turns = runMaxTurns(request);
+  expect(payloads).toHaveLength(turns); expect(f.searches).toHaveLength(turns - 1);
+  expect(payloads.at(-1)!.tools ?? []).toEqual([]);
+  expect(JSON.stringify(payloads.at(-1)!.input)).toContain("weather.test/today");
+  expect(outcome.usage).toMatchObject({ rounds: turns, calls: turns * 2 - 1, contextTokens: turns * 10, outputTokens: turns * 5 });
+});
+
+function clockFixture() {
+  let time = 0;
+  const deadlines: number[] = [];
+  return {
+    deadlines,
+    advance: (ms: number) => { time += ms; },
+    clock: {
+      now: () => time,
+      monotonicNow: () => time,
+      sleep: async (ms: number, signal?: AbortSignal) => {
+        if (ms < 10_000) { time += ms; return; }
+        deadlines.push(ms);
+        await new Promise<void>((_resolve, reject) => {
+          const abort = () => reject(new DOMException("Aborted", "AbortError"));
+          if (signal?.aborted) abort(); else signal?.addEventListener("abort", abort, { once: true });
+        });
+      },
+    },
+  };
+}
+
+test("WEB01-F the answer turn uses only the remaining deadline and its pre-reserved host retries", async () => {
+  const time = clockFixture();
+  const f = await fixture([], undefined, false, 64_000, { clock: time.clock }); f.select();
+  loopUntilAnswer(f, "web_search", { query: "Bangkok current weather" }, request => { if (request.tools?.length) time.advance(100); });
+  const stream = f.model.stream.bind(f.model); let retried = false;
+  f.model.stream = async function* (request) {
+    if (!request.tools?.length && !retried) {
+      retried = true; f.captured.push(request);
+      throw Object.assign(new Error("fixture connection reset"), { code: "ECONNRESET" });
+    }
+    yield* stream(request);
+  };
+  const reply = await f.send(), { request, outcome } = storedRun(f, reply.id), turns = runMaxTurns(request);
+  expect(reply.state).toBe("answered"); expect(retried).toBe(true);
+  expect(time.deadlines).toEqual([60_000, 60_000 - (turns - 1) * 100]);
+  expect(f.captured).toHaveLength(turns + 1);
+  expect(outcome.usage).toMatchObject({ rounds: turns + 1, calls: turns * 2 });
+  expect(outcome.usage.calls).toBeLessThanOrEqual(schwayMaxCalls(request));
+  expect(outcome.usage.rounds).toBeLessThanOrEqual(schwayMaxRounds(request));
+});
+
+test("WEB01-F an exhausted wall budget cannot buy a new deadline for the answer turn", async () => {
+  const time = clockFixture();
+  const f = await fixture([], undefined, false, 64_000, { clock: time.clock }); f.select();
+  loopUntilAnswer(f, "web_search", { query: "Bangkok current weather" }, () => {
+    if (f.captured.length === runMaxTurns(f.port.requests[0]!) - 1) time.advance(60_000);
+  });
+  const reply = await f.send(), { outcome } = storedRun(f, reply.id);
+  expect(reply.state).not.toBe("answered"); expect(outcome.reason).toBe("budget_exhausted");
+  expect(time.deadlines).toEqual([60_000]);
+  expect(f.captured.every(request => !!request.tools?.length)).toBe(true);
+});
+
+test("WEB01-F a late tool-free answer cannot commit after its attempt becomes stale", async () => {
+  const f = await fixture(); f.select();
+  loopUntilAnswer(f, "web_search", { query: "Bangkok current weather" }, request => {
+    if (!request.tools?.length) f.store.transaction(tx => invalidateJob(tx, f.port.requests[0]!.fence.jobId, "input_changed", Date.now()));
+  });
+  const reply = await f.send();
+  expect(f.captured.at(-1)!.tools ?? []).toEqual([]);
+  expect(reply.state).not.toBe("answered");
+  expect(f.app.conversation(f.auth.actor, f.project.id, f.topic.id).items).toHaveLength(1);
+  expect(replyStreams(f.store).previews(f.project.id, f.topic.id)).toEqual([]);
 });
