@@ -1,4 +1,5 @@
 import { effectTokens, scaleTokens, themeDeclarations } from "./web-design";
+import { attachmentStyles } from "./web-attachments-style";
 
 /**
  * The shared owner stylesheet, generated from ui.design_tokens/v1 (src/web-design.ts).
@@ -795,6 +796,7 @@ details.team-card[open] > summary { margin-bottom: 8px; }
   .composer textarea { min-height: 28px; max-height: clamp(28px, 20dvh, 96px); }
   .composer-note { display: none; }
 }
+${attachmentStyles}
 /* Safe areas (web.pwa/v1). Pages use viewport-fit=cover, so the installed app draws under the status bar, notch and
    home indicator; every edge that touches the screen keeps its own spacing or the device inset, whichever is larger.
    Without insets env() is 0 and nothing moves. These come last so the breakpoints above cannot undo them. */

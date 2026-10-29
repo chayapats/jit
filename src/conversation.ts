@@ -2,6 +2,7 @@ import { AppError } from "./errors";
 import type { AppTransaction } from "./store";
 import { commitOwnerSource, lookupSource, requireId, requireText, type Attribution, type SourceReference } from "./sources";
 import { requireParticipationReference, type ParticipationReference } from "./team/routing";
+import { requireAttachmentIds } from "./attachments/binding";
 
 /** Creates a topic under the selected project's current aggregate revision. */
 export interface CreateTopicCommand {
@@ -10,11 +11,13 @@ export interface CreateTopicCommand {
 /**
  * Appends literal owner text under the selected topic's current conversation revision. `replyTo` optionally names the
  * participation (one role in one discussion of this topic) the owner is answering; app.routing_selection/v1 uses it to
- * call that role again without a model choice. It is owner input and never comes from model text.
+ * call that role again without a model choice. It is owner input and never comes from model text. `attachmentIds`
+ * (app.attachments/v1, ATT03) names staged attachments of this topic to bind to the message in the same transaction;
+ * it is accepted only while `JIT_ATTACHMENTS` is on, and the receipt identity includes the ids sorted.
  */
 export interface SendMessageCommand {
   kind: "message.send"; requestId: string; projectId: string; expectedRevision: number;
-  payload: { topicId: string; text: string; replyTo?: ParticipationReference };
+  payload: { topicId: string; text: string; replyTo?: ParticipationReference; attachmentIds?: string[] };
 }
 /**
  * Starts a new chat from the home composer (app.topic_promotion/v1 home, S09-D05/D09): one topic in the chosen project
@@ -95,12 +98,15 @@ export function conversationIdentity(command: ConversationCommand, messageBytes:
     return JSON.stringify([command.kind, command.projectId, command.expectedRevision, command.payload.text]);
   }
   if (command.kind === "message.send") {
-    if (Object.keys(command.payload).some(k => !["topicId", "text", "replyTo"].includes(k))) throw new AppError("invalid_conversation_command");
+    if (Object.keys(command.payload).some(k => !["topicId", "text", "replyTo", "attachmentIds"].includes(k))) throw new AppError("invalid_conversation_command");
     requireId(command.payload.topicId); requireText(command.payload.text, messageBytes);
+    // A message without attachments keeps its original identity; attachments append their sorted ids as one object.
+    const attachmentIds = command.payload.attachmentIds === undefined ? [] : requireAttachmentIds(command.payload.attachmentIds);
+    const files = attachmentIds.length ? [{ attachmentIds }] : [];
     // A message without a reply target keeps its original receipt identity.
-    if (!Object.hasOwn(command.payload, "replyTo")) return JSON.stringify([command.kind, command.projectId, command.expectedRevision, command.payload.topicId, command.payload.text]);
+    if (!Object.hasOwn(command.payload, "replyTo")) return JSON.stringify([command.kind, command.projectId, command.expectedRevision, command.payload.topicId, command.payload.text, ...files]);
     const replyTo = requireParticipationReference(command.payload.replyTo);
-    return JSON.stringify([command.kind, command.projectId, command.expectedRevision, command.payload.topicId, command.payload.text, replyTo.discussionId, replyTo.roleId]);
+    return JSON.stringify([command.kind, command.projectId, command.expectedRevision, command.payload.topicId, command.payload.text, replyTo.discussionId, replyTo.roleId, ...files]);
   }
   throw new AppError("invalid_conversation_command");
 }

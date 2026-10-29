@@ -152,7 +152,7 @@ test("ui.design_tokens/v1: text and status pairs meet WCAG AA in both themes and
 
 test("web.static_assets/v1: hashed, immutable, self-hosted assets with font licences; unknown paths are 404", async () => {
   const f = await fixture();
-  expect([...staticAssets.keys()].sort()).toEqual(["OFL-Inter.txt", "OFL-JetBrainsMono.txt", "OFL-NotoSansThai.txt", "app.css", "app.js", "apple-touch-icon.png", "favicon.svg",
+  expect([...staticAssets.keys()].sort()).toEqual(["OFL-Inter.txt", "OFL-JetBrainsMono.txt", "OFL-NotoSansThai.txt", "app.css", "app.js", "apple-touch-icon.png", "attachments.js", "favicon.svg",
     "icon-192.png", "icon-512.png", "icon-maskable-512.png", "inter.woff2", "jetbrains-mono.woff2", "manifest.webmanifest", "noto-sans-thai.woff2"]);
   for (const asset of staticAssets.values()) {
     expect(asset.hash).toBe(createHash("sha256").update(asset.body).digest("hex").slice(0, 16));
@@ -216,7 +216,7 @@ test("the generated stylesheet has only valid property names and keeps literal t
 });
 
 test("layout templates contain no hard-coded English or Thai text nodes", async () => {
-  const source = (await Promise.all(["web-layout.ts", "web-navigation.ts", "web-settings.ts", "web-setup.ts"].map(file => Bun.file(join(import.meta.dir, "../src", file)).text()))).join("\n");
+  const source = (await Promise.all(["web-layout.ts", "web-navigation.ts", "web-settings.ts", "web-setup.ts", "web-attachments.ts"].map(file => Bun.file(join(import.meta.dir, "../src", file)).text()))).join("\n");
   const nodes = [...source.matchAll(/>([^<>$`{}\n=;'"]*[A-Za-z\u0E00-\u0E7F]{2,}[^<>$`{}\n=;'"]*)</g)].map(m => m[1]!.trim()).filter(Boolean);
   // Allowed literals: vendored font names and contract identifiers, which are the same in every language.
   const literals = [...new Set(nodes)].filter(node => !/^[a-z_.]+\/v\d+$/.test(node) && !node.includes("(value)")).sort();

@@ -142,7 +142,7 @@ test("the service worker is public, never stored, carries the CSP and lists exac
   const body = await response.text();
   expect(body).toBe(serviceWorkerScript());
   // Only stylesheet, scripts, fonts and icons: never the manifest, licences, pages or anything outside the table.
-  expect(offlineAssets.map(asset => asset.name).sort()).toEqual(["app.css", "app.js", "apple-touch-icon.png", "favicon.svg", "icon-192.png", "icon-512.png",
+  expect(offlineAssets.map(asset => asset.name).sort()).toEqual(["app.css", "app.js", "apple-touch-icon.png", "attachments.js", "favicon.svg", "icon-192.png", "icon-512.png",
     "icon-maskable-512.png", "inter.woff2", "jetbrains-mono.woff2", "noto-sans-thai.woff2"]);
   for (const asset of offlineAssets) expect(lookupAsset(asset.path)).toBe(asset);
   expect(body).toContain(`const table = ${JSON.stringify({ version: offlineVersion, paths: offlineAssets.map(asset => asset.path) })};`);
