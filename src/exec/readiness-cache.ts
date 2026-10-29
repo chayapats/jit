@@ -32,10 +32,12 @@ export function invalidateReadiness(runtime: object): void {
   if (entry) { entry.value = undefined; entry.expires = 0; entry.generation++; }
 }
 
-/** Observes real commands only (probes use the raw runner), retaining explicit Podman client selection. */
+/** Observes real commands only (probes use the raw runner): engine failures (exit 125) or spawn errors invalidate readiness. */
 export function readinessCommands<T extends CommandRunner>(runtime: object, run: T): T {
   return Object.assign(async (...args: Parameters<CommandRunner>) => {
-    try { const result = await run(...args); if (result.exitCode !== 0) invalidateReadiness(runtime); return result; }
+    // Podman exits 125 for engine/API failures; 1 is an ordinary negative answer (`image exists`, a missing
+    // container on `inspect`, a failed health probe) and must not erase readiness (live finding, #224).
+    try { const result = await run(...args); if (result.exitCode === 125) invalidateReadiness(runtime); return result; }
     catch (error) { invalidateReadiness(runtime); throw error; }
   }, { client: run.client }) as T;
 }

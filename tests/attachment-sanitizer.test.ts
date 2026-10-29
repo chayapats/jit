@@ -222,8 +222,11 @@ test("container caps output tmpfs bytes/inodes and memory, mounts only read-only
   const outputBytes = sanitizerOutputBudget("png"), memoryBytes = 512 * 1024 * 1024 + outputBytes;
   for (const flag of ["--rm", "--pull=never", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only", `--memory=${memoryBytes}`, `--memory-swap=${memoryBytes}`, "--pids-limit=64", "--cpus=1", "--userns=keep-id:uid=1000,gid=1000"]) expect(run).toContain(flag);
   expect(run[run.indexOf("--network") + 1]).toBe("none"); expect(run[run.indexOf("--user") + 1]).toBe("1000:1000");
-  expect(run.filter((_, i) => run[i - 1] === "--mount")).toEqual(["type=bind,source=/generated/in,destination=/in,ro=true"]);
-  expect(run).toContain(`/out:rw,nosuid,nodev,noexec,size=${outputBytes},nr_inodes=4,uid=1000,gid=1000,mode=0700`);
+  // The only host path is the read-only input; /out is a size-capped private tmpfs owned by the container user.
+  expect(run.filter((_, i) => run[i - 1] === "--mount")).toEqual([`type=tmpfs,destination=/out,tmpfs-size=${outputBytes},tmpfs-mode=0700,U=true,noexec,nosuid,nodev`, "type=bind,source=/generated/in,destination=/in,ro=true"]);
+  expect(run).toContain(`type=tmpfs,destination=/out,tmpfs-size=${outputBytes},tmpfs-mode=0700,U=true,noexec,nosuid,nodev`);
+  // Podman 4.9 rejects these tmpfs options; they must never come back (#224 live finding).
+  expect(run.join(" ")).not.toMatch(/nr_inodes=|uid=1000,gid=1000,mode/);
   expect(run.filter((_, i) => run[i - 1] === "--env")).toEqual(["HOME=/tmp", "LANG=C.UTF-8"]);
   expect(run.slice(-6)).toEqual([base, "/opt/jit/sanitize", "png", "40000000", "30", "--stream"]);
   expire(); await expect(pending).rejects.toThrow("sanitize_timeout");
@@ -425,7 +428,7 @@ for (const [name, kind] of [["metadata-polyglot.png", "png"], ["exif-gps.jpg", "
     };
     const command: SanitizerCommandRunner = async (args, request) => {
       if (args[0] === "run") {
-        expect(args).toContain(`/out:rw,nosuid,nodev,noexec,size=${sanitizerOutputBudget(kind)},nr_inodes=${kind === "pdf" ? 3 : 4},uid=1000,gid=1000,mode=0700`);
+        expect(args).toContain(`type=tmpfs,destination=/out,tmpfs-size=${sanitizerOutputBudget(kind)},tmpfs-mode=0700,U=true,noexec,nosuid,nodev`);
         const memoryBytes = f.config.attachments.sanitizerMemoryMB * 1024 * 1024 + sanitizerOutputBudget(kind);
         expect(args).toContain(`--memory=${memoryBytes}`); expect(args).toContain(`--memory-swap=${memoryBytes}`);
         expect(request.stdoutBytes).toBe(sanitizerStreamLimit(kind));

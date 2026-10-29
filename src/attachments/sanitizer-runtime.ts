@@ -92,7 +92,9 @@ export class PodmanAttachmentSanitizer implements AttachmentSanitizerRuntime {
     const args = ["run", "--label", `jit.sanitize.job=${jobId}`, "--rm", "--name", this.name, "--pull=never", "--network", "none", "--cap-drop=ALL",
       "--security-opt=no-new-privileges", "--read-only", "--http-proxy=false", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=32m,mode=1777",
       "--tmpfs", "/run:rw,nosuid,nodev,noexec,size=1m,mode=1777",
-      "--tmpfs", `/out:rw,nosuid,nodev,noexec,size=${outputBytes},nr_inodes=${job.kind === "pdf" ? 3 : 4},uid=1000,gid=1000,mode=0700`,
+      // Podman 4.9 rejects tmpfs nr_inodes=/uid=/gid=. The size cap stays; the file count is bounded by the stdout
+      // record protocol (at most three or four named records) and the container memory cgroup that charges tmpfs.
+      "--mount", `type=tmpfs,destination=/out,tmpfs-size=${outputBytes},tmpfs-mode=0700,U=true,noexec,nosuid,nodev`,
       `--memory=${memoryBytes}`, `--memory-swap=${memoryBytes}`, "--pids-limit=64", "--cpus=1", "--userns=keep-id:uid=1000,gid=1000",
       "--user", "1000:1000", "--log-driver=none", "--workdir", "/", "--env", "HOME=/tmp", "--env", "LANG=C.UTF-8",
       "--mount", `type=bind,source=${job.input},destination=/in,ro=true`,
