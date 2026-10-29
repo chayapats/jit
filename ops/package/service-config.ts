@@ -41,6 +41,8 @@ export interface ServiceConfig {
   runPort?: "scripted" | "schway";
   /** Managed keyless search defaults on; false here or JIT_SEARXNG_ENABLED=0 disables it. */
   searxngEnabled?: boolean;
+  /** Explicit chat attachment ingestion opt-in, rendered as JIT_ATTACHMENTS; omitted stays off by default. */
+  attachmentsEnabled?: boolean;
   /**
    * Opt-in channels. `telegram: "enabled"` requires the `telegram-bot-token`
    * credential-file reference and a supported transport; otherwise startup
@@ -162,7 +164,7 @@ export function parseServiceConfig(raw: unknown): ServiceConfig {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) fail();
   const c = raw as Record<string, unknown>;
   keysWithin(c, ["serviceUser", "executablePath", "workingDirectory", "stateDirectory", "ledgerPath", "backupDirectory",
-    "routes", "secretRefs", "network", "resources"], ["runPort", "channels", "execution", "searxngEnabled"]);
+    "routes", "secretRefs", "network", "resources"], ["runPort", "channels", "execution", "searxngEnabled", "attachmentsEnabled"]);
   if (typeof c.serviceUser !== "string" || !userPattern.test(c.serviceUser) || c.serviceUser === "root") fail();
   const executablePath = absolutePath(c.executablePath);
   const workingDirectory = absolutePath(c.workingDirectory);
@@ -230,6 +232,10 @@ export function parseServiceConfig(raw: unknown): ServiceConfig {
   if (c.searxngEnabled !== undefined) {
     if (typeof c.searxngEnabled !== "boolean") fail();
     parsed.searxngEnabled = c.searxngEnabled as boolean;
+  }
+  if (c.attachmentsEnabled !== undefined) {
+    if (typeof c.attachmentsEnabled !== "boolean") fail();
+    parsed.attachmentsEnabled = c.attachmentsEnabled as boolean;
   }
   if (c.runPort !== undefined) {
     if (c.runPort !== "scripted" && c.runPort !== "schway") fail();
@@ -341,6 +347,7 @@ export function serviceEnvironment(config: ServiceConfig): [string, string][] {
     ["JIT_RUN_PORT", parsed.runPort ?? "scripted"],
   ];
   if (parsed.searxngEnabled !== undefined) env.push(["JIT_SEARXNG_ENABLED", parsed.searxngEnabled ? "1" : "0"]);
+  if (parsed.attachmentsEnabled !== undefined) env.push(["JIT_ATTACHMENTS", parsed.attachmentsEnabled ? "1" : "0"]);
   if (!parsed.execution) env.push(["JIT_EXECUTION_SECRETS_DIR", `${parsed.stateDirectory}.connections`]);
   const token = telegramTokenPath(parsed);
   if (token) env.push(["JIT_TELEGRAM_BOT_TOKEN_PATH", token]);
@@ -369,7 +376,7 @@ export interface ServicePlanChange {
 }
 
 const planFields = ["serviceUser", "executablePath", "workingDirectory", "stateDirectory", "ledgerPath",
-  "backupDirectory", "routes", "network", "resources", "runPort", "channels", "execution", "searxngEnabled"] as const;
+  "backupDirectory", "routes", "network", "resources", "runPort", "channels", "execution", "searxngEnabled", "attachmentsEnabled"] as const;
 
 /**
  * Plan/validate mode: prints only allowlisted non-secret differences between two

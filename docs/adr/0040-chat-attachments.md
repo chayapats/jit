@@ -36,7 +36,7 @@ Each choice is labelled. **Confirmed** means an owner decision in S13. **Propose
 ### Feature gate
 
 - `JIT_ATTACHMENTS` is off by default. It can be turned on only after #193 (ATT04, Jit reads attachments) and #195 (ATT06, lifecycle) have merged (Confirmed, S13 Tickets). This way no release can store files that it cannot delete.
-- **Proposed:** a code constant `attachmentsReleasable` enforces the gate. While it is false, config load refuses `JIT_ATTACHMENTS=1`. Tests inject configuration, so ATT01–ATT05 can be built with the gate on. The later of ATT04 and ATT06 to merge sets the constant to true.
+- **Implemented — 2026-10-29 (ATT05 release-gate change):** ATT04 #193 (`31bb200`) and ATT06 #195 (`0423008`) have merged, satisfying the S13 condition. `attachmentsReleasable = true` now permits explicit opt-in. `JIT_ATTACHMENTS` still defaults to `0`; only `JIT_ATTACHMENTS=1` or service config `attachmentsEnabled: true` enables uploads. An explicit service value overrides the environment; omission preserves the environment choice. Existing-file reads and lifecycle remain available with ingestion off. This change does not enable ATT07 images to models or flip the default.
 - **Proposed:** the gate controls ingestion only. While it is off:
   - the upload routes answer 404;
   - `message.send` refuses `attachmentIds`;
@@ -242,8 +242,7 @@ Each choice is labelled. **Confirmed** means an owner decision in S13. **Propose
 
 ## Open questions
 
-1. **Default of `JIT_ATTACHMENTS` once releasable.** S13 says off by default and allowed on after ATT04 and ATT06. "Just works" argues for on.
-   - Recommendation: the PR that sets `attachmentsReleasable` keeps the default off. The owner flips the default in a one-line follow-up after one live check on a reference host.
+1. **Default of `JIT_ATTACHMENTS` once releasable — resolved 2026-10-29.** The ATT05 release-gate change keeps the S13 default off. Any future default-on change requires a separate owner decision; it is outside ATT05.
 2. **Upgrade recovery points versus the attachment bound** (see Consequences). This ADR keeps them fail-closed.
    - The alternative is an explicitly recorded exclusion for upgrade recovery points only, which is not silent. Restoring such a point would then need the live blobs to still exist.
    - Recommendation: keep fail-closed, and revisit with measured attachment volumes from real installs.

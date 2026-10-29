@@ -50,8 +50,12 @@ function stream(chunks: Uint8Array[]) {
 }
 
 test("release interlock and exact host-scaled env bounds are deterministic", () => {
-  expect(attachmentsReleasable).toBe(false);
-  for (const gate of ["1", "true", "", "2"]) expect(() => attachmentLimits({ JIT_ATTACHMENTS: gate }, host)).toThrow("Invalid JIT_ATTACHMENTS");
+  expect(attachmentsReleasable).toBe(true);
+  expect(attachmentLimits({ JIT_ATTACHMENTS: "1" }, host).enabled).toBe(true);
+  expect(attachmentLimits({ JIT_ATTACHMENTS: "0" }, host).enabled).toBe(false);
+  expect(readConfig({}, host).attachments.enabled).toBe(false);
+  expect(readConfig({ JIT_ATTACHMENTS: "1" }, host).attachments.enabled).toBe(true);
+  for (const gate of ["true", "", "2"]) expect(() => attachmentLimits({ JIT_ATTACHMENTS: gate }, host)).toThrow("Invalid JIT_ATTACHMENTS");
   const normal = attachmentLimits({}, host); expect(normal).toMatchObject({ enabled: false, fileBytes: 10 * 1024 ** 2, messageFiles: 5,
     projectBytes: 500 * 1024 ** 2, diskReserveBytes: 2 * 1024 ** 3, stagedHours: 24, sanitizerMemoryMB: 512, backupBytes: 2 * 1024 ** 3, imagePixels: 40_000_000 });
   const small = attachmentLimits({}, { memoryBytes: 2 * 1024 ** 3, dataFilesystemBytes: 512 * 1024 ** 2, backupFilesystemBytes: 1024 ** 3 });

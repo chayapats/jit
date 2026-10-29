@@ -2,8 +2,8 @@ import { statfsSync } from "node:fs";
 import { totalmem } from "node:os";
 import { dirname } from "node:path";
 
-/** Release interlock: only the later of ATT04 and ATT06 may enable production ingestion. */
-export const attachmentsReleasable = false;
+/** S13 release interlock satisfied by merged ATT04/ATT06; ingestion still requires an explicit operator opt-in. */
+export const attachmentsReleasable = true;
 const parsedEnvironments = new WeakMap<AttachmentLimits, Record<string, string | undefined>>();
 const MiB = 1024 * 1024, GiB = 1024 * MiB;
 /** Detected host capacities, injectable so configuration tests never depend on the test machine. */
