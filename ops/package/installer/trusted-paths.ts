@@ -2,36 +2,8 @@ import { chmodSync, chownSync, cpSync, lstatSync, mkdtempSync, readdirSync, rmSy
 import { dirname, join, resolve } from "node:path";
 import { validateArtifact, type BuildManifest } from "../bun-build";
 
-/** Fake-root tests use their own uid and boundary; production always requires root ownership up to `/`. */
-export interface RootPathPolicy { root?: string; uid?: number }
-
-/** Rejects symlinks (including dangling ones), non-root owners and writable ancestors before privileged use. */
-export function assertRootPath(path: string, policy: RootPathPolicy = {}): void {
-  const boundary = resolve(policy.root ?? "/"), uid = policy.uid ?? 0;
-  let current = resolve(path);
-  if (boundary !== "/" && current !== boundary && !current.startsWith(boundary + "/")) throw new Error("unsafe_root_path");
-  for (;;) {
-    try {
-      const stats = lstatSync(current);
-      if (stats.isSymbolicLink() || (!stats.isFile() && !stats.isDirectory()) || stats.uid !== uid || (stats.mode & 0o022) !== 0) throw new Error("unsafe_root_path");
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-    if (current === boundary) break;
-    current = dirname(current);
-  }
-}
-
-/** Checks the complete executable tree, including dependencies and metadata excluded from content hashing. */
-export function assertRootTree(path: string, policy: RootPathPolicy = {}): void {
-  assertRootPath(path, policy);
-  const walk = (entry: string) => {
-    const stats = lstatSync(entry);
-    if (stats.isSymbolicLink() || (!stats.isFile() && !stats.isDirectory()) || stats.uid !== (policy.uid ?? 0) || (stats.mode & 0o022) !== 0) throw new Error("unsafe_root_path");
-    if (stats.isDirectory()) for (const name of readdirSync(entry)) walk(join(entry, name));
-  };
-  walk(path);
-}
+import { assertRootPath, assertRootTree, type RootPathPolicy } from "../trusted-paths";
+export { assertRootPath, assertRootTree, type RootPathPolicy } from "../trusted-paths";
 
 /** Transfers a fresh trusted staging tree bottom-up; root never traverses a directory after giving it away. */
 export function giveInstallerStaging(path: string, uid: number, gid: number): void {

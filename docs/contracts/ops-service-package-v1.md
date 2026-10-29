@@ -18,7 +18,7 @@ bun ops/package/bun-build.ts install-deps <outDir>     # on the host that will r
 
 ## Trusted installation configuration
 
-The operator writes ignored `.local/service-config.json`; install copies it to `<configDir>/service-config.json` (default `/etc/jit`, mode 0640, read-only to the sandboxed service). Fields: `serviceUser` (existing dedicated non-root, non-login identity), absolute `executablePath` (active-release symlink; releases live in `<dirname>/releases/<artifactId>`), `workingDirectory`, `stateDirectory` (holds `app.sqlite`), `ledgerPath` (the one deletion/suppression ledger checkpoint location for this installation), `backupDirectory`, `routes` (non-secret selection), `secretRefs` (opaque `{name,store,key}`; file stores are absolute paths), `network` (`bindHost` loopback, or a private/VPN address — RFC 1918, 100.64/10, fc00::/7 — on a named `vpnInterface`; `origin` is required and HTTPS for any non-loopback bind, and only a loopback bind may default to `http://127.0.0.1:<port>`), `resources` (finite memory/restart/log/retention ceilings, optional `stopTimeoutSeconds`), optional `runPort` (`scripted` default or `schway`) and optional `channels.telegram` (`disabled` default or `enabled`, which requires the `telegram-bot-token` credential-file reference). The ledger and backups may not collide with the database (`<state>/app.sqlite`), its `-wal`/`-shm`/`-journal` sidecars, any `<db>.<suffix>` control path (backups, upgrades, restores, fences, swaps; the ledger alone may use the OPS02 default `<db>.lifecycle-ledger.json`), the `.jit-host` and `pr-cache` trees, the state/working directories or each other. State, backups and the ledger may not live inside releases, the working directory or a home tree (`/home`, `/root`, `/Users`, `/run/user`); unknown fields, wildcard/public binds and secret-value fields fail.
+The operator writes ignored `.local/service-config.json`, then copies the reviewed file into root-owned storage before privileged plan/install; install copies it to `<configDir>/service-config.json` (default `/etc/jit`, mode 0640, read-only to the sandboxed service). Fields: `serviceUser` (existing dedicated non-root, non-login identity), absolute `executablePath` (active-release symlink; releases live in `<dirname>/releases/<artifactId>`), `workingDirectory`, `stateDirectory` (holds `app.sqlite`), `ledgerPath` (the one deletion/suppression ledger checkpoint location for this installation), `backupDirectory`, `routes` (non-secret selection), `secretRefs` (opaque `{name,store,key}`; file stores are absolute paths), `network` (`bindHost` loopback, or a private/VPN address — RFC 1918, 100.64/10, fc00::/7 — on a named `vpnInterface`; `origin` is required and HTTPS for any non-loopback bind, and only a loopback bind may default to `http://127.0.0.1:<port>`), `resources` (finite memory/restart/log/retention ceilings, optional `stopTimeoutSeconds`), optional `runPort` (`scripted` default or `schway`) and optional `channels.telegram` (`disabled` default or `enabled`, which requires the `telegram-bot-token` credential-file reference). The ledger and backups may not collide with the database (`<state>/app.sqlite`), its `-wal`/`-shm`/`-journal` sidecars, any `<db>.<suffix>` control path (backups, upgrades, restores, fences, swaps; the ledger alone may use the OPS02 default `<db>.lifecycle-ledger.json`), the `.jit-host` and `pr-cache` trees, the state/working directories or each other. State, backups and the ledger may not live inside releases, the working directory or a home tree (`/home`, `/root`, `/Users`, `/run/user`); unknown fields, wildcard/public binds and secret-value fields fail.
 
 | Public entry | Behavior |
 | --- | --- |
@@ -28,14 +28,44 @@ The operator writes ignored `.local/service-config.json`; install copies it to `
 | `renderJournaldConfig(config)` + `systemd/journald@jit.conf` | Persistent journald namespace bounded by `SystemMaxUse=<logBytes>` and `MaxRetentionSec=<retentionDays>day`. |
 | `assertNoSecretValues(text)` | Rejects rendered text carrying token, bearer, private-key, password or API-key shaped values. |
 
-Privileged entry-point ownership is an operator precondition: the Bun binary,
-CLI code, imports/dependencies and every ancestor must be root-owned and not
-service/group/other-writable. A valid hash does not revoke an identity's write
-access. Do not run a `jit`-built artifact under `/var/lib/jit/artifacts/<sha>` with
-sudo. Build as a trusted operator and snapshot into a protected root-owned
-location before invoking the CLI. General CLI enforcement remains a follow-up;
-`ops.installer/v1` enforces its own boundary and uses the dependency-free API
-without executing service-produced dependencies as root.
+OPS08 (#206, ADR 0042) enforces privileged path trust for **every** root-run
+`service` command. Before application imports, the dependency-free `src/main.ts`
+bootstrap recovers the original Linux script path from `/proc/self/cmdline`
+(Bun realpaths `argv[1]`), then checks that invocation path, running release (all code,
+metadata and dependencies), Bun and ancestor dependency/config lookup paths.
+`runServiceCommand` also checks the selected `--bun`, any explicit `--artifact`
+(even for a command that does not consume it), source/installed config and all
+ancestors before reading. After parsing config it checks unit/drop-ins,
+journald, config/release directories and the active release. Every entry must
+be root-owned, regular file/directory and without group/other write, with no
+symlink in its path. The sole managed exception is the root-owned active-release
+link: its parent is protected before reading the link and its direct target's
+whole tree is checked without following another link. Root CLI invocation via
+that link is refused; invoke the direct snapshot path.
+
+Root-protected ancestors and complete trees keep validation and use on the same
+non-service-writable inodes. Staging rechecks source and existing destination
+before reading/copying, checks the new copy before content validation, and uses
+that protected destination for upgrade execution. Privileged subprocesses use a
+fixed system PATH and protected default cwd. The schema upgrade still runs as
+the service identity with the owner's password on stdin. Fence, quiesce,
+recovery-point, activation and compatible rollback semantics are unchanged.
+
+Refusal is CLI-only English JSON, exit 2: `error: unsafe_root_path`, `path` and
+`nextAction` naming the protected-copy procedure and its exact command:
+`sudo cp -R --no-dereference -- "$newDir" "$snapshot/artifact"`.
+The full [runbook procedure](../runbooks/ops-service.md#trusted-operator-built-root-owned-snapshot-ops08)
+builds as `jit` or another unprivileged operator, copies to new inodes beneath a
+fresh private root-owned parent, rejects links/special files, sets protected
+ownership/modes, validates hashes and only then grants read/traverse access.
+Ownership does not authenticate build provenance; the operator must select
+trusted bootstrap code, Bun and release inputs before execution.
+
+Non-root CLI calls retain their existing behavior. `ServiceCliDeps.uid`,
+`rootPathPolicy` (`RootPathPolicy`: boundary/uid/metadata) and `runtimeDir` are
+trusted test seams, never flags or environment overrides. The dependency-free
+shared checks live in `ops/package/trusted-paths.ts`; the installer re-exports
+its previous imports and continues to use its existing protected snapshot/API.
 
 ## Operator commands
 

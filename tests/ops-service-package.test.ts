@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { accessSync, chmodSync, readdirSync, constants as fsConstants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, openSync, closeSync, writeSync, readdirSync, constants as fsConstants, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Application } from "../src/application";
@@ -10,6 +10,9 @@ import { ScriptedTelegramSender } from "../src/delivery";
 import { startFullApp, stopDrain } from "../src/ops/lifecycle";
 import type { ChannelTransportFactory } from "../src/ops/service-channels";
 import { runServiceCommand } from "../src/ops/service-cli";
+import { assertServiceRuntime, rootSnapshotCopyCommand, serviceInvocationPath } from "../src/ops/service-trust";
+import { assertRootTree, type RootPathPolicy } from "../ops/package/trusted-paths";
+import { freezeInstallerArtifact } from "../ops/package/installer/trusted-paths";
 import { installService, planInstall, upgradePackage, type OperatorHost } from "../src/ops/service-package";
 import { gatherServiceStatus } from "../src/ops/status";
 import type { CommandOptions, CommandResult, CommandRunner } from "../src/ops/supervisor";
@@ -764,8 +767,9 @@ test("a root-run status judges state ownership against the configured identity, 
   const l = layout();
   new TransactionStore(serviceDatabasePath(l.service)).close();
   const fake = fakeSupervisor(l.dirs.unit);
+  const operator = rootOperator(l, fake);
   const status = async (caller: number) => (await runServiceCommand(["status", "--config", l.source, "--unit-dir", l.dirs.unit, "--journald-dir", l.dirs.journald, "--config-dir", l.dirs.configDir],
-    { cwd: l.root, run: fake.run, bunPath: process.execPath, uid: caller })).output as { service: { blockedGates: string[] } };
+    { ...operator.deps, uid: caller })).output as { service: { blockedGates: string[] } };
   // The test process owns the state, playing the service identity resolved through getent.
   expect((await status(0)).service.blockedGates).not.toContain("config");
   expect(fake.calls).toContainEqual(["getent", "passwd", l.service.serviceUser]);
@@ -1040,4 +1044,151 @@ test("installer install never seeds/chmods/chowns a mutable ledger path as root"
   const installed = await installService({ service: l.service, artifactDir: staged, host });
   expect(installed.ok).toBe(true);
   expect(ownership).not.toContain(l.service.ledgerPath);
+});
+
+
+// OPS08: root is simulated by the current uid inside a disposable filesystem boundary.
+function rootOperator(l: ReturnType<typeof layout>, fake = fakeSupervisor(l.dirs.unit, { spawnService: false })) {
+  const runtimeDir = join(l.root, "operator-cli"); mkdirSync(runtimeDir, { recursive: true });
+  const bunPath = join(runtimeDir, "bun"); writeFileSync(bunPath, "fixture runtime", { mode: 0o755 });
+  const foreign = new Set<string>();
+  const policy: RootPathPolicy = { root: l.root, uid, lstat: path => {
+    const stats = lstatSync(path); if (foreign.has(path)) stats.uid = uid + 1; return stats;
+  } };
+  let passwords = 0;
+  const deps = { cwd: l.root, run: fake.run, bunPath, uid: 0, runtimeDir, rootPathPolicy: policy, chown: recordChown,
+    readPassword: async () => { passwords++; return password; }, health: async () => true };
+  const invoke = (args: string[]) => runServiceCommand([...args, "--unit-dir", l.dirs.unit, "--journald-dir", l.dirs.journald,
+    "--config-dir", l.dirs.configDir], deps);
+  return { deps, invoke, foreign, fake, passwords: () => passwords, policy };
+}
+
+const rootCommands = ["plan", "install", "start", "stop", "restart", "status", "upgrade", "disable", "uninstall"];
+for (const command of rootCommands) {
+  for (const kind of ["group-write", "other-write", "foreign-artifact", "symlink", "symlink-ancestor", "foreign-ancestor", "writable-ancestor", "writable-node_modules", "writable-dependency", "foreign-dependency", "dangling-dependency"]) {
+    test(`OPS08 root ${command} refuses ${kind} before commands or password input`, async () => {
+      const l = layout(), operator = rootOperator(l), parent = join(l.root, "build"), artifact = join(parent, "artifact");
+      mkdirSync(join(artifact, "node_modules/fixture"), { recursive: true });
+      const dependency = join(artifact, "node_modules/fixture/index.js"); writeFileSync(dependency, "fixture");
+      let bad = artifact;
+      if (kind === "group-write") chmodSync(artifact, 0o775);
+      if (kind === "other-write") chmodSync(artifact, 0o757);
+      if (kind === "foreign-artifact") operator.foreign.add(artifact);
+      if (kind === "symlink") { rmSync(artifact, { recursive: true }); symlinkSync(operator.deps.runtimeDir, artifact); }
+      if (kind === "symlink-ancestor") {
+        const real = join(l.root, "real"); mkdirSync(join(real, "artifact"), { recursive: true });
+        rmSync(parent, { recursive: true }); symlinkSync(real, parent); bad = parent;
+      }
+      if (kind === "foreign-ancestor") { operator.foreign.add(parent); bad = parent; }
+      if (kind === "writable-ancestor") { chmodSync(parent, 0o775); bad = parent; }
+      if (kind === "writable-node_modules") { bad = join(artifact, "node_modules"); chmodSync(bad, 0o775); }
+      if (kind === "writable-dependency") { bad = dependency; chmodSync(bad, 0o666); }
+      if (kind === "foreign-dependency") { bad = dependency; operator.foreign.add(bad); }
+      if (kind === "dangling-dependency") { bad = dependency; rmSync(bad); symlinkSync(join(l.root, "missing"), bad); }
+      const result = await operator.invoke([command, "--config", l.source, "--artifact", artifact, "--password-stdin"]);
+      expect(result).toMatchObject({ exitCode: 2, output: { error: "unsafe_root_path", path: bad } });
+      expect((result.output as { nextAction: string }).nextAction).toContain(rootSnapshotCopyCommand);
+      expect(operator.fake.calls).toEqual([]); expect(operator.passwords()).toBe(0);
+    });
+  }
+}
+
+for (const kind of ["config", "config-ancestor", "installed-config", "bun", "runtime", "unit", "unit-dropin", "journald", "release-parent", "active-link", "active-target", "active-link-ancestor"]) {
+  test(`OPS08 root status refuses unsafe ${kind} even without --artifact`, async () => {
+    const l = layout(), operator = rootOperator(l);
+    let bad = l.source;
+    if (kind === "config-ancestor") bad = l.dirs.local;
+    if (kind === "installed-config") bad = join(l.dirs.configDir, "service-config.json");
+    if (kind === "bun") bad = operator.deps.bunPath;
+    if (kind === "runtime") { bad = join(operator.deps.runtimeDir, "import.ts"); writeFileSync(bad, "fixture"); }
+    if (kind === "unit") bad = join(l.dirs.unit, "jit.service");
+    if (kind === "unit-dropin") { mkdirSync(join(l.dirs.unit, "jit.service.d")); bad = join(l.dirs.unit, "jit.service.d/override.conf"); }
+    if (kind === "journald") bad = join(l.dirs.journald, "journald@jit.conf");
+    if (kind === "release-parent") { bad = join(l.dirs.opt, "releases"); mkdirSync(bad); }
+    if (kind.startsWith("active-")) {
+      const release = join(l.dirs.opt, "release"); mkdirSync(release); symlinkSync(release, l.service.executablePath);
+      bad = kind === "active-link" ? l.service.executablePath : kind === "active-target" ? release : l.dirs.opt;
+    }
+    if (!existsSync(bad)) writeFileSync(bad, "fixture");
+    operator.foreign.add(bad);
+    const result = await operator.invoke(["status", "--config", l.source]);
+    expect(result).toMatchObject({ exitCode: 2, output: { error: "unsafe_root_path", path: bad } });
+    expect(operator.fake.calls).toEqual([]);
+  });
+}
+
+test("OPS08 root runtime rejects invocation links and ancestor dependency fallbacks before loading app imports", () => {
+  const l = layout(), operator = rootOperator(l), entry = join(l.root, "entry.ts");
+  symlinkSync(join(operator.deps.runtimeDir, "main.ts"), entry);
+  expect(() => assertServiceRuntime(operator.deps.runtimeDir, operator.deps.bunPath, operator.policy, entry)).toThrow("unsafe_root_path");
+  mkdirSync(join(l.root, "node_modules")); chmodSync(join(l.root, "node_modules"), 0o777);
+  expect(() => assertServiceRuntime(operator.deps.runtimeDir, operator.deps.bunPath, operator.policy)).toThrow("unsafe_root_path");
+});
+
+test("OPS08 non-root keeps existing status behavior for a service-writable runtime and artifact", async () => {
+  const l = layout(), operator = rootOperator(l), artifact = join(l.root, "mutable"); mkdirSync(artifact); chmodSync(artifact, 0o777);
+  operator.deps.uid = uid || 1000; operator.foreign.add(operator.deps.runtimeDir);
+  const result = await operator.invoke(["status", "--config", l.source, "--artifact", artifact]);
+  expect(result.exitCode).toBe(0); expect(result.output).not.toHaveProperty("error");
+  expect(operator.fake.calls.some(argv => argv[0] === "getent")).toBe(false);
+});
+
+test("OPS08 protected snapshot installs and upgrades from fresh inodes despite retained build descriptors", async () => {
+  const l = layout(), operator = rootOperator(l), first = await artifact(l.root, "first");
+  expect((await operator.invoke(["plan", "--config", l.source, "--artifact", first])).exitCode).toBe(0);
+  expect((await operator.invoke(["install", "--config", l.source, "--artifact", first])).exitCode).toBe(0);
+  new TransactionStore(serviceDatabasePath(l.service)).close();
+  const second = await artifact(l.root, "second"), original = join(second, "src/main.ts"), fd = openSync(original, "r+");
+  try {
+    const frozen = freezeInstallerArtifact(second, join(l.dirs.opt, "releases"), readManifest(second), operator.policy);
+    const protectedEntry = join(frozen.artifact, "src/main.ts"), bytes = readFileSync(protectedEntry);
+    expect(lstatSync(original).ino).not.toBe(lstatSync(protectedEntry).ino);
+    operator.deps.readPassword = async () => { writeSync(fd, "attacker", 0, "utf8"); return password; };
+    const calls: string[][] = [];
+    operator.fake.upgrade = async (argv, options) => {
+      calls.push(argv); expect(operator.fake.active()).toBe(false); expect(options.stdin).toBe(`${password}\n`);
+      expect(readFileSync(protectedEntry)).toEqual(bytes);
+      expect(options.env?.PATH).toBe("/usr/sbin:/usr/bin:/sbin:/bin");
+      return evidence("activated");
+    };
+    const result = await operator.invoke(["upgrade", "--artifact", frozen.artifact, "--password-stdin"]);
+    expect(result).toMatchObject({ exitCode: 0, output: { outcome: "upgraded", recoveryBackupId: expect.any(String), supervisor: "active" } });
+    expect(calls).toHaveLength(1); expect(calls[0]!.slice(0, 4)).toEqual(["runuser", "-u", l.service.serviceUser, "--"]);
+    expect(calls[0]).toContain(join(l.dirs.opt, "releases", readManifest(second).artifactId, "src/main.ts"));
+    expect(() => assertRootTree(readlinkSync(l.service.executablePath), operator.policy)).not.toThrow();
+  } finally { closeSync(fd); }
+}, 60_000);
+
+test("OPS08 upgrade refuses an unsafe pre-existing destination before stopping the unit", async () => {
+  const u = await installedForUpgrade(), operator = rootOperator(u.l, u.fake);
+  const target = join(u.l.dirs.opt, "releases", u.b.artifactId); cpSync(u.second, target, { recursive: true });
+  const bad = join(target, "node_modules"); chmodSync(bad, 0o775);
+  u.fake.calls.length = 0;
+  const result = await operator.invoke(["upgrade", "--artifact", u.second, "--password-stdin"]);
+  expect(result).toMatchObject({ exitCode: 2, output: { error: "unsafe_root_path", path: bad } });
+  expect(u.fake.calls.some(argv => argv[0] === "systemctl" && argv[1] === "stop")).toBe(false);
+  expect(u.fake.active()).toBe(true);
+}, 60_000);
+
+test("OPS08 original Linux command line preserves entry symlinks despite Bun canonicalizing argv", () => {
+  const l = layout(), operator = rootOperator(l), direct = join(operator.deps.runtimeDir, "main.ts"), alias = join(l.root, "alias.ts");
+  writeFileSync(direct, "fixture"); symlinkSync(direct, alias);
+  const argv = [operator.deps.bunPath, direct, "service", "status"];
+  const raw = [operator.deps.bunPath, "--no-env-file", alias, "service", "status", ""].join("\0");
+  const entry = serviceInvocationPath(argv, raw, l.root);
+  expect(entry).toBe(alias);
+  expect(() => assertServiceRuntime(operator.deps.runtimeDir, operator.deps.bunPath, operator.policy, entry)).toThrow("unsafe_root_path");
+  const supported = [operator.deps.bunPath, "run", "operator-cli/main.ts", "service", "status", ""].join("\0");
+  expect(serviceInvocationPath(argv, supported, l.root)).toBe(direct);
+  expect(() => serviceInvocationPath(argv, "bun\0-e\0unrecognized wrapper\0", l.root)).toThrow("unsafe_root_path");
+});
+
+test("OPS08 CLI recovery command is copied verbatim from the operator runbook", () => {
+  expect(readFileSync(join(repoRoot, "docs/runbooks/ops-service.md"), "utf8")).toContain(rootSnapshotCopyCommand);
+});
+
+test("OPS08 non-root plan retains its source-config behavior", async () => {
+  const l = layout(), operator = rootOperator(l), art = await artifact(l.root, "artifact");
+  operator.deps.uid = uid || 1000; chmodSync(l.source, 0o666);
+  expect((await operator.invoke(["plan", "--config", l.source, "--artifact", art])).exitCode).toBe(0);
 });

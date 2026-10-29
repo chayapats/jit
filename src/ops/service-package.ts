@@ -1,3 +1,4 @@
+import { assertRootPath, assertRootTree, UnsafeRootPath, type RootPathPolicy } from "../../ops/package/trusted-paths";
 import { createHash } from "node:crypto";
 import { chmodSync, chownSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
@@ -42,6 +43,8 @@ export interface OperatorHost {
   chown?: (path: string, uid: number, gid: number) => void;
   /** Installer already seeds as the service identity; never write/chmod/chown beneath its mutable home as root. */
   skipLedgerSeed?: boolean;
+  /** Privileged CLI policy: validate protected release destinations before reading or activating them. */
+  rootPathPolicy?: RootPathPolicy;
 }
 
 /** Default ownership change: chown, then verify the result instead of trusting it. */
@@ -330,9 +333,14 @@ function releaseTarget(activePath: string): string | null {
 }
 
 /** Copies a validated artifact into the immutable releases directory (idempotent per artifact id). */
-function stageRelease(service: ServiceConfig, artifactDir: string, manifest: BuildManifest): string {
+function stageRelease(service: ServiceConfig, artifactDir: string, manifest: BuildManifest, policy?: RootPathPolicy): string {
   const releases = serviceReleasesDirectory(service);
   const target = join(releases, manifest.artifactId);
+  if (policy) {
+    assertRootTree(artifactDir, policy);
+    assertRootPath(target, policy);
+    if (existsSync(target)) assertRootTree(target, policy);
+  }
   mkdirSync(releases, { recursive: true, mode: 0o755 });
   chmodSync(releases, 0o755);
   if (!existsSync(target)) {
@@ -340,6 +348,7 @@ function stageRelease(service: ServiceConfig, artifactDir: string, manifest: Bui
     cpSync(resolve(artifactDir), temp, { recursive: true });
     renameSync(temp, target);
   }
+  if (policy) assertRootTree(target, policy);
   const copied = validateArtifact(target, { runtime: true });
   if (!copied.ok || copied.manifest?.artifactId !== manifest.artifactId) throw new Error("release_copy_invalid");
   return target;
@@ -379,7 +388,7 @@ export async function installService(input: { service: unknown; artifactDir: str
   const fail = (nextAction: string, detail: string, release: string | null = null): InstallResult =>
     ({ ok: false, plan: { ...plan, ok: false, checks: [...plan.checks, blocked("install", nextAction, detail)] }, release, supervisor: null });
   const manifest = readManifest(input.artifactDir);
-  const release = stageRelease(service, input.artifactDir, manifest);
+  const release = stageRelease(service, input.artifactDir, manifest, host.rootPathPolicy);
   // The service identity must traverse the config directory to read --service-config: root:<gid> 0750.
   try {
     mkdirSync(host.configDir, { recursive: true, mode: 0o750 });
@@ -553,8 +562,8 @@ export async function upgradePackage(input: PackageUpgradeInput): Promise<Packag
   finally { ledgerStore.close(); }
   if (!ledger.trusted) return result("blocked", ledger.reason, ledger.nextAction, { artifactId: manifest.artifactId });
   let release: string;
-  try { release = stageRelease(service, input.artifactDir, manifest); }
-  catch { return result("blocked", "release copy failed validation", "rebuild-artifact", { artifactId: manifest.artifactId }); }
+  try { release = stageRelease(service, input.artifactDir, manifest, host.rootPathPolicy); }
+  catch (error) { if (error instanceof UnsafeRootPath) throw error; return result("blocked", "release copy failed validation", "rebuild-artifact", { artifactId: manifest.artifactId }); }
   if (!await releaseReadableByService(host.run, service.serviceUser, release)) {
     return result("blocked", "service identity cannot read or traverse the whole staged release", "grant-service-identity-access", { artifactId: manifest.artifactId });
   }
@@ -565,7 +574,7 @@ export async function upgradePackage(input: PackageUpgradeInput): Promise<Packag
     return result("blocked", "service did not stop; another live writer still owns admission or delivery", "terminate-supervised-process-and-reconcile",
       { artifactId: manifest.artifactId, supervisor: stopped.active });
   }
-  const runAs = typeof process.getuid === "function" && process.getuid() === 0 ? ["runuser", "-u", service.serviceUser, "--"] : [];
+  const runAs = host.rootPathPolicy !== undefined || (process.geteuid?.() ?? process.getuid?.()) === 0 ? ["runuser", "-u", service.serviceUser, "--"] : [];
   const env = Object.fromEntries([...serviceEnvironment(service), ["PATH", process.env.PATH ?? "/usr/bin:/bin"]]);
   const upgraded = await host.run([...runAs, host.bunPath, join(release, "src", "main.ts"), "upgrade", "--service-config", installedConfigPath(host), "--password-stdin"],
     { cwd: service.workingDirectory, env, stdin: `${input.ownerPassword}\n`, timeoutMs: input.upgradeTimeoutMs ?? 1_800_000 });

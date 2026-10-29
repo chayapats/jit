@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { assertRootPath, assertRootTree, UnsafeRootPath, type RootPathPolicy } from "../../ops/package/trusted-paths";
+import { assertServicePaths, assertServiceRuntime, rootPathFailure } from "./service-trust";
 import { readConfig } from "../config";
 import type { LedgerGate } from "./lifecycle";
 import { gatherServiceStatus } from "./status";
@@ -22,8 +24,12 @@ export interface ServiceCliDeps {
   ledgerGate?: LedgerGate;
   /** Ownership operation for install (tests inject a recorder). */
   chown?: OperatorHost["chown"];
-  /** Effective uid of the caller (tests); production reads `process.getuid()`. */
+  /** Effective uid of the caller (tests); production reads `process.geteuid()` (getuid fallback). */
   uid?: number;
+  /** Fake-root trust policy; production checks real root ownership up to `/`. Non-root calls skip this gate. */
+  rootPathPolicy?: RootPathPolicy;
+  /** Running release root (fake-root tests); production checks this module's release. */
+  runtimeDir?: string;
 }
 
 /**
@@ -71,9 +77,15 @@ export async function runServiceCommand(args: string[], deps: ServiceCliDeps): P
   const parsed = parseArgs(args);
   if (!parsed) return { exitCode: 2, output: { error: "invalid-service-command", usage } };
   const { command, flags } = parsed;
-  const run = deps.run ?? spawnRunner;
+  const privileged = (deps.uid ?? process.geteuid?.() ?? process.getuid?.()) === 0;
+  const policy = privileged ? deps.rootPathPolicy ?? {} : undefined;
+  const runner = deps.run ?? spawnRunner;
+  const run: CommandRunner = policy ? (argv, options) => runner(argv, { ...options,
+    cwd: options.cwd ?? policy.root ?? "/", env: { ...options.env, PATH: "/usr/sbin:/usr/bin:/sbin:/bin" },
+  }) : runner;
   const host: OperatorHost = {
     run,
+    ...(policy ? { rootPathPolicy: policy } : {}),
     unitDir: resolve(deps.cwd, flags.get("--unit-dir") ?? defaultHostPaths.unitDir),
     journaldDir: resolve(deps.cwd, flags.get("--journald-dir") ?? defaultHostPaths.journaldDir),
     configDir: resolve(deps.cwd, flags.get("--config-dir") ?? defaultHostPaths.configDir),
@@ -83,25 +95,32 @@ export async function runServiceCommand(args: string[], deps: ServiceCliDeps): P
   };
   const configPath = flags.get("--config") ? resolve(deps.cwd, flags.get("--config")!) : installedConfigPath(host);
   try {
+    const artifactDir = flags.has("--artifact") ? resolve(deps.cwd, flags.get("--artifact")!) : null;
+    if (policy) {
+      assertServiceRuntime(deps.runtimeDir ?? resolve(import.meta.dir, "../.."), host.bunPath, policy);
+      assertRootPath(configPath, policy);
+      if (artifactDir) assertRootTree(artifactDir, policy);
+    }
     if (command === "plan" || command === "install") {
       const artifact = flags.get("--artifact");
       if (!artifact || !flags.get("--config")) return { exitCode: 2, output: { error: "invalid-service-command", usage } };
       // The operator's source configuration lives in ignored .local records; it is validated strictly before anything else.
-      const raw = JSON.parse(readFileSync(configPath, "utf8")) as unknown;
-      const service = parseServiceConfig(raw);
+      const service = policy ? readServiceConfigFile(configPath) : parseServiceConfig(JSON.parse(readFileSync(configPath, "utf8")));
+      if (policy) assertServicePaths(service, host, policy);
       if (command === "plan") {
-        const plan = await planInstall({ service, artifactDir: resolve(deps.cwd, artifact), host });
+        const plan = await planInstall({ service, artifactDir: artifactDir!, host });
         return { exitCode: plan.ok ? 0 : 1, output: sanitized(plan) };
       }
-      const installed = await installService({ service, artifactDir: resolve(deps.cwd, artifact), host });
+      const installed = await installService({ service, artifactDir: artifactDir!, host });
       const { plan, ...rest } = installed;
       return { exitCode: installed.ok ? 0 : 1, output: sanitized({ ...rest, checks: plan.checks, files: plan.files.map(f => ({ path: f.path, mode: f.mode, sha256: f.sha256 })),
         nextAction: installed.ok ? "start-service" : plan.checks.find(c => !c.ok)?.nextAction ?? "inspect-supervisor" }) };
     }
     const service = readServiceConfigFile(configPath);
+    if (policy) assertServicePaths(service, host, policy);
     const supervisor = new SystemdSupervisor(run);
     // As root, directory ownership is judged against the configured identity, never root itself.
-    const stateOwnerUid = (deps.uid ?? process.getuid?.()) === 0 ? await serviceIdentityUid(run, service.serviceUser) : undefined;
+    const stateOwnerUid = privileged ? await serviceIdentityUid(run, service.serviceUser) : undefined;
     const status = async () => ({ supervisor: await supervisor.state(), service: gatherServiceStatus(readConfig({}), service, {
       ...(deps.ledgerGate ? { ledgerGate: deps.ledgerGate } : {}), ...(stateOwnerUid !== undefined ? { stateOwnerUid } : {}) }) });
     if (command === "status") return { exitCode: 0, output: sanitized(await status()) };
@@ -119,12 +138,13 @@ export async function runServiceCommand(args: string[], deps: ServiceCliDeps): P
       const artifact = flags.get("--artifact");
       if (!artifact || !parsed.passwordStdin || !deps.readPassword) return { exitCode: 2, output: { error: "invalid-service-command", usage } };
       const ownerPassword = await deps.readPassword();
-      const result = await upgradePackage({ service, artifactDir: resolve(deps.cwd, artifact), host, ownerPassword,
+      const result = await upgradePackage({ service, artifactDir: artifactDir!, host, ownerPassword,
         ...(deps.health ? { health: deps.health } : {}) });
       return { exitCode: result.outcome === "upgraded" ? 0 : 1, output: sanitized(result) };
     }
     return { exitCode: 2, output: { error: "invalid-service-command", usage } };
   } catch (error) {
+    if (error instanceof UnsafeRootPath) return { exitCode: 2, output: rootPathFailure(error) };
     const code = error instanceof Error && /^[a-z_]{1,64}$/.test(error.message) ? error.message : "service-command-failed";
     return { exitCode: 2, output: { error: code, nextAction: "check-service-configuration-and-paths" } };
   }
