@@ -4,6 +4,7 @@ import { liveProjectSql, requireLiveProject } from "./project-lifecycle";
 import { previewBoxData, wipeBoxData } from "./exec/box-data";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { AppError } from "./errors";
+import { requireOwnerSetup, removeOwnerSetupLink } from "./ops/owner-setup";
 import type { AppConfig } from "./config";
 import { TransactionStore, type AppTransaction } from "./store";
 import { preferencesIdentity, readPreferences, writePreferences, type PreferencesReceipt, type SetPreferencesCommand, type UiPreferences } from "./preferences";
@@ -364,13 +365,30 @@ export class Application {
     try { syncLedgerCheckpoint(this.store, this.#ledgerPath, this.#now()); } catch { /* Restore resolves trust itself and fails closed. */ }
   }
 
-  /** Provisions exactly one owner through trusted local setup; no HTTP route exposes this method. */
+  /** Provisions exactly one owner through trusted local setup; HTTP uses the expiring capability boundary. */
   async setupOwner(password: string, reset = false): Promise<void> {
+    await this.#saveOwnerPassword(password, reset);
+  }
+
+  /** Checks the installer capability; GET never creates an owner or consumes the link. */
+  checkOwnerSetup(token: unknown): void {
+    this.store.read(tx => requireOwnerSetup(this.store, tx, token, this.#now()));
+  }
+
+  /** Creates the first owner once, rechecking the capability under the owner commit's writer lock. Never resets. */
+  async completeOwnerSetup(token: string, password: string): Promise<void> {
+    this.checkOwnerSetup(token);
+    await this.#saveOwnerPassword(password, false, tx => requireOwnerSetup(this.store, tx, token, this.#now()));
+    removeOwnerSetupLink(this.store);
+  }
+
+  async #saveOwnerPassword(password: string, reset: boolean, authorize?: (tx: AppTransaction) => void): Promise<void> {
     if (typeof password !== "string" || password.length < 12 || password.length > 256) {
       throw new AppError("password_length_12_to_256");
     }
     const hash = await Bun.password.hash(password, { algorithm: "argon2id" });
     this.store.transaction(tx => {
+      authorize?.(tx);
       const owner = tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'");
       if (owner && !reset) throw new AppError("owner_already_configured", 409);
       if (!owner && reset) throw new AppError("owner_not_configured", 409);

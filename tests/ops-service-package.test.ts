@@ -10,7 +10,7 @@ import { ScriptedTelegramSender } from "../src/delivery";
 import { startFullApp, stopDrain } from "../src/ops/lifecycle";
 import type { ChannelTransportFactory } from "../src/ops/service-channels";
 import { runServiceCommand } from "../src/ops/service-cli";
-import { planInstall, upgradePackage, type OperatorHost } from "../src/ops/service-package";
+import { installService, planInstall, upgradePackage, type OperatorHost } from "../src/ops/service-package";
 import { gatherServiceStatus } from "../src/ops/status";
 import type { CommandOptions, CommandResult, CommandRunner } from "../src/ops/supervisor";
 import { TransactionStore, inspectStoreSchema, schemaVersion } from "../src/store";
@@ -1024,4 +1024,20 @@ test("the bot token reader rejects FIFOs, symlinks and oversized files without b
   const service: ServiceConfig = { ...l.service, secretRefs: [{ name: "telegram-bot-token", store: "credential-file", key: fifo }], channels: { telegram: "enabled" } };
   expect(gatherServiceStatus(readConfig({ JIT_DATABASE: serviceDatabasePath(service) }), service)).toMatchObject({ channels: "blocked", telegram: "unconfigured" });
   expect(Date.now() - started).toBeLessThan(2000);
+});
+
+test("installer install never seeds/chmods/chowns a mutable ledger path as root", async () => {
+  const l = layout(), staged = await artifact(l.root, "installer-artifact"), fake = fakeSupervisor(l.dirs.unit, { spawnService: false });
+  const ownership: string[] = [];
+  const host: OperatorHost = { run: fake.run, unitDir: l.dirs.unit, journaldDir: l.dirs.journald, configDir: l.dirs.configDir,
+    bunPath: process.execPath, skipLedgerSeed: true, chown: path => { ownership.push(path); } };
+  const missing = await installService({ service: l.service, artifactDir: staged, host });
+  expect(missing.ok).toBe(false);
+  expect(missing.plan.checks.at(-1)?.nextAction).toBe("prepare-service-ledger-as-service-user");
+  expect(existsSync(l.service.ledgerPath)).toBe(false);
+  expect(ownership).not.toContain(l.service.ledgerPath);
+  writeFileSync(l.service.ledgerPath, JSON.stringify({ ledger: "jit.deletion.ledger/v1", revision: 1 }), { mode: 0o600 });
+  const installed = await installService({ service: l.service, artifactDir: staged, host });
+  expect(installed.ok).toBe(true);
+  expect(ownership).not.toContain(l.service.ledgerPath);
 });

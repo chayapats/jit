@@ -3,7 +3,7 @@ import { chmodSync, chownSync, cpSync, existsSync, lstatSync, mkdirSync, readFil
 import { basename, dirname, join, resolve } from "node:path";
 import { inspectStoreSchema, TransactionStore } from "../store";
 import { backupDirectoryProblem } from "./backup";
-import { defaultLedgerGate, type LedgerGate } from "./lifecycle";
+import type { LedgerGate } from "./lifecycle";
 import { SystemdSupervisor, type CommandRunner, type SupervisorState } from "./supervisor";
 import { writeFileAtomic } from "./upgrade-fence";
 import { readManifest, validateArtifact, type BuildManifest } from "../../ops/package/bun-build";
@@ -40,6 +40,8 @@ export interface OperatorHost {
    * by a stat verification). Tests inject a recorder; any failure fails install.
    */
   chown?: (path: string, uid: number, gid: number) => void;
+  /** Installer already seeds as the service identity; never write/chmod/chown beneath its mutable home as root. */
+  skipLedgerSeed?: boolean;
 }
 
 /** Default ownership change: chown, then verify the result instead of trusting it. */
@@ -389,6 +391,7 @@ export async function installService(input: { service: unknown; artifactDir: str
   for (const file of plan.files) {
     const content = file.content ?? JSON.stringify(service, null, 2) + "\n";
     const isLedger = file.path === service.ledgerPath;
+    if (isLedger && host.skipLedgerSeed) return fail("prepare-service-ledger-as-service-user", "installer ledger seed missing", release);
     // The ledger seed is written only when absent; a real checkpoint is never replaced by packaging.
     if (isLedger && existsSync(file.path)) continue;
     writeFileAtomic(file.path, content);
@@ -543,7 +546,10 @@ export async function upgradePackage(input: PackageUpgradeInput): Promise<Packag
   // Newer deletion/suppression ledger state is never ignored: a quarantined installation is not upgraded.
   const ledgerStore = new TransactionStore(serviceDatabasePath(service), { migrateExisting: false });
   let ledger;
-  try { ledger = (host.ledgerGate ?? defaultLedgerGate)({ store: ledgerStore, ledgerPath: service.ledgerPath, now: (host.now ?? Date.now)(), mode: "inspect" }); }
+  try {
+    const ledgerGate = host.ledgerGate ?? (await import("./lifecycle")).defaultLedgerGate;
+    ledger = ledgerGate({ store: ledgerStore, ledgerPath: service.ledgerPath, now: (host.now ?? Date.now)(), mode: "inspect" });
+  }
   finally { ledgerStore.close(); }
   if (!ledger.trusted) return result("blocked", ledger.reason, ledger.nextAction, { artifactId: manifest.artifactId });
   let release: string;
