@@ -1,5 +1,7 @@
 import { DeviceSignIns, type SignInCommand, type SignInOptions, type SignInReceipt, type SignInView, type ProviderReadiness } from "./device-sign-in";
 import { recommendedModel, type RouteProvider } from "./team/route-options";
+import { readWebCalls, type WebCall } from "./web-tools";
+import { isWebCommand, readWebSettings, webCommandIdentity, writeWebCommand, type WebCommand, type WebReceipt, type WebSettings } from "./web-tools/settings";
 import { AttachmentSanitizer } from "./attachments/sanitizer";
 import type { AttachmentSanitizerRuntime } from "./attachments/sanitizer-runtime";
 import { reconcileForgottenAttachments, attachmentProjectContributor, replayAttachmentLifecycle, type AttachmentCopyCleanup } from "./attachments/lifecycle";
@@ -1065,6 +1067,7 @@ export class Application {
   execute(actor: OwnerActor, command: McpCommand): McpReceipt;
   execute(actor: OwnerActor, command: TakeoverCommand): TakeoverReceipt;
   execute(actor: OwnerActor, command: TakeoverInputCommand): Promise<TakeoverInputReceipt>;
+  execute(actor: OwnerActor, command: WebCommand): WebReceipt;
   execute(actor: OwnerActor, command: SetComputerSettingsCommand): ComputerSettingsReceipt;
   execute(actor: OwnerActor, command: DispatchCommand): DispatchReceipt;
   execute(actor: OwnerActor, command: CreateTopicCommand): TopicReceipt;
@@ -1089,8 +1092,8 @@ export class Application {
   execute(actor: OwnerActor, command: ExportCommand): ExportReceipt;
   execute(actor: OwnerActor, command: UpgradeCommand): Promise<UpgradeReceipt>;
   execute(actor: OwnerActor, command: RestoreCommand): Promise<RestoreReceipt>;
-  execute(actor: OwnerActor, command: CreateProjectCommand | RenameProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetAttentionCommand | SetPersonaCommand | SetupCommand | SignInCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | FeedCommand | AccessCommand | ResetBoxCommand | ConnectionCommand | ApprovalCommand | McpCommand | TakeoverCommand | TakeoverInputCommand | SetComputerSettingsCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | WebhookCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | AttentionReceipt | PersonaReceipt | SetupReceipt | Promise<SignInReceipt> | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | FeedReceipt | AccessReceipt | Promise<BoxResetReceipt> | ConnectionReceipt | ApprovalReceipt | McpReceipt | TakeoverReceipt | Promise<TakeoverInputReceipt> | ComputerSettingsReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | WebhookReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt>;
-  execute(actor: OwnerActor, command: CreateProjectCommand | RenameProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetAttentionCommand | SetPersonaCommand | SetupCommand | SignInCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | FeedCommand | AccessCommand | ResetBoxCommand | ConnectionCommand | ApprovalCommand | McpCommand | TakeoverCommand | TakeoverInputCommand | SetComputerSettingsCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | WebhookCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | AttentionReceipt | PersonaReceipt | SetupReceipt | Promise<SignInReceipt> | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | FeedReceipt | AccessReceipt | Promise<BoxResetReceipt> | ConnectionReceipt | ApprovalReceipt | McpReceipt | TakeoverReceipt | Promise<TakeoverInputReceipt> | ComputerSettingsReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | WebhookReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt> {
+  execute(actor: OwnerActor, command: CreateProjectCommand | RenameProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetAttentionCommand | SetPersonaCommand | SetupCommand | SignInCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | FeedCommand | AccessCommand | ResetBoxCommand | ConnectionCommand | ApprovalCommand | McpCommand | TakeoverCommand | TakeoverInputCommand | SetComputerSettingsCommand | WebCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | WebhookCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | AttentionReceipt | PersonaReceipt | SetupReceipt | Promise<SignInReceipt> | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | FeedReceipt | AccessReceipt | Promise<BoxResetReceipt> | ConnectionReceipt | ApprovalReceipt | McpReceipt | TakeoverReceipt | Promise<TakeoverInputReceipt> | ComputerSettingsReceipt | WebReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | WebhookReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt>;
+  execute(actor: OwnerActor, command: CreateProjectCommand | RenameProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetAttentionCommand | SetPersonaCommand | SetupCommand | SignInCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | FeedCommand | AccessCommand | ResetBoxCommand | ConnectionCommand | ApprovalCommand | McpCommand | TakeoverCommand | TakeoverInputCommand | SetComputerSettingsCommand | WebCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | WebhookCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | AttentionReceipt | PersonaReceipt | SetupReceipt | Promise<SignInReceipt> | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | FeedReceipt | AccessReceipt | Promise<BoxResetReceipt> | ConnectionReceipt | ApprovalReceipt | McpReceipt | TakeoverReceipt | Promise<TakeoverInputReceipt> | ComputerSettingsReceipt | WebReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | WebhookReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt> {
     if (command?.kind === "message.send" && !this.config.attachments.enabled) {
       const ids = (command.payload as unknown as { attachmentIds?: unknown })?.attachmentIds;
       if (ids !== undefined && (!Array.isArray(ids) || ids.length > 0)) {
@@ -1149,6 +1152,7 @@ export class Application {
     if (isMcpCommand(command)) return this.#mcpCommand(actor, command);
     if (isTakeoverCommand(command)) return this.#takeoverCommand(actor, command);
     if (isTakeoverInputCommand(command)) return this.#takeoverInputCommand(actor, command);
+    if (isWebCommand(command)) return this.#webCommand(actor, command);
     if (isComputerCommand(command)) return this.#computerCommand(actor, command);
     if (command?.kind === "dispatch.proposal.accept" || command?.kind === "dispatch.proposal.dismiss" || command?.kind === "dispatch.answer") return this.#dispatchCommand(actor, command);
     if (command?.kind === "job.enqueue" || command?.kind === "job.resume" || command?.kind === "job.stop") return this.#jobCommand(actor, command);
@@ -2627,6 +2631,35 @@ export class Application {
     });
     if (!replay && input) await this.#browser!.desktopInput(command.projectId, null, input, "owner");
     return receipt;
+  }
+
+  /** Owner-only, revisioned web configuration with atomic receipt replay and audit. */
+  #webCommand(actor: OwnerActor, command: WebCommand): WebReceipt {
+    const payloadHash = digest(webCommandIdentity(command));
+    return this.store.transaction(tx => {
+      this.#requireOwner(tx, actor, ["web"]);
+      if (command.projectId !== null) this.#project(tx, command.projectId);
+      const prior = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash, result_json FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", command.requestId);
+      if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as WebReceipt; }
+      const now = this.#now(), receipt = writeWebCommand(tx, command, this.#commandChannel(actor), now);
+      tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(receipt), now);
+      tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", command.kind, command.requestId, command.projectId ?? "installation", now);
+      this.#beforeCommit?.("receipt");
+      return receipt;
+    });
+  }
+
+  /** Owner-visible query/URL audit metadata, scoped to this project and optionally one run. */
+  webCalls(actor: OwnerActor, projectId: string, runId?: string): WebCall[] {
+    requireId(projectId);
+    if (runId !== undefined) requireId(runId);
+    return this.store.read(tx => { this.#requireOwner(tx, actor, ["web"]); this.#project(tx, projectId); return readWebCalls(tx, projectId, runId); });
+  }
+
+  /** Owner projection of the project's Web-only web-read switch. */
+  webSettings(actor: OwnerActor, projectId: string): WebSettings {
+    requireId(projectId);
+    return this.store.read(tx => { this.#requireOwner(tx, actor, ["web"]); this.#project(tx, projectId); return readWebSettings(tx, projectId); });
   }
 
   /**

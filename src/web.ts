@@ -2,6 +2,7 @@ import { fillText } from "./web-proposal-card";
 import { signInPage, signInPath } from "./web-sign-in";
 import type { SignInCommand } from "./device-sign-in";
 import type { RouteProvider } from "./team/route-options";
+import type { WebCommand } from "./web-tools/settings";
 import { Application, type CreateProjectCommand } from "./application";
 import { AppError } from "./errors";
 import { ownerSetupCsrf } from "./ops/owner-setup";
@@ -371,7 +372,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const body = replyEventStream({ cursor, projectId, topicId, signal: request.signal, streams: replyStreams(app.store), options: streamOptions,
           changes: (after, limit) => app.replyStream(auth.actor, projectId, topicId, after, limit), durable: replyEvent,
           provisional: preview => ({ ...preview, provisional: true,
-            label: renderWith(ui, () => tr(preview.stalled ? "reply.still_working" : preview.text ? "reply.streaming" : "reply.state.thinking")) }),
+            label: renderWith(ui, () => preview.status ?? tr(preview.stalled ? "reply.still_working" : preview.text ? "reply.streaming" : "reply.state.thinking")) }),
         });
         if (!body) throw new AppError("reply_stream_limit", 429);
         return new Response(body, { status: 200, headers: { ...headers, "Content-Type": "text/event-stream; charset=utf-8", "X-Accel-Buffering": "no" } });
@@ -826,7 +827,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       }
       // web.access_settings/v1 (EXE04): execution levels, role limits and the kill switch. Narrowing posts
       // straight to the project; widening goes through the confirmation page; halt and resume fence execution.
-      const accessPageRoute = /^\/settings\/access\/([a-f0-9-]{36})\/(confirm|roles|halt|resume|computer)$/.exec(url.pathname);
+      const accessPageRoute = /^\/settings\/access\/([a-f0-9-]{36})\/(confirm|roles|halt|resume|computer|web)$/.exec(url.pathname);
       const accessProjectRoute = /^\/settings\/access\/([a-f0-9-]{36})$/.exec(url.pathname);
       /** Maps an EXE01 command refusal to its owner-facing Settings sentence. */
       const accessError = (error: unknown): string | null => error instanceof AppError ? ({
@@ -850,7 +851,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const roles = new Map(rows.map(({ project }) => [project.id, app.roleAccess(auth.actor, project.id)] as const));
         const list = { projects: rows, hasMore: only.length ? false : paged.hasMore, single: only.length > 0 };
         const computer = new Map(rows.map(({ project }) => [project.id, app.computerSettings(auth.actor, project.id)] as const));
-        return page(() => settingsAccessPage(nav(paged), list, access, roles, auth.csrf, offset, config.pageSize, computer));
+        return page(() => settingsAccessPage(nav(paged), list, access, roles, auth.csrf, offset, config.pageSize, computer, new Map(rows.map(({ project }) => [project.id, app.webSettings(auth.actor, project.id)]))));
       }
       if (request.method === "GET" && accessPageRoute && accessPageRoute[2] === "confirm") {
         const projectId = accessPageRoute[1]!;
@@ -870,7 +871,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
         const number = (value: unknown) => typeof value === "string" && /^\d{1,15}$/.test(value) ? Number(value) : value;
         const allowed = ["csrf", "requestId", "expectedRevision",
-          ...(verb === "level" ? ["level", "confirmToken"] : verb === "roles" ? ["roleId", "level"] : verb === "computer" ? ["confirmEveryAction"] : [])];
+          ...(verb === "level" ? ["level", "confirmToken"] : verb === "roles" ? ["roleId", "level"] : verb === "computer" ? ["confirmEveryAction"] : verb === "web" ? ["enabled"] : [])];
         if (Object.keys(body).some(key => !allowed.includes(key))) throw new AppError("invalid_body");
         // exec.computer/v1: an unticked checkbox is absent from the post and means off; only "on" turns it on.
         const settingCommand = verb === "computer" ? { kind: "computer.settings.set", requestId: body.requestId, projectId, expectedRevision: number(body.expectedRevision),
@@ -884,7 +885,8 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const command = { requestId: body.requestId, projectId, expectedRevision: number(body.expectedRevision),
           kind, payload: verb === "halt" || verb === "resume" ? {} : picked } as AccessCommand;
         try {
-          if (settingCommand) app.execute(auth.actor, settingCommand);
+          if (verb === "web") app.execute(auth.actor, { kind: "web.settings.set", requestId: body.requestId, projectId, expectedRevision: number(body.expectedRevision), payload: { enabled: body.enabled === undefined ? false : body.enabled === "on" ? true : body.enabled } } as WebCommand);
+          else if (settingCommand) app.execute(auth.actor, settingCommand);
           else app.execute(auth.actor, command);
         } catch (error) {
           const key = accessError(error);
@@ -1640,6 +1642,8 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const attachments = { byMessage: app.messageAttachments(auth.actor, state.project.id, state.topic.id, state.items.map(item => item.id)),
           composer: composer.enabled ? { ...composer, pageSize: config.pageSize } : null };
         return page(() => conversationPage(state, nav(), app.topics(auth.actor, state.project.id).items, auth.csrf, after(), config.messageBytes, {
+          webCalls: new Map(discussions.flatMap(discussion => discussion.participations.map(role =>
+            [role.runId, app.webCalls(auth.actor, state.project.id, role.runId)] as const))),
           team, discussions, limits: config.jobs.maximum, dispatchAvailable: team.previewAvailable, replies, cards,
           synthesisLimits: dispatchLimits(config, 1), promotion,
           decision: app.decision(auth.actor, state.project.id, state.topic.id),

@@ -895,7 +895,12 @@ function attemptEnvelopeProblem(attempt: unknown, row: { id: string; job_id: str
   if (attempt.contextState === "none") return "native_without_context_state";
   const data = attempt.data;
   // Requests admitted since exec.run_tools/v1 carry their frozen `execution` grant (null without one).
-  if (!isObject(data) || !(exact(data, runRequestKeys) || exact(data, [...runRequestKeys, "execution"]))) return "run_request_invalid";
+  if (!isObject(data) || !exact(data, [...runRequestKeys, ...["execution", "web", "attachments"].filter(key => key in data)])) return "run_request_invalid";
+  if ("web" in data && typeof data.web !== "boolean") return "run_request_invalid";
+  if ("attachments" in data && (!Array.isArray(data.attachments) || data.attachments.length > 20 || data.attachments.some(ref =>
+    !isObject(ref) || !exact(ref, ["attachmentId", "revision", "generation", "kind", "inline"]) ||
+    typeof ref.attachmentId !== "string" || !ID.test(ref.attachmentId) || !isInt(ref.revision, 1) || !isInt(ref.generation, 1) ||
+    !["image", "pdf", "text"].includes(ref.kind as string) || typeof ref.inline !== "boolean"))) return "run_request_invalid";
   const context = native.context as { id: string; generation: number };
   const runContext = data.context, fence = data.fence;
   if (data.runId !== native.runId || data.projectId !== snapshot.projectId || !isObject(runContext) || !exact(runContext, ["id", "generation"]) ||

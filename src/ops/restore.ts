@@ -2,6 +2,7 @@ import { replayAttachmentLifecycle, type AttachmentDeletionScope } from "../atta
 import { collectAttachmentBlobs, copyAttachmentBlob, readAttachmentIndex } from "../attachments/backup";
 import { AttachmentStorage } from "../attachments/storage";
 import { attachmentHost, attachmentLimits } from "../attachments/limits";
+import { purgeWebReadPayloads } from "../web-tools/lifecycle";
 import { purgeProjectPayloads } from "../memory/project-delete";
 import { redactRoleProposals } from "../team/role-proposals";
 import { redactPromotionProposal } from "../promotion";
@@ -812,6 +813,7 @@ function replayLedger(staged: TransactionStore, entries: LifecycleLedgerEntry[],
         if (version) {
           needle(version.text);
           if (version.text !== null) replay.purgedSources++;
+          purgeWebReadPayloads(tx, { sourceId: d.sourceId!, revision: d.revision, generation: d.generation });
           tx.run("UPDATE source_versions SET content_text = NULL WHERE source_id = ? AND revision = ? AND generation = ?", d.sourceId, d.revision, d.generation);
           tx.run("UPDATE sources SET availability = 'unavailable' WHERE id = ? AND current_revision = ? AND generation = ?", d.sourceId, d.revision, d.generation);
         }
@@ -834,7 +836,10 @@ function replayLedger(staged: TransactionStore, entries: LifecycleLedgerEntry[],
       if (tx.get<{ n: number }>("SELECT count(*) AS n FROM deletion_ledger")!.n > before) replay.appliedDeletions++;
     }
     for (const c of view.suppressedClaims) suppressedClaims.add(c.claimId);
-    for (const s of view.suppressedSources) suppressedSources.add(`${s.sourceId}:${s.revision}:${s.generation}`);
+    for (const s of view.suppressedSources) {
+      suppressedSources.add(`${s.sourceId}:${s.revision}:${s.generation}`);
+      purgeWebReadPayloads(tx, { sourceId: s.sourceId, revision: s.revision, generation: s.generation });
+    }
     for (const s of view.suppressions) {
       suppressedClaims.add(s.claimId);
       const claims = view.suppressedClaims.filter(c => c.suppressionId === s.id);

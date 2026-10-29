@@ -186,7 +186,7 @@ test("versioned migration snapshots existing v0 state and rejects future schema 
   const old = new Database(path);
   old.exec("CREATE TABLE fixture_marker (value TEXT); INSERT INTO fixture_marker VALUES ('pre-migration'); PRAGMA user_version = 0;"); old.close();
   const store = new TransactionStore(path); stores.push(store);
-  expect(store.read(tx => tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version)).toBe(41);
+  expect(store.read(tx => tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version)).toBe(42);
   const snapshots = readdirSync(dir).filter(p => p.includes(".pre-v0-"));
   expect(snapshots).toHaveLength(1);
   const snapshot = new Database(join(dir, snapshots[0]!), { readonly: true });

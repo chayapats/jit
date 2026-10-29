@@ -1,4 +1,7 @@
 import { validateTaskWording } from "../tasks";
+import { dictionaries } from "../i18n";
+import { readWebCalls, type WebCall } from "../web-tools";
+import { readWebSettings } from "../web-tools/settings";
 import { AppError } from "../errors";
 import { attemptAuthority, readAttempt } from "../jobs/attempts";
 import { parseReply, replyFormatInstruction } from "./reply-format";
@@ -20,7 +23,7 @@ import { readEffectiveAccess } from "../exec/access";
 import { configuredRoutes, parseRoleProposal, roleProposalInstructions, roleProposalLimit, roleProposalViews, type RoleProposal, type RoleProposalView } from "./role-proposals";
 import type { ApplicationRunPort } from "./run-port";
 import { normalizePortResult, validateRunRequest } from "./scripted-port";
-import { portFailureOutcome, schwayMaxCalls } from "./schway-port";
+import { portFailureOutcome, schwayMaxCalls, schwayMaxRounds } from "./schway-port";
 import type { ApplicationRunOutcome, ApplicationRunRequest, ContextPacketOmission, MemoryContextLayout, RoleRoute } from "./types";
 import { admitJitDispatch } from "./jit-dispatch";
 import { communicationPolicyLine, teamCommunicationPolicy } from "./communication-policy";
@@ -150,6 +153,8 @@ export interface JitReplyView {
   id: string; projectId: string; topicId: string; messageId: string; jobId: string | null;
   cursor: number; revision: number; state: ReplyState; reason: string | null; nextAction: string | null;
   progress: { text: string; provisional: true } | null;
+  /** Audited query and URL metadata, never fetched content. */
+  webCalls?: WebCall[];
   replyMessageId: string | null; source: SourceReference | null;
   /** Topic message sequences of the owner message and of the committed reply, for page links. */
   messageSequence: number; replySequence: number | null;
@@ -427,7 +432,7 @@ function admitReply(tx: AppTransaction, input: ReplyAdmission): { id: string; re
   const anchorSource = lookupSource(tx, message.projectId, anchor.source);
   if (pinnedCost > room || anchorSource.state !== "available" ||
       Buffer.byteLength(JSON.stringify(anchorSource.text)) + 160 > room - pinnedCost) return notAdmitted("context_too_large");
-  const limits = replyLimits(config.jobs.maximum, config.team.contextBytes, executionGrant(tx, message.projectId, jit.id) !== null);
+  const limits = replyLimits(config.jobs.maximum, config.team.contextBytes, executionGrant(tx, message.projectId, jit.id) !== null || readWebSettings(tx, message.projectId).enabled);
   const context = { id: crypto.randomUUID(), generation: 1 };
   const request: ApplicationRunRequest = {
     runId: replyId, projectId: message.projectId, topicId: message.topicId, roleId: jit.id,
@@ -436,7 +441,7 @@ function admitReply(tx: AppTransaction, input: ReplyAdmission): { id: string; re
     configuration: { ownerRevision: team.ownerRevision, projectRevision: team.projectRevision, roleRevision: jit.revision },
     context, fence: { jobId: "00000000-0000-0000-0000-000000000000", generation: 1, ownerGeneration: input.generation },
     instructions: { operator: [...fixedOperator, metadataOf(offered, gaps)], responsibility: jit.responsibility },
-    manifest: { sources: [], claims: [] }, tools: [],
+    manifest: { sources: [], claims: [] }, web: readWebSettings(tx, message.projectId).enabled, tools: [],
     policy: { genericExecution: false, arbitraryFetch: false, hostedLookup: false, repositoryDiscovery: false }, limits,
   };
   const projectRevision = tx.get<{ revision: number }>("SELECT revision FROM projects WHERE id = ?", message.projectId)!.revision;
@@ -679,6 +684,7 @@ function earlierReplyLive(tx: AppTransaction, row: { id: string; projectId: stri
 
 function project(tx: AppTransaction, row: { id: string; projectId: string; topicId: string; messageId: string; runId: string | null; reason: string | null; cursor: number; createdAt: number }): JitReplyView {
   const base = { id: row.id, projectId: row.projectId, topicId: row.topicId, messageId: row.messageId, cursor: row.cursor, createdAt: row.createdAt,
+    webCalls: row.runId ? readWebCalls(tx, row.projectId, row.runId) : [],
     messageSequence: sequenceOf(tx, row.messageId) ?? 0, replySequence: null as number | null };
   if (!row.runId) {
     return { ...base, jobId: null, revision: 1, state: "not_admitted", reason: row.reason, nextAction: notAdmittedAction(tx, row),
@@ -860,8 +866,7 @@ export function jitReplyWork(store: TransactionStore, config: AppConfig, port: A
       const outputTokens = Math.min(replyAttemptOutputTokens, job.limits.outputTokens);
       reserve({ contextTokens: Math.ceil(Buffer.byteLength(jobData(request, config.team.contextBytes)) / 4), outputTokens });
       if (port.adapter === "schway") {
-        const extra = schwayMaxCalls(request) - 1;
-        if (extra > 0) reserve({ calls: extra, rounds: extra });
+        reserve({ calls: schwayMaxCalls(request) - 1, rounds: schwayMaxRounds(request) - 1 });
       }
       const outputBytes = Math.min(config.jobs.outputBytes, outputTokens * 4, 65000);
       const preview = replyStreams(store).begin({ id: opened.id, projectId: opened.projectId, topicId: opened.topicId, attemptId: attempt.id },
@@ -877,6 +882,8 @@ export function jitReplyWork(store: TransactionStore, config: AppConfig, port: A
       try {
         outcome = normalizePortResult(await port.invoke(request, signal, event => {
           if (signal.aborted || event.runId !== request.runId) return;
+          if (event.kind === "progress" && [dictionaries.en["web.searching"], dictionaries.en["web.reading"], dictionaries.th["web.searching"], dictionaries.th["web.reading"]].includes(event.text)) preview?.status(event.text);
+          if (event.kind === "progress" && [dictionaries.en["web.finished"], dictionaries.th["web.finished"]].includes(event.text)) preview?.status("");
           if (event.kind === "delta") preview?.delta(event.text);
           if (event.kind === "delta_reset") preview?.reset();
         }), request, outputBytes);

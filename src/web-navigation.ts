@@ -1,3 +1,4 @@
+import type { WebSettings } from "./web-tools/settings";
 import type { Application, Project, SearchResults } from "./application";
 import type { Topic } from "./conversation";
 import { dictionaries, tr, type MessageKey } from "./i18n";
@@ -138,7 +139,7 @@ export interface AccessProjectRow {
 export function settingsAccessPage(workspace: NavigationWorkspace, list: { projects: AccessProjectRow[]; hasMore: boolean; single: boolean },
   access: ReadonlyMap<string, ProjectAccess>,
   roles: ReadonlyMap<string, RoleAccess[]>,
-  csrf: string, offset: number, pageSize: number, computer: ReadonlyMap<string, ComputerSettings> = new Map()): string {
+  csrf: string, offset: number, pageSize: number, computer: ReadonlyMap<string, ComputerSettings> = new Map(), web: ReadonlyMap<string, WebSettings> = new Map()): string {
   const single = list.single;
   const levelText = (level: AccessLevel) => tr(`access.level_${level}` as MessageKey);
   const row = ({ project: p, teamRoles }: AccessProjectRow) => {
@@ -174,6 +175,8 @@ export function settingsAccessPage(workspace: NavigationWorkspace, list: { proje
       ? `<form class="team-form access-form" method="post" action="/settings/access/${p.id}/resume">${hiddenCommand(csrf, a.haltRevision)}<button class="primary">${tr("access.resume")}</button></form>`
       : `<form class="team-form access-form" method="post" action="/settings/access/${p.id}/halt">${hiddenCommand(csrf, a.haltRevision)}<button class="danger">${tr("access.stop_everything")}</button></form>`;
     // exec.computer/v1 (EXE16): Web-only `computer.confirmEveryAction`, on until the owner unticks it here.
+    const w = web.get(p.id) ?? { enabled: true, revision: 0 };
+    const webForm = `<form class="team-form access-form" method="post" action="/settings/access/${p.id}/web">${hiddenCommand(csrf, w.revision)}<label><input type="checkbox" name="enabled"${w.enabled ? " checked" : ""}> ${tr("web.label")}</label><p>${tr("web.note")}</p><button>${tr("settings.save")}</button></form>`;
     const settings = computer.get(p.id);
     const confirmEvery = settings ? `<form class="team-form access-form" method="post" action="/settings/access/${p.id}/computer">${hiddenCommand(csrf, settings.revision)}
       <label><input type="checkbox" name="confirmEveryAction"${settings.confirmEveryAction ? " checked" : ""}> ${tr("access.computer_confirm_every")}</label>
@@ -181,7 +184,7 @@ export function settingsAccessPage(workspace: NavigationWorkspace, list: { proje
     return `<li class="access-row" id="access-${p.id}"><h3>${escape(p.name)}</h3><p>${accessBadge(a)}</p>
       ${narrow}${widen ? `<nav class="settings-links" aria-label="${escape(p.name)}">${widen}</nav>` : ""}
       ${roleRows ? `<ul class="access-roles">${roleRows}</ul>` : ""}
-      ${confirmEvery}${halt}</li>`;
+      ${webForm}${confirmEvery}${halt}</li>`;
   };
   return shell(tr("settings.access"), { workspace, csrf, section: "settings", settings: "access" }, `<div class="content settings-content">
     <section class="settings-section" aria-labelledby="access-title"><h2 id="access-title">${tr("settings.access_title")}</h2><p>${tr("settings.access_note")}</p>

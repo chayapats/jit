@@ -228,7 +228,7 @@ async function fullUpgrade(f: Fixture) {
 
 test("preflight matrix: one supported target, sequential sources, downgrade/forward/newer/too-old rejection, exact engine contract", () => {
   expect(planUpgrade(schemaVersion, schemaVersion, upgradeEngineContract)).toMatchObject({ compatible: true, reason: null });
-  expect(planSchema(17, schemaVersion)).toEqual({ compatible: true, reason: null, migrations: [18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41].filter(v => v <= schemaVersion) });
+  expect(planSchema(17, schemaVersion)).toEqual({ compatible: true, reason: null, migrations: [18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42].filter(v => v <= schemaVersion) });
   expect(planSchema(schemaVersion, 99)).toMatchObject({ compatible: false, reason: "forward_upgrade_unsupported" });
   expect(planSchema(schemaVersion, schemaVersion - 1)).toMatchObject({ compatible: false, reason: "downgrade_rejected" });
   expect(planSchema(99, 99)).toMatchObject({ compatible: false, reason: "newer_schema_unsupported" });
@@ -631,7 +631,7 @@ function serviceFor(root: string): ServiceConfig {
 /** Rewinds a fresh current store to a historical fixture schema by removing tables later migrations add. */
 function historical(path: string, version: number) {
   const db = new Database(path);
-  const drops: Record<number, string[]> = { 41: ["attachments", "attachment_events"], 40: ["computer_settings"], 39: ["takeover_sessions"], 38: ["mcp_proposals", "mcp_servers"], 37: ["approval_cards", "auto_approve_rules", "git_remotes", "deploy_targets"], 36: ["execution_tool_calls"], 35: ["attention_levels", "work_groups"], 34: ["connection_audit", "connections"], 33: ["execution_box_resets"], 32: ["webhook_receipts", "webhook_triggers", "pr_poll_due"], 31: ["project_access_revisions", "role_access_overrides", "execution_halts"], 30: ["schedule_feed"], 29: ["local_api_settings"], 28: ["topic_promotions", "chat_title_sources"], 27: ["dispatch_proposals", "dispatch_allowance_revisions"], 26: ["general_space", "setup_state"], 25: ["jit_reply_sources", "jit_replies", "persona_revisions"], 24: ["owner_preferences"], 23: ["lifecycle_ledger", "lifecycle_checkpoint"], 22: [], 21: ["schway_native_refs"], 20: ["restore_quarantines"], 19: ["upgrade_journal"], 18: ["export_artifacts"] };
+  const drops: Record<number, string[]> = { 42: ["web_settings", "web_provider", "web_tool_calls", "web_run_sources"], 41: ["attachments", "attachment_events"], 40: ["computer_settings"], 39: ["takeover_sessions"], 38: ["mcp_proposals", "mcp_servers"], 37: ["approval_cards", "auto_approve_rules", "git_remotes", "deploy_targets"], 36: ["execution_tool_calls"], 35: ["attention_levels", "work_groups"], 34: ["connection_audit", "connections"], 33: ["execution_box_resets"], 32: ["webhook_receipts", "webhook_triggers", "pr_poll_due"], 31: ["project_access_revisions", "role_access_overrides", "execution_halts"], 30: ["schedule_feed"], 29: ["local_api_settings"], 28: ["topic_promotions", "chat_title_sources"], 27: ["dispatch_proposals", "dispatch_allowance_revisions"], 26: ["general_space", "setup_state"], 25: ["jit_reply_sources", "jit_replies", "persona_revisions"], 24: ["owner_preferences"], 23: ["lifecycle_ledger", "lifecycle_checkpoint"], 22: [], 21: ["schway_native_refs"], 20: ["restore_quarantines"], 19: ["upgrade_journal"], 18: ["export_artifacts"] };
   const triggers: Record<number, string[]> = { 28: ["general_space_keep", "general_space_fixed", "general_project_keep"], 25: ["jit_reply_job_change"], 23: ["lifecycle_ledger_deletion", "lifecycle_ledger_suppression", "lifecycle_ledger_suppressed_claim", "lifecycle_ledger_suppressed_source"] };
   for (let v = schemaVersion; v > version; v--) {
     for (const trigger of triggers[v] ?? []) db.exec(`DROP TRIGGER IF EXISTS ${trigger}`);
@@ -938,6 +938,18 @@ test("a symlinked staged copy blocks the attempt as corrupt and never touches it
   expect(f.rt.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM projects")!.n)).toBe(1);
 });
 
+test("upgrade accepts frozen attempts carrying web, execution and attachment selections together", async () => {
+  const f = await fixture(); await rich(f);
+  f.rt.store.transaction(tx => tx.run(`UPDATE job_attempts SET record_json = json_set(record_json,
+    '$.data.web', json('true'), '$.data.execution', json('null'), '$.data.attachments', json('[]'))
+    WHERE json_extract(record_json, '$.native') IS NOT NULL`));
+  const prepared = (await prepare(f)).journal;
+  await stepCmd(f, "upgrade.migrate", prepared.id);
+  const validated = (await stepCmd(f, "upgrade.validate", prepared.id)).journal;
+  expect(validated.state).toBe("ready");
+  expect(validated.validation!.checks.filter(check => !check.pass)).toEqual([]);
+});
+
 test("orphaned, unbound or uncorrelated attempt native references fail validation and block activation", async () => {
   const cases: [string, string][] = [
     // Context identity missing from team_contexts.
@@ -952,6 +964,8 @@ test("orphaned, unbound or uncorrelated attempt native references fail validatio
     // A native reference whose data is not the admitted run request.
     [`UPDATE job_attempts SET record_json = json_set(record_json, '$.data', 'opaque') WHERE rowid = (SELECT max(rowid) FROM job_attempts WHERE json_extract(record_json, '$.native') IS NOT NULL)`, "run_request_invalid"],
     [`UPDATE job_attempts SET record_json = json_set(record_json, '$.data', json('null')) WHERE rowid = (SELECT max(rowid) FROM job_attempts WHERE json_extract(record_json, '$.native') IS NOT NULL)`, "run_request_invalid"],
+    [`UPDATE job_attempts SET record_json = json_set(record_json, '$.data.web', 'enabled') WHERE rowid = (SELECT max(rowid) FROM job_attempts WHERE json_extract(record_json, '$.native') IS NOT NULL)`, "run_request_invalid"],
+    [`UPDATE job_attempts SET record_json = json_set(record_json, '$.data.attachments', json('{}')) WHERE rowid = (SELECT max(rowid) FROM job_attempts WHERE json_extract(record_json, '$.native') IS NOT NULL)`, "run_request_invalid"],
     // The run request's fence must belong to this job and attempt generation.
     [`UPDATE job_attempts SET record_json = json_set(record_json, '$.data.fence.generation', 999) WHERE rowid = (SELECT max(rowid) FROM job_attempts WHERE json_extract(record_json, '$.native') IS NOT NULL)`, "fence_mismatch"],
     // A dispatched Schway attempt without its durable bridge correlation.

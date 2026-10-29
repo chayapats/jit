@@ -9,10 +9,12 @@ export const replyStallMs = 10_000;
 export interface ReplyPreview {
   id: string; projectId: string; topicId: string; attemptId: string; sequence: number;
   text: string; stalled: boolean;
+  /** Localised, temporary tool status; never answer text or evidence. */
+  status?: string;
 }
 interface Active {
   id: string; projectId: string; topicId: string; attemptId: string;
-  sequence: number; text: string; lastDelta: number; parser: ReplyProseBuffer;
+  sequence: number; text: string; status?: string; lastDelta: number; parser: ReplyProseBuffer;
   current(): boolean; now(): number;
 }
 
@@ -44,7 +46,7 @@ export class ReplyStreams {
   }
   /** Begins a fresh attempt with its own bounded parser; returning null disables only the optional preview. */
   begin(identity: Pick<ReplyPreview, "id" | "projectId" | "topicId" | "attemptId">,
-    bytes: number, now: () => number, current: () => boolean): { delta(text: string): void; reset(): void; end(): void } | null {
+    bytes: number, now: () => number, current: () => boolean): { delta(text: string): void; status(text: string): void; reset(): void; end(): void } | null {
     this.previews(identity.projectId, identity.topicId);
     if (this.#active.size >= replyStreamBounds.replies && !this.#active.has(identity.id)) return null;
     const bound = Math.min(bytes, replyStreamBounds.bytes);
@@ -52,9 +54,10 @@ export class ReplyStreams {
     this.#active.set(entry.id, entry); this.wake();
     const valid = () => this.#active.get(entry.id) === entry && this.#current(entry);
     return {
+      status: text => { if (!valid()) return; entry.status = text.slice(0, 200); entry.sequence++; entry.lastDelta = now(); this.wake(); },
       delta: text => {
         if (!valid()) return;
-        entry.lastDelta = now(); entry.sequence++; entry.text = entry.parser.append(text); this.wake();
+        entry.status = ""; entry.lastDelta = now(); entry.sequence++; entry.text = entry.parser.append(text); this.wake();
       },
       reset: () => {
         if (!valid()) return;
@@ -74,7 +77,7 @@ export class ReplyStreams {
     for (const entry of this.#active.values()) {
       if (entry.projectId !== projectId || entry.topicId !== topicId || !this.#current(entry)) continue;
       const { id, attemptId, sequence, text } = entry;
-      result.push({ id, projectId, topicId, attemptId, sequence, text, stalled: entry.now() - entry.lastDelta >= replyStallMs });
+      result.push({ id, projectId, topicId, attemptId, sequence, text, ...(entry.status ? { status: entry.status } : {}), stalled: entry.now() - entry.lastDelta >= replyStallMs });
     }
     return result;
   }

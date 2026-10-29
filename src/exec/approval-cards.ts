@@ -17,9 +17,9 @@ import { assertExecutionAllowed } from "./access";
  * `unknown` and is never retried automatically. Model output, retrieved content and tool results never decide a card.
  */
 export type EffectKind = "effect.git_push" | "effect.github_pr_create" | "effect.github_comment" | "effect.github_pr_merge" | "effect.deploy" | "mcp_tool" | "browser_confirm"
-  | "computer_confirm";
+  | "computer_confirm" | "outbound_release";
 export const effectKinds: readonly EffectKind[] = Object.freeze(["effect.git_push", "effect.github_pr_create", "effect.github_comment", "effect.github_pr_merge", "effect.deploy", "mcp_tool",
-  "browser_confirm", "computer_confirm"]);
+  "browser_confirm", "computer_confirm", "outbound_release"]);
 /**
  * Kinds an owner auto-approve rule may decide. A browser or computer confirm action always waits for the owner
  * (ADR 0039): there is no rule for either.
@@ -36,7 +36,8 @@ export const inBoxKinds: readonly EffectKind[] = Object.freeze(["mcp_tool", "bro
  * `browser_confirm` card the level browser tools run at (ADR 0039). A `computer_confirm` card needs `full`, like
  * computer-use itself.
  */
-export function cardLevel(kind: EffectKind): "workspace" | "full" {
+export function cardLevel(kind: EffectKind): "read" | "workspace" | "full" {
+  if (kind === "outbound_release") return "read";
   return kind === "mcp_tool" || kind === "browser_confirm" ? "workspace" : "full";
 }
 /** Kinds whose rule scope is a remote or deploy target (the Settings › Approvals form); `mcp_tool` rules are per tool. */
@@ -81,7 +82,13 @@ export type EffectAction =
   | { kind: "effect.deploy"; target: { name: string; url: string; revision: number }; ref: string | null }
   | McpToolAction
   | BrowserConfirmAction
-  | ComputerConfirmAction;
+  | ComputerConfirmAction
+  | OutboundReleaseAction;
+/** One exact held web read; provider revision and context generation prevent later configuration or deletion from changing it. */
+export interface OutboundReleaseAction {
+  kind: "outbound_release"; tool: "web_search" | "web_fetch"; subject: string; matchedSpan: string;
+  providerRevision: number; contextId: string; contextGeneration: number; ownerGeneration: number;
+}
 /** The intent a model declares for a computer action. Untrusted: it can only add a card, never remove one (ADR 0039). */
 export type ComputerIntent = "input" | "navigate" | "submit" | "confirm";
 export const computerIntents: readonly ComputerIntent[] = Object.freeze(["input", "navigate", "submit", "confirm"]);
@@ -141,6 +148,12 @@ export function validateAction(action: EffectAction): void {
   };
   if (!action || typeof action !== "object") throw invalid();
   switch (action.kind) {
+    case "outbound_release":
+      if ((action.tool !== "web_search" && action.tool !== "web_fetch") || !text(action.subject, 8192) || !text(action.matchedSpan, 256) ||
+          !Number.isSafeInteger(action.providerRevision) || action.providerRevision < 0 || !Number.isSafeInteger(action.contextGeneration) || action.contextGeneration < 1 ||
+          !Number.isSafeInteger(action.ownerGeneration) || action.ownerGeneration < 1) throw invalid();
+      requireId(action.contextId);
+      return;
     case "effect.git_push": {
       remote(action.remote);
       if (!validRepository(action.repository) || !Array.isArray(action.updates) || action.updates.length < 1 || action.updates.length > maximumRefUpdates) throw invalid();
@@ -411,7 +424,7 @@ export function matchingRule(tx: AppTransaction, projectId: string, action: Effe
   }
   if (action.kind === "effect.deploy") return scope.target === action.target.name ? rule : null;
   if (action.kind === "mcp_tool") return (scope.tools as { server: string; tool: string }[]).some(item => item.server === action.server.name && item.tool === action.tool) ? rule : null;
-  if (action.kind === "browser_confirm" || action.kind === "computer_confirm") return null;
+  if (action.kind === "browser_confirm" || action.kind === "computer_confirm" || action.kind === "outbound_release") return null;
   return scope.remote === action.remote.name ? rule : null;
 }
 
@@ -490,7 +503,7 @@ export function expireCards(tx: AppTransaction, projectId: string, now: number):
 
 /** Whether a card may be decided from Telegram: exactly one action (one ref for a push). */
 export function telegramEligible(action: EffectAction): boolean {
-  return action.kind !== "effect.git_push" || action.updates.length === 1;
+  return action.kind !== "outbound_release" && (action.kind !== "effect.git_push" || action.updates.length === 1);
 }
 
 /** Who and what proposed a card: the run, its job, topic and role. */

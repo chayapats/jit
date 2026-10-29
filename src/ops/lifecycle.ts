@@ -1,3 +1,4 @@
+import { WebTools, assertWebToolsCapability } from "../web-tools";
 import { PodmanAttachmentSanitizer } from "../attachments/sanitizer-runtime";
 import { attachmentRequestBytes, attachmentLimitsForDirectories } from "../attachments/limits";
 import { realpathSync, statSync } from "node:fs";
@@ -218,6 +219,9 @@ export function preflightService(input: PreflightInput): PreflightResult {
   gates.push(input.requiredEngine === "jit.schway.bridge/v1"
     ? { gate: "engine", state: "ready", nextAction: "none", detail: "declared bridge contract only; live capability proven separately" }
     : { gate: "engine", state: "blocked", nextAction: "use-supported-engine-contract", detail: "engine contract not supported" });
+  if (input.config.runPort === "schway") {
+    try { assertWebToolsCapability(); } catch { gates.push({ gate: "engine", state: "blocked", nextAction: "install-supported-schway-web-tools", detail: "Schway web-tools/v1 is required" }); }
+  }
   let ledger: LedgerVerdict;
   try { ledger = (input.ledgerGate ?? defaultLedgerGate)({ store, ledgerPath: service?.ledgerPath ?? null, now: now(), mode: "inspect" }); }
   catch { ledger = { trusted: false, reason: "ledger check failed", nextAction: "inspect-quarantine-and-ledger" }; }
@@ -400,10 +404,11 @@ export async function startFullApp(input: StartInput): Promise<{ ok: true; handl
     const computer = browser ? new ComputerService(store, browser, { now }) : null;
     // The executor exists wherever boxes do: in-box cards (MCP, browser, computer) need no vault, and without one the
     // credential effects fail `connection_vault_not_configured` cleanly instead of every card being undecidable.
-    const effects = boxes ? new EffectExecutor(store, { vault: connections, boxes, mirrorRoot: config.execution.directory, now,
-      performers: { ...(mcp ? { mcp_tool: mcp.perform } : {}), ...(browser ? { browser_confirm: browser.perform } : {}),
-        ...(computer ? { computer_confirm: computer.perform } : {}) } }) : null;
-    const compose = { now, prCacheRoot: input.prCacheRoot ?? (service ? resolve(service.stateDirectory, "pr-cache") : ".local/pr-cache"), ...(boxes ? { boxes } : {}),
+    const web = new WebTools(store, { ...(connections ? { vault: connections } : {}), now, outputBytes: config.jobs.outputBytes });
+    const effects = new EffectExecutor(store, { vault: connections, boxes, mirrorRoot: config.execution.directory, now,
+      performers: { outbound_release: web.perform, ...(mcp ? { mcp_tool: mcp.perform } : {}), ...(browser ? { browser_confirm: browser.perform } : {}),
+        ...(computer ? { computer_confirm: computer.perform } : {}) } });
+    const compose = { now, web, prCacheRoot: input.prCacheRoot ?? (service ? resolve(service.stateDirectory, "pr-cache") : ".local/pr-cache"), ...(boxes ? { boxes } : {}),
       ...(effects ? { effects } : {}), ...(mcp ? { mcp } : {}), ...(browser ? { browser } : {}), ...(computer ? { computer } : {}) };
     managed = ManagedService.forConfig(store, config, compose);
     const composed = composeJobQueue(store, config, compose);

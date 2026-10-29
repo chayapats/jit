@@ -1,3 +1,6 @@
+import { WebTools, assertWebToolsCapability, type WebToolsOptions } from "../web-tools";
+import { dictionaries } from "../i18n";
+import { readPersona } from "../persona";
 import { lstatSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
@@ -27,7 +30,7 @@ import type {
 } from "schway/host";
 import { AppError } from "../errors";
 import { redactRegisteredSecrets } from "../security/secret-fingerprints";
-import { executionInstruction, openRunTools, requestGrant, runMaxTurns, runToolsFailure, type RunExecution, type RunTools } from "../exec/run-tools";
+import { executionInstruction, webCallLimit, openRunTools, requestGrant, runMaxTurns, runToolsFailure, type RunExecution, type RunTools } from "../exec/run-tools";
 import { requireId } from "../sources";
 import type { TransactionStore } from "../store";
 import type { ApplicationRunPort, ManagedContextOutcome, NativeRunInspection } from "./run-port";
@@ -92,6 +95,10 @@ export interface SchwayPortOptions {
    * core tools over the box backend; without it no run ever admits an execution tool.
    */
   execution?: RunExecution;
+  /** Service web reads and trusted deterministic provider/transport seams. */
+  web?: WebTools;
+  /** Fixture-only options when no shared service instance is supplied. */
+  webOptions?: WebToolsOptions;
   /** Test-only interleaving hooks around native creation. */
   testHooks?: {
     /** Awaited right after the host opens, before the pre-creation fence recheck. */
@@ -137,11 +144,16 @@ export function schwayMaxAttempts(request: Pick<ApplicationRunRequest, "limits">
 }
 
 /**
- * Worst-case Schway model calls for one attempt of the request: every turn
- * ({@link runMaxTurns}) times every host attempt of that turn. A run without an
- * execution grant has one turn, so this equals {@link schwayMaxAttempts}.
+ * Worst-case reserved calls for one attempt: every model turn
+ * ({@link runMaxTurns}) times every host attempt, plus the selected web-read allowance.
+ * With neither execution nor web reads, this equals {@link schwayMaxAttempts}.
  */
-export function schwayMaxCalls(request: Pick<ApplicationRunRequest, "limits" | "execution">): number {
+export function schwayMaxCalls(request: Pick<ApplicationRunRequest, "limits" | "execution" | "web">): number {
+  return schwayMaxRounds(request) + webCallLimit(request);
+}
+
+/** Worst-case model rounds for one attempt; service-owned web calls do not spend model rounds. */
+export function schwayMaxRounds(request: Pick<ApplicationRunRequest, "limits" | "execution" | "web">): number {
   return schwayMaxAttempts(request) * runMaxTurns(request);
 }
 
@@ -262,6 +274,7 @@ function ensureServiceDir(path: string): void {
 
 /** Synchronous startup gate: service directories plus the pinned release contract, before any admission. */
 export function assertSchwayGate(storePath: string): void {
+  assertWebToolsCapability();
   const dirs = schwayHostDirs(storePath);
   // The parent itself is validated first: a symlinked base would otherwise
   // redirect every child outside the service-owned directory.
@@ -449,6 +462,8 @@ export class SchwayRunPort implements ApplicationRunPort {
     if (fenced()) return { ...classifyBridgeReason("context_retired"), session: null };
     if (signal.aborted) return { ...classifyBridgeReason("cancelled"), session: null };
     const effective = describeEffectiveRun(snapshot);
+    const web = this.options.web ?? new WebTools(this.store, { ...this.options.webOptions, outputBytes: this.outputBytes });
+    effective.sections.push({ name: "web-reads", content: web.instruction(snapshot.projectId, snapshot.web === true) });
     this.#requests.push(structuredClone(snapshot));
     if (this.#requests.length > 32) this.#requests.shift();
     observe({ kind: "started", runId: snapshot.runId, context: { ...snapshot.context } });
@@ -464,7 +479,11 @@ export class SchwayRunPort implements ApplicationRunPort {
       // exec.run_tools/v1: a grant opens the project box (re-checking the level); no grant is the empty registry.
       try { tools = await openRunTools(this.store, this.options.execution, snapshot); }
       catch (error) { return finish({ ...classifyBridgeReason(runToolsFailure(error)), session: null }); }
-      host = await this.openHost(effective, false, tools.definitions);
+      const webDefinitions = web.buildWebTools(snapshot, key => {
+        const language = this.store.read(tx => readPersona(tx).language);
+        observe({ kind: "progress", runId: snapshot.runId, text: dictionaries[language][key as keyof typeof dictionaries.en] ?? key });
+      });
+      host = await this.openHost(effective, false, [...tools.definitions.filter(tool => tool.name !== "web_search" && tool.name !== "web_fetch"), ...webDefinitions]);
       await this.options.testHooks?.afterOpenHost?.(host);
       // Recheck before reserving: retirement may have fenced the context
       // while the host was constructed, and no intent row exists yet to stop
@@ -522,6 +541,7 @@ export class SchwayRunPort implements ApplicationRunPort {
       this.recordRef(snapshot, session.reference, "finished");
       if (fenced()) return finish({ ...classifyBridgeReason("context_retired"), session: null });
       if (signal.aborted) return finish({ ...classifyBridgeReason("cancelled"), session: null });
+      if (snapshot.web) outcome.usage.calls += web.callsUsed(snapshot.runId);
       return finish(outcome);
     } catch (error) {
       if (fenced()) return finish({ ...classifyBridgeReason("context_retired"), session: null });
@@ -740,7 +760,7 @@ export async function verifySchwayBridge(store: TransactionStore): Promise<{ ok:
     return {
       ok: false,
       detail: error instanceof Error ? error.message.slice(0, 300) : "bridge verification failed",
-      nextAction: SCHWAY_NEXT_ACTION,
+      nextAction: error instanceof AppError && error.code === "install-supported-schway-web-tools" ? error.code : SCHWAY_NEXT_ACTION,
     };
   }
 }

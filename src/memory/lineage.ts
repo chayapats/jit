@@ -46,6 +46,7 @@ function producerIndex(tx: AppTransaction): Map<string, Producer[]> {
     const discussion = record?.kind === "discussion";
     const refs = manifestSources(discussion ? record.manifest?.sources : record?.request?.manifest?.sources);
     if (!refs) continue;
+    refs.push(...tx.all<SourceReference>("SELECT source_id AS sourceId, revision, generation FROM web_run_sources WHERE job_id = ?", row.jobId));
     const output = !discussion && typeof record.source?.sourceId === "string" ? record.source.sourceId : null;
     add(refs, { id: `run:${row.id}`, projectId: row.projectId, output, jobId: row.jobId, jobState: row.jobState });
   }

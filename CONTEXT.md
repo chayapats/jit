@@ -175,3 +175,7 @@ _Avoid_: Approval, remote desktop of the owner's computer.
 **MCP install proposal**:
 A revisioned card from an agent naming an MCP server's source, pinned version and command, installed only when the owner accepts it in Web.
 _Avoid_: Connector, automatic plugin install.
+
+**Outbound read**:
+A Jit service-owned search query or public URL read whose exact destination text is visible to the owner and audited. It is read-only but can disclose private context, so a matched private span requires a single-use Web owner release.
+_Avoid_: Execution-box network authority, hosted lookup, model-granted permission.

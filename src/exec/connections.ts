@@ -13,8 +13,8 @@ import type { AppTransaction } from "../store";
  * an owner command from the Web channel, is never rendered back, logged, exported, backed up, placed in a prompt or
  * tool result or written under the execution directory, and is released only through {@link releaseConnection}.
  */
-export type ConnectionKind = "github_token" | "deploy_secret" | "mcp_env";
-export const connectionKinds: readonly ConnectionKind[] = Object.freeze(["github_token", "deploy_secret", "mcp_env"]);
+export type ConnectionKind = "github_token" | "deploy_secret" | "mcp_env" | "web_search_key";
+export const connectionKinds: readonly ConnectionKind[] = Object.freeze(["github_token", "deploy_secret", "mcp_env", "web_search_key"]);
 
 /** What the owner sees of a connection: never the value, only whether one is stored. */
 export interface ConnectionView {
@@ -163,15 +163,15 @@ export function applyConnectionCommand(tx: AppTransaction, vault: ConnectionVaul
   return { connection: readConnection(tx, current.id) };
 }
 
-/** The purposes a value may be released for: an approved effect card (EXE07) or an MCP sidecar spawn (EXE12). */
-const purposePattern = /^(effect:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|mcp:[a-z0-9][a-z0-9._-]{0,63})$/;
+/** The purposes a value may be released for: an approved effect card (EXE07) , an MCP sidecar spawn (EXE12), or the selected installation web provider (WEB01). */
+const purposePattern = /^(effect:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|web:[a-z][a-z0-9_-]{0,63}|mcp:[a-z0-9][a-z0-9._-]{0,63})$/;
 
 /** A released value. It goes to the effect executor or the MCP spawn only, never into text. */
 export interface ReleasedConnection { connectionId: string; kind: ConnectionKind; secret: string }
 
 /**
  * The only way to read a stored value (internal API; no route, command or read model calls it). `purpose` must be
- * `effect:<cardId>` or `mcp:<serverId>` (`connection_purpose_invalid` otherwise, with nothing read or recorded). A
+ * `effect:<cardId>`, `mcp:<serverId>` or `web:<providerId>` (`connection_purpose_invalid` otherwise, with nothing read or recorded). A
  * removed or empty connection is `connection_unavailable`; a connection scoped to other projects is
  * `connection_out_of_scope` when `options.projectId` is given. Every release records a `connection_audit` row in `tx`,
  * which the caller commits with the work that uses the value.

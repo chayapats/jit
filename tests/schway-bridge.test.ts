@@ -400,6 +400,8 @@ test("team dispatch commits production specialist evidence while preview stays f
   await app.setupOwner(password);
   const auth = app.authenticate(await app.login(password));
   const project = app.execute(auth.actor, { kind: "project.create", projectId: null, requestId: rid(), expectedRevision: 0, payload: { name: "โครงการสะพาน" } }).project;
+  // These tests isolate the pre-web bridge retry contract; WEB01 exercises the enabled registry separately.
+  app.execute(auth.actor, { kind: "web.settings.set", requestId: rid(), projectId: project.id, expectedRevision: 0, payload: { enabled: false } });
   const topic = app.execute(auth.actor, { kind: "topic.create", projectId: project.id, requestId: rid(), expectedRevision: project.revision, payload: { title: "หัวข้อสะพาน" } }).topic;
   const role = app.execute(auth.actor, { kind: "role.save", projectId: null, requestId: rid(), expectedRevision: 0,
     payload: { roleId: null, name: "สะพาน", kind: "specialist", responsibility: "วิเคราะห์โครงสร้างซอฟต์แวร์", enabled: true, route: grok } }).role!;
@@ -453,6 +455,8 @@ async function minimumTeam(runPort: "schway" | "scripted") {
   await app.setupOwner("fixture-minimum-owner-pass");
   const auth = app.authenticate(await app.login("fixture-minimum-owner-pass"));
   const project = app.execute(auth.actor, { kind: "project.create", projectId: null, requestId: rid(), expectedRevision: 0, payload: { name: "โครงการขั้นต่ำ" } }).project;
+  // These tests isolate the pre-web bridge retry contract; WEB01 exercises the enabled registry separately.
+  app.execute(auth.actor, { kind: "web.settings.set", requestId: rid(), projectId: project.id, expectedRevision: 0, payload: { enabled: false } });
   const topic = app.execute(auth.actor, { kind: "topic.create", projectId: project.id, requestId: rid(), expectedRevision: project.revision, payload: { title: "หัวข้อขั้นต่ำ" } }).topic;
   const role = app.execute(auth.actor, { kind: "role.save", projectId: null, requestId: rid(), expectedRevision: 0,
     payload: { roleId: null, name: "ขั้นต่ำ", kind: "specialist", responsibility: "วิเคราะห์งบประมาณ", enabled: true, route: grok } }).role!;
@@ -608,6 +612,8 @@ test("stopping a running participation clears retained progress", async () => {
   await app.setupOwner(password);
   const auth = app.authenticate(await app.login(password));
   const project = app.execute(auth.actor, { kind: "project.create", projectId: null, requestId: rid(), expectedRevision: 0, payload: { name: "หยุด" } }).project;
+  // These tests isolate the pre-web bridge retry contract; WEB01 exercises the enabled registry separately.
+  app.execute(auth.actor, { kind: "web.settings.set", requestId: rid(), projectId: project.id, expectedRevision: 0, payload: { enabled: false } });
   const topic = app.execute(auth.actor, { kind: "topic.create", projectId: project.id, requestId: rid(), expectedRevision: project.revision, payload: { title: "หยุดกลางคัน" } }).topic;
   const role = app.execute(auth.actor, { kind: "role.save", projectId: null, requestId: rid(), expectedRevision: 0,
     payload: { roleId: null, name: "ช่าง", kind: "specialist", responsibility: "วิเคราะห์โครงสร้างซอฟต์แวร์", enabled: true, route: grok } }).role!;
@@ -666,6 +672,8 @@ test("coordinator reserves exactly the worst-case retry budget", async () => {
   await app.setupOwner(password);
   const auth = app.authenticate(await app.login(password));
   const project = app.execute(auth.actor, { kind: "project.create", projectId: null, requestId: rid(), expectedRevision: 0, payload: { name: "งบ" } }).project;
+  // These tests isolate the pre-web bridge retry contract; WEB01 exercises the enabled registry separately.
+  app.execute(auth.actor, { kind: "web.settings.set", requestId: rid(), projectId: project.id, expectedRevision: 0, payload: { enabled: false } });
   const topic = app.execute(auth.actor, { kind: "topic.create", projectId: project.id, requestId: rid(), expectedRevision: project.revision, payload: { title: "งบพอดี" } }).topic;
   const role = app.execute(auth.actor, { kind: "role.save", projectId: null, requestId: rid(), expectedRevision: 0,
     payload: { roleId: null, name: "ช่าง", kind: "specialist", responsibility: "วิเคราะห์โครงสร้างซอฟต์แวร์", enabled: true, route: grok } }).role!;
@@ -773,6 +781,8 @@ test("dispatch waits on production route failures without claiming fixture work"
   await app.setupOwner(password);
   const auth = app.authenticate(await app.login(password));
   const project = app.execute(auth.actor, { kind: "project.create", projectId: null, requestId: rid(), expectedRevision: 0, payload: { name: "รอ" } }).project;
+  // These tests isolate the pre-web bridge retry contract; WEB01 exercises the enabled registry separately.
+  app.execute(auth.actor, { kind: "web.settings.set", requestId: rid(), projectId: project.id, expectedRevision: 0, payload: { enabled: false } });
   const topic = app.execute(auth.actor, { kind: "topic.create", projectId: project.id, requestId: rid(), expectedRevision: project.revision, payload: { title: "รอคิว" } }).topic;
   const role = app.execute(auth.actor, { kind: "role.save", projectId: null, requestId: rid(), expectedRevision: 0,
     payload: { roleId: null, name: "ช่าง", kind: "specialist", responsibility: "วิเคราะห์โครงสร้างซอฟต์แวร์", enabled: true, route: grok } }).role!;
@@ -909,6 +919,8 @@ test("production coordinator commits mode-labeled synthesis without fixture clai
   await app.setupOwner(password);
   const auth = app.authenticate(await app.login(password));
   const project = app.execute(auth.actor, { kind: "project.create", projectId: null, requestId: rid(), expectedRevision: 0, payload: { name: "ประสาน" } }).project;
+  // These tests isolate the pre-web bridge retry contract; WEB01 exercises the enabled registry separately.
+  app.execute(auth.actor, { kind: "web.settings.set", requestId: rid(), projectId: project.id, expectedRevision: 0, payload: { enabled: false } });
   const topic = app.execute(auth.actor, { kind: "topic.create", projectId: project.id, requestId: rid(), expectedRevision: project.revision, payload: { title: "หัวข้อประสาน" } }).topic;
   const specialist = app.execute(auth.actor, { kind: "role.save", projectId: null, requestId: rid(), expectedRevision: 0,
     payload: { roleId: null, name: "ช่าง", kind: "specialist", responsibility: "วิเคราะห์โครงสร้างซอฟต์แวร์", enabled: true, route: grok } }).role!;
