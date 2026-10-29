@@ -11,9 +11,9 @@ fails closed before any native session exists.
 Pinned artifact (verified, deterministic):
 
 - npm `schway@1.0.0-rc.2`, git revision
-  `ac6355702d42a44deabb91a675081f08113cb1a9` (Schway main, #416+#418+#420+#424+#426+#430 merged; adds schway.host.core-tools/v1 and composes schway.host.release/v2).
-- Vendored tarball `vendor/schway-1.0.0-rc.2-ac63557.tgz`,
-  SHA-256 `6e95fb181ba3ba3dae5f7fc4d186e57acf899b9e8824b8b7a72b63b743f914e3`.
+  `6532e76565fec3c10422c4a3bfa88136da269f2b` (Schway main, #416+#418+#420+#424+#426+#430+#437+#438 merged; adds schway.host.core-tools/v1 and composes schway.host.release/v2, plus the additive capabilities schway.host.web-tools/v1 (#433/#434) and schway.host.device-sign-in/v1 (#435)).
+- Vendored tarball `vendor/schway-1.0.0-rc.2-6532e76.tgz`,
+  SHA-256 `2862be51d5410c401c30f98e82e98276ca9ce3b73ccfc2b13975675858d961d3`.
 - Behavior set `schway.host.release/v2` (composes `base`, `context-policy`,
   `tool-policy`, `durable-sessions`, `auth-routes`, `run-control`,
   `managed-session-data`, `session-snapshot` and `core-tools`). `release/v2` is
@@ -29,9 +29,9 @@ Pinned artifact (verified, deterministic):
 ```ts
 SCHWAY_RELEASE_CONTRACT: "schway.host.release/v2";
 SCHWAY_SNAPSHOT_CONTRACT: "schway.host.session-snapshot/v1";
-SCHWAY_PINNED_REVISION: "ac63557...";
+SCHWAY_PINNED_REVISION: "6532e76...";
 SCHWAY_PINNED_VERSION: "1.0.0-rc.2";
-SCHWAY_PINNED_TARBALL_SHA256: "6e95fb18...";
+SCHWAY_PINNED_TARBALL_SHA256: "2862be51...";
 SCHWAY_NEXT_ACTION: "pin_supported_schway_host_release";
 SCHWAY_SNAPSHOT_NEXT_ACTION: "await_supported_schway_snapshot_api";
 SCHWAY_SYSTEM_PROMPT: string;

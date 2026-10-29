@@ -2,7 +2,7 @@
 
 Owner: Jit #127 (S11 EXE03). Status: implemented on the issue branch. Decision: [ADR 0036](../adr/0036-execution-box-and-runner.md). Spec: [S11](../specs/S11-execution-access-and-tools.md) (S11-D01, D04, D05, S11-AC01, S11-AC02, S11-AC04). Requirements: FR-36, FR-35, NFR-14, NFR-06, NFR-07, NFR-10.
 
-Uses `schway.host.core-tools/v1` (Schway [#429](https://github.com/chayapats/schway/issues/429), pinned artifact `ac63557`, `schway.host.release/v2`; see [schway-bridge-v1](schway-bridge-v1.md)), `app.access_level/v1`, `ops.execution_config/v1`, `ops.box_image/v1` and `jobs.queue_admission/v1`. Delivers `exec.box_runtime/v1`, [`jit.box.runner/v1`](box-runner-v1.md) and `exec.box_backend/v1`. No work definition uses a box yet; wiring tools into model runs is EXE05.
+Uses `schway.host.core-tools/v1` (Schway [#429](https://github.com/chayapats/schway/issues/429), pinned artifact `6532e76`, `schway.host.release/v2`; see [schway-bridge-v1](schway-bridge-v1.md)), `app.access_level/v1`, `ops.execution_config/v1`, `ops.box_image/v1` and `jobs.queue_admission/v1`. Delivers `exec.box_runtime/v1`, [`jit.box.runner/v1`](box-runner-v1.md) and `exec.box_backend/v1`. No work definition uses a box yet; wiring tools into model runs is EXE05.
 
 ## `exec.box_runtime/v1`
 
