@@ -8,7 +8,7 @@ import { readConfig } from "../src/config";
 import {
   DeliveryWorker, ScriptedTelegramSender, commitDeliveryIntent, recordDeliveryResult, type DeliveryCrashPhase,
 } from "../src/delivery";
-import { TransactionStore } from "../src/store";
+import { schemaVersion, TransactionStore } from "../src/store";
 import { TelegramChannel } from "../src/telegram";
 import { createWebHandler } from "../src/web";
 
@@ -376,11 +376,14 @@ test("schema v6 migrates to v9 with a private snapshot and leaves the previous p
   const projectId = "11111111-1111-4111-8111-111111111111";
   const old = new Database(path);
   old.exec(`CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, revision INTEGER NOT NULL, created_at INTEGER NOT NULL);
+    CREATE TABLE sources (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, kind TEXT NOT NULL, current_revision INTEGER NOT NULL, generation INTEGER NOT NULL, availability TEXT NOT NULL, UNIQUE (project_id, id));
+    CREATE TABLE topics (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, UNIQUE (project_id, id));
+    CREATE TABLE messages (id TEXT PRIMARY KEY);
     INSERT INTO projects VALUES ('${projectId}', 'kept', 1, 1);
     PRAGMA user_version = 6;`);
   old.close();
   const store = new TransactionStore(path); stores.push(store);
-  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 40 });
+  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: schemaVersion });
   expect(store.read(tx => tx.get("SELECT name FROM projects WHERE id = ?", projectId))).toEqual({ name: "kept" });
   expect(store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM delivery_intents")!.n)).toBe(0);
   const snapshot = new Database(join(root, readdirSync(root).find(name => name.includes(".pre-v6-"))!), { readonly: true });

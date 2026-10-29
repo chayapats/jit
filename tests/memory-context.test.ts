@@ -10,7 +10,7 @@ import { lexicalScore, lexicalTerms, memoryContextOperator, memoryContextPolicy 
 import { memoryExtractionMarker, memoryExtractionWork, scriptedMemoryResult } from "../src/memory/extract";
 import type { ClaimReference, MemoryClaim } from "../src/memory/types";
 import type { SourceReference } from "../src/sources";
-import { TransactionStore } from "../src/store";
+import { schemaVersion, TransactionStore } from "../src/store";
 import { coordinatorSynthesisMarker, coordinatorSynthesisWork } from "../src/team/decisions";
 import { discussionPlanWork, specialistAnalysisWork } from "../src/team/dispatch";
 import { ScriptedRunPort, fixtureOutcome, specialistFixtureResult } from "../src/team/scripted-port";
@@ -464,7 +464,7 @@ test("MEM02 schema v11 store migrates to v20 with a private snapshot and keeps M
   db.exec("DROP TABLE memory_suppressed_sources; DROP TABLE memory_suppressed_claims; DROP TABLE memory_suppressions; DROP TABLE memory_corrections; DROP TABLE memory_derived_sources; DROP TABLE memory_context_entries; DROP TABLE memory_contexts; DROP TABLE job_schedule_occurrences; DROP TABLE job_schedules; PRAGMA user_version = 11;");
   db.close();
   f.rt = boot(f.config, f.hooks, f.clock);
-  expect(f.rt.store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 40 });
+  expect(f.rt.store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: schemaVersion });
   expect(readdirSync(f.root).filter(name => name.includes(".pre-v11-"))).toHaveLength(1);
   expect(f.rt.app.memoryClaim(actor(f), p.id, ref(claim)).state).toBe("available");
   const answered = await ask(f, p, "ฐานข้อมูลคืออะไร");

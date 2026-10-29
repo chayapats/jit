@@ -1,4 +1,5 @@
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { attachmentHost, attachmentLimits, type AttachmentHost, type AttachmentLimits } from "./attachments/limits";
 import type { JobPolicy } from "./jobs/types";
 import type { TeamPolicy } from "./team/types";
 import { noRouteModels, type RouteModels } from "./team/route-options";
@@ -160,6 +161,8 @@ function validatedHostname(value: string | undefined): string {
 /** Finite local-development limits; operators must measure them before a pilot. */
 export interface AppConfig {
   databasePath: string;
+  /** app.attachments/v1: ingestion gate and host-scaled storage/sanitizer limits. */
+  attachments: AttachmentLimits;
   origin: string;
   hostname: string;
   port: number;
@@ -183,7 +186,7 @@ export interface AppConfig {
 }
 
 /** Reads only Jit's declared settings and rejects malformed or unbounded values. */
-export function readConfig(env: Record<string, string | undefined> = process.env): AppConfig {
+export function readConfig(env: Record<string, string | undefined> = process.env, host?: AttachmentHost): AppConfig {
   const positive = (key: string, fallback: number, maximum: number) => {
     const raw = env[key];
     const n = raw === undefined ? fallback : Number(raw);
@@ -213,8 +216,10 @@ export function readConfig(env: Record<string, string | undefined> = process.env
   const pollBackoffMs = positive("JIT_TELEGRAM_POLL_BACKOFF_MS", 1_000, 60_000);
   const maxPollBackoffMs = positive("JIT_TELEGRAM_MAX_POLL_BACKOFF_MS", 30_000, 300_000);
   if (maxPollBackoffMs < pollBackoffMs) throw new Error("Invalid JIT_TELEGRAM_MAX_POLL_BACKOFF_MS");
+  const databasePath = resolve(env.JIT_DATABASE ?? ".local/jit.sqlite");
   return {
-    databasePath: resolve(env.JIT_DATABASE ?? ".local/jit.sqlite"),
+    databasePath,
+    attachments: attachmentLimits(env, host ?? attachmentHost(dirname(databasePath), `${databasePath}.backups`)),
     runPort,
     origin: origin.origin,
     hostname: validatedHostname(env.JIT_HOST),

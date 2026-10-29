@@ -557,6 +557,7 @@ function historicalBackup(f: Fixture, backupId: string, version: number, extra =
   const db = new Database(manifest.artifact.path);
   for (const trigger of ["lifecycle_ledger_deletion", "lifecycle_ledger_suppression", "lifecycle_ledger_suppressed_claim", "lifecycle_ledger_suppressed_source"]) db.exec(`DROP TRIGGER IF EXISTS ${trigger}`);
   for (const table of ["lifecycle_ledger", "lifecycle_checkpoint"]) db.exec(`DROP TABLE IF EXISTS ${table}`);
+  if (version < 41) db.exec("DROP TABLE IF EXISTS attachments; DROP TABLE IF EXISTS attachment_events;");
   if (version < 22) { /* Schema 22 only rebuilds pr_reports, created lazily. */ }
   if (version < 21) db.exec("DROP TABLE IF EXISTS schway_native_refs");
   if (extra) db.exec(extra);

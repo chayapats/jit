@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { Application } from "../src/application";
 import { readConfig } from "../src/config";
-import { TransactionStore } from "../src/store";
+import { schemaVersion, TransactionStore } from "../src/store";
 import { createWebHandler } from "../src/web";
 import { JobQueue } from "../src/jobs/queue";
 import {
@@ -402,7 +402,7 @@ test("schema v12 store migrates to v20 with new schedule tables and a private sn
   db.close();
   const before = new Set(readdirSync(f.root));
   const store = new TransactionStore(f.path); stores.push(store);
-  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 40 });
+  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: schemaVersion });
   expect(readdirSync(f.root).filter(name => !before.has(name) && name.includes(".pre-v12-"))).toHaveLength(1);
   // The v12-era memory context row survives the owner_kind widening rebuild.
   expect(store.read(tx => tx.get<{ record_json: string }>("SELECT record_json FROM memory_contexts WHERE id = ?", contextId)!.record_json))

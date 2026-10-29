@@ -2,6 +2,16 @@ import type { MessageKey } from "./index";
 
 /** ui.i18n_dictionary/v1 — English. Must define every key of the Thai dictionary; values are plain text. */
 export const en: Record<MessageKey, string> = {
+  "error.attachments_disabled": "File uploads are not enabled. Send a text message instead.",
+  "error.invalid_attachment_upload": "The upload is invalid. Choose the file again and retry.",
+  "error.attachment_too_large": "This file is too large. Choose a smaller file and retry.",
+  "error.attachment_quota_exceeded": "The attachment quota is full. Delete unused files or ask the operator to raise the limit.",
+  "error.attachment_disk_reserve": "There is too little free disk space. Free space on the data disk and retry.",
+  "error.attachment_type_unsupported": "The file type or extension is unsupported. Choose a matching PNG, JPEG, WebP, PDF or UTF-8 text file without NUL.",
+  "error.attachment_needs_sanitizer": "This file needs the container sanitizer. Ask the operator to configure it, or send UTF-8 text, PNG or JPEG.",
+  "error.attachment_not_found": "This attachment is not in this topic. Return to the topic and choose an existing file.",
+  "error.invalid_attachment_event": "Attachment audit metadata is invalid. Retry or ask the operator to inspect the service.",
+
   "common.jit_all_projects": "Jit · All projects",
   "common.you": "You",
   "common.teammate": "Teammate",

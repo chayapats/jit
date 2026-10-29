@@ -13,7 +13,7 @@ import { ensurePrSchema } from "../src/pr/schema";
 import { mutateMonitor } from "../src/pr/authority";
 import { TRIGGER_POLICY_VERSION } from "../src/pr/types";
 import { commitOutputSource, type SourceReference } from "../src/sources";
-import { TransactionStore } from "../src/store";
+import { schemaVersion, TransactionStore } from "../src/store";
 import { registerTaskEvidenceArtifact, type TaskCommand } from "../src/tasks";
 import { createWebHandler } from "../src/web";
 
@@ -234,7 +234,7 @@ test("schema v8 migrates to v9, keeps the previous project, and snapshots the ol
     PRAGMA user_version = 8;`);
   old.close();
   const store = new TransactionStore(path); stores.push(store);
-  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 40 });
+  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: schemaVersion });
   expect(store.read(tx => tx.get("SELECT name, revision FROM projects WHERE id = ?", projectId))).toEqual({ name: "kept-task", revision: 4 });
   expect(store.read(tx => tx.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tasks'"))).toEqual({ name: "tasks" });
   const snapshotName = readdirSync(root).find(name => name.includes(".pre-v8-"))!;
