@@ -49,3 +49,12 @@ for (const status of ["needs-login", "quota-exceeded", "integration-unavailable"
     expect(html).toContain('name="model"'); expect(html).not.toContain('name="model_codex"');
   }
 });
+
+test("an empty catalog keeps the saved model in the free-text field so a save never changes it (FR-13)", () => {
+  for (const layout of ["cards", "select"] as const) {
+    const route = { provider: "codex", model: "gpt-saved-custom", authRoute: "codex" } as const;
+    const html = renderWith({ locale: "en", theme: "light" }, () => routePicker({ route, models: piModels, legend: "Account", layout, catalogs: { codex: { models: [], status: null } } }));
+    expect(html).toContain('value="gpt-saved-custom"');
+    expect(html).not.toContain('name="model_codex"');
+  }
+});

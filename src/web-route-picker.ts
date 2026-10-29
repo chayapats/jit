@@ -14,7 +14,8 @@ import type { RoleRoute } from "./team/types";
 export function routePicker(options: { route: RoleRoute | null; models: RouteModels; legend: string; layout: "cards" | "select"; inheritLabel?: string; readiness?: ProviderReadiness; catalogs?: RouteCatalogs }): string {
   const { route, models } = options;
   const recommendation = (provider: RouteProvider) => options.catalogs?.[provider]?.models?.find(model => model.recommended)?.id ?? recommendedModel(provider, models);
-  const custom = route && !options.catalogs?.[route.provider]?.models && route.model !== recommendedModel(route.provider, models) ? route.model : "";
+  // An empty or missing catalog renders no select, so the saved model must stay in the free-text field (FR-13).
+  const custom = route && !options.catalogs?.[route.provider]?.models?.length && route.model !== recommendedModel(route.provider, models) ? route.model : "";
   const catalogs = routeProviders.map(provider => {
     const catalog = options.catalogs?.[provider];
     if (!catalog) return "";

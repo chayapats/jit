@@ -1296,8 +1296,8 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         // The wake step previews the other language without saving anything; its form saves the choice.
         const lang = url.searchParams.get("lang");
         const locale: Locale = shown === "wake" && (lang === "th" || lang === "en") ? lang : ui.locale;
-        const readiness = shown === "connect" ? await app.providerReadiness(auth.actor) : undefined;
-        const catalogs = shown === "connect" ? await app.routeCatalogs(auth.actor) : undefined;
+        // Independent bounded reads: run them together so a slow store costs one deadline, not two.
+        const [readiness, catalogs] = shown === "connect" ? await Promise.all([app.providerReadiness(auth.actor), app.routeCatalogs(auth.actor)]) : [undefined, undefined];
         return respond(renderWith({ ...ui, locale }, () => setupPage(setup, auth.csrf, shown, config.routeModels, readiness, catalogs)), 200, { "Content-Language": locale, "Vary": "Accept-Language, Cookie" });
       }
       if (request.method === "POST" && setupAction) {
@@ -1413,8 +1413,10 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       }
       if (request.method === "GET" && teamRoute) {
         const state = app.team(auth.actor, teamRoute[1] ?? null);
-        const readiness = !api && !state.project ? await app.providerReadiness(auth.actor) : undefined;
-        const catalogs = !api ? await app.routeCatalogs(auth.actor) : undefined;
+        const [readiness, catalogs] = await Promise.all([
+          !api && !state.project ? app.providerReadiness(auth.actor) : undefined,
+          !api ? app.routeCatalogs(auth.actor) : undefined,
+        ]);
         return api ? json(state) : page(() => teamPage(state, nav(), auth.csrf, config.jobs.maximum, url.searchParams.get("preset") ?? undefined, config.routeModels, readiness, catalogs));
       }
       if (request.method === "GET" && previewRoute) {
