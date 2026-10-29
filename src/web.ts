@@ -789,7 +789,8 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const projectId = boxRoute[1]!;
         if (!boxRoute[2]) {
           if (request.method !== "GET") throw new AppError("method_not_allowed", 405);
-          return json({ box: app.boxStatus(auth.actor, projectId) });
+          const box = app.boxStatus(auth.actor, projectId);
+          return json({ box, runtime: await app.boxRuntimeStatus() });
         }
         if (request.method !== "POST") throw new AppError("method_not_allowed", 405);
         const body = await payload(request); app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token") ?? body.csrf);
@@ -852,7 +853,8 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const roles = new Map(rows.map(({ project }) => [project.id, app.roleAccess(auth.actor, project.id)] as const));
         const list = { projects: rows, hasMore: only.length ? false : paged.hasMore, single: only.length > 0 };
         const computer = new Map(rows.map(({ project }) => [project.id, app.computerSettings(auth.actor, project.id)] as const));
-        return page(() => settingsAccessPage(nav(paged), list, access, roles, auth.csrf, offset, config.pageSize, computer, new Map(rows.map(({ project }) => [project.id, app.webSettings(auth.actor, project.id)]))));
+        const runtimeStatus = await app.boxRuntimeStatus();
+        return page(() => settingsAccessPage(nav(paged), list, access, roles, auth.csrf, offset, config.pageSize, computer, new Map(rows.map(({ project }) => [project.id, app.webSettings(auth.actor, project.id)])), runtimeStatus));
       }
       if (request.method === "GET" && accessPageRoute && accessPageRoute[2] === "confirm") {
         const projectId = accessPageRoute[1]!;
@@ -1690,9 +1692,10 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         // never disappears behind newer cards in other topics.
         const approvals = app.topicApprovalCards(auth.actor, state.project.id, state.topic.id);
         // app.attachments/v1 (ATT03): existing chips render with the gate off; the attach control only with it on.
+        const runtimeStatus = config.attachments.enabled ? await app.attachmentRuntimeStatus() : undefined;
         const composer = app.attachmentComposer();
         const attachments = { byMessage: app.messageAttachments(auth.actor, state.project.id, state.topic.id, state.items.map(item => item.id)),
-          composer: composer.enabled ? { ...composer, pageSize: config.pageSize } : null };
+          composer: composer.enabled ? { ...composer, ...(runtimeStatus ? { runtimeStatus } : {}), pageSize: config.pageSize } : null };
         return page(() => conversationPage(state, nav(), app.topics(auth.actor, state.project.id).items, auth.csrf, after(), config.messageBytes, {
           webCalls: new Map(discussions.flatMap(discussion => discussion.participations.map(role =>
             [role.runId, app.webCalls(auth.actor, state.project.id, role.runId)] as const))),

@@ -1,5 +1,6 @@
 import { searxngImage } from "../web-tools/searxng";
 import { en } from "../i18n/en";
+import { podmanClient, podmanSocketCommand } from "../exec/podman-client";
 import type { AppConfig } from "../config";
 
 /** One `box-doctor` result row. `nextAction` is null only for passing checks. */
@@ -10,7 +11,7 @@ export interface DoctorCheck {
   nextAction: string | null;
 }
 
-/** `ops.box_doctor/v1` report: twelve ordered checks, `ok` only when all pass. */
+/** `ops.box_doctor/v1`: twelve ordered checks plus the remote API check when selected; `ok` only when all pass. */
 export interface DoctorReport {
   ok: boolean;
   checks: DoctorCheck[];
@@ -18,6 +19,7 @@ export interface DoctorReport {
 
 /** Injected host access. Unit tests provide scripted `run`/`stat`. */
 export interface BoxDoctorDeps {
+  clientEnv?: Record<string, string | undefined>;
   run(cmd: string[]): { exitCode: number; stdout: string };
   stat(path: string): { uid: number; mode: number; isDirectory?: boolean } | null;
   uid: number;
@@ -71,11 +73,13 @@ const checkNames = [
  * Pure except for the injected `run`/`stat`; never calls Podman directly.
  */
 export function boxDoctor(deps: BoxDoctorDeps, config: AppConfig["execution"], searxngEnabled = true): DoctorReport {
+  const client = podmanClient(deps.clientEnv);
+  const run = (args: string[]) => deps.run(["podman", ...(client.remote ? client.argv : []), ...args]);
   const checks: DoctorCheck[] = [];
   const fail = (name: string, detail: string, nextAction: string): DoctorCheck => ({ name, ok: false, detail, nextAction });
   const pass = (name: string, detail: string): DoctorCheck => ({ name, ok: true, detail, nextAction: null });
 
-  const versionOut = deps.run(["podman", "--version"]);
+  const versionOut = deps.run(["podman", ...(client.remote ? ["--remote=false"] : []), "--version"]);
   const installed = versionOut.exitCode !== 127 && versionOut.exitCode === 0;
   if (versionOut.exitCode === 127 || versionOut.exitCode !== 0) {
     checks.push(fail("podman-installed", "podman is not installed or not on PATH", "install-podman"));
@@ -95,7 +99,7 @@ export function boxDoctor(deps: BoxDoctorDeps, config: AppConfig["execution"], s
 
   let info: { rootless: boolean; cgroupVersion: string; controllers: string[] } | null = null;
   if (installed) {
-    const infoOut = deps.run(["podman", "info", "--format", "json"]);
+    const infoOut = run(["info", "--format", "json"]);
     if (infoOut.exitCode === 0) {
       try {
         info = parsePodmanInfo(infoOut.stdout);
@@ -104,6 +108,10 @@ export function boxDoctor(deps: BoxDoctorDeps, config: AppConfig["execution"], s
       }
     }
   }
+
+  if (client.remote) checks.push(!installed ? fail("podman-api-socket", en["podman.reason_podman"], "install-podman")
+    : info ? pass("podman-api-socket", "Podman API is reachable")
+    : fail("podman-api-socket", en["podman.reason_socket"], podmanSocketCommand(deps.clientEnv)));
 
   if (info === null) {
     checks.push(fail("rootless", "cannot determine rootless mode from podman info", "check-podman-info"));
@@ -143,7 +151,7 @@ export function boxDoctor(deps: BoxDoctorDeps, config: AppConfig["execution"], s
   if (config.images === null) {
     checks.push(fail("image-base-present", "no base image is configured", "configure-execution-block"));
   } else {
-    const probe = deps.run(["podman", "image", "exists", config.images.base]);
+    const probe = run(["image", "exists", config.images.base]);
     if (probe.exitCode === 0) checks.push(pass("image-base-present", `base image ${config.images.base} is present`));
     else checks.push(fail("image-base-present", `base image ${config.images.base} is missing`, "build-box-images"));
   }
@@ -151,18 +159,18 @@ export function boxDoctor(deps: BoxDoctorDeps, config: AppConfig["execution"], s
   if (config.images === null || config.images.browser === undefined) {
     checks.push({ name: "image-browser-present", ok: true, detail: "browser image is not configured; skipped", nextAction: null });
   } else {
-    const probe = deps.run(["podman", "image", "exists", config.images.browser]);
+    const probe = run(["image", "exists", config.images.browser]);
     if (probe.exitCode === 0) checks.push(pass("image-browser-present", `browser image ${config.images.browser} is present`));
     else checks.push(fail("image-browser-present", `browser image ${config.images.browser} is missing`, "build-box-images"));
   }
 
   const sanitizerImage = config.images?.base;
-  const sanitizer = sanitizerImage ? deps.run(["podman", "image", "inspect", "--format", '{{ index .Config.Labels "jit.sanitize.version" }}', sanitizerImage]) : null;
+  const sanitizer = sanitizerImage ? run(["image", "inspect", "--format", '{{ index .Config.Labels "jit.sanitize.version" }}', sanitizerImage]) : null;
   checks.push(sanitizer?.exitCode === 0 && sanitizer.stdout.trim() === "2"
     ? pass("sanitizer-image", en["attachments.sanitizer_image_ready"])
     : fail("sanitizer-image", en["attachments.sanitizer_image_missing"], "rebuild-base-image-and-pin-digest"));
 
-  const searchImage = installed && info?.rootless && searxngEnabled ? deps.run(["podman", "image", "exists", searxngImage]) : null;
+  const searchImage = installed && info?.rootless && searxngEnabled ? run(["image", "exists", searxngImage]) : null;
   checks.push(!searxngEnabled ? pass("searxng", en["searxng.reason_disabled"]) : searchImage?.exitCode === 0
     ? pass("searxng", en["web_search.status_ready"])
     : fail("searxng", en["web_search.status_unavailable"], "open-settings-web-search"));
@@ -179,7 +187,9 @@ export function boxDoctor(deps: BoxDoctorDeps, config: AppConfig["execution"], s
   checks.push(dirCheck("execution-directory", config.directory));
   checks.push(dirCheck("secrets-directory", config.secretsDirectory));
 
-  if (checks.length !== checkNames.length || !checks.every((c, i) => c.name === checkNames[i])) {
+  const names: string[] = [...checkNames];
+  if (client.remote) names.splice(2, 0, "podman-api-socket");
+  if (checks.length !== names.length || !checks.every((c, i) => c.name === names[i])) {
     throw new Error("invalid_box_doctor");
   }
   return { ok: checks.every(c => c.ok), checks };

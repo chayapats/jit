@@ -120,7 +120,7 @@ else
     '  Create/verify non-login jit identity with /var/lib/jit home; owner-only data/work/ledger/backups/keyring directories.' \
     '  Create <data>/attachments mode 0700 and check the hardware-scaled disk reserve (+512 MiB staging).' \
     '  Try Podman/uidmap/slirp4netns; allocate unused subuid/subgid ranges and create /var/lib/cni.' \
-    '  Enable linger/user manager; install a Secret Service boot-unlock unit and random 0600 unlock file (preserve on re-run).' \
+    '  Enable linger/user manager and optional user podman.socket; install a Secret Service boot-unlock unit and random 0600 unlock file (preserve on re-run).' \
     '  Build/install sealed service artifact and dependencies; preserve existing config and data.' \
     '  Write /etc/jit/service-config.json: loopback:3000, Schway, Codex/Grok recommended models, Telegram disabled.' \
     '  Size service memory from RAM/3 (256 MiB..8 GiB), logs from disk/1000 (16..256 MiB); record RAM/CPU-sized box recommendations.' \

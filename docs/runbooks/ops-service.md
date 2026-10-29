@@ -142,8 +142,10 @@ or group/other write fail with `unsafe_root_path`, the exact failing path and
 `sudo cp -R --no-dereference -- "$newDir" "$snapshot/artifact"` as the next copy
 command. Config/unit path errors also require replacing those inputs with
 protected files. The managed root-owned `current` link is checked separately
-and only its checked, direct target is read; invoke the CLI from the snapshot's
-direct path, never through `current`. Development/non-root commands retain
+and only its checked, direct target is read. OPS09 (2026-10-29) accepts the exact
+managed CLI entry `/opt/jit/current/src/main.ts` when it resolves to the running
+protected release. Use it for installed lifecycle/status commands; upgrades
+still invoke the new snapshot directly. Arbitrary aliases remain refused. Development/non-root commands retain
 their existing behavior. The dependency-free bootstrap checks the release before
 loading application imports and recovers the original Linux invocation path
 from `/proc/self/cmdline` because Bun resolves `argv[1]` through symlinks. Use
@@ -257,3 +259,34 @@ sudo <abs root-owned bun> <root-owned artifact>/src/main.ts service uninstall   
 - Deterministic tests simulate systemd, `getent`, `ip`, dependency install and upgrade outcomes; they really build, install into disposable directories, boot the full app from the release, authenticate the owner over HTTP and persist state across stop/start.
 - `JIT_OPS_SMOKE=1 bun run ops:smoke` (Linux arm64 only) builds, installs dependencies, validates and launches the release against disposable state. It is opt-in and not part of `bun test`; its summary still is not reboot evidence.
 - Real unit install, unattended boot, restart/reboot, credential access and VPN reachability on the Pi belong to OPS05 (#36, `docs/runbooks/pi-live-round.md` Round D). Probe-only FEAS05 (#25) evidence does not substitute.
+
+## 2026-10-29 — OPS09 container API in the hardened unit (#224)
+
+Installer, `service install` and `service upgrade` enable the identity's
+user `podman.socket` idempotently and preserve linger. Upgrade also replaces
+the installed descriptor with the new rendered descriptor and reloads systemd.
+`NoNewPrivileges`, strict filesystem protection, SUID/SGID restriction and the
+other sandbox directives stay enabled. The system unit binds only the optional
+`/run/user/<uid>/podman` directory and its existing Schway bus, and cannot access
+default rootless storage below the identity's home. Never grant writable
+access to the home or disable the sandbox to fix a container feature.
+
+Read-only status now includes separate `podman.state` and `podman.nextAction`:
+
+```sh
+sudo /opt/jit/bin/bun --no-env-file /opt/jit/current/src/main.ts service status
+```
+
+`not-installed` means install Podman/rootless dependencies and re-run install
+or upgrade. `socket-unavailable` means repair the user manager/socket (commands
+in execution-box.md §2), then restart Jit. The optional bind permits chat-only
+startup when Podman is absent; if its directory did not exist at service start,
+a restart is required after repair. Web displays these states in `th`/`en` with
+operator commands; provisioning/rebinding needs operator privileges, so Web does
+not invoke a privileged repair. Existing provider-selection/test controls remain
+available. A custom Podman graphroot needs an operator `InaccessiblePaths=`
+exclusion too and must stay outside Jit managed/writable paths.
+
+Use [execution-box.md OPS09 live verification](execution-box.md#ops09-live-verification-2026-10-29)
+for the opt-in reference-host checks, including every sandbox directive, all
+three container-backed features, unavailable-socket recovery and reboot.

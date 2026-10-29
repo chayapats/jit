@@ -217,3 +217,12 @@ test("release tarball carries an intact artifact and can dry-run before installi
   const [stdout, stderr, exit] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
   expect({ exit, stderr }).toEqual({ exit: 0, stderr: "" }); expect(stdout).toContain("Dry run complete");
 });
+
+test("OPS09 an unavailable user socket reports chat-only, preserves hardening and remains repairable without host commands", async () => {
+  const f = fixture();
+  const result = await runInstaller({ ...f.options, simulation: { failStep: "optional-podman-socket" } });
+  expect(result.events).toContain("owner-link"); expect(f.lines.join("\n")).toContain("Podman API socket for the service identity is not running");
+  const unit = readFileSync(f.at("/etc/systemd/system/jit.service"), "utf8");
+  for (const directive of ["NoNewPrivileges=true", "ProtectSystem=strict", "RestrictSUIDSGID=true", "Environment=JIT_PODMAN_MODE=remote", "BindPaths=-/run/user/1001/podman"]) expect(unit).toContain(directive);
+  await runInstaller(f.options); expect(f.calls).toHaveLength(0);
+});

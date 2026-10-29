@@ -313,8 +313,8 @@ test("the CLI runner bounds output, closes abortable pipes and strips the servic
   const dir = mkdtempSync(join(tmpdir(), "jit-fake-sanitize-cli-")); dirs.push(dir);
   const cli = join(dir, "fake-podman");
   writeFileSync(cli, `#!${Bun.which("bun")}
-if (process.argv[2] === "flood") console.log("x".repeat(70000));
-else if (process.argv[2] === "hold") setInterval(() => {}, 1000);
+if (process.argv.at(-1) === "flood") console.log("x".repeat(70000));
+else if (process.argv.at(-1) === "hold") setInterval(() => {}, 1000);
 else console.log(JSON.stringify(Object.keys(process.env).sort()));
 `, { mode: 0o700 });
   const runner = sanitizerCommandRunner(cli, { PATH: fixtureEnv.PATH, HOME: dir, LANG: "C.UTF-8", JIT_FIXTURE_SECRET: "synthetic-secret", RANDOM_SECRET: "synthetic-secret" });

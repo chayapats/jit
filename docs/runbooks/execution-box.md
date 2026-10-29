@@ -26,14 +26,27 @@ jit:100000:65536
   every box on `jit-box-internal` fails with `unable to find network with name or ID jit-box-internal` (observed on
   the Pi with Podman 4.9.3, 2026-10-28).
 
-## 2. Enable lingering
+## 2. Enable lingering and the user API socket (OPS09, 2026-10-29)
 
 ```sh
 sudo loginctl enable-linger <serviceUser>
+# Replace 1001 with `id -u <serviceUser>`:
+sudo systemctl start user@1001.service
+sudo runuser -u <serviceUser> -- env XDG_RUNTIME_DIR=/run/user/1001 \
+  DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1001/bus \
+  systemctl --user enable --now podman.socket
+sudo systemctl restart jit.service
 ```
 
 - The service user needs a lingering user manager so rootless Podman and its networks survive logout.
 - Re-check with `loginctl show-user <serviceUser>`.
+- Installer/install/upgrade repeat socket enablement safely. Check the API as
+  the identity with `podman --remote --url unix:///run/user/1001/podman/podman.sock info`.
+- The installed unit selects `JIT_PODMAN_MODE=remote` and sets `XDG_RUNTIME_DIR`.
+  Development defaults to local mode (`--remote=false`); choose either mode
+  explicitly in a test/CLI environment. Remote failures never retry locally.
+- Keep the API Unix-only and owned by the identity. Do not publish it, bind it
+  into containers, add a rootful socket or expose container storage to Jit.
 
 ## 3. Build images
 
@@ -92,7 +105,7 @@ a shell that already has those variables.
 jit ops box-doctor
 ```
 
-- Exit 0 only when all eleven checks pass; otherwise exit 1 with the failing check,
+- Exit 0 only when all twelve local checks (thirteen in remote mode) pass; otherwise exit 1 with the failing check,
   its `detail` and its `nextAction`.
 - The command never runs containers and never prints secrets; it only probes
   `podman --version`, `podman info`, `podman image exists`, `podman image inspect` and the two directories. The `sanitizer-image` check requires the rebuilt base image label `jit.sanitize.version=2`.
@@ -109,7 +122,8 @@ jit ops box-doctor
 
 | Check | Next action |
 | --- | --- |
-| `podman-installed` | `install-podman`: install Podman 4.4+ and put `podman` on `PATH`. |
+| `podman-installed` | `install-podman`: install Podman 4.4+ and put `podman` on `PATH`, then re-run install/upgrade. |
+| `podman-api-socket` (remote mode) | The executable is present but the API is unreachable. Run the exact identity/UID-specific socket command in `nextAction`; restart Jit after repair. |
 | `podman-version>=4.4` | `upgrade-podman-to-4.4`: upgrade Podman to 4.4 or newer. |
 | `rootless` | `enable-rootless-podman`: run as the service user without `sudo`, add subuid/subgid entries. |
 | `cgroup-v2` | `enable-cgroup-v2`: boot with cgroup v2 (unified hierarchy). |
@@ -133,6 +147,94 @@ JIT_LIVE_PODMAN=1 JIT_LIVE_BOX_IMAGE=jit-box-base:<tag>@sha256:<digest> bun test
 ```
 
 It checks the inspected mounts, zero capabilities, no Jit variable or path in the box, and that the internal network blocks `example.com` while the proxy allows `registry.npmjs.org`.
+
+### Remote feature mapping (2026-10-29, #224)
+
+| Feature | Installed service behavior |
+| --- | --- |
+| `create`, `run`, `start`, `inspect`, `rm`, `pull`, network/image queries | Same operation through `podman --remote --url unix:///run/user/<uid>/podman/podman.sock`. |
+| `exec -i`, detached exec, MCP/CDP streams | Remote API stdin/stdout pipes, no TTY or inherited file descriptors. Sidecar secrets use `--env NAME` with values only in the client environment. |
+| `cp` | Remote copy API; client-side files/streams, no host storage mount. Attachment copying continues through its confined runner. |
+| Workspace/input/profile bind mounts | Paths belong to the API server host, which is the same machine/identity. Existing exact mount checks remain. Private service `/tmp` is not a shared bind source. |
+| tmpfs, `--network none`, `--userns=keep-id:uid=…,gid=…` | Unchanged flags interpreted by the rootless server. Sanitizer output is still bounded stdout after cleanup. |
+| `unshare --rootless-netns` (#163) | Local-only. Remote mode starts a separate pinned-base proxy container on internal + egress bridges, with both forwarding sysctls zero, no host mount/published port and existing CONNECT host/443 allowlist. Workspace boxes retain only their internal network. |
+| API server environment | `--http-proxy=false` prevents implicit proxy environment inheritance for every container. |
+
+The proxy adds a fixed 128 MiB / 0.5 CPU / 64 pid ceiling outside project box
+capacity; the service removes it after drain or before replacing an orphan.
+Its code is bundled for the base image's existing Node, so OPS09 needs no new
+base-image digest. A different internal IP changes box environment labels and
+recreates stale containers. Failure to establish the proxy refuses Workspace
+execution; it never switches a box to an egress network.
+
+### OPS09 live verification (2026-10-29)
+
+Orchestrator/owner only, after merge, in the approved reference-host window.
+Implementation tests never run these commands. Keep outputs/addresses/image
+pins in ignored `.local` evidence; report only commit, OS/arch and pass/blocked.
+Use the protected new build and normal owner-authorized `service upgrade`
+procedure first. The actual service must have execution configured with a real
+base digest and owner-enabled attachments before accepting all three features.
+
+1. Run installed `service status` via `/opt/jit/current/src/main.ts` as above.
+   Expect API `ready`. Inspect `systemctl cat jit.service` and
+   `systemctl show jit.service -p NoNewPrivileges -p PrivateTmp -p ProtectSystem -p ProtectHome -p ProtectControlGroups -p ProtectKernelTunables -p RestrictSUIDSGID -p BindPaths -p ReadWritePaths -p InaccessiblePaths`.
+   Check all template sandbox directives, remote environment, only the user
+   socket directory/bus binds and default-storage exclusions. As the identity,
+   `systemctl --user is-enabled podman.socket` and `is-active podman.socket`
+   must succeed with its XDG/session-bus environment from §2.
+2. Through the running service's Web, test built-in search, upload the tiny
+   PNG/PDF fixtures and confirm sanitizer output/preview eligibility, then open
+   an owner-authorized Workspace box and exercise runner + browser/CDP/MCP
+   streams as configured. Confirm direct outbound HTTPS fails, a disallowed
+   proxy host fails, and `registry.npmjs.org:443` succeeds. No access-level
+   widening or approval is implied by this checklist.
+3. For repeatable protocol/isolation probes under the same sandbox, prepare a
+   reviewed, service-readable checkout at the tested HEAD with dependencies
+   installed (the installed artifact omits tests). Stop Jit after draining;
+   these probes share its service-owned proxy name. Use a **shared** disposable
+   directory outside state/credentials, inside the configured execution path:
+
+```sh
+checkout=/opt/jit/ops09-checkout
+service_uid="$(id -u jit)"
+live_root="$(jq -r '.execution.directory' /etc/jit/service-config.json)/.ops09-live"
+base_image="$(jq -r '.execution.images.base' /etc/jit/service-config.json)"
+sudo install -d -o jit -g jit -m 0700 "$live_root"
+sudo systemctl stop jit.service
+sudo systemd-run --unit=jit-ops09-check --wait --pipe --collect --uid=jit --gid=jit \
+  --property=NoNewPrivileges=true --property=PrivateTmp=true \
+  --property=ProtectSystem=strict --property=ProtectHome=tmpfs \
+  --property=ProtectKernelTunables=true --property=ProtectControlGroups=true \
+  --property=RestrictSUIDSGID=true --property=UMask=0077 \
+  --property=TasksMax=256 --property=LimitNOFILE=4096 \
+  --property="BindPaths=/run/user/$service_uid/podman" \
+  --property="ReadWritePaths=$live_root" \
+  --property='InaccessiblePaths=-/var/lib/jit/.local/share/containers' \
+  --setenv=HOME=/var/lib/jit --setenv="XDG_RUNTIME_DIR=/run/user/$service_uid" \
+  --setenv=JIT_PODMAN_MODE=remote --setenv=JIT_SERVICE_USER=jit \
+  --setenv=JIT_LIVE_PODMAN=1 --setenv=JIT_LIVE_SEARXNG=1 \
+  --setenv="JIT_LIVE_BOX_IMAGE=$base_image" --setenv="JIT_LIVE_CONTAINER_ROOT=$live_root" \
+  /opt/jit/bin/bun --no-env-file test "$checkout/tests/box-podman.live.test.ts" \
+    "$checkout/tests/attachment-sanitizer.live.test.ts" "$checkout/tests/searxng.test.ts"
+sudo systemctl start jit.service
+```
+
+   Record actual assertions/pass/blocked, not just process start. Restart Jit
+   even if a probe fails. Inspect proxy topology/sysctls and confirm containers
+   have no credential/state/socket mount. Remove only the reviewed disposable
+   fixture directory after cleanup; retain no fixture content in public evidence.
+4. On a disposable installation, stop the identity's user `podman.socket`
+   **and** `podman.service` (the active API can outlive its listening unit).
+   Web search, attachment and box readiness must say API unavailable, distinct
+   from missing Podman. Run the displayed repair command and restart Jit;
+   confirm recovery. Exercise absent Podman separately only on a disposable
+   installation; ordinary chat must remain available. Never remove host
+   packages on the production reference installation for this test.
+5. Re-run install/upgrade's safe repair path as appropriate, then reboot in the
+   owner's window. Confirm linger, user socket and all three features return
+   under the actual unit. Stop and report any version/backend incompatibility;
+   do not weaken system/container isolation to obtain a pass.
 
 
 ## Attachment sanitizer (ATT02)

@@ -532,7 +532,7 @@ export function serveFullApp(handle: FullAppHandle, options: { drainTimeoutMs?: 
       await handle.app.closeAttachmentSanitizer();
       let result: DrainResult;
       try { result = await stopDrain(handle, { timeoutMs: drainTimeoutMs }); }
-      finally { await handle.web?.searxng.close().catch(() => {}); handle.service.close(); try { handle.store.close(); } catch { /* Already closed. */ } }
+      finally { await handle.boxes?.close().catch(() => {}); await handle.web?.searxng.close().catch(() => {}); handle.service.close(); try { handle.store.close(); } catch { /* Already closed. */ } }
       return result;
     })(),
   };

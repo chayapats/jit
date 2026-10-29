@@ -3,6 +3,8 @@ import { redactRegisteredSecrets } from "../security/secret-fingerprints";
 import type { TransactionStore } from "../store";
 import { BoxManager, type BoxManagerOptions } from "./box-manager";
 import { NetnsRegistryProxy } from "./netns-proxy";
+import { ContainerRegistryProxy } from "./container-registry-proxy";
+import { podmanClient } from "./podman-client";
 import { PodmanBoxRuntime } from "./podman-runtime";
 import { startRegistryProxy, type RegistryProxy } from "./registry-proxy";
 
@@ -12,11 +14,11 @@ import { startRegistryProxy, type RegistryProxy } from "./registry-proxy";
  * network and the registry allowlist proxy on its gateway start lazily with the first `workspace` box.
  */
 export function createServiceBoxes(store: TransactionStore, config: AppConfig, options: Omit<BoxManagerOptions, "now"> & { now?: () => number } = {}): BoxManager | null {
-  const runtime = serviceBoxRuntime(config)?.runtime;
-  if (!runtime) return null;
+  const service = serviceBoxRuntime(config);
+  if (!service) return null;
   // app.connections/v1: tool output and search lines pass the fingerprint guard before Schway sees them.
   // exec.browser/v1: with a pinned browser image every box carries the project profile (ADR 0039).
-  return new BoxManager(store, config, runtime, { profile: !!config.execution.images?.browser, ...options, backend: { redact: redactRegisteredSecrets, ...options.backend } });
+  return new BoxManager(store, config, service.runtime, { profile: !!config.execution.images?.browser, ...options, closeRuntime: service.close, backend: { redact: redactRegisteredSecrets, ...options.backend } });
 }
 
 /**
@@ -26,6 +28,10 @@ export function createServiceBoxes(store: TransactionStore, config: AppConfig, o
  */
 export function serviceBoxRuntime(config: AppConfig): { runtime: PodmanBoxRuntime; close(): Promise<void> } | null {
   if (!config.execution.directory || !config.execution.images) return null;
+  if (podmanClient().remote) {
+    const proxy = new ContainerRegistryProxy(config.execution.images.base, config.execution.registryHosts);
+    return { runtime: new PodmanBoxRuntime({ config: config.execution, registryProxy: () => proxy.url() }), close: () => proxy.close() };
+  }
   // Rootless Podman keeps the internal gateway inside its own network namespace, where a host process cannot bind;
   // the proxy then runs there as a child (#163). A root service binds the gateway on the host as before.
   if (process.getuid?.() !== 0) {

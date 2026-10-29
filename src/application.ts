@@ -7,6 +7,7 @@ import { recommendedModel, type RouteProvider } from "./team/route-options";
 import { WebTools, readWebCalls, type WebCall } from "./web-tools";
 import { isWebCommand, readWebProvider, readWebSettings, webSearchKeyLabels, webCommandIdentity, writeWebCommand, type WebCommand, type WebReceipt, type WebProviderSetting, type WebSettings } from "./web-tools/settings";
 import { AttachmentSanitizer } from "./attachments/sanitizer";
+import type { PodmanReadiness } from "./exec/podman-client";
 import type { AttachmentSanitizerRuntime } from "./attachments/sanitizer-runtime";
 import { reconcileForgottenAttachments, attachmentProjectContributor, replayAttachmentLifecycle, type AttachmentCopyCleanup } from "./attachments/lifecycle";
 import { sweepBackupAttachmentBlobs } from "./attachments/backup";
@@ -971,6 +972,20 @@ export class Application {
   attachmentComposer(): { enabled: boolean; messageFiles: number; fileBytes: number; sanitizer: boolean; backupUsage: { bytes: number; bound: number; notice: boolean } } {
     const limits = this.config.attachments;
     return { backupUsage: this.attachmentBackupUsage(), enabled: limits.enabled, messageFiles: limits.messageFiles, fileBytes: limits.fileBytes, sanitizer: this.#attachments.options.sanitizerAvailable?.() ?? false };
+  }
+
+  /** Probes the isolated sanitizer without starting a parser; fake runtimes may retain their boolean contract. */
+  async attachmentRuntimeStatus(): Promise<PodmanReadiness> {
+    const runtime = this.#sanitizer.runtime;
+    const status = runtime?.status ? await runtime.status() : { state: "unavailable" as const, reason: "runtime" as const };
+    this.#sanitizerAvailable = runtime?.status ? status.state === "ready" : await this.#sanitizer.available();
+    return status;
+  }
+
+  /** Reports the configured box backend's availability without creating a box or granting execution authority. */
+  async boxRuntimeStatus(): Promise<PodmanReadiness | undefined> {
+    const runtime = this.#boxes?.runtime;
+    return runtime && "readiness" in runtime && typeof runtime.readiness === "function" ? runtime.readiness() : undefined;
   }
 
   /**

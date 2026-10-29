@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
+import { podmanClient, podmanReadiness, type PodmanReadiness } from "../exec/podman-client";
 import { pinnedImagePattern } from "../exec/box-runtime";
-import type { CommandRequest, CommandResult } from "../exec/podman-runtime";
+import type { CommandRequest, CommandResult, CommandRunner } from "../exec/podman-runtime";
 import type { AttachmentLimits } from "./limits";
 import { receiveSanitizerOutput, sanitizerOutputBudget, sanitizerStreamLimit } from "./sanitizer-output";
 
@@ -8,6 +9,7 @@ import { receiveSanitizerOutput, sanitizerOutputBudget, sanitizerStreamLimit } f
 export interface SanitizeJob { input: string; output: string; kind: "png" | "jpeg" | "webp" | "pdf"; pixels: number }
 /** A disposable, networkless parser. Cleanup uncertainty must reject with sanitizer_cleanup_failed and retain work. */
 export interface AttachmentSanitizerRuntime {
+  status?(): Promise<PodmanReadiness>;
   available(): Promise<boolean>;
   reset(): Promise<void>;
   run(job: SanitizeJob, signal?: AbortSignal): Promise<void>;
@@ -17,14 +19,13 @@ export const sanitizerReasons = new Set(["sanitize_timeout", "sanitize_out_of_me
   "pdf_extract_failed", "sanitize_output_invalid", "sanitizer_unavailable"]);
 
 /** Sanitizer-only stdout allowance; ordinary control commands retain their 64 KiB diagnostic cap. */
-export type SanitizerCommandRunner = (argv: readonly string[], request: CommandRequest & { stdoutBytes?: number }) => Promise<CommandResult>;
+export type SanitizerCommandRunner = ((argv: readonly string[], request: CommandRequest & { stdoutBytes?: number }) => Promise<CommandResult>) & Pick<CommandRunner, "client">;
 
 /** Rootless CLI with a fixed environment, bounded diagnostics and abortable pipes; never forwards service secrets. */
 export function sanitizerCommandRunner(binary = "podman", serviceEnv: Record<string, string | undefined> = process.env): SanitizerCommandRunner {
-  const env = Object.fromEntries(["PATH", "HOME", "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "DBUS_SESSION_BUS_ADDRESS", "LANG"]
-    .flatMap(key => serviceEnv[key] === undefined ? [] : [[key, serviceEnv[key]!]]));
-  return async (argv, request) => {
-    const proc = Bun.spawn([binary, ...argv], { env, stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+  const client = podmanClient(serviceEnv);
+  const run: SanitizerCommandRunner = async (argv, request) => {
+    const proc = Bun.spawn([binary, ...client.argv, ...argv], { env: client.env, stdin: "ignore", stdout: "pipe", stderr: "ignore" });
     const reader = proc.stdout.getReader();
     const kill = () => {
       try { proc.kill("SIGKILL"); } catch { /* Already exited. */ }
@@ -43,6 +44,7 @@ export function sanitizerCommandRunner(binary = "podman", serviceEnv: Record<str
       return { exitCode: await proc.exited, stdout: Buffer.concat(chunks), stderr: new Uint8Array() };
     } finally { clearTimeout(timer); request.signal?.removeEventListener("abort", kill); kill(); reader.releaseLock(); await proc.exited; }
   };
+  return Object.assign(run, { client });
 }
 
 /**
@@ -59,14 +61,17 @@ export class PodmanAttachmentSanitizer implements AttachmentSanitizerRuntime {
     this.name = `jit-sanitize-${createHash("sha256").update(installation).digest("hex").slice(0, 32)}`;
   }
   async available(): Promise<boolean> {
+    return (await this.status()).state === "ready";
+  }
+  /** Reports a missing executable, stopped API, host isolation failure or missing sanitizer image independently. */
+  async status(): Promise<PodmanReadiness> {
+    const readiness = await podmanReadiness(this.command);
+    if (readiness.state !== "ready") return readiness;
     try {
-      const info = await this.command(["info", "--format", "json"], { timeoutMs: 5000 });
-      const host = JSON.parse(new TextDecoder().decode(info.stdout)).host;
-      if (info.exitCode !== 0 || host?.security?.rootless !== true || host.cgroupVersion !== "v2" ||
-          !["memory", "cpu", "pids"].every(c => host.cgroupControllers?.includes(c))) return false;
       const image = await this.command(["image", "inspect", "--format", "json", this.image], { timeoutMs: 5000 });
-      return image.exitCode === 0 && JSON.parse(new TextDecoder().decode(image.stdout))[0]?.Config?.Labels?.["jit.sanitize.version"] === "2";
-    } catch { return false; }
+      return image.exitCode === 0 && JSON.parse(new TextDecoder().decode(image.stdout))[0]?.Config?.Labels?.["jit.sanitize.version"] === "2"
+        ? readiness : { state: "unavailable", reason: "runtime" };
+    } catch { return { state: "unavailable", reason: "runtime" }; }
   }
   async reset(): Promise<void> {
     // `--ignore` succeeds for an absent container; other failures must block work-directory cleanup/publication.
@@ -82,7 +87,7 @@ export class PodmanAttachmentSanitizer implements AttachmentSanitizerRuntime {
     // tmpfs is charged to the container cgroup. Add its full cap to the configured parser memory budget.
     const memoryBytes = this.limits.sanitizerMemoryMB * 1024 * 1024 + outputBytes;
     const args = ["run", "--label", `jit.sanitize.job=${jobId}`, "--rm", "--name", this.name, "--pull=never", "--network", "none", "--cap-drop=ALL",
-      "--security-opt=no-new-privileges", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=32m,mode=1777",
+      "--security-opt=no-new-privileges", "--read-only", "--http-proxy=false", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=32m,mode=1777",
       "--tmpfs", "/run:rw,nosuid,nodev,noexec,size=1m,mode=1777",
       "--tmpfs", `/out:rw,nosuid,nodev,noexec,size=${outputBytes},nr_inodes=${job.kind === "pdf" ? 3 : 4},uid=1000,gid=1000,mode=0700`,
       `--memory=${memoryBytes}`, `--memory-swap=${memoryBytes}`, "--pids-limit=64", "--cpus=1", "--userns=keep-id:uid=1000,gid=1000",

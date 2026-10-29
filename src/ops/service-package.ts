@@ -7,6 +7,7 @@ import { backupDirectoryProblem } from "./backup";
 import type { LedgerGate } from "./lifecycle";
 import { SystemdSupervisor, type CommandRunner, type SupervisorState } from "./supervisor";
 import { writeFileAtomic } from "./upgrade-fence";
+import { enableServicePodman, servicePodmanCommands, type ServicePodmanStatus } from "./podman-service";
 import { readManifest, validateArtifact, type BuildManifest } from "../../ops/package/bun-build";
 import {
   assertNoSecretValues, parseServiceConfig, planServiceConfig, renderJournaldConfig, renderServiceUnit, serviceDatabasePath,
@@ -76,6 +77,8 @@ export interface InstallPlan {
   activeRelease: string;
   /** Fixed command vectors install runs after writing files. */
   commands: string[][];
+  /** Idempotent user-manager/socket commands, run only when the optional Podman executable is installed. */
+  optionalCommands: string[][];
   /** Managed data the plan never touches. */
   preserved: string[];
 }
@@ -98,8 +101,8 @@ export function readServiceConfigFile(path: string): ServiceConfig {
   return parseServiceConfig(JSON.parse(readFileSync(file, "utf8")));
 }
 
-async function identity(run: CommandRunner, user: string): Promise<{ check: OperatorCheck; uid: number | null; gid: number | null }> {
-  const none = (check: OperatorCheck) => ({ check, uid: null, gid: null });
+async function identity(run: CommandRunner, user: string): Promise<{ check: OperatorCheck; uid: number | null; gid: number | null; home: string | null }> {
+  const none = (check: OperatorCheck) => ({ check, uid: null, gid: null, home: null });
   const result = await run(["getent", "passwd", user], { timeoutMs: 10_000 });
   if (result.exitCode !== 0) return none(blocked("identity", "create-dedicated-service-user", "service identity not found"));
   const fields = result.stdout.trim().split("\n")[0]?.split(":") ?? [];
@@ -112,10 +115,10 @@ async function identity(run: CommandRunner, user: string): Promise<{ check: Oper
   const group = await run(["getent", "group", String(gid)], { timeoutMs: 10_000 });
   const groupFields = group.stdout.trim().split("\n")[0]?.split(":") ?? [];
   if (group.exitCode !== 0 || groupFields[2] !== String(gid)) return none(blocked("identity", "create-dedicated-service-group", "service identity's primary group not found"));
-  if (!nologinShells.includes(shell) || home.startsWith("/home/")) {
-    return { check: blocked("identity", "use-dedicated-non-login-identity", "service identity is an interactive login user"), uid, gid };
+  if (!nologinShells.includes(shell) || home.startsWith("/home/") || !/^\/[A-Za-z0-9_./-]+$/.test(home) || home.includes("..")) {
+    return { check: blocked("identity", "use-dedicated-non-login-identity", "service identity is an interactive login user or has an unsupported home path"), uid, gid, home: null };
   }
-  return { check: ok("identity", "dedicated non-login service identity and primary group present"), uid, gid };
+  return { check: ok("identity", "dedicated non-login service identity and primary group present"), uid, gid, home };
 }
 
 async function runtime(run: CommandRunner, bunPath: string, manifest: BuildManifest | null): Promise<OperatorCheck> {
@@ -294,7 +297,7 @@ export async function planInstall(input: { service: unknown; artifactDir: string
     ? blocked("instance", "stop-service-before-reinstall", `installed unit is ${state.active}`)
     : ok("instance", state ? "installed unit inactive" : "no installed unit"));
   const configPath = installedConfigPath(host);
-  const unit = await renderServiceUnit(service, { bunPath: host.bunPath, configPath, ...(who.gid !== null ? { gid: who.gid } : {}), ...(who.uid !== null ? { uid: who.uid } : {}) });
+  const unit = await renderServiceUnit(service, { bunPath: host.bunPath, configPath, ...(who.gid !== null ? { gid: who.gid } : {}), ...(who.uid !== null ? { uid: who.uid } : {}), ...(who.home !== null ? { home: who.home } : {}) });
   const journald = await renderJournaldConfig(service);
   const configText = JSON.stringify(service, null, 2) + "\n";
   for (const text of [unit, journald, configText]) assertNoSecretValues(text);
@@ -317,6 +320,7 @@ export async function planInstall(input: { service: unknown; artifactDir: string
     artifactId: manifest?.artifactId ?? null, checks, identity: who.uid !== null && who.gid !== null ? { uid: who.uid, gid: who.gid } : null, changes: planServiceConfig(readCurrent(host), service), files,
     releaseDirectory, activeRelease: service.executablePath,
     commands: [["systemctl", "daemon-reload"], ["systemctl", "enable", serviceUnitName]],
+    optionalCommands: who.uid === null ? [] : servicePodmanCommands(service.serviceUser, who.uid),
     preserved: [service.stateDirectory, service.backupDirectory, service.ledgerPath, ...service.secretRefs.map(r => `secret-ref:${r.name}`)],
   };
 }
@@ -386,7 +390,8 @@ export async function releaseReadableByService(run: CommandRunner, user: string,
   return result.exitCode === 0 && !result.timedOut && result.stdout.trim() === "";
 }
 
-export interface InstallResult { ok: boolean; plan: InstallPlan; release: string | null; supervisor: { reloaded: boolean; enabled: boolean } | null }
+/** Install outcome, including optional container readiness separately from chat/service installation. */
+export interface InstallResult { ok: boolean; plan: InstallPlan; release: string | null; supervisor: { reloaded: boolean; enabled: boolean } | null; podman?: ServicePodmanStatus }
 
 /**
  * Installs service descriptors after a passing plan: stages the release,
@@ -448,11 +453,12 @@ export async function installService(input: { service: unknown; artifactDir: str
     if (seeded) rmSync(service.ledgerPath, { force: true });
     return fail("grant-service-identity-access", "service identity cannot read or traverse the whole staged release", release);
   }
+  const podman = await enableServicePodman(host.run, service.serviceUser, uid);
   switchRelease(service.executablePath, release);
   const supervisor = new SystemdSupervisor(host.run);
   const reloaded = await supervisor.daemonReload();
   const enabled = reloaded && await supervisor.enable();
-  return { ok: reloaded && enabled, plan, release, supervisor: { reloaded, enabled } };
+  return { ok: reloaded && enabled, plan, release, supervisor: { reloaded, enabled }, podman };
 }
 
 // ---------------------------------------------------------------------------
@@ -462,6 +468,7 @@ export async function installService(input: { service: unknown; artifactDir: str
 export type PackageUpgradeOutcome = "upgraded" | "blocked" | "upgrade-failed" | "rolled-back" | "activation-unhealthy";
 
 export interface PackageUpgradeResult {
+  podman?: ServicePodmanStatus;
   schema: "jit.ops.package-upgrade/v1";
   outcome: PackageUpgradeOutcome;
   previousArtifactId: string | null;
@@ -584,6 +591,12 @@ export async function upgradePackage(input: PackageUpgradeInput): Promise<Packag
   if (!await releaseReadableByService(host.run, service.serviceUser, release)) {
     return result("blocked", "service identity cannot read or traverse the whole staged release", "grant-service-identity-access", { artifactId: manifest.artifactId });
   }
+  const who = await identity(host.run, service.serviceUser);
+  if (!who.check.ok || who.uid === null || who.gid === null) return result("blocked", who.check.detail, who.check.nextAction);
+  const unitPath = join(host.unitDir, serviceUnitName);
+  const previousUnit = readFileSync(unitPath, "utf8");
+  const nextUnit = await renderServiceUnit(service, { bunPath: host.bunPath, configPath: installedConfigPath(host), uid: who.uid, gid: who.gid, ...(who.home !== null ? { home: who.home } : {}) });
+  const podman = await enableServicePodman(host.run, service.serviceUser, who.uid);
   // Stop: systemd delivers SIGTERM; serve drains within its budget and the unit's TimeoutStopSec bounds the wait.
   await supervisor.stop();
   const stopped = await supervisor.state();
@@ -596,7 +609,7 @@ export async function upgradePackage(input: PackageUpgradeInput): Promise<Packag
   const upgraded = await host.run([...runAs, host.bunPath, join(release, "src", "main.ts"), "upgrade", "--service-config", installedConfigPath(host), "--password-stdin"],
     { cwd: service.workingDirectory, env, stdin: `${input.ownerPassword}\n`, timeoutMs: input.upgradeTimeoutMs ?? 1_800_000 });
   const evidence = parseUpgradeEvidence(upgraded.stdout);
-  const ids = { artifactId: manifest.artifactId, recoveryBackupId: evidence.snapshotBackupId, upgradeId: evidence.id };
+  const ids = { artifactId: manifest.artifactId, recoveryBackupId: evidence.snapshotBackupId, upgradeId: evidence.id, podman };
   if (upgraded.exitCode !== 0 || evidence.state !== "activated" && evidence.state !== "complete") {
     // Live state is untouched before activation, so the prior release still matches it.
     const compatible = previous !== null && schemaOf(service) === previous.schemaVersion;
@@ -604,15 +617,19 @@ export async function upgradePackage(input: PackageUpgradeInput): Promise<Packag
     return result("upgrade-failed", `owner upgrade did not activate (${evidence.error ?? evidence.state ?? (upgraded.timedOut ? "timeout" : "failed")})`,
       compatible ? "inspect-upgrade-journal" : "inspect-upgrade-journal-service-stopped", { ...ids, supervisor: restarted ? "active" : stopped.active });
   }
+  writeFileAtomic(unitPath, nextUnit); chmodSync(unitPath, 0o644);
+  const reloaded = await supervisor.daemonReload();
   switchRelease(service.executablePath, release);
-  const started = await supervisor.start();
+  const started = reloaded && await supervisor.start();
   const healthy = started && await (input.health ?? defaultHealth(service, supervisor))();
   if (healthy) return result("upgraded", `release ${manifest.artifactId} active and healthy`, "none", { ...ids, supervisor: "active" });
   await supervisor.stop();
   const toSchema = schemaOf(service);
   if (previous && previousRelease && toSchema === previous.schemaVersion) {
+    writeFileAtomic(unitPath, previousUnit); chmodSync(unitPath, 0o644);
+    const restored = await supervisor.daemonReload();
     switchRelease(service.executablePath, previousRelease);
-    const restarted = await supervisor.start();
+    const restarted = restored && await supervisor.start();
     return result("rolled-back", "health check failed; prior release restored against a compatible state", "inspect-upgrade-health-failure",
       { ...ids, supervisor: restarted ? "active" : "unknown" });
   }

@@ -2,6 +2,24 @@
 
 Owner: Jit #35 (ADR 0022). `ops.service_package/v1` is the install/operate package for the composed Jit application under a Linux supervisor (systemd). It performs no provisioning of users, VPN, credentials, accounts or reboots; those are OPS05 human gates. Consumed contracts: `jit.app.foundation/v1`, `app.owner_identity/v1`, `jobs.queue_admission/v1`, `jobs.attempt_fence/v1`, `jobs.session_reconcile/v1`, `delivery.outbox/v1`, `ops.schema_migrations/v1`, `ops.quarantined_restore/v1` (ledger, through a seam), `ops.load_drill/v1`, `jit.schway.bridge/v1`.
 
+## 2026-10-29 — OPS09 installed container client (#224)
+
+This dated refinement supersedes the original local-Podman/scripted-unit
+description below. Every resolved-identity unit explicitly selects the Unix
+remote API through `JIT_PODMAN_MODE=remote` and `XDG_RUNTIME_DIR`, preserves the
+existing sandbox, binds only the optional user socket directory (plus Schway's
+existing bus) through empty home trees and hides default container storage.
+`renderServiceUnit` accepts the resolved `uid`, `gid` and `home` for these paths.
+Custom Podman graphroots need operator exclusions outside Jit managed paths.
+
+Plan exposes idempotent `optionalCommands` for linger, user-manager startup and
+user `podman.socket` enable/start; they run only when Podman is installed.
+Install and upgrade return separate optional `podman` status. Missing runtime
+or socket leaves chat available and supplies a next action. Upgrade rewrites
+the descriptor, requires successful daemon reload before startup, and restores
+the previous descriptor on compatible health rollback. CLI status probes the
+binary and the identity's API read-only, as that identity, separately.
+
 ## Build a versioned artifact (build host)
 
 ```sh
@@ -41,7 +59,9 @@ be root-owned, regular file/directory and without group/other write, with no
 symlink in its path. The sole managed exception is the root-owned active-release
 link: its parent is protected before reading the link and its direct target's
 whole tree is checked without following another link. Root CLI invocation via
-that link is refused; invoke the direct snapshot path.
+that link is accepted only at `/opt/jit/current/src/main.ts`, when the checked
+direct target equals the running release (OPS09, 2026-10-29); other symlink
+invocations remain refused.
 
 Root-protected ancestors and complete trees keep validation and use on the same
 non-service-writable inodes. Staging rechecks source and existing destination

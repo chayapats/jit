@@ -4,11 +4,12 @@ import type { SearchProvider, SearchResult } from "schway/host";
 import { AppError } from "../errors";
 import { ConnectionVault } from "../exec/connections";
 import { podmanCommandRunner, type CommandRunner } from "../exec/podman-runtime";
+import { podmanReadiness } from "../exec/podman-client";
 
 /** Official multi-architecture index, release 2026.10.28-c360868e5 (amd64/arm64/arm). */
 export const searxngImage = "docker.io/searxng/searxng@sha256:268a4b460136dcefc8f2e896b6098ba3f770c8218dbbddcb86811b06b06816f1";
 /** Sanitized operator status; diagnostics and provider response bodies never cross this boundary. */
-export type SearxngStatus = { state: "ready"; reason: null } | { state: "unavailable"; reason: "disabled" | "podman" | "rootless" | "runtime" };
+export type SearxngStatus = { state: "ready"; reason: null } | { state: "unavailable"; reason: "disabled" | "podman" | "socket" | "rootless" | "runtime" };
 /** Fakeable service-owned runtime; it has no workspace, state or credential mounts. */
 export interface SearxngRuntime {
   status(): Promise<SearxngStatus>;
@@ -59,13 +60,7 @@ export class PodmanSearxngRuntime implements SearxngRuntime {
     this.#name = `jit-searxng-${createHash("sha256").update(installation).digest("hex").slice(0, 16)}`;
   }
   async status(): Promise<SearxngStatus> {
-    try {
-      const info = await this.run(["info", "--format", "json"], { timeoutMs: 5000 });
-      if (info.exitCode !== 0) return { state: "unavailable", reason: "podman" };
-      const value = JSON.parse(new TextDecoder().decode(info.stdout));
-      return value?.host?.security?.rootless === true && value?.host?.cgroupVersion === "v2" && ["memory", "cpu", "pids"].every(c => value?.host?.cgroupControllers?.includes(c))
-        ? { state: "ready", reason: null } : { state: "unavailable", reason: "rootless" };
-    } catch { return { state: "unavailable", reason: "podman" }; }
+    return podmanReadiness(this.run);
   }
   async running(): Promise<boolean> {
     const inspect = await this.run(["container", "inspect", this.#name], { timeoutMs: 2000 });
@@ -84,7 +79,7 @@ export class PodmanSearxngRuntime implements SearxngRuntime {
     const present = await this.run(["image", "exists", searxngImage], { timeoutMs: 5000, signal });
     if (present.exitCode !== 0) await this.#command(["pull", "--quiet", searxngImage], signal, undefined, 120_000);
     await this.#command(["create", "--name", this.#name, "--pull=never", "--image-volume=ignore", "--label", "jit.searxng=1",
-      "--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only", "--userns=keep-id:uid=977,gid=977", "--user=977:977",
+      "--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only", "--http-proxy=false", "--userns=keep-id:uid=977,gid=977", "--user=977:977",
       "--pids-limit=128", `--memory=${memoryMb}m`, "--cpus=1", "--log-driver=none", "--stop-timeout=2",
       ...["/tmp:rw,nosuid,nodev,size=64m,mode=1777", "/run:rw,nosuid,nodev,size=16m,mode=1777", "/etc/searxng:rw,nosuid,nodev,noexec,size=1m,mode=0700,uid=977,gid=977", "/var/cache/searxng:rw,nosuid,nodev,noexec,size=32m,mode=0700,uid=977,gid=977"].flatMap(v => ["--tmpfs", v]),
       "--env", "PYTHONDONTWRITEBYTECODE=1", "--env", "SEARXNG_SETTINGS_PATH=/etc/searxng/settings.yml",

@@ -1,5 +1,7 @@
 import type { WebProviderSelection } from "./web-tools/providers";
 import type { SearxngStatus } from "./web-tools/searxng";
+import type { PodmanReadiness } from "./exec/podman-client";
+import { podmanNotice } from "./web-podman";
 import { webSearchKeyLabels, type WebSettings } from "./web-tools/settings";
 import type { Application, Project, SearchResults } from "./application";
 import type { Topic } from "./conversation";
@@ -141,7 +143,7 @@ export interface AccessProjectRow {
 export function settingsAccessPage(workspace: NavigationWorkspace, list: { projects: AccessProjectRow[]; hasMore: boolean; single: boolean },
   access: ReadonlyMap<string, ProjectAccess>,
   roles: ReadonlyMap<string, RoleAccess[]>,
-  csrf: string, offset: number, pageSize: number, computer: ReadonlyMap<string, ComputerSettings> = new Map(), web: ReadonlyMap<string, WebSettings> = new Map()): string {
+  csrf: string, offset: number, pageSize: number, computer: ReadonlyMap<string, ComputerSettings> = new Map(), web: ReadonlyMap<string, WebSettings> = new Map(), runtimeStatus?: PodmanReadiness): string {
   const single = list.single;
   const levelText = (level: AccessLevel) => tr(`access.level_${level}` as MessageKey);
   const row = ({ project: p, teamRoles }: AccessProjectRow) => {
@@ -189,7 +191,7 @@ export function settingsAccessPage(workspace: NavigationWorkspace, list: { proje
       ${webForm}${confirmEvery}${halt}</li>`;
   };
   return shell(tr("settings.access"), { workspace, csrf, section: "settings", settings: "access" }, `<div class="content settings-content">
-    <section class="settings-section" aria-labelledby="access-title"><h2 id="access-title">${tr("settings.access_title")}</h2><p>${tr("settings.access_note")}</p>
+    <section class="settings-section" aria-labelledby="access-title"><h2 id="access-title">${tr("settings.access_title")}</h2><p>${tr("settings.access_note")}</p>${podmanNotice(runtimeStatus)}
     ${list.projects.length ? `<ul class="data-projects">${list.projects.map(row).join("")}</ul>` : `<p class="empty-list">${tr("settings.dispatch_no_projects")}</p>`}
     <nav class="pagination" aria-label="${tr("home.project_pages")}">${single ? `<a href="/settings/access">${tr("common.view_all_projects")}</a>` : ""}${!single && offset > 0 ? `<a href="/settings/access?offset=${Math.max(0, offset - pageSize)}">${tr("home.previous")}</a>` : ""}${!single && list.hasMore ? `<a href="/settings/access?offset=${offset + pageSize}">${tr("common.next")}</a>` : ""}</nav></section></div>`, { breadcrumb: { title: tr("shell.settings"), href: "/settings" } });
 }
@@ -464,6 +466,7 @@ export function settingsWebSearchPage(workspace: NavigationWorkspace, settings: 
         <label class="choice"><input type="checkbox" name="confirm" required>${tr("connection.remove_confirm")}</label><button class="danger">${tr("web_search.remove_key")}</button></form></section>`).join("");
   return shell(tr("settings.web_search"), { workspace, csrf, section: "settings", settings: "web_search" }, `<div class="content settings-content">
     <section class="settings-section"><h2>${tr("web_search.title")}</h2><p>${tr("web_search.intro")}</p><p>${tr("web_search.provider_searxng_note")}</p>
+    ${status.state === "unavailable" && status.reason !== "disabled" ? podmanNotice(status as PodmanReadiness) : ""}
     ${settings.fallback ? `<p role="status">${tr("web_search.key_removed_fallback")}</p>` : ""}
     ${tested ? `<p role="status">${tr(tested === "ok" ? "web_search.test_ok" : "web_search.test_failed")}</p>` : ""}
     ${error ? `<p class="error" role="alert">${tr(error)}</p>` : ""}

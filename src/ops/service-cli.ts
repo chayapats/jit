@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { assertRootPath, assertRootTree, UnsafeRootPath, type RootPathPolicy } from "../../ops/package/trusted-paths";
 import { assertServicePaths, assertServiceRuntime, rootPathFailure } from "./service-trust";
+import { inspectServicePodman } from "./podman-service";
 import { readConfig } from "../config";
 import type { LedgerGate } from "./lifecycle";
 import { gatherServiceStatus } from "./status";
@@ -121,7 +122,8 @@ export async function runServiceCommand(args: string[], deps: ServiceCliDeps): P
     const supervisor = new SystemdSupervisor(run);
     // As root, directory ownership is judged against the configured identity, never root itself.
     const stateOwnerUid = privileged ? await serviceIdentityUid(run, service.serviceUser) : undefined;
-    const status = async () => ({ supervisor: await supervisor.state(), service: gatherServiceStatus(readConfig({}), service, {
+    const status = async () => ({ supervisor: await supervisor.state(), podman: await inspectServicePodman(run, service.serviceUser,
+      stateOwnerUid ?? await serviceIdentityUid(run, service.serviceUser), privileged), service: gatherServiceStatus(readConfig({}), service, {
       ...(deps.ledgerGate ? { ledgerGate: deps.ledgerGate } : {}), ...(stateOwnerUid !== undefined ? { stateOwnerUid } : {}) }) });
     if (command === "status") return { exitCode: 0, output: sanitized(await status()) };
     if (command === "start" || command === "stop" || command === "restart") {
