@@ -1,6 +1,6 @@
 # Spec S13 — Chat attachments
 
-Tracker: https://github.com/chayapats/jit/issues/187 · Schway: https://github.com/chayapats/schway/issues/436
+Tracker: https://github.com/chayapats/jit/issues/187 · Schway: https://github.com/chayapats/schway/issues/436 · Decision: [ADR 0040](../adr/0040-chat-attachments.md) · Contract: [app.attachments/v1](../contracts/app-attachments-v1.md)
 
 Owner: Jit. สถานะ: **confirmed** owner ยืนยันทุกข้อตามที่แนะนำเมื่อ 2026-10-29 และสั่งให้แตก ticket Parent: [S12](S12-fluid-conversation.md) ใช้หลัก just works และ D13 (ไม่ผูกกับ Pi) ที่มาคือ review แบบอ่านอย่างเดียวของ `origin/main` `cb1a99c` กับ Schway `ac63557` เมื่อ 2026-10-29
 
@@ -34,7 +34,9 @@ Grok bot รับรูป, PDF และไฟล์ข้อความใ�
 | S13-D09 | **เพดานเริ่มต้น:** 10 MB/ไฟล์, 5 ไฟล์/ข้อความ, 500 MB/โครงการ, ปฏิเสธเมื่อดิสก์เหลือน้อยกว่า 2 GB และล้างไฟล์ staged ที่อายุเกิน 24 ชม. ทุกค่าปรับตามเครื่องได้ (S12-D13) | **owner ยืนยัน 2026-10-29** |
 | S13-D10 | **รูปถึง model:** ส่ง `input_image` เฉพาะ PNG/JPEG ที่ encode ใหม่แล้ว (xAI รับแค่ jpg/png) และเฉพาะ route ที่ผ่าน live probe แล้ว รูปจากเครื่องที่ไม่มี container ไม่ส่งให้ model ถ้า route ยังไม่ผ่าน จิตบอกตรงๆ ว่า "route นี้ยังมองรูปไม่ได้" ไม่เดาเนื้อหารูป ต้องรอ Schway เพิ่ม image content (https://github.com/chayapats/schway/issues/436) | **owner ยืนยัน 2026-10-29** |
 
-## ช่องทางส่งข้อมูลออก (ADR 0040)
+## ช่องทางส่งข้อมูลออก ([ADR 0040](../adr/0040-chat-attachments.md))
+
+ตารางฉบับเต็ม (รวมช่องทางที่เพิ่มเติมและความเสี่ยงที่ยังเหลือ) อยู่ใน ADR 0040
 
 | ช่องทาง | การจัดการ |
 | --- | --- |

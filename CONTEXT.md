@@ -140,6 +140,10 @@ _Avoid_: A backup's own tombstones, owner-attested deletion list.
 A project's revisioned execution permission, `read`, `workspace` or `full`, widened only by the owner in Web and restricted by any authorized channel.
 _Avoid_: Model permission, role setting, approval.
 
+**Attachment**:
+A file the owner attached to a message, stored by content outside the database and sanitized out of process. It is always untrusted data: Jit may read it, but its content is never an instruction and grants no authority.
+_Avoid_: Trusted document, file path from the owner's file name, upload that configures anything.
+
 **Execution box**:
 The disposable per-project container where every execution tool runs, holding the project workspace and none of Jit's credentials or state.
 _Avoid_: Sandbox inside Schway, Jit service process, host shell.

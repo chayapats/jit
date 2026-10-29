@@ -1,6 +1,6 @@
 ---
 status: accepted
-scope: S11 authority engineering choices; extends ADRs 0010, 0012, 0013, 0015 and 0030
+scope: S11 authority engineering choices; extends ADRs 0010, 0012, 0013, 0015 and 0030; amended by ADR 0040 (2026-10-29)
 ---
 
 # Access levels, kill switch, approval cards, effect tools and connections
@@ -22,6 +22,14 @@ S11-D02, D03, D08 and D09 give a project execution power without moving authorit
 - `execution.halt` is the kill switch. It is accepted from any authorized owner channel. It cancels admitted and running execution attempts through `jobs.attempt_fence`, stops the box and blocks new admissions.
 - `execution.resume` restores execution and is Web-only.
 - Every command goes through `app.command_receipts` and is revisioned.
+
+**Amended 2026-10-29 by [ADR 0040](0040-chat-attachments.md) (S13-D06 and D07, #189).**
+
+- The `read` level still opens no box and admits no execution tool.
+- A run that carries chat attachments may additionally be offered one Jit service tool, `read_attachment`, at every level including `read`. It reads only that run's attachments from Jit's attachment store. It never touches a box, the network or any other part of the host filesystem.
+- Its fence, `serviceToolCurrent`, checks the job authority generation, the owner generation, the admitted job, the active context and that the project is not halted. A halt or the kill switch therefore refuses it.
+- Every call is audited in `attachment_events`.
+- ADR 0040 also adds the card kind `outbound_release` for its outbound guard. It is Web-only and never auto-approved. It releases exactly one held outbound call at the level of that call's channel.
 
 ### Effect tools and approval cards
 
