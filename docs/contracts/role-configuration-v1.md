@@ -39,3 +39,13 @@ Schema4 snapshots older stores privately before migration and retains owner/proj
 ## Archive (S12-D12)
 
 `role.archive` uses the shared owner receipt/audit boundary. Archived roles are excluded before the role limit in `readTeam`, including routing, dispatch allowance, follow-ups, proposals and extraction configuration. Captured pending work is fenced in the archive transaction; attempt admission/publication and execution access also reject the archived identity. Scheduled summaries are role-less (`scheduleRunRoleId`), so they never invoke an archived specialist. `readRole` retains archived identities for history; stored role names, results and citations are unchanged. Saving, routing, previewing or granting access to an archived role returns `role_not_found`; archiving any coordinator returns `role_archive_coordinator`. Stale revisions and receipt conflicts follow `role.save`. No unarchive or schema migration is provided. POST `/[api/]team/archive` supports forms and JSON; project-scoped archive is `not_found`.
+
+### Account model choices (UX04b)
+
+Owner defaults, role routes, project defaults and project overrides all use the
+same catalog picker as setup (see [setup-v1](setup-v1.md#account-model-catalog-ux04b)).
+The selected provider's `model_codex`/`model_grok` value is used unless a nonempty
+free-text `model` overrides it. An empty provider still means inherit. Existing
+saved models remain selected even when absent from the catalog. Reading a catalog
+never rewrites a route, and role proposal text continues to display the exact saved
+route through `routeText`. The JSON API and route validation are unchanged.

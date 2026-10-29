@@ -303,6 +303,12 @@ test("application run seam imports only app contracts and owns no provider SDK, 
   for (const name of readdirSync(join(import.meta.dir, "../src/team")).filter(name => name.endsWith(".ts") && name !== "schway-port.ts")) {
     const text = readFileSync(join(import.meta.dir, "../src/team", name), "utf8");
     const imports = [...text.matchAll(/from\s+["']([^"']+)["']/g)].map(match => match[1]!);
+    // Catalog metadata is a separate read-only public host adapter, never an execution model.
+    if (name === "route-catalog.ts") {
+      expect(imports).toEqual(["schway/host", "./route-options"]);
+      expect(text).not.toMatch(/createAuthRouteModel|createHost|schway\/src|process\.env/);
+      continue;
+    }
     expect(imports.every(specifier => specifier.startsWith(".") || specifier === "node:crypto")).toBe(true);
     expect(text).not.toMatch(/Bun\.(spawn|file)|fetch\(|process\.env|schway\/src|@opentui|@anthropic|@openai/);
   }
@@ -1416,4 +1422,36 @@ test("REL03 app.routing_selection/v1: fixed rules match exact NFC names, ignore 
   expect(f.app.discussions(f.auth.actor, f.project.id, f.topic.id)[0]!.router.selected.sort()).toEqual([tech.id, design.id].sort());
   expect(() => f.store.read(tx => selectRoles(tx, { message: { id: rid(), sequence: 99, text: "x", replyTo: { discussionId: rid(), roleId: tech.id } },
     topic: { id: f.topic.id }, project: { id: f.project.id }, config: f.config }))).toThrow("reply_target_not_found");
+});
+
+test("UX04b every Team route form has the catalog, preserves unlisted models and submits without JS", async () => {
+  const f = await fixture();
+  const { markSetupComplete } = await import("./fixtures/setup"); markSetupComplete(f.store);
+  const roles = await specialists(f);
+  route(f, null, null, { provider: "codex", model: "gpt-owner-unlisted", authRoute: "codex" });
+  f.app.routeCatalogs = async () => ({ codex: { status: null, models: [{ id: "gpt-fixture-best", recommended: true }, { id: "gpt-fixture-other", recommended: false }] }, grok: { status: "quota-exceeded", models: null } });
+  for (const path of ["/settings/team", `/projects/${f.project.id}/team`]) {
+    const html = await (await f.web(request(f, path))).text();
+    expect(html).toContain("gpt-fixture-best");
+    for (const match of html.matchAll(/<form[^>]*action="([^"]+)"[^>]*>([\s\S]*?)<\/form>/g)) {
+      if (!/\/(routes|roles)$/.test(match[1]!)) continue;
+      expect(match[2]).toContain('<select name="model_codex">');
+      expect(match[2]).toContain("gpt-fixture-best · แนะนำ");
+      expect(match[2]).toContain('name="model"');
+    }
+  }
+  const html = await (await f.web(request(f, "/settings/team"))).text();
+  expect(html).toContain('<option value="gpt-owner-unlisted" selected>');
+  const state = f.app.team(f.auth.actor);
+  const response = await f.web(request(f, "/team/routes", { csrf: f.auth.csrf, requestId: rid(), expectedRevision: String(state.ownerRevision), roleId: "", provider: "codex", model_codex: "gpt-owner-unlisted", model: "" }, true));
+  expect(response.status).toBe(303);
+  expect(f.app.team(f.auth.actor).ownerDefault?.model).toBe("gpt-owner-unlisted");
+  const roleResponse = await f.web(request(f, "/team/roles", { csrf: f.auth.csrf, requestId: rid(), expectedRevision: String(f.app.team(f.auth.actor).ownerRevision), roleId: roles.tech.id, name: roles.tech.name, kind: roles.tech.kind, responsibility: roles.tech.responsibility, enabled: "true", provider: "codex", model_codex: "gpt-fixture-other", model: "" }, true));
+  expect(roleResponse.status).toBe(303);
+  expect(f.app.team(f.auth.actor).roles.find(role => role.id === roles.tech.id)?.route?.model).toBe("gpt-fixture-other");
+  for (const [projectId, roleId] of [[f.project.id, null], [f.project.id, roles.tech.id]] as const) {
+    const before = f.app.team(f.auth.actor, projectId);
+    const result = await f.web(request(f, projectId ? `/projects/${projectId}/team/routes` : "/team/routes", { csrf: f.auth.csrf, requestId: rid(), expectedRevision: String(projectId ? before.projectRevision : before.ownerRevision), roleId: roleId ?? "", provider: "codex", model_codex: "gpt-fixture-other", model: "" }, true));
+    expect(result.status).toBe(303);
+  }
 });

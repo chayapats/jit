@@ -1439,6 +1439,8 @@ export const en: Record<MessageKey, string> = {
   "setup.connect_text": "Choose the account Jit thinks with. Jit then makes one real call to check it. Finding a token never counts as ready.",
   "setup.provider": "Which account",
   "setup.account_note": "Sign in here and approve in your browser. Ready means the account is configured; model access needs a separate route check.",
+  "route.catalog_note": "Choose the model for the account selected above. Use another model overrides that selection.",
+  "route.recommended": "Recommended",
   "route.recommended_model": "Recommended model:",
   "route.other_model": "Use another model",
   "route.model_id": "Model ID",

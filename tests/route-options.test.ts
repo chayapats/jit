@@ -40,3 +40,21 @@ test("the route picker offers providers with their recommended model and never a
   expect(custom).toContain('<option value="">Use the next level</option>');
   expect(custom).toContain('<option value="grok" selected>Grok · grok-4.7</option>');
 });
+
+for (const status of ["needs-login", "quota-exceeded", "integration-unavailable"] as const) test(`catalog ${status} retains fallback and safe status text in both layouts`, () => {
+  for (const layout of ["cards", "select"] as const) {
+    const html = renderWith({ locale: "en", theme: "light" }, () => routePicker({ route: null, models: piModels, legend: "Account", layout, catalogs: { codex: { models: null, status } } }));
+    expect(html).toContain("gpt-6.1-sol");
+    expect(html).toContain(status === "needs-login" ? "Sign in needed" : status === "quota-exceeded" ? "Quota exhausted" : "Blocked");
+    expect(html).toContain('name="model"'); expect(html).not.toContain('name="model_codex"');
+  }
+});
+
+test("an empty catalog keeps the saved model in the free-text field so a save never changes it (FR-13)", () => {
+  for (const layout of ["cards", "select"] as const) {
+    const route = { provider: "codex", model: "gpt-saved-custom", authRoute: "codex" } as const;
+    const html = renderWith({ locale: "en", theme: "light" }, () => routePicker({ route, models: piModels, legend: "Account", layout, catalogs: { codex: { models: [], status: null } } }));
+    expect(html).toContain('value="gpt-saved-custom"');
+    expect(html).not.toContain('name="model_codex"');
+  }
+});

@@ -1442,6 +1442,8 @@ export const th = {
   "setup.connect_text": "เลือกบัญชีที่จิตจะใช้คิด แล้วจิตจะลองเรียกจริงหนึ่งครั้ง จิตไม่ถือว่าพร้อมแค่เพราะเจอ token",
   "setup.provider": "ใช้บัญชีไหน",
   "setup.account_note": "กดเข้าสู่ระบบเพื่อยืนยันบัญชีใน browser สถานะพร้อมหมายถึงมีบัญชีแล้ว ส่วนการเรียก model ต้องผ่านผลตรวจ route",
+  "route.catalog_note": "เลือก model ของบัญชีที่เลือกด้านบน ช่องใช้ model อื่นจะใช้แทนตัวเลือกนี้",
+  "route.recommended": "แนะนำ",
   "route.recommended_model": "model แนะนำ:",
   "route.other_model": "ใช้ model อื่น",
   "route.model_id": "Model ID",

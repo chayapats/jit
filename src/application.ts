@@ -1,3 +1,4 @@
+import { RouteCatalog, type RouteCatalogs } from "./team/route-catalog";
 import { DeviceSignIns, type SignInCommand, type SignInOptions, type SignInReceipt, type SignInView, type ProviderReadiness } from "./device-sign-in";
 import { recommendedModel, type RouteProvider } from "./team/route-options";
 import { WebTools, readWebCalls, type WebCall } from "./web-tools";
@@ -285,6 +286,7 @@ export interface ApprovalReceipt { card?: ApprovalCard; rule?: AutoApproveRule; 
 /** Owns identity validation and revisioned app commands independently of Web or model transports. */
 export class Application {
   #signIns: DeviceSignIns;
+  #routeCatalog: RouteCatalog;
   #signInReadinessEnabled: boolean;
   #actors = new WeakMap<OwnerActor, string>();
   #now: () => number;
@@ -318,6 +320,7 @@ export class Application {
   constructor(readonly store: TransactionStore, readonly config: AppConfig, options: ApplicationOptions = {}) {
     this.#now = options.now ?? Date.now;
     this.#signIns = new DeviceSignIns(options.signIn);
+    this.#routeCatalog = new RouteCatalog(options.signIn);
     this.#signInReadinessEnabled = config.runPort === "schway" || options.signIn !== undefined;
     this.#beforeCommit = options.beforeCommit;
     if (options.jobs && options.jobs.store !== store) throw new AppError("invalid_job_store");
@@ -816,6 +819,12 @@ export class Application {
     // A prior exact-route quota result remains observed evidence; local credential reads cannot clear it.
     if (connection.status === "blocked" && connection.reason === "quota" && connection.route && readiness[connection.route.provider] !== "cleanup-required") return { ...readiness, [connection.route.provider]: "quota-exceeded" };
     return readiness;
+  }
+
+  /** Web-only account catalogs; fixture profiles never access native credentials or live transports. */
+  async routeCatalogs(actor: OwnerActor): Promise<RouteCatalogs> {
+    this.store.read(tx => { this.#requireOwner(tx, actor); if (this.#commandChannel(actor) !== "web") throw new AppError("channel_not_authorized", 403); });
+    return this.#signInReadinessEnabled ? this.#routeCatalog.readAll() : {};
   }
 
   /** Web-only credential-free status. Unknown/restarted flow ids are cancelled with an explicit retry. */
@@ -2990,6 +2999,7 @@ export class Application {
     });
     if (!fresh) return { signIn: ["starting", "pending"].includes(metadata.state) ? this.#signIns.read(provider, metadata.id) : metadata };
     const save = (signIn: SignInView) => {
+      if (signIn.state === "ready" || signIn.state === "cancelled") this.#routeCatalog.invalidate(provider);
       try { this.store.transaction(tx => tx.run("UPDATE command_receipts SET result_json = ? WHERE actor_id = 'owner' AND request_id = ?", JSON.stringify({ signIn }), command.requestId)); }
       catch { /* Shutdown has fenced credential writes; no raw storage errors leave the flow. */ }
     };
@@ -3020,6 +3030,7 @@ export class Application {
       if (prior) { if (prior.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); return JSON.parse(prior.result_json) as SetupReceipt; }
       const now = this.#now(), generation = tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'")!.generation;
       const receipt = applySetup(tx, command, { config: this.config, queue: this.#jobs, generation, now });
+      if ((command.kind === "setup.check" || command.kind === "setup.connect") && receipt.setup.connection.route) this.#routeCatalog.invalidate(receipt.setup.connection.route.provider);
       this.#beforeCommit?.("setup");
       tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", command.requestId, payloadHash, JSON.stringify(receipt), now);
       tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, 'owner', ?)", command.kind, command.requestId, now);

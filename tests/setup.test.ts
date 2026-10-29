@@ -693,3 +693,20 @@ test("connect succeeds for every coordinator state × General project default, a
     expect(f.requests.filter(r => r.instructions.operator.includes(setupCheckMarker)).at(-1)!.route).toEqual(chosen);
   }
 });
+
+test("UX04b setup posts the catalog selection without JS and free text still wins", async () => {
+  const f = await fixture();
+  command(f, "setup.wake", { language: "en" });
+  f.app.routeCatalogs = async () => ({ codex: { status: null, models: [{ id: "gpt-fixture-best", recommended: true }, { id: "gpt-fixture-other", recommended: false }] }, grok: { status: "needs-login", models: null } });
+  const html = await (await get(f, "/setup?step=connect")).text();
+  expect(html).toContain('<select name="model_codex"><option value="gpt-fixture-best" selected>gpt-fixture-best · Recommended</option>');
+  expect(html).toContain("Sign in needed"); expectNoInlineScript(html);
+  const fields = form(html, "/setup/connect");
+  const response = await postForm(f, "/setup/connect", { ...fields, provider: "codex", model_codex: "gpt-fixture-best", model: "" });
+  expect(response.status).toBe(303);
+  expect(f.app.setup(f.auth.actor).connection.route?.model).toBe("gpt-fixture-best");
+  const next = await (await get(f, "/setup?step=connect")).text();
+  const custom = await postForm(f, "/setup/connect", { ...form(next, "/setup/connect"), provider: "codex", model_codex: "gpt-fixture-best", model: "gpt-owner-exact" });
+  expect(custom.status).toBe(303);
+  expect(f.app.setup(f.auth.actor).connection.route?.model).toBe("gpt-owner-exact");
+});

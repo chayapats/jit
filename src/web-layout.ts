@@ -1,3 +1,4 @@
+import type { RouteCatalogs } from "./team/route-catalog";
 import type { ProviderReadiness } from "./device-sign-in";
 import { providerSignInCards } from "./web-sign-in";
 import type { WebCall } from "./web-tools";
@@ -822,9 +823,9 @@ export function prReportPage(state: ReturnType<Application["prReport"]>, workspa
 }
 
 /** Renders bounded owner configuration and explicitly authorized fixture previews. */
-export function teamPage(state: ReturnType<Application["team"]>, workspace: Workspace, csrf: string, limits: JobPolicy["maximum"], preset?: string, models: RouteModels = noRouteModels, readiness?: ProviderReadiness): string {
+export function teamPage(state: ReturnType<Application["team"]>, workspace: Workspace, csrf: string, limits: JobPolicy["maximum"], preset?: string, models: RouteModels = noRouteModels, readiness?: ProviderReadiness, catalogs?: RouteCatalogs): string {
   const project = state.project ?? undefined, base = project ? `/projects/${project.id}/team` : "/team";
-  const routeFields = (route: RoleRoute | null, label: string) => `<fieldset class="team-route"><legend>${escape(label)}</legend>${routePicker({ route, models, legend: tr("label.provider"), layout: "select", inheritLabel: tr("team.use_the_next_levels_value") })}</fieldset>`;
+  const routeFields = (route: RoleRoute | null, label: string) => `<fieldset class="team-route"><legend>${escape(label)}</legend>${routePicker({ route, models, legend: tr("label.provider"), layout: "select", ...(catalogs ? { catalogs } : {}), inheritLabel: tr("team.use_the_next_levels_value") })}</fieldset>`;
   const names = { project_role: tr("team.project_role_override"), project_default: tr("team.project_default"), owner_role: tr("team.role_default"), owner_default: tr("team.owner_default"), missing: tr("team.not_set") };
   const presets: Record<string, { name: string; responsibility: string }> = { tech: { name: tr("team.technology"), responsibility: tr("team.analyzes_software_structure_correctness") }, design: { name: tr("team.design"), responsibility: tr("team.analyzes_user_experience_and_design") }, marketing: { name: tr("team.marketing"), responsibility: tr("team.analyzes_audiences_product_value_and") } };
   const example = preset ? presets[preset] : undefined;
