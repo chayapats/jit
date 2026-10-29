@@ -1168,6 +1168,7 @@ test("OPS08 upgrade refuses an unsafe pre-existing destination before stopping t
   expect(result).toMatchObject({ exitCode: 2, output: { error: "unsafe_root_path", path: bad } });
   expect(u.fake.calls.some(argv => argv[0] === "systemctl" && argv[1] === "stop")).toBe(false);
   expect(u.fake.active()).toBe(true);
+  expect(operator.passwords()).toBe(0);
 }, 60_000);
 
 test("OPS08 original Linux command line preserves entry symlinks despite Bun canonicalizing argv", () => {
@@ -1192,3 +1193,34 @@ test("OPS08 non-root plan retains its source-config behavior", async () => {
   operator.deps.uid = uid || 1000; chmodSync(l.source, 0o666);
   expect((await operator.invoke(["plan", "--config", l.source, "--artifact", art])).exitCode).toBe(0);
 });
+
+
+for (const kind of ["foreign-owner", "symlink", "dangling-symlink", "corrupt-artifact"] as const) {
+  test(`OPS08-F refuses ${kind} at the new destination without reading the password`, async () => {
+    const u = await installedForUpgrade(), operator = rootOperator(u.l, u.fake);
+    const target = join(u.l.dirs.opt, "releases", u.b.artifactId);
+    if (kind === "symlink" || kind === "dangling-symlink") symlinkSync(kind === "symlink" ? u.second : join(u.l.root, "missing"), target);
+    else {
+      cpSync(u.second, target, { recursive: true });
+      if (kind === "foreign-owner") operator.foreign.add(target);
+      else writeFileSync(join(target, "src/main.ts"), "invalid artifact content");
+    }
+    const result = await operator.invoke(["upgrade", "--artifact", u.second, "--password-stdin"]);
+    expect(result).toMatchObject({ exitCode: 2, output: { error: kind === "corrupt-artifact" ? "release_copy_invalid" : "unsafe_root_path" } });
+    expect(operator.passwords()).toBe(0); expect(u.fake.calls.some(argv => argv[0] === "systemctl" && argv[1] === "stop")).toBe(false);
+    if (kind !== "corrupt-artifact") expect((result.output as { nextAction: string }).nextAction).toContain(rootSnapshotCopyCommand);
+  }, 60_000);
+}
+
+test("OPS08-F normal upgrade reads the password exactly once and later checks still refuse a changed destination", async () => {
+  const good = await installedForUpgrade(), operator = rootOperator(good.l, good.fake);
+  good.fake.upgrade = async () => evidence("activated");
+  const result = await operator.invoke(["upgrade", "--artifact", good.second, "--password-stdin"]);
+  expect(result).toMatchObject({ exitCode: 0, output: { outcome: "upgraded" } }); expect(operator.passwords()).toBe(1);
+  const race = await installedForUpgrade(), racingOperator = rootOperator(race.l, race.fake);
+  const target = join(race.l.dirs.opt, "releases", race.b.artifactId); let passwords = 0;
+  racingOperator.deps.readPassword = async () => { passwords++; cpSync(race.second, target, { recursive: true }); chmodSync(join(target, "node_modules"), 0o775); return password; };
+  const refused = await racingOperator.invoke(["upgrade", "--artifact", race.second, "--password-stdin"]);
+  expect(refused).toMatchObject({ exitCode: 2, output: { error: "unsafe_root_path" } }); expect(passwords).toBe(1);
+  expect(race.fake.calls.some(argv => argv[0] === "systemctl" && argv[1] === "stop")).toBe(false);
+}, 60_000);

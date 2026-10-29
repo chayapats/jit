@@ -6,7 +6,7 @@ import { readConfig } from "../config";
 import type { LedgerGate } from "./lifecycle";
 import { gatherServiceStatus } from "./status";
 import {
-  defaultHostPaths, disableService, installService, installedConfigPath, planInstall, readServiceConfigFile, upgradePackage,
+  assertReleaseDestination, defaultHostPaths, disableService, installService, installedConfigPath, planInstall, readServiceConfigFile, upgradePackage,
   type OperatorHost,
 } from "./service-package";
 import { SystemdSupervisor, spawnRunner, type CommandRunner } from "./supervisor";
@@ -137,6 +137,7 @@ export async function runServiceCommand(args: string[], deps: ServiceCliDeps): P
     if (command === "upgrade") {
       const artifact = flags.get("--artifact");
       if (!artifact || !parsed.passwordStdin || !deps.readPassword) return { exitCode: 2, output: { error: "invalid-service-command", usage } };
+      assertReleaseDestination(service, artifactDir!, policy);
       const ownerPassword = await deps.readPassword();
       const result = await upgradePackage({ service, artifactDir: artifactDir!, host, ownerPassword,
         ...(deps.health ? { health: deps.health } : {}) });
@@ -145,6 +146,7 @@ export async function runServiceCommand(args: string[], deps: ServiceCliDeps): P
     return { exitCode: 2, output: { error: "invalid-service-command", usage } };
   } catch (error) {
     if (error instanceof UnsafeRootPath) return { exitCode: 2, output: rootPathFailure(error) };
+    if (error instanceof Error && error.message === "release_copy_invalid") return { exitCode: 2, output: { error: "release_copy_invalid", nextAction: "rebuild-artifact" } };
     const code = error instanceof Error && /^[a-z_]{1,64}$/.test(error.message) ? error.message : "service-command-failed";
     return { exitCode: 2, output: { error: code, nextAction: "check-service-configuration-and-paths" } };
   }
