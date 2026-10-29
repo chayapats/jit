@@ -64,7 +64,7 @@ Topic messages are never replayed into discussions, syntheses or summaries (ADR 
 
 ## Rebuild from committed tables
 
-Every packet is built inside the owner or admission transaction from `owner_decisions`, `memory_decision_sources`, `tasks`, `job_schedule_occurrences`, `memory_contexts`, `sources`, `messages` and `memory_claims`. It never reads Schway native history, native sessions or compaction summaries. Reopening the store in a new process or changing the provider therefore rebuilds the same packet. The Schway port renders each pinned decision as a `decision/<project>/<id>` document with revision `r<revision>`, so the model receives the decisions in every run.
+Every packet is built inside the owner or attempt-admission transaction from `owner_decisions`, `memory_decision_sources`, `tasks`, `job_schedule_occurrences`, `memory_contexts`, `sources`, `messages` and `memory_claims`. It never reads Schway native history, native sessions or compaction summaries. Reopening the store in a new process or changing the provider therefore rebuilds the same packet. The Schway port renders each pinned decision as a `decision/<project>/<id>` document with revision `r<revision>`, so the model receives the decisions in every run.
 
 ## Deterministic evidence
 
@@ -75,3 +75,9 @@ Every packet is built inside the owner or admission transaction from `owner_deci
 3. Decisions alone larger than the budget refuse `team.dispatch` with `context_too_large` and its next action, and refuse a Jit reply with `review_pinned_decisions`.
 4. A decision accepted or superseded while a reply run is pending fences the reply as stale; no reply message commits.
 5. Reopening the database with a new store handle rebuilds an identical packet.
+
+## Jit reply attempt timing (CTX01 #186)
+
+Under S12-D07, Jit replies defer packet assembly until their first fenced `prepare` transaction. The owner-message admission captures identities, route/persona/policy, budgets and queue ordering, with a pinned-size feasibility check; it freezes no packet. At first attempt admission the packet pins the owner's then-live decisions and records exact source lineage alongside the immutable attempt request. The reply's current message stays last; history includes earlier requests' committed answers even if their physical message sequences exceed that message, and excludes later owner questions. Team replies retain their original question boundary. Source/byte ceilings and bottom-up omission priorities are unchanged.
+
+Before first assembly, decision/task edits are read from current tables. After first assembly they fence through the existing currentness rules. Explicit read resume/retry uses the first packet with fresh native identities, never a newly expanded history; a retired reference blocks as `source_retired`. Legacy replies without the identity-only assembly plan reuse their previously frozen packet. Attachments use the live-reference hook described in [Jit replies](jit-reply-v1.md#att04-extension-point); ATT04 will supply bounded frame materialization. No provisional stream text is context.

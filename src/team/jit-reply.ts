@@ -9,7 +9,8 @@ import { JobQueue, jobData, readJob } from "../jobs/queue";
 import type { Job, JobLimits, WorkDefinition } from "../jobs/types";
 import { constraintCandidates, contextCurrent, markMemoryDerived, memoryContextPolicy } from "../memory/context";
 import { contextPacket, omit, packetSections, pinnedBytes, pinnedDecisions, trimBottomUp } from "../memory/packet";
-import { suppressedSource } from "../memory/read";
+import { suppressedSource, deletedSource } from "../memory/read";
+import { runAttachmentCurrent } from "../attachments/run-references";
 import { personaInstructions, readPersona } from "../persona";
 import { commitOutputSource, lookupSource, requireId, type Attribution, type SourceReference } from "../sources";
 import type { AppTransaction, TransactionStore } from "../store";
@@ -76,7 +77,9 @@ interface JitReplyRecord {
   personaRevision: number;
   /** app.communication_policy version sent with this run (1 or 2). Absent on records written before the policy. */
   policyVersion?: number;
-  /** The immutable run request; its manifest holds untrusted topic history. */
+  /** CTX01: identities and fixed byte ceilings until the first fenced attempt assembles its packet. Absent on legacy runs. */
+  contextAssembly?: { anchor: ReplyAnchor; contextBytes: number; sourceLimit: number; overheadBase: number; assembledAt: number | null };
+  /** Admission template until assembly, then the immutable request last frozen in an attempt snapshot. */
   request: ApplicationRunRequest;
   /** Owner-visible revision: 1 at admission, +1 when a result commits. Stop expects it. */
   revision: number;
@@ -282,16 +285,22 @@ const nextCursor = (tx: AppTransaction) => tx.get<{ cursor: number }>("SELECT co
 export type ReplyAnchor = Pick<CommittedMessage, "id" | "projectId" | "topicId" | "sequence" | "source">;
 
 /**
- * Recent topic history (oldest first), always ending with `message`, inside the byte budget. Only the owner's own
+ * Recent topic history in request/answer order, always ending with `message`, inside the byte budget.
+ * Earlier committed answers may have physical sequences above a queued message; later owner requests are excluded. Only the owner's own
  * messages and Jit's committed replies are history. Specialist outputs (a team reply cites them separately) and every
  * source whose lineage an owner forget suppressed are left out, so automatic history never reuses forgotten or
  * memory-derived material; app.memory_suppression/v1 extends suppression to Jit replies that copied it.
  */
-function topicHistory(tx: AppTransaction, projectId: string, topicId: string, message: ReplyAnchor, slots: number, bytes: number) {
+function topicHistory(tx: AppTransaction, projectId: string, topicId: string, message: ReplyAnchor, slots: number, bytes: number, includeEarlierAnswers = false) {
   const rows = tx.all<{ id: string; sequence: number; attribution: string; sourceId: string; revision: number; generation: number; jit: number }>(
     `SELECT m.id, m.sequence, m.attribution_json AS attribution, m.source_id AS sourceId, m.source_revision AS revision, m.source_generation AS generation,
        EXISTS (SELECT 1 FROM jit_replies r WHERE r.reply_message_id = m.id) AS jit
-     FROM messages m WHERE m.project_id = ? AND m.topic_id = ? AND m.sequence <= ? ORDER BY m.sequence DESC LIMIT ?`, projectId, topicId, message.sequence, slots * 4);
+     FROM messages m
+       LEFT JOIN jit_replies reply ON reply.reply_message_id = m.id
+       LEFT JOIN messages anchor ON anchor.id = reply.message_id
+     WHERE m.project_id = ? AND m.topic_id = ? AND (m.sequence <= ? OR (? AND anchor.sequence < ?))
+     ORDER BY CASE WHEN ? THEN coalesce(anchor.sequence, m.sequence) ELSE m.sequence END DESC, m.sequence DESC LIMIT ?`,
+    projectId, topicId, message.sequence, includeEarlierAnswers ? 1 : 0, message.sequence, includeEarlierAnswers ? 1 : 0, slots * 4);
   const picked: { source: { projectId: string; reference: SourceReference; text: string }; speaker: string; cost: number }[] = [];
   // app.context_packet/v1 records what recent-message trimming left out of the fetched window, by cause.
   const left = { budget: 0, ceiling: 0 };
@@ -302,9 +311,9 @@ function topicHistory(tx: AppTransaction, projectId: string, topicId: string, me
     if (stop) { left[stop]++; continue; }
     if (picked.length >= slots) { stop = "ceiling"; left.ceiling++; continue; }
     const reference = { sourceId: row.sourceId, revision: row.revision, generation: row.generation };
-    if (suppressedSource(tx, reference)) { if (row.id === message.id) return null; continue; }
+    if (deletedSource(tx, reference) || suppressedSource(tx, reference)) { if (row.id === message.id) return null; continue; }
     const found = lookupSource(tx, projectId, reference);
-    if (found.state !== "available") continue;
+    if (found.state !== "available" || found.current.revision !== reference.revision) continue;
     const cost = Buffer.byteLength(JSON.stringify(found.text)) + 160;
     if (used + cost > bytes) { if (row.id === message.id) return null; stop = "budget"; left.budget++; continue; }
     used += cost;
@@ -378,12 +387,12 @@ function admitReply(tx: AppTransaction, input: ReplyAdmission): { id: string; re
   const jit = jitCoordinator(team.roles);
   if (!jit?.effective.route) return notAdmitted("no_route");
   const persona = readPersona(tx);
-  const offered = [...teamInput?.results ?? []], results: TeamReplyResult[] = [], gaps = [...teamInput?.gaps ?? []];
+  const offered = [...teamInput?.results ?? []], gaps = [...teamInput?.gaps ?? []];
   // Message replies may propose a dispatch; the roster is owner configuration (names of enabled, routed specialists).
   // S12-D06: a reply that hands work to specialists stays one short line naming whom Jit asks; the team answers later.
   const roster = team.roles.filter(role => role.kind === "specialist" && role.enabled && role.effective.route).map(role => role.name);
   const metadataOf = (kept: readonly TeamReplyResult[], missing: readonly TeamReplyGap[]) => teamInput
-    ? `Committed specialist results (service-recorded), in manifest order after the history: ${boundedNames(kept.map(item => item.roleName), operatorLineBytes / 2 - 120)}. Roles without a result: ${boundedNames(missing.map(gap => `${gap.roleName} (${gap.reason})`), operatorLineBytes / 2 - 120)}.`
+    ? teamResultMetadata(kept, missing)
     : routing
       ? `The service already chose specialists by a fixed rule (${routing.selection.rule}) and calls them after your reply when the owner's dispatch allowance covers them; do not propose a dispatch. Chosen specialists (owner-configured, service-recorded): ${boundedNames(routing.selection.roleIds.map(id => team.roles.find(role => role.id === id)?.name ?? id), operatorLineBytes - 600)}. When the service calls specialists after your reply, keep your reply to one short line saying whom you are asking.`
       : `Answer the owner yourself by default. Optional "proposals" entry {"kind":"dispatch","roles":[names],"why":string} (at most one) asks the service to call existing specialists for read-only analysis; propose it only when the owner asks for the team or the question clearly needs a specialist's separate analysis, never for greetings, small talk, quick questions or anything you can answer well yourself. "why" is one short reason of at most ${selectionWhyLimit} characters, shown to the owner as your reasoning. The service checks the entry against the owner's configuration and dispatch allowance, and the owner confirms anything beyond it. If you propose a dispatch, keep your reply to one short line saying whom you are asking. Specialists you may name (owner-configured, service-recorded): ${boundedNames(roster, operatorLineBytes - 1300)}.${followUp ? ` An open team discussion in this topic, with ${boundedNames(followUp.roleIds.map(id => team.roles.find(role => role.id === id)?.name ?? id), 240)}, answered just before this message; propose them again only if the owner asks that team to continue.` : ""}`;
@@ -410,17 +419,100 @@ function admitReply(tx: AppTransaction, input: ReplyAdmission): { id: string; re
     ? Buffer.byteLength(JSON.stringify(metadataOf([], []))) + Math.min(listCap, listBytes(offered.map(item => item.roleName))) + Math.min(listCap, listBytes(gapEntries)) + 2 * moreSuffixBytes
     : Buffer.byteLength(JSON.stringify(metadataOf([], [])));
   const overheadBase = Buffer.byteLength(JSON.stringify(fixedOperator)) + metadataBound + Buffer.byteLength(jit.responsibility) + 3000;
+  // Admission captures route, persona, policy and ordering, but no history or task/decision packet. The cheap
+  // feasibility check preserves the existing immediate context_too_large response without freezing a packet.
+  const anchor = teamInput?.question ?? message;
+  const room = Math.max(0, config.team.contextBytes - overheadBase);
+  const pinnedCost = pinnedBytes(pinnedDecisions(tx, message.projectId, message.topicId));
+  const anchorSource = lookupSource(tx, message.projectId, anchor.source);
+  if (pinnedCost > room || anchorSource.state !== "available" ||
+      Buffer.byteLength(JSON.stringify(anchorSource.text)) + 160 > room - pinnedCost) return notAdmitted("context_too_large");
+  const limits = replyLimits(config.jobs.maximum, config.team.contextBytes, executionGrant(tx, message.projectId, jit.id) !== null);
+  const context = { id: crypto.randomUUID(), generation: 1 };
+  const request: ApplicationRunRequest = {
+    runId: replyId, projectId: message.projectId, topicId: message.topicId, roleId: jit.id,
+    purpose: teamInput ? "Jit team reply to the owner's question" : "Jit reply to the owner's newest message",
+    route: structuredClone(jit.effective.route),
+    configuration: { ownerRevision: team.ownerRevision, projectRevision: team.projectRevision, roleRevision: jit.revision },
+    context, fence: { jobId: "00000000-0000-0000-0000-000000000000", generation: 1, ownerGeneration: input.generation },
+    instructions: { operator: [...fixedOperator, metadataOf(offered, gaps)], responsibility: jit.responsibility },
+    manifest: { sources: [], claims: [] }, tools: [],
+    policy: { genericExecution: false, arbitraryFetch: false, hostedLookup: false, repositoryDiscovery: false }, limits,
+  };
+  const projectRevision = tx.get<{ revision: number }>("SELECT revision FROM projects WHERE id = ?", message.projectId)!.revision;
+  let job: Job;
+  try {
+    ({ job } = queue.execute(tx, {
+      kind: "job.enqueue", requestId: input.requestId, projectId: message.projectId, expectedRevision: projectRevision,
+      payload: { type: jitReplyWorkId, configurationRevision: 1, policyRevision: config.jobs.revision, purpose: jitReplyPurpose,
+        inputRevision: message.sequence, input: { replyId, messageId: message.id }, priority: "interactive", limits },
+    }, input.generation, now));
+  } catch (error) {
+    // Queue capacity is checked before anything is written, so the message still commits.
+    if (error instanceof AppError && error.code === "job_queue_full") return notAdmitted("queue_full");
+    throw error;
+  }
+  request.fence.jobId = job.id;
+  tx.run("INSERT INTO team_contexts VALUES (?, 1, 'active')", context.id);
+  const record: JitReplyRecord = {
+    kind: "jit_reply", id: replyId, projectId: message.projectId, topicId: message.topicId, messageId: message.id, jobId: job.id, roleId: jit.id,
+    personaRevision: persona.revision, policyVersion: teamCommunicationPolicy.version,
+    contextAssembly: { anchor: structuredClone(anchor), contextBytes: config.team.contextBytes, sourceLimit: config.team.sourceLimit, overheadBase, assembledAt: null },
+    request, revision: 1, createdAt: now, updatedAt: now,
+    outcome: null, result: null, source: null, replyMessageId: null, progress: null, ...(routing ? { routing: structuredClone(routing) } : {}),
+    ...(followUp ? { followUp: structuredClone(followUp) } : {}),
+    ...(teamInput ? { team: { proposalId: teamInput.proposalId, discussionId: teamInput.discussionId,
+      citations: offered.map(item => ({ roleId: item.roleId, roleName: item.roleName, reference: { ...item.reference } })), gaps: gaps.map(gap => ({ ...gap })) } } : {}),
+    ...(teamInput?.workGroupId ? { workGroupId: teamInput.workGroupId } : {}),
+  };
+  tx.run("INSERT INTO team_runs (id, project_id, job_id, context_id, record_json) VALUES (?, ?, ?, ?, ?)", replyId, message.projectId, job.id, context.id, JSON.stringify(record));
+  tx.run("INSERT INTO jit_replies (id, project_id, topic_id, message_id, run_id, reason, cursor, created_at) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)",
+    replyId, message.projectId, message.topicId, message.id, replyId, nextCursor(tx), now);
+  return { id: replyId, reason: null };
+}
+
+/** Team result metadata is service-recorded; source text never enters operator instructions. */
+function teamResultMetadata(kept: readonly Pick<TeamReplyResult, "roleName">[], missing: readonly TeamReplyGap[]): string {
+  return `Committed specialist results (service-recorded), in manifest order after the history: ${boundedNames(kept.map(item => item.roleName), operatorLineBytes / 2 - 120)}. Roles without a result: ${boundedNames(missing.map(gap => `${gap.roleName} (${gap.reason})`), operatorLineBytes / 2 - 120)}.`;
+}
+
+/** Builds a bounded packet from committed live state inside the first attempt's fenced claim transaction. */
+function assembleReplyContext(tx: AppTransaction, record: JitReplyRecord, config: AppConfig, now: number): void {
+  const plan = record.contextAssembly!;
+  const message = plan.anchor, replyId = record.id;
+  const policy = { ...config.team, contextBytes: plan.contextBytes, sourceLimit: plan.sourceLimit };
+  const overheadBase = plan.overheadBase;
+  const jit = { responsibility: record.request.instructions.responsibility };
+  const teamInput = record.team;
+  const anchorSource = lookupSource(tx, message.projectId, message.source);
+  if (anchorSource.state !== "available" || anchorSource.current.revision !== message.source.revision || deletedSource(tx, message.source) || suppressedSource(tx, message.source)) {
+    throw new AppError("source_retired", 409);
+  }
+  const offered: TeamReplyResult[] = [], results: TeamReplyResult[] = [], gaps = [...record.team?.gaps ?? []];
+  for (const citation of record.team?.citations ?? []) {
+    const found = lookupSource(tx, record.projectId, citation.reference);
+    if (found.state !== "available" || found.current.revision !== citation.reference.revision || deletedSource(tx, citation.reference) || suppressedSource(tx, citation.reference)) {
+      throw new AppError("source_retired", 409);
+    }
+    offered.push({ ...citation, text: found.text });
+  }
+  // ATT04 extension point: collect references from the selected history and materialize framed content only after
+  // this live check, inside this transaction and the same byte fit. Until ATT04 no file content enters a reply.
+  if (record.request.attachments) record.request.attachments = record.request.attachments.filter(ref => runAttachmentCurrent(tx, record, ref));
+  const fixedOperator = record.request.instructions.operator.slice(0, -1);
+  const metadataOf = (kept: readonly TeamReplyResult[], missing: readonly TeamReplyGap[]) => record.team
+    ? teamResultMetadata(kept, missing) : record.request.instructions.operator.at(-1)!;
   // app.context_packet/v1: every live owner decision is pinned and charged before anything below the request;
   // it is never trimmed, so a reply whose pinned decisions alone exceed the room is not admitted.
   const pinned = pinnedDecisions(tx, message.projectId, message.topicId), pinnedCost = pinnedBytes(pinned);
-  const room = Math.max(0, config.team.contextBytes - overheadBase);
-  if (pinnedCost > room) return notAdmitted("context_too_large");
+  const room = Math.max(0, policy.contextBytes - overheadBase);
+  if (pinnedCost > room) throw new AppError("context_too_large", 409);
   const cost = (item: TeamReplyResult) => Buffer.byteLength(JSON.stringify(item.text)) + 160;
   // A team reply's history ends at the question the team analyzed, never at a later owner message.
-  const anchor = teamInput?.question ?? message;
+  const anchor = message;
   const fit = (kept: readonly TeamReplyResult[], reserved = 0) => {
-    const slots = config.team.sourceLimit - kept.length;
-    return slots > 0 ? topicHistory(tx, message.projectId, message.topicId, anchor, slots, room - pinnedCost - reserved - kept.reduce((sum, item) => sum + cost(item), 0)) : null;
+    const slots = policy.sourceLimit - kept.length;
+    return slots > 0 ? topicHistory(tx, message.projectId, message.topicId, anchor, slots, room - pinnedCost - reserved - kept.reduce((sum, item) => sum + cost(item), 0), !record.team) : null;
   };
   // The owner's question is reserved first. Each result then only adds its own fixed cost, so trying the smallest
   // first keeps the most results and one large result never crowds out smaller ones. Results that do not fit
@@ -433,7 +525,7 @@ function admitReply(tx: AppTransaction, input: ReplyAdmission): { id: string; re
     else gaps.push({ roleId: result.roleId, roleName: result.roleName, reason: "context_limit" });
   }
   results.sort((x, y) => offered.indexOf(x) - offered.indexOf(y));
-  if (!history || (teamInput && !results.length)) return notAdmitted("context_too_large");
+  if (!history || (teamInput && !results.length)) throw new AppError("context_too_large", 409);
   // Sections 5 (current tasks) then 6 (recent messages) share what the request, its results and the pinned decisions
   // left; trimming runs bottom-up, so older messages go before any task constraint.
   const purpose = teamInput ? "Jit team reply to the owner's question" : "Jit reply to the owner's newest message";
@@ -445,11 +537,8 @@ function admitReply(tx: AppTransaction, input: ReplyAdmission): { id: string; re
   const trimmed = trimBottomUp(constraintRoom, [constraintCosts]);
   const constraints = candidates.items.slice(0, trimmed.kept[0]);
   const fitted = fit(results, trimmed.used);
-  if (!fitted) return notAdmitted("context_too_large");
+  if (!fitted) throw new AppError("context_too_large", 409);
   const operatorBase = [...fixedOperator, metadataOf(results, gaps)];
-  // exec.run_tools/v1: a reply admitted while Jit may execute gets the call budget for several tool turns.
-  const limits = replyLimits(config.jobs.maximum, config.team.contextBytes, executionGrant(tx, message.projectId, jit.id) !== null);
-  const context = { id: crypto.randomUUID(), generation: 1 };
   const json = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
   // One request whose recent messages start `dropped` messages later than the budget fit allowed.
   const build = (dropped: number): ApplicationRunRequest => {
@@ -491,55 +580,21 @@ function admitReply(tx: AppTransaction, input: ReplyAdmission): { id: string; re
     const speakers = `Manifest speakers in order (service-recorded): ${[...items.map(item => item.speaker), ...results.map(() => "specialist")].join(",")}. ${teamInput
       ? "The owner's question is the last owner source; specialist sources are the results to speak for." : "The last source is the message to answer."}`;
     return {
-      runId: replyId, projectId: message.projectId, topicId: message.topicId, roleId: jit.id,
-      purpose,
-      route: structuredClone(jit.effective.route!),
-      configuration: { ownerRevision: team.ownerRevision, projectRevision: team.projectRevision, roleRevision: jit.revision },
-      context, fence: { jobId: "00000000-0000-0000-0000-000000000000", generation: 1, ownerGeneration: input.generation },
-      instructions: { operator: [...operatorBase, speakers], responsibility: jit.responsibility },
+      ...structuredClone(record.request), purpose,
+      instructions: { operator: [...operatorBase, speakers], responsibility: record.request.instructions.responsibility },
       manifest: { sources, claims: [], context: layout },
-      tools: [], policy: { genericExecution: false, arbitraryFetch: false, hostedLookup: false, repositoryDiscovery: false },
-      limits,
     };
   };
   // The packet's own labels are not charged above; if they push the request past its bytes, the oldest recent
   // messages go first (section 6 trims before anything above it), and each is recorded as a budget omission.
-  const fits = (candidate: ApplicationRunRequest) => { try { jobData(candidate, config.team.contextBytes); return true; } catch { return false; } };
+  const fits = (candidate: ApplicationRunRequest) => { try { jobData(candidate, policy.contextBytes); return true; } catch { return false; } };
   let request = build(0);
   for (let dropped = 1; !fits(request) && dropped < fitted.items.length; dropped++) request = build(dropped);
-  try { validateRunRequest(request, config.team); } catch { return notAdmitted("context_too_large"); }
-  const projectRevision = tx.get<{ revision: number }>("SELECT revision FROM projects WHERE id = ?", message.projectId)!.revision;
-  let job: Job;
-  try {
-    ({ job } = queue.execute(tx, {
-      kind: "job.enqueue", requestId: input.requestId, projectId: message.projectId, expectedRevision: projectRevision,
-      payload: { type: jitReplyWorkId, configurationRevision: 1, policyRevision: config.jobs.revision, purpose: jitReplyPurpose,
-        inputRevision: message.sequence, input: { replyId, messageId: message.id }, priority: "interactive", limits },
-    }, input.generation, now));
-  } catch (error) {
-    // Queue capacity is checked before anything is written, so the message still commits.
-    if (error instanceof AppError && error.code === "job_queue_full") return notAdmitted("queue_full");
-    throw error;
-  }
-  request.fence.jobId = job.id;
-  tx.run("INSERT INTO team_contexts VALUES (?, 1, 'active')", context.id);
-  const record: JitReplyRecord = {
-    kind: "jit_reply", id: replyId, projectId: message.projectId, topicId: message.topicId, messageId: message.id, jobId: job.id, roleId: jit.id,
-    personaRevision: persona.revision, policyVersion: teamCommunicationPolicy.version, request, revision: 1, createdAt: now, updatedAt: now,
-    outcome: null, result: null, source: null, replyMessageId: null, progress: null, ...(routing ? { routing: structuredClone(routing) } : {}),
-    ...(followUp ? { followUp: structuredClone(followUp) } : {}),
-    ...(teamInput ? { team: { proposalId: teamInput.proposalId, discussionId: teamInput.discussionId,
-      citations: results.map(item => ({ roleId: item.roleId, roleName: item.roleName, reference: { ...item.reference } })), gaps: gaps.map(gap => ({ ...gap })) } } : {}),
-    ...(teamInput?.workGroupId ? { workGroupId: teamInput.workGroupId } : {}),
-  };
-  tx.run("INSERT INTO team_runs (id, project_id, job_id, context_id, record_json) VALUES (?, ?, ?, ?, ?)", replyId, message.projectId, job.id, context.id, JSON.stringify(record));
-  tx.run("INSERT INTO jit_replies (id, project_id, topic_id, message_id, run_id, reason, cursor, created_at) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)",
-    replyId, message.projectId, message.topicId, message.id, replyId, nextCursor(tx), now);
-  for (const source of request.manifest.sources) {
-    tx.run("INSERT INTO jit_reply_sources (reply_id, project_id, source_id, revision, generation) VALUES (?, ?, ?, ?, ?)",
-      replyId, message.projectId, source.reference.sourceId, source.reference.revision, source.reference.generation);
-  }
-  return { id: replyId, reason: null };
+  try { validateRunRequest(request, policy); } catch { throw new AppError("context_too_large", 409); }
+  record.request = request;
+  if (record.team) record.team = { ...record.team,
+    citations: results.map(item => ({ roleId: item.roleId, roleName: item.roleName, reference: { ...item.reference } })), gaps };
+  plan.assembledAt = now;
 }
 
 /**
@@ -720,10 +775,15 @@ function inheritDerivation(tx: AppTransaction, projectId: string, source: Source
 }
 
 function sourcesCurrent(tx: AppTransaction, request: ApplicationRunRequest): boolean {
-  return request.manifest.sources.every(source => {
+  const labelled = [...request.manifest.context?.constraints ?? [], ...request.manifest.context?.packet?.pinned ?? []];
+  return labelled.every(item => {
+    const found = lookupSource(tx, request.projectId, item.source);
+    return found.state === "available" && found.current.revision === item.source.revision &&
+      !deletedSource(tx, item.source) && !suppressedSource(tx, item.source);
+  }) && (request.attachments ?? []).every(ref => runAttachmentCurrent(tx, request, ref)) && request.manifest.sources.every(source => {
     const current = lookupSource(tx, source.projectId, source.reference);
     return current.state === "available" && current.current.revision === source.reference.revision && current.text === source.text &&
-      !suppressedSource(tx, source.reference);
+      !deletedSource(tx, source.reference) && !suppressedSource(tx, source.reference);
   });
 }
 
@@ -754,19 +814,34 @@ export function jitReplyWork(store: TransactionStore, config: AppConfig, port: A
       if (!valid(job.input)) throw new AppError("invalid_job_input");
       const record = readReplyRecord(tx, job.projectId, job.input.replyId);
       if (record.messageId !== job.input.messageId || record.jobId !== job.id) throw new AppError("invalid_job_input");
+      // Charge the service-computed grant during packing as well as in the final immutable attempt data.
+      record.request.execution = port.execution ? executionGrant(tx, job.projectId, record.roleId) : null;
+      if (record.contextAssembly?.assembledAt === null) assembleReplyContext(tx, record, config, now());
       const request = structuredClone(record.request);
+      const stale = !sourcesCurrent(tx, request) ? "source_retired" : contextCurrent(tx, request.projectId, request.manifest);
+      if (stale) throw new AppError(stale, 409);
       if (job.steps > 1) {
         request.runId = crypto.randomUUID();
         request.context = { id: crypto.randomUUID(), generation: 1 };
-        tx.run("INSERT INTO team_contexts VALUES (?, 1, 'active')", request.context.id);
       }
       request.fence = { jobId: job.id, generation, ownerGeneration: job.authorization.generation };
-      // Frozen in the attempt snapshot at admission; model output never changes it.
-      request.execution = port.execution ? executionGrant(tx, job.projectId, request.roleId) : null;
+      // Check the complete data before writing the packet/lineage: the queue handles preparation errors in its
+      // claim transaction, so a failed size check must not leave a frozen packet without an attempt snapshot.
+      let data;
+      try { validateRunRequest(request, config.team); data = JSON.parse(jobData(request, config.team.contextBytes)); }
+      catch { throw new AppError("context_too_large", 409); }
+      if (job.steps > 1) tx.run("INSERT INTO team_contexts VALUES (?, 1, 'active')", request.context.id);
       record.request = request; record.progress = null; record.updatedAt = now();
+      tx.run("DELETE FROM jit_reply_sources WHERE reply_id = ?", record.id);
+      const cited = [...request.manifest.sources, ...(request.attachments ?? []).map(ref => ({ projectId: request.projectId,
+        reference: { sourceId: ref.attachmentId, revision: ref.revision, generation: ref.generation } }))];
+      for (const source of cited) {
+        tx.run("INSERT OR IGNORE INTO jit_reply_sources (reply_id, project_id, source_id, revision, generation) VALUES (?, ?, ?, ?, ?)",
+          record.id, source.projectId, source.reference.sourceId, source.reference.revision, source.reference.generation);
+      }
       saveReplyRecord(tx, record);
       return { native: { adapter: port.adapter, runId: request.runId, sessionId: request.runId, context: request.context },
-        data: JSON.parse(jobData(request, config.team.contextBytes)),
+        data,
         ...(request.execution ? { execution: { level: request.execution.level, roleId: request.roleId } } : {}) };
     },
     isCurrent: (tx, job, attempt) => {

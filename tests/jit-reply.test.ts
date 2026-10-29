@@ -4,13 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Application } from "../src/application";
 import { readConfig } from "../src/config";
+import { readAttempts } from "../src/jobs/attempts";
+import { runAttachmentCurrent, type RunAttachmentRef } from "../src/attachments/run-references";
 import { JobQueue } from "../src/jobs/queue";
 import { backupImageTables } from "../src/ops/backup";
 import { TransactionStore } from "../src/store";
 import { listDiscussions } from "../src/team/dispatch";
 import { memoryExtractionMarker, memoryExtractionWork, scriptedMemoryResult } from "../src/memory/extract";
-import { commitOutputSource } from "../src/sources";
-import { dispatchNames, jitReplyMarker, jitReplyWork, jitReplyWorkId, normalizeJitReply, parseSuggestions, parseTaskSuggestion, suggestionsInstruction, taskSuggestionInstruction, type JitReplyView } from "../src/team/jit-reply";
+import { commitAttachmentSource, commitOutputSource } from "../src/sources";
+import { dispatchNames, jitReplyMarker, jitReplyWork, jitReplyWorkId, normalizeJitReply, readReplyRecord, saveReplyRecord, parseSuggestions, parseTaskSuggestion, suggestionsInstruction, taskSuggestionInstruction, type JitReplyView } from "../src/team/jit-reply";
 import type { ApplicationRunPort } from "../src/team/run-port";
 import { ScriptedRunPort, fixtureOutcome } from "../src/team/scripted-port";
 import type { ApplicationRunEvent, ApplicationRunOutcome, ApplicationRunRequest, RoleRoute } from "../src/team/types";
@@ -39,7 +41,7 @@ const answer = (request: ApplicationRunRequest, output: string): ApplicationRunO
 const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(r => { resolve = r; }); return { promise, resolve }; };
 
 const stream: ReplyStreamOptions = { intervalMs: 1, polls: 3 };
-interface Options { script?: Script; wrap?: (port: ScriptedRunPort) => ApplicationRunPort; coordinator?: boolean; path?: string; env?: Record<string, string>; streamTimers?: ReplyStreamOptions["timers"]; streamOptions?: ReplyStreamOptions }
+interface Options { crashed?: boolean; script?: Script; wrap?: (port: ScriptedRunPort) => ApplicationRunPort; coordinator?: boolean; path?: string; env?: Record<string, string>; streamTimers?: ReplyStreamOptions["timers"]; streamOptions?: ReplyStreamOptions }
 /** Stream pacing the test drives by hand: ticks run only when flushed, never on a wall-clock timer. */
 function manualStreamTimers() {
   const pending = new Map<number, () => void>();
@@ -69,7 +71,7 @@ async function fixture(options: Options = {}) {
   const scripted = new ScriptedRunPort(store, config.team, config.jobs.outputBytes, (request, signal, observe) =>
     request.instructions.operator.includes(memoryExtractionMarker) ? scriptedMemoryResult(request, true) : reply(request, signal, observe));
   const port = options.wrap?.(scripted) ?? scripted;
-  const queue = new JobQueue(store, config.jobs, [jitReplyWork(store, config, port, () => now), memoryExtractionWork(store, config, scripted, () => now)], { now: () => now }); queues.push(queue);
+  const queue = new JobQueue(store, config.jobs, [jitReplyWork(store, config, port, () => now), memoryExtractionWork(store, config, scripted, () => now)], { now: () => now, ...(options.crashed ? { isAlive: () => false } : {}) }); queues.push(queue);
   const app = new Application(store, config, { now: () => now, jobs: queue });
   const web = createWebHandler(app, { stream: options.streamOptions ?? (options.streamTimers ? { ...stream, timers: options.streamTimers } : stream) });
   if (options.path) {
@@ -125,6 +127,13 @@ function allEvents(text: string) {
   });
 }
 const events = (text: string) => allEvents(text).filter(event => event.event === "reply");
+/** Identity-only suppression fixture models the latest installation ledger surviving a restore. */
+function suppressSourceFixture(f: Fixture, source: { sourceId: string; revision: number; generation: number }): void {
+  const suppressionId = rid(), subject = `source:${source.sourceId}:${source.revision}:${source.generation}`;
+  f.store.transaction(tx => tx.run(`INSERT INTO lifecycle_ledger (kind, entry_key, subject, project_id, record_json, recorded_at)
+    VALUES ('suppressed_source', ?, ?, ?, ?, ?)`, `suppressed_source:${suppressionId}:${subject}`, subject, f.project.id,
+    JSON.stringify({ suppressionId, projectId: f.project.id, ...source }), epoch));
+}
 const previews = (text: string) => allEvents(text).filter(event => event.event === "reply-preview");
 function expectNoInlineScript(html: string) {
   for (const [tag, body] of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)) {
@@ -246,6 +255,195 @@ for (const stopRunning of [false, true]) test(`COMM03: stopping the ${stopRunnin
   expect(replyFor(f, first.message.id).state).toBe(stopRunning ? "stopped" : "answered");
   expect(replyFor(f, second.message.id).state).toBe(stopRunning ? "answered" : "stopped");
   expect(messages(f).filter(message => message.attribution.kind === "participant")).toHaveLength(1);
+});
+
+test("CTX01: each queued packet sees committed answers, excludes future questions and provisional text, and records exact attempt lineage", async () => {
+  const gate = deferred<void>(), entered = deferred<void>(); releases.push(() => gate.resolve());
+  let calls = 0;
+  const f = await fixture({ script: async (request, _signal, observe) => {
+    if (calls++ === 0) {
+      observe({ kind: "delta", runId: request.runId, text: "PROVISIONAL_ONLY" });
+      entered.resolve(); await gate.promise;
+    }
+    return answer(request, `answer-${calls}`);
+  } });
+  const first = send(f, "question-1"); f.queue.pump(); await entered.promise;
+  const second = send(f, "question-2"), third = send(f, "question-3");
+  const pending = f.store.read(tx => readReplyRecord(tx, f.project.id, replyFor(f, second.message.id).id));
+  expect(pending.contextAssembly?.assembledAt).toBeNull();
+  expect(pending.request.manifest).toEqual({ sources: [], claims: [] });
+  gate.resolve(); await f.queue.idle(); await settle(f); await settle(f);
+  expect(f.port.requests.map(request => request.manifest.sources.map(source => source.text))).toEqual([
+    ["question-1"], ["question-1", "answer-1", "question-2"], ["question-1", "answer-1", "question-2", "answer-2", "question-3"],
+  ]);
+  for (const sent of [first, second, third]) {
+    const view = replyFor(f, sent.message.id);
+    const record = f.store.read(tx => readReplyRecord(tx, f.project.id, view.id));
+    const attempts = f.store.read(tx => readAttempts(tx, view.jobId!));
+    expect(record.contextAssembly?.assembledAt).toBe(epoch);
+    expect((attempts[0]!.data as unknown as ApplicationRunRequest).manifest).toEqual(record.request.manifest);
+    const lineage = f.store.read(tx => tx.all<{ sourceId: string; revision: number; generation: number }>(
+      "SELECT source_id AS sourceId, revision, generation FROM jit_reply_sources WHERE reply_id = ? ORDER BY source_id", view.id));
+    expect(lineage).toEqual(record.request.manifest.sources.map(source => source.reference).sort((a, b) => a.sourceId.localeCompare(b.sourceId)));
+    expect(JSON.stringify(record)).not.toContain("PROVISIONAL_ONLY");
+  }
+});
+
+for (const action of ["delete", "forget"] as const) test(`CTX01: ${action} between admission and attempt start removes history and derived answers`, async () => {
+  const f = await fixture({ script: request => answer(request, `echo ${request.manifest.sources.map(source => source.text).join(" / ")}`) });
+  const old = send(f, "RETIRED_MARKER"); await settle(f);
+  const oldAnswer = replyFor(f, old.message.id).source!;
+  const claim = action === "forget" ? await remember(f, old.message.source) : null;
+  const waiting = send(f, "new question");
+  if (claim) forget(f, claim);
+  else {
+    const revision = () => f.app.project(f.auth.actor, f.project.id).revision;
+    const preview = f.app.execute(f.auth.actor, { kind: "memory.delete.preview", requestId: rid(), projectId: f.project.id, expectedRevision: revision(),
+      payload: { scope: { kind: "source", projectId: f.project.id, source: old.message.source } } }) as { preview: { id: string } };
+    f.app.execute(f.auth.actor, { kind: "memory.delete.confirm", requestId: rid(), projectId: f.project.id, expectedRevision: revision(),
+      payload: { previewId: preview.preview.id, acknowledged: true, acknowledgedWholeSession: true } });
+  }
+  await settle(f);
+  const request = f.port.requests.at(-1)!;
+  expect(request.manifest.sources.map(source => source.text)).toEqual(["new question"]);
+  expect(request.manifest.sources.some(source => source.reference.sourceId === oldAnswer.sourceId)).toBe(false);
+  expect(replyFor(f, waiting.message.id).state).toBe("answered");
+});
+
+for (const action of ["delete", "forget"] as const) test(`CTX01: retiring the current request by ${action} before its attempt fails closed without invoking the model`, async () => {
+  const f = await fixture();
+  const sent = send(f, "current request");
+  if (action === "forget") {
+    // The identity-only lifecycle ledger is the same authority consulted after a memory.forget lineage walk.
+    suppressSourceFixture(f, sent.message.source);
+  } else f.store.transaction(tx => tx.run("UPDATE sources SET availability = 'unavailable' WHERE id = ?", sent.message.source.sourceId));
+  await settle(f);
+  expect(f.port.requests).toEqual([]);
+  expect(replyFor(f, sent.message.id)).toMatchObject({ state: "failed", reason: "source_retired", replyMessageId: null });
+});
+
+test("CTX01: crash takeover preserves the first packet for explicit read resume and fences the old late completion", async () => {
+  const gate = deferred<void>(), entered = deferred<void>(); releases.push(() => gate.resolve());
+  const f = await fixture({ script: async request => { entered.resolve(); await gate.promise; return answer(request, "STALE_ANSWER"); } });
+  const first = send(f, "first question"); f.queue.pump(); await entered.promise;
+  const view = replyFor(f, first.message.id);
+  const original = f.store.read(tx => readAttempts(tx, view.jobId!)[0]!.data as unknown as ApplicationRunRequest);
+  const parts = await fixture({ path: f.path, crashed: true, script: request => answer(request, "resumed answer") });
+  const g = { ...parts, project: f.project, topic: f.topic, coordinatorId: f.coordinatorId };
+  expect(g.store.read(tx => readAttempts(tx, view.jobId!)[0]!.data)).toEqual(original as never);
+  // The old native transport settles after takeover; it cannot publish before explicit read resume.
+  gate.resolve(); await f.queue.idle();
+  expect(messages(g).some(message => message.text === "STALE_ANSWER")).toBe(false);
+  await g.queue.reconcile(g.port);
+  const job = g.app.job(g.auth.actor, g.project.id, view.jobId!);
+  g.app.execute(g.auth.actor, { kind: "job.resume", requestId: rid(), projectId: g.project.id, expectedRevision: job.revision, payload: { jobId: job.id } });
+  const second = send(g, "later question");
+  await settle(g); await settle(g);
+  expect(g.port.requests[0]!.manifest).toEqual(original.manifest);
+  expect(g.port.requests[0]!.runId).not.toBe(original.runId);
+  expect(g.port.requests[0]!.context.id).not.toBe(original.context.id);
+  expect(g.port.requests[1]!.manifest.sources.map(source => source.text)).toEqual(["first question", "resumed answer", "later question"]);
+  expect(replyFor(g, second.message.id).state).toBe("answered");
+  gate.resolve(); await f.queue.idle();
+  expect(messages(g).some(message => message.text === "STALE_ANSWER")).toBe(false);
+  expect(messages(g).filter(message => message.text === "resumed answer")).toHaveLength(2);
+});
+
+test("CTX01: a same-route retry reuses its packet and refuses a source retired after the first attempt", async () => {
+  const f = await fixture({ script: () => fixtureOutcome("quota") });
+  const sent = send(f, "retry me"); await settle(f);
+  const view = replyFor(f, sent.message.id);
+  const original = f.port.requests[0]!.manifest;
+  await f.queue.reconcile(f.port);
+  let job = f.app.job(f.auth.actor, f.project.id, view.jobId!);
+  f.app.execute(f.auth.actor, { kind: "job.resume", requestId: rid(), projectId: f.project.id, expectedRevision: job.revision, payload: { jobId: job.id } });
+  send(f, "a later message must not enter the retry packet");
+  await settle(f);
+  expect(f.port.requests[1]!.manifest).toEqual(original);
+  expect(f.port.requests[1]!.runId).not.toBe(f.port.requests[0]!.runId);
+  await f.queue.reconcile(f.port);
+  job = f.app.job(f.auth.actor, f.project.id, view.jobId!);
+  f.app.execute(f.auth.actor, { kind: "job.resume", requestId: rid(), projectId: f.project.id, expectedRevision: job.revision, payload: { jobId: job.id } });
+  // Isolate this retry; its authority is checked again before any model invocation.
+  const other = replyFor(f, messages(f).find(message => message.text?.startsWith("a later"))!.id);
+  f.app.execute(f.auth.actor, { kind: "jit.reply.stop", requestId: rid(), projectId: f.project.id, expectedRevision: other.revision, payload: { replyId: other.id } });
+  suppressSourceFixture(f, sent.message.source);
+  await settle(f);
+  expect(f.port.requests).toHaveLength(2);
+  expect(replyFor(f, sent.message.id)).toMatchObject({ state: "failed", reason: "source_retired" });
+});
+
+test("CTX01: a long queue keeps the source and byte ceilings, with current request last and trim omissions recorded", async () => {
+  const f = await fixture({ env: { JIT_PREVIEW_SOURCES: "3", JIT_PREVIEW_CONTEXT_BYTES: "16000" }, script: request => answer(request, "answer") });
+  const sent = Array.from({ length: 6 }, (_, index) => send(f, `question-${index} ${"x".repeat(1000)}`));
+  for (const _ of sent) await settle(f);
+  expect(f.port.requests).toHaveLength(6);
+  for (const [index, request] of f.port.requests.entries()) {
+    expect(request.manifest.sources.length).toBeLessThanOrEqual(3);
+    expect(Buffer.byteLength(JSON.stringify(request))).toBeLessThanOrEqual(16000);
+    expect(request.manifest.sources.at(-1)!.reference).toEqual(sent[index]!.message.source);
+    expect(replyFor(f, sent[index]!.message.id).state).toBe("answered");
+  }
+  expect(f.port.requests.at(-1)!.manifest.context!.packet!.omissions).toContainEqual(expect.objectContaining({ section: "recent_messages", reason: "ceiling" }));
+});
+
+test("CTX01: queued admission survives restart and assembles only after the earlier answer commits", async () => {
+  const f = await fixture();
+  const first = send(f, "first"), second = send(f, "second");
+  f.queue.close(); await f.queue.idle(); queues.splice(queues.indexOf(f.queue), 1);
+  f.store.close(); stores.splice(stores.indexOf(f.store), 1);
+  const parts = await fixture({ path: f.path });
+  const g = { ...parts, project: f.project, topic: f.topic, coordinatorId: f.coordinatorId };
+  expect(replyFor(g, second.message.id).state).toBe("queued");
+  await settle(g); await settle(g);
+  const answer = replyFor(g, first.message.id);
+  expect(g.port.requests[1]!.manifest.sources.map(source => source.reference.sourceId)).toContain(answer.source!.sourceId);
+});
+
+for (const retired of ["row", "source", "suppression"] as const) test(`CTX01 attachment hook drops a ${retired}-retired RunAttachmentRef before first attempt`, async () => {
+  const f = await fixture();
+  const sent = send(f, "with an attachment reference");
+  const attachmentId = rid();
+  const ref: RunAttachmentRef = { attachmentId, revision: 1, generation: 1, kind: "text", inline: true };
+  const view = replyFor(f, sent.message.id);
+  f.store.transaction(tx => {
+    tx.run(`INSERT INTO attachments (id, project_id, topic_id, message_id, revision, state, kind, media_type, bytes, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 2, 'ready', 'text', 'text/plain', 0, ?, ?)`, attachmentId, f.project.id, f.topic.id, sent.message.id, epoch, epoch);
+    commitAttachmentSource(tx, { projectId: f.project.id, topicId: f.topic.id, messageId: sent.message.id, attachmentId, committedAt: epoch });
+    const record = readReplyRecord(tx, f.project.id, view.id);
+    record.request.attachments = [ref]; saveReplyRecord(tx, record);
+    expect(runAttachmentCurrent(tx, record, ref)).toBe(true);
+    expect(runAttachmentCurrent(tx, { ...record, topicId: rid() }, ref)).toBe(false);
+    if (retired === "row") tx.run("UPDATE attachments SET state = 'deleted' WHERE id = ?", attachmentId);
+    if (retired === "source") tx.run("UPDATE sources SET generation = generation + 1 WHERE id = ?", attachmentId);
+
+  });
+  if (retired === "suppression") suppressSourceFixture(f, { sourceId: attachmentId, revision: 1, generation: 1 });
+  await settle(f);
+  expect(f.port.requests[0]!.attachments).toEqual([]);
+  expect(replyFor(f, sent.message.id).state).toBe("answered");
+});
+
+test("CTX01 attachment hook retains live identities in lineage and fences a late answer after deletion", async () => {
+  const entered = deferred<void>(), gate = deferred<void>(); releases.push(() => gate.resolve());
+  const f = await fixture({ script: async request => { entered.resolve(); await gate.promise; return answer(request, "late attachment answer"); } });
+  const sent = send(f, "with a live attachment");
+  const view = replyFor(f, sent.message.id), attachmentId = rid();
+  f.store.transaction(tx => {
+    tx.run(`INSERT INTO attachments (id, project_id, topic_id, message_id, revision, state, kind, media_type, bytes, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 2, 'ready', 'text', 'text/plain', 0, ?, ?)`, attachmentId, f.project.id, f.topic.id, sent.message.id, epoch, epoch);
+    commitAttachmentSource(tx, { projectId: f.project.id, topicId: f.topic.id, messageId: sent.message.id, attachmentId, committedAt: epoch });
+    const record = readReplyRecord(tx, f.project.id, view.id);
+    record.request.attachments = [{ attachmentId, revision: 1, generation: 1, kind: "text", inline: true }];
+    saveReplyRecord(tx, record);
+  });
+  f.queue.pump(); await entered.promise;
+  expect(f.port.requests[0]!.attachments).toHaveLength(1);
+  expect(f.store.read(tx => tx.get("SELECT 1 FROM jit_reply_sources WHERE reply_id = ? AND source_id = ?", view.id, attachmentId))).not.toBeNull();
+  f.store.transaction(tx => tx.run("UPDATE attachments SET state = 'deleted' WHERE id = ?", attachmentId));
+  gate.resolve(); await f.queue.idle();
+  expect(replyFor(f, sent.message.id).state).toBe("failed");
+  expect(messages(f).some(message => message.text === "late attachment answer")).toBe(false);
 });
 
 test("provisional deltas stay in memory only; a stream cut midway shows a failure and no reply", async () => {
