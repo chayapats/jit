@@ -493,7 +493,7 @@ function readCard(tx: AppTransaction, row: ProposalRow, policy: TeamPolicy): Dis
         opinion: item.output ? { reference: item.output, text: found?.state === "available" ? found.text : null } : null };
     });
     discussion = { id: stored.id, revision: stored.revision, origin: stored.origin ?? null, stoppedAll: stored.stoppedAll === true, coverageGap: projected.coverageGap, roles };
-    canStopAll = roles.some(item => item.activity !== "settled") || teamReply?.state === "thinking" || teamReply?.state === "blocked";
+    canStopAll = roles.some(item => item.activity !== "settled") || (teamReply?.state === "thinking" || teamReply?.state === "queued") || teamReply?.state === "blocked";
     canAnswer = !row.teamReplyId && !roles.some(item => item.activity === "live") &&
       roles.some(item => item.state === "completed" && citableResult(item.result) && item.opinion?.text !== null);
     const model = readDecisionModel(tx, row.projectId, row.topicId, stored.id);

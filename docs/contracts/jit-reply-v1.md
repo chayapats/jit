@@ -17,14 +17,15 @@ Uses `app.conversation/v1`, `jobs.queue_admission/v1`, `jobs.attempt_fence/v1` a
 
 | State | Meaning | `nextAction` |
 | --- | --- | --- |
-| `thinking` | The job is queued or running. `progress` is null. Active attempts may publish a separate memory-only SSE snapshot, labelled unsaved. | — |
+| `queued` | The job is exactly `queued` and an earlier anchor message in the same project/topic has a reply job in `queued`, `admitted` or `waiting`. No position number or avatar animation; `progress` and `nextAction` are null, and `reason` is the job reason. | — |
+| `thinking` | The job is running, or queued with no earlier live reply. A single message never flashes Queued. `progress` is null. Active attempts may publish a separate memory-only SSE snapshot, labelled unsaved. | — |
 | `answered` | The fenced result committed. `replyMessageId` and `source` name the reply. | — |
 | `blocked` | The job waits on the same route (`quota`, `needs_login`, `route_unavailable`) or was interrupted. The route, budget and billing stay the same. | `wait_for_quota_then_resume`, `sign_in_to_route_then_resume`, `check_route_then_resume`, `resume_or_send_again` |
 | `stopped` | The owner stopped it. A late result is rejected. | `send_again` |
 | `failed` | The output was malformed or empty, or the adapter failed. No reply message exists. | `send_again` |
 | `not_admitted` | No job was admitted, for the recorded reason. | `configure_jit_route`, `start_service_then_send_again`, `wait_then_send_again`, `send_a_shorter_message` |
 
-Stop expects the reply `revision`: 1 from admission until a result commits, then 2. Only `thinking` and `blocked` replies can be stopped (`reply_not_stoppable`). Stop runs the job's own `job.stop`, so authority is fenced before cancellation is requested.
+Stop expects the reply `revision`: 1 from admission until a result commits, then 2. Only `thinking`, `queued` and `blocked` replies can be stopped (`reply_not_stoppable`). Stop runs the job's own `job.stop`, so authority is fenced before cancellation is requested.
 
 Resuming a blocked reply uses the existing `job.resume` from the job page. It follows the shared contract: the waiting attempt's managed context must be reconciled first. It gets a fresh run id and context on the same route. Reply limits cover the first attempt and two retries; every attempt reserves its own token share.
 
@@ -141,3 +142,7 @@ Jit #185 (S12-D08). Under Jit's newest answer the page shows 2–3 suggested rep
 
 **Evidence.** `tests/jit-reply.test.ts`: the schema cases, normalization discards, escaping and evidence, the no-script chip post (303, the owner message, a new answered reply), visibility under newer messages, live replies, role and task cards and invalid entries, `chipsAllowed` for dispatch, MCP, promotion and approval, the stream payload with the `app.js` slot contract, and deletion. `tests/dispatch-allowance.test.ts`: team replies discard the entry and get no instruction, and a dispatching reply shows no chips. `tests/chat-voice.test.ts`: the instruction fits the worst-case operator lines.
 
+
+## S12 COMM03 queued replies
+
+S12-D07 (#183), NFR-10 and NFR-11: each queued reply keeps its own Stop form; stopping it leaves the running reply untouched. Existing `priority DESC, queue_order` admission and route concurrency are unchanged. The local API reports `running`; queued team replies keep their work group open. Job transitions advance the existing reply cursor, and both the stream and no-script reload project the same state. Chip suppression, hidden chip forms and the script's live set include `queued`. On a transcript page containing both anchor and committed answer, the answer appears immediately after its anchor; persisted message sequences and pagination cursors remain append-only.

@@ -360,7 +360,7 @@ export function prepareStopAll(
   const team = tx.get<{ replyId: string | null }>("SELECT team_reply_id AS replyId FROM dispatch_proposals WHERE project_id = ? AND discussion_id = ?", command.projectId, discussion.id);
   if (team?.replyId) {
     const reply = readReply(tx, command.projectId, team.replyId);
-    if (reply.state === "thinking" || reply.state === "blocked") {
+    if ((reply.state === "thinking" || reply.state === "queued") || reply.state === "blocked") {
       stopReply(tx, { kind: "jit.reply.stop", requestId: command.requestId, projectId: command.projectId, expectedRevision: reply.revision, payload: { replyId: reply.id } }, queue, generation, now);
     }
   }

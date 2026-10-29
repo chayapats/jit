@@ -1160,6 +1160,7 @@ export const en: Record<MessageKey, string> = {
   "ops.validation": "validation",
   "ops.versions": "versions",
   "jit.name": "Jit",
+  "reply.state.queued": "Queued — Jit will reply after the earlier message",
   "reply.state.thinking": "Jit is thinking…",
   "reply.state.blocked": "Jit can’t reply right now",
   "reply.state.stopped": "Reply stopped",

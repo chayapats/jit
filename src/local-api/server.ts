@@ -217,7 +217,7 @@ export function createLocalApiHandler(options: LocalApiHandlerOptions): (request
       for (const item of reply.roleProposals) if (item.state === "proposed") pending.push({ kind: "role", id: item.id, revision: item.revision });
       for (const item of reply.promotionProposals) if (item.state === "proposed") pending.push({ kind: "promotion", id: item.id, revision: item.revision });
     }
-    const outcome: ReplyOutcome = !reply ? "failed" : reply.state === "thinking" ? "running"
+    const outcome: ReplyOutcome = !reply ? "failed" : (reply.state === "thinking" || reply.state === "queued") ? "running"
       : reply.state === "blocked" || (reply.state === "answered" && pending.length) ? "waiting_on_owner"
         : reply.state === "answered" ? "done" : "failed";
     return { receiptId, projectId, topicId, messageId, outcome, answer, pending,

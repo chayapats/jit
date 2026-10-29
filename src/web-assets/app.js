@@ -86,7 +86,7 @@ if (ceremony && ceremonyForm) {
 // longer than the grace period dims it and shows a calm hint. After a reconnect, a draft no snapshot confirms is cleared.
 const chat = document.querySelector("[data-reply-stream]");
 if (chat && typeof EventSource === "function") {
-  const live = new Set(["thinking", "blocked"]);
+  const live = new Set(["thinking", "queued", "blocked"]);
   const graceMs = 3000;
   const base = chat.dataset.replyStream;
   const stream = new EventSource(`${base}${base.includes("?") ? "&" : "?"}cursor=${encodeURIComponent(chat.dataset.replyCursor ?? "0")}`);

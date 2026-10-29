@@ -184,6 +184,70 @@ test("one owner message gets one committed, attributed Jit reply; replay, refres
   expect(messages(f)).toHaveLength(4); expect(jobCount(f)).toBe(2);
 });
 
+test("COMM03: several quick messages queue, stream and answer in order with no-script Stop and chip slots", async () => {
+  const gates = Array.from({ length: 3 }, () => deferred<void>());
+  const entered = gates.map(() => deferred<void>());
+  let calls = 0;
+  for (const gate of gates) releases.push(() => gate.resolve());
+  const timers = manualStreamTimers();
+  const f = await fixture({ streamTimers: timers.timers, script: async request => {
+    const index = calls++; entered[index]!.resolve(); await gates[index]!.promise;
+    return answer(request, `answer-${index + 1}`);
+  } });
+  const first = send(f, "message-1"); f.queue.pump(); await entered[0]!.promise;
+  expect(replyFor(f, first.message.id).state).toBe("thinking");
+  const second = send(f, "message-2"), third = send(f, "message-3");
+  const views = () => [first, second, third].map(item => replyFor(f, item.message.id));
+  expect(views().map(view => view.state)).toEqual(["thinking", "queued", "queued"]);
+  expect(views()[1]).toMatchObject({ reason: "queued", nextAction: null, progress: null });
+  const url = `/projects/${f.project.id}/topics/${f.topic.id}`;
+  const page = await (await get(f, url)).text();
+  expect(page).toContain("รอคิว — จิตจะตอบหลังข้อความก่อนหน้า");
+  expect([...page.matchAll(/data-reply-stop/g)]).toHaveLength(3);
+  expect([...page.matchAll(/class="jit-avatar" data-state="thinking"/g)]).toHaveLength(1);
+  expect(page).toContain(`data-reply-chips="${views()[2]!.id}" hidden`);
+  expect(chipsOf(page)).toEqual([]);
+  expect(page).toContain('data-reply-stream=');
+  const stream = async () => {
+    const reading = (await get(f, `${url}/events`, { "last-event-id": "0" })).text();
+    await timers.flush(); return events(await reading);
+  };
+  expect((await stream()).find(event => event.data.id === views()[1]!.id)!.data.state).toBe("queued");
+  gates[0]!.resolve(); await f.queue.idle(); f.queue.pump(); await entered[1]!.promise;
+  expect(views().map(view => view.state)).toEqual(["answered", "thinking", "queued"]);
+  expect((await stream()).find(event => event.data.id === views()[1]!.id)!.data.state).toBe("thinking");
+  gates[1]!.resolve(); await f.queue.idle(); f.queue.pump(); await entered[2]!.promise; gates[2]!.resolve(); await f.queue.idle();
+  expect(views().map(view => view.state)).toEqual(["answered", "answered", "answered"]);
+  expect(calls).toBe(3);
+  const done = await (await get(f, url)).text();
+  const displayIds = [...done.matchAll(/data-message-id="([^"]+)"/g)].map(match => match[1]);
+  expect(displayIds).toEqual([first.message.id, views()[0]!.replyMessageId!, second.message.id, views()[1]!.replyMessageId!, third.message.id, views()[2]!.replyMessageId!]);
+  // Storage and pagination retain append-only commit order; presentation pairs each answer with its owner message.
+  expect(messages(f).map(message => message.text)).toEqual(["message-1", "message-2", "message-3", "answer-1", "answer-2", "answer-3"]);
+});
+
+for (const stopRunning of [false, true]) test(`COMM03: stopping the ${stopRunning ? "running" : "queued"} reply leaves the other reply independent`, async () => {
+  const gate = deferred<void>(), entered = deferred<void>(); releases.push(() => gate.resolve());
+  let calls = 0;
+  const f = await fixture({ script: async request => {
+    if (calls++ === 0) { entered.resolve(); await gate.promise; }
+    return answer(request, "answer");
+  } });
+  const first = send(f, "first"); f.queue.pump(); await entered.promise;
+  const second = send(f, "second");
+  const one = replyFor(f, first.message.id), two = replyFor(f, second.message.id);
+  expect(two.state).toBe("queued");
+  const url = `/projects/${f.project.id}/topics/${f.topic.id}`;
+  const stop = form(await (await get(f, url)).text(), `${url}/replies/${stopRunning ? one.id : two.id}/stop`);
+  expect((await postForm(f, stop.action, stop.fields)).status).toBe(303);
+  expect(replyFor(f, stopRunning ? first.message.id : second.message.id).state).toBe("stopped");
+  if (!stopRunning) expect(replyFor(f, first.message.id).state).toBe("thinking");
+  gate.resolve(); await f.queue.idle(); await settle(f);
+  expect(replyFor(f, first.message.id).state).toBe(stopRunning ? "stopped" : "answered");
+  expect(replyFor(f, second.message.id).state).toBe(stopRunning ? "answered" : "stopped");
+  expect(messages(f).filter(message => message.attribution.kind === "participant")).toHaveLength(1);
+});
+
 test("provisional deltas stay in memory only; a stream cut midway shows a failure and no reply", async () => {
   const gate = deferred<void>();
   releases.push(() => gate.resolve());
@@ -634,6 +698,14 @@ test("app.js contract: the event stream updates reply text with textContent and 
     expect(one.dataset.replyGap).toBe("closed");
     expect(one.parts.connection).toMatchObject({ textContent: "closed", hidden: false });
     expect(one.parts.progress.textContent).toBe("reconnected");
+
+    // Queued remains live, keeps Stop, ignores provisional text and does not animate.
+    fire({ id: two.id, state: "queued", progress: null, label: "รอคิว", tone: "queued", next: null, text: null });
+    expect(two.parts.avatar.dataset.state).toBeUndefined();
+    expect(two.removed()).toBe(false);
+    preview({ id: two.id, attemptId: rid(), sequence: 1, text: "not running" });
+    expect(two.parts.progress.hidden).toBe(true);
+    expect(source.closed).toBe(false);
 
     // A blocked reply names its next action; the stream stays open while another reply is live.
     fire({ id: two.id, state: "blocked", progress: null, label: "ตอบไม่ได้ตอนนี้", tone: "blocked", next: "รอโควตา", text: null });

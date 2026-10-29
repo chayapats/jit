@@ -1162,6 +1162,7 @@ export const th = {
   "ops.validation": "validation",
   "ops.versions": "versions",
   "jit.name": "จิต",
+  "reply.state.queued": "รอคิว — จิตจะตอบหลังข้อความก่อนหน้า",
   "reply.state.thinking": "จิตกำลังคิด…",
   "reply.state.blocked": "จิตตอบไม่ได้ตอนนี้",
   "reply.state.stopped": "หยุดคำตอบแล้ว",

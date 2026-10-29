@@ -243,7 +243,7 @@ export function projectPage(state: ReturnType<Application["topics"]>, workspace:
     <nav class="pagination" aria-label="${tr("project.topic_pages")}">${after > 0 ? `<a href="/projects/${p.id}">${tr("common.first_page")}</a>` : ""}${state.hasMore ? `<a href="/projects/${p.id}?after=${state.nextAfter}">${tr("project.next_topics")}</a>` : ""}</nav></div>`, { breadcrumb: { title: tr("common.all_projects"), href: "/" } });
 }
 /** Pill tone for each reply state; the label text always comes with it. */
-export const replyTone: Record<JitReplyView["state"], string> = { thinking: "running", answered: "succeeded", blocked: "blocked", stopped: "stopped", failed: "failed", not_admitted: "waiting" };
+export const replyTone: Record<JitReplyView["state"], string> = { thinking: "running", queued: "queued", answered: "succeeded", blocked: "blocked", stopped: "stopped", failed: "failed", not_admitted: "waiting" };
 /** Localised app.jit_reply/v1 state label and next action. Shared by the page and the event stream. */
 export function replyLabels(view: Pick<JitReplyView, "state" | "nextAction">): { state: string; next: string | null } {
   return { state: tr(`reply.state.${view.state}` as MessageKey), next: view.nextAction ? tr(`reply.next.${view.nextAction}` as MessageKey) : null };
@@ -256,7 +256,7 @@ export function replyLabels(view: Pick<JitReplyView, "state" | "nextAction">): {
  * The streamed text is not a live region; one polite status line announces start, connection and finish instead.
  */
 function replyStatus(view: JitReplyView, base: string, projectId: string, csrf: string): string {
-  const labels = replyLabels(view), stoppable = view.state === "thinking" || view.state === "blocked";
+  const labels = replyLabels(view), stoppable = view.state === "thinking" || view.state === "queued" || view.state === "blocked";
   // The page that starts at this owner message also holds its reply card.
   const here = `${base}?after=${Math.max(0, view.messageSequence - 1)}#reply-${view.id}`;
   return `<article class="message message--jit reply-status" id="reply-${view.id}" data-reply-id="${view.id}" data-reply-state="${view.state}">
@@ -349,7 +349,7 @@ function dispatchCard(card: DispatchCardView, base: string, csrf: string, topicR
   const settledFailure = team.roles.some(role => role.activity === "settled" && role.state === "blocked");
   const needsOwner = !team.stoppedAll && (settledFailure || waiting > 0 || card.blocked.length > 0 || (card.teamHold !== null && !card.teamReply) || team.roles.some(role => role.result?.status === "blocked") || teamReplyStalled);
   // Nothing runs or waits any more and no answer is coming (stopped, failed or without results): Jit asked, past tense.
-  const settled = !answered && !live && !waiting && card.teamReply?.state !== "thinking" && card.teamReply?.state !== "blocked";
+  const settled = !answered && !live && !waiting && card.teamReply?.state !== "thinking" && card.teamReply?.state !== "queued" && card.teamReply?.state !== "blocked";
   const title = tr(answered ? "team_card.answered_by" : settled ? "team_card.asked" : "team_card.asking");
   const origin = team.origin?.kind === "owner-accepted" ? tr("team_card.origin_owner")
     : `${tr("team_card.origin_allowance")} ${card.allowanceRevision}${card.allowanceRevision === 0 ? ` (${tr("settings.dispatch_default")})` : ""}`;
@@ -491,8 +491,16 @@ export function conversationPage(state: ReturnType<Application["conversation"]>,
   const onPageCards = [...cards.values()].filter(card => card.discussion && state.items.some(item => item.id === card.replyMessageId));
   const folded = new Set(onPageCards.flatMap(card => card.discussion!.roles.map(role => role.runId)));
   const committedReplies = new Map([...replies.values()].filter(view => view.replyMessageId).map(view => [view.replyMessageId!, view]));
-  const live = [...replies.values()].filter(view => view.state === "thinking" || view.state === "blocked");
+  const live = [...replies.values()].filter(view => view.state === "thinking" || view.state === "queued" || view.state === "blocked");
   const onPage = new Set(state.items.map(item => item.id));
+  const paired = new Set([...replies.values()].filter(view => onPage.has(view.messageId) && view.replyMessageId && onPage.has(view.replyMessageId)).map(view => view.replyMessageId!));
+  const ordered: typeof state.items = [];
+  const append = (item: (typeof state.items)[number]) => {
+    ordered.push(item);
+    const answerId = replies.get(item.id)?.replyMessageId;
+    if (answerId && paired.has(answerId)) append(state.items.find(message => message.id === answerId)!);
+  };
+  for (const item of state.items) if (!paired.has(item.id)) append(item);
   // An answer committed beyond this page: link to it instead of dropping the reply from view.
   const answeredElsewhere = (view: JitReplyView) => `<article class="message message--jit reply-status" id="reply-${view.id}" data-reply-id="${view.id}" data-reply-state="answered">
     <div class="reply-head"><span class="jit-avatar">${logoMark({ size: 20 })}</span><span class="reply-name">${tr("jit.name")}</span><span class="job-status" data-state="${replyTone.answered}">${escape(replyLabels(view).state)}</span></div>
@@ -558,9 +566,9 @@ export function conversationPage(state: ReturnType<Application["conversation"]>,
   const chips = (view: JitReplyView | undefined) => view && !live.length && newest(view) && chipsAllowed(view, {
     dispatchCard: cards.has(view.replyMessageId!), mcpCard: mcpByReply.has(view.id), promoted: !!promotedTo, approvalPending }) ? replyChips(view.suggestions, base, csrf, topic.revision) : "";
   // A live reply to the owner's newest message gets a hidden slot the stream may fill when it answers.
-  const chipSlot = (view: JitReplyView) => (view.state === "thinking" || view.state === "blocked") && !view.team && !state.hasMore && !promotedTo && !approvalPending &&
+  const chipSlot = (view: JitReplyView) => (view.state === "thinking" || view.state === "queued" || view.state === "blocked") && !view.team && !state.hasMore && !promotedTo && !approvalPending &&
     view.messageSequence >= lastOwner ? replyChipSlot(view.id, base, csrf, topic.revision) : "";
-  return shell(title, { workspace, csrf, project, topics, topic, section: "topic" }, `<div class="content chat-content"${live.length ? ` data-reply-stream="${base}/events" data-reply-cursor="${cursor}"` : ""}>${promotedBanner}${dispatchPanel}${decision}${proposeTask}${approvals}<section aria-label="${tr("topic.message_history")}">${state.items.length ? state.items.map(m => { const jit = committedReplies.get(m.id), reply = replies.get(m.id), card = cards.get(m.id);
+  return shell(title, { workspace, csrf, project, topics, topic, section: "topic" }, `<div class="content chat-content"${live.length ? ` data-reply-stream="${base}/events" data-reply-cursor="${cursor}"` : ""}>${promotedBanner}${dispatchPanel}${decision}${proposeTask}${approvals}<section aria-label="${tr("topic.message_history")}">${state.items.length ? ordered.map(m => { const jit = committedReplies.get(m.id), reply = replies.get(m.id), card = cards.get(m.id);
       if (m.attribution.kind === "participant" && !jit && folded.has(m.attribution.runId)) return "";
       if (m.attribution.kind === "service" && m.attribution.service === "jit-promotion") return continuedBlock(m);
       return `<article id="message-${m.id}" class="message${m.attribution.kind === "owner" ? " message--owner" : jit || setupGreeting(m.attribution) ? " message--jit" : ""}" data-message-id="${m.id}">${jit || setupGreeting(m.attribution) ? `<div class="reply-head"><span class="jit-avatar">${logoMark({ size: 20 })}</span><span class="reply-name">${tr("jit.name")}</span></div>` : ""}<div class="message-body">${m.text === null ? `<p class="literal">${tr("common.source_unavailable")}</p>` : literalContent(m.text)}</div>${messageAttachmentList(base, dispatch?.attachments?.byMessage.get(m.id) ?? [])}

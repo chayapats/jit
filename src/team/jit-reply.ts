@@ -67,7 +67,7 @@ export const jitReplyPurpose = "จิตตอบข้อความ";
 /** Why a reply was not admitted. The owner message is committed regardless. */
 export type ReplyNotAdmitted = "no_route" | "scheduler_unavailable" | "queue_full" | "context_too_large";
 /** Owner-visible reply state, derived from the persisted record and its job. */
-export type ReplyState = "thinking" | "answered" | "blocked" | "stopped" | "failed" | "not_admitted";
+export type ReplyState = "thinking" | "queued" | "answered" | "blocked" | "stopped" | "failed" | "not_admitted";
 
 /** Persisted in `team_runs.record_json` (kind `jit_reply`) so data lifecycle, correction and restore cover it. */
 interface JitReplyRecord {
@@ -612,6 +612,16 @@ function promotionOpen(tx: AppTransaction, projectId: string, topicId: string): 
 const sequenceOf = (tx: AppTransaction, messageId: string | null) => messageId
   ? tx.get<{ sequence: number }>("SELECT sequence FROM messages WHERE id = ?", messageId)?.sequence ?? null : null;
 
+/** Whether a lower-sequence reply in this topic still has live queued, running or waiting work. */
+function earlierReplyLive(tx: AppTransaction, row: { id: string; projectId: string; topicId: string }, messageSequence: number): boolean {
+  return !!tx.get(`SELECT 1 FROM jit_replies r
+    JOIN messages m ON m.id = r.message_id
+    JOIN team_runs t ON t.id = r.run_id AND t.project_id = r.project_id
+    JOIN jobs j ON j.id = json_extract(t.record_json, '$.jobId')
+    WHERE r.project_id = ? AND r.topic_id = ? AND r.id <> ? AND m.sequence < ?
+      AND j.state IN ('queued', 'admitted', 'waiting') LIMIT 1`, row.projectId, row.topicId, row.id, messageSequence);
+}
+
 function project(tx: AppTransaction, row: { id: string; projectId: string; topicId: string; messageId: string; runId: string | null; reason: string | null; cursor: number; createdAt: number }): JitReplyView {
   const base = { id: row.id, projectId: row.projectId, topicId: row.topicId, messageId: row.messageId, cursor: row.cursor, createdAt: row.createdAt,
     messageSequence: sequenceOf(tx, row.messageId) ?? 0, replySequence: null as number | null };
@@ -636,7 +646,7 @@ function project(tx: AppTransaction, row: { id: string; projectId: string; topic
   if (record.result) return { ...common, state: "failed", reason: record.result.reason, nextAction: "send_again", progress: null, replyMessageId: null, source: null };
   const job = readJob(tx, row.projectId, record.jobId);
   const none = { replyMessageId: null, source: null };
-  if (job.state === "queued" || job.state === "admitted") return { ...common, ...none, state: "thinking", reason: job.reason, nextAction: null, progress: null };
+  if (job.state === "queued" || job.state === "admitted") return { ...common, ...none, state: job.state === "queued" && earlierReplyLive(tx, row, base.messageSequence) ? "queued" : "thinking", reason: job.reason, nextAction: null, progress: null };
   if (job.state === "waiting") return { ...common, ...none, state: "blocked", reason: job.reason, nextAction: blockedNext[job.reason] ?? "resume_or_send_again", progress: null };
   if (job.reason === "cancelled") return { ...common, ...none, state: "stopped", reason: "cancelled", nextAction: "send_again", progress: null };
   return { ...common, ...none, state: "failed", reason: job.reason, nextAction: "send_again", progress: null };
@@ -686,7 +696,7 @@ export function stopReply(tx: AppTransaction, command: StopReplyCommand, queue: 
   if (!queue) throw new AppError("scheduler_unavailable", 503);
   queue.assertOwner(tx);
   const view = readReply(tx, command.projectId, command.payload.replyId);
-  if (view.state !== "thinking" && view.state !== "blocked") throw new AppError("reply_not_stoppable", 409);
+  if (view.state !== "thinking" && view.state !== "queued" && view.state !== "blocked") throw new AppError("reply_not_stoppable", 409);
   if (view.revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
   const job = readJob(tx, command.projectId, view.jobId!);
   queue.execute(tx, { kind: "job.stop", requestId: command.requestId, projectId: command.projectId, expectedRevision: job.revision, payload: { jobId: job.id } }, generation, now);

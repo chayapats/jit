@@ -195,6 +195,31 @@ test("a Jit reply that calls 3 specialists creates no intent until all settle, t
   expect(intents(g)).toHaveLength(1);
 });
 
+test("COMM03: a queued team reply keeps its work group open until its attempt settles", async () => {
+  const f = await fixture({ jit: request => request.manifest.sources.at(-1)!.text === "wait"
+    ? fixtureOutcome("quota") : answer(request, dispatching(three)) });
+  const first = send(f, "ask the team"), waiting = send(f, "wait");
+  f.queue.pump(); await f.queue.idle();
+  // The earlier owner message remains blocked; the dispatching answer has a higher append-only sequence.
+  f.queue.pump(); await f.queue.idle();
+  expect(replyFor(f, waiting.message.id).state).toBe("blocked");
+  const dispatch = replyFor(f, first.message.id);
+  // All specialist results settle; the new team reply is queued behind that live earlier anchor.
+  for (let index = 0; index < 3; index++) {
+    const card = cardFor(f, dispatch.replyMessageId!);
+    if (card.teamReply) break;
+    f.queue.pump(); await f.queue.idle();
+  }
+  const queued = cardFor(f, dispatch.replyMessageId!).teamReply!;
+  expect(queued.state).toBe("queued");
+  tickWorkGroups(f.store, f.config.team, f.clock.now);
+  expect(groups(f)[0]!.state).toBe("open");
+  expect(intents(f)).toHaveLength(0);
+  await drain(f);
+  expect(cardFor(f, dispatch.replyMessageId!).teamReply!.state).toBe("answered");
+  expect(groups(f)[0]!.state).toBe("closed");
+});
+
 test("one specialist stopped and one skipped still notify once, and a late callback after settlement adds none", async () => {
   const gates = new Map<string, ReturnType<typeof deferred<ApplicationRunOutcome>>>();
   let techId = "";
