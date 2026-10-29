@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
-import { closeSync, constants, existsSync, fsyncSync, lstatSync, openSync, readFileSync, readSync, readdirSync, rmSync, writeSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { closeSync, constants, existsSync, fsyncSync, fstatSync, lstatSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, writeSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { AppError } from "../errors";
 import type { AppTransaction } from "../store";
@@ -54,29 +54,52 @@ export function attachmentArtifactPath(root: string, blob: AttachmentBlob, creat
   }
   return join(root, blob.projectId, blob.sha256.slice(0, 2), blob.sha256);
 }
-/** Copies a verified blob without buffering it, following links, overwriting existing content or sharing live-store inodes. */
+/** Copies through a private, verified and fsynced sibling before atomic publication; repairs corrupt regular files without following links or sharing inodes. */
 export function copyAttachmentBlob(sourceRoot: string, targetRoot: string, blob: AttachmentBlob): void {
   const source = attachmentArtifactPath(sourceRoot, blob);
   verifyAttachmentBlob(source, blob.sha256, blob.bytes);
   const target = attachmentArtifactPath(targetRoot, blob, true);
-  let output: number;
-  try { output = openSync(target, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600); }
-  catch (e) { if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e; verifyAttachmentBlob(target, blob.sha256, blob.bytes); return; }
-  let input: number | null = null;
+  const checkTarget = () => {
+    try {
+      const st = lstatSync(target);
+      if (!st.isFile() || st.isSymbolicLink() || (st.mode & 0o077)) throw new AppError("attachment_blob_corrupt", 409);
+      return true;
+    } catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return false; throw e; }
+  };
+  if (checkTarget()) {
+    try { verifyAttachmentBlob(target, blob.sha256, blob.bytes); return; }
+    catch { /* Only a verified replacement may repair this regular file. */ }
+  }
+  const temporary = join(dirname(target), `.${blob.sha256}.${randomUUID()}.tmp`);
+  let input: number | null = null, output: number | null = null;
   try {
-    input = openSync(source, constants.O_RDONLY | constants.O_NOFOLLOW);
+    output = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    input = openSync(source, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const stat = fstatSync(input);
+    if (!stat.isFile() || stat.size !== blob.bytes || (stat.mode & 0o077)) throw new Error("attachment_blob_corrupt");
     const digest = createHash("sha256"), chunk = Buffer.alloc(65536); let bytes = 0;
     for (;;) {
       const n = readSync(input, chunk, 0, chunk.length, null); if (!n) break;
       bytes += n; if (bytes > blob.bytes) throw new Error("attachment_blob_corrupt"); digest.update(chunk.subarray(0, n));
-      for (let at = 0; at < n;) at += writeSync(output, chunk, at, n - at);
+      for (let at = 0; at < n;) {
+        const written = writeSync(output, chunk, at, n - at);
+        if (!written) throw new Error("attachment_write_failed");
+        at += written;
+      }
     }
     if (bytes !== blob.bytes || digest.digest("hex") !== blob.sha256) throw new Error("attachment_blob_corrupt");
     fsyncSync(output);
-  } catch (e) { rmSync(target, { force: true }); throw e; }
-  finally { closeSync(output); if (input !== null) closeSync(input); }
-  const fd = openSync(dirname(target), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-  try { fsyncSync(fd); } finally { closeSync(fd); }
+    closeSync(output); output = null;
+    // Recheck the authorized directory and refuse non-regular destinations before replacing the name.
+    attachmentArtifactPath(targetRoot, blob); checkTarget();
+    renameSync(temporary, target);
+    const fd = openSync(dirname(target), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try { fsyncSync(fd); } finally { closeSync(fd); }
+  } finally {
+    if (output !== null) closeSync(output);
+    if (input !== null) closeSync(input);
+    rmSync(temporary, { force: true });
+  }
 }
 /** Captures blobs inside the snapshot transaction. The bound must be checked before this function or any backup writer runs. */
 export function stageBackupAttachments(databasePath: string, backupDir: string, inventory: ReturnType<typeof collectAttachmentBlobs>, bound: number): Omit<BackupAttachments, "index"> {

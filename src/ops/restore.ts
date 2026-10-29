@@ -1,4 +1,4 @@
-import { replayAttachmentLifecycle } from "../attachments/lifecycle";
+import { replayAttachmentLifecycle, type AttachmentDeletionScope } from "../attachments/lifecycle";
 import { collectAttachmentBlobs, copyAttachmentBlob, readAttachmentIndex } from "../attachments/backup";
 import { AttachmentStorage } from "../attachments/storage";
 import { attachmentHost, attachmentLimits } from "../attachments/limits";
@@ -730,15 +730,15 @@ function openDeletionContexts(tx: AppTransaction): Set<string> {
 /** Context states that still hold native data (a `missing` context was reported absent by the engine). */
 const undeletedStates = new Set(["pending", "delete_failed", "retire_failed"]);
 
-/** Opens one budgeted app.data_lifecycle/v1 deletion operation for restored contexts (managed delete through the run port). */
-function scheduleRestoreDeletion(tx: AppTransaction, projectId: string, contexts: { id: string; generation: number }[], now: number, reason: string): string {
+/** Opens one budgeted app.data_lifecycle/v1 operation for restored contexts and/or attachment copies, reconciled before fence release. */
+function scheduleRestoreDeletion(tx: AppTransaction, projectId: string, contexts: { id: string; generation: number }[], now: number, reason: string, attachments: AttachmentDeletionScope[] = []): string {
   const operationId = randomUUID();
   const operation = {
     id: operationId, contract: "app.data_deletion_operation/v1", projectId, previewId: `restore-replay:${operationId}`,
     scope: { kind: "source", projectId, source: { sourceId: "restore-ledger-replay", revision: 1, generation: 1 } },
     state: "pending", attempts: 0, maxAttempts: 5, tombstones: [],
     contexts: contexts.map(c => ({ ...c, state: "pending", attempts: 0, reason, nextAction: "reconcile_managed_delete_then_verify", updatedAt: now })),
-    exports: [], scopes: [], backupsRetained: [],
+    exports: [], scopes: [], backupsRetained: [], attachments,
     residuals: ["telegram_delivery_copies_not_deleted", "provider_session_copies_not_deleted", "retained_backups_require_retention_purge"],
     reason: "native_sessions_pending_managed_delete", nextAction: "reconcile_managed_delete_then_verify", createdAt: now, updatedAt: now,
   };
@@ -865,7 +865,11 @@ function replayLedger(staged: TransactionStore, entries: LifecycleLedgerEntry[],
       for (const c of lineage) tx.run("INSERT OR IGNORE INTO memory_suppressed_sources VALUES (?, ?, ?, ?, ?)", s.id, c.projectId, c.sourceId, c.revision, c.generation);
       replay.appliedSuppressions++;
     }
-    replayAttachmentLifecycle(tx, now, true);
+    // An older image has no cleanup scopes for a later forget/delete. Rebuild them from the rows
+    // replay retires, including drafts and ledger-only suppressions, before their blob references vanish.
+    for (const scope of replayAttachmentLifecycle(tx, now, true)) {
+      replay.deleteOperations.push(scheduleRestoreDeletion(tx, scope.projectId, [], now, "restore_attachment_replay", [scope]));
+    }
     // Derived invalidation: the deletion inventory's own job evidence (runs, syntheses, extractions, attempts) classifies
     // every managed native context; opaque or manifest-less owners are unknown and handled like deleted (fail closed).
     const citations = contextCitations(tx, { sources: deletedSources, claims: deletedClaims, projects: new Set(view.projectDeletions.map(d => d.projectId)) }, { sources: suppressedSources, claims: suppressedClaims });

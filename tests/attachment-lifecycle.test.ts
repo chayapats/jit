@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Application, type ApplicationOptions } from "../src/application";
@@ -11,7 +11,9 @@ import { ScriptedRunPort } from "../src/team/scripted-port";
 import { reconcileDeletions, type DeletionPreview, type DeletionReceipt, type DeletionConfirmReceipt } from "../src/memory/delete";
 import { attachmentProjectContributor, reconcileForgottenAttachments, replayAttachmentLifecycle, redactOutboundRelease } from "../src/attachments/lifecycle";
 import { AttachmentStorage } from "../src/attachments/storage";
-import { collectAttachmentBlobs, readAttachmentIndex } from "../src/attachments/backup";
+import { attachmentArtifactPath, collectAttachmentBlobs, copyAttachmentBlob, readAttachmentIndex } from "../src/attachments/backup";
+import { readRestoreGate } from "../src/ops/restore";
+import { readUpgradeFence } from "../src/ops/upgrade-fence";
 import { assertRestorableBackup, planRetention, type BackupNativePort } from "../src/ops/backup";
 import { upgradeEngineContract, upgradeNativeFormatVersion } from "../src/ops/upgrade";
 import { createWebHandler } from "../src/web";
@@ -160,14 +162,64 @@ test("restore writes only ledger survivors and drops unsent drafts, then sweeps 
   f.derivative(a.id, "model", "deleted model"); const backup = (await f.backup()).manifest;
   f.confirm(f.preview({ sourceId: a.id, revision: 1, generation: 1 })); await reconcileDeletions(f.store, f.port, now, undefined, f.env);
   const late = await f.upload("after backup"); f.send([late.id]);
-  rmSync(f.path("survivor"));
+  // Corrupt the existing inode in place: restore must repair it without manual unlinking.
+  const corruptInode = lstatSync(f.path("survivor")).ino;
+  writeFileSync(f.path("survivor"), "corrupted");
+  expect(lstatSync(f.path("survivor")).ino).toBe(corruptInode);
   const prepared = (await f.app.execute(f.auth.actor, { kind: "restore.prepare", requestId: rid(), projectId: null, expectedRevision: f.app.workspace(f.auth.actor).revision, payload: { backupId: backup.id, note: "test" } })).quarantine;
   const step = (kind: "restore.migrate" | "restore.apply_ledger" | "restore.validate" | "restore.activate") => f.app.execute(f.auth.actor, { kind, requestId: rid(), projectId: null, expectedRevision: f.app.workspace(f.auth.actor).revision, payload: { quarantineId: prepared.id } });
   await step("restore.migrate"); await step("restore.apply_ledger"); expect((await step("restore.validate")).quarantine.state).toBe("validated");
   await step("restore.activate");
   expect(readFileSync(f.path("survivor"), "utf8")).toBe("survivor");
+  expect(lstatSync(f.path("survivor")).ino).not.toBe(corruptInode);
   for (const text of ["delete me", "deleted model", "draft", "after backup"]) expect(existsSync(f.path(text))).toBe(false);
   expect(f.store.read(tx => tx.get<{ state: string }>("SELECT state FROM attachments WHERE id = ?", draft.id)?.state)).toBe("deleted");
+});
+
+test("blob replacement rejects symlinks and corrupt sources, preserves the destination on failure and leaves no temporary files", async () => {
+  const f = await fixture(), a = await f.upload("good"); f.send([a.id]);
+  const backup = (await f.backup()).manifest, blob = readAttachmentIndex(backup.attachments, f.backupDir, backup.id)[0]!;
+  const sourceRoot = join(f.backupDir, "attachments"), source = attachmentArtifactPath(sourceRoot, blob), target = f.path("good");
+  const outside = join(f.dir, "outside.txt"); writeFileSync(outside, "outside", { mode: 0o600 });
+  rmSync(target); symlinkSync(outside, target);
+  expect(() => copyAttachmentBlob(sourceRoot, f.storage.root, blob)).toThrow();
+  expect(lstatSync(target).isSymbolicLink()).toBe(true); expect(readFileSync(outside, "utf8")).toBe("outside");
+  rmSync(target); writeFileSync(target, "bad!", { mode: 0o600 }); writeFileSync(source, "bad!");
+  expect(() => copyAttachmentBlob(sourceRoot, f.storage.root, blob)).toThrow();
+  expect(readFileSync(target, "utf8")).toBe("bad!");
+  writeFileSync(source, "good"); copyAttachmentBlob(sourceRoot, f.storage.root, blob);
+  expect(readFileSync(target, "utf8")).toBe("good"); expect(lstatSync(target).mode & 0o777).toBe(0o600);
+  expect(lstatSync(target).ino).not.toBe(lstatSync(source).ino);
+  expect(readdirSync(join(f.storage.root, f.p.id, blob.sha256.slice(0, 2)))).toEqual([blob.sha256]);
+  const inode = lstatSync(target).ino; copyAttachmentBlob(sourceRoot, f.storage.root, blob); expect(lstatSync(target).ino).toBe(inode);
+  const parent = join(f.storage.root, f.p.id, blob.sha256.slice(0, 2)), outsideDir = join(f.dir, "outside-dir");
+  mkdirSync(outsideDir, { mode: 0o700 }); writeFileSync(join(outsideDir, blob.sha256), "untouched", { mode: 0o600 });
+  rmSync(parent, { recursive: true }); symlinkSync(outsideDir, parent);
+  expect(() => copyAttachmentBlob(sourceRoot, f.storage.root, blob)).toThrow();
+  expect(readFileSync(join(outsideDir, blob.sha256), "utf8")).toBe("untouched");
+});
+
+test("over-bound attachment inventory never blocks chat with ingestion off, while backup still fails closed", async () => {
+  const f = await fixture(); const a = await f.upload("12345678"); f.send([a.id], "chat stays reachable");
+  const p = f.app.execute(f.auth.actor, { kind: "project.create", projectId: null, requestId: rid(), expectedRevision: f.app.workspace(f.auth.actor).revision, payload: { name: "large installation" } }).project;
+  const t = f.app.execute(f.auth.actor, { kind: "topic.create", projectId: p.id, requestId: rid(), expectedRevision: p.revision, payload: { title: "many files" } }).topic;
+  f.store.transaction(tx => tx.run(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 200000)
+    INSERT INTO attachments (id, project_id, topic_id, revision, state, kind, media_type, bytes, sha256, text_sha256, text_bytes, created_at, updated_at)
+    SELECT '00000000-0000-4000-8000-' || printf('%012x', i), ?, ?, 1, 'ready', 'text', 'text/plain', 8, ?, ?, 8, ?, ? FROM n`, p.id, t.id, sha("12345678"), sha("12345678"), now, now));
+  f.config.attachments.enabled = false; f.config.attachments.backupBytes = 20;
+  // Same hash in two projects counts twice; text/original and repeated live references count once per project.
+  expect(f.app.attachmentBackupUsage()).toEqual({ bytes: 16, bound: 20, notice: true });
+  const response = await createWebHandler(f.app)(new Request(`${f.config.origin}/projects/${f.p.id}/topics/${f.t.id}`, { headers: { cookie: `jit_session=${f.token}` } }));
+  expect(response.status).toBe(200); expect(await response.text()).toContain("chat stays reachable");
+  const before = existsSync(f.backupDir) ? readdirSync(f.backupDir).sort() : [];
+  await expect(f.backup()).rejects.toMatchObject({ code: "attachment_inventory_too_large" });
+  expect(existsSync(f.backupDir) ? readdirSync(f.backupDir).sort() : []).toEqual(before);
+});
+
+test("a notice read failure degrades to no notice", async () => {
+  const f = await fixture(); f.store.close();
+  expect(f.app.attachmentBackupUsage()).toEqual({ bytes: 0, bound: f.config.attachments.backupBytes, notice: false });
+  expect(f.app.attachmentComposer().backupUsage.notice).toBe(false);
 });
 
 test("staged GC stays outside ledger; replay deletes suppressed attachments and 80% notice renders in both locales", async () => {
@@ -206,6 +258,54 @@ test("owner forget of a message claim suppresses its attachment lineage, waits f
   await reconcileForgottenAttachments(reopened, { reconcile: async () => storage.purgeDeleted() });
   expect(f.app.suppressionLedger(f.auth.actor, f.p.id, claimId)?.retire.state).toBe("complete");
   expect(existsSync(f.path("forget file"))).toBe(false);
+});
+
+test("restore of a backup before forget keeps copy cleanup pending across activation and reopen", async () => {
+  let failCleanup = true, resumes = 0, port!: ScriptedRunPort;
+  const calls: { projectId: string; ids: readonly string[]; fenced: boolean }[] = [];
+  const options: ApplicationOptions = {
+    attachmentCopies: { reconcile: async (projectId, ids) => {
+      calls.push({ projectId, ids: [...ids], fenced: !!readUpgradeFence(f.config.databasePath) });
+      if (failCleanup) throw new Error("box copy remains");
+      rmSync(copy, { force: true });
+    } },
+    service: { quiesce: async () => ({ settled: true, fencedJobs: 0, detail: "fixture_quiesced" }),
+      resume: async () => { resumes++; return { reconciled: true, detail: "fixture_reconciled" }; },
+      fencedLifecycle: async run => run(port) },
+  };
+  const f = await fixture(options); port = f.port;
+  const copy = join(f.dir, "tracked-box-copy.txt"); writeFileSync(copy, "forget file", { mode: 0o600 });
+  const a = await f.upload("forget file"), m = f.send([a.id], "remember this message"), claimId = rid(), extractionId = rid(), jobId = rid();
+  f.store.transaction(tx => {
+    tx.run("INSERT INTO jobs (id, project_id, queue_order, priority, state, occupies, route_key, record_json) VALUES (?, ?, 1, 0, 'succeeded', 0, 'fixture', ?)", jobId, f.p.id, JSON.stringify({ id: jobId }));
+    tx.run("INSERT INTO memory_extractions (id, project_id, job_id, source_id, source_revision, source_generation, extractor, policy, record_json) VALUES (?, ?, ?, ?, 1, 1, 'claims/v1', 1, ?)", extractionId, f.p.id, jobId, m.source.sourceId, JSON.stringify({ id: extractionId, source: m.source, dependencies: [], request: { manifest: { sources: [], claims: [] } } }));
+    tx.run("INSERT INTO memory_claims (id, project_id, extraction_id, revision, generation, record_json) VALUES (?, ?, ?, 1, 1, ?)", claimId, f.p.id, extractionId,
+      JSON.stringify({ claimId, projectId: f.p.id, extractionId, revision: 1, generation: 1, kind: "explicit_fact", text: "remember this message", quote: "remember this message", source: m.source,
+        dependencies: [], conflicts: [], status: "active", createdAt: now, decision: null }));
+  });
+  const backup = (await f.backup()).manifest;
+  f.app.execute(f.auth.actor, { kind: "memory.forget", requestId: rid(), projectId: f.p.id, expectedRevision: f.app.project(f.auth.actor, f.p.id).revision,
+    payload: { claim: { claimId, revision: 1, generation: 1 }, reason: "forget", acknowledged: true } });
+  await reconcileForgottenAttachments(f.store, options.attachmentCopies);
+  expect(f.app.suppressionLedger(f.auth.actor, f.p.id, claimId)?.retire.state).toBe("incomplete"); expect(existsSync(copy)).toBe(true);
+  const prepared = (await f.app.execute(f.auth.actor, { kind: "restore.prepare", requestId: rid(), projectId: null, expectedRevision: f.app.restoreConsole(f.auth.actor).revision,
+    payload: { backupId: backup.id, note: "before forget" } })).quarantine;
+  const step = (kind: "restore.migrate" | "restore.apply_ledger" | "restore.validate" | "restore.activate") => f.app.execute(f.auth.actor, { kind, requestId: rid(), projectId: null,
+    expectedRevision: f.app.restoreConsole(f.auth.actor).revision, payload: { quarantineId: prepared.id } });
+  await step("restore.migrate"); await step("restore.apply_ledger"); expect((await step("restore.validate")).quarantine.state).toBe("validated");
+  const activated = (await step("restore.activate")).quarantine;
+  expect(activated).toMatchObject({ state: "activated", reason: "native_delete_pending", activation: { fenceReleased: false } });
+  expect(readUpgradeFence(f.config.databasePath)?.holder).toBe("restore"); expect(readRestoreGate(f.config.databasePath)).toBe(prepared.id);
+  expect(existsSync(copy)).toBe(true); expect(resumes).toBe(0);
+  expect(calls.some(c => c.fenced && c.projectId === f.p.id && c.ids.includes(a.id))).toBe(true);
+  expect(f.store.read(tx => tx.all<{ json: string }>("SELECT record_json AS json FROM deletion_operations").some(r => JSON.parse(r.json).attachments?.some((scope: { state: string; identities: string[] }) => scope.state === "pending" && scope.identities.includes(a.id))))).toBe(true);
+  f.store.close(); const reopened = new TransactionStore(f.config.databasePath); stores.push(reopened);
+  port = new ScriptedRunPort(reopened, f.config.team, f.config.jobs.outputBytes);
+  const app = new Application(reopened, f.config, { ...options, now: () => now, backupDir: f.backupDir, nativeSnapshot: native });
+  failCleanup = false; const owner = app.authenticate(await app.login("attachment-lifecycle-password")).actor;
+  const completed = (await app.execute(owner, { kind: "restore.activate", requestId: rid(), projectId: null, expectedRevision: app.restoreConsole(owner).revision, payload: { quarantineId: prepared.id } })).quarantine;
+  expect(completed.state).toBe("complete"); expect(resumes).toBe(1); expect(existsSync(copy)).toBe(false); expect(existsSync(f.path("forget file"))).toBe(false);
+  expect(readUpgradeFence(f.config.databasePath)).toBeNull(); expect(readRestoreGate(f.config.databasePath)).toBeNull();
 });
 
 test("deletion aborts an active sanitizer and removes its private work before operation completion", async () => {

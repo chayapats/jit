@@ -1,7 +1,7 @@
 import { AttachmentSanitizer } from "./attachments/sanitizer";
 import type { AttachmentSanitizerRuntime } from "./attachments/sanitizer-runtime";
 import { reconcileForgottenAttachments, attachmentProjectContributor, replayAttachmentLifecycle, type AttachmentCopyCleanup } from "./attachments/lifecycle";
-import { sweepBackupAttachmentBlobs, collectAttachmentBlobs } from "./attachments/backup";
+import { sweepBackupAttachmentBlobs } from "./attachments/backup";
 import { purgeDeletedAttachments } from "./memory/delete";
 import { AttachmentStorage, type AttachmentStorageOptions, type AttachmentUpload } from "./attachments/storage";
 import { readAttachment, readAttachmentEvents, writeAttachmentEvent, type AttachmentView, type AttachmentEventView } from "./attachments/records";
@@ -2165,10 +2165,24 @@ export class Application {
     return result;
   }
 
-  /** Installation-wide distinct attachment bytes and the separate backup bound, including sanitized derivatives. */
+  /** Best-effort notice aggregate, distinct within each project including derivatives; errors suppress the notice, never block a page. Backup inventory remains strict. */
   attachmentBackupUsage(): { bytes: number; bound: number; notice: boolean } {
-    const bytes = this.store.read(tx => collectAttachmentBlobs(tx).bytes), bound = this.config.attachments.backupBytes;
-    return { bytes, bound, notice: bytes >= bound * .8 };
+    const bound = this.config.attachments.backupBytes;
+    try {
+      const bytes = this.store.read(tx => tx.get<{ bytes: number }>(`WITH live AS (
+          SELECT project_id, sha256, bytes, clean_sha256, clean_bytes, model_sha256, model_bytes, text_sha256, text_bytes
+          FROM attachments WHERE state != 'deleted'
+        ), blobs AS (
+          SELECT project_id, sha256 AS hash, bytes FROM live
+          UNION ALL SELECT project_id, clean_sha256, clean_bytes FROM live
+          UNION ALL SELECT project_id, model_sha256, model_bytes FROM live
+          UNION ALL SELECT project_id, text_sha256, text_bytes FROM live
+        ) SELECT coalesce(sum(bytes), 0) AS bytes FROM (
+          SELECT project_id, hash, max(bytes) AS bytes FROM blobs WHERE hash IS NOT NULL GROUP BY project_id, hash
+        )`)!.bytes);
+      if (!Number.isSafeInteger(bytes) || bytes < 0) return { bytes: 0, bound, notice: false };
+      return { bytes, bound, notice: bytes >= bound * .8 };
+    } catch { return { bytes: 0, bound, notice: false }; }
   }
 
   /** ops.backup_manifest/v1 reads: bounded inventory outside ordinary project data. */

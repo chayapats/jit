@@ -97,8 +97,8 @@ function redactOutboundRecords(tx: AppTransaction, projectId: string, scope: Rel
   for (const row of tx.all<{ rowid_: number; json: string }>(`SELECT rowid AS rowid_, result_json AS json FROM command_receipts WHERE request_id IN (SELECT request_id FROM audit WHERE project_id = ?)`, projectId)) tx.run("UPDATE command_receipts SET result_json = ? WHERE rowid = ?", JSON.stringify(redactOutboundRelease(JSON.parse(row.json), scope)), row.rowid_);
 }
 
-/** Applies latest source/project deletion and suppression authority to rows; restore additionally discards every draft. */
-export function replayAttachmentLifecycle(tx: AppTransaction, now: number, dropStaged = false): void {
+/** Applies latest lifecycle authority and returns pre-retirement cleanup inventories; restore must persist them before activation. Also discards drafts when requested. */
+export function replayAttachmentLifecycle(tx: AppTransaction, now: number, dropStaged = false): AttachmentDeletionScope[] {
   const rows = tx.all<{ id: string; projectId: string; messageId: string | null; deleted: number; suppressed: number }>(`SELECT a.id, a.project_id AS projectId, a.message_id AS messageId,
     EXISTS(SELECT 1 FROM lifecycle_ledger l WHERE l.kind = 'deletion' AND (l.subject = 'project:' || a.project_id OR (json_extract(l.record_json, '$.kind') = 'source' AND json_extract(l.record_json, '$.sourceId') = a.id))) AS deleted,
     EXISTS(SELECT 1 FROM lifecycle_ledger l WHERE l.kind = 'suppressed_source' AND json_extract(l.record_json, '$.sourceId') = a.id) AS suppressed
@@ -108,7 +108,14 @@ export function replayAttachmentLifecycle(tx: AppTransaction, now: number, dropS
     const reason = row.deleted ? "delete" : row.suppressed ? "forget" : "restore_dropped", key = `${row.projectId}/${reason}`;
     const group = groups.get(key) ?? { projectId: row.projectId, reason, ids: [] }; group.ids.push(row.id); groups.set(key, group);
   }
+  const byProject = new Map<string, string[]>();
+  for (const group of groups.values()) byProject.set(group.projectId, [...(byProject.get(group.projectId) ?? []), ...group.ids]);
+  // Capture hashes/bytes in the digest before retirement clears them. Only identities leave this transaction.
+  const scopes: AttachmentDeletionScope[] = [...byProject].map(([projectId, ids]) => ({
+    ...attachmentInventory(tx, projectId, ids), projectId, state: "pending", attempts: 0, reason: null,
+  }));
   for (const group of groups.values()) retireAttachments(tx, group.projectId, group.ids, group.reason, now);
+  return scopes;
 }
 
 /** Registers ATT06 on LIFE02's service-owned project collateral contract; all files, including drafts/orphans, are purged. */
