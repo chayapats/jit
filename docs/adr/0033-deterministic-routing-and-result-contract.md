@@ -34,6 +34,8 @@ FR-27, FR-29 and FR-30 make team work cheaper, more predictable and easier to ac
 
   The policy version is part of each run's captured identity.
 
+  **Revised 2026-10-29 (#179, confirmed S12-D05).** Version 2 adds Jit's short chat voice: answer first in about 80 words without headings, preambles or closing offers (longer only when the owner asks for detail), and move long or multi-step work into a task suggestion that only pre-fills the owner's task form. The rules stay instructions; no code truncates a reply. A scripted eval checks the committed replies, and a live check is opt-in. See [app.communication_policy/v2](../contracts/communication-policy-v2.md).
+
 ## Alternatives and consequences
 
 - Always asking a model to route wastes budget on cases that are already decided.

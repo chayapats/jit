@@ -46,6 +46,14 @@ export const teamReplyPolicy: readonly string[] = Object.freeze([
 ]);
 /** Most specialist names one dispatch proposal may carry before the rest are dropped as over-long. */
 export const dispatchNameLimit = 16;
+/** Longest task suggestion title, in UTF-16 code units: the same bound `task.propose` and the task form apply. */
+export const taskSuggestionTitleChars = 200;
+/** Longest task suggestion summary, in UTF-16 code units. */
+export const taskSuggestionSummaryChars = 1200;
+/** S12-D05: a message reply may suggest one task; it only pre-fills the owner's task form and creates nothing. */
+export const taskSuggestionInstruction = `Optional "proposals" entry {"kind":"task","title":string,"summary":string} (at most one; title at most ${taskSuggestionTitleChars} characters on one line, summary at most ${taskSuggestionSummaryChars}) suggests a task for long or multi-step work; it creates nothing until the owner saves it.`;
+/** One task suggestion kept on an answered message reply. Untrusted model text: shown escaped, never an obligation. */
+export interface TaskSuggestion { title: string; summary: string }
 /** Stored job purpose and work title. It equals the `system.jit_reply_purpose` entry, so pages translate it. */
 export const jitReplyPurpose = "จิตตอบข้อความ";
 
@@ -59,7 +67,7 @@ interface JitReplyRecord {
   kind: "jit_reply";
   id: string; projectId: string; topicId: string; messageId: string; jobId: string; roleId: string;
   personaRevision: number;
-  /** app.communication_policy/v1 version sent with this run. Absent on records written before the policy. */
+  /** app.communication_policy version sent with this run (1 or 2). Absent on records written before the policy. */
   policyVersion?: number;
   /** The immutable run request; its manifest holds untrusted topic history. */
   request: ApplicationRunRequest;
@@ -78,6 +86,11 @@ interface JitReplyRecord {
   roleProposals?: RoleProposal[];
   /** app.topic_promotion/v1: a General space reply's suggestion to continue the topic as a project; absent otherwise. */
   promotionProposal?: PromotionProposal;
+  /**
+   * S12-D05: the task a message reply suggested, untrusted model text that only pre-fills the owner's task form.
+   * Absent when none was kept, on team replies and on records written before COMM01; data deletion removes it.
+   */
+  taskSuggestion?: TaskSuggestion;
   /**
    * app.routing_selection/v1: the fixed rule that chose specialists when the owner's message was admitted. The run is
    * told the choice and is not offered a dispatch proposal; the service admits the roles when the reply commits.
@@ -130,6 +143,8 @@ export interface JitReplyView {
   roleProposals: RoleProposalView[];
   /** app.topic_promotion/v1 card attached to the committed reply (at most one). */
   promotionProposals: PromotionProposalView[];
+  /** S12-D05: the task an answered message reply suggested, for the owner's pre-filled form; null in every other state. */
+  taskSuggestion: TaskSuggestion | null;
   /** A team reply (app.dispatch_allowance/v1) answers Jit's dispatching message; null for a reply to an owner message. */
   team: TeamReplyContext | null;
 }
@@ -193,6 +208,24 @@ export function dispatchNames(item: unknown): { names: string[]; why: string | n
   const why = selectionWhy((item as { why?: unknown }).why);
   if (why === undefined) return null;
   return { names: roles.map(name => (name as string).trim()), why };
+}
+
+/** C0 controls and DEL; a title must stay one line, a summary may keep tabs and line breaks. */
+const controlCharacters = /[\u0000-\u001f\u007f]/, summaryControls = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
+/**
+ * One well-formed task suggestion `{"kind": "task", "title": string, "summary": string}` with exactly those keys, or
+ * null. Both strings are trimmed, non-empty, well-formed and within {@link taskSuggestionTitleChars} /
+ * {@link taskSuggestionSummaryChars} UTF-16 code units (the `task.propose` bound), so a saved suggestion always fits the
+ * owner's command; the title has no control characters and the summary none but tabs and line breaks. The result is
+ * untrusted text for the owner's form only: it never creates, accepts or starts a task.
+ */
+export function parseTaskSuggestion(item: unknown): TaskSuggestion | null {
+  if (!exact(item, ["kind", "title", "summary"]) || (item as { kind: unknown }).kind !== "task") return null;
+  const { title, summary } = item as { title: unknown; summary: unknown };
+  if (typeof title !== "string" || typeof summary !== "string") return null;
+  const t = title.trim(), s = summary.trim();
+  if (!t || !s || !t.isWellFormed() || !s.isWellFormed() || t.length > taskSuggestionTitleChars || s.length > taskSuggestionSummaryChars) return null;
+  return controlCharacters.test(t) || summaryControls.test(s) ? null : { title: t, summary: s };
 }
 
 /** Reads one reply record. app.role_proposals/v1 keeps its proposal revisions here. */
@@ -322,16 +355,20 @@ function admitReply(tx: AppTransaction, input: ReplyAdmission): { id: string; re
     : routing
       ? `The service already chose specialists by a fixed rule (${routing.selection.rule}) and calls them after your reply when the owner's dispatch allowance covers them; do not propose a dispatch. Chosen specialists (owner-configured, service-recorded): ${boundedNames(routing.selection.roleIds.map(id => team.roles.find(role => role.id === id)?.name ?? id), operatorLineBytes - 520)}.`
       : `Answer the owner yourself by default. Optional "proposals" entry {"kind":"dispatch","roles":[names],"why":string} (at most one) asks the service to call existing specialists for read-only analysis; propose it only when the owner asks for the team or the question clearly needs a specialist's separate analysis, never for greetings, small talk, quick questions or anything you can answer well yourself. "why" is one short reason of at most ${selectionWhyLimit} characters, shown to the owner as your reasoning. The service checks the entry against the owner's configuration and dispatch allowance, and the owner confirms anything beyond it. Specialists you may name (owner-configured, service-recorded): ${boundedNames(roster, operatorLineBytes - 1200)}.${followUp ? ` An open team discussion in this topic, with ${boundedNames(followUp.roleIds.map(id => team.roles.find(role => role.id === id)?.name ?? id), 240)}, answered just before this message; propose them again only if the owner asks that team to continue.` : ""}`;
-  // Policy lines go as one operator line: run requests hold at most 8, and role proposals (app.role_proposals/v1)
-  // and dispatch proposals each add instruction lines to a message reply.
+  // Run requests hold at most 8 operator lines of at most 2048 bytes, and a message reply with the persona's about-me
+  // line and the dispatch offer already uses 8. So the policy line carries trust, format and app.communication_policy,
+  // which ends it; one proposal-kinds line (in place of the role sentence of app.role_proposals/v1) names every other
+  // optional entry a message reply may return, and the configured-routes line stays on its own. Team replies get neither.
   // app.topic_promotion/v1: only a reply to an owner message in an open General space topic may suggest a promotion.
-  // app.communication_policy/v1 ends that line, so a reply with the persona's about-me line still fits in 8.
   const promotable = !teamInput && promotionOpen(tx, message.projectId, message.topicId);
   // app.mcp_servers/v1: a message reply may propose an MCP install only where the owner could accept it (level ≥ workspace).
   const installable = !teamInput && readEffectiveAccess(tx, message.projectId, jit.id).level !== "read";
+  const [roleSentence, routesLine] = teamInput ? [] : roleProposalInstructions(configuredRoutes(tx, message.projectId, config.team));
   const fixedOperator = [teamInput ? teamReplyMarker : jitReplyMarker,
-    [...teamInput ? teamReplyPolicy : jitReplyPolicy, ...promotable ? [promotionInstruction] : [], ...installable ? [mcpProposalInstruction] : [], communicationPolicyLine].join(" "),
-    ...(teamInput ? [] : roleProposalInstructions(configuredRoutes(tx, message.projectId, config.team))), ...personaInstructions(persona)];
+    [...teamInput ? teamReplyPolicy : jitReplyPolicy, communicationPolicyLine].join(" "),
+    ...(teamInput ? [] : [[roleSentence!, ...promotable ? [promotionInstruction] : [], ...installable ? [mcpProposalInstruction] : [],
+      taskSuggestionInstruction].join(" "), routesLine!]),
+    ...personaInstructions(persona)];
   // The metadata line is charged at an upper bound that holds for every split of the offered results into kept and
   // gaps, in any order: the line with empty lists plus, per list, the smaller of its cap and every candidate entry,
   // plus the "(+N more)" suffix. The budget never changes during packing, so a fit found below stays a fit.
@@ -549,7 +586,7 @@ function project(tx: AppTransaction, row: { id: string; projectId: string; topic
   if (!row.runId) {
     return { ...base, jobId: null, revision: 1, state: "not_admitted", reason: row.reason, nextAction: notAdmittedAction(tx, row),
       progress: null, replyMessageId: null, source: null, mode: null, route: null, personaRevision: null, discarded: [], discardedTotal: 0, roleProposals: [],
-      promotionProposals: [], team: dispatchAnchored(tx, row.id) };
+      promotionProposals: [], taskSuggestion: null, team: dispatchAnchored(tx, row.id) };
   }
   const record = readReplyRecord(tx, row.projectId, row.runId);
   const common = { ...base, jobId: record.jobId, revision: record.revision, route: record.request.route, personaRevision: record.personaRevision,
@@ -557,10 +594,11 @@ function project(tx: AppTransaction, row: { id: string; projectId: string; topic
     roleProposals: roleProposalViews(record, record.roleProposals, sequenceOf(tx, record.replyMessageId)),
     promotionProposals: promotionProposalViews(record, record.promotionProposal, sequenceOf(tx, record.replyMessageId),
       record.promotionProposal ? promotionFrom(tx, record.projectId, record.topicId) : null),
+    taskSuggestion: null as TaskSuggestion | null,
     team: record.team ? { ...record.team, gaps: record.team.gaps.map(gap => gap.runId ? { ...gap, unblock: unblockAction(tx, row.projectId, gap.runId) } : gap) } : null };
   if (record.result?.state === "answered") {
     return { ...common, state: "answered", reason: null, nextAction: null, progress: null, replyMessageId: record.replyMessageId, source: record.source,
-      replySequence: sequenceOf(tx, record.replyMessageId) };
+      replySequence: sequenceOf(tx, record.replyMessageId), taskSuggestion: record.taskSuggestion ? { ...record.taskSuggestion } : null };
   }
   if (record.result) return { ...common, state: "failed", reason: record.result.reason, nextAction: "send_again", progress: null, replyMessageId: null, source: null };
   const job = readJob(tx, row.projectId, record.jobId);
@@ -740,7 +778,9 @@ export function jitReplyWork(store: TransactionStore, config: AppConfig, port: A
       const promotable = !opened.team && store.read(tx => promotionOpen(tx, job.projectId, opened.topicId));
       // app.mcp_servers/v1: at most two MCP install proposals; a dropped one (unpinned version, …) still shows its reason.
       const mcpProposals: ParsedMcpProposal[] = [];
-      // A team reply speaks for the team: it may neither re-dispatch nor propose roles.
+      // S12-D05: at most one task suggestion, which only pre-fills the owner's task form.
+      let taskSuggestion: TaskSuggestion | null = null;
+      // A team reply speaks for the team: it may neither re-dispatch, propose roles nor suggest a task.
       const handlers = opened.team ? {} : { mcp_install: (item: unknown) => {
         if (mcpProposals.length >= mcpProposalLimit) return false;
         const parsed = parseMcpProposal(item);
@@ -759,13 +799,17 @@ export function jitReplyWork(store: TransactionStore, config: AppConfig, port: A
         if (promotion) return false;
         promotion = parsePromotionProposal(item, now());
         return !!promotion;
-      } } : {} };
+      } } : {}, task: (item: unknown) => {
+        if (taskSuggestion) return false;
+        taskSuggestion = parseTaskSuggestion(item);
+        return !!taskSuggestion;
+      } };
       const parsed = outcome.state === "complete" && outcome.output ? normalizeJitReply(outcome.output, outputBytes, handlers) : null;
       const result: NonNullable<JitReplyRecord["result"]> = parsed?.state === "complete"
         ? { state: "answered", reason: null, structured: parsed.structured, discarded: parsed.discarded, discardedTotal: parsed.discardedTotal }
         : { state: "failed", reason: parsed?.state === "failed" ? parsed.reason : outcome.reason, structured: false, discarded: [], discardedTotal: 0 };
       // Language-neutral technical evidence (codes only), the same on Thai and English pages.
-      const evidence = `jit-reply · ${outcome.mode} · ${result.state}${result.reason ? `/${result.reason}` : ""} · discarded ${result.discardedTotal}${result.discarded.length ? ` (${result.discarded.join(", ")})` : ""}${result.state === "answered" && roleProposals.length ? ` · proposals role:${roleProposals.length}` : ""}${result.state === "answered" && promotion ? " · proposals promotion:1" : ""}${result.state === "answered" && mcpProposals.length ? ` · proposals mcp_install:${mcpProposals.length}` : ""}${opened.team ? ` · team cites ${opened.team.citations.length} gaps ${opened.team.gaps.length}` : ""}${result.state === "answered" && (dispatch as { names: string[] } | null)?.names.length ? ` · dispatch named ${(dispatch as { names: string[] } | null)?.names.length}` : ""}${result.state === "answered" && opened.routing ? ` · selection ${opened.routing.selection.rule} ${opened.routing.selection.roleIds.length}` : ""} · tools none · reply ${opened.id}`;
+      const evidence = `jit-reply · ${outcome.mode} · ${result.state}${result.reason ? `/${result.reason}` : ""} · discarded ${result.discardedTotal}${result.discarded.length ? ` (${result.discarded.join(", ")})` : ""}${result.state === "answered" && roleProposals.length ? ` · proposals role:${roleProposals.length}` : ""}${result.state === "answered" && promotion ? " · proposals promotion:1" : ""}${result.state === "answered" && mcpProposals.length ? ` · proposals mcp_install:${mcpProposals.length}` : ""}${result.state === "answered" && taskSuggestion ? " · proposals task:1" : ""}${opened.team ? ` · team cites ${opened.team.citations.length} gaps ${opened.team.gaps.length}` : ""}${result.state === "answered" && (dispatch as { names: string[] } | null)?.names.length ? ` · dispatch named ${(dispatch as { names: string[] } | null)?.names.length}` : ""}${result.state === "answered" && opened.routing ? ` · selection ${opened.routing.selection.rule} ${opened.routing.selection.roleIds.length}` : ""} · tools none · reply ${opened.id}`;
       const outcomeState = result.state === "answered" ? { state: "succeeded" as const, evidence } : { state: "partial" as const, evidence };
       const committed = commit(outcomeState, tx => {
         const current = readReplyRecord(tx, job.projectId, opened.id);
@@ -787,6 +831,7 @@ export function jitReplyWork(store: TransactionStore, config: AppConfig, port: A
           if (roleProposals.length) current.roleProposals = roleProposals;
           for (const parsed of mcpProposals) insertMcpProposal(tx, { projectId: current.projectId, topicId: current.topicId, replyId: current.id }, parsed, now());
           if (promotion) current.promotionProposal = promotion;
+          if (taskSuggestion) current.taskSuggestion = taskSuggestion;
           const why = (dispatch as { why: string | null } | null)?.why;
           if (why) current.dispatchWhy = why;
           tx.run("UPDATE jit_replies SET reply_message_id = ?, reply_source_id = ? WHERE id = ?", messageId, source.sourceId, current.id);

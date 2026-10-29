@@ -11,7 +11,7 @@ import { backupImageTables } from "../src/ops/backup";
 import { TransactionStore } from "../src/store";
 import { coordinatorSynthesisMarker, coordinatorSynthesisWork } from "../src/team/decisions";
 import { discussionPlanWork, readDiscussion, specialistAnalysisWork, specialistAttemptOutputTokens } from "../src/team/dispatch";
-import { jitReplyMarker, jitReplyWork, teamReplyMarker, type JitReplyView } from "../src/team/jit-reply";
+import { jitReplyMarker, jitReplyWork, taskSuggestionInstruction, teamReplyMarker, type JitReplyView } from "../src/team/jit-reply";
 import { ScriptedRunPort, fixtureOutcome } from "../src/team/scripted-port";
 import { communicationPolicyLine, teamCommunicationPolicy } from "../src/team/communication-policy";
 import { dispatchPurpose } from "../src/team/jit-dispatch";
@@ -935,7 +935,7 @@ test("REL02: injected policy text and an unproven done result change neither the
   for (const role of card.discussion!.roles) {
     expect(role.result).toEqual({ version: 2, status: "incomplete", unblock: null });
     const run = specialistRun(f, role.runId);
-    expect(run.policyVersion).toBe(1);
+    expect(run.policyVersion).toBe(2);
     expect(run.result).toEqual({ version: 2, status: "incomplete", result: "", evidence: "none", unblock: null, raw: '{"status":"done"}' });
     expect(run.request.instructions.operator.filter((line: string) => line.startsWith("Team communication policy"))).toEqual([communicationPolicyLine]);
     expect(run.request.manifest.sources.some((source: { text: string }) => source.text.includes("policy v9"))).toBe(true);
@@ -944,20 +944,40 @@ test("REL02: injected policy text and an unproven done result change neither the
   expect(card.discussion!.coverageGap.sort()).toEqual([f.techId, f.designId].sort());
   expect(card.teamReply).toBeNull();
   expect(card.canAnswer).toBe(false);
-  // The Jit reply carries the same fixed policy (inside its policy line), records version 1 and still fits 8 lines
+  // The Jit reply carries the same fixed policy (inside its policy line), records version 2 and still fits 8 lines
   // with the persona about-me line.
   const jitRequest = f.port.requests.find(r => r.instructions.operator[0] === jitReplyMarker)!;
   expect(jitRequest.instructions.operator.length).toBeLessThanOrEqual(8);
   expect(jitRequest.instructions.operator.filter(line => line.includes(communicationPolicyLine))).toHaveLength(1);
   expect(jitRequest.instructions.operator.every(line => Buffer.byteLength(line) <= 2048)).toBe(true);
   expect(jitRequest.instructions.operator.join("\n")).not.toContain("v9");
-  expect(specialistRun(f, reply.id).policyVersion).toBe(1);
-  expect(teamCommunicationPolicy).toEqual({ version: 1, lines: [
+  expect(specialistRun(f, reply.id).policyVersion).toBe(2);
+  // app.communication_policy/v2 (S12-D05): the five v1 rules, then Jit's short chat voice.
+  expect(teamCommunicationPolicy).toEqual({ version: 2, lines: [
     "Do not narrate setup or loading.", "Report progress only on meaningful outcomes.", "Do not get into acknowledgement loops.",
-    "Name the specialist first when relaying their result.", "Never claim a check that no evidence shows."] });
+    "Name the specialist first when relaying their result.", "Never claim a check that no evidence shows.",
+    "Jit's chat replies are short and plain: answer first, about 80 words at most (a few short sentences), no headings, preambles or closing offers of more help; go longer only when the owner asks for detail.",
+    "Jit moves long or multi-step work into a task suggestion and says in one line what it covers."] });
   expect(Object.isFrozen(teamCommunicationPolicy) && Object.isFrozen(teamCommunicationPolicy.lines)).toBe(true);
   const html = await page(f);
   expect(html.match(/data-result-status="incomplete"/g)?.length).toBe(2);
+});
+
+test("COMM01: a team reply is never offered a task suggestion, and one it returns anyway is discarded as proposal:task", async () => {
+  const task = { kind: "task", title: "งานจากทีม", summary: "ทีมเสนอ" };
+  const f = await fixture({ team: r => answer(r, JSON.stringify({ reply: "สรุปจากทีม", proposals: [task] })) });
+  const sent = send(f, "ควรใช้ SQLite หรือ Postgres ดี");
+  await drain(f);
+  const card = cardFor(f, replyFor(f, sent.message.id).replyMessageId!);
+  expect(card.teamReply).toMatchObject({ state: "answered", taskSuggestion: null, discarded: ["proposal:task"] });
+  const jitRequest = f.port.requests.find(r => r.instructions.operator[0] === jitReplyMarker)!;
+  const teamRequest = f.port.requests.find(r => r.instructions.operator[0] === teamReplyMarker)!;
+  expect(jitRequest.instructions.operator.filter(line => line.includes(taskSuggestionInstruction))).toHaveLength(1);
+  expect(teamRequest.instructions.operator.some(line => line.includes(taskSuggestionInstruction) || line.includes('"kind":"task"'))).toBe(false);
+  const html = await page(f);
+  expect(html).not.toContain("task-suggestion");
+  expect(html).not.toContain("งานจากทีม");
+  expect(count(f, "SELECT count(*) AS n FROM tasks")).toBe(0);
 });
 
 test("REL02: a v1 specialist record from before the change still renders on the team card and is never rewritten", async () => {

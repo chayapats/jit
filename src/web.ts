@@ -345,7 +345,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
         const found = view.state === "answered" && view.source ? app.source(auth.actor, view.projectId, view.source) : null;
         return { id: view.id, messageId: view.messageId, state: view.state, reason: view.reason, revision: view.revision, progress: view.progress,
           replyMessageId: view.replyMessageId, text: found?.state === "available" ? found.text : null, tone: replyTone[view.state], label: labels.state, next: labels.next,
-          proposals: view.roleProposals.length + view.promotionProposals.length };
+          proposals: view.roleProposals.length + view.promotionProposals.length + (view.taskSuggestion ? 1 : 0) };
       };
       if (request.method === "GET" && streamRoute) {
         // web.reply_stream/v2: push committed changes and attempt-scoped provisional snapshots independently.

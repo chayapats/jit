@@ -1215,6 +1215,8 @@ export const th = {
   "error.reply_not_stoppable": "คำตอบนี้จบไปแล้ว หยุดไม่ได้",
   "error.invalid_reply_command": "คำสั่งของคำตอบไม่ถูกต้อง",
   "reply.view_answer": "ดูคำตอบของจิต",
+  "reply.task_suggestion_title": "จิตเสนอให้เก็บเป็นงาน",
+  "reply.task_suggestion_note": "ยังไม่มีงานจนกว่าคุณกดบันทึก แก้ชื่อหรือสรุปก่อนได้",
   "proposal.state.proposed": "รอคุณตัดสิน",
   "proposal.state.accepted": "สร้างแล้ว",
   "proposal.state.rejected": "ไม่เอา",

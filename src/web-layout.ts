@@ -401,6 +401,17 @@ function teamReplyMeta(view: JitReplyView, card: DispatchCardView | undefined, p
 }
 
 /**
+ * S12-D05 task suggestion under an answered Jit reply: the existing propose-as-task form (`topic.propose_as_task`), pre-filled with Jit's
+ * escaped title and summary. Only the owner's post of this form runs `task.propose` (origin `owner`); until then
+ * nothing is stored. Returns "" when the reply suggests no task. Plain form post, so it works without script.
+ */
+export function taskSuggestionCard(view: JitReplyView, projectId: string, topic: { id: string; revision: number }, csrf: string, summaryBytes?: number): string {
+  const suggestion = view.taskSuggestion;
+  if (!suggestion) return "";
+  return `<details class="team-card task-suggestion" open><summary>${tr("reply.task_suggestion_title")}</summary><form class="team-form" method="post" action="/projects/${projectId}/tasks">${hiddenCommand(csrf, topic.revision)}<input type="hidden" name="topicId" value="${topic.id}"><label>${tr("common.task_title")}<input name="title" required maxlength="200" value="${escape(suggestion.title)}"></label><label>${tr("common.summary")}<textarea name="summary" required${summaryBytes ? ` maxlength="${summaryBytes}"` : ""}>${escape(suggestion.summary)}</textarea></label><button class="primary">${tr("common.save_as_proposal")}</button><small>${tr("reply.task_suggestion_note")}</small></form></details>`;
+}
+
+/**
  * Topic right panel toggle (web.settings_ia/v1). The panel is closed by default. Without script the link opens the
  * panel as its own page; the enhancement script loads that page's `.panel-body` into the empty aside instead.
  */
@@ -452,7 +463,9 @@ export function conversationPage(state: ReturnType<Application["conversation"]>,
   // app.role_proposals/v1 cards follow the Jit reply that carries them; the edit form lists configured routes only.
   const routes = dispatch ? routesOf(dispatch.team) : [];
   const proposals = (view: JitReplyView | undefined) => (view?.roleProposals.map(item => roleProposalCard(item, { topicBase: base, csrf, routes, defaultRoute: dispatch?.team.projectDefault ?? dispatch?.team.ownerDefault ?? null })).join("") ?? "") +
-    (view?.promotionProposals.map(item => promotionProposalCard(item, { topicBase: base, csrf, originTitle: topic.title })).join("") ?? "");
+    (view?.promotionProposals.map(item => promotionProposalCard(item, { topicBase: base, csrf, originTitle: topic.title })).join("") ?? "") +
+    // S12-D05: a read-only (promoted) topic takes no new task proposals from its page, like every other composer form.
+    (view && !promotedTo ? taskSuggestionCard(view, project.id, topic, csrf, messageBytes) : "");
   // app.mcp_servers/v1 (EXE13): install proposal cards follow the Jit reply that carries them, in thread order
   // like role proposals, with the project-scoped connection selects. A card whose reply fell off this page is
   // not shown, the same as a role proposal card.
