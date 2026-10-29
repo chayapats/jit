@@ -1042,3 +1042,20 @@ for (const kind of ["source", "claim"] as const) {
     expect(events.map(event => event.kind)).toEqual(["started", "progress", "progress", "finished"]);
   });
 }
+
+test("STR01: supported host deltas reach the reply observer untruncated", async () => {
+  const { config, store } = setup();
+  const chunks = ["ก".repeat(600), " 😀"], observed: ApplicationRunEvent[] = [];
+  const port = new SchwayRunPort(store, config.team, config.jobs.outputBytes, { model: {
+    provider: "scripted", id: "str01-host-deltas",
+    async *stream() {
+      for (const text of chunks) yield { type: "text_delta", text };
+      yield { type: "message_complete", message: { type: "assistant", id: rid(), content: [{ type: "text", text: chunks.join("") }] } };
+    },
+  } });
+  const run = request(config); activate(store, run.context);
+  const outcome = await port.invoke(run, new AbortController().signal, event => observed.push(event));
+  expect(outcome).toMatchObject({ state: "complete", output: chunks.join("") });
+  expect(observed.filter(event => event.kind === "delta").map(event => event.text)).toEqual(chunks);
+  expect(observed.filter(event => event.kind === "delta").every(event => event.runId === run.runId)).toBe(true);
+});

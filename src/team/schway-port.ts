@@ -17,6 +17,7 @@ import type {
   HostRunAttemptUsage,
   HostRunResult,
   HostRunUsage,
+  HostProgressEvent,
   HostRuntime,
   HostSession,
   HostSessionReference,
@@ -498,9 +499,15 @@ export class SchwayRunPort implements ApplicationRunPort {
         if (fenced()) return finish({ ...classifyBridgeReason("context_retired"), session: null });
         return finish({ ...classifyBridgeReason("cancelled"), session: null });
       }
-      const onProgress = (event: { transient: true; text?: string; name?: string; message?: string; stage?: string }) => {
+      const onProgress = (event: HostProgressEvent) => {
         try {
-          const text = event.text ?? event.message ?? event.name ?? event.stage ?? "progress";
+          if (event.type === "delta") {
+            observe({ kind: "delta", runId: snapshot.runId, text: event.text });
+            // Preserve v1 progress observers for other producers; Jit replies consume only the typed delta.
+            observe({ kind: "progress", runId: snapshot.runId, text: event.text.slice(0, 500) }); return;
+          }
+          if (event.type === "retry" || event.type === "tool_started") observe({ kind: "delta_reset", runId: snapshot.runId });
+          const text = "message" in event ? event.message : "name" in event ? event.name : "stage" in event ? event.stage : "progress";
           observe({ kind: "progress", runId: snapshot.runId, text: String(text).slice(0, 500) });
         } catch { /* Provisional observation never fails the run. */ }
       };

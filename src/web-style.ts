@@ -380,7 +380,8 @@ kbd { font: 500 var(--size-xs)/1.6 var(--font-sans); color: var(--fg-2); border:
 .reply-head { display: flex; align-items: center; gap: 8px; font-size: var(--size-sm); font-weight: 600; color: var(--muted); }
 .jit-avatar { display: inline-flex; color: var(--fg); }
 .reply-status .message-body { color: var(--muted); }
-.reply-progress { font-size: var(--size-ui); }
+.reply-progress { font-size: var(--size-chat); color: var(--fg); }
+.reply-connection { font-size: var(--size-xs); color: var(--muted); }
 .reply-provisional, .reply-next { font-size: var(--size-xs); color: var(--faint); margin-top: 4px; }
 .reply-next { color: var(--muted); }
 .reply-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: var(--size-xs); }

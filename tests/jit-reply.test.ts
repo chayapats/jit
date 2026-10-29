@@ -16,6 +16,7 @@ import { ScriptedRunPort, fixtureOutcome } from "../src/team/scripted-port";
 import type { ApplicationRunEvent, ApplicationRunOutcome, ApplicationRunRequest, RoleRoute } from "../src/team/types";
 import { createWebHandler, type ReplyStreamOptions } from "../src/web";
 import { assetUrl } from "../src/web-assets";
+import { replyStreams, replyStallMs } from "../src/team/reply-stream";
 
 const roots: string[] = [], stores: TransactionStore[] = [], queues: JobQueue[] = [], releases: (() => void)[] = [];
 afterEach(async () => {
@@ -36,7 +37,7 @@ const answer = (request: ApplicationRunRequest, output: string): ApplicationRunO
 const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(r => { resolve = r; }); return { promise, resolve }; };
 
 const stream: ReplyStreamOptions = { intervalMs: 1, polls: 3 };
-interface Options { script?: Script; wrap?: (port: ScriptedRunPort) => ApplicationRunPort; coordinator?: boolean; path?: string; env?: Record<string, string>; streamTimers?: ReplyStreamOptions["timers"] }
+interface Options { script?: Script; wrap?: (port: ScriptedRunPort) => ApplicationRunPort; coordinator?: boolean; path?: string; env?: Record<string, string>; streamTimers?: ReplyStreamOptions["timers"]; streamOptions?: ReplyStreamOptions }
 /** Stream pacing the test drives by hand: ticks run only when flushed, never on a wall-clock timer. */
 function manualStreamTimers() {
   const pending = new Map<number, () => void>();
@@ -52,7 +53,7 @@ function manualStreamTimers() {
         const callbacks = [...pending.values()];
         pending.clear();
         for (const callback of callbacks) callback();
-        await Promise.resolve();
+        for (let step = 0; step < 200; step++) await Promise.resolve();
       }
     },
   };
@@ -68,7 +69,7 @@ async function fixture(options: Options = {}) {
   const port = options.wrap?.(scripted) ?? scripted;
   const queue = new JobQueue(store, config.jobs, [jitReplyWork(store, config, port, () => now), memoryExtractionWork(store, config, scripted, () => now)], { now: () => now }); queues.push(queue);
   const app = new Application(store, config, { now: () => now, jobs: queue });
-  const web = createWebHandler(app, { stream: options.streamTimers ? { ...stream, timers: options.streamTimers } : stream });
+  const web = createWebHandler(app, { stream: options.streamOptions ?? (options.streamTimers ? { ...stream, timers: options.streamTimers } : stream) });
   if (options.path) {
     const token = await app.login(password), auth = app.authenticate(token);
     return { root, path, config, store, app, queue, port: scripted, token, auth, web, project: null as never, topic: null as never, coordinatorId: "", advance: (ms: number) => { now += ms; } };
@@ -115,12 +116,14 @@ function form(html: string, action: string | RegExp) {
   }
   throw new Error(`no form for ${action}`);
 }
-function events(text: string) {
+function allEvents(text: string) {
   return text.split("\n\n").filter(block => block.includes("data: ")).map(block => {
     const field = (name: string) => block.split("\n").find(line => line.startsWith(`${name}: `))?.slice(name.length + 2) ?? null;
     return { id: Number(field("id")), event: field("event"), data: JSON.parse(field("data")!) };
   });
 }
+const events = (text: string) => allEvents(text).filter(event => event.event === "reply");
+const previews = (text: string) => allEvents(text).filter(event => event.event === "reply-preview");
 function expectNoInlineScript(html: string) {
   for (const [tag, body] of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)) {
     expect(body).toBe("");
@@ -179,10 +182,11 @@ test("one owner message gets one committed, attributed Jit reply; replay, refres
   expect(messages(f)).toHaveLength(4); expect(jobCount(f)).toBe(2);
 });
 
-test("progress is persisted as provisional until commit; a stream cut midway shows a failure and no reply", async () => {
+test("provisional deltas stay in memory only; a stream cut midway shows a failure and no reply", async () => {
   const gate = deferred<void>();
+  releases.push(() => gate.resolve());
   const f = await fixture({ script: async (_request, _signal, observe) => {
-    observe({ kind: "progress", runId: _request.runId, text: "กำลังร่างคำตอบ…" });
+    observe({ kind: "delta", runId: _request.runId, text: "กำลังร่างคำตอบ…" });
     await gate.promise;
     throw new Error("stream dropped");
   } });
@@ -190,15 +194,16 @@ test("progress is persisted as provisional until commit; a stream cut midway sho
   f.queue.pump();
   await Bun.sleep(5);
   const live = replyFor(f, sent.message.id);
-  expect(live).toMatchObject({ state: "thinking", progress: { text: "กำลังร่างคำตอบ…", provisional: true }, source: null, replyMessageId: null });
+  expect(live).toMatchObject({ state: "thinking", progress: null, source: null, replyMessageId: null });
+  expect(f.store.read(tx => tx.get<{ record_json: string }>("SELECT record_json FROM team_runs WHERE id = ?", live.id)!.record_json)).not.toContain("กำลังร่างคำตอบ…");
   expect(messages(f)).toHaveLength(1);
   const page = await (await get(f, `/projects/${f.project.id}/topics/${f.topic.id}`)).text();
-  expect(page).toContain("กำลังร่างคำตอบ…");
+  expect(page).not.toContain("กำลังร่างคำตอบ…");
   expect(page).toContain("ข้อความระหว่างคิด ยังไม่บันทึก");
   expect(page).toContain(`data-reply-stream="/projects/${f.project.id}/topics/${f.topic.id}/events"`);
   expect(page).toContain('data-state="thinking"');
-  const streamed = events(await (await get(f, `/projects/${f.project.id}/topics/${f.topic.id}/events`)).text());
-  expect(streamed.at(-1)!.data).toMatchObject({ id: live.id, state: "thinking", progress: { text: "กำลังร่างคำตอบ…", provisional: true }, text: null, label: "จิตกำลังคิด…" });
+  const streamed = previews(await (await get(f, `/projects/${f.project.id}/topics/${f.topic.id}/events`)).text());
+  expect(streamed.at(-1)!.data).toMatchObject({ id: live.id, provisional: true, text: "กำลังร่างคำตอบ…", label: "จิตกำลังตอบ…" });
   gate.resolve(); await f.queue.idle();
   const failed = replyFor(f, sent.message.id);
   expect(failed).toMatchObject({ state: "failed", reason: "invalid_result", nextAction: "send_again", progress: null, replyMessageId: null });
@@ -270,8 +275,9 @@ test("stop during a reply (plain form post) fences a late complete result from a
   const f = await fixture({ wrap: scripted => ({
     adapter: "scripted", inspectRuns: after => scripted.inspectRuns(after), retire: context => scripted.retire(context), delete: context => scripted.delete(context),
     invoke: async (request, _signal, observe) => {
-      observe({ kind: "progress", runId: request.runId, text: "เกือบเสร็จ" });
+      observe({ kind: "delta", runId: request.runId, text: "เกือบเสร็จ" });
       await gate.promise; late = request;
+      observe({ kind: "delta", runId: request.runId, text: "LATE_PROVISIONAL" });
       return answer(request, JSON.stringify({ reply: "คำตอบที่มาช้า" }));
     },
   }) });
@@ -286,6 +292,7 @@ test("stop during a reply (plain form post) fences a late complete result from a
   // A replayed stop returns the same receipt.
   expect((await postForm(f, stop.action, stop.fields)).status).toBe(303);
   expect(replyFor(f, sent.message.id)).toMatchObject({ state: "stopped", progress: null });
+  expect(replyStreams(f.store).previews(f.project.id, f.topic.id)).toEqual([]);
   gate.resolve(); await f.queue.idle();
   expect(late).not.toBeNull();
   expect(replyFor(f, sent.message.id)).toMatchObject({ state: "stopped", replyMessageId: null, source: null });
@@ -365,7 +372,7 @@ test("persona is revisioned owner configuration: validated, idempotent, audited,
 });
 
 test("no-script flow: form post sends, the page shows the thinking state, refresh shows Jit's reply in Thai and English", async () => {
-  const f = await fixture();
+  const f = await fixture({ script: request => answer(request, 'สวัสดีครับ จิตพร้อมช่วย\n```jit-proposals\n{"version":2,"proposals":[]}\n```') });
   const url = `/projects/${f.project.id}/topics/${f.topic.id}`;
   const page = await (await get(f, url)).text();
   expect(page).toContain("จิตตอบทุกข้อความในหัวข้อนี้");
@@ -388,6 +395,7 @@ test("no-script flow: form post sends, the page shows the thinking state, refres
   const answered = await (await get(f, url)).text();
   expect(answered).toContain('class="message message--jit"');
   expect(answered).toContain("สวัสดีครับ จิตพร้อมช่วย");
+  expect(answered).not.toContain("jit-proposals");
   expect(answered).toContain("จิต · ตัวอย่างจำลอง");
   expect(answered).not.toContain('data-reply-state="thinking"');
   f.app.execute(f.auth.actor, { kind: "ui.preferences.set", requestId: rid(), projectId: null, expectedRevision: 0, payload: { theme: "light", language: "en" } });
@@ -420,8 +428,9 @@ test("without an enabled coordinator route the message commits and the page name
 
 test("the SSE stream replays persisted state from a cursor and a reconnect after the answer adds nothing new", async () => {
   const gate = deferred<void>();
+  releases.push(() => gate.resolve());
   const f = await fixture({ script: async (request, _signal, observe) => {
-    observe({ kind: "progress", runId: request.runId, text: "ขั้นที่ 1" });
+    observe({ kind: "delta", runId: request.runId, text: "ขั้นที่ 1" });
     await gate.promise;
     return answer(request, JSON.stringify({ reply: "เสร็จแล้ว <img src=x onerror=alert(1)>" }));
   } });
@@ -434,8 +443,9 @@ test("the SSE stream replays persisted state from a cursor and a reconnect after
   expect(queued).toHaveLength(1);
   expect(queued[0]!.data).toMatchObject({ messageId: sent.message.id, state: "thinking", progress: null });
   f.queue.pump(); await Bun.sleep(5);
-  const running = events(await (await get(f, url, { "last-event-id": String(queued[0]!.id) })).text());
-  expect(running.at(-1)!.data).toMatchObject({ state: "thinking", progress: { text: "ขั้นที่ 1", provisional: true } });
+  const runningText = await (await get(f, url, { "last-event-id": String(queued[0]!.id) })).text();
+  const running = events(runningText);
+  expect(previews(runningText).at(-1)!.data).toMatchObject({ provisional: true, text: "ขั้นที่ 1" });
   gate.resolve(); await f.queue.idle();
   const final = events(await (await get(f, url, { "last-event-id": String(running.at(-1)!.id) })).text());
   expect(final).toHaveLength(1);
@@ -471,10 +481,10 @@ test("reopening the store shows the same replies, states and messages", async ()
 test("app.js contract: the event stream updates reply text with textContent and closes when no reply is live", async () => {
   const card = (id: string) => {
     const node = (extra: Record<string, unknown> = {}) => ({ textContent: "", hidden: true, dataset: {} as Record<string, string>, ...extra });
-    const parts = { label: node(), avatar: node({ dataset: { state: "thinking" } }), progress: node(), provisional: node({ textContent: "provisional" }), next: node(), text: node() };
+    const parts = { label: node(), avatar: node({ dataset: { state: "thinking" } }), progress: node(), provisional: node({ textContent: "provisional" }), next: node(), text: node(), connection: node() };
     let stopRemoved = false;
     const selectors: Record<string, unknown> = { "[data-reply-label]": parts.label, "[data-reply-avatar]": parts.avatar, "[data-reply-progress]": parts.progress,
-      "[data-reply-provisional]": parts.provisional, "[data-reply-next]": parts.next, "[data-reply-text]": parts.text, "[data-reply-stop]": { remove: () => { stopRemoved = true; } } };
+      "[data-reply-provisional]": parts.provisional, "[data-reply-next]": parts.next, "[data-reply-text]": parts.text, "[data-reply-connection]": parts.connection, "[data-reply-stop]": { remove: () => { stopRemoved = true; } } };
     return { id, parts, dataset: { replyState: "thinking" } as Record<string, string>, querySelector: (s: string) => selectors[s] ?? null, removed: () => stopRemoved };
   };
   const one = card("11111111-1111-1111-1111-111111111111");
@@ -510,12 +520,28 @@ test("app.js contract: the event stream updates reply text with textContent and 
     expect(one.parts.provisional).toMatchObject({ textContent: "provisional", hidden: false });
     expect(one.parts.label).toMatchObject({ textContent: "คิด", dataset: { state: "running" } });
     expect(sources[0]!.closed).toBe(false);
+    const preview = (data: unknown) => sources[0]!.listeners["reply-preview"]!({ data: JSON.stringify(data) });
+    const attemptId = rid();
+    preview({ id: one.id, attemptId, sequence: 2, text: "<b>streamed</b>", stalled: false, label: "กำลังตอบ" });
+    expect(one.parts.progress.textContent).toBe("<b>streamed</b>");
+    preview({ id: one.id, attemptId, sequence: 1, text: "older" });
+    expect(one.parts.progress.textContent).toBe("<b>streamed</b>");
+    preview({ id: one.id, attemptId, sequence: 2, text: "<b>streamed</b>", stalled: true, label: "ยังทำงานอยู่" });
+    expect(one.parts.label.textContent).toBe("ยังทำงานอยู่");
+    sources[0]!.listeners.error!({ data: "" });
+    expect(one.parts.progress.hidden).toBe(true);
+    expect(one.parts.connection.hidden).toBe(false);
+    preview({ id: one.id, attemptId, sequence: 3, text: "reconnected", label: "กำลังตอบ" });
+    expect(one.parts.progress.textContent).toBe("reconnected");
+    expect(one.parts.connection.hidden).toBe(true);
     fire({ id: one.id, state: "answered", progress: null, label: "ตอบแล้ว", tone: "succeeded", next: null, text: "<img src=x onerror=alert(1)>" });
     expect(one.dataset.replyState).toBe("answered");
     expect(one.parts.text).toMatchObject({ textContent: "<img src=x onerror=alert(1)>", hidden: false });
     expect(one.parts.progress.hidden).toBe(true);
     expect(one.parts.provisional.hidden).toBe(true);
     expect(one.parts.avatar.dataset.state).toBeUndefined();
+    preview({ id: one.id, attemptId, sequence: 99, text: "late" });
+    expect(one.parts.progress.hidden).toBe(true);
     expect(one.removed()).toBe(true);
     expect(sources[0]!.closed).toBe(true);
   } finally {
@@ -573,14 +599,16 @@ test("many live replies stream without a growing URL, across more than one page 
   expect(page).toContain(`data-reply-stream="${url}/events"`);
   // Stream pacing is driven by hand: the first tick ran when the response opened, the rest run here.
   const firstResponse = await get(f, `${url}/events`);
+  const firstText = firstResponse.text();
   await pacing.flush();
-  const first = events(await firstResponse.text());
+  const first = events(await firstText);
   expect(first.map(e => e.data.messageId)).toEqual(sent.map(s => s.message.id));
   expect(new Set(first.map(e => e.id)).size).toBe(25);
   while (f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM jobs WHERE state IN ('queued', 'admitted')")!.n)) await settle(f);
   const doneResponse = await get(f, `${url}/events`, { "last-event-id": String(first.at(-1)!.id) });
+  const doneText = doneResponse.text();
   await pacing.flush();
-  const done = events(await doneResponse.text());
+  const done = events(await doneText);
   expect(new Set(done.filter(e => e.data.state === "answered").map(e => e.data.messageId)).size).toBe(25);
 });
 
@@ -754,4 +782,71 @@ test("REL03 the dispatch proposal is a closed schema of roles plus an optional w
   const handlers = { dispatch: (item: unknown) => !!dispatchNames(item) };
   expect(normalizeJitReply(JSON.stringify({ reply: "ok", proposals: [{ kind: "dispatch", roles: ["x"], why: "<b>" + "y".repeat(200) }] }), 4096, handlers))
     .toMatchObject({ state: "complete", discarded: ["proposal:dispatch"] });
+});
+
+test("STR01: adapter deltas push immediately, metadata stays hidden, commit replaces the preview and receipts stay stable", async () => {
+  const entered = deferred<void>(), gate = deferred<void>();
+  releases.push(() => gate.resolve());
+  let emit!: (text: string) => void;
+  const output = 'คำตอบที่บันทึก\n```jit-proposals\n{"version":2,"proposals":[{"kind":"future","secret":"HIDDEN_METADATA"}],"future":true}\n```';
+  const f = await fixture({ streamOptions: { intervalMs: 1000, polls: 120, timers: manualStreamTimers().timers },
+    script: async (request, _signal, observe) => {
+      emit = text => observe({ kind: "delta", runId: request.runId, text });
+      entered.resolve(); await gate.promise; return answer(request, output);
+    } });
+  const requestId = rid(), sent = send(f, "ขอคำตอบ", requestId);
+  const expectedRevision = f.app.conversation(f.auth.actor, f.project.id, f.topic.id).topic.revision - 1;
+  f.queue.pump(); await entered.promise;
+  const reply = replyFor(f, sent.message.id), url = `/projects/${f.project.id}/topics/${f.topic.id}/events`;
+  const response = await get(f, `${url}?cursor=${reply.cursor}`), reader = response.body!.getReader();
+  const next = async () => {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) throw new Error("unexpected end of stream");
+      const parsed = allEvents(new TextDecoder().decode(chunk.value));
+      if (parsed.length) return parsed[0]!;
+    }
+  };
+  expect((await next()).data.text).toBe("");
+  const delivery = next(); emit("ร่างที่ยังไม่บันทึก");
+  expect((await delivery).data).toMatchObject({ text: "ร่างที่ยังไม่บันทึก", provisional: true });
+  const persisted = f.store.read(tx => tx.get<{ record_json: string }>("SELECT record_json FROM team_runs WHERE id = ?", reply.id)!.record_json);
+  expect(persisted).not.toContain("ร่างที่ยังไม่บันทึก");
+  expect(f.app.source(f.auth.actor, f.project.id, sent.message.source)).toMatchObject({ text: "ขอคำตอบ" });
+  const metadata = next(); emit('\n`'); emit('`'); emit('`jit-proposals\n{"version":2,"proposals":["HIDDEN_METADATA"]}\n```');
+  expect((await metadata).data.text).toBe("ร่างที่ยังไม่บันทึก");
+  expect(replyStreams(f.store).previews(f.project.id, f.topic.id)[0]!.text).not.toContain("HIDDEN_METADATA");
+  const committed = next(); gate.resolve(); await f.queue.idle();
+  const final = await committed;
+  expect(final.event).toBe("reply");
+  expect(final.data).toMatchObject({ state: "answered", text: "คำตอบที่บันทึก", progress: null });
+  expect(final.id).toBeGreaterThan(reply.cursor);
+  const view = replyFor(f, sent.message.id);
+  expect(view).toMatchObject({ state: "answered", revision: 2, discarded: ["proposal:future", "field:future"], discardedTotal: 2 });
+  expect(f.app.source(f.auth.actor, f.project.id, view.source!)).toMatchObject({ text: "คำตอบที่บันทึก" });
+  expect(replyStreams(f.store).previews(f.project.id, f.topic.id)).toEqual([]);
+  expect(messages(f).map(message => message.text)).toEqual(["ขอคำตอบ", "คำตอบที่บันทึก"]);
+  expect(f.app.execute(f.auth.actor, { kind: "message.send", projectId: f.project.id, requestId, expectedRevision,
+    payload: { topicId: f.topic.id, text: "ขอคำตอบ" } })).toEqual(sent);
+  expect(jobCount(f)).toBe(1);
+  await reader.cancel();
+});
+
+test("STR01: an expired attempt loses its preview and cannot commit even when the adapter ignores cancellation", async () => {
+  const entered = deferred<void>(), gate = deferred<void>(); releases.push(() => gate.resolve());
+  let emit!: (text: string) => void;
+  const f = await fixture({ wrap: port => ({ adapter: "scripted", inspectRuns: after => port.inspectRuns(after), retire: context => port.retire(context), delete: context => port.delete(context),
+    invoke: async (request, _signal, observe) => {
+      emit = text => observe({ kind: "delta", runId: request.runId, text });
+      emit("EXPIRED_PREVIEW"); entered.resolve(); await gate.promise;
+      return answer(request, "late complete");
+    } }) });
+  const sent = send(f, "รอคำตอบ"); f.queue.pump(); await entered.promise;
+  expect(replyStreams(f.store).previews(f.project.id, f.topic.id)[0]!.text).toBe("EXPIRED_PREVIEW");
+  f.advance(60_001); emit("STALE_DELTA");
+  expect(replyStreams(f.store).previews(f.project.id, f.topic.id)).toEqual([]);
+  gate.resolve(); await f.queue.idle();
+  expect(replyFor(f, sent.message.id)).toMatchObject({ state: "failed", replyMessageId: null, source: null, progress: null });
+  expect(messages(f).map(message => message.text)).toEqual(["รอคำตอบ"]);
+  expect(f.store.read(tx => tx.get<{ record_json: string }>("SELECT record_json FROM team_runs WHERE id = ?", replyFor(f, sent.message.id).id)!.record_json)).not.toContain("EXPIRED_PREVIEW");
 });

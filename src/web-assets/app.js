@@ -77,8 +77,8 @@ if (ceremony && ceremonyForm) {
   });
 }
 
-// Jit replies (app.jit_reply/v1): follow the topic's event stream and update each reply placeholder in place.
-// Events carry persisted state and server-localised labels; text is set with textContent only, never as markup.
+// Jit replies (web.reply_stream/v2): durable state carries replay IDs; preview snapshots are memory-only.
+// Every snapshot replaces the previous one, including after reconnect. Text always uses textContent.
 // The stream never starts work. Without this script the placeholder's refresh link shows the same state.
 const chat = document.querySelector("[data-reply-stream]");
 if (chat && typeof EventSource === "function") {
@@ -86,6 +86,38 @@ if (chat && typeof EventSource === "function") {
   const base = chat.dataset.replyStream;
   const stream = new EventSource(`${base}${base.includes("?") ? "&" : "?"}cursor=${encodeURIComponent(chat.dataset.replyCursor ?? "0")}`);
   const show = (node, text) => { if (!node) return; node.textContent = text ?? ""; node.hidden = !text; };
+  const previewVersions = new Map();
+  stream.addEventListener("reply-preview", event => {
+    let data;
+    try { data = JSON.parse(event.data); } catch { return; }
+    if (!data || typeof data.id !== "string" || !/^[a-f0-9-]{36}$/.test(data.id) ||
+      typeof data.attemptId !== "string" || !/^[a-f0-9-]{36}$/.test(data.attemptId) ||
+      !Number.isSafeInteger(data.sequence) || data.sequence < 0 || typeof data.text !== "string" || data.text.length > 32768) return;
+    const card = document.getElementById(`reply-${data.id}`);
+    if (!card || card.dataset.replyState !== "thinking") return;
+    const previous = previewVersions.get(data.id);
+    if (previous?.attemptId === data.attemptId && previous.sequence > data.sequence) return;
+    previewVersions.set(data.id, { attemptId: data.attemptId, sequence: data.sequence });
+    show(card.querySelector("[data-reply-progress]"), data.text);
+    const provisional = card.querySelector("[data-reply-provisional]");
+    if (provisional) provisional.hidden = !data.text;
+    const label = card.querySelector("[data-reply-label]");
+    if (label) label.textContent = data.label ?? "";
+    card.dataset.replyStalled = String(data.stalled === true);
+    const connection = card.querySelector("[data-reply-connection]");
+    if (connection) connection.hidden = true;
+  });
+  stream.addEventListener("error", () => {
+    previewVersions.clear();
+    for (const card of document.querySelectorAll("[data-reply-id]")) {
+      if (!live.has(card.dataset.replyState)) continue;
+      show(card.querySelector("[data-reply-progress]"), "");
+      const provisional = card.querySelector("[data-reply-provisional]");
+      if (provisional) provisional.hidden = true;
+      const connection = card.querySelector("[data-reply-connection]");
+      if (connection) connection.hidden = false;
+    }
+  });
   stream.addEventListener("reply", event => {
     let data;
     try { data = JSON.parse(event.data); } catch { return; }
@@ -97,9 +129,14 @@ if (chat && typeof EventSource === "function") {
     if (label) { label.textContent = data.label ?? ""; label.dataset.state = data.tone ?? ""; }
     const avatar = card.querySelector("[data-reply-avatar]");
     if (avatar) { if (data.state === "thinking") avatar.dataset.state = "thinking"; else delete avatar.dataset.state; }
-    show(card.querySelector("[data-reply-progress]"), data.progress?.text);
-    const provisional = card.querySelector("[data-reply-provisional]");
-    if (provisional) provisional.hidden = !data.progress;
+    if (data.state !== "thinking" || !previewVersions.has(data.id)) {
+      show(card.querySelector("[data-reply-progress]"), data.progress?.text);
+      const provisional = card.querySelector("[data-reply-provisional]");
+      if (provisional) provisional.hidden = !data.progress;
+    }
+    if (data.state !== "thinking") { previewVersions.delete(data.id); delete card.dataset.replyStalled; }
+    const connection = card.querySelector("[data-reply-connection]");
+    if (connection) connection.hidden = true;
     show(card.querySelector("[data-reply-next]"), data.next);
     show(card.querySelector("[data-reply-text]"), data.state === "answered" ? data.text : "");
     // app.role_proposals/v1: cards render on the page itself; an answered reply that carries one shows the link to it.

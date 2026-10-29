@@ -106,6 +106,8 @@ export interface StoreOptions {
 export class TransactionStore {
   #db: Database;
   #tx: AppTransaction;
+  #commitListeners = new Set<() => void>();
+  #transactionDepth = 0;
 
   constructor(readonly path: string, options: StoreOptions = {}) {
     const existing = existsSync(path) && statSync(path).size > 0;
@@ -1264,11 +1266,24 @@ export class TransactionStore {
 
   /** Serializes a synchronous mutation and acknowledges only a successful SQLite commit. */
   transaction<T>(mutate: (tx: AppTransaction) => T): T {
-    return this.#db.transaction(() => {
-      const result = mutate(this.#tx);
-      if (result instanceof Promise) throw new Error("Application transactions must be synchronous");
+    this.#transactionDepth++;
+    try {
+      const result = this.#db.transaction(() => {
+        const value = mutate(this.#tx);
+        if (value instanceof Promise) throw new Error("Application transactions must be synchronous");
+        return value;
+      }).immediate();
+      if (this.#transactionDepth === 1) for (const listener of this.#commitListeners) {
+        try { listener(); } catch { /* Observers cannot undo a committed transaction. */ }
+      }
       return result;
-    }).immediate();
+    } finally { this.#transactionDepth--; }
+  }
+
+  /** Observes successful outer commits only; observers must defer reads and never grant authority. */
+  onCommit(listener: () => void): () => void {
+    this.#commitListeners.add(listener);
+    return () => { this.#commitListeners.delete(listener); };
   }
 
   /** Consistent app snapshot bytes after a WAL checkpoint; never copies a live WAL blindly. */
@@ -1357,5 +1372,5 @@ export class TransactionStore {
   }
 
   /** Closes this connection; committed commands remain available after reopening. */
-  close(): void { this.#db.close(); }
+  close(): void { this.#commitListeners.clear(); this.#db.close(); }
 }
