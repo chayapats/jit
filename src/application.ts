@@ -907,7 +907,7 @@ export class Application {
     if (isComputerCommand(command)) return this.#computerCommand(actor, command);
     if (command?.kind === "dispatch.proposal.accept" || command?.kind === "dispatch.proposal.dismiss" || command?.kind === "dispatch.answer") return this.#dispatchCommand(actor, command);
     if (command?.kind === "job.enqueue" || command?.kind === "job.resume" || command?.kind === "job.stop") return this.#jobCommand(actor, command);
-    if (command?.kind === "role.save" || command?.kind === "route.save" || command?.kind === "role.preview" ||
+    if (command?.kind === "role.save" || command?.kind === "role.archive" || command?.kind === "route.save" || command?.kind === "role.preview" ||
         command?.kind === "team.dispatch" || command?.kind === "team.control" || command?.kind === "team.stop_all") return this.#teamCommand(actor, command);
     if (command?.kind === "decision.synthesize" || command?.kind === "decision.accept" || command?.kind === "decision.supersede") return this.#decisionCommand(actor, command);
     const payloadHash = digest(conversationIdentity(command as ConversationCommand, this.config.messageBytes));

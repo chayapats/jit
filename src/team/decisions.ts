@@ -1,3 +1,4 @@
+import { readActiveRole, roleActive } from "./configuration";
 import { createHash } from "node:crypto";
 import { AppError } from "../errors";
 import type { AppConfig } from "../config";
@@ -497,6 +498,7 @@ export function coordinatorSynthesisWork(
         request.context = { id: crypto.randomUUID(), generation: 1 };
         tx.run("INSERT INTO team_contexts VALUES (?, 1, 'active')", request.context.id);
       }
+      readActiveRole(tx, request.roleId);
       request.fence = { jobId: job.id, generation, ownerGeneration: job.authorization.generation };
       loaded.record.request = request;
       loaded.public.state = "running";
@@ -510,7 +512,7 @@ export function coordinatorSynthesisWork(
     },
     isCurrent: (tx, job, attempt) => {
       const request = attempt.data as unknown as ApplicationRunRequest;
-      return request.fence.jobId === job.id && request.fence.generation === attempt.generation &&
+      return roleActive(tx, request.roleId) && request.fence.jobId === job.id && request.fence.generation === attempt.generation &&
         request.fence.ownerGeneration === job.authorization.generation &&
         tx.get<{ state: string }>("SELECT state FROM team_contexts WHERE id = ? AND generation = ?", request.context.id, request.context.generation)?.state === "active" &&
         sourceCurrent(tx, request) && contextCurrent(tx, request.projectId, request.manifest) === null;

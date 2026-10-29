@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { AppError } from "../errors";
-import { jobData } from "../jobs/queue";
+import { invalidatePendingJob, jobData } from "../jobs/queue";
 import { requireId, requireText } from "../sources";
 import type { AppTransaction } from "../store";
 import type { EffectiveRoleRoute, Role, RoleRoute, TeamCommand, TeamPolicy, TeamReceipt } from "./types";
@@ -28,6 +28,9 @@ export function teamIdentity(command: TeamCommand, policy: TeamPolicy): string {
     requireText(p.name, 200); requireText(p.responsibility, policy.responsibilityBytes);
     if (!["specialist", "coordinator"].includes(p.kind) || typeof p.enabled !== "boolean") throw new AppError("invalid_team_command");
     requireRoleRoute(p.route);
+  } else if (command.kind === "role.archive") {
+    if (command.projectId !== null || !exact(command.payload, ["roleId"])) throw new AppError("invalid_team_command");
+    requireId(command.payload.roleId);
   } else if (command.kind === "route.save") {
     const p = command.payload;
     if (!exact(p, ["roleId", "route"]) || (command.projectId === null && p.roleId !== null)) throw new AppError("invalid_team_command");
@@ -62,6 +65,16 @@ export function readRole(tx: AppTransaction, roleId: string): Role {
   const row = tx.get<{ record_json: string }>("SELECT record_json FROM roles WHERE id = ?", roleId);
   if (!row) throw new AppError("role_not_found", 404); return JSON.parse(row.record_json) as Role;
 }
+/** Reads an invocable identity; archived roles stay readable only through readRole for history. */
+export function readActiveRole(tx: AppTransaction, roleId: string): Role {
+  const role = readRole(tx, roleId);
+  if (role.archivedAt != null) throw new AppError("role_not_found", 404);
+  return role;
+}
+/** Fail-closed invocation predicate used at attempt admission and publication. */
+export function roleActive(tx: AppTransaction, roleId: string): boolean {
+  try { readActiveRole(tx, roleId); return true; } catch { return false; }
+}
 /** Resolves complete routes by project-role > project default > owner-role > owner default; never mixes fields. */
 export function readTeam(tx: AppTransaction, projectId: string | null, policy: TeamPolicy) {
   const owner = tx.get<{ revision: number; route_json: string | null }>("SELECT revision, route_json FROM team_state WHERE id = 1")!;
@@ -69,7 +82,7 @@ export function readTeam(tx: AppTransaction, projectId: string | null, policy: T
   const overrides = JSON.parse(project?.overrides_json ?? "{}") as Record<string, RoleRoute>;
   const ownerDefault = owner.route_json ? JSON.parse(owner.route_json) as RoleRoute : null;
   const projectDefault = project?.route_json ? JSON.parse(project.route_json) as RoleRoute : null;
-  const roles = tx.all<{ record_json: string }>("SELECT record_json FROM roles ORDER BY sequence LIMIT ?", policy.roleLimit).map(row => JSON.parse(row.record_json) as Role);
+  const roles = tx.all<{ record_json: string }>("SELECT record_json FROM roles WHERE json_extract(record_json, '$.archivedAt') IS NULL ORDER BY sequence LIMIT ?", policy.roleLimit).map(row => JSON.parse(row.record_json) as Role);
   return { ownerRevision: owner.revision, projectRevision: project?.revision ?? 0, ownerDefault, projectDefault, overrides,
     roles: roles.map(role => {
       const selected: [EffectiveRoleRoute["layer"], RoleRoute | null] = overrides[role.id] ? ["project_role", overrides[role.id]!] : projectDefault ? ["project_default", projectDefault] : role.route ? ["owner_role", role.route] : ownerDefault ? ["owner_default", ownerDefault] : ["missing", null];
@@ -80,11 +93,35 @@ export function readTeam(tx: AppTransaction, projectId: string | null, policy: T
 }
 
 /** Applies owner-validated settings atomically; the caller persists the shared command receipt and audit. */
-export function mutateTeamConfiguration(tx: AppTransaction, command: Extract<TeamCommand, { kind: "role.save" | "route.save" }>, policy: TeamPolicy, now: number): TeamReceipt {
+export function mutateTeamConfiguration(tx: AppTransaction, command: Extract<TeamCommand, { kind: "role.save" | "route.save" | "role.archive" }>, policy: TeamPolicy, now: number): TeamReceipt {
   const state = readTeam(tx, command.projectId, policy), revision = command.projectId ? state.projectRevision : state.ownerRevision;
   if (command.expectedRevision !== revision) throw new AppError("stale_revision", 409);
+  if (command.kind === "role.archive") {
+    const old = readActiveRole(tx, command.payload.roleId);
+    if (old.kind === "coordinator") throw new AppError("role_archive_coordinator", 409);
+    const role: Role = { ...old, archivedAt: now, enabled: false, revision: old.revision + 1, updatedAt: now };
+    tx.run("UPDATE roles SET record_json = ? WHERE id = ?", JSON.stringify(role), role.id);
+    for (const row of tx.all<{ project_id: string; overrides_json: string }>("SELECT project_id, overrides_json FROM project_team")) {
+      const overrides = JSON.parse(row.overrides_json) as Record<string, RoleRoute>;
+      if (Object.hasOwn(overrides, role.id)) {
+        delete overrides[role.id];
+        tx.run("UPDATE project_team SET overrides_json = ? WHERE project_id = ?", JSON.stringify(overrides), row.project_id);
+      }
+    }
+    // Captured requests do not follow readTeam. Fence them in the archive transaction, including waiting resumes.
+    const jobs = new Map<string, string>();
+    for (const table of ["team_runs", "memory_extractions", "coordinator_syntheses"]) {
+      for (const row of tx.all<{ record_json: string }>(`SELECT record_json FROM ${table}`)) {
+        const record = JSON.parse(row.record_json) as { roleId?: string; jobId?: string; projectId?: string; request?: { roleId?: string } };
+        if ((record.roleId === role.id || record.request?.roleId === role.id) && record.jobId && record.projectId) jobs.set(record.jobId, record.projectId);
+      }
+    }
+    for (const [jobId, projectId] of jobs) invalidatePendingJob(tx, projectId, jobId, "revoked", now);
+    tx.run("UPDATE team_state SET revision = revision + 1 WHERE id = 1");
+    return { revision: revision + 1, role };
+  }
   if (command.kind === "role.save") {
-    const p = command.payload, old = p.roleId ? readRole(tx, p.roleId) : null;
+    const p = command.payload, old = p.roleId ? readActiveRole(tx, p.roleId) : null;
     if (!old && state.roles.length >= policy.roleLimit) throw new AppError("role_limit", 409);
     const role: Role = { id: old?.id ?? crypto.randomUUID(), sequence: old?.sequence ?? 0, revision: (old?.revision ?? 0) + 1,
       name: p.name.trim(), kind: p.kind, responsibility: p.responsibility, enabled: p.enabled, route: p.route,
@@ -98,7 +135,7 @@ export function mutateTeamConfiguration(tx: AppTransaction, command: Extract<Tea
     tx.run("UPDATE team_state SET revision = revision + 1 WHERE id = 1"); return { revision: revision + 1, role };
   }
   const p = command.payload;
-  if (p.roleId) readRole(tx, p.roleId);
+  if (p.roleId) readActiveRole(tx, p.roleId);
   if (!command.projectId) tx.run("UPDATE team_state SET revision = revision + 1, route_json = ? WHERE id = 1", p.route ? JSON.stringify(p.route) : null);
   else {
     const overrides = { ...state.overrides };

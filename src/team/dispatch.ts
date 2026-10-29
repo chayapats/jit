@@ -1,3 +1,4 @@
+import { readActiveRole, roleActive } from "./configuration";
 import { AppError } from "../errors";
 import { readTopic } from "../conversation";
 import { JobQueue, jobData, validateJobLimits } from "../jobs/queue";
@@ -430,6 +431,7 @@ export function specialistAnalysisWork(
         request.context = { id: crypto.randomUUID(), generation: 1 };
         tx.run("INSERT INTO team_contexts VALUES (?, 1, 'active')", request.context.id);
       }
+      readActiveRole(tx, request.roleId);
       request.fence = { jobId: job.id, generation, ownerGeneration: job.authorization.generation };
       // Frozen in the attempt snapshot at admission; model output never changes it.
       request.execution = port.execution ? executionGrant(tx, job.projectId, request.roleId) : null;
@@ -439,7 +441,7 @@ export function specialistAnalysisWork(
     },
     isCurrent: (tx, job, attempt) => {
       const request = attempt.data as unknown as ApplicationRunRequest;
-      return request.fence.jobId === job.id && request.fence.generation === attempt.generation &&
+      return roleActive(tx, request.roleId) && request.fence.jobId === job.id && request.fence.generation === attempt.generation &&
         request.fence.ownerGeneration === job.authorization.generation &&
         tx.get<{ state: string }>("SELECT state FROM team_contexts WHERE id = ? AND generation = ?", request.context.id, request.context.generation)?.state === "active" &&
         sourceCurrent(tx, request) && contextCurrent(tx, request.projectId, request.manifest) === null;
