@@ -380,11 +380,22 @@ kbd { font: 500 var(--size-xs)/1.6 var(--font-sans); color: var(--fg-2); border:
 .reply-head { display: flex; align-items: center; gap: 8px; font-size: var(--size-sm); font-weight: 600; color: var(--muted); }
 .jit-avatar { display: inline-flex; color: var(--fg); }
 .reply-status .message-body { color: var(--muted); }
-.reply-progress { font-size: var(--size-chat); color: var(--fg); }
-.reply-connection { font-size: var(--size-xs); color: var(--muted); }
-.reply-provisional, .reply-next { font-size: var(--size-xs); color: var(--faint); margin-top: 4px; }
-.reply-next { color: var(--muted); }
+/* STR01: the streamed draft and the committed text share one slot and one typography, so a commit swaps them in place.
+   Only one of the two is ever shown; the shared .literal spacing must not push the committed text down. */
+.reply-progress, .reply-text { font-size: var(--size-chat); color: var(--fg); }
+.reply-status .reply-progress + .reply-text { margin-top: 0; }
+/* A small dot after the last streamed character, breathing like the mark's จุดตั้งจิต; static under reduced motion. */
+.reply-status[data-reply-state="thinking"] .reply-progress::after { content: ""; display: inline-block; width: .5em; height: .5em; margin-inline-start: .3em; border-radius: 50%; background: currentColor; vertical-align: .05em; animation: jit-breath var(--motion-breath) ease-in-out infinite; }
+/* A longer connection gap dims the draft and drops the dot; it is never styled as an error. */
+.reply-status[data-reply-gap] .reply-progress { color: var(--fg-2); }
+.reply-status[data-reply-gap] .reply-progress::after { display: none; }
+.reply-provisional, .reply-saved, .reply-connection, .reply-next { font-size: var(--size-xs); color: var(--faint); margin-top: 4px; }
+.reply-saved { display: flex; align-items: center; gap: 4px; color: var(--ok); }
+.reply-saved svg { width: 12px; height: 12px; }
+.reply-connection, .reply-next { color: var(--muted); }
 .reply-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: var(--size-xs); }
+/* Keeps the card's height when Stop disappears on commit. */
+.reply-status .reply-actions { min-height: 32px; }
 .reply-actions form { display: inline; }
 .reply-actions button { min-height: 32px; padding: 4px 14px; border: 1px solid var(--line-strong); border-radius: var(--radius-pill); background: transparent; color: var(--fg); font: inherit; cursor: pointer; }
 @media (hover: hover) and (pointer: fine) { .reply-actions button:hover { background: var(--surface-3); } }

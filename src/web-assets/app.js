@@ -80,13 +80,46 @@ if (ceremony && ceremonyForm) {
 // Jit replies (web.reply_stream/v2): durable state carries replay IDs; preview snapshots are memory-only.
 // Every snapshot replaces the previous one, including after reconnect. Text always uses textContent.
 // The stream never starts work. Without this script the placeholder's refresh link shows the same state.
+// The view follows the stream only while the owner is at the bottom. The draft is not a live region: one polite status
+// line per card announces a change of phase (replying, still working, connection, finished), never a token.
+// The server ends every connection after a bounded lifetime, so reconnects are routine: the draft stays, and only a gap
+// longer than the grace period dims it and shows a calm hint. After a reconnect, a draft no snapshot confirms is cleared.
 const chat = document.querySelector("[data-reply-stream]");
 if (chat && typeof EventSource === "function") {
   const live = new Set(["thinking", "blocked"]);
+  const graceMs = 3000;
   const base = chat.dataset.replyStream;
   const stream = new EventSource(`${base}${base.includes("?") ? "&" : "?"}cursor=${encodeURIComponent(chat.dataset.replyCursor ?? "0")}`);
   const show = (node, text) => { if (!node) return; node.textContent = text ?? ""; node.hidden = !text; };
-  const previewVersions = new Map();
+  const previewVersions = new Map(), unconfirmed = new Set();
+  let grace = 0;
+  const stopGrace = () => { if (grace) window.clearTimeout(grace); grace = 0; };
+  const region = chat.closest?.(".scroll-region") ?? null;
+  // Pinned while the owner is within a few lines of the end; scrolling up stops the follow until they come back.
+  const follow = update => {
+    const pinned = region !== null && region.scrollHeight - region.scrollTop - region.clientHeight <= 48;
+    update();
+    if (pinned) region.scrollTop = region.scrollHeight;
+  };
+  const announce = (card, text) => { const node = card.querySelector("[data-reply-announce]"); if (node && text) node.textContent = text; };
+  const liveCards = () => [...document.querySelectorAll("[data-reply-id]")].filter(card => live.has(card.dataset.replyState));
+  // null hides the hint; "reconnecting" and "closed" pick its server-localised text from the hint's data attributes.
+  const gap = (card, state) => {
+    const node = card.querySelector("[data-reply-connection]");
+    if (!state) { delete card.dataset.replyGap; if (node) node.hidden = true; return; }
+    if (card.dataset.replyGap === state) return;
+    card.dataset.replyGap = state;
+    if (!node) return;
+    node.textContent = node.dataset[state] ?? node.textContent;
+    node.hidden = false;
+    announce(card, node.textContent);
+  };
+  const clearDraft = card => {
+    show(card.querySelector("[data-reply-progress]"), "");
+    const provisional = card.querySelector("[data-reply-provisional]");
+    if (provisional) provisional.hidden = true;
+    delete card.dataset.replyPhase;
+  };
   stream.addEventListener("reply-preview", event => {
     let data;
     try { data = JSON.parse(event.data); } catch { return; }
@@ -98,25 +131,41 @@ if (chat && typeof EventSource === "function") {
     const previous = previewVersions.get(data.id);
     if (previous?.attemptId === data.attemptId && previous.sequence > data.sequence) return;
     previewVersions.set(data.id, { attemptId: data.attemptId, sequence: data.sequence });
-    show(card.querySelector("[data-reply-progress]"), data.text);
-    const provisional = card.querySelector("[data-reply-provisional]");
-    if (provisional) provisional.hidden = !data.text;
-    const label = card.querySelector("[data-reply-label]");
-    if (label) label.textContent = data.label ?? "";
-    card.dataset.replyStalled = String(data.stalled === true);
-    const connection = card.querySelector("[data-reply-connection]");
-    if (connection) connection.hidden = true;
+    unconfirmed.delete(data.id);
+    gap(card, null);
+    follow(() => {
+      show(card.querySelector("[data-reply-progress]"), data.text);
+      const provisional = card.querySelector("[data-reply-provisional]");
+      if (provisional) provisional.hidden = !data.text;
+      const label = card.querySelector("[data-reply-label]");
+      if (label) label.textContent = data.label ?? "";
+    });
+    const phase = data.stalled === true ? "stalled" : data.text ? "streaming" : "thinking";
+    if (card.dataset.replyPhase === phase) return;
+    card.dataset.replyPhase = phase;
+    if (phase !== "thinking") announce(card, data.label);
   });
   stream.addEventListener("error", () => {
+    for (const id of previewVersions.keys()) unconfirmed.add(id);
     previewVersions.clear();
-    for (const card of document.querySelectorAll("[data-reply-id]")) {
-      if (!live.has(card.dataset.replyState)) continue;
-      show(card.querySelector("[data-reply-progress]"), "");
-      const provisional = card.querySelector("[data-reply-provisional]");
-      if (provisional) provisional.hidden = true;
-      const connection = card.querySelector("[data-reply-connection]");
-      if (connection) connection.hidden = false;
-    }
+    stopGrace();
+    // CLOSED (2): the browser will not retry (refused, signed out or over the reader limit), so point to Refresh now.
+    if (stream.readyState === 2) { for (const card of liveCards()) gap(card, "closed"); return; }
+    grace = window.setTimeout(() => { grace = 0; for (const card of liveCards()) gap(card, "reconnecting"); }, graceMs);
+  });
+  stream.addEventListener("open", () => {
+    stopGrace();
+    for (const card of liveCards()) gap(card, null);
+    if (!unconfirmed.size) return;
+    // A reconnect receives every current snapshot at once; a draft none confirms belongs to an attempt that has ended.
+    grace = window.setTimeout(() => {
+      for (const id of unconfirmed) {
+        const card = document.getElementById(`reply-${id}`);
+        if (card?.dataset.replyState === "thinking") follow(() => clearDraft(card));
+      }
+      unconfirmed.clear();
+      grace = 0;
+    }, graceMs);
   });
   stream.addEventListener("reply", event => {
     let data;
@@ -124,26 +173,35 @@ if (chat && typeof EventSource === "function") {
     if (!data || typeof data.id !== "string" || !/^[a-f0-9-]{36}$/.test(data.id)) return;
     const card = document.getElementById(`reply-${data.id}`);
     if (!card) return;
-    card.dataset.replyState = data.state;
-    const label = card.querySelector("[data-reply-label]");
-    if (label) { label.textContent = data.label ?? ""; label.dataset.state = data.tone ?? ""; }
-    const avatar = card.querySelector("[data-reply-avatar]");
-    if (avatar) { if (data.state === "thinking") avatar.dataset.state = "thinking"; else delete avatar.dataset.state; }
-    if (data.state !== "thinking" || !previewVersions.has(data.id)) {
-      show(card.querySelector("[data-reply-progress]"), data.progress?.text);
-      const provisional = card.querySelector("[data-reply-provisional]");
-      if (provisional) provisional.hidden = !data.progress;
+    const changed = card.dataset.replyState !== data.state;
+    unconfirmed.delete(data.id);
+    gap(card, null);
+    // The committed text takes the draft's place with the same typography; the unsaved line becomes the saved line.
+    follow(() => {
+      card.dataset.replyState = data.state;
+      const label = card.querySelector("[data-reply-label]");
+      if (label) { label.textContent = data.label ?? ""; label.dataset.state = data.tone ?? ""; }
+      const avatar = card.querySelector("[data-reply-avatar]");
+      if (avatar) { if (data.state === "thinking") avatar.dataset.state = "thinking"; else delete avatar.dataset.state; }
+      if (data.state !== "thinking" || !previewVersions.has(data.id)) {
+        show(card.querySelector("[data-reply-progress]"), data.progress?.text);
+        const provisional = card.querySelector("[data-reply-provisional]");
+        if (provisional) provisional.hidden = !data.progress;
+      }
+      if (data.state !== "thinking") { previewVersions.delete(data.id); delete card.dataset.replyPhase; }
+      const saved = card.querySelector("[data-reply-saved]");
+      if (saved) saved.hidden = data.state !== "answered";
+      show(card.querySelector("[data-reply-next]"), data.next);
+      show(card.querySelector("[data-reply-text]"), data.state === "answered" ? data.text : "");
+      // app.role_proposals/v1: cards render on the page itself; an answered reply that carries one shows the link to it.
+      const proposals = card.querySelector("[data-reply-proposals]");
+      if (proposals) proposals.hidden = !(data.state === "answered" && Number.isSafeInteger(data.proposals) && data.proposals > 0);
+      if (!live.has(data.state)) card.querySelector("[data-reply-stop]")?.remove();
+    });
+    if (changed && data.state !== "thinking") {
+      announce(card, data.state === "answered" ? card.querySelector("[data-reply-announce]")?.dataset.answered : [data.label, data.next].filter(Boolean).join(" "));
     }
-    if (data.state !== "thinking") { previewVersions.delete(data.id); delete card.dataset.replyStalled; }
-    const connection = card.querySelector("[data-reply-connection]");
-    if (connection) connection.hidden = true;
-    show(card.querySelector("[data-reply-next]"), data.next);
-    show(card.querySelector("[data-reply-text]"), data.state === "answered" ? data.text : "");
-    // app.role_proposals/v1: cards render on the page itself; an answered reply that carries one shows the link to it.
-    const proposals = card.querySelector("[data-reply-proposals]");
-    if (proposals) proposals.hidden = !(data.state === "answered" && Number.isSafeInteger(data.proposals) && data.proposals > 0);
-    if (!live.has(data.state)) card.querySelector("[data-reply-stop]")?.remove();
-    if (![...document.querySelectorAll("[data-reply-id]")].some(node => live.has(node.dataset.replyState))) stream.close();
+    if (!liveCards().length) { stopGrace(); stream.close(); }
   });
 }
 

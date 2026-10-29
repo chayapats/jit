@@ -16,6 +16,7 @@ import { ScriptedRunPort, fixtureOutcome } from "../src/team/scripted-port";
 import type { ApplicationRunEvent, ApplicationRunOutcome, ApplicationRunRequest, RoleRoute } from "../src/team/types";
 import { createWebHandler, type ReplyStreamOptions } from "../src/web";
 import { assetUrl } from "../src/web-assets";
+import { styleSheet } from "../src/web-style";
 import { replyStreams, replyStallMs } from "../src/team/reply-stream";
 
 const roots: string[] = [], stores: TransactionStore[] = [], queues: JobQueue[] = [], releases: (() => void)[] = [];
@@ -199,7 +200,7 @@ test("provisional deltas stay in memory only; a stream cut midway shows a failur
   expect(messages(f)).toHaveLength(1);
   const page = await (await get(f, `/projects/${f.project.id}/topics/${f.topic.id}`)).text();
   expect(page).not.toContain("กำลังร่างคำตอบ…");
-  expect(page).toContain("ข้อความระหว่างคิด ยังไม่บันทึก");
+  expect(page).toContain("ร่างคำตอบ ยังไม่บันทึก");
   expect(page).toContain(`data-reply-stream="/projects/${f.project.id}/topics/${f.topic.id}/events"`);
   expect(page).toContain('data-state="thinking"');
   const streamed = previews(await (await get(f, `/projects/${f.project.id}/topics/${f.topic.id}/events`)).text());
@@ -479,32 +480,48 @@ test("reopening the store shows the same replies, states and messages", async ()
 });
 
 test("app.js contract: the event stream updates reply text with textContent and closes when no reply is live", async () => {
+  const node = (extra: Record<string, unknown> = {}) => ({ textContent: "", hidden: true, dataset: {} as Record<string, string>, ...extra });
   const card = (id: string) => {
-    const node = (extra: Record<string, unknown> = {}) => ({ textContent: "", hidden: true, dataset: {} as Record<string, string>, ...extra });
-    const parts = { label: node(), avatar: node({ dataset: { state: "thinking" } }), progress: node(), provisional: node({ textContent: "provisional" }), next: node(), text: node(), connection: node() };
+    const parts = { label: node(), avatar: node({ dataset: { state: "thinking" } }), progress: node(), provisional: node({ textContent: "provisional" }),
+      saved: node({ textContent: "saved" }), next: node(), text: node(), proposals: node(),
+      connection: node({ textContent: "reconnecting", dataset: { reconnecting: "reconnecting", closed: "closed" } }),
+      announce: node({ hidden: false, dataset: { answered: "Jit has finished replying" } }) };
     let stopRemoved = false;
     const selectors: Record<string, unknown> = { "[data-reply-label]": parts.label, "[data-reply-avatar]": parts.avatar, "[data-reply-progress]": parts.progress,
-      "[data-reply-provisional]": parts.provisional, "[data-reply-next]": parts.next, "[data-reply-text]": parts.text, "[data-reply-connection]": parts.connection, "[data-reply-stop]": { remove: () => { stopRemoved = true; } } };
-    return { id, parts, dataset: { replyState: "thinking" } as Record<string, string>, querySelector: (s: string) => selectors[s] ?? null, removed: () => stopRemoved };
+      "[data-reply-provisional]": parts.provisional, "[data-reply-saved]": parts.saved, "[data-reply-next]": parts.next, "[data-reply-text]": parts.text,
+      "[data-reply-proposals]": parts.proposals, "[data-reply-connection]": parts.connection, "[data-reply-announce]": parts.announce,
+      "[data-reply-stop]": { remove: () => { stopRemoved = true; } } };
+    return { id, parts, dataset: { replyId: id, replyState: "thinking" } as Record<string, string>, querySelector: (s: string) => selectors[s] ?? null, removed: () => stopRemoved };
   };
-  const one = card("11111111-1111-1111-1111-111111111111");
-  const chat = { dataset: { replyStream: "/projects/p/topics/t/events", replyCursor: "7" } };
-  const sources: { url: string; listeners: Record<string, (event: { data: string }) => void>; closed: boolean }[] = [];
+  const one = card("11111111-1111-1111-1111-111111111111"), two = card("22222222-2222-2222-2222-222222222222");
+  // The scroll region grows with the reply text on the page; the browser clamps scrollTop to its range.
+  let top = 0;
+  const region = {
+    clientHeight: 400,
+    get scrollHeight() { return 400 + [one, two].reduce((n, c) => n + c.parts.progress.textContent.length + c.parts.text.textContent.length, 0); },
+    get scrollTop() { return top; }, set scrollTop(value: number) { top = Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight)); },
+  };
+  const chat = { dataset: { replyStream: "/projects/p/topics/t/events", replyCursor: "7" }, closest: (s: string) => s === ".scroll-region" ? region : null };
+  const timers = new Map<number, { ms: number; run(): void }>();
+  let timerId = 0;
+  const runTimers = () => { const due = [...timers.values()]; timers.clear(); for (const timer of due) timer.run(); };
+  const sources: { url: string; listeners: Record<string, (event: { data: string }) => void>; closed: boolean; readyState: number }[] = [];
   class FakeEventSource {
-    listeners: Record<string, (event: { data: string }) => void> = {}; closed = false;
+    listeners: Record<string, (event: { data: string }) => void> = {}; closed = false; readyState = 0;
     constructor(readonly url: string) { sources.push(this); }
     addEventListener(type: string, fn: (event: { data: string }) => void) { this.listeners[type] = fn; }
-    close() { this.closed = true; }
+    close() { this.closed = true; this.readyState = 2; }
   }
   const globals: Record<string, unknown> = {
     document: {
       documentElement: { dataset: {} },
       querySelector: (s: string) => s === "[data-reply-stream]" ? chat : null,
-      querySelectorAll: (s: string) => s === "[data-reply-id]" ? [one] : [],
-      getElementById: (id: string) => id === `reply-${one.id}` ? one : null,
+      querySelectorAll: (s: string) => s === "[data-reply-id]" ? [one, two] : [],
+      getElementById: (id: string) => [one, two].find(c => `reply-${c.id}` === id) ?? null,
       addEventListener: () => {},
     },
-    window: { addEventListener: () => {} }, location: { hash: "", pathname: "/", search: "" }, history: { replaceState: () => {} },
+    window: { addEventListener: () => {}, setTimeout: (run: () => void, ms: number) => { timers.set(++timerId, { ms, run }); return timerId; }, clearTimeout: (id: number) => { timers.delete(id); } },
+    location: { hash: "", pathname: "/", search: "" }, history: { replaceState: () => {} },
     CSS: { supports: () => true }, EventSource: FakeEventSource,
   };
   const saved = new Map(Object.keys(globals).map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
@@ -512,41 +529,162 @@ test("app.js contract: the event stream updates reply text with textContent and 
   try {
     await import(`../src/web-assets/app.js?case=${crypto.randomUUID()}`);
     expect(sources.map(s => s.url)).toEqual(["/projects/p/topics/t/events?cursor=7"]);
-    const fire = (data: unknown) => sources[0]!.listeners.reply!({ data: typeof data === "string" ? data : JSON.stringify(data) });
+    const source = sources[0]!;
+    const fire = (data: unknown) => source.listeners.reply!({ data: typeof data === "string" ? data : JSON.stringify(data) });
+    const preview = (data: unknown) => source.listeners["reply-preview"]!({ data: JSON.stringify(data) });
+    const transport = (type: "open" | "error", readyState: number) => { source.readyState = readyState; source.listeners[type]!({ data: "" }); };
+    transport("open", 1);
     fire("not json"); fire({ id: "../../x", state: "answered" });
     expect(one.dataset.replyState).toBe("thinking");
+    // A legacy v1 durable progress slot still renders as unsaved text.
     fire({ id: one.id, state: "thinking", progress: { text: "<b>ร่าง</b>", provisional: true }, label: "คิด", tone: "running", next: null, text: null });
     expect(one.parts.progress).toMatchObject({ textContent: "<b>ร่าง</b>", hidden: false });
     expect(one.parts.provisional).toMatchObject({ textContent: "provisional", hidden: false });
     expect(one.parts.label).toMatchObject({ textContent: "คิด", dataset: { state: "running" } });
-    expect(sources[0]!.closed).toBe(false);
-    const preview = (data: unknown) => sources[0]!.listeners["reply-preview"]!({ data: JSON.stringify(data) });
+    expect(one.parts.announce.textContent).toBe("");
+
+    // Snapshots replace the draft; only a change of phase is announced, never each token.
     const attemptId = rid();
+    preview({ id: one.id, attemptId, sequence: 0, text: "", stalled: false, label: "กำลังคิด" });
+    expect(one.parts.progress.hidden).toBe(true);
+    expect(one.parts.announce.textContent).toBe("");
     preview({ id: one.id, attemptId, sequence: 2, text: "<b>streamed</b>", stalled: false, label: "กำลังตอบ" });
-    expect(one.parts.progress.textContent).toBe("<b>streamed</b>");
+    expect(one.parts.progress).toMatchObject({ textContent: "<b>streamed</b>", hidden: false });
+    expect(one.parts.provisional.hidden).toBe(false);
+    expect(one.dataset.replyPhase).toBe("streaming");
+    expect(one.parts.announce.textContent).toBe("กำลังตอบ");
+    one.parts.announce.textContent = "";
     preview({ id: one.id, attemptId, sequence: 1, text: "older" });
     expect(one.parts.progress.textContent).toBe("<b>streamed</b>");
-    preview({ id: one.id, attemptId, sequence: 2, text: "<b>streamed</b>", stalled: true, label: "ยังทำงานอยู่" });
+    preview({ id: one.id, attemptId, sequence: 3, text: "<b>streamed</b> more", stalled: false, label: "กำลังตอบ" });
+    expect(one.parts.announce.textContent).toBe("");
+    preview({ id: one.id, attemptId, sequence: 3, text: "<b>streamed</b> more", stalled: true, label: "ยังทำงานอยู่" });
     expect(one.parts.label.textContent).toBe("ยังทำงานอยู่");
-    sources[0]!.listeners.error!({ data: "" });
-    expect(one.parts.progress.hidden).toBe(true);
-    expect(one.parts.connection.hidden).toBe(false);
-    preview({ id: one.id, attemptId, sequence: 3, text: "reconnected", label: "กำลังตอบ" });
-    expect(one.parts.progress.textContent).toBe("reconnected");
+    expect(one.parts.label.dataset.state).toBe("running"); // A stall keeps the calm running tone.
+    expect(one.dataset.replyPhase).toBe("stalled");
+    expect(one.parts.announce.textContent).toBe("ยังทำงานอยู่");
+
+    // The view follows the stream only while the owner is at the bottom.
+    region.scrollTop = region.scrollHeight;
+    preview({ id: one.id, attemptId, sequence: 4, text: "a".repeat(200), stalled: false, label: "กำลังตอบ" });
+    expect(region.scrollTop).toBe(region.scrollHeight - region.clientHeight);
+    region.scrollTop = 0;
+    preview({ id: one.id, attemptId, sequence: 5, text: "a".repeat(300), stalled: false, label: "กำลังตอบ" });
+    expect(region.scrollTop).toBe(0);
+    region.scrollTop = region.scrollHeight;
+    preview({ id: one.id, attemptId, sequence: 6, text: "a".repeat(400), stalled: false, label: "กำลังตอบ" });
+    expect(region.scrollTop).toBe(region.scrollHeight - region.clientHeight);
+
+    // A routine reconnect keeps the draft and shows nothing; the snapshot after it confirms the draft.
+    one.parts.announce.textContent = "";
+    transport("error", 0);
+    expect(one.parts.progress).toMatchObject({ textContent: "a".repeat(400), hidden: false });
+    expect(one.dataset.replyGap).toBeUndefined();
     expect(one.parts.connection.hidden).toBe(true);
+    expect([...timers.values()].map(t => t.ms)).toEqual([3000]);
+    transport("open", 1);
+    preview({ id: one.id, attemptId, sequence: 6, text: "a".repeat(400), stalled: false, label: "กำลังตอบ" });
+    runTimers();
+    expect(one.parts.progress.textContent).toBe("a".repeat(400));
+    expect(one.parts.announce.textContent).toBe("");
+
+    // A longer gap dims the draft and shows the calm hint once; reconnecting hides it.
+    transport("error", 0);
+    runTimers();
+    expect(one.dataset.replyGap).toBe("reconnecting");
+    expect(one.parts.connection).toMatchObject({ textContent: "reconnecting", hidden: false });
+    expect(one.parts.progress.hidden).toBe(false);
+    expect(one.parts.announce.textContent).toBe("reconnecting");
+    transport("open", 1);
+    expect(one.dataset.replyGap).toBeUndefined();
+    expect(one.parts.connection.hidden).toBe(true);
+    // No snapshot confirms the draft after reconnecting: its attempt has ended, so the draft is cleared.
+    runTimers();
+    expect(one.parts.progress.hidden).toBe(true);
+    expect(one.parts.provisional.hidden).toBe(true);
+    expect(one.dataset.replyPhase).toBeUndefined();
+
+    // A new attempt streams again; a stream the browser will not retry points to Refresh at once.
+    const retried = rid();
+    preview({ id: one.id, attemptId: retried, sequence: 1, text: "reconnected", stalled: false, label: "กำลังตอบ" });
+    expect(one.parts.progress.textContent).toBe("reconnected");
+    expect(one.parts.announce.textContent).toBe("กำลังตอบ");
+    transport("error", 2);
+    expect(timers.size).toBe(0);
+    expect(one.dataset.replyGap).toBe("closed");
+    expect(one.parts.connection).toMatchObject({ textContent: "closed", hidden: false });
+    expect(one.parts.progress.textContent).toBe("reconnected");
+
+    // A blocked reply names its next action; the stream stays open while another reply is live.
+    fire({ id: two.id, state: "blocked", progress: null, label: "ตอบไม่ได้ตอนนี้", tone: "blocked", next: "รอโควตา", text: null });
+    expect(two.parts.announce.textContent).toBe("ตอบไม่ได้ตอนนี้ รอโควตา");
+    expect(two.parts.saved.hidden).toBe(true);
+    expect(source.closed).toBe(false);
+
+    // Commit: the committed text takes the draft's slot, the unsaved line becomes the saved line, and the finish is announced.
     fire({ id: one.id, state: "answered", progress: null, label: "ตอบแล้ว", tone: "succeeded", next: null, text: "<img src=x onerror=alert(1)>" });
     expect(one.dataset.replyState).toBe("answered");
     expect(one.parts.text).toMatchObject({ textContent: "<img src=x onerror=alert(1)>", hidden: false });
     expect(one.parts.progress.hidden).toBe(true);
     expect(one.parts.provisional.hidden).toBe(true);
+    expect(one.parts.saved.hidden).toBe(false);
+    expect(one.parts.connection.hidden).toBe(true);
+    expect(one.dataset.replyGap).toBeUndefined();
     expect(one.parts.avatar.dataset.state).toBeUndefined();
-    preview({ id: one.id, attemptId, sequence: 99, text: "late" });
-    expect(one.parts.progress.hidden).toBe(true);
+    expect(one.parts.announce.textContent).toBe("Jit has finished replying");
     expect(one.removed()).toBe(true);
-    expect(sources[0]!.closed).toBe(true);
+    preview({ id: one.id, attemptId: retried, sequence: 99, text: "late" });
+    expect(one.parts.progress.hidden).toBe(true);
+    expect(source.closed).toBe(false);
+    fire({ id: two.id, state: "stopped", progress: null, label: "หยุดแล้ว", tone: "stopped", next: "ส่งอีกครั้ง", text: null });
+    expect(two.parts.announce.textContent).toBe("หยุดแล้ว ส่งอีกครั้ง");
+    expect(source.closed).toBe(true);
   } finally {
     for (const [key, descriptor] of saved) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete (globalThis as Record<string, unknown>)[key]; }
   }
+});
+
+test("reply card markup: the draft is not a live region; one polite status line and calm connection hints in Thai and English", async () => {
+  const gate = deferred<void>();
+  releases.push(() => gate.resolve());
+  const f = await fixture({ script: async (request, _signal, observe) => {
+    observe({ kind: "delta", runId: request.runId, text: "ร่างที่ยังไม่บันทึก" });
+    await gate.promise;
+    return answer(request, "เสร็จแล้ว");
+  } });
+  const url = `/projects/${f.project.id}/topics/${f.topic.id}`;
+  send(f, "สวัสดี");
+  f.queue.pump(); await Bun.sleep(5);
+  const card = async () => /<article class="message message--jit reply-status"[\s\S]*?<\/article>/.exec(await (await get(f, url)).text())![0];
+  const thai = await card();
+  // The streamed draft is never server-rendered, and the draft and committed slots are adjacent so a commit swaps in place.
+  expect(thai).not.toContain("ร่างที่ยังไม่บันทึก");
+  expect(thai).not.toContain("aria-live");
+  expect(thai).toContain('<div class="message-body"><p class="literal reply-progress" data-reply-progress hidden></p><p class="literal reply-text" data-reply-text hidden></p><p class="reply-provisional" data-reply-provisional hidden>ร่างคำตอบ ยังไม่บันทึก</p><p class="reply-saved" data-reply-saved hidden>');
+  expect(thai).toContain('<p class="sr-only" role="status" data-reply-announce data-answered="จิตตอบเสร็จแล้ว"></p>');
+  expect(thai).toContain('data-reconnecting="กำลังเชื่อมต่อใหม่… จิตยังทำงานต่อระหว่างนี้" data-closed="อัปเดตสดหยุดแล้ว — กด “ดูสถานะล่าสุด” เพื่อดูคำตอบ" hidden>');
+  expect(thai).toContain("บันทึกแล้ว</p>");
+  f.app.execute(f.auth.actor, { kind: "ui.preferences.set", requestId: rid(), projectId: null, expectedRevision: 0, payload: { theme: "light", language: "en" } });
+  const english = await card();
+  expect(english).toContain(">Draft reply, not saved yet</p>");
+  expect(english).toContain('data-answered="Jit has finished replying"');
+  expect(english).toContain('data-reconnecting="Reconnecting… Jit keeps working in the meantime" data-closed="Live updates stopped — select “See the latest status” for the reply"');
+  expect(english).toContain(">Saved</p>");
+  expect(english).not.toMatch(/[฀-๿]/);
+  gate.resolve(); await f.queue.idle();
+  expect(replyFor(f, messages(f)[0]!.id).state).toBe("answered");
+});
+
+test("reply stylesheet: draft and committed text share one typography; the dot breathes only while thinking and stops under reduced motion", () => {
+  const css = styleSheet({ inter: "/i", thai: "/t", mono: "/m" });
+  expect(css).toContain(".reply-progress, .reply-text { font-size: var(--size-chat); color: var(--fg); }");
+  // .literal + .literal spacing would otherwise push the committed text down when it replaces the draft.
+  expect(css).toContain(".reply-status .reply-progress + .reply-text { margin-top: 0; }");
+  expect(css).toMatch(/\.reply-status\[data-reply-state="thinking"\] \.reply-progress::after \{[^}]*animation: jit-breath var\(--motion-breath\) ease-in-out infinite; \}/);
+  expect(css).toContain(".reply-status[data-reply-gap] .reply-progress { color: var(--fg-2); }");
+  expect(css).toContain(".reply-status[data-reply-gap] .reply-progress::after { display: none; }");
+  expect(css).toContain(".reply-status .reply-actions { min-height: 32px; }");
+  expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\) \{\s*\*, \*::before, \*::after \{[^}]*animation: none !important/);
 });
 
 test("the stream reports queue-only transitions and acknowledges each change with its own cursor", async () => {
