@@ -64,3 +64,13 @@ test("an ordinary negative answer (exit 1) keeps readiness; only engine failures
   await engine(["info"], { timeoutMs: 1000 });
   expect(cachedReadiness(runtime, probe)).toEqual({ state: "checking", reason: null });
 });
+
+test("a command killed on timeout (signal status) also erases readiness", async () => {
+  const runtime = {};
+  const probe = async () => ready;
+  cachedReadiness(runtime, probe); await flush();
+  expect(cachedReadiness(runtime, probe)).toEqual(ready);
+  const killed = readinessCommands(runtime, (async (_argv: readonly string[], _request: { timeoutMs: number }) => ({ exitCode: 137, stdout: new Uint8Array(), stderr: new Uint8Array() })) as CommandRunner);
+  await killed(["info"], { timeoutMs: 1 });
+  expect(cachedReadiness(runtime, probe)).toEqual({ state: "checking", reason: null });
+});

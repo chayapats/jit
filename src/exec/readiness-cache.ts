@@ -32,12 +32,13 @@ export function invalidateReadiness(runtime: object): void {
   if (entry) { entry.value = undefined; entry.expires = 0; entry.generation++; }
 }
 
-/** Observes real commands only (probes use the raw runner): engine failures (exit 125) or spawn errors invalidate readiness. */
+/** Observes real commands only (probes use the raw runner): engine failures (exit 125), timeouts (signal status) or spawn errors invalidate readiness. */
 export function readinessCommands<T extends CommandRunner>(runtime: object, run: T): T {
   return Object.assign(async (...args: Parameters<CommandRunner>) => {
-    // Podman exits 125 for engine/API failures; 1 is an ordinary negative answer (`image exists`, a missing
-    // container on `inspect`, a failed health probe) and must not erase readiness (live finding, #224).
-    try { const result = await run(...args); if (result.exitCode === 125) invalidateReadiness(runtime); return result; }
+    // 1–124 are ordinary command answers (`image exists` = 1, `inspect` of a missing container, a failed health
+    // probe) and keep readiness (live finding, #224). Podman's own engine/API failures exit 125, and a command the
+    // runner killed on timeout ends with a signal status (>= 128); both erase readiness.
+    try { const result = await run(...args); if (!(result.exitCode >= 0 && result.exitCode < 125)) invalidateReadiness(runtime); return result; }
     catch (error) { invalidateReadiness(runtime); throw error; }
   }, { client: run.client }) as T;
 }

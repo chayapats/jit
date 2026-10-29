@@ -92,8 +92,8 @@ export class PodmanAttachmentSanitizer implements AttachmentSanitizerRuntime {
     const args = ["run", "--label", `jit.sanitize.job=${jobId}`, "--rm", "--name", this.name, "--pull=never", "--network", "none", "--cap-drop=ALL",
       "--security-opt=no-new-privileges", "--read-only", "--http-proxy=false", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=32m,mode=1777",
       "--tmpfs", "/run:rw,nosuid,nodev,noexec,size=1m,mode=1777",
-      // Podman 4.9 rejects tmpfs nr_inodes=/uid=/gid=. The size cap stays; the file count is bounded by the stdout
-      // record protocol (at most three or four named records) and the container memory cgroup that charges tmpfs.
+      // Podman 4.9 rejects tmpfs nr_inodes=/uid=/gid=. The byte cap stays and tmpfs is charged to the memory cgroup;
+      // files created inside are not counted, but Jit accepts at most the named stdout records, checked after decoding.
       "--mount", `type=tmpfs,destination=/out,tmpfs-size=${outputBytes},tmpfs-mode=0700,U=true,noexec,nosuid,nodev`,
       `--memory=${memoryBytes}`, `--memory-swap=${memoryBytes}`, "--pids-limit=64", "--cpus=1", "--userns=keep-id:uid=1000,gid=1000",
       "--user", "1000:1000", "--log-driver=none", "--workdir", "/", "--env", "HOME=/tmp", "--env", "LANG=C.UTF-8",
