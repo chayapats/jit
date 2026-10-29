@@ -10,13 +10,14 @@ export type Attribution = { kind: "owner"; ownerId: "owner" }
 /** Describes application data or an external identity without provider wire objects or fetch authority. */
 export type SourceDescriptor = { kind: "topic"; topicId: string }
   | { kind: "message"; topicId: string; messageId: string }
+  | { kind: "attachment"; topicId: string; messageId: string; attachmentId: string }
   | { kind: "output" }
   | { kind: "external"; system: string; resourceType: string; resourceId: string; revisionHint?: string };
 /** Reports the current registry pointer independently from an immutable requested reference. */
 export interface SourceCurrent {
   revision: number; generation: number; kind: SourceDescriptor["kind"]; availability: "available" | "unavailable";
 }
-/** Returns exact committed content or an explicit unavailable result without guessing or fetching. */
+/** Returns exact committed content or unavailable; an available attachment returns descriptor/provenance and empty text, never file bytes. */
 export type SourceLookup = {
   state: "available"; projectId: string; reference: SourceReference; current: SourceCurrent;
   descriptor: SourceDescriptor; attribution: Attribution; committedAt: number; text: string;
@@ -101,6 +102,22 @@ export function registerExternalSource(tx: AppTransaction, input: {
   return insert(tx, input.projectId, descriptor, { kind: "service", service: "source-registry" }, null, input.committedAt);
 }
 
+/** Registers an immutable bound attachment as available metadata with NULL content_text; caller binds it in the same owner transaction. */
+export function commitAttachmentSource(tx: AppTransaction, input: {
+  projectId: string; topicId: string; messageId: string; attachmentId: string; committedAt: number;
+}): SourceReference {
+  for (const id of [input.projectId, input.topicId, input.messageId, input.attachmentId]) requireId(id);
+  if (!Number.isSafeInteger(input.committedAt) || input.committedAt < 0) throw new AppError("invalid_commit_time");
+  if (!tx.get("SELECT 1 FROM messages WHERE id = ? AND project_id = ? AND topic_id = ?", input.messageId, input.projectId, input.topicId) ||
+      !tx.get("SELECT 1 FROM attachments WHERE id = ? AND project_id = ? AND topic_id = ? AND state IN ('pending', 'ready') AND (message_id IS NULL OR message_id = ?)",
+        input.attachmentId, input.projectId, input.topicId, input.messageId)) throw new AppError("attachment_not_found", 404);
+  const descriptor: SourceDescriptor = { kind: "attachment", topicId: input.topicId, messageId: input.messageId, attachmentId: input.attachmentId };
+  tx.run("INSERT INTO sources VALUES (?, ?, 'attachment', 1, 1, 'available')", input.attachmentId, input.projectId);
+  tx.run("INSERT INTO source_versions VALUES (?, 1, 1, ?, ?, NULL, ?)", input.attachmentId, JSON.stringify(descriptor),
+    JSON.stringify({ kind: "owner", ownerId: "owner" }), input.committedAt);
+  return { sourceId: input.attachmentId, revision: 1, generation: 1 };
+}
+
 /** Reads one exact version under a caller-authorized project scope without materializing external content. */
 export function lookupSource(tx: AppTransaction, projectId: string, reference: SourceReference): SourceLookup {
   requireId(projectId); requireReference(reference);
@@ -117,10 +134,10 @@ export function lookupSource(tx: AppTransaction, projectId: string, reference: S
     reference.sourceId, reference.revision, reference.generation);
   if (!version) return unavailable("revision_unavailable");
   const descriptor = JSON.parse(version.descriptor) as SourceDescriptor;
-  if (row.availability !== "available" || version.text === null) {
+  if (row.availability !== "available" || (version.text === null && descriptor.kind !== "attachment")) {
     if (descriptor.kind === "external") return { ...unavailable("external_not_imported"), descriptor };
     return unavailable("source_unavailable");
   }
   return { state: "available", projectId, reference: { ...reference }, current: { ...row }, descriptor,
-    attribution: JSON.parse(version.attribution) as Attribution, committedAt: version.committedAt, text: version.text };
+    attribution: JSON.parse(version.attribution) as Attribution, committedAt: version.committedAt, text: version.text ?? "" };
 }

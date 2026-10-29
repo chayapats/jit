@@ -4,6 +4,16 @@
  * Values are plain text: no markup and none of < > & " ' (renderers insert them unescaped).
  */
 export const th = {
+  "error.attachments_disabled": "ยังไม่ได้เปิดรับไฟล์แนบ กรุณาส่งข้อความแทน",
+  "error.invalid_attachment_upload": "ข้อมูลอัปโหลดไม่ถูกต้อง กรุณาเลือกไฟล์แล้วลองใหม่",
+  "error.attachment_too_large": "ไฟล์ใหญ่เกินเพดาน กรุณาเลือกไฟล์ที่เล็กลงแล้วลองใหม่",
+  "error.attachment_quota_exceeded": "ไฟล์แนบเต็ม quota แล้ว กรุณาลบไฟล์ที่ไม่ใช้หรือให้ผู้ดูแลเพิ่มเพดาน",
+  "error.attachment_disk_reserve": "พื้นที่ดิสก์ไม่พอรักษาพื้นที่สำรอง กรุณาเพิ่มพื้นที่ว่างแล้วลองใหม่",
+  "error.attachment_type_unsupported": "ชนิดไฟล์หรือนามสกุลไม่รองรับ กรุณาเลือก PNG, JPEG, WebP, PDF หรือข้อความ UTF-8 ที่ไม่มี NUL และนามสกุลตรงกับเนื้อไฟล์",
+  "error.attachment_needs_sanitizer": "ไฟล์ชนิดนี้ต้องใช้ container sanitizer กรุณาให้ผู้ดูแลตั้งค่า หรือส่งข้อความ UTF-8, PNG หรือ JPEG แทน",
+  "error.attachment_not_found": "ไม่พบไฟล์แนบในหัวข้อนี้ กรุณากลับไปที่หัวข้อแล้วเลือกไฟล์ที่ยังมีอยู่",
+  "error.invalid_attachment_event": "ข้อมูล audit ของไฟล์แนบไม่ถูกต้อง กรุณาลองใหม่หรือให้ผู้ดูแลตรวจ service",
+
   "common.jit_all_projects": "Jit · โครงการทั้งหมด",
   "common.you": "คุณ",
   "common.teammate": "ผู้ร่วมทีม",

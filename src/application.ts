@@ -1,3 +1,5 @@
+import { AttachmentStorage, type AttachmentStorageOptions, type AttachmentUpload } from "./attachments/storage";
+import { readAttachment, readAttachmentEvents, type AttachmentView, type AttachmentEventView } from "./attachments/records";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { AppError } from "./errors";
 import type { AppConfig } from "./config";
@@ -187,6 +189,8 @@ import { ledgerCheckpointPathFor, syncLedgerCheckpoint, type TrustedLedger } fro
 
 /** Injectable clock and transaction fault seam for deterministic persistence checks. */
 export interface ApplicationOptions {
+  /** app.attachments/v1 deterministic storage/capability probes; production defaults fail closed. */
+  attachments?: Pick<AttachmentStorageOptions, "diskFree" | "sanitizerAvailable">;
   now?: () => number;
   beforeCommit?(stage: "project" | "topic" | "message" | "job" | "team" | "decision" | "delivery" | "task" | "memory" | "receipt" | "schedule" | "backup" | "ops" | "setup"): void;
   jobs?: JobQueue;
@@ -272,6 +276,7 @@ export class Application {
   #jitVersion: string;
   /** Backup ids whose files are staged but not yet committed; reconciliation never removes them. */
   #stagingBackups = new Set<string>();
+  #attachments: AttachmentStorage;
 
   constructor(readonly store: TransactionStore, readonly config: AppConfig, options: ApplicationOptions = {}) {
     this.#now = options.now ?? Date.now;
@@ -290,6 +295,12 @@ export class Application {
     this.#restoreFault = options.restoreFault;
     this.#ledgerPath = options.ledgerPath ?? ledgerCheckpointPathFor(store.path);
     this.#backupDir = ownBackupDir(store.path, options.backupDir);
+    this.#attachments = new AttachmentStorage(store, config.attachments, { ...options.attachments, now: this.#now,
+      forbiddenDirectories: [this.#backupDir, config.execution.directory],
+      backupActive: () => this.#stagingBackups.size > 0, assertWritable: () => {
+        if (this.#upgradeBusy || upgradeFenced(store.path) || readRestoreGate(store.path)) throw new AppError("service_unavailable", 503);
+      } });
+
     this.#exportLimits = {
       maxExports: Math.min(exportRetention.maxExports, Math.max(1, options.exportLimits?.maxExports ?? exportRetention.maxExports)),
       maxBytes: Math.min(exportRetention.maxBytes, Math.max(1, options.exportLimits?.maxBytes ?? exportRetention.maxBytes)),
@@ -739,6 +750,29 @@ export class Application {
     });
   }
 
+  /** Streams one staged file after verified Web CSRF/Origin; revalidates session and scope before each chunk and at commit. */
+  uploadAttachment(actor: OwnerActor, projectId: string, topicId: string, upload: AttachmentUpload): Promise<AttachmentView> {
+    return this.#attachments.upload(projectId, topicId, upload, tx => {
+      this.#requireOwner(tx, actor); this.#project(tx, projectId); readTopic(tx, projectId, topicId);
+      if (readGeneralSpace(tx)?.projectId === projectId && !setupComplete(tx)) throw new AppError("setup_incomplete", 409);
+    });
+  }
+
+  /** Reads scoped attachment metadata even when ingestion is disabled; never returns file content. */
+  attachment(actor: OwnerActor, projectId: string, topicId: string, id: string): AttachmentView {
+    return this.store.read(tx => { this.#requireOwner(tx, actor); this.#project(tx, projectId); readTopic(tx, projectId, topicId);
+      return readAttachment(tx, projectId, topicId, id); });
+  }
+
+  /** Reads bounded newest-first attachment audit metadata inside an authenticated project. */
+  attachmentEvents(actor: OwnerActor, projectId: string, options: { before?: number; limit?: number; attachmentId?: string } = {}): AttachmentEventView[] {
+    requireId(projectId);
+    return this.store.read(tx => { this.#requireOwner(tx, actor); this.#project(tx, projectId); return readAttachmentEvents(tx, projectId, options); });
+  }
+
+  /** Service-only staged GC and orphan sweep; respects upgrade/restore fences and in-flight backups, including with gate off. */
+  sweepAttachments(): { expired: number; removed: number } { return this.#attachments.sweep(); }
+
   /** Resolves an exact source reference under an explicit authorized project and never fetches missing content. */
   source(actor: OwnerActor, projectId: string, reference: SourceReference): SourceLookup {
     requireId(projectId); requireReference(reference);
@@ -806,6 +840,12 @@ export class Application {
   execute(actor: OwnerActor, command: RestoreCommand): Promise<RestoreReceipt>;
   execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetAttentionCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | FeedCommand | AccessCommand | ResetBoxCommand | ConnectionCommand | ApprovalCommand | McpCommand | TakeoverCommand | TakeoverInputCommand | SetComputerSettingsCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | WebhookCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | AttentionReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | FeedReceipt | AccessReceipt | Promise<BoxResetReceipt> | ConnectionReceipt | ApprovalReceipt | McpReceipt | TakeoverReceipt | Promise<TakeoverInputReceipt> | ComputerSettingsReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | WebhookReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt>;
   execute(actor: OwnerActor, command: CreateProjectCommand | SetPreferencesCommand | SetLocalApiCommand | SetAttentionCommand | SetPersonaCommand | SetupCommand | StopReplyCommand | RoleProposalCommand | PromotionCommand | SetDispatchAllowanceCommand | FeedCommand | AccessCommand | ResetBoxCommand | ConnectionCommand | ApprovalCommand | McpCommand | TakeoverCommand | TakeoverInputCommand | SetComputerSettingsCommand | DispatchCommand | ConversationCommand | JobCommand | ScheduleCommand | TeamCommand | DecisionCommand | DeliveryCommand | PrReportCommand | SetAlertPolicyCommand | WebhookCommand | TaskCommand | ExtractMemoryCommand | CorrectMemoryCommand | ForgetMemoryCommand | BackupCommand | DeleteCommand | ExportCommand | UpgradeCommand | RestoreCommand): ProjectReceipt | PreferencesReceipt | LocalApiReceipt | AttentionReceipt | PersonaReceipt | SetupReceipt | ReplyReceipt | RoleProposalReceipt | PromotionReceipt | DispatchAllowanceReceipt | FeedReceipt | AccessReceipt | Promise<BoxResetReceipt> | ConnectionReceipt | ApprovalReceipt | McpReceipt | TakeoverReceipt | Promise<TakeoverInputReceipt> | ComputerSettingsReceipt | DispatchReceipt | TopicReceipt | MessageReceipt | ChatReceipt | JobReceipt | ScheduleReceipt | TeamReceipt | DecisionReceipt | DeliveryReceipt | DeliveryResendReceipt | DeliveryRetireReceipt | PrReportReceipt | AlertPolicyReceipt | WebhookReceipt | TaskReceipt | MemoryReceipt | CorrectionReceipt | SuppressionReceipt | BackupReceipt | Promise<BackupReceipt> | DeletionReceipt | DeletionConfirmReceipt | DeletionOperation | ExportReceipt | Promise<UpgradeReceipt> | Promise<RestoreReceipt> {
+    if (command?.kind === "message.send" && !this.config.attachments.enabled) {
+      const ids = (command.payload as unknown as { attachmentIds?: unknown })?.attachmentIds;
+      if (ids !== undefined && (!Array.isArray(ids) || ids.length > 0)) {
+        this.store.read(tx => this.#requireOwner(tx, actor)); throw new AppError("attachments_disabled", 404);
+      }
+    }
     if (command?.kind?.startsWith("upgrade.")) return this.#upgradeCommand(actor, command as UpgradeCommand);
     if (command?.kind?.startsWith("restore.")) return this.#restoreCommand(actor, command as RestoreCommand);
     // ops.schema_migrations/v1 admission fence (held by an upgrade or, ops.quarantined_restore/v1, a restore):

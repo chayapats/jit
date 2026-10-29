@@ -1,3 +1,4 @@
+import { attachmentRequestBytes, attachmentLimitsForDirectories } from "../attachments/limits";
 import { realpathSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { Application } from "../application";
@@ -160,6 +161,7 @@ export function serviceAppConfig(config: AppConfig, service: ServiceConfig | nul
   if (!service) return config;
   const parsed = parseServiceConfig(service);
   return { ...config, databasePath: serviceDatabasePath(parsed), hostname: parsed.network.bindHost, port: parsed.network.port,
+    attachments: attachmentLimitsForDirectories(config.attachments, parsed.stateDirectory, parsed.backupDirectory),
     origin: serviceOrigin(parsed), runPort: parsed.runPort ?? config.runPort, routeModels: serviceRouteModels(parsed),
     telegram: { ...config.telegram, botTokenPath: telegramTokenPath(parsed) ?? config.telegram.botTokenPath } };
 }
@@ -463,15 +465,19 @@ export interface RunningService {
 export function serveFullApp(handle: FullAppHandle, options: { drainTimeoutMs?: number; intervalMs?: number } = {}): RunningService {
   const config = handle.config;
   // app.webhook_triggers/v1 bodies may reach 32 KiB; owner forms stay capped at config.bodyBytes by the Web handler.
-  const server = Bun.serve({ hostname: config.hostname, port: config.port, maxRequestBodySize: Math.max(config.bodyBytes, webhookLimits.bodyBytes * 2),
+  const server = Bun.serve({ hostname: config.hostname, port: config.port, maxRequestBodySize: Math.max(config.bodyBytes, webhookLimits.bodyBytes * 2, config.attachments.enabled ? attachmentRequestBytes(config.attachments) : 0),
     idleTimeout: 15, fetch: createWebHandler(handle.app), error: () => new Response("Request failed", { status: 503 }) });
   let lastPrTick = 0;
+  let lastAttachmentSweep = Date.now();
+  const attachments = () => { try { handle.app.sweepAttachments(); } catch { /* Fenced or storage unavailable: retry on the next sweep. */ } };
+  attachments();
   let sweeping = false;
   // delivery.attention_levels/v1: recompute open work groups from committed state once at start (restart safety)
   // and on every tick (route waits, deadlines and interrupted work happen inside the queue alone).
   const groups = () => { try { tickWorkGroups(handle.store, config.team, Date.now()); } catch { /* Storage failure: the next tick retries. */ } };
   groups();
   const timer = setInterval(() => {
+    if (Date.now() - lastAttachmentSweep >= 60_000) { lastAttachmentSweep = Date.now(); attachments(); }
     const queue = handle.service.queue;
     if (queue) {
       try { queue.pump(); tickSchedules(handle.store, queue, config, Date.now()); } catch { /* Queue refuses acknowledgments after a storage/ownership failure or under an upgrade fence. */ }

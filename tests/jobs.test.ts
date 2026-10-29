@@ -6,7 +6,7 @@ import { Database } from "bun:sqlite";
 import { tmpdir } from "node:os";
 import { Application, type ApplicationOptions } from "../src/application";
 import { readConfig } from "../src/config";
-import { TransactionStore, type AppTransaction } from "../src/store";
+import { schemaVersion, TransactionStore, type AppTransaction } from "../src/store";
 import { createWebHandler } from "../src/web";
 import { JobQueue, jobData } from "../src/jobs/queue";
 import { projectStateWork } from "../src/jobs/project-state";
@@ -376,7 +376,7 @@ test("frozen published v2 schema migrates with conversation, source identity and
   const id = app.execute(actor, cmd).job.id; queue.pump(); await queue.idle(); expect(app.job(actor, projectId, id).state).toBe("succeeded");
   const snapshot = new Database(join(root, readdirSync(root).find(name => name.includes(".pre-v2-"))!), { readonly: true });
   expect(snapshot.query("PRAGMA user_version").get()).toEqual({ user_version: 2 }); expect(snapshot.query("SELECT count(*) AS n FROM messages").get()).toEqual({ n: 1 }); snapshot.close();
-  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 40 });
+  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: schemaVersion });
 });
 
 test("attempt snapshot and generation/lease commit before dispatch; non-model commit is atomic with producer mutations", async () => {

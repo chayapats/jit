@@ -7,7 +7,7 @@ import { Application, type ApplicationOptions } from "../src/application";
 import { readConfig } from "../src/config";
 import { DeliveryWorker, ScriptedTelegramSender } from "../src/delivery";
 import { JobQueue } from "../src/jobs/queue";
-import { TransactionStore } from "../src/store";
+import { schemaVersion, TransactionStore } from "../src/store";
 import { discussionPlanWork, specialistAnalysisWork } from "../src/team/dispatch";
 import { ScriptedRunPort, fixtureOutcome } from "../src/team/scripted-port";
 import { scriptedPreviewWork } from "../src/team/preview";
@@ -294,7 +294,7 @@ test("schema v6 migrates from published v5 without fabricating telegram history 
     CREATE UNIQUE INDEX project_group_identity ON project_groups(project_id, id);
     CREATE TABLE sources (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, kind TEXT NOT NULL, current_revision INTEGER NOT NULL, generation INTEGER NOT NULL, availability TEXT NOT NULL);
     CREATE TABLE source_versions (source_id TEXT NOT NULL, revision INTEGER NOT NULL, generation INTEGER NOT NULL, descriptor_json TEXT NOT NULL, attribution_json TEXT NOT NULL, content_text TEXT, committed_at INTEGER NOT NULL, PRIMARY KEY (source_id, revision, generation));
-    CREATE TABLE topics (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, group_id TEXT NOT NULL, revision INTEGER NOT NULL, sequence INTEGER NOT NULL, message_sequence INTEGER NOT NULL, created_at INTEGER NOT NULL, attribution_json TEXT NOT NULL, source_id TEXT NOT NULL UNIQUE, source_revision INTEGER NOT NULL, source_generation INTEGER NOT NULL);
+    CREATE TABLE topics (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, group_id TEXT NOT NULL, revision INTEGER NOT NULL, sequence INTEGER NOT NULL, message_sequence INTEGER NOT NULL, created_at INTEGER NOT NULL, attribution_json TEXT NOT NULL, source_id TEXT NOT NULL UNIQUE, source_revision INTEGER NOT NULL, source_generation INTEGER NOT NULL, UNIQUE (project_id, id));
     CREATE TABLE messages (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, topic_id TEXT NOT NULL, sequence INTEGER NOT NULL, committed_at INTEGER NOT NULL, attribution_json TEXT NOT NULL, source_id TEXT NOT NULL UNIQUE, source_revision INTEGER NOT NULL, source_generation INTEGER NOT NULL);
     CREATE TABLE job_scheduler (id INTEGER PRIMARY KEY CHECK (id = 1), token TEXT NOT NULL, pid INTEGER NOT NULL);
     CREATE TABLE jobs (sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL, queue_order INTEGER NOT NULL, priority INTEGER NOT NULL, state TEXT NOT NULL, occupies INTEGER NOT NULL, route_key TEXT NOT NULL, record_json TEXT NOT NULL);
@@ -311,7 +311,7 @@ test("schema v6 migrates from published v5 without fabricating telegram history 
   `);
   old.close();
   const store = new TransactionStore(path); stores.push(store);
-  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: 40 });
+  expect(store.read(tx => tx.get("PRAGMA user_version"))).toEqual({ user_version: schemaVersion });
   expect(store.read(tx => tx.get("SELECT state FROM telegram_binding WHERE id = 1"))).toEqual({ state: "unbound" });
   expect(store.read(tx => tx.get("SELECT next_offset FROM telegram_poll WHERE id = 1"))).toEqual({ next_offset: 0 });
   expect(store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM telegram_inbox")!.n)).toBe(0);

@@ -184,6 +184,22 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       ui = uiFor(auth.actor);
       // New settings page paths render through the installation page handlers; commands keep their own paths.
       const pathname = (request.method === "GET" ? settingsPageHandler(url.pathname) : null) ?? url.pathname;
+      // app.attachments/v1: this route alone bypasses payload(); all preflight guards precede the first body read.
+      const attachmentRoute = /^\/(?:api\/)?projects\/([a-f0-9-]{36})\/topics\/([a-f0-9-]{36})\/attachments(?:\/([a-f0-9-]{36}))?$/.exec(pathname);
+      if (attachmentRoute) {
+        const [, projectId, topicId, id] = attachmentRoute;
+        if (request.method === "GET" && id) return json({ attachment: app.attachment(auth.actor, projectId!, topicId!, id) });
+        if (request.method === "POST" && !id) {
+          if (!config.attachments.enabled) throw new AppError("attachments_disabled", 404);
+          app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token"));
+          // The ordered no-script multipart composer and binding are ATT03; never misinterpret it as raw file bytes.
+          if (url.search) throw new AppError("invalid_attachment_upload");
+          if (request.headers.get("content-type")?.split(";")[0]?.trim() !== "application/octet-stream") throw new AppError("unsupported_content_type", 415);
+          const attachment = await app.uploadAttachment(auth.actor, projectId!, topicId!, { body: request.body,
+            encodedName: request.headers.get("x-jit-file-name"), contentLength: request.headers.get("content-length") });
+          return json({ attachment }, 201);
+        }
+      }
       const selectedProject = /^\/projects\/([a-f0-9-]{36})(?:\/|$)/.exec(pathname)?.[1];
       /** Sidebar state: the workspace page plus waiting-on-owner counts for the projects the sidebar can show. */
       const nav = (workspace = app.workspace(auth.actor)): NavigationWorkspace => {
@@ -1636,6 +1652,8 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
           return api ? json(receipt) : respond(null, 303, { Location: `/projects/${receipt.job.projectId}/jobs/${receipt.job.id}#job-${receipt.job.id}` });
         }
         if (topicCollection || messageRoute) {
+          if (messageRoute && !config.attachments.enabled && body.attachmentIds !== undefined &&
+              (!Array.isArray(body.attachmentIds) || body.attachmentIds.length > 0)) throw new AppError("attachments_disabled", 404);
           // app.routing_selection/v1: a reply to one specialist's opinion names its participation (both fields or neither).
           const allowed = ["csrf", "requestId", "expectedRevision", ...topicCollection ? ["title"] : ["text", "replyDiscussion", "replyRole"]];
           if (Object.keys(body).some(key => !allowed.includes(key))) throw new AppError("invalid_body");

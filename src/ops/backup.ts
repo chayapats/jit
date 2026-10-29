@@ -262,6 +262,7 @@ function ensureDir(dir: string): void {
  * classified before it can enter a backup.
  */
 export const backupImageTables: Readonly<Record<string, "include" | "exclude" | "scrub">> = Object.freeze({
+  attachments: "include", attachment_events: "include",
   owner: "exclude", sessions: "exclude", login_throttle: "exclude",
   job_scheduler: "exclude", delivery_worker: "exclude",
   // Installation-scoped registry: preserved from live on activation, never restored from an image.
