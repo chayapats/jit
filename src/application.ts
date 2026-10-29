@@ -1,5 +1,8 @@
 import { AttachmentSanitizer } from "./attachments/sanitizer";
 import type { AttachmentSanitizerRuntime } from "./attachments/sanitizer-runtime";
+import { reconcileForgottenAttachments, attachmentProjectContributor, replayAttachmentLifecycle, type AttachmentCopyCleanup } from "./attachments/lifecycle";
+import { sweepBackupAttachmentBlobs, collectAttachmentBlobs } from "./attachments/backup";
+import { purgeDeletedAttachments } from "./memory/delete";
 import { AttachmentStorage, type AttachmentStorageOptions, type AttachmentUpload } from "./attachments/storage";
 import { readAttachment, readAttachmentEvents, writeAttachmentEvent, type AttachmentView, type AttachmentEventView } from "./attachments/records";
 import { bindAttachments, discardStagedAttachment, readMessageAttachments } from "./attachments/binding";
@@ -242,7 +245,9 @@ export interface ApplicationOptions {
    * `box_not_configured`, and the kill switch has no box to stop.
    */
   boxes?: BoxManager;
-  /** Service-owned external collateral for project deletion; ATT06 supplies attachment lifecycle here. */
+  /** ATT05 service hook: removal must verify every tracked box copy before cleanup can complete. */
+  attachmentCopies?: AttachmentCopyCleanup;
+  /** Additional service-owned external collateral for project deletion; built-in attachment cleanup is always registered. */
   deletionContributors?: readonly import("./memory/project-delete").ProjectCollateralContributor[];
   /**
    * app.connections/v1 (EXE08): the secret files of owner connections. Without it every connection command is
@@ -322,8 +327,10 @@ export class Application {
         if (this.#upgradeBusy || upgradeFenced(store.path) || readRestoreGate(store.path)) throw new AppError("service_unavailable", 503);
       } });
 
-    this.#deletionEnvironment = { backupDir: this.#backupDir, contributors: [
+    this.#deletionEnvironment = { backupDir: this.#backupDir,
+      attachmentCleanup: { reconcile: async (projectId, ids) => { await this.#sanitizer.settleForDeletion(); await options.attachmentCopies?.reconcile(projectId, ids); this.#attachments.purgeDeleted(); } }, contributors: [
       ...(options.deletionContributors ?? []),
+      attachmentProjectContributor(this.#attachments, { reconcile: async (projectId, ids) => { await this.#sanitizer.settleForDeletion(); await options.attachmentCopies?.reconcile(projectId, ids); } }),
       { key: "execution_box", preview: (_tx: AppTransaction, projectId: string) => previewBoxData(this.config.execution.directory, projectId),
         confirm: () => {}, reconcile: async (projectId: string) => {
           await this.#boxes?.wipeDeletedProject(projectId);
@@ -829,15 +836,22 @@ export class Application {
   }
 
   /** Service-only staged GC and orphan sweep; respects upgrade/restore fences and in-flight backups, including with gate off. */
-  sweepAttachments(): { expired: number; removed: number } { return this.#attachments.sweep(); }
+  sweepAttachments(): { expired: number; removed: number } {
+    this.#attachments.options.assertWritable?.();
+    this.store.transaction(tx => replayAttachmentLifecycle(tx, this.#now()));
+    const result = this.#attachments.sweep();
+    void purgeDeletedAttachments(this.store, this.#now(), this.#deletionEnvironment).catch(() => {});
+    void reconcileForgottenAttachments(this.store, this.#deletionEnvironment.attachmentCleanup).catch(() => {});
+    return result;
+  }
 
   /**
    * app.attachments/v1 (ATT03): what the composer may offer. `enabled` is the ingestion gate; `sanitizer` says whether
    * the container sanitizer is reachable, without which WebP and PDF are refused at upload. Configuration only.
    */
-  attachmentComposer(): { enabled: boolean; messageFiles: number; fileBytes: number; sanitizer: boolean } {
+  attachmentComposer(): { enabled: boolean; messageFiles: number; fileBytes: number; sanitizer: boolean; backupUsage: { bytes: number; bound: number; notice: boolean } } {
     const limits = this.config.attachments;
-    return { enabled: limits.enabled, messageFiles: limits.messageFiles, fileBytes: limits.fileBytes, sanitizer: this.#attachments.options.sanitizerAvailable?.() ?? false };
+    return { backupUsage: this.attachmentBackupUsage(), enabled: limits.enabled, messageFiles: limits.messageFiles, fileBytes: limits.fileBytes, sanitizer: this.#attachments.options.sanitizerAvailable?.() ?? false };
   }
 
   /**
@@ -1379,7 +1393,7 @@ export class Application {
   #upgradeContext(actor: OwnerActor | null): UpgradeContext {
     return {
       store: this.store, upgradeDir: this.#upgradeDir, backupDir: this.#backupDir, port: this.#nativeSnapshot,
-      jitVersion: this.#jitVersion, now: this.#now, inflight: this.#stagingBackups, service: this.#upgradeService(),
+      jitVersion: this.#jitVersion, now: this.#now, inflight: this.#stagingBackups, attachmentBound: this.config.attachments.backupBytes, service: this.#upgradeService(),
       authorize: tx => { if (actor) this.#requireOwner(tx, actor); },
       ...(this.#upgradeFault ? { fault: this.#upgradeFault } : {}),
     };
@@ -1489,7 +1503,7 @@ export class Application {
 
   #restoreContext(actor: OwnerActor | null): RestoreContext {
     return {
-      store: this.store, deletionEnvironment: this.#deletionEnvironment, restoreDir: this.#restoreDir, backupDir: this.#backupDir, ledgerPath: this.#ledgerPath,
+      store: this.store, deletionEnvironment: this.#deletionEnvironment, settleAttachments: () => this.#sanitizer.settleForDeletion(), restoreDir: this.#restoreDir, backupDir: this.#backupDir, ledgerPath: this.#ledgerPath,
       port: this.#nativeSnapshot, jitVersion: this.#jitVersion, now: this.#now, service: this.#upgradeService(),
       authorize: tx => { if (actor) this.#requireOwner(tx, actor, ["web"], false); },
       ...(this.#restoreFault ? { fault: this.#restoreFault } : {}),
@@ -1584,6 +1598,7 @@ export class Application {
       this.#syncLedger();
       // Committed: purge app-owned export files now, then hand native contexts to one budgeted pass.
       try { purgeDeletedExports(this.store, this.#now(), operationId); } catch { /* Per-file state stays pending for reconcile. */ }
+      void purgeDeletedAttachments(this.store, this.#now(), this.#deletionEnvironment, operationId).catch(() => {});
       finalizeProjectDatabasePurge(this.store, this.#now(), operationId);
       void this.#jobs?.reconcilePendingDeletions();
     }
@@ -1605,6 +1620,7 @@ export class Application {
     });
     this.#jobs?.cancelFenced();
     this.#syncLedger();
+    void reconcileForgottenAttachments(this.store, this.#deletionEnvironment.attachmentCleanup).catch(() => {});
     return result;
   }
 
@@ -2149,8 +2165,14 @@ export class Application {
     return result;
   }
 
+  /** Installation-wide distinct attachment bytes and the separate backup bound, including sanitized derivatives. */
+  attachmentBackupUsage(): { bytes: number; bound: number; notice: boolean } {
+    const bytes = this.store.read(tx => collectAttachmentBlobs(tx).bytes), bound = this.config.attachments.backupBytes;
+    return { bytes, bound, notice: bytes >= bound * .8 };
+  }
+
   /** ops.backup_manifest/v1 reads: bounded inventory outside ordinary project data. */
-  backups(actor: OwnerActor): { manifests: BackupManifest[]; integrity: Record<string, BackupIntegrity> } {
+  backups(actor: OwnerActor): { manifests: BackupManifest[]; integrity: Record<string, BackupIntegrity>; attachmentUsage: ReturnType<Application["attachmentBackupUsage"]> } {
     const listed = this.store.read(tx => {
       // Identity-only inventory of recoverable source artifacts: part of restore remediation, so not read-gated.
       this.#requireOwner(tx, actor, ["web"], false);
@@ -2166,7 +2188,7 @@ export class Application {
       integrity[manifest.id] = verdict;
       return verdict.state === "verified" ? manifest : { ...manifest, state: "incomplete" as const, reason: verdict.reason };
     });
-    return { manifests, integrity };
+    return { manifests, integrity, attachmentUsage: this.attachmentBackupUsage() };
   }
 
   /**
@@ -2207,7 +2229,7 @@ export class Application {
       const now = this.#now();
       const revision = tx.get<{ revision: number }>("SELECT revision FROM app_state WHERE id = 1")!.revision;
       if (revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
-      const selected = selectRetentionVictims(tx, this.#backupDir, null, command.payload.keep);
+      const selected = selectRetentionVictims(tx, this.#backupDir, null, command.payload.keep, { blobs: [], bound: this.config.attachments.backupBytes });
       victims = selected.files;
       this.#beforeCommit?.("backup");
       const receipt: BackupReceipt = {
@@ -2230,6 +2252,7 @@ export class Application {
       return receipt;
     });
     removeManagedFiles(victims);
+    this.store.read(tx => sweepBackupAttachmentBlobs(tx, this.#backupDir, 0));
     return result;
   }
 
@@ -2238,7 +2261,7 @@ export class Application {
     const payloadHash = digest(backupIdentity(command));
     return stageManagedBackup<BackupReceipt>({
       store: this.store, backupDir: this.#backupDir, port: this.#nativeSnapshot, jitVersion: this.#jitVersion,
-      now: this.#now, inflight: this.#stagingBackups,
+      now: this.#now, inflight: this.#stagingBackups, attachmentBound: this.config.attachments.backupBytes,
       guard: (tx, phase) => {
         this.#requireOwner(tx, actor);
         const prior = this.#priorBackupReceipt(tx, command, payloadHash);

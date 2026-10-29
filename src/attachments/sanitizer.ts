@@ -20,6 +20,7 @@ const running = new Map<string, Promise<number>>();
  */
 export class AttachmentSanitizer {
   #closed = false;
+  #deletionPauses = 0;
   #abort = new AbortController();
   #unsafeWork: { release(): void }[] = [];
   constructor(readonly storage: AttachmentStorage, readonly runtime: AttachmentSanitizerRuntime | null,
@@ -28,19 +29,33 @@ export class AttachmentSanitizer {
   async available(): Promise<boolean> { return !this.#closed && !!this.runtime && await this.runtime.available(); }
   /** Processes a bounded batch; overlapping callers share the installation's current batch. Safe with ingestion off. */
   pump(maximum = 8): Promise<number> {
-    if (this.#closed) return Promise.resolve(0);
+    if (this.#closed || this.#deletionPauses) return Promise.resolve(0);
     const existing = running.get(this.storage.root); if (existing) return existing;
     const work = this.#pump(maximum).finally(() => { if (running.get(this.storage.root) === work) running.delete(this.storage.root); });
     running.set(this.storage.root, work); return work;
   }
   /** Stops admission, kills an active parser, and waits for its cleanup before the caller closes SQLite. */
   async close(): Promise<void> { this.#closed = true; this.#abort.abort(); await running.get(this.storage.root)?.catch(() => undefined); }
-  #current(): void { if (this.#closed) throw new Error("sanitizer_unavailable"); this.storage.options.assertWritable?.(); this.options.assertCurrent?.(); }
+  /** Fences parser admission, aborts the current batch and verifies cleanup of its private input/output copies before deletion completes. */
+  async settleForDeletion(): Promise<void> {
+    this.#deletionPauses++;
+    try {
+      const hasWork = this.storage.hasSanitizerWork();
+      this.#abort.abort();
+      await running.get(this.storage.root)?.catch(() => undefined);
+      if (hasWork || this.#unsafeWork.length) {
+        if (!this.runtime) throw new Error("sanitizer_cleanup_failed");
+        await this.runtime.reset();
+        for (const work of this.#unsafeWork.splice(0)) work.release();
+      }
+    } finally { this.#deletionPauses--; if (!this.#deletionPauses && !this.#closed) this.#abort = new AbortController(); }
+  }
+  #current(): void { if (this.#closed || this.#deletionPauses) throw new Error("sanitizer_unavailable"); this.storage.options.assertWritable?.(); this.options.assertCurrent?.(); }
   async #pump(maximum: number): Promise<number> {
     let settled = 0;
     for (let n = 0; n < maximum; n++) {
       this.#current();
-      if (this.storage.options.backupActive?.()) break;
+      if (this.storage.backupActive()) break;
       const row = this.storage.store.read(tx => tx.get<Pending>(`SELECT id, project_id AS projectId, sha256, bytes, revision,
         media_type AS mediaType, kind, sanitize_attempts AS attempts, reason FROM attachments WHERE state = 'pending' ORDER BY created_at, id LIMIT 1`));
       if (!row) break;

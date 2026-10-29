@@ -1,3 +1,6 @@
+import { holdAttachmentBackup } from "../attachments/storage";
+import { pinBackupAttachments, backupAttachmentBound, collectAttachmentBlobs, stageBackupAttachments, readAttachmentIndex, verifyBackupAttachments, sweepBackupAttachmentBlobs, type BackupAttachments, type AttachmentBlob } from "../attachments/backup";
+import { redactOutboundRelease } from "../attachments/lifecycle";
 import { createHash } from "node:crypto";
 import {
   closeSync, constants as fsConstants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync,
@@ -152,6 +155,8 @@ export interface BackupManifest {
   };
   /** Lifecycle-ledger checkpoint; `position` counts committed deletion tombstones and suppressions. */
   lifecycle: { available: boolean; checkpoint: string | null; reason: string | null; position?: { deletions: number; suppressions: number } | null };
+  /** Bounded attachment originals and derivatives in the shared content-addressed backup store. */
+  attachments?: BackupAttachments;
   native: {
     state: "valid" | "unavailable" | "incomplete";
     refs: { id: string; generation: number }[];
@@ -389,6 +394,18 @@ export function captureBackupImage(tx: AppTransaction, store: Pick<TransactionSt
       image.exec("UPDATE webhook_triggers SET sealed_secret = NULL");
       scrubbed.push("webhook_triggers.sealed_secret");
     }
+    if (tables.includes("approval_cards")) {
+      image.exec("UPDATE approval_cards SET action_json = '{}', decision_json = NULL, receipt_json = NULL WHERE kind = 'outbound_release'");
+      scrubbed.push("approval_cards.outbound_release");
+    }
+    // Approval payloads copied into receipts and run records follow the same metadata-only rule.
+    for (const [table, column] of [["command_receipts", "result_json"], ["jobs", "record_json"], ["job_attempts", "record_json"], ["team_runs", "record_json"]]) {
+      if (!tables.includes(table!)) continue;
+      for (const row of image.query(`SELECT rowid AS id, ${column} AS json FROM ${table}`).all() as { id: number; json: string }[]) {
+        const next = JSON.stringify(redactOutboundRelease(JSON.parse(row.json)));
+        if (next !== row.json) image.query(`UPDATE ${table} SET ${column} = ? WHERE rowid = ?`).run(next, row.id);
+      }
+    }
     if (tables.includes("command_receipts")) {
       const rows = image.query("SELECT rowid AS id, result_json FROM command_receipts").all() as { id: number; result_json: string }[];
       const update = image.query("UPDATE command_receipts SET result_json = ? WHERE rowid = ?");
@@ -604,11 +621,12 @@ export function prepareBackupManifest(tx: AppTransaction, input: {
   image: BackupImage; native: BackupManifest["native"]; artifactPath: string; pruned: string[];
   inventory?: ReturnType<typeof collectInventory>;
   lifecycle?: BackupManifest["lifecycle"];
+  attachments?: BackupAttachments;
 }): BackupManifest {
   if (!isJitVersion(input.jitVersion)) throw new AppError("invalid_jit_version", 500);
   const collected = input.inventory ?? collectInventory(tx);
   const lifecycle = input.lifecycle ?? lifecycleCheckpoint(tx);
-  const reason = input.native.state !== "valid" ? input.native.reason ?? "native_snapshot_failed"
+  const reason = input.attachments?.state === "incomplete" ? input.attachments.reason ?? "attachment_blob_corrupt" : input.native.state !== "valid" ? input.native.reason ?? "native_snapshot_failed"
     : !lifecycle.available || !lifecycle.checkpoint ? lifecycle.reason ?? "ledger_unverifiable"
       : !collected.inventory.complete ? "inventory_truncated" : null;
   return {
@@ -623,6 +641,7 @@ export function prepareBackupManifest(tx: AppTransaction, input: {
     inventory: collected.inventory,
     lifecycle,
     native: input.native,
+    ...(input.attachments ? { attachments: input.attachments } : {}),
     content: { bytes: input.image.bytes.length, hash: input.image.hash, projects: collected.projects.length, sources: collected.sourceGenerations.length },
     retention: { maxBackups: backupRetention.maxBackups, maxBytes: backupRetention.maxBytes, pruned: input.pruned },
     credentials: { included: false, excludedTables: input.image.excludedTables, scrubbed: input.image.scrubbed, restore: "owner_credential_setup_required" },
@@ -661,6 +680,8 @@ export interface StageBackupInput<R> {
   record(tx: AppTransaction, manifest: BackupManifest, now: number): R;
   /** Fault seam after retention selection, before the manifest row is written. */
   beforeCommit?(): void;
+  /** Separate attachment budget; defaults to the actual backup filesystem capacity policy. */
+  attachmentBound?: number | undefined;
 }
 
 /**
@@ -684,17 +705,25 @@ export async function stageManagedBackup<R>(input: StageBackupInput<R>): Promise
   const id = crypto.randomUUID();
   const { store, backupDir, port } = input;
   input.inflight.add(id);
+  holdAttachmentBackup(store.path, id, true);
   const written: string[] = [];
+  let attachmentsPinned = false;
   try {
     const staged = store.transaction(tx => {
       const prior = input.guard(tx, "capture");
       if (prior !== null) return { done: true as const, prior };
+      const attachmentInventory = collectAttachmentBlobs(tx);
+      const bound = input.attachmentBound ?? backupAttachmentBound(store.path, backupDir);
+      if (attachmentInventory.bytes > bound) throw new AppError("backup_attachments_too_large", 507, { bytes: attachmentInventory.bytes, bound });
       reconcileBackupArtifacts(tx, backupDir, input.inflight);
+      pinBackupAttachments(backupDir, id, attachmentInventory.blobs);
+      attachmentsPinned = true;
+      const attachmentSection = stageBackupAttachments(store.path, backupDir, attachmentInventory, bound);
       const app = captureAppSide(tx, store);
       let plan: BackupNativePlan | undefined;
       let planFailed = false;
       try { plan = port?.resolve?.(tx); } catch { planFailed = true; }
-      return { done: false as const, app, plan, planFailed };
+      return { done: false as const, app, plan, planFailed, attachmentInventory, attachmentSection };
     });
     if (staged.done) return staged.prior;
     const capture: NativeCapture = staged.planFailed
@@ -705,6 +734,10 @@ export async function stageManagedBackup<R>(input: StageBackupInput<R>): Promise
     const artifactPath = writeArtifact(backupDir, id, staged.app.image.bytes);
     written.push(artifactPath);
     const nativeArtifacts = writeNativeArtifacts(backupDir, id, capture.artifacts, written);
+    const indexBytes = Buffer.from(JSON.stringify(staged.attachmentInventory.blobs));
+    const indexPath = writeManagedFile(backupDir, `${id}.attachments.json`, indexBytes);
+    written.push(indexPath);
+    const attachments: BackupAttachments = { ...staged.attachmentSection, index: { path: indexPath, bytes: indexBytes.length, hash: sha256(indexBytes) } };
     let victims: string[] = [];
     const discard: string[] = [];
     const result = store.transaction(tx => {
@@ -721,25 +754,31 @@ export async function stageManagedBackup<R>(input: StageBackupInput<R>): Promise
         }
       }
       const storedBytes = staged.app.image.bytes.length + native.artifacts.reduce((sum, a) => sum + a.bytes, 0);
-      const selected = selectRetentionVictims(tx, backupDir, storedBytes);
+      const selected = selectRetentionVictims(tx, backupDir, storedBytes, backupRetention.maxBackups, { blobs: staged.attachmentInventory.blobs, bound: attachments.bound });
       victims = selected.files;
       input.beforeCommit?.();
       const now = input.now();
       const manifest = prepareBackupManifest(tx, {
         id, now, appRevision: staged.app.appRevision, appSchema: staged.app.appSchema, jitVersion: input.jitVersion,
         image: staged.app.image, native, artifactPath, pruned: selected.pruned,
-        inventory: staged.app.inventory, lifecycle: staged.app.lifecycle,
+        inventory: staged.app.inventory, lifecycle: staged.app.lifecycle, attachments,
       });
       tx.run("INSERT INTO ops_backups VALUES (?, ?, ?)", manifest.id, manifest.createdAt, JSON.stringify(manifest));
       return input.record(tx, manifest, now);
     });
     written.length = 0;
     removeManagedFiles([...victims, ...discard]);
+    store.read(tx => sweepBackupAttachmentBlobs(tx, backupDir, 0));
     return result;
   } finally {
     // Anything still listed was staged by a failed attempt and never committed.
     removeManagedFiles(written);
     input.inflight.delete(id);
+    holdAttachmentBackup(store.path, id, false);
+    if (attachmentsPinned) {
+      pinBackupAttachments(backupDir, id, null);
+      store.read(tx => sweepBackupAttachmentBlobs(tx, backupDir, 0));
+    }
   }
 }
 
@@ -777,7 +816,7 @@ function checkManagedFile(path: string, expected: string, bytes: unknown, hash: 
  * declared snapshot contract/format and must cover a non-empty native set.
  * Content is hashed, never parsed.
  */
-export function verifyBackupArtifacts(manifest: BackupManifest, backupDir: string): BackupIntegrity {
+export function verifyBackupArtifacts(manifest: BackupManifest, backupDir: string, attachmentHashes = false): BackupIntegrity {
   const fail = (reason: string): BackupIntegrity => ({ state: "invalid", reason });
   const dir = resolve(backupDir);
   const image = checkManagedFile(manifest.artifact?.path, artifactPathFor(dir, manifest.id), manifest.artifact?.bytes, manifest.artifact?.hash, "image");
@@ -795,6 +834,8 @@ export function verifyBackupArtifacts(manifest: BackupManifest, backupDir: strin
     total += artifact.bytes;
   }
   if (native.bytes !== total) return fail("native_size_mismatch");
+  const attachmentProblem = verifyBackupAttachments(manifest.attachments, dir, manifest.id, attachmentHashes);
+  if (attachmentProblem) return fail(attachmentProblem);
   return { state: "verified", reason: null };
 }
 
@@ -808,7 +849,20 @@ export function assertRestorableBackup(manifest: BackupManifest, backupDir: stri
       manifest.native?.state !== "valid" || manifest.inventory?.complete !== true) {
     throw new AppError("backup_incomplete", 409);
   }
-  const integrity = verifyBackupArtifacts(manifest, backupDir);
+  const integrity = verifyBackupArtifacts(manifest, backupDir, true);
+  if (integrity.state === "verified") {
+    const image = new Database(manifest.artifact.path, { readonly: true });
+    try {
+      if (image.query("SELECT 1 FROM sqlite_master WHERE name = 'attachments'").get()) {
+        const recorded = new Map(readAttachmentIndex(manifest.attachments, backupDir, manifest.id).map(b => [`${b.projectId}/${b.sha256}`, b.bytes]));
+        const inventory = collectAttachmentBlobs({
+          all: <T>(sql: string, ...params: unknown[]) => image.query(sql).all(...params as import("bun:sqlite").SQLQueryBindings[]) as T[],
+          get: <T>(sql: string, ...params: unknown[]) => image.query(sql).get(...params as import("bun:sqlite").SQLQueryBindings[]) as T | null,
+        });
+        if (manifest.attachments && inventory.count !== manifest.attachments.count || inventory.blobs.some(b => recorded.get(`${b.projectId}/${b.sha256}`) !== b.bytes)) throw new AppError("backup_integrity_failed", 409);
+      }
+    } finally { image.close(); }
+  }
   if (integrity.state !== "verified") {
     throw new AppError(integrity.reason === "image_missing" ? "backup_artifact_missing" : "backup_integrity_failed", 409);
   }
@@ -850,7 +904,7 @@ export function manifestStoredBytes(manifest: Pick<BackupManifest, "artifact"> &
  * the cumulative projected total fits the ceiling.
  */
 export function planRetention(existing: { id: string; bytes: number }[], incomingBytes: number | null, keep: number,
-  maxBytes: number = backupRetention.maxBytes): string[] {
+  maxBytes: number = backupRetention.maxBytes, attachments?: { existing: Record<string, AttachmentBlob[]>; incoming: AttachmentBlob[]; bound: number }): string[] {
   if (incomingBytes !== null && incomingBytes > maxBytes) throw new AppError("backup_too_large", 507);
   const slots = Math.max(0, Math.min(keep, backupRetention.maxBackups) - (incomingBytes === null ? 0 : 1));
   const victims: string[] = [];
@@ -862,6 +916,15 @@ export function planRetention(existing: { id: string; bytes: number }[], incomin
     victims.push(row.id);
     total -= row.bytes;
   }
+  if (attachments) {
+    const unionBytes = () => {
+      const blobs = new Map<string, number>();
+      for (const b of [...attachments.incoming, ...kept.flatMap(row => attachments.existing[row.id] ?? [])]) blobs.set(`${b.projectId}/${b.sha256}`, b.bytes);
+      return [...blobs.values()].reduce((a, b) => a + b, 0);
+    };
+    while (unionBytes() > attachments.bound && kept.length) victims.push(kept.shift()!.id);
+    if (unionBytes() > attachments.bound) throw new AppError("backup_attachments_too_large", 507, { bytes: unionBytes(), bound: attachments.bound });
+  }
   return victims;
 }
 
@@ -870,6 +933,7 @@ export function manifestFiles(backupDir: string, id: string, recordJson: string)
   const files = [artifactPathFor(backupDir, id)];
   try {
     const manifest = JSON.parse(recordJson) as Partial<BackupManifest>;
+    if (manifest.attachments?.index) files.push(join(backupDir, `${id}.attachments.json`));
     for (const artifact of manifest.native?.artifacts ?? []) {
       if (typeof artifact.path === "string" && dirname(artifact.path) === backupDir && artifact.path.startsWith(join(backupDir, `${id}.native-`))) {
         files.push(artifact.path);
@@ -884,7 +948,7 @@ export function manifestFiles(backupDir: string, id: string, recordJson: string)
  * returns their files. Physical deletion is the caller's job AFTER commit:
  * a rolled-back transaction must leave every previously committed artifact intact.
  */
-export function selectRetentionVictims(tx: AppTransaction, backupDir: string, incomingBytes: number | null, keep: number = backupRetention.maxBackups): { pruned: string[]; files: string[] } {
+export function selectRetentionVictims(tx: AppTransaction, backupDir: string, incomingBytes: number | null, keep: number = backupRetention.maxBackups, attachments?: { blobs: AttachmentBlob[]; bound: number }): { pruned: string[]; files: string[] } {
   // Oldest first by commit time, then commit order (rowid) for equal clocks.
   const rows = tx.all<{ id: string; record_json: string }>("SELECT id, record_json FROM ops_backups ORDER BY created_at, rowid");
   const sized = rows.map(row => {
@@ -892,7 +956,13 @@ export function selectRetentionVictims(tx: AppTransaction, backupDir: string, in
     try { bytes = manifestStoredBytes(JSON.parse(row.record_json) as BackupManifest); } catch { /* Corrupt rows count as zero. */ }
     return { id: row.id, bytes };
   });
-  const pruned = planRetention(sized, incomingBytes, keep);
+  const basePruned = new Set(planRetention(sized, incomingBytes, keep));
+  const indexes: Record<string, AttachmentBlob[]> = {};
+  for (const row of rows) {
+    try { indexes[row.id] = readAttachmentIndex(JSON.parse(row.record_json).attachments, backupDir, row.id); }
+    catch { if (!basePruned.has(row.id)) throw new AppError("backup_integrity_failed", 409); indexes[row.id] = []; }
+  }
+  const pruned = planRetention(sized, incomingBytes, keep, backupRetention.maxBytes, attachments ? { existing: indexes, incoming: attachments.blobs, bound: attachments.bound } : undefined);
   const files: string[] = [];
   for (const id of pruned) {
     const row = rows.find(r => r.id === id)!;
@@ -909,7 +979,7 @@ export function removeManagedFiles(files: string[]): void {
   }
 }
 
-const MANAGED_FILE = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.(?:sqlite|native-\d{1,4}\.json)$/;
+const MANAGED_FILE = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.(?:sqlite|native-\d{1,4}\.json|attachments\.json)$/;
 
 /**
  * Orphan reconciliation: removes managed-pattern files whose backup id has no
@@ -933,6 +1003,7 @@ export function reconcileBackupArtifacts(tx: AppTransaction, backupDir: string, 
       removed.push(entry);
     } catch { /* Changing files are retried next time. */ }
   }
+  sweepBackupAttachmentBlobs(tx, backupDir, graceMs);
   return removed;
 }
 

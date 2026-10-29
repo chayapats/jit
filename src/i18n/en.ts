@@ -2,6 +2,16 @@ import type { MessageKey } from "./index";
 
 /** ui.i18n_dictionary/v1 — English. Must define every key of the Thai dictionary; values are plain text. */
 export const en: Record<MessageKey, string> = {
+  "attachments.backup_bound_notice": "Attachment storage uses {bytes} of the {bound} backup limit. Delete files or increase the limit before backup or upgrade.",
+  "error.attachment_backup_active": "A backup still uses the files. Wait for it to finish, then retry cleanup.",
+  "error.attachment_cleanup_unavailable": "Attachment cleanup is unavailable. Restart the configured service and retry.",
+  "error.attachment_purge_failed": "Some attachment files remain. Check file storage permissions and retry cleanup.",
+  "error.attachment_inventory_too_large": "The attachment inventory exceeds the supported limit. Delete files before retrying backup.",
+  "error.attachment_blob_corrupt": "An attachment blob failed verification. Choose a verified backup and retry.",
+  "error.attachment_blob_missing": "An attachment blob is missing. Restore a verified copy or delete its attachment before retrying.",
+  "error.attachment_index_missing": "The attachment backup index is missing. Choose another verified backup.",
+  "error.attachment_index_corrupt": "The attachment backup index failed verification. Choose another verified backup.",
+  "error.backup_attachments_too_large": "Attachment bytes ({bytes}) exceed the backup limit ({bound}). Delete files or increase JIT_BACKUP_ATTACHMENT_BYTES, then retry.",
   "error.attachments_disabled": "File uploads are not enabled. Send a text message instead.",
   "error.invalid_attachment_upload": "The upload is invalid. Choose the file again and retry.",
   "error.attachment_too_large": "This file is too large. Choose a smaller file and retry.",

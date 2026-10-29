@@ -1,3 +1,4 @@
+import { fillText } from "./web-proposal-card";
 import { Application, type CreateProjectCommand } from "./application";
 import { AppError } from "./errors";
 import { ownerSetupCsrf } from "./ops/owner-setup";
@@ -1756,7 +1757,7 @@ export function createWebHandler(app: Application, options: { stream?: ReplyStre
       // Error text comes only from the dictionaries, keyed by the fixed error code; unknown codes get the generic message.
       // app.attachments/v1: one code, two limits; the per-message file count has its own sentence.
       const textKey = rejection.code === "attachment_quota_exceeded" && detail?.limit === "message_files" ? "attachment_quota_exceeded_files" : rejection.code;
-      return api ? json({ error: rejection.code, ...(detail ? { detail } : {}) }, rejection.status) : page(() => errorPage(trMaybe(`error.${textKey}`) ?? tr("error.default"),
+      return api ? json({ error: rejection.code, ...(detail ? { detail } : {}) }, rejection.status) : page(() => errorPage(fillText(trMaybe(`error.${textKey}`) ?? tr("error.default"), { bytes: String(detail?.bytes ?? ""), bound: String(detail?.bound ?? "") }),
         recovery && { href: recovery.href, label: tr(recovery.proposal ? "error.recovery_open_proposal" : recovery.topic ? "error.recovery_open_topic" : "error.recovery_open_list") }), rejection.status);
     }
   };

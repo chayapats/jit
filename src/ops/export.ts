@@ -1,3 +1,4 @@
+import { redactOutboundRelease } from "../attachments/lifecycle";
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { closeSync, constants, lstatSync, openSync, readFileSync, unlinkSync } from "node:fs";
@@ -24,7 +25,7 @@ export const exportFormatVersion = 2 as const;
 export const exportRetention = Object.freeze({ maxExports: 20, maxBytes: 32 * 1024 * 1024 });
 /** Per-collection read bounds; anything beyond a bound is reported in `completeness`, never silently dropped. */
 export const exportCollectionBounds = Object.freeze({
-  topics: 1000, messages: 5000, tasks: 1000, proposals: 2000, events: 2000, decisions: 500, ownerDecisions: 500,
+  attachments: 2000, topics: 1000, messages: 5000, tasks: 1000, proposals: 2000, events: 2000, decisions: 500, ownerDecisions: 500,
   claims: 2000, sources: 2000, jobs: 1000, deliveries: 1000, reports: 1000, prMonitors: 100, prCandidates: 2000, prReports: 500, extractions: 1000,
 });
 /** Bounded coverage list size kept on each manifest for delete previews. */
@@ -55,6 +56,7 @@ export interface ExportDisclosure {
   secrets: "excluded";
   nativeSessions: "excluded";
   rawHistory: "included" | "metadata_only";
+  attachments: "metadata_only";
 }
 /** One bounded collection: how many rows the artifact holds versus how many exist. */
 export interface ExportCollectionCompleteness { included: number; total: number; truncated: boolean }
@@ -71,7 +73,7 @@ interface ExportManifestBase {
   /** Exact source/claim generations whose payload text is in the artifact; `truncated` when the list hit {@link exportCoverageBound}. */
   coverage: { sources: SourceReference[]; claims: ClaimReference[]; truncated: boolean };
   /** Rows included in the artifact per kind (never totals; see `completeness`). */
-  counts: { topics: number; messages: number; tasks: number; decisions: number; claims: number; jobs: number; deliveries: number; prReports: number };
+  counts: { topics: number; messages: number; tasks: number; decisions: number; claims: number; jobs: number; deliveries: number; prReports: number; attachments: number };
   /** Included/total/truncated for every bounded collection; `complete` is false when any collection was truncated. */
   completeness: { complete: boolean; collections: Record<string, ExportCollectionCompleteness> };
   exclusions: ExportExclusion[];
@@ -108,7 +110,7 @@ export interface ExportLimits { maxExports: number; maxBytes: number }
 const residualExternal = ["telegram_delivery_copies_not_exported_or_deleted", "provider_session_copies_not_exported"];
 const lifecycleNote = "รวมเฉพาะ generation ที่ยัง active; ที่ถูกลบ/ลืม/แก้อยู่ใน exclusions";
 const disclosureFor = (scope: ExportScope): ExportDisclosure => ({ restorableBackup: false, externalCopiesDeleted: false,
-  secrets: "excluded", nativeSessions: "excluded", rawHistory: scope.includeHistory ? "included" : "metadata_only" });
+  attachments: "metadata_only", secrets: "excluded", nativeSessions: "excluded", rawHistory: scope.includeHistory ? "included" : "metadata_only" });
 /**
  * Credential shapes that never leave through PR-derived or delivery text. One detector for the whole
  * service: the shared `containsCredential` (src/security/credentials.ts) plus the export-only
@@ -139,7 +141,7 @@ export function sanitizeExportStrings<T>(value: T): T {
  * credential shape (for example one only formed by a key/value pair) fails closed as `export_failed`.
  */
 export function serializeExportEnvelope(envelope: Record<string, unknown>): string {
-  const json = JSON.stringify(sanitizeExportStrings(envelope));
+  const json = JSON.stringify(sanitizeExportStrings(redactOutboundRelease(envelope)));
   if (exportSecretLike(json)) throw new AppError("export_failed", 500);
   return json;
 }
@@ -180,7 +182,7 @@ function parseStored(json: string): ExportManifest {
     : raw.artifact.storage === "sqlite" ? { storage: "sqlite", bytes: raw.artifact.bytes, hash: raw.artifact.hash, downloadPath: downloadPath(raw.projectId, raw.id) }
     : { storage: "legacy_file", path: raw.artifact.path ?? "", bytes: raw.artifact.bytes, hash: raw.artifact.hash, directorySync: "legacy_unverified" };
   return { ...raw, formatVersion: raw.formatVersion ?? 1, failure: raw.failure ?? null,
-    counts: { ...raw.counts, prReports: raw.counts?.prReports ?? 0 },
+    counts: { ...raw.counts, prReports: raw.counts?.prReports ?? 0, attachments: raw.counts?.attachments ?? 0 },
     completeness: raw.completeness ?? { ...emptyCompleteness(), complete: !legacy },
     artifact,
     disclosure: raw.disclosure ?? { ...disclosureFor(raw.scope), rawHistory: legacy ? "included" : disclosureFor(raw.scope).rawHistory } } as ExportManifest;
@@ -417,6 +419,8 @@ export function assembleExport(tx: AppTransaction, projectId: string, scope: Exp
       }
     } catch { missingRefs.push({ kind: "extraction", id: "unreadable", reason: "record_unreadable" }); }
   }
+  const attachments = bounded("attachments", total("attachments"), tx.all(`SELECT id, topic_id AS topicId, message_id AS messageId, kind, media_type AS mediaType, bytes, state, created_at AS createdAt,
+    CASE WHEN ? THEN display_name ELSE NULL END AS name FROM attachments WHERE project_id = ? ORDER BY created_at, id LIMIT ?`, scope.includeHistory ? 1 : 0, projectId, bounds.attachments));
   const pr = assemblePr(tx, projectId, bounded, exclusions, missingRefs);
   // Coverage lists exactly the payload-bearing refs emitted above (bounded); `truncated`
   // means the bound cut the list, so delete previews treat the export conservatively.
@@ -425,12 +429,12 @@ export function assembleExport(tx: AppTransaction, projectId: string, scope: Exp
   const coverageSources = includedSources.slice(0, exportCoverageBound), coverageClaims = includedClaims.slice(0, exportCoverageBound);
   return {
     data: { project: { id: project.id, name: project.name, revision: project.revision, createdAt: project.created_at },
-      topics, messages, messageCount: messageTotal, tasks: taskModels, proposals, events, decisions, ownerDecisions: ownerDecisionRows,
+      attachments, topics, messages, messageCount: messageTotal, tasks: taskModels, proposals, events, decisions, ownerDecisions: ownerDecisionRows,
       claims, sources, jobs, deliveries, reports, pr: { monitors: pr.monitors, candidates: pr.candidates }, prReports: pr.reports },
     coverage: { sources: coverageSources, claims: coverageClaims,
       truncated: includedSources.length > coverageSources.length || includedClaims.length > coverageClaims.length },
     counts: { topics: topics.length, messages: messages.length, tasks: tasks.length, decisions: ownerDecisionRows.length,
-      claims: claims.filter(c => c.state === "available").length, jobs: jobs.length, deliveries: deliveries.length, prReports: pr.reports.length },
+      claims: claims.filter(c => c.state === "available").length, jobs: jobs.length, deliveries: deliveries.length, prReports: pr.reports.length, attachments: attachments.length },
     completeness: { complete: Object.values(collections).every(c => !c.truncated), collections },
     exclusions, missingRefs,
   };
@@ -657,7 +661,7 @@ export function recordFailedExport(tx: AppTransaction, input: {
 }): FailedExportManifest {
   const limits = input.limits ?? exportRetention;
   const empty = { coverage: { sources: [], claims: [], truncated: false },
-    counts: { topics: 0, messages: 0, tasks: 0, decisions: 0, claims: 0, jobs: 0, deliveries: 0, prReports: 0 },
+    counts: { topics: 0, messages: 0, tasks: 0, decisions: 0, claims: 0, jobs: 0, deliveries: 0, prReports: 0, attachments: 0 },
     completeness: emptyCompleteness(), exclusions: [], missingRefs: [] };
   const failed = tx.all<{ id: string; record_json: string }>(
     "SELECT id, record_json FROM export_artifacts WHERE project_id = ? ORDER BY created_at, rowid", input.projectId)

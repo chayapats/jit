@@ -1,3 +1,4 @@
+import { reconcileForgottenAttachments, attachmentSources, attachmentInventory, retireAttachments, type AttachmentDeletionScope, type AttachmentCopyCleanup } from "../attachments/lifecycle";
 import { projectDeleted } from "../project-lifecycle";
 import { readGeneralSpace } from "../setup";
 import { projectDeletionInventory, purgeProjectPayloads, type ProjectDeletionInventory, type ProjectCollateralContributor, type ProjectCollateralScope } from "./project-delete";
@@ -91,8 +92,9 @@ export interface DeletionPreview {
   affected: {
     /** Complete project-owned identity inventory, present only for project deletion. */
     project?: ProjectDeletionInventory;
+    attachments?: { count: number; bytes: number };
     /** The scope lineage plus every descendant output (recorded memory derivation or run output). */
-    sources: { projectId: string; source: SourceReference; relation: "scope" | "derived_output" | "quoted_copy" }[];
+    sources: { projectId: string; source: SourceReference; relation: "scope" | "derived_output" | "quoted_copy" | "attachment" }[];
     claims: { projectId: string; reference: ClaimReference }[];
     contexts: { id: string; generation: number; projectId: string; ownerKind: string; ownerId: string }[];
     pendingJobs: { id: string; projectId: string }[];
@@ -163,7 +165,7 @@ export interface DeletionExportScope {
 
 /** Non-native scopes: active-local purge versus retained/external copies this command does not erase. */
 export interface DeletionLocalScope {
-  scope: "app_store" | "retained_backups" | "local_exports" | "external_copies";
+  scope: "app_store" | "attachments" | "retained_backups" | "local_exports" | "external_copies";
   state: "purged" | "pending" | "failed" | "retained" | "none" | "not_attempted";
   detail: string;
 }
@@ -182,6 +184,7 @@ export interface DeletionOperation {
   /** Project-specific local cleanup; a pending WAL checkpoint or contributor prevents completion. */
   databasePurge?: "pending" | "purged";
   collateral?: ProjectCollateralScope[];
+  attachments?: AttachmentDeletionScope[];
   backupsRetained: string[];
   residuals: string[];
   reason: string | null; nextAction: string;
@@ -189,7 +192,7 @@ export interface DeletionOperation {
 }
 
 /** Trusted service-owned locations the inventory may inspect (never read from persisted JSON). */
-export interface DeletionEnvironment { backupDir?: string; contributors?: readonly ProjectCollateralContributor[] }
+export interface DeletionEnvironment { backupDir?: string; contributors?: readonly ProjectCollateralContributor[]; attachmentCleanup?: AttachmentCopyCleanup }
 
 export interface DeletionReceipt { preview: DeletionPreview; duplicate: boolean }
 export interface DeletionConfirmReceipt { operation: DeletionOperation; duplicate: boolean }
@@ -326,6 +329,11 @@ function manifestsIn(value: unknown, out: ManifestLike[] = [], depth = 0): Manif
   if (Array.isArray(value)) { for (const item of value) manifestsIn(item, out, depth + 1); return out; }
   const record = value as Record<string, unknown>;
   if (Array.isArray(record.sources) && Array.isArray(record.claims)) out.push(record as unknown as ManifestLike);
+  // ATT04 requests persist identity references rather than bytes; cite them even if an older manifest omitted them.
+  if (Array.isArray(record.attachments) && record.attachments.length) out.push({ sources: record.attachments.map(item => {
+    const ref = item as { attachmentId?: unknown; revision?: unknown; generation?: unknown } | null;
+    return { reference: { sourceId: ref?.attachmentId, revision: ref?.revision, generation: ref?.generation } };
+  }), claims: [] });
   for (const item of Object.values(record)) if (item && typeof item === "object") manifestsIn(item, out, depth + 1);
   return out;
 }
@@ -342,7 +350,7 @@ interface JobEvidence {
 }
 
 interface ClaimRow { projectId: string; claim: MemoryClaim }
-interface SourceEntry { projectId: string; source: SourceReference; relation: "scope" | "derived_output" | "quoted_copy" }
+interface SourceEntry { projectId: string; source: SourceReference; relation: "scope" | "derived_output" | "quoted_copy" | "attachment" }
 interface ContextRow { id: string; generation: number; projectId: string; ownerKind: string; ownerId: string }
 
 interface Inventory {
@@ -361,6 +369,7 @@ interface Inventory {
   scrub: { long: string[]; short: string[] };
   blockers: Set<string>;
   project?: ProjectDeletionInventory;
+  attachments: AttachmentDeletionScope[];
 }
 
 function jobEvidence(tx: AppTransaction, blockers: Set<string>): Map<string, JobEvidence> {
@@ -500,6 +509,10 @@ function buildInventory(tx: AppTransaction, scope: DeletionScope, env: DeletionE
   for (let round = 0; ; round++) {
     if (round >= deleteInventoryPolicy.closureRounds) { blockers.add("inventory_closure_ceiling"); break; }
     const before = sources.size + claims.size;
+    for (const entry of attachmentSources(tx, [...sources.values()].map(e => e.source.sourceId))) {
+      const key = sourceKey(entry.source);
+      if (!sources.has(key)) sources.set(key, { ...entry, relation: "attachment" });
+    }
     for (let grew = true; grew;) {
       grew = false;
       for (const entry of claimRows) {
@@ -612,6 +625,7 @@ function buildInventory(tx: AppTransaction, scope: DeletionScope, env: DeletionE
     taskProposals: taskProposalsFor(tx, allSources, blockers, scope),
     taskEvidence: taskEvidenceFor(tx, allSources, blockers, scope),
     deliveries: [],
+    attachments: [],
     scrub: { long: [], short: [] },
     blockers,
   };
@@ -619,6 +633,10 @@ function buildInventory(tx: AppTransaction, scope: DeletionScope, env: DeletionE
     inventory.project = projectDeletionInventory(tx, scope.projectId, env.contributors ?? [], blockers);
     // Even an empty project can have an export, and every local delivery belongs to the delete scope.
     inventory.exports = retainedExports(tx, allSources, [...claims.values()], blockers, scope.projectId);
+  }
+  for (const projectId of new Set(allSources.map(e => e.projectId))) {
+    const item = attachmentInventory(tx, projectId, scope.kind === "project" && projectId === scope.projectId ? undefined : allSources.filter(e => e.projectId === projectId).map(e => e.source.sourceId));
+    if (item.count) inventory.attachments.push({ ...item, projectId, state: "pending", attempts: 0, reason: null });
   }
   inventory.scrub = payloadNeedles(tx, allSources, [...claims.values()], inventory.taskProposals);
   if (inventory.scrub.long.length > deleteScrubPolicy.maxTerms) blockers.add("scrub_set_exceeds_bound");
@@ -986,6 +1004,7 @@ function inventoryDigest(tx: AppTransaction, scope: DeletionScope, inventory: In
   const canonical = {
     scope: scope.kind === "source" ? `${scope.projectId}/${sourceKey(scope.source)}` : `project:${scope.projectId}`,
     project: inventory.project,
+    attachments: inventory.attachments,
     sources: sorted([...inventory.sources.values()].map(e => `${e.projectId}/${sourceKey(e.source)}/${e.relation}/${availability(e)}`)),
     claims: sorted([...inventory.claims.values()].map(e => `${e.projectId}/${e.claim.claimId}:${e.claim.revision}:${e.claim.generation}/${e.claim.status}`)),
     contexts: sorted([...inventory.contexts.keys()]),
@@ -1058,6 +1077,7 @@ export function prepareDeletionPreview(tx: AppTransaction, command: DeletePrevie
     projectRevision, expiresAt: now + deletePolicy.previewMs, createdAt: now,
     affected: {
       ...(inventory.project ? { project: inventory.project } : {}),
+      attachments: { count: inventory.attachments.reduce((n, a) => n + a.count, 0), bytes: inventory.attachments.reduce((n, a) => n + a.bytes, 0) },
       sources: sources.items.map(entry => ({ projectId: entry.projectId, source: { ...entry.source }, relation: entry.relation })),
       claims: claims.items.map(entry => ({ projectId: entry.projectId,
         reference: { claimId: entry.claim.claimId, revision: entry.claim.revision, generation: entry.claim.generation } })),
@@ -1380,13 +1400,14 @@ function redactDerivedRuns(tx: AppTransaction, sources: SourceEntry[]): void {
   }
 }
 
-function localScopes(operation: Pick<DeletionOperation, "tombstones" | "backupsRetained" | "exports" | "databasePurge">): DeletionLocalScope[] {
+function localScopes(operation: Pick<DeletionOperation, "tombstones" | "backupsRetained" | "exports" | "databasePurge" | "attachments">): DeletionLocalScope[] {
   const sources = operation.tombstones.filter(t => t.kind === "source").length, claims = operation.tombstones.length - sources;
   const exports = operation.exports;
   const exportState: DeletionLocalScope["state"] = !exports.length ? "none" : exports.some(e => e.state === "failed") ? "failed"
     : exports.some(e => e.state === "pending") ? "pending" : "purged";
   return [
     { scope: "app_store", state: operation.databasePurge === "pending" ? "pending" : "purged", detail: `${sources} source generations and ${claims} claims purged; manifests, attempts and receipts redacted` },
+    { scope: "attachments", state: !operation.attachments?.length ? "none" : operation.attachments.some(a => a.state === "failed") ? "failed" : operation.attachments.some(a => a.state === "pending") ? "pending" : "purged", detail: "attachment originals, derivatives and service-managed copies" },
     operation.backupsRetained.length
       ? { scope: "retained_backups", state: "retained", detail: `${operation.backupsRetained.length} backups may keep the deleted data until retention purge` }
       : { scope: "retained_backups", state: "none", detail: "no recorded backup was taken after this data was committed" },
@@ -1546,6 +1567,7 @@ export function confirmDeletion(tx: AppTransaction, command: DeleteConfirmComman
     reason: session.appState === "missing" ? "native_context_missing" : "awaiting_managed_delete",
     nextAction: "reconcile_managed_delete_then_verify", updatedAt: now,
   }));
+  for (const item of inventory.attachments) retireAttachments(tx, item.projectId, item.identities, "delete", now);
   const backupsRetained = inventory.backups.map(backup => backup.id);
   const operation: DeletionOperation = aggregate({
     id: operationId, contract: deleteOperationContract,
@@ -1553,7 +1575,7 @@ export function confirmDeletion(tx: AppTransaction, command: DeleteConfirmComman
     scope: structuredClone(preview.scope),
     ...(preview.scope.kind === "project" ? { databasePurge: "pending" as const, collateral: (inventory.project?.collateral ?? []).map(item => ({ ...item, state: "pending" as const, attempts: 0, reason: null })) } : {}),
     state: "pending", attempts: 0, maxAttempts: deletePolicy.maxAttempts,
-    tombstones, contexts, exports, scopes: [],
+    tombstones, contexts, exports, scopes: [], attachments: inventory.attachments,
     backupsRetained,
     residuals: ["telegram_delivery_copies_not_deleted", "provider_session_copies_not_deleted", "retained_backups_require_retention_purge", ...(preview.scope.kind === "project" ? ["execution_workspaces_retained"] : [])],
     reason: null, nextAction: "", createdAt: now, updatedAt: now,
@@ -1569,6 +1591,8 @@ function aggregate(raw: DeletionOperation, now: number): DeletionOperation {
   const scoped = (next: DeletionOperation) => ({ ...next, scopes: localScopes(next), updatedAt: now });
   const native = operation.contexts.filter(context => context.state !== "deleted");
   const files = operation.exports.filter(entry => entry.state !== "purged");
+  const attachmentFiles = operation.attachments?.filter(a => a.state !== "purged") ?? [];
+  if (attachmentFiles.length) return scoped({ ...operation, state: attachmentFiles.some(a => a.state === "failed") ? "failed" : "pending", reason: "attachment_purge_pending", nextAction: "reconcile_attachment_cleanup" });
   const collateral = operation.collateral?.filter(entry => entry.state !== "purged") ?? [];
   if (collateral.some(entry => entry.state === "failed")) return scoped({ ...operation, state: "failed", reason: "project_collateral_purge_failed", nextAction: "inspect_project_cleanup" });
   if (!native.length && !files.length && (collateral.length || operation.databasePurge === "pending")) return scoped({ ...operation, state: "pending", reason: collateral.length ? "project_collateral_pending" : "database_checkpoint_pending", nextAction: "reconcile_project_cleanup" });
@@ -1754,6 +1778,47 @@ export function finalizeProjectDatabasePurge(store: TransactionStore, now: numbe
   });
 }
 
+const attachmentPurgePasses = new WeakMap<TransactionStore, Promise<void>>();
+/** Serializes post-commit attachment cleanup with queue/startup passes; failed scopes retain their durable retry budget. */
+export function purgeDeletedAttachments(store: TransactionStore, now: number, env: DeletionEnvironment, operationId?: string): Promise<void> {
+  const prior = attachmentPurgePasses.get(store);
+  const pass = prior ? prior.catch(() => {}).then(() => purgeAttachmentScopes(store, now, env, operationId)) : purgeAttachmentScopes(store, now, env, operationId);
+  attachmentPurgePasses.set(store, pass);
+  void pass.finally(() => { if (attachmentPurgePasses.get(store) === pass) attachmentPurgePasses.delete(store); }).catch(() => {});
+  return pass;
+}
+
+/** Reserves and reconciles each durable file scope after commit; a missing ATT06/ATT05 hook fails closed across restart. */
+async function purgeAttachmentScopes(store: TransactionStore, now: number, env: DeletionEnvironment, operationId?: string): Promise<void> {
+  const ids = operationId ? [operationId] : store.read(tx => tx.all<{ id: string }>("SELECT id FROM deletion_operations WHERE state IN ('pending', 'blocked')").map(r => r.id));
+  for (const id of ids) {
+    const operation = store.read(tx => readOperationRow(tx, id));
+    for (const item of operation?.attachments ?? []) {
+      if (item.state !== "pending") continue;
+      const reserved = store.transaction(tx => {
+        const op = readOperationRow(tx, id)!;
+        const scope = op.attachments!.find(a => a.projectId === item.projectId)!;
+        if (scope.state !== "pending") return false;
+        scope.attempts++;
+        if (scope.attempts > op.maxAttempts) { scope.state = "failed"; scope.reason = "retry_budget_exhausted"; }
+        saveOperation(tx, aggregate(op, now)); return scope.state === "pending";
+      });
+      if (!reserved) continue;
+      let reason: string | null = null;
+      try {
+        if (!env.attachmentCleanup) throw new AppError("attachment_cleanup_unavailable", 503);
+        await env.attachmentCleanup.reconcile(item.projectId, item.identities);
+      } catch (e) { reason = e instanceof AppError ? e.code : "attachment_purge_failed"; }
+      store.transaction(tx => {
+        const op = readOperationRow(tx, id)!;
+        const scope = op.attachments!.find(a => a.projectId === item.projectId)!;
+        scope.reason = reason; scope.state = !reason ? "purged" : scope.attempts >= op.maxAttempts ? "failed" : "pending";
+        saveOperation(tx, aggregate(op, now));
+      });
+    }
+  }
+}
+
 async function reconcileProjectCollateral(store: TransactionStore, operationId: string, env: DeletionEnvironment, now: number): Promise<void> {
   const operation = store.read(tx => readOperationRow(tx, operationId));
   if (!operation || operation.scope.kind !== "project") return;
@@ -1809,6 +1874,7 @@ export function reconstructProjectDeletionOperations(store: TransactionStore, no
  */
 export async function reconcileDeletions(store: TransactionStore, port: ApplicationRunPort, now: number,
   exportRoot = defaultExportRoot(store), env: DeletionEnvironment = {}): Promise<DeletionOperation[]> {
+  await reconcileForgottenAttachments(store, env.attachmentCleanup);
   reconstructProjectDeletionOperations(store, now);
   reconstructLegacyExportScopes(store, now);
   const pending = store.read(tx => tx.all<{ id: string }>(
@@ -1816,6 +1882,7 @@ export async function reconcileDeletions(store: TransactionStore, port: Applicat
   const results: DeletionOperation[] = [];
   for (const id of pending) {
     purgeDeletedExports(store, now, id, exportRoot);
+    await purgeDeletedAttachments(store, now, env, id);
     await reconcileProjectCollateral(store, id, env, now);
     finalizeProjectDatabasePurge(store, now, id);
     const { operation, dispatch } = store.transaction(tx => reservePass(tx, id, now));
