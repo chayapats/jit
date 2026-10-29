@@ -9,7 +9,7 @@ import { readConfig } from "../src/config";
 import { schemaVersion, TransactionStore } from "../src/store";
 import { AppError } from "../src/errors";
 import { createWebHandler } from "../src/web";
-import { AttachmentStorage } from "../src/attachments/storage";
+import { AttachmentStorage, attachmentDedupeCandidates } from "../src/attachments/storage";
 import { attachmentDisplayName, AttachmentSniffer } from "../src/attachments/types";
 import { attachmentLimits, attachmentRequestBytes, attachmentsReleasable } from "../src/attachments/limits";
 import { attachmentProjectBytes, readAttachmentEvents, writeAttachmentEvent } from "../src/attachments/records";
@@ -292,4 +292,50 @@ test("a failed metadata transaction leaves a recoverable orphan, never an accept
   expect(f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM attachments")!.n)).toBe(0);
   expect(f.app.sweepAttachments().removed).toBe(1);
   db.exec("DROP TRIGGER fixture_upload_failure;"); db.close(); await f.upload();
+});
+
+
+test("written staging bytes are not reserved twice and abort releases only unwritten bytes", async () => {
+  let free = 3500;
+  const f = await fixture({ attachments: { diskFree: () => free } });
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  let secondRead!: () => void;
+  const waiting = new Promise<void>(resolve => { secondRead = resolve; });
+  let pulls = 0;
+  const body = new ReadableStream<Uint8Array>({ start(c) { controller = c; }, pull(c) {
+    if (++pulls === 1) c.enqueue(utf8("a".repeat(900))); else secondRead();
+  } }, { highWaterMark: 0 });
+  const first = f.web(f.request(body, "a.txt", { "content-length": "1000" }));
+  await waiting; free -= 900;
+  // 1600 bytes above reserve: 100 unwritten reserved + a second 1000-byte upload fit.
+  expect((await f.web(f.request(utf8("b".repeat(1000)), "b.txt", { "content-length": "1000" }))).status).toBe(201);
+  free -= 1000;
+  controller.error(new Error("fixture_abort")); expect((await first).status).toBe(503);
+  // Keep the fake probe at its low water mark to detect over-release as well as a leak.
+  const tooBig = stream([utf8("x")]);
+  expect((await f.web(f.request(tooBig.body, "c.txt", { "content-length": "700" }))).status).toBe(507);
+  expect(tooBig.reads()).toBe(0);
+  expect((await f.web(f.request(utf8("c".repeat(600)), "c.txt", { "content-length": "600" }))).status).toBe(201);
+});
+
+test("dedupe candidate overflow reads no body at full quota and otherwise follows ordinary quota", async () => {
+  const f = await fixture(); f.config.attachments.projectBytes = 100_000;
+  const files = Array.from({ length: attachmentDedupeCandidates + 1 }, (_, i) => utf8("same-prefix-" + String(i).padStart(2, "0")));
+  for (const bytes of files.slice(0, attachmentDedupeCandidates)) await f.upload(bytes);
+  f.config.attachments.projectBytes = f.store.read(tx => attachmentProjectBytes(tx, f.p.id));
+  // Exactly the bound still compares candidates and permits a true duplicate.
+  await f.upload(files[0]!);
+  f.config.attachments.projectBytes = 100_000; await f.upload(files.at(-1)!);
+  const used = f.store.read(tx => attachmentProjectBytes(tx, f.p.id));
+  f.config.attachments.projectBytes = used;
+  const blocked = stream([files[0]!]);
+  expect((await f.web(f.request(blocked.body, "a.txt", { "content-length": String(files[0]!.length) }))).status).toBe(413);
+  expect(blocked.reads()).toBe(0);
+  // Unknown-length streams stop at the normal remaining quota when the candidate set overflows.
+  f.config.attachments.projectBytes = used + 4;
+  const unknown = stream([utf8("same"), utf8("-"), utf8("later")]);
+  expect((await f.web(f.request(unknown.body))).status).toBe(413); expect(unknown.reads()).toBe(2);
+  f.config.attachments.projectBytes = used + files[0]!.length;
+  await f.upload(files[0]!); // Ordinary path still dedupes at commit.
+  expect(f.store.read(tx => attachmentProjectBytes(tx, f.p.id))).toBe(used);
 });

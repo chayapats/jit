@@ -16,6 +16,8 @@ export interface AttachmentStorageOptions {
 }
 /** One file stream, reusable by ATT03's ordered multipart reader after it has verified CSRF and scope. */
 export interface AttachmentUpload { body: ReadableStream<Uint8Array> | null; encodedName: string | null; contentLength?: string | null }
+/** Maximum original blobs compared per upload; an overflow disables the quota dedupe exception entirely. */
+export const attachmentDedupeCandidates = 16;
 const hashPattern = /^[a-f0-9]{64}$/;
 const projectPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const active = new Map<string, { stages: Set<string>; reserved: number }>();
@@ -29,8 +31,8 @@ function safeDirectory(path: string): void {
     try { fsyncSync(parent); } finally { closeSync(parent); }
   }
 }
-function writeAll(fd: number, bytes: Uint8Array): void {
-  let at = 0; while (at < bytes.length) { const n = writeSync(fd, bytes, at, bytes.length - at); if (!n) throw new Error("attachment_write_failed"); at += n; }
+function writeAll(fd: number, bytes: Uint8Array, written: (bytes: number) => void): void {
+  let at = 0; while (at < bytes.length) { const n = writeSync(fd, bytes, at, bytes.length - at); if (!n) throw new Error("attachment_write_failed"); at += n; written(n); }
 }
 function verifyBlob(path: string, hash: string, bytes: number): void {
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -90,8 +92,8 @@ export class AttachmentStorage {
       // or denying a duplicate just because its original already consumes the last quota byte.
       const remaining = this.store.read(tx => this.limits.projectBytes - attachmentProjectBytes(tx, projectId));
       let candidates = this.store.read(tx => tx.all<{ hash: string; bytes: number }>(`SELECT sha256 AS hash, max(bytes) AS bytes FROM attachments
-        WHERE project_id = ? AND state != 'deleted' AND sha256 IS NOT NULL AND bytes > ? GROUP BY sha256`, projectId, remaining));
-      if (declared !== null) candidates = candidates.filter(c => c.bytes === declared);
+        WHERE project_id = ? AND state != 'deleted' AND sha256 IS NOT NULL AND bytes > ? AND (? IS NULL OR bytes = ?) GROUP BY sha256 LIMIT ?`, projectId, remaining, declared, declared, attachmentDedupeCandidates + 1));
+      if (candidates.length > attachmentDedupeCandidates) candidates = [];
       if (declared !== null && declared > remaining && !candidates.length) throw new AppError("attachment_quota_exceeded", 413, { limit: "project_bytes" });
       if (!input.body) throw new AppError("invalid_attachment_upload");
       stage = join(this.root, ".staging", crypto.randomUUID());
@@ -117,7 +119,7 @@ export class AttachmentStorage {
         if (next > remaining && !candidates.length) throw new AppError("attachment_quota_exceeded", 413, { limit: "project_bytes" });
         // The probe is checked during the stream as well, to catch non-Jit writers consuming the reserve.
         if (this.#diskFree(this.root) - value.length < this.limits.diskReserveBytes) throw new AppError("attachment_disk_reserve", 507);
-        writeAll(fd, value); digest.update(value); sniffer.push(value); bytes = next;
+        writeAll(fd, value, n => { reservation -= n; this.#state.reserved -= n; }); digest.update(value); sniffer.push(value); bytes = next;
       }
       if (declared !== null && bytes !== declared) throw new AppError("invalid_attachment_upload");
       const type = sniffer.finish(name);
