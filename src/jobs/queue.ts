@@ -211,11 +211,11 @@ export class JobQueue {
     if (!positive(this.#leaseMs, 3_600_000)) throw new AppError("invalid_job_policy");
     if (!Array.isArray(definitions) || definitions.length > 32) throw new AppError("invalid_work_definition");
     for (const raw of definitions) {
-      const { run, validate, prepare, isCurrent, executes, ...metadata } = raw, definition: WorkDefinition = { ...structuredClone(metadata), run, validate, ...(prepare ? { prepare } : {}), ...(isCurrent ? { isCurrent } : {}), ...(executes ? { executes } : {}) };
+      const { run, validate, prepare, isCurrent, executes, admissionGate, ...metadata } = raw, definition: WorkDefinition = { ...structuredClone(metadata), run, validate, ...(prepare ? { prepare } : {}), ...(isCurrent ? { isCurrent } : {}), ...(executes ? { executes } : {}), ...(admissionGate ? { admissionGate } : {}) };
       if (!id(raw.id) || this.#definitions.has(raw.id) || !positive(raw.revision) || typeof raw.title !== "string" || !raw.title.length || raw.title.length > 120 ||
           typeof run !== "function" || typeof validate !== "function" || (raw.replay !== undefined && !["read", "mutation", "send"].includes(raw.replay)) || (raw.execution !== undefined && typeof raw.execution !== "boolean") ||
           (prepare !== undefined && typeof prepare !== "function") || (isCurrent !== undefined && typeof isCurrent !== "function") ||
-          (executes !== undefined && typeof executes !== "function") || !exact(raw.route, ["provider", "model", "authRoute"]) ||
+          (admissionGate !== undefined && typeof admissionGate !== "function") || (executes !== undefined && typeof executes !== "function") || !exact(raw.route, ["provider", "model", "authRoute"]) ||
           !id(raw.route.provider) || (raw.route.model !== null && !id(raw.route.model)) || !id(raw.route.authRoute)) throw new AppError("invalid_work_definition");
       this.#usage(raw.cost);
       if (["roles", "calls", "rounds", "hops"].some(key => !positive(raw.cost[key as keyof JobUsage]))) throw new AppError("invalid_work_definition");
@@ -358,6 +358,11 @@ export class JobQueue {
             if (job.state === "waiting" || occupied >= this.policy.concurrency || this.#active.has(job.id)) continue;
             const routeSlots = tx.get<{ count: number }>("SELECT count(*) AS count FROM jobs WHERE occupies = 1 AND route_key = ?", routeKey(job.route))!.count;
             if (routeSlots >= this.policy.routeConcurrency) continue;
+            const gate = entry!.definition.admissionGate?.(tx, structuredClone(job));
+            if (gate) {
+              if (job.reason !== gate) { this.#transition(job, "queued", gate); this.#save(tx, job, false); }
+              continue;
+            }
             // exec.run_tools/v1: work whose next attempt gets an execution grant counts as execution work.
             let executes = entry!.definition.execution === true;
             if (!executes && entry!.definition.executes) { try { executes = entry!.definition.executes(tx, structuredClone(job)); } catch { executes = false; } }
@@ -625,7 +630,7 @@ export class JobQueue {
   #save(tx: AppTransaction, job: Job, occupies: boolean, requeue = false) {
     job.revision++;
     job.occupiesAdmission = occupies;
-    job.nextAction = occupies && job.state !== "admitted" ? "wait_for_adapter_to_stop" : job.state === "queued" ? job.reason === "box_capacity" ? "wait_for_box_capacity" : "wait_for_admission"
+    job.nextAction = occupies && job.state !== "admitted" ? "wait_for_adapter_to_stop" : job.state === "queued" ? job.reason === "box_capacity" ? "wait_for_box_capacity" : job.reason === "attachments_pending" ? "wait_for_attachments" : "wait_for_admission"
       : job.state === "admitted" ? "wait_for_running_work" : job.state === "waiting" ? job.reason === "interrupted" ? "inspect_interrupted_work_then_resume" : "resolve_same_route_then_resume"
       : job.state === "succeeded" ? "inspect_committed_evidence" : "inspect_reason_and_authorize_new_work";
     job.updatedAt = Math.max(job.updatedAt, this.#time()); job.remaining.wallMs = Math.max(0, job.deadlineAt - job.updatedAt);

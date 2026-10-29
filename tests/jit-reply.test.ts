@@ -1,3 +1,4 @@
+import { AttachmentStorage } from "../src/attachments/storage";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -437,6 +438,8 @@ test("CTX01 attachment hook retains live identities in lineage and fences a late
     record.request.attachments = [{ attachmentId, revision: 1, generation: 1, kind: "text", inline: true }];
     saveReplyRecord(tx, record);
   });
+  const emptyHash = new AttachmentStorage(f.store, readConfig({ JIT_DATABASE: f.store.path }).attachments).publishDerivative(f.project.id, new Uint8Array());
+  f.store.transaction(tx => tx.run("UPDATE attachments SET sha256 = ?, text_sha256 = ?, text_bytes = 0 WHERE id = ?", emptyHash, emptyHash, attachmentId));
   f.queue.pump(); await entered.promise;
   expect(f.port.requests[0]!.attachments).toHaveLength(1);
   expect(f.store.read(tx => tx.get("SELECT 1 FROM jit_reply_sources WHERE reply_id = ? AND source_id = ?", view.id, attachmentId))).not.toBeNull();
@@ -1622,3 +1625,63 @@ test("COMM04 deleting the reply's output takes its chips with it", async () => {
   expect(await (await get(f, `/projects/${f.project.id}/topics/${f.topic.id}`)).text()).not.toContain("ข้อความที่จะถูกลบ");
 });
 
+
+for (const transition of ["stop", "cancel", "commit", "failure"] as const) test(`COMM03-F: ${transition} pushes the affected successor over an open SSE connection, with no unrelated events`, async () => {
+  const gate = deferred<void>(), entered = deferred<void>(); releases.push(() => gate.resolve());
+  const timers = manualStreamTimers();
+  const queuedFirst = transition === "stop" || transition === "cancel";
+  const f = await fixture({ streamTimers: timers.timers, script: async request => {
+    entered.resolve(); await gate.promise;
+    return transition === "failure" ? fixtureOutcome("invalid_result") : answer(request, "committed-first");
+  } });
+  const other = f.app.execute(f.auth.actor, { kind: "topic.create", requestId: rid(), projectId: f.project.id,
+    expectedRevision: f.app.project(f.auth.actor, f.project.id).revision, payload: { title: "other topic" } }).topic;
+  const sendOther = () => f.app.execute(f.auth.actor, { kind: "message.send", requestId: rid(), projectId: f.project.id,
+    expectedRevision: f.app.topic(f.auth.actor, f.project.id, other.id).topic.revision, payload: { topicId: other.id, text: "unrelated" } });
+  if (queuedFirst) { sendOther(); f.queue.pump(); await entered.promise; }
+  const first = send(f, "first");
+  if (!queuedFirst) { f.queue.pump(); await entered.promise; }
+  const second = send(f, "second"), third = send(f, "third"), control = sendOther();
+  const one = replyFor(f, first.message.id), two = replyFor(f, second.message.id), three = replyFor(f, third.message.id);
+  const unrelated = f.app.replies(f.auth.actor, f.project.id, other.id, [control.message.id]).get(control.message.id)!;
+  expect(two.state).toBe("queued"); expect(three.state).toBe("queued");
+  const cursor = Math.max(one.cursor, two.cursor, three.cursor, unrelated.cursor);
+  const reading = (await get(f, `/projects/${f.project.id}/topics/${f.topic.id}/events`, { "last-event-id": String(cursor) })).text();
+  if (transition === "stop") f.app.execute(f.auth.actor, { kind: "jit.reply.stop", requestId: rid(), projectId: f.project.id, expectedRevision: one.revision, payload: { replyId: one.id } });
+  else if (transition === "cancel") {
+    const job = f.app.job(f.auth.actor, f.project.id, one.jobId!);
+    f.app.execute(f.auth.actor, { kind: "job.stop", requestId: rid(), projectId: f.project.id, expectedRevision: job.revision, payload: { jobId: job.id } });
+  } else { gate.resolve(); await f.queue.idle(); }
+  await timers.flush(); const pushed = events(await reading);
+  expect([...new Set(pushed.map(event => event.data.id))].sort()).toEqual([one.id, two.id].sort());
+  expect(pushed.filter(event => event.data.id === two.id)).toHaveLength(1);
+  expect(pushed.find(event => event.data.id === two.id)!.data.state).toBe("thinking");
+  expect(replyFor(f, second.message.id).cursor).toBeGreaterThan(two.cursor);
+  expect(replyFor(f, third.message.id)).toMatchObject({ state: "queued", cursor: three.cursor });
+  expect(f.app.replies(f.auth.actor, f.project.id, other.id, [control.message.id]).get(control.message.id)!.cursor).toBe(unrelated.cursor);
+  gate.resolve(); await f.queue.idle();
+});
+
+test("COMM03-F: a reservation-only update and a still-live earlier reply produce no successor events", async () => {
+  const gate = deferred<void>(), entered = deferred<void>(); releases.push(() => gate.resolve());
+  const f = await fixture({ script: async request => { entered.resolve(); await gate.promise; return answer(request, "done"); } });
+  const first = send(f, "running"); f.queue.pump(); await entered.promise;
+  const second = send(f, "queued second"), third = send(f, "queued third");
+  const one = replyFor(f, first.message.id), two = replyFor(f, second.message.id), three = replyFor(f, third.message.id);
+  f.store.transaction(tx => tx.run("UPDATE jobs SET record_json = json_set(record_json, '$.remaining.calls', 1) WHERE id = ?", one.jobId!));
+  expect(replyFor(f, second.message.id).cursor).toBe(two.cursor); expect(replyFor(f, third.message.id).cursor).toBe(three.cursor);
+  f.app.execute(f.auth.actor, { kind: "jit.reply.stop", requestId: rid(), projectId: f.project.id, expectedRevision: two.revision, payload: { replyId: two.id } });
+  // The first reply still masks the dependency on the stopped second reply.
+  expect(replyFor(f, third.message.id)).toMatchObject({ state: "queued", cursor: three.cursor });
+  gate.resolve(); await f.queue.idle();
+});
+
+for (const version of [42, 43]) test(`COMM03-F: migration from schema ${version} installs dependency cursor propagation at schema 44`, () => {
+  const root = mkdtempSync(join(tmpdir(), "jit-comm03f-migration-")); roots.push(root);
+  const path = join(root, "state.sqlite"), old = new TransactionStore(path);
+  old.transaction(tx => { tx.run("DROP TRIGGER jit_reply_queue_dependency_change"); tx.run(`PRAGMA user_version = ${version}`); }); old.close();
+  const reopened = new TransactionStore(path); stores.push(reopened);
+  expect(reopened.read(tx => tx.get("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = 'jit_reply_queue_dependency_change'"))).not.toBeNull();
+  expect(reopened.read(tx => tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version)).toBe(44);
+  expect(reopened.read(tx => tx.all<{ name: string }>("PRAGMA table_info(web_tool_calls)")).some(column => column.name === "fallback")).toBe(true);
+});

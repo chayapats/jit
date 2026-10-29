@@ -17,11 +17,13 @@ export function purgeWebReadPayloads(tx: AppTransaction, source: SourceReference
       UNION SELECT json_extract(record_json, '$.data.runId') FROM job_attempts WHERE job_id = ?`, job, job, job)) if (row.id) runs.add(row.id);
   }
   tx.run("UPDATE source_versions SET descriptor_json = json_set(descriptor_json, '$.resourceId', '[deleted]') WHERE source_id = ? AND json_extract(descriptor_json, '$.system') = 'web'", source.sourceId);
-  for (const row of tx.all<{ id: string; runId: string; jobId: string; json: string }>("SELECT id, run_id AS runId, job_id AS jobId, action_json AS json FROM approval_cards WHERE kind = 'outbound_release'")) {
+  for (const row of tx.all<{ id: string; kind: string; runId: string; jobId: string; json: string }>("SELECT id, kind, run_id AS runId, job_id AS jobId, action_json AS json FROM approval_cards WHERE kind = 'outbound_release' OR json_extract(action_json, '$.outbound') IS NOT NULL")) {
     const action = JSON.parse(row.json) as OutboundReleaseAction;
     if (!runs.has(row.runId) && !jobs.has(row.jobId) && !contextIds.includes(action.contextId)) continue;
     runs.add(row.runId);
-    const redacted = { ...action, subject: "[deleted]", matchedSpan: "[deleted]" }, digest = actionDigest(redacted);
+    const { release: _release, outbound: _outbound, ...identity } = action;
+    const redacted = row.kind === "outbound_release" ? { ...identity, subject: "[deleted]", matchedSpan: "[deleted]" } : {} as OutboundReleaseAction;
+    const digest = actionDigest(redacted);
     tx.run("UPDATE approval_cards SET action_json = ?, digest = ?, receipt_json = NULL, state = CASE WHEN state IN ('pending', 'approved') THEN 'denied' ELSE state END, revision = revision + 1 WHERE id = ?", canonicalJson(redacted), digest, row.id);
     for (const receipt of tx.all<{ requestId: string; json: string }>("SELECT request_id AS requestId, result_json AS json FROM command_receipts WHERE json_extract(result_json, '$.card.id') = ?", row.id)) {
       const value = JSON.parse(receipt.json) as { card: Record<string, unknown> };

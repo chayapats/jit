@@ -1,3 +1,4 @@
+import { holdOutboundCall, markOutboundAction, runOutboundGuard } from "../security/run-outbound";
 import type { ToolDefinition, ToolExecutionResult } from "schway/host";
 import { AppError } from "../errors";
 import { redactCredentials } from "../security/credentials";
@@ -333,7 +334,7 @@ export class McpGateway {
    * every server process and sidecar.
    */
   async openRun(input: McpRunInput): Promise<{ definitions: ToolDefinition[]; release(): void }> {
-    const { request } = input;
+    const { request } = input, guard = runOutboundGuard(this.#store, request);
     const servers = this.#store.read(tx => readMcpServers(tx, request.projectId)).filter(server => server.state === "installed");
     const connections: Connection[] = [];
     for (const server of servers) {
@@ -353,13 +354,13 @@ export class McpGateway {
         return { ...tool, exposed: null, refused: "name_collision" };
       });
       if (collided) this.#store.transaction(tx => writeServerTools(tx, connection.server, connection.listing, this.#now()));
-      for (const tool of connection.listing) if (!tool.refused && tool.exposed) definitions.push(this.#definition(connection, tool, input));
+      for (const tool of connection.listing) if (!tool.refused && tool.exposed) definitions.push(this.#definition(connection, tool, input, guard));
     }
     let released = false;
     return { definitions, release: () => { if (released) return; released = true; for (const connection of connections) connection.close(); } };
   }
 
-  #definition(connection: Connection, listed: McpToolListing, input: McpRunInput): ToolDefinition {
+  #definition(connection: Connection, listed: McpToolListing, input: McpRunInput, guard: ReturnType<typeof runOutboundGuard>): ToolDefinition {
     const { request } = input, serverName = connection.server.name, toolName = listed.name;
     const origin = { projectId: request.projectId, topicId: request.topicId, runId: request.runId, jobId: request.fence.jobId, roleId: request.roleId };
     return {
@@ -383,6 +384,13 @@ export class McpGateway {
         }
         const tool = connection.listing.find(item => item.name === toolName && !item.refused);
         if (!tool) return fail(`The MCP server ${serverName} no longer lists ${toolName}.`);
+        const match = guard(args);
+        const action: McpToolAction = { kind: "mcp_tool", server: { id: connection.server.id, name: serverName, revision: connection.server.revision }, tool: toolName,
+          arguments: JSON.parse(canonicalJson(args)) as Record<string, unknown> };
+        if (tool.readOnly && match) {
+          const card = holdOutboundCall(this.#store, request, { tool: "mcp_tool", subject: canonicalJson(args), level: "workspace", providerRevision: 0, release: action }, match, this.#now());
+          return card ? cardToolResult(card) : fail("outbound_blocked: the first outbound call is already held for Web approval.");
+        }
         if (tool.readOnly) {
           let result: McpCallResult;
           try { result = await connection.client.callTool(toolName, args as Record<string, unknown>, ctx.signal); }
@@ -393,15 +401,13 @@ export class McpGateway {
           const framed = frameMcpResult(serverName, toolName, result);
           return { content: framed.text, ...(framed.isError ? { isError: true } : {}), details: { truncated: framed.truncated } };
         }
-        const action: McpToolAction = { kind: "mcp_tool", server: { id: connection.server.id, name: serverName, revision: connection.server.revision }, tool: toolName,
-          arguments: JSON.parse(canonicalJson(args)) as Record<string, unknown> };
         let card: ApprovalCard;
         try {
           card = this.#store.transaction(tx => {
             if (!input.current(tx)) throw new AppError("execution_access_changed");
             const current = readMcpServer(tx, request.projectId, connection.server.id);
             if (current.state !== "installed" || current.revision !== connection.server.revision) throw new AppError("mcp_server_changed");
-            return createCard(tx, origin, action, this.#now(), { autoApprove: true });
+            return createCard(tx, origin, markOutboundAction(action, match), this.#now(), { autoApprove: true });
           });
         } catch (error) { return fail(`Jit refused the MCP call: ${codeOf(error, "invalid_effect_action")}.`); }
         if (card.state === "executing") void input.effects?.run(card.projectId, card.id).catch(() => undefined);
@@ -416,7 +422,7 @@ export class McpGateway {
    * after it was sent is `unknown`, never retried.
    */
   readonly perform: EffectPerformer = async (card, signal, allowed): Promise<EffectOutcome> => {
-    const action = card.action as McpToolAction;
+    const action = (card.action.kind === "outbound_release" ? card.action.release : card.action) as McpToolAction;
     let server: McpServerView;
     try { server = this.#store.read(tx => readMcpServer(tx, card.projectId, action.server.id)); }
     catch { return { outcome: "failed", reason: "server_changed", detail: {} }; }

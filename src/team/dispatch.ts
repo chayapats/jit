@@ -1,3 +1,6 @@
+import { attachmentsPending, collectRunAttachments, runAttachmentCurrent } from "../attachments/run-references";
+import { attachmentContextTokens } from "../attachments/run-content";
+import { attachmentMaxTurns } from "../exec/run-tools";
 import { readWebSettings } from "../web-tools/settings";
 import { readActiveRole, roleActive } from "./configuration";
 import { AppError } from "../errors";
@@ -158,6 +161,7 @@ function buildRequest(
     context, fence: { jobId: "00000000-0000-0000-0000-000000000000", generation: 1, ownerGeneration: generation },
     instructions: { operator: manifest.context ? [...operator, memoryContextOperator] : operator, responsibility: role.responsibility },
     manifest: structuredClone(manifest),
+    attachments: collectRunAttachments(tx, { projectId, topicId }, manifest.sources).filter(ref => ref.inline),
     web: readWebSettings(tx, projectId).enabled,
     tools: [], policy: { genericExecution: false, arbitraryFetch: false, hostedLookup: false, repositoryDiscovery: false },
     limits: structuredClone(limits),
@@ -375,6 +379,7 @@ export function prepareStopAll(
 }
 
 function sourceCurrent(tx: AppTransaction, request: ApplicationRunRequest) {
+  if (!(request.attachments ?? []).every(ref => runAttachmentCurrent(tx, request, ref))) return false;
   return request.manifest.sources.every(source => {
     const current = lookupSource(tx, source.projectId, source.reference);
     return current.state === "available" && current.current.revision === source.reference.revision && current.text === source.text;
@@ -424,6 +429,11 @@ export function specialistAnalysisWork(
     route: { provider: "jit-fixture", model: "scripted", authRoute: "internal" },
     // exec.run_tools/v1: a port with boxes grants the specialist's effective level (capped by its role override).
     executes: (tx, job) => valid(job.input) && !!port.execution && executionGrant(tx, job.projectId, readSpecialist(tx, job.projectId, job.input.runId).roleId) !== null,
+    admissionGate: (tx, job) => {
+      if (!valid(job.input)) return null;
+      const request = readSpecialist(tx, job.projectId, job.input.runId).request;
+      return attachmentsPending(tx, request, request.attachments) ? "attachments_pending" : null;
+    },
     prepare: (tx, job, generation) => {
       if (!valid(job.input)) throw new AppError("invalid_job_input");
       const run = readSpecialist(tx, job.projectId, job.input.runId);
@@ -435,6 +445,10 @@ export function specialistAnalysisWork(
       }
       readActiveRole(tx, request.roleId);
       request.fence = { jobId: job.id, generation, ownerGeneration: job.authorization.generation };
+      if (request.attachments) request.attachments = request.attachments.filter(ref => runAttachmentCurrent(tx, request, ref));
+      // Each attachment attempt receives its own finite context share, including an explicit owner resume.
+      if (request.attachments?.length) request.limits.contextTokens = Math.max(1,
+        Math.min(Math.floor(job.limits.contextTokens / (job.limits.retries + 1)), job.remaining.contextTokens));
       // Frozen in the attempt snapshot at admission; model output never changes it.
       request.execution = port.execution ? executionGrant(tx, job.projectId, request.roleId) : null;
       return { native: { adapter: port.adapter, runId: request.runId, sessionId: request.runId, context: request.context },
@@ -459,7 +473,7 @@ export function specialistAnalysisWork(
       // Each attempt (the first and every owner resume) reserves its own share of the job's output budget, so a
       // route wait leaves budget for the resumed attempt.
       const outputTokens = specialistAttemptOutputTokens(job.limits);
-      reserve({ contextTokens: Math.ceil(Buffer.byteLength(jobData(request, config.team.contextBytes)) / 4), outputTokens });
+      reserve({ contextTokens: Math.min(request.limits.contextTokens, Math.ceil(Buffer.byteLength(jobData(request, config.team.contextBytes)) / 4) + attachmentContextTokens(request, attachmentMaxTurns(request))), outputTokens });
       if (port.adapter === "schway") {
         // Worst-case retry calls pre-reserved before dispatch; single-output
         // token accounting stays as committed, with measured overrun in usage.
@@ -495,7 +509,7 @@ export function specialistAnalysisWork(
       // A run admitted before v2 never asked for that shape, so it keeps the v1 result path.
       const v2 = request.instructions.operator.includes(specialistResultInstruction);
       const normalized = v2 && outcome.state === "complete" && outcome.output
-        ? normalizeSpecialistResult(outcome.output, request.manifest.sources.map(source => source.reference)) : null;
+        ? normalizeSpecialistResult(outcome.output, [...request.manifest.sources.map(source => source.reference), ...(request.attachments ?? []).map(ref => ({ sourceId: ref.attachmentId, revision: ref.revision, generation: ref.generation }))]) : null;
       const resultLine = normalized ? ` · result ${normalized.result.status}${normalized.droppedEvidence ? ` · evidence dropped ${normalized.droppedEvidence}` : ""}` : "";
       const result = { state: "succeeded" as const, evidence: `${evidenceKind}: ${outcome.state} / ${outcome.reason}${resultLine} · run ${run.id}\n${evidenceRoute}` };
       const committed = commit(result, tx => {

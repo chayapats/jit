@@ -109,7 +109,7 @@ function attachmentChip(base: string, view: AttachmentView): string {
   const name = escape(view.name);
   const status = view.state === "pending" ? tr("attachments.state_pending")
     : view.state === "rejected" ? `${tr("attachments.state_rejected")}: ${attachmentReasonText(view.reason)}`
-    : view.kind === "image" && view.sanitizedBy === "fallback" ? tr("attachments.no_preview_fallback") : "";
+    : view.kind === "image" && view.sanitizedBy === "fallback" ? `${tr("attachments.no_preview_fallback")} · ${tr("attachments.route_cannot_see_images")}` : view.kind === "image" ? tr("attachments.route_cannot_see_images") : "";
   const thumb = view.preview
     ? `<a class="attachment-thumb" href="${url}/preview" target="_blank" rel="noopener noreferrer"><img src="${url}/preview" alt="${escape(fillText(tr("attachments.open_preview"), { name: view.name }))}" width="48" height="48" loading="lazy" decoding="async"></a>`
     : icon;

@@ -22,7 +22,7 @@ export type JobState = "queued" | "admitted" | "waiting" | "succeeded" | "blocke
 /** Safe finite reason codes instead of raw adapter/store diagnostics. */
 export type JobReason = "queued" | "running" | "complete" | "yielded" | "quota" | "needs_login" | "route_unavailable"
   | "cancelled" | "revoked" | "superseded" | "source_retired" | "context_retired" | "lease_expired" | "budget_exhausted" | "deadline" | "worker_failed" | "interrupted" | "configuration_changed" | "authorization_changed" | "input_changed"
-  | "context_too_large" | "box_capacity";
+  | "context_too_large" | "box_capacity" | "attachments_pending";
 /** Committed owner-visible work, its immutable scope/configuration, and remaining reservation budgets. */
 export interface Job {
   id: string; projectId: string; revision: number; type: string; purpose: string;
@@ -96,6 +96,8 @@ export interface WorkDefinition {
    * returns the grant's `execution` so every reservation and result commit re-checks that level.
    */
   executes?(tx: AppTransaction, job: Job): boolean;
+  /** Returns attachments_pending to keep the job queued without spending or preparing an attempt. */
+  admissionGate?(tx: AppTransaction, job: Job): "attachments_pending" | null;
   /** Captures native identities and immutable adapter input inside admission, before any dispatch. */
   prepare?(tx: AppTransaction, job: Job, generation: number): AttemptPreparation;
   /** Rechecks source/context freshness inside each reservation and result transaction. */

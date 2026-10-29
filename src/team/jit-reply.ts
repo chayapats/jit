@@ -1,3 +1,5 @@
+import { attachmentContextTokens } from "../attachments/run-content";
+import { attachmentMaxTurns } from "../exec/run-tools";
 import { validateTaskWording } from "../tasks";
 import { dictionaries } from "../i18n";
 import { readWebCalls, type WebCall } from "../web-tools";
@@ -13,7 +15,7 @@ import type { Job, JobLimits, WorkDefinition } from "../jobs/types";
 import { constraintCandidates, contextCurrent, markMemoryDerived, memoryContextPolicy } from "../memory/context";
 import { contextPacket, omit, packetSections, pinnedBytes, pinnedDecisions, trimBottomUp } from "../memory/packet";
 import { suppressedSource, deletedSource } from "../memory/read";
-import { runAttachmentCurrent } from "../attachments/run-references";
+import { attachmentsPending, collectRunAttachments, runAttachmentCurrent } from "../attachments/run-references";
 import { personaInstructions, readPersona } from "../persona";
 import { commitOutputSource, lookupSource, requireId, type Attribution, type SourceReference } from "../sources";
 import type { AppTransaction, TransactionStore } from "../store";
@@ -185,14 +187,14 @@ export const replyAttemptOutputTokens = 1024;
  * Bounded fixed limits for one reply, clamped to the installation maximum. Budgets cover the first attempt
  * and every allowed retry, because each attempt (including an owner resume) is admitted and reserves its own share.
  */
-export function replyLimits(maximum: JobLimits, contextBytes: number, execution = false): JobLimits {
+export function replyLimits(maximum: JobLimits, contextBytes: number, execution = false, attachments = false): JobLimits {
   const retries = Math.min(2, maximum.retries), attempts = retries + 1;
   // Each admission spends one role, call, round and hop; a Schway attempt may pre-reserve its host retries, and an
   // execution reply (exec.run_tools/v1) those of every model turn its tools may take.
   const calls = attempts * (retries + 1) * (execution ? executionMaxTurns : 1);
   return {
     roles: Math.min(attempts, maximum.roles), calls: Math.min(calls, maximum.calls), rounds: Math.min(calls, maximum.rounds), hops: Math.min(attempts, maximum.hops),
-    contextTokens: Math.min(Math.ceil(contextBytes / 4) * attempts, maximum.contextTokens),
+    contextTokens: Math.min(Math.ceil(contextBytes / 4) * attempts + (attachments ? Math.ceil((64 * 1024 + 8 * 64 * 1024) / 4) : 0), maximum.contextTokens),
     outputTokens: Math.min(replyAttemptOutputTokens * attempts, maximum.outputTokens),
     retries, wallMs: Math.min(60_000, maximum.wallMs),
   };
@@ -432,7 +434,8 @@ function admitReply(tx: AppTransaction, input: ReplyAdmission): { id: string; re
   const anchorSource = lookupSource(tx, message.projectId, anchor.source);
   if (pinnedCost > room || anchorSource.state !== "available" ||
       Buffer.byteLength(JSON.stringify(anchorSource.text)) + 160 > room - pinnedCost) return notAdmitted("context_too_large");
-  const limits = replyLimits(config.jobs.maximum, config.team.contextBytes, executionGrant(tx, message.projectId, jit.id) !== null || readWebSettings(tx, message.projectId).enabled);
+  const hasAttachments = !!tx.get("SELECT 1 FROM attachments a JOIN messages m ON m.id = a.message_id WHERE a.project_id = ? AND a.topic_id = ? AND m.sequence <= ? AND a.state != 'deleted' LIMIT 1", message.projectId, message.topicId, anchor.sequence);
+  const limits = replyLimits(config.jobs.maximum, config.team.contextBytes, executionGrant(tx, message.projectId, jit.id) !== null || readWebSettings(tx, message.projectId).enabled || hasAttachments, hasAttachments);
   const context = { id: crypto.randomUUID(), generation: 1 };
   const request: ApplicationRunRequest = {
     runId: replyId, projectId: message.projectId, topicId: message.topicId, roleId: jit.id,
@@ -441,7 +444,7 @@ function admitReply(tx: AppTransaction, input: ReplyAdmission): { id: string; re
     configuration: { ownerRevision: team.ownerRevision, projectRevision: team.projectRevision, roleRevision: jit.revision },
     context, fence: { jobId: "00000000-0000-0000-0000-000000000000", generation: 1, ownerGeneration: input.generation },
     instructions: { operator: [...fixedOperator, metadataOf(offered, gaps)], responsibility: jit.responsibility },
-    manifest: { sources: [], claims: [] }, web: readWebSettings(tx, message.projectId).enabled, tools: [],
+    manifest: { sources: [], claims: [] }, attachments: collectRunAttachments(tx, message, [{ reference: anchor.source }]), web: readWebSettings(tx, message.projectId).enabled, tools: [],
     policy: { genericExecution: false, arbitraryFetch: false, hostedLookup: false, repositoryDiscovery: false }, limits,
   };
   const projectRevision = tx.get<{ revision: number }>("SELECT revision FROM projects WHERE id = ?", message.projectId)!.revision;
@@ -501,9 +504,8 @@ function assembleReplyContext(tx: AppTransaction, record: JitReplyRecord, config
     }
     offered.push({ ...citation, text: found.text });
   }
-  // ATT04 extension point: collect references from the selected history and materialize framed content only after
-  // this live check, inside this transaction and the same byte fit. Until ATT04 no file content enters a reply.
-  if (record.request.attachments) record.request.attachments = record.request.attachments.filter(ref => runAttachmentCurrent(tx, record, ref));
+  // ATT04 keeps only identity references in this packet. The run port materializes live framed text at dispatch.
+  const removedAttachments = (record.request.attachments ?? []).filter(ref => !runAttachmentCurrent(tx, record, ref)).length;
   const fixedOperator = record.request.instructions.operator.slice(0, -1);
   const metadataOf = (kept: readonly TeamReplyResult[], missing: readonly TeamReplyGap[]) => record.team
     ? teamResultMetadata(kept, missing) : record.request.instructions.operator.at(-1)!;
@@ -586,8 +588,9 @@ function assembleReplyContext(tx: AppTransaction, record: JitReplyRecord, config
       ? "The owner's question is the last owner source; specialist sources are the results to speak for." : "The last source is the message to answer."}`;
     return {
       ...structuredClone(record.request), purpose,
-      instructions: { operator: [...operatorBase, speakers], responsibility: record.request.instructions.responsibility },
+      instructions: { operator: [...operatorBase, speakers + (removedAttachments ? " The owner removed an attachment after admission; do not use its content." : "")], responsibility: record.request.instructions.responsibility },
       manifest: { sources, claims: [], context: layout },
+      attachments: collectRunAttachments(tx, record, items.map(item => item.source)),
     };
   };
   // The packet's own labels are not charged above; if they push the request past its bytes, the oldest recent
@@ -707,7 +710,7 @@ function project(tx: AppTransaction, row: { id: string; projectId: string; topic
   if (record.result) return { ...common, state: "failed", reason: record.result.reason, nextAction: "send_again", progress: null, replyMessageId: null, source: null };
   const job = readJob(tx, row.projectId, record.jobId);
   const none = { replyMessageId: null, source: null };
-  if (job.state === "queued" || job.state === "admitted") return { ...common, ...none, state: job.state === "queued" && earlierReplyLive(tx, row, base.messageSequence) ? "queued" : "thinking", reason: job.reason, nextAction: null, progress: null };
+  if (job.state === "queued" || job.state === "admitted") return { ...common, ...none, state: job.state === "queued" && (job.reason === "attachments_pending" || earlierReplyLive(tx, row, base.messageSequence)) ? "queued" : "thinking", reason: job.reason, nextAction: job.reason === "attachments_pending" ? "wait_for_attachments" : null, progress: null };
   if (job.state === "waiting") return { ...common, ...none, state: "blocked", reason: job.reason, nextAction: blockedNext[job.reason] ?? "resume_or_send_again", progress: null };
   if (job.reason === "cancelled") return { ...common, ...none, state: "stopped", reason: "cancelled", nextAction: "send_again", progress: null };
   return { ...common, ...none, state: "failed", reason: job.reason, nextAction: "send_again", progress: null };
@@ -735,7 +738,7 @@ export function readRepliesFor(tx: AppTransaction, projectId: string, topicId: s
  * app.jit_reply/v2: replies of one topic whose persisted state changed after `cursor`, in change order (SSE replay).
  * The reply record, the reply row and (through the schema 25 `jit_reply_job_change` trigger) every update of the
  * reply's job move the cursor, so this covers transitions the queue makes alone: a stop from the job page, a
- * deadline, a budget rejection.
+ * deadline, a budget rejection. Schema 43 also advances the queued successor when an earlier job changes its wait dependency.
  */
 export function readReplyChanges(tx: AppTransaction, projectId: string, topicId: string, cursor: number, limit: number): JitReplyView[] {
   return tx.all<Parameters<typeof project>[1]>(`SELECT ${replyColumns} FROM jit_replies WHERE project_id = ? AND topic_id = ? AND cursor > ? ORDER BY cursor LIMIT ?`,
@@ -816,6 +819,13 @@ export function jitReplyWork(store: TransactionStore, config: AppConfig, port: A
     validate: input => valid(input),
     // exec.run_tools/v1: a port with boxes grants Jit's effective level; `read`, a halt or no boxes grants nothing.
     executes: (tx, job) => valid(job.input) && !!port.execution && executionGrant(tx, job.projectId, readReplyRecord(tx, job.projectId, job.input.replyId).roleId) !== null,
+    admissionGate: (tx, job) => {
+      if (!valid(job.input)) return null;
+      const record = readReplyRecord(tx, job.projectId, job.input.replyId);
+      const anchor = record.contextAssembly?.anchor;
+      const refs = anchor ? collectRunAttachments(tx, record, [{ reference: anchor.source }]) : record.request.attachments;
+      return attachmentsPending(tx, record, refs) ? "attachments_pending" : null;
+    },
     prepare: (tx, job, generation) => {
       if (!valid(job.input)) throw new AppError("invalid_job_input");
       const record = readReplyRecord(tx, job.projectId, job.input.replyId);
@@ -831,6 +841,9 @@ export function jitReplyWork(store: TransactionStore, config: AppConfig, port: A
         request.context = { id: crypto.randomUUID(), generation: 1 };
       }
       request.fence = { jobId: job.id, generation, ownerGeneration: job.authorization.generation };
+      // Freeze an attachment attempt's share before deriving tool turns; a route wait must leave room to resume.
+      if (request.attachments?.length) request.limits.contextTokens = Math.max(1,
+        Math.min(Math.floor(job.limits.contextTokens / (job.limits.retries + 1)), job.remaining.contextTokens));
       // Check the complete data before writing the packet/lineage: the queue handles preparation errors in its
       // claim transaction, so a failed size check must not leave a frozen packet without an attempt snapshot.
       let data;
@@ -864,7 +877,7 @@ export function jitReplyWork(store: TransactionStore, config: AppConfig, port: A
       if (opened.jobId !== job.id || opened.result) return { state: "failed", reason: "worker_failed" };
       const request = structuredClone(attempt.data) as unknown as ApplicationRunRequest;
       const outputTokens = Math.min(replyAttemptOutputTokens, job.limits.outputTokens);
-      reserve({ contextTokens: Math.ceil(Buffer.byteLength(jobData(request, config.team.contextBytes)) / 4), outputTokens });
+      reserve({ contextTokens: Math.min(request.limits.contextTokens, Math.ceil(Buffer.byteLength(jobData(request, config.team.contextBytes)) / 4) + attachmentContextTokens(request, attachmentMaxTurns(request))), outputTokens });
       if (port.adapter === "schway") {
         reserve({ calls: schwayMaxCalls(request) - 1, rounds: schwayMaxRounds(request) - 1 });
       }

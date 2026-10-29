@@ -61,7 +61,7 @@ export function retireAttachments(tx: AppTransaction, projectId: string, ids: re
         if (typeof record.data?.runId === "string") runIds.add(record.data.runId);
       }
     }
-    for (const card of tx.all<{ id: string; runId: string; jobId: string; action: string }>("SELECT id, run_id AS runId, job_id AS jobId, action_json AS action FROM approval_cards WHERE project_id = ? AND kind = 'outbound_release'", projectId)) {
+    for (const card of tx.all<{ id: string; runId: string; jobId: string; action: string }>("SELECT id, run_id AS runId, job_id AS jobId, action_json AS action FROM approval_cards WHERE project_id = ? AND (kind = 'outbound_release' OR json_extract(action_json, '$.outbound') IS NOT NULL)", projectId)) {
       if (!runIds.has(card.runId) && !jobIds.has(card.jobId) && !referencesAttachment(JSON.parse(card.action), attachmentIds)) continue;
       cardIds.add(card.id);
       tx.run(`UPDATE approval_cards SET action_json = '{}', decision_json = NULL, receipt_json = NULL,
@@ -83,7 +83,7 @@ export function redactOutboundRelease<T>(value: T, scope?: ReleaseScope): T {
   if (Array.isArray(value)) return value.map(v => redactOutboundRelease(v, scope)) as T;
   if (!value || typeof value !== "object") return value;
   const row = value as Record<string, unknown>;
-  if (row.kind === "outbound_release" && (!scope || scope.cardIds.has(String(row.id ?? row.cardId)) || scope.runIds.has(String(row.runId)) || scope.jobIds.has(String(row.jobId)) || referencesAttachment(row, scope.attachmentIds))) return { ...row, action: {}, arguments: undefined, decision: null, receipt: null } as T;
+  if ((row.kind === "outbound_release" || (row.action && typeof row.action === "object" && "outbound" in row.action)) && (!scope || scope.cardIds.has(String(row.id ?? row.cardId)) || scope.runIds.has(String(row.runId)) || scope.jobIds.has(String(row.jobId)) || referencesAttachment(row, scope.attachmentIds))) return { ...row, action: {}, arguments: undefined, decision: null, receipt: null } as T;
   return Object.fromEntries(Object.entries(row).map(([k, v]) => [k, redactOutboundRelease(v, scope)])) as T;
 }
 function redactOutboundRecords(tx: AppTransaction, projectId: string, scope: ReleaseScope): void {

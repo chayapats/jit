@@ -121,15 +121,16 @@ export class EffectExecutor {
   accessChanged(projectId: string): void {
     for (const [cardId, item] of this.#inFlight) {
       if (item.projectId !== projectId) continue;
-      const row = this.#store.read(tx => tx.get<{ roleId: string; kind: EffectKind }>("SELECT role_id AS roleId, kind FROM approval_cards WHERE id = ?", cardId));
-      try { this.#store.read(tx => assertExecutionAllowed(tx, projectId, row?.roleId ?? null, row ? cardLevel(row.kind) : "full")); } catch { item.abort.abort(); }
+      const row = this.#store.read(tx => tx.get<{ roleId: string; kind: EffectKind; action: string }>("SELECT role_id AS roleId, kind, action_json AS action FROM approval_cards WHERE id = ?", cardId));
+      try { this.#store.read(tx => assertExecutionAllowed(tx, projectId, row?.roleId ?? null, row ? cardLevel(row.kind, JSON.parse(row.action)) : "full")); } catch { item.abort.abort(); }
     }
   }
 
   /** True while the card may still cause its effect: not aborted, and the role keeps the card's level in an unhalted project. */
   #allowed(card: ApprovalCard, signal: AbortSignal): boolean {
     if (signal.aborted || this.#closing) return false;
-    try { this.#store.read(tx => assertExecutionAllowed(tx, card.projectId, card.roleId, cardLevel(card.kind))); return true; } catch { return false; }
+    if (card.action.outbound && this.#store.read(tx => tx.get<{ reason: string | null }>("SELECT reason FROM approval_cards WHERE id = ?", card.id)?.reason === "source_retired")) return false;
+    try { this.#store.read(tx => assertExecutionAllowed(tx, card.projectId, card.roleId, cardLevel(card.kind, card.action))); return true; } catch { return false; }
   }
 
   /** Runs the card once if it is claimable; resolves with the card's final state. Never throws for an effect failure. */
@@ -186,7 +187,7 @@ export class EffectExecutor {
     const failBeforeStart = (card: ApprovalCard, reason: string, at: number) => { const failed = failBefore(tx, card, reason, at); postResult(tx, failed, at); return failed; };
     const card = readCard(tx, projectId, cardId);
     if (card.state !== "executing" || card.startedAt !== null) return null;
-    try { assertExecutionAllowed(tx, projectId, card.roleId, cardLevel(card.kind)); }
+    try { assertExecutionAllowed(tx, projectId, card.roleId, cardLevel(card.kind, card.action)); }
     catch { return { failed: failBeforeStart(card, "access_changed", now) }; }
     const action = card.action;
     // In-box kinds release no connection here: an MCP sidecar receives its bound values from the gateway at spawn.
@@ -446,7 +447,7 @@ function postResult(tx: AppTransaction, card: ApprovalCard, now: number): void {
   const words = dictionaries[readPersona(tx).language];
   const text = (card.kind === "outbound_release" && typeof card.receipt?.detail.untrustedData === "string" ? card.receipt.detail.untrustedData + "\n" : "") + fill(words[`effects.result.${card.state}`], { kind: card.kind, subject: subjectOf(card), reason: card.reason ?? "-", card: card.id.slice(0, 8) });
   const source = card.action.kind === "outbound_release"
-    ? commitWebSource(tx, { projectId: card.projectId, url: card.action.subject, text: clip(text, 65536), committedAt: now, resourceType: card.action.tool === "web_search" ? "search" : "page" })
+    ? commitWebSource(tx, { projectId: card.projectId, url: card.action.tool === "web_fetch" || card.action.tool === "browser_open" ? card.action.subject : "https://jit.invalid/outbound-release", text: clip(text, 65536), committedAt: now, resourceType: card.action.tool === "web_search" ? "search" : "page" })
     : commitServiceOutput(tx, { projectId: card.projectId, service: "jit-effects", text: clip(text, 4000), committedAt: now });
   if (card.action.kind === "outbound_release") tx.run("INSERT INTO web_run_sources VALUES (?, ?, ?, ?, ?, ?, ?)", card.runId, card.projectId, card.topicId, source.sourceId, source.revision, source.generation, card.jobId);
   // Raw web content belongs only to the lifecycle source, never a duplicate receipt copy.

@@ -1,15 +1,18 @@
 import { tr } from "../i18n";
 import { ManagedSearxng, PodmanSearxngRuntime, searxngSecret } from "./searxng";
+import { holdOutboundCall } from "../security/run-outbound";
+import { runAttachmentCurrent } from "../attachments/run-references";
+import { serviceToolCurrent as baseServiceToolCurrent } from "../security/service-tools";
+import { attachmentOutboundEntries } from "../attachments/run-content";
 import { contextCurrent } from "../memory/context";
 import { lookupSource } from "../sources";
 import { createWebFetchTool, createWebSearchTool, hostCapabilities, type ToolDefinition, type ToolExecutionResult } from "schway/host";
 import { webCallLimit } from "../exec/run-tools";
 import { AppError } from "../errors";
-import { assertExecutionAllowed } from "../exec/access";
-import { createCard, type ApprovalCard } from "../exec/approval-cards";
+import { type ApprovalCard } from "../exec/approval-cards";
 import type { ConnectionVault } from "../exec/connections";
 import type { EffectPerformer } from "../exec/effect-executor";
-import { outboundGuard, type PrivateContextEntry } from "../security/outbound-guard";
+import { buildOutboundCorpus, findVerbatimSpan, outboundGuard, type OutboundMatch, type PrivateContextEntry } from "../security/outbound-guard";
 import { redactRegisteredSecrets } from "../security/secret-fingerprints";
 import { commitWebSource } from "../sources";
 import type { AppTransaction, TransactionStore } from "../store";
@@ -25,12 +28,7 @@ export function assertWebToolsCapability(capabilities: { webToolsContract?: stri
 }
 /** Shared service-tool fence: every access level, no box, with current attempt, owner, context and kill switch. */
 export function serviceToolCurrent(tx: AppTransaction, request: ApplicationRunRequest): boolean {
-  const authority = tx.get<{ generation: number; reason: string | null }>("SELECT generation, reason FROM job_authority WHERE job_id = ?", request.fence.jobId);
-  if (!authority || authority.generation !== request.fence.generation || authority.reason !== null) return false;
-  if (tx.get<{ generation: number }>("SELECT generation FROM owner WHERE id = 'owner'")?.generation !== request.fence.ownerGeneration) return false;
-  if (tx.get<{ state: string }>("SELECT state FROM jobs WHERE id = ?", request.fence.jobId)?.state !== "admitted") return false;
-  if (tx.get<{ state: string }>("SELECT state FROM team_contexts WHERE id = ? AND generation = ?", request.context.id, request.context.generation)?.state !== "active") return false;
-  try { assertExecutionAllowed(tx, request.projectId, request.roleId, "read"); } catch { return false; }
+  if (!baseServiceToolCurrent(tx, request)) return false;
   if (contextCurrent(tx, request.projectId, request.manifest) !== null) return false;
   if (request.manifest.sources.some(source => lookupSource(tx, source.projectId, source.reference).state !== "available")) return false;
   return readWebSettings(tx, request.projectId).enabled;
@@ -92,22 +90,18 @@ export class WebTools {
   }
   #corpus(request: ApplicationRunRequest): PrivateContextEntry[] {
     return [...request.manifest.sources, ...request.manifest.claims, ...(request.manifest.context?.constraints ?? []),
-      ...(request.manifest.context?.packet?.pinned ?? []).map(item => ({ text: `${item.conclusion}\n${item.rationale}` })), { text: request.purpose }, ...(this.options.privateContext?.(request) ?? [])];
+      ...(request.manifest.context?.packet?.pinned ?? []).map(item => ({ text: `${item.conclusion}\n${item.rationale}` })), { text: request.purpose }, ...attachmentOutboundEntries(this.store, request), ...(this.options.privateContext?.(request) ?? [])];
   }
-  #hold(request: ApplicationRunRequest, tool: "web_search" | "web_fetch", subject: string, matchedSpan: string): void {
-    this.store.transaction(tx => {
-      if (!serviceToolCurrent(tx, request) || tx.get("SELECT 1 FROM approval_cards WHERE kind = 'outbound_release' AND run_id = ?", request.runId)) return;
-      createCard(tx, { projectId: request.projectId, topicId: request.topicId, runId: request.runId, jobId: request.fence.jobId, roleId: request.roleId }, {
-        kind: "outbound_release", tool, subject, matchedSpan,
-        providerRevision: readWebProvider(tx).revision, contextId: request.context.id, contextGeneration: request.context.generation, ownerGeneration: request.fence.ownerGeneration,
-      }, (this.options.now ?? Date.now)(), { autoApprove: false });
-    });
+  #hold(request: ApplicationRunRequest, tool: "web_search" | "web_fetch", subject: string, match: OutboundMatch): void {
+    holdOutboundCall(this.store, request, { tool, subject, providerRevision: this.store.read(readWebProvider).revision },
+      match, (this.options.now ?? Date.now)());
   }
   /** Builds an exact run registry. Empty application tools remain empty; only the service-owned web flag selects these reads. */
   buildWebTools(request: ApplicationRunRequest, progress: (text: string) => void = () => {}): ToolDefinition[] {
     if (Math.min(this.options.outputBytes ?? 32768, request.limits.outputTokens * 4) < 1024 || request.web !== true || !this.store.read(tx => readWebSettings(tx, request.projectId).enabled)) return [];
-    const corpus = this.#corpus(request);
-    const guard = outboundGuard(corpus);
+    const corpus = buildOutboundCorpus(this.#corpus(request));
+    const attachments = { entries: corpus.entries.filter(entry => entry.attachmentId) };
+    const guard = (text: string) => findVerbatimSpan(corpus, text), attachmentGuard = (text: string) => findVerbatimSpan(attachments, text);
     let calls = 0;
     const definitions = this.#definitions(request.projectId, url => !guard(url.href), Math.min(this.options.outputBytes ?? 32768, request.limits.outputTokens * 4));
     return definitions.map(definition => {
@@ -120,13 +114,14 @@ export class WebTools {
         const current = this.store.transaction(tx => {
           const allowed = !ctx.signal?.aborted && serviceToolCurrent(tx, request) && ++calls <= webCallLimit(request);
           tx.run("INSERT INTO web_tool_calls (id, project_id, topic_id, run_id, job_id, tool, subject, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            id, request.projectId, request.topicId, request.runId, request.fence.jobId, definition.name, redactRegisteredSecrets(subject), allowed ? "running" : "refused", now());
+            id, request.projectId, request.topicId, request.runId, request.fence.jobId, definition.name, attachmentGuard(subject) ? "[attachment outbound blocked]" : redactRegisteredSecrets(subject), allowed ? "running" : "refused", now());
           tx.run("DELETE FROM web_tool_calls WHERE project_id = ? AND run_id != ? AND sequence < (SELECT sequence FROM web_tool_calls WHERE project_id = ? ORDER BY sequence DESC LIMIT 1 OFFSET 2000)", request.projectId, request.runId, request.projectId);
           return allowed;
         });
         const finish = (status: string, bytes = 0) => this.store.transaction(tx => tx.run("UPDATE web_tool_calls SET status = ?, bytes = ? WHERE id = ?", status, bytes, id));
         if (!current) return envelope("Web read refused: access, attempt or call budget changed.");
-        const matchedSpan = guard(subject);
+        // Prefer attachment attribution and preserve conservative-hold reasons on the digest-bound card.
+        const matchedSpan = attachmentGuard(subject) ?? guard(subject);
         if (matchedSpan) {
           this.#hold(request, definition.name as "web_search" | "web_fetch", subject, matchedSpan);
           finish("blocked-private-context");
@@ -135,8 +130,8 @@ export class WebTools {
         progress(definition.name === "web_search" ? "web.searching" : "web.reading");
         try {
           const actual = definition.name === "web_fetch" ? this.#definitions(request.projectId, url => {
-            this.#redirect(request, subject, url, now());
-            const match = guard(url.href);
+            this.#redirect(request, subject, url, now(), !!attachmentGuard(url.href));
+            const match = attachmentGuard(url.href) ?? guard(url.href);
             if (match) this.#hold(request, "web_fetch", url.href, match);
             return !match && !ctx.signal?.aborted && this.store.read(tx => serviceToolCurrent(tx, request));
           }, Math.min(this.options.outputBytes ?? 32768, request.limits.outputTokens * 4)).find(item => item.name === "web_fetch")! : this.#definitions(request.projectId, undefined, Math.min(this.options.outputBytes ?? 32768, request.limits.outputTokens * 4),
@@ -156,9 +151,9 @@ export class WebTools {
       } };
     });
   }
-  #redirect(request: Pick<ApplicationRunRequest, "projectId" | "topicId" | "runId" | "fence">, subject: string, url: URL, now: number): void {
+  #redirect(request: Pick<ApplicationRunRequest, "projectId" | "topicId" | "runId" | "fence">, subject: string, url: URL, now: number, attachment = false): void {
     if (url.href !== new URL(subject).href) this.store.transaction(tx => tx.run("INSERT INTO web_tool_calls (id, project_id, topic_id, run_id, job_id, tool, subject, status, created_at) VALUES (?, ?, ?, ?, ?, 'web_fetch', ?, 'redirect', ?)",
-      crypto.randomUUID(), request.projectId, request.topicId, request.runId, request.fence.jobId, redactRegisteredSecrets(url.href), now));
+      crypto.randomUUID(), request.projectId, request.topicId, request.runId, request.fence.jobId, attachment ? "[attachment outbound blocked]" : redactRegisteredSecrets(url.href), now));
   }
   #source(request: Pick<ApplicationRunRequest, "projectId" | "runId" | "topicId" | "fence">, tool: string, subject: string, content: string, now: number): void {
     this.store.transaction(tx => {
@@ -183,17 +178,17 @@ export class WebTools {
       return run?.json ? JSON.parse(run.json) as ApplicationRunRequest : null;
     });
     if (!request) return { outcome: "failed", reason: "web_context_changed", detail: {} };
-    const contextLive = () => this.store.read(tx => contextCurrent(tx, request.projectId, request.manifest) === null && request.manifest.sources.every(source => lookupSource(tx, source.projectId, source.reference).state === "available"));
+    const contextLive = () => this.store.read(tx => (request.attachments ?? []).every(ref => runAttachmentCurrent(tx, request, ref)) && contextCurrent(tx, request.projectId, request.manifest) === null && request.manifest.sources.every(source => lookupSource(tx, source.projectId, source.reference).state === "available"));
     if (!contextLive()) return { outcome: "failed", reason: "web_context_changed", detail: {} };
-    const guard = outboundGuard(this.#corpus(request));
+    const corpus = this.#corpus(request), guard = outboundGuard(corpus), attachmentGuard = outboundGuard(corpus.filter(entry => entry.attachmentId));
     const now = this.options.now ?? Date.now;
     const id = crypto.randomUUID();
     const definition = this.#definitions(card.projectId, url => {
-      this.#redirect(request, action.subject, url, now());
+      this.#redirect(request, action.subject, url, now(), !!attachmentGuard(url.href));
       return current() && contextLive() && (url.href === new URL(action.subject).href || !guard(url.href));
     }, this.options.outputBytes ?? 32768, () => this.store.transaction(tx => tx.run("UPDATE web_tool_calls SET fallback = 'key_missing' WHERE id = ?", id))).find(item => item.name === action.tool);
     if (!definition) return { outcome: "failed", reason: "web_provider_unavailable", detail: {} };
-    this.store.transaction(tx => tx.run("INSERT INTO web_tool_calls (id, project_id, topic_id, run_id, job_id, tool, subject, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)", id, card.projectId, card.topicId, card.runId, card.jobId, action.tool, redactRegisteredSecrets(action.subject), now()));
+    this.store.transaction(tx => tx.run("INSERT INTO web_tool_calls (id, project_id, topic_id, run_id, job_id, tool, subject, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)", id, card.projectId, card.topicId, card.runId, card.jobId, action.tool, action.outbound?.attachmentId ? "[attachment outbound released]" : redactRegisteredSecrets(action.subject), now()));
     let result: ToolExecutionResult;
     try { result = await definition.execute({ [action.tool === "web_search" ? "query" : "url"]: action.subject }, { workspace: null as never, signal }); }
     catch { result = envelope("Web read failed."); }

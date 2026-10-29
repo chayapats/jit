@@ -1,3 +1,4 @@
+import { outboundReleasePerformer } from "../../src/security/run-outbound";
 import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -36,6 +37,8 @@ export type FetchReply = (call: FetchCall, signal: AbortSignal | null) => Respon
 
 export interface EffectFixtureOptions {
   script?: RunScript; fetch?: FetchReply; executor?: Partial<EffectExecutorOptions>; effects?: boolean;
+  /** Installation policy overrides, applied before the queue freezes its finite ceilings. */
+  env?: Record<string, string>;
   /** Wraps the box's runner handler (for gating one request). */
   exec?: (local: FakeBoxExec) => FakeBoxExec;
   /** Long-lived pipes of the fake box and its sidecars (MCP servers, the CDP relay). */
@@ -62,7 +65,7 @@ export async function effectFixture(options: EffectFixtureOptions = {}) {
   const state = join(root, "state"), backups = join(root, "backups"), execution = join(root, "execution"), secrets = join(root, "secrets");
   mkdirSync(state); mkdirSync(execution);
   const config = readConfig({ JIT_DATABASE: join(state, "jit.sqlite"), JIT_EXECUTION_DIR: execution, JIT_EXECUTION_SECRETS_DIR: secrets,
-    JIT_EXECUTION_FULL_ALLOWED: "1", JIT_JOB_CONCURRENCY: "4", JIT_JOB_ROUTE_CONCURRENCY: "4" });
+    JIT_EXECUTION_FULL_ALLOWED: "1", JIT_JOB_CONCURRENCY: "4", JIT_JOB_ROUTE_CONCURRENCY: "4", ...options.env });
   const store = new TransactionStore(config.databasePath);
   const clock = { now: epoch };
   const now = () => clock.now;
@@ -77,7 +80,7 @@ export async function effectFixture(options: EffectFixtureOptions = {}) {
   const fetches: FetchCall[] = [];
   const reply: FetchReply = options.fetch ?? (() => new Response(JSON.stringify({}), { status: 200 }));
   const executor = new EffectExecutor(store, {
-    vault, boxes, mirrorRoot: execution, now, tempRoot: root, performers: { ...(mcp ? { mcp_tool: mcp.perform } : {}), ...(browser ? { browser_confirm: browser.perform } : {}), ...(computer ? { computer_confirm: computer.perform } : {}) },
+    vault, boxes, mirrorRoot: execution, now, tempRoot: root, performers: { outbound_release: outboundReleasePerformer(store, { web: async () => ({ outcome: "failed", reason: "fixture_web_disabled", detail: {} }), ...(browser ? { browser: browser.perform } : {}), ...(computer ? { computer: computer.perform } : {}), ...(mcp ? { mcp: mcp.perform } : {}) }), ...(mcp ? { mcp_tool: mcp.perform } : {}), ...(browser ? { browser_confirm: browser.perform } : {}), ...(computer ? { computer_confirm: computer.perform } : {}) },
     fetch: async (url, init) => {
       const headers = Object.fromEntries(Object.entries(init.headers as Record<string, string>));
       const call = { url, method: String(init.method), headers, body: init.body ? JSON.parse(String(init.body)) : null };

@@ -20,3 +20,27 @@ export function runAttachmentCurrent(tx: AppTransaction, scope: { projectId: str
   const found = lookupSource(tx, scope.projectId, source);
   return found.state === "available" && found.descriptor.kind === "attachment" && found.current.revision === ref.revision;
 }
+
+/** Collects at most 20 live bound references from selected message sources, newest first; only the newest owner's files inline. */
+export function collectRunAttachments(tx: AppTransaction, scope: { projectId: string; topicId: string }, sources: readonly { reference: { sourceId: string } }[]): RunAttachmentRef[] {
+  const result: RunAttachmentRef[] = [];
+  let newestOwner: string | null = null;
+  const messages = sources.map(source => tx.get<{ id: string; attribution: string; sequence: number }>("SELECT id, attribution_json AS attribution, sequence FROM messages WHERE project_id = ? AND topic_id = ? AND source_id = ?", scope.projectId, scope.topicId, source.reference.sourceId)).filter(message => message !== null).sort((a, b) => b.sequence - a.sequence);
+  for (const message of messages) {
+    if (!message || JSON.parse(message.attribution).kind !== "owner") continue;
+    newestOwner ??= message.id;
+    const rows = tx.all<{ attachmentId: string; revision: number; generation: number; kind: RunAttachmentRef["kind"] }>(`SELECT a.id AS attachmentId, s.current_revision AS revision, s.generation, a.kind
+      FROM attachments a JOIN sources s ON s.id = a.id AND s.project_id = a.project_id
+      WHERE a.project_id = ? AND a.topic_id = ? AND a.message_id = ? AND a.state != 'deleted' ORDER BY a.created_at, a.id`, scope.projectId, scope.topicId, message.id);
+    for (const row of rows) {
+      const ref = { ...row, inline: message.id === newestOwner };
+      if (result.length < 20 && !result.some(item => item.attachmentId === ref.attachmentId) && runAttachmentCurrent(tx, scope, ref)) result.push(ref);
+    }
+  }
+  return result;
+}
+
+/** Admission gate for carried inline files only; rejected and removed files never keep a reply waiting. */
+export function attachmentsPending(tx: AppTransaction, scope: { projectId: string; topicId: string }, refs: readonly RunAttachmentRef[] = []): boolean {
+  return refs.some(ref => ref.inline && runAttachmentCurrent(tx, scope, ref) && tx.get<{ state: string }>("SELECT state FROM attachments WHERE id = ?", ref.attachmentId)?.state === "pending");
+}

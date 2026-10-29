@@ -1,3 +1,5 @@
+import { runAttachmentCurrent } from "../attachments/run-references";
+import { materializeRunAttachments, attachmentInstruction } from "../attachments/run-content";
 import { WebTools, assertWebToolsCapability, type WebToolsOptions } from "../web-tools";
 import { dictionaries } from "../i18n";
 import { readPersona } from "../persona";
@@ -461,10 +463,15 @@ export class SchwayRunPort implements ApplicationRunPort {
     validateRunRequest(request, this.policy);
     const snapshot = structuredClone(request);
     const fenced = () => this.store.read(tx =>
-      tx.get<{ state: string }>("SELECT state FROM team_contexts WHERE id = ? AND generation = ?", snapshot.context.id, snapshot.context.generation)?.state !== "active");
+      tx.get<{ state: string }>("SELECT state FROM team_contexts WHERE id = ? AND generation = ?", snapshot.context.id, snapshot.context.generation)?.state !== "active" || (snapshot.attachments ?? []).some(ref => !runAttachmentCurrent(tx, snapshot, ref)));
     if (fenced()) return { ...classifyBridgeReason("context_retired"), session: null };
     if (signal.aborted) return { ...classifyBridgeReason("cancelled"), session: null };
     const effective = describeEffectiveRun(snapshot);
+    if (snapshot.attachments?.length) {
+      effective.sources.push(...materializeRunAttachments(this.store, snapshot, this.options.now));
+      effective.sections.push({ name: "attachments", content: attachmentInstruction });
+      effective.limits.maxInputChars = Math.min(1_000_000, effective.limits.maxInputChars + effective.sources.filter(source => source.id.startsWith("attachment/")).reduce((n, source) => n + source.content.length, 0) + 4096);
+    }
     const web = this.options.web ?? new WebTools(this.store, { ...this.options.webOptions, outputBytes: this.outputBytes });
     effective.sections.push({ name: "web-reads", content: web.instruction(snapshot.projectId, snapshot.web === true) });
     this.#requests.push(structuredClone(snapshot));
