@@ -5,7 +5,7 @@ import { dirname } from "node:path";
 import { commitDecisionMemorySource, retireDecisionMemorySource } from "./memory/decision-sources";
 
 /** Current application schema revision. Service packaging pins and checks this value. */
-export const schemaVersion = 41;
+export const schemaVersion = 42;
 
 /**
  * Installation-scoped state that never round-trips through backup images and
@@ -132,7 +132,7 @@ export class TransactionStore {
           // A second opener may have migrated while this connection waited for the writer.
           const current = this.#tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version;
           if (current === schemaVersion) return;
-          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40].includes(current)) throw new Error("Unsupported migration source");
+          if (![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41].includes(current)) throw new Error("Unsupported migration source");
           if (existing) {
             const snapshot = `${path}.pre-v${current}-${crypto.randomUUID()}.sqlite`;
             const fd = openSync(snapshot, "wx", 0o600);
@@ -1246,6 +1246,30 @@ export class TransactionStore {
             PRAGMA user_version = 40;
           `);
           if (current < 41) this.#db.exec(attachmentSchema);
+          if (current < 42) this.#db.exec(`
+            ${rebuildCardKinds(["effect.git_push", "effect.github_pr_create", "effect.github_comment", "effect.github_pr_merge", "effect.deploy", "mcp_tool", "browser_confirm", "computer_confirm", "outbound_release"],
+              ["effect.git_push", "effect.github_pr_create", "effect.github_comment", "effect.github_pr_merge", "effect.deploy", "mcp_tool"])}
+            CREATE TEMP TABLE web_connections_copy AS SELECT * FROM connections;
+            DROP TABLE connections;
+            CREATE TABLE connections (
+              id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('github_token', 'deploy_secret', 'mcp_env', 'web_search_key')),
+              label TEXT NOT NULL, project_scope_json TEXT, revision INTEGER NOT NULL CHECK (revision > 0),
+              secret_state TEXT NOT NULL CHECK (secret_state IN ('empty', 'set')), created_at INTEGER NOT NULL, rotated_at INTEGER, removed_at INTEGER
+            );
+            INSERT INTO connections SELECT * FROM temp.web_connections_copy;
+            DROP TABLE temp.web_connections_copy;
+            CREATE TABLE IF NOT EXISTS web_settings (project_id TEXT NOT NULL REFERENCES projects(id), revision INTEGER NOT NULL CHECK (revision > 0),
+              enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)), created_at INTEGER NOT NULL, PRIMARY KEY (project_id, revision));
+            CREATE TABLE IF NOT EXISTS web_provider (revision INTEGER PRIMARY KEY CHECK (revision > 0), provider_id TEXT, connection_id TEXT REFERENCES connections(id), created_at INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS web_tool_calls (sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL, topic_id TEXT NOT NULL,
+              run_id TEXT NOT NULL, job_id TEXT NOT NULL, tool TEXT NOT NULL CHECK (tool IN ('web_search', 'web_fetch')), subject TEXT NOT NULL,
+              status TEXT NOT NULL, bytes INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);
+            CREATE INDEX IF NOT EXISTS web_calls_run ON web_tool_calls (project_id, run_id, sequence);
+            CREATE UNIQUE INDEX IF NOT EXISTS outbound_once_per_run ON approval_cards(run_id) WHERE kind = 'outbound_release';
+            CREATE TABLE IF NOT EXISTS web_run_sources (run_id TEXT NOT NULL, project_id TEXT NOT NULL, topic_id TEXT NOT NULL, source_id TEXT NOT NULL,
+              revision INTEGER NOT NULL, generation INTEGER NOT NULL, job_id TEXT NOT NULL, PRIMARY KEY (run_id, source_id));
+            PRAGMA user_version = 42;
+          `);
         }).immediate();
         this.#db.exec("PRAGMA foreign_keys = ON;");
       }

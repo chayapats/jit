@@ -10,7 +10,7 @@ import { contextPacketSections } from "./types";
 import { requireRoleRoute } from "./configuration";
 import { renderContextAnswer } from "../memory/context-answer";
 import { specialistResultInstruction } from "./specialist-results";
-import { openRunTools, runMaxTurns, runToolsFailure, validateGrant, type RunExecution, type RunTools, type ToolExecutionResult } from "../exec/run-tools";
+import { openRunTools, runMaxTurns, runToolsFailure, validateGrant, webCallLimit, type RunExecution, type RunTools, type ToolExecutionResult } from "../exec/run-tools";
 
 const reasons: RunReason[] = ["complete", "unknown_model", "route_unavailable", "quota", "needs_login", "cancelled", "max_rounds", "budget_exhausted", "invalid_result", "context_retired"];
 const emptyUsage = () => ({ calls: 0, rounds: 0, hops: 0, contextTokens: 0, outputTokens: 0, retries: 0, wallMs: 0, tokensUnknown: false });
@@ -62,6 +62,7 @@ export function validateRunRequest(request: ApplicationRunRequest, policy: TeamP
       ids.add(ref.attachmentId);
     }
   }
+  if (request.web !== undefined && typeof request.web !== "boolean") throw new AppError("invalid_run_request");
   validateGrant(request);
   if (request.manifest.context !== undefined) validateContextLayout(request, policy);
   validateJobLimits(request.limits, { roles: 10000, calls: 10000, rounds: 10000, hops: 10000, contextTokens: 1e9, outputTokens: 1e9, retries: 100, wallMs: 3600000 });
@@ -190,8 +191,8 @@ function validUsage(result: ApplicationRunOutcome, request: ApplicationRunReques
   }
   // Each model turn may take every host attempt; a run without an execution grant has exactly one turn.
   const maxCalls = Math.min(Math.max(1, Math.ceil(request.limits.retries + 1)), 10) * runMaxTurns(request);
-  const attempted = usage.calls >= 1 && usage.calls <= maxCalls &&
-    usage.rounds === usage.calls && usage.retries === usage.calls - 1 && usage.hops === 0;
+  const attempted = usage.rounds >= 1 && usage.rounds <= maxCalls &&
+    usage.calls >= usage.rounds && usage.calls - usage.rounds <= webCallLimit(request) && usage.retries === usage.rounds - 1 && usage.hops === 0;
   if (result.reason === "complete") return attempted;
   const zeroAttempt = usage.calls === 0 && usage.rounds === 0 && usage.retries === 0 &&
     usage.hops === 0 && usage.contextTokens === 0 && usage.outputTokens === 0;

@@ -895,7 +895,7 @@ function attemptEnvelopeProblem(attempt: unknown, row: { id: string; job_id: str
   if (attempt.contextState === "none") return "native_without_context_state";
   const data = attempt.data;
   // Requests admitted since exec.run_tools/v1 carry their frozen `execution` grant (null without one).
-  if (!isObject(data) || !(exact(data, runRequestKeys) || exact(data, [...runRequestKeys, "execution"]))) return "run_request_invalid";
+  if (!isObject(data) || !(exact(data, runRequestKeys) || exact(data, [...runRequestKeys, "execution"]) || exact(data, [...runRequestKeys, "web"]) || exact(data, [...runRequestKeys, "execution", "web"]))) return "run_request_invalid";
   const context = native.context as { id: string; generation: number };
   const runContext = data.context, fence = data.fence;
   if (data.runId !== native.runId || data.projectId !== snapshot.projectId || !isObject(runContext) || !exact(runContext, ["id", "generation"]) ||

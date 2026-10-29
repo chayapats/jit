@@ -1,3 +1,4 @@
+import { readWebSettings } from "../web-tools/settings";
 import { readActiveRole, roleActive } from "./configuration";
 import { AppError } from "../errors";
 import { readTopic } from "../conversation";
@@ -157,6 +158,7 @@ function buildRequest(
     context, fence: { jobId: "00000000-0000-0000-0000-000000000000", generation: 1, ownerGeneration: generation },
     instructions: { operator: manifest.context ? [...operator, memoryContextOperator] : operator, responsibility: role.responsibility },
     manifest: structuredClone(manifest),
+    web: readWebSettings(tx, projectId).enabled,
     tools: [], policy: { genericExecution: false, arbitraryFetch: false, hostedLookup: false, repositoryDiscovery: false },
     limits: structuredClone(limits),
   };

@@ -7,7 +7,7 @@ export interface SourceReference { sourceId: string; revision: number; generatio
 /** Attributes content to a verified ingress identity or a trusted service producer, never its text. */
 export type Attribution = { kind: "owner"; ownerId: "owner" }
   | { kind: "participant"; participantId: string; runId: string }
-  | { kind: "service"; service: "source-registry" | "jit-setup" | "jit-promotion" | "jit-effects" };
+  | { kind: "service"; service: "source-registry" | "jit-setup" | "jit-promotion" | "jit-effects" | "web-tools" };
 /** Describes application data or an external identity without provider wire objects or fetch authority. */
 export type SourceDescriptor = { kind: "topic"; topicId: string }
   | { kind: "message"; topicId: string; messageId: string }
@@ -102,6 +102,13 @@ export function registerExternalSource(tx: AppTransaction, input: {
   for (const value of [descriptor.system, descriptor.resourceType, descriptor.resourceId]) requireText(value, 512);
   if (descriptor.revisionHint !== undefined) requireText(descriptor.revisionHint, 512);
   return insert(tx, input.projectId, descriptor, { kind: "service", service: "source-registry" }, null, input.committedAt);
+}
+
+/** Imports one bounded, already escaped web result as external evidence; this creates no owner authority. */
+export function commitWebSource(tx: AppTransaction, input: { projectId: string; url: string; text: string; committedAt: number; resourceType?: "page" | "search" }): SourceReference {
+  requireText(input.text, 65536);
+  return insert(tx, input.projectId, { kind: "external", system: "web", resourceType: input.resourceType ?? "page", resourceId: input.url },
+    { kind: "service", service: "web-tools" }, input.text, input.committedAt);
 }
 
 /** Registers an immutable bound attachment as available metadata with NULL content_text; caller binds it in the same owner transaction. */

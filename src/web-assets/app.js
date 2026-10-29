@@ -149,7 +149,7 @@ if (chat && typeof EventSource === "function") {
     unconfirmed.delete(data.id);
     gap(card, null);
     follow(() => {
-      show(card.querySelector("[data-reply-progress]"), data.text);
+      show(card.querySelector("[data-reply-progress]"), data.status ?? data.text);
       const provisional = card.querySelector("[data-reply-provisional]");
       if (provisional) provisional.hidden = !data.text;
       const label = card.querySelector("[data-reply-label]");

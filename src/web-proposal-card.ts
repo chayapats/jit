@@ -14,6 +14,8 @@ import { canonicalJson, type ApprovalCard, type EffectAction } from "./exec/appr
  */
 export function summarizeApprovalAction(action: EffectAction): string[] {
   switch (action.kind) {
+    case "outbound_release":
+      return [action.tool, action.subject, `${tr("web.matched_span")}: ${action.matchedSpan}`];
     case "effect.git_push":
       return [
         `${action.remote.name} (${action.remote.url})`,

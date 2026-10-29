@@ -1,4 +1,5 @@
 import { reconcileForgottenAttachments, attachmentSources, attachmentInventory, retireAttachments, type AttachmentDeletionScope, type AttachmentCopyCleanup } from "../attachments/lifecycle";
+import { purgeWebReadPayloads } from "../web-tools/lifecycle";
 import { projectDeleted } from "../project-lifecycle";
 import { readGeneralSpace } from "../setup";
 import { projectDeletionInventory, purgeProjectPayloads, type ProjectDeletionInventory, type ProjectCollateralContributor, type ProjectCollateralScope } from "./project-delete";
@@ -494,6 +495,10 @@ function buildInventory(tx: AppTransaction, scope: DeletionScope, env: DeletionE
   if (scope.kind === "project") scanTable<{ id: string }>(tx, "jobs", "id", row => {
     if (!jobs.has(row.id)) jobs.set(row.id, { jobId: row.id, projectId: scope.projectId, manifests: [], runIds: new Set(), contexts: new Map(), dispatched: new Set(), extractionSources: [], opaque: false });
   }, { blockers }, "project_id = ?", [scope.projectId]);
+  for (const job of jobs.values()) {
+    const refs = tx.all<{ sourceId: string; revision: number; generation: number }>("SELECT source_id AS sourceId, revision, generation FROM web_run_sources WHERE job_id = ?", job.jobId);
+    job.manifests.push({ sources: refs.map(reference => ({ reference })), claims: [] });
+  }
   const intents = deliveryIntentRows(tx, blockers);
   const occurrenceLinks: { output: SourceReference; intentId: string }[] = [];
   scanTable<{ json: string }>(tx, "job_schedule_occurrences", "record_json AS json", row => {
@@ -549,6 +554,9 @@ function buildInventory(tx: AppTransaction, scope: DeletionScope, env: DeletionE
     }
     const runIds = new Set<string>();
     for (const job of jobs.values()) if ((scope.kind === "project" && job.projectId === scope.projectId) || jobCites(job, sources, claims)) for (const runId of job.runIds) runIds.add(runId);
+    // Web evidence read by an affected run belongs to the same lifecycle scope.
+    for (const batch of chunks([...runIds])) for (const row of tx.all<{ sourceId: string; projectId: string; revision: number; generation: number }>(
+      `SELECT source_id AS sourceId, project_id AS projectId, revision, generation FROM web_run_sources WHERE run_id IN (${marks(batch.length)})`, ...batch)) addDerived(tx, sources, row);
     for (const batch of chunks([...runIds])) {
       for (const row of tx.all<{ sourceId: string; projectId: string; revision: number; generation: number }>(
         `SELECT s.id AS sourceId, s.project_id AS projectId, v.revision, v.generation FROM source_versions v JOIN sources s ON s.id = v.source_id
@@ -1474,6 +1482,7 @@ export function confirmDeletion(tx: AppTransaction, command: DeleteConfirmComman
   }
   // Purge app-owned payloads of the scope and every descendant output; identity rows stay so references resolve as unavailable.
   for (const entry of sources) {
+    purgeWebReadPayloads(tx, entry.source, sessions.map(session => session.id));
     tx.run("UPDATE source_versions SET content_text = NULL WHERE source_id = ? AND revision = ? AND generation = ?",
       entry.source.sourceId, entry.source.revision, entry.source.generation);
     tx.run("UPDATE sources SET availability = 'unavailable' WHERE id = ? AND project_id = ? AND current_revision = ? AND generation = ?",

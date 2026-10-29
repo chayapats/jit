@@ -19,6 +19,8 @@ export function renderApprovalMessage(card: ApprovalCard, locale: Locale, option
 export function approvalDetailParts(card: ApprovalCard): { pinned: string[]; flexible: string[] } {
   const action = card.action;
   switch (action.kind) {
+    case "outbound_release":
+      return { pinned: [tr("approval.kind_outbound_release")], flexible: [] };
     case "effect.git_push":
       return {
         pinned: [`${action.remote.name}`, action.repository,

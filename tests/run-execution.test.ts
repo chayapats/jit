@@ -124,7 +124,7 @@ test("a read run admits zero execution tools: bash is an unknown tool, and nothi
   // The frozen grant is null; the trusted execution statement says read; no box was ensured or called.
   const request = f.seen[0]!;
   expect(request.execution).toBeNull();
-  expect(runMaxTurns(request)).toBe(1);
+  expect(runMaxTurns({ ...request, web: false })).toBe(1);
   expect(describeEffectiveRun(request).sections.find(section => section.name === "execution")!.content).toContain("read. This run has no execution tools");
   expect(boxOps(f)).toEqual([]);
   expect(f.app.toolCalls(f.auth.actor, f.project.id)).toEqual([]);
@@ -185,6 +185,7 @@ test("the concrete Schway port admits the core tools over the box at workspace a
     },
   };
   const f = await fixture({ model });
+  f.app.execute(f.auth.actor, { kind: "web.settings.set", requestId: rid(), projectId: f.project.id, expectedRevision: 0, payload: { enabled: false } });
   // Read: the model is offered no tool; its bash call executes nothing and the single-turn run ends without a reply.
   const first = send(f, "ลองรันดู").message;
   await settle(f);

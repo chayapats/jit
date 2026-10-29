@@ -6,7 +6,7 @@ import { dictionaries } from "../i18n";
 import { readPersona } from "../persona";
 import { redactCredentials } from "../security/credentials";
 import { redactRegisteredSecrets, registerSecretFingerprint } from "../security/secret-fingerprints";
-import { commitServiceOutput, requireId } from "../sources";
+import { commitServiceOutput, commitWebSource, requireId } from "../sources";
 import type { AppTransaction, TransactionStore } from "../store";
 import { assertExecutionAllowed } from "./access";
 import {
@@ -190,7 +190,7 @@ export class EffectExecutor {
     catch { return { failed: failBeforeStart(card, "access_changed", now) }; }
     const action = card.action;
     // In-box kinds release no connection here: an MCP sidecar receives its bound values from the gateway at spawn.
-    if (action.kind === "mcp_tool" || action.kind === "browser_confirm" || action.kind === "computer_confirm") {
+    if (action.kind === "mcp_tool" || action.kind === "browser_confirm" || action.kind === "computer_confirm" || action.kind === "outbound_release") {
       if (!this.#options.performers?.[action.kind]) return { failed: failBeforeStart(card, "performer_not_configured", now) };
       const started = claimCard(tx, projectId, cardId, now);
       if (!started) throw new AppError("approval_card_not_pending", 409);
@@ -218,7 +218,7 @@ export class EffectExecutor {
     const action = card.action;
     // Every external step re-checks the level and the halt right before it starts (ADR 0037).
     const allowed = () => this.#allowed(card, signal);
-    if (inBoxKinds.includes(action.kind)) {
+    if (inBoxKinds.includes(action.kind) || action.kind === "outbound_release") {
       if (!allowed()) return { outcome: "failed", reason: "access_changed", detail: {} };
       return this.#options.performers![action.kind]!(card, signal, allowed);
     }
@@ -427,6 +427,7 @@ function subjectOf(card: ApprovalCard): string {
     case "effect.github_pr_create": return `${action.github.owner}/${action.github.repo} ${action.head}→${action.base}`;
     case "effect.github_comment": return `${action.github.owner}/${action.github.repo} #${action.issueNumber}`;
     case "effect.github_pr_merge": return `${action.github.owner}/${action.github.repo} #${action.pullNumber} @${action.headSha.slice(0, 12)}`;
+    case "outbound_release": return action.tool;
     case "effect.deploy": return `${action.target.name}${action.ref ? ` @${action.ref}` : ""}`;
     case "mcp_tool": return `${action.server.name} ${action.tool}`;
     case "browser_confirm": return `${action.operation} "${action.element.name.slice(0, 80) || action.element.tag}" @ ${hostOf(action.url)}`;
@@ -443,8 +444,16 @@ function postResult(tx: AppTransaction, card: ApprovalCard, now: number): void {
   if (card.state !== "succeeded" && card.state !== "failed" && card.state !== "unknown") return;
   if (!tx.get("SELECT 1 FROM topics WHERE project_id = ? AND id = ?", card.projectId, card.topicId)) return;
   const words = dictionaries[readPersona(tx).language];
-  const text = fill(words[`effects.result.${card.state}`], { kind: card.kind, subject: subjectOf(card), reason: card.reason ?? "-", card: card.id.slice(0, 8) });
-  const source = commitServiceOutput(tx, { projectId: card.projectId, service: "jit-effects", text: clip(text, 4000), committedAt: now });
+  const text = (card.kind === "outbound_release" && typeof card.receipt?.detail.untrustedData === "string" ? card.receipt.detail.untrustedData + "\n" : "") + fill(words[`effects.result.${card.state}`], { kind: card.kind, subject: subjectOf(card), reason: card.reason ?? "-", card: card.id.slice(0, 8) });
+  const source = card.action.kind === "outbound_release"
+    ? commitWebSource(tx, { projectId: card.projectId, url: card.action.subject, text: clip(text, 65536), committedAt: now, resourceType: card.action.tool === "web_search" ? "search" : "page" })
+    : commitServiceOutput(tx, { projectId: card.projectId, service: "jit-effects", text: clip(text, 4000), committedAt: now });
+  if (card.action.kind === "outbound_release") tx.run("INSERT INTO web_run_sources VALUES (?, ?, ?, ?, ?, ?, ?)", card.runId, card.projectId, card.topicId, source.sourceId, source.revision, source.generation, card.jobId);
+  // Raw web content belongs only to the lifecycle source, never a duplicate receipt copy.
+  if (card.action.kind === "outbound_release" && card.receipt?.detail.untrustedData) {
+    const { untrustedData: _content, ...detail } = card.receipt.detail;
+    tx.run("UPDATE approval_cards SET receipt_json = ? WHERE id = ?", JSON.stringify({ ...card.receipt, detail }), card.id);
+  }
   const topic = tx.get<{ sequence: number }>("SELECT message_sequence AS sequence FROM topics WHERE project_id = ? AND id = ?", card.projectId, card.topicId)!;
   tx.run("INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", crypto.randomUUID(), card.projectId, card.topicId, topic.sequence + 1, now,
     JSON.stringify({ kind: "service", service: "jit-effects" }), source.sourceId, source.revision, source.generation);

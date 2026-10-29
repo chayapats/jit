@@ -133,12 +133,14 @@ export interface ApplicationRunRequest {
   attachments?: readonly RunAttachmentRef[];
   tools: readonly ApplicationReadTool[];
   /**
-   * Host-process policy: no generic execution, fetch, hosted lookup or discovery ever runs in the Jit process. Box
+   * Host-process policy: no generic execution, arbitrary fetch, hosted lookup or discovery ever runs in the Jit process. Box
    * execution is the separate `execution` grant, whose tools run only inside the project's execution box.
    */
   policy: { genericExecution: false; arbitraryFetch: false; hostedLookup: false; repositoryDiscovery: false };
   /** exec.run_tools/v1: the frozen execution grant; `null` or absent means no execution tool is admitted. */
   execution?: RunExecutionGrant | null;
+  /** Service-owned selection of bounded, audited web reads; independent of box execution and application read tools. */
+  web?: boolean;
   limits: JobLimits;
 }
 /** Normalized reasons retain incomplete/blocked/cancelled states without raw provider diagnostics or route fallback. */
@@ -146,6 +148,7 @@ export type RunReason = "complete" | "unknown_model" | "route_unavailable" | "qu
   | "max_rounds" | "budget_exhausted" | "invalid_result" | "context_retired";
 /** Usage reports are finite nonnegative measurements, distinct from permission to spend any resource. */
 export interface ApplicationRunUsage {
+  // calls includes admitted web reads; rounds and retries count model attempts.
   calls: number; rounds: number; hops: number; contextTokens: number; outputTokens: number; retries: number; wallMs: number;
   /**
    * True when any provider token counter was unreported; totals are then

@@ -317,6 +317,10 @@ export const backupImageTables: Readonly<Record<string, "include" | "exclude" | 
   attention_levels: "include", work_groups: "include",
   // exec.run_tools/v1 (schema 36): bounded tool call audit; subjects are redacted command/path prefixes, never output.
   execution_tool_calls: "include",
+  web_settings: "include",
+  web_provider: "include",
+  web_tool_calls: "include",
+  web_run_sources: "include",
   // app.approval_cards/v1 and app.auto_approve/v1 (schema 37): cards, rules and effect targets hold actions, digests,
   // receipts and connection ids only — never a connection value.
   approval_cards: "include", auto_approve_rules: "include", git_remotes: "include", deploy_targets: "include",

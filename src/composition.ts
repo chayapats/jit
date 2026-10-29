@@ -1,3 +1,4 @@
+import type { WebTools } from "./web-tools";
 import type { AppConfig } from "./config";
 import { JobQueue, type SchedulerOptions } from "./jobs/queue";
 import { projectStateWork } from "./jobs/project-state";
@@ -21,6 +22,8 @@ import type { EffectRunner } from "./exec/effect-tools";
 
 export interface ComposeOptions {
   now?: () => number;
+  /** Shared service-owned web registry, independent of boxes. */
+  web?: WebTools;
   /** Process-owned PR snapshot cache directory (default `.local/pr-cache`). */
   prCacheRoot?: string;
   /** Deterministic test transport for the concrete port; production never sets it. */
@@ -69,7 +72,7 @@ export function composeJobQueue(store: TransactionStore, config: AppConfig, opti
     ...(options.mcp ? { mcp: options.mcp } : {}), ...(options.browser ? { browser: options.browser } : {}),
     ...(options.computer ? { computer: options.computer } : {}) } : undefined;
   const teamPort: ApplicationRunPort = config.runPort === "schway"
-    ? new SchwayRunPort(store, config.team, config.jobs.outputBytes, { ...options.schwayOptions, ...(execution ? { execution } : {}) })
+    ? new SchwayRunPort(store, config.team, config.jobs.outputBytes, { ...options.schwayOptions, ...(options.web ? { web: options.web } : {}), ...(execution ? { execution } : {}) })
     : new ScriptedRunPort(store, config.team, config.jobs.outputBytes, undefined, undefined, undefined, execution ? { execution } : {});
   const fixturePort: ApplicationRunPort = config.runPort === "schway"
     ? new ScriptedRunPort(store, config.team, config.jobs.outputBytes)

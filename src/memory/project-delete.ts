@@ -190,6 +190,7 @@ export function purgeProjectPayloads(tx: AppTransaction, projectId: string, now:
   tx.run("UPDATE task_events SET reason = ? WHERE project_id = ? AND reason IS NOT NULL AND reason != 'project_deleted'", marker, projectId);
   tx.run("UPDATE tasks SET closed_reason = ? WHERE project_id = ? AND closed_reason IS NOT NULL AND closed_reason != 'project_deleted'", marker, projectId);
   tx.run("UPDATE execution_halts SET reason = ? WHERE project_id = ?", "project_deleted", projectId);
+  tx.run("UPDATE web_tool_calls SET subject = ? WHERE project_id = ?", marker, projectId);
   tx.run("UPDATE execution_tool_calls SET subject = ? WHERE project_id = ?", marker, projectId);
   for (const table of ["delivery_intents", "pr_candidates"]) tx.run(`UPDATE ${table} SET dedupe_key = 'deleted:' || rowid WHERE project_id = ?`, projectId);
   tx.run("UPDATE pr_poll_due SET last_failure = 'project_deleted' WHERE project_id = ? AND last_failure IS NOT NULL", projectId);
