@@ -1174,6 +1174,35 @@ test("#169 follow-up: after a team reply the next message calls nobody unless Ji
   expect(specialistRuns(f)).toBe(runs + 2);
 });
 
+test("#169 continuation boundary: a subset of the open team continues it, a role outside it opens a second discussion, and two open discussions offer no context", async () => {
+  let output = dispatching(["เทคโนโลยี", "ออกแบบ"]);
+  const f = await fixture({ jit: r => answer(r, output) });
+  const continuesOf = (id: string) => JSON.parse(f.store.read(tx => tx.get<{ record_json: string }>("SELECT record_json FROM dispatch_proposals WHERE id = ?", id)!.record_json)).continues ?? null;
+  const first = send(f, "ควรใช้ SQLite หรือ Postgres ดี");
+  await drain(f);
+  const d1 = cardFor(f, replyFor(f, first.message.id).replyMessageId!);
+  // A subset of the open team continues it.
+  output = dispatching(["เทคโนโลยี"]);
+  const second = send(f, "ขอมุมเทคอย่างเดียว");
+  await drain(f);
+  const d2 = cardFor(f, replyFor(f, second.message.id).replyMessageId!);
+  expect(d2).toMatchObject({ state: "admitted", selection: { rule: "model", roleIds: [f.techId] } });
+  expect(continuesOf(d2.id)).toBe(d1.discussion!.id);
+  // Adding a role outside the open team does not continue it: a second discussion opens.
+  output = dispatching(["เทคโนโลยี", "การตลาด"]);
+  const third = send(f, "แล้วฝั่งการตลาดว่าไง");
+  await drain(f);
+  expect(followUpOffered(jitRequests(f).at(-1)!)).toBe(true);
+  const d3 = cardFor(f, replyFor(f, third.message.id).replyMessageId!);
+  expect(d3).toMatchObject({ state: "admitted", selection: { rule: "model", roleIds: [f.techId, f.marketingId] } });
+  expect(continuesOf(d3.id)).toBeNull();
+  // Two open discussions: the next message gets no follow-up context.
+  output = JSON.stringify({ reply: "รับทราบ" });
+  send(f, "โอเค");
+  await drain(f);
+  expect(followUpOffered(jitRequests(f).at(-1)!)).toBe(false);
+});
+
 test("#169 the open-discussion context goes only to the message that directly follows the team reply, and not after stop-all", async () => {
   const f = await fixture({ jit: r => answer(r, JSON.stringify({ reply: "รับทราบ" })) });
   f.app.execute(f.auth.actor, { kind: "message.send", projectId: f.project.id, requestId: rid(), expectedRevision: f.app.conversation(f.auth.actor, f.project.id, f.topic.id).topic.revision,
