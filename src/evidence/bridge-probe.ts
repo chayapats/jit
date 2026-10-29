@@ -247,6 +247,8 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
           throw error;
         }
         if (result.outcome === "completed") return "success";
+        // The probe sends text only; an image refusal is an unexpected host result and counts as rejected.
+        if (!("auth" in result)) return "rejected";
         switch (result.auth.status) {
           case "needs-login": return "login";
           case "quota-exceeded": return "quota";

@@ -58,11 +58,11 @@ export const SCHWAY_RELEASE_CONTRACT = RELEASE_CONTRACT;
 /** Supported native snapshot behavior set for operations reads. */
 export const SCHWAY_SNAPSHOT_CONTRACT = SNAPSHOT_CONTRACT;
 /** Exact pinned Schway git revision backing the vendored artifact. */
-export const SCHWAY_PINNED_REVISION = "6532e76565fec3c10422c4a3bfa88136da269f2b";
+export const SCHWAY_PINNED_REVISION = "2068b7139f53bd62f85c3545546724e5367588cd";
 /** Exact pinned Schway npm version carried by the vendored tarball. */
 export const SCHWAY_PINNED_VERSION = "1.0.0-rc.2";
-/** SHA-256 of `vendor/schway-1.0.0-rc.2-6532e76.tgz`, the tested artifact. */
-export const SCHWAY_PINNED_TARBALL_SHA256 = "2862be51d5410c401c30f98e82e98276ca9ce3b73ccfc2b13975675858d961d3";
+/** SHA-256 of `vendor/schway-1.0.0-rc.2-2068b71.tgz`, the tested artifact. */
+export const SCHWAY_PINNED_TARBALL_SHA256 = "7f2c75c3c511661ff31505b26ab14d83e7c6eaba4aa084e8c32bdc53dc2a183b";
 /** Owner next action when the pinned release gate does not hold. */
 export const SCHWAY_NEXT_ACTION = "pin_supported_schway_host_release";
 /** Owner next action when no managed native session exists for a snapshot read. */
@@ -446,6 +446,9 @@ export class SchwayRunPort implements ApplicationRunPort {
     if (result.outcome === "cancelled") return { ...classifyBridgeReason("cancelled"), usage };
     if (result.outcome === "max_turns") return { ...classifyBridgeReason("max_rounds"), usage };
     if (result.outcome === "limit_exceeded") return { ...classifyBridgeReason("budget_exhausted"), usage };
+    // schway.host.image-input/v1: Jit sends no images until ATT07 (#196), so an image refusal here is an
+    // unexpected host result and fails closed; ATT07 maps it to its own owner-visible reason.
+    if (!("auth" in result)) return { ...classifyBridgeReason("invalid_result"), usage };
     return { ...classifyBridgeReason(mapAuthStatus(result.auth.status)), usage };
   }
 
