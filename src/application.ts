@@ -1,6 +1,7 @@
 import { AttachmentStorage, type AttachmentStorageOptions, type AttachmentUpload } from "./attachments/storage";
 import { readAttachment, readAttachmentEvents, type AttachmentView, type AttachmentEventView } from "./attachments/records";
 import { liveProjectSql, requireLiveProject } from "./project-lifecycle";
+import { previewBoxData, wipeBoxData } from "./exec/box-data";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { AppError } from "./errors";
 import type { AppConfig } from "./config";
@@ -313,8 +314,11 @@ export class Application {
 
     this.#deletionEnvironment = { backupDir: this.#backupDir, contributors: [
       ...(options.deletionContributors ?? []),
-      ...(this.#boxes ? [{ key: "execution_box", preview: (_tx: AppTransaction, projectId: string) => ({ count: 1, bytes: 0, digest: digest(projectId), identities: [projectId] }),
-        confirm: () => {}, reconcile: async (projectId: string) => { await this.#boxes!.stopDeletedProject(projectId); } }] : []),
+      { key: "execution_box", preview: (_tx: AppTransaction, projectId: string) => previewBoxData(this.config.execution.directory, projectId),
+        confirm: () => {}, reconcile: async (projectId: string) => {
+          await this.#boxes?.wipeDeletedProject(projectId);
+          wipeBoxData(this.config.execution.directory, projectId);
+        } },
     ] };
     options.jobs?.setDeletionEnvironment(this.#deletionEnvironment);
     options.service?.setDeletionEnvironment?.(this.#deletionEnvironment);

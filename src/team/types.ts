@@ -314,7 +314,9 @@ export interface CoordinatorSynthesis {
 export interface OwnerDecision {
   id: string; projectId: string; topicId: string; proposalId: string; proposalRevision: number; revision: number;
   actorId: "owner"; channel: "web"; optionId: string | null; conclusion: string; rationale: string;
-  sourceLinks: SourceReference[]; supersededBy: string | null; createdAt: number;
+  sourceLinks: SourceReference[];
+  /** Replacement decision ID, or project:<id> when explicit whole-project deletion closes this decision. */
+  supersededBy: string | null; createdAt: number;
 }
 /** A source link resolved against the registry. Unavailable content is not replaced. */
 export interface ResolvedEvidence {

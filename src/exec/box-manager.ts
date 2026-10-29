@@ -132,6 +132,8 @@ export class BoxManager {
       for (let attempt = 0; ; attempt++) {
         const generation = this.#accessGeneration.get(projectId) ?? 0;
         while (own.opening) await own.opening.catch(() => undefined);
+        // A queued open (including one requesting a different profile) must not start another ensure after deletion.
+        mode = this.#mode(projectId, roleId);
         if (!own.handle || own.verified === false || own.handle.mode !== mode || own.handle.profile !== (options.profile === true)) {
           const opening = this.runtime.ensure(projectId, mode, options);
           own.opening = opening;
@@ -233,6 +235,12 @@ export class BoxManager {
     this.#accessGeneration.set(projectId, (this.#accessGeneration.get(projectId) ?? 0) + 1);
     await slot?.opening?.catch(() => undefined);
     await this.stop(projectId);
+  }
+
+  /** After deletion's project fence, waits for an in-flight ensure, stops and resets the box with workspace/profile wipe. */
+  async wipeDeletedProject(projectId: string): Promise<void> {
+    await this.stopDeletedProject(projectId);
+    await this.runtime.reset({ projectId }, { wipeWorkspace: true });
   }
 
   /**

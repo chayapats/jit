@@ -452,11 +452,29 @@ export function supersedeDecision(
   if (!live) throw new AppError("decision_not_found", 404);
   if (live.id !== command.payload.decisionId) throw new AppError("stale_revision", 409);
   const id = crypto.randomUUID();
-  tx.run("UPDATE owner_decisions SET superseded_by = ? WHERE id = ? AND project_id = ? AND topic_id = ? AND superseded_by IS NULL", id, live.id, proposal.projectId, proposal.topicId);
-  const updated = tx.get<{ supersededBy: string | null }>("SELECT superseded_by AS supersededBy FROM owner_decisions WHERE id = ?", live.id);
-  if (updated?.supersededBy !== id) throw new AppError("stale_revision", 409);
+  transitionSuperseded(tx, live, id);
   const decision = insertDecision(tx, proposal, { id, optionId: command.payload.optionId, conclusion: command.payload.conclusion, rationale: command.payload.rationale, channel, now });
   return { revision: proposal.revision, proposal, decision };
+}
+
+function transitionSuperseded(tx: AppTransaction, live: Pick<OwnerDecision, "id" | "projectId" | "topicId" | "revision">, successor: string): void {
+  tx.run("UPDATE owner_decisions SET superseded_by = ? WHERE id = ? AND project_id = ? AND topic_id = ? AND revision = ? AND superseded_by IS NULL",
+    successor, live.id, live.projectId, live.topicId, live.revision);
+  const updated = tx.get<{ supersededBy: string | null }>("SELECT superseded_by AS supersededBy FROM owner_decisions WHERE id = ?", live.id);
+  if (updated?.supersededBy !== successor) throw new AppError("stale_revision", 409);
+}
+
+/**
+ * Whole-project confirmation only: supersedes a live decision with the project's identity tombstone, without
+ * inventing a replacement conclusion. Uses the same guarded transition as decision.supersede. The caller records
+ * the project_deleted reason, audit and receipt atomically and retires its memory source before payload purge.
+ */
+export function supersedeDecisionForProjectDeletion(tx: AppTransaction, projectId: string, decisionId: string): { decisionId: string; revision: number; state: "superseded"; reason: "project_deleted"; successorId: string } {
+  const row = tx.get<Parameters<typeof toDecision>[0]>(`${decisionSelect} WHERE project_id = ? AND id = ? AND superseded_by IS NULL`, projectId, decisionId);
+  if (!row) throw new AppError("decision_not_found", 404);
+  const live = toDecision(row), successorId = `project:${projectId}`;
+  transitionSuperseded(tx, live, successorId);
+  return { decisionId, revision: live.revision, state: "superseded", reason: "project_deleted", successorId };
 }
 
 function sourceCurrent(tx: AppTransaction, request: ApplicationRunRequest): boolean {

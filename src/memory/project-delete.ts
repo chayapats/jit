@@ -5,10 +5,13 @@ import { AppError } from "../errors";
 import type { AppTransaction } from "../store";
 import { mutateMonitor, readMonitors } from "../pr/authority";
 import { ensurePrSchema } from "../pr/schema";
+import { applyTask, type TaskCommand } from "../tasks";
+import { supersedeDecisionForProjectDeletion } from "../team/decisions";
+import { retireDecisionMemorySource } from "./decision-sources";
 
 const marker = "(memory ไม่พร้อมใช้งาน)";
 /** Identity-only collateral disclosed in the digest-bound project preview. No paths or payload text may be persisted. */
-export interface ProjectCollateralInventory { key: string; count: number; bytes: number; digest: string; identities: string[] }
+export interface ProjectCollateralInventory { key: string; count: number; bytes: number; digest: string; identities: string[]; details?: { identity: string; count: number; bytes: number }[] }
 /** Durable cleanup state; a missing contributor fails closed and a pending scope prevents completion. */
 export interface ProjectCollateralScope extends ProjectCollateralInventory { state: "pending" | "purged" | "failed"; attempts: number; reason: string | null }
 /**
@@ -26,6 +29,7 @@ export interface ProjectCollateralContributor {
 export interface ProjectDeletionInventory {
   topics: { id: string; revision: number }[]; messages: { id: string }[];
   tasks: { id: string; revision: number; state: string }[];
+  decisions: { id: string; revision: number; state: "active" }[];
   schedules: { id: string; revision: number; state: string }[];
   prMonitors: { id: string; revision: number; state: string }[];
   discussions: { id: string; revision: number }[];
@@ -64,10 +68,12 @@ export function projectDeletionInventory(tx: AppTransaction, projectId: string, 
   const rows = <T,>(table: string, columns: string) => tx.all<T>(`SELECT ${columns} FROM ${table} WHERE project_id = ? ORDER BY rowid`, projectId);
   const topics = rows<{ id: string; revision: number }>("topics", "id, revision"), messages = rows<{ id: string }>("messages", "id");
   const tasks = rows<{ id: string; revision: number; state: string }>("tasks", "id, task_revision AS revision, state");
-  for (const task of tasks) if (["proposed", "accepted", "ready_for_review"].includes(task.state)) blockers.add(`active_task_current_proposal:${task.id}`);
-  for (const decision of rows<{ id: string; superseded_by: string | null }>("owner_decisions", "id, superseded_by")) if (!decision.superseded_by) blockers.add(`owner_decision_copy:${decision.id}`);
+  const decisions = rows<{ id: string; revision: number; superseded_by: string | null }>("owner_decisions", "id, revision, superseded_by")
+    .filter(d => d.superseded_by === null).map(d => ({ id: d.id, revision: d.revision, state: "active" as const }));
   for (const card of rows<{ id: string; state: string }>("approval_cards", "id, state")) if (["executing", "unknown"].includes(card.state)) blockers.add(`project_effect_unsettled:${card.id}`);
-  for (const server of rows<{ id: string; state: string }>("mcp_servers", "id, state")) if (server.state === "installing") blockers.add(`project_mcp_installing:${server.id}`);
+  // Server state is append-only. Historical installing rows are not live installs.
+  for (const server of tx.all<{ id: string; state: string }>(`SELECT s.id, s.state FROM mcp_servers s WHERE s.project_id = ?
+    AND s.revision = (SELECT max(revision) FROM mcp_servers x WHERE x.id = s.id)`, projectId)) if (server.state === "installing") blockers.add(`project_mcp_installing:${server.id}`);
   const schedules = rows<{ id: string; record_json: string }>("job_schedules", "id, record_json").map(row => {
     try { const value = JSON.parse(row.record_json); return { id: row.id, revision: value.revision as number, state: value.state as string }; }
     catch { blockers.add("unreadable_record:job_schedules"); return { id: row.id, revision: 0, state: "unknown" }; }
@@ -95,27 +101,54 @@ export function projectDeletionInventory(tx: AppTransaction, projectId: string, 
     }
   }
   const collateral = contributors.map(contributor => ({ key: contributor.key, ...contributor.preview(tx, projectId) })).sort((a, b) => a.key.localeCompare(b.key));
+  for (const c of collateral) if (c.details && (!Array.isArray(c.details) || c.details.length > 1000 || c.details.some(d =>
+    !c.identities.includes(d.identity) || !Number.isSafeInteger(d.count) || d.count < 0 || !Number.isSafeInteger(d.bytes) || d.bytes < 0))) throw new AppError("invalid_project_collateral", 500);
   if (new Set(collateral.map(c => c.key)).size !== collateral.length || collateral.some(c => !/^[a-z][a-z0-9_]{0,63}$/.test(c.key) || !Number.isSafeInteger(c.count) || c.count < 0 || !Number.isSafeInteger(c.bytes) || c.bytes < 0 || !/^[a-f0-9]{64}$/.test(c.digest) || !Array.isArray(c.identities) || c.identities.some(id => typeof id !== "string" || id.length > 200))) throw new AppError("invalid_project_collateral", 500);
-  for (const [key, list] of Object.entries({ topics, messages, tasks, schedules, prMonitors, discussions, collateral })) if (list.length > 1000) blockers.add(`inventory_truncated:project.${key}`);
-  return { topics: topics.slice(0, 1000), messages: messages.slice(0, 1000), tasks: tasks.slice(0, 1000), schedules: schedules.slice(0, 1000), prMonitors: prMonitors.slice(0, 1000), discussions: discussions.slice(0, 1000), collateral, stateDigest: state.digest("hex") };
+  for (const [key, list] of Object.entries({ topics, messages, tasks, decisions, schedules, prMonitors, discussions, collateral })) if (list.length > 1000) blockers.add(`inventory_truncated:project.${key}`);
+  return { topics: topics.slice(0, 1000), messages: messages.slice(0, 1000), tasks: tasks.slice(0, 1000), decisions: decisions.slice(0, 1000), schedules: schedules.slice(0, 1000), prMonitors: prMonitors.slice(0, 1000), discussions: discussions.slice(0, 1000), collateral, stateDigest: state.digest("hex") };
+}
+
+function closureReceipt(tx: AppTransaction, projectId: string, kind: string, identity: string, result: unknown, now: number): void {
+  const requestId = createHash("sha256").update(JSON.stringify(["project_deleted", projectId, kind, identity])).digest("hex");
+  if (tx.get("SELECT request_id FROM command_receipts WHERE actor_id = 'owner' AND request_id = ?", requestId)) return;
+  const json = JSON.stringify(result), hash = createHash("sha256").update(json).digest("hex");
+  tx.run("INSERT INTO command_receipts VALUES ('owner', ?, ?, ?, ?)", requestId, hash, json, now);
+  tx.run("INSERT INTO audit (actor_id, command_kind, request_id, project_id, committed_at) VALUES ('owner', ?, ?, ?, ?)", kind, requestId, projectId, now);
+}
+
+function closeProjectObligations(tx: AppTransaction, projectId: string, now: number): void {
+  for (const task of tx.all<{ id: string; revision: number; state: string; proposalId: string }>(`SELECT id, task_revision AS revision, state,
+      current_proposal_id AS proposalId FROM tasks WHERE project_id = ? AND state IN ('proposed', 'accepted', 'ready_for_review') ORDER BY id`, projectId)) {
+    const command: TaskCommand = task.state === "proposed"
+      ? { kind: "task.dismiss", requestId: crypto.randomUUID(), projectId, expectedRevision: task.revision, payload: { taskId: task.id, proposalId: task.proposalId, reason: "project_deleted" } }
+      : { kind: "task.cancel", requestId: crypto.randomUUID(), projectId, expectedRevision: task.revision, payload: { taskId: task.id, reason: "project_deleted" } };
+    const receipt = applyTask(tx, command, "web", now, 4096);
+    closureReceipt(tx, projectId, command.kind, task.id, receipt, now);
+  }
+  for (const decision of tx.all<{ id: string }>("SELECT id FROM owner_decisions WHERE project_id = ? AND superseded_by IS NULL ORDER BY id", projectId)) {
+    const receipt = supersedeDecisionForProjectDeletion(tx, projectId, decision.id);
+    retireDecisionMemorySource(tx, projectId, decision.id);
+    closureReceipt(tx, projectId, "decision.supersede", decision.id, receipt, now);
+  }
 }
 
 const structural = /^(?:id|ids|kind|type|state|status|channel|provider|adapter|nextAction|layer|availability|origin|mode|storage|contract|policyVersion|outcome|digest|inventoryDigest|stateDigest)$|(?:Id|Ids|_id|_ids)$/;
 /** Removes project payload strings while retaining identity references and lifecycle enums needed for reconciliation. */
 function redact(value: unknown, key = ""): unknown {
-  if (typeof value === "string") return structural.test(key) || (key === "reason" && ["revoked", "source_retired", "context_retired", "cancelled", "project_deleted", "superseded", "complete", "queued", "interrupted"].includes(value)) ? value : value ? marker : value;
+  if (typeof value === "string") return structural.test(key) || ((key === "closedReason" && value === "project_deleted") || key === "reason" && ["revoked", "source_retired", "context_retired", "cancelled", "project_deleted", "superseded", "complete", "queued", "interrupted"].includes(value)) ? value : value ? marker : value;
   if (Array.isArray(value)) return value.map(item => redact(item, key));
   if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, redact(v, k)]));
   return value;
 }
 
 /**
- * Purges all project-owned payloads while preserving identity rows and owner task/decision states. Used by confirm
- * and quarantined restore replay after owner blockers have been checked (replay enforces the existing ledger).
+ * Closes disclosed project obligations through their state machines, then purges payloads while preserving identities.
+ * Used by authorized whole-project confirm and quarantined restore replay of the installation ledger; replay is idempotent.
  * Native bytes and external artifacts are handled only by managed cleanup scopes, outside this transaction.
  */
 export function purgeProjectPayloads(tx: AppTransaction, projectId: string, now: number): void {
   ensurePrSchema(tx);
+  closeProjectObligations(tx, projectId, now);
   for (const row of tx.all<{ id: string }>("SELECT id FROM jobs WHERE project_id = ?", projectId)) invalidatePendingJob(tx, projectId, row.id, "source_retired", now);
   for (const row of tx.all<{ id: string }>("SELECT id FROM delivery_reports WHERE project_id = ?", projectId)) {
     const report = readDeliveryReport(tx, projectId, row.id);
@@ -154,8 +187,8 @@ export function purgeProjectPayloads(tx: AppTransaction, projectId: string, now:
   tx.run("UPDATE tasks SET title = ?, summary = ? WHERE project_id = ?", marker, marker, projectId);
   tx.run("UPDATE task_proposals SET title = ?, summary = ? WHERE project_id = ?", marker, marker, projectId);
   tx.run("UPDATE owner_decisions SET conclusion = ?, rationale = ? WHERE project_id = ?", marker, marker, projectId);
-  tx.run("UPDATE task_events SET reason = ? WHERE project_id = ? AND reason IS NOT NULL", marker, projectId);
-  tx.run("UPDATE tasks SET closed_reason = ? WHERE project_id = ? AND closed_reason IS NOT NULL", marker, projectId);
+  tx.run("UPDATE task_events SET reason = ? WHERE project_id = ? AND reason IS NOT NULL AND reason != 'project_deleted'", marker, projectId);
+  tx.run("UPDATE tasks SET closed_reason = ? WHERE project_id = ? AND closed_reason IS NOT NULL AND closed_reason != 'project_deleted'", marker, projectId);
   tx.run("UPDATE execution_halts SET reason = ? WHERE project_id = ?", "project_deleted", projectId);
   tx.run("UPDATE execution_tool_calls SET subject = ? WHERE project_id = ?", marker, projectId);
   for (const table of ["delivery_intents", "pr_candidates"]) tx.run(`UPDATE ${table} SET dedupe_key = 'deleted:' || rowid WHERE project_id = ?`, projectId);

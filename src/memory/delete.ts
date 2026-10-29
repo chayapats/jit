@@ -106,12 +106,13 @@ export interface DeletionPreview {
     exports: { id: string; projectId: string; createdAt: number; evidence: "coverage" | "affected_project" }[];
     /**
      * Owner tasks/decisions linked by lineage, lexical overlap or an exact quoted copy of an affected payload, by identity
-     * and revision only (no title or other payload is persisted). Deletion never completes or cancels them. An active
+     * and revision only (no title or other payload is persisted). Whole-project confirmation explicitly closes its own
+     * obligations; per-source and cross-project copies keep their blockers. An active
      * task or current decision holding a copy is `blocked_owner_copy` (a named blocker until the owner edits, closes or
      * supersedes it); a superseded decision's copy is `redacted`; everything else is `retained_unchanged`.
      */
     obligations: { kind: "task" | "decision"; id: string; revision: number; evidence: "lineage" | "lexical" | "quoted_copy";
-      effect: "retained_unchanged" | "blocked_owner_copy" | "redacted" }[];
+      effect: "retained_unchanged" | "blocked_owner_copy" | "redacted" | "closed_and_deleted" }[];
     /**
      * Task proposal revisions whose exact source generation is affected. Historical (or inactive-task) proposal
      * payloads are redacted; the current proposal of an active task is a named blocker (edit or close the task first).
@@ -608,8 +609,8 @@ function buildInventory(tx: AppTransaction, scope: DeletionScope, env: DeletionE
     backups: retainedBackups(tx, allSources, blockers, env),
     exports: retainedExports(tx, allSources, [...claims.values()], blockers),
     obligations: obligationsFor(tx, scope, allSources, blockers),
-    taskProposals: taskProposalsFor(tx, allSources, blockers),
-    taskEvidence: taskEvidenceFor(tx, allSources, blockers),
+    taskProposals: taskProposalsFor(tx, allSources, blockers, scope),
+    taskEvidence: taskEvidenceFor(tx, allSources, blockers, scope),
     deliveries: [],
     scrub: { long: [], short: [] },
     blockers,
@@ -631,7 +632,13 @@ function buildInventory(tx: AppTransaction, scope: DeletionScope, env: DeletionE
   }
   if (inventory.scrub.short.length && shortPayloadCopied(tx, inventory.scrub.short, keys, new Set(citing.map(job => job.jobId)),
     new Set(inventory.deliveries.map(d => d.intentId)), new Set(inventory.deliveries.map(d => d.reportId)))) blockers.add("short_payload_unlinked_copy");
-  ownerCopies(tx, inventory);
+  ownerCopies(tx, inventory, scope);
+  if (scope.kind === "project") for (const obligation of inventory.obligations) {
+    const local = obligation.kind === "task"
+      ? inventory.project?.tasks.some(t => t.id === obligation.id && activeTaskStates.includes(t.state))
+      : inventory.project?.decisions?.some(d => d.id === obligation.id);
+    if (local) obligation.effect = "closed_and_deleted";
+  }
   // Lists confirmation acts on (or the owner must see in full) block when they exceed display bounds; backups are disclosure only.
   const sizes: [string, number, number][] = [["sources", sources.size, deletePreviewBounds.sources], ["claims", claims.size, deletePreviewBounds.claims],
     ["contexts", contexts.size, deletePreviewBounds.contexts], ["pendingJobs", pendingJobs.length, deletePreviewBounds.pendingJobs],
@@ -784,7 +791,7 @@ function ownerCopyTerms(tx: AppTransaction, inventory: Pick<Inventory, "sources"
  * `active_task_current_proposal` blocker, any other is redacted at confirm. A current decision quoting a payload adds
  * `owner_decision_copy:<id>`; a superseded one is redacted. Nothing payload-bearing enters the preview.
  */
-function ownerCopies(tx: AppTransaction, inventory: Inventory): void {
+function ownerCopies(tx: AppTransaction, inventory: Inventory, scope: DeletionScope): void {
   const terms = ownerCopyTerms(tx, inventory);
   const linked = new Set(inventory.taskProposals.map(p => p.proposalId));
   const mark = (kind: "task" | "decision", id: string, revision: number, effect: "blocked_owner_copy" | "redacted",
@@ -803,10 +810,10 @@ function ownerCopies(tx: AppTransaction, inventory: Inventory): void {
   scanTable<{ id: string; taskId: string; revision: number; title: string; summary: string }>(tx, "task_proposals",
     "id, task_id AS taskId, revision, title, summary", row => {
       if (linked.has(row.id) || !holdsCopy(terms, [row.title, row.summary])) return;
-      const task = tx.get<{ state: string; currentId: string; revision: number }>(
-        "SELECT state, current_proposal_id AS currentId, task_revision AS revision FROM tasks WHERE id = ?", row.taskId);
+      const task = tx.get<{ state: string; currentId: string; revision: number; projectId: string }>(
+        "SELECT state, current_proposal_id AS currentId, task_revision AS revision, project_id AS projectId FROM tasks WHERE id = ?", row.taskId);
       const current = task?.currentId === row.id, active = activeTaskStates.includes(task?.state ?? "");
-      const effect = current && active ? "blocked_active_task" as const : "redacted" as const;
+      const effect = current && active && !(scope.kind === "project" && task?.projectId === scope.projectId) ? "blocked_active_task" as const : "redacted" as const;
       if (effect === "blocked_active_task") {
         inventory.blockers.add(`active_task_current_proposal:${row.taskId}`);
         mark("task", row.taskId, task!.revision, "blocked_owner_copy");
@@ -814,28 +821,29 @@ function ownerCopies(tx: AppTransaction, inventory: Inventory): void {
       inventory.taskProposals.push({ taskId: row.taskId, taskState: task?.state ?? "missing", proposalId: row.id, revision: row.revision,
         current, evidence: "quoted_text", effect });
     }, { blockers: inventory.blockers });
-  scanTable<{ id: string; revision: number; conclusion: string; rationale: string; supersededBy: string | null }>(tx, "owner_decisions",
-    "id, revision, conclusion, rationale, superseded_by AS supersededBy", row => {
+  scanTable<{ id: string; revision: number; conclusion: string; rationale: string; supersededBy: string | null; projectId: string }>(tx, "owner_decisions",
+    "id, revision, conclusion, rationale, superseded_by AS supersededBy, project_id AS projectId", row => {
       if (!holdsCopy(terms, [row.conclusion, row.rationale])) return;
-      if (row.supersededBy === null) inventory.blockers.add(`owner_decision_copy:${row.id}`);
-      mark("decision", row.id, row.revision, row.supersededBy === null ? "blocked_owner_copy" : "redacted");
+      const blocked = row.supersededBy === null && !(scope.kind === "project" && row.projectId === scope.projectId);
+      if (blocked) inventory.blockers.add(`owner_decision_copy:${row.id}`);
+      mark("decision", row.id, row.revision, blocked ? "blocked_owner_copy" : "redacted");
     }, { blockers: inventory.blockers });
 }
 
 /** Every task proposal revision (current or historical) citing an affected exact source generation. */
-function taskProposalsFor(tx: AppTransaction, sources: SourceEntry[], blockers: Set<string>): DeletionPreview["affected"]["taskProposals"] {
+function taskProposalsFor(tx: AppTransaction, sources: SourceEntry[], blockers: Set<string>, scope: DeletionScope): DeletionPreview["affected"]["taskProposals"] {
   const keys = new Set(sources.map(entry => sourceKey(entry.source)));
   const out: DeletionPreview["affected"]["taskProposals"] = [];
   for (const batch of chunks([...new Set(sources.map(entry => entry.source.sourceId))])) {
     for (const row of tx.all<{ id: string; taskId: string; revision: number; sourceId: string; sourceRevision: number; sourceGeneration: number;
-      state: string | null; currentId: string | null }>(
+      state: string | null; currentId: string | null; projectId: string | null }>(
       `SELECT p.id, p.task_id AS taskId, p.revision, p.source_id AS sourceId, p.source_revision AS sourceRevision, p.source_generation AS sourceGeneration,
-         t.state, t.current_proposal_id AS currentId FROM task_proposals p LEFT JOIN tasks t ON t.id = p.task_id
+         t.state, t.current_proposal_id AS currentId, t.project_id AS projectId FROM task_proposals p LEFT JOIN tasks t ON t.id = p.task_id
        WHERE p.source_id IN (${marks(batch.length)})`, ...batch)) {
       if (!keys.has(sourceKey({ sourceId: row.sourceId, revision: row.sourceRevision, generation: row.sourceGeneration }))) continue;
       const current = row.currentId === row.id;
       const active = ["proposed", "accepted", "ready_for_review"].includes(row.state ?? "");
-      const effect = current && active ? "blocked_active_task" as const : "redacted" as const;
+      const effect = current && active && !(scope.kind === "project" && row.projectId === scope.projectId) ? "blocked_active_task" as const : "redacted" as const;
       if (effect === "blocked_active_task") blockers.add(`active_task_current_proposal:${row.taskId}`);
       out.push({ taskId: row.taskId, taskState: row.state ?? "missing", proposalId: row.id, revision: row.revision, current, evidence: "provenance", effect });
     }
@@ -844,21 +852,21 @@ function taskProposalsFor(tx: AppTransaction, sources: SourceEntry[], blockers: 
 }
 
 /** Every task evidence artifact citing an affected exact source generation; the latest one of an active task blocks. */
-function taskEvidenceFor(tx: AppTransaction, sources: SourceEntry[], blockers: Set<string>): DeletionPreview["affected"]["taskEvidence"] {
+function taskEvidenceFor(tx: AppTransaction, sources: SourceEntry[], blockers: Set<string>, scope: DeletionScope): DeletionPreview["affected"]["taskEvidence"] {
   const keys = new Set(sources.map(entry => sourceKey(entry.source)));
   const out: DeletionPreview["affected"]["taskEvidence"] = [];
   for (const batch of chunks([...new Set(sources.map(entry => entry.source.sourceId))])) {
     for (const row of tx.all<{ id: string; taskId: string; revision: number; sourceId: string; sourceRevision: number; sourceGeneration: number;
-      state: string | null; taskRevision: number | null; latestRevision: number }>(
+      state: string | null; taskRevision: number | null; latestRevision: number; projectId: string | null }>(
       `SELECT e.id, e.task_id AS taskId, e.revision, e.source_id AS sourceId, e.source_revision AS sourceRevision, e.source_generation AS sourceGeneration,
-         t.state, t.task_revision AS taskRevision,
+         t.state, t.task_revision AS taskRevision, t.project_id AS projectId,
          (SELECT max(l.revision) FROM task_evidence_artifacts l WHERE l.task_id = e.task_id) AS latestRevision
        FROM task_evidence_artifacts e LEFT JOIN tasks t ON t.id = e.task_id
        WHERE e.source_id IN (${marks(batch.length)})`, ...batch)) {
       if (!keys.has(sourceKey({ sourceId: row.sourceId, revision: row.sourceRevision, generation: row.sourceGeneration }))) continue;
       const latest = row.revision === row.latestRevision;
       const active = ["proposed", "accepted", "ready_for_review"].includes(row.state ?? "");
-      const effect = latest && active ? "blocked_active_task" as const : "reference_unavailable" as const;
+      const effect = latest && active && !(scope.kind === "project" && row.projectId === scope.projectId) ? "blocked_active_task" as const : "reference_unavailable" as const;
       if (effect === "blocked_active_task") blockers.add(`active_task_evidence:${row.taskId}`);
       out.push({ taskId: row.taskId, taskState: row.state ?? "missing", taskRevision: row.taskRevision ?? 0, artifactId: row.id,
         revision: row.revision, latest, effect });

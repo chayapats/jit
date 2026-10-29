@@ -1342,6 +1342,102 @@ function projectConfirm(f: Fixture, p: Project, preview: DeletionReceipt["previe
     payload: { previewId: preview.id, inventoryDigest: preview.inventoryDigest, projectName: name, acknowledged: true, acknowledgedWholeSession: true } };
 }
 
+async function ownerDecision(f: Fixture, p: Project, conclusion: string) {
+  f.rt.app.execute(actor(f), dispatch(f, p, "Prepare decision")); await drain(f);
+  const discussion = f.rt.app.discussions(actor(f), p.id, p.topic.id)[0]!;
+  f.rt.app.execute(actor(f), { kind: "decision.synthesize", requestId: rid(), projectId: p.id, expectedRevision: discussion.revision,
+    payload: { discussionId: discussion.id, limits: { ...f.config.jobs.maximum } } }); await drain(f);
+  const proposal = f.rt.app.decision(actor(f), p.id, p.topic.id).proposal!;
+  return f.rt.app.execute(actor(f), { kind: "decision.accept", requestId: rid(), projectId: p.id, expectedRevision: proposal.revision,
+    payload: { proposalId: proposal.id, optionId: null, conclusion, rationale: "Owner selected" } }).decision!;
+}
+
+test("LIFE02 confirmation closes every open task state and active decision with reason/audit/receipts; replay is idempotent", async () => {
+  const f = await fixture(), p = project(f, "Obligations", "Obligations topic");
+  const decision = await ownerDecision(f, p, "decision-closure-canary-177");
+  const tasks = [];
+  for (const state of ["proposed", "accepted", "ready_for_review"] as const) {
+    let task = f.rt.app.execute(actor(f), { kind: "task.propose", requestId: rid(), projectId: p.id, expectedRevision: topicRevision(f, p),
+      payload: { topicId: p.topic.id, title: `task-closure-canary-177 ${state}`, summary: "Obligation payload" } }).task;
+    if (state !== "proposed") task = f.rt.app.execute(actor(f), { kind: "task.accept", requestId: rid(), projectId: p.id, expectedRevision: task.revision,
+      payload: { taskId: task.id, proposalId: f.rt.app.task(actor(f), p.id, task.id).proposals.at(-1)!.id } }).task;
+    if (state === "ready_for_review") {
+      f.rt.store.transaction(tx => {
+        const source = commitOutputSource(tx, { projectId: p.id, participantId: f.roles.tech, runId: rid(), text: "task-evidence-closure-canary-177", committedAt: epoch });
+        registerTaskEvidenceArtifact(tx, { taskId: task.id, projectId: p.id, workType: "analysis", outcome: "complete", source, now: epoch });
+      });
+      task = f.rt.app.execute(actor(f), { kind: "task.set_policy", requestId: rid(), projectId: p.id, expectedRevision: f.rt.app.task(actor(f), p.id, task.id).task.revision,
+        payload: { taskId: task.id, policyKind: "evidence_satisfied" } }).task;
+    }
+    tasks.push({ ...task, state });
+  }
+  const preview = projectPreview(f, p).preview;
+  expect(preview.blockers).toEqual([]);
+  expect(preview.affected.project?.tasks.map(t => t.state)).toEqual(["proposed", "accepted", "ready_for_review"]);
+  expect(preview.affected.project?.decisions).toEqual([{ id: decision.id, revision: decision.revision, state: "active" }]);
+  const command = projectConfirm(f, p, preview, "Obligations");
+  const countsBefore = f.rt.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM audit")!.n);
+  const fragile = new Application(f.rt.store, f.config, { jobs: f.rt.queue, now: () => f.clock.now,
+    beforeCommit: stage => { if (stage === "memory") throw new Error("fixture obligation rollback"); } });
+  expect(() => fragile.execute(fragile.authenticate(f.token).actor, command)).toThrow("fixture obligation rollback");
+  expect(f.rt.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM audit")!.n)).toBe(countsBefore);
+  expect(f.rt.app.decision(actor(f), p.id, p.topic.id).currentDecision?.decision.id).toBe(decision.id);
+  const result = f.rt.app.execute(actor(f), command) as DeletionConfirmReceipt;
+  for (const task of tasks) {
+    const state = task.state === "proposed" ? "dismissed" : "cancelled";
+    expect(f.rt.store.read(tx => tx.get("SELECT state, task_revision AS revision, closed_reason AS reason FROM tasks WHERE id = ?", task.id)))
+      .toEqual({ state, revision: task.revision + 1, reason: "project_deleted" });
+    expect(f.rt.store.read(tx => tx.get("SELECT kind, reason FROM task_events WHERE task_id = ? ORDER BY sequence DESC LIMIT 1", task.id)))
+      .toEqual({ kind: state, reason: "project_deleted" });
+  }
+  expect(f.rt.store.read(tx => tx.get<{ superseded_by: string }>("SELECT superseded_by FROM owner_decisions WHERE id = ?", decision.id)!.superseded_by)).toBe(`project:${p.id}`);
+  const closureRows = () => f.rt.store.read(tx => tx.all<{ result_json: string }>(`SELECT c.result_json FROM command_receipts c JOIN audit a ON a.request_id = c.request_id
+    WHERE a.project_id = ? AND a.command_kind IN ('task.dismiss', 'task.cancel', 'decision.supersede')`, p.id));
+  expect(closureRows()).toHaveLength(4);
+  for (const row of closureRows()) expect(row.result_json).toContain('"reason":"project_deleted"');
+  expect(f.rt.app.execute(actor(f), command)).toEqual(result);
+  const { purgeProjectPayloads } = await import("../src/memory/project-delete");
+  f.rt.store.transaction(tx => purgeProjectPayloads(tx, p.id, f.clock.now));
+  expect(closureRows()).toHaveLength(4);
+  await f.rt.queue.reconcilePendingDeletions();
+  for (const text of ["decision-closure-canary-177", "task-closure-canary-177"]) expect(Buffer.from(f.rt.store.snapshotBytes()).includes(Buffer.from(text))).toBe(false);
+});
+
+test("LIFE02 still blocks active task and decision copies in another project", async () => {
+  const f = await fixture(), a = project(f, "Original", "Original topic"), b = project(f, "Copy", "Copy topic");
+  const text = "cross-project-owner-obligation-canary-177"; say(f, a, text);
+  const decision = await ownerDecision(f, b, text);
+  const task = f.rt.app.execute(actor(f), { kind: "task.propose", requestId: rid(), projectId: b.id, expectedRevision: topicRevision(f, b),
+    payload: { topicId: b.topic.id, title: text, summary: "Keep cross-project authority" } }).task;
+  const preview = projectPreview(f, a).preview;
+  expect(preview.blockers).toContain(`active_task_current_proposal:${task.id}`);
+  expect(preview.blockers).toContain(`owner_decision_copy:${decision.id}`);
+  expect(() => f.rt.app.execute(actor(f), projectConfirm(f, a, preview, "Original"))).toThrow("memory_delete_blocked");
+});
+
+test("LIFE02 MCP blockers use only each server's latest append-only state", async () => {
+  const f = await fixture(), p = project(f, "MCP history", "MCP history topic"), serverId = rid();
+  const { writeServerState } = await import("../src/exec/mcp");
+  f.rt.store.transaction(tx => tx.run(`INSERT INTO mcp_servers (project_id, id, revision, name, spec_json, env_json, state, reason, tools_json, proposal_id, created_at, updated_at)
+    VALUES (?, ?, 1, 'fixture', ?, '{}', 'installing', NULL, '[]', ?, ?, ?)`, p.id, serverId, JSON.stringify({ env: [], source: "npm" }), rid(), epoch, epoch));
+  expect(projectPreview(f, p).preview.blockers).toContain(`project_mcp_installing:${serverId}`);
+  for (const [index, state] of (["installed", "failed", "removed"] as const).entries()) {
+    f.rt.store.transaction(tx => writeServerState(tx, { id: serverId, projectId: p.id }, index + 1, state, null, epoch + index));
+    expect(projectPreview(f, p).preview.blockers).toEqual([]);
+  }
+  const cardId = rid();
+  f.rt.store.transaction(tx => tx.run(`INSERT INTO approval_cards (id, project_id, topic_id, run_id, job_id, role_id, kind, action_json,
+    digest, revision, state, telegram_eligible, created_at, expires_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'effect.git_push', '{}', ?, 1, 'executing', 0, ?, ?, ?)`,
+    cardId, p.id, p.topic.id, rid(), rid(), f.roles.tech, "a".repeat(64), epoch, epoch + 1000, epoch));
+  expect(projectPreview(f, p).preview.blockers).toContain(`project_effect_unsettled:${cardId}`);
+  f.rt.store.transaction(tx => tx.run("UPDATE approval_cards SET state = 'unknown', revision = revision + 1 WHERE id = ?", cardId));
+  expect(projectPreview(f, p).preview.blockers).toContain(`project_effect_unsettled:${cardId}`);
+  f.rt.store.transaction(tx => tx.run("UPDATE approval_cards SET state = 'succeeded', revision = revision + 1 WHERE id = ?", cardId));
+  const preview = projectPreview(f, p).preview;
+  expect(preview.blockers).toEqual([]);
+  f.rt.app.execute(actor(f), projectConfirm(f, p, preview, "MCP history"));
+});
+
 test("LIFE02 project preview covers every source generation and owned metadata; confirm hides identity and purges database/WAL text", async () => {
   const f = await fixture(), name = "project-name-canary-177", a = project(f, name, "project-topic-canary-177");
   const s = say(f, a, "project-message-canary-177");
@@ -1360,6 +1456,7 @@ test("LIFE02 project preview covers every source generation and owned metadata; 
   expect(f.rt.app.search(actor(f), "canary", { query: 100, projects: 10, topics: 10 }).projects).toEqual([]);
   expect(() => f.rt.app.project(actor(f), a.id)).toThrow("project_deleted");
   expect(f.rt.store.read(tx => tx.get("SELECT id FROM projects WHERE id = ?", a.id))).not.toBeNull();
+  await f.rt.queue.reconcile(f.rt.teamPort);
   expect(f.rt.app.deletionOperation(actor(f), a.id, result.operation.id).operation?.state).toBe("complete");
   for (const marker of [name, "project-topic-canary-177", "project-message-canary-177", "historical-canary-177", "descriptor-canary-177"]) {
     for (const path of [f.config.databasePath, `${f.config.databasePath}-wal`]) if (existsSync(path)) expect(readFileSync(path).includes(Buffer.from(marker))).toBe(false);
@@ -1383,7 +1480,7 @@ test("LIFE02 project confirms bind name and digest; message drift is stale even 
   expect(duplicate.duplicate).toBe(true); expect(duplicate.operation.id).toBe(first.operation.id);
 });
 
-test("LIFE02 project deletion refuses General and owner blockers with identities and reasons", async () => {
+test("LIFE02 project deletion refuses General and explicitly closes disclosed local task proposals", async () => {
   const f = await fixture(), a = project(f, "Protected", "Protected topic");
   f.rt.store.transaction(tx => tx.run("INSERT INTO general_space VALUES (1, ?, ?, NULL, ?)", a.id, a.topic.id, epoch));
   markSetupComplete(f.rt.store);
@@ -1392,8 +1489,13 @@ test("LIFE02 project deletion refuses General and owner blockers with identities
   const proposed = f.rt.app.execute(actor(f), { kind: "task.propose", requestId: rid(), projectId: b.id, expectedRevision: topicRevision(f, b),
     payload: { topicId: b.topic.id, title: "Owner task canary", summary: "Owner still needs this obligation" } });
   const { preview } = projectPreview(f, b);
-  expect(preview.blockers).toContain(`active_task_current_proposal:${proposed.task.id}`);
-  expect(() => f.rt.app.execute(actor(f), projectConfirm(f, b, preview, "Blocked project"))).toThrow("memory_delete_blocked");
+  expect(preview.blockers).toEqual([]);
+  expect(preview.affected.project?.tasks).toContainEqual({ id: proposed.task.id, revision: 1, state: "proposed" });
+  f.rt.app.execute(actor(f), { kind: "task.edit", requestId: rid(), projectId: b.id, expectedRevision: proposed.task.revision,
+    payload: { taskId: proposed.task.id, title: "Edited task", summary: "Inventory drift" } });
+  expect(() => f.rt.app.execute(actor(f), projectConfirm(f, b, preview, "Blocked project"))).toThrow("memory_delete_stale_preview");
+  f.rt.app.execute(actor(f), projectConfirm(f, b, projectPreview(f, b).preview, "Blocked project"));
+  expect(f.rt.store.read(tx => tx.get("SELECT state, closed_reason FROM tasks WHERE id = ?", proposed.task.id))).toEqual({ state: "dismissed", closed_reason: "project_deleted" });
   expect(JSON.stringify(preview)).not.toContain("Owner task canary");
 });
 
@@ -1456,7 +1558,7 @@ test("LIFE02 collateral extension binds preview and confirmation and cannot comp
   const old = prepare(); version++;
   expect(() => app.execute(owner, projectConfirm(f, a, old, "Collateral project"))).toThrow("memory_delete_stale_preview");
   const preview = prepare();
-  expect(preview.affected.project?.collateral[0]).toMatchObject({ key: "fixture_collateral", count: 2, bytes: 123 });
+  expect(preview.affected.project?.collateral.find(c => c.key === "fixture_collateral")).toMatchObject({ key: "fixture_collateral", count: 2, bytes: 123 });
   const c = projectConfirm(f, a, preview, "Collateral project"), result = app.execute(owner, c) as DeletionConfirmReceipt;
   expect(confirms).toBe(1);
   await f.rt.queue.reconcile(f.rt.teamPort);
@@ -1464,7 +1566,7 @@ test("LIFE02 collateral extension binds preview and confirmation and cannot comp
   expect(cleanups).toBe(1);
   await restart(f); // Unregistered contributor is an honest pending cleanup, never an empty successful scope.
   await f.rt.queue.reconcile(f.rt.teamPort);
-  expect(f.rt.app.deletionOperation(actor(f), a.id, result.operation.id).operation?.collateral?.[0]?.reason).toBe("project_delete_contributor_unavailable");
+  expect(f.rt.app.deletionOperation(actor(f), a.id, result.operation.id).operation?.collateral?.find(c => c.key === "fixture_collateral")?.reason).toBe("project_delete_contributor_unavailable");
   failing = false;
   new Application(f.rt.store, f.config, { jobs: f.rt.queue, now: () => f.clock.now, deletionContributors: [contributor] });
   await f.rt.queue.reconcilePendingDeletions();
@@ -1474,6 +1576,13 @@ test("LIFE02 collateral extension binds preview and confirmation and cannot comp
 
 test("LIFE02 project deletion Web forms preview then require exact name/digest and redirect Home without script", async () => {
   const f = await fixture(), a = project(f, "Web deletion <project>", "Web deletion topic");
+  f.config.execution.directory = join(f.root, "execution");
+  const workspace = join(f.config.execution.directory, a.id, "workspace"), profile = join(f.config.execution.directory, a.id, "profile");
+  mkdirSync(workspace, { recursive: true }); mkdirSync(profile);
+  writeFileSync(join(workspace, "uncommitted.txt"), "unpushed work"); writeFileSync(join(profile, "cookies"), "profile");
+  const task = f.rt.app.execute(actor(f), { kind: "task.propose", requestId: rid(), projectId: a.id, expectedRevision: topicRevision(f, a),
+    payload: { topicId: a.topic.id, title: "Web task", summary: "Close explicitly" } }).task;
+  const decision = await ownerDecision(f, a, "Web decision");
   const web = createWebHandler(f.rt.app), req = webRequest(f);
   const page = await (await web(req(`/projects/${a.id}`))).text();
   expect(page).toContain(`action="/projects/${a.id}/delete"`);
@@ -1485,16 +1594,62 @@ test("LIFE02 project deletion Web forms preview then require exact name/digest a
   const location = response.headers.get("location")!, previewId = location.split("/").at(-1)!;
   const html = await (await web(req(location))).text();
   expect(html).toContain('name="projectName"'); expect(html).toContain('name="inventoryDigest"'); expect(html).toContain("Web deletion &lt;project&gt;");
+  const { dictionaries } = await import("../src/i18n");
+  for (const language of ["th", "en"] as const) {
+    const translated = await (await web(new Request(`http://localhost:3000${location}`, { headers: { cookie: `jit_session=${f.token}`, "accept-language": language } }))).text();
+    for (const key of ["project.delete_box_warning", "project.delete_obligations", "project.delete_acknowledge"] as const) expect(translated).toContain(dictionaries[language][key]);
+    expect(translated).toContain(task.id); expect(translated).toContain("proposed");
+    expect(translated).toContain(decision.id); expect(translated).toContain("active");
+    expect(translated).toContain("13 bytes"); expect(translated).toContain("7 bytes");
+    expect(translated).not.toContain(workspace);
+  }
   const preview = f.rt.app.deletionPreview(actor(f), a.id, previewId).preview!;
   const confirmed = await post({ mode: "confirm", requestId: rid(), expectedRevision: String(preview.projectRevision), csrf: body.csrf, previewId, inventoryDigest: preview.inventoryDigest, projectName: "Web deletion <project>", acknowledged: "on", acknowledgedWholeSession: "on" });
   expect(confirmed.status).toBe(303); expect(confirmed.headers.get("location")).toBe("/");
   const operation = f.rt.app.projectDeletionOperations(actor(f))[0]!;
   expect((await web(req(`/projects/${a.id}/delete/${operation.id}`))).status).toBe(200);
   expect(await (await web(req("/settings/data"))).text()).toContain(operation.id);
+  await f.rt.queue.reconcile(f.rt.teamPort);
+  expect(existsSync(workspace)).toBe(false); expect(existsSync(profile)).toBe(false);
+  expect(f.rt.app.deletionOperation(actor(f), a.id, operation.id).operation?.state).toBe("complete");
+});
+
+test("LIFE02 box cleanup waits for concurrent ensure and verifies workspace/profile removal", async () => {
+  const f = await fixture(), p = project(f, "Opening box", "Opening box topic");
+  f.config.execution.directory = join(f.root, "execution");
+  const workspace = join(f.config.execution.directory, p.id, "workspace"), profile = join(f.config.execution.directory, p.id, "profile");
+  mkdirSync(workspace, { recursive: true }); mkdirSync(profile);
+  writeFileSync(join(workspace, "unpushed"), "lost work"); writeFileSync(join(profile, "cookies"), "cookies");
+  const { FakeBoxRuntime } = await import("../src/exec/fake-box-runtime"), { BoxManager } = await import("../src/exec/box-manager");
+  let release!: () => void, started!: () => void;
+  const startedPromise = new Promise<void>(resolve => { started = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+  class Runtime extends FakeBoxRuntime {
+    override async ensure(...args: Parameters<InstanceType<typeof FakeBoxRuntime>["ensure"]>) { started(); await gate; return super.ensure(...args); }
+  }
+  f.rt.store.transaction(tx => tx.run("INSERT INTO project_access_revisions VALUES (?, 1, 'workspace', 'web', ?)", p.id, epoch));
+  const runtime = new Runtime(), boxes = new BoxManager(f.rt.store, f.config, runtime);
+  f.rt.app = new Application(f.rt.store, f.config, { jobs: f.rt.queue, boxes, now: () => epoch });
+  await f.rt.queue.reconcile(f.rt.teamPort);
+  const opening = boxes.open(p.id, null).then(() => "opened", (error: Error) => error.message); await startedPromise;
+  const queuedOpening = boxes.open(p.id, null, { profile: true }).then(() => "opened", (error: Error) => error.message);
+  const preview = projectPreview(f, p).preview;
+  const confirmed = f.rt.app.execute(actor(f), projectConfirm(f, p, preview, "Opening box")) as DeletionConfirmReceipt;
+  const cleanup = f.rt.queue.reconcilePendingDeletions();
+  expect(existsSync(workspace)).toBe(true); expect(runtime.wipes(p.id)).toBe(0);
+  release(); expect(await opening).toBe("project_deleted"); expect(await queuedOpening).toBe("project_deleted"); await cleanup;
+  expect(runtime.calls.filter(c => c.op === "ensure")).toHaveLength(1);
+  expect(runtime.calls.findIndex(c => c.op === "stop")).toBeLessThan(runtime.calls.findIndex(c => c.op === "reset"));
+  expect(existsSync(workspace)).toBe(false); expect(existsSync(profile)).toBe(false);
+  expect(runtime.wipes(p.id)).toBe(1);
+  expect(f.rt.app.deletionOperation(actor(f), p.id, confirmed.operation.id).operation?.state).toBe("complete");
 });
 
 test("LIFE02 box stop failure remains pending across restart and tombstones deny every box open", async () => {
   const f = await fixture(), a = project(f, "Box lifecycle", "Box lifecycle topic");
+  f.config.execution.directory = join(f.root, "execution");
+  const workspace = join(f.config.execution.directory, a.id, "workspace"), profile = join(f.config.execution.directory, a.id, "profile");
+  mkdirSync(workspace, { recursive: true }); mkdirSync(profile);
+  writeFileSync(join(workspace, "uncommitted"), "unpushed work"); writeFileSync(join(profile, "cookies"), "cookies");
   const { FakeBoxRuntime } = await import("../src/exec/fake-box-runtime"), { BoxManager } = await import("../src/exec/box-manager");
   class Runtime extends FakeBoxRuntime {
     fail = true;
@@ -1504,18 +1659,20 @@ test("LIFE02 box stop failure remains pending across restart and tombstones deny
   const boxes = new BoxManager(f.rt.store, f.config, runtime); await boxes.reconcile();
   f.rt.app = new Application(f.rt.store, f.config, { jobs: f.rt.queue, boxes, now: () => f.clock.now });
   const { preview } = projectPreview(f, a);
-  expect(preview.affected.project?.collateral).toContainEqual(expect.objectContaining({ key: "execution_box", count: 1 }));
+  expect(preview.affected.project?.collateral).toContainEqual(expect.objectContaining({ key: "execution_box", count: 2 }));
   const result = f.rt.app.execute(actor(f), projectConfirm(f, a, preview, "Box lifecycle")) as DeletionConfirmReceipt;
   await f.rt.queue.reconcile(f.rt.teamPort);
   expect(f.rt.app.deletionOperation(actor(f), a.id, result.operation.id).operation?.state).toBe("pending");
   await expect(boxes.open(a.id, null)).rejects.toThrow("project_deleted");
+  expect(existsSync(workspace)).toBe(true); expect(existsSync(profile)).toBe(true);
   runtime.fail = false; await restart(f);
   const reopened = new BoxManager(f.rt.store, f.config, runtime);
   f.rt.app = new Application(f.rt.store, f.config, { jobs: f.rt.queue, boxes: reopened, now: () => f.clock.now });
   await f.rt.queue.reconcile(f.rt.teamPort);
-  expect((await runtime.status(a.id)).state).toBe("stopped");
+  expect((await runtime.status(a.id)).state).toBe("absent");
   expect(f.rt.app.deletionOperation(actor(f), a.id, result.operation.id).operation?.state).toBe("complete");
-  expect(runtime.wipes(a.id)).toBe(0);
+  expect(runtime.wipes(a.id)).toBe(1);
+  expect(existsSync(workspace)).toBe(false); expect(existsSync(profile)).toBe(false);
 });
 
 test("LIFE02 a busy WAL reader prevents completion; confirmed previews survive expiry pruning for duplicate confirms", async () => {

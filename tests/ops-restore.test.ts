@@ -874,7 +874,20 @@ test("web restore inventory, report and actions render sanitized evidence; activ
 
 test("LIFE02 restoring a pre-delete image keeps whole projects and empty project identities tombstoned", async () => {
   const f = await fixture(), a = project(f, "restore-project-name-canary-177", "restore-project-topic-canary-177");
-  say(f, a, "restore-project-message-canary-177");
+  const source = say(f, a, "restore-project-message-canary-177");
+  f.rt.app.execute(actor(f), dispatch(f, a, "Restore decision", [source])); await drain(f);
+  const discussion = f.rt.app.discussions(actor(f), a.id, a.topic.id)[0]!;
+  f.rt.app.execute(actor(f), { kind: "decision.synthesize", requestId: rid(), projectId: a.id, expectedRevision: discussion.revision,
+    payload: { discussionId: discussion.id, limits: { ...f.config.jobs.maximum } } }); await drain(f);
+  const proposal = f.rt.app.decision(actor(f), a.id, a.topic.id).proposal!;
+  const decision = f.rt.app.execute(actor(f), { kind: "decision.accept", requestId: rid(), projectId: a.id, expectedRevision: proposal.revision,
+    payload: { proposalId: proposal.id, optionId: null, conclusion: "restore-decision-canary-177", rationale: "Owner selected" } }).decision!;
+  const task = f.rt.app.execute(actor(f), { kind: "task.propose", requestId: rid(), projectId: a.id, expectedRevision: f.rt.app.topic(actor(f), a.id, a.topic.id).topic.revision,
+    payload: { topicId: a.topic.id, title: "restore-task-canary-177", summary: "Close on replay" } }).task;
+  f.config.execution.directory = join(f.root, "execution");
+  const workspace = join(f.config.execution.directory, a.id, "workspace"), profile = join(f.config.execution.directory, a.id, "profile");
+  mkdirSync(workspace, { recursive: true }); mkdirSync(profile);
+  writeFileSync(join(workspace, "unpushed"), "unpushed"); writeFileSync(join(profile, "cookies"), "cookies");
   const empty = f.rt.app.execute(actor(f), { kind: "project.create", requestId: rid(), projectId: null, expectedRevision: appRevision(f), payload: { name: "restore-empty-project-canary-177" } }).project;
   const backup = await backupNow(f);
   for (const p of [a, empty]) {
@@ -885,12 +898,18 @@ test("LIFE02 restoring a pre-delete image keeps whole projects and empty project
     f.rt.app.execute(actor(f), { kind: "project.delete.confirm", requestId: rid(), projectId: p.id, expectedRevision: revision,
       payload: { previewId: preview.id, inventoryDigest: preview.inventoryDigest, projectName: "name" in p ? p.name : "restore-project-name-canary-177", acknowledged: true, acknowledgedWholeSession: true } });
   }
+  await queue(f).reconcilePendingDeletions();
+  mkdirSync(workspace, { recursive: true }); mkdirSync(profile, { recursive: true });
+  writeFileSync(join(workspace, "old-host-data"), "must disappear during restore");
   const q = await restoreThrough(f, backup.id);
   expect(q.state).toBe("complete");
   await relogin(f);
   expect(f.rt.app.workspace(actor(f)).projects).toEqual([]);
   for (const p of [a, empty]) expect(() => f.rt.app.project(actor(f), p.id)).toThrow("project_deleted");
-  for (const marker of ["restore-project-name-canary-177", "restore-project-topic-canary-177", "restore-project-message-canary-177", "restore-empty-project-canary-177"]) {
+  expect(f.rt.store.read(tx => tx.get("SELECT state, closed_reason FROM tasks WHERE id = ?", task.id))).toEqual({ state: "dismissed", closed_reason: "project_deleted" });
+  expect(f.rt.store.read(tx => tx.get<{ superseded_by: string }>("SELECT superseded_by FROM owner_decisions WHERE id = ?", decision.id)!.superseded_by)).toBe(`project:${a.id}`);
+  expect(existsSync(workspace)).toBe(false); expect(existsSync(profile)).toBe(false);
+  for (const marker of ["restore-project-name-canary-177", "restore-project-topic-canary-177", "restore-project-message-canary-177", "restore-empty-project-canary-177", "restore-task-canary-177", "restore-decision-canary-177"]) {
     expect(dbContains(f.rt.store, marker)).toBe(false);
   }
 });
