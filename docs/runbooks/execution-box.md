@@ -95,7 +95,7 @@ jit ops box-doctor
 - Exit 0 only when all eleven checks pass; otherwise exit 1 with the failing check,
   its `detail` and its `nextAction`.
 - The command never runs containers and never prints secrets; it only probes
-  `podman --version`, `podman info`, `podman image exists`, `podman image inspect` and the two directories. The `sanitizer-image` check requires the rebuilt base image label `jit.sanitize.version=1`.
+  `podman --version`, `podman info`, `podman image exists`, `podman image inspect` and the two directories. The `sanitizer-image` check requires the rebuilt base image label `jit.sanitize.version=2`.
 
 ## 6. What `fullAllowed` means
 
@@ -145,7 +145,7 @@ bun ops/box/build.ts --target base --tag <new-tag>
 jit ops box-doctor
 ```
 
-The base now includes `python3-pil`, `poppler-utils`, `/opt/jit/sanitize` and label `jit.sanitize.version=1`. The optional browser target inherits it; rebuild browser too when the operator wants matching targets. Never invent a published digest or reuse the prior digest for changed contents. The image is selected by the same base-image pin already used by execution boxes, so no extra installer image entry is required.
+The base now includes `python3-pil`, `poppler-utils`, `/opt/jit/sanitize` and label `jit.sanitize.version=2`. The optional browser target inherits it; rebuild browser too when the operator wants matching targets. Never invent a published digest or reuse the prior digest for changed contents. The image is selected by the same base-image pin already used by execution boxes, so no extra installer image entry is required.
 
 For opt-in acceptance on any disposable Linux x64/arm64 host with rootless Podman (never ordinary CI):
 
@@ -153,7 +153,9 @@ For opt-in acceptance on any disposable Linux x64/arm64 host with rootless Podma
 JIT_LIVE_PODMAN=1 JIT_LIVE_BOX_IMAGE=<base-name>@sha256:<real-digest> bun test tests/attachment-sanitizer.live.test.ts
 ```
 
-Record tested commit, OS/architecture, memory, image digest and sanitized pass/fail only in ignored `.local` evidence. The test processes a tiny repository metadata/polyglot fixture in its own temporary directories. To extend evidence in that authorized window, use the bomb/huge/malformed fixtures from `tests/fixtures/attachments`, verify rejection, and inspect an active `jit-sanitize-*` container: network `none`, no added capabilities, non-root user, read-only root, `/in` read-only and exactly `/in` plus `/out` bind mounts. Confirm a deadline removes the container. Keep raw file content, installation paths, addresses and diagnostics out of issues.
+Record tested commit, OS/architecture, memory, image digest and sanitized pass/fail only in ignored `.local` evidence. The test processes a tiny repository metadata/polyglot fixture in its own temporary directories. To extend evidence in that authorized window, use the bomb/huge/malformed fixtures from `tests/fixtures/attachments`, verify rejection, and inspect an active `jit-sanitize-*` container: network `none`, no added capabilities, non-root user, read-only root, only the private `/in` read-only bind mount, and `/out` tmpfs with its byte/inode caps. Confirm a deadline removes the container. Keep raw file content, installation paths, addresses and diagnostics out of issues.
+
+The output tmpfs cap is 32 MiB + 64 KiB for images (4 inodes including root) or 2 MiB + 64 KiB for PDFs (3 inodes). It is fully included in the disk reservation and added to the parser cgroup memory/swap ceiling. Outputs return over a bounded length-prefixed stdout stream; no writable output bind mount reaches service disk. Host writes follow successful container cleanup only. Cleanup uncertainty quarantines work and its reservation until reset succeeds.
 
 Runtime defaults are host-scaled memory `min(512, max(256, RAM/16))` MiB, up to 40 MP scaled with memory, 30 seconds and one parser at a time. PNG stays PNG, JPEG stays JPEG, WebP becomes PNG; model copies fit 2048 px. Images have a 16 MiB cap per derivative; PDFs produce at most 50 pages / 2 MiB UTF-8 text, never a rendered page. Attempt counts survive restart; two failed/interrupted attempts reject the file and remove its original when unshared.
 

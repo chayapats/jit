@@ -46,7 +46,7 @@ function depsFor(scenario: string): BoxDoctorDeps {
     }
     if (cmd[0] === "podman" && cmd[1] === "image") {
       if (scenario === "image-missing") return { exitCode: 1, stdout: "" };
-      return { exitCode: 0, stdout: cmd[2] === "inspect" && scenario !== "sanitizer-old" ? "1" : "" };
+      return { exitCode: 0, stdout: cmd[2] === "inspect" ? (scenario === "sanitizer-old" ? "1" : "2") : "" };
     }
     return { exitCode: 0, stdout: "" };
   };

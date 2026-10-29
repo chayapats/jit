@@ -156,7 +156,7 @@ export function boxDoctor(deps: BoxDoctorDeps, config: AppConfig["execution"]): 
 
   const sanitizerImage = config.images?.base;
   const sanitizer = sanitizerImage ? deps.run(["podman", "image", "inspect", "--format", '{{ index .Config.Labels "jit.sanitize.version" }}', sanitizerImage]) : null;
-  checks.push(sanitizer?.exitCode === 0 && sanitizer.stdout.trim() === "1"
+  checks.push(sanitizer?.exitCode === 0 && sanitizer.stdout.trim() === "2"
     ? pass("sanitizer-image", en["attachments.sanitizer_image_ready"])
     : fail("sanitizer-image", en["attachments.sanitizer_image_missing"], "rebuild-base-image-and-pin-digest"));
 

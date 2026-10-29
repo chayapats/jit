@@ -5,6 +5,8 @@ import os
 import re
 import resource
 import signal
+import stat
+import struct
 import subprocess
 import sys
 import warnings
@@ -41,7 +43,12 @@ def sanitize(kind, pixels, source, out):
         pages = int(match[1])
         text, cut = bounded_command(["pdftotext", "-f", "1", "-l", str(min(50, pages)), "-enc", "UTF-8", str(source), "-"], TEXT_BYTES)
         # Only a cut UTF-8 tail may be discarded; malformed complete output is a failure.
-        text = text.decode("utf-8", errors="ignore" if cut else "strict").encode("utf-8")
+        try:
+            text = text.decode("utf-8", errors="strict").encode("utf-8")
+        except UnicodeDecodeError as error:
+            if not cut or error.reason != "unexpected end of data" or error.end != len(text):
+                raise
+            text = text[:error.start].decode("utf-8", errors="strict").encode("utf-8")
         if not text.strip():
             text = b""
         if b"\0" in text:
@@ -72,10 +79,40 @@ def sanitize(kind, pixels, source, out):
         raise ValueError("image_too_many_pixels") from None
 
 
+def stream_outputs(kind, out):
+    """Length-prefixed files, never an archive; the host independently checks names, count and byte bounds."""
+    caps = {"result.json": 2048, "text.txt": TEXT_BYTES} if kind == "pdf" else {
+        "result.json": 2048,
+        "clean.jpg" if kind == "jpeg" else "clean.png": IMAGE_BYTES,
+        "model.jpg" if kind == "jpeg" else "model.png": IMAGE_BYTES,
+    }
+    names = []
+    with os.scandir(out) as entries:
+        for entry in entries:
+            if entry.name not in caps or len(names) >= len(caps):
+                raise ValueError("sanitize_output_invalid")
+            names.append(entry.name)
+    for name in names:
+        fd = os.open(out / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as file:
+            info = os.fstat(file.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > caps[name]:
+                raise ValueError("sanitize_output_invalid")
+            data = file.read(caps[name] + 1)
+            if len(data) != info.st_size:
+                raise ValueError("sanitize_output_invalid")
+        encoded = name.encode("ascii")
+        sys.stdout.buffer.write(bytes([len(encoded)]) + encoded + struct.pack(">I", len(data)))
+        sys.stdout.buffer.write(data)
+
+
 def main():
     os.umask(0o077)
     resource.setrlimit(resource.RLIMIT_FSIZE, (IMAGE_BYTES, IMAGE_BYTES))
     kind, pixels, seconds = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+    stream = sys.argv[-1] == "--stream"
+    if stream:
+        sys.argv.pop()
     # The external deadline also kills/removes the container; this alarm bounds an orphan after a service crash.
     signal.alarm(seconds)
     # Optional paths exist for deterministic fake-runtime fixtures; production passes only kind, pixel cap and deadline.
@@ -90,6 +127,11 @@ def main():
         if str(error) == "image_too_many_pixels":
             result["reason"] = "image_too_many_pixels"
     (out / "result.json").write_text(json.dumps(result), encoding="utf-8")
+    if stream:
+        try:
+            stream_outputs(kind, out)
+        except (OSError, ValueError):
+            sys.exit(65)
 
 
 if __name__ == "__main__":

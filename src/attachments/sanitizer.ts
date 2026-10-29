@@ -4,14 +4,14 @@ import { stripAttachmentMetadata } from "./fallback";
 import { writeAttachmentEvent } from "./records";
 import type { AttachmentStorage } from "./storage";
 import { sanitizerReasons, type AttachmentSanitizerRuntime, type SanitizeJob } from "./sanitizer-runtime";
+import { sanitizerOutputBudget, sanitizerOutputLimits } from "./sanitizer-output";
+export { sanitizerOutputLimits } from "./sanitizer-output";
 
 interface Pending {
   id: string; projectId: string; sha256: string; bytes: number; revision: number;
   mediaType: string; kind: string; attempts: number; reason: string | null;
 }
 interface Derivatives { clean?: Buffer; model?: Buffer; text?: Buffer; mediaType?: string; truncated: boolean }
-/** Hard byte bounds independent of compression ratios; output beyond a cap is rejected, never silently served. */
-export const sanitizerOutputLimits = Object.freeze({ image: 16 * 1024 * 1024, text: 2 * 1024 * 1024, result: 2048 });
 const running = new Map<string, Promise<number>>();
 
 /**
@@ -45,6 +45,7 @@ export class AttachmentSanitizer {
         media_type AS mediaType, kind, sanitize_attempts AS attempts, reason FROM attachments WHERE state = 'pending' ORDER BY created_at, id LIMIT 1`));
       if (!row) break;
       const container = await this.available(); this.#current();
+      if (this.#unsafeWork.length && !container) throw new Error("sanitizer_cleanup_failed");
       if (container) { await this.runtime!.reset(); for (const work of this.#unsafeWork.splice(0)) work.release(); }
       // A crash during the second attempt leaves pending/2. Do not run a third parser.
       if (row.attempts >= 2) { this.#finish(row, null, "container", row.reason ?? "sanitizer_unavailable", 0); settled++; continue; }
@@ -59,7 +60,7 @@ export class AttachmentSanitizer {
       let work: ReturnType<AttachmentStorage["sanitizerWork"]> | undefined;
       let safe = true;
       try {
-        work = this.storage.sanitizerWork(row.projectId, row.sha256, row.bytes, container ? sanitizerOutputLimits.result + (row.kind === "pdf" ? sanitizerOutputLimits.text : 2 * sanitizerOutputLimits.image) : 0);
+        work = this.storage.sanitizerWork(row.projectId, row.sha256, row.bytes, container ? sanitizerOutputBudget(row.kind) : 0);
         if (container) {
           try { await this.runtime!.run({ input: work.input, output: work.output, kind: this.#kind(row), pixels: this.storage.limits.imagePixels }, this.#abort.signal); }
           catch (error) { if ((error as Error).message === "sanitizer_cleanup_failed") safe = false; throw error; }

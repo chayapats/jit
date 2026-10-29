@@ -9,7 +9,8 @@ import { TransactionStore } from "../src/store";
 import { AttachmentStorage } from "../src/attachments/storage";
 import { stripAttachmentMetadata } from "../src/attachments/fallback";
 import { AttachmentSanitizer, sanitizerOutputLimits } from "../src/attachments/sanitizer";
-import { PodmanAttachmentSanitizer, sanitizerCommandRunner, type AttachmentSanitizerRuntime, type SanitizeJob } from "../src/attachments/sanitizer-runtime";
+import { sanitizerOutputBudget, sanitizerStreamLimit } from "../src/attachments/sanitizer-output";
+import { PodmanAttachmentSanitizer, sanitizerCommandRunner, type AttachmentSanitizerRuntime, type SanitizeJob, type SanitizerCommandRunner } from "../src/attachments/sanitizer-runtime";
 import type { CommandRunner } from "../src/exec/podman-runtime";
 import { readAttachment, readAttachmentEvents } from "../src/attachments/records";
 
@@ -52,6 +53,12 @@ async function fixture(runtime: AttachmentSanitizerRuntime | null = null) {
 function emit(job: SanitizeJob, result: object, files: Record<string, Uint8Array> = {}) {
   writeFileSync(join(job.output, "result.json"), JSON.stringify(result));
   for (const [name, content] of Object.entries(files)) writeFileSync(join(job.output, name), content);
+}
+function frame(files: Record<string, Uint8Array>): Buffer {
+  return Buffer.concat(Object.entries(files).flatMap(([name, bytes]) => {
+    const header = Buffer.alloc(5); header[0] = Buffer.byteLength(name); header.writeUInt32BE(bytes.length, 1);
+    return [header.subarray(0, 1), Buffer.from(name), header.subarray(1), bytes];
+  }));
 }
 
 for (const [name, mediaType] of [["metadata-polyglot.png", "image/png"], ["exif-gps.jpg", "image/jpeg"]] as const) {
@@ -192,16 +199,16 @@ test("PDF/WebP upload is refused when runtime capability is absent; valid PNG st
 });
 
 test("runtime capability requires rootless cgroup controls and the rebuilt pinned base image", async () => {
-  let info = { security: { rootless: true }, cgroupVersion: "v2", cgroupControllers: ["memory", "cpu", "pids"] }, version = "1";
+  let info = { security: { rootless: true }, cgroupVersion: "v2", cgroupControllers: ["memory", "cpu", "pids"] }, version = "2";
   const command: CommandRunner = async args => okCommand(JSON.stringify(args[0] === "info" ? { host: info } : [{ Config: { Labels: { "jit.sanitize.version": version } } }]));
   const runtime = new PodmanAttachmentSanitizer(base, "/fixture/state", readConfig({}, host).attachments, command);
-  expect(await runtime.available()).toBe(true); version = ""; expect(await runtime.available()).toBe(false); version = "1";
+  expect(await runtime.available()).toBe(true); version = "1"; expect(await runtime.available()).toBe(false); version = "2";
   info.security.rootless = false; expect(await runtime.available()).toBe(false); info.security.rootless = true;
   info.cgroupControllers = ["cpu"]; expect(await runtime.available()).toBe(false);
   expect(() => new PodmanAttachmentSanitizer("image:latest", "fixture", readConfig({}, host).attachments, command)).toThrow("sanitizer_unavailable");
 });
 
-test("container flags have exactly per-job input/output, fixed environment, no network; deadline kills then removes", async () => {
+test("container caps output tmpfs bytes/inodes and memory, mounts only read-only input; deadline kills then removes", async () => {
   const calls: string[][] = []; let expire!: () => void;
   const command: CommandRunner = async (args, request) => {
     calls.push([...args]);
@@ -212,11 +219,13 @@ test("container flags have exactly per-job input/output, fixed environment, no n
   const runtime = new PodmanAttachmentSanitizer(base, "installation", limits, command, (callback, ms) => { expire = callback; expect(ms).toBe(30_000); return () => {}; });
   const pending = runtime.run({ input: "/generated/in", output: "/generated/out", kind: "png", pixels: limits.imagePixels });
   const run = calls[0]!;
-  for (const flag of ["--rm", "--pull=never", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only", "--memory=512m", "--memory-swap=512m", "--pids-limit=64", "--cpus=1", "--userns=keep-id:uid=1000,gid=1000"]) expect(run).toContain(flag);
+  const outputBytes = sanitizerOutputBudget("png"), memoryBytes = 512 * 1024 * 1024 + outputBytes;
+  for (const flag of ["--rm", "--pull=never", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only", `--memory=${memoryBytes}`, `--memory-swap=${memoryBytes}`, "--pids-limit=64", "--cpus=1", "--userns=keep-id:uid=1000,gid=1000"]) expect(run).toContain(flag);
   expect(run[run.indexOf("--network") + 1]).toBe("none"); expect(run[run.indexOf("--user") + 1]).toBe("1000:1000");
-  expect(run.filter((_, i) => run[i - 1] === "--mount")).toEqual(["type=bind,source=/generated/in,destination=/in,ro=true", "type=bind,source=/generated/out,destination=/out,rw=true"]);
+  expect(run.filter((_, i) => run[i - 1] === "--mount")).toEqual(["type=bind,source=/generated/in,destination=/in,ro=true"]);
+  expect(run).toContain(`/out:rw,nosuid,nodev,noexec,size=${outputBytes},nr_inodes=4,uid=1000,gid=1000,mode=0700`);
   expect(run.filter((_, i) => run[i - 1] === "--env")).toEqual(["HOME=/tmp", "LANG=C.UTF-8"]);
-  expect(run.slice(-5)).toEqual([base, "/opt/jit/sanitize", "png", "40000000", "30"]);
+  expect(run.slice(-6)).toEqual([base, "/opt/jit/sanitize", "png", "40000000", "30", "--stream"]);
   expire(); await expect(pending).rejects.toThrow("sanitize_timeout");
   expect(calls.slice(1).map(c => c[0])).toEqual(["ps", "kill", "rm"]);
   expect(calls.at(-1)).toEqual(["rm", "--force", "--ignore", "b".repeat(64)]);
@@ -229,6 +238,11 @@ test("failed runtime cleanup retains work and pending state; next pump resets be
   const worker = new AttachmentSanitizer(f.storage, runtime);
   await expect(worker.pump()).rejects.toThrow("sanitizer_cleanup_failed");
   expect(f.view(a.id).state).toBe("pending"); expect(readdirSync(join(f.storage.root, ".work"))).toHaveLength(1);
+  runtime.reachable = false;
+  await expect(worker.pump()).rejects.toThrow("sanitizer_cleanup_failed");
+  expect(runtime.calls).toHaveLength(1); expect(f.row(a.id).sanitize_attempts).toBe(1);
+  expect(readdirSync(join(f.storage.root, ".work"))).toHaveLength(1);
+  runtime.reachable = true;
   fail = false; expect(await worker.pump()).toBe(1); expect(readdirSync(join(f.storage.root, ".work"))).toHaveLength(0);
 });
 
@@ -241,20 +255,27 @@ test("lifecycle fencing after parser completion publishes no output and leaves a
   expect(f.row(a.id)).toMatchObject({ state: "pending", sanitize_attempts: 1, clean_sha256: null });
 });
 
-test("actual PDF script bounds its subprocess pipe and snaps a truncated multibyte UTF-8 tail", async () => {
+for (const [label, expression, valid, length] of [
+  ["incomplete tail", "('a' * (2 * 1024 * 1024 - 1) + '🧪tail').encode('utf-8')", true, sanitizerOutputLimits.text - 1],
+  ["complete boundary", "b'a' * (2 * 1024 * 1024 + 1)", true, sanitizerOutputLimits.text],
+  ["invalid middle over cap", "b'a' * 100 + b'\\xff' + b'a' * (2 * 1024 * 1024)", false, 0],
+  ["invalid final byte over cap", "b'a' * (2 * 1024 * 1024 - 1) + b'\\xfftail'", false, 0],
+  ["invalid middle and incomplete tail", "b'bad\\xff' + b'a' * (2 * 1024 * 1024 - 5) + '🧪tail'.encode('utf-8')", false, 0],
+  ["incomplete tail without cut", "b'text\\xf0'", false, 0],
+] as const) test(`actual PDF script bounds its pipe and decodes UTF-8 strictly: ${label}`, async () => {
   const runtime = new FakeRuntime(async job => {
     const bin = join(job.input, "fake-poppler"); mkdirSync(bin, { mode: 0o700 });
     const interpreter = Bun.which(python)!;
     writeFileSync(join(bin, "pdfinfo"), `#!${interpreter}\nprint('Pages: 1')\n`, { mode: 0o700 });
-    writeFileSync(join(bin, "pdftotext"), `#!${interpreter}\nimport sys\nsys.stdout.buffer.write(('a' * (2 * 1024 * 1024 - 1) + '🧪tail').encode('utf-8'))\n`, { mode: 0o700 });
+    writeFileSync(join(bin, "pdftotext"), `#!${interpreter}\nimport sys\nsys.stdout.buffer.write(${expression})\n`, { mode: 0o700 });
     const proc = Bun.spawn([python, script, job.kind, String(job.pixels), "30", join(job.input, "input"), job.output], {
       env: { ...fixtureEnv, PATH: `${bin}:${fixtureEnv.PATH}` }, stdout: "ignore", stderr: "pipe",
     });
     const err = await new Response(proc.stderr).text(); expect([await proc.exited, err]).toEqual([0, ""]);
   });
   const f = await fixture(runtime), a = await f.upload(bytes("malformed.pdf"), "a.pdf"); await f.app.processAttachments();
-  expect(f.view(a.id)).toMatchObject({ state: "ready", textTruncated: true });
-  expect(f.row(a.id).text_bytes).toBe(sanitizerOutputLimits.text - 1);
+  expect(f.view(a.id)).toMatchObject(valid ? { state: "ready", textTruncated: true } : { state: "rejected", reason: "pdf_extract_failed" });
+  expect(f.row(a.id).text_bytes).toBe(valid ? length : null);
 });
 
 test("a rejected duplicate never unlinks another pending or ready row's original", async () => {
@@ -300,6 +321,8 @@ else console.log(JSON.stringify(Object.keys(process.env).sort()));
   const result = await runner(["env"], { timeoutMs: 1000 });
   expect(result.exitCode).toBe(0); expect(JSON.parse(Buffer.from(result.stdout).toString())).toEqual(["HOME", "LANG", "PATH"]);
   await expect(runner(["flood"], { timeoutMs: 1000 })).rejects.toThrow("sanitizer_unavailable");
+  expect((await runner(["flood"], { timeoutMs: 1000, stdoutBytes: 80000 })).stdout.length).toBe(70001);
+  await expect(runner(["flood"], { timeoutMs: 1000, stdoutBytes: 70000 })).rejects.toThrow("sanitize_output_invalid");
   const abort = new AbortController(), pending = runner(["hold"], { timeoutMs: 1000, signal: abort.signal });
   abort.abort(); expect((await pending).exitCode).not.toBe(0);
 });
@@ -310,10 +333,117 @@ test("late cleanup cannot remove a successor that reused the installation contai
   const runtime = new PodmanAttachmentSanitizer(base, "fixture", readConfig({}, host).attachments, async args => {
     calls.push([...args]);
     // The prior process's container is already removed; a new owner uses the same name with a different job label.
-    return okCommand();
+    return { ...okCommand(), stdout: args[0] === "run" ? frame({ "result.json": Buffer.from('{"ok":false,"reason":"image_decode_failed"}') }) : new Uint8Array() };
   });
-  await runtime.run({ input: "/fixture/in", output: "/fixture/out", kind: "png", pixels: 20_000_000 });
+  const directory = mkdtempSync(join(tmpdir(), "jit-successor-")); dirs.push(directory);
+  await runtime.run({ input: "/fixture/in", output: directory, kind: "png", pixels: 20_000_000 });
   expect(calls.map(c => c[0])).toEqual(["run", "ps"]);
   const job = calls[0]!.find(arg => arg.startsWith("jit.sanitize.job="))!;
   expect(calls[1]).toContain(`label=${job}`); expect(calls[1]).not.toContain(runtime.name);
 });
+
+for (const cleanup of ["ps", "rm"] as const) for (const failure of ["throw", "reject", "exit"] as const) {
+  test(`${cleanup} cleanup ${failure} quarantines work and reservation until reset is proven`, async () => {
+    const f = await fixture(new FakeRuntime()), a = await f.upload(bytes("metadata-polyglot.png"), "a.png");
+    const id = "d".repeat(64), inputs: string[] = [];
+    let broken: "job" | "reset" | null = "job";
+    const command: SanitizerCommandRunner = args => {
+      if (args[0] === "run") {
+        inputs.push(args.find(arg => arg.startsWith("type=bind,"))!);
+        return Promise.resolve({ ...okCommand(), stdout: frame({
+          "result.json": Buffer.from('{"ok":true,"width":1,"height":1,"truncated":false}'),
+          "clean.png": bytes("metadata-polyglot.png"), "model.png": bytes("metadata-polyglot.png"),
+        }) });
+      }
+      const fail = (broken === "job" && args[0] === cleanup && (cleanup === "ps" || args.at(-1) === id)) ||
+        (broken === "reset" && args[0] === "rm");
+      if (fail) {
+        if (failure === "throw") throw new Error("EMFILE");
+        if (failure === "reject") return Promise.reject(new Error("EMFILE"));
+        return Promise.resolve(okCommand("", 1));
+      }
+      return Promise.resolve(okCommand(args[0] === "ps" ? id : ""));
+    };
+    const runtime = new PodmanAttachmentSanitizer(base, f.dir, f.config.attachments, command);
+    runtime.available = async () => true;
+    const worker = new AttachmentSanitizer(f.storage, runtime);
+    await expect(worker.pump()).rejects.toThrow("sanitizer_cleanup_failed");
+    const quarantined = readdirSync(join(f.storage.root, ".work")); expect(quarantined).toHaveLength(1);
+    expect(readdirSync(join(f.storage.root, ".work", quarantined[0]!, "out"))).toEqual([]);
+    expect(f.row(a.id)).toMatchObject({ state: "pending", sanitize_attempts: 1, clean_sha256: null });
+    // GC and admission still account for the quarantined work while removal cannot be established.
+    f.storage.sweep(); expect(readdirSync(join(f.storage.root, ".work"))).toEqual(quarantined);
+    const tight = new AttachmentStorage(f.store, f.config.attachments, {
+      diskFree: () => f.config.attachments.diskReserveBytes + sanitizerOutputBudget("png") + f.row(a.id).bytes,
+    });
+    expect(() => tight.sanitizerWork(f.p.id, f.row(a.id).sha256, f.row(a.id).bytes, 1)).toThrow("sanitizer_unavailable");
+    broken = "reset";
+    await expect(worker.pump()).rejects.toThrow("sanitizer_cleanup_failed");
+    expect(inputs).toHaveLength(1); expect(f.row(a.id).sanitize_attempts).toBe(1);
+    expect(readdirSync(join(f.storage.root, ".work"))).toEqual(quarantined);
+    broken = null;
+    expect(await worker.pump()).toBe(1);
+    expect(inputs).toHaveLength(2); expect(inputs[0]).not.toBe(inputs[1]);
+    expect(f.view(a.id).state).toBe("ready"); expect(readdirSync(join(f.storage.root, ".work"))).toEqual([]);
+  });
+}
+
+for (const [label, output] of [
+  ["total bytes over cap", () => Buffer.alloc(sanitizerStreamLimit("png") + 1)],
+  ["one oversized file", () => frame({ "result.json": Buffer.from('{"ok":true}'), "clean.png": Buffer.alloc(sanitizerOutputLimits.image + 1) })],
+  ["too many files", () => frame({ "result.json": Buffer.from('{"ok":true}'), "clean.png": Buffer.from("a"), "model.png": Buffer.from("b"), extra: Buffer.from("c") })],
+  ["duplicate file", () => Buffer.concat([frame({ "result.json": Buffer.from("{}") }), frame({ "result.json": Buffer.from("{}") })])],
+  ["path traversal", () => frame({ "../escape": Buffer.from("bad") })],
+  ["high-bit filename alias", () => { const stream = frame({ "result.json": Buffer.from("{}") }); stream[1] = stream[1]! | 0x80; return stream; }],
+  ["truncated frame", () => frame({ "result.json": Buffer.from("{}") }).subarray(0, -1)],
+] as const) test(`bounded output transport rejects ${label} and still removes the container`, async () => {
+  const f = await fixture(new FakeRuntime()), a = await f.upload(bytes("metadata-polyglot.png"), "a.png");
+  let removed = 0;
+  const command: SanitizerCommandRunner = async (args, request) => {
+    if (args[0] === "run") {
+      expect(request.stdoutBytes).toBe(sanitizerStreamLimit("png")); return { ...okCommand(), stdout: output() };
+    }
+    if (args[0] === "rm" && args.at(-1) === "e".repeat(64)) removed++;
+    return okCommand(args[0] === "ps" ? "e".repeat(64) : "");
+  };
+  const runtime = new PodmanAttachmentSanitizer(base, f.dir, f.config.attachments, command); runtime.available = async () => true;
+  expect(await new AttachmentSanitizer(f.storage, runtime).pump()).toBe(1);
+  expect(f.view(a.id)).toMatchObject({ state: "rejected", reason: "sanitize_output_invalid" });
+  expect(f.row(a.id)).toMatchObject({ clean_sha256: null, model_sha256: null });
+  expect(removed).toBe(2); expect(readdirSync(join(f.storage.root, ".work"))).toEqual([]);
+  expect(existsSync(join(f.dir, "escape"))).toBe(false);
+});
+
+for (const [name, kind] of [["metadata-polyglot.png", "png"], ["exif-gps.jpg", "jpeg"], ["image.webp", "webp"], ["valid.pdf", "pdf"], ["malformed.pdf", "pdf"]] as const) {
+  test(`actual script streams bounded outputs before exit; host writes only after cleanup: ${name}`, async () => {
+    const f = await fixture(new FakeRuntime()), a = await f.upload(name === "valid.pdf" ? pdf(1) : bytes(name), name);
+    let workOutput = "", attempts = 0;
+    const createWork = f.storage.sanitizerWork.bind(f.storage);
+    f.storage.sanitizerWork = (project, hash, size, budget) => {
+      expect(budget).toBe(sanitizerOutputBudget(kind));
+      const work = createWork(project, hash, size, budget); workOutput = work.output; return work;
+    };
+    const command: SanitizerCommandRunner = async (args, request) => {
+      if (args[0] === "run") {
+        expect(args).toContain(`/out:rw,nosuid,nodev,noexec,size=${sanitizerOutputBudget(kind)},nr_inodes=${kind === "pdf" ? 3 : 4},uid=1000,gid=1000,mode=0700`);
+        const memoryBytes = f.config.attachments.sanitizerMemoryMB * 1024 * 1024 + sanitizerOutputBudget(kind);
+        expect(args).toContain(`--memory=${memoryBytes}`); expect(args).toContain(`--memory-swap=${memoryBytes}`);
+        expect(request.stdoutBytes).toBe(sanitizerStreamLimit(kind));
+        const source = args.find(arg => arg.startsWith("type=bind,"))!.split(",")[1]!.slice("source=".length);
+        const output = join(f.dir, `parser-${attempts++}`); mkdirSync(output, { mode: 0o700 });
+        const proc = Bun.spawn([python, script, kind, "40000000", "30", join(source, "input"), output, "--stream"], { env: fixtureEnv, stdout: "pipe", stderr: "pipe" });
+        const [stdout, stderr, exitCode] = await Promise.all([new Response(proc.stdout).bytes(), new Response(proc.stderr).bytes(), proc.exited]);
+        expect(stderr.length).toBe(0); return { stdout, stderr, exitCode };
+      }
+      expect(readdirSync(workOutput)).toEqual([]);
+      return okCommand(args[0] === "ps" ? "f".repeat(64) : "");
+    };
+    // Initial reset runs before the first work directory exists.
+    const wrapped: SanitizerCommandRunner = (args, request) => args[0] === "rm" && args.at(-1) !== "f".repeat(64)
+      ? Promise.resolve(okCommand()) : command(args, request);
+    const runtime = new PodmanAttachmentSanitizer(base, f.dir, f.config.attachments, wrapped); runtime.available = async () => true;
+    await new AttachmentSanitizer(f.storage, runtime).pump();
+    expect(f.view(a.id)).toMatchObject(name === "malformed.pdf" ? { state: "rejected", reason: "pdf_extract_failed" } : { state: "ready", sanitizedBy: "container", preview: kind !== "pdf" });
+    expect(readdirSync(join(f.storage.root, ".work"))).toEqual([]);
+  });
+}

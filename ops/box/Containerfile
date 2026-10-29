@@ -12,7 +12,7 @@ RUN useradd --uid 1000 --create-home --home-dir /home/box --shell /bin/bash box
 # jit.box.runner/v1 (EXE03): POSIX sh + jq, perl-base for process groups; no model, no network, mode 0555.
 COPY --chmod=0555 ops/box/runner /opt/jit/runner
 COPY --chmod=0555 ops/box/sanitize /opt/jit/sanitize
-LABEL jit.sanitize.version="1"
+LABEL jit.sanitize.version="2"
 WORKDIR /workspace
 USER box
 
