@@ -2,7 +2,7 @@
 
 Tracker: https://github.com/chayapats/jit/issues/170
 
-Owner: Jit. สถานะ: **confirmed** owner ยืนยันทุกข้อ (D01–D12) เมื่อ 2026-10-29 และสั่งให้แตก ticket D01 ทำแล้วใน [#169](https://github.com/chayapats/jit/issues/169) ส่วน ticket ที่เหลืออยู่ใน issue [#170](https://github.com/chayapats/jit/issues/170) Parent: [MVP spec](00-mvp.md) ต่อยอดจาก [S09](S09-main-bot-and-chat-first-ui.md), [S10](S10-reliability-and-owner-integrations.md) และ [S11](S11-execution-access-and-tools.md)
+Owner: Jit. สถานะ: **confirmed** owner ยืนยันทุกข้อ (D01–D13) เมื่อ 2026-10-29 และสั่งให้แตก ticket D01 ทำแล้วใน [#169](https://github.com/chayapats/jit/issues/169) ส่วน ticket ที่เหลืออยู่ใน issue [#170](https://github.com/chayapats/jit/issues/170) Parent: [MVP spec](00-mvp.md) ต่อยอดจาก [S09](S09-main-bot-and-chat-first-ui.md), [S10](S10-reliability-and-owner-integrations.md) และ [S11](S11-execution-access-and-tools.md)
 
 แหล่งแนวคิด: [nightly-labs/openbot](https://github.com/nightly-labs/openbot) (PolyForm Noncommercial ใช้ได้เฉพาะแนวคิด ห้ามคัดลอกโค้ดหรือข้อความ) และ [CopilotKit/OpenDuet](https://github.com/CopilotKit/OpenDuet) (MIT) แต่ spec นี้ยืมแค่แนวคิดจากทั้งสองโครงการ
 
@@ -40,6 +40,7 @@ Owner ลองใช้ Jit บน Pi เมื่อ 2026-10-29 แล้ว�
 | S12-D10 | **Login Codex/Grok จากหน้า Web:**<br>• ขั้น "เชื่อมจิต" แสดง device code กับลิงก์ให้กดยืนยัน แทนการ SSH ไปรัน `/login`<br>• ต้องมี host contract ใน Schway สำหรับ device-code login ที่เขียน credential ลง Secret Service ของ service identity<br>• Credential ไม่ผ่าน Jit, ไม่อยู่ในฐานข้อมูล และไม่อยู่ใน log | หลัก just works | **owner ยืนยัน 2026-10-29** |
 | S12-D11 | **ติดตั้งด้วยคำสั่งเดียว:**<br>• `install.sh` ที่ตรวจเครื่อง แล้วเตรียม Bun, service user, Podman, keyring unlock และ systemd unit ตาม runbook OPS07<br>• แสดงแผนก่อนแก้เครื่องทุกครั้ง และหยุดพร้อมบอกทางแก้เมื่อขั้นไหนไม่ผ่าน<br>• จบแล้วพิมพ์ URL ของหน้าเว็บให้เปิด ขั้นต่อไปทั้งหมดทำใน Web | หลัก just works | **owner ยืนยัน 2026-10-29** |
 | S12-D12 | **จัดการของในแอปได้ครบ:**<br>• ลบหรือเปลี่ยนชื่อโครงการ และลบ role ได้จาก Web<br>• การลบผ่าน preview → confirm ตาม data lifecycle เดิม | หลัก just works | **owner ยืนยัน 2026-10-29** |
+| S12-D13 | **ไม่ผูกกับ Raspberry Pi:**<br>• Jit รองรับ Linux 64-bit ทุกตัวที่มี systemd ทั้ง x64 และ arm64 เช่น mini PC, home server, VPS และ Pi<br>• Pi 5 เป็นแค่เครื่องอ้างอิงที่เล็กที่สุด ใช้กำหนดเพดานทรัพยากรเริ่มต้น<br>• ค่าเริ่มต้นปรับตามเครื่องที่ตรวจพบ (RAM, CPU, ดิสก์) แทนการฝังค่าของ Pi ไว้<br>• เครื่องที่ไม่มี Podman (เช่น macOS สำหรับพัฒนา) ยังคุยได้ ส่วนที่ต้องใช้ container ปิดพร้อมบอกเหตุผล | owner สั่ง 2026-10-29 | **owner ยืนยัน 2026-10-29** |
 
 ## Required behavior
 

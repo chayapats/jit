@@ -13,7 +13,7 @@ Chat with one assistant, bring in specialists when needed, and pick up where you
 [![License: MIT](https://img.shields.io/badge/license-MIT-0a0a0a?style=flat-square)](LICENSE)
 [![Bun](https://img.shields.io/badge/Bun-%E2%89%A51.4.2-0a0a0a?style=flat-square&logo=bun)](https://bun.sh)
 [![TypeScript](https://img.shields.io/badge/TypeScript-7-0a0a0a?style=flat-square&logo=typescript)](tsconfig.json)
-[![Runs on Raspberry Pi 5](https://img.shields.io/badge/runs%20on-Raspberry%20Pi%205-0a0a0a?style=flat-square&logo=raspberrypi)](docs/runbooks/ops-service.md)
+[![Runs on Linux x64 and arm64](https://img.shields.io/badge/runs%20on-Linux%20x64%20%7C%20arm64-0a0a0a?style=flat-square&logo=linux)](docs/runbooks/ops-service.md)
 
 **English** · [ไทย](README.th.md)
 
@@ -25,7 +25,7 @@ Chat with one assistant, bring in specialists when needed, and pick up where you
 
 ## What is Jit?
 
-Jit is a personal assistant that runs on a machine you control, such as a Raspberry Pi. You talk to **Jit**, the main bot. Jit answers every message, suggests specialists when a topic needs them, and asks them for independent analyses. It remembers decisions, tasks and their sources across projects and across days.
+Jit is a personal assistant that runs on a machine you control: a mini PC, a home server, a VPS or a Raspberry Pi. Any 64-bit Linux works. You talk to **Jit**, the main bot. Jit answers every message, suggests specialists when a topic needs them, and asks them for independent analyses. It remembers decisions, tasks and their sources across projects and across days.
 
 Jit uses [Schway](https://github.com/chayapats/schway) as its execution engine. Schway runs the agent loop and the provider sessions. Jit handles everything else: projects, the team, memory, tasks, jobs and channels.
 
@@ -65,7 +65,7 @@ flowchart LR
 
 ## Status
 
-Jit is in **pilot** with a single owner. The MVP and specs S09–S11 are implemented. On 2026-10-28, a Raspberry Pi 5 install passed packaging, restart, reboot and route-readiness gates on the **Codex** route. The Grok route is deferred until its quota resets, and Telegram stays disabled until a live transport ships. Each installation supports one owner.
+Jit is in **pilot** with a single owner. The MVP and specs S09–S11 are implemented. Jit is not tied to one device. Its smallest reference host is a Raspberry Pi 5, and on 2026-10-28 an install there passed packaging, restart, reboot and route-readiness gates on the **Codex** route. The Grok route is deferred until its quota resets, and Telegram stays disabled until a live transport ships. Each installation supports one owner.
 
 ## Quick start
 

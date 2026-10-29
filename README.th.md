@@ -13,7 +13,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-0a0a0a?style=flat-square)](LICENSE)
 [![Bun](https://img.shields.io/badge/Bun-%E2%89%A51.4.2-0a0a0a?style=flat-square&logo=bun)](https://bun.sh)
 [![TypeScript](https://img.shields.io/badge/TypeScript-7-0a0a0a?style=flat-square&logo=typescript)](tsconfig.json)
-[![Runs on Raspberry Pi 5](https://img.shields.io/badge/runs%20on-Raspberry%20Pi%205-0a0a0a?style=flat-square&logo=raspberrypi)](docs/runbooks/ops-service.md)
+[![Runs on Linux x64 and arm64](https://img.shields.io/badge/runs%20on-Linux%20x64%20%7C%20arm64-0a0a0a?style=flat-square&logo=linux)](docs/runbooks/ops-service.md)
 
 [English](README.md) · **ไทย**
 
@@ -25,7 +25,7 @@
 
 ## Jit คืออะไร
 
-Jit คือผู้ช่วยส่วนตัวที่รันบนเครื่องที่คุณควบคุมเอง เช่น Raspberry Pi คุณคุยกับ **จิต** ซึ่งเป็นบอทหลัก จิตตอบทุกข้อความ เสนอผู้เชี่ยวชาญเมื่อหัวข้อนั้นต้องใช้ และขอให้แต่ละคนวิเคราะห์แยกกัน จิตจำการตัดสินใจ งาน และที่มาของข้อมูลได้ข้ามโครงการและข้ามวัน
+Jit คือผู้ช่วยส่วนตัวที่รันบนเครื่องที่คุณควบคุมเอง จะเป็น mini PC, home server, VPS หรือ Raspberry Pi ก็ได้ ขอแค่เป็น Linux 64-bit คุณคุยกับ **จิต** ซึ่งเป็นบอทหลัก จิตตอบทุกข้อความ เสนอผู้เชี่ยวชาญเมื่อหัวข้อนั้นต้องใช้ และขอให้แต่ละคนวิเคราะห์แยกกัน จิตจำการตัดสินใจ งาน และที่มาของข้อมูลได้ข้ามโครงการและข้ามวัน
 
 Jit ใช้ [Schway](https://github.com/chayapats/schway) เป็น execution engine โดย Schway รับผิดชอบ agent loop และ provider sessions ส่วน Jit ดูแลที่เหลือทั้งหมด ได้แก่ โครงการ ทีม memory งาน jobs และช่องทางสื่อสาร
 
@@ -65,7 +65,7 @@ flowchart LR
 
 ## สถานะ
 
-Jit อยู่ในช่วง **pilot** กับ owner คนเดียว MVP และ specs S09–S11 ทำเสร็จแล้ว เมื่อ 2026-10-28 การติดตั้งบน Raspberry Pi 5 ผ่านการทดสอบ packaging, restart, reboot และ route readiness บน route **Codex** ส่วน route Grok เลื่อนไว้จนกว่า quota จะ reset และ Telegram ยังปิดไว้จนกว่าจะมี transport จริง แต่ละ installation รองรับ owner คนเดียว
+Jit อยู่ในช่วง **pilot** กับ owner คนเดียว MVP และ specs S09–S11 ทำเสร็จแล้ว Jit ไม่ผูกกับอุปกรณ์ใด เครื่องอ้างอิงที่เล็กที่สุดคือ Raspberry Pi 5 และเมื่อ 2026-10-28 การติดตั้งบน Pi 5 ผ่านการทดสอบ packaging, restart, reboot และ route readiness บน route **Codex** ส่วน route Grok เลื่อนไว้จนกว่า quota จะ reset และ Telegram ยังปิดไว้จนกว่าจะมี transport จริง แต่ละ installation รองรับ owner คนเดียว
 
 ## เริ่มต้นใช้งาน
 
