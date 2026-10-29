@@ -1,5 +1,7 @@
 {
   "autoReview": ["open"],
   "triggerOnDrafts": false,
+  "disabledLabels": ["documentation"],
+  "ignoreKeywords": "no-greptile",
   "ignorePatterns": "bun.lock\n**/__snapshots__/**\nvendor/**\nresources/**\n*.woff2\n*.png"
 }
