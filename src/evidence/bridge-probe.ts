@@ -4,6 +4,7 @@ import {
   checkAuthReadiness,
   createHost,
   type HostAuthFetch,
+  type HostImagesRejected,
   type HostCredentialReference,
   type HostCredentialStore,
   type HostRunOptions,
@@ -31,6 +32,8 @@ export interface BridgeProbeOptions {
   store?: HostCredentialStore;
   /** Fixture protocol transport; absent uses real native transport. Never used silently. */
   fetch?: HostAuthFetch;
+  /** Deterministic native-result seam; absent in production. */
+  testImagesRejected?: HostImagesRejected;
 }
 
 function serviceUid(): number | null {
@@ -93,6 +96,7 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
   const selection = { route: options.route, model: options.model } as const;
   const store = options.store;
   const providedFetch = options.fetch;
+  const testImagesRejected = options.testImagesRejected;
   // Ports instances are single-flight: liveProbe never overlaps infer calls
   // on one instance. A second concurrent call throws instead of silently
   // swapping per-call send counts.
@@ -238,7 +242,7 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
         const options: HostRunOptions = { signal };
         let result: Awaited<ReturnType<HostSession["submitWithRoute"]>>;
         try {
-          result = await session.submitWithRoute({ text: BRIDGE_PROBE_PROMPT }, options);
+          result = testImagesRejected ?? await session.submitWithRoute({ text: BRIDGE_PROBE_PROMPT }, options);
         } catch (error) {
           // An unverified credential cleanup is uncertainty, not a silent
           // failure: surface it as a store terminal so the record reports
@@ -247,7 +251,7 @@ export function bridgeProbePorts(options: BridgeProbeOptions): ProbePorts {
           throw error;
         }
         if (result.outcome === "completed") return "success";
-        // The probe sends text only; an image refusal is an unexpected host result and counts as rejected.
+        // Text-only readiness never proves image support. Image refusal is a safe rejected result without auth.
         if (!("auth" in result)) return "rejected";
         switch (result.auth.status) {
           case "needs-login": return "login";

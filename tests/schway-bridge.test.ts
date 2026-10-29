@@ -1086,3 +1086,16 @@ test("STR01: supported host deltas reach the reply observer untruncated", async 
   expect(observed.filter(event => event.kind === "delta").map(event => event.text)).toEqual(chunks);
   expect(observed.filter(event => event.kind === "delta").every(event => event.runId === run.runId)).toBe(true);
 });
+
+for (const outcome of ["images-unsupported", "images-unavailable"] as const) for (const fixtureModel of [false, true])
+test(`image rejection ${outcome} without auth is owner-visible (${fixtureModel ? "submit" : "route"})`, async () => {
+  const { config, store } = setup(), run = request(config); activate(store, run.context);
+  const result = { outcome, model: { provider: "grok", id: run.route.model }, usage: { attempts: [], complete: false, totalMs: 0 } } as unknown as import("schway/host").HostImagesRejected;
+  const port = new SchwayRunPort(store, config.team, config.jobs.outputBytes, {
+    ...(fixtureModel ? { model: scripted("must not run") } : {}),
+    testHooks: { imagesRejected: result },
+  });
+  const actual = await port.invoke(run, new AbortController().signal, () => {});
+  expect(actual).toMatchObject({ state: "blocked", mode: "production", output: null, reason: outcome.replaceAll("-", "_") });
+  expect(actual.usage.calls).toBe(0);
+});

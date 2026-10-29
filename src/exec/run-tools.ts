@@ -85,7 +85,7 @@ export function runMaxTurns(request: Pick<ApplicationRunRequest, "execution" | "
 
 function attachmentContextTurns(request: Pick<ApplicationRunRequest, "execution" | "limits" | "web" | "attachments">): number {
   return request.attachments?.length ? 1 + Math.max(0, Math.floor((request.limits.contextTokens -
-    Math.ceil(Buffer.byteLength(JSON.stringify(request)) / 4) - attachmentContextTokens(request, 1)) / (64 * 1024 / 4))) : 1;
+    Math.ceil(Buffer.byteLength(JSON.stringify(request)) / 4) - attachmentContextTokens(request, 1)) / (attachmentContextTokens(request, 2) - attachmentContextTokens(request, 1)))) : 1;
 }
 
 /** Initial inline turn plus the read_attachment continuations that fit this attempt; other tools keep their own turns. */

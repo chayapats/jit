@@ -1616,3 +1616,12 @@ test("no clock crossing at any dispatch boundary starts inference past the deadl
     Date.now = realNow;
   }
 });
+
+for (const outcome of ["images-unsupported", "images-unavailable"] as const)
+test(`bridge probe handles ${outcome} without auth safely`, async () => {
+  const ports = bridgeProbePorts({ root: setup(), route: "grok", model: "grok-4-fixture", store: memStore(validTokens), fetch: throwingFetch,
+    testImagesRejected: { outcome, model: { provider: "grok", id: "grok-4-fixture" },
+      usage: { attempts: [], complete: false, totalMs: 0 } } as unknown as import("schway/host").HostImagesRejected,
+  });
+  expect(await ports.infer({ route: "grok", model: "grok-4-fixture", prompt: PROBE_PROMPT, tools: [], discovery: { repository: false, hosted: false }, deadlineMs: 8000 }, new AbortController().signal)).toBe("rejected");
+});

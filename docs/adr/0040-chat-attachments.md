@@ -245,3 +245,57 @@ Each choice is labelled. **Confirmed** means an owner decision in S13. **Propose
 2. **Upgrade recovery points versus the attachment bound** (see Consequences). This ADR keeps them fail-closed.
    - The alternative is an explicitly recorded exclusion for upgrade recovery points only, which is not silent. Restoring such a point would then need the live blobs to still exist.
    - Recommendation: keep fail-closed, and revisit with measured attachment volumes from real installs.
+
+## ATT07 implementation choices (S13-D10)
+
+These are engineering choices; S13-D01–D10 and FR-13 remain unchanged.
+
+- Use `schway.host.image-input/v1` from pinned Schway `2068b71`. Only the
+  newest owner message's inline images (at most five) become reference-only
+  `HostInput.images`. Older image metadata explicitly says that its content
+  is unavailable. Only `ready`, `container` PNG/JPEG `model_sha256` derivatives
+  qualify; originals, clean preview images and fallback images are not read.
+- Create metadata from bounded verified derivatives at attempt start. The
+  resolver rereads the same model derivative at each provider attempt/tool
+  round, checking scope, source revision/generation, lifecycle suppression,
+  job/owner/context fences, halt, current probe evidence, size, MIME,
+  dimensions and SHA-256. The route transport also checks live authority
+  under the deletion writer serialization when starting a send (no lock spans
+  the network wait). Reserve conservative public image context bounds per
+  inline image/model turn in ATT04 budgeting. Nothing caches bytes or adds them to
+  a run request, audit, receipt, native session or snapshot. Attachment blobs
+  remain in Jit's existing authoritative store and backup artifact only.
+- Each resolver byte release writes `send_model`, `part: image`, route/model
+  and byte count. This records the attempted send boundary, including a later
+  transport failure; it does not claim successful provider receipt. Every
+  retry/replay is checked and audited separately. An already started send or
+  provider-held copy cannot be recalled by deletion.
+- Web Team settings (installation or project) offers one checkbox-confirmed
+  action for each configured exact route/model. Session, Origin, CSRF,
+  displayed revision and genuine Web channel are mandatory. Store the
+  `HostImageProbeRecord` in the existing command receipt with an audit row,
+  before dispatch as inconclusive/running and after settlement as its result.
+  A replay does not spend quota. A crash never resumes a probe automatically.
+  Latest evidence wins (including a failed or interrupted re-probe); retain at
+  most 256 recent actions when reading evidence. No schema migration is needed.
+- `hostCapabilities(records)` invokes Schway's `imageProbeRecords` validator
+  through the public host surface. Admission requires its image contract and
+  advertised exact passed route/model. A changed route/model or Schway pin
+  needs matching evidence. Evidence never selects a route or billing identity.
+- Schway's probe runner is not exported through `schway/host`. Jit's probe
+  therefore uses public host sessions with bundled, synthetic PNG/JPEG digit
+  challenges, exact transcription and native replay. Temporary bootstrap
+  admission belongs only to this isolated synthetic probe host and never
+  enters the evidence store. Both completed answers must match to pass.
+  There are no tools or owner files, no outer retries and no alternate route.
+  Bound the action to 120 seconds, 256 KiB cumulative response bytes, two host
+  submissions, and at most four inference/four token sends (including native
+  refresh). The public host has no output-token cap; time/byte limits bound it.
+  Cancellation, owner/session revocation, configuration change, shutdown and
+  upgrade/restore fences refuse further sends and passing evidence.
+- Normalize `HostImagesRejected` before inspecting `auth`: `images_unsupported`
+  and `images_unavailable` have localized owner reasons. The text-only bridge
+  readiness probe categorizes either as rejected and cannot claim image support.
+  Unprobed routes continue text analysis with an explicit unavailable-image
+  marker and never receive image bytes. Image contents remain untrusted and
+  add no OCR corpus (the D07 residual remains).

@@ -4,6 +4,21 @@
  * Values are plain text: no markup and none of < > & " ' (renderers insert them unescaped).
  */
 export const th = {
+  "attachments.image_probe_result_pass": "ผ่านการทดสอบ",
+  "attachments.image_probe_result_unsupported": "ยังไม่รองรับ",
+  "attachments.image_probe_result_inconclusive": "ยังสรุปผลไม่ได้",
+  "attachments.image_probe_title": "การมองรูปของ model",
+  "attachments.image_probe_note": "ทดสอบ route และ model ที่ระบุด้วยรูปสังเคราะห์ PNG และ JPEG รวมถึง replay การทดสอบใช้ quota เล็กน้อย เมื่อเปลี่ยน route, model หรือ Schway revision ต้องมีผลทดสอบที่ตรงกัน",
+  "attachments.image_probe_confirm": "ยืนยันให้ทดสอบ live probe ครั้งนี้และใช้ quota",
+  "attachments.image_probe_run": "ทดสอบการมองรูป",
+  "attachments.image_probe_pass": "route และ model นี้ผ่านการทดสอบมองรูปแล้ว",
+  "attachments.images_unavailable": "รูปแนบไม่พร้อมใช้งานหรือเกินเพดาน แนบ PNG/JPEG ที่เล็กลงเพื่อลองอีกครั้ง",
+  "error.invalid_image_probe": "ยืนยันการทดสอบรูปหนึ่งครั้งสำหรับ route และ model ที่ตั้งค่าไว้",
+  "error.image_probe_unavailable": "รอการทดสอบรูปปัจจุบัน หรือตั้งค่าให้ใช้ Schway run port",
+  "attachments.image_requires_probe": "ส่งรูปเฉพาะ route ที่ผ่านการทดสอบมองรูปแล้ว",
+  "team_card.reason.images_unsupported": "route นี้ยังมองรูปไม่ได้ ทดสอบการมองรูปใน Team settings",
+  "team_card.reason.images_unavailable": "รูปแนบไม่พร้อมใช้งาน กรุณาแนบใหม่",
+
   "web_search.title": "การค้นเว็บของจิต",
   "web_search.intro": "จิตใช้ตัวค้นในเครื่องได้ทันทีโดยไม่ต้องตั้งค่า เปลี่ยนเป็นบริการที่ใช้ key ได้ถ้าต้องการ",
   "web_search.provider_searxng": "ในเครื่อง (ค่าเริ่มต้น)",
