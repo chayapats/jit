@@ -892,9 +892,9 @@ test("REL02: Jit does not re-dispatch a role for the same request while its late
   await drain(f);
   expect(f.app.decision(f.auth.actor, f.project.id, f.topic.id).proposal!.artifact.missing)
     .toEqual([{ roleId: f.designId, roleName: "ออกแบบ", reason: "result_blocked", runId: held.blocked[0]!.runId, unblock: unblockText }]);
-  // Naming only the blocked role for the same request calls nobody and shows why. (REL03: the repeat above was a
-  // follow-up of the first team, so close this team first; otherwise rule follow_up, not Jit's model, would choose.)
-  expect(held.selection).toMatchObject({ rule: "follow_up" });
+  // Naming only the blocked role for the same request calls nobody and shows why. (#169: the repeat above was Jit's
+  // own proposal for the same team, so it continued the first discussion; close this team before the next case.)
+  expect(held.selection).toMatchObject({ rule: "model" });
   const closing = f.app.discussion(f.auth.actor, f.project.id, held.discussion!.id).discussion;
   f.app.execute(f.auth.actor, { kind: "team.stop_all", requestId: rid(), projectId: f.project.id, expectedRevision: closing.revision, payload: { discussionId: closing.id } });
   named = ["ออกแบบ"];
@@ -1145,61 +1145,68 @@ test("REL03 reply: answering one specialist's opinion calls that role again; a f
     payload: { topicId: f.topic.id, text: "x", replyTo: { discussionId } as never } })).toThrow(expect.objectContaining({ code: "invalid_conversation_command" }));
 });
 
-test("REL03 follow_up: the next message after the only open discussion's team reply calls that team; two open discussions fall to the model", async () => {
-  const f = await fixture();
+const followUpOffered = (request: ApplicationRunRequest) => request.instructions.operator.some(line => line.includes("An open team discussion in this topic"));
+const specialistRuns = (f: Fixture) => f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) AS n FROM team_runs WHERE json_extract(record_json, '$.kind') = 'specialist'")!.n);
+
+test("#169 follow-up: after a team reply the next message calls nobody unless Jit proposes it; the same team continues the discussion", async () => {
+  let output = dispatching(["เทคโนโลยี", "ออกแบบ"]);
+  const f = await fixture({ jit: r => answer(r, output) });
   const first = send(f, "ควรใช้ SQLite หรือ Postgres ดี");
   await drain(f);
   const d1 = cardFor(f, replyFor(f, first.message.id).replyMessageId!);
   expect(d1.teamReply).toMatchObject({ state: "answered" });
+  const runs = specialistRuns(f);
+  // Jit is told about the open discussion, proposes the same team again, and that continues the first discussion.
   const second = send(f, "แล้วถ้าต้องรองรับผู้ใช้หมื่นคนล่ะ");
   await drain(f);
-  const d2 = cardFor(f, replyFor(f, second.message.id).replyMessageId!);
-  expect(d2).toMatchObject({ state: "admitted", selection: { rule: "follow_up", roleIds: [f.techId, f.designId], why: null } });
-  expect(offersDispatch(jitRequests(f).at(-1)!)).toBe(false);
-  // The follow-up continues the first discussion, so it stays the only open one and the chain goes on.
-  const third = send(f, "สรุปอีกทีได้ไหม");
-  await drain(f);
-  expect(cardFor(f, replyFor(f, third.message.id).replyMessageId!).selection).toMatchObject({ rule: "follow_up" });
-  // A named dispatch opens a second discussion; with two open, a follow-up is no longer clear.
-  const named = send(f, "@การตลาด มองเรื่องนี้ยังไง");
-  await drain(f);
-  expect(cardFor(f, replyFor(f, named.message.id).replyMessageId!).selection).toMatchObject({ rule: "named", roleIds: [f.marketingId] });
-  const fourth = send(f, "แล้วยังไงต่อ");
-  await drain(f);
+  expect(followUpOffered(jitRequests(f).at(-1)!)).toBe(true);
   expect(offersDispatch(jitRequests(f).at(-1)!)).toBe(true);
-  expect(cardFor(f, replyFor(f, fourth.message.id).replyMessageId!).selection).toMatchObject({ rule: "model" });
+  const d2 = cardFor(f, replyFor(f, second.message.id).replyMessageId!);
+  expect(d2).toMatchObject({ state: "admitted", selection: { rule: "model", roleIds: [f.techId, f.designId] } });
+  expect(JSON.parse(f.store.read(tx => tx.get<{ record_json: string }>("SELECT record_json FROM dispatch_proposals WHERE id = ?", d2.id)!.record_json)).continues).toBe(d1.discussion!.id);
+  expect(specialistRuns(f)).toBe(runs + 2);
+  // A follow-up Jit answers itself calls nobody: no card and no specialist run.
+  output = JSON.stringify({ reply: "ได้ครับ สรุปคือเริ่มจาก SQLite ก่อน" });
+  const third = send(f, "ขอบคุณครับ");
+  await drain(f);
+  expect(followUpOffered(jitRequests(f).at(-1)!)).toBe(true);
+  expect(cardFor(f, replyFor(f, third.message.id).replyMessageId!)).toBeUndefined();
+  expect(specialistRuns(f)).toBe(runs + 2);
 });
 
-test("REL03 follow_up needs the message to follow the team reply directly and an open discussion; stop-all closes it", async () => {
-  const f = await fixture();
-  send(f, "ควรใช้ SQLite หรือ Postgres ดี");
+test("#169 the open-discussion context goes only to the message that directly follows the team reply, and not after stop-all", async () => {
+  const f = await fixture({ jit: r => answer(r, JSON.stringify({ reply: "รับทราบ" })) });
+  f.app.execute(f.auth.actor, { kind: "message.send", projectId: f.project.id, requestId: rid(), expectedRevision: f.app.conversation(f.auth.actor, f.project.id, f.topic.id).topic.revision,
+    payload: { topicId: f.topic.id, text: "@เทคโนโลยี ควรใช้ SQLite หรือ Postgres ดี" } });
   await drain(f);
-  // Two owner messages before either reply commits: only the first one directly follows the team reply.
-  const a = send(f, "ข้อแรก"), b = send(f, "ข้อสอง");
+  const before = jitRequests(f).length;
+  // Two owner messages before either reply commits: only the first directly follows the team reply.
+  send(f, "ข้อแรก"); send(f, "ข้อสอง");
   await drain(f);
-  expect(cardFor(f, replyFor(f, a.message.id).replyMessageId!).selection).toMatchObject({ rule: "follow_up" });
-  expect(cardFor(f, replyFor(f, b.message.id).replyMessageId!).selection).toMatchObject({ rule: "model" });
+  expect(jitRequests(f).slice(before).filter(followUpOffered)).toHaveLength(1);
   // A stopped team is not open.
   const g = await fixture();
   const sent = send(g, "ควรใช้ SQLite หรือ Postgres ดี");
   await drain(g);
   const card = cardFor(g, replyFor(g, sent.message.id).replyMessageId!);
   g.app.execute(g.auth.actor, { kind: "team.stop_all", requestId: rid(), projectId: g.project.id, expectedRevision: card.discussion!.revision, payload: { discussionId: card.discussion!.id } });
-  const after = send(g, "ต่อจากนี้");
+  send(g, "ต่อจากนี้");
   await drain(g);
-  expect(cardFor(g, replyFor(g, after.message.id).replyMessageId!).selection).toMatchObject({ rule: "model" });
+  expect(followUpOffered(jitRequests(g).at(-1)!)).toBe(false);
 });
 
-test("REL03 single: a project with exactly one eligible specialist calls it without a model selection", async () => {
-  const f = await fixture();
+test("#169 one eligible specialist is never called on its own: Jit answers, and only @name or Jit's proposal calls it", async () => {
+  const f = await fixture({ jit: r => answer(r, JSON.stringify({ reply: "สวัสดีครับ" })) });
   disableRole(f, f.designId); disableRole(f, f.marketingId);
-  const sent = send(f, "ช่วยดูหน่อย");
+  const hello = send(f, "สวัสดี");
   await drain(f);
-  expect(offersDispatch(jitRequests(f)[0]!)).toBe(false);
-  const reply = replyFor(f, sent.message.id);
-  expect(reply.discarded).toEqual(["proposal:dispatch"]);
-  expect(cardFor(f, reply.replyMessageId!)).toMatchObject({ state: "admitted", selection: { rule: "single", roleIds: [f.techId], why: null } });
-  expect(await page(f)).toContain(dictionaries.th["team.selection_rule_single"]);
+  expect(offersDispatch(jitRequests(f)[0]!)).toBe(true);
+  expect(jitRequests(f)[0]!.instructions.operator.some(line => line.includes("Answer the owner yourself by default."))).toBe(true);
+  expect(cardFor(f, replyFor(f, hello.message.id).replyMessageId!)).toBeUndefined();
+  expect(specialistRuns(f)).toBe(0);
+  const named = send(f, "@เทคโนโลยี ช่วยดูหน่อย");
+  await drain(f);
+  expect(cardFor(f, replyFor(f, named.message.id).replyMessageId!)).toMatchObject({ state: "admitted", selection: { rule: "named", roleIds: [f.techId], why: null } });
 });
 
 test("REL03 model: a selection naming a disabled role or made before the team changed is held for the owner and never broadcasts", async () => {

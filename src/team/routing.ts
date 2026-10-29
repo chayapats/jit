@@ -6,12 +6,13 @@ import { readTeam } from "./configuration";
 import type { Discussion } from "./types";
 
 /**
- * app.routing_selection/v1 rules (ADR 0033). The four fixed rules run in this order with no model call; `model` is
- * Jit's tool-less dispatch proposal, used only when no fixed rule applies.
+ * app.routing_selection/v1 rules (ADR 0033, revised by #169). Only explicit owner intent calls specialists without
+ * Jit: `named` and `reply`. Otherwise Jit answers itself and may propose a dispatch (`model`). `follow_up` and
+ * `single` stay in the type because discussions recorded before #169 carry them; the service no longer selects them.
  */
 export type SelectionRule = "named" | "reply" | "follow_up" | "single" | "model";
-/** Fixed rules, in ADR 0033 order. */
-export const fixedSelectionRules = ["named", "reply", "follow_up", "single"] as const;
+/** Fixed rules the service still applies, in order. */
+export const fixedSelectionRules = ["named", "reply"] as const;
 /**
  * How the specialists of one dispatch were chosen. `roleIds` are role ids from owner configuration; `why` is Jit's
  * own short reason for a `model` selection (untrusted text, shown escaped and labelled as Jit's reasoning, never as
@@ -25,6 +26,11 @@ export interface ParticipationReference { discussionId: string; roleId: string }
  * open once the follow-up starts; it is null for the other rules.
  */
 export interface FixedSelection { selection: RoutingSelection & { rule: Exclude<SelectionRule, "model"> }; continues: string | null }
+/**
+ * The only open Jit-dispatched discussion that the owner's message directly follows (#169). It never calls anyone by
+ * itself: Jit is told about it, and a dispatch Jit proposes for a subset of these roles continues that discussion.
+ */
+export interface FollowUpCandidate { discussionId: string; roleIds: string[] }
 
 /** Longest `why` a model selection may carry, in characters (code points). */
 export const selectionWhyLimit = 160;
@@ -77,10 +83,11 @@ function decided(tx: AppTransaction, projectId: string, discussionId: string): b
  *    roles, or of nobody are ignored.
  * 2. `reply`: the message replies to a participation (`replyTo`) whose role is still an eligible specialist. The
  *    discussion must belong to this topic and the role must take part in it (`reply_target_not_found`).
- * 3. `follow_up`: the topic has exactly one open Jit-dispatched discussion (not stopped, not decided by the owner and
- *    not continued by a later follow-up), its team reply has committed, and no other owner message came after that
- *    team reply. The roles are its participants the owner did not skip or exclude, still eligible.
- * 4. `single`: the project has exactly one eligible specialist.
+ *
+ * Nothing else calls specialists without Jit (#169): an owner message that names nobody is answered by Jit, which
+ * proposes a dispatch only when the message needs the team. The former `follow_up` condition is now
+ * {@link followUpCandidate}, context for that proposal; the former `single` rule is gone, because it called the only
+ * specialist on every message, small talk included.
  *
  * The selection only names roles. Admission still runs through app.dispatch_allowance/v1 when Jit's reply commits:
  * the roles are checked against configuration again and against the allowance current then.
@@ -115,8 +122,22 @@ export function selectRoles(tx: AppTransaction, input: {
   if (replyTarget && eligibleIds.has(message.replyTo!.roleId)) {
     return { selection: { rule: "reply", roleIds: [message.replyTo!.roleId], why: null }, continues: null };
   }
-  // The owner meant someone specific but the name fits several: an implicit rule would guess, so the model decides.
-  if (ambiguous) return null;
+  // The owner meant someone specific but the name fits several: the service does not guess, so the model decides.
+  return null;
+}
+
+/**
+ * The open discussion an owner message directly follows (#169, formerly the `follow_up` rule): the topic has exactly
+ * one open Jit-dispatched discussion (not stopped, not decided by the owner and not continued by a later dispatch), its
+ * team reply has committed, and no other owner message came after that team reply. The roles are its participants the
+ * owner did not skip or exclude, still eligible. Returns null otherwise. It selects nobody.
+ */
+export function followUpCandidate(tx: AppTransaction, input: {
+  message: { sequence: number }; topic: { id: string }; project: { id: string }; config: AppConfig;
+}): FollowUpCandidate | null {
+  const { message, topic, project, config } = input;
+  const team = readTeam(tx, project.id, config.team);
+  const eligibleIds = new Set(team.roles.filter(role => role.kind === "specialist" && role.enabled && !!role.effective.route).map(role => role.id));
   const dispatched = tx.all<{ discussionId: string; teamReplyId: string | null; recordJson: string }>(
     `SELECT discussion_id AS discussionId, team_reply_id AS teamReplyId, record_json AS recordJson FROM dispatch_proposals
      WHERE project_id = ? AND topic_id = ? AND discussion_id IS NOT NULL`, project.id, topic.id);
@@ -138,10 +159,9 @@ export function selectRoles(tx: AppTransaction, input: {
     if (answered && answered.sequence < message.sequence && !ownerSince) {
       const roleIds = [...new Set(discussion.participations.filter(item => item.state !== "skipped" && item.state !== "excluded").map(item => item.roleId))]
         .filter(id => eligibleIds.has(id));
-      if (roleIds.length) return { selection: { rule: "follow_up", roleIds, why: null }, continues: discussion.id };
+      if (roleIds.length) return { discussionId: discussion.id, roleIds };
     }
   }
-  if (eligible.length === 1) return { selection: { rule: "single", roleIds: [eligible[0]!.id], why: null }, continues: null };
   return null;
 }
 

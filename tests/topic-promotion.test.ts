@@ -637,12 +637,13 @@ test("promoting a topic resolves its dispatch card notice and closes the work gr
 test("REL03 a promoted origin's team card offers no reply, add or call-again form; the continuation does", async () => {
   const f = await fixture();
   const g = general(f);
-  f.outputs.push(proposal("แอปบันทึกรายจ่าย"));
-  // One eligible specialist: app.routing_selection/v1 rule `single` calls it, so the origin has a team card.
+  // Jit proposes the promotion and asks its one specialist (#169: nobody is called without Jit's proposal or @name).
+  const promoting = proposal("แอปบันทึกรายจ่าย");
+  f.outputs.push({ ...promoting, proposals: [...promoting.proposals, { kind: "dispatch", roles: ["เทคโนโลยี"] }] });
   const started = await chat(f, "อยากทำแอปบันทึกรายจ่าย ช่วยดูโครงสร้างข้อมูลหน่อย");
   const replyMessageId = started.reply.replyMessageId!;
   const held = f.app.dispatchCards(f.auth.actor, g.projectId, started.topic.id, [replyMessageId]).get(replyMessageId)!;
-  expect(held).toMatchObject({ state: "proposed", selection: { rule: "single" }, readOnly: false });
+  expect(held).toMatchObject({ state: "proposed", selection: { rule: "model" }, readOnly: false });
   // This fixture's reply worker has no queue, so the owner starts the team from the held card.
   f.app.execute(f.auth.actor, { kind: "dispatch.proposal.accept", requestId: rid(), projectId: g.projectId, expectedRevision: held.revision,
     payload: { proposalId: held.id, roleIds: held.roles.map(role => role.roleId) } });
@@ -660,5 +661,5 @@ test("REL03 a promoted origin's team card offers no reply, add or call-again for
   expect(origin).not.toContain(`class="team-form team-add"`);
   expect(origin).not.toMatch(/<input type="hidden" name="action" value="include">/);
   // The read-only origin still shows the selection line and the opinion itself.
-  expect(origin).toContain(`data-selection-rule="single"`);
+  expect(origin).toContain(`data-selection-rule="model"`);
 });

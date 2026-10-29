@@ -9,6 +9,7 @@ Rules for the whole round:
 - Export and attach only sanitized summaries (`export` command output, never raw records).
 - Quota-affecting steps run only with explicit per-round owner approval recorded before the command.
 - Never add plaintext secret storage, never copy credentials from another CLI, never switch provider/billing when a route fails.
+- Drill data never stays in the owner's installation (#169). App-level drills (seeded projects, roles, discussions, schedules) run against a disposable instance with its own `JIT_DATABASE` and port, removed afterwards, as the UX01 check did. When a round must use the real service (Round C/D in-flight work across a reboot), prefix every seeded object's name with `drill-`, record its ids in the private notes, and remove or disable it in "After the round". A drill role left enabled is called by Jit like any other specialist.
 
 Entry criteria: the deterministic release checklist (`bun run ops:drill report`) is composed, and the OPS07 service package (manifest + rendered unit + preflight record) is built and reviewed.
 
@@ -96,3 +97,4 @@ Practical details the steps above depend on. Evidence lives in #7, #22, #25 and 
 - File per-round evidence IDs back to #7, #22, #25 and #36 with sanitized summaries only.
 - Any blocked gate keeps its ticket open with a next action; closing a blocker never certifies an untested path.
 - Desktop fixture results are never cited as Pi evidence, and probe-only evidence is never cited as full-app evidence.
+- Clean up before handoff: disable or delete every `drill-` role and remove `drill-` projects through the owner's normal commands. Delete seed scripts' session cookies and any owner-password files on the host: a password file breaks the "no plaintext secret storage" rule, and it goes stale anyway after an owner reset. Record in the private notes that the installation holds no drill data.
