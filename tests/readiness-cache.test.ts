@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { cachedReadiness, invalidateReadiness, readinessCommands } from "../src/exec/readiness-cache";
 import type { PodmanReadiness } from "../src/exec/podman-client";
+import type { CommandRunner } from "../src/exec/podman-runtime";
 import { PodmanAttachmentSanitizer } from "../src/attachments/sanitizer-runtime";
 import { readConfig } from "../src/config";
 const ready: PodmanReadiness = { state: "ready", reason: null };
@@ -46,4 +47,30 @@ test("sanitizer real-use cleanup failure invalidates the same cached runtime", a
   await expect(runtime.reset()).rejects.toThrow("sanitizer_cleanup_failed");
   expect(cachedReadiness(runtime, async () => unavailable).state).toBe("checking"); await flush();
   expect(cachedReadiness<PodmanReadiness>(runtime, async () => ready)).toEqual(unavailable);
+});
+
+test("an ordinary negative answer (exit 1) keeps readiness; only engine failures (125) or spawn errors invalidate it", async () => {
+  const runtime = {};
+  let probes = 0;
+  const probe = async () => { probes++; return ready; };
+  cachedReadiness(runtime, probe); await flush();
+  expect(cachedReadiness(runtime, probe)).toEqual(ready);
+  // `image exists` for a missing image and `container inspect` for a missing container exit 1 (#224 live finding).
+  const negative = readinessCommands(runtime, (async (_argv: readonly string[], _request: { timeoutMs: number }) => ({ exitCode: 1, stdout: new Uint8Array(), stderr: new Uint8Array() })) as CommandRunner);
+  await negative(["image", "exists", "missing"], { timeoutMs: 1000 });
+  expect(cachedReadiness(runtime, probe)).toEqual(ready);
+  expect(probes).toBe(1);
+  const engine = readinessCommands(runtime, (async (_argv: readonly string[], _request: { timeoutMs: number }) => ({ exitCode: 125, stdout: new Uint8Array(), stderr: new Uint8Array() })) as CommandRunner);
+  await engine(["info"], { timeoutMs: 1000 });
+  expect(cachedReadiness(runtime, probe)).toEqual({ state: "checking", reason: null });
+});
+
+test("a command killed on timeout (signal status) also erases readiness", async () => {
+  const runtime = {};
+  const probe = async () => ready;
+  cachedReadiness(runtime, probe); await flush();
+  expect(cachedReadiness(runtime, probe)).toEqual(ready);
+  const killed = readinessCommands(runtime, (async (_argv: readonly string[], _request: { timeoutMs: number }) => ({ exitCode: 137, stdout: new Uint8Array(), stderr: new Uint8Array() })) as CommandRunner);
+  await killed(["info"], { timeoutMs: 1 });
+  expect(cachedReadiness(runtime, probe)).toEqual({ state: "checking", reason: null });
 });

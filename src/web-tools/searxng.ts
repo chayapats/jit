@@ -84,7 +84,10 @@ export class PodmanSearxngRuntime implements SearxngRuntime {
     await this.#command(["create", "--name", this.#name, "--pull=never", "--image-volume=ignore", "--label", "jit.searxng=1",
       "--cap-drop=ALL", "--security-opt=no-new-privileges", "--read-only", "--http-proxy=false", "--userns=keep-id:uid=977,gid=977", "--user=977:977",
       "--pids-limit=128", `--memory=${memoryMb}m`, "--cpus=1", "--log-driver=none", "--stop-timeout=2",
-      ...["/tmp:rw,nosuid,nodev,size=64m,mode=1777", "/run:rw,nosuid,nodev,size=16m,mode=1777", "/etc/searxng:rw,nosuid,nodev,noexec,size=1m,mode=0700,uid=977,gid=977", "/var/cache/searxng:rw,nosuid,nodev,noexec,size=32m,mode=0700,uid=977,gid=977"].flatMap(v => ["--tmpfs", v]),
+      ...["/tmp:rw,nosuid,nodev,size=64m,mode=1777", "/run:rw,nosuid,nodev,size=16m,mode=1777"].flatMap(v => ["--tmpfs", v]),
+      // Podman 4.9 (Ubuntu 24.04, Debian 12 backports) rejects tmpfs uid=/gid=; `U=true` chowns to the container user.
+      ...["/etc/searxng,tmpfs-size=1048576", "/var/cache/searxng,tmpfs-size=33554432"]
+        .flatMap(v => ["--mount", `type=tmpfs,destination=${v},tmpfs-mode=0700,U=true,noexec,nosuid,nodev`]),
       "--env", "PYTHONDONTWRITEBYTECODE=1", "--env", "SEARXNG_SETTINGS_PATH=/etc/searxng/settings.yml",
       "--env", "GRANIAN_HOST=127.0.0.1", "--env", "GRANIAN_LOG_LEVEL=critical", "--env", "GRANIAN_ACCESS_LOG=false",
       "--entrypoint", "/bin/sleep", searxngImage, "infinity"], signal);

@@ -75,7 +75,11 @@ test("WEB02 Podman argv hardens container, mounts no host path, publishes no por
   await runtime.start(searxngSettings(secret), 512, signal());
   const create = calls.find(c => c.argv[0] === "create")!.argv.join(" ");
   for (const flag of ["--read-only", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--memory=512m", "--user=977:977", "--log-driver=none", "--image-volume=ignore"]) expect(create).toContain(flag);
-  expect(create).not.toContain("--mount"); expect(create).not.toContain("--publish"); expect(create).not.toContain("--privileged"); expect(create).not.toContain(secret);
+  // Only tmpfs mounts (Podman 4.9 needs --mount type=tmpfs with U=true instead of tmpfs uid=/gid=); never a host path.
+  const mounts = calls.find(c => c.argv[0] === "create")!.argv.flatMap((v, i, all) => v === "--mount" ? [all[i + 1]!] : []);
+  expect(mounts.length).toBe(2); for (const m of mounts) { expect(m.startsWith("type=tmpfs,")).toBe(true); expect(m).not.toMatch(/source=|bind|volume/); }
+  expect(create).not.toMatch(/uid=977,gid=977,|nr_inodes=/);
+  expect(create).not.toContain("--publish"); expect(create).not.toContain("--privileged"); expect(create).not.toContain(secret);
   expect(calls.find(c => c.stdin.includes(secret))?.argv.slice(0, 2)).toEqual(["exec", "-i"]);
 });
 test("WEB02 unavailable runtime diagnostics are sanitized", async () => {
