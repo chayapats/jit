@@ -92,10 +92,10 @@ a shell that already has those variables.
 jit ops box-doctor
 ```
 
-- Exit 0 only when all ten checks pass; otherwise exit 1 with the failing check,
+- Exit 0 only when all eleven checks pass; otherwise exit 1 with the failing check,
   its `detail` and its `nextAction`.
 - The command never runs containers and never prints secrets; it only probes
-  `podman --version`, `podman info`, `podman image exists` and the two directories.
+  `podman --version`, `podman info`, `podman image exists`, `podman image inspect` and the two directories. The `sanitizer-image` check requires the rebuilt base image label `jit.sanitize.version=1`.
 
 ## 6. What `fullAllowed` means
 
@@ -116,6 +116,7 @@ jit ops box-doctor
 | `controllers` | `enable-cgroup-controllers`: enable the `memory`, `cpu` and `pids` controllers. |
 | `execution-configured` | `configure-execution-block`: set `directory`, `secretsDirectory` and `images` in the service config. |
 | `image-base-present` | `build-box-images`: run `bun ops/box/build.ts --target base --tag <tag>` and pin the digest. |
+| `sanitizer-image` | `rebuild-base-image-and-pin-digest`: rebuild base with Pillow/Poppler and `/opt/jit/sanitize`, then pin the new digest. |
 | `image-browser-present` | `build-box-images`: run `bun ops/box/build.ts --target browser --tag <tag>` and pin the digest (skipped when not configured). |
 | `execution-directory` | `create-execution-directory` / `chown-execution-directory` / `restrict-execution-directory`: create the directory, chown to the service uid, chmod 0700. |
 | `secrets-directory` | `create-execution-directory` / `chown-execution-directory` / `restrict-execution-directory`: same as above for the secrets directory. |
@@ -132,3 +133,30 @@ JIT_LIVE_PODMAN=1 JIT_LIVE_BOX_IMAGE=jit-box-base:<tag>@sha256:<digest> bun test
 ```
 
 It checks the inspected mounts, zero capabilities, no Jit variable or path in the box, and that the internal network blocks `example.com` while the proxy allows `registry.npmjs.org`.
+
+
+## Attachment sanitizer (ATT02)
+
+The operator rebuilds the existing base image; no separate image is downloaded, no image is built in CI, and ATT02 does not depend on the installer under review. On the operator-approved host/window:
+
+```sh
+bun ops/box/build.ts --target base --tag <new-tag>
+# Set execution.images.base / JIT_BOX_IMAGE_BASE to the actual new digest, then restart through the normal service workflow.
+jit ops box-doctor
+```
+
+The base now includes `python3-pil`, `poppler-utils`, `/opt/jit/sanitize` and label `jit.sanitize.version=1`. The optional browser target inherits it; rebuild browser too when the operator wants matching targets. Never invent a published digest or reuse the prior digest for changed contents. The image is selected by the same base-image pin already used by execution boxes, so no extra installer image entry is required.
+
+For opt-in acceptance on any disposable Linux x64/arm64 host with rootless Podman (never ordinary CI):
+
+```sh
+JIT_LIVE_PODMAN=1 JIT_LIVE_BOX_IMAGE=<base-name>@sha256:<real-digest> bun test tests/attachment-sanitizer.live.test.ts
+```
+
+Record tested commit, OS/architecture, memory, image digest and sanitized pass/fail only in ignored `.local` evidence. The test processes a tiny repository metadata/polyglot fixture in its own temporary directories. To extend evidence in that authorized window, use the bomb/huge/malformed fixtures from `tests/fixtures/attachments`, verify rejection, and inspect an active `jit-sanitize-*` container: network `none`, no added capabilities, non-root user, read-only root, `/in` read-only and exactly `/in` plus `/out` bind mounts. Confirm a deadline removes the container. Keep raw file content, installation paths, addresses and diagnostics out of issues.
+
+Runtime defaults are host-scaled memory `min(512, max(256, RAM/16))` MiB, up to 40 MP scaled with memory, 30 seconds and one parser at a time. PNG stays PNG, JPEG stays JPEG, WebP becomes PNG; model copies fit 2048 px. Images have a 16 MiB cap per derivative; PDFs produce at most 50 pages / 2 MiB UTF-8 text, never a rendered page. Attempt counts survive restart; two failed/interrupted attempts reject the file and remove its original when unshared.
+
+Without a capable rootless runtime/rebuilt image, PNG/JPEG use metadata stripping only and are download-only; PDF/WebP upload is refused. No host image decoder is used by the service. `JIT_ATTACHMENTS` remains release-gated until ATT04 and ATT06 merge. ATT03 owns composer/preview serving; ATT04/ATT05/ATT07 must preserve the container/service/fallback eligibility rules in `docs/contracts/app-attachments-v1.md`.
+
+Deterministic parser tests require local Python 3 with Pillow and Poppler (`python3-pil` and `poppler-utils` on Debian/Ubuntu), alongside the existing runner dependencies. They use generated fixture paths through the fake runtime, never Podman or live host files.

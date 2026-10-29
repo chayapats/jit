@@ -6,11 +6,13 @@ FROM docker.io/library/debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e790
 LABEL org.opencontainers.image.source="https://github.com/chayapats/jit"
 RUN apt-get update && apt-get install -y --no-install-recommends \
   bash coreutils findutils grep sed gawk git ca-certificates ripgrep \
-  python3 python3-venv nodejs npm build-essential curl jq tzdata \
+  python3 python3-venv python3-pil poppler-utils nodejs npm build-essential curl jq tzdata \
   && rm -rf /var/lib/apt/lists/*
 RUN useradd --uid 1000 --create-home --home-dir /home/box --shell /bin/bash box
 # jit.box.runner/v1 (EXE03): POSIX sh + jq, perl-base for process groups; no model, no network, mode 0555.
 COPY --chmod=0555 ops/box/runner /opt/jit/runner
+COPY --chmod=0555 ops/box/sanitize /opt/jit/sanitize
+LABEL jit.sanitize.version="1"
 WORKDIR /workspace
 USER box
 
