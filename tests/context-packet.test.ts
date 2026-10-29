@@ -270,6 +270,7 @@ test("REL05 thirteen live decisions of the topic and the project are all pinned 
   expect(discussion.packet.omissions.some(item => (item.section as string) === "pinned_decisions")).toBe(false);
 
   const message = say(f, p, "เราตกลงอะไรกันไว้บ้าง");
+  await drain(f);
   const request = replyRequest(f, message.id);
   expect(request.manifest.context!.packet!.pinned.map(item => item.id)).toEqual(discussion.packet.pinned.map(item => item.id));
   expect(request.manifest.context!.packet!.sourceIndexes.currentRequest).toEqual([request.manifest.sources.length - 1]);
@@ -310,22 +311,22 @@ test("REL05 pinned decisions alone larger than the budget refuse admission with 
   expect(f.rt.store.read(tx => JSON.parse(tx.get<{ json: string }>("SELECT record_json AS json FROM jobs WHERE id = ?", schedule.occurrences[0]!.jobId)!.json).reason)).toBe("context_too_large");
 });
 
-test("REL05 a decision accepted or superseded while a reply run is pending fences the reply as stale", async () => {
+test("CTX01/REL05 decisions are read at attempt start and changes after assembly fence the reply", async () => {
   const f = await fixture();
   const p = project(f, "Fence");
   const first = await proposal(f, p);
   const decided = accept(f, p, first, "ใช้ SQLite");
 
-  // Superseded while the reply is queued.
+  // Superseded before first assembly: the queued reply receives the new live decision.
   const queued = say(f, p, "ช่วยสรุปมติล่าสุด");
-  expect(replyRequest(f, queued.id).manifest.context!.packet!.pinned.map(item => [item.id, item.revision])).toEqual([[decided.id, decided.revision]]);
+  expect(replyRequest(f, queued.id).manifest.context).toBeUndefined();
   const messagesBefore = assistantMessages(f, p);
   const superseded = f.rt.app.execute(actor(f), { kind: "decision.supersede", requestId: rid(), projectId: p.id, expectedRevision: first.revision,
     payload: { decisionId: decided.id, proposalId: first.id, optionId: null, conclusion: "ใช้ PostgreSQL แทน", rationale: "เจ้าของเปลี่ยนมติ" } }).decision!;
   await drain(f);
-  expect(replyOf(f, p, queued.id).state).not.toBe("answered");
-  expect(f.rt.store.read(tx => JSON.parse(tx.get<{ json: string }>("SELECT record_json AS json FROM jobs WHERE id = ?", replyOf(f, p, queued.id).jobId)!.json).reason)).toBe("superseded");
-  expect(assistantMessages(f, p)).toBe(messagesBefore);
+  expect(replyOf(f, p, queued.id).state).toBe("answered");
+  expect(replyRequest(f, queued.id).manifest.context!.packet!.pinned.map(item => [item.id, item.revision])).toEqual([[superseded.id, superseded.revision]]);
+  expect(assistantMessages(f, p)).toBe(messagesBefore + 1);
 
   // Accepted (a decision on another topic of the project) while the reply is running.
   const second = topic(f, p.id, "หัวข้อที่สอง");
@@ -335,9 +336,9 @@ test("REL05 a decision accepted or superseded while a reply run is pending fence
   const gate = new Promise<void>(resolve => { release = resolve; }); releases.push(release);
   f.hooks.reply = async () => { entered(); await gate; return fixtureOutcome("complete", JSON.stringify({ reply: "ตอบช้า" })); };
   const running = say(f, p, "มีมติอะไรบ้าง");
-  expect(replyRequest(f, running.id).manifest.context!.packet!.pinned.map(item => item.id)).toEqual([superseded.id]);
   const timer = setInterval(() => f.rt.queue.pump(), 5); releases.push(() => clearInterval(timer));
   f.rt.queue.pump(); await started;
+  expect(replyRequest(f, running.id).manifest.context!.packet!.pinned.map(item => item.id)).toEqual([superseded.id]);
   const before = assistantMessages(f, p);
   f.rt.app.execute(actor(f), { kind: "decision.accept", requestId: rid(), projectId: p.id, expectedRevision: open.revision,
     payload: { proposalId: open.id, optionId: null, conclusion: "หัวข้อที่สองตกลงแล้ว", rationale: "เจ้าของตัดสินเอง" } });
@@ -349,8 +350,8 @@ test("REL05 a decision accepted or superseded while a reply run is pending fence
 
   // A reply admitted after the change pins the new set and answers.
   const fresh = say(f, p, "ตอนนี้มีมติอะไรบ้าง");
-  expect(replyRequest(f, fresh.id).manifest.context!.packet!.pinned.map(item => item.scope)).toEqual(["topic", "project"]);
   await drain(f);
+  expect(replyRequest(f, fresh.id).manifest.context!.packet!.pinned.map(item => item.scope)).toEqual(["topic", "project"]);
   expect(replyOf(f, p, fresh.id).state).toBe("answered");
 });
 

@@ -29,3 +29,15 @@ FR-31 requires that the owner's live decisions survive long conversations, compa
 - Relying on native session history or compaction would lose decisions without any warning.
 - Pinning everything would overflow the budget.
 - Packets grow by the number of live decision rows. Pinned decisions have **no count cap**: every live decision in scope is pinned, because FR-31 forbids dropping one. The existing 12-item ceiling of ADR 0020 applies to constraints only. Growth is bounded by the run's context byte budget; when the pinned decisions alone do not fit, the run is refused with `context_too_large` and a next action (supersede or close stale decisions, or raise the budget), and nothing is silently cut.
+
+## CTX01 refinement: first-attempt assembly for Jit replies
+
+Engineering decisions for S12-D07 (#183/#186), NFR-05 and FR-31; the confirmed product/authority decisions do not change:
+
+- Jit reply admission owns receipt, job/order and trusted configuration; the first fenced attempt claim owns context assembly. Capture an identity-only plan in the existing reply JSON, without a schema migration. Retain an admission-time pinned-size feasibility check for the existing refusal/next action.
+- Reuse the existing packet packing/omission policy. Order recent conversation by request/answer relationship so an earlier answer committed after a queued owner's message is visible, while later questions stay outside that run. A team reply keeps its original question boundary.
+- Persist packet, exact lineage and first attempt snapshot atomically. Before assembly, owner state changes are reflected; after assembly they fence as before. Native history and memory-only deltas are never assembly inputs.
+- Retries and explicit interrupted-read resumes keep the first assembled packet with fresh native identities. Recheck references on every attempt, reservation, preview and commit; a retired source blocks as `source_retired`, without rebuilding or resurrecting it. Legacy frozen requests remain valid.
+- Provide a bounded attachment-reference liveness hook now, including exact source revision/generation and deletion/suppression ledgers. ATT04 supplies collection and bounded frame/tool materialization at that hook; ATT06 supplies file cleanup. Neither this timing change nor retrieved content grants tools or authority.
+
+The immutable message sequence/pagination contract stays append-only. COMM03 pairs each on-page committed answer with its anchor for display, and leaves existing cross-page answer links intact. Queue ordering, priorities and concurrency remain unchanged; native steering still requires a future supported Schway contract.

@@ -52,6 +52,16 @@ export function validateRunRequest(request: ApplicationRunRequest, policy: TeamP
     if (claimIds.has(key)) throw new AppError("invalid_run_request");
     claimIds.add(key);
   }
+  if (request.attachments !== undefined) {
+    if (!Array.isArray(request.attachments) || request.attachments.length > 20) throw new AppError("invalid_run_request");
+    const ids = new Set<string>();
+    for (const ref of request.attachments) {
+      requireId(ref?.attachmentId);
+      requireReference({ sourceId: ref.attachmentId, revision: ref.revision, generation: ref.generation });
+      if (!["image", "pdf", "text"].includes(ref.kind) || typeof ref.inline !== "boolean" || ids.has(ref.attachmentId)) throw new AppError("invalid_run_request");
+      ids.add(ref.attachmentId);
+    }
+  }
   validateGrant(request);
   if (request.manifest.context !== undefined) validateContextLayout(request, policy);
   validateJobLimits(request.limits, { roles: 10000, calls: 10000, rounds: 10000, hops: 10000, contextTokens: 1e9, outputTokens: 1e9, retries: 100, wallMs: 3600000 });

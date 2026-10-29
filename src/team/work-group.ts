@@ -141,7 +141,7 @@ function observe(tx: AppTransaction, row: GroupRow, card: DispatchCardView): { s
   // A role the owner included again after the team reply started keeps the group open until it settles too.
   const open = discussion.roles.some(role => role.activity !== "settled");
   if (reply) {
-    if (reply.state === "thinking") return { stalls, final: null, closed: null };
+    if ((reply.state === "thinking" || reply.state === "queued")) return { stalls, final: null, closed: null };
     if (reply.state === "blocked") {
       const waiting = job(reply.jobId!);
       stalls.push({ item: `job:${waiting.id}:${waiting.steps}`, class: "needs_owner", key: "attention.notice_blocked", values: { reason: waiting.reason } });

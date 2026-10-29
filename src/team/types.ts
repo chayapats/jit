@@ -1,3 +1,4 @@
+import type { RunAttachmentRef } from "../attachments/run-references";
 import type { JobLimits } from "../jobs/types";
 import type { SourceReference } from "../sources";
 import type { RoutingSelection } from "./routing";
@@ -128,6 +129,8 @@ export interface ApplicationRunRequest {
   fence: { jobId: string; generation: number; ownerGeneration: number };
   instructions: { operator: readonly string[]; responsibility: string };
   manifest: RunSourceManifest;
+  /** CTX01/ATT04: identity-only attachment references, rechecked before first assembly and at every attempt fence. */
+  attachments?: readonly RunAttachmentRef[];
   tools: readonly ApplicationReadTool[];
   /**
    * Host-process policy: no generic execution, fetch, hosted lookup or discovery ever runs in the Jit process. Box

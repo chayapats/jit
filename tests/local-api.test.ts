@@ -263,6 +263,8 @@ test("replies, pending items and dispatch proposals map onto the Web owner comma
   listen(f).reconcile();
   const sent = await (await api(f, "POST", `/v1/topics/${f.topic.id}/messages`, { text: "ช่วยตอบหน่อย" })).json() as { receiptId: string };
   expect(await (await api(f, "GET", `/v1/replies/${sent.receiptId}`)).json()).toMatchObject({ outcome: "running", reply: { state: "thinking" }, answer: null });
+  const queued = await (await api(f, "POST", `/v1/topics/${f.topic.id}/messages`, { text: "อีกข้อความ" })).json() as { receiptId: string };
+  expect(await (await api(f, "GET", `/v1/replies/${queued.receiptId}`)).json()).toMatchObject({ outcome: "running", reply: { state: "queued" }, answer: null });
   await drain(f);
   expect(await (await api(f, "GET", `/v1/replies/${sent.receiptId}?wait=1`)).json()).toMatchObject({ outcome: "done", answer: "สวัสดีครับ จิตตอบจาก local API", pending: [] });
   expect((await api(f, "GET", "/v1/replies/lapi_unknownreceipt")).status).toBe(404);

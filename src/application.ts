@@ -2753,7 +2753,7 @@ export class Application {
     for (const row of tx.all<{ id: string }>(`SELECT r.id FROM jit_replies r JOIN team_runs t ON t.id = r.run_id JOIN jobs j ON j.id = t.job_id
       WHERE r.project_id = ? AND j.state IN ('queued', 'admitted', 'waiting') ORDER BY r.cursor`, projectId)) {
       const reply = readReply(tx, projectId, row.id);
-      if (reply.state !== "thinking" && reply.state !== "blocked") continue;
+      if (reply.state !== "thinking" && reply.state !== "queued" && reply.state !== "blocked") continue;
       stopReply(tx, { kind: "jit.reply.stop", requestId: command.requestId, projectId, expectedRevision: reply.revision, payload: { replyId: reply.id } }, queue, generation, now);
       outcome.stoppedReplyIds.push(reply.id);
     }
