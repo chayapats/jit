@@ -1982,6 +1982,7 @@ export const en: Record<MessageKey, string> = {
   "jobs.attachments_pending": "Waiting for attached files to finish processing",
   "attachments.route_cannot_see_images": "This route can’t see images yet. Jit will say so and won’t guess their content.",
   "attachments.outbound_marker": "Contains attachment or private context text. Review the exact outgoing content before releasing it.",
+  "attachments.outbound_uncertain": "This content may contain private text. Review the exact outgoing content before releasing it.",
   "attachments.wait_for_attachments": "Wait for attached files to finish processing.",
   "reply.next.wait_for_attachments": "Wait for attached files to finish processing.",
   "error.attachment_not_in_run": "This file is not carried by this run.",

@@ -24,15 +24,16 @@ import { WebProviderRegistry } from "../src/web-tools/providers";
 import { forgetLineage } from "../src/memory/lineage";
 import { lookupSource } from "../src/sources";
 import { replyStreams } from "../src/team/reply-stream";
+import { summarizeApprovalAction } from "../src/web-proposal-card";
 
 const rid = () => crypto.randomUUID();
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0)) await close(); });
 const marker = "PRIVATE_MARKER_173_never_send_this_value";
 
-async function fixture(calls: { name: string; arguments: Record<string, string> }[] = [], page = "<p>Bangkok weather: sunny.</p>", specialist = false) {
+async function fixture(calls: { name: string; arguments: Record<string, string> }[] = [], page = "<p>Bangkok weather: sunny.</p>", specialist = false, contextTokens = 64_000) {
   const root = mkdtempSync(join(tmpdir(), "jit-web01-"));
-  const config = readConfig({ JIT_DATABASE: join(root, "state.sqlite"), JIT_JOB_RETRIES: "1", ...(specialist ? { JIT_RUN_PORT: "schway" } : {}) });
+  const config = readConfig({ JIT_DATABASE: join(root, "state.sqlite"), JIT_JOB_RETRIES: "1", JIT_JOB_CONTEXT_TOKENS: String(contextTokens), ...(specialist ? { JIT_RUN_PORT: "schway" } : {}) });
   const store = new TransactionStore(config.databasePath);
   if (specialist) expect((await verifySchwayBridge(store)).ok).toBe(true);
   const searches: string[] = [], fetched: string[] = [], captured: ModelRequest[] = [], progress: string[] = [];
@@ -138,7 +139,7 @@ test("guard normalizes Unicode, format characters, whitespace and percent-encode
 test("missing public capability fails closed with the preflight action", () => {
   expect(() => assertWebToolsCapability({})).toThrow("install-supported-schway-web-tools");
   assertWebToolsCapability();
-  expect(schemaVersion).toBe(43);
+  expect(schemaVersion).toBe(44);
 });
 
 test("a read-level reply searches and fetches through exact function tools with escaped evidence, audit, Details and live progress", async () => {
@@ -369,9 +370,31 @@ test("ATT04 ordinary public reads still work with an attachment and deleting the
   expect(f.searches).toEqual(["Bangkok public weather today"]); expect(f.app.approvalCards(f.auth.actor, f.project.id)).toHaveLength(0);
 });
 
+test("ATT04 verification exhaustion holds repeated attachment text for a single Web owner release without transport", async () => {
+  const query = ("a".repeat(23) + "b").repeat(10);
+  const f = await fixture([{ name: "web_search", arguments: { query } }, { name: "web_search", arguments: { query } }]);
+  f.select(); f.config.attachments.enabled = true; f.config.attachments.diskReserveBytes = 1;
+  const file = await f.app.uploadAttachment(f.auth.actor, f.project.id, f.topic.id, { body: new Blob(["a".repeat(3 * 1024 * 1024)]).stream(), encodedName: "repeated.txt" });
+  const reply = await f.send("Read the attached note.", [file.id]);
+  expect(reply.state).toBe("answered"); expect(f.searches).toEqual([]); expect(f.fetched).toEqual([]);
+  const held = f.app.approvalCards(f.auth.actor, f.project.id);
+  expect(held).toHaveLength(1);
+  expect(held[0]).toMatchObject({ state: "pending", telegramEligible: false, action: { kind: "outbound_release", subject: query,
+    outbound: { reason: "verification_budget_exhausted", attachmentId: file.id } } });
+  const card = held[0]!;
+  expect(summarizeApprovalAction(card.action)).toEqual(["web_search", query]);
+  const command = { kind: "approval.decide" as const, requestId: rid(), projectId: f.project.id, expectedRevision: card.revision,
+    payload: { cardId: card.id, digest: card.digest, decision: "approve" as const } };
+  expect(() => f.store.transaction(tx => decideCard(tx, command, "telegram", Date.now(), { executor: true }))).toThrow("approval_requires_web");
+  f.store.transaction(tx => decideCard(tx, command, "web", Date.now(), { executor: true }));
+  expect((await f.effects.run(f.project.id, card.id)).state).toBe("succeeded");
+  await f.effects.run(f.project.id, card.id);
+  expect(f.searches).toEqual([query]);
+});
+
 test("ATT04 production bridge reads continuation bytes over multiple model turns through the exact service registry", async () => {
   const calls = [{ name: "read_attachment", arguments: { id: "", offset: 32768, maxBytes: 65536 } }, { name: "read_attachment", arguments: { id: "", offset: 98304, maxBytes: 65536 } }];
-  const f = await fixture(calls as never); f.config.attachments.enabled = true; f.config.attachments.diskReserveBytes = 1;
+  const f = await fixture(calls as never, undefined, false, 256_000); f.config.attachments.enabled = true; f.config.attachments.diskReserveBytes = 1;
   const file = await f.app.uploadAttachment(f.auth.actor, f.project.id, f.topic.id, { body: new Blob(["a".repeat(149900) + marker]).stream(), encodedName: "long.txt" });
   for (const call of calls) call.arguments.id = file.id;
   const reply = await f.send("Read the whole attachment.", [file.id]);

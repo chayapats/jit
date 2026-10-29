@@ -12,7 +12,7 @@ import { AppError } from "../errors";
 import { type ApprovalCard } from "../exec/approval-cards";
 import type { ConnectionVault } from "../exec/connections";
 import type { EffectPerformer } from "../exec/effect-executor";
-import { outboundGuard, type PrivateContextEntry } from "../security/outbound-guard";
+import { buildOutboundCorpus, findVerbatimSpan, outboundGuard, type OutboundMatch, type PrivateContextEntry } from "../security/outbound-guard";
 import { redactRegisteredSecrets } from "../security/secret-fingerprints";
 import { commitWebSource } from "../sources";
 import type { AppTransaction, TransactionStore } from "../store";
@@ -92,19 +92,16 @@ export class WebTools {
     return [...request.manifest.sources, ...request.manifest.claims, ...(request.manifest.context?.constraints ?? []),
       ...(request.manifest.context?.packet?.pinned ?? []).map(item => ({ text: `${item.conclusion}\n${item.rationale}` })), { text: request.purpose }, ...attachmentOutboundEntries(this.store, request), ...(this.options.privateContext?.(request) ?? [])];
   }
-  #hold(request: ApplicationRunRequest, tool: "web_search" | "web_fetch", subject: string, matchedSpan: string): void {
+  #hold(request: ApplicationRunRequest, tool: "web_search" | "web_fetch", subject: string, match: OutboundMatch): void {
     holdOutboundCall(this.store, request, { tool, subject, providerRevision: this.store.read(readWebProvider).revision },
-      // Prefer the attachment identity on the same normalized span when both context and a file contain it.
-      { span: matchedSpan, chars: Array.from(matchedSpan).length, ...(() => {
-        const entry = attachmentOutboundEntries(this.store, request).find(entry => outboundGuard([entry])(subject));
-        return entry?.attachmentId ? { attachmentId: entry.attachmentId } : {};
-      })() }, (this.options.now ?? Date.now)());
+      match, (this.options.now ?? Date.now)());
   }
   /** Builds an exact run registry. Empty application tools remain empty; only the service-owned web flag selects these reads. */
   buildWebTools(request: ApplicationRunRequest, progress: (text: string) => void = () => {}): ToolDefinition[] {
     if (Math.min(this.options.outputBytes ?? 32768, request.limits.outputTokens * 4) < 1024 || request.web !== true || !this.store.read(tx => readWebSettings(tx, request.projectId).enabled)) return [];
-    const corpus = this.#corpus(request);
-    const guard = outboundGuard(corpus), attachmentGuard = outboundGuard(corpus.filter(entry => entry.attachmentId));
+    const corpus = buildOutboundCorpus(this.#corpus(request));
+    const attachments = { entries: corpus.entries.filter(entry => entry.attachmentId) };
+    const guard = (text: string) => findVerbatimSpan(corpus, text), attachmentGuard = (text: string) => findVerbatimSpan(attachments, text);
     let calls = 0;
     const definitions = this.#definitions(request.projectId, url => !guard(url.href), Math.min(this.options.outputBytes ?? 32768, request.limits.outputTokens * 4));
     return definitions.map(definition => {
@@ -123,7 +120,8 @@ export class WebTools {
         });
         const finish = (status: string, bytes = 0) => this.store.transaction(tx => tx.run("UPDATE web_tool_calls SET status = ?, bytes = ? WHERE id = ?", status, bytes, id));
         if (!current) return envelope("Web read refused: access, attempt or call budget changed.");
-        const matchedSpan = guard(subject);
+        // Prefer attachment attribution and preserve conservative-hold reasons on the digest-bound card.
+        const matchedSpan = attachmentGuard(subject) ?? guard(subject);
         if (matchedSpan) {
           this.#hold(request, definition.name as "web_search" | "web_fetch", subject, matchedSpan);
           finish("blocked-private-context");
@@ -133,7 +131,7 @@ export class WebTools {
         try {
           const actual = definition.name === "web_fetch" ? this.#definitions(request.projectId, url => {
             this.#redirect(request, subject, url, now(), !!attachmentGuard(url.href));
-            const match = guard(url.href);
+            const match = attachmentGuard(url.href) ?? guard(url.href);
             if (match) this.#hold(request, "web_fetch", url.href, match);
             return !match && !ctx.signal?.aborted && this.store.read(tx => serviceToolCurrent(tx, request));
           }, Math.min(this.options.outputBytes ?? 32768, request.limits.outputTokens * 4)).find(item => item.name === "web_fetch")! : this.#definitions(request.projectId, undefined, Math.min(this.options.outputBytes ?? 32768, request.limits.outputTokens * 4),

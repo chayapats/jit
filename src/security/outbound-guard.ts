@@ -15,8 +15,10 @@ export function normalizeOutbound(text: string): string {
   return decoded.normalize("NFC").toUpperCase().toLowerCase().replace(/\p{Cf}/gu, "").replace(/[\s\p{White_Space}]+/gu, " ").trim().normalize("NFC");
 }
 
-/** A directly confirmed normalized match, never a probabilistic hash-only result. */
-export interface OutboundMatch { span: string; attachmentId?: string; chars: number }
+/** A directly confirmed match, or a potential outgoing span held conservatively when verification runs out. */
+export interface OutboundMatch { span: string; attachmentId?: string; chars: number; reason?: "verification_budget_exhausted" }
+/** Maximum candidate code-point comparisons per outgoing value, shared by both normalization interpretations. */
+export const outboundVerificationBudget = 64 * 1024;
 /** Run-local corpus; sampled 12-code-point windows bound index space to roughly 1/13 of source length. */
 export interface OutboundCorpus { readonly entries: readonly { text: string; attachmentId?: string; index: BigUint64Array }[] }
 const hash = (text: string) => { let h = 2166136261; for (const char of text) h = Math.imul(h ^ char.codePointAt(0)!, 16777619); return h >>> 0; };
@@ -37,23 +39,33 @@ export function buildOutboundCorpus(entries: readonly PrivateContextEntry[]): Ou
   }) };
 }
 
-function findNormalizedSpan(corpus: OutboundCorpus, text: string, minimum: number): OutboundMatch | null {
+function findNormalizedSpan(corpus: OutboundCorpus, text: string, minimum: number, work: { remaining: number }): OutboundMatch | null {
+  const potentialEnd = windowEnd(text, 0, minimum);
+  if (potentialEnd < 0) return null;
   for (let at = 0; at < text.length; at = next(text, at)) {
     const end = windowEnd(text, at, 12); if (end < 0) break;
     const anchor = text.slice(at, end), target = BigInt(hash(anchor)) << 32n;
     for (const entry of corpus.entries) {
       let lo = 0, hi = entry.index.length;
       while (lo < hi) { const mid = (lo + hi) >>> 1; if (entry.index[mid]! < target) lo = mid + 1; else hi = mid; }
+      // Exhaustion is a match for every consumer: it follows the same owner-only release/card path. The reason
+      // distinguishes this potential outgoing span from a directly confirmed source span (including hash collisions).
+      const exhausted = (): OutboundMatch => ({ span: text.slice(0, potentialEnd), chars: minimum,
+        reason: "verification_budget_exhausted", ...(entry.attachmentId ? { attachmentId: entry.attachmentId } : {}) });
       for (; lo < entry.index.length && entry.index[lo]! >> 32n === target >> 32n; lo++) {
+        if (work.remaining < 12) return exhausted();
+        work.remaining -= 12;
         const sourceAt = Number(entry.index[lo]! & 0xffffffffn), sourceEnd = windowEnd(entry.text, sourceAt, 12);
         if (entry.text.slice(sourceAt, sourceEnd) !== anchor) continue;
         let left = at, right = end, sl = sourceAt, sr = sourceEnd, count = 12;
         while (count < minimum && left > 0 && sl > 0) {
+          if (work.remaining-- <= 0) return exhausted();
           const l = previous(text, left), s = previous(entry.text, sl);
           if (text.slice(l, left) !== entry.text.slice(s, sl)) break;
           left = l; sl = s; count++;
         }
         while (count < minimum && right < text.length && sr < entry.text.length) {
+          if (work.remaining-- <= 0) return exhausted();
           const r = next(text, right), s = next(entry.text, sr);
           if (text.slice(right, r) !== entry.text.slice(sr, s)) break;
           right = r; sr = s; count++;
@@ -66,13 +78,15 @@ function findNormalizedSpan(corpus: OutboundCorpus, text: string, minimum: numbe
 }
 
 /**
- * Finds a directly confirmed span of at least 24 code points. Ambiguous argument strings also get a form-value
+ * Finds a directly confirmed span of at least 24 code points, or fails closed with a potential span on work-budget
+ * exhaustion. Callers must hold either result for owner release. Ambiguous argument strings also get a form-value
  * interpretation, so a bare `word+word` value cannot bypass spaces while literal plus spans still match normally.
  */
 export function findVerbatimSpan(corpus: OutboundCorpus, outgoing: string, minChars = 24): OutboundMatch | null {
-  const text = normalizeOutbound(outgoing), minimum = Math.max(24, minChars);
-  return findNormalizedSpan(corpus, text, minimum) ?? (text.includes("+")
-    ? findNormalizedSpan(corpus, text.replace(/\+/g, " ").replace(/[\s\p{White_Space}]+/gu, " ").trim(), minimum) : null);
+  const text = normalizeOutbound(outgoing), minimum = Number.isSafeInteger(minChars) ? Math.max(24, minChars) : 24;
+  const work = { remaining: outboundVerificationBudget };
+  return findNormalizedSpan(corpus, text, minimum, work) ?? (text.includes("+")
+    ? findNormalizedSpan(corpus, text.replace(/\+/g, " ").replace(/[\s\p{White_Space}]+/gu, " ").trim(), minimum, work) : null);
 }
 
 /** WEB01-compatible callable guard over the same full-text corpus. */

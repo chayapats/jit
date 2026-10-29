@@ -1985,6 +1985,7 @@ export const th = {
   "jobs.attachments_pending": "กำลังรอประมวลผลไฟล์แนบ",
   "attachments.route_cannot_see_images": "route นี้ยังมองรูปไม่ได้ จิตจะบอกตรง ๆ และไม่เดาเนื้อหารูป",
   "attachments.outbound_marker": "มีข้อความจากไฟล์แนบหรือ context ส่วนตัว ตรวจเนื้อหาที่จะส่งออกก่อนอนุมัติ",
+  "attachments.outbound_uncertain": "อาจมีข้อความส่วนตัว ตรวจเนื้อหาที่จะส่งออกก่อนอนุมัติ",
   "attachments.wait_for_attachments": "รอให้ไฟล์แนบประมวลผลเสร็จ",
   "reply.next.wait_for_attachments": "รอให้ไฟล์แนบประมวลผลเสร็จ",
   "error.attachment_not_in_run": "ไฟล์นี้ไม่ได้อยู่ในขอบเขตของ run นี้",

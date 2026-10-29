@@ -1,5 +1,5 @@
 import { registerSecretFingerprint } from "../src/security/secret-fingerprints";
-import { frameAttachmentText } from "../src/attachments/run-content";
+import { attachmentContextTokens, frameAttachmentText } from "../src/attachments/run-content";
 import { afterEach, expect, test } from "bun:test";
 import { rmSync } from "node:fs";
 import { dirname } from "node:path";
@@ -7,20 +7,81 @@ import { attachmentOutboundEntries } from "../src/attachments/run-content";
 import { retireAttachments } from "../src/attachments/lifecycle";
 import { AttachmentStorage } from "../src/attachments/storage";
 import { runMaxTurns } from "../src/exec/run-tools";
-import { buildOutboundCorpus, findVerbatimSpan, normalizeOutbound } from "../src/security/outbound-guard";
-import { type RunScript } from "../src/team/scripted-port";
+import { buildOutboundCorpus, findVerbatimSpan, normalizeOutbound, outboundVerificationBudget } from "../src/security/outbound-guard";
+import { fixtureOutcome, type RunScript } from "../src/team/scripted-port";
 import { readReplyRecord } from "../src/team/jit-reply";
 import { answer, effectFixture, rid, settle, type EffectFixture } from "./fixtures/effects";
 import { uploadText, sendFiles } from "./fixtures/attachment-run";
 
 const fixtures: EffectFixture[] = [];
 afterEach(async () => { for (const f of fixtures.splice(0)) { await f.close(); rmSync(f.root, { recursive: true, force: true }); rmSync(dirname(f.box.root), { recursive: true, force: true }); } });
-async function world(script: RunScript) {
-  const f = await effectFixture({ script }); fixtures.push(f);
+async function world(script: RunScript, contextTokens = 256_000, retries = 1, contextBytes = 32768) {
+  // Reading a whole large fixture needs an explicit budget; resume regressions below use installation defaults.
+  const f = await effectFixture({ script, env: { JIT_JOB_CONTEXT_TOKENS: String(contextTokens), JIT_JOB_RETRIES: String(retries), JIT_PREVIEW_CONTEXT_BYTES: String(contextBytes) } }); fixtures.push(f);
   f.app.execute(f.auth.actor, { kind: "web.settings.set", requestId: rid(), projectId: f.project.id, expectedRevision: 0, payload: { enabled: false } });
   return f;
 }
 const marker = "ATTACHMENT_PRIVATE_WORDS_that_must_never_leave_193";
+
+for (const reason of ["quota", "needs_login", "route_unavailable"] as const) for (const kind of ["reply", "specialist"] as const)
+test(`small attachment ${kind} keeps context for a successful resume after ${reason}`, async () => {
+  let waiting = true;
+  const f = await world(request => waiting ? fixtureOutcome(reason) : answer(request, "Read successfully."), 64_000, 3);
+  const file = await uploadText(f, "A small attached note.");
+  const sent = sendFiles(f, [file.id]);
+  let jobId: string;
+  if (kind === "reply") jobId = f.app.replies(f.auth.actor, f.project.id, f.topic.id, [sent.message.id]).get(sent.message.id)!.jobId!;
+  else {
+    const reply = f.app.replies(f.auth.actor, f.project.id, f.topic.id, [sent.message.id]).get(sent.message.id)!;
+    f.app.execute(f.auth.actor, { kind: "job.stop", requestId: rid(), projectId: f.project.id, expectedRevision: f.app.job(f.auth.actor, f.project.id, reply.jobId!).revision, payload: { jobId: reply.jobId! } });
+    const role = f.app.execute(f.auth.actor, { kind: "role.save", requestId: rid(), projectId: null, expectedRevision: f.app.team(f.auth.actor).ownerRevision,
+      payload: { roleId: null, name: "Reader", kind: "specialist", responsibility: "Read attached notes.", enabled: true, route: { provider: "grok", model: "fixture-grok-exact", authRoute: "owner-grok" } } }).role!;
+    const discussion = f.app.execute(f.auth.actor, { kind: "team.dispatch", requestId: rid(), projectId: f.project.id, expectedRevision: f.app.project(f.auth.actor, f.project.id).revision,
+      payload: { topicId: f.topic.id, purpose: "Read the note", sources: [sent.message.source], include: [role.id], exclude: [], limits: { ...f.config.jobs.maximum } } }).discussion!;
+    jobId = discussion.participations[0]!.jobId;
+  }
+  await settle(f);
+  const job = f.app.job(f.auth.actor, f.project.id, jobId);
+  expect(job).toMatchObject({ state: "waiting", reason }); expect(f.port.requests).toHaveLength(1);
+  const share = Math.floor(job.limits.contextTokens / (job.limits.retries + 1));
+  expect(f.port.requests[0]!.limits.contextTokens).toBe(share);
+  expect(job.remaining.contextTokens).toBeGreaterThanOrEqual(share * job.remaining.retries);
+  waiting = false; await f.queue.reconcile(f.port);
+  const current = f.app.job(f.auth.actor, f.project.id, jobId);
+  f.app.execute(f.auth.actor, { kind: "job.resume", requestId: rid(), projectId: f.project.id, expectedRevision: current.revision, payload: { jobId } });
+  await settle(f);
+  expect(f.app.job(f.auth.actor, f.project.id, jobId).state).toBe("succeeded");
+  expect(f.port.requests).toHaveLength(2); expect(f.port.requests[1]!.route).toEqual(f.port.requests[0]!.route);
+});
+
+test("near the context ceiling attachment turns shrink to fit the attempt's remaining share", async () => {
+  let observed = false;
+  const f = await world(async (request, _s, _o, tools) => {
+    const turns = runMaxTurns(request);
+    expect(turns).toBe(2); expect(tools.names).toEqual(["read_attachment"]);
+    expect(Math.ceil(Buffer.byteLength(JSON.stringify(request)) / 4) + attachmentContextTokens(request, turns)).toBeLessThanOrEqual(request.limits.contextTokens);
+    expect(runMaxTurns({ ...request, limits: { ...request.limits, contextTokens: request.limits.contextTokens + 65536 } })).toBeGreaterThan(turns);
+    expect((await tools.call("read_attachment", { id: request.attachments![0]!.attachmentId, offset: 32768 })).isError).toBeUndefined();
+    expect((await tools.call("read_attachment", { id: request.attachments![0]!.attachmentId })).content).toContain("attachment_call_budget");
+    observed = true; return answer(request, "Bounded read.");
+  }, 120_000, 3);
+  const file = await uploadText(f, "a".repeat(40000)); sendFiles(f, [file.id]); await settle(f);
+  expect(observed).toBe(true);
+});
+
+test("repeated attachment anchors have bounded verification work and fail closed even before a later true match", () => {
+  const corpus = buildOutboundCorpus([{ text: "a".repeat(3 * 1024 * 1024), attachmentId: "repeated" }, { text: marker, attachmentId: "later" }]);
+  let reads = 0;
+  const entry = corpus.entries[0]!;
+  entry.index = new Proxy(entry.index, { get(target, key) { if (typeof key === "string" && /^\d+$/.test(key)) reads++; return Reflect.get(target, key, target); } });
+  const outgoing = ("a".repeat(23) + "b").repeat(100);
+  expect(findVerbatimSpan(corpus, outgoing)).toMatchObject({ reason: "verification_budget_exhausted", chars: 24, attachmentId: "repeated" });
+  expect(reads).toBeLessThan(outboundVerificationBudget);
+  expect(findVerbatimSpan(corpus, outgoing + marker)).not.toBeNull();
+  expect(findVerbatimSpan(corpus, `https://public.example/?q=${outgoing.replaceAll("a", "%61")}`)?.reason).toBe("verification_budget_exhausted");
+  expect(findVerbatimSpan(corpus, "ordinary public search query")).toBeNull();
+  expect(findVerbatimSpan(corpus, "a".repeat(24))).toMatchObject({ chars: 24, attachmentId: "repeated" });
+});
 
 test("Read with web disabled reads the whole file over bounded turns, frames Unicode, audits route, and opens no box", async () => {
   const text = "ก🙂abc".repeat(15000), seen: string[] = [];
@@ -168,7 +229,7 @@ test("read_attachment uses its finite call budget and rejects invalid ranges, im
     f.store.transaction(tx => tx.run("UPDATE attachments SET state = 'ready' WHERE id = ?", id));
     for (let at = 0; at < 8; at++) results.push(await tools.call("read_attachment", { id, maxBytes: 10 }));
     return answer(request, "done");
-  });
+  }, 256_000, 1, 65536);
   const file = await uploadText(f, "a".repeat(40000)); sendFiles(f, [file.id]); await settle(f);
   expect(results[0].content).toContain("invalid_attachment_read"); expect(results[1].content).toContain("invalid_attachment_read");
   expect(results[2].content).toContain("attachment_unavailable"); expect(results[3].content).toContain("attachment_processing");

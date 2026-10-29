@@ -37,6 +37,8 @@ export type FetchReply = (call: FetchCall, signal: AbortSignal | null) => Respon
 
 export interface EffectFixtureOptions {
   script?: RunScript; fetch?: FetchReply; executor?: Partial<EffectExecutorOptions>; effects?: boolean;
+  /** Installation policy overrides, applied before the queue freezes its finite ceilings. */
+  env?: Record<string, string>;
   /** Wraps the box's runner handler (for gating one request). */
   exec?: (local: FakeBoxExec) => FakeBoxExec;
   /** Long-lived pipes of the fake box and its sidecars (MCP servers, the CDP relay). */
@@ -63,7 +65,7 @@ export async function effectFixture(options: EffectFixtureOptions = {}) {
   const state = join(root, "state"), backups = join(root, "backups"), execution = join(root, "execution"), secrets = join(root, "secrets");
   mkdirSync(state); mkdirSync(execution);
   const config = readConfig({ JIT_DATABASE: join(state, "jit.sqlite"), JIT_EXECUTION_DIR: execution, JIT_EXECUTION_SECRETS_DIR: secrets,
-    JIT_EXECUTION_FULL_ALLOWED: "1", JIT_JOB_CONCURRENCY: "4", JIT_JOB_ROUTE_CONCURRENCY: "4" });
+    JIT_EXECUTION_FULL_ALLOWED: "1", JIT_JOB_CONCURRENCY: "4", JIT_JOB_ROUTE_CONCURRENCY: "4", ...options.env });
   const store = new TransactionStore(config.databasePath);
   const clock = { now: epoch };
   const now = () => clock.now;

@@ -225,7 +225,7 @@ test("source migration preserves references and bound attachments use an availab
     INSERT INTO sources SELECT id, project_id, kind, current_revision, generation, availability FROM old; DROP TABLE old;`);
   const path = join(dir(), "legacy.sqlite"); const bytes = legacy.serialize(); legacy.close(); bytes[18] = 1; bytes[19] = 1; writeFileSync(path, bytes);
   const migrated = new TransactionStore(path); stores.push(migrated);
-  expect(migrated.read(tx => tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version)).toBe(43); expect(schemaVersion).toBe(43);
+  expect(migrated.read(tx => tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version)).toBe(44); expect(schemaVersion).toBe(44);
   const newSourceId = crypto.randomUUID();
   migrated.transaction(tx => tx.run("INSERT INTO sources VALUES (?, ?, 'attachment', 1, 1, 'available')", newSourceId, f.p.id));
   expect(migrated.read(tx => tx.get("SELECT kind FROM sources WHERE id = ?", newSourceId))).toEqual({ kind: "attachment" });

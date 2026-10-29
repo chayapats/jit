@@ -93,9 +93,9 @@ export function attachmentOutboundEntries(store: TransactionStore, request: Appl
   });
 }
 
-/** Reserves the maximum inline and continuation context, within the already-authorized request ceiling. */
-export function attachmentContextTokens(request: ApplicationRunRequest, turns: number): number {
-  return request.attachments?.length ? Math.ceil((64 * 1024 + turns * 64 * 1024) / 4) : 0;
+/** Maximum inline plus continuation context; the first model turn consumes inline text, not a tool result. */
+export function attachmentContextTokens(request: Pick<ApplicationRunRequest, "attachments">, turns: number): number {
+  return request.attachments?.length ? Math.ceil((64 * 1024 + Math.max(0, turns - 1) * 64 * 1024) / 4) : 0;
 }
 
 /** The fenced read-only service tool at every level; no box or network is opened and every invocation records one content-free read event. */
@@ -122,7 +122,7 @@ export function attachmentToolDefinitions(store: TransactionStore, request: Appl
         let reason: string | null = null, content = "", bytes = 0;
         try {
           if (ctx.signal?.aborted || !serviceToolCurrent(tx, request)) throw new AppError("attachment_access_changed");
-          if (++calls > turns) throw new AppError("attachment_call_budget");
+          if (++calls > turns - 1) throw new AppError("attachment_call_budget");
           if (!ref) throw new AppError("attachment_not_in_run");
           if (!runAttachmentCurrent(tx, request, ref)) throw new AppError("attachment_unavailable");
           if (Object.keys(fields).some(key => !["id", "offset", "maxBytes"].includes(key)) ||

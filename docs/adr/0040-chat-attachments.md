@@ -141,6 +141,7 @@ Each choice is labelled. **Confirmed** means an owner decision in S13. **Propose
   - A Jit reply carries the live attachments of the messages in its history window. Only the newest owner message's attachments are inlined. The inline total per run is 64 KiB.
   - `read_attachment` accepts only ids the run carries: project scope, narrowed further to the run.
   - Without a grant, a run that offers it may take up to 8 turns within its call budget.
+  - **ATT04 fix-round engineering decision:** freeze each attachment attempt's context ceiling to at most the job ceiling divided by its initial attempt count, further capped by the remaining context. Reserve inline text once and at most one 64 KiB continuation per remaining read turn. Reduce attachment-only model turns and the service tool's call allowance to fit that share; web/box tools retain their existing turn budgets. Runs without attachments keep their existing accounting. A provider wait spends its reservation but leaves a share for each authorized owner resume.
   - `ApplicationRunRequest.tools` stays empty, as the scripted port requires.
 
 ### Outbound channels and the exfiltration guard (D07)
@@ -149,6 +150,7 @@ Each choice is labelled. **Confirmed** means an owner decision in S13. **Propose
 - **Proposed mechanism:**
   - One shared guard module, `src/security/outbound-guard.ts`. #173 adds private-context entries (memory, owner messages) to the same corpus.
   - Both sides are normalized: NFC, case folding, collapsed whitespace, no format characters, and URLs percent-decoded.
+  - **ATT04 fix-round engineering decision:** cap candidate verification at 65,536 code-point comparisons per outgoing value, shared across normal and form-value interpretations. Exhaustion returns a conservative hold with `reason: verification_budget_exhausted` and a potential outgoing span, rather than claiming a confirmed source match or allowing the call. Every guarded channel uses the same owner-only release or existing marked-card path. Directly confirmed matches still require at least 24 normalized code points.
   - The corpus is the full text of every attachment the run carries. A granted run's corpus also includes every attachment with a copy in the box, because a later run can `cat` an old copy.
   - "Ask once" means the first refused call of a run creates one `outbound_release` approval card, and later matches in that run are refused without a new card. If the call would already create a card (a non-read-only MCP tool, a browser or computer confirm action, an effect tool), that card is marked as containing file text instead.
   - The card is Web-only, never auto-approved and single-use. Approving it makes the effect executor perform exactly that one call and post the result to the topic as untrusted data (ADR 0037 cards do not block a run).

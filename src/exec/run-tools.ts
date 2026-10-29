@@ -1,4 +1,4 @@
-import { attachmentToolDefinitions } from "../attachments/run-content";
+import { attachmentContextTokens, attachmentToolDefinitions } from "../attachments/run-content";
 import { coreToolDefinitions, type ExecutionBackend, type ToolDefinition, type ToolExecutionResult } from "schway/host";
 import { AppError } from "../errors";
 import { redactCredentials } from "../security/credentials";
@@ -68,16 +68,29 @@ export function validateGrant(request: Pick<ApplicationRunRequest, "execution" |
 
 /**
  * Model turns the run may take: 1 without execution, selected web reads or carried attachments; otherwise the call
- * and round budgets cover every attempt and host retry (also reserving web calls). Attachment runs without a grant cap at 8; granted runs cap at {@link executionMaxTurns}.
+ * and round budgets cover every attempt and host retry (also reserving web calls). Attachment-only runs also fit
+ * their context share. Without a grant they cap at 8; granted runs cap at {@link executionMaxTurns}.
  */
 export function runMaxTurns(request: Pick<ApplicationRunRequest, "execution" | "limits" | "web" | "attachments">): number {
   if (!requestGrant(request) && !request.web && !request.attachments?.length) return 1;
   const attempts = Math.min(10, Math.max(1, request.limits.retries + 1));
   const modelAttempts = (request.limits.retries + 1) * attempts;
+  const contextTurns = !requestGrant(request) && !request.web ? attachmentContextTurns(request) : executionMaxTurns;
   return Math.min(!requestGrant(request) && request.attachments?.length ? 8 : executionMaxTurns, Math.max(1, Math.min(
     Math.floor(request.limits.calls / (modelAttempts * (request.web ? 2 : 1))),
     Math.floor(request.limits.rounds / modelAttempts),
+    contextTurns,
   )));
+}
+
+function attachmentContextTurns(request: Pick<ApplicationRunRequest, "execution" | "limits" | "web" | "attachments">): number {
+  return request.attachments?.length ? 1 + Math.max(0, Math.floor((request.limits.contextTokens -
+    Math.ceil(Buffer.byteLength(JSON.stringify(request)) / 4) - attachmentContextTokens(request, 1)) / (64 * 1024 / 4))) : 1;
+}
+
+/** Initial inline turn plus the read_attachment continuations that fit this attempt; other tools keep their own turns. */
+export function attachmentMaxTurns(request: ApplicationRunRequest): number {
+  return Math.min(runMaxTurns(request), attachmentContextTurns(request));
 }
 
 const effectRule = "External effects (git push, pull request create, comment or merge, deploy, sending as the owner, payments and remote deletion) " +
@@ -165,7 +178,7 @@ function subjectOf(input: unknown): string {
  */
 export async function openRunTools(store: TransactionStore, execution: RunExecution | undefined, request: ApplicationRunRequest): Promise<RunTools> {
   const grant = requestGrant(request);
-  const service = attachmentToolDefinitions(store, request, runMaxTurns(request), execution?.now);
+  const service = attachmentToolDefinitions(store, request, attachmentMaxTurns(request), execution?.now);
   if (!grant || !execution) return service.length ? { definitions: Object.freeze(service), release: () => {} } : noTools;
   requireId(grant.boxProjectId);
   store.read(tx => assertExecutionAllowed(tx, request.projectId, request.roleId, grant.level));

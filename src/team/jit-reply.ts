@@ -1,5 +1,5 @@
 import { attachmentContextTokens } from "../attachments/run-content";
-import { runMaxTurns } from "../exec/run-tools";
+import { attachmentMaxTurns } from "../exec/run-tools";
 import { validateTaskWording } from "../tasks";
 import { dictionaries } from "../i18n";
 import { readWebCalls, type WebCall } from "../web-tools";
@@ -841,6 +841,9 @@ export function jitReplyWork(store: TransactionStore, config: AppConfig, port: A
         request.context = { id: crypto.randomUUID(), generation: 1 };
       }
       request.fence = { jobId: job.id, generation, ownerGeneration: job.authorization.generation };
+      // Freeze an attachment attempt's share before deriving tool turns; a route wait must leave room to resume.
+      if (request.attachments?.length) request.limits.contextTokens = Math.max(1,
+        Math.min(Math.floor(job.limits.contextTokens / (job.limits.retries + 1)), job.remaining.contextTokens));
       // Check the complete data before writing the packet/lineage: the queue handles preparation errors in its
       // claim transaction, so a failed size check must not leave a frozen packet without an attempt snapshot.
       let data;
@@ -874,7 +877,7 @@ export function jitReplyWork(store: TransactionStore, config: AppConfig, port: A
       if (opened.jobId !== job.id || opened.result) return { state: "failed", reason: "worker_failed" };
       const request = structuredClone(attempt.data) as unknown as ApplicationRunRequest;
       const outputTokens = Math.min(replyAttemptOutputTokens, job.limits.outputTokens);
-      reserve({ contextTokens: Math.min(request.limits.contextTokens, Math.ceil(Buffer.byteLength(jobData(request, config.team.contextBytes)) / 4) + attachmentContextTokens(request, runMaxTurns(request))), outputTokens });
+      reserve({ contextTokens: Math.min(request.limits.contextTokens, Math.ceil(Buffer.byteLength(jobData(request, config.team.contextBytes)) / 4) + attachmentContextTokens(request, attachmentMaxTurns(request))), outputTokens });
       if (port.adapter === "schway") {
         reserve({ calls: schwayMaxCalls(request) - 1, rounds: schwayMaxRounds(request) - 1 });
       }

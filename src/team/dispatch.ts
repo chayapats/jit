@@ -1,6 +1,6 @@
 import { attachmentsPending, collectRunAttachments, runAttachmentCurrent } from "../attachments/run-references";
 import { attachmentContextTokens } from "../attachments/run-content";
-import { runMaxTurns } from "../exec/run-tools";
+import { attachmentMaxTurns } from "../exec/run-tools";
 import { readWebSettings } from "../web-tools/settings";
 import { readActiveRole, roleActive } from "./configuration";
 import { AppError } from "../errors";
@@ -446,6 +446,9 @@ export function specialistAnalysisWork(
       readActiveRole(tx, request.roleId);
       request.fence = { jobId: job.id, generation, ownerGeneration: job.authorization.generation };
       if (request.attachments) request.attachments = request.attachments.filter(ref => runAttachmentCurrent(tx, request, ref));
+      // Each attachment attempt receives its own finite context share, including an explicit owner resume.
+      if (request.attachments?.length) request.limits.contextTokens = Math.max(1,
+        Math.min(Math.floor(job.limits.contextTokens / (job.limits.retries + 1)), job.remaining.contextTokens));
       // Frozen in the attempt snapshot at admission; model output never changes it.
       request.execution = port.execution ? executionGrant(tx, job.projectId, request.roleId) : null;
       return { native: { adapter: port.adapter, runId: request.runId, sessionId: request.runId, context: request.context },
@@ -470,7 +473,7 @@ export function specialistAnalysisWork(
       // Each attempt (the first and every owner resume) reserves its own share of the job's output budget, so a
       // route wait leaves budget for the resumed attempt.
       const outputTokens = specialistAttemptOutputTokens(job.limits);
-      reserve({ contextTokens: Math.min(request.limits.contextTokens, Math.ceil(Buffer.byteLength(jobData(request, config.team.contextBytes)) / 4) + attachmentContextTokens(request, runMaxTurns(request))), outputTokens });
+      reserve({ contextTokens: Math.min(request.limits.contextTokens, Math.ceil(Buffer.byteLength(jobData(request, config.team.contextBytes)) / 4) + attachmentContextTokens(request, attachmentMaxTurns(request))), outputTokens });
       if (port.adapter === "schway") {
         // Worst-case retry calls pre-reserved before dispatch; single-output
         // token accounting stays as committed, with measured overrun in usage.
