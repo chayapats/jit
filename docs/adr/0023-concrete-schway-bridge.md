@@ -110,6 +110,39 @@ isolation with no shared mutable host state. Serve keeps the scripted port by
 default (`JIT_RUN_PORT=scripted`); `schway` mode fails startup when the gate
 reports blocked, before any job is admitted.
 
+### WEB01-F (#235): reserve the final answer turn
+
+Engineering choice (2026-10-30), implementing S12-D03 and preserving FR/NFR scope:
+`runMaxTurns` includes the answer, and the web allowance is at most `turns - 1`.
+The tool phase gets at most `turns - 1` native model turns. An early completed
+answer returns immediately. Only `max_turns` permits one further submission,
+using the already-reserved final turn, the same route, native session and branch,
+and the original deadline's remaining time. With only one turn available, no
+tools are offered.
+
+The pinned public `HostRunOptions`/`submitWithRoute` surface has no per-turn tool
+selection. Its documented durable-session contract does apply the current host's
+exact tools and context on `openSession`, so Jit closes the idle tool host and
+reopens the same reference on a strict host with `definitions: []`, hosted lookup
+off and `maxTurns: 1`. No Schway change, native-record parsing, deep import,
+unbounded outer loop or additional budget is needed. This applies uniformly to
+web reads, `read_attachment` and granted execution tools. Both native usage lists
+are combined before application normalization; transition failures retain spent
+usage. Job admission minima cover a tool turn plus an answer turn and every
+permitted host retry/job admission. Attachment context reservation continues to
+include all model turns.
+
+Before reopening and submitting, recheck attempt authority (including scheduler,
+lease and deadline), source/context freshness, owner generation, kill switch and
+the frozen execution grant. The application commit fence remains authoritative;
+a late answer cannot publish after invalidation. Clear provisional tool-phase
+text before the answer submission. The localized trusted instruction requires
+actual citations, explicit missing evidence and no invented figures or successful
+actions. Transport/auth/storage failures and a model that refuses to produce a
+valid answer still fail honestly; the reservation is not synthetic evidence or a
+semantic correctness guarantee. Deterministic models, route protocol fixtures and
+fake clocks cover looping tools, exact boundaries, early answers and stale work.
+
 ## Validator and record modes
 
 `normalizePortResult` accepts fixture and production outcomes with the same

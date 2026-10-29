@@ -23,6 +23,7 @@ import type {
   HostAuthSelection,
   HostAuthStatusCode,
   HostCredentialStore,
+  HostClock,
   HostRunAttemptUsage,
   HostRunResult,
   HostRunUsage,
@@ -36,8 +37,11 @@ import type {
 } from "schway/host";
 import { AppError } from "../errors";
 import { redactRegisteredSecrets } from "../security/secret-fingerprints";
-import { executionInstruction, webCallLimit, openRunTools, requestGrant, runMaxTurns, runToolsFailure, type RunExecution, type RunTools } from "../exec/run-tools";
-import { requireId } from "../sources";
+import { serviceToolCurrent } from "../security/service-tools";
+import { attemptAuthority, readAttempts } from "../jobs/attempts";
+import { contextCurrent } from "../memory/context";
+import { executionCurrent, executionInstruction, webCallLimit, openRunTools, requestGrant, runMaxTurns, runToolsFailure, type RunExecution, type RunTools } from "../exec/run-tools";
+import { lookupSource, requireId } from "../sources";
 import type { TransactionStore } from "../store";
 import type { ApplicationRunPort, ManagedContextOutcome, NativeRunInspection } from "./run-port";
 import { fixtureOutcome, validateRunRequest } from "./scripted-port";
@@ -96,6 +100,8 @@ export interface SchwayPortOptions {
   /** Fixture credential store for route-bound runs; never set in production. */
   authStore?: HostCredentialStore;
   now?: () => number;
+  /** Deterministic host retry/deadline clock; production uses Schway's system clock. */
+  clock?: HostClock;
   /**
    * exec.run_tools/v1: the project boxes. With it, a run whose request carries an execution grant admits Schway's
    * core tools over the box backend; without it no run ever admits an execution tool.
@@ -154,14 +160,14 @@ export function schwayMaxAttempts(request: Pick<ApplicationRunRequest, "limits">
 /**
  * Worst-case reserved calls for one attempt: every model turn
  * ({@link runMaxTurns}) times every host attempt, plus the selected web-read allowance.
- * With neither execution nor web reads, this equals {@link schwayMaxAttempts}.
+ * With no execution, web reads or attachments, this equals {@link schwayMaxAttempts}.
  */
-export function schwayMaxCalls(request: Pick<ApplicationRunRequest, "limits" | "execution" | "web">): number {
+export function schwayMaxCalls(request: Pick<ApplicationRunRequest, "limits" | "execution" | "web" | "attachments">): number {
   return schwayMaxRounds(request) + webCallLimit(request);
 }
 
 /** Worst-case model rounds for one attempt; service-owned web calls do not spend model rounds. */
-export function schwayMaxRounds(request: Pick<ApplicationRunRequest, "limits" | "execution" | "web">): number {
+export function schwayMaxRounds(request: Pick<ApplicationRunRequest, "limits" | "execution" | "web" | "attachments">): number {
   return schwayMaxAttempts(request) * runMaxTurns(request);
 }
 
@@ -217,10 +223,7 @@ export function describeEffectiveRun(request: ApplicationRunRequest): EffectiveS
     sources,
     inputText,
     limits: {
-      // Single-turn bridge without an execution grant: one model turn with
-      // transport retries bounded by maxAttempts. An execution run gets the
-      // turns its reserved call budget covers (exec.run_tools/v1). Anything
-      // needing more surfaces as max_turns instead of spending unreserved calls.
+      // Total reserved turns, including the final tool-free answer turn when tools are offered.
       maxTurns: runMaxTurns(request),
       maxConcurrentTools: 1,
       contextWindow: clampInt(request.limits.contextTokens, 1, 2_000_000),
@@ -492,6 +495,9 @@ export class SchwayRunPort implements ApplicationRunPort {
     }
     const web = this.options.web ?? new WebTools(this.store, { ...this.options.webOptions, outputBytes: this.outputBytes });
     effective.sections.push({ name: "web-reads", content: web.instruction(snapshot.projectId, snapshot.web === true) });
+    const language = this.store.read(tx => readPersona(tx).language);
+    const answerInstruction = dictionaries[language]["run.final_answer"];
+    effective.sections.push({ name: "final-answer", content: answerInstruction });
     this.#requests.push(structuredClone(snapshot));
     if (this.#requests.length > 32) this.#requests.shift();
     observe({ kind: "started", runId: snapshot.runId, context: { ...snapshot.context } });
@@ -505,13 +511,17 @@ export class SchwayRunPort implements ApplicationRunPort {
     };
     try {
       // exec.run_tools/v1: a grant opens the project box (re-checking the level); no grant is the empty registry.
-      try { tools = await openRunTools(this.store, this.options.execution, snapshot); }
+      try { tools = effective.limits.maxTurns > 1 ? await openRunTools(this.store, this.options.execution, snapshot) : { definitions: [], release: () => {} }; }
       catch (error) { return finish({ ...classifyBridgeReason(runToolsFailure(error)), session: null }); }
       const webDefinitions = web.buildWebTools(snapshot, key => {
         const language = this.store.read(tx => readPersona(tx).language);
         observe({ kind: "progress", runId: snapshot.runId, text: dictionaries[language][key as keyof typeof dictionaries.en] ?? key });
       });
-      host = await this.openHost(effective, false, [...tools.definitions.filter(tool => tool.name !== "web_search" && tool.name !== "web_fetch"), ...webDefinitions], imageInput?.options, imageInput?.images.length ? imageInput.guardSend : undefined);
+      const definitions = effective.limits.maxTurns > 1
+        ? [...tools.definitions.filter(tool => tool.name !== "web_search" && tool.name !== "web_fetch"), ...webDefinitions] : [];
+      const answerReserved = definitions.length > 0;
+      const toolPhase = { ...effective, limits: { ...effective.limits, maxTurns: answerReserved ? effective.limits.maxTurns - 1 : 1 } };
+      host = await this.openHost(toolPhase, false, definitions, imageInput?.options, imageInput?.images.length ? imageInput.guardSend : undefined);
       await this.options.testHooks?.afterOpenHost?.(host);
       // Recheck before reserving: retirement may have fenced the context
       // while the host was constructed, and no intent row exists yet to stop
@@ -558,15 +568,72 @@ export class SchwayRunPort implements ApplicationRunPort {
           observe({ kind: "progress", runId: snapshot.runId, text: String(text).slice(0, 500) });
         } catch { /* Provisional observation never fails the run. */ }
       };
-      let outcome: ApplicationRunOutcome;
-      if (this.options.model) {
-        outcome = this.mapSubmitResult(
-          this.options.testHooks?.imagesRejected ?? await session.submit({ text: effective.inputText, ...(imageInput?.images.length ? { images: imageInput.images } : {}) }, this.options.model, { signal, onProgress, imageRoute: snapshot.route.provider }), snapshot,
-        );
-      } else {
-        outcome = this.mapRouteResult(this.options.testHooks?.imagesRejected ?? await session.submitWithRoute({ text: effective.inputText, ...(imageInput?.images.length ? { images: imageInput.images } : {}) }, { signal, onProgress }), snapshot);
+      // Both submissions share one deadline and one reservation. A max_turns tool phase has persisted its
+      // results, but no committed answer. Reopen its exact ancestry under a fresh, empty exact registry.
+      const clock = this.options.clock;
+      const monotonicNow = () => clock ? (clock.monotonicNow?.() ?? clock.now()) : performance.now();
+      const started = monotonicNow();
+      const deadline = AbortSignal.timeout(effective.limits.deadlineMs);
+      const runSignal = AbortSignal.any([signal, deadline]);
+      const submit = async (text: string, initial = false) => {
+        const input = { text, ...(initial && imageInput?.images.length ? { images: imageInput.images } : {}) };
+        const options = { signal: runSignal, onProgress, ...(clock ? { clock } : {}) };
+        if (this.options.model) {
+          const native = this.options.testHooks?.imagesRejected ?? await session!.submit(input, this.options.model, { ...options, imageRoute: snapshot.route.provider });
+          return { native, outcome: this.mapSubmitResult(native, snapshot) };
+        }
+        const native = this.options.testHooks?.imagesRejected ?? await session!.submitWithRoute(input, options);
+        return { native, outcome: this.mapRouteResult(native, snapshot) };
+      };
+      const current = () => !fenced() && !runSignal.aborted && this.store.read(tx => {
+        const attempt = readAttempts(tx, snapshot.fence.jobId).find(item => item.generation === snapshot.fence.generation);
+        return !!attempt && attemptAuthority(tx, attempt, (this.options.now ?? Date.now)()) === null &&
+          serviceToolCurrent(tx, snapshot) && (!requestGrant(snapshot) || executionCurrent(tx, snapshot)) &&
+          contextCurrent(tx, snapshot.projectId, snapshot.manifest) === null && snapshot.manifest.sources.every(source => {
+            const found = lookupSource(tx, source.projectId, source.reference);
+            return found.state === "available" && found.current.revision === source.reference.revision && found.text === source.text;
+          });
+      });
+      const reference = session.reference;
+      let phase = await submit(effective.inputText, true);
+      let usage = phase.native.usage;
+      let continuationFailure: RunReason | null = null;
+      if (answerReserved && phase.native.outcome === "max_turns" && current()) {
+        try {
+          await session.close(); session = null;
+          await host.close(); host = null;
+          const remainingMs = Math.floor(effective.limits.deadlineMs - Math.max(monotonicNow() - started, usage.totalMs));
+          const remainingAttempts = Math.min(effective.limits.maxAttempts,
+            schwayMaxRounds(snapshot) - usage.attempts.length,
+            schwayMaxCalls(snapshot) - usage.attempts.length - (snapshot.web ? web.callsUsed(snapshot.runId) : 0));
+          if (remainingMs > 0 && remainingAttempts > 0 && current()) {
+            const answerPhase = { ...effective, limits: { ...effective.limits, maxTurns: 1, maxAttempts: remainingAttempts, deadlineMs: remainingMs } };
+            host = await this.openHost(answerPhase, false, [], imageInput?.options, imageInput?.images.length ? imageInput.guardSend : undefined);
+            if (current()) session = await host.openSession(reference);
+            if (session && current()) {
+              try { observe({ kind: "delta_reset", runId: snapshot.runId }); } catch { /* Provisional only. */ }
+              if (current()) {
+                phase = await submit(answerInstruction);
+                usage = { ...phase.native.usage, attempts: [...usage.attempts, ...phase.native.usage.attempts],
+                  totalMs: Math.max(Math.ceil(monotonicNow() - started), usage.totalMs + phase.native.usage.totalMs) };
+              }
+            }
+          } else if (remainingMs <= 0 || remainingAttempts <= 0) {
+            continuationFailure = "budget_exhausted";
+          }
+        } catch (error) {
+          // Preserve already-spent native usage even if closing/reopening the continuation fails.
+          continuationFailure = error instanceof HostImageError
+            ? error.code === "images-unsupported" ? "images_unsupported" : "images_unavailable" : "invalid_result";
+        }
       }
-      this.recordRef(snapshot, session.reference, "finished");
+      let outcome = { ...(continuationFailure ? classifyBridgeReason(continuationFailure) : phase.outcome), usage: mapHostUsage(usage, usage.totalMs) };
+      if (deadline.aborted || monotonicNow() - started >= effective.limits.deadlineMs || usage.totalMs >= effective.limits.deadlineMs) {
+        outcome = { ...classifyBridgeReason("budget_exhausted"), usage: mapHostUsage(usage, usage.totalMs) };
+      } else if (answerReserved && !current() && !fenced()) {
+        outcome = { ...classifyBridgeReason("cancelled"), usage: mapHostUsage(usage, usage.totalMs) };
+      }
+      this.recordRef(snapshot, reference, "finished");
       if (fenced()) return finish({ ...classifyBridgeReason("context_retired"), session: null });
       if (signal.aborted) return finish({ ...classifyBridgeReason("cancelled"), session: null });
       if (snapshot.web) outcome.usage.calls += web.callsUsed(snapshot.runId);

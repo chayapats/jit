@@ -1,3 +1,4 @@
+import { needsAttachmentRead } from "../attachments/run-content";
 import { attachmentsPending, collectRunAttachments, runAttachmentCurrent } from "../attachments/run-references";
 import { attachmentContextTokens } from "../attachments/run-content";
 import { attachmentMaxTurns } from "../exec/run-tools";
@@ -200,16 +201,16 @@ function enqueueSpecialist(
 
 /**
  * Smallest model-call/round allowance for a Schway specialist: admission spends one of each and the attempt
- * pre-reserves every host retry. Web-enabled admission additionally requires one call, without another model round.
+ * pre-reserves every host retry. Tool-enabled jobs also reserve a tool turn and a final answer turn for each admission.
  * The scripted port reserves nothing extra.
  */
-export function schwayDispatchMinimum(limits: Pick<JobLimits, "retries">): number {
-  return schwayMaxAttempts({ limits: limits as JobLimits });
+export function schwayDispatchMinimum(limits: Pick<JobLimits, "retries">, tools = false): number {
+  return schwayMaxAttempts({ limits: limits as JobLimits }) * (tools ? 2 * (limits.retries + 1) : 1);
 }
 
 /** Refuses Schway dispatch limits the retry pre-reserve can never satisfy, naming the minimum for the chosen retries. */
-function assertSchwayRetryRoom(limits: JobLimits, web: boolean): void {
-  const minimumRounds = schwayDispatchMinimum(limits), minimumCalls = minimumRounds + (web ? 1 : 0);
+function assertSchwayRetryRoom(limits: JobLimits, web: boolean, tools = web): void {
+  const minimumRounds = schwayDispatchMinimum(limits, tools), minimumCalls = minimumRounds + (web ? limits.retries + 1 : 0);
   if (limits.calls < minimumCalls || limits.rounds < minimumRounds) {
     throw new AppError("dispatch_limits_below_retry_minimum", 400, { retries: limits.retries, minimumCalls, minimumRounds });
   }
@@ -225,7 +226,6 @@ export function prepareDispatch(
   const p = command.payload;
   readTopic(tx, command.projectId, p.topicId);
   validateJobLimits(p.limits, config.jobs.maximum);
-  if (config.runPort === "schway") assertSchwayRetryRoom(p.limits, readWebSettings(tx, command.projectId).enabled);
   if (!Array.isArray(p.include) || !Array.isArray(p.exclude) || p.include.length > config.team.roleLimit ||
       p.exclude.length > config.team.roleLimit) throw new AppError("invalid_team_command");
   const state = readTeam(tx, command.projectId, config.team);
@@ -237,6 +237,12 @@ export function prepareDispatch(
       enabled: role.enabled, route: role.effective.route,
     })),
   });
+  if (config.runPort === "schway") {
+    const web = readWebSettings(tx, command.projectId).enabled;
+    const tools = web || plan.selected.some(roleId => executionGrant(tx, command.projectId, roleId) !== null) ||
+      needsAttachmentRead(tx, { projectId: command.projectId, attachments: collectRunAttachments(tx, { projectId: command.projectId, topicId: p.topicId }, sources).filter(ref => ref.inline) });
+    assertSchwayRetryRoom(p.limits, web, tools);
+  }
   const discussionId = crypto.randomUUID();
   const responsibility = state.roles.filter(role => plan.selected.includes(role.id))
     .map(role => role.responsibility).sort((a, b) => Buffer.byteLength(JSON.stringify(b)) - Buffer.byteLength(JSON.stringify(a)))[0] ?? "";

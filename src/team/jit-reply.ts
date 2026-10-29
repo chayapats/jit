@@ -1,4 +1,4 @@
-import { attachmentContextTokens } from "../attachments/run-content";
+import { attachmentContextTokens, needsAttachmentRead } from "../attachments/run-content";
 import { attachmentMaxTurns } from "../exec/run-tools";
 import { validateTaskWording } from "../tasks";
 import { dictionaries } from "../i18n";
@@ -186,6 +186,8 @@ export const replyAttemptOutputTokens = 1024;
 /**
  * Bounded fixed limits for one reply, clamped to the installation maximum. Budgets cover the first attempt
  * and every allowed retry, because each attempt (including an owner resume) is admitted and reserves its own share.
+ * A tool-capable reply's model-turn ceiling includes its final tool-free answer; web reads fit the shared call ceiling
+ * through runMaxTurns rather than increasing the installation maximum.
  */
 export function replyLimits(maximum: JobLimits, contextBytes: number, execution = false, attachments = false): JobLimits {
   const retries = Math.min(2, maximum.retries), attempts = retries + 1;
@@ -435,7 +437,8 @@ function admitReply(tx: AppTransaction, input: ReplyAdmission): { id: string; re
   if (pinnedCost > room || anchorSource.state !== "available" ||
       Buffer.byteLength(JSON.stringify(anchorSource.text)) + 160 > room - pinnedCost) return notAdmitted("context_too_large");
   const hasAttachments = !!tx.get("SELECT 1 FROM attachments a JOIN messages m ON m.id = a.message_id WHERE a.project_id = ? AND a.topic_id = ? AND m.sequence <= ? AND a.state != 'deleted' LIMIT 1", message.projectId, message.topicId, anchor.sequence);
-  const limits = replyLimits(config.jobs.maximum, config.team.contextBytes, executionGrant(tx, message.projectId, jit.id) !== null || readWebSettings(tx, message.projectId).enabled || hasAttachments, hasAttachments);
+  const attachments = collectRunAttachments(tx, message, [{ reference: anchor.source }]);
+  const limits = replyLimits(config.jobs.maximum, config.team.contextBytes, executionGrant(tx, message.projectId, jit.id) !== null || readWebSettings(tx, message.projectId).enabled || needsAttachmentRead(tx, { projectId: message.projectId, attachments }), hasAttachments);
   const context = { id: crypto.randomUUID(), generation: 1 };
   const request: ApplicationRunRequest = {
     runId: replyId, projectId: message.projectId, topicId: message.topicId, roleId: jit.id,
@@ -444,7 +447,7 @@ function admitReply(tx: AppTransaction, input: ReplyAdmission): { id: string; re
     configuration: { ownerRevision: team.ownerRevision, projectRevision: team.projectRevision, roleRevision: jit.revision },
     context, fence: { jobId: "00000000-0000-0000-0000-000000000000", generation: 1, ownerGeneration: input.generation },
     instructions: { operator: [...fixedOperator, metadataOf(offered, gaps)], responsibility: jit.responsibility },
-    manifest: { sources: [], claims: [] }, attachments: collectRunAttachments(tx, message, [{ reference: anchor.source }]), web: readWebSettings(tx, message.projectId).enabled, tools: [],
+    manifest: { sources: [], claims: [] }, attachments, web: readWebSettings(tx, message.projectId).enabled, tools: [],
     policy: { genericExecution: false, arbitraryFetch: false, hostedLookup: false, repositoryDiscovery: false }, limits,
   };
   const projectRevision = tx.get<{ revision: number }>("SELECT revision FROM projects WHERE id = ?", message.projectId)!.revision;
