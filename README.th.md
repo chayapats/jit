@@ -40,7 +40,7 @@ Jit ใช้ [Schway](https://github.com/chayapats/schway) เป็น executi
 | **ตรวจ PR แบบส่วนตัว** | จิตอ่าน PR ใหม่โดยไม่รันโค้ด แล้วแจ้งสิ่งที่พบพร้อมหลักฐานให้คุณคนเดียว |
 | **เงียบเป็นค่าเริ่มต้น** | งานตามตารางเวลาที่ไม่มีอะไรใหม่จะไม่ส่งข้อความ และคุณได้แจ้งเตือนครั้งเดียวเมื่องานทั้งชุดจบ เลือกได้ว่าจะรับทุกเรื่องหรือเฉพาะเรื่องที่รอคุณ |
 | **รันงานใน sandbox** | แต่ละโครงการมี rootless Podman box ของตัวเอง ระดับสิทธิ์มี Read, Workspace และ Full และมีแต่คุณที่เพิ่มระดับได้ การ push, deploy และ external effect อื่นๆ ต้องรอให้คุณอนุมัติผ่าน approval card ก่อน |
-| **เข้าถึงได้หลายทาง** | Web, Telegram, CLI บน loopback (`jit ask`), signed webhooks และ `.ics` feed ของตารางงาน |
+| **เข้าถึงได้หลายทาง** | Web, CLI บน loopback (`jit ask`), signed webhooks และ `.ics` feed ของตารางงาน ช่องทาง Telegram เขียนไว้แล้ว แต่ build นี้ยังไม่มี Bot API transport ที่ใช้งานจริง |
 
 ## ทำงานอย่างไร
 
@@ -65,7 +65,7 @@ flowchart LR
 
 ## สถานะ
 
-Jit อยู่ในช่วง **pilot** กับ owner คนเดียว MVP และ specs S09–S11 ทำเสร็จแล้ว เมื่อ 2026-10-28 การติดตั้งบน Raspberry Pi 5 ผ่านการทดสอบ packaging, restart, reboot และ route readiness บน route **Codex** ส่วน route Grok เลื่อนไว้จนกว่า quota จะ reset แต่ละ installation รองรับ owner คนเดียว
+Jit อยู่ในช่วง **pilot** กับ owner คนเดียว MVP และ specs S09–S11 ทำเสร็จแล้ว เมื่อ 2026-10-28 การติดตั้งบน Raspberry Pi 5 ผ่านการทดสอบ packaging, restart, reboot และ route readiness บน route **Codex** ส่วน route Grok เลื่อนไว้จนกว่า quota จะ reset และ Telegram ยังปิดไว้จนกว่าจะมี transport จริง แต่ละ installation รองรับ owner คนเดียว
 
 ## เริ่มต้นใช้งาน
 
@@ -77,7 +77,7 @@ bun run setup        # สร้าง owner (รหัสผ่าน 12–256 
 bun start            # http://localhost:3000
 ```
 
-เปิด `http://localhost:3000` เข้าสู่ระบบ แล้วทำขั้นตอน **ตั้งจิต** เพื่อตั้ง persona ของจิต ค่าเริ่มต้นจะตอบด้วย scripted fixtures ถ้าต้องการใช้ Schway route จริงให้ตั้ง `JIT_RUN_PORT=schway`
+เปิด `http://localhost:3000` เข้าสู่ระบบ แล้วทำขั้นตอน **ตั้งจิต** เพื่อตั้ง persona ของจิต ค่าเริ่มต้นจะตอบด้วย scripted fixtures ถ้าต้องการใช้ model จริงให้ตั้ง `JIT_RUN_PORT=schway` โดยก่อนหน้านั้น user ที่รัน Jit ต้องมี Secret Service ที่ปลดล็อกแล้วและ login provider ใน Schway แล้ว (ดู [Pi live round](docs/runbooks/pi-live-round.md) Round B)
 
 > [!TIP]
 > ถ้าลืมรหัสผ่าน ให้รัน `bun run owner:reset` บนเครื่องนั้น คำสั่งนี้เพิกถอน session เดิมและเก็บโครงการไว้ครบ ไม่มีการ reset จากระยะไกล

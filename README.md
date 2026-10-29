@@ -40,7 +40,7 @@ Jit uses [Schway](https://github.com/chayapats/schway) as its execution engine. 
 | **Private PR review** | Jit reads new pull requests without running them and sends you findings with evidence. |
 | **Quiet by default** | Scheduled runs with nothing new stay silent. You get one notice per finished batch of work, either for everything or only for what needs you. |
 | **Sandboxed execution** | Each project gets one rootless Podman box. Access is Read, Workspace or Full, and only you can raise it. Pushes, deploys and other external effects wait for your approval card. |
-| **Reach it your way** | Web, Telegram, a loopback CLI (`jit ask`), signed webhooks, and an `.ics` feed of your schedules. |
+| **Reach it your way** | Web, a loopback CLI (`jit ask`), signed webhooks, and an `.ics` feed of your schedules. The Telegram channel is built, but no live Bot API transport ships yet. |
 
 ## How it works
 
@@ -65,7 +65,7 @@ flowchart LR
 
 ## Status
 
-Jit is in **pilot** with a single owner. The MVP and specs S09–S11 are implemented. On 2026-10-28, a Raspberry Pi 5 install passed packaging, restart, reboot and route-readiness gates on the **Codex** route. The Grok route is deferred until its quota resets. Each installation supports one owner.
+Jit is in **pilot** with a single owner. The MVP and specs S09–S11 are implemented. On 2026-10-28, a Raspberry Pi 5 install passed packaging, restart, reboot and route-readiness gates on the **Codex** route. The Grok route is deferred until its quota resets, and Telegram stays disabled until a live transport ships. Each installation supports one owner.
 
 ## Quick start
 
@@ -77,7 +77,7 @@ bun run setup        # create the owner (password: 12–256 chars, read from the
 bun start            # http://localhost:3000
 ```
 
-Open `http://localhost:3000`, sign in, and follow the first-run **ตั้งจิต** flow to set Jit's persona. Replies come from scripted fixtures by default. Set `JIT_RUN_PORT=schway` to use real Schway routes.
+Open `http://localhost:3000`, sign in, and follow the first-run **ตั้งจิต** flow to set Jit's persona. Replies come from scripted fixtures by default. To use real models, set `JIT_RUN_PORT=schway`. First give the user that runs Jit an unlocked Secret Service and a Schway provider login (see [Pi live round](docs/runbooks/pi-live-round.md), Round B).
 
 > [!TIP]
 > If you forget the password, run `bun run owner:reset` on the host. It revokes old sessions and keeps your projects. There is no remote reset.
