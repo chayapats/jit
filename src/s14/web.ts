@@ -1,4 +1,5 @@
 import { AppError } from "../errors";
+import { readS14Ops } from "./ops-state";
 import { negotiateLocale } from "../i18n";
 import type { S14Application, S14Command } from "./application";
 import type { Home, Policy } from "./types";
@@ -124,6 +125,10 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
       if (botLifecycle) return json(botLifecycle[2]
         ? app.botLifecycle.preview(auth.actor, botLifecycle[1]!, botLifecycle[2] as "retire" | "delete")
         : app.botLifecycle.view(auth.actor, botLifecycle[1]!));
+      if (url.pathname === "/api/s14/ops") {
+        const control = readS14Ops(app.store.path);
+        return json({ revision: control.revision, backups: control.backups, stage: control.stage ? { id: control.stage.id, mode: control.stage.mode, state: control.stage.state, reason: control.stage.reason } : null, maintenance: "offline_required", workers: "running" });
+      }
       if (url.pathname === "/api/s14/routines") return json({ items: app.routines.list(auth.actor) });
       if (url.pathname === "/api/s14/attention") return json(app.attention.view(auth.actor));
       const routine = /^\/api\/s14\/routines\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);

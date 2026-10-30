@@ -1,4 +1,6 @@
 import { dirname, join, resolve } from "node:path";
+import { runS14Ops } from "./ops-cli";
+import { assertS14OpsUnfenced } from "./ops-state";
 import { ConnectionVault } from "../exec/connections";
 import { schwayRecovery } from "./native-recovery";
 import { schwayResearch } from "./research";
@@ -22,6 +24,8 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
   const path = resolve(env.JIT_S14_DATABASE ?? ".local/s14/application.sqlite"), command = args[0];
   try {
     inspectS14Store(path); // Refuse legacy before creating even a lock, profile directory or worker.
+    if (command === "ops") { await runS14Ops(path, args, env); return; }
+    assertS14OpsUnfenced(path);
     if (!["serve", "setup"].includes(command ?? "") || args.some(a => !["serve", "setup", "--s14", "--password-stdin", "--refusal-page"].includes(a))) throw new AppError("use_setup_or_serve_with_s14");
     const policy: Policy = { routes: JSON.parse(env.JIT_S14_ROUTES ?? "[]"), tools: ["web_search", "web_fetch", "computer"], resources: JSON.parse(env.JIT_S14_RESOURCES ?? "[]") };
     const release = acquireS14RuntimeLock(path);

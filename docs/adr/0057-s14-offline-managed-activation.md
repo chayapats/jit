@@ -1,0 +1,22 @@
+---
+status: accepted for opt-in implementation
+scope: OPS14-01, S14-AC01/05/06/11/14; refines ADRs 0025–0027 and 0048 for S14
+---
+
+# Offline S14 backup and quarantined activation
+
+The owner confirmed credential-free consistent images, current independent lifecycle reconciliation, exact cutover authority and workers fenced until reconciliation. Legacy behavior remains unchanged behind the separate S14 opt-in. UI and real Linux evidence remain separate deliverables.
+
+Use one stopped-service maintenance process under the existing OS-backed runtime lock. This avoids a new online quiesce/shutdown authority surface and ensures asynchronous native snapshot calls cannot overlap managed writes. A durable external control journal/fence survives process death and covers both the application rename and native session-store pointer. Normal store reads/writes and boot fail closed while it exists. Offline status and recovery commands authenticate the current owner.
+
+Keep schema 12. There is no released previous S14 format to migrate; support 12→12 staging/revalidation now and refuse unreleased 1–11, future/legacy schemas and unknown builds before candidate writes. Future actual migrations require an explicit compatibility matrix and preservation tests. The stage creates a normal credential-free recovery point before copying. Before cutover, discard leaves the prior application intact. After cutover, rollback is another quarantine restore with current tombstones.
+
+Immutable artifacts already live as transactional SQLite BLOBs, so the main image carries them with an exact hash inventory. Native snapshots use the pinned public Schway format-4 APIs only. Native correlation workspaces remain fixed; a separate session directory is restored/reconciled and selected during fenced activation. This supports the existing host/path only: native workspace relocation is not invented. The old application/native store stays private installation recovery state and is not an ordinary export.
+
+Classify every application table explicitly. Remove credentials/session/connection/transient input state, scan retained plain/opaque bytes for registered or credential-shaped secrets, zero free pages and compact. Do not recursively copy any filesystem tree, vault, native home, computer workspace or browser profile. Images contain hash-only ledger positions, never replacement lifecycle authority. Existing identity, source/access/share/Bot/computer withdrawals, native catalog and monotonic reservations remain in the separate current lifecycle database.
+
+Quarantine reuses S14 lifecycle, report/share and REC14 reconciliation. Revoke restored work grants, block old routines/chat, expire approvals and keep unknown effects/unsent deliveries reconcile-only. Preserve the current owner generation for historical evidence contracts while deleting all sessions; this keeps valid reports readable without re-authorizing execution. Unresolved native or computer/Bot cleanup blocks activation. The CLI has no computer runtime, so a retained computer installation must use the trusted service seam with its runtime; it cannot claim cleanup from missing enforcement.
+
+Finite MVP limits refuse rather than prune silently: ten registered backups, one hundred durable command receipts, 64 MiB image plus serialized native bytes, 2 MiB manifest/control, 1024 native intents and 200000 rows/ledger records. Automatic archival/pruning and arbitrary archive/cross-install import need later scoped contracts. Schway still has no caller byte ceiling, so one session may allocate its host-side bounded capture before Jit rejects serialized size.
+
+Evidence is deterministic public-host local-storage round trip and fault injection, not Linux power-loss/isolation or paid provider verification. `docs/runbooks/s14-backup-restore.md` supplies the opt-in x64/arm64 evidence procedure. No UI design or acceptance is claimed.

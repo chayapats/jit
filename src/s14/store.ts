@@ -2,6 +2,8 @@ import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readSync } from "node:fs";
 import { dirname } from "node:path";
 import { AppError } from "../errors";
+import { assertS14OpsUnfenced } from "./ops-state";
+import { opsPath } from "./ops-files";
 import type { AppTransaction } from "../store";
 
 /** Fresh S14 SQLite format identity, distinct from every legacy user_version. */
@@ -30,9 +32,12 @@ export function inspectS14Store(path: string): "missing" | "s14" {
 export class S14Store {
   #db: Database;
   #tx: AppTransaction;
-  constructor(readonly path: string) {
+  constructor(readonly path: string, readonly maintenance?: { lifecyclePath?: string }) {
+    opsPath(path);
+    if (!maintenance) assertS14OpsUnfenced(path);
     const state = inspectS14Store(path);
-    const ledgerPath = `${path}.lifecycle.sqlite`;
+    const ledgerPath = maintenance?.lifecyclePath ?? `${path}.lifecycle.sqlite`;
+    opsPath(ledgerPath);
     if (state !== "missing" && (!existsSync(ledgerPath) || lstatSync(ledgerPath).isSymbolicLink())) throw new AppError("s14_lifecycle_ledger_unavailable", 503);
     if (state === "missing" && existsSync(ledgerPath)) throw new AppError("s14_lifecycle_ledger_conflict", 409);
     if (state === "missing") {
@@ -159,9 +164,17 @@ export class S14Store {
     } catch (e) { this.#db.close(); throw e; }
   }
   /** Reads an owner projection without admitting work or performing inference. */
-  read<T>(fn: (tx: AppTransaction) => T): T { return this.#db.transaction(() => fn(this.#tx)).deferred(); }
+  read<T>(fn: (tx: AppTransaction) => T): T {
+    if (!this.maintenance) assertS14OpsUnfenced(this.path);
+    return this.#db.transaction(() => fn(this.#tx)).deferred();
+  }
   /** Commits one synchronous receipt/state/outbox transition under the writer lock. */
-  transaction<T>(fn: (tx: AppTransaction) => T): T { return this.#db.transaction(() => fn(this.#tx)).immediate(); }
+  transaction<T>(fn: (tx: AppTransaction) => T): T {
+    if (!this.maintenance) assertS14OpsUnfenced(this.path);
+    return this.#db.transaction(() => fn(this.#tx)).immediate();
+  }
+  /** Copies a consistent main-database image while its caller holds the exclusive maintenance lock. */
+  snapshotBytes(): Uint8Array { return this.#db.serialize("main"); }
   /** Closes this connection without deleting application, backup or profile data. */
   close(): void { this.#db.close(); }
 }
