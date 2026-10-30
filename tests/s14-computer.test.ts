@@ -436,7 +436,7 @@ test("schema 14 reopens with result and computer tables and original receipts in
   f.store.close(); stores.delete(f.store);
   const store = new S14Store(f.path); stores.add(store);
   expect(store.read(tx => tx.all("SELECT * FROM command_receipts"))).toEqual(original);
-  expect(store.read(tx => tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version)).toBe(13);
+  expect(store.read(tx => tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version)).toBe(14);
   for (const table of ["work_results", "bot_computers", "input_leases", "computer_operations", "computer_inputs", "computer_attempts"]) {
     expect(store.read(tx => tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name=?", table))).not.toBeNull();
   }
