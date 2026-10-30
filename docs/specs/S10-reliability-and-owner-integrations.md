@@ -1,5 +1,7 @@
 # Spec S10 — Reliability and owner integrations
 
+> S14 target status: Historical implemented S10 baseline. S14 retains quiet/results/authority invariants while refining routing, Bot/work scopes and safe recovery. See [S14](S14-bot-first-local-assistant.md).
+
 Tracker: https://github.com/chayapats/jit/issues/111
 
 Owner: Jit. Status: the owner instructed on 2026-10-28 to adopt all ten ideas, and the spec is ready for ticket breakdown. Parent: [MVP spec](00-mvp.md); builds on [S09](S09-main-bot-and-chat-first-ui.md). Requirements: [PRD FR-26–FR-34, NFR-13 and the FR-17 refinement](../product/02-prd.md). Inspiration: [nightly-labs/openbot](https://github.com/nightly-labs/openbot).

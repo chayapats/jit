@@ -17,3 +17,7 @@ FR-22 asks for chat without choosing a project, and for promoting a conversation
 ## Alternatives and consequences
 
 The owner confirmed this linked-continuation behavior on 2026-10-26 (S09-D09). Physically moving the topic would break project identity, memory lineage and deletion-ledger assumptions. A project-less chat would put the model in charge of scope. Owner-visible difference: the history is linked and quoted rather than relocated.
+
+## S14 refinement status
+
+This record retains its implemented legacy meaning. The owner-confirmed [S14 target](../specs/S14-bot-first-local-assistant.md) and proposed ADRs 0045–0048 refine Project ownership, grants/computers, Parallel default or replay-safe recovery where applicable. They do not claim a new supported API or change this build's behavior. Unchanged authority, fencing, credential and evidence invariants remain.

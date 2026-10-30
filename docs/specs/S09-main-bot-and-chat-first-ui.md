@@ -1,5 +1,7 @@
 # Spec S09 — Jit main bot and chat-first interface
 
+> S14 target status: Historical implemented S09 baseline. S14 replaces required Projects/General/promotion and the project-centric IA for the new store; current runtime remains unchanged. See [S14](S14-bot-first-local-assistant.md).
+
 Tracker: https://github.com/chayapats/jit/issues/90
 
 Owner: Jit. Status: confirmed by the owner on 2026-10-26 and ready for ticket breakdown. Parent: [MVP spec](00-mvp.md). Requirements: [PRD FR-19–FR-25 and NFR-11](../product/02-prd.md). Visual system: [design/README.md](../design/README.md).

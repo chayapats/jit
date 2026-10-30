@@ -25,3 +25,7 @@ Transport cancellation alone cannot prevent delayed workers from committing, so 
 The run-port v1 artifact gains mandatory paginated inspection and a retirement-failure outcome; the TEAM01 artifact alone does not meet jobs.session_reconcile/v1. Registry fingerprints include replay policy, conservatively blocking old queued/waiting definitions rather than inferring safe replay. Schema migration preserves historical records without fabricating attempt evidence. Future real adapters must implement these lifecycle semantics on Schway's supported public surface; a missing host operation requires a Schway proposal, not private integration.
 
 The exact surfaces and deterministic evidence are recorded in [attempt-fence-v1](../contracts/attempt-fence-v1.md) and [session-reconcile-v1](../contracts/session-reconcile-v1.md). Fixture checks do not certify physical reboot, live providers, external exactly-once effects or production native deletion.
+
+## S14 refinement status
+
+This record retains its implemented legacy meaning. The owner-confirmed [S14 target](../specs/S14-bot-first-local-assistant.md) and proposed ADRs 0045–0048 refine Project ownership, grants/computers, Parallel default or replay-safe recovery where applicable. They do not claim a new supported API or change this build's behavior. Unchanged authority, fencing, credential and evidence invariants remain.

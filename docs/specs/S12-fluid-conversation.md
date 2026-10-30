@@ -1,5 +1,7 @@
 # Spec S12 — Fluid conversation that just works: answer first, stream, read the web
 
+> S14 target status: Historical implemented S12 baseline. S14 selects Parallel as the new-store default and replaces Project ownership; current SearXNG runtime behavior is not changed by the documentation. See [S14](S14-bot-first-local-assistant.md).
+
 Tracker: https://github.com/chayapats/jit/issues/170
 
 Owner: Jit. สถานะ: **done** owner ยืนยันทุกข้อ (D01–D13) เมื่อ 2026-10-29 ticket ทุกตัว merge แล้วในวันเดียวกัน (ดูตาราง Tickets) D01 ทำใน [#169](https://github.com/chayapats/jit/issues/169) parent คือ issue [#170](https://github.com/chayapats/jit/issues/170) Parent: [MVP spec](00-mvp.md) ต่อยอดจาก [S09](S09-main-bot-and-chat-first-ui.md), [S10](S10-reliability-and-owner-integrations.md) และ [S11](S11-execution-access-and-tools.md)

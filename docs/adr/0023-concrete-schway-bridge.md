@@ -151,3 +151,7 @@ executors (preview, specialist, coordinator, schedules, PR review) commit
 through it and label evidence by mode; run records carry the actual outcome
 mode. Fixture scripts stay fixture-strict. Memory extraction keeps its scripted
 port: production memory inference is not part of this slice.
+
+## S14 refinement status
+
+This record retains its implemented legacy meaning. The owner-confirmed [S14 target](../specs/S14-bot-first-local-assistant.md) and proposed ADRs 0045–0048 refine Project ownership, grants/computers, Parallel default or replay-safe recovery where applicable. They do not claim a new supported API or change this build's behavior. Unchanged authority, fencing, credential and evidence invariants remain.

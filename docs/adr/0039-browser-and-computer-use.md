@@ -60,3 +60,7 @@ A confirm action produces an approval card of kind `browser_confirm`. The card s
 - noVNC was rejected because it would add a vendored JavaScript dependency and a WebSocket path, and it needs script.
 - Approving every browser click was rejected as too slow for normal browsing.
 - Residual risk: computer-use intent is model-declared, so in Full with `confirmEveryAction` off a misclassified click can submit something. This is why the default is on and the setting is Web-only.
+
+## S14 refinement status
+
+This record retains its implemented legacy meaning. The owner-confirmed [S14 target](../specs/S14-bot-first-local-assistant.md) and proposed ADRs 0045–0048 refine Project ownership, grants/computers, Parallel default or replay-safe recovery where applicable. They do not claim a new supported API or change this build's behavior. Unchanged authority, fencing, credential and evidence invariants remain.

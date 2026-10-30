@@ -28,3 +28,7 @@ All transport verification remains fixture-backed. This slice does not introduce
 Parsing natural-language acceptances would violate FR-11. A separate Telegram task store would diverge from Web. Advancing team dispatch without Application.execute would bypass receipts and revision checks.
 
 Exact surfaces are in [telegram-project-commands-v1](../contracts/telegram-project-commands-v1.md). Evidence is `tests/telegram.test.ts` TG02 cases with scripted Application adapters and `ScriptedTelegramSender`.
+
+## S14 refinement status
+
+This record retains its implemented legacy meaning. The owner-confirmed [S14 target](../specs/S14-bot-first-local-assistant.md) and proposed ADRs 0045–0048 refine Project ownership, grants/computers, Parallel default or replay-safe recovery where applicable. They do not claim a new supported API or change this build's behavior. Unchanged authority, fencing, credential and evidence invariants remain.

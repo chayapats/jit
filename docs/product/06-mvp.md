@@ -1,60 +1,40 @@
 # Jit MVP Definition
 
-สถานะ: scope baseline จาก C01–C22; ข้อเสนอการส่งมอบภายใน scope อยู่ใน roadmap
+Current target: [S14](../specs/S14-bot-first-local-assistant.md), confirmed 2026-10-30. The existing S09–S13 runtime is a historical implemented baseline; this scope is not yet shipped.
 
-## สิ่งที่รุ่นแรกต้องพิสูจน์
+## First useful outcome
 
-เจ้าของคนเดียวคุยกับทีมผู้เชี่ยวชาญใน project group กลับมาข้ามวันแล้วติดตามงาน/ข้อสรุปต่อได้ และรับ static PR review บน infrastructure ของตนเอง พร้อม Telegram เป็นช่องทางเสริม
+An authenticated owner asks Jit for research without creating a Project. Enabled Bots work independently and concurrently within finite grants, use free-first Parallel search/fetch and deliver an immutable report with citations and downloadable artifacts. The owner can inspect, stop, share, correct memory and return after restart.
 
-นี่คือขั้นต่ำที่ผู้ก่อตั้งเลือกให้ทดลองก่อนมี agent execution สำหรับแก้โค้ด ไม่ลดกรุ๊ปหรือความจำออกจาก MVP เพื่อทำ bot แจ้ง PR อย่างเดียว
+## Required in phase A
 
-## In scope
+Persistent Bots and proposal acceptance; owner/global and Bot-private sourced memory; isolated persistent local computers with input leases/takeover; exact external-action approvals; explicit snapshot sharing; bounded concurrent work; honest quota/partial evidence; replay-safe recovery; owner-authorized routines and quiet/grouped delivery; Linux x64/arm64 operation with opt-in evidence.
 
-| Capability | ขอบเขตขั้นต่ำ | PRD |
-| --- | --- | --- |
-| โครงการและกรุ๊ป | หนึ่ง group ต่อ project, topics, references และประวัติ | FR-01 |
-| ทีม | specialist analyses แยก, topic router, coordinator; ผู้ใช้เรียก/หยุด role ได้ | FR-02–FR-03 |
-| Models | Grok/Codex subscriptions, role/project assignment; ไม่บังคับใช้ทั้งคู่ทุกครั้ง | FR-13 |
-| ความต่อเนื่อง | tasks, decisions, history, sourced memory, cross-project learning พร้อม explicit/inferred distinction | FR-04–FR-05 |
-| ข้อผูกพัน | proposed/accepted แยก, completion ตามประเภท; acceptance ไม่เริ่ม coding | FR-06–FR-07 |
-| PR | configured repo monitoring, static snapshot review, scope/evidence, private reports/alerts | FR-08–FR-09 |
-| Web | project conversation, tasks, memory, jobs, controls, owner authentication หลัง VPN | FR-10, FR-17–FR-18 |
-| Telegram | notifications, follow-up, project-scoped commands/acceptance; binding กับ owner | FR-11 |
-| Background | user-configured reminders/summaries, interactive priority, finite budgets | FR-12, FR-14 |
-| Operations | reboot/recovery, stop/pause, durable state, backup/restore, corrections/forget/delete | FR-15–FR-18 |
+Fresh store/domain/schema is allowed. No legacy-data conversion or deletion is implied. Reuse existing receipt/fencing/outbox/sanitization/lifecycle algorithms where appropriate.
 
-ทีมเทค ดีไซน์ และมาร์เก็ตติ้งเป็น role presets ที่เสนอ ไม่ใช่ข้อกำหนดให้เรียกสามทีมพร้อมกันทุกข้อความ ตัวเลือก role/model defaults ต้องตั้งค่าได้โดยเจ้าของ ตาม [S09](../specs/S09-main-bot-and-chat-first-ui.md) ทางหลักในการได้ role คือยอมรับ role proposal ที่ Jit เสนอในบทสนทนา ส่วน presets เป็นทางเลือกเสริม
+## Required later phases
 
-## Explicit exclusions
+B: authorized repository work inside the Bot boundary, actual edit/test evidence and a reviewable diff, with approved exact push/PR actions and unknown-effect reconciliation.
 
-- Agent แก้ไฟล์ใน repository, shell, tests/build, dependency installation และการ execute โค้ดจาก PR
-- GitHub comment/review submission, request changes, commits, merge หรือ deployment อัตโนมัติ
-- MCP Server, local inference และ full mirror ของทุก specialist message ไป Telegram
-- browser/computer automation, voice, multi-user/tenant administration และ marketplace
-- team autonomy ที่ยอมรับงานหรือตัดสินใจสำคัญแทนผู้ใช้โดยปริยาย
-- การย้าย group/memory/job product logic เข้า Schway core
-- vector database หรือ learned model weights เป็นเงื่อนไขของคำว่า memory
-- provider-hosted web search/lookup และ arbitrary network/file access ที่อยู่นอก scoped integration
+C: owner-scoped email/calendar read/triage/briefs, drafts and exact approved sends/changes, routines, timezone and revocation handling.
 
-การสร้าง record/report/cache ในพื้นที่บริการเป็น system persistence ที่อนุญาต ไม่เปิดช่องให้ model เขียน filesystem ตามอำเภอใจ
+B/C are required roadmap outcomes, not optional exclusions.
+
+## Outside this MVP
+
+Multi-user tenancy, native host-desktop runner, cloud computer dependency, automatic creation of permanent Bots, unrestricted autonomous scope expansion, automatic paid/provider/model fallback, auto-merge, voice/image generation and a marketplace. SearXNG fallback and Parallel deep-research products are not silently enabled.
 
 ## Release gates
 
-1. **Runtime:** Pi ARM64 รัน service และสอง subscription routes ได้ในบริบทจริง รวม reboot/refresh โดยไม่ fallback ไป API billing
-2. **Integration:** ผ่าน stable Schway host contract ที่รองรับ policy ของ Jit; ไม่มี private deep imports หรือ TUI load ใน headless path
-3. **Product journey:** J01–J05 ใน PRD ผ่าน scripted fixtures และ local service restart
-4. **Trust:** ไม่มี unapproved GitHub writes, shell/repo execution, arbitrary file/network access, forged owner commands หรือ PR-controlled instruction autoload
-5. **State:** duplicate commands, changed PR revisions, stale approvals, cancelled attempts และ corrections/forget ไม่ทำ state ผิด
-6. **Operations:** inspect/stop/pause, degraded mode, backups, restore และ deletion reconciliation ใช้ได้จริง
-7. **Operating profile:** บันทึกค่าจำกัด resource/queue/retry/retention และวัดบน Pi; ไม่มี unlimited fallback
-8. **Pilot handoff:** ผู้ก่อตั้งเข้าใช้งานและรายงาน feedback ได้ โดยยังไม่มี product-value numeric threshold ที่ตกลง
+1. S14-AC01–AC14 pass deterministic product/authority/lineage/partial/recovery fixtures.
+2. Actual multi-Bot overlap and independent contexts are demonstrated. The supported Schway credential-lifecycle prerequisite is pinned and passes packed-consumer conformance.
+3. Crash-created native orphans are discoverable/reconcilable using supported #414 behavior before automatic resume is advertised.
+4. Bot/profile/private-memory and egress/effect boundaries hold across shell/browser/MCP, with no credential/state/control-socket leakage.
+5. Reports bind actual evidence, disclose gaps and provide checked artifact snapshots.
+6. Supported Linux profiles record limits and persistence/reboot/selected-route evidence separately from fixtures.
+7. A small owner-approved live research corpus records actual source coverage/failures before making quality claims about Parallel.
+8. Opus-authored UI/UX is reviewable in Thai/English, dark/light and responsive states. Unverified device/screen-reader/takeover behavior remains explicit.
 
-## เกณฑ์ที่ไม่ใช้เป็นข้ออ้างว่า MVP สำเร็จ
+9. Existing Bot capability edits/retire/delete fence old authority and late results (BOT14-02). A complete new-store state/artifact/native backup restores through current lifecycle-ledger reconciliation before workers resume (OPS14-01); EVID14-01 records actual supported Linux round trips.
 
-จำนวน agent messages, model ตอบว่า done, การมี transcript บน disk และการส่ง Telegram API สำเร็จบางครั้งไม่แทนเกณฑ์ด้าน project continuity, completion หรือ delivery state
-
-## การยก scope เข้ารุ่นถัดไป
-
-การเพิ่ม coding execution ต้องมีแยก user start authorization, isolated executor, scoped secrets/network/filesystem, evidence-based completion และ recovery ของ side effects ตาม C04/C14/C17/C18 ก่อนเปิด capability นั้น โดยไม่เปิดพร้อม MVP เพียงเพราะ Schway มี bash/edit/write อยู่แล้ว
-
-รายการงานหลัง pilot ต้องมาจาก feedback ของผู้ก่อตั้งและ risk evidence ไม่ตั้ง browser, voice หรือ multi-agent concurrency สูงเป็น roadmap ที่ผูกพันล่วงหน้า
+No model done text, queued jobs, transcript on disk, configured token or fixture success substitutes for these gates.

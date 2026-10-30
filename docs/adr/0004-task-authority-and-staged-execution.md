@@ -14,3 +14,7 @@ PR review และ reminders ที่ผู้ใช้เปิดไว้�
 ผลตามมาคือ MVP ปิด capability นี้แม้ Schway มี bash/edit/write แล้ว และต้องรักษา task/job/run เป็นคนละ state
 
 ที่มา: C04, C14, C17–C18, C21 ใน [decision record](../product/decision-record.md)
+
+## S14 refinement status
+
+This record retains its implemented legacy meaning. The owner-confirmed [S14 target](../specs/S14-bot-first-local-assistant.md) and proposed ADRs 0045–0048 refine Project ownership, grants/computers, Parallel default or replay-safe recovery where applicable. They do not claim a new supported API or change this build's behavior. Unchanged authority, fencing, credential and evidence invariants remain.
