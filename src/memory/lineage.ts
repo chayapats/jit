@@ -1,3 +1,4 @@
+import { lineageClosure } from "./lineage-policy";
 import { AppError } from "../errors";
 import type { SourceReference } from "../sources";
 import type { AppTransaction } from "../store";
@@ -84,10 +85,10 @@ export function forgetLineage(tx: AppTransaction, seeds: readonly SourceReferenc
   outputs: { projectId: string; source: SourceReference }[]; pendingJobs: { id: string; projectId: string }[];
 } {
   const index = producerIndex(tx);
-  const queue = [...seeds], seen = new Set(seeds.map(key)), visited = new Set<string>();
+  const seen = new Set(seeds.map(key)), visited = new Set<string>();
   const outputs: { projectId: string; source: SourceReference }[] = [], pendingJobs: { id: string; projectId: string }[] = [];
-  while (queue.length) {
-    const ref = queue.shift()!;
+  lineageClosure(seeds, key, ref => {
+    const nextSources: SourceReference[] = [];
     for (const producer of [...replyProducers(tx, ref), ...(index.get(key(ref)) ?? [])]) {
       if (visited.has(producer.id)) continue;
       visited.add(producer.id);
@@ -97,12 +98,13 @@ export function forgetLineage(tx: AppTransaction, seeds: readonly SourceReferenc
         if (!current) continue;
         const output = { sourceId: producer.output, revision: current.revision, generation: current.generation };
         if (seen.has(key(output))) continue;
-        seen.add(key(output)); queue.push(output);
+        seen.add(key(output)); nextSources.push(output);
         outputs.push({ projectId: producer.projectId, source: output });
       } else if (producer.jobId && producer.jobState && pendingStates.has(producer.jobState)) {
         pendingJobs.push({ id: producer.jobId, projectId: producer.projectId });
       }
     }
-  }
+    return nextSources;
+  }, forgetLineageLimit + seeds.length + 1);
   return { outputs, pendingJobs };
 }

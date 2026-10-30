@@ -1,3 +1,4 @@
+import { activeLineage } from "./lineage-policy";
 import { AppError } from "../errors";
 import { lookupSource, requireId, requireReference, requireText } from "../sources";
 import type { AppTransaction } from "../store";
@@ -12,12 +13,11 @@ export function requireClaimReference(ref: ClaimReference): void {
 function unique(refs: ClaimReference[]): ClaimReference[] {
   return [...new Map(refs.map(ref => [`${ref.claimId}:${ref.revision}:${ref.generation}`, ref])).values()];
 }
-function resolve(tx: AppTransaction, projectId: string, reference: ClaimReference, seen: Set<string>, depth: number, budget: { remaining: number }): ClaimLookup {
+function inspectClaim(tx: AppTransaction, projectId: string, reference: ClaimReference): ClaimLookup {
   const row = tx.get<{ record_json: string }>("SELECT record_json FROM memory_claims WHERE project_id = ? AND id = ? AND revision = ? AND generation = ?", projectId, reference.claimId, reference.revision, reference.generation);
   const claim = row ? JSON.parse(row.record_json) as MemoryClaim : null;
   const unavailable = (reason: string): ClaimLookup => ({ state: "unavailable", reference, reason,
     ...(claim ? { provenance: { projectId: claim.projectId, source: claim.source, dependencies: claim.dependencies, conflicts: claim.conflicts, decision: claim.decision } } : {}) });
-  if (--budget.remaining < 0 || depth > 8 || seen.has(reference.claimId)) return unavailable("lineage_limit");
   if (!claim) return unavailable("claim_unavailable");
   if (claim.status === "deleted" || deletedClaim(tx, claim.claimId)) return unavailable("claim_deleted");
   if (claim.status === "forgotten" || suppressedClaim(tx, claim.claimId)) return unavailable("claim_forgotten");
@@ -27,11 +27,23 @@ function resolve(tx: AppTransaction, projectId: string, reference: ClaimReferenc
   if (suppressedSource(tx, claim.source)) return unavailable("source_suppressed");
   const source = lookupSource(tx, projectId, claim.source);
   if (source.state !== "available" || source.current.revision !== claim.source.revision) return unavailable("source_unavailable");
-  const next = new Set(seen).add(reference.claimId);
-  for (const dependency of unique([...claim.dependencies, ...claim.conflicts])) {
-    if (resolve(tx, projectId, dependency, next, depth + 1, budget).state !== "available") return unavailable("dependency_unavailable");
-  }
   return { state: "available", claim, source };
+
+}
+
+function resolve(tx: AppTransaction, projectId: string, reference: ClaimReference, seen: Set<string>, depth: number, budget: { remaining: number }): ClaimLookup {
+  const options = { depth, remaining: budget.remaining, seen };
+  const result = activeLineage(reference, ref => {
+    const value = inspectClaim(tx, projectId, ref);
+    return { value, key: ref.claimId, available: value.state === "available",
+      children: value.state === "available" ? unique([...value.claim.dependencies, ...value.claim.conflicts]) : [] };
+  }, (ref, reason): ClaimLookup => {
+    const value = inspectClaim(tx, projectId, ref);
+    return { state: "unavailable", reference: ref, reason,
+      ...(value.state === "available" ? { provenance: { projectId: value.claim.projectId, source: value.claim.source, dependencies: value.claim.dependencies, conflicts: value.claim.conflicts, decision: value.claim.decision } } : value.provenance ? { provenance: value.provenance } : {}) };
+  }, options);
+  budget.remaining = options.remaining;
+  return result;
 }
 
 /** app.memory_active_generation/v1: all consumers resolve lineage here; no raw transcript/index read grants active memory. */

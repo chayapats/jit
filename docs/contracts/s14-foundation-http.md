@@ -56,3 +56,25 @@ Typed states to map onto the existing Opus design:
 - Usage: reservations are finite, actual usage is unknown; no invented zero, concurrency measurement, provider readiness, research coverage or delivered effect.
 
 All core types have one-line TSDoc in `src/s14/types.ts`, `authority-types.ts`, `application.ts` and `web.ts`. Full product render/a11y/responsive/Thai-English copy checks and all UI acceptance boxes remain for the UI agent. Follow existing external hashed assets and tokens when wiring the Opus design; the unstyled baseline is not a styling precedent.
+
+## MEM14-01 logic seam
+
+`app.memory-scope/v2` and `app.context-provenance/v2` add the following commands to the **same** authenticated JSON/form ingress. `MemoryRef` is exactly `{id,revision,generation}`. Mutations return `MemoryReceipt` with references, access/share revisions and withdrawn count; they do not echo forgotten payload.
+
+| Kind | Payload | expectedRevision |
+| --- | --- | --- |
+| `memory.remember` | `{conversationId,text}` | conversation.revision |
+| `memory.correct` | `{claim:MemoryRef,text}` | claim.revision |
+| `memory.forget`, `memory.delete` | `{claim:MemoryRef}` | claim.revision |
+| `memory.publish`, `memory.revoke` | `{claim:MemoryRef}` | MemoryAccess.revision |
+| `memory.share` | `{claim:MemoryRef,scopeId,receiverBotId,expiresAt}` | MemoryAccess.revision |
+| `memory.decision.set` | `{conversationId,key,text}` | current decision.revision, or 0 for new key |
+
+| Query | Result |
+| --- | --- |
+| `GET /api/s14/memory/:botId?q=...` | `{claims:MemoryLookup[],decisions:MemoryDecision[],sources:MemorySource[]}`; no inference or outbound call |
+| `GET /api/s14/memory/:botId/claims/:id?revision=1&generation=1` | `{claim:MemoryLookup,history:MemoryAccess[]}` |
+| `GET /api/s14/memory-impact/:id?revision=1&generation=1` | `MemoryImpact`: exact affected claims/sources/context IDs and native policy |
+| `GET /api/s14/memory-contexts/:id` | `MemoryPacket`; retired state withholds claim/decision text |
+
+Existing Opus memory/share flows consume these projections. States: available/unavailable with safe reason; fact/inference; private/shared with owner publication revision/history; current/retired packet; source text null after deletion. Forget preserves the owner-readable original but prevents automatic use. Correct creates a new private claim. Preview is read-only; the subsequent command is exact-revision authenticated owner authority. No new UI/UX is authored in this slice. Keep UI acceptance unchecked. Native policy is `fresh_sessions_retire_on_close`, not a claim of external erasure. Schema3 requires a fresh separate application path plus its independent current lifecycle ledger; see the memory contract.

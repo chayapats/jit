@@ -7,7 +7,7 @@ import type { AppTransaction } from "../store";
 /** Fresh S14 SQLite format identity, distinct from every legacy user_version. */
 export const s14ApplicationId = 0x4a495431;
 /** Unreleased S14 schema version; unknown formats refuse before writable SQLite opens. */
-export const s14SchemaVersion = 2;
+export const s14SchemaVersion = 3;
 /** Safe next action for incompatible stores; no original bytes or sidecars are opened by SQLite. */
 export class FreshStateRequired extends AppError {
   readonly nextAction = "choose_a_separate_JIT_S14_DATABASE_keep_legacy_installation";
@@ -32,6 +32,9 @@ export class S14Store {
   #tx: AppTransaction;
   constructor(readonly path: string) {
     const state = inspectS14Store(path);
+    const ledgerPath = `${path}.lifecycle.sqlite`;
+    if (state !== "missing" && (!existsSync(ledgerPath) || lstatSync(ledgerPath).isSymbolicLink())) throw new AppError("s14_lifecycle_ledger_unavailable", 503);
+    if (state === "missing" && existsSync(ledgerPath)) throw new AppError("s14_lifecycle_ledger_conflict", 409);
     if (state === "missing") {
       mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
       closeSync(openSync(path, "wx", 0o600));
@@ -43,6 +46,8 @@ export class S14Store {
       run: (sql: string, ...args: SQLQueryBindings[]) => { this.#db.query(sql).run(...args); },
     };
     try {
+      if (state === "missing") closeSync(openSync(ledgerPath, "wx", 0o600));
+      this.#db.query("ATTACH DATABASE ? AS lifecycle").run(ledgerPath);
       this.#db.exec("PRAGMA busy_timeout=2000; PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON");
       if (state === "missing") this.#db.transaction(() => this.#db.exec(`
         CREATE TABLE owner (id TEXT PRIMARY KEY CHECK(id='owner'), password_hash TEXT NOT NULL, generation INTEGER NOT NULL);
@@ -50,6 +55,18 @@ export class S14Store {
         CREATE TABLE login_throttle (id INTEGER PRIMARY KEY CHECK(id=1), window_start INTEGER NOT NULL, attempts INTEGER NOT NULL);
         CREATE TABLE installation (id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, profile_json TEXT);
         INSERT INTO installation VALUES (1,0,NULL);
+        CREATE TABLE memory_identity (id TEXT PRIMARY KEY);
+        CREATE TABLE lifecycle.identity (id TEXT PRIMARY KEY);
+        CREATE TABLE lifecycle.withdrawals (kind TEXT NOT NULL, id TEXT NOT NULL, mode TEXT NOT NULL, PRIMARY KEY(kind,id,mode));
+        CREATE TRIGGER lifecycle.no_withdrawal_update BEFORE UPDATE ON withdrawals BEGIN SELECT RAISE(ABORT,'immutable_lifecycle'); END;
+        CREATE TRIGGER lifecycle.no_withdrawal_delete BEFORE DELETE ON withdrawals BEGIN SELECT RAISE(ABORT,'immutable_lifecycle'); END;
+        CREATE TABLE memory_sources (id TEXT PRIMARY KEY, bot_id TEXT NOT NULL REFERENCES bots(id), record_json TEXT NOT NULL);
+        CREATE TABLE memory_claims (id TEXT PRIMARY KEY, bot_id TEXT NOT NULL REFERENCES bots(id), record_json TEXT NOT NULL);
+        CREATE TABLE memory_access (id TEXT PRIMARY KEY REFERENCES memory_claims(id), record_json TEXT NOT NULL);
+        CREATE TABLE memory_access_history (id TEXT NOT NULL, revision INTEGER NOT NULL, record_json TEXT NOT NULL, PRIMARY KEY(id,revision));
+        CREATE TABLE memory_shares (id TEXT PRIMARY KEY, record_json TEXT NOT NULL);
+        CREATE TABLE memory_decisions (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id), record_json TEXT NOT NULL);
+        CREATE TABLE memory_contexts (id TEXT PRIMARY KEY, bot_id TEXT NOT NULL REFERENCES bots(id), record_json TEXT NOT NULL);
         CREATE TABLE bots (id TEXT PRIMARY KEY, record_json TEXT NOT NULL);
         CREATE TABLE conversations (id TEXT PRIMARY KEY, bot_id TEXT NOT NULL REFERENCES bots(id), revision INTEGER NOT NULL);
         CREATE TABLE messages (sequence INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, conversation_id TEXT NOT NULL REFERENCES conversations(id), record_json TEXT NOT NULL);
@@ -73,6 +90,13 @@ export class S14Store {
         CREATE TRIGGER immutable_effect_action BEFORE UPDATE ON effects WHEN json_extract(NEW.record_json,'$.revision') = json_extract(OLD.record_json,'$.revision') AND (json_extract(NEW.record_json,'$.action') IS NOT json_extract(OLD.record_json,'$.action') OR json_extract(NEW.record_json,'$.actionHash') IS NOT json_extract(OLD.record_json,'$.actionHash') OR json_extract(NEW.record_json,'$.expiresAt') IS NOT json_extract(OLD.record_json,'$.expiresAt')) BEGIN SELECT RAISE(ABORT,'immutable_effect_action'); END;
         PRAGMA application_id=${s14ApplicationId}; PRAGMA user_version=${s14SchemaVersion};
       `)).immediate();
+      if (state === "missing") this.#db.transaction(() => {
+        const installation = crypto.randomUUID();
+        this.#tx.run("INSERT INTO memory_identity VALUES (?)", installation);
+        this.#tx.run("INSERT INTO lifecycle.identity VALUES (?)", installation);
+      }).immediate();
+      const installationId = this.#tx.get<{ id: string }>("SELECT id FROM memory_identity")?.id;
+      if (!installationId || installationId !== this.#tx.get<{ id: string }>("SELECT id FROM lifecycle.identity")?.id) throw new AppError("s14_lifecycle_ledger_conflict", 409);
       chmodSync(path, 0o600);
     } catch (e) { this.#db.close(); throw e; }
   }

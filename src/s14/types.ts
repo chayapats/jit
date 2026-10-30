@@ -1,3 +1,5 @@
+import type { MemoryPacket } from "./memory-types";
+
 /** Non-secret exact owner-configured model selection; readiness is never inferred from configuration. */
 export interface Route { id: string; provider: "codex" | "grok"; model: string }
 /** Explicit Bot ceiling; opaque resource identities never name host paths or website profiles. */
@@ -13,9 +15,9 @@ export interface BotProposal { id: string; conversationId: string; messageId: st
 /** Bounded chat outbox entry; interrupted inference is visible and never automatically replayed. */
 export interface Reply { id: string; conversationId: string; messageId: string; state: "queued" | "running" | "succeeded" | "blocked"; reason: string | null; snapshot: ChatInput }
 /** Immutable, credential-free chat input; this port cannot issue commands or access tools. */
-export interface ChatInput { route: Route; language: "th" | "en"; ownerName: string; bot: Bot; messages: Message[] }
+export interface ChatInput { route: Route; language: "th" | "en"; ownerName: string; bot: Bot; messages: Message[]; memory?: MemoryPacket }
 /** Untrusted model response; suggestions are data until exact owner acceptance. */
-export interface ChatOutput { text: string; proposal?: unknown; task?: unknown }
+export interface ChatOutput { text: string; proposal?: unknown; task?: unknown; memory?: unknown }
 /** One bounded inference adapter; production uses only schway/host and deterministic tests inject scripts. */
 export interface ChatPort { reply(input: ChatInput, signal: AbortSignal): Promise<ChatOutput> }
 /** Opaque server-issued owner principal; a structural copy is rejected. */

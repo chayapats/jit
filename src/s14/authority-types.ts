@@ -30,7 +30,7 @@ export interface AuthorityReceipt { kind: AuthorityCommand["kind"]; requestId: s
 /** Service-selected admission narrowing; no field can increase the originating grant. */
 export interface Admission { botId: string; tools: string[]; scopes: ScopeRef[]; input: string; calls: number; outputBytes: number }
 /** Immutable admission plus separate lifecycle evidence; routes, resources and grant generation are pinned. */
-export interface Attempt { id: string; workId: string; requestId: string; parentId: string | null; snapshot: { grant: WorkGrant; bot: Bot; route: Route; tools: string[]; scopes: ScopePolicy[]; input: string; calls: number; outputBytes: number }; state: "running" | "waiting" | "committed" | "settled" | "interrupted"; reason: string | null; createdAt: number }
+export interface Attempt { id: string; workId: string; requestId: string; parentId: string | null; snapshot: { grant: WorkGrant; bot: Bot; route: Route; tools: string[]; scopes: ScopePolicy[]; input: string; calls: number; outputBytes: number }; memoryId?: string; state: "running" | "waiting" | "committed" | "settled" | "interrupted"; reason: string | null; createdAt: number }
 /** One exact consequential action; no shell/browser/MCP fallback or always-allow mode exists. */
 export interface EffectAction { kind: "send" | "publish" | "push" | "payment" | "delete"; destination: string; content: string }
 /** Durable action ledger revision and outcome; unknown is reconcile-only and never claimable again. */

@@ -155,6 +155,7 @@ export class S14Authority {
   }
   private live(tx: AppTransaction, attempt: Attempt): Work {
     if (attempt.state !== "running" && attempt.state !== "waiting") throw new AppError("attempt_fenced", 403);
+    if (!this.app.memory.attemptCurrent(tx, attempt.id)) throw new AppError("memory_context_stale", 403);
     const s = attempt.snapshot, work = this.grantLive(tx, s.grant), bot = record<Bot>(tx, "bots", s.bot.id);
     if (!bot.enabled || bot.revision !== s.bot.revision || bot.generation !== s.bot.generation || !equal(bot.capabilities, s.bot.capabilities) || !equal(this.app.route(bot.routeId), s.route)) throw new AppError("bot_authority_changed", 403);
     for (const scope of s.scopes) if (!equal(this.scope(tx, scope.ref), scope) || !this.accessible(scope, bot, work.id)) throw new AppError("scope_revoked_or_stale", 403);
@@ -192,6 +193,9 @@ export class S14Authority {
     if (usage.attempts + 1 > grant.limits.attempts || usage.steps + 1 > grant.limits.steps || usage.calls + 1 > grant.limits.calls || usage.output_bytes + input.outputBytes > grant.limits.outputBytes || input.calls > grant.limits.calls) throw new AppError("budget_exhausted", 409);
     const attempt: Attempt = { id: id(), workId, requestId, parentId, snapshot: { grant, bot, route, tools: structuredClone(input.tools), scopes: structuredClone(scopes), input: purpose, calls: input.calls, outputBytes: input.outputBytes }, state: "running", reason: null, createdAt: this.app.now() };
     tx.run("INSERT INTO work_attempts VALUES (?,?,?,?,?)", attempt.id, workId, requestId, payloadHash, canonical(attempt));
+    const packet = this.app.memory.assemble(tx, { botId: bot.id, conversationId: work.conversationId, purpose, sources: [], attempt });
+    attempt.memoryId = packet.id;
+    save(tx, "work_attempts", attempt);
     tx.run("INSERT INTO attempt_usage VALUES (?,1)", attempt.id);
     tx.run("UPDATE grant_usage SET attempts=attempts+1,steps=steps+1,calls=calls+1,output_bytes=output_bytes+? WHERE grant_id=?", input.outputBytes, grant.id);
     tx.run("UPDATE work_queue SET state='claimed' WHERE work_id=?", workId);

@@ -5,18 +5,20 @@ import { registerSecretFingerprint } from "../security/secret-fingerprints";
 import type { S14Store } from "./store";
 import type { Bot, BotCommand, BotProposal, BotReceipt, ChatInput, ChatPort, Conversation, Home, Message, OwnerActor, Policy, Reply } from "./types";
 import { canonical, capabilities, digest, exact, identity, integer, text } from "./validation";
+import { S14Memory } from "./memory";
+import type { MemoryCommand, MemoryReceipt } from "./memory-types";
 import { S14Authority, suggestTask } from "./authority";
 import type { AuthorityCommand, AuthorityOptions, AuthorityReceipt } from "./authority-types";
 
 /** Stable complete typed owner ingress union for the S14 logic foundation. */
-export type S14Command = BotCommand | AuthorityCommand;
+export type S14Command = BotCommand | AuthorityCommand | MemoryCommand;
 /** Committed typed result of the S14 owner command boundary. */
-export type S14Receipt = BotReceipt | AuthorityReceipt;
+export type S14Receipt = BotReceipt | AuthorityReceipt | MemoryReceipt;
 
 const id = () => crypto.randomUUID().replaceAll("-", "");
 const tokenPattern = /^[a-f0-9]{64}$/;
 /** Service-owned JSON tables; request/model input never selects a SQL identifier. */
-export type RecordTable = "bots" | "bot_proposals" | "reply_outbox" | "work_items" | "work_grants" | "work_attempts" | "effects";
+export type RecordTable = "bots" | "bot_proposals" | "reply_outbox" | "work_items" | "work_grants" | "work_attempts" | "effects" | "memory_sources" | "memory_claims" | "memory_access" | "memory_shares" | "memory_contexts" | "memory_decisions";
 /** Loads an opaque record from a trusted table name; callers enforce command and scope first. */
 export function record<T>(tx: AppTransaction, table: RecordTable, key: string): T {
   const row = tx.get<{ record_json: string }>(`SELECT record_json FROM ${table} WHERE id=?`, key);
@@ -35,6 +37,7 @@ export class S14Application {
   readonly policy: Policy;
   readonly now: () => number;
   readonly authority: S14Authority;
+  readonly memory: S14Memory;
   #actors = new WeakMap<OwnerActor, string>();
   #replyBusy = false;
   constructor(readonly store: S14Store, readonly options: S14Options) {
@@ -45,7 +48,12 @@ export class S14Application {
       if (!["codex", "grok"].includes(r.provider) || !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/.test(r.model)) throw new AppError("invalid_route");
     }
     capabilities({ tools: this.policy.tools, resources: this.policy.resources }, this.policy);
-    this.authority = new S14Authority(this, options.authority);
+    this.memory = new S14Memory(this);
+    const externalScopes = options.authority?.scopes;
+    this.authority = new S14Authority(this, { ...options.authority, scopes: {
+      current: (tx, scope) => this.memory.scope(tx, scope) ?? externalScopes?.current(tx, scope) ?? null,
+    } });
+    this.store.transaction(tx => { this.memory.reconcile(tx); this.memory.fence(tx); });
   }
   /** Trusted local bootstrap creates only the authentication principal, never resets an existing installation. */
   async provisionOwner(password: string): Promise<void> {
@@ -120,6 +128,8 @@ export class S14Application {
   execute(actor: OwnerActor, command: BotCommand): BotReceipt;
   /** Executes obligation, work-start, stop and exact approval decisions under the same owner receipt boundary. */
   execute(actor: OwnerActor, command: AuthorityCommand): AuthorityReceipt;
+  /** Executes revisioned memory publication and lifecycle decisions under authenticated owner authority. */
+  execute(actor: OwnerActor, command: MemoryCommand): MemoryReceipt;
   /** Executes the complete typed HTTP command union without client-controlled actor identities. */
   execute(actor: OwnerActor, command: S14Command): S14Receipt;
   execute(actor: OwnerActor, command: S14Command): S14Receipt {
@@ -129,7 +139,8 @@ export class S14Application {
       this.requireOwner(tx, actor);
       const previous = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash,result_json FROM command_receipts WHERE owner_id='owner' AND request_id=?", command.requestId);
       if (previous) { if (previous.payload_hash !== digest(encoded)) throw new AppError("request_id_conflict", 409); return JSON.parse(previous.result_json) as S14Receipt; }
-      const result = ["task.accept", "work.start", "work.stop", "approval.decide"].includes(command.kind) ? this.authority.apply(tx, command as AuthorityCommand) : this.applyBot(tx, command as BotCommand);
+      const result = command.kind.startsWith("memory.") ? this.memory.apply(tx, command as MemoryCommand) : ["task.accept", "work.start", "work.stop", "approval.decide"].includes(command.kind) ? this.authority.apply(tx, command as AuthorityCommand) : this.applyBot(tx, command as BotCommand);
+      if (command.kind.startsWith("memory.")) { this.memory.reconcile(tx); this.memory.fence(tx); }
       tx.run("INSERT INTO command_receipts VALUES ('owner',?,?,?,?)", command.requestId, digest(encoded), canonical(result), this.now());
       tx.run("INSERT INTO audit(kind,request_id,committed_at) VALUES (?,?,?)", command.kind, command.requestId, this.now());
       this.options.beforeCommit?.(); return structuredClone(result);
@@ -171,7 +182,11 @@ export class S14Application {
       tx.run("INSERT INTO messages(id,conversation_id,record_json) VALUES (?,?,?)", message.id, conversation.id, canonical(message));
       const owner = JSON.parse(tx.get<{ profile_json: string }>("SELECT profile_json FROM installation")!.profile_json) as { name: string; language: "th" | "en" };
       const messages = tx.all<{ record_json: string }>("SELECT record_json FROM (SELECT sequence,record_json FROM messages WHERE conversation_id=? ORDER BY sequence DESC LIMIT 12) ORDER BY sequence", conversation.id).map(r => JSON.parse(r.record_json) as Message);
-      const snapshot: ChatInput = { route: this.route(bot.routeId), bot, ownerName: owner.name, language: owner.language, messages };
+      for (const item of messages) this.memory.source(tx, { id: item.id, botId: bot.id, conversationId: conversation.id, attribution: item.role === "owner" ? "owner" : "bot", text: item.text, derived: [] });
+      const availableMessages = messages.filter(item => !tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE kind='source' AND id=?", item.id));
+      const memory = this.memory.assemble(tx, { botId: bot.id, conversationId: conversation.id, purpose: message.text,
+        sources: availableMessages.map(item => ({ id: item.id, revision: 1, generation: 1 })) });
+      const snapshot: ChatInput = { route: this.route(bot.routeId), bot, ownerName: owner.name, language: owner.language, messages: availableMessages, memory };
       const reply: Reply = { id: id(), conversationId: conversation.id, messageId: message.id, state: "queued", reason: null, snapshot };
       tx.run("INSERT INTO reply_outbox VALUES (?,?,?,?)", reply.id, conversation.id, message.id, canonical(reply));
       tx.run("UPDATE conversations SET revision=revision+1 WHERE id=?", conversation.id); conversation.revision++;
@@ -206,6 +221,9 @@ export class S14Application {
       const reply = this.store.transaction(tx => {
         const row = tx.get<{ record_json: string }>("SELECT record_json FROM reply_outbox WHERE json_extract(record_json,'$.state')='queued' ORDER BY rowid LIMIT 1"); if (!row) return null;
         const next = JSON.parse(row.record_json) as Reply;
+        if (next.snapshot.memory && !this.memory.current(tx, next.snapshot.memory)) {
+          next.state = "blocked"; next.reason = "memory_context_stale"; save(tx, "reply_outbox", next); return null;
+        }
         next.state = "running"; save(tx, "reply_outbox", next); return next;
       });
       if (!reply) return;
@@ -215,12 +233,22 @@ export class S14Application {
       finally { clearTimeout(timer); }
       this.store.transaction(tx => {
         const current = record<Reply>(tx, "reply_outbox", reply.id); if (current.state !== "running") return;
+        if (reply.snapshot.memory && !this.memory.current(tx, reply.snapshot.memory)) {
+          current.state = "blocked"; current.reason = "memory_context_stale"; save(tx, "reply_outbox", current); return;
+        }
         let content: string | null = null; try { if (output && !abort.signal.aborted) content = text(output.text); } catch { /* Invalid output remains blocked. */ }
         current.state = content ? "succeeded" : "blocked"; current.reason = content ? null : "reply_unavailable";
         if (content) {
           const message: Message = { id: id(), conversationId: reply.conversationId, role: "bot", text: content, createdAt: this.now() };
           tx.run("INSERT INTO messages(id,conversation_id,record_json) VALUES (?,?,?)", message.id, message.conversationId, canonical(message));
           tx.run("UPDATE conversations SET revision=revision+1 WHERE id=?", message.conversationId);
+          const packet = reply.snapshot.memory;
+          this.memory.source(tx, { id: message.id, botId: reply.snapshot.bot.id, conversationId: message.conversationId, attribution: "bot", text: content,
+            derived: packet ? [...packet.sources, ...packet.claims.map(c => c.source), ...packet.decisions.map(d => d.source)] : [] });
+          if (packet && output?.memory !== undefined) {
+            try { this.memory.extract(tx, packet.id, { id: reply.messageId, revision: 1, generation: 1 }, output.memory); }
+            catch { /* Unsupported extraction stays untrusted data and never publishes globally. */ }
+          }
           if (output?.task !== undefined) suggestTask(tx, message.conversationId, message.id, output.task, this.now());
           const item = output?.proposal;
           if (item && typeof item === "object" && !Array.isArray(item)) {

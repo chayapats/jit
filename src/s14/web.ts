@@ -54,6 +54,14 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
       if (request.method !== "GET") throw new AppError("not_found", 404);
       if (url.pathname === "/api/s14/home") return json({ state: app.home(auth.actor), csrf: auth.csrf });
       if (url.pathname === "/api/s14/work") return json({ items: app.authority.list(auth.actor) });
+      const memory = /^\/api\/s14\/memory\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
+      if (memory) return json(app.memory.inspect(auth.actor, memory[1]!, url.searchParams.get("q") ?? ""));
+      const memoryClaim = /^\/api\/s14\/memory\/([a-zA-Z0-9_-]+)\/claims\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
+      if (memoryClaim) return json(app.memory.claim(auth.actor, memoryClaim[1]!, { id: memoryClaim[2]!, revision: Number(url.searchParams.get("revision")), generation: Number(url.searchParams.get("generation")) }));
+      const impact = /^\/api\/s14\/memory-impact\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
+      if (impact) return json(app.memory.preview(auth.actor, { id: impact[1]!, revision: Number(url.searchParams.get("revision")), generation: Number(url.searchParams.get("generation")) }));
+      const context = /^\/api\/s14\/memory-contexts\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
+      if (context) return json(app.memory.context(auth.actor, context[1]!));
       const work = /^\/api\/s14\/work\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
       if (work) return json(app.authority.view(auth.actor, work[1]!));
       const effect = /^\/api\/s14\/effects\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);

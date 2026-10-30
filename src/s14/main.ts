@@ -32,6 +32,7 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
       const app = new S14Application(store, { policy, chat, authority: { executor: { async run(attempt, signal) {
         const profile = store!.read(tx => JSON.parse(tx.get<{ profile_json: string }>("SELECT profile_json FROM installation")!.profile_json) as { name: string; language: "th" | "en" });
         const result = await chat.reply({ route: attempt.snapshot.route, bot: attempt.snapshot.bot, language: profile.language, ownerName: profile.name,
+          memory: store!.read(tx => app.memory.attemptPacket(tx, attempt.id)),
           messages: [{ id: attempt.id, conversationId: attempt.workId, role: "owner", text: attempt.snapshot.input, createdAt: attempt.createdAt }] }, signal);
         return { state: "ready", text: result.text };
       } } } });

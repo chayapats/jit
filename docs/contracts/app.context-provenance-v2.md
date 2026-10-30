@@ -1,0 +1,13 @@
+# app.context-provenance/v2
+
+MEM14-01; consumes app.memory-scope/v2, app.bots/v1, app.conversations/v2 and app.work-grants/v1. `MemoryPacket` and the public service signatures are in `src/s14/memory-types.ts` and `memory.ts`.
+
+`assemble(tx,{botId,conversationId,purpose,sources,attempt?,bytes?}):MemoryPacket` freezes origin, owner/Bot generations, source revisions, up to six accessible lexical claims, publication/share revisions and every live owner decision for the conversation. Default packet budget is 16384 UTF-8 bytes (explicit trusted range 1024–65536). Decisions are charged first and never trimmed; overflow refuses `context_too_large`. Memory omissions are counted. Scope filtering happens before ranking. Fact/inference, conflicts and unavailable counterpart references retain their labels. The current owner purpose and pinned decisions precede source/claim text, which is always data.
+
+Chat messages register exact sources. Suppressed/derived withdrawn messages cannot reenter automatic context. `ChatInput.memory` carries the packet; `Attempt.memoryId` identifies the work packet. Work grants and the existing `execution_capacity_held` serialization are unchanged. `attemptPacket(tx,attemptId)` supplies a current packet to the trusted executor. Native history is never the source of current decisions or memory.
+
+`current(tx,packet):boolean` rechecks sources/transitive lineage, decisions, owner/Bot generation, and publication/share revisions. It joins tool and result barriers; owner mutations fence queued/in-flight chat and scrub retained snapshots, retire old contexts and withdraw stale work output. Already dispatched transports may settle but cannot publish late evidence. `context(actor,id):MemoryPacket` returns no claim/decision payload for retired packets. `inspect`, `claim` and `preview` are read-only authenticated owner queries.
+
+Sources from an answer conservatively inherit all supplied sources and memory/decision sources. Forward lineage closure suppresses descendants as well as same-source sibling claims. Deletion reconciliation consults the independent installation ledger before restored data can enter a worker. Pinned decisions are rebuilt on each assembly across reopen or context trimming. Native sessions retire on close through supported APIs; fresh session admission avoids replay of forgotten ancestry.
+
+Limitations: deterministic lexical recall, conservative invalidation, finite graph/store ceilings (20000 records per memory class), serial execution and no transcript import. Reports/artifacts, full Bot lifecycle and managed restore UX remain their own tickets. UI acceptance remains pending.
