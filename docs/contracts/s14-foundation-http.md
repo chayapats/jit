@@ -330,3 +330,20 @@ Recovery checkpoint states are prepared/dispatched/committed/waiting/queued/resu
 Map per-checkpoint reason codes from app.work-checkpoints/v1. Stopped/revoked/expired/changed/exhausted/unknown-effect work stays waiting/blocked with its concrete reason. An unsettled old transport or orphan retains capacity. Unknown actual usage stays null and charged reservations stay retained. Boot discovery fences old results before workers start; a queued/resumed replacement never reuses native history. Existing committed reports/siblings remain inspectable with explicit partial evidence.
 
 Exact UI integration: `sharing-types.ts`, `recovery-types.ts`, `authority-types.ts`; `app.sharing.list(actor)`, `app.recovery.view(actor)`, `app.authority.effect/view`, existing report/artifact queries and `app.execute`. Opus owns F10/F11/F12, recovery/stopping/unknown presentation, forms and both-language/no-script/responsive/accessibility acceptance. All UI acceptance boxes remain unticked in this logic delivery. Do not add inferred retries, provider fallback, new authority, arbitrary paths or active artifact HTML.
+
+## SHARE14-01 and REC14-01 Web wiring
+
+Opus-authored product routes over the seams above. See section 21 of the experience document for design decisions and evidence.
+
+| Route / form | Use |
+| --- | --- |
+| `GET /shares` | Active shares, shareable report files and ended shares |
+| `GET /shares/new?kind=artifact\|source&id=&revision=&generation=&work=` | Share sheet for one exact snapshot. It runs the gateway check and refuses in words with no control. `work` pins an accepted task. |
+| `GET /shares/:id` | One share, the work that names it and, while active, the revoke slip. `?receipt=` rereads the landing banner. |
+| `POST /s14/forms/snapshot-share` | `{csrf,requestId,targetKind,targetId,targetRevision,targetGeneration,receiver,workId,hours}` to `snapshot.share`. `receiver` is `<botId>:<botRevision>:<scopeId>`; a retried form reuses its committed expiry. |
+| `snapshot.revoke` | Fixed envelope through `POST /s14/commands`, landing on `/shares/:id?receipt=`. A refusal returns to that share. |
+| `POST /s14/forms/compose`, `task-start` | Also accept `scope:<shareId>=<shareRevision>`, which become `ScopeRef {kind:'share',...}` in `work.start`. An unticked share is not named. |
+| `GET /recovery` | Read-only metadata page with links only. `/api/s14/recovery` is unchanged. |
+| `POST /s14/forms/effect-reconcile` | `{csrf,requestId,expectedRevision,effectId,actionHash,outcome,note}` to `effect.reconcile`, landing on `/effects/:id?receipt=`. Used only on the card's own page. |
+
+`S14Overview` gains optional `scopes` and `recovery`, both display data read without the writer lock. A default install has `JIT_S14_RESOURCES=[]`, so no Bot can receive a share until slots exist; the UI says so and offers no control.

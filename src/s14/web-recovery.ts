@@ -5,12 +5,14 @@ import type { S14Page } from "./web";
 import { banner, botName, commandForm, e, k, ownerStrip, remaining } from "./web-pages";
 import type { S14WorkResearch } from "./web-product-memory";
 
-type Blocker = "effect" | "open_call" | "revoked" | "expired" | "bot" | "budget";
+type Blocker = "effect" | "stated" | "open_call" | "revoked" | "expired" | "bot" | "budget";
 const recoverable = ["blocked", "waiting", "ready"];
 /** Why neither recovery command could be admitted right now. Advisory wording only: the service rechecks every condition. */
 function blockerOf(page: S14Page, view: WorkView): Blocker | null {
   const { grant, authority, reservations } = view; if (!grant) return null;
-  if (view.effects.some(effect => ["pending", "approved", "executing", "unknown"].includes(effect.state))) return "effect";
+  const open = view.effects.filter(effect => ["pending", "approved", "executing", "unknown"].includes(effect.state));
+  // An owner statement is not a verified outcome, so the service keeps refusing; only the honest next step differs.
+  if (open.length) return open.every(effect => effect.resolution) ? "stated" : "effect";
   if (view.attempts.some(attempt => ["running", "interrupted"].includes(attempt.state))) return "open_call";
   if (authority?.revoked) return "revoked";
   if (page.now >= grant.expiresAt) return "expired";

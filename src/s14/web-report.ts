@@ -4,6 +4,7 @@ import type { WorkStep } from "./graph-types";
 import type { ExternalEvidence } from "./parallel-types";
 import type { Artifact, EvidenceRequirement, Report, ReportClaim, ReportGap, ReportReview, ReportView } from "./report-types";
 import { banner, botName, commandForm, e, k, ownerStrip, pill, untrusted, when } from "./web-pages";
+import { fileShare } from "./web-sharing";
 import type { S14Page } from "./web";
 import type { S14WorkResearch } from "./web-product-memory";
 import type { S14ReportHint, S14WorkTeam } from "./web-product-team";
@@ -85,7 +86,7 @@ function claimCard(claim: ReportClaim, index: number, report: Report, targets: E
   return `<article class="s-claim" id="claim-${encodeURIComponent(claim.id)}" aria-label="${tr("s14.report.claim")} ${index + 1}"><div class="s-mem-hd"><span class="s-source-n" aria-hidden="true">${index + 1}</span>${kind}${support}${flags}</div>${untrusted(`<p>${e(claim.text)}</p>`, tr("s14.report.untrusted"))}${conflicts}${declaredTargets}${cites}</article>`;
 }
 function filesBlock(files: Artifact[]): string {
-  const row = (file: Artifact) => `<li class="s-file"><div class="s-stack"><p class="s-mono">${e(file.name)}</p><dl class="s-kv"><dt>${tr("s14.report.file_type")}</dt><dd>${e(typeWord(file))} · <span class="s-mono">${e(file.mediaType)}</span></dd><dt>${tr("s14.report.file_size")}</dt><dd>${file.size} ${tr("s14.report.bytes")}</dd><dt>SHA-256</dt><dd class="s-mono">${e(file.sha256)}</dd><dt>${tr("s14.report.file_made")}</dt><dd>${when(file.createdAt)}</dd></dl></div><a class="s-btn" href="/s14/artifacts/${e(file.id)}/download" download="${e(file.name)}" aria-label="${tr("s14.report.download")} ${e(file.name)}">${tr("s14.report.download")}</a></li>`;
+  const row = (file: Artifact) => `<li class="s-file"><div class="s-stack"><p class="s-mono">${e(file.name)}</p><dl class="s-kv"><dt>${tr("s14.report.file_type")}</dt><dd>${e(typeWord(file))} · <span class="s-mono">${e(file.mediaType)}</span></dd><dt>${tr("s14.report.file_size")}</dt><dd>${file.size} ${tr("s14.report.bytes")}</dd><dt>SHA-256</dt><dd class="s-mono">${e(file.sha256)}</dd><dt>${tr("s14.report.file_made")}</dt><dd>${when(file.createdAt)}</dd></dl></div><a class="s-btn" href="/s14/artifacts/${e(file.id)}/download" download="${e(file.name)}" aria-label="${tr("s14.report.download")} ${e(file.name)}">${tr("s14.report.download")}</a>${fileShare(file)}</li>`;
   return `<section class="s-stack" aria-labelledby="s14-files"><h3 class="s-section-t" id="s14-files">${tr("s14.report.files")}</h3>${files.length ? `<ul class="s-files">${files.map(row).join("")}</ul><p class="s-note">${tr("s14.report.files_note")}</p>` : `<p class="s-sub">${tr("s14.report.no_files")}</p>`}</section>`;
 }
 /** Owner review of the live target, after the gaps and claims. The control names the revision and, when partial, that it stays partial. */

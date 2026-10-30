@@ -4,6 +4,7 @@ import type { MemoryLookup, MemoryRef, MemorySource } from "./memory-types";
 import type { Bot } from "./types";
 import { banner, botName, e, flat, hidden, k, notice, ownerStrip, pill, rid, shell, short, untrusted, when } from "./web-pages";
 import type { S14Page } from "./web";
+import { fileShareSource } from "./web-sharing";
 import { memoryShareHours, type S14MemoryAction, type S14MemoryBrowse, type S14MemoryClaimView, type S14MemoryGone, type S14MemoryRow, type S14MemorySource, type S14MemorySourceView } from "./web-product-memory";
 
 const claimHref = (botId: string, ref: MemoryRef, action?: S14MemoryAction) => `/memory/${e(botId)}/claims/${e(ref.id)}?revision=${ref.revision}&amp;generation=${ref.generation}${action ? `&amp;action=${action}#slip` : ""}`;
@@ -76,7 +77,8 @@ function browsePage(page: S14Page, view: S14MemoryBrowse): string {
 function memoryForm(page: S14Page, form: string, view: S14MemoryClaimView, revision: number, label: string, cls: string, fields = ""): string {
   return `<form class="s-stack" method="post" action="/s14/forms/${form}">${flat(page.csrf, revision)}${hidden("botId", view.bot.id)}${hidden("claimId", view.ref.id)}${hidden("revision", view.ref.revision)}${hidden("generation", view.ref.generation)}${fields}<div><button class="${cls}">${e(label)}</button></div></form>`;
 }
-function reach(does: MessageKey[], cannot: MessageKey[]): string {
+/** Two fixed lists, so the owner decides on what a command reaches rather than on a reassuring sentence. */
+export function reach(does: MessageKey[], cannot: MessageKey[]): string {
   return `<div class="s-reach"><div><h3 class="s-section-t">${tr("s14.memory.reach.does")}</h3>${list(does)}</div><div><h3 class="s-section-t">${tr("s14.memory.reach.cannot")}</h3>${list(cannot)}</div></div>`;
 }
 function impactBlock(view: S14MemoryClaimView): string {
@@ -165,7 +167,7 @@ function sourcePage(page: S14Page, view: S14MemorySourceView): string {
   const { source, modes } = view.source, status = sourceStatus(view.source);
   const body = source.text === null ? banner("", tr("s14.memory.source_gone_title"), tr("s14.memory.source_gone")) : untrusted(`<p>${e(source.text)}</p>`, sourceLabel(source));
   const forgotten = source.text !== null && modes.includes("forgotten") ? banner("", tr("s14.memory.gone.forgotten"), tr("s14.memory.source_forgotten")) : "";
-  return shell(page, tr("s14.memory.source_title"), `<div class="s-col">${forgotten}<article class="s-card s-stack"><div class="s-mem-hd">${pill(tr(k(`s14.memory.attribution.${source.attribution}`)))}${status}${refText(source)}</div>${body}<dl class="s-kv"><dt>${tr("s14.memory.origin")}</dt><dd>${e(botName(view.bot))}</dd><dt>${tr("s14.memory.saved")}</dt><dd>${when(source.createdAt)}</dd><dt>${tr("s14.memory.lineage")}</dt><dd>${source.derived.length}</dd></dl></article>${view.rows.length ? `<section class="s-stack"><h2 class="s-section-t">${tr("s14.memory.from_source")}</h2>${view.rows.map(row => claimRow(page, row, view.bot)).join("")}</section>` : ""}<p><a class="s-link-text" href="/memory?scope=${e(view.bot.id)}">${tr("s14.memory.back")}</a></p></div>`, { current: "memory" });
+  return shell(page, tr("s14.memory.source_title"), `<div class="s-col">${forgotten}<article class="s-card s-stack"><div class="s-mem-hd">${pill(tr(k(`s14.memory.attribution.${source.attribution}`)))}${status}${refText(source)}</div>${body}<dl class="s-kv"><dt>${tr("s14.memory.origin")}</dt><dd>${e(botName(view.bot))}</dd><dt>${tr("s14.memory.saved")}</dt><dd>${when(source.createdAt)}</dd><dt>${tr("s14.memory.lineage")}</dt><dd>${source.derived.length}</dd></dl>${source.text === null ? "" : fileShareSource(source)}</article>${view.rows.length ? `<section class="s-stack"><h2 class="s-section-t">${tr("s14.memory.from_source")}</h2>${view.rows.map(row => claimRow(page, row, view.bot)).join("")}</section>` : ""}<p><a class="s-link-text" href="/memory?scope=${e(view.bot.id)}">${tr("s14.memory.back")}</a></p></div>`, { current: "memory" });
 }
 /** Renders the memory surfaces; all memory and source text sits in a labelled frame and no text reaches a control. */
 export function renderMemorySurface(page: S14Page, view: S14MemoryBrowse | S14MemoryClaimView | S14MemorySourceView): string {
