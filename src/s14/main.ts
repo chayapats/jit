@@ -6,6 +6,9 @@ import { S14Application } from "./application";
 import { schwayChat } from "./chat";
 import { FreshStateRequired, inspectS14Store, s14SchemaVersion, S14Store } from "./store";
 import { createS14Handler } from "./web";
+import { renderS14 } from "./web-pages";
+import { createS14Product } from "./web-product";
+import { serveS14Refusal } from "./web-refusal";
 import type { Policy } from "./types";
 import { BotPodmanRuntime } from "./computer-podman";
 import { runComputerWork } from "./computer-work";
@@ -15,7 +18,7 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
   const path = resolve(env.JIT_S14_DATABASE ?? ".local/s14/application.sqlite"), command = args[0];
   try {
     inspectS14Store(path); // Refuse legacy before creating even a lock, profile directory or worker.
-    if (!["serve", "setup"].includes(command ?? "") || args.some(a => !["serve", "setup", "--s14", "--password-stdin"].includes(a))) throw new AppError("use_setup_or_serve_with_s14");
+    if (!["serve", "setup"].includes(command ?? "") || args.some(a => !["serve", "setup", "--s14", "--password-stdin", "--refusal-page"].includes(a))) throw new AppError("use_setup_or_serve_with_s14");
     const policy: Policy = { routes: JSON.parse(env.JIT_S14_ROUTES ?? "[]"), tools: ["computer"], resources: [] };
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     const lock = `${path}.runtime-lock`;
@@ -60,7 +63,7 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
           if (!store!.read(tx => tx.get("SELECT id FROM reply_outbox WHERE json_extract(record_json,'$.state')='queued' LIMIT 1"))) break;
         } } finally { pumping = false; }
       };
-      const handler = createS14Handler(app, origin);
+      const handler = createS14Handler(app, origin, renderS14, createS14Product(app));
       const maintainComputers = () => {
         app.computers.sweep();
         app.authority.cancelFenced();
@@ -80,5 +83,7 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
   } catch (error) {
     console.error(JSON.stringify(error instanceof FreshStateRequired ? { error: error.code, nextAction: error.nextAction } : { error: error instanceof AppError ? error.code : "s14_start_failed" }));
     process.exitCode = 1;
+    // Opt-in explanation page: it runs after the refusal, with no store, lock or worker, so it can only say what happened.
+    if (error instanceof FreshStateRequired && command === "serve" && args.includes("--refusal-page")) serveS14Refusal(path, env.JIT_S14_ORIGIN ?? "http://localhost:3001");
   }
 }
