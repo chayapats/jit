@@ -22,10 +22,10 @@ const rid = () => crypto.randomUUID().replaceAll("-", "");
 const epoch = 1800000000000;
 const barrier = () => Promise.withResolvers<void>();
 afterEach(() => { for (const store of stores) store.close(); stores.clear(); for (const root of roots.splice(0)) rmSync(root, { force: true, recursive: true }); });
-async function fixture() {
+async function fixture(resources: string[] = []) {
   const root = mkdtempSync(join(tmpdir(), "jit-s14-report-")); roots.push(root);
   const path = join(root, "state.sqlite"), store = new S14Store(path); stores.add(store);
-  const options = { policy: { routes: [{ id: "selected", provider: "codex" as const, model: "fixture" }], tools: ["web_search", "web_fetch", "computer"], resources: [] },
+  const options = { policy: { routes: [{ id: "selected", provider: "codex" as const, model: "fixture" }], tools: ["web_search", "web_fetch", "computer"], resources },
     now: () => epoch, chat: { async reply() { return { text: "Chat" }; } }, parallel: { transport: async (_url: string, init: RequestInit) => {
       const wire = JSON.parse(init.body as string);
       const rpc = (result: unknown) => Response.json({ jsonrpc: "2.0", id: wire.id, result });
@@ -106,6 +106,42 @@ function withdrawComputer(f: F, kind: "computer.reset" | "computer.delete") {
   const c = f.app.computers.view(f.auth.actor, "origin").computer!;
   f.app.execute(f.auth.actor, { kind, requestId: rid(), expectedRevision: c.revision, payload: { botId: "origin", computerId: c.id, generation: c.generation } });
 }
+
+test.each(["computer.reset", "computer.delete"] as const)("%s withdraws shared report artifacts through uncited producer lineage, including stale restores", async kind => {
+  const f = await fixture(["share1", "share2"]), chain = await uncitedChain(f); await chain.draining;
+  const report = available(f.app.reports.list(f.auth.actor, chain.work.id)[0]!);
+  f.app.execute(f.auth.actor, acceptance(f, report.report));
+  f.store.transaction(tx => {
+    const bot = JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM bots WHERE id='jit'")!.record_json) as Bot;
+    tx.run("INSERT INTO bots VALUES (?,?)", "receiver", canonical({ ...bot, id: "receiver", capabilities: { tools: [], resources: ["share1", "share2"] } }));
+  });
+  const target = { kind: "artifact" as const, id: report.artifacts[0]!.id, revision: 1, generation: 1 };
+  const share = (scopeId: string) => ({ kind: "snapshot.share" as const, requestId: rid(), expectedRevision: 1,
+    payload: { scopeId, target, receiverBotId: "receiver", workId: null, expiresAt: epoch + 60000 } });
+  f.app.execute(f.auth.actor, share("share1"));
+  const receiving = f.start({ bots: [{ id: "receiver", revision: 1 }], tools: [], scopes: [{ kind: "share", id: "share1", revision: 1 }] }).work!;
+  const attempt = f.app.authority.admit(receiving.id, rid(), { botId: "receiver", tools: [], scopes: [{ kind: "share", id: "share1", revision: 1 }], input: "Read exact report snapshot", calls: 1, outputBytes: 4096 });
+  expect(f.store.read(tx => f.app.sharing.context(tx, attempt))).toHaveLength(1);
+  f.app.authority.commit(attempt.id, { state: "ready", text: "Descendant of shared report", report: uncitedReport() });
+  const descendant = available(f.app.reports.list(f.auth.actor, receiving.id)[0]!);
+  // Retain the fallback producer lookup from main as well as the additive pin.
+  f.store.transaction(tx => tx.run("UPDATE memory_sources SET record_json=json_remove(record_json,'$.producerAttemptId')"));
+  const backup = join(f.root, "before-shared-producer-withdrawal.sqlite"); copyFileSync(f.path, backup);
+  withdrawComputer(f, kind);
+  expect(() => f.app.execute(f.auth.actor, share("share2"))).toThrow("snapshot_unavailable");
+  expect(f.app.sharing.list(f.auth.actor)[0]!.state).toBe("unavailable");
+  expect(f.app.reports.review(f.auth.actor, chain.work.id).acceptance).toBeNull();
+  expect(f.app.reports.list(f.auth.actor, receiving.id)[0]!.state).toBe("unavailable");
+  expect(() => f.app.artifacts.download(f.auth.actor, descendant.artifacts[0]!.id)).toThrow("artifact_unavailable");
+  expect(f.app.authority.view(f.auth.actor, receiving.id).results).toEqual([]);
+  expect(f.store.read(tx => tx.get<{ content: unknown }>("SELECT content FROM snapshot_shares WHERE id='share1'")!.content)).toBeNull();
+  f.store.close(); stores.delete(f.store); copyFileSync(backup, f.path);
+  const store = new S14Store(f.path); stores.add(store); const app = new S14Application(store, f.options), actor = app.authenticate(f.token).actor;
+  expect(app.sharing.list(actor)[0]!.state).toBe("unavailable");
+  expect(app.reports.list(actor, receiving.id)[0]!.state).toBe("unavailable");
+  expect(() => app.artifacts.download(actor, target.id)).toThrow("artifact_unavailable");
+  expect(store.read(tx => tx.get<{ content: unknown }>("SELECT content FROM snapshot_shares WHERE id='share1'")!.content)).toBeNull();
+});
 
 test.each(["computer.reset", "computer.delete"] as const)("%s withdraws transitive uncited handoffs, report revisions, workspace files and restored pre-pin outputs", async kind => {
   const f = await fixture(), chain = await uncitedChain(f); await chain.draining;

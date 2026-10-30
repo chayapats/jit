@@ -60,6 +60,7 @@ export class S14Memory {
       const row = tx.get<{ record_json: string }>("SELECT record_json FROM memory_sources WHERE id=?", r.id);
       const item = row ? JSON.parse(row.record_json) as MemorySource : null;
       if (!item || !same(item, r) || item.text === null || this.withdrawn(tx, "source", r.id) || item.derived.length > 0 && item.access === undefined || !this.accessCurrent(tx, item.botId, item.access ?? [])) return false;
+      if (item.snapshotShare && !this.app.sharing.current(tx, item.snapshotShare)) return false;
       // Resolve pre-pin schema-10 outputs from service-owned records too; never trust report citations as complete ancestry.
       const producer = item.producerAttemptId ?? (item.id.startsWith("result_") ? item.id.slice(7) : tx.get<{ attempt_id: string }>(`
         SELECT attempt_id FROM external_evidence WHERE id=?
@@ -252,6 +253,7 @@ export class S14Memory {
       if (seen.has(next.id)) continue;
       seen.add(next.id);
       const item = record<MemorySource>(tx, "memory_sources", next.id);
+      if (item.snapshotShare && !this.app.sharing.permits(tx, item.snapshotShare, receiver)) return false;
       for (const pin of item.access ?? []) {
         const claim = record<MemoryClaim>(tx, "memory_claims", pin.id);
         if (this.lookup(tx, receiver.snapshot.bot.id, ref(claim), receiver).state !== "available") return false;
@@ -453,7 +455,7 @@ export class S14Memory {
       identity(s.scopeId); identity(s.receiverBotId); integer(s.expiresAt, this.app.now() + 1, this.app.now() + 86400000);
       const receiver = record<Bot>(tx, "bots", s.receiverBotId);
       if (!receiver.enabled || !this.app.policy.resources.includes(s.scopeId) || !receiver.capabilities.resources.includes(s.scopeId)) throw new AppError("memory_scope_denied", 403);
-      if (tx.get("SELECT id FROM memory_shares WHERE id=?", s.scopeId)) throw new AppError("memory_share_exists", 409);
+      if (tx.get("SELECT id FROM memory_shares WHERE id=?", s.scopeId) || tx.get("SELECT id FROM snapshot_shares WHERE id=?", s.scopeId)) throw new AppError("memory_share_exists", 409);
       const share: MemoryShare = { id: s.scopeId, revision: 1, claim: ref(claim), receiverBotId: receiver.id, expiresAt: s.expiresAt, active: true };
       tx.run("INSERT INTO memory_shares VALUES (?,?)", share.id, canonical(share));
       return { ...receipt, share };

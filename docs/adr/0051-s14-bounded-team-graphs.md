@@ -19,6 +19,6 @@ Committed ingress wakes the process's existing drain rather than waiting for a p
 
 ## First-run integration with main
 
-Combined schema 10 retains the first-run computer activity table alongside every graph, report and review table; unreleased schemas 1–9 refuse with fresh-state. Provider-derived default routes use the same process-owned credential lifecycle as explicit routes in chat, research and computer hosts. Shutdown awaits admitted transports and device sign-in cleanup before disposing that owner or closing the store.
+Combined schema 11 retains the first-run computer activity table alongside every graph, report and review table; unreleased schemas 1–10 refuse with fresh-state. Provider-derived default routes use the same process-owned credential lifecycle as explicit routes in chat, research and computer hosts. Shutdown awaits admitted transports and device sign-in cleanup before disposing that owner or closing the store.
 
 Explicit `work.retry` and `work.summarize` remain single first-Bot recovery attempts under the original live grant and spent reservations. The shared drain admits them through the same capacity/transport barriers as graph lanes. Recovery refuses any unsettled transport even after provisional result commit, cancels only unstarted original lanes, and retains their history plus all committed evidence. It never restarts the original graph, refunds usage or revives stopped authority. Evidence-only synthesis keeps zero tools and exact current source pins.

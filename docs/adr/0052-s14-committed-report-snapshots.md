@@ -19,7 +19,7 @@ Use a separate revisioned per-work review record for explicit owner acceptance o
 
 Service-observed missing evidence uses a discriminated ReportGap union; model-proposed missing prose stays in modelMissing, including exact look-alikes of valid service codes or IDs. Product rendering and generated manifests keep these origins separate. The existing review fact/coverage copy is reused; the acceptance control remains an explicit follow-up for the UI agent.
 
-Combined schema 10 retains this report/review storage together with the first-run computer activity table; earlier unreleased schemas 1–9 refuse with fresh-state. The existing Opus-authored acceptance control and first-run/recovery surfaces are both retained. The integrated deterministic journey covers fresh owner setup and fake-store device sign-in, independent overlapping public Schway hosts, committed cited synthesis, exact-revision review and private artifact downloads.
+Combined schema 11 retains this report/review storage together with the first-run computer activity table; earlier unreleased schemas 1–10 refuse with fresh-state. The existing Opus-authored acceptance control and first-run/recovery surfaces are both retained. The integrated deterministic journey covers fresh owner setup and fake-store device sign-in, independent overlapping public Schway hosts, committed cited synthesis, exact-revision review and private artifact downloads.
 
 ## PR #273 withdrawal review
 

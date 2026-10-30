@@ -281,7 +281,7 @@ test("changed action closes the old decision: diff shown, stale form refused, no
   expect(f.app.authority.effect(f.auth.actor, effect.id).effect.state).toBe("pending");
 });
 
-test("expired, denied, unsupported and unknown cards offer no way to send, and unknown offers no retry", async () => {
+test("expired, denied, unsupported and unknown cards offer no way to send, and unknown offers only an owner statement", async () => {
   const f = await effectFixture();
   const expired = f.propose(sendAction, f.clock.now + 1000), denied = f.propose(), unknown = f.propose(), unsupported = f.propose({ kind: "push", destination: "origin/main", content: "push it" });
   approve(f, denied, "deny"); approve(f, unknown); await f.app.authority.runEffect(unknown.id, 1, unknown.actionHash); f.clock.now += 2000;
@@ -289,7 +289,7 @@ test("expired, denied, unsupported and unknown cards offer no way to send, and u
   await expect_(expired.id, [dictionaries.en["s14.effect.expired_detail"], dictionaries.en["s14.effect_state.expired"]], []);
   await expect_(denied.id, [dictionaries.en["s14.effect_state.denied"], dictionaries.en["s14.effect.denied_detail"]], []);
   await expect_(unsupported.id, [dictionaries.en["s14.effect.unsupported"]], [dictionaries.en["s14.effect.deny"]]);
-  const lost = await expect_(unknown.id, [dictionaries.en["s14.effect_state.unknown"], dictionaries.en["s14.effect.unknown_detail"], dictionaries.en["s14.effect.unknown_next"]], []);
+  const lost = await expect_(unknown.id, [dictionaries.en["s14.effect_state.unknown"], dictionaries.en["s14.effect.unknown_detail"], dictionaries.en["s14.effect.unknown_next"]], [dictionaries.en["s14.statement.submit"]]);
   expect(lost).toContain('data-state="unknown"'); expect(lost).not.toMatch(/retry|ลองใหม่/i);
   const home = await f.page("/"); expect(home).toContain(`/effects/${unknown.id}#slip`); expect(home).not.toContain(`/effects/${denied.id}#slip`);
 });

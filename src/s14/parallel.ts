@@ -111,6 +111,7 @@ export class ParallelWeb {
       { text: JSON.stringify(packet) },
       ...packet.claims.flatMap(claim => [{ text: claim.text }, { text: claim.quote }]),
       ...packet.decisions.map(decision => ({ text: decision.text })),
+      ...this.app.sharing.context(tx, attempt).map(snapshot => ({ text: snapshot.content })),
     );
     if (entries.reduce((sum, entry) => sum + Buffer.byteLength(entry.text), 0) > 2097152 || findVerbatimSpan(buildOutboundCorpus(entries), subject)) throw new ParallelFailure("private_context");
   }

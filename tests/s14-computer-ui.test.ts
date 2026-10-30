@@ -114,7 +114,7 @@ test("running with nobody driving is view-only: a picture, a typed lease and tak
   const f = await fixture(); await f.open(); const html = await f.page();
   expect(html).toContain("Nobody is driving"); expect(html).toContain("Running"); expect(html).toContain('<img src="/api/s14/bots/jit/computer/image"'); expect(html).toContain("cannot read these pixels"); strict(html);
   expect(html).not.toContain('type="image"'); expect(formsFor(html, "/s14/bots/jit/computer/input")).toHaveLength(0); expect(hasCommand(html, "takeover.start")).toBe(true);
-  expect(html).toContain("None. No internet, website sign-in or sharing in this build");
+  expect(html).toContain("None. No internet or website sign-in in this build. Nothing on this computer is shared with another Bot");
   const response = await f.get("/api/s14/bots/jit/computer/image"); expect(response.headers.get("content-type")).toBe("image/png"); expect(response.headers.get("cache-control")).toContain("no-store");
 });
 

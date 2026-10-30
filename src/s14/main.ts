@@ -1,5 +1,6 @@
 import { dirname, join, resolve } from "node:path";
 import { ConnectionVault } from "../exec/connections";
+import { schwayRecovery } from "./native-recovery";
 import { schwayResearch } from "./research";
 import { AppError } from "../errors";
 import { readHiddenPassword } from "../terminal-password";
@@ -38,13 +39,13 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
     if (!["serve", "setup"].includes(command ?? "") || args.some(a => !["serve", "setup", "--s14", "--password-stdin", "--refusal-page", "--no-refusal-page"].includes(a))) throw new AppError("use_setup_or_serve_with_s14");
     const url = new URL(command === "serve" ? origin : "http://localhost:3001");
     if (command === "serve" && (url.protocol !== "http:" || !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) || url.pathname !== "/" || url.username || url.password || url.search || url.hash)) throw new AppError("s14_loopback_origin_required");
-    const policy: Policy = { routes: env.JIT_S14_ROUTES ? JSON.parse(env.JIT_S14_ROUTES) : supportedS14Routes(), tools: ["web_search", "web_fetch", "computer"], resources: [] };
+    const policy: Policy = { routes: env.JIT_S14_ROUTES ? JSON.parse(env.JIT_S14_ROUTES) : supportedS14Routes(), tools: ["web_search", "web_fetch", "computer"], resources: JSON.parse(env.JIT_S14_RESOURCES ?? "[]") };
     const release = acquireS14RuntimeLock(path);
     let store: S14Store | undefined;
     try {
       store = new S14Store(path);
-      policy.resources = store.read(existingResourceCeilings);
-      const chat = schwayChat(join(dirname(path), "native"));
+      policy.resources = [...new Set([...store.read(existingResourceCeilings), ...policy.resources])];
+      const chat: import("./types").ChatPort = { reply: (input, signal) => schwayChat(join(dirname(path), "native"), undefined, app.recovery).reply(input, signal) };
       const vaultDirectory = resolve(env.JIT_S14_VAULT_DIRECTORY ?? join(dirname(path), "..", "s14-vault"));
       const vault = new ConnectionVault(vaultDirectory, { forbidden: [dirname(path)] });
       const runtime = env.JIT_S14_COMPUTER_ROOT ? new BotPodmanRuntime({ dataRoot: env.JIT_S14_COMPUTER_ROOT,
@@ -59,8 +60,7 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
         await app.provisionOwner(password); console.log(JSON.stringify({ state: "owner_provisioned", nextAction: "sign_in_and_submit_setup", storeFormat: "jit.s14/v1", schemaVersion: s14SchemaVersion }));
         store.close(); release(); return;
       }
-      app.recoverReplies(); app.authority.recover(); app.parallel.recover();
-      app.computers.recover();
+      await app.recovery.boot(schwayRecovery(join(dirname(path), "native")));
       await app.computers.drain();
       // Interactive chat is checked before every bounded graph admission; each run has its own host.
       let pumping: Promise<void> | null = null;
@@ -99,7 +99,7 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
       };
       process.once("SIGTERM", shutdown);
       process.once("SIGINT", shutdown);
-      console.log(JSON.stringify({ state: "s14_listening", origin, contracts: ["app.bots/v1", "app.conversations/v2", "app.work-grants/v1", "app.effect-approval/v2", "app.bot-computer/v1", "app.input-lease/v1", "app.memory-scope/v2", "app.context-provenance/v2", "app.parallel-web/v1", "app.external-evidence/v2", "app.work-graph/v1", "app.report-artifacts/v1", "app.artifact-gateway/v1"], readiness: "configured_unverified" }));
+      console.log(JSON.stringify({ state: "s14_listening", origin, contracts: ["app.bots/v1", "app.conversations/v2", "app.work-grants/v1", "app.effect-approval/v2", "app.bot-computer/v1", "app.input-lease/v1", "app.memory-scope/v2", "app.context-provenance/v2", "app.parallel-web/v1", "app.external-evidence/v2", "app.work-graph/v1", "app.report-artifacts/v1", "app.artifact-gateway/v1", "app.snapshot-sharing/v1", "app.work-checkpoints/v1", "app.replay-policy/v1"], readiness: "configured_unverified" }));
       printS14OwnerSetupLink(store, origin);
     } catch (e) { store?.close(); release(); throw e; }
   } catch (error) {

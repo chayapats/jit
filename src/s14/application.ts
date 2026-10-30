@@ -18,6 +18,10 @@ import { S14Authority, suggestTask } from "./authority";
 import type { AuthorityCommand, AuthorityOptions, AuthorityReceipt } from "./authority-types";
 import type { ReportCommand, ReportReceipt } from "./report-types";
 import { S14Reports } from "./reports";
+import { S14Recovery } from "./recovery";
+import type { RecoveryCommand, RecoveryReceipt } from "./recovery-types";
+import { S14Sharing } from "./sharing";
+import type { SharingCommand, SharingReceipt } from "./sharing-types";
 import { S14Artifacts } from "./artifacts";
 import { S14Graph } from "./graph";
 import type { GraphCommand, GraphReceipt } from "./graph-types";
@@ -25,9 +29,9 @@ import { S14Computers } from "./computer";
 import type { ComputerCommand, ComputerOptions, ComputerReceipt } from "./computer-types";
 
 /** Stable complete typed owner ingress union for the S14 logic foundation. */
-export type S14Command = BotCommand | AuthorityCommand | MemoryCommand | ParallelCommand | ComputerCommand | GraphCommand | ReportCommand;
+export type S14Command = BotCommand | AuthorityCommand | MemoryCommand | ParallelCommand | ComputerCommand | GraphCommand | ReportCommand | SharingCommand | RecoveryCommand;
 /** Committed typed result of the S14 owner command boundary. */
-export type S14Receipt = BotReceipt | AuthorityReceipt | MemoryReceipt | ParallelReceipt | ComputerReceipt | GraphReceipt | ReportReceipt;
+export type S14Receipt = BotReceipt | AuthorityReceipt | MemoryReceipt | ParallelReceipt | ComputerReceipt | GraphReceipt | ReportReceipt | SharingReceipt | RecoveryReceipt;
 
 const id = () => crypto.randomUUID().replaceAll("-", "");
 const tokenPattern = /^[a-f0-9]{64}$/;
@@ -57,6 +61,8 @@ export class S14Application {
   readonly graph: S14Graph;
   readonly reports: S14Reports;
   readonly artifacts: S14Artifacts;
+  readonly sharing: S14Sharing;
+  readonly recovery: S14Recovery;
   readonly signIns: S14SignIns;
   #actors = new WeakMap<OwnerActor, string>();
   #replyBusy = false;
@@ -69,15 +75,17 @@ export class S14Application {
     }
     capabilities({ tools: this.policy.tools, resources: this.policy.resources }, this.policy);
     this.memory = new S14Memory(this);
+    this.sharing = new S14Sharing(this);
     const externalScopes = options.authority?.scopes;
     this.authority = new S14Authority(this, { ...options.authority, scopes: {
-      current: (tx, scope) => this.memory.scope(tx, scope) ?? externalScopes?.current(tx, scope) ?? null,
+      current: (tx, scope) => this.sharing.scope(tx, scope) ?? this.memory.scope(tx, scope) ?? externalScopes?.current(tx, scope) ?? null,
     } });
     this.graph = new S14Graph(this);
     this.parallel = new ParallelWeb(this, options.parallel);
     this.reports = new S14Reports(this);
     this.artifacts = new S14Artifacts(this);
-    this.store.transaction(tx => { this.memory.reconcile(tx); this.memory.fence(tx); this.parallel.reconcile(tx); this.reports.reconcile(tx); });
+    this.recovery = new S14Recovery(this);
+    this.store.transaction(tx => { this.memory.reconcile(tx); this.sharing.fence(tx); this.parallel.reconcile(tx); this.reports.reconcile(tx); this.recovery.reconcileReservations(tx); this.recovery.reconcileEffects(tx); });
     this.computers = new S14Computers(this, options.computers);
     this.signIns = new S14SignIns(this, options.signIn);
   }
@@ -181,6 +189,10 @@ export class S14Application {
   execute(actor: OwnerActor, command: ComputerCommand): ComputerReceipt;
   /** Executes lane stops and future-work defaults without granting execution authority. */
   execute(actor: OwnerActor, command: GraphCommand): GraphReceipt;
+  /** Executes owner-only immutable sharing and revocation through the receipt boundary. */
+  execute(actor: OwnerActor, command: SharingCommand): SharingReceipt;
+  /** Records an exact owner statement about an unknown effect without retrying it. */
+  execute(actor: OwnerActor, command: RecoveryCommand): RecoveryReceipt;
   /** Accepts an exact report revision separately from coverage, execution and immutable report bytes. */
   execute(actor: OwnerActor, command: ReportCommand): ReportReceipt;
   /** Executes the complete typed HTTP command union without client-controlled actor identities. */
@@ -196,7 +208,11 @@ export class S14Application {
       const previous = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash,result_json FROM command_receipts WHERE owner_id='owner' AND request_id=?", command.requestId);
       if (previous) { if (previous.payload_hash !== digest(encoded)) throw new AppError("request_id_conflict", 409); return JSON.parse(previous.result_json) as S14Receipt; }
       let result: S14Receipt;
-      if (["work.step.stop", "work.defaults.set"].includes(command.kind)) {
+      if (command.kind === "effect.reconcile") {
+        result = this.recovery.apply(tx, command as RecoveryCommand);
+      } else if (command.kind.startsWith("snapshot.")) {
+        result = this.sharing.apply(tx, command as SharingCommand);
+      } else if (["work.step.stop", "work.defaults.set"].includes(command.kind)) {
         result = this.graph.apply(tx, command as GraphCommand);
       } else if (command.kind === "report.review.accept") {
         result = this.reports.apply(tx, command as ReportCommand);
@@ -205,7 +221,7 @@ export class S14Application {
       } else if (command.kind.startsWith("memory.")) {
         result = this.memory.apply(tx, command as MemoryCommand);
         this.memory.reconcile(tx);
-        this.memory.fence(tx);
+        this.sharing.fence(tx);
         this.parallel.reconcile(tx);
       } else if (["computer.open", "computer.stop", "computer.reset", "computer.delete", "takeover.start", "takeover.end", "takeover.renew"].includes(command.kind)) {
         result = this.computers.apply(tx, command as ComputerCommand);
@@ -306,6 +322,7 @@ export class S14Application {
   recoverReplies(): void { this.store.transaction(tx => { for (const row of tx.all<{ record_json: string }>("SELECT record_json FROM reply_outbox WHERE json_extract(record_json,'$.state')='running'")) { const reply = JSON.parse(row.record_json) as Reply; reply.state = "blocked"; reply.reason = "interrupted_no_auto_replay"; save(tx, "reply_outbox", reply); } }); }
   /** Drains committed chat intents serially with bounded context; this never admits persistent work or tools. */
   async drainReplies(): Promise<void> {
+    if (this.recovery.booting) return;
     if (this.#replyBusy) return; this.#replyBusy = true;
     try { for (;;) {
       const reply = this.store.transaction(tx => {

@@ -124,7 +124,8 @@ export function workResearch(app: S14Application, actor: OwnerActor, view: WorkV
   return { ...app.parallel.inspect(actor, view.work.id), contexts: ids.map(id => app.memory.context(actor, id)) };
 }
 
-function shareExpiry(app: S14Application, actor: OwnerActor, requestId: string, hours: number): number {
+/** A retried form reuses its committed expiry, so one retry key stays one command. Both share receipts carry `share.expiresAt`. */
+export function shareExpiry(app: S14Application, actor: OwnerActor, requestId: string, hours: number): number {
   const row = app.store.read(tx => { app.requireOwner(tx, actor); return tx.get<{ result_json: string }>("SELECT result_json FROM command_receipts WHERE owner_id='owner' AND request_id=?", requestId); });
   const receipt = row ? JSON.parse(row.result_json) as { share?: { expiresAt?: number } } : null;
   return receipt?.share?.expiresAt ?? app.now() + hours * 3600000;
