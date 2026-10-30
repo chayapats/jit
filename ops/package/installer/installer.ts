@@ -111,8 +111,14 @@ export function pinnedImages(raw: unknown = pins): PinnedImage[] {
   });
 }
 
-/** Allocates a non-overlapping subordinate-ID range across both files; existing entries are never replaced. */
-export function subordinateIds(uidText: string, gidText: string, user: string): { subuid: string; subgid: string } {
+/**
+ * Allocates 65536 non-overlapping IDs across both files only when reachable in the caller's namespace.
+ * Map coordinates use the first (inside) column. Existing entries are never replaced; unavailable
+ * results preserve both files and require an operator to expand the parent UID and GID mappings.
+ */
+export function subordinateIds(uidText: string, gidText: string, user: string,
+  maps = { uid: "0 0 4294967295", gid: "0 0 4294967295" },
+): { subuid: string; subgid: string; unavailable?: string } {
   const parse = (text: string) => text.split("\n").filter(line => line && !line.startsWith("#")).map(line => {
     const [name, start, count, extra] = line.split(":");
     if (!name || !/^\d+$/.test(start ?? "") || !/^\d+$/.test(count ?? "") || extra !== undefined || Number(count) < 1 || Number(start) + Number(count) > 4294967295) throw new Error("invalid-subordinate-ids");
@@ -121,6 +127,27 @@ export function subordinateIds(uidText: string, gidText: string, user: string): 
   const uids = parse(uidText), gids = parse(gidText);
   const first = Math.max(100000, ...[...uids, ...gids].map(r => r.start + r.count));
   if (first + 65536 > 4294967295) throw new Error("subordinate-ids-exhausted");
+  const reachable = (text: string, start: number, count: number): boolean => {
+    const spans = text.trim().split("\n").map(line => line.trim().split(/\s+/).map(Number));
+    if (spans.some(row => row.length !== 3 || row.some(n => !Number.isSafeInteger(n) || n < 0) ||
+        row[2]! < 1 || row[0]! + row[2]! > 4294967295 || row[1]! + row[2]! > 4294967295)) return false;
+    let end = start;
+    for (const [inside, , size] of spans.sort((a, b) => a[0]! - b[0]!)) {
+      if (inside! > end) break;
+      if (inside! + size! > end) end = inside! + size!;
+      if (end >= start + count) return true;
+    }
+    return false;
+  };
+  const required = (rows: typeof uids) => {
+    const existing = rows.filter(r => r.name === user);
+    return existing.some(r => r.count >= 65536) ? existing : [...existing, { name: user, start: first, count: 65536 }];
+  };
+  if (required(uids).some(r => !reachable(maps.uid, r.start, r.count)) ||
+      required(gids).some(r => !reachable(maps.gid, r.start, r.count))) {
+    return { subuid: uidText, subgid: gidText,
+      unavailable: `Subordinate IDs are outside or cannot be verified against /proc/self/uid_map or /proc/self/gid_map. On the parent host, expand the container's UID and GID mappings to cover jit entries in /etc/subuid and /etc/subgid with these required ranges (start:count): UID ${required(uids).map(r => `${r.start}:${r.count}`).join(", ")}; GID ${required(gids).map(r => `${r.start}:${r.count}`).join(", ")}. Restart the container, then re-run the installer. No ranges were changed.` };
+  }
   const add = (text: string, rows: ReturnType<typeof parse>) => rows.some(r => r.name === user && r.count >= 65536) ? text : `${text}${text && !text.endsWith("\n") ? "\n" : ""}${user}:${first}:65536\n`;
   return { subuid: add(uidText, uids), subgid: add(gidText, gids) };
 }
@@ -259,12 +286,25 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
     if (dry) for (const path of homeDirectories(home)) dir(path);
     if (!dry) chownSync(home, uid, gid);
     dir(at("/opt/jit"), 0o755); dir(at("/opt/jit/bin"), 0o755); dir(at("/opt/jit/releases"), 0o755); dir(at("/var/lib/cni"), 0o755);
-    const available = dry ? options.simulation?.podman !== false : (await call(["podman", "--version"])).exitCode === 0;
+    let available = dry ? options.simulation?.podman !== false : (await call(["podman", "--version"])).exitCode === 0;
+    let subordinateUnavailable = false;
     step("subordinate-ids", "repair /etc/subuid and /etc/subgid ranges, then re-run");
     if (available) {
       const subuid = at("/etc/subuid"), subgid = at("/etc/subgid"); safe(subuid); safe(subgid);
-      const ranges = subordinateIds(existsSync(subuid) ? readFileSync(subuid, "utf8") : "", existsSync(subgid) ? readFileSync(subgid, "utf8") : "", "jit");
-      write(subuid, ranges.subuid, 0o644); write(subgid, ranges.subgid, 0o644);
+      const readMap = (name: string) => {
+        const path = at(`/proc/self/${name}`);
+        // Linux /proc/self is a kernel-owned symlink, not an installer output path.
+        if (dry) safe(path);
+        try { return readFileSync(path, "utf8"); } catch { return ""; }
+      };
+      const ranges = subordinateIds(existsSync(subuid) ? readFileSync(subuid, "utf8") : "", existsSync(subgid) ? readFileSync(subgid, "utf8") : "", "jit", { uid: readMap("uid_map"), gid: readMap("gid_map") });
+      if (ranges.unavailable) {
+        available = false;
+        subordinateUnavailable = true;
+        options.out?.(`Chat-only: container features unavailable. ${ranges.unavailable}`);
+      } else {
+        write(subuid, ranges.subuid, 0o644); write(subgid, ranges.subgid, 0o644);
+      }
     }
     step("keyring", "repair the jit user manager/Secret Service; preserve its existing unlock file and keyring, then re-run");
     if (!dry) await must(asUser([options.bunPath, join(commandArtifact, "ops/package/installer/main.ts"), "prepare-home", "--home", home]));
@@ -279,7 +319,7 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
     await must(asUser(["systemctl", "--user", "enable", "--now", "gnome-keyring-daemon.service"]));
     step("optional-podman-socket", "enable the jit identity's user podman.socket and restart jit.service (docs/runbooks/execution-box.md)");
     if (available) await repairPodmanNamespace(call, asUser, options.out);
-    if (!available || (await call(asUser(["systemctl", "--user", "enable", "--now", "podman.socket"]))).exitCode !== 0) {
+    if (!subordinateUnavailable && (!available || (await call(asUser(["systemctl", "--user", "enable", "--now", "podman.socket"]))).exitCode !== 0)) {
       const key = available ? "podman.reason_socket" : "podman.reason_podman";
       options.out?.(`Chat-only: ${en[key]} / ${th[key]}${available ? " As jit: systemctl --user enable --now podman.socket; then restart jit.service." : ""}`);
     }
@@ -355,7 +395,9 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
     for (const image of configuredImages) {
       if (!available || (await call(asUser(["podman", "--remote", "--url", `unix:///run/user/${uid}/podman/podman.sock`, "pull", image.ref]), 120_000)).exitCode !== 0) options.out?.(`Optional image unavailable: ${image.feature}`);
     }
-    if (!available) options.out?.("Container features unavailable: Podman is absent. Chat-only installation is ready.");
+    if (!available) options.out?.(subordinateUnavailable
+      ? "Container features unavailable: subordinate IDs are outside the parent mapping. Chat-only installation is ready."
+      : "Container features unavailable: Podman is absent. Chat-only installation is ready.");
     else if (!configuredImages.length && !desired.execution) options.out?.("Container features unavailable: no published image pins in this release (WEB02/ATT02 follow-ups).");
     step("optional-box-doctor", "configure an execution image and re-run box-doctor when container features are needed");
     if (!dry) {

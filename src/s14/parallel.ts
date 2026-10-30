@@ -202,7 +202,7 @@ export class ParallelWeb {
       });
       return row;
     } catch (error) {
-      row.outcome = timedOut ? "deadline" : signal.aborted ? "cancelled" : error instanceof ParallelFailure ? error.outcome : error instanceof AppError && ["grant_revoked", "grant_expired", "attempt_fenced", "memory_context_stale", "scope_revoked_or_stale", "bot_authority_changed", "owner_authority_changed"].includes(error.code) ? "authority_changed" : "service_error";
+      row.outcome = timedOut ? "deadline" : signal.aborted ? "cancelled" : error instanceof ParallelFailure ? error.outcome : error instanceof AppError && ["grant_revoked", "grant_expired", "attempt_fenced", "computer_attempt_fenced", "memory_context_stale", "scope_revoked_or_stale", "bot_authority_changed", "owner_authority_changed"].includes(error.code) ? "authority_changed" : "service_error";
       row.evidence = [];
       if (row.outcome === "private_context" || row.outcome === "credential_refused") row.subject = "[outbound blocked]";
       row.reason = `parallel_${row.outcome}`;

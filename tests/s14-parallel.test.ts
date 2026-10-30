@@ -9,6 +9,8 @@ import { S14Store } from "../src/s14/store";
 import { createS14Handler } from "../src/s14/web";
 import { parallelEndpoint, publicWebUrl, type ParallelTimer, type ParallelTransport } from "../src/s14/parallel-protocol";
 import { schwayResearch } from "../src/s14/research";
+import { runComputerWork } from "../src/s14/computer-work";
+import { barrier, FakeComputerRuntime } from "./fixtures/s14-computer";
 import type { ParallelWebOptions } from "../src/s14/parallel";
 import type { Policy } from "../src/s14/types";
 import type { AuthorityOptions } from "../src/s14/authority-types";
@@ -39,13 +41,13 @@ function protocol(change?: (event: Seen) => Response | undefined | Promise<Respo
   };
   return { transport, seen };
 }
-async function fixture(wire = protocol(), extra: Omit<ParallelWebOptions, "transport" | "vault"> = {}, runtime: { effects?: AuthorityOptions["effects"]; outputBytes?: number } = {}) {
+async function fixture(wire = protocol(), extra: Omit<ParallelWebOptions, "transport" | "vault"> = {}, runtime: { effects?: AuthorityOptions["effects"]; outputBytes?: number; computer?: FakeComputerRuntime } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "jit-s14-parallel-"))); roots.push(root);
   const path = join(root, "state", "app.sqlite"), store = new S14Store(path); stores.add(store);
   const vault = new ConnectionVault(join(root, "vault"), { forbidden: [join(root, "state"), join(root, "native")] });
   const clock = { now: epoch };
-  const selectedPolicy = { ...policy, tools: [...policy.tools, ...Object.keys(runtime.effects ?? {}).map(kind => `effect_${kind}`)] }, outputBytes = runtime.outputBytes ?? 32768;
-  const options = { policy: selectedPolicy, authority: { ...(runtime.effects ? { effects: runtime.effects } : {}) }, chat: { async reply() { return { text: "Fixture reply" }; } }, parallel: { transport: wire.transport, vault, ...extra }, now: () => clock.now };
+  const selectedPolicy = { ...policy, tools: [...policy.tools, ...(runtime.computer ? ["computer"] : []), ...Object.keys(runtime.effects ?? {}).map(kind => `effect_${kind}`)] }, outputBytes = runtime.outputBytes ?? 32768;
+  const options = { policy: selectedPolicy, authority: { ...(runtime.effects ? { effects: runtime.effects } : {}) }, computers: runtime.computer ? { runtime: runtime.computer } : {}, chat: { async reply() { return { text: "Fixture reply" }; } }, parallel: { transport: wire.transport, vault, ...extra }, now: () => clock.now };
   const app = new S14Application(store, options);
   await app.provisionOwner(password); const token = await app.login(password), auth = app.authenticate(token);
   const setup = app.execute(auth.actor, { kind: "setup", requestId: rid(), expectedRevision: 0, payload: { ownerName: "Owner", language: "en", routeId: "selected", capabilities: { tools: selectedPolicy.tools, resources: [] } } });
@@ -248,6 +250,75 @@ test("supported Schway host runs two allowlisted tools, charges later inference 
   expect(f.app.home(f.auth.actor).bots).toHaveLength(1);
   expect(readdirSync(join(f.root, "native", "sessions")).some(file => file.endsWith(".host-retired"))).toBe(true);
   expect(f.app.parallel.inspect(f.auth.actor, f.work.id).evidence).toHaveLength(1);
+});
+
+test("one queued work uses its computer, private memory and both public read tools through the production executor", async () => {
+  const runtime = new FakeComputerRuntime(), f = await fixture(protocol(), {}, { computer: runtime });
+  f.app.authority.commit(f.attempt.id, { state: "ready", text: "Earlier work settled" });
+  const privateText = "Private owner preference for concise sourced public reports";
+  const claim = f.app.execute(f.auth.actor, { kind: "memory.remember", requestId: rid(), expectedRevision: f.app.conversation(f.auth.actor, f.conversationId).conversation.revision,
+    payload: { conversationId: f.conversationId, text: privateText } }).claim!;
+  f.app.execute(f.auth.actor, { kind: "memory.decision.set", requestId: rid(), expectedRevision: 0,
+    payload: { conversationId: f.conversationId, key: "report-style", text: "Keep unknown freshness visible" } });
+  const work = f.start().work!;
+  let turn = 0;
+  const model: Model = { provider: "scripted", id: "computer-memory-research", async *stream(request) {
+    expect(f.app.authority.view(f.auth.actor, work.id).work.state).toBe("running");
+    expect(request.tools!.map(t => t.name)).toEqual(["read", "write", "edit", "bash", "grep", "find", "ls", "web_search", "web_fetch"]);
+    expect(request.hostedTools ?? []).toEqual([]);
+    const context = request.context.map(section => section.content).join("\n");
+    expect(context).toContain(privateText); expect(context).toContain("Keep unknown freshness visible");
+    expect(context).toContain("network-free workspace");
+    const content = turn === 0 ? [{ type: "tool_call" as const, id: rid(), name: "bash", arguments: { command: "printf report" } }]
+      : turn === 1 ? [{ type: "tool_call" as const, id: rid(), name: "web_search", arguments: { query: "public docs" } }]
+      : turn === 2 ? [{ type: "tool_call" as const, id: rid(), name: "web_fetch", arguments: { url: "https://example.com/article", fullContent: true } }]
+      : [{ type: "text" as const, text: "Local report with public snippet and page evidence; freshness unknown." }];
+    turn++;
+    yield { type: "message_complete", message: { type: "assistant", id: rid(), content } };
+  } };
+  f.app.authority.options.executor = { run: (attempt, signal) => runComputerWork(f.app, join(f.root, "native"), attempt, signal, model) };
+  await f.app.authority.drain();
+  const view = f.app.authority.view(f.auth.actor, work.id), attempt = view.attempts[0]!;
+  expect(view.work.state).toBe("ready"); expect(view.attempts).toHaveLength(1); expect(turn).toBe(4);
+  expect(view.results).toEqual([expect.objectContaining({ attemptId: attempt.id, state: "ready", text: "Local report with public snippet and page evidence; freshness unknown." })]);
+  expect(f.app.memory.context(f.auth.actor, attempt.memoryId!).claims.map(c => c.id)).toContain(claim.id);
+  expect(runtime.starts).toHaveLength(1); expect(runtime.starts[0]!.workId).toBe(work.id);
+  expect(runtime.requests.some(r => (r as { op: string }).op === "spawn")).toBe(true);
+  expect(f.app.computers.view(f.auth.actor, "jit").lease?.actor).toBeNull();
+  const evidence = f.app.parallel.inspect(f.auth.actor, work.id);
+  expect(evidence.reads.map(read => read.tool)).toEqual(expect.arrayContaining(["web_search", "web_fetch"]));
+  expect(evidence.evidence).toHaveLength(2);
+  for (const item of evidence.evidence) expect(f.store.read(tx => f.app.parallel.citation(tx, attempt.id, item.id, item.revision)).id).toBe(item.id);
+  expect(JSON.stringify(f.seen)).not.toContain(privateText);
+  expect(view.reservations!.calls).toBe(7); expect(view.actualUsage).toBeNull();
+  expect(readdirSync(join(f.root, "native", "sessions")).some(file => file.endsWith(".host-retired"))).toBe(true);
+});
+
+test.each(["memory", "computer"] as const)("%s withdrawal fences public reads, runner calls and late results of the same combined work", async change => {
+  const gate = barrier(), runtime = new FakeComputerRuntime();
+  const wire = protocol(async event => { if (event.wire.method === "tools/call") await gate.wait(); return undefined; });
+  const f = await fixture(wire, {}, { computer: runtime });
+  f.app.authority.commit(f.attempt.id, { state: "ready", text: "Earlier work settled" });
+  const claim = f.app.execute(f.auth.actor, { kind: "memory.remember", requestId: rid(), expectedRevision: f.app.conversation(f.auth.actor, f.conversationId).conversation.revision,
+    payload: { conversationId: f.conversationId, text: "Private combined-work preference" } }).claim!;
+  const work = f.start().work!, attempt = f.app.authority.admit(work.id, rid(), { botId: "jit", tools: ["computer", ...policy.tools], scopes: [], input: "Public report", calls: 16, outputBytes: 32768 });
+  await f.app.computers.prepare(attempt.id);
+  const computer = f.app.computers.open(attempt.id);
+  const pending = f.app.parallel.read(attempt.id, "web_search", { query: "public docs" });
+  await gate.reached;
+  if (change === "memory") f.app.execute(f.auth.actor, { kind: "memory.forget", requestId: rid(), expectedRevision: 1, payload: { claim } });
+  else {
+    const c = f.app.computers.view(f.auth.actor, "jit").computer!;
+    f.app.execute(f.auth.actor, { kind: "computer.reset", requestId: rid(), expectedRevision: c.revision, payload: { botId: c.botId, computerId: c.id, generation: c.generation } });
+  }
+  gate.release();
+  expect((await pending).outcome).toBe("authority_changed");
+  expect(f.app.parallel.inspect(f.auth.actor, work.id).evidence).toHaveLength(0);
+  await expect(computer.backend.spawn({ command: "printf late", cwd: "/workspace", timeoutMs: 1000 })).rejects.toThrow();
+  expect(runtime.requests).toHaveLength(0);
+  expect(() => f.app.authority.commit(attempt.id, { state: "ready", text: "Late report" })).toThrow(change === "memory" ? "memory_context_stale" : "computer_attempt_fenced");
+  expect(f.app.authority.view(f.auth.actor, work.id).results).toHaveLength(0);
+  computer.release(); await f.app.computers.drain();
 });
 
 test("typed web configuration uses authenticated JSON/forms; key receipts and restarted state never expose values", async () => {

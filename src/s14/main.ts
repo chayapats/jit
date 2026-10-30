@@ -12,6 +12,8 @@ import { createS14Product } from "./web-product";
 import { acquireS14RuntimeLock } from "./runtime-lock";
 import { serveS14Refusal } from "./web-refusal";
 import type { Policy } from "./types";
+import { BotPodmanRuntime } from "./computer-podman";
+import { runComputerWork } from "./computer-work";
 
 /** Explicit opt-in composition root; it imports no legacy application, workers, configuration or store at runtime. */
 export async function runS14(args = process.argv.slice(2), env = process.env): Promise<void> {
@@ -19,14 +21,18 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
   try {
     inspectS14Store(path); // Refuse legacy before creating even a lock, profile directory or worker.
     if (!["serve", "setup"].includes(command ?? "") || args.some(a => !["serve", "setup", "--s14", "--password-stdin", "--refusal-page"].includes(a))) throw new AppError("use_setup_or_serve_with_s14");
-    const policy: Policy = { routes: JSON.parse(env.JIT_S14_ROUTES ?? "[]"), tools: ["web_search", "web_fetch"], resources: [] };
+    const policy: Policy = { routes: JSON.parse(env.JIT_S14_ROUTES ?? "[]"), tools: ["web_search", "web_fetch", "computer"], resources: [] };
     const release = acquireS14RuntimeLock(path);
     let store: S14Store | undefined;
     try {
       store = new S14Store(path);
       const chat = schwayChat(join(dirname(path), "native"));
-      const vault = new ConnectionVault(resolve(env.JIT_S14_VAULT_DIRECTORY ?? join(dirname(path), "..", "s14-vault")), { forbidden: [dirname(path)] });
-      const app = new S14Application(store, { policy, chat, parallel: { vault }, authority: { executor: { async run(attempt, signal) {
+      const vaultDirectory = resolve(env.JIT_S14_VAULT_DIRECTORY ?? join(dirname(path), "..", "s14-vault"));
+      const vault = new ConnectionVault(vaultDirectory, { forbidden: [dirname(path)] });
+      const runtime = env.JIT_S14_COMPUTER_ROOT ? new BotPodmanRuntime({ dataRoot: env.JIT_S14_COMPUTER_ROOT,
+        protectedPaths: [dirname(path), vaultDirectory, resolve(".local"), resolve("backups")], workspaceImage: env.JIT_BOX_IMAGE_BASE ?? "", browserImage: env.JIT_BOX_IMAGE_BROWSER ?? "" }) : undefined;
+      const app: S14Application = new S14Application(store, { policy, chat, parallel: { vault }, computers: runtime ? { runtime } : {}, authority: { executor: { async run(attempt, signal) {
+        if (attempt.snapshot.tools.includes("computer")) return runComputerWork(app, join(dirname(path), "native"), attempt, signal);
         return schwayResearch(join(dirname(path), "native"), app).run(attempt, signal);
       } } } });
       if (command === "setup") {
@@ -38,6 +44,8 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
       const origin = env.JIT_S14_ORIGIN ?? "http://localhost:3001", url = new URL(origin);
       if (url.protocol !== "http:" || !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) || url.pathname !== "/" || url.username || url.password || url.search || url.hash) throw new AppError("s14_loopback_origin_required");
       app.recoverReplies(); app.authority.recover(); app.parallel.recover();
+      app.computers.recover();
+      await app.computers.drain();
       // One root pump keeps conversational/work inference serial on the selected credential route.
       let pumping = false;
       const pump = async () => {
@@ -49,14 +57,21 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
         } } finally { pumping = false; }
       };
       const handler = createS14Handler(app, origin, renderS14, createS14Product(app));
+      const maintainComputers = () => {
+        app.computers.sweep();
+        app.authority.cancelFenced();
+        void app.computers.drain().catch(() => {});
+      };
       const server = Bun.serve({ hostname: url.hostname === "[::1]" ? "::1" : url.hostname, port: Number(url.port || 80), async fetch(request) {
-        const response = await handler(request); void pump().catch(() => {}); return response;
+        const response = await handler(request); maintainComputers(); void pump().catch(() => {}); return response;
       } });
+      const computerTimer = setInterval(maintainComputers, 1000);
       void pump().catch(() => {});
       process.once("exit", release);
-      process.once("SIGTERM", () => { server.stop(true); process.exit(0); });
-      process.once("SIGINT", () => { server.stop(true); process.exit(0); });
-      console.log(JSON.stringify({ state: "s14_listening", origin, contracts: ["app.bots/v1", "app.conversations/v2", "app.work-grants/v1", "app.effect-approval/v2", "app.memory-scope/v2", "app.context-provenance/v2", "app.parallel-web/v1", "app.external-evidence/v2"], readiness: "configured_unverified" }));
+      const shutdown = () => { clearInterval(computerTimer); server.stop(true); app.computers.recover(); void app.computers.drain().finally(() => process.exit(0)); };
+      process.once("SIGTERM", shutdown);
+      process.once("SIGINT", shutdown);
+      console.log(JSON.stringify({ state: "s14_listening", origin, contracts: ["app.bots/v1", "app.conversations/v2", "app.work-grants/v1", "app.effect-approval/v2", "app.bot-computer/v1", "app.input-lease/v1", "app.memory-scope/v2", "app.context-provenance/v2", "app.parallel-web/v1", "app.external-evidence/v2"], readiness: "configured_unverified" }));
     } catch (e) { store?.close(); release(); throw e; }
   } catch (error) {
     console.error(JSON.stringify(error instanceof FreshStateRequired ? { error: error.code, nextAction: error.nextAction } : { error: error instanceof AppError ? error.code : "s14_start_failed" }));

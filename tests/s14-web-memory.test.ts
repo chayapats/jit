@@ -322,13 +322,16 @@ test("memory and web surfaces render in both languages with no raw keys, and set
   }
   const root = mkdtempSync(join(tmpdir(), "jit-s14-ui-")); roots.push(root);
   const store = new S14Store(join(root, "s14.sqlite")); stores.push(store);
-  const app = new S14Application(store, { policy: { routes: [{ id: "selected", provider: "codex", model: "scripted-model" }], tools: ["web_search", "web_fetch"], resources: [] }, chat: { async reply() { return { text: "" }; } }, now: () => 1800000000000 });
+  const app = new S14Application(store, { policy: { routes: [{ id: "selected", provider: "codex", model: "scripted-model" }], tools: ["web_search", "web_fetch", "computer", "effect_send"], resources: ["private-resource"] }, chat: { async reply() { return { text: "" }; } }, now: () => 1800000000000 });
   await app.provisionOwner(password); const token = await app.login(password), auth = app.authenticate(token), handler = createS14Handler(app, origin, renderS14, createS14Product(app));
   const html = await (await handler(new Request(`${origin}/`, { headers: { cookie: `jit_s14=${token}` } }))).text(), words = dictionaries.th;
   expect(html).toContain(words["s14.setup.research_note"]); expect(html).toContain(words["s14.setup.nothing_else"]); expect(html).not.toContain(words["s14.setup.nothing_granted"]); expect(accessibilityProblems(html, "th")).toEqual([]);
   const fields = { ...formFields(html, "/s14/forms/setup"), ownerName: "Owner" }; expect(fields).toMatchObject({ "tool:web_search": "on", "tool:web_fetch": "on" });
+  expect(Object.keys(fields).filter(key => key.startsWith("tool:")).sort()).toEqual(["tool:web_fetch", "tool:web_search"]);
   const posted = await handler(new Request(`${origin}/s14/forms/setup`, { method: "POST", headers: { cookie: `jit_s14=${token}`, origin, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(fields).toString() })); expect(posted.status).toBe(303);
   expect(app.home(auth.actor).bots[0]!.capabilities.tools.sort()).toEqual(["web_fetch", "web_search"]);
+  expect(app.home(auth.actor).bots[0]!.capabilities.resources).toEqual([]);
+  expect(app.computers.view(auth.actor, "jit")).toEqual({ computer: null, lease: null });
 });
 
 test("a Bot without web tools is named on the settings page instead of implying research works", async () => {

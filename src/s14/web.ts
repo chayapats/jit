@@ -3,6 +3,7 @@ import { negotiateLocale } from "../i18n";
 import type { S14Application, S14Command } from "./application";
 import type { Home, Policy } from "./types";
 import type { Work } from "./authority-types";
+import type { OwnerInputCommand } from "./computer-types";
 import type { S14Overview, S14Product, S14View } from "./web-product";
 
 /** Product rendering seam; `view`, `overview`, `policy` and `now` are query data and prove nothing about authority. */
@@ -65,6 +66,27 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
         const p = await body(request); if (Object.keys(p).join() !== "csrf") throw new AppError("invalid_body"); app.verifyCsrf(auth.csrf, p.csrf); app.logout(auth.actor);
         return redirect("/s14/login", { "Set-Cookie": `${cookieName}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${secure ? "; Secure" : ""}` });
       }
+      const input = /^\/(api\/)?s14\/bots\/([a-zA-Z0-9_-]+)\/computer\/input$/.exec(url.pathname);
+      if (request.method === "POST" && input) {
+        const isForm = !input[1];
+        if (isForm && product) next = product.next(null, { payload: { botId: input[2] } });
+        const p = await body(request);
+        app.verifyCsrf(auth.csrf, isForm ? p.csrf : request.headers.get("x-csrf-token"));
+        let command: OwnerInputCommand;
+        if (isForm) {
+          const base = ["csrf", "requestId", "expectedRevision", "computerId", "generation", "leaseRevision", "kind"];
+          const fields = p.kind === "click" ? ["point.x", "point.y"] : p.kind === "text" ? ["text"] : p.kind === "key" ? ["key"] : [];
+          if (!fields.length || Object.keys(p).sort().join() !== [...base, ...fields].sort().join()) throw new AppError("invalid_shape");
+          const number = (value: unknown) => { if (typeof value !== "string" || !/^(0|[1-9][0-9]{0,15})$/.test(value)) throw new AppError("invalid_number"); return Number(value); };
+          const action = p.kind === "click" ? { kind: "click" as const, x: number(p["point.x"]), y: number(p["point.y"]) }
+            : p.kind === "text" ? { kind: "text" as const, text: p.text as string } : { kind: "key" as const, key: p.key as string };
+          command = { kind: "takeover.input", requestId: p.requestId as string, expectedRevision: number(p.expectedRevision),
+            payload: { botId: input[2]!, computerId: p.computerId as string, generation: number(p.generation), leaseRevision: number(p.leaseRevision), input: action } };
+        } else command = p as unknown as OwnerInputCommand;
+        if (command.payload?.botId !== input[2]) throw new AppError("computer_scope_changed", 403);
+        const result = await app.computers.ownerInput(auth.actor, command);
+        return isForm ? respond("", 303, "text/html", { Location: product ? product.inputSurface(input[2]!, result.requestId) : `/api/s14/computer-inputs/${result.requestId}` }) : json(result);
+      }
       const form = product && request.method === "POST" ? /^\/s14\/forms\/([a-z-]+)$/.exec(url.pathname)?.[1] : undefined;
       if (form) {
         const p = await body(request), state = app.home(auth.actor); app.verifyCsrf(auth.csrf, p.csrf); next = product!.next(form, p);
@@ -85,6 +107,20 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
       }
       if (request.method !== "GET") throw new AppError("not_found", 404);
       if (url.pathname === "/api/s14/home") return json({ state: app.home(auth.actor), csrf: auth.csrf });
+      const inputReceipt = /^\/api\/s14\/computer-inputs\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
+      if (inputReceipt) return json(app.computers.inputReceipt(auth.actor, inputReceipt[1]!));
+      const computer = /^\/api\/s14\/bots\/([a-zA-Z0-9_-]+)\/computer(?:\/(image|events))?$/.exec(url.pathname);
+      if (computer) {
+        if (computer[2] === "image") {
+          const bytes = await app.computers.screenshot(auth.actor, computer[1]!);
+          const headers = new Headers(respond("").headers);
+          headers.set("Content-Type", "image/png");
+          return new Response(new Uint8Array(bytes), { headers });
+        }
+        const state = app.computers.view(auth.actor, computer[1]!);
+        if (computer[2] === "events") return respond(`event: state\ndata: ${JSON.stringify(state)}\n\n`, 200, "text/event-stream", { "X-Accel-Buffering": "no" });
+        return json(state);
+      }
       if (url.pathname === "/api/s14/work") return json({ items: app.authority.list(auth.actor) });
       const memory = /^\/api\/s14\/memory\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
       if (memory) return json(app.memory.inspect(auth.actor, memory[1]!, url.searchParams.get("q") ?? ""));
@@ -108,7 +144,7 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
       const receipt = /^\/(?:api\/)?s14\/receipts\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
       if (receipt) return app.store.read(tx => { app.requireOwner(tx, auth.actor); const r = tx.get<{ result_json: string }>("SELECT result_json FROM command_receipts WHERE owner_id='owner' AND request_id=?", receipt[1]!); if (!r) throw new AppError("not_found", 404); return page ? redirect(product!.surface(JSON.parse(r.result_json))) : json(JSON.parse(r.result_json)); });
       if (page) { const state = app.home(auth.actor); return view(state, product!.view(url, auth.actor, state, signedInLocale(state))); }
-      if (url.pathname === "/") { const state = app.home(auth.actor); return respond(render({ state, work: app.authority.list(auth.actor), csrf: auth.csrf, locale: state.owner?.language ?? (request.headers.get("accept-language")?.startsWith("en") ? "en" : "th"), view: { kind: "more" }, overview: { views: [], effects: [], botStates: {} }, policy: app.policy, now: app.now() }), 200, "text/html"); }
+      if (url.pathname === "/") { const state = app.home(auth.actor); return respond(render({ state, work: app.authority.list(auth.actor), csrf: auth.csrf, locale: state.owner?.language ?? (request.headers.get("accept-language")?.startsWith("en") ? "en" : "th"), view: { kind: "more" }, overview: { views: [], effects: [], botStates: {}, computers: {} }, policy: app.policy, now: app.now() }), 200, "text/html"); }
       throw new AppError("not_found", 404);
     } catch (error) {
       const code = error instanceof AppError ? error.code : "invalid_request", status = error instanceof AppError ? error.status : 400;

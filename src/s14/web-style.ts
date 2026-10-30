@@ -216,6 +216,30 @@ html, body { height: 100%; }
 .s-diff-new { box-shadow: inset 2px 0 0 var(--ok); }
 .s-history li { border-top: 1px solid var(--line); padding: 8px 0; }
 
+/* Bot computer: the lease bar always answers who is driving. The owner outline is the takeover signal, so it reads without colour. */
+.s-lease[data-driver=owner] { border-color: var(--fg); }
+.s-lease[data-driver=expired] { border-color: var(--warn-line); }
+.s-lease .s-slip-hd h2 { font-size: var(--size-chat); }
+.s-slip-top { padding-top: 12px; }
+.s-screen { border: 1px solid var(--line-strong); border-radius: var(--radius-card); background: var(--bg); min-width: 0; scroll-margin-top: 16px; }
+.s-screen[data-driver=owner] { border-color: var(--fg); outline: 2px solid var(--fg); }
+.s-screen-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 12px; background: var(--surface-2); border-bottom: 1px solid var(--line); border-radius: var(--radius-card) var(--radius-card) 0 0; }
+.s-screen-bar svg { width: 14px; height: 14px; color: var(--fg-3); }
+.s-screen-bar h2 { flex: 1; min-width: 0; font-size: var(--size-sm); font-weight: 500; }
+.s-screen-bar .s-link-text { font-size: var(--size-xs); }
+.s-screen-view { overflow-x: auto; overscroll-behavior-x: contain; }
+.s-screen-view form { margin: 0; }
+.s-screen-view img { display: block; width: 100%; height: auto; }
+.s-screen-view input[type=image] { display: block; max-width: none; padding: 0; border: 0; border-radius: 0; cursor: crosshair; }
+[data-enhanced] .s-screen-view input[type=image] { width: 100%; height: auto; }
+.s-screen-empty { display: flex; align-items: center; justify-content: center; aspect-ratio: 16 / 10; padding: 16px; background: var(--surface-1); color: var(--fg-2); text-align: center; }
+.s-screen-note { padding: 8px 12px; border-top: 1px solid var(--line); }
+.s-input-status:empty { display: none; }
+.s-keys { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; }
+.s-log { margin: 0; padding: 0; list-style: none; }
+.s-log li { display: grid; grid-template-columns: minmax(112px, auto) minmax(0, 1fr); gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: var(--size-sm); }
+.s-log time { color: var(--fg-3); font-size: var(--size-xs); padding-top: 1px; }
+
 /* Setup, sign-in and notice pages */
 .s-page:has(.auth-card) { justify-content: center; }
 .s-page { min-height: 100dvh; display: flex; flex-direction: column; align-items: center; padding: 32px 20px max(32px, env(safe-area-inset-bottom)); background: var(--bg); }

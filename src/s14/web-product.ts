@@ -3,6 +3,7 @@ import { dictionaries, type Locale, type MessageKey } from "../i18n";
 import type { StaticAsset } from "../web-assets";
 import type { S14Application, S14Command, S14Receipt } from "./application";
 import type { AuthorityReceipt, Effect, StartWorkCommand, Work, WorkLimits, WorkView } from "./authority-types";
+import type { ComputerActivity, ComputerInputReceipt, ComputerReceipt, ComputerView } from "./computer-types";
 import type { Bot, BotProposal, Conversation, Home, Message, OwnerActor, Reply } from "./types";
 import { lookupS14Asset } from "./web-assets";
 import { renderFailure, renderLogin } from "./web-pages";
@@ -18,7 +19,9 @@ export const workLimitBounds = Object.freeze({ concurrent: [1, 8], minutes: [1, 
 /** Composer content preserved across a refused post, so a stale revision never costs the owner their text. */
 export interface S14Draft { text: string; work: boolean; concurrent: number; minutes: number; reads: number; completion: string; bots: string[] }
 /** Work pane tabs that have real data in this slice; later slices add theirs when their data exists. */
-export type S14WorkTab = "progress" | "evidence" | "grant";
+export type S14WorkTab = "progress" | "grant" | "computer" | "evidence";
+/** Query data only the Bot computer tab needs. `runtime` says one is configured, never that it is ready. */
+export interface S14ComputerSurface { activity: ComputerActivity[]; runtime: boolean; confirm: "reset" | "delete" | null; input: ComputerInputReceipt | null }
 /** One conversation query as rendered, with open proposal history for the exact-revision diff. */
 export interface S14Chat { conversation: Conversation; messages: Message[]; proposals: BotProposal[]; replies: Reply[]; history: Record<string, BotProposal[]> }
 /** Server-rendered surface selected from the URL; every variant carries only typed query data. */
@@ -29,13 +32,13 @@ export type S14View =
   | { kind: "work-list" }
   | { kind: "work"; view: WorkView; tab: S14WorkTab; research: S14WorkResearch | null; conversation: Conversation; bot: Bot }
   | { kind: "team" }
-  | { kind: "bot"; bot: Bot; conversation: Conversation | null }
+  | { kind: "bot"; bot: Bot; conversation: Conversation | null; computer: S14ComputerSurface | null }
   | { kind: "proposal"; proposal: BotProposal; history: BotProposal[] }
   | { kind: "effect"; effect: Effect; history: Effect[] }
   | { kind: "more" }
   | S14MemorySurface;
 /** Query projections every signed-in page needs for attention counts and Bot state; never a proof of authority. */
-export interface S14Overview { views: WorkView[]; effects: Effect[]; botStates: Record<string, "working" | "queued" | "waiting" | "idle"> }
+export interface S14Overview { views: WorkView[]; effects: Effect[]; botStates: Record<string, "working" | "queued" | "waiting" | "idle">; computers: Record<string, ComputerView> }
 /** Product routes behind the authenticated handler; every state change still goes through S14Application.execute. */
 export interface S14Product {
   asset(pathname: string): StaticAsset | null;
@@ -46,6 +49,8 @@ export interface S14Product {
   command(form: string, fields: Record<string, unknown>, actor: OwnerActor, state: Home, locale: Locale): S14Command;
   recover(form: string, fields: Record<string, unknown>, code: string, actor: OwnerActor, state: Home): S14View | null;
   surface(receipt: S14Receipt, fields?: Record<string, unknown>): string;
+  /** Owner-facing page for one no-script input outcome, replacing the JSON redirect of the bare seam. */
+  inputSurface(botId: string, requestId: string): string;
   next(form: string | null, value: unknown): string;
 }
 
@@ -94,7 +99,8 @@ const draftOf = (fields: Record<string, unknown>, keepText: boolean): S14Draft =
   const number = (key: "concurrent" | "minutes" | "reads") => { const value = Number(single(fields, key)); return Number.isSafeInteger(value) && value > 0 ? value : defaultWorkLimits[key]; };
   return { text: keepText ? single(fields, "text") : "", work: single(fields, "work") === "on", concurrent: number("concurrent"), minutes: number("minutes"), reads: number("reads"), completion: single(fields, "completion"), bots: prefixed(fields, "bot:") };
 };
-const tab = (url: URL): S14WorkTab => { const name = url.searchParams.get("tab"); return name === "grant" || name === "evidence" ? name : "progress"; };
+const tab = (url: URL): S14WorkTab => { const name = url.searchParams.get("tab"); return name === "grant" || name === "computer" || name === "evidence" ? name : "progress"; };
+const computerPath = (botId: string, suffix = "") => `/team/${botId}?tab=computer${suffix}`;
 const example = (locale: Locale, url: URL): S14Draft | null => {
   const key = ({ "1": "s14.home.example_1", "2": "s14.home.example_2" } as Record<string, MessageKey>)[url.searchParams.get("example") ?? ""];
   return key ? { ...defaultWorkLimits, text: dictionaries[locale][key], work: true, completion: "", bots: [] } : null;
@@ -111,6 +117,12 @@ export function createS14Product(app: S14Application): S14Product {
     const read = app.conversation(actor, id);
     return { ...read, history: Object.fromEntries(read.proposals.filter(p => p.revision > 1).map(p => [p.id, app.proposal(actor, p.id).history])) };
   };
+  /** A stale, foreign or malformed outcome link shows no outcome; it must not cost the owner the computer page. */
+  const inputOutcome = (actor: OwnerActor, botId: string, requestId: string | null) => {
+    if (!requestId) return null;
+    try { const receipt = app.computers.inputReceipt(actor, requestId); return receipt.computerId === app.computers.view(actor, botId).computer?.id ? receipt : null; }
+    catch (error) { if (error instanceof AppError && ["not_found", "invalid_identity"].includes(error.code)) return null; throw error; }
+  };
   return {
     asset: lookupS14Asset,
     login: (locale, code) => renderLogin(locale, code, !!app.store.read(tx => tx.get("SELECT id FROM owner"))),
@@ -123,7 +135,7 @@ export function createS14Product(app: S14Application): S14Product {
         if (state && botStates[bot.id] !== "working") botStates[bot.id] = state;
       }
       for (const reply of state.replies) if (reply.state === "running") botStates[reply.snapshot.bot.id] = "working";
-      return { views, effects: views.flatMap(view => view.effects), botStates };
+      return { views, effects: views.flatMap(view => view.effects), botStates, computers: Object.fromEntries(state.bots.map(bot => [bot.id, app.computers.view(actor, bot.id)])) };
     },
     view(url, actor, state, locale) {
       if (!state.owner) return { kind: "setup", draft: null, notice: null };
@@ -146,7 +158,10 @@ export function createS14Product(app: S14Application): S14Product {
         const view = app.authority.view(actor, id), conversation = app.conversation(actor, view.work.conversationId).conversation;
         return { kind: "work", view, tab: tab(url), research: workResearch(app, actor, view), conversation, bot: botOf(state, conversation.botId) };
       }
-      if (area === "team") return { kind: "bot", bot: botOf(state, id), conversation: state.conversations.find(c => c.botId === id) ?? null };
+      if (area === "team") {
+        const confirm = url.searchParams.get("confirm"), computer = url.searchParams.get("tab") === "computer";
+        return { kind: "bot", bot: botOf(state, id), conversation: state.conversations.find(c => c.botId === id) ?? null, computer: computer ? { activity: app.computers.activity(actor, id), runtime: !!app.computers.options.runtime, confirm: confirm === "reset" || confirm === "delete" ? confirm : null, input: inputOutcome(actor, id, url.searchParams.get("input")) } : null };
+      }
       if (area === "proposals") return { kind: "proposal", ...app.proposal(actor, id) };
       return { kind: "effect", ...app.authority.effect(actor, id) };
     },
@@ -194,15 +209,18 @@ export function createS14Product(app: S14Application): S14Product {
       if (receipt.kind === "bot.proposal.accept") return `/team/${receipt.bot!.id}`;
       if (receipt.kind === "bot.proposal.reject" || receipt.kind === "bot.proposal.revise") return `/proposals/${receipt.proposal!.id}`;
       if (receipt.kind === "approval.decide") return `/effects/${receipt.effect!.id}`;
+      if (receipt.kind.startsWith("computer.") || receipt.kind.startsWith("takeover.")) return computerPath((receipt as ComputerReceipt).computer!.botId, receipt.kind === "takeover.start" ? "#screen" : "");
       const work = (receipt as AuthorityReceipt).work!;
       return `/chats/${work.conversationId}?work=${work.id}#latest`;
     },
+    inputSurface: (botId, requestId) => computerPath(botId, `&input=${requestId}#screen`),
     next(form, value) {
       const extended = memoryNext(form, value); if (extended) return extended;
       const data = value as { kind?: string; payload?: Record<string, string>; proposalId?: string; taskId?: string; conversationId?: string } | null;
       if (form === "proposal-accept" || form === "proposal-revise") return `/proposals/${data?.proposalId ?? ""}`;
       if (form === "task-start") return `/work/${data?.taskId ?? ""}`;
       const payload = data?.payload ?? {};
+      if (payload.botId) return computerPath(payload.botId);
       if (payload.proposalId) return `/proposals/${payload.proposalId}`;
       if (payload.effectId) return `/effects/${payload.effectId}`;
       if (payload.workId) return `/work/${payload.workId}`;

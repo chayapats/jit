@@ -11,11 +11,13 @@ import { S14Memory } from "./memory";
 import type { MemoryCommand, MemoryReceipt } from "./memory-types";
 import { S14Authority, suggestTask } from "./authority";
 import type { AuthorityCommand, AuthorityOptions, AuthorityReceipt } from "./authority-types";
+import { S14Computers } from "./computer";
+import type { ComputerCommand, ComputerOptions, ComputerReceipt } from "./computer-types";
 
 /** Stable complete typed owner ingress union for the S14 logic foundation. */
-export type S14Command = BotCommand | AuthorityCommand | MemoryCommand | ParallelCommand;
+export type S14Command = BotCommand | AuthorityCommand | MemoryCommand | ParallelCommand | ComputerCommand;
 /** Committed typed result of the S14 owner command boundary. */
-export type S14Receipt = BotReceipt | AuthorityReceipt | MemoryReceipt | ParallelReceipt;
+export type S14Receipt = BotReceipt | AuthorityReceipt | MemoryReceipt | ParallelReceipt | ComputerReceipt;
 
 const id = () => crypto.randomUUID().replaceAll("-", "");
 const tokenPattern = /^[a-f0-9]{64}$/;
@@ -32,7 +34,7 @@ export function save(tx: AppTransaction, table: RecordTable, value: { id: string
 /** Reads bounded identity records from a trusted table name without starting workers. */
 export function records<T>(tx: AppTransaction, table: RecordTable): T[] { return tx.all<{ record_json: string }>(`SELECT record_json FROM ${table} ORDER BY rowid DESC LIMIT 100`).map(row => JSON.parse(row.record_json) as T); }
 /** Injectable deterministic inference/clock and rollback fault seams; production never enables fixture inference. */
-export interface S14Options { policy: Policy; chat: ChatPort; authority?: AuthorityOptions; parallel?: ParallelWebOptions; now?: () => number; beforeCommit?: () => void }
+export interface S14Options { policy: Policy; chat: ChatPort; authority?: AuthorityOptions; parallel?: ParallelWebOptions; computers?: ComputerOptions; now?: () => number; beforeCommit?: () => void }
 
 /** Project-free owner command boundary; registered actors are revalidated on every read and commit. */
 export class S14Application {
@@ -41,6 +43,7 @@ export class S14Application {
   readonly authority: S14Authority;
   readonly memory: S14Memory;
   readonly parallel: ParallelWeb;
+  readonly computers: S14Computers;
   #actors = new WeakMap<OwnerActor, string>();
   #replyBusy = false;
   constructor(readonly store: S14Store, readonly options: S14Options) {
@@ -58,6 +61,7 @@ export class S14Application {
     } });
     this.parallel = new ParallelWeb(this, options.parallel);
     this.store.transaction(tx => { this.memory.reconcile(tx); this.memory.fence(tx); this.parallel.reconcile(tx); });
+    this.computers = new S14Computers(this, options.computers);
   }
   /** Trusted local bootstrap creates only the authentication principal, never resets an existing installation. */
   async provisionOwner(password: string): Promise<void> {
@@ -139,6 +143,8 @@ export class S14Application {
   execute(actor: OwnerActor, command: MemoryCommand): MemoryReceipt;
   /** Executes explicit optional Parallel mode and write-only key commands under the same owner receipt boundary. */
   execute(actor: OwnerActor, command: ParallelCommand): ParallelReceipt;
+  /** Executes exact computer lifecycle and input ownership intents without embedding transient browser input. */
+  execute(actor: OwnerActor, command: ComputerCommand): ComputerReceipt;
   /** Executes the complete typed HTTP command union without client-controlled actor identities. */
   execute(actor: OwnerActor, command: S14Command): S14Receipt;
   execute(actor: OwnerActor, command: S14Command): S14Receipt {
@@ -148,6 +154,7 @@ export class S14Application {
     identity(command.requestId); integer(command.expectedRevision);
     const receipt = this.store.transaction(tx => {
       this.requireOwner(tx, actor);
+      if (tx.get("SELECT request_id FROM computer_inputs WHERE request_id=?", command.requestId)) throw new AppError("request_id_conflict", 409);
       const previous = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash,result_json FROM command_receipts WHERE owner_id='owner' AND request_id=?", command.requestId);
       if (previous) { if (previous.payload_hash !== digest(encoded)) throw new AppError("request_id_conflict", 409); return JSON.parse(previous.result_json) as S14Receipt; }
       let result: S14Receipt;
@@ -158,6 +165,8 @@ export class S14Application {
         this.memory.reconcile(tx);
         this.memory.fence(tx);
         this.parallel.reconcile(tx);
+      } else if (["computer.open", "computer.stop", "computer.reset", "computer.delete", "takeover.start", "takeover.end"].includes(command.kind)) {
+        result = this.computers.apply(tx, command as ComputerCommand);
       } else if (["task.accept", "work.start", "work.stop", "approval.decide"].includes(command.kind)) {
         result = this.authority.apply(tx, command as AuthorityCommand);
       } else {
@@ -168,6 +177,7 @@ export class S14Application {
       this.options.beforeCommit?.(); return structuredClone(result);
     });
     this.authority.cancelFenced();
+    this.computers.sweep();
     return receipt;
   }
   /** Resolves an exact configured route; no provider, account, model or billing fallback exists. */

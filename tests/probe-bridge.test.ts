@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, jest, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1497,20 +1497,29 @@ test("an unreadable record after a landed write stays uncertain, never kept as c
 test("uncertainty past the deadline still publishes a valid store-unavailable record", async () => {
   const root = setup();
   const starter = bridgePorts({ root, fetch: successFetch() });
-  // Wall clock past the deadline at terminalization (production Date.now
-  // shape): the uncertainty observation must still validate.
-  let ticks = 0;
-  const { record } = await liveProbe("fixture-probe-host",
-    { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 100 },
-    { ...starter.ports, now: () => 1800000000000 + (ticks++ === 0 ? 0 : 5000), id: () => ID, infer: async (input, signal) => {
-      await input.fence!.guard!();
-      await new Promise((_, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
-      return "failed";
-    } }, starter.root);
-  expect(record.lifecycle).toBe("store-unavailable");
-  expect(record.nextAction).toBe("check-secure-store");
-  expect(record.elapsedMs).toBe(5000);
-  expect((await readProbeAttempt(root, ID)).lifecycle).toBe("store-unavailable");
+  // The old 100 ms wall timer could expire during persistence on slow CI,
+  // before the Schway guard opened: cancelled was then the correct outcome.
+  // Advance the real deadline callback only after the guard admission barrier.
+  const started = 1800000000000;
+  let guardEntered = false;
+  jest.useFakeTimers({ now: started });
+  try {
+    const { record } = await liveProbe("fixture-probe-host",
+      { route: "grok", model: "grok-4-fixture", maxAttempts: 1, deadlineMs: 100 },
+      { ...starter.ports, now: () => Date.now(), id: () => ID, infer: async input => {
+        await input.fence!.guard!();
+        guardEntered = true;
+        jest.advanceTimersByTime(5000);
+        return "failed";
+      } }, starter.root);
+    expect(guardEntered).toBe(true);
+    expect(record.lifecycle).toBe("store-unavailable");
+    expect(record.nextAction).toBe("check-secure-store");
+    expect(record.elapsedMs).toBe(5000);
+    expect((await readProbeAttempt(root, ID)).lifecycle).toBe("store-unavailable");
+  } finally {
+    jest.useRealTimers();
+  }
 });
 
 test("a failed terminal publication keeps tracking for a later same-process reconcile", async () => {
