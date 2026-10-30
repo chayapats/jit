@@ -1,5 +1,7 @@
 # S14 foundation HTTP handoff
 
+Current combined logic schema: **12**; earlier unreleased 1–11 refuse with `s14_fresh_state_required` before workers. Earlier slice schema numbers below describe their introduction. All commands remain opt-in behind `--s14`.
+
 ## BOX14-01 computer/input seam
 
 Contracts: [app.bot-computer/v1](app.bot-computer-v1.md), [app.input-lease/v1](app.input-lease-v1.md); schema 6 combines result-state evidence, computer storage, memory and Parallel; earlier unreleased schemas 1–7 refuse with fresh-state. Existing setup/chat/work/approval transport remains intact. All additions stay behind `--s14`. Computer product layout and forms are in design section 18.
@@ -219,7 +221,7 @@ Exact UI integration: `sharing-types.ts`, `recovery-types.ts`, `authority-types.
 
 ## ROUT14-01 logic seam (UI pending)
 
-Contracts: `app.routine-grants/v1`, `app.attention-outbox/v1`; schema 11 (unreleased 1–10 refuse fresh-state). No product UI was authored in this slice. All new commands work through the existing JSON and URL-encoded `/commands` endpoints and receipt queries, with the same session/Origin/Host/CSRF/exact-key rules.
+Contracts: `app.routine-grants/v1`, `app.attention-outbox/v1`; introduced schema 11, current combined schema 12 (unreleased 1–11 refuse fresh-state). No product UI was authored in this slice. All new commands work through the existing JSON and URL-encoded `/commands` endpoints and receipt queries, with the same session/Origin/Host/CSRF/exact-key rules.
 
 | Command | Exact payload | expectedRevision |
 | --- | --- | --- |
@@ -232,3 +234,31 @@ Queries: `GET /api/s14/routines` → `{items:RoutineView[]}`, `GET /api/s14/rout
 Map Routine states active/paused/revoked/exhausted/blocked and occurrence states running/complete/failed/stopped; outcome report/no_update/failed/needs_owner/null. History exposes quiet runs; quiet has no notice. Scope-changing findings are Work proposals (`reason:'routine_out_of_scope'`), with task.accept separate from work.start. Failed admission/read/transport/sibling and owner decisions stay visible. Resume preserves the capture/budget and discards paused backlog; changed Bot/resource authority needs a newly reviewed routine. The UI must not infer start or modify scope from source/model text.
 
 In-app attention carries local_dedupe_only and distinct state/remote/resolvedAt. Unknown remains unknown without auto-resubmit. Retrying an owner command keeps its requestId; stale revision requires a fresh owner review. Thai/English forms, routine/history/needs-me layout and accessibility remain the later Opus-authored work; keep those acceptance boxes unticked.
+
+## BOT14-02 logic seam (UI pending)
+
+Contract `app.bot-lifecycle/v1` extends `app.bots/v1`; combined schema **12**. Types are in `src/s14/bot-lifecycle-types.ts`, service `app.botLifecycle`. The existing JSON and no-script `/commands` endpoints and receipt queries handle every new command with the same auth/CSRF/retry rules.
+
+| Command | Exact payload | expectedRevision |
+| --- | --- | --- |
+| `bot.capabilities.propose` | `{botId,capabilities:{tools:string[],resources:string[]}}` | Bot.revision |
+| `bot.reenable.propose` | same explicit shape for a settled retired Bot | Bot.revision |
+| `bot.capabilities.accept` | `{proposalId,proposalHash}` | CapabilityProposal.revision |
+| `bot.retire` | `{botId,previewHash,retain:{history:true,evidence:true}}` | Bot.revision from exact preview |
+| `bot.delete` | `{botId,previewHash}` | Bot.revision from exact preview |
+
+| Query | Result |
+| --- | --- |
+| `GET /api/s14/bots/:id/lifecycle` | `{bot,lifecycle,proposals}`; direct `app.botLifecycle.view(actor,id)` |
+| `GET /api/s14/bots/:id/lifecycle/retire-preview` | BotLifecyclePreview with exact manifest and hash |
+| `GET /api/s14/bots/:id/lifecycle/delete-preview` | BotLifecyclePreview with exact manifest and hash |
+
+Preview reads are owner-only/no-store and create no authority or cleanup. `preview(actor,id,'retire'|'delete')` is the service equivalent. Refresh before a new owner decision after stale_capability_proposal/stale_lifecycle_preview/stale_revision; do not auto-accept the refreshed card. Duplicate request IDs return the committed logical receipt, while queries report current settlement. Deletion may redact payload in historical receipts while preserving retry hash/identities.
+
+Policy proposals include exact Bot revision/generation, action capabilities/reenable, selected ceiling/hash, owner generation and proposed/accepted/superseded state. Widening grants no work/resource/account; this includes adding web_search/web_fetch to a tool-less Jit after creation. Accepted policy changes fence all previous captures/grants and temporarily disable the Bot until actual cleanup settles. Main Jit capability repair is allowed; retiring/deleting jit returns main_bot_required. Reenable is available only for a settled retired identity, takes a new exact owner proposal/current selected ceiling, and creates a new generation needing new work/routine grants. Deleted identities cannot reenable.
+
+Transition states: active/stopping/retired/deleting/deleted; target active/retired/deleted; cleanup stage fenced/data/computer/native/complete. Read Bot.enabled and lifecycle together: receipt is intent, not confirmed stop/erasure. Reasons: bot_transports_unsettled, bot_computer_cleanup_unresolved, bot_native_cleanup_unresolved, restored_bot_generation_withdrawn. Old work/chat/input/native calls retain their real occupancy until settlement. No query retries a model, input or unknown delivery.
+
+Retire requires both explicit history/evidence retention flags and preserves volumes; computer-only reset/delete is separate. Delete preview exposes exact owned sources/private claims, forward derivatives, report/artifact IDs, work/conversation/routine revisions, scoped withdrawal facts, dependent shares, workspace/profile/computer revisions and native IDs/states. retainedEffects enumerates exact action IDs/revisions/hashes/outcomes. Deleted effect payloads show payloadState=deleted with the original actionHash/outcome retained and cannot execute. retainedLineage is identity_hashes_and_independent_originals; disclosedKnowledge is cannot_recall. The backend protects these independently of presentation. Local cleanup never promises erasure of provider/recipient knowledge.
+
+UI agent seam: add Opus-authored lifecycle/capability/routine/history/needs-me surfaces and typed server form translators under `src/s14/`; retain existing `createS14Handler`, S14Application.execute and exact preview/query contracts. Use current Bot revision plus proposal hash or lifecycle preview hash in the owner action. Extend the product `surface`/redirect mapping for these new receipts, since this logic slice leaves product navigation unchanged. Keep Thai/English, keyboard, no-script and UI acceptance boxes unticked until that integration is verified. No CSS/layout/interaction design was authored here.

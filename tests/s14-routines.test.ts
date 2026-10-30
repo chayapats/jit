@@ -191,3 +191,41 @@ test("attention policy filters only future informational groups and interrupted 
   expect(notices(f)).toHaveLength(1);
   expect(notices(f)[0]).toMatchObject({ state: "unknown", remote: "uncertain" });
 });
+
+test("once schedules exhaust after one materialization; waiting outcomes and failed reads cannot hide as no_update", async () => {
+  const f = await fixture({ state: "waiting", text: '{"outcome":"no_update"}' });
+  const routine = f.app.execute(f.auth.actor, routineCommand(f, { recurrence: { kind: "once", at: f.clock.now + 60000 } })).routine;
+  f.clock.now += 60000; await run(f);
+  expect(f.app.routines.view(f.auth.actor, routine.id)).toMatchObject({ routine: { state: "exhausted" }, nextRun: null, history: [{ outcome: "needs_owner" }] });
+  const g = await domainFixture({ authority: { executor: { async run(a) {
+    g.store.transaction(tx => tx.run("INSERT INTO web_reads VALUES (?,?,?)", retryId(), a.id, JSON.stringify({ id: retryId(), workId: a.workId, outcome: "quota" })));
+    return { state: "ready", text: '{"outcome":"no_update"}' };
+  } } } }); fixtures.push(g);
+  const other = g.app.execute(g.auth.actor, routineCommand(g)).routine;
+  g.clock.now += 60000; await run(g);
+  expect(g.app.routines.view(g.auth.actor, other.id).history[0]!.outcome).toBe("failed");
+  expect(notices(g)).toHaveLength(1);
+});
+
+test("new proposals in an already resolved work group reopen in-app attention without duplicate or uncertain resend", async () => {
+  const f = await fixture();
+  f.store.transaction(tx => {
+    f.app.attention.commit(tx, { groupId: "proposal_group", class: "needs_owner", reason: "owner_decision", workId: null, proposalIds: ["old_proposal"] });
+    f.app.attention.resolve(tx);
+  });
+  expect(notices(f)[0]!.resolvedAt).not.toBeNull();
+  f.store.transaction(tx => f.app.attention.commit(tx, { groupId: "proposal_group", class: "needs_owner", reason: "owner_decision", workId: null, proposalIds: ["new_proposal"] }));
+  expect(notices(f)).toHaveLength(1);
+  expect(notices(f)[0]).toMatchObject({ resolvedAt: null, state: "queued", proposalIds: ["old_proposal", "new_proposal"] });
+});
+
+test("a final failure reopens a resolved proposal notice in the same group and cannot be hidden as answered", async () => {
+  const f = await fixture();
+  f.store.transaction(tx => {
+    const input = { groupId: "failed_group", class: "needs_owner" as const, reason: "owner_decision" as const, workId: null, proposalIds: ["answered_proposal"] };
+    f.app.attention.commit(tx, input); f.app.attention.resolve(tx);
+    f.app.attention.commit(tx, { ...input, reason: "routine_failed" }); f.app.attention.resolve(tx);
+  });
+  expect(notices(f)).toHaveLength(1);
+  expect(notices(f)[0]).toMatchObject({ reason: "routine_failed", resolvedAt: null, state: "queued" });
+});

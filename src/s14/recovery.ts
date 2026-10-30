@@ -5,6 +5,7 @@ import type { AppTransaction } from "../store";
 import { record, save, type S14Application } from "./application";
 import type { Attempt, Effect, Work } from "./authority-types";
 import type { WorkGraph, WorkStep } from "./graph-types";
+import type { MemoryPacket } from "./memory-types";
 import type { OwnerActor, Route } from "./types";
 import type { NativeIntent, NativeRecoveryPort, RecoveryCommand, RecoveryReceipt, RecoveryView, WorkCheckpoint } from "./recovery-types";
 import { checkpointFingerprint, replayPolicy } from "./replay-policy";
@@ -102,15 +103,25 @@ export class S14Recovery {
     return this.app.store.transaction(tx => {
       const attempt = attemptId ? this.app.authority.guard(tx, attemptId) : null;
       if (attempt && (contextId !== attempt.memoryId || canonical(route) !== canonical(attempt.snapshot.route))) throw new AppError("native_correlation_scope_changed", 403);
+      const context = contextId ? record<MemoryPacket>(tx, "memory_contexts", contextId) : null;
+      if (context && !this.app.memory.current(tx, context)) throw new AppError("native_context_fenced", 403);
       const intent: NativeIntent = {
         id: id(), attemptId, contextId, route: structuredClone(route), reference: null,
         workId: attempt?.workId ?? null, grantId: attempt?.snapshot.grant.id ?? null,
-        botId: attempt?.snapshot.bot.id ?? null, computer: attempt?.snapshot.tools.includes("computer") ?? false,
+        botId: attempt?.snapshot.bot.id ?? context?.botId ?? null, computer: attempt?.snapshot.tools.includes("computer") ?? false,
         state: "creating", discovered: [], mode: "retire", reason: null,
       };
       tx.run("INSERT INTO native_intents VALUES (?,?)", intent.id, canonical(intent));
       tx.run("INSERT INTO lifecycle.native_intents VALUES (?,?)", intent.id, canonical(intent));
       return intent;
+    });
+  }
+
+  /** Rechecks a chat context before native creation, credentials and inference dispatch without creating authority. */
+  guardContext(contextId: string): void {
+    this.app.store.read(tx => {
+      const packet = record<MemoryPacket>(tx, "memory_contexts", contextId);
+      if (!this.app.memory.current(tx, packet)) throw new AppError("native_context_fenced", 403);
     });
   }
 
@@ -215,6 +226,47 @@ export class S14Recovery {
     }
   }
 
+  /** Retires or deletes all discoverable native contexts for one fenced Bot using metadata-only public APIs. */
+  async cleanupBot(botId: string, mode: "retire" | "delete", port: NativeRecoveryPort): Promise<boolean> {
+    const intents = this.app.store.transaction(tx => {
+      tx.run("INSERT OR IGNORE INTO native_intents SELECT id,record_json FROM lifecycle.native_intents");
+      const contexts = new Set([
+        ...tx.all<{ id: string }>("SELECT id FROM memory_contexts WHERE bot_id=?", botId).map(row => row.id),
+        ...(mode === "delete" ? tx.all<{ mode: string }>("SELECT mode FROM lifecycle.withdrawals WHERE kind='bot_context' AND id=?", botId).map(row => row.mode) : []),
+      ]);
+      const grants = new Set(tx.all<{ id: string }>(`SELECT id FROM work_grants g WHERE EXISTS
+        (SELECT 1 FROM json_each(g.record_json,'$.bots') b WHERE json_extract(b.value,'$.id')=?)`, botId).map(row => row.id));
+      return this.intents(tx).filter(intent => intent.botId === botId || intent.contextId !== null && contexts.has(intent.contextId) || intent.grantId !== null && grants.has(intent.grantId)).map(intent => {
+        if (mode === "delete" && (intent.botId === botId || intent.contextId !== null && contexts.has(intent.contextId))) intent.mode = "delete";
+        this.saveIntent(tx, intent);
+        return intent;
+      });
+    });
+    for (const intent of intents) await this.discover(port, intent);
+    return this.app.store.transaction(tx => {
+      const current = this.intents(tx).filter(intent => intents.some(i => i.id === intent.id));
+      const settled = (intent: NativeIntent) => (intent.mode === "delete" ? ["deleted", "not_created"] : ["retired", "deleted", "not_created"]).includes(intent.state);
+      for (const attemptId of new Set(current.map(i => i.attemptId).filter((key): key is string => key !== null))) {
+        const owned = current.filter(i => i.attemptId === attemptId);
+        const row = tx.get<{ record_json: string }>("SELECT record_json FROM work_attempts WHERE id=?", attemptId);
+        if (!row || !owned.every(settled)) continue;
+        const attempt = JSON.parse(row.record_json) as Attempt;
+        if (attempt.state !== "interrupted") continue;
+        attempt.state = "settled";
+        attempt.reason = "bot_lifecycle_fenced";
+        save(tx, "work_attempts", attempt);
+        tx.run("UPDATE attempt_transports SET active=0 WHERE attempt_id=?", attempt.id);
+        const checkpoint = this.checkpoints(tx).find(c => c.id === attemptId);
+        if (checkpoint) { checkpoint.transport = "settled"; checkpoint.state = "waiting"; checkpoint.reason = "bot_lifecycle_fenced"; this.saveCheckpoint(tx, checkpoint); }
+        const work = record<Work>(tx, "work_items", attempt.workId);
+        if (work.state === "stopping" && !tx.get("SELECT 1 FROM work_attempts WHERE work_id=? AND (json_extract(record_json,'$.state') IN ('running','interrupted') OR EXISTS (SELECT 1 FROM attempt_transports WHERE attempt_id=work_attempts.id AND active=1))", work.id)) {
+          work.state = "stopped"; work.revision++; save(tx, "work_items", work);
+        }
+      }
+      return current.every(settled);
+    });
+  }
+
   private reason(tx: AppTransaction, checkpoint: WorkCheckpoint, attempt: Attempt): string | null {
     const work = record<Work>(tx, "work_items", attempt.workId);
     if (["stopped", "stopping"].includes(work.state) || work.reason === "owner_stopped") return "owner_stopped";
@@ -244,7 +296,8 @@ export class S14Recovery {
     if (this.#booting) throw new AppError("recovery_in_progress", 409);
     this.#booting = true;
     try {
-      this.app.store.transaction(tx => { this.reconcileReservations(tx); this.reconcileEffects(tx); });
+      this.app.store.transaction(tx => { this.app.botLifecycle.reconcile(tx); this.reconcileReservations(tx); this.reconcileEffects(tx); });
+      this.app.store.transaction(tx => tx.run("UPDATE reply_transports SET active=0"));
       this.app.recoverReplies();
       this.app.authority.recover();
       this.app.parallel.recover();
@@ -253,6 +306,7 @@ export class S14Recovery {
         tx.run("INSERT OR IGNORE INTO native_intents SELECT id,record_json FROM lifecycle.native_intents");
         return this.intents(tx).map(intent => {
           if (intent.contextId) {
+            if (tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE kind='native_context' AND id=?", intent.contextId)) intent.mode = "delete";
             const row = tx.get<{ record_json: string }>("SELECT record_json FROM memory_contexts WHERE id=?", intent.contextId);
             if (!row || !this.app.memory.current(tx, JSON.parse(row.record_json))) intent.mode = "delete";
           }
@@ -325,6 +379,7 @@ export class S14Recovery {
           save(tx, "work_items", work);
         }
       });
+      this.app.store.transaction(tx => this.app.botLifecycle.reconcile(tx));
     } finally { this.#booting = false; }
   }
 

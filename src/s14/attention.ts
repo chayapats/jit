@@ -33,7 +33,14 @@ export class S14Attention {
       const row = tx.get<{ record_json: string }>("SELECT record_json FROM attention_notices WHERE group_id=?", input.groupId);
       if (row) {
         const notice = JSON.parse(row.record_json) as AttentionNotice;
+        const added = input.proposalIds.some(id => !notice.proposalIds.includes(id));
         notice.proposalIds = [...new Set([...notice.proposalIds, ...input.proposalIds])];
+        const newFailure = input.reason === "routine_failed" && notice.reason !== "routine_failed";
+        if ((added || newFailure) && notice.resolvedAt !== null) {
+          notice.resolvedAt = null;
+          if (notice.state === "cancelled") notice.state = "queued";
+        }
+        notice.revision++;
         if (input.reason === "routine_failed" || notice.reason !== "routine_failed" && input.reason === "owner_decision") notice.reason = input.reason;
         this.save(tx, notice);
       }
@@ -52,7 +59,7 @@ export class S14Attention {
   resolve(tx: AppTransaction): void {
     for (const row of tx.all<{ record_json: string }>("SELECT record_json FROM attention_notices")) {
       const notice = JSON.parse(row.record_json) as AttentionNotice;
-      if (notice.resolvedAt !== null || !notice.proposalIds.length) continue;
+      if (notice.resolvedAt !== null || notice.reason !== "owner_decision" || !notice.proposalIds.length) continue;
       if (notice.proposalIds.some(id => tx.get("SELECT 1 FROM work_items WHERE id=? AND json_extract(record_json,'$.state')='proposed'", id))) continue;
       notice.resolvedAt = this.app.now();
       notice.retriesRemaining = 0;

@@ -120,6 +120,10 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
           "Content-Digest": `sha-256=:${Buffer.from(artifact.sha256, "hex").toString("base64")}:`,
         } });
       }
+      const botLifecycle = /^\/api\/s14\/bots\/([a-zA-Z0-9_-]+)\/lifecycle(?:\/(retire|delete)-preview)?$/.exec(url.pathname);
+      if (botLifecycle) return json(botLifecycle[2]
+        ? app.botLifecycle.preview(auth.actor, botLifecycle[1]!, botLifecycle[2] as "retire" | "delete")
+        : app.botLifecycle.view(auth.actor, botLifecycle[1]!));
       if (url.pathname === "/api/s14/routines") return json({ items: app.routines.list(auth.actor) });
       if (url.pathname === "/api/s14/attention") return json(app.attention.view(auth.actor));
       const routine = /^\/api\/s14\/routines\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);

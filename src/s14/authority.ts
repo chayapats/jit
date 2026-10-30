@@ -121,7 +121,7 @@ export class S14Authority {
       tx.run("UPDATE work_queue SET state='blocked' WHERE work_id=?", work.id);
       for (const attempt of this.attempts(tx, work.id)) if (attempt.state === "waiting") { attempt.state = "settled"; attempt.reason = "stopped"; save(tx, "work_attempts", attempt); }
       for (const effect of this.effects(tx, work.id)) if (["pending", "approved"].includes(effect.state)) { effect.state = "denied"; effect.reason = "work_stopped"; this.saveEffect(tx, effect); }
-      work.state = this.attempts(tx, work.id).some(a => a.state === "running" || a.state === "interrupted") || this.effects(tx, work.id).some(e => e.state === "executing") ? "stopping" : "stopped";
+      work.state = this.attempts(tx, work.id).some(a => a.state === "running" || a.state === "interrupted" || !!tx.get("SELECT 1 FROM attempt_transports WHERE attempt_id=? AND active=1", a.id)) || this.effects(tx, work.id).some(e => e.state === "executing") ? "stopping" : "stopped";
       work.reason = "owner_stopped"; work.revision++; save(tx, "work_items", work); return { ...receipt, work };
     }
     if (c.kind === "approval.decide") return { ...receipt, effect: this.decide(tx, c) };
@@ -198,7 +198,7 @@ export class S14Authority {
     const state = tx.get<{ generation: number; revoked: number }>("SELECT generation,revoked FROM grant_state WHERE grant_id=?", s.grant.id);
     if (!state || tx.get<{ generation: number }>("SELECT generation FROM owner")?.generation !== s.grant.ownerGeneration) return false;
     const bot = record<Bot>(tx, "bots", s.bot.id);
-    if (!equal(bot, s.bot) || !bot.enabled || !equal(this.app.route(bot.routeId), s.route)) return false;
+    if ((!equal(bot, s.bot) || !bot.enabled) && !this.app.botLifecycle.retained(tx, attempt.id) || !equal(this.app.route(bot.routeId), s.route)) return false;
     for (const scope of s.scopes) if (!equal(this.scope(tx, scope.ref), scope)) return false;
     const computer = tx.get<{ computer_id: string; generation: number; record_json: string }>("SELECT a.computer_id,a.generation,c.record_json FROM computer_attempts a JOIN bot_computers c ON c.id=a.computer_id WHERE a.attempt_id=?", attemptId);
     if (computer) {

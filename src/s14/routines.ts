@@ -191,7 +191,8 @@ export class S14Routines {
           DO UPDATE SET consumed=consumed+1,last_instant=max(last_instant,excluded.last_instant)`, routine.id, range.last);
         routine.occurrencesRemaining--;
         routine.cursor = { lastInstant: range.last, lastRevision: routine.revision };
-        if (routine.occurrencesRemaining === 0 && routine.state === "active") routine.state = "exhausted";
+        const next = nextScheduledInstant(this.schedule(routine), range.last);
+        if (routine.state === "active" && (routine.occurrencesRemaining === 0 || !next || next.utc > routine.capture.command.payload.endsAt)) routine.state = "exhausted";
         storeRoutine(tx, routine);
         storeOccurrence(tx, occurrence);
         this.notify(tx, occurrence);
@@ -290,7 +291,7 @@ export class S14Routines {
         const results = tx.all<{ record_json: string }>("SELECT record_json FROM routine_results WHERE occurrence_id=?", occurrence.id)
           .map(row => JSON.parse(row.record_json) as { kind: string; reason: string | null; waiting: boolean });
         const readFailure = !!tx.get("SELECT 1 FROM web_reads WHERE json_extract(record_json,'$.workId')=? AND json_extract(record_json,'$.outcome')<>'success'", work.id);
-        const failed = readFailure || ["blocked", "stopped"].includes(work.state) || steps.some(s => s.state !== "committed") || results.some(r => r.kind === "failed") || !results.length;
+        const failed = readFailure || ["blocked", "stopped"].includes(work.state) || steps.some(s => s.state !== "committed" && !(s.state === "blocked" && s.reason === "handler_waiting")) || results.some(r => r.kind === "failed") || !results.length;
         occurrence.outcome = failed ? "failed" : occurrence.proposals.length || work.state === "waiting" || results.some(r => r.waiting) ? "needs_owner" : results.every(r => r.kind === "no_update") ? "no_update" : "report";
         occurrence.state = work.state === "stopped" ? "stopped" : failed ? "failed" : "complete";
         occurrence.reason = failed ? results.find(r => r.kind === "failed")?.reason ?? work.reason ?? "routine_failed" : null;
@@ -307,8 +308,8 @@ export class S14Routines {
     return this.app.store.read(tx => {
       this.app.requireOwner(tx, actor);
       const routine = load(tx, routineId);
-      return { routine, nextRun: routine.state === "active" && routine.occurrencesRemaining > 0
-        ? nextScheduledInstant(this.schedule(routine), this.app.now())?.utc ?? null : null, history: this.occurrences(tx, routineId) };
+      const next = routine.state === "active" && routine.occurrencesRemaining > 0 ? nextScheduledInstant(this.schedule(routine), this.app.now()) : null;
+      return { routine, nextRun: next && next.utc <= routine.capture.command.payload.endsAt ? next.utc : null, history: this.occurrences(tx, routineId) };
     });
   }
 
