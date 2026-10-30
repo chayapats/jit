@@ -56,6 +56,13 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
         const token = await app.login(p.password);
         return respond("", 303, "text/html", { Location: "/", "Set-Cookie": `${cookieName}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400${secure ? "; Secure" : ""}` });
       }
+      if (request.method === "GET" && url.pathname === "/s14/personal/oauth/callback") {
+        if ([...url.searchParams.keys()].some(key => !["state", "code", "error", "scope", "authuser", "prompt"].includes(key)) ||
+            [...url.searchParams.keys()].some(key => url.searchParams.getAll(key).length !== 1) ||
+            url.searchParams.has("code") === url.searchParams.has("error")) throw new AppError("personal_oauth_stale", 409);
+        app.personal.callback(url.searchParams.get("state") ?? "", url.searchParams.get("code"));
+        return redirect("/", { "Referrer-Policy": "no-referrer" });
+      }
       const matches = (request.headers.get("cookie") ?? "").split(";").map(s => s.trim()).filter(s => s.startsWith(`${cookieName}=`));
       if (matches.length !== 1) throw new AppError("authentication_required", 401);
       const auth = app.authenticate(matches[0]!.slice(cookieName.length + 1));
@@ -66,6 +73,19 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
         const p = await body(request); if (Object.keys(p).join() !== "csrf") throw new AppError("invalid_body"); app.verifyCsrf(auth.csrf, p.csrf); app.logout(auth.actor);
         return redirect("/s14/login", { "Set-Cookie": `${cookieName}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${secure ? "; Secure" : ""}` });
       }
+      if (request.method === "POST" && ["/api/s14/personal/oauth/complete", "/s14/personal/oauth/complete"].includes(url.pathname)) {
+        const p = await body(request);
+        const form = url.pathname.startsWith("/s14/");
+        app.verifyCsrf(auth.csrf, form ? p.csrf : request.headers.get("x-csrf-token"));
+        if (Object.keys(p).sort().join() !== (form ? "csrf,flowId" : "flowId") || typeof p.flowId !== "string") throw new AppError("invalid_body");
+        const connection = await app.personal.complete(auth.actor, p.flowId);
+        return form ? redirect("/") : json({ connection });
+      }
+      if (request.method === "GET" && url.pathname === "/api/s14/personal") return json(app.personal.settings(auth.actor));
+      const oauth = /^\/api\/s14\/personal\/oauth\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
+      if (request.method === "GET" && oauth) return json(app.personal.authorization(auth.actor, oauth[1]!));
+      const brief = /^\/api\/s14\/work\/([a-zA-Z0-9_-]+)\/brief$/.exec(url.pathname);
+      if (request.method === "GET" && brief) return json(app.personal.reads.brief(auth.actor, brief[1]!));
       const input = /^\/(api\/)?s14\/bots\/([a-zA-Z0-9_-]+)\/computer\/input$/.exec(url.pathname);
       if (request.method === "POST" && input) {
         const isForm = !input[1];

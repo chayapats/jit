@@ -291,7 +291,7 @@ export class S14Routines {
         const results = tx.all<{ record_json: string }>("SELECT record_json FROM routine_results WHERE occurrence_id=?", occurrence.id)
           .map(row => JSON.parse(row.record_json) as { kind: string; reason: string | null; waiting: boolean });
         const readFailure = !!tx.get("SELECT 1 FROM web_reads WHERE json_extract(record_json,'$.workId')=? AND json_extract(record_json,'$.outcome')<>'success'", work.id);
-        const failed = readFailure || ["blocked", "stopped"].includes(work.state) || steps.some(s => s.state !== "committed" && !(s.state === "blocked" && s.reason === "handler_waiting")) || results.some(r => r.kind === "failed") || !results.length;
+        const failed = this.app.personal.reads.failed(tx, work.id) || readFailure || ["blocked", "stopped"].includes(work.state) || steps.some(s => s.state !== "committed" && !(s.state === "blocked" && s.reason === "handler_waiting")) || results.some(r => r.kind === "failed") || !results.length;
         occurrence.outcome = failed ? "failed" : occurrence.proposals.length || work.state === "waiting" || results.some(r => r.waiting) ? "needs_owner" : results.every(r => r.kind === "no_update") ? "no_update" : "report";
         occurrence.state = work.state === "stopped" ? "stopped" : failed ? "failed" : "complete";
         occurrence.reason = failed ? results.find(r => r.kind === "failed")?.reason ?? work.reason ?? "routine_failed" : null;

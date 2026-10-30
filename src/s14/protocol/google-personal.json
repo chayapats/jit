@@ -1,0 +1,37 @@
+{
+  "contract": "jit.google-personal-protocol/v1",
+  "verifiedOn": "2026-10-31",
+  "provider": "Google Gmail v1 and Calendar v3",
+  "authorization": "https://accounts.google.com/o/oauth2/v2/auth",
+  "token": "https://oauth2.googleapis.com/token",
+  "revoke": "https://oauth2.googleapis.com/revoke",
+  "gmail": "https://gmail.googleapis.com/gmail/v1/users/me",
+  "calendar": "https://www.googleapis.com/calendar/v3/calendars/{calendarId}",
+  "scopes": ["gmail.readonly", "calendar.readonly", "gmail.send", "calendar.events"],
+  "sources": [
+    "https://developers.google.com/identity/protocols/oauth2/web-server",
+    "https://developers.google.com/identity/protocols/oauth2/native-app#step1-code-verifier",
+    "https://developers.google.com/workspace/gmail/api/reference/rest/v1/users/getProfile",
+    "https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/list",
+    "https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/get",
+    "https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages.attachments/get",
+    "https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/send",
+    "https://developers.google.com/workspace/calendar/api/v3/reference/calendars/get",
+    "https://developers.google.com/workspace/calendar/api/v3/reference/events/list",
+    "https://developers.google.com/workspace/calendar/api/v3/reference/events/insert",
+    "https://developers.google.com/workspace/calendar/api/v3/reference/events/patch",
+    "https://developers.google.com/workspace/calendar/api/v3/reference/events/delete",
+    "https://developers.google.com/workspace/calendar/api/guides/version-resources"
+  ],
+  "shapes": {
+    "token": ["access_token", "token_type", "expires_in", "scope", "refresh_token"],
+    "profile": ["emailAddress"],
+    "messages.list": ["messages[].id", "nextPageToken"],
+    "messages.get": ["id", "internalDate", "payload.headers", "payload.parts", "payload.body"],
+    "attachments.get": ["data", "size"],
+    "calendar.get": ["id", "summary", "timeZone"],
+    "events.list": ["items", "nextPageToken", "timeZone"],
+    "event": ["id", "etag", "status", "updated", "summary", "description", "location", "start", "end", "recurrence", "attendees"]
+  },
+  "writes": { "gmailSend": "RFC2822 MIME raw base64url; no documented idempotency key; no blind retry", "calendarInsert": "client-supplied base32hex event ID and GET read-back; collisions are not guaranteed to be detected", "calendarPatchDelete": "If-Match etag; 412 is a known precondition failure; no reapplication", "uncertainty": "record unknown; read-back only; owner reconciliation never resends" }
+}

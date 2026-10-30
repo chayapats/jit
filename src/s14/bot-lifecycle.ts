@@ -237,6 +237,7 @@ export class S14BotLifecycle {
       }
     }
     this.app.memory.reconcile(tx);
+    this.app.personal.reconcile(tx);
     this.app.sharing.fence(tx);
     this.app.parallel.reconcile(tx);
     this.app.reports.reconcile(tx);

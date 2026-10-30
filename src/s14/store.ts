@@ -7,7 +7,7 @@ import type { AppTransaction } from "../store";
 /** Fresh S14 SQLite format identity, distinct from every legacy user_version. */
 export const s14ApplicationId = 0x4a495431;
 /** Unreleased S14 schema version; unknown formats refuse before writable SQLite opens. */
-export const s14SchemaVersion = 12;
+export const s14SchemaVersion = 13;
 /** Safe next action for incompatible stores; no original bytes or sidecars are opened by SQLite. */
 export class FreshStateRequired extends AppError {
   readonly nextAction = "choose_a_separate_JIT_S14_DATABASE_keep_legacy_installation";
@@ -79,6 +79,12 @@ export class S14Store {
         CREATE TABLE memory_shares (id TEXT PRIMARY KEY, record_json TEXT NOT NULL);
         CREATE TABLE memory_decisions (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id), record_json TEXT NOT NULL);
         CREATE TABLE memory_contexts (id TEXT PRIMARY KEY, bot_id TEXT NOT NULL REFERENCES bots(id), record_json TEXT NOT NULL);
+        CREATE TABLE personal_clients (id TEXT PRIMARY KEY, record_json TEXT NOT NULL);
+        CREATE TABLE personal_connections (id TEXT PRIMARY KEY, record_json TEXT NOT NULL);
+        CREATE TABLE personal_flows (id TEXT PRIMARY KEY, state_hash TEXT NOT NULL UNIQUE, record_json TEXT NOT NULL);
+        CREATE TABLE personal_grants (id TEXT PRIMARY KEY, record_json TEXT NOT NULL);
+        CREATE TABLE personal_sources (source_id TEXT PRIMARY KEY REFERENCES memory_sources(id), connection_id TEXT NOT NULL REFERENCES personal_connections(id), connection_revision INTEGER NOT NULL, scope_json TEXT NOT NULL);
+        CREATE TABLE personal_reads (id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL REFERENCES work_attempts(id), record_json TEXT NOT NULL);
         CREATE TABLE parallel_settings (id TEXT PRIMARY KEY CHECK(id='parallel'), record_json TEXT NOT NULL);
         INSERT INTO parallel_settings VALUES ('parallel','{"id":"parallel","revision":1,"mode":"anonymous","connectionId":null,"billingAcknowledged":false}');
         CREATE TABLE parallel_connections (id TEXT PRIMARY KEY, record_json TEXT NOT NULL);
@@ -143,7 +149,7 @@ export class S14Store {
       }).immediate();
       const installationId = this.#tx.get<{ id: string }>("SELECT id FROM memory_identity")?.id;
       if (!installationId || installationId !== this.#tx.get<{ id: string }>("SELECT id FROM lifecycle.identity")?.id) throw new AppError("s14_lifecycle_ledger_conflict", 409);
-      // Fresh schema 12 combines result, memory, Parallel and computer tables; earlier unreleased stores refuse.
+      // Fresh schema 13 combines result, memory, Parallel and computer tables; earlier unreleased stores refuse.
       this.#db.transaction(() => {
         this.#db.exec(`
           CREATE TABLE IF NOT EXISTS bot_computers (id TEXT PRIMARY KEY, bot_id TEXT NOT NULL UNIQUE REFERENCES bots(id), record_json TEXT NOT NULL);

@@ -52,7 +52,8 @@ export class S14Memory {
   }
 
   /** Checks source ancestry and its original access revisions without a lifetime record-count cutoff. */
-  sourceCurrent(tx: AppTransaction, source: MemoryRef): boolean {
+  sourceCurrent(tx: AppTransaction, source: MemoryRef, botId?: string): boolean {
+    if (this.app.personal && !this.app.personal.sourceAllowed(tx, source.id, botId)) return false;
     const pending = [source], seen = new Set<string>();
     while (pending.length) {
       const r = pending.pop()!, key = `${r.id}:${r.revision}:${r.generation}`;
@@ -113,6 +114,7 @@ export class S14Memory {
   }
 
   private access(tx: AppTransaction, claim: MemoryClaim, botId: string, attempt: Attempt | null): { policy: MemoryAccess; share: MemoryShare | null } | null {
+    if (this.app.personal && !this.app.personal.sourceAllowed(tx, claim.source.id, botId)) return null;
     const policy = record<MemoryAccess>(tx, "memory_access", claim.id);
     if (claim.botId === botId || policy.shared) return { policy, share: null };
     if (!attempt) return null;
@@ -217,7 +219,7 @@ export class S14Memory {
       ownerGeneration: tx.get<{ generation: number }>("SELECT generation FROM owner")!.generation,
       conversationId: conversation.id, workId: attempt?.workId ?? null, attemptId: attempt?.id ?? null,
       sources: unique(input.sources), claims: [], decisions, access: [], omitted: 0, bytes: 0, state: "current", createdAt: this.app.now() };
-    if (packet.sources.some(r => !this.sourceCurrent(tx, r))) throw new AppError("memory_source_unavailable", 409);
+    if (packet.sources.some(r => !this.sourceCurrent(tx, r, packet.botId))) throw new AppError("memory_source_unavailable", 409);
     const cost = () => Buffer.byteLength(canonical(packet));
     if (cost() > budget) throw new AppError("context_too_large", 409);
     const query = lexicalTerms(input.purpose);
@@ -242,6 +244,7 @@ export class S14Memory {
   /** Checks receiver access to every source/claim ancestor before a committed result crosses Bot context. */
   handoff(tx: AppTransaction, source: MemoryRef, receiver: Attempt): boolean {
     if (!this.sourceCurrent(tx, source)) return false;
+    if (this.app.personal && !this.app.personal.sourceAllowed(tx, source.id, receiver.snapshot.bot.id)) return false;
     const pending = [source], seen = new Set<string>();
     while (pending.length) {
       const next = pending.pop()!;
@@ -275,7 +278,7 @@ export class S14Memory {
     if (!stored || (JSON.parse(stored.record_json) as MemoryPacket).state !== "current") return false;
     const bot = record<Bot>(tx, "bots", packet.botId);
     if (!bot.enabled || bot.revision !== packet.botRevision || bot.generation !== packet.botGeneration || tx.get<{ generation: number }>("SELECT generation FROM owner")?.generation !== packet.ownerGeneration) return false;
-    if (packet.sources.some(r => !this.sourceCurrent(tx, r))) return false;
+    if (packet.sources.some(r => !this.sourceCurrent(tx, r, packet.botId))) return false;
     const live = rows<MemoryDecision>(tx, "memory_decisions").filter(d => d.conversationId === packet.conversationId);
     if (canonical(live.map(ref)) !== canonical(packet.decisions.map(ref))) return false;
     if (packet.decisions.some(d => !this.sourceCurrent(tx, d.source))) return false;
