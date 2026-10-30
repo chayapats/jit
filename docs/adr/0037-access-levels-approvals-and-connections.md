@@ -66,3 +66,7 @@ S11-D02, D03, D08 and D09 give a project execution power without moving authorit
 - Blocking tool calls until the owner decides were rejected: runs would hold boxes and budgets for minutes or hours.
 - Pushing from inside the box was rejected because it puts a credential in the box.
 - Running `git push` on the host directly in the workspace was rejected because repository hooks and configuration could run box-controlled code with the credential.
+
+## S14 refinement status
+
+This record retains its implemented legacy meaning. The owner-confirmed [S14 target](../specs/S14-bot-first-local-assistant.md) and proposed ADRs 0045–0048 refine Project ownership, grants/computers, Parallel default or replay-safe recovery where applicable. They do not claim a new supported API or change this build's behavior. Unchanged authority, fencing, credential and evidence invariants remain.

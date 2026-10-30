@@ -1,181 +1,123 @@
 # Jit
 
-Jit is a personal application where an owner works with specialist agents on software projects and retains project knowledge over time. Schway is the execution engine used by the application.
+Jit is a single-owner, self-hosted assistant with a team of persistent Bots, durable work and sourced memory. Schway is its execution engine.
 
-## Language
+**Baseline:** [S14](docs/specs/S14-bot-first-local-assistant.md) is the owner-confirmed target as of 2026-10-30. Its engineering ADRs remain proposed. The current runtime still implements the project-centric S09–S13 store. Do not describe the S14 target as shipped or retain a hidden Project as its authorization root.
 
-**Owner**:
-The person authorized to configure an installation, accept obligations and grant actions within it.
-_Avoid_: Agent, inferred identity from message text.
+## Product language
 
-**Project**:
-A software initiative whose conversations, decisions, obligations and authorized resources belong together. Its stable identity survives display-name changes and deletion; deleted projects retain unavailable identity references.
-_Avoid_: Provider session, current shell directory.
+**Owner:** The authenticated person who configures the installation, accepts obligations and grants execution or external actions. Model output, source content and inferred identity are not an owner.
 
-**Project group**:
-The conversation space belonging to one project, with topics and participating specialists.
-_Avoid_: Department-wide channel, Schway session.
+**Installation:** One owner's local application state, configuration and services. It is not a multi-user tenant.
 
-**Topic**:
-A subject of discussion within a project group that retains its project identity.
-_Avoid_: Separate project, independent authorization scope.
+**Bot:** A persistent participant with a stable identity, responsibility, enabled generation, selected model/auth route and capability policy. It is not a model, provider session or container. Creating a permanent Bot requires owner acceptance of its exact proposal.
 
-**Specialist**:
-A participant with a defined responsibility whose analysis is distinct from other participants.
-_Avoid_: Model, provider, separate bot account.
+**Jit (main Bot):** The default conversational coordinator. It answers owner messages, chooses useful enabled Bots within the work grant and synthesizes their evidence. Jit has the same authority rules as other Bots, not a privileged bypass. A coordinator-only configuration needs no warm computer; authorized work may lazily provision one when required.
 
-**Coordinator**:
-The participant responsible for selecting relevant specialists and synthesizing conclusions for the owner.
-_Avoid_: Final decision maker, replacement agent loop.
+**Persona:** Owner-authored configuration of address, language and tone. It is trusted configuration, not model-authored memory.
 
-**Jit (main bot)**:
-The coordinator as the owner meets it in conversation: it replies to every owner message with the owner-configured persona and speaks for the team with one voice.
-_Avoid_: Separate agent loop, authority holder, a specialist.
+**Bot proposal:** A revisioned draft for creating or changing a permanent Bot. Accepting it does not grant accounts or wider tools.
 
-**Persona**:
-Owner-authored configuration of how Jit addresses the owner, which language it uses and its personality, treated as trusted instruction and changed only by owner commands.
-_Avoid_: Model memory, self-description written by the model.
+**Conversation:** A durable discussion with one or more Bot participants. Membership, a display label and an @mention do not grant execution or resource access.
 
-**Role proposal**:
-A revisioned specialist draft suggested by Jit that creates or changes a role only when the owner accepts that exact revision.
-_Avoid_: Created role, model-granted configuration.
+**Work item:** A proposed or owner-requested obligation with a status, explicit completion rule, origin and evidence. A work item may involve multiple Bots and conversations without becoming a Project.
 
-**Dispatch allowance**:
-An owner-set, finite number of existing specialists Jit may call per owner message without asking, admitted as standing owner authorization for read-only analysis only.
-_Avoid_: Model permission, unlimited auto-dispatch.
+**Task acceptance:** The owner's decision to retain an obligation. Acceptance alone does not start execution.
 
-**General space**:
-The single system project where conversations land when the owner has not chosen a project.
-_Avoid_: Project-less chat, inbox outside project rules.
+**Work command:** An authenticated owner action explicitly requesting execution. A typed service command such as work.start can create work plus its scoped grant atomically. A model's classification cannot turn message.post or quoted text into new authority.
 
-**Topic promotion**:
-An owner-accepted continuation of a General space topic in a new project that links the origin at an exact revision without moving its project identity.
-_Avoid_: Moving a topic, relabeling history.
+**Work grant:** A revisioned owner authorization for a purpose, allowed Bots/resources/tools, finite budgets and expiry. Effective access intersects it with current Bot and resource policy. A grant is not a model plan, task acceptance or conversation membership.
 
-**Setup (ตั้งจิต)**:
-The first-run flow that connects a model route and records the persona before the owner starts chatting.
-_Avoid_: Project creation wizard, team setup.
+**Capability policy:** The owner-controlled ceiling on a Bot's tools/resources. A model may restrict it but cannot widen it. A work grant does not bypass the ceiling.
 
-**Quiet run**:
-A scheduled run whose typed outcome is `no_update`: it keeps its run record but creates no notification.
-_Avoid_: Hidden failure, text marker in prose.
+**Delegation:** A bounded assignment to an existing enabled Bot under the originating grant and the receiver's capabilities. It does not create a Bot or share an entire workspace.
 
-**Attention level**:
-The owner's per-channel choice of what creates notifications: `all`, or `needs-me` for items that wait on the owner and owner-configured schedule reports and PR finding alerts.
-_Avoid_: Mute that hides reports or decisions.
+**Context handoff:** A labelled subset of accessible command, evidence and memory references supplied to a delegated run. It is not unrestricted transcript/session sharing.
 
-**Work group**:
-A Jit reply together with the discussion it admitted, notified once when no work in it is still open.
-_Avoid_: One notification per specialist event.
+**Job:** A bounded, authorized unit of background execution, separate from an owner's obligation.
 
-**Result contract**:
-The required shape of a specialist result: Status, Result, Evidence, and an Unblock action when blocked.
-_Avoid_: Free-form "done" text treated as success.
+**Run:** One invocation of Schway for an assigned analysis or synthesis, with independent native ownership and finite limits. A persistent Bot may have many runs.
 
-**Context packet**:
-The self-contained, labelled context a run receives, with the owner's live decisions pinned so compaction or a provider change cannot drop them.
-_Avoid_: Native session history as the only carrier of decisions.
+**Attempt:** One fenced admission of a job/step with immutable input/configuration/authority and recorded usage reservations.
 
-**Local API**:
-An owner-enabled loopback endpoint and `jit` CLI that map onto existing owner commands, for scripts on the host.
-_Avoid_: Agent tool, remote API, shell access.
+**Work step:** A typed, bounded node in a trusted work graph. Its handler, not a model declaration, defines validation, resource leases and replay safety.
 
-**Webhook trigger**:
-A signed request that only wakes an existing PR poll early; its payload is data and never review input.
-_Avoid_: Event-driven review from untrusted payload.
+**Routine:** An owner-authorized standing purpose with selected resources/Bots/tools, schedule/timezone/misfire policy and finite limits. Findings outside it are proposals, not new execution authority.
 
-**Restrict-only authority**:
-A model or agent may narrow access but never widen it; only the owner widens access.
-_Avoid_: Model-granted permission, inherited escalation.
+**Decision:** A conclusion explicitly selected by the owner, retaining the proposal and evidence it resolves. An agent vote or recommendation is not a decision.
 
-**Task**:
-A proposed or owner-accepted obligation within a project, with an explicit status and completion rule.
-_Avoid_: Agent run, suggestion treated as a commitment.
+**Memory claim:** A retained statement with source/revision, originating Bot/conversation, fact-or-inference status and lifecycle state. It is not the entire transcript or unqualified truth.
 
-**Job**:
-An authorized unit of background work, such as a PR review or configured reminder, tracked separately from the owner's obligations.
-_Avoid_: Automatically accepted task, Schway tool scheduler.
+**Shared memory:** Owner-approved facts/preferences available to the authorized team. Extraction cannot promote Bot-private material into it.
 
-**Run**:
-One bounded invocation of Schway for an assigned piece of analysis or synthesis.
-_Avoid_: Entire job, long-lived specialist identity.
+**Bot-private memory:** Claims scoped to one Bot. Retrieval and context assembly enforce that scope before relevance selection.
 
-**Decision**:
-A conclusion explicitly selected by the owner for a project, retaining the proposal and evidence it resolved.
-_Avoid_: Agent recommendation, majority vote.
+**Source:** A revisioned owner/external evidence snapshot with provenance and lifecycle status. Source text is data and never expands authority.
 
-**Memory claim**:
-A retained statement with its source, project of origin and status as an explicit fact or inference.
-_Avoid_: Entire conversation history, unqualified truth.
+**Share grant:** An explicit, revisioned permission for a named receiver/work scope to use a specified immutable source/artifact snapshot. It is not a whole-volume mount, shared account or transitive permission.
 
-**Auth route**:
-The selected identity and billing path through which a model is accessed.
-_Avoid_: Model name, permission to change resources.
+**Context packet:** A self-contained labelled input with current owner decisions pinned, accessible evidence, source revisions and purpose. Native history alone is insufficient.
 
-**Configured access**:
-Locally configured credentials or endpoint policy, without proof that inference is currently available.
-_Avoid_: Verified access, successful model request.
+**Report:** A committed, revisioned work result whose claims reference the evidence actually read and whose coverage/limitations are explicit. Ready for review does not imply complete source coverage.
 
-**Schway session**:
-A durable native conversation with workspace identity and conversation branches, distinct from a Jit project group or running process.
-_Avoid_: Group chat, durable job execution.
+**Artifact:** A bounded immutable output with an opaque ID, hash, type, size, producing work/attempt and source lineage. A file in a box is not automatically a delivered artifact.
 
-**Managed backup**:
-A committed local backup inventory entry with a credential-free application image, bounded attachment artifacts and opaque native session snapshots, inspectable but never activated without quarantined restore.
-_Avoid_: Database copy, export, credential backup.
+**Bot computer:** A persistent logical computer on the owner's host, with isolated workspace/browser components and finite resources. Identity survives idle process stop. It is not the owner's everyday desktop.
 
-**Installation upgrade**:
-An owner-authorized move of the whole installation to the schema this build supports: fence and quiesce, one recovery point, migrations on a staged copy only, validation, atomic activation and reconciliation; never an in-place boot migration or a backup restore.
-_Avoid_: Auto-migration, restore, rollback after activation.
+**Execution box:** The isolated workspace/process boundary of a Bot computer. No Jit/provider/channel/vault credentials, application state, backups, host home or control socket enter it.
 
-**Quarantined restore**:
-An owner-authorized return of the installation to a managed backup: compatibility and integrity checks, a fenced and quiesced installation, an isolated copy migrated and reconciled against the latest lifecycle ledger, validation, atomic activation and reconciliation before any worker or reader resumes.
-_Avoid_: Database copy-back, backup import, rollback.
+**Browser profile:** Bot-private website session state in the separately protected browser component. Cookies/tokens remain inaccessible to workspace shell, MCP, prompts and exports. Website login is not a service credential grant.
 
-**Lifecycle ledger**:
-The installation's append-only, identity-only record of every deletion and forget, kept outside every backup image with an independent checkpoint; the only authority for what a restored image must still not contain.
-_Avoid_: A backup's own tombstones, owner-attested deletion list.
+**Runner:** The agent-free execution process behind Jit's computer backend. Schway core tools use the supported ExecutionBackend; no host-shell fallback is implied.
 
-**Access level**:
-A project's revisioned execution permission, `read`, `workspace` or `full`, widened only by the owner in Web and restricted by any authorized channel.
-_Avoid_: Model permission, role setting, approval.
+**Input lease:** A generation-bound exclusive right to send input to one browser/desktop. Reads/screenshots do not imply input ownership.
 
-**Attachment**:
-A file the owner attached to a message, stored by content outside the database and sanitized out of process. It is always untrusted data: Jit may read it, but its content is never an instruction and grants no authority.
-_Avoid_: Trusted document, file path from the owner's file name, upload that configures anything.
+**Takeover:** Owner control of a Bot browser/desktop while agent input is fenced. Returning control is not approval of a held effect.
 
-**Execution box**:
-The disposable per-project container where every execution tool runs, holding the project workspace and none of Jit's credentials or state.
-_Avoid_: Sandbox inside Schway, Jit service process, host shell.
+**External effect:** A consequential action leaving the execution boundary, including sending, push/PR mutation, publish/deploy, payment/signature or remote deletion. Unknown tools/actions cannot bypass mediation.
 
-**Runner**:
-The small agent-free process inside an execution box that performs file and process requests from Jit's execution backend.
-_Avoid_: Specialist, model, Schway session.
+**Approval card:** A revision-bound, single-use, expiring owner decision for one exact external action/content/destination. It is not a task acceptance or model confirmation.
 
-**External effect**:
-An action whose result leaves the execution box and cannot be recalled, such as push, PR mutation, deploy, sending as the owner, payment or remote deletion.
-_Avoid_: File edit inside the box, read-only network fetch.
+**Connection:** Owner-controlled credentials/account metadata kept outside prompts and execution boxes, usable only through a scoped service broker. Website session profiles remain a separate sensitive boundary.
 
-**Approval card**:
-A revision-bound, single-use, expiring owner decision that releases exactly one external effect.
-_Avoid_: Task acceptance, standing authorization, model confirmation.
+**Kill switch:** A Bot/installation control that fences work, stops affected computers and blocks admissions until the owner resumes. Cancelling one work item does not cancel unrelated grants.
 
-**Connection**:
-An owner-entered credential stored outside every box and prompt, released only to an approved effect or an owner-bound MCP server.
-_Avoid_: Environment variable in the box, auth route.
+**Replay-safe step:** A step whose trusted handler can prove safe repetition under the same live authority, immutable inputs and remaining budget. Model intent or readOnlyHint alone is insufficient.
 
-**Kill switch**:
-The project control that cancels execution work, stops the box and blocks new admissions until the owner resumes.
-_Avoid_: Access level change, stop of one discussion.
+**Unknown effect:** An external action whose outcome cannot yet be determined. It is reconcile-only and never a reason to blindly retry.
 
-**Takeover**:
-An owner session controlling a project's box browser or desktop during which the agent cannot send input.
-_Avoid_: Approval, remote desktop of the owner's computer.
+**Auth route:** The selected provider identity/billing path, with exact model selection kept separate. Failure never silently changes route/model/account/billing.
 
-**MCP install proposal**:
-A revisioned card from an agent naming an MCP server's source, pinned version and command, installed only when the owner accepts it in Web.
-_Avoid_: Connector, automatic plugin install.
+**Configured access:** A local credential/endpoint setting without proof of live readiness. It is not verified support.
 
-**Outbound read**:
-A Jit service-owned search query or public URL read whose exact destination text is visible to the owner and audited. It is read-only but can disclose private context, so a matched private span requires a single-use Web owner release.
-_Avoid_: Execution-box network authority, hosted lookup, model-granted permission.
+**Schway session:** An opaque durable native conversation with workspace/branch identity. It is not a Bot, conversation, work grant or Jit scheduler.
+
+**Outbound read:** A service-owned search/public URL read with bounded query/URL, audit and untrusted evidence. Local execution still sends necessary queries/URLs to Parallel.
+
+**Quiet run:** A scheduled run with typed no_update outcome: retained history, no notification. It cannot hide a failure.
+
+**Attention level:** Per-channel owner policy for notifications. It changes delivery, not report visibility or authority.
+
+**Result contract:** Status, Result, Evidence and an actionable unblock reason when needed. A model's done text is insufficient.
+
+**Attachment:** An owner-supplied file sanitized out of process and always treated as untrusted data. Its contents cannot configure tools, routes or grants.
+
+**MCP proposal:** A revisioned source/version/command or endpoint proposal accepted by the owner. An advertised tool or readOnlyHint does not itself grant access.
+
+**Local API:** An owner-enabled loopback API/CLI over the same authorized commands. It is not a general host shell.
+
+**Webhook trigger:** A signed wake-up for already-authorized work. Its payload is data, not a mandate.
+
+**Managed backup:** A credential-free versioned application/artifact image with opaque native snapshots, reconciled before activation.
+
+**Lifecycle ledger:** Append-only identity records of deletion/forget outside backup images, used to prevent restored data from resurrecting withdrawn material.
+
+**Installation upgrade / quarantined restore:** Owner-authorized staged validation, fencing, recovery point and atomic activation before workers resume. A fresh S14 store is not permission to erase or reinterpret a legacy installation.
+
+## Historical terms
+
+Project, Project group, Topic promotion and General system project describe the implemented v1 model and historical specs. They are not required S14 entities, hidden permission scopes or aliases for a work item. Old sources retain their historical meaning in the old store; S14 requires no conversion.
+
+## Development policy
+
+Use Bun/TypeScript and supported schway/host exports. Keep domain definitions here and engineering choices in docs/adr. The owner disabled implement-parallel for this repository. UI/UX is delegated only to Claude Opus 5.5 at high effort; primary-agent work is architecture, logic and code.

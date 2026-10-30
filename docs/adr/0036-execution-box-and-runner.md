@@ -87,3 +87,7 @@ the opt-in check in the execution runbook is the live acceptance gate.
 Engineering choice (2026-10-29, #224 / PR #228): topic, Web search settings and access/box status readers use an in-memory cache per runtime instance. Cold readers return `checking`; expired readers return the last result and trigger one background refresh. Ready results live for 30 seconds, unavailable results for 5 seconds, measured from probe completion. Rejected probes become a sanitized runtime-unavailable result. There is no polling timer or container startup from a page render.
 
 Real command failures invalidate the corresponding runtime cache (including sanitizer availability failures and managed search failures). Invalidation fences an in-flight probe's publication, while retaining single-flight until it settles. Explicit owner search tests and real operations retain their independent readiness checks; this projection grants no execution authority.
+
+## S14 refinement status
+
+This record retains its implemented legacy meaning. The owner-confirmed [S14 target](../specs/S14-bot-first-local-assistant.md) and proposed ADRs 0045–0048 refine Project ownership, grants/computers, Parallel default or replay-safe recovery where applicable. They do not claim a new supported API or change this build's behavior. Unchanged authority, fencing, credential and evidence invariants remain.

@@ -1,22 +1,20 @@
 # Jit Architecture Decision Records
 
-ADRs อยู่ที่ docs/adr ของ Jit ทุกฉบับด้านล่างมี scope เป็น Jit design ไม่ประกาศว่ามี implementation หรือ public Schway API ใหม่แล้ว
+Domain vocabulary lives in [CONTEXT.md](../../CONTEXT.md). Current target is [S14](../specs/S14-bot-first-local-assistant.md); engineering choices remain proposed until implementation evidence exists.
 
-## Accepted direction
+## S14 proposals
 
-| ADR | การตัดสินใจ | ที่มาจาก discovery |
+| ADR | Proposed engineering choice | Owner direction |
 | --- | --- | --- |
-| [0001](../adr/0001-application-boundary.md) | Jit application แยก repository; Schway เป็น execution engine | C19–C20 |
-| [0002](../adr/0002-local-runtime-and-external-inference.md) | local always-on host กับ external inference/channels และ unattended boot | C08–C12 |
-| [0003](../adr/0003-cross-project-memory-with-provenance.md) | เรียนรู้ข้ามโครงการพร้อม provenance/correction/forget | C05–C07 |
-| [0004](../adr/0004-task-authority-and-staged-execution.md) | task acceptance แยกจาก start; isolated coding execution เลื่อน | C04, C14, C17–C18, C21 |
-| [0005](../adr/0005-static-private-pr-review.md) | static private PR review; evidence/revision/scope เป็นส่วนของผล | C16 |
+| [0045](../adr/0045-bot-first-domain-and-fresh-state.md) | Bot/work/grant identities and a fresh application store | D01/D04/D05/D06/D12/D15 |
+| [0046](../adr/0046-bot-computers-and-explicit-sharing.md) | Private persistent computers, protected browser sessions, input leases and named snapshot shares | D02/D03/D10/D13 |
+| [0047](../adr/0047-parallel-research-and-report-artifacts.md) | Service-owned Parallel reads, evidence snapshots and report artifacts | D07/D09 |
+| [0048](../adr/0048-concurrent-work-and-replay-safe-recovery.md) | Finite concurrent work graphs and safe checkpoint/native reconciliation | D04/D08/D10/D11 |
 
-## Proposed engineering decisions
+The [design/contract resolutions](../contracts/s14-authority-and-design-resolutions.md) record engineering review of the Opus artifact. They are not a replacement UI design or a shipped contract.
 
-| ADR | ข้อเสนอ | เงื่อนไขก่อนรับรอง implementation |
-| --- | --- | --- |
-| [Schway S02](https://github.com/chayapats/schway/issues/393) | narrow public Schway host API | feasibility + interface spec + Schway compatibility/review |
-| [0006](../adr/0006-local-transactional-state.md) | SQLite app state กับ references ไป native Schway sessions | crash/restore/concurrency tests บน Pi และ storage spec |
+## Retained boundaries and history
 
-Migration รักษา provenance และ mapping ของ accepted decisions แล้ว ส่วน ADR/API ที่กระทบ Schway อ้างกลับไป spec และ process ของ Schway การเลือก database, package entrypoint หรือ service supervisor ยังไม่กลายเป็นคำตอบของผู้ก่อตั้งเพราะมีชื่ออยู่ใน architecture proposal
+[0001](../adr/0001-application-boundary.md) keeps the Jit/Schway boundary and [0002](../adr/0002-local-runtime-and-external-inference.md) keeps local runtime with explicit external recipients. Existing authority, receipts, fencing, outbox, lifecycle and credential invariants remain relevant.
+
+ADRs 0003/0018/0031 retain their historical project-origin language for the legacy store. ADRs 0036–0039 retain the implemented per-project computer/permission shape until S14 replaces it. ADR 0044 retains the legacy SearXNG default; S14 chooses Parallel for the new store. Do not erase history or describe a proposed replacement as shipped.

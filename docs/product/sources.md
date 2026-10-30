@@ -57,3 +57,14 @@ ADR 0005 มีข้อความ historical ว่า approval ยังไ�
 - [MIT license](https://opensource.org/license/mit): license ที่เสนอให้ตรง permissive intent; Jit repository ใช้ LICENSE นี้แล้ว
 
 ไม่มีการใช้เอกสาร provider เป็นหลักฐานว่าบัญชี subscription ของเจ้าของให้ inference ได้จริง ไม่มีการยืนยัน entitlement, limits หรือ protocol stability จากการมี adapter ใน source เพียงอย่างเดียว
+
+## S14 references — 2026-10-30
+
+- Owner decisions: [S14](../specs/S14-bot-first-local-assistant.md), [#244](https://github.com/chayapats/jit/issues/244). The owner chose the A paths except Q12, which explicitly allows fresh state without legacy-data conversion.
+- [CopilotKit/OpenBot README](https://github.com/CopilotKit/OpenBot/blob/ab9855c19848378c90a806426130d86699cc798c/README.md), [coworkers](https://github.com/CopilotKit/OpenBot/blob/ab9855c19848378c90a806426130d86699cc798c/docs/coworkers.md), [research](https://github.com/CopilotKit/OpenBot/blob/ab9855c19848378c90a806426130d86699cc798c/docs/web-research.md): persistent coworkers/computers, controlled handoffs and provider research roles. MIT reference; distinct from the historical nightly-labs/openbot reference above. No source/assets copied.
+- [CopilotKit/OpenDuet README](https://github.com/CopilotKit/OpenDuet/blob/677e0fcd148d80b99dd788c6d6f9c1c9f40a72db/README.md): proactive briefs/triage/routines and exact actions. Built on OpenBot and requires CopilotKit Intelligence in its own setup; Jit does not inherit that dependency.
+- [Grok Bot overview](https://docs.x.ai/grok-bot/overview): persistent named Bots, work handoffs and computer use. Reference behavior, not a dependency or copied UI.
+- [Parallel MCP](https://docs.parallel.ai/integrations/mcp/quickstart), fetched 2026-10-30: unified endpoint, anonymous rate-limited search/fetch, explicit authenticated billing and tool selection. Vendor availability/terms remain external policy.
+- [Schway host source](https://github.com/chayapats/schway/blob/98ba7f007a0ba382f1a26195ec7774559e25eab3/src/host/auth-routes.ts), [runtime](https://github.com/chayapats/schway/blob/98ba7f007a0ba382f1a26195ec7774559e25eab3/src/host/runtime.ts), [public API](https://github.com/chayapats/schway/blob/98ba7f007a0ba382f1a26195ec7774559e25eab3/api/host.api.md): evidence for the shared-lifecycle proposal. Jit's pinned 2068b71 artifact is unchanged.
+- Existing [Schway #414](https://github.com/chayapats/schway/issues/414) is reused for orphan-session discovery; [#413](https://github.com/chayapats/schway/issues/413) distinct-account aliases remain separate scope.
+- Design provenance and parent verification: [contract/design resolutions](../contracts/s14-authority-and-design-resolutions.md).

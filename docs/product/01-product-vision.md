@@ -1,54 +1,36 @@
 # Jit Product Vision
 
-สถานะ: ทิศทางผลิตภัณฑ์ confirmed; ความคุ้มค่าจากการใช้จริงยังต้อง validate ดู [decision record](decision-record.md)
+Status: owner-confirmed target in [S14](../specs/S14-bot-first-local-assistant.md), 2026-10-30. The current runtime remains S09–S13; the target is not shipped.
 
-## ตัวตนและปัญหา
+## Purpose
 
-Jit คือทีมผู้ช่วยส่วนตัวสำหรับสร้างและดูแลซอฟต์แวร์ ผู้ใช้คุยกับผู้เชี่ยวชาญในกรุ๊ปของแต่ละโครงการ แล้วกลับมาทำงานต่อได้โดยรักษางานค้าง การตัดสินใจ และเหตุผลที่เกี่ยวข้องข้ามวัน
+Jit is a personal team of persistent Bots that does useful work on a computer the owner controls. The owner talks to Jit, delegates directly to a Bot when useful, and receives results with evidence instead of managing Projects and provider sessions.
 
-ผู้ใช้แรกคือผู้ก่อตั้งเอง ซึ่งใช้ผู้ช่วยอย่าง Grok bot อยู่แล้ว แต่ต้องการควบคุมเครื่องที่ถือข้อมูล credentials และ execution จึงเลือกรันบริการบนเครื่องส่วนตัว โดยยอมรับการส่งเนื้อหาที่เกี่ยวข้องให้ Grok/Codex inference และผ่าน Telegram
+The first user is the founder. One installation has one owner. Linux x64/arm64 hosts keep runtime, persistent application state and execution local; relevant content may reach configured inference, web research and delivery services. Local execution is not a promise of local inference or no external recipients.
 
-สถานการณ์ที่ยืนยันคือ PR ใหม่เข้ามาแล้ว Jit ตรวจแบบอ่านอย่างเดียว แจ้งปัญหาที่มีหลักฐานให้ผู้ใช้เป็นการส่วนตัว และให้ผู้ใช้หารือต่อกับทีมที่เหมาะกับหัวข้อ เช่น เทค ดีไซน์ หรือมาร์เก็ตติ้ง
+## What must be useful first
 
-## ผู้ใช้และขอบเขต
+Research is the MVP: ask a question, let useful Bots work concurrently, search/read with Parallel and receive a persisted report with citations and files. The product must survive interruption and tell the truth about missing evidence.
 
-- ออกแบบเพื่อผู้ก่อตั้งเป็น design partner แรก พร้อม self-hosting บน Raspberry Pi 5
-- แต่ละ installation รองรับเจ้าของคนเดียวใน MVP; การเปิด source ไม่ได้แปลว่ามี multi-user tenancy
-- โฟกัสงานโครงการซอฟต์แวร์ ทั้งการตัดสินใจ ติดตามงาน และ review
-- รุ่นแรกช่วยวิเคราะห์และติดตาม ส่วนการแก้ repository และรัน tests ด้วย agent เลื่อนไป milestone ภายหลัง
+Coding from a request to reviewable code/tests/PR, and personal assistance with email/calendar, are required subsequent capabilities. They are not optional ideas discarded from the roadmap.
 
-## คุณค่าที่ต้องพิสูจน์
+## Product principles
 
-1. ผู้ใช้กลับมาคุยแล้วเรียกคืนงานที่ตกลงและประวัติโครงการได้ตรง โดยไม่ต้องเล่าใหม่ทั้งหมด
-2. ผู้เชี่ยวชาญเพิ่มมุมมองที่ต่างกันจริง ผู้ประสานงานช่วยลดภาระรวมข้อสรุปและแสดงข้อขัดแย้ง
-3. PR review เบื้องหลังให้ข้อมูลที่นำไปใช้ได้ พร้อมหลักฐานและ revision ที่ตรวจ
-4. ผู้ใช้ควบคุมสิ่งที่เกิดบน host ได้ และเห็นได้ว่างานใดกำลังทำ ติดขัด หรือรอการตัดสินใจ
+- Persistent Bots and sourced memory give continuity without requiring a Project.
+- One main voice synthesizes useful independent work; dispatch is not mandatory on every message.
+- A clear authenticated work command starts authorized internal execution. Retaining an obligation alone does not.
+- Exact external actions wait on owner approval. Sources/models cannot widen authority.
+- Bot computers and private memory are separate. Explicit sharing exposes a named snapshot, not every account/file.
+- Proactive work follows a bounded routine the owner enabled.
+- Real concurrency, finite resources, visible stop and safe recovery are part of usefulness.
+- Facts, inferences, partial coverage, unknown outcomes and future capabilities are labelled honestly.
 
-การลดภาระและความเหนือกว่าเครื่องมือเดิมยังเป็นสมมติฐาน ไม่ได้มี benchmark เปรียบเทียบจาก discovery ผู้ก่อตั้งจะทดลองแล้วให้ feedback โดยยังไม่รับรองเกณฑ์ 14 วัน, 10 PR หรือความแม่น 80% ที่เคยเสนอ
+## Product and engine
 
-## ความต่างที่ตั้งใจสร้าง
+Jit owns Bots, grants, conversations, tasks, memory, artifacts, durable jobs and channels. Schway owns loop/provider/session/compaction/model-retry primitives through its supported public host surface. We build Jit itself, taking ideas from OpenBot/OpenDuet/Grok Bot without requiring their platform or memory service.
 
-ความต่างอยู่ที่การรวม project group, specialist analysis, project memory, user-accepted tasks และงาน PR เบื้องหลังไว้ใน state ที่ตรวจสอบได้บน host ของผู้ใช้ การให้หลายชื่อพูดในกรุ๊ปอย่างเดียวไม่เพียงพอจะพิสูจน์คุณค่านี้
+MIT remains the repository license. Open source does not imply multi-user tenancy or support for every website/model/OS.
 
-แต่ละ specialist มี analysis context และผลลัพธ์แยกกัน ผู้ใช้กำหนด model/auth route ต่อบทบาทหรือโครงการได้ Jit เลือกผู้เกี่ยวข้องตามหัวข้อและสรุป trade-offs ให้ผู้ใช้ตัดสิน แผนกเป็นบทบาทความรับผิดชอบ ไม่ใช่คำรับประกันว่าทุกบทบาทจะมีความเชี่ยวชาญจริงจาก prompt เพียงอย่างเดียว
+## Validation
 
-## หลักผลิตภัณฑ์
-
-- **ต่อเนื่องและตรวจสอบได้:** สิ่งที่เสนอ สิ่งที่ตกลง และสิ่งที่ทำสำเร็จต้องแยกกัน
-- **ตอบเมื่อมีประโยชน์:** ทีมที่ไม่มีประเด็นเพิ่มควรเงียบ จำนวนข้อความไม่ใช่ตัวชี้วัดความสำเร็จ
-- **อำนาจมาจากผู้ใช้:** การรับรอง task ไม่เท่ากับคำสั่งเริ่ม execution และความจำที่เรียนรู้ไม่เพิ่มสิทธิ์
-- **เก็บความรู้พร้อมที่มา:** ข้ออนุมานนำไปใช้ได้ แต่ต้องตรวจ แก้ และลืมได้
-- **ควบคุม infrastructure:** runtime และข้อมูลถาวรอยู่บน host ที่ผู้ใช้ควบคุม พร้อมระบุ external recipients ชัดเจน
-- **ให้ผู้ใช้ปัจจุบันมาก่อน:** งานเบื้องหลังรอได้เมื่อผู้ใช้กำลังสนทนา
-
-## ชื่อ บุคลิก และ philosophy
-
-Jit เชื่อมความหมาย Just in Time กับ จิต ในฐานะความคิดและบริบทส่วนตัว ใช้แนวคิด “Just in time. Just for you.” เป็นทิศทางแบรนด์ โดยไม่อ้างความรู้สึกตัวหรือ subjective experience
-
-บุคลิกควรกระชับ ตรงไปตรงมา กล้าระบุความไม่แน่ใจ และให้เหตุผลเมื่อเห็นต่าง บทบาทแสดงชื่อ หน้าที่ และแหล่งหลักฐานโดยไม่ใช้บทสนทนาจำลองความเป็นบริษัทมาแทนผลงานจริง รายละเอียด copy/visual identity ยังเป็นงานออกแบบภายหลัง; เอกสารนี้ไม่ได้ล็อกภาษาของ UI Jit
-
-## ขอบเขตกับ Schway และ open source
-
-Schway เป็น execution engine และเจ้าของ agent loop ส่วน Jit เป็น application แยก repository ที่ดูแลประสบการณ์ส่วนตัวและงานต่อเนื่อง ไม่สร้าง provider loop ชุดที่สอง
-
-เจตนา license เป็น permissive; ข้อเสนอคือ MIT ให้สอดคล้องกับ Schway Jit repository ใช้ MIT แล้ว ส่วน public release/support policy ยังต้องกำหนด ความเข้ากันได้ระหว่างสองโครงการต้องมี versioned public contracts และ compatibility tests ไม่ผูกกับ private deep imports โดยไม่มีข้อตกลง
+The owner will judge practical usefulness. No launch date, recall score or claimed superiority of Parallel is invented. Deterministic correctness, live host/account feasibility and real research quality are separate evidence.

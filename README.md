@@ -1,3 +1,5 @@
+> **S14 direction (approved, not shipped):** Jit is moving to persistent Bots and private local computers without required Projects. Research with Parallel is the next MVP; coding-to-PR and email/calendar are required later phases. See the [S14 spec](docs/specs/S14-bot-first-local-assistant.md), [Opus design](docs/design/S14-bot-first-experience.md) and [roadmap](docs/tickets/S14-bot-first-roadmap.md). The screenshots and setup instructions below describe the current project-centric pilot.
+
 <div align="center">
 
 <picture>

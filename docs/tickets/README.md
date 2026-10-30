@@ -243,3 +243,7 @@ Parent: [S11 / Jit #123](https://github.com/chayapats/jit/issues/123) ([spec](..
 | [EXE13](https://github.com/chayapats/jit/issues/138) | `[Standard]` | MCP install proposal card and Settings › MCP servers with per-tool auto-approve | [EXE12](https://github.com/chayapats/jit/issues/136) | Agent |
 | [EXE15](https://github.com/chayapats/jit/issues/139) | `[Standard]` | Live view and takeover page for the project box, working without script | [EXE14](https://github.com/chayapats/jit/issues/137) | Agent |
 | [EXE16](https://github.com/chayapats/jit/issues/140) | `[Frontier]` | Computer-use on the box's virtual desktop with declared intents and confirm-every-click by default | [EXE14](https://github.com/chayapats/jit/issues/137) | Agent |
+
+## S14 — Bot-first local assistant
+
+The owner-confirmed [S14 spec](../specs/S14-bot-first-local-assistant.md) has parent [#244](https://github.com/chayapats/jit/issues/244). [#245](https://github.com/chayapats/jit/issues/245) delivers docs and Opus UI/UX. The [S14 roadmap](S14-bot-first-roadmap.md) tracks research MVP and required coding/personal-assistant phases separately from the historical ticket snapshot above. No runtime ticket is ready merely because this parent exists. The owner disabled implement-parallel for this repository.

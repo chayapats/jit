@@ -1,0 +1,263 @@
+{
+  "parent": 244,
+  "documentation": 245,
+  "status": "prepared-needs-triage",
+  "baseline": "a94c19e3917c5bcbebad3ac7831898cc18a64e02",
+  "phases": {
+    "A": "research MVP",
+    "B": "required coding",
+    "C": "required personal assistance"
+  },
+  "tickets": [
+    {
+      "key": "BOT14-01",
+      "number": 246,
+      "url": "https://github.com/chayapats/jit/issues/246",
+      "title": "[Frontier] [BOT14-01] Start a project-free conversation and accept a permanent Bot",
+      "phase": "A",
+      "blockedBy": [
+        245
+      ],
+      "upstream": null,
+      "missingDecision": null,
+      "humanEvidence": false,
+      "readyForAgent": false,
+      "file": "s14/BOT14-01.md"
+    },
+    {
+      "key": "AUTH14-01",
+      "number": 247,
+      "url": "https://github.com/chayapats/jit/issues/247",
+      "title": "[Frontier] [AUTH14-01] Start bounded internal work and hold exact external actions for approval",
+      "phase": "A",
+      "blockedBy": [
+        245,
+        246
+      ],
+      "upstream": null,
+      "missingDecision": null,
+      "humanEvidence": false,
+      "readyForAgent": false,
+      "file": "s14/AUTH14-01.md"
+    },
+    {
+      "key": "BOX14-01",
+      "number": 248,
+      "url": "https://github.com/chayapats/jit/issues/248",
+      "title": "[Frontier] [BOX14-01] Use a private persistent Bot computer with exclusive input and takeover",
+      "phase": "A",
+      "blockedBy": [
+        245,
+        247
+      ],
+      "upstream": null,
+      "missingDecision": null,
+      "humanEvidence": false,
+      "readyForAgent": false,
+      "file": "s14/BOX14-01.md"
+    },
+    {
+      "key": "MEM14-01",
+      "number": 249,
+      "url": "https://github.com/chayapats/jit/issues/249",
+      "title": "[Frontier] [MEM14-01] Recall scoped shared and Bot-private memory with lifecycle provenance",
+      "phase": "A",
+      "blockedBy": [
+        245,
+        247
+      ],
+      "upstream": null,
+      "missingDecision": null,
+      "humanEvidence": false,
+      "readyForAgent": false,
+      "file": "s14/MEM14-01.md"
+    },
+    {
+      "key": "WEB14-01",
+      "number": 250,
+      "url": "https://github.com/chayapats/jit/issues/250",
+      "title": "[Frontier] [WEB14-01] Research public sources through free-first Parallel with honest limits",
+      "phase": "A",
+      "blockedBy": [
+        245,
+        247
+      ],
+      "upstream": null,
+      "missingDecision": null,
+      "humanEvidence": false,
+      "readyForAgent": false,
+      "file": "s14/WEB14-01.md"
+    },
+    {
+      "key": "TEAM14-01",
+      "number": 251,
+      "url": "https://github.com/chayapats/jit/issues/251",
+      "title": "[Frontier] [TEAM14-01] Run independent research Bots concurrently under a finite work graph",
+      "phase": "A",
+      "blockedBy": [
+        245,
+        249,
+        250
+      ],
+      "upstream": "docs/proposals/schway/SCH14-01-shared-credential-lifecycle.md — proposed upstream capability, not yet implemented; retain live routeConcurrency guard until a supported artifact and conformance are pinned.",
+      "missingDecision": null,
+      "humanEvidence": false,
+      "readyForAgent": false,
+      "file": "s14/TEAM14-01.md"
+    },
+    {
+      "key": "REPORT14-01",
+      "number": 252,
+      "url": "https://github.com/chayapats/jit/issues/252",
+      "title": "[Frontier] [REPORT14-01] Deliver cited report revisions and checked downloadable artifacts",
+      "phase": "A",
+      "blockedBy": [
+        245,
+        251,
+        248
+      ],
+      "upstream": null,
+      "missingDecision": null,
+      "humanEvidence": false,
+      "readyForAgent": false,
+      "file": "s14/REPORT14-01.md"
+    },
+    {
+      "key": "SHARE14-01",
+      "number": 253,
+      "url": "https://github.com/chayapats/jit/issues/253",
+      "title": "[Frontier] [SHARE14-01] Share one immutable snapshot with a named Bot and revoke future use",
+      "phase": "A",
+      "blockedBy": [
+        245,
+        252
+      ],
+      "upstream": null,
+      "missingDecision": null,
+      "humanEvidence": false,
+      "readyForAgent": false,
+      "file": "s14/SHARE14-01.md"
+    },
+    {
+      "key": "REC14-01",
+      "number": 254,
+      "url": "https://github.com/chayapats/jit/issues/254",
+      "title": "[Frontier] [REC14-01] Reconcile native work and resume only authorized replay-safe steps",
+      "phase": "A",
+      "blockedBy": [
+        245,
+        252
+      ],
+      "upstream": "https://github.com/chayapats/schway/issues/414 — currently open; required metadata discovery/correlation is not yet a supported artifact. Follow docs/proposals/schway/SCH14-02-session-recovery-414.md.",
+      "missingDecision": null,
+      "humanEvidence": false,
+      "readyForAgent": false,
+      "file": "s14/REC14-01.md"
+    },
+    {
+      "key": "ROUT14-01",
+      "number": 255,
+      "url": "https://github.com/chayapats/jit/issues/255",
+      "title": "[Frontier] [ROUT14-01] Run scoped routines with quiet outcomes and owner-only scope expansion",
+      "phase": "A",
+      "blockedBy": [
+        245,
+        254
+      ],
+      "upstream": null,
+      "missingDecision": null,
+      "humanEvidence": false,
+      "readyForAgent": false,
+      "file": "s14/ROUT14-01.md"
+    },
+    {
+      "key": "EVID14-01",
+      "number": 256,
+      "url": "https://github.com/chayapats/jit/issues/256",
+      "title": "[Frontier] [EVID14-01] Verify the research MVP on Linux and record live source coverage",
+      "phase": "A",
+      "blockedBy": [
+        245,
+        253,
+        255
+      ],
+      "upstream": null,
+      "missingDecision": null,
+      "humanEvidence": true,
+      "readyForAgent": false,
+      "file": "s14/EVID14-01.md"
+    },
+    {
+      "key": "CODE14-01",
+      "number": 257,
+      "url": "https://github.com/chayapats/jit/issues/257",
+      "title": "[Frontier] [CODE14-01] Produce reviewable code and real test evidence in a granted workspace",
+      "phase": "B",
+      "blockedBy": [
+        245,
+        253,
+        254
+      ],
+      "upstream": null,
+      "missingDecision": null,
+      "humanEvidence": false,
+      "readyForAgent": false,
+      "file": "s14/CODE14-01.md"
+    },
+    {
+      "key": "CODE14-02",
+      "number": 258,
+      "url": "https://github.com/chayapats/jit/issues/258",
+      "title": "[Frontier] [CODE14-02] Approve exact commits and destination before push or PR creation",
+      "phase": "B",
+      "blockedBy": [
+        245,
+        257
+      ],
+      "upstream": null,
+      "missingDecision": null,
+      "humanEvidence": false,
+      "readyForAgent": false,
+      "file": "s14/CODE14-02.md"
+    },
+    {
+      "key": "LIFE14-01",
+      "number": 259,
+      "url": "https://github.com/chayapats/jit/issues/259",
+      "title": "[Frontier] [LIFE14-01] Connect scoped email/calendar reads and produce a sourced brief",
+      "phase": "C",
+      "blockedBy": [
+        245,
+        249,
+        255
+      ],
+      "upstream": null,
+      "missingDecision": "Before unattended implementation, confirm the first email/calendar provider and least-privilege OAuth scopes. Required capability is confirmed; provider-specific consent is not.",
+      "humanEvidence": false,
+      "readyForAgent": false,
+      "file": "s14/LIFE14-01.md"
+    },
+    {
+      "key": "LIFE14-02",
+      "number": 260,
+      "url": "https://github.com/chayapats/jit/issues/260",
+      "title": "[Frontier] [LIFE14-02] Approve exact email or calendar changes and reconcile their outcomes",
+      "phase": "C",
+      "blockedBy": [
+        245,
+        259
+      ],
+      "upstream": null,
+      "missingDecision": "Write scopes and exact provider send/event endpoints must be owner-approved after LIFE14-01 connector review; do not infer write consent from read connection.",
+      "humanEvidence": false,
+      "readyForAgent": false,
+      "file": "s14/LIFE14-02.md"
+    }
+  ],
+  "nativeRelations": {
+    "parent": 244,
+    "subIssues": 16,
+    "blockedByEdges": 35,
+    "upstreamRecovery": "https://github.com/chayapats/schway/issues/414"
+  }
+}

@@ -13,3 +13,7 @@ Deadlines make stalled work visibly failed and request adapter cancellation. Unt
 Waiting quota/login/unavailable jobs require an explicit owner resume with a current job revision, unchanged work configuration/route and remaining retry budget. There is no automatic job retry loop. Password reset fences old authorization generations. A changed work configuration or source revision blocks admission rather than silently adopting a new route/input. Limits and usage survive restart; exhaustion produces visible blocked/partial/failed state with a fixed reason and next action. Raw adapter exceptions are never returned or retained.
 
 The owner can inspect a bounded job list without connectivity. Reads never start work. Deterministic tests use fake clocks and scripted adapters, covering commit failure, duplicate/revision conflicts, queue contention, ownership, deadline/cancellation, budget exhaustion, waiting and restart. No live model/account, installation, Pi or network probe is part of JOB01.
+
+## S14 refinement status
+
+This record retains its implemented legacy meaning. The owner-confirmed [S14 target](../specs/S14-bot-first-local-assistant.md) and proposed ADRs 0045–0048 refine Project ownership, grants/computers, Parallel default or replay-safe recovery where applicable. They do not claim a new supported API or change this build's behavior. Unchanged authority, fencing, credential and evidence invariants remain.

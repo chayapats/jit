@@ -74,3 +74,13 @@ Q20 ระบุ SSH target ของ installation แรกไว้ในบ�
 ## สิ่งที่ไม่ได้รับรองจาก discovery
 
 ตัวเลขทดลอง 14 วัน, 10 PR และข้อค้นพบถูกต้อง 80% เป็นข้อเสนอ Q41 ที่ผู้ก่อตั้งไม่ได้รับรอง ห้ามใช้เป็น release acceptance หรือประกาศเป็น benchmark ของ Jit ค่าเวลาใน roadmap เป็นประมาณการวิศวกรรมหลัง discovery ไม่ใช่ commitment จาก Q40
+
+## S14 change record — 2026-10-30
+
+The owner completed a 13-question grilling session and explicitly authorized the combined baseline, specification, ADRs, Opus-only UI/UX and issue preparation. [S14-D01–D16](../specs/S14-bot-first-local-assistant.md#confirmed-owner-decisions) is the canonical decision table.
+
+This replaces required Project/group/General/promotion ownership with persistent Bots and scoped work, selects isolated persistent local computers and explicit sharing, owner/global plus Bot-private memory, direct authenticated internal start with exact external-effect approvals, routines only by standing authorization, free-first Parallel, true bounded concurrency and replay-safe recovery.
+
+Research/report is MVP; coding-to-PR and email/calendar are required later capabilities. Fresh state is allowed with no legacy conversion; deleting an installation is not authorized. Linux x64/arm64 is the initial runtime target. UI/UX must be authored by Claude Opus 5.5 at effort high. The owner subsequently disabled implement-parallel for Jit while retaining that design delegation.
+
+C01/C02/C05/C12/C21 and old deferred/excluded scope above are historical where they conflict. FR-01–FR-40 and NFR-01–NFR-14 retain their IDs with S14 refinements; FR-41/42 add web research/report artifacts. Engineering ADRs 0045–0048 and Opus visual/interaction choices are proposed, not additional owner answers or shipped behavior. No date, performance number or superiority benchmark was confirmed.

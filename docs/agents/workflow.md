@@ -1,5 +1,7 @@
 # Specs and implementation tickets
 
+Owner instruction, 2026-10-30: do not use `implement-parallel` or its coordinator/claim workflow for Jit. Continue checking existing ownership, branches/PRs and prerequisites, and use issue-specific branches/worktrees. Explicitly requested UI/UX delegation to Claude Opus 5.5 at high effort remains required.
+
 Tracker: GitHub Issues for chayapats/jit, using gh. Engine changes belong to chayapats/schway and reference the Jit parent spec.
 
 ## Write a spec

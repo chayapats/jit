@@ -1,5 +1,7 @@
 # Spec S13 — Chat attachments
 
+> S14 target status: Historical implemented S13 baseline. Attachment sanitization/untrusted-data/lifecycle requirements remain; Project bindings are refined by the new S14 ownership model. See [S14](S14-bot-first-local-assistant.md).
+
 Tracker: https://github.com/chayapats/jit/issues/187 · Schway: https://github.com/chayapats/schway/issues/436 · Decision: [ADR 0040](../adr/0040-chat-attachments.md) · Contract: [app.attachments/v1](../contracts/app-attachments-v1.md)
 
 Owner: Jit. สถานะ: **done** owner ยืนยันทุกข้อตามที่แนะนำเมื่อ 2026-10-29 ticket ทุกตัว merge แล้วในวันเดียวกัน (ดูตาราง Tickets) และ owner สั่งให้เปิด attachments เป็นค่าเริ่มต้น (S13-D-gate) Parent: [S12](S12-fluid-conversation.md) ใช้หลัก just works และ D13 (ไม่ผูกกับ Pi) ที่มาคือ review แบบอ่านอย่างเดียวของ `origin/main` `cb1a99c` กับ Schway `ac63557` เมื่อ 2026-10-29

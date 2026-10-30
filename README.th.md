@@ -1,3 +1,5 @@
+> **ทิศทาง S14 (ยืนยันแล้ว ยังไม่ส่งมอบ runtime):** Jit จะใช้ทีม Bot ถาวรและ computer ส่วนตัวบนเครื่องคุณ โดยไม่บังคับ Project เริ่ม MVP ด้วย research ผ่าน Parallel ส่วน coding จนพร้อมเปิด PR และ email/calendar ต้องทำในเฟสถัดไป ดู [spec](docs/specs/S14-bot-first-local-assistant.md), [design โดย Opus](docs/design/S14-bot-first-experience.md) และ [roadmap](docs/tickets/S14-bot-first-roadmap.md) ภาพและคำสั่งติดตั้งด้านล่างเป็น pilot แบบ Project ที่ใช้อยู่ปัจจุบัน
+
 <div align="center">
 
 <picture>

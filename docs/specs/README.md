@@ -24,3 +24,7 @@
 5. ใช้ ready-for-agent เฉพาะ ticket ที่แคบพอและไม่มี decision ที่ต้องเดา; spec parents ใช้ spec กับ needs-triage
 
 ดู [workflow](../agents/workflow.md) Specs นี้ไม่ได้สร้าง implementation claims หรืออนุมัติให้ติดตั้งบน Pi/ใช้ live subscription จากงานเขียนเอกสาร
+
+## S14 — current owner-confirmed target
+
+[S14](S14-bot-first-local-assistant.md) / [#244](https://github.com/chayapats/jit/issues/244) replaces required Projects with persistent Bots/local computers and a Parallel research MVP. Coding and email/calendar are required later phases. Documentation/design is [#245](https://github.com/chayapats/jit/issues/245). Product choices are confirmed; ADRs/design remain proposed and runtime work is not yet implemented. See [ticket preparation](../tickets/S14-bot-first-roadmap.md).
