@@ -13,4 +13,7 @@ if (process.argv[2] === "service" && (process.geteuid?.() ?? process.getuid?.())
     trusted = false;
   }
 }
-if (trusted) await import("./app-cli");
+if (trusted) {
+  if (process.argv.includes("--s14")) await (await import("./s14/main")).runS14();
+  else await import("./app-cli");
+}

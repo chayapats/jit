@@ -1,0 +1,24 @@
+# app.bots/v1
+
+Implemented logic contract for BOT14-01 (#246), S14-AC01/02; FR-01/02/19/20/22/23/25, NFR-05/07/11/12. Product UI acceptance remains with the Opus integration slice.
+
+Entry points: `S14Application` in `src/s14/application.ts`, exported shapes in `src/s14/types.ts`, `createS14Handler` in `src/s14/web.ts`. `execute(actor: OwnerActor, command: BotCommand): BotReceipt` authenticates registered, live session actors; structurally forged objects fail. Every command is exactly `{kind, requestId, expectedRevision, payload}`. Unknown fields fail. A retry key is installation-owner scoped across all command kinds. An identical command returns its committed receipt even if current state has advanced; changed payload with that key returns `request_id_conflict`. Authentication is still required on retries. Mutation, audit, receipt and outbox intent use one `BEGIN IMMEDIATE`; faults roll back all of them.
+
+| Kind | Payload | expectedRevision |
+| --- | --- | --- |
+| `setup` | `{ownerName, language:'th'\|'en', routeId, capabilities:{tools:string[],resources:string[]}}` | `home.revision` (0 before setup) |
+| `bot.proposal.accept` | `{proposalId, capabilities}` | exact current proposal revision |
+| `bot.proposal.reject` | `{proposalId}` | exact current proposal revision |
+| `bot.proposal.revise` | `{proposalId,name,responsibility,routeId}` | exact current proposal revision |
+
+Local `setup --s14` provisions only the password authentication principal; it never resets an existing owner. Authenticated `setup` creates owner persona, main Jit Bot and its conversation once. All capability lists are explicit, including empty lists. They must be subsets of installation `Policy`. Route IDs resolve exact configured provider/model selections; configuration is unverified, never live readiness. No silent inheritance or fallback. Permanent Bots have stable IDs, revision/generation, enabled flag, duty, route ID, capability lists and null computer/profile references. No account/login copying or implicit resource binding exists.
+
+Only the service's committed model reply parser can materialize a suggestion card, anchored by conversation/message foreign keys. Name/duty are bounded sanitized text. Extra model fields are dropped as safe codes; an unconfigured route is held as null until an authenticated owner revision. Suggested capabilities are never granted. Source/owner text mentioning a proposal does not materialize a card. Current revision and open state are rechecked on accept/reject/edit. Revise retains the old content in `proposal_versions`; acceptance never executes work. Existing-Bot edits/retirement/deletion remain #262.
+
+Queries: `home(actor): Home`, `conversation(actor,id)` and authenticated receipt lookup. Lists are bounded to 100 newest records; chat context to 12 messages and the bounded canonical JSON envelope. Inputs/output redact shared credential patterns/fingerprints; raw model/transport errors are never persisted or returned.
+
+Store format: SQLite application_id `0x4a495431`, user_version 1 at the BOT commit (the final bundled AUTH commit specifies its schema). Tables: owner/password hash/generation; session token hashes/expiry/generation; persisted login throttle; installation revision/profile; bots JSON; conversations with Bot FK/revision; immutable messages with conversation FK; bot_proposals with message/conversation FKs; proposal_versions with proposal FK; reply_outbox with unique owner-message FK; command_receipts with owner FK; audit. There is no Project table, `project_id`, alias or General permission root. Runtime table names are trusted service code, never model/request data.
+
+HTTP: `GET /api/s14/home` → `{state,csrf}`, `GET /api/s14/conversations/:id`, `GET /api/s14/receipts/:requestId`, `POST /api/s14/commands` (command JSON, session cookie and `X-CSRF-Token`). `POST /s14/commands` accepts URL-encoded `{csrf,command:JSON.stringify(command)}` and redirects to `/s14/receipts/:requestId`. `GET /` uses the injected `S14Renderer`; its default is an unstyled contract form, not a product design. `GET/POST /s14/login` signs in with `{password}` and an HttpOnly SameSite=Strict cookie. Mutation requires exact Origin, Host and live session; no CORS, credentials in URLs, inline scripts or sensitive caching. HTML escapes data. UI code belongs under `src/s14/`, passing its renderer to `createS14Handler`; leave legacy `src/web.ts` intact.
+
+Tests: `tests/s14-bots.test.ts` covers scripted setup/reply/accept/reject/retries, revision/forgery/configuration denial, rollback, interruption, legacy main/WAL/SHM/profile/backup byte preservation, Thai/English/no-script transport, and a real pinned public-host invocation with a scripted model (no live provider).

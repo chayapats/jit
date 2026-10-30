@@ -1,0 +1,248 @@
+import { randomBytes, timingSafeEqual } from "node:crypto";
+import { AppError } from "../errors";
+import type { AppTransaction } from "../store";
+import { registerSecretFingerprint } from "../security/secret-fingerprints";
+import type { S14Store } from "./store";
+import type { Bot, BotCommand, BotProposal, BotReceipt, ChatInput, ChatPort, Conversation, Home, Message, OwnerActor, Policy, Reply } from "./types";
+import { canonical, canonicalByteLimit, capabilities, digest, exact, identity, integer, text } from "./validation";
+import { S14Authority, suggestTask } from "./authority";
+import type { AuthorityCommand, AuthorityOptions, AuthorityReceipt } from "./authority-types";
+
+/** Stable complete typed owner ingress union for the S14 logic foundation. */
+export type S14Command = BotCommand | AuthorityCommand;
+/** Committed typed result of the S14 owner command boundary. */
+export type S14Receipt = BotReceipt | AuthorityReceipt;
+
+const id = () => crypto.randomUUID().replaceAll("-", "");
+const tokenPattern = /^[a-f0-9]{64}$/;
+/** Service-owned JSON tables; request/model input never selects a SQL identifier. */
+export type RecordTable = "bots" | "bot_proposals" | "reply_outbox" | "work_items" | "work_grants" | "work_attempts" | "effects";
+/** Loads an opaque record from a trusted table name; callers enforce command and scope first. */
+export function record<T>(tx: AppTransaction, table: RecordTable, key: string): T {
+  const row = tx.get<{ record_json: string }>(`SELECT record_json FROM ${table} WHERE id=?`, key);
+  if (!row) throw new AppError("not_found", 404);
+  return JSON.parse(row.record_json) as T;
+}
+/** Updates a trusted table's immutable-identity record inside its caller's transaction. */
+export function save(tx: AppTransaction, table: RecordTable, value: { id: string }): void { tx.run(`UPDATE ${table} SET record_json=? WHERE id=?`, canonical(value), value.id); }
+/** Reads bounded identity records from a trusted table name without starting workers. */
+export function records<T>(tx: AppTransaction, table: RecordTable): T[] { return tx.all<{ record_json: string }>(`SELECT record_json FROM ${table} ORDER BY rowid DESC LIMIT 100`).map(row => JSON.parse(row.record_json) as T); }
+/** Injectable deterministic inference/clock and rollback fault seams; production never enables fixture inference. */
+export interface S14Options { policy: Policy; chat: ChatPort; authority?: AuthorityOptions; now?: () => number; beforeCommit?: () => void }
+
+/** Project-free owner command boundary; registered actors are revalidated on every read and commit. */
+export class S14Application {
+  readonly policy: Policy;
+  readonly now: () => number;
+  readonly authority: S14Authority;
+  #actors = new WeakMap<OwnerActor, string>();
+  #replyBusy = false;
+  constructor(readonly store: S14Store, readonly options: S14Options) {
+    this.policy = structuredClone(options.policy); this.now = options.now ?? Date.now;
+    if (this.policy.routes.length > 16 || new Set(this.policy.routes.map(r => r.id)).size !== this.policy.routes.length) throw new AppError("invalid_policy");
+    for (const r of this.policy.routes) {
+      exact(r, ["id", "provider", "model"]); identity(r.id);
+      if (!["codex", "grok"].includes(r.provider) || !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/.test(r.model)) throw new AppError("invalid_route");
+    }
+    capabilities({ tools: this.policy.tools, resources: this.policy.resources }, this.policy);
+    this.authority = new S14Authority(this, options.authority);
+  }
+  /** Trusted local bootstrap creates only the authentication principal, never resets an existing installation. */
+  async provisionOwner(password: string): Promise<void> {
+    if (typeof password !== "string" || password.length < 12 || password.length > 256) throw new AppError("password_length_12_to_256");
+    const hash = await Bun.password.hash(password, { algorithm: "argon2id" });
+    this.store.transaction(tx => {
+      if (tx.get("SELECT id FROM owner")) throw new AppError("owner_already_configured", 409);
+      tx.run("INSERT INTO owner VALUES ('owner',?,1)", hash);
+    });
+    registerSecretFingerprint(password);
+  }
+  /** Authenticates under a persisted finite login budget and returns a write-only session credential. */
+  async login(password: string): Promise<string> {
+    const owner = this.store.transaction(tx => {
+      const row = tx.get<{ window_start: number; attempts: number }>("SELECT * FROM login_throttle WHERE id=1"), now = this.now();
+      const fresh = !row || now >= row.window_start + 900000;
+      if (!fresh && row.attempts >= 10) throw new AppError("login_limited_try_later", 429);
+      tx.run("INSERT OR REPLACE INTO login_throttle VALUES (1,?,?)", fresh ? now : row.window_start, fresh ? 1 : row.attempts + 1);
+      return tx.get<{ password_hash: string; generation: number }>("SELECT password_hash,generation FROM owner WHERE id='owner'");
+    });
+    if (!owner || typeof password !== "string" || password.length > 256 || !await Bun.password.verify(password, owner.password_hash)) throw new AppError("login_failed", 401);
+    const token = randomBytes(32).toString("hex");
+    this.store.transaction(tx => {
+      if (tx.get<{ generation: number }>("SELECT generation FROM owner")?.generation !== owner.generation) throw new AppError("login_failed", 401);
+      tx.run("DELETE FROM sessions WHERE expires_at<=?", this.now());
+      tx.run("DELETE FROM sessions WHERE token_hash NOT IN (SELECT token_hash FROM sessions ORDER BY expires_at DESC LIMIT 15)");
+      tx.run("INSERT INTO sessions VALUES (?,?,?)", digest(token), owner.generation, this.now() + 86400000);
+    });
+    registerSecretFingerprint(password); registerSecretFingerprint(token);
+    return token;
+  }
+  /** Issues an opaque owner actor and distinct CSRF proof from a live authenticated session. */
+  authenticate(token: string): { actor: OwnerActor; csrf: string } {
+    if (!tokenPattern.test(token)) throw new AppError("authentication_required", 401);
+    const actor: OwnerActor = Object.freeze({ ownerId: "owner" }); this.#actors.set(actor, digest(token));
+    this.store.read(tx => this.requireOwner(tx, actor));
+    return { actor, csrf: digest(`s14.csrf.v1:${token}`) };
+  }
+  /** Rejects forged, expired and revoked actors even after a command has waited for the writer lock. */
+  requireOwner(tx: AppTransaction, actor: OwnerActor): void {
+    const key = this.#actors.get(actor);
+    if (!key || !tx.get("SELECT s.token_hash FROM sessions s JOIN owner o ON s.generation=o.generation WHERE s.token_hash=? AND s.expires_at>?", key, this.now())) throw new AppError("authentication_required", 401);
+  }
+  /** Verifies a session-bound proof in constant time without accepting client-supplied actors. */
+  verifyCsrf(expected: string, supplied: unknown): void {
+    if (typeof supplied !== "string" || !tokenPattern.test(supplied) || !timingSafeEqual(Buffer.from(expected), Buffer.from(supplied))) throw new AppError("csrf_rejected", 403);
+  }
+  /** Revokes the session and every actor issued from it. */
+  logout(actor: OwnerActor): void { this.store.transaction(tx => { this.requireOwner(tx, actor); tx.run("DELETE FROM sessions WHERE token_hash=?", this.#actors.get(actor)!); }); }
+  /** Returns setup/team/chat state with revisions and configured-unverified routes, never credentials. */
+  home(actor: OwnerActor): Home { return this.store.read(tx => {
+    this.requireOwner(tx, actor);
+    const row = tx.get<{ revision: number; profile_json: string | null }>("SELECT * FROM installation")!;
+    return { revision: row.revision, owner: row.profile_json ? JSON.parse(row.profile_json) : null, routes: structuredClone(this.policy.routes), bots: records<Bot>(tx, "bots"),
+      conversations: tx.all<Conversation>("SELECT id,bot_id AS botId,revision FROM conversations ORDER BY rowid DESC LIMIT 100"), proposals: records<BotProposal>(tx, "bot_proposals"), replies: records<Reply>(tx, "reply_outbox") };
+  }); }
+  /** Returns one bounded conversation and its typed proposal/reply cards; text has no command semantics. */
+  conversation(actor: OwnerActor, conversationId: string): { conversation: Conversation; messages: Message[]; proposals: BotProposal[]; replies: Reply[] } {
+    identity(conversationId);
+    return this.store.read(tx => {
+      this.requireOwner(tx, actor); const conversation = this.readConversation(tx, conversationId);
+      return { conversation, messages: tx.all<{ record_json: string }>("SELECT record_json FROM (SELECT sequence,record_json FROM messages WHERE conversation_id=? ORDER BY sequence DESC LIMIT 100) ORDER BY sequence", conversationId).map(r => JSON.parse(r.record_json)),
+        proposals: records<BotProposal>(tx, "bot_proposals").filter(p => p.conversationId === conversationId), replies: records<Reply>(tx, "reply_outbox").filter(r => r.conversationId === conversationId) };
+    });
+  }
+  /** Returns the current Bot proposal and retained content revisions for exact owner review. */
+  proposal(actor: OwnerActor, proposalId: string): { proposal: BotProposal; history: BotProposal[] } {
+    identity(proposalId);
+    return this.store.read(tx => { this.requireOwner(tx, actor); return { proposal: record<BotProposal>(tx, "bot_proposals", proposalId), history: tx.all<{ record_json: string }>("SELECT record_json FROM proposal_versions WHERE proposal_id=? ORDER BY revision", proposalId).map(r => JSON.parse(r.record_json)) }; });
+  }
+  /** Executes a typed owner command exactly once with its audit and queue intent in the same transaction. */
+  execute(actor: OwnerActor, command: BotCommand): BotReceipt;
+  /** Executes obligation, work-start, stop and exact approval decisions under the same owner receipt boundary. */
+  execute(actor: OwnerActor, command: AuthorityCommand): AuthorityReceipt;
+  /** Executes the complete typed HTTP command union without client-controlled actor identities. */
+  execute(actor: OwnerActor, command: S14Command): S14Receipt;
+  execute(actor: OwnerActor, command: S14Command): S14Receipt {
+    const encoded = canonical(command); exact(command, ["kind", "requestId", "expectedRevision", "payload"]);
+    identity(command.requestId); integer(command.expectedRevision);
+    const receipt = this.store.transaction(tx => {
+      this.requireOwner(tx, actor);
+      const previous = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash,result_json FROM command_receipts WHERE owner_id='owner' AND request_id=?", command.requestId);
+      if (previous) { if (previous.payload_hash !== digest(encoded)) throw new AppError("request_id_conflict", 409); return JSON.parse(previous.result_json) as S14Receipt; }
+      const result = ["task.accept", "work.start", "work.stop", "approval.decide"].includes(command.kind) ? this.authority.apply(tx, command as AuthorityCommand) : this.applyBot(tx, command as BotCommand);
+      tx.run("INSERT INTO command_receipts VALUES ('owner',?,?,?,?)", command.requestId, digest(encoded), canonical(result), this.now());
+      tx.run("INSERT INTO audit(kind,request_id,committed_at) VALUES (?,?,?)", command.kind, command.requestId, this.now());
+      this.options.beforeCommit?.(); return structuredClone(result);
+    });
+    this.authority.cancelFenced();
+    return receipt;
+  }
+  /** Resolves an exact configured route; no provider, account, model or billing fallback exists. */
+  route(routeId: unknown) { const route = this.policy.routes.find(r => r.id === routeId); if (!route) throw new AppError("route_unconfigured", 403); return structuredClone(route); }
+  /** Resolves one conversation by identity, independent of names and permission scopes. */
+  readConversation(tx: AppTransaction, key: string): Conversation {
+    const row = tx.get<Conversation>("SELECT id,bot_id AS botId,revision FROM conversations WHERE id=?", key);
+    if (!row) throw new AppError("not_found", 404); return row;
+  }
+  /** Applies Bot commands only inside the shared authenticated receipt transaction. */
+  applyBot(tx: AppTransaction, c: BotCommand): BotReceipt {
+    const result: BotReceipt = { kind: c.kind, requestId: c.requestId };
+    if (c.kind === "setup") {
+      const p = c.payload;
+      exact(p, ["ownerName", "language", "routeId", "capabilities"]);
+      const row = tx.get<{ revision: number; profile_json: string | null }>("SELECT * FROM installation")!;
+      if (c.expectedRevision !== row.revision || row.profile_json) throw new AppError("stale_revision", 409);
+      if (p.language !== "th" && p.language !== "en") throw new AppError("invalid_language");
+      this.route(p.routeId); const caps = capabilities(p.capabilities, this.policy);
+      const bot: Bot = { id: "jit", revision: 1, generation: 1, enabled: true, name: "Jit", responsibility: "Coordinate and answer within the owner's explicit authority", routeId: p.routeId, capabilities: caps, computerId: null, profileId: null };
+      tx.run("INSERT INTO bots VALUES (?,?)", bot.id, canonical(bot));
+      const conversation: Conversation = { id: id(), botId: bot.id, revision: 1 };
+      tx.run("INSERT INTO conversations VALUES (?,?,?)", conversation.id, bot.id, 1);
+      tx.run("UPDATE installation SET revision=revision+1,profile_json=?", canonical({ name: text(p.ownerName, 200), language: p.language }));
+      return { ...result, bot, conversation };
+    }
+    if (c.kind === "message.post") {
+      const p = c.payload;
+      exact(p, ["conversationId", "text"]); identity(p.conversationId);
+      const conversation = this.readConversation(tx, p.conversationId);
+      if (conversation.revision !== c.expectedRevision) throw new AppError("stale_revision", 409);
+      const bot = record<Bot>(tx, "bots", conversation.botId); if (!bot.enabled) throw new AppError("bot_disabled", 403);
+      const message: Message = { id: id(), conversationId: conversation.id, role: "owner", text: text(p.text), createdAt: this.now() };
+      tx.run("INSERT INTO messages(id,conversation_id,record_json) VALUES (?,?,?)", message.id, conversation.id, canonical(message));
+      const owner = JSON.parse(tx.get<{ profile_json: string }>("SELECT profile_json FROM installation")!.profile_json) as { name: string; language: "th" | "en" };
+      const snapshot: ChatInput = { route: this.route(bot.routeId), bot, ownerName: owner.name, language: owner.language, messages: [message] };
+      const reply: Reply = { id: id(), conversationId: conversation.id, messageId: message.id, state: "queued", reason: null, snapshot };
+      tx.run("UPDATE conversations SET revision=revision+1 WHERE id=?", conversation.id); conversation.revision++;
+      const receipt = { ...result, conversation, message, reply };
+      // Budget the complete receipt: it duplicates the new message and also contains the outbox record.
+      let remaining = canonicalByteLimit - Buffer.byteLength(canonical(receipt));
+      for (const row of tx.all<{ record_json: string }>("SELECT record_json FROM messages WHERE conversation_id=? AND id<>? ORDER BY sequence DESC LIMIT 11", conversation.id, message.id)) {
+        const prior = JSON.parse(row.record_json) as Message, bytes = Buffer.byteLength(canonical(prior)) + 1;
+        if (bytes > remaining) break;
+        snapshot.messages.unshift(prior); remaining -= bytes;
+      }
+      tx.run("INSERT INTO reply_outbox VALUES (?,?,?,?)", reply.id, conversation.id, message.id, canonical(reply));
+      return receipt;
+    }
+    if (["bot.proposal.accept", "bot.proposal.reject", "bot.proposal.revise"].includes(c.kind)) {
+      const p = c.payload;
+      exact(p, c.kind === "bot.proposal.accept" ? ["proposalId", "capabilities"] : c.kind === "bot.proposal.revise" ? ["proposalId", "name", "responsibility", "routeId"] : ["proposalId"]);
+      const proposal = record<BotProposal>(tx, "bot_proposals", (p as { proposalId: string }).proposalId);
+      if (proposal.revision !== c.expectedRevision || proposal.state !== "proposed") throw new AppError("stale_revision", 409);
+      if (c.kind === "bot.proposal.revise") { proposal.name = text(c.payload.name, 200); proposal.responsibility = text(c.payload.responsibility, 4000); this.route(c.payload.routeId); proposal.routeId = c.payload.routeId; proposal.revision++; proposal.author = "owner"; }
+      if (c.kind === "bot.proposal.reject") proposal.state = "rejected";
+      if (c.kind === "bot.proposal.accept") {
+        if (!proposal.routeId) throw new AppError("route_unconfigured", 403); this.route(proposal.routeId);
+        const bot: Bot = { id: id(), revision: 1, generation: 1, enabled: true, name: proposal.name, responsibility: proposal.responsibility, routeId: proposal.routeId, capabilities: capabilities(c.payload.capabilities, this.policy), computerId: null, profileId: null };
+        tx.run("INSERT INTO bots VALUES (?,?)", bot.id, canonical(bot)); proposal.state = "accepted"; proposal.botId = bot.id;
+        const conversation: Conversation = { id: id(), botId: bot.id, revision: 1 }; tx.run("INSERT INTO conversations VALUES (?,?,?)", conversation.id, bot.id, 1);
+        tx.run("UPDATE installation SET revision=revision+1"); result.bot = bot; result.conversation = conversation;
+      }
+      save(tx, "bot_proposals", proposal);
+      tx.run("INSERT OR REPLACE INTO proposal_versions VALUES (?,?,?)", proposal.id, proposal.revision, canonical(proposal));
+      return { ...result, proposal };
+    }
+    throw new AppError("unknown_command");
+  }
+  /** Marks orphaned chat inference blocked on exclusive boot; never silently resubmits an uncertain call. */
+  recoverReplies(): void { this.store.transaction(tx => { for (const row of tx.all<{ record_json: string }>("SELECT record_json FROM reply_outbox WHERE json_extract(record_json,'$.state')='running'")) { const reply = JSON.parse(row.record_json) as Reply; reply.state = "blocked"; reply.reason = "interrupted_no_auto_replay"; save(tx, "reply_outbox", reply); } }); }
+  /** Drains committed chat intents serially with bounded context; this never admits persistent work or tools. */
+  async drainReplies(): Promise<void> {
+    if (this.#replyBusy) return; this.#replyBusy = true;
+    try { for (;;) {
+      const reply = this.store.transaction(tx => {
+        const row = tx.get<{ record_json: string }>("SELECT record_json FROM reply_outbox WHERE json_extract(record_json,'$.state')='queued' ORDER BY rowid LIMIT 1"); if (!row) return null;
+        const next = JSON.parse(row.record_json) as Reply;
+        next.state = "running"; save(tx, "reply_outbox", next); return next;
+      });
+      if (!reply) return;
+      let output: Awaited<ReturnType<ChatPort["reply"]>> | null = null;
+      const abort = new AbortController(), timer = setTimeout(() => abort.abort(), 60000);
+      try { output = await this.options.chat.reply(structuredClone(reply.snapshot), abort.signal); } catch { /* Safe public reason only; transport errors may contain credentials. */ }
+      finally { clearTimeout(timer); }
+      this.store.transaction(tx => {
+        const current = record<Reply>(tx, "reply_outbox", reply.id); if (current.state !== "running") return;
+        let content: string | null = null; try { if (output && !abort.signal.aborted) content = text(output.text); } catch { /* Invalid output remains blocked. */ }
+        current.state = content ? "succeeded" : "blocked"; current.reason = content ? null : "reply_unavailable";
+        if (content) {
+          const message: Message = { id: id(), conversationId: reply.conversationId, role: "bot", text: content, createdAt: this.now() };
+          tx.run("INSERT INTO messages(id,conversation_id,record_json) VALUES (?,?,?)", message.id, message.conversationId, canonical(message));
+          tx.run("UPDATE conversations SET revision=revision+1 WHERE id=?", message.conversationId);
+          if (output?.task !== undefined) suggestTask(tx, message.conversationId, message.id, output.task, this.now());
+          const item = output?.proposal;
+          if (item && typeof item === "object" && !Array.isArray(item)) {
+            const data = item as Record<string, unknown>;
+            try {
+              let routeId: string | null = null; try { routeId = this.route(data.routeId ?? reply.snapshot.route.id).id; } catch { /* Held for owner revision. */ }
+              const proposal: BotProposal = { id: id(), conversationId: reply.conversationId, messageId: message.id, revision: 1, author: "bot", proposerBotId: reply.snapshot.bot.id, state: "proposed", name: text(data.name, 200), responsibility: text(data.responsibility, 4000), routeId,
+                dropped: [...Object.keys(data).filter(k => !["name", "responsibility", "routeId"].includes(k)).map(() => "unsupported_field"), ...(!routeId ? ["route_unconfigured"] : [])].slice(0, 8), botId: null };
+              tx.run("INSERT INTO bot_proposals VALUES (?,?,?,?)", proposal.id, proposal.conversationId, proposal.messageId, canonical(proposal));
+              tx.run("INSERT INTO proposal_versions VALUES (?,?,?)", proposal.id, 1, canonical(proposal));
+            } catch { /* Malformed model suggestions never become authority cards. */ }
+          }
+        }
+        save(tx, "reply_outbox", current);
+      });
+    } } finally { this.#replyBusy = false; }
+  }
+}
