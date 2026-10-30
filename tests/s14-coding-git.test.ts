@@ -6,7 +6,8 @@ import { S14Application } from "../src/s14/application";
 import { S14Store } from "../src/s14/store";
 import { ConnectionVault } from "../src/exec/connections";
 import { canonical, digest } from "../src/s14/validation";
-import type { Effect } from "../src/s14/authority-types";
+import { replayPolicy } from "../src/s14/replay-policy";
+import type { Attempt, Effect } from "../src/s14/authority-types";
 import type { GitAction, GitCommand, GitOptions, GitRemotePort, GitRemoteProof } from "../src/s14/coding-git-types";
 import { CodingGitMirror } from "../src/s14/coding-git-mirror";
 import { GitHubCodingRemote } from "../src/s14/coding-git-remote";
@@ -54,7 +55,7 @@ class RemoteFixture implements GitRemotePort {
     return { headCommit: this.head, baseCommit: this.base, prs: structuredClone(this.prs), complete: !this.incomplete };
   }
 }
-async function fixture(afterStage?: GitOptions["afterStage"]) {
+async function fixture(afterStage?: GitOptions["afterStage"], scheduled = false, separateBot = false) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "s14-git-"))); roots.push(root);
   const runtime = new CodingRuntimeFixture(); roots.push(runtime.root);
   const base = await runtime.seed();
@@ -71,17 +72,34 @@ async function fixture(afterStage?: GitOptions["afterStage"]) {
   const token = await app.login("git-fixture-owner-password"), auth = app.authenticate(token);
   const setup = app.execute(auth.actor, { kind: "setup", requestId: rid(), expectedRevision: 0,
     payload: { ownerName: "Owner", language: "th", routeId: "route", capabilities: { tools: policy.tools, resources: policy.resources } } });
+  let botId = "jit";
+  if (separateBot) {
+    app.options.chat = { async reply() { return { text: "Suggested coder", proposal: { name: "Coder", responsibility: "Repair scoped repositories", routeId: "route" } }; } };
+    app.execute(auth.actor, { kind: "message.post", requestId: rid(), expectedRevision: 1,
+      payload: { conversationId: setup.conversation!.id, text: "Suggest a coder" } });
+    await app.drainReplies();
+    const proposal = app.home(auth.actor).proposals[0]!;
+    botId = app.execute(auth.actor, { kind: "bot.proposal.accept", requestId: rid(), expectedRevision: proposal.revision,
+      payload: { proposalId: proposal.id, capabilities: { tools: policy.tools, resources: policy.resources } } }).bot!.id;
+  }
   app.execute(auth.actor, { kind: "coding.repository.grant", requestId: rid(), expectedRevision: 0,
-    payload: { id: "repo", botId: "jit", url: "https://github.com/fixture/repo.git", baseCommit: base } });
-  const work = app.execute(auth.actor, { kind: "coding.start", requestId: rid(), expectedRevision: 1,
+    payload: { id: "repo", botId, url: "https://github.com/fixture/repo.git", baseCommit: base } });
+  const work = app.execute(auth.actor, { kind: "coding.start", requestId: rid(), expectedRevision: app.conversation(auth.actor, setup.conversation!.id).conversation.revision,
     payload: { repository: { id: "repo", revision: 1 }, install: null,
       tests: [{ argv: ["sh", "-c", 'test "$(cat answer.txt)" = fixed'], network: "none", timeoutMs: 1000, coverage: "fixture assertion" }],
       work: { conversationId: setup.conversation!.id, task: null, title: "Code", purpose: "Repair fixture", completionRule: "Owner review",
-        bots: [{ id: "jit", revision: 1 }], tools: ["computer", "coding", "effect_push"], scopes: [{ kind: "resource", id: "repo", revision: 1 }],
+        bots: [{ id: botId, revision: 1 }], tools: ["computer", "coding", "effect_push"], scopes: [{ kind: "resource", id: "repo", revision: 1 }],
         limits: { attempts: 2, steps: 2, calls: 256, outputBytes: 65536, wallMs: 3600000, concurrency: 1, reads: 1 }, expiresAt: clock.now + 3600000 } } }).work!;
   path = `/workspace/coding/${work.id}`;
-  const attempt = app.authority.admit(work.id, rid(), { botId: "jit", tools: ["computer", "coding", "effect_push"], scopes: [{ kind: "resource", id: "repo", revision: 1 }], input: "Repair answer", calls: 256, outputBytes: 65536 });
-  app.authority.commit(attempt.id, await app.coding.run(join(root, "native"), attempt, new AbortController().signal));
+  let attempt: Attempt;
+  if (scheduled) {
+    app.authority.options.executor = { run: (selected, signal) => app.coding.run(join(root, "native"), selected, signal) };
+    await app.authority.drain();
+    attempt = app.authority.view(auth.actor, work.id).attempts[0]!;
+  } else {
+    attempt = app.authority.admit(work.id, rid(), { botId, tools: ["computer", "coding", "effect_push"], scopes: [{ kind: "resource", id: "repo", revision: 1 }], input: "Repair answer", calls: 256, outputBytes: 65536 });
+    app.authority.commit(attempt.id, await app.coding.run(join(root, "native"), attempt, new AbortController().signal));
+  }
   const connection = app.execute(auth.actor, { kind: "git.connection.create", requestId: rid(), expectedRevision: 0, payload: { repositoryId: "repo", label: "GitHub fixture" } }).connection!;
   const secretCommand: GitCommand = { kind: "git.connection.secret.set", requestId: rid(), expectedRevision: connection.revision, payload: { connectionId: connection.id, secret } };
   const stored = app.execute(auth.actor, secretCommand).connection!;
@@ -97,7 +115,7 @@ async function fixture(afterStage?: GitOptions["afterStage"]) {
     return app.execute(auth.actor, { kind: "approval.decide", requestId: rid(), expectedRevision: effect.revision,
       payload: { effectId: effect.id, actionHash: effect.actionHash, decision: "approve" } });
   }
-  return { root, runtime, remote, store, app, options, auth, token, clock, base, vault, path, work, attempt, stored, secretCommand, propose, approve };
+  return { root, runtime, remote, store, app, options, auth, token, clock, base, vault, path, work, attempt, botId, stored, secretCommand, propose, approve };
 }
 
 test("one exact approval verifies broker-owned objects, pushes once and creates only the exact PR", async () => {
@@ -319,4 +337,145 @@ test("stop after bundle verification fences the final broker dispatch", async ()
   expect((await f.app.authority.runEffect(effect.id, effect.revision, effect.actionHash)).state).toBe("unknown");
   expect(f.remote.pushes).toHaveLength(0);
   expect(f.remote.creates).toHaveLength(0);
+});
+
+
+test("graph-scheduled coding retains report/review/download ingress and exact Git approval after actual settlement", async () => {
+  const f = await fixture(undefined, true);
+  expect(f.app.graph.view(f.auth.actor, f.work.id).steps[0]).toMatchObject({ state: "blocked", reason: "handler_waiting", attemptId: f.attempt.id });
+  expect(f.store.read(tx => tx.get<{ active: number }>("SELECT active FROM attempt_transports WHERE attempt_id=?", f.attempt.id))!.active).toBe(0);
+  const handler = createS14Handler(f.app, "http://localhost:3001");
+  const get = (path: string) => handler(new Request(`http://localhost:3001${path}`, { headers: { cookie: `jit_s14=${f.token}` } }));
+  const run = f.app.coding.view(f.auth.actor, f.work.id).runs[0]!;
+  expect(run.state).toBe("reviewable");
+  expect(typeof run.reportId).toBe("string");
+  for (const path of ["/api/s14/coding/repositories", "/api/s14/git/connections", `/api/s14/work/${f.work.id}/coding`, `/api/s14/work/${f.work.id}/report-review`, `/api/s14/reports/${run.reportId}`]) expect([path, (await get(path)).status]).toEqual([path, 200]);
+  const report = f.app.reports.view(f.auth.actor, run.reportId!);
+  if (report.state !== "available") throw new Error("missing committed report");
+  for (const artifact of report.artifacts) expect(f.app.artifacts.download(f.auth.actor, artifact.id).bytes.length).toBe(artifact.size);
+  const review = f.app.reports.review(f.auth.actor, f.work.id);
+  f.app.execute(f.auth.actor, { kind: "report.review.accept", requestId: rid(), expectedRevision: review.revision,
+    payload: { reportId: report.report.id, reportRevision: report.report.revision } });
+  const { effect } = f.propose();
+  expect((await get(`/api/s14/git/effects/${effect.id}`)).status).toBe(200);
+  expect(f.remote.pushes).toHaveLength(0);
+  f.approve(effect);
+  await f.app.git.drain();
+  expect(f.app.git.view(f.auth.actor, effect.id).effect.state).toBe("succeeded");
+  expect(f.remote.pushes).toHaveLength(1);
+  expect(f.remote.creates).toHaveLength(1);
+});
+
+
+test.each(["retire", "capabilities"])("%s fences an approved graph coding effect at its last dispatch barrier while retaining committed evidence", async change => {
+  let f: Awaited<ReturnType<typeof fixture>>;
+  f = await fixture(stage => {
+    if (stage !== "push_dispatching") return;
+    if (change === "retire") {
+      const preview = f.app.botLifecycle.preview(f.auth.actor, f.botId, "retire");
+      f.app.execute(f.auth.actor, { kind: "bot.retire", requestId: rid(), expectedRevision: preview.bot.revision,
+        payload: { botId: f.botId, previewHash: preview.hash, retain: { history: true, evidence: true } } });
+    } else {
+      const bot = f.app.botLifecycle.view(f.auth.actor, f.botId).bot;
+      const proposal = f.app.execute(f.auth.actor, { kind: "bot.capabilities.propose", requestId: rid(), expectedRevision: bot.revision,
+        payload: { botId: bot.id, capabilities: { tools: ["computer"], resources: ["repo"] } } }).proposal!;
+      f.app.execute(f.auth.actor, { kind: "bot.capabilities.accept", requestId: rid(), expectedRevision: proposal.revision,
+        payload: { proposalId: proposal.id, proposalHash: proposal.hash } });
+    }
+  }, true, true);
+  const run = f.app.coding.view(f.auth.actor, f.work.id).runs[0]!;
+  const report = f.app.reports.view(f.auth.actor, run.reportId!);
+  if (report.state !== "available") throw new Error("missing coding report");
+  const { effect } = f.propose(); f.approve(effect);
+  expect((await f.app.authority.runEffect(effect.id, effect.revision, effect.actionHash)).state).not.toBe("succeeded");
+  expect(f.remote.pushes).toHaveLength(0); expect(f.remote.creates).toHaveLength(0);
+  expect(f.app.botLifecycle.view(f.auth.actor, f.botId).bot.generation).toBe(2);
+  expect(() => f.propose()).toThrow();
+  expect(() => f.app.computers.open(f.attempt.id)).toThrow();
+  expect(f.app.reports.view(f.auth.actor, run.reportId!).state).toBe("available");
+  for (const artifact of report.artifacts) expect(f.app.artifacts.download(f.auth.actor, artifact.id).bytes.length).toBe(artifact.size);
+});
+
+test("graph coding effect checkpoints stay reconcile-only and owner retry/summarize cannot replay shell or erase evidence", async () => {
+  const f = await fixture(undefined, true);
+  expect(replayPolicy(f.attempt).replay).toBe("reconcile_only");
+  const checkpoint = f.app.recovery.view(f.auth.actor).checkpoints.find(c => c.id === f.attempt.id)!;
+  expect(checkpoint.replay).toBe("reconcile_only");
+  expect(checkpoint.state).toBe("committed");
+  const before = f.app.authority.view(f.auth.actor, f.work.id), requests = f.runtime.requests.length;
+  for (const kind of ["work.retry", "work.summarize"] as const) {
+    expect(() => f.app.execute(f.auth.actor, { kind, requestId: rid(), expectedRevision: before.work.revision, payload: { workId: f.work.id } })).toThrow("coding_never_replay");
+    expect(f.app.authority.view(f.auth.actor, f.work.id)).toEqual(before);
+  }
+  await f.app.authority.drain(); await f.app.git.drain();
+  expect(f.runtime.requests).toHaveLength(requests);
+  expect(f.remote.pushes).toHaveLength(0);
+  expect(f.app.reports.list(f.auth.actor, f.work.id)[0]!.state).toBe("available");
+});
+
+test("graph lane stop fences the retained coding approval seam without erasing committed files", async () => {
+  const f = await fixture(undefined, true), { effect } = f.propose(); f.approve(effect);
+  const step = f.app.graph.view(f.auth.actor, f.work.id).steps[0]!;
+  f.app.execute(f.auth.actor, { kind: "work.step.stop", requestId: rid(), expectedRevision: step.revision,
+    payload: { workId: f.work.id, stepId: step.id } });
+  await expect(f.app.authority.runEffect(effect.id, effect.revision, effect.actionHash)).rejects.toThrow("step_fenced");
+  expect(f.remote.pushes).toHaveLength(0);
+  expect(f.app.reports.list(f.auth.actor, f.work.id)[0]!.state).toBe("available");
+});
+
+test("boot fences coding before workers and never replays an unknown graph Git effect", async () => {
+  const f = await fixture(undefined, true), { effect } = f.propose(false); f.approve(effect);
+  f.remote.pushOutcome = "unknown";
+  expect((await f.app.authority.runEffect(effect.id, effect.revision, effect.actionHash)).state).toBe("unknown");
+  const run = f.app.coding.view(f.auth.actor, f.work.id).runs[0]!;
+  const reopened = new S14Application(f.store, f.options), actor = reopened.authenticate(f.token).actor;
+  let runs = 0;
+  reopened.authority.options.executor = { async run() { runs++; return { state: "ready", text: "must not replay" }; } };
+  const gate = Promise.withResolvers<void>(), entered = Promise.withResolvers<void>();
+  const boot = reopened.recovery.boot({ async open(intent) {
+    entered.resolve(); await gate.promise;
+    return {
+      async listSessions() { return { sessions: intent.reference ? [{ reference: intent.reference, state: "retired" as const }] : [] }; },
+      async retireSession() {},
+      async deleteSession(reference) { return { status: "deleted" as const, session: reference, removed: ["conversation" as const], nextAction: "none" as const }; },
+      async close() {},
+    };
+  } });
+  await entered.promise;
+  expect(reopened.recovery.booting).toBe(true);
+  await reopened.authority.drain(); await reopened.drainReplies(); await reopened.git.drain();
+  expect(runs).toBe(0); expect(f.remote.pushes).toHaveLength(1);
+  gate.resolve(); await boot;
+  await reopened.authority.drain(); await reopened.git.drain();
+  expect(runs).toBe(0); expect(f.remote.pushes).toHaveLength(1); expect(f.remote.creates).toHaveLength(0);
+  expect(reopened.authority.effect(actor, effect.id).effect.state).toBe("unknown");
+  const checkpoint = reopened.recovery.view(actor).checkpoints.find(c => c.id === f.attempt.id)!;
+  expect(checkpoint.replay).toBe("reconcile_only"); expect(checkpoint.state).not.toBe("queued");
+  expect(reopened.reports.view(actor, run.reportId!).state).toBe("available");
+});
+
+test("freshly re-enabled capability generation cannot release credentials for an old unknown Git read-back", async () => {
+  const f = await fixture(undefined, true), { effect } = f.propose(false); f.approve(effect);
+  f.remote.pushOutcome = "unknown";
+  expect((await f.app.authority.runEffect(effect.id, effect.revision, effect.actionHash)).state).toBe("unknown");
+  const bot = f.app.botLifecycle.view(f.auth.actor, f.botId).bot;
+  const proposal = f.app.execute(f.auth.actor, { kind: "bot.capabilities.propose", requestId: rid(), expectedRevision: bot.revision,
+    payload: { botId: bot.id, capabilities: { tools: bot.capabilities.tools, resources: ["repo"] } } }).proposal!;
+  f.app.execute(f.auth.actor, { kind: "bot.capabilities.accept", requestId: rid(), expectedRevision: proposal.revision,
+    payload: { proposalId: proposal.id, proposalHash: proposal.hash } });
+  await f.app.botLifecycle.drain({ async open(intent) { return {
+    async listSessions() { return { sessions: intent.reference ? [{ reference: intent.reference, state: "retired" as const }] : [] }; },
+    async retireSession() {},
+    async deleteSession(reference) { return { status: "deleted" as const, session: reference, removed: ["conversation" as const], nextAction: "none" as const }; },
+    async close() {},
+  }; } });
+  expect(f.app.botLifecycle.view(f.auth.actor, f.botId).bot.enabled).toBe(true);
+  expect(f.app.botLifecycle.view(f.auth.actor, f.botId).bot.generation).toBe(2);
+  const current = f.app.authority.effect(f.auth.actor, effect.id).effect, reads = f.remote.reads;
+  const releases = f.store.read(tx => tx.all("SELECT * FROM git_connection_releases"));
+  expect(() => f.app.execute(f.auth.actor, { kind: "git.reconcile", requestId: rid(), expectedRevision: current.revision,
+    payload: { effectId: current.id, actionHash: current.actionHash } })).toThrow("git_authority_changed");
+  await f.app.git.drain();
+  expect(f.remote.reads).toBe(reads); expect(f.remote.pushes).toHaveLength(1);
+  expect(f.store.read(tx => tx.all("SELECT * FROM git_connection_releases"))).toEqual(releases);
 });

@@ -12,3 +12,15 @@ Citations resolve actual read evidence through app.parallel.citation. Synthesis 
 Only portable UTF-8 Markdown/text/JSON files are delivered initially. Workspace snapshots use the exact guarded computer backend and stable runner observation, with relative-path, symlink/type/size/hash checks. Downloads use opaque IDs, attachment responses, no-store, nosniff and sandbox/default-none CSP. No active app-origin HTML rendering or arbitrary host-file export is introduced.
 
 Report/file sources inherit original memory source and access pins. Publication and every download revalidate them. The independent ledger retains identity-only revoked access/share revisions, stopped execution grants and reset/deleted computer generation ranges so a stale application image cannot restore their descendants. This is part of the ticket's revocation/restore invariant, not a new execution permission. Full managed recovery/backup remains its tracked slice. See the delivered app.report-artifacts/v1 and app.artifact-gateway/v1 contracts.
+
+## PR #273 logic-gap refinement
+
+Use a separate revisioned per-work review record for explicit owner acceptance of the exact latest available report revision. Immutable report/artifact bytes and evidence coverage do not change. New publication or lineage withdrawal invalidates acceptance; retry receipts remain historical facts. The owner command uses the review revision plus report ID/revision and the existing receipt/audit boundary. Schema 9 adds report_reviews and refuses earlier unreleased stores.
+
+Service-observed missing evidence uses a discriminated ReportGap union; model-proposed missing prose stays in modelMissing, including exact look-alikes of valid service codes or IDs. Product rendering and generated manifests keep these origins separate. The existing review fact/coverage copy is reused; the acceptance control remains an explicit follow-up for the UI agent.
+
+Combined schema 11 retains this report/review storage together with the first-run computer activity table; earlier unreleased schemas 1–10 refuse with fresh-state. The existing Opus-authored acceptance control and first-run/recovery surfaces are both retained. The integrated deterministic journey covers fresh owner setup and fake-store device sign-in, independent overlapping public Schway hosts, committed cited synthesis, exact-revision review and private artifact downloads.
+
+## PR #273 withdrawal review
+
+Citations are an incomplete description of data used by synthesis. Enforce retained producer fences at the shared source-currentness boundary, with an additive producer-attempt pin on attempt-derived sources and durable origin resolution for existing schema-10 outputs. Retained attempt validation follows all actual graph inputs and delegation parents iteratively. Context/tool/publication guards and report/staging reconciliation therefore cover uncited transitive text and every report/artifact copy. Preserve committed evidence after ordinary execution stop/expiry; destructive computer reset/delete and revoked source/access/Bot/resource lineage withdraw descendants. No schema bump or required export change is needed.

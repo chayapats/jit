@@ -61,6 +61,11 @@ export class DeviceSignIns {
   }
   /** Whether a provider is still owned by a start/poll, including cancellation cleanup. */
   busy(provider: RouteProvider): boolean { return !this.#flows.get(provider)?.settled && this.#flows.has(provider); }
+  /** Safe metadata for the currently occupied provider; callers must authenticate before exposing it. */
+  current(provider: RouteProvider): SignInView | null {
+    const flow = this.#flows.get(provider);
+    return flow && !flow.settled ? { ...flow.view } : null;
+  }
   /** Unknown ids (including after restart) are cancelled, with no reconstructed approval data. */
   read(provider: RouteProvider, id: string): SignInView {
     const flow = this.#flows.get(provider);

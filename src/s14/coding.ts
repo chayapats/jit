@@ -112,7 +112,10 @@ export class S14Coding {
       this.app.reports.reconcile(tx);
       const runs = tx.all<{ record_json: string }>("SELECT record_json FROM coding_runs WHERE work_id=? ORDER BY rowid", workId).map(row => JSON.parse(row.record_json) as CodingRun);
       const available = runs.every(run => {
-        try { return this.app.authority.retainedEvidence(tx, run.attemptId); } catch { return false; }
+        try {
+          return (this.app.memory.attemptCurrent(tx, run.attemptId) || this.app.botLifecycle.retained(tx, run.attemptId)) &&
+            this.app.authority.retainedEvidence(tx, run.attemptId);
+        } catch { return false; }
       });
       const checks = available ? tx.all<{ attemptId: string; ordinal: number; record_json: string }>("SELECT c.attempt_id AS attemptId,c.ordinal,c.record_json FROM coding_checks c JOIN coding_runs r ON r.attempt_id=c.attempt_id WHERE r.work_id=? ORDER BY c.rowid", workId)
         .map(({ record_json, ...row }) => ({ ...row, result: JSON.parse(record_json) as CodingCheckResult })) : [];
@@ -248,7 +251,7 @@ export class S14Coding {
       });
       this.saveRun(run);
       return { state: "waiting", text: `Coding evidence: ${run.state}; base ${run.baseCommit}; head ${run.headCommit}; reason ${run.reason ?? "owner_review_required"}.`,
-        report: { title: "Coding execution evidence", claims: [{ id: "execution", kind: "inference", text: "Inspect the attached service-captured diff and actual command observations; no exhaustive coverage or owner completion is asserted.", citations: [], covers: [], conflicts: [] }], missing: [], limitations: ["Owner review required. No automatic push, PR or merge.", "Network egress is disabled; registry requirements are unrun.", "Test output is an execution observation, not proof of exhaustive coverage.", ...(run.reason ? [run.reason] : [])], artifactIds } };
+        report: { title: "Coding execution evidence", claims: [{ id: "execution", kind: "inference", text: "Inspect the attached service-captured diff and actual command observations; no exhaustive coverage or owner completion is asserted.", citations: [], covers: [], conflicts: [] }], missing: [], limitations: ["Owner review required. No automatic push, PR or merge.", job.repository.registry ? "Only explicitly scoped registry checks may use the registry proxy; ordinary workspace/model commands have no network egress." : "Network egress is disabled; registry requirements are unrun.", "Test output is an execution observation, not proof of exhaustive coverage.", ...(run.reason ? [run.reason] : [])], artifactIds } };
     } catch (error) {
       run.state = "interrupted";
       run.reason = error instanceof AppError ? error.code : "coding_execution_unconfirmed";

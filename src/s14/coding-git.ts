@@ -3,9 +3,9 @@ import { containsCredential } from "../security/credentials";
 import { registerSecretFingerprint } from "../security/secret-fingerprints";
 import type { AppTransaction } from "../store";
 import { record, save, type S14Application } from "./application";
-import type { Effect, EffectAction } from "./authority-types";
+import type { Attempt, Effect, EffectAction } from "./authority-types";
 import type { CodingJob, CodingRun } from "./coding-types";
-import type { OwnerActor } from "./types";
+import type { Bot, OwnerActor } from "./types";
 import { canonical, digest, exact, identity, integer, text } from "./validation";
 import { codingCommit, codingGit, codingGitOutput, codingPath } from "./coding-protocol";
 import { applyGitConnection, gitConnection } from "./coding-connections";
@@ -34,8 +34,11 @@ export class S14GitEffects {
   }
 
   private currentConnection(tx: AppTransaction, action: GitAction): GitConnection {
+    const attempt = record<Attempt>(tx, "work_attempts", action.codingAttemptId);
+    const bot = record<Bot>(tx, "bots", action.repository.botId);
     if (tx.get<{ generation: number }>("SELECT generation FROM owner")?.generation !== action.ownerGeneration ||
-        !record<import("./types").Bot>(tx, "bots", action.repository.botId).enabled) throw new AppError("git_authority_changed", 403);
+        !bot.enabled || canonical(bot) !== canonical(attempt.snapshot.bot) ||
+        canonical(this.app.route(bot.routeId)) !== canonical(attempt.snapshot.route)) throw new AppError("git_authority_changed", 403);
     const connection = gitConnection(tx, action.connection.id);
     const latest = tx.get<{ revision: number }>("SELECT max(revision) AS revision FROM lifecycle.git_connection_revisions WHERE connection_id=?", connection.id)?.revision ?? connection.revision;
     if (connection.revision !== action.connection.revision || connection.revision !== latest || connection.removed || connection.secret !== "set" ||

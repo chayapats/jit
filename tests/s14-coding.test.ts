@@ -147,6 +147,10 @@ test("owner registry scope is visible, exact and permits install/test dispatch o
   f.app.authority.commit(attempt.id, await f.app.coding.run(join(f.root, "native"), attempt, new AbortController().signal));
   expect(f.app.coding.view(f.auth.actor, attempt.workId).runs[0]!.state).toBe("reviewable");
   expect(f.runtime.registryRequests).toHaveLength(2);
+  const report = f.app.reports.view(f.auth.actor, f.app.coding.view(f.auth.actor, attempt.workId).runs[0]!.reportId!);
+  if (report.state !== "available") throw new Error("missing registry report");
+  expect(report.report.limitations).toContain("Only explicitly scoped registry checks may use the registry proxy; ordinary workspace/model commands have no network egress.");
+  expect(report.report.limitations).not.toContain("Network egress is disabled; registry requirements are unrun.");
   expect(f.runtime.registryRequests.every(r => r.hosts.join() === "registry.npmjs.org")).toBe(true);
   expect(readFileSync(f.runtime.local(`/workspace/coding/${attempt.workId}/dependency.txt`), "utf8")).toBe("installed");
 });
@@ -216,4 +220,32 @@ test("connection rotation while repository bytes are in flight refuses import an
   gate.release();
   await expect(running).rejects.toThrow("connection_out_of_scope");
   expect(f.runtime.requests).toHaveLength(0);
+});
+
+test.each(["memory.forget", "memory.publish"] as const)("coding diffs/check logs inherit source/access/producer pins, survive expiry and withdraw after %s", async kind => {
+  const f = await fixture(), conversation = f.app.home(f.auth.actor).conversations[0]!;
+  const claim = f.app.execute(f.auth.actor, { kind: "memory.remember", requestId: rid(), expectedRevision: conversation.revision,
+    payload: { conversationId: conversation.id, text: "Repair generated repository using answer fixture evidence" } }).claim!;
+  const { attempt } = f.start();
+  expect(f.store.read(tx => f.app.memory.attemptPacket(tx, attempt.id).claims.map(c => c.id))).toContain(claim.id);
+  f.app.authority.commit(attempt.id, await f.app.coding.run(join(f.root, "native"), attempt, new AbortController().signal));
+  const run = f.app.coding.view(f.auth.actor, attempt.workId).runs[0]!;
+  const report = f.app.reports.view(f.auth.actor, run.reportId!);
+  if (report.state !== "available") throw new Error("missing coding report");
+  const evidence = report.artifacts.filter(a => a.name.startsWith("coding-"));
+  expect(evidence).toHaveLength(2);
+  for (const artifact of evidence) {
+    const source = f.store.read(tx => JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM memory_sources WHERE id=?", artifact.source.id)!.record_json));
+    expect(source.producerAttemptId).toBe(attempt.id);
+    expect(source.access.map((pin: { id: string }) => pin.id)).toContain(claim.id);
+  }
+  f.clock.now = attempt.snapshot.grant.expiresAt + 1;
+  expect(() => f.app.store.read(tx => f.app.authority.assertTool(tx, attempt.id, "coding"))).toThrow("grant_expired");
+  expect(f.app.reports.view(f.auth.actor, run.reportId!).state).toBe("available");
+  for (const artifact of evidence) expect(f.app.artifacts.download(f.auth.actor, artifact.id).bytes.length).toBe(artifact.size);
+  f.app.execute(f.auth.actor, { kind, requestId: rid(), expectedRevision: 1, payload: { claim } });
+  expect(f.app.reports.view(f.auth.actor, run.reportId!).state).toBe("unavailable");
+  for (const artifact of evidence) expect(() => f.app.artifacts.download(f.auth.actor, artifact.id)).toThrow("artifact_unavailable");
+  const view = f.app.coding.view(f.auth.actor, attempt.workId);
+  expect(view.available).toBe(false); expect(view.job).toBeNull(); expect(view.checks).toEqual([]);
 });

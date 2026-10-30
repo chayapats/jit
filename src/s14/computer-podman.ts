@@ -376,6 +376,15 @@ export class BotPodmanRuntime implements ComputerRuntime {
     else await client.send("Input.dispatchMouseEvent", { type: "mouseWheel", x: 640, y: 400, deltaX: 0, deltaY: input.deltaY }, { sessionId });
     allowed();
   }
+  /** Reads target metadata through the protected pipe; the application withholds arbitrary website titles and URLs. */
+  async pageInfo(handle: ComputerHandle, allowed: () => void): Promise<{ url?: string; title?: string }> {
+    const { client, sessionId } = await this.browser(handle, allowed);
+    allowed();
+    const result = await client.send("Target.getTargetInfo", {}, { sessionId });
+    allowed();
+    const info = result.targetInfo as { url?: unknown } | undefined;
+    return info?.url === "about:blank" ? { url: "about:blank" } : {};
+  }
   /** Captures one bounded in-memory PNG through the protected pipe, retaining no website data in the service. */
   async screenshot(handle: ComputerHandle, allowed: () => void): Promise<Uint8Array> {
     const { client, sessionId } = await this.browser(handle, allowed);

@@ -1,6 +1,6 @@
 # app.coding-work/v1
 
-CODE14-01 (#257), Phase B; FR-06/07/08/14/17/35/36/42; NFR-01/02/07/14. Logic only, opt-in `--s14`; UI acceptance remains pending for Claude Opus 5.5 high. Exported contracts: `src/s14/coding-types.ts`, `coding-protocol.ts`, `coding-model.ts`, `coding.ts`. Introduced schema **13**; the current combined schema **15** refuses unreleased 1–14 without migration or erasure.
+CODE14-01 (#257), Phase B; FR-06/07/08/14/17/35/36/42; NFR-01/02/07/14. Logic only, opt-in `--s14`; UI acceptance remains pending for Claude Opus 5.5 high. Exported contracts: `src/s14/coding-types.ts`, `coding-protocol.ts`, `coding-model.ts`, `coding.ts`. Introduced schema **13**; the current combined schema **16** refuses unreleased 1–15 without migration or erasure.
 
 Owner commands use `S14Application.execute`, the existing authenticated envelope, exact keys, receipts, audit and rollback boundary:
 
@@ -34,4 +34,10 @@ Queries: `repositories(actor):CodingRepository[]`; `view(actor,workId):CodingVie
 
 Deterministic generated-repository/scripted-model/fake-runtime tests prove actual edit→test→diff protocol, credential absence, hook/config/path refusal, duplicate receipt/no replay, changed-during-test partial state, scoped registry dispatch/refusal and unavailable proxy checks and cancellation. They do not prove a container kernel boundary. Live/paid calls, real Linux x64/arm64 isolation, product UX and production package availability remain pending. UI boxes stay unticked.
 
-Schema 15 adds identity-only git_preload_releases and captures normalized registry/connection scope in repository/job JSON; earlier unreleased stores refuse before writable open. ADR 0057 records these engineering choices.
+Schema 16 retains identity-only git_preload_releases and captures normalized registry/connection scope in repository/job JSON; earlier unreleased stores refuse before writable open. ADR 0057 records these engineering choices.
+
+PR #276 reconciliation uses combined schema **16**, one above both unreleased parents (coding 15 and main 13); all 1–15 refuse before writable open. All existing main command/query, graph, review, computer-activity, routines/lifecycle and independent ledger tables coexist with coding/Git storage. Current schema details supersede historical introduction versions in ADR 0057; ADR 0058 records integration choices.
+
+Coding runs through the ordinary graph scheduler. A settled `handler_waiting` coding lane with a committed report and original `effect_push` authority retains its exact Git proposal/export seam; it never requeues a model or shell. Lane stop, current owner/Bot generation/capability revision, grant/resource/computer and memory fences still apply to each call. Generic `work.retry`/`work.summarize` refuse coding jobs with `coding_never_replay` atomically; a new coding execution requires new owner work. Effect-bearing checkpoints are `reconcile_only`, including when computer tools are also present.
+
+`CodingView.available` requires current source/access/producer lineage (or explicit owner-retained Bot evidence) as well as retained authority. Withdrawn jobs/check logs are withheld alongside report/artifact content. Execution expiry alone retains committed owner evidence while refusing execution; retirement/capability changes retain only owner-inspectable evidence and never keep Git authority. Registry reports describe the actual scoped path rather than claiming every registry check was unrun.

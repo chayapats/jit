@@ -9,7 +9,9 @@ export interface SnapshotShare {
   workId: string | null; expiresAt: number; active: boolean; source: MemoryRef;
   name: string; mediaType: "text/plain" | "text/markdown" | "application/json"; size: number; sha256: string;
 }
-/** Creates a share in an explicitly configured receiver resource slot without granting execution. */
+/** One unused resource identity and enabled Bots whose owner-accepted ceilings contain it; empty receivers require exact capability acceptance. */
+export interface FreeShareSlot { scopeId: string; receiverBotIds: string[] }
+/** Creates a share in an explicitly owner-selected receiver resource slot without granting execution. */
 export type CreateSnapshotShare = Envelope<"snapshot.share", { scopeId: string; target: SnapshotTarget; receiverBotId: string; workId: string | null; expiresAt: number }>;
 /** Revokes future use at an exact share revision without claiming erasure of disclosed knowledge. */
 export type RevokeSnapshotShare = Envelope<"snapshot.revoke", { shareId: string }>;

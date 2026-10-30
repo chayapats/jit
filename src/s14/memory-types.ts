@@ -10,6 +10,8 @@ export interface MemorySource extends MemoryRef {
   access?: MemoryPacket["access"];
   /** Original snapshot permission retained by every source descendant. */
   snapshotShare?: import("./authority-types").ScopeRef;
+  /** Trusted producing attempt; its retained Bot/resource/computer fences apply to every descendant. */
+  producerAttemptId?: string;
 }
 /** Retained assertion with conservative dependencies; a fact records an owner statement rather than objective truth. */
 export interface MemoryClaim extends MemoryRef {
@@ -23,7 +25,7 @@ export interface MemoryAccess { id: string; revision: number; shared: boolean; p
 /** Explicit nontransitive share of one immutable claim to a receiver with a named resource ceiling. */
 export interface MemoryShare { id: string; revision: number; claim: MemoryRef; receiverBotId: string; expiresAt: number; active: boolean }
 /** Current authenticated owner decision; memory extraction cannot create one. */
-export interface MemoryDecision extends MemoryRef { conversationId: string; key: string; text: string; source: MemoryRef }
+export interface MemoryDecision extends MemoryRef { conversationId: string; key: string; text: string; source: MemoryRef; pinned?: boolean }
 /** Recorded bounded input with pinned decisions and currentness checks before tools and publication. */
 export interface MemoryPacket {
   id: string; botId: string; botRevision: number; botGeneration: number; ownerGeneration: number;
@@ -46,11 +48,13 @@ export type PublishMemoryCommand = Envelope<"memory.publish" | "memory.revoke", 
 export type ShareMemoryCommand = Envelope<"memory.share", { claim: MemoryRef; scopeId: string; receiverBotId: string; expiresAt: number }>;
 /** Owner decisions are pinned from live rows on every fresh context assembly. */
 export type SetMemoryDecisionCommand = Envelope<"memory.decision.set", { conversationId: string; key: string; text: string }>;
+/** Unpins an exact current decision without deleting its retained owner source. */
+export type UnpinMemoryDecisionCommand = Envelope<"memory.decision.unpin", { decision: MemoryRef }>;
 /** app.memory-scope/v2 typed authenticated owner command union. */
-export type MemoryCommand = RememberCommand | CorrectMemoryCommand | WithdrawMemoryCommand | PublishMemoryCommand | ShareMemoryCommand | SetMemoryDecisionCommand;
+export type MemoryCommand = RememberCommand | CorrectMemoryCommand | WithdrawMemoryCommand | PublishMemoryCommand | ShareMemoryCommand | SetMemoryDecisionCommand | UnpinMemoryDecisionCommand;
 /** Credential-free mutation receipt; lifecycle commands retain identities rather than withdrawn payload. */
 export interface MemoryReceipt { kind: MemoryCommand["kind"]; requestId: string; claim?: MemoryRef; access?: MemoryAccess; share?: MemoryShare; decision?: MemoryRef; withdrawn?: number }
 /** Owner-only lifecycle label for a returned claim or source; it carries identities and never withdrawn payload. */
 export interface MemoryWithdrawal { kind: "claim" | "source"; id: string; mode: "corrected" | "forgotten" | "deleted"; source: MemoryRef | null }
 /** Owner impact preview with no authority and no mutation. */
-export interface MemoryImpact { claim: MemoryRef; claims: MemoryRef[]; sources: MemoryRef[]; contexts: string[]; reports: { id: string; workId: string; revision: number }[]; artifacts: string[]; nativePolicy: "fresh_sessions_retire_on_close" }
+export interface MemoryImpact { claim: MemoryRef; claims: MemoryRef[]; sources: MemoryRef[]; contexts: string[]; reports: { id: string; workId: string; revision: number }[]; artifacts: string[]; names: { bots: { id: string; name: string }[]; work: { id: string; title: string }[]; omittedBots: number; omittedWork: number }; nativePolicy: "fresh_sessions_retire_on_close" }
