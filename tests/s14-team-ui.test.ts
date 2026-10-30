@@ -61,12 +61,88 @@ test("running lanes state real overlap, the limit, the queue and the dependency 
   await settle(run);
 });
 
-test("lanes and timeline never invent an interval: a queued lane has no bar, and no run recorded says so", async () => {
+test("lanes and timeline never invent a run: pending lanes draw only their recorded phases, and no run recorded says so", async () => {
   const f = await fixture(), work = f.start();
+  f.clock.now += 30000;
   const html = await f.page(`/work/${work.id}`), body = text(html);
   expect(body).toContain(en["s14.team.working_none"]); expect(body).toContain(en["s14.timeline.none"]);
-  expect(html).not.toContain("s-tl-track"); expect(barCount(html, "run")).toBe(0);
-  expect(body).toContain(en["s14.step_state.queued"]);
+  expect(barCount(html, "run")).toBe(0); expect(barCount(html, "done")).toBe(0);
+  expect(barCount(html, "queued")).toBe(3); expect(barCount(html, "waiting")).toBe(1);
+  expect(body).toContain(en["s14.step_state.queued"]); expect(body).not.toContain(en["s14.timeline.overlap"]); strict(html);
+});
+
+test("queued and waiting phases come from recorded starts, stay after the lane moves on and never count as run time", async () => {
+  const f = await fixture(), started = f.clock.now, run = await overlapping(f);
+  f.clock.now += 90000;
+  const live = await f.page(`/work/${run.work.id}`), body = text(live), steps = f.steps(run.work.id);
+  expect(steps.map(step => [step.queuedAt, step.waitingAt])).toEqual([[started, null], [started, null], [started, null], [null, started]]);
+  // Two lanes admitted at once queued for no recorded time, so only the held lane and the dependent lane show a phase.
+  expect(live.match(/<rect class="s-bar-queued"[^>]*>/g)).toEqual(['<rect class="s-bar-queued" x="0" y="3" width="1000" height="6"/>']);
+  expect(live.match(/<line class="s-bar-waiting"[^>]*>/g)).toEqual(['<line class="s-bar-waiting" x1="0" x2="1000" y1="6" y2="6"/>']);
+  expect(barCount(live, "run")).toBe(2);
+  expect(body).toContain(`${en["s14.timeline.overlap"]} 1 ${en["s14.time.min"]} 30 ${en["s14.time.sec"]}`);
+  for (const key of ["s14.timeline.key_waiting", "s14.timeline.key_queued", "s14.timeline.col_waited", "s14.timeline.col_queued"] as const) expect(body).toContain(en[key]);
+  expect(body).toContain(`08:00:00 UTC · ${en["s14.timeline.so_far"]} 1 ${en["s14.time.min"]} 30 ${en["s14.time.sec"]}`);
+  f.clock.now += 30000; await settle(run);
+  const done = await f.page(`/work/${run.work.id}`), table = text(done), lanes = f.steps(run.work.id);
+  expect(lanes.map(step => step.state)).toEqual(["committed", "committed", "committed", "committed"]);
+  expect(lanes[2]).toMatchObject({ queuedAt: started, startedAt: started + 120000 });
+  expect(lanes[3]).toMatchObject({ waitingAt: started, queuedAt: started + 120000 });
+  // Phase starts remain recorded; each closed phase now ends at the observation after it, not at the page's clock.
+  f.clock.now += 600000;
+  const later = await f.page(`/work/${run.work.id}`);
+  expect(barCount(later, "queued")).toBe(1); expect(barCount(later, "waiting")).toBe(1); expect(later).not.toContain("s-tl-now");
+  expect(later).toContain('class="s-bar-queued" x="0" y="3" width="1000"');
+  expect(table).toContain(`2 ${en["s14.time.min"]}`); expect(table).not.toContain(en["s14.timeline.so_far"]); strict(later);
+});
+
+test("a lane cancelled before it ran marks where its phase began and never stretches that phase to now", async () => {
+  const f = await fixture(), run = await overlapping(f), lane = f.steps(run.work.id)[2]!;
+  f.app.execute(f.auth.actor, { kind: "work.step.stop", requestId: rid(), expectedRevision: lane.revision, payload: { workId: run.work.id, stepId: lane.id } });
+  f.clock.now += 60000;
+  const html = await f.page(`/work/${run.work.id}`), body = text(html);
+  expect(f.steps(run.work.id)[2]).toMatchObject({ state: "cancelled", startedAt: null, settledAt: null });
+  expect(barCount(html, "open")).toBe(1); expect(barCount(html, "queued")).toBe(0);
+  expect(body).toContain(en["s14.timeline.end_not_recorded"]);
+  expect(html.match(/class="s-tl-now"/g)).toHaveLength(3);
+  await settle(run);
+});
+
+test("a stopped run keeps its outline and gains a cap, so it never reads as a queue", async () => {
+  const f = await fixture(), run = await overlapping(f), lane = f.steps(run.work.id)[1]!;
+  f.app.execute(f.auth.actor, { kind: "work.step.stop", requestId: rid(), expectedRevision: lane.revision, payload: { workId: run.work.id, stepId: lane.id } });
+  f.clock.now += 1000; await settle(run);
+  const html = await f.page(`/work/${run.work.id}`);
+  expect(barCount(html, "stopped")).toBe(1); expect(barCount(html, "cap")).toBe(1);
+});
+
+test("the Thai timeline and lane name the phases and the holding ceiling in Thai", async () => {
+  const f = await fixture({ language: "th" }), run = await overlapping(f);
+  f.clock.now += 5000;
+  const html = await f.page(`/work/${run.work.id}`), body = text(html);
+  for (const key of ["s14.timeline.key_waiting", "s14.timeline.key_queued", "s14.timeline.col_waited"] as const) expect(body).toContain(th[key]);
+  expect(body).toContain(`${th["s14.team.held_work"]}: 2`); strict(html, "th");
+  await settle(run);
+});
+
+test.each(["global", "route", "bot", "computer"] as const)("a queued lane names the %s ceiling holding it, and only then", async ceiling => {
+  const f = await fixture({ scheduler: { global: 4, route: 4, bot: 4, computer: 4, [ceiling]: 1 } });
+  const first = f.start({ bots: [{ id: "jit", revision: 1 }], tools: ["computer"] });
+  const work = f.start({ bots: [{ id: ceiling === "bot" ? "jit" : "scout", revision: 1 }], tools: ["computer"] });
+  const attempt = f.app.authority.admit(first.id, rid(), { botId: "jit", tools: ["computer"], scopes: [], input: "Hold capacity", calls: 1, outputBytes: 100 });
+  const held = await f.page(`/work/${work.id}`), body = text(held), word = en[`s14.team.held_${ceiling}`];
+  expect(f.app.graph.view(f.auth.actor, work.id).steps[0]!.queueCeiling).toBe(ceiling);
+  expect(body).toContain(ceiling === "computer" ? `${word}.` : `${word}: 1.`); expect(body).toContain(en["s14.step_line.queued"]); strict(held);
+  f.app.authority.settle(attempt.id);
+  const free = text(await f.page(`/work/${work.id}`));
+  expect(free).not.toContain("Held by"); expect(free).toContain(en["s14.step_line.queued_free"]);
+});
+
+test("a queued lane held by the grant says this work's limit, and a queue never reads as a fault", async () => {
+  const f = await fixture(), run = await overlapping(f), html = await f.page(`/work/${run.work.id}`), body = text(html);
+  expect(body).toContain(`${en["s14.team.held_work"]}: 2. ${en["s14.step_line.queued"]}`);
+  expect(body).not.toContain("Capacity is full");
+  await settle(run);
 });
 
 test("a step stops by a no-script post: stopping until it settles, the sibling keeps running, nothing replaces it", async () => {
@@ -297,7 +373,10 @@ test("hostile report and source text stays inert data: no markup, no links out, 
     expect(main).toContain("&lt;img src=x onerror=alert(1)&gt;"); strict(html);
   }
   const report_ = await f.page(`/work/${work.id}?tab=report`);
-  expect(forms(report_)).toBeLessThanOrEqual(forms(baseline));
+  // The owner's own accept control is the only form a report adds, and it carries only service identities.
+  expect(forms(report_)).toBeLessThanOrEqual(forms(baseline) + 1);
+  expect(formsFor(report_, "/s14/commands").map(fields).map(item => JSON.parse(item.command!).kind)).toEqual(["report.review.accept"]);
+  expect(commands(report_, "report.review.accept")[0]!.command).not.toContain("alert");
   expect([...report_.matchAll(/<button\b[^>]*>([\s\S]*?)<\/button>/g)].map(m => m[1]).join(" ")).not.toContain("Approve");
   expect(report_.match(/href="https?:/g)).toBeNull();
   // Look-alike gap strings never become typed lines; they stay visible as Bot text.
@@ -368,16 +447,142 @@ test("model text imitating real targets, claims and read IDs never becomes a ser
   expect(html).toContain('class="s-untrusted'); strict(html);
 });
 
-test("accepted report review updates the existing fact without certifying partial coverage or adding a control", async () => {
-  const f = await fixture(), work = await reported(f, async a => report([claim(a, await f.read(a))]));
-  const before = await f.page(`/work/${work.id}?tab=report`), review = f.app.reports.review(f.auth.actor, work.id);
-  f.app.execute(f.auth.actor, { kind: "report.review.accept", requestId: rid(), expectedRevision: review.revision, payload: { reportId: review.reportId!, reportRevision: review.reportRevision! } });
-  const after = await f.page(`/work/${work.id}?tab=report`), body = text(after);
-  expect(body).toContain(`${en["pr.reviewed"]} r1`);
+const accept = (html: string) => commands(html, "report.review.accept");
+const buttonOf = (html: string) => /<form[^>]*action="\/s14\/commands"[^>]*>(?:(?!<\/form>)[\s\S])*?report\.review\.accept[\s\S]*?<button class="([^"]*)">([^<]*)<\/button>/.exec(html);
+
+test("the accept control sends the exact review revision and report identity through a no-script post", async () => {
+  const f = await fixture(), work = await reported(f, async a => report([claim(a, await f.read(a))], { missing: ["Vendor B page unread"] }));
+  const html = await f.page(`/work/${work.id}?tab=report`), forms = accept(html);
+  const review = await (await f.get(`/api/s14/work/${work.id}/report-review`)).json() as import("../src/s14/report-types").ReportReview;
+  expect(review).toMatchObject({ workId: work.id, reportRevision: 1, completion: "owner_review_required", acceptance: null });
+  expect(forms).toHaveLength(1); expect(Object.keys(forms[0]!).sort()).toEqual(["command", "csrf"]);
+  const command = JSON.parse(forms[0]!.command!);
+  expect(Object.keys(command).sort()).toEqual(["expectedRevision", "kind", "payload", "requestId"]);
+  expect(command).toMatchObject({ kind: "report.review.accept", expectedRevision: review.revision, payload: { reportId: review.reportId, reportRevision: review.reportRevision } });
+  expect(Object.keys(command.payload).sort()).toEqual(["reportId", "reportRevision"]);
+  const body = text(html);
+  expect(body).toContain(en["s14.report.review.accept_note"]); expect(body).toContain(`${en["s14.report.review.stays_partial"]} 2 ${en["s14.report.missing_count"]}`);
+  expect(html.indexOf('id="s14-review"')).toBeGreaterThan(html.indexOf(en["s14.report.files"]));
+  expect(html.indexOf('id="s14-review"')).toBeLessThan(html.indexOf('id="s14-revisions"'));
+  expect(html).toContain('href="#s14-review"'); strict(html);
+  const pane = await f.page(`/chats/${f.conversationId}?work=${work.id}&tab=report`);
+  expect(accept(pane)).toHaveLength(1); expect(pane).toContain('id="s14-review"'); strict(pane);
+});
+
+test.each(["en", "th"] as const)("the %s control names the revision and partial, and no word of it reads as finishing the work", async language => {
+  const f = await fixture({ language }), words = dictionaries[language], url = "https://example.com/article";
+  const partial = await reported(f, async a => report([claim(a, await f.read(a))]));
+  const label = buttonOf(await f.page(`/work/${partial.id}?tab=report`))!;
+  expect(label[2]).toBe(`${words["s14.report.review.accept"]} r1 ${words["s14.report.review.as_partial"]}`); expect(label[1]).toBe("s-btn");
+  const covered = await reported(f, async a => report([claim(a, await f.read(a), { covers: ["page"] })]), { requiredEvidence: [{ id: "page", label: "Maker's page", url, coverage: "full_content_returned", freshness: "any" }] });
+  const whole = buttonOf(await f.page(`/work/${covered.id}?tab=report`))!;
+  expect(whole[2]).toBe(`${words["s14.report.review.accept"]} r1`); expect(whole[1]).toBe("s-btn primary");
+  for (const button of [label[2]!, whole[2]!]) expect(button).not.toMatch(/complete|done|close|finish|approve|เสร็จ|ครบ|ปิด|อนุมัติ/i);
+});
+
+test("accepting a partial report records that exact revision and leaves coverage, gaps, work and files alone", async () => {
+  const f = await fixture(), work = await reported(f, async a => report([claim(a, await f.read(a))], { missing: ["Vendor B page unread"], limitations: ["Prices are a week old"] }));
+  const before = f.app.reports.list(f.auth.actor, work.id)[0]!, workBefore = f.app.authority.view(f.auth.actor, work.id); if (before.state !== "available") throw Error("unavailable");
+  const form = accept(await f.page(`/work/${work.id}?tab=report`))[0]!;
+  const landed = await follow(f, await f.post("/s14/commands", form)), path = `/chats/${f.conversationId}?work=${work.id}&tab=report#latest`;
+  expect(landed.headers.get("location")).toBe(path);
+  const after = await f.page(path), body = text(after), review = f.app.reports.review(f.auth.actor, work.id);
+  expect(review).toMatchObject({ completion: "owner_accepted", acceptance: { reportId: before.report.id, reportRevision: 1 } });
+  expect(body).toContain(`${en["s14.report.review.accepted"]} r1`); expect(body).toContain(en["s14.report.review.accepted_at"]); expect(body).toContain(en["s14.report.review.clears"]);
   expect(body).not.toContain(en["s14.report.completion.owner_review_required"]);
-  expect(body).toContain(en["s14.report.coverage.partial"]);
-  expect(body).toContain(en["s14.report.note_partial"]);
-  expect(commands(after, "report.review.accept")).toEqual([]);
-  expect(formsFor(after, "/s14/commands").length).toBe(formsFor(before, "/s14/commands").length);
+  expect(body).toContain(en["s14.report.coverage.partial"]); expect(body).toContain(en["s14.report.note_partial"]); expect(body).toContain("Vendor B page unread"); expect(body).toContain(en["s14.report.miss.rule"]);
+  expect(accept(after)).toEqual([]); expect(after).not.toContain('href="#s14-review"');
+  const again = f.app.reports.list(f.auth.actor, work.id)[0]!; if (again.state !== "available") throw Error("unavailable");
+  expect(again.report).toEqual(before.report); expect(again.artifacts).toEqual(before.artifacts);
+  expect(f.app.authority.view(f.auth.actor, work.id).work).toEqual(workBefore.work);
   strict(after);
+  // The browser's own retry of that one press lands on the same receipt and records nothing new.
+  expect((await follow(f, await f.post("/s14/commands", form))).headers.get("location")).toBe(path);
+  expect(f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) n FROM audit WHERE kind='report.review.accept'")!.n)).toBe(1);
+});
+
+/** Two lanes with the second report held back, so the owner can accept r1 before r2 arrives. */
+async function superseded(f: TeamFixture) {
+  const entered = Promise.withResolvers<void>(), hold = Promise.withResolvers<void>();
+  f.scripts.lanes = {
+    "jit:research": async a => ({ state: "ready", text: "One", report: report([claim(a, await f.read(a))], { title: "First revision" }) }),
+    "scout:research": async a => { const source = await f.read(a); entered.resolve(); await hold.promise; return { state: "ready", text: "Two", report: report([claim(a, source)], { title: "Second revision" }) }; },
+  };
+  const work = f.start({ bots: [{ id: "jit", revision: 1 }, { id: "scout", revision: 1 }] }), pending = f.app.authority.drain();
+  await entered.promise;
+  while (!f.app.reports.list(f.auth.actor, work.id).length) await Bun.sleep(1);
+  return { work, publish: async () => { hold.resolve(); await pending; } };
+}
+
+test("a new revision clears acceptance: the older one cannot be reviewed and the latest asks again", async () => {
+  const f = await fixture(), run = await superseded(f), id = run.work.id;
+  const form = accept(await f.page(`/work/${id}?tab=report`))[0]!;
+  await f.post("/s14/commands", form);
+  expect(text(await f.page(`/work/${id}?tab=report`))).toContain(`${en["s14.report.review.accepted"]} r1`);
+  await run.publish();
+  const latest = await f.page(`/work/${id}?tab=report`), body = text(latest), review = f.app.reports.review(f.auth.actor, id);
+  expect(review).toMatchObject({ reportRevision: 2, completion: "owner_review_required", acceptance: null });
+  expect(body).toContain(en["s14.report.completion.owner_review_required"]); expect(body).not.toContain(en["s14.report.review.accepted"]);
+  expect(JSON.parse(accept(latest)[0]!.command!)).toMatchObject({ expectedRevision: review.revision, payload: { reportId: review.reportId, reportRevision: 2 } });
+  const first = f.app.reports.list(f.auth.actor, id)[0]!; if (first.state !== "available") throw Error("unavailable");
+  const older = await f.page(`/work/${id}?tab=report&report=${first.report.id}`), words = text(older);
+  expect(words).toContain(en["s14.report.review.latest_only"]); expect(words).not.toContain(en["s14.report.completion.owner_review_required"]);
+  expect(accept(older)).toEqual([]); expect(older).not.toContain('id="s14-review"'); strict(older);
+});
+
+test("a form left open across a new revision is refused and leads back to the report", async () => {
+  const f = await fixture(), run = await superseded(f), id = run.work.id;
+  const form = accept(await f.page(`/work/${id}?tab=report`))[0]!;
+  await run.publish();
+  const refused = await f.post("/s14/commands", form), page = await refused.text();
+  expect(refused.status).toBe(409); expect(page).toContain(en["s14.error.stale_revision"]); expect(page).toContain(`href="/work/${id}?tab=report"`);
+  expect(f.app.reports.review(f.auth.actor, id).acceptance).toBeNull();
+});
+
+test.each(["memory.forget", "memory.delete"] as const)("%s clears acceptance: the revision is withdrawn and offers no control", async kind => {
+  const f = await fixture();
+  const remembered = f.app.execute(f.auth.actor, { kind: "memory.remember", requestId: rid(), expectedRevision: f.app.conversation(f.auth.actor, f.conversationId).conversation.revision, payload: { conversationId: f.conversationId, text: "Report style memory" } });
+  const work = await reported(f, async a => report([claim(a, await f.read(a))]));
+  const form = accept(await f.page(`/work/${work.id}?tab=report`))[0]!;
+  await f.post("/s14/commands", form);
+  const accepted = await f.page(`/work/${work.id}?tab=report`);
+  expect(text(accepted)).toContain(en["s14.report.review.clears"]);
+  f.app.execute(f.auth.actor, { kind, requestId: rid(), expectedRevision: 1, payload: { claim: remembered.claim! } });
+  const html = await f.page(`/work/${work.id}?tab=report`), body = text(html);
+  expect(f.app.reports.review(f.auth.actor, work.id)).toMatchObject({ completion: "owner_review_required", acceptance: null });
+  expect(body).toContain(`${en["s14.report.withdrawn"]} r1`); expect(body).toContain(en["s14.report.review.withdrawn"]);
+  expect(body).not.toContain(`${en["s14.report.review.accepted"]} r1`); expect(accept(html)).toEqual([]); expect(html).not.toContain('id="s14-review"'); strict(html);
+});
+
+test("a withdrawn revision refuses a form left open, in words, with the way back to the report", async () => {
+  const f = await fixture(), work = await reported(f, async a => report([claim(a, await f.read(a))]));
+  const form = accept(await f.page(`/work/${work.id}?tab=report`))[0]!, view = f.app.reports.list(f.auth.actor, work.id)[0]!; if (view.state !== "available") throw Error("unavailable");
+  f.store.transaction(tx => tx.run("UPDATE reports SET content_json=NULL WHERE id=?", view.report.id));
+  const refused = await f.post("/s14/commands", form), page = await refused.text();
+  expect(refused.status).toBe(409); expect(page).toContain(en["s14.error.report_unavailable"]); expect(page).toContain(`href="/work/${work.id}?tab=report"`);
+});
+
+test("the owner's accepted state renders in both languages with valid markup and no raw keys", async () => {
+  for (const language of ["th", "en"] as const) {
+    const f = await fixture({ language }), work = await reported(f, async a => report([claim(a, await f.read(a))]));
+    await f.post("/s14/commands", accept(await f.page(`/work/${work.id}?tab=report`))[0]!);
+    for (const path of [`/work/${work.id}?tab=report`, `/chats/${f.conversationId}?work=${work.id}&tab=report`]) {
+      const html = await f.page(path), words = text(html);
+      expect(words).toContain(`${dictionaries[language]["s14.report.review.accepted"]} r1`); expect(words).toContain(dictionaries[language]["s14.report.review.clears"]);
+      expect(words).not.toMatch(/\bs14\.[a-z_]+\.?/); strict(html, language);
+    }
+  }
+});
+
+test.each(["en", "th"] as const)("the %s report separates gaps Jit recorded from gaps the Bot wrote, and labels the Bot's", async language => {
+  const f = await fixture({ language }), words = dictionaries[language];
+  const work = await reported(f, async a => report([claim(a, await f.read(a))], { missing: ["Vendor B page unread"] }), { requiredEvidence: [{ id: "power", label: "Power at full load", url: null, coverage: "snippet", freshness: "any" }] });
+  const html = await f.page(`/work/${work.id}?tab=report`), body = text(html);
+  const start = html.indexOf(`id="s14-coverage"`), block = html.slice(start, html.indexOf(`id="s14-claims"`));
+  const frame = /<div class="s-untrusted">[\s\S]*?<\/div><ul[\s\S]*?<\/ul><\/div>/.exec(block)![0], service = block.replace(frame, "");
+  expect(block).toContain(words["s14.report.missing_service"]);
+  expect(frame).toContain(words["s14.report.missing_bot"]); expect(frame).toContain("Vendor B page unread"); expect(frame).not.toContain("Power at full load");
+  expect(service).toContain("Power at full load"); expect(service).toContain(words["s14.report.miss.target"]); expect(service).not.toContain("Vendor B page unread");
+  expect(body).toContain(`1 ${words["s14.report.missing_count"]}`); expect(body).toContain(`1 ${words["s14.report.missing_from_bot"]}`);
+  strict(html, language);
 });

@@ -212,7 +212,7 @@ export function createS14Product(app: S14Application): S14Product {
     },
     inputSurface: (botId, requestId) => computerPath(botId, `&input=${requestId}#screen`),
     next(form, value) {
-      const extended = memoryNext(form, value) ?? teamNext(form, value); if (extended) return extended;
+      const extended = memoryNext(form, value) ?? teamNext(app, form, value); if (extended) return extended;
       const data = value as { kind?: string; payload?: Record<string, string>; proposalId?: string; taskId?: string; conversationId?: string } | null;
       if (form === "proposal-accept" || form === "proposal-revise") return `/proposals/${data?.proposalId ?? ""}`;
       if (form === "task-start") return `/work/${data?.taskId ?? ""}`;

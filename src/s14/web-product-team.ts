@@ -2,14 +2,14 @@ import { AppError } from "../errors";
 import type { S14Application, S14Command, S14Receipt } from "./application";
 import type { Work, WorkView } from "./authority-types";
 import type { GraphReceipt, GraphView, SchedulerLimits, WorkDefaults, WorkStep } from "./graph-types";
-import type { EvidenceRequirement, Report, ReportView } from "./report-types";
+import type { EvidenceRequirement, Report, ReportReview, ReportView } from "./report-types";
 import type { OwnerActor } from "./types";
 import { workLimitBounds, type S14Overview } from "./web-product";
 
 /** Owner-facing form values of the stored defaults; a wall limit that is not whole minutes rounds, never to zero. */
 export interface S14LimitValues { concurrent: number; minutes: number; reads: number }
-/** Graph lanes and committed report history of one opened work item, plus the revision being read. */
-export interface S14WorkTeam { graph: GraphView | null; reports: ReportView[]; selected: ReportView | null }
+/** Graph lanes and committed report history of one opened work item, the revision being read and the live review target. */
+export interface S14WorkTeam { graph: GraphView | null; reports: ReportView[]; selected: ReportView | null; review: ReportReview | null }
 /** Latest readable report of a work item, for work lists and cards. It is a link hint and proves nothing. */
 export interface S14ReportHint { id: string; revision: number; coverage: Report["coverage"] }
 /** Settings page for future-work defaults; `limits` are read-only installation ceilings, never owner authority. */
@@ -27,10 +27,10 @@ export function evidenceTargets(raw: string): EvidenceRequirement[] {
 
 /** Reads the lanes and reports of one opened work. `?report=` selects a revision; anything else opens the latest. */
 export function workTeam(app: S14Application, actor: OwnerActor, view: WorkView, url: URL): S14WorkTeam {
-  if (!view.work.grantId) return { graph: null, reports: [], selected: null };
+  if (!view.work.grantId) return { graph: null, reports: [], selected: null, review: null };
   const reports = app.reports.list(actor, view.work.id), wanted = url.searchParams.get("report");
   const selected = (wanted ? reports.find(item => (item.state === "available" ? item.report.id : item.id) === wanted) : undefined) ?? reports.at(-1) ?? null;
-  return { graph: app.graph.view(actor, view.work.id), reports, selected };
+  return { graph: app.graph.view(actor, view.work.id), reports, selected, review: app.reports.review(actor, view.work.id) };
 }
 
 /** One query over all reports for list hints. Its text is never read, so a withheld revision cannot leak through it. */
@@ -94,9 +94,14 @@ export function teamSurface(receipt: S14Receipt): string | null {
   if (receipt.kind === "report.review.accept") return `/chats/${receipt.conversationId}?work=${receipt.review.workId}&tab=report#latest`;
   return null;
 }
-/** Where a refused defaults post leads. A refused lane stop keeps the generic `payload.workId` path. */
-export function teamNext(form: string | null, value: unknown): string | null {
-  return form === "work-defaults" || (value as { kind?: string } | null)?.kind === "work.defaults.set" ? "/settings/work" : null;
+/** Where a refused post leads. A lane stop keeps the generic `payload.workId` path; a review names only its report, so that resolves to the work. */
+export function teamNext(app: S14Application, form: string | null, value: unknown): string | null {
+  const command = value as { kind?: string; payload?: { reportId?: unknown } } | null;
+  if (command?.kind === "report.review.accept" && typeof command.payload?.reportId === "string") {
+    const reportId = command.payload.reportId, row = app.store.read(tx => tx.get<{ work_id: string }>("SELECT work_id FROM reports WHERE id=?", reportId));
+    return row ? `/work/${row.work_id}?tab=report` : null;
+  }
+  return form === "work-defaults" || command?.kind === "work.defaults.set" ? "/settings/work" : null;
 }
 /** Rebuilds settings with the cause in words. A stale form shows the fresh saved values, so nothing is overwritten unseen. */
 export function teamRecover(app: S14Application, form: string, fields: Record<string, unknown>, code: string, actor: OwnerActor): S14WorkSettings | null {

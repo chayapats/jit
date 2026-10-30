@@ -29,7 +29,7 @@ The owner-only `report.review.accept` command is exactly `{kind,requestId,expect
 
 Acceptance grants no execution, creates no Work/grant/coverage mutation and does not turn partial into covered/complete. Publication of any new report revision increments the review revision and clears acceptance; all older report views then require review. Forget/delete/correction/revocation of the accepted report lineage clears acceptance and increments the review revision before reads or acceptance, including reconciliation after stale-image restore with the current independent ledger. An owner-generation change also invalidates acceptance. Valid acceptance survives an ordinary restart. Review history remains in authenticated command receipts; immutable report/file hashes do not change.
 
-UI follow-up: add the owner acceptance control using this command/query. This implementation adds no visible control or screen. The existing review fact reads the new projection, reusing existing reviewed copy; evidence coverage and partial wording stay independent.
+The Report tab carries the owner acceptance control using this command and projection (`src/s14/web-report.ts`). It appears only for the current review target; evidence coverage and partial wording stay independent. See section 19 of the experience document.
 
 Committed handoffs contain only accessible result excerpts (8192 bytes each) plus actual evidence read via the citation port, bounded to 49152 bytes. Omissions/excerpts are explicit gaps. Synthesis sees committed untrusted data, not peer native sessions, private workspaces or operator instructions. Successful siblings and older report revisions remain independently inspectable; a failed sibling cannot erase them or claim complete work.
 

@@ -1,6 +1,6 @@
 import { tr, trMaybe } from "../i18n";
 import type { Attempt, Work, WorkView } from "./authority-types";
-import type { WorkStep } from "./graph-types";
+import type { GraphView, WorkStep } from "./graph-types";
 import type { Bot } from "./types";
 import type { S14Page } from "./web";
 import { banner, botName, commandForm, computerPath, e, k, notice, ownerStrip, pill, shell, size, tile, flat } from "./web-pages";
@@ -8,12 +8,27 @@ import type { S14WorkResearch } from "./web-product-memory";
 import { defaultWorkLimits, workLimitBounds } from "./web-product";
 import { limitValues, type S14LimitValues, type S14WorkSettings, type S14WorkTeam } from "./web-product-team";
 
-/* Team work (TEAM14-01, F3, F4). Every interval is a recorded observation: a lane with no recorded start has no bar. */
+/* Team work (TEAM14-01, F3, F4). Every interval is a recorded observation: a phase with no recorded start has no mark, and one with no recorded end never stretches to now. */
 const stepTone: Record<WorkStep["state"], [string, string]> = { queued: ["", ""], waiting_evidence: ["", ""], running: ["strong", ""], stopping: ["", ""], committed: ["ok", "✓"], failed: ["danger", "×"], cancelled: ["", ""], blocked: ["warn", "!"] };
 const stepDot: Record<WorkStep["state"], string> = { queued: "hollow", waiting_evidence: "hollow", running: "working", stopping: "hollow", committed: "ready", failed: "failed", cancelled: "", blocked: "waiting" };
 const stepWord = (step: WorkStep) => tr(k(`s14.step_state.${step.state}`));
 const stepPill = (step: WorkStep) => pill(stepWord(step), ...stepTone[step.state]);
 const settled = (step: WorkStep) => ["committed", "failed", "cancelled", "blocked"].includes(step.state);
+/** Still moving on the shared clock. A lane cancelled before it ran is over, yet records no settlement. */
+const live = (step: WorkStep) => !settled(step) || (step.startedAt !== null && step.settledAt === null);
+/** A phase before the run. `to` is null when nothing recorded where it ended; `open` means it is still running to now. */
+interface Phase { kind: "waiting" | "queued"; from: number; to: number | null; open: boolean }
+/** Phase starts stay on the lane after it moves on, so the current state alone decides which phase is still open. */
+function phases(step: WorkStep, now: number): Phase[] {
+  const phase = (kind: Phase["kind"], state: WorkStep["state"], from: number, end: number | null): Phase => { const open = end === null && step.state === state; return { kind, from, to: end ?? (open ? now : null), open }; };
+  return [...(step.waitingAt === null ? [] : [phase("waiting", "waiting_evidence", step.waitingAt, step.queuedAt ?? step.startedAt)]), ...(step.queuedAt === null ? [] : [phase("queued", "queued", step.queuedAt, step.startedAt)])];
+}
+/** Which ceiling holds a queued lane, with its configured value. A computer hold can be a lease, so it carries no number. */
+function heldBy(step: WorkStep, graph: GraphView): string {
+  const ceiling = step.state === "queued" ? step.queueCeiling : null; if (!ceiling) return "";
+  const value = ceiling === "computer" ? "" : `: ${ceiling === "work" ? graph.concurrency : graph.limits[ceiling]}`;
+  return `${tr(k(`s14.team.held_${ceiling}`))}${value}`;
+}
 /** Exact second in UTC; the timeline compares seconds, which the page's minute format would hide. */
 const clock = (value: number) => { const iso = new Date(value).toISOString(); return `<time datetime="${iso}">${iso.slice(11, 19)} UTC</time>`; };
 /** Elapsed time in words. Under a second says so rather than rounding to zero. */
@@ -43,31 +58,47 @@ const trackWidth = 1000, minimumBar = 6;
 /** One SVG per lane: geometry attributes keep the bars server-rendered under a CSP with no inline style. */
 function track(step: WorkStep, from: number, span: number, now: number): string {
   const x = (at: number) => Math.round(((at - from) / span) * trackWidth * 10) / 10, parts = ['<line class="s-tl-base" x1="0" x2="1000" y1="6" y2="6"/>'];
+  for (const phase of phases(step, now)) {
+    const left = Math.min(x(phase.from), trackWidth - minimumBar);
+    if (phase.to === null) parts.push(`<line class="s-bar-open" x1="${left}" x2="${left}" y1="3" y2="9"/>`);
+    else if (phase.to > phase.from) {
+      const width = Math.max(x(phase.to) - left, minimumBar);
+      parts.push(phase.kind === "queued" ? `<rect class="s-bar-queued" x="${left}" y="3" width="${width}" height="6"/>` : `<line class="s-bar-waiting" x1="${left}" x2="${left + width}" y1="6" y2="6"/>`);
+    }
+  }
   if (step.startedAt !== null) {
     const left = Math.min(x(step.startedAt), trackWidth - minimumBar), right = x(step.settledAt ?? now), width = Math.max(right - left, minimumBar), end = left + width;
     if (step.state === "stopping") parts.push(`<line class="s-bar-stopping" x1="${left}" x2="${end}" y1="6" y2="6"/>`);
     else parts.push(`<rect class="s-bar-${step.state === "running" ? "run" : step.state === "cancelled" ? "stopped" : "done"}" x="${left}" y="1" width="${width}" height="10"/>`);
     if (step.state === "failed" || step.state === "blocked") parts.push(`<line class="s-bar-mark" x1="${end}" x2="${end}" y1="0" y2="12"/>`);
+    if (step.state === "cancelled") parts.push(`<line class="s-bar-cap" x1="${end}" x2="${end}" y1="0" y2="12"/>`);
   }
-  if (step.settledAt === null) parts.push(`<line class="s-tl-now" x1="1000" x2="1000" y1="0" y2="12"/>`);
+  if (live(step)) parts.push(`<line class="s-tl-now" x1="1000" x2="1000" y1="0" y2="12"/>`);
   return `<svg class="s-tl-track" viewBox="0 0 1000 12" preserveAspectRatio="none" focusable="false">${parts.join("")}</svg>`;
 }
 function legend(): string {
   const item = (cls: string, key: string) => `<span><i class="s-key ${cls}"></i>${tr(k(key))}</span>`;
-  return `<p class="s-tl-legend">${item("run", "s14.timeline.key_running")}${item("done", "s14.timeline.key_committed")}${item("stopping", "s14.timeline.key_stopping")}${item("stopped", "s14.timeline.key_stopped")}${item("failed", "s14.timeline.key_failed")}</p>`;
+  return `<p class="s-tl-legend">${item("waiting", "s14.timeline.key_waiting")}${item("queued", "s14.timeline.key_queued")}${item("run", "s14.timeline.key_running")}${item("done", "s14.timeline.key_committed")}${item("stopping", "s14.timeline.key_stopping")}${item("stopped", "s14.timeline.key_stopped")}${item("failed", "s14.timeline.key_failed")}</p>`;
 }
-function stepTable(page: S14Page, steps: WorkStep[], now: number): string {
-  const row = (step: WorkStep) => `<tr><th scope="row">${e(laneName(page, step, steps))}</th><td>${e(stepWord(step))}</td><td>${step.startedAt === null ? tr("s14.timeline.not_recorded") : clock(step.startedAt)}</td><td>${step.settledAt !== null ? clock(step.settledAt) : step.startedAt === null ? tr("s14.timeline.not_recorded") : tr("s14.timeline.not_settled")}</td><td>${step.startedAt === null ? tr("s14.timeline.not_recorded") : `${step.settledAt === null ? `${tr("s14.timeline.so_far")} ` : ""}${duration((step.settledAt ?? now) - step.startedAt)}`}</td></tr>`;
-  return `<details class="s-more"><summary>${tr("s14.timeline.table")}</summary><div><div class="s-table" tabindex="0" role="group" aria-label="${tr("s14.timeline.table")}"><table><thead><tr><th scope="col">${tr("s14.timeline.col_step")}</th><th scope="col">${tr("s14.timeline.col_state")}</th><th scope="col">${tr("s14.timeline.col_started")}</th><th scope="col">${tr("s14.timeline.col_ended")}</th><th scope="col">${tr("s14.timeline.col_ran")}</th></tr></thead><tbody>${steps.map(row).join("")}</tbody></table></div></div></details>`;
+function stepTable(page: S14Page, graph: GraphView, now: number): string {
+  const { steps } = graph, held = (step: WorkStep) => heldBy(step, graph);
+  const phaseCell = (step: WorkStep, kind: Phase["kind"]) => {
+    const phase = phases(step, now).find(item => item.kind === kind); if (!phase) return tr("s14.timeline.not_recorded");
+    return `${clock(phase.from)} · ${phase.to === null ? tr("s14.timeline.end_not_recorded") : `${phase.open ? `${tr("s14.timeline.so_far")} ` : ""}${e(duration(phase.to - phase.from))}`}`;
+  };
+  const row = (step: WorkStep) => `<tr><th scope="row">${e(laneName(page, step, steps))}</th><td>${e(stepWord(step))}${held(step) ? ` · ${e(held(step))}` : ""}</td><td>${phaseCell(step, "waiting")}</td><td>${phaseCell(step, "queued")}</td><td>${step.startedAt === null ? tr("s14.timeline.not_recorded") : clock(step.startedAt)}</td><td>${step.settledAt !== null ? clock(step.settledAt) : step.startedAt === null ? tr("s14.timeline.not_recorded") : tr("s14.timeline.not_settled")}</td><td>${step.startedAt === null ? tr("s14.timeline.not_recorded") : `${step.settledAt === null ? `${tr("s14.timeline.so_far")} ` : ""}${duration((step.settledAt ?? now) - step.startedAt)}`}</td></tr>`;
+  return `<details class="s-more"><summary>${tr("s14.timeline.table")}</summary><div><div class="s-table" tabindex="0" role="group" aria-label="${tr("s14.timeline.table")}"><table><thead><tr><th scope="col">${tr("s14.timeline.col_step")}</th><th scope="col">${tr("s14.timeline.col_state")}</th><th scope="col">${tr("s14.timeline.col_waited")}</th><th scope="col">${tr("s14.timeline.col_queued")}</th><th scope="col">${tr("s14.timeline.col_started")}</th><th scope="col">${tr("s14.timeline.col_ended")}</th><th scope="col">${tr("s14.timeline.col_ran")}</th></tr></thead><tbody>${steps.map(row).join("")}</tbody></table></div></div></details>`;
 }
 /** The graphic is hidden from assistive technology; the lanes and the table carry the same observations in words. */
-function timeline(page: S14Page, steps: WorkStep[]): string {
-  const observed = steps.filter(step => step.startedAt !== null), now = page.now, table = stepTable(page, steps, now);
-  if (!observed.length) return `<section class="s-stack" aria-labelledby="s14-timeline"><h3 class="s-section-t" id="s14-timeline">${tr("s14.timeline.title")}</h3><p class="s-sub">${tr("s14.timeline.none")}</p>${table}</section>`;
-  const open = observed.some(step => step.settledAt === null), from = Math.min(...observed.map(step => step.startedAt!)), to = Math.max(from, ...(open ? [now] : []), ...observed.flatMap(step => step.settledAt === null ? [] : [step.settledAt])), span = Math.max(to - from, 1);
-  const rows = steps.map(step => { const pending = step.startedAt === null || step.state === "failed" || step.state === "blocked"; return `<span class="s-tl-name">${e(laneName(page, step, steps))}${pending ? `<small class="${step.state === "failed" ? "danger" : ""}">${e(stepWord(step))}</small>` : ""}</span>${track(step, from, span, now)}`; }).join("");
+function timeline(page: S14Page, graph: GraphView): string {
+  const { steps } = graph, observed = steps.filter(step => step.startedAt !== null), now = page.now, table = stepTable(page, graph, now);
+  const starts = steps.flatMap(step => [...phases(step, now).map(phase => phase.from), ...(step.startedAt === null ? [] : [step.startedAt])]);
+  if (!starts.length) return `<section class="s-stack" aria-labelledby="s14-timeline"><h3 class="s-section-t" id="s14-timeline">${tr("s14.timeline.title")}</h3><p class="s-sub">${tr("s14.timeline.none")}</p>${table}</section>`;
+  const ends = steps.flatMap(step => [...phases(step, now).flatMap(phase => phase.to === null ? [] : [phase.to]), ...(step.settledAt === null ? [] : [step.settledAt])]);
+  const from = Math.min(...starts), to = Math.max(from, ...(steps.some(live) ? [now] : []), ...ends), span = Math.max(to - from, 1);
+  const rows = steps.map(step => { const pending = step.startedAt === null || step.state === "failed" || step.state === "blocked"; return `<span class="s-tl-name">${e(laneName(page, step, steps))}${pending ? `<small class="${step.state === "failed" ? "danger" : ""}">${e([stepWord(step), heldBy(step, graph)].filter(Boolean).join(" · "))}</small>` : ""}</span>${track(step, from, span, now)}`; }).join("");
   const together = observed.length > 1 ? overlap(observed.map(step => [step.startedAt!, step.settledAt ?? now])) : null;
-  const word = together === null ? "" : `<p class="s-note">${together ? `${tr("s14.timeline.overlap")} ${e(duration(together))}` : tr("s14.timeline.no_overlap")}</p>`;
+  const word = !observed.length ? `<p class="s-note">${tr("s14.timeline.none")}</p>` : together === null ? "" : `<p class="s-note">${together ? `${tr("s14.timeline.overlap")} ${e(duration(together))}` : tr("s14.timeline.no_overlap")}</p>`;
   return `<section class="s-stack" aria-labelledby="s14-timeline"><h3 class="s-section-t" id="s14-timeline">${tr("s14.timeline.title")}</h3><div class="s-tl" aria-hidden="true">${rows}<span></span><span class="s-tl-axis"><span>${clock(from)}</span><span>${e(duration(to - from))}</span></span></div>${legend()}${word}<p class="s-note">${tr("s14.timeline.note")}</p>${table}</section>`;
 }
 
@@ -88,15 +119,15 @@ function handoff(page: S14Page, step: WorkStep, steps: WorkStep[], attempt: Atte
   return `<p class="s-meta">${tr("s14.team.received")} ${parts.map(e).join(" · ")}</p>${gaps}`;
 }
 /** Plain line per state. Waiting names the exact lanes it depends on, because the fix differs from a queue. */
-function laneLine(page: S14Page, step: WorkStep, steps: WorkStep[], depends: string[]): string {
+function laneLine(page: S14Page, step: WorkStep, graph: GraphView, depends: string[]): string {
+  const { steps } = graph;
   const code = step.reason && !["dependency_uncommitted", "owner_stopped_step", "work_stopped"].includes(step.reason) ? step.reason : null, why = code ? trMaybe(`s14.reason.${code}`) ?? tr("s14.reason.generic") : "";
   if (step.state === "waiting_evidence") {
     const waiting = depends.flatMap(id => { const lane = steps.find(item => item.nodeId === id); return lane && lane.state !== "committed" ? [laneName(page, lane, steps)] : []; });
     return `<p class="s-sub">${tr("s14.team.waiting_on")} ${e(waiting.join(" · ") || tr("s14.team.unknown_step"))}</p>`;
   }
   if (step.state === "running" && step.startedAt !== null) return `<p class="s-sub">${tr("s14.team.running_since")} ${clock(step.startedAt)}</p>`;
-  const ceiling = step.state === "queued" && step.queueCeiling ? tr(k(step.queueCeiling === "work" ? "s14.team.limit" : `s14.defaults.ceiling_${step.queueCeiling}`)) : "";
-  const line = tr(k(`s14.step_line.${step.state}`)), detail = [why, ceiling].filter(Boolean).join(" · ");
+  const held = heldBy(step, graph), line = tr(k(step.state === "queued" && !held ? "s14.step_line.queued_free" : `s14.step_line.${step.state}`)), detail = [why, held].filter(Boolean).join(" · ");
   return `<p class="s-sub">${e(`${detail ? `${detail}. ` : ""}${line}`)}</p>${code ? `<p class="s-mono s-meta">${e(code)}</p>` : ""}`;
 }
 /** One lane per graph step. Stopping one is only offered when a sibling exists; a lone lane is the whole work. */
@@ -104,7 +135,7 @@ function lane(page: S14Page, view: WorkView, team: S14WorkTeam, step: WorkStep, 
   const graph = team.graph!, steps = graph.steps, node = graph.graph.nodes.find(item => item.id === step.nodeId), bot = botOf(page, step.botId), attempt = view.attempts.find(item => item.id === step.attemptId);
   const name = laneName(page, step, steps), computer = node?.tools.includes("computer") ? `<p><a class="s-link-text" href="${computerPath(bot)}">${tr("s14.work.view_computer")}</a></p>` : "";
   const stop = steps.length > 1 && !settled(step) && step.state !== "stopping" ? ownerStrip(commandForm(page.csrf, "work.step.stop", step.revision, { workId: step.workId, stepId: step.id }, tr("s14.team.stop_step"), "s-btn danger"), tr("s14.team.stop_step_note")) : "";
-  return `<article class="s-slip" data-state="closed" aria-label="${e(name)}"><div class="s-lane-row">${tile(bot, stepDot[step.state], "")}<div class="s-stack"><div class="s-between"><b>${e(botName(bot))}</b>${stepPill(step)}</div><p class="s-meta">${tr(k(`s14.step_handler.${step.handler}`))}</p>${laneLine(page, step, steps, node?.dependsOn ?? [])}${laneReads(step, research)}${handoff(page, step, steps, attempt, research)}${computer}</div></div>${stop}</article>`;
+  return `<article class="s-slip" data-state="closed" aria-label="${e(name)}"><div class="s-lane-row">${tile(bot, stepDot[step.state], "")}<div class="s-stack"><div class="s-between"><b>${e(botName(bot))}</b>${stepPill(step)}</div><p class="s-meta">${tr(k(`s14.step_handler.${step.handler}`))}</p>${laneLine(page, step, graph, node?.dependsOn ?? [])}${laneReads(step, research)}${handoff(page, step, steps, attempt, research)}${computer}</div></div>${stop}</article>`;
 }
 /** A failed sibling is named next to what was kept, so the owner never reads it as lost work. */
 function siblingBanner(page: S14Page, view: WorkView, steps: WorkStep[]): string {
@@ -117,7 +148,7 @@ function siblingBanner(page: S14Page, view: WorkView, steps: WorkStep[]): string
 /** Progress sections for a work graph: headline, sibling banner, recorded timeline and lanes. */
 export function teamProgress(page: S14Page, view: WorkView, team: S14WorkTeam, research: S14WorkResearch | null): string {
   const graph = team.graph; if (!graph) return "";
-  return `<p class="s-headline">${e(headline(graph.steps, graph.concurrency))}</p>${siblingBanner(page, view, graph.steps)}${timeline(page, graph.steps)}<section class="s-stack" aria-labelledby="s14-lanes"><h3 class="s-section-t" id="s14-lanes">${tr("s14.work.lanes")}</h3>${graph.steps.map(step => lane(page, view, team, step, research)).join("")}</section>`;
+  return `<p class="s-headline">${e(headline(graph.steps, graph.concurrency))}</p>${siblingBanner(page, view, graph.steps)}${timeline(page, graph)}<section class="s-stack" aria-labelledby="s14-lanes"><h3 class="s-section-t" id="s14-lanes">${tr("s14.work.lanes")}</h3>${graph.steps.map(step => lane(page, view, team, step, research)).join("")}</section>`;
 }
 
 /** Meter with its words. Near the ceiling is a word too, so it never depends on the bar. */
