@@ -322,7 +322,7 @@ const named = (key: string, bot: Pick<Bot, "id" | "name">) => tr(k(key)).replace
 const reasonText = (code: string) => trMaybe(`s14.reason.${code}`) ?? tr("s14.reason.computer_generic");
 const computerTone: Record<BotComputer["state"], [string, string]> = { starting: ["", ""], running: ["strong", ""], stopping: ["", ""], stopped: ["", ""], resetting: ["warn", "!"], deleting: ["warn", "!"], deleted: ["", ""], unavailable: ["danger", "!"] };
 const computerWord = (view: ComputerView) => tr(k(`s14.computer_state.${view.computer?.state ?? "absent"}`));
-const computerPill = (view: ComputerView) => view.computer ? pill(computerWord(view), ...computerTone[view.computer.state]) : pill(computerWord(view));
+const computerPill = (view: ComputerView, id = "") => pill(computerWord(view), ...(view.computer ? computerTone[view.computer.state] : ["", ""] as const), id);
 type Driver = "owner" | "expired" | "agent" | "none";
 /** Who can send input right now. An expired lease refuses input before the sweep clears it, so it never reads as driving. */
 function driverOf({ computer, lease }: ComputerView, now: number): Driver {
@@ -417,15 +417,16 @@ function destroyCard(page: S14Page, bot: Bot, c: BotComputer, mode: "reset" | "d
     <div><p class="s-exact-label">${tr("s14.destroy.kept")}</p><p>${tr("s14.destroy.kept_detail")}</p></div><div><p class="s-exact-label">${tr("s14.destroy.effect")}</p><p>${tr("s14.destroy.effect_detail")}</p></div><div><p class="s-exact-label">${tr("s14.destroy.after")}</p><p>${tr(k(`s14.destroy.${mode}_after`))}</p></div><dl class="s-kv"><dt>${tr("s14.proposal.computer")}</dt><dd class="s-mono">${e(c.id)}</dd><dt>${tr("s14.computer.generation")}</dt><dd class="s-mono">g${c.generation} · r${c.revision}</dd></dl></div>
     ${ownerStrip(`${commandForm(page.csrf, mode === "reset" ? "computer.reset" : "computer.delete", c.revision, { botId: c.botId, computerId: c.id, generation: c.generation }, tr(k(`s14.destroy.${mode}_confirm`)), "s-btn danger")}<a class="s-btn" href="${computerPath(bot)}">${tr("s14.destroy.cancel")}</a>`, tr("s14.destroy.scope_note"))}</article>`;
 }
-/** Bot computer tab. Three regions refresh by signature, so a live read never swaps a form under a press or a half-typed field. */
+/** Bot computer tab. Form regions refresh by signature; the visible status has its own refresh target. */
 function computerPanel(page: S14Page, bot: Bot, surface: S14ComputerSurface): string {
   const view = page.overview.computers[bot.id] ?? { computer: null, lease: null }, c = view.computer, driver = driverOf(view, page.now);
   if (c && surface.confirm && lifecycle(c)) return destroyCard(page, bot, c, surface.confirm);
   const held = page.overview.effects.filter(effect => effect.botId === bot.id && effect.state === "pending");
   const minutes = driver === "owner" ? Math.ceil((view.lease!.expiresAt - page.now) / 60000) : 0;
-  const key = `${c?.revision ?? 0}.${c?.generation ?? 0}.${view.lease?.revision ?? 0}`, region = (id: string, html: string) => `<div class="s-stack" id="${id}" data-sig="${e(`${key}.${driver}.${held.length}.${minutes}`)}">${html}</div>`;
+  const workKey = JSON.stringify(openable(page, bot).slice(0, 3).map(item => [item.work.id, item.work.revision, item.work.state]));
+  const key = `${c?.revision ?? 0}.${c?.generation ?? 0}.${view.lease?.revision ?? 0}`, region = (id: string, html: string) => `<div class="s-stack" id="${id}" data-sig="${e(`${key}.${driver}.${held.length}.${minutes}${id === "s14-computer-more" ? `.${workKey}` : ""}`)}">${html}</div>`;
   const phase = c ? `${computerWord(view)} · ${leaseWord(view, bot, page.now)}` : computerWord(view);
-  return `<div class="s-stack" data-computer="${e(bot.id)}" data-key="${e(key)}"><div class="s-between"><p class="s-sub">${tr("s14.computer.lead")}</p>${computerPill(view)}</div>
+  return `<div class="s-stack" data-computer="${e(bot.id)}" data-key="${e(key)}"><div class="s-between"><p class="s-sub">${tr("s14.computer.lead")}</p>${computerPill(view, "s14-computer-status")}</div>
     ${region("s14-live", `<span hidden data-phase="${e(phase)}"></span>${heldNotice(held)}${computerBanner(bot, view, surface)}${c ? leaseBar(page, bot, view) : ""}`)}
     ${region("s14-computer-screen", `${c ? screenView(page, bot, view, surface, driver) : ""}${driver === "owner" ? inputControls(page, bot, view) : ""}`)}
     ${region("s14-computer-more", `${openCards(page, bot, view, surface)}${c ? `${computerFacts(page, c)}${lifecycleStrip(page, bot, c)}${activityLog(surface.activity)}` : ""}`)}</div>`;

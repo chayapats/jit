@@ -25,6 +25,7 @@ export class FakeComputerRuntime implements ComputerRuntime {
   afterInput: ReturnType<typeof barrier> | null = null;
   beforeExec: ReturnType<typeof barrier> | null = null;
   beforeDestroy: ReturnType<typeof barrier> | null = null;
+  beforeStop: ReturnType<typeof barrier> | null = null;
   stopFailure = false;
   active = 0;
   maxActive = 0;
@@ -40,6 +41,7 @@ export class FakeComputerRuntime implements ComputerRuntime {
   }
   async stop(c: BotComputer) {
     this.stops.push(c.id);
+    if (this.beforeStop) await this.beforeStop.wait();
     if (this.stopFailure) throw new AppError("fixture_stop_unconfirmed", 503);
   }
   async destroy(c: BotComputer, allowed: () => void) {

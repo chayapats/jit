@@ -285,11 +285,25 @@ export class S14Computers {
       }
     });
   }
-  /** Lazily provisions one computer using only the admitted attempt's original typed work grant. */
+  /** Lazily provisions under the admitted work grant, settling the previous work's stop before binding a fresh generation. */
   async prepare(attemptId: string): Promise<void> {
+    const stopping = this.app.store.transaction(tx => {
+      const attempt = this.app.authority.assertTool(tx, attemptId, "computer");
+      let c = load(tx, attempt.snapshot.bot.id);
+      if (c?.state === "running" && c.workId !== attempt.workId) {
+        // A new work grant cannot inherit the previous work's runtime or input lease.
+        this.apply(tx, { kind: "computer.stop", requestId: `computer_stop_${attempt.id}`, expectedRevision: c.revision,
+          payload: { botId: c.botId, computerId: c.id, generation: c.generation } });
+        c = load(tx, c.botId);
+      }
+      return c?.state === "stopping" ? c : null;
+    });
+    if (stopping) await this.drain();
     this.app.store.transaction(tx => {
       const attempt = this.app.authority.assertTool(tx, attemptId, "computer");
-      const c = load(tx, attempt.snapshot.bot.id);
+      const c = stopping ? this.current(tx, stopping.botId, stopping.id, stopping.generation) : load(tx, attempt.snapshot.bot.id);
+      // Failed or superseded stops never authorize a replacement runtime.
+      if (stopping && c?.state !== "stopped") throw new AppError(c?.reason ?? "computer_not_stopped", 503);
       if (c?.state === "running" && c.workId === attempt.workId) return;
       this.apply(tx, { kind: "computer.open", requestId: `computer_${attempt.id}`, expectedRevision: c?.revision ?? 0,
         payload: { botId: attempt.snapshot.bot.id, workId: attempt.workId } });

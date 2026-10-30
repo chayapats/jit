@@ -84,6 +84,32 @@ test("a work without the computer tool offers no open form", async () => {
   expect(await f.page()).not.toContain("Open the computer for this work");
 });
 
+test("computer open forms refresh their signature for new work, work state, grant revocation and expiry without a computer revision", async () => {
+  const f = await fixture();
+  const signature = (html: string) => unescape(/id="s14-computer-more" data-sig="([^"]+)"/.exec(html)![1]!);
+  const absent = signature(await f.page()), work = f.startWork("First report");
+  const queued = await f.page(), queuedKey = signature(queued);
+  expect(queuedKey).not.toBe(absent);
+  expect(queuedKey).toContain(work.id); expect(queuedKey).toContain("queued");
+  expect(signature(await f.page())).toBe(queuedKey);
+  expect(hasCommand(queued, "computer.open")).toBe(true);
+  const a = f.app.authority.admit(work.id, rid(), { botId: "jit", tools: ["computer"], scopes: [], input: "Report", calls: 6, outputBytes: 1024 });
+  const working = signature(await f.page());
+  expect(working).not.toBe(queuedKey); expect(working).toContain("running");
+  f.app.authority.commit(a.id, { state: "waiting", text: "Waiting for evidence" });
+  const waiting = signature(await f.page());
+  expect(waiting).not.toBe(working); expect(waiting).toContain("waiting");
+  f.app.execute(f.auth.actor, { kind: "work.stop", requestId: rid(), expectedRevision: f.app.authority.view(f.auth.actor, work.id).work.revision, payload: { workId: work.id } });
+  const revoked = await f.page();
+  expect(signature(revoked)).toBe(absent); expect(hasCommand(revoked, "computer.open")).toBe(false);
+  const next = f.startWork("Next report"), live = await f.page();
+  expect(signature(live)).toContain(next.id); expect(hasCommand(live, "computer.open")).toBe(true);
+  f.clock.now += 3600000;
+  const expired = await f.page();
+  expect(signature(expired)).toBe(absent); expect(hasCommand(expired, "computer.open")).toBe(false);
+  expect(f.computer().computer).toBeNull();
+});
+
 test("running with nobody driving is view-only: a picture, a typed lease and take over, and no input form", async () => {
   const f = await fixture(); await f.open(); const html = await f.page();
   expect(html).toContain("Nobody is driving"); expect(html).toContain("Running"); expect(html).toContain('<img src="/api/s14/bots/jit/computer/image"'); expect(html).toContain("cannot read these pixels"); strict(html);
@@ -187,6 +213,7 @@ test("every computer state has words, no lease controls while not running, and o
   for (const [state, words, present, absent] of expectations) {
     f.forceState({ ...key, state, reason: state === "unavailable" ? "computer_isolation_unverified" : null });
     const html = await f.page();
+    expect(html).toContain(`<span id="s14-computer-status" class="s-pill ${state === "unavailable" ? "danger" : state === "resetting" || state === "deleting" ? "warn" : ""}">`);
     expect(html).toContain(dictionaries.en[`s14.computer_state.${state}`]); expect(html).toContain(words); expect(html).toContain("Nobody can send input"); strict(html);
     expect(html).not.toContain("data-screen"); expect(html).toContain("No picture while the computer is not running");
     for (const kind of ["takeover.start", "takeover.end"]) expect(hasCommand(html, kind)).toBe(false);

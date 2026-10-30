@@ -15,11 +15,11 @@ const password = "s14-computer-fixture-owner-password";
 const roots: string[] = [], stores = new Set<S14Store>();
 const policy: Policy = { routes: [{ id: "selected", provider: "codex", model: "scripted" }], tools: ["computer", "effect_send"], resources: [] };
 afterEach(() => { for (const store of stores) store.close(); stores.clear(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
-async function fixture(runtime: FakeComputerRuntime | null = new FakeComputerRuntime()) {
+async function fixture(runtime: FakeComputerRuntime | null = new FakeComputerRuntime(), authority: S14Options["authority"] = {}) {
   const root = mkdtempSync(join(tmpdir(), "s14-computer-")); roots.push(root);
   const path = join(root, "s14.sqlite"), store = new S14Store(path); stores.add(store);
   const clock = { now: 1800000000000 };
-  const options: S14Options = { policy, now: () => clock.now, computers: runtime ? { runtime } : {}, chat: { async reply() { return { text: "No computer authority from text" }; } } };
+  const options: S14Options = { policy, authority, now: () => clock.now, computers: runtime ? { runtime } : {}, chat: { async reply() { return { text: "No computer authority from text" }; } } };
   const app = new S14Application(store, options);
   await app.provisionOwner(password);
   const token = await app.login(password), auth = app.authenticate(token);
@@ -137,6 +137,57 @@ test("lazy preparation drains an intent committed while an earlier empty drainer
   await idle;
   expect(f.app.computers.view(f.auth.actor, "jit").computer?.state).toBe("running");
   expect(f.runtime!.starts).toHaveLength(1);
+});
+
+test.each(["running", "stopping"])("two queued jobs for one Bot wait for its %s computer to stop before rebinding", async state => {
+  const runtime = new FakeComputerRuntime(), gate = barrier();
+  let runs = 0;
+  const f = await fixture(runtime, { executor: { async run(a) {
+    if (++runs === 2 && state === "stopping") f.app.computers.sweep();
+    await f.app.computers.prepare(a.id);
+    const session = f.app.computers.open(a.id);
+    runtime.volumes.get(session.lease.computerId)!.workspace.set(a.workId, "persisted report");
+    session.release();
+    runtime.beforeStop = gate;
+    return { state: "ready", text: "Report ready" };
+  } } });
+  const first = start(f).work!, second = start(f).work!;
+  const draining = f.app.authority.drain();
+  await gate.reached;
+  const stopping = f.app.computers.view(f.auth.actor, "jit");
+  expect(stopping.computer).toMatchObject({ state: "stopping", workId: first.id });
+  expect(stopping.lease?.actor).toBeNull();
+  expect(runtime.starts).toHaveLength(1);
+  gate.release();
+  await draining;
+  expect(f.app.authority.view(f.auth.actor, first.id).work.state).toBe("ready");
+  expect(f.app.authority.view(f.auth.actor, second.id).work.state).toBe("ready");
+  const c = f.app.computers.view(f.auth.actor, "jit").computer!;
+  expect(c).toMatchObject({ id: runtime.starts[0]!.id, state: "running", workId: second.id, workspaceId: runtime.starts[0]!.workspaceId, profileId: runtime.starts[0]!.profileId });
+  expect(runtime.starts).toHaveLength(2);
+  expect(c.generation).toBeGreaterThan(runtime.starts[0]!.generation);
+  expect([...runtime.volumes.get(c.id)!.workspace.keys()]).toEqual([first.id, second.id]);
+  const bindings = f.store.read(tx => tx.all<{ generation: number }>("SELECT generation FROM computer_attempts ORDER BY rowid"));
+  expect(bindings.map(row => row.generation)).toEqual(runtime.starts.map(c => c.generation));
+});
+
+test.each(["unconfirmed-stop", "revoked", "expired"])("a queued computer handoff fails closed when %s while stop is settling", async change => {
+  const runtime = new FakeComputerRuntime(), gate = barrier();
+  const f = await fixture(runtime), first = await running(f), a = attempt(f, first.work.id);
+  const session = f.app.computers.open(a.id); session.release();
+  f.app.authority.commit(a.id, { state: "ready", text: "First report" });
+  const second = start(f).work!, next = attempt(f, second.id);
+  runtime.beforeStop = gate;
+  const preparing = f.app.computers.prepare(next.id).then(() => null, error => error);
+  await gate.reached;
+  if (change === "unconfirmed-stop") runtime.stopFailure = true;
+  if (change === "revoked") f.app.execute(f.auth.actor, { kind: "work.stop", requestId: rid(), expectedRevision: f.app.authority.view(f.auth.actor, second.id).work.revision, payload: { workId: second.id } });
+  if (change === "expired") f.clock.now += 3600000;
+  gate.release();
+  expect(await preparing).toMatchObject({ code: { "unconfirmed-stop": "fixture_stop_unconfirmed", revoked: "grant_revoked", expired: "grant_expired" }[change] });
+  expect(runtime.starts).toHaveLength(1);
+  expect(f.app.computers.view(f.auth.actor, "jit").computer?.workId).toBe(first.work.id);
+  expect(f.app.computers.view(f.auth.actor, "jit").lease?.actor).toBeNull();
 });
 
 test("a takeover fences queued agent input at the final runtime barrier and never approves a held effect", async () => {

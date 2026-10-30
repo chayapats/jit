@@ -260,15 +260,18 @@ export class BotPodmanRuntime implements ComputerRuntime {
     const live = this.current(handle);
     if (!live.client) {
       allowed();
-      live.client = new CdpClient(this.#streams(["exec", "-i", live.names[1]!, cdpRelayPath], {}));
-      const targets = await live.client.send("Target.getTargets");
-      allowed();
-      const target = (targets.targetInfos as { type: string; targetId: string }[])?.find(t => t.type === "page");
-      if (!target) fail("protected_browser_unavailable");
-      const attached = await live.client.send("Target.attachToTarget", { targetId: target.targetId, flatten: true });
-      allowed();
-      if (typeof attached.sessionId !== "string") fail("protected_browser_unavailable");
-      live.sessionId = attached.sessionId;
+      const client = new CdpClient(this.#streams(["exec", "-i", live.names[1]!, cdpRelayPath], {}));
+      try {
+        const targets = await client.send("Target.getTargets");
+        allowed();
+        const target = (targets.targetInfos as { type: string; targetId: string }[])?.find(t => t.type === "page");
+        if (!target) fail("protected_browser_unavailable");
+        const attached = await client.send("Target.attachToTarget", { targetId: target.targetId, flatten: true });
+        allowed();
+        if (typeof attached.sessionId !== "string" || !attached.sessionId) fail("protected_browser_unavailable");
+        live.client = client;
+        live.sessionId = attached.sessionId;
+      } catch (error) { client.close(); throw error; }
     }
     if (!live.sessionId) fail("protected_browser_unavailable");
     return { client: live.client, sessionId: live.sessionId };

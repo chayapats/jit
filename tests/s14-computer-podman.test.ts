@@ -6,6 +6,7 @@ import { BotPodmanRuntime, probeBotPodman, type BotPodmanOptions } from "../src/
 import { defaultComputerLimits } from "../src/s14/computer";
 import type { BotComputer } from "../src/s14/computer-types";
 import type { CommandRunner } from "../src/exec/podman-runtime";
+import type { BoxStream } from "../src/exec/box-runtime";
 import { FakeCdp } from "./fixtures/fake-cdp";
 
 const image = `localhost/jit@sha256:${"a".repeat(64)}`;
@@ -14,7 +15,7 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 const bytes = (v: unknown) => new TextEncoder().encode(typeof v === "string" ? v : JSON.stringify(v));
 const ok = (v: unknown = "") => ({ exitCode: 0, stdout: bytes(v), stderr: new Uint8Array() });
 const host = () => ({ os: "linux", security: { rootless: true }, cgroupVersion: "v2", cgroupControllers: ["cpu", "memory", "pids"], idMappings: { uidmap: [{ size: 65536 }], gidmap: [{ size: 65536 }] } });
-function fixture(change: (info: any) => void = () => {}, kernel = "50000 100000\n536870912\n128\n0\n") {
+function fixture(change: (info: any) => void = () => {}, kernel = "50000 100000\n536870912\n128\n0\n", stream?: (index: number) => BoxStream) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "s14-podman-"))); roots.push(root);
   for (const bot of ["jit", "reader"]) for (const role of ["workspace", "profile"]) mkdirSync(join(root, bot, role), { recursive: true, mode: 0o700 });
   const calls: string[][] = [], streamCalls: string[][] = [], infos = new Map<string, any>(), cdp = new FakeCdp();
@@ -41,7 +42,7 @@ function fixture(change: (info: any) => void = () => {}, kernel = "50000 100000\
     throw Error(`unexpected fixture command ${argv[0]}`);
   };
   const options: BotPodmanOptions = { dataRoot: root, protectedPaths: [join(root, "..", "private-state")], workspaceImage: image, browserImage: image, run,
-    streams(argv, extra) { streamCalls.push([...argv]); expect(extra).toEqual({}); return cdp.stream(); } };
+    streams(argv, extra) { streamCalls.push([...argv]); expect(extra).toEqual({}); return stream ? stream(streamCalls.length) : cdp.stream(); } };
   const c: BotComputer = { id: "a".repeat(32), botId: "jit", revision: 1, generation: 1, botGeneration: 1, ownerGeneration: 1, workId: "work1", state: "starting", reason: null,
     limits: { ...defaultComputerLimits }, workspaceId: "workspace1", profileId: "profile1", lastUsedAt: 1800000000000 };
   let disk = "safe";
@@ -79,6 +80,42 @@ test("rootless workspace/browser use separate mounts, private namespaces, finite
   expect(f.calls.some(args => args.join(" ").includes("private browser input"))).toBe(false);
   await f.runtime.stop(f.c);
   await expect(f.runtime.screenshot(handle, () => {})).rejects.toThrow("computer_handle_fenced");
+});
+
+test.each(["get-error", "no-page", "attach-error", "missing-session"])("failed browser Target setup (%s) closes its pipe and a later request reconnects without replaying input", async failure => {
+  const sent: { method: string; params: Record<string, unknown> }[] = [], closed: number[] = [];
+  const f = fixture(undefined, undefined, index => {
+    let output!: ReadableStreamDefaultController<Uint8Array>;
+    let exit!: (code: number) => void;
+    const exited = new Promise<number>(resolve => { exit = resolve; });
+    return {
+      stdout: new ReadableStream({ start(controller) { output = controller; } }), exited,
+      close() { closed.push(index); output.close(); exit(0); },
+      write(bytes) {
+        const command = JSON.parse(new TextDecoder().decode(bytes).replace(/\0$/, ""));
+        sent.push(command);
+        const failed = index === 1;
+        let result: Record<string, unknown> = {}, error = false;
+        if (command.method === "Target.getTargets") {
+          result = { targetInfos: failed && failure === "no-page" ? [] : [{ type: "page", targetId: "page-1" }] };
+          error = failed && failure === "get-error";
+        }
+        if (command.method === "Target.attachToTarget") { result = failed && failure === "missing-session" ? {} : { sessionId: "session-1" }; error = failed && failure === "attach-error"; }
+        if (command.method === "Page.captureScreenshot") result = { data: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).toString("base64") };
+        output.enqueue(new TextEncoder().encode(JSON.stringify({ id: command.id, ...(error ? { error: { code: -32000 } } : { result }) }) + "\0"));
+      },
+    };
+  });
+  const handle = await f.runtime.start(f.c, () => {});
+  await expect(f.runtime.input(handle, { kind: "text", text: "do not replay" }, () => {})).rejects.toThrow();
+  expect(closed).toEqual([1]);
+  expect(sent.some(c => c.method.startsWith("Input."))).toBe(false);
+  expect(await f.runtime.screenshot(handle, () => {})).toHaveLength(8);
+  await f.runtime.input(handle, { kind: "text", text: "new explicit input" }, () => {});
+  expect(f.streamCalls).toHaveLength(2);
+  expect(sent.filter(c => c.method === "Input.insertText").map(c => c.params.text)).toEqual(["new explicit input"]);
+  await f.runtime.stop(f.c);
+  expect(closed).toEqual([1, 2]);
 });
 
 test.each(["other-bot", "profile", "socket", "writable-root", "egress", "namespace", "capability", "privilege", "unbounded-tmpfs", "image"])("inspect tampering (%s) refuses and removes containers before any runner or CDP call", async change => {
