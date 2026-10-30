@@ -11,6 +11,8 @@ import { S14Memory } from "./memory";
 import type { MemoryCommand, MemoryReceipt } from "./memory-types";
 import { S14Authority, suggestTask } from "./authority";
 import type { AuthorityCommand, AuthorityOptions, AuthorityReceipt } from "./authority-types";
+import { S14Reports } from "./reports";
+import { S14Artifacts } from "./artifacts";
 import { S14Graph } from "./graph";
 import type { GraphCommand, GraphReceipt } from "./graph-types";
 import { S14Computers } from "./computer";
@@ -47,6 +49,8 @@ export class S14Application {
   readonly parallel: ParallelWeb;
   readonly computers: S14Computers;
   readonly graph: S14Graph;
+  readonly reports: S14Reports;
+  readonly artifacts: S14Artifacts;
   #actors = new WeakMap<OwnerActor, string>();
   #replyBusy = false;
   constructor(readonly store: S14Store, readonly options: S14Options) {
@@ -64,7 +68,9 @@ export class S14Application {
     } });
     this.graph = new S14Graph(this);
     this.parallel = new ParallelWeb(this, options.parallel);
-    this.store.transaction(tx => { this.memory.reconcile(tx); this.memory.fence(tx); this.parallel.reconcile(tx); });
+    this.reports = new S14Reports(this);
+    this.artifacts = new S14Artifacts(this);
+    this.store.transaction(tx => { this.memory.reconcile(tx); this.memory.fence(tx); this.parallel.reconcile(tx); this.reports.reconcile(tx); });
     this.computers = new S14Computers(this, options.computers);
   }
   /** Trusted local bootstrap creates only the authentication principal, never resets an existing installation. */
@@ -183,6 +189,7 @@ export class S14Application {
       } else {
         result = this.applyBot(tx, command as BotCommand);
       }
+      this.reports.reconcile(tx);
       tx.run("INSERT INTO command_receipts VALUES ('owner',?,?,?,?)", command.requestId, digest(encoded), canonical(result), this.now());
       tx.run("INSERT INTO audit(kind,request_id,committed_at) VALUES (?,?,?)", command.kind, command.requestId, this.now());
       this.options.beforeCommit?.(); return structuredClone(result);

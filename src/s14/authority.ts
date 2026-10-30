@@ -5,8 +5,9 @@ import type { S14Application } from "./application";
 import { record, records, save } from "./application";
 import type { Bot, OwnerActor } from "./types";
 import type { Admission, ApprovalCommand, Attempt, AuthorityCommand, AuthorityOptions, AuthorityReceipt, Effect, EffectAction, ScopePolicy, ScopeRef, Work, WorkGrant, WorkLimits, WorkOutput, WorkView } from "./authority-types";
+import { evidenceRequirements } from "./reports";
 import { assertConcurrentHost } from "./lifecycle";
-import type { SchedulerLimits, StepProposal, WorkGraph, WorkStep } from "./graph-types";
+import type { SchedulerLimits, WorkGraph, WorkStep } from "./graph-types";
 import { canonical, digest, exact, identity, integer, text } from "./validation";
 
 const id = () => crypto.randomUUID().replaceAll("-", "");
@@ -65,7 +66,8 @@ export class S14Authority {
     }
     if (c.kind === "work.start") {
       const p = c.payload;
-      exact(p, ["conversationId", "task", "title", "purpose", "completionRule", "bots", "tools", "scopes", "limits", "expiresAt"]);
+      exact(p, ["conversationId", "task", "title", "purpose", "completionRule", "bots", "tools", "scopes", "limits", "expiresAt", ...(Object.hasOwn(p, "requiredEvidence") ? ["requiredEvidence"] : [])]);
+      if (Object.hasOwn(p, "requiredEvidence")) evidenceRequirements(p.requiredEvidence);
       for (const value of [p.title, p.purpose, p.completionRule]) { text(value); if (containsCredential(value)) throw new AppError("credential_content_refused", 403); }
       identity(p.conversationId); const conversation = this.app.readConversation(tx, p.conversationId);
       if (conversation.revision !== c.expectedRevision) throw new AppError("stale_revision", 409);
@@ -113,6 +115,7 @@ export class S14Authority {
       if (work.revision !== c.expectedRevision) throw new AppError("stale_revision", 409);
       if (!work.grantId) throw new AppError("work_not_started", 409);
       tx.run("UPDATE grant_state SET generation=generation+1,revoked=1 WHERE grant_id=?", work.grantId);
+      tx.run("INSERT OR IGNORE INTO lifecycle.withdrawals VALUES ('grant',?,?)", work.grantId, "revoked");
       this.app.graph.stop(tx, work.id);
       tx.run("UPDATE work_queue SET state='blocked' WHERE work_id=?", work.id);
       for (const attempt of this.attempts(tx, work.id)) if (attempt.state === "waiting") { attempt.state = "settled"; attempt.reason = "stopped"; save(tx, "work_attempts", attempt); }
@@ -164,7 +167,7 @@ export class S14Authority {
   checkGrant(tx: AppTransaction, grant: WorkGrant): Work { return this.grantLive(tx, grant); }
   private grantLive(tx: AppTransaction, grant: WorkGrant): Work {
     const work = record<Work>(tx, "work_items", grant.workId), state = tx.get<{ generation: number; revoked: number }>("SELECT generation,revoked FROM grant_state WHERE grant_id=?", grant.id);
-    if (work.grantId !== grant.id || !state || state.revoked || state.generation !== grant.generation || stopped.includes(work.state)) throw new AppError("grant_revoked", 403);
+    if (tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE kind='grant' AND id=?", grant.id) || work.grantId !== grant.id || !state || state.revoked || state.generation !== grant.generation || stopped.includes(work.state)) throw new AppError("grant_revoked", 403);
     if (this.app.now() >= grant.expiresAt) throw new AppError("grant_expired", 403);
     if (tx.get<{ generation: number }>("SELECT generation FROM owner")?.generation !== grant.ownerGeneration) throw new AppError("owner_authority_changed", 403);
     this.app.memory.workSources(tx, work);
@@ -181,6 +184,24 @@ export class S14Authority {
     if (!grant.tools.includes("computer") || !bot.capabilities.tools.includes("computer")) throw new AppError("computer_outside_grant", 403);
     for (const scope of grant.scopes) if (!equal(this.scope(tx, scope.ref), scope)) throw new AppError("scope_revoked_or_stale", 403);
     return { bot, grant };
+  }
+  /** Checks retained output authority without treating grant expiry or native completion as renewed execution permission. */
+  retainedEvidence(tx: AppTransaction, attemptId: string): boolean {
+    const attempt = record<Attempt>(tx, "work_attempts", attemptId), s = attempt.snapshot;
+    const state = tx.get<{ generation: number; revoked: number }>("SELECT generation,revoked FROM grant_state WHERE grant_id=?", s.grant.id);
+    if (!state || tx.get<{ generation: number }>("SELECT generation FROM owner")?.generation !== s.grant.ownerGeneration) return false;
+    const bot = record<Bot>(tx, "bots", s.bot.id);
+    if (!equal(bot, s.bot) || !bot.enabled || !equal(this.app.route(bot.routeId), s.route)) return false;
+    for (const scope of s.scopes) if (!equal(this.scope(tx, scope.ref), scope)) return false;
+    const computer = tx.get<{ computer_id: string; generation: number; record_json: string }>("SELECT a.computer_id,a.generation,c.record_json FROM computer_attempts a JOIN bot_computers c ON c.id=a.computer_id WHERE a.attempt_id=?", attemptId);
+    if (computer) {
+      const withdrawals = tx.all<{ mode: string }>("SELECT mode FROM lifecycle.withdrawals WHERE kind='computer' AND id=?", computer.computer_id);
+      if (withdrawals.some(row => {
+        const generation = Number(/^through_generation_([0-9]+)$/.exec(row.mode)?.[1]);
+        return Number.isSafeInteger(generation) && computer.generation <= generation;
+      })) return false;
+    }
+    return true;
   }
   /** Rechecks an attempt's current authority without charging a second call at every transport guard. */
   assertTool(tx: AppTransaction, attemptId: string, tool: string): Attempt {
@@ -284,7 +305,7 @@ export class S14Authority {
   }
   /** Commits result evidence only under the original still-live authority; late/fenced output is discarded. */
   commit(attemptId: string, output: WorkOutput): void {
-    exact(output, ["state", "text"]); if (!["ready", "waiting"].includes(output.state)) throw new AppError("invalid_result");
+    exact(output, ["state", "text", ...(Object.hasOwn(output, "report") ? ["report"] : [])]); if (!["ready", "waiting"].includes(output.state)) throw new AppError("invalid_result");
     this.app.store.transaction(tx => {
       const attempt = record<Attempt>(tx, "work_attempts", attemptId), work = this.live(tx, attempt);
       const content = text(output.text, attempt.snapshot.outputBytes);
@@ -293,6 +314,7 @@ export class S14Authority {
       const packet = this.app.memory.attemptPacket(tx, attempt.id);
       this.app.memory.source(tx, { id: `result_${attempt.id}`, botId: attempt.snapshot.bot.id, conversationId: work.conversationId,
         attribution: "bot", text: `Committed result ${attempt.id}; sha256 ${digest(content)}`, ...this.app.memory.derive(tx, packet) });
+      if (output.report) this.app.reports.publish(tx, attempt, output.report, Buffer.byteLength(content));
       attempt.state = "waiting"; save(tx, "work_attempts", attempt);
       work.result = attempt.id; save(tx, "work_items", work);
       this.reevaluate(tx, work.id, true);
@@ -407,6 +429,7 @@ export class S14Authority {
   }
   /** Exclusive-boot fencing; interrupted attempts and executing effects are never automatically replayed. */
   recover(): void { this.app.store.transaction(tx => {
+    tx.run("DELETE FROM artifact_staging");
     for (const row of tx.all<{ record_json: string }>("SELECT record_json FROM work_attempts WHERE json_extract(record_json,'$.state') IN ('running','waiting')")) {
       const attempt = JSON.parse(row.record_json) as Attempt;
       if (attempt.step) {
@@ -494,6 +517,21 @@ export class S14Authority {
                 const source = { id: dependency.sourceId, revision: 1, generation: 1 };
                 if (this.app.memory.handoff(tx, source, attempt)) {
                   this.app.memory.appendSource(tx, attempt.id, source);
+                  // Bound the handoff independently of retained sibling output and keep every omission explicit.
+                  if (Buffer.byteLength(dependency.text) > 8192) {
+                    dependency.text = Buffer.from(dependency.text).subarray(0, 8192).toString("utf8").toWellFormed();
+                    attempt.step.gaps.push({ stepId: dependency.stepId, reason: "handoff_result_excerpt" });
+                  }
+                  const evidenceRows = tx.all<{ id: string }>("SELECT id FROM external_evidence WHERE attempt_id=? ORDER BY rowid", dependency.attemptId);
+                  for (const row of evidenceRows) {
+                    const evidence = this.app.parallel.citation(tx, dependency.attemptId, row.id, 1);
+                    const bytes = Buffer.byteLength(JSON.stringify([...attempt.step.inputs, { ...dependency, evidence: [...dependency.evidence, evidence] }]));
+                    if (bytes > 49152) {
+                      attempt.step.gaps.push({ stepId: dependency.stepId, reason: "handoff_evidence_omitted" });
+                      break;
+                    }
+                    dependency.evidence.push(evidence);
+                  }
                   attempt.step.inputs.push(dependency);
                 } else attempt.step.gaps.push({ stepId: dependency.stepId, reason: "handoff_not_accessible" });
               }
@@ -548,6 +586,7 @@ export class S14Authority {
       this.#running.delete(attempt.id);
       this.app.store.transaction(tx => {
         tx.run("UPDATE attempt_transports SET active=0 WHERE attempt_id=?", attempt.id);
+        this.app.artifacts.discard(tx, attempt.id);
         this.app.graph.finish(tx, attempt, reason);
         this.finishGraph(tx, attempt.workId);
       });

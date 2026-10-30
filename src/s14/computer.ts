@@ -142,6 +142,9 @@ export class S14Computers {
       if (command.kind !== "computer.stop" || c.state !== "starting") throw new AppError("computer_busy", 409);
     }
     if (c.state === "deleted") throw new AppError("computer_deleted", 409);
+    if (command.kind === "computer.reset" || command.kind === "computer.delete") {
+      tx.run("INSERT OR IGNORE INTO lifecycle.withdrawals VALUES ('computer',?,?)", c.id, `through_generation_${c.generation}`);
+    }
     c.generation++;
     c.revision++;
     c.ownerGeneration = tx.get<{ generation: number }>("SELECT generation FROM owner")!.generation;

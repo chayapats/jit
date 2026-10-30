@@ -51,4 +51,4 @@ export interface MemoryReceipt { kind: MemoryCommand["kind"]; requestId: string;
 /** Owner-only lifecycle label for a returned claim or source; it carries identities and never withdrawn payload. */
 export interface MemoryWithdrawal { kind: "claim" | "source"; id: string; mode: "corrected" | "forgotten" | "deleted"; source: MemoryRef | null }
 /** Owner impact preview with no authority and no mutation. */
-export interface MemoryImpact { claim: MemoryRef; claims: MemoryRef[]; sources: MemoryRef[]; contexts: string[]; nativePolicy: "fresh_sessions_retire_on_close" }
+export interface MemoryImpact { claim: MemoryRef; claims: MemoryRef[]; sources: MemoryRef[]; contexts: string[]; reports: { id: string; workId: string; revision: number }[]; artifacts: string[]; nativePolicy: "fresh_sessions_retire_on_close" }

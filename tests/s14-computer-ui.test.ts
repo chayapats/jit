@@ -179,9 +179,10 @@ test("a stale input page refuses on the styled page, sends nothing and does not 
 });
 
 test("handing back is exact, clears the lease and says it approves nothing, while a held action stays on its own card", async () => {
-  const f = await fixture({ authority: { effects: { send: async () => "unknown" } } }), work = await f.open(); f.lease("takeover.start");
+  const f = await fixture({ authority: { effects: { send: async () => "unknown" } } }), work = await f.open();
   const attempt = f.app.authority.admit(work.id, rid(), { botId: "jit", tools: ["computer", "effect_send"], scopes: [], input: "Send", calls: 6, outputBytes: 1024 });
   const effect = f.app.authority.proposeEffect(attempt.id, rid(), { kind: "send", destination: "https://example.invalid", content: "Approve this now" }, f.clock.now + 60000);
+  f.lease("takeover.start");
   const html = await f.page();
   expect(html).toContain("A held external action is not approved"); expect(html).toContain("Handing back does not approve a held external action"); expect(html).toContain(`/effects/${effect.id}#slip`); expect(html).not.toContain("Approve this now");
   expect(hasCommand(html, "approval.decide")).toBe(false); expect(buttons(html)).toContain("Hand back");

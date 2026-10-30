@@ -265,7 +265,7 @@ test("one queued work uses its computer, private memory and both public read too
   let turn = 0;
   const model: Model = { provider: "scripted", id: "computer-memory-research", async *stream(request) {
     expect(f.app.authority.view(f.auth.actor, work.id).work.state).toBe("running");
-    expect(request.tools!.map(t => t.name)).toEqual(["read", "write", "edit", "bash", "grep", "find", "ls", "web_search", "web_fetch"]);
+    expect(request.tools!.map(t => t.name)).toEqual(["read", "write", "edit", "bash", "grep", "find", "ls", "artifact_export", "web_search", "web_fetch"]);
     expect(request.hostedTools ?? []).toEqual([]);
     const context = request.context.map(section => section.content).join("\n");
     expect(context).toContain(privateText); expect(context).toContain("Keep unknown freshness visible");

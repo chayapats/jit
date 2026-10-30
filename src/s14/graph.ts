@@ -2,7 +2,7 @@ import { AppError } from "../errors";
 import { containsCredential } from "../security/credentials";
 import type { AppTransaction } from "../store";
 import { record, save, type S14Application } from "./application";
-import type { Admission, Attempt, Work, WorkGrant } from "./authority-types";
+import type { Attempt, Work, WorkGrant } from "./authority-types";
 import type { GraphCommand, GraphReceipt, GraphView, StepGap, StepInput, StepProposal, WorkDefaults, WorkGraph, WorkStep } from "./graph-types";
 import type { OwnerActor } from "./types";
 import { canonical, exact, identity, integer, text } from "./validation";
@@ -27,7 +27,7 @@ export function validateWorkGraph(grant: WorkGrant, proposed: StepProposal[]): S
     for (const list of [node.tools, node.scopes, node.dependsOn]) if (!Array.isArray(list) || list.length > 64) throw new AppError("invalid_graph_list");
     if (new Set(node.tools).size !== node.tools.length || new Set(node.dependsOn).size !== node.dependsOn.length) throw new AppError("invalid_graph_list");
     if (node.tools.some(tool => !grant.tools.includes(tool) || !bot.capabilities.tools.includes(tool))) throw new AppError("tool_outside_grant", 403);
-    if (node.handler === "synthesis" && (node.tools.length || node.scopes.length)) throw new AppError("synthesis_tools_refused", 403);
+    if (node.handler === "synthesis" && (node.tools.length || node.scopes.some(scope => scope.kind !== "share"))) throw new AppError("synthesis_tools_refused", 403);
     for (const scope of node.scopes) {
       exact(scope, ["kind", "id", "revision"]);
       const pinned = grant.scopes.find(s => canonical(s.ref) === canonical(scope));
@@ -66,7 +66,7 @@ export function defaultWorkGraph(grant: WorkGrant): StepProposal[] {
     scopes: grant.scopes.filter(s => bot.capabilities.resources.includes(s.ref.id) && (s.ref.kind === "share" ? s.receiverBotId === bot.id : s.ownerBotId === bot.id)).map(s => s.ref),
     input: `${grant.purpose}\nCompletion rule: ${grant.command.payload.completionRule}`, calls, outputBytes }));
   if (count > 1) nodes.push({ id: "synthesis", handler: "synthesis", botId: grant.bots[0]!.id, dependsOn: nodes.map(n => n.id),
-    tools: [], scopes: [], input: `Synthesize the committed evidence for: ${grant.purpose}. Preserve conflicts, missing evidence and failed siblings.`, calls, outputBytes });
+    tools: [], scopes: nodes[0]!.scopes.filter(scope => scope.kind === "share"), input: `Synthesize the committed evidence for: ${grant.purpose}. Preserve conflicts, missing evidence and failed siblings.`, calls, outputBytes });
   return validateWorkGraph(grant, nodes);
 }
 
@@ -166,7 +166,7 @@ export class S14Graph {
       const prior = steps.find(s => s.nodeId === dependency)!;
       if (!terminal.has(prior.state) || prior.settledAt === null && prior.attemptId !== null) return null;
       const result = prior.state === "committed" && prior.attemptId ? tx.get<{ content: string }>("SELECT content FROM work_results WHERE attempt_id=?", prior.attemptId) : null;
-      if (result) inputs.push({ stepId: prior.id, attemptId: prior.attemptId!, sourceId: `result_${prior.attemptId}`, text: result.content });
+      if (result) inputs.push({ stepId: prior.id, attemptId: prior.attemptId!, sourceId: `result_${prior.attemptId}`, text: result.content, evidence: [] });
       else gaps.push({ stepId: prior.id, reason: prior.reason ?? "dependency_unavailable" });
     }
     if (node.handler !== "synthesis" && gaps.length) {

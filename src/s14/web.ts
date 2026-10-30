@@ -106,6 +106,20 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
         return json(receipt);
       }
       if (request.method !== "GET") throw new AppError("not_found", 404);
+      const reports = /^\/api\/s14\/work\/([a-zA-Z0-9_-]+)\/reports$/.exec(url.pathname);
+      if (reports) return json(app.reports.list(auth.actor, reports[1]!));
+      const report = /^\/api\/s14\/reports\/([a-f0-9]{32})$/.exec(url.pathname);
+      if (report) return json(app.reports.view(auth.actor, report[1]!));
+      const download = /^\/(?:api\/)?s14\/artifacts\/([a-f0-9]{32})\/download$/.exec(url.pathname);
+      if (download) {
+        const { artifact, bytes } = app.artifacts.download(auth.actor, download[1]!);
+        return new Response(new Uint8Array(bytes), { headers: {
+          "Content-Type": artifact.mediaType, "Content-Length": String(artifact.size),
+          "Content-Disposition": `attachment; filename="${artifact.name}"`, "Cache-Control": "private, no-store",
+          "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Content-Security-Policy": "sandbox; default-src 'none'; frame-ancestors 'none'",
+          "Content-Digest": `sha-256=:${Buffer.from(artifact.sha256, "hex").toString("base64")}:`,
+        } });
+      }
       if (url.pathname === "/api/s14/work-defaults") return json(app.graph.defaults(auth.actor));
       const graph = /^\/api\/s14\/work\/([a-zA-Z0-9_-]+)\/graph$/.exec(url.pathname);
       if (graph) return json(app.graph.view(auth.actor, graph[1]!));

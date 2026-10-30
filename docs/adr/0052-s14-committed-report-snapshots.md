@@ -1,0 +1,14 @@
+---
+status: accepted for opt-in implementation
+scope: REPORT14-01, S14-AC06/08; refines ADR 0047
+---
+
+# Committed report revisions and private snapshots
+
+Separate report readiness, evidence coverage and owner completion. A free-form result may be inspectable without a report. The trusted result handler alone publishes a validated immutable report revision with Markdown, an evidence manifest and optional bounded workspace snapshots. All report/result/source/file rows commit together in SQLite. BLOB storage keeps this local slice atomic without filesystem orphan/rename or arbitrary host-path delivery.
+
+Citations resolve actual read evidence through app.parallel.citation. Synthesis receives only accessible committed handoffs, with explicit gaps and bounds. Quote, inference, snippet/excerpt/page, cache, freshness and conflict remain distinct. Optional owner-start evidence targets define mechanically checkable coverage; absent targets retain a machine-unverified completion-rule gap. Models cannot certify owner completion, invent a coverage target or widen authority.
+
+Only portable UTF-8 Markdown/text/JSON files are delivered initially. Workspace snapshots use the exact guarded computer backend and stable runner observation, with relative-path, symlink/type/size/hash checks. Downloads use opaque IDs, attachment responses, no-store, nosniff and sandbox/default-none CSP. No active app-origin HTML rendering or arbitrary host-file export is introduced.
+
+Report/file sources inherit original memory source and access pins. Publication and every download revalidate them. The independent ledger retains identity-only revoked access/share revisions, stopped execution grants and reset/deleted computer generation ranges so a stale application image cannot restore their descendants. This is part of the ticket's revocation/restore invariant, not a new execution permission. Full managed recovery/backup remains its tracked slice. See the delivered app.report-artifacts/v1 and app.artifact-gateway/v1 contracts.

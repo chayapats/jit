@@ -1,5 +1,6 @@
 import type { AppTransaction } from "../store";
 import type { Bot, Envelope, Route } from "./types";
+import type { EvidenceRequirement, ReportProposal } from "./report-types";
 import type { SchedulerLimits, GraphPlanner, StepGap, StepInput } from "./graph-types";
 import type { MemoryRef } from "./memory-types";
 
@@ -16,7 +17,7 @@ export interface WorkGrant { id: string; workId: string; revision: number; gener
 /** Retained obligation; result is the latest committed attempt ID, never an inline result body. Acceptance grants no execution. */
 export interface Work { id: string; revision: number; conversationId: string; sourceMessageId: string | null; /** Exact committed task source, pinned at acceptance and checked at every start/use. */ source?: MemoryRef; title: string; purpose: string; completionRule: string; state: "proposed" | "accepted" | "queued" | "running" | "waiting" | "ready" | "blocked" | "stopping" | "stopped"; reason: string | null; grantId: string | null; result: string | null; createdAt: number }
 /** Explicit start parameters; selected Bot and task revisions are checked in the receipt transaction. */
-export interface StartPayload { conversationId: string; task: { id: string; revision: number } | null; title: string; purpose: string; completionRule: string; bots: { id: string; revision: number }[]; tools: string[]; scopes: ScopeRef[]; limits: WorkLimits; expiresAt: number }
+export interface StartPayload { conversationId: string; task: { id: string; revision: number } | null; title: string; purpose: string; completionRule: string; bots: { id: string; revision: number }[]; tools: string[]; scopes: ScopeRef[]; limits: WorkLimits; expiresAt: number; requiredEvidence?: EvidenceRequirement[] }
 /** Obligation-only owner acceptance of a typed service proposal. */
 export type AcceptTaskCommand = Envelope<"task.accept", { taskId: string }>;
 /** Atomic creation of work, finite grant and durable queue intent from explicit owner authority. */
@@ -38,9 +39,9 @@ export interface EffectAction { kind: "send" | "publish" | "push" | "payment" | 
 /** Durable action ledger revision and outcome; unknown is reconcile-only and never claimable again. */
 export interface Effect { id: string; revision: number; workId: string; attemptId: string; botId: string; action: EffectAction; actionHash: string; expiresAt: number; state: "pending" | "approved" | "denied" | "expired" | "executing" | "succeeded" | "failed" | "unknown" | "changed"; reason: string | null; supported: boolean }
 /** Worker result is evidence for owner review, not an automatic claim that the completion rule is fulfilled. */
-export interface WorkOutput { state: "ready" | "waiting"; text: string }
+export interface WorkOutput { state: "ready" | "waiting"; text: string; report?: ReportProposal }
 /** Immutable result evidence stored outside capped records, bounded by the originating attempt's output reservation. */
-export interface WorkResult extends WorkOutput { attemptId: string; workId: string; committedAt: number }
+export interface WorkResult extends Pick<WorkOutput, "state" | "text"> { attemptId: string; workId: string; committedAt: number }
 /** Trusted bounded internal handler; production foundation offers only tool-free analysis over schway/host. */
 export interface WorkExecutor { run(attempt: Attempt, signal: AbortSignal): Promise<WorkOutput> }
 /** Reviewed external adapter contract; production foundation configures none and tests use no-send fixtures. */

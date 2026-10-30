@@ -20,11 +20,11 @@ async function fixture(executor?: WorkExecutor, extra: AuthorityOptions = {}) {
   const root = mkdtempSync(join(tmpdir(), "jit-s14-team-")); roots.push(root);
   const store = new S14Store(join(root, "state.sqlite")); stores.add(store);
   const clock = { now: 1800000000000 };
-  const options: S14Options = { now: () => clock.now, policy: { routes: [{ id: "route", provider: "codex", model: "fixture" }], tools: ["web_search", "computer"], resources: [] },
+  const options: S14Options = { now: () => clock.now, policy: { routes: [{ id: "route", provider: "codex", model: "fixture" }], tools: ["web_search", "computer"], resources: ["share1"] },
     chat: { async reply() { return { text: "Tool-free reply" }; } }, authority: { ...(executor ? { executor } : {}), ...extra } };
   const app = new S14Application(store, options);
   await app.provisionOwner("fixture-team-password"); const token = await app.login("fixture-team-password"), auth = app.authenticate(token);
-  const setup = app.execute(auth.actor, { kind: "setup", requestId: rid(), expectedRevision: 0, payload: { ownerName: "Owner", language: "en", routeId: "route", capabilities: { tools: ["web_search", "computer"], resources: [] } } });
+  const setup = app.execute(auth.actor, { kind: "setup", requestId: rid(), expectedRevision: 0, payload: { ownerName: "Owner", language: "en", routeId: "route", capabilities: { tools: ["web_search", "computer"], resources: ["share1"] } } });
   const bot = setup.bot!, conversationId = setup.conversation!.id;
   store.transaction(tx => {
     for (const name of ["second", "third"]) {
@@ -226,4 +226,23 @@ test("read reservations are finite per grant, survive failure and defaults never
   expect(() => f.store.transaction(tx => f.app.authority.reserveRead(tx, attempt))).toThrow("read_budget_exhausted");
   f.app.authority.settle(attempt.id, "quota_exceeded");
   expect(f.app.authority.view(f.auth.actor, original.work!.id).reservations!.reads).toBe(1);
+});
+
+test("an exact owner-granted private memory share reaches synthesis while execution tools remain absent", async () => {
+  const f = await fixture({ async run(a) {
+    if (a.step!.handler === "synthesis") {
+      expect(a.snapshot.tools).toEqual([]);
+      expect(a.snapshot.scopes.map(s => s.ref.id)).toEqual(["share1"]);
+      expect(a.step!.inputs.map(input => input.text)).toContain("Explicitly shared sibling result");
+      expect(a.step!.gaps).toEqual([]);
+      return { state: "ready", text: "Synthesis within the explicit share" };
+    }
+    return { state: "ready", text: a.snapshot.bot.id === "second" ? "Explicitly shared sibling result" : "Coordinator result" };
+  } });
+  const remembered = f.app.execute(f.auth.actor, { kind: "memory.remember", requestId: rid(), expectedRevision: 1, payload: { conversationId: "secondchat", text: "Private fact explicitly shared with Jit" } });
+  const shared = f.app.execute(f.auth.actor, { kind: "memory.share", requestId: rid(), expectedRevision: 1,
+    payload: { claim: remembered.claim!, scopeId: "share1", receiverBotId: "jit", expiresAt: f.clock.now + 1800000 } });
+  const started = f.start({ scopes: [{ kind: "share", id: shared.share!.id, revision: shared.share!.revision }] });
+  await f.app.authority.drain();
+  expect(f.app.graph.view(f.auth.actor, started.work!.id).steps.at(-1)!.state).toBe("committed");
 });
