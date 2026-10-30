@@ -153,3 +153,21 @@ Map existing Opus web/evidence/rate/quota/settings states from `WebOutcome`: run
 `ExternalEvidence` source IDs/revisions are the citation seam; `app.parallel.citation(tx,attemptId,id,revision)` is the trusted later report handler's validation port. Free-form foundation work output is ready for owner review, not a certified complete report/artifact. Packet source references append evidence actually read, and lifecycle changes fence subsequent tools and final output. Native executor is `schwayResearch` in src/s14/research.ts; UI agent owns rendering/routes/assets and can use the existing renderer/service projections. Do not replace the command/authority boundary.
 
 Final store is schema **6**, combining the reviewed foundation result table with computer, memory and Parallel tables; earlier unreleased schemas 1–5 require a fresh separate path, preserving original data. The current independent lifecycle ledger must accompany this installation and remain current across application-image restore. MEM14-01/WEB14-01 UI evidence is recorded in section 17 of the experience document and `tests/s14-web-memory.test.ts`. Protocol fixtures are documentation-derived (2026-10-30), with live exact serialization/conformance and live quality explicitly pending.
+
+## TEAM14-01 logic seam
+
+Schema **7** refuses earlier unreleased schemas 1–6 with fresh-state. `app.work-graph/v1` adds `concurrency` and `reads` as required explicit `WorkLimits` fields. Defaults are owner-confirmed **2 / 1800000 ms / 40 reads**; query current defaults rather than assuming fixture counts. Call reservations include inference as well as tools; actual usage remains null.
+
+| Command | Exact payload | expectedRevision |
+| --- | --- | --- |
+| `work.step.stop` | `{workId,stepId}` | current lane revision |
+| `work.defaults.set` | `{concurrency,wallMs,reads}` | defaults revision |
+
+Both use the existing authenticated JSON/form command envelope and receipts. Work stop remains `work.stop`; stopping one lane grants no replacement execution. Future default edits do not mutate current grants.
+
+| Query | Result |
+| --- | --- |
+| `GET /api/s14/work/:id/graph` | `GraphView {graph,steps,active,concurrency,limits,actualUsage:null}` |
+| `GET /api/s14/work-defaults` | `WorkDefaults {id:'work',revision,concurrency,wallMs,reads}` |
+
+Lane states are queued, waiting_evidence, running, stopping, committed, failed, cancelled, blocked. `startedAt`/`settledAt` are actual service observations; null means no observed interval. Render timeline only from these observations. `dependency_uncommitted`, `partial_graph_evidence`, `handoff_not_accessible`, `native_reconciliation_required` and safe handler failures stay explicit. Ready means review evidence; report coverage remains a separate field in REPORT14-01. Core query/command types are `graph-types.ts`. Opus owns pages, form controls, state copy and new UI/UX acceptance; this logic pass adds no product layout.

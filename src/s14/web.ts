@@ -106,6 +106,9 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
         return json(receipt);
       }
       if (request.method !== "GET") throw new AppError("not_found", 404);
+      if (url.pathname === "/api/s14/work-defaults") return json(app.graph.defaults(auth.actor));
+      const graph = /^\/api\/s14\/work\/([a-zA-Z0-9_-]+)\/graph$/.exec(url.pathname);
+      if (graph) return json(app.graph.view(auth.actor, graph[1]!));
       if (url.pathname === "/api/s14/home") return json({ state: app.home(auth.actor), csrf: auth.csrf });
       const inputReceipt = /^\/api\/s14\/computer-inputs\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
       if (inputReceipt) return json(app.computers.inputReceipt(auth.actor, inputReceipt[1]!));

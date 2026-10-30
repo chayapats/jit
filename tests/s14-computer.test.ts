@@ -31,7 +31,7 @@ type F = Awaited<ReturnType<typeof fixture>>;
 function start(f: F, botId = "jit", tools = ["computer", "effect_send"]) {
   return f.app.execute(f.auth.actor, { kind: "work.start", requestId: rid(), expectedRevision: f.app.conversation(f.auth.actor, f.conversationId).conversation.revision,
     payload: { conversationId: f.conversationId, task: null, title: "Report", purpose: "Local report", completionRule: "Owner review", bots: [{ id: botId, revision: 1 }], tools, scopes: [],
-      limits: { attempts: 4, steps: 4, calls: 64, outputBytes: 8192, wallMs: 3600000 }, expiresAt: f.clock.now + 3600000 } });
+      limits: { attempts: 4, steps: 4, calls: 64, outputBytes: 8192, wallMs: 3600000, concurrency: 2, reads: 40 }, expiresAt: f.clock.now + 3600000 } });
 }
 async function running(f: F, botId = "jit") {
   const work = start(f, botId).work!;
@@ -430,13 +430,13 @@ test("owner image/state/SSE and no-script coordinate/text/key commands retain sa
   expect(f.runtime!.requests).toHaveLength(0);
 });
 
-test("schema 6 reopens with result and computer tables and original receipts intact", async () => {
+test("schema 7 reopens with result and computer tables and original receipts intact", async () => {
   const f = await fixture();
   const original = f.store.read(tx => tx.all("SELECT * FROM command_receipts"));
   f.store.close(); stores.delete(f.store);
   const store = new S14Store(f.path); stores.add(store);
   expect(store.read(tx => tx.all("SELECT * FROM command_receipts"))).toEqual(original);
-  expect(store.read(tx => tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version)).toBe(6);
+  expect(store.read(tx => tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version)).toBe(7);
   for (const table of ["work_results", "bot_computers", "input_leases", "computer_operations", "computer_inputs", "computer_attempts"]) {
     expect(store.read(tx => tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name=?", table))).not.toBeNull();
   }

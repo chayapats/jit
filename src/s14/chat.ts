@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { createHost, hostCapabilities, RELEASE_CONTRACT, type Model } from "schway/host";
+import { s14CredentialLifecycle } from "./lifecycle";
 import { AppError } from "../errors";
 import type { ChatPort } from "./types";
 
@@ -15,7 +16,7 @@ export function schwayChat(directory: string, model?: Model): ChatPort {
         sources: input.messages.map(m => ({ id: `message/${m.id}`, revision: "r1", content: `${m.role}: ${m.text}` })) },
       tools: { policy: "exact", hostedLookup: "off", definitions: [] },
       limits: { maxTurns: 1, maxConcurrentTools: 1, maxAttempts: 1, contextWindow: 32768, maxInputChars: 262144, deadlineMs: 60000 },
-      auth: { route: input.route.provider, model: input.route.model },
+      auth: { lifecycle: s14CredentialLifecycle(), route: input.route.provider, model: input.route.model },
     });
     try {
       if (host.capabilities.releaseContract !== RELEASE_CONTRACT || signal.aborted) throw new AppError("reply_unavailable");

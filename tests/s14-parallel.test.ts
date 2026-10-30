@@ -53,7 +53,7 @@ async function fixture(wire = protocol(), extra: Omit<ParallelWebOptions, "trans
   await app.provisionOwner(password); const token = await app.login(password), auth = app.authenticate(token);
   const setup = app.execute(auth.actor, { kind: "setup", requestId: rid(), expectedRevision: 0, payload: { ownerName: "Owner", language: "en", routeId: "selected", capabilities: { tools: selectedPolicy.tools, resources: [] } } });
   const start = () => app.execute(auth.actor, { kind: "work.start", requestId: rid(), expectedRevision: app.conversation(auth.actor, setup.conversation!.id).conversation.revision,
-    payload: { conversationId: setup.conversation!.id, task: null, title: "Public research", purpose: "Read public facts", completionRule: "Evidence for review", bots: [{ id: "jit", revision: 1 }], tools: selectedPolicy.tools, scopes: [], limits: { attempts: 1, steps: 1, calls: 16, outputBytes, wallMs: 60000 }, expiresAt: clock.now + 60000 } });
+    payload: { conversationId: setup.conversation!.id, task: null, title: "Public research", purpose: "Read public facts", completionRule: "Evidence for review", bots: [{ id: "jit", revision: 1 }], tools: selectedPolicy.tools, scopes: [], limits: { attempts: 1, steps: 1, calls: 16, outputBytes, wallMs: 60000, concurrency: 2, reads: 40 }, expiresAt: clock.now + 60000 } });
   const started = start(), attempt = app.authority.admit(started.work!.id, rid(), { botId: "jit", tools: selectedPolicy.tools, scopes: [], input: "Read public facts", calls: 16, outputBytes });
   return { root, path, store, vault, app, options, clock, auth, token, start, attempt, work: started.work!, conversationId: setup.conversation!.id, ...wire };
 }
@@ -453,7 +453,7 @@ test("revoking published memory withdraws a receiver's committed evidence, citat
     tx.run("INSERT INTO conversations VALUES ('receiverchat','receiver',1)");
   });
   const work = f.app.execute(f.auth.actor, { kind: "work.start", requestId: rid(), expectedRevision: 1,
-    payload: { conversationId: "receiverchat", task: null, title: "Read", purpose: "report preference", completionRule: "Evidence", bots: [{ id: "receiver", revision: 1 }], tools: policy.tools, scopes: [], limits: { attempts: 1, steps: 1, calls: 8, outputBytes: 32768, wallMs: 60000 }, expiresAt: epoch + 60000 } }).work!;
+    payload: { conversationId: "receiverchat", task: null, title: "Read", purpose: "report preference", completionRule: "Evidence", bots: [{ id: "receiver", revision: 1 }], tools: policy.tools, scopes: [], limits: { attempts: 1, steps: 1, calls: 8, outputBytes: 32768, wallMs: 60000, concurrency: 2, reads: 40 }, expiresAt: epoch + 60000 } }).work!;
   const attempt = f.app.authority.admit(work.id, rid(), { botId: "receiver", tools: policy.tools, scopes: [], input: "report preference", calls: 8, outputBytes: 32768 });
   const read = await f.app.parallel.read(attempt.id, "web_search", { query: "public docs" }), evidence = read.evidence[0]!;
   expect(read.outcome).toBe("success");

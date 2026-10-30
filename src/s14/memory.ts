@@ -235,6 +235,34 @@ export class S14Memory {
     return packet;
   }
 
+  /** Checks receiver access to every source/claim ancestor before a committed result crosses Bot context. */
+  handoff(tx: AppTransaction, source: MemoryRef, receiver: Attempt): boolean {
+    if (!this.sourceCurrent(tx, source)) return false;
+    const pending = [source], seen = new Set<string>();
+    while (pending.length) {
+      const next = pending.pop()!;
+      if (seen.has(next.id)) continue;
+      seen.add(next.id);
+      const item = record<MemorySource>(tx, "memory_sources", next.id);
+      for (const pin of item.access ?? []) {
+        const claim = record<MemoryClaim>(tx, "memory_claims", pin.id);
+        if (this.lookup(tx, receiver.snapshot.bot.id, ref(claim), receiver).state !== "available") return false;
+      }
+      pending.push(...item.derived);
+    }
+    return true;
+  }
+
+  /** Appends exact committed accessible handoff evidence while preserving the bounded packet and original access pins. */
+  appendSource(tx: AppTransaction, attemptId: string, source: MemoryRef): void {
+    const packet = this.attemptPacket(tx, attemptId);
+    if (packet.sources.some(r => same(r, source))) return;
+    if (packet.sources.length >= 64 || !this.sourceCurrent(tx, source)) throw new AppError("memory_source_unavailable", 409);
+    packet.sources.push(ref(source));
+    packet.bytes = Buffer.byteLength(canonical(packet));
+    save(tx, "memory_contexts", packet);
+  }
+
   /** Rechecks live decisions, access revisions, source lineage and owner/Bot generations before use or publication. */
   current(tx: AppTransaction, packet: MemoryPacket): boolean {
     if (packet.state !== "current") return false;
@@ -441,8 +469,8 @@ export class S14Memory {
       save(tx, "memory_contexts", packet);
       if (packet.workId) {
         const work = record<Work>(tx, "work_items", packet.workId);
-        if (work.result !== null) { work.result = null; work.reason = "memory_context_stale"; work.state = "blocked"; work.revision++; save(tx, "work_items", work); }
-        tx.run("DELETE FROM work_results WHERE work_id=?", packet.workId);
+        if (work.result === packet.attemptId) { work.result = null; work.reason = "memory_context_stale"; work.state = "blocked"; work.revision++; save(tx, "work_items", work); }
+        tx.run("DELETE FROM work_results WHERE attempt_id=?", packet.attemptId);
       }
     }
     for (const row of tx.all<{ record_json: string }>("SELECT record_json FROM reply_outbox")) {

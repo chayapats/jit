@@ -79,7 +79,7 @@ const claimPath = (botId: string, ref: { id: string; revision: number; generatio
 /** Starts one granted research work and returns its admitted attempt, with the memory packet a real attempt carries. */
 function research(f: F, tools = ["web_search", "web_fetch"]) {
   const conversation = f.app.conversation(f.auth.actor, f.conversationId).conversation;
-  const work = f.app.execute(f.auth.actor, { kind: "work.start", requestId: rid(), expectedRevision: conversation.revision, payload: { conversationId: f.conversationId, task: null, title: "Public research", purpose: "Read public facts", completionRule: "Evidence", bots: [{ id: "jit", revision: 1 }], tools, scopes: [], limits: { attempts: 1, steps: 1, calls: 16, outputBytes: 32768, wallMs: 60000 }, expiresAt: f.clock.now + 60000 } }).work!;
+  const work = f.app.execute(f.auth.actor, { kind: "work.start", requestId: rid(), expectedRevision: conversation.revision, payload: { conversationId: f.conversationId, task: null, title: "Public research", purpose: "Read public facts", completionRule: "Evidence", bots: [{ id: "jit", revision: 1 }], tools, scopes: [], limits: { attempts: 1, steps: 1, calls: 16, outputBytes: 32768, wallMs: 60000, concurrency: 2, reads: 40 }, expiresAt: f.clock.now + 60000 } }).work!;
   return { work, attempt: f.app.authority.admit(work.id, rid(), { botId: "jit", tools, scopes: [], input: "Read public facts", calls: 16, outputBytes: 32768 }) };
 }
 function plant(f: F, attemptId: string, workId: string, change: Partial<WebRead>): WebRead {

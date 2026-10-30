@@ -7,7 +7,7 @@ import type { AppTransaction } from "../store";
 /** Fresh S14 SQLite format identity, distinct from every legacy user_version. */
 export const s14ApplicationId = 0x4a495431;
 /** Unreleased S14 schema version; unknown formats refuse before writable SQLite opens. */
-export const s14SchemaVersion = 6;
+export const s14SchemaVersion = 7;
 /** Safe next action for incompatible stores; no original bytes or sidecars are opened by SQLite. */
 export class FreshStateRequired extends AppError {
   readonly nextAction = "choose_a_separate_JIT_S14_DATABASE_keep_legacy_installation";
@@ -84,7 +84,12 @@ export class S14Store {
         CREATE TABLE work_items (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id), record_json TEXT NOT NULL);
         CREATE TABLE work_grants (id TEXT PRIMARY KEY, work_id TEXT NOT NULL UNIQUE REFERENCES work_items(id), record_json TEXT NOT NULL);
         CREATE TABLE grant_state (grant_id TEXT PRIMARY KEY REFERENCES work_grants(id), generation INTEGER NOT NULL, revoked INTEGER NOT NULL CHECK(revoked IN (0,1)));
-        CREATE TABLE grant_usage (grant_id TEXT PRIMARY KEY REFERENCES work_grants(id), attempts INTEGER NOT NULL, steps INTEGER NOT NULL, calls INTEGER NOT NULL, output_bytes INTEGER NOT NULL);
+        CREATE TABLE grant_usage (grant_id TEXT PRIMARY KEY REFERENCES work_grants(id), attempts INTEGER NOT NULL, steps INTEGER NOT NULL, calls INTEGER NOT NULL, output_bytes INTEGER NOT NULL, reads INTEGER NOT NULL);
+        CREATE TABLE work_defaults (id TEXT PRIMARY KEY CHECK(id='work'), record_json TEXT NOT NULL);
+        INSERT INTO work_defaults VALUES ('work','{"id":"work","revision":1,"concurrency":2,"wallMs":1800000,"reads":40}');
+        CREATE TABLE work_graphs (id TEXT PRIMARY KEY REFERENCES work_items(id), record_json TEXT NOT NULL);
+        CREATE TABLE work_steps (id TEXT PRIMARY KEY, work_id TEXT NOT NULL REFERENCES work_items(id), record_json TEXT NOT NULL);
+        CREATE TABLE attempt_transports (attempt_id TEXT PRIMARY KEY REFERENCES work_attempts(id), active INTEGER NOT NULL CHECK(active IN (0,1)));
         CREATE TABLE work_queue (work_id TEXT PRIMARY KEY REFERENCES work_items(id), state TEXT NOT NULL CHECK(state IN ('queued','claimed','blocked')));
         CREATE TABLE work_attempts (id TEXT PRIMARY KEY, work_id TEXT NOT NULL REFERENCES work_items(id), request_id TEXT NOT NULL, payload_hash TEXT NOT NULL, record_json TEXT NOT NULL, UNIQUE(work_id,request_id));
         CREATE TABLE attempt_usage (attempt_id TEXT PRIMARY KEY REFERENCES work_attempts(id), calls INTEGER NOT NULL);
@@ -103,7 +108,7 @@ export class S14Store {
       }).immediate();
       const installationId = this.#tx.get<{ id: string }>("SELECT id FROM memory_identity")?.id;
       if (!installationId || installationId !== this.#tx.get<{ id: string }>("SELECT id FROM lifecycle.identity")?.id) throw new AppError("s14_lifecycle_ledger_conflict", 409);
-      // Fresh schema 6 combines result, memory, Parallel and computer tables; earlier unreleased stores refuse.
+      // Fresh schema 7 combines result, memory, Parallel and computer tables; earlier unreleased stores refuse.
       this.#db.transaction(() => {
         this.#db.exec(`
           CREATE TABLE IF NOT EXISTS bot_computers (id TEXT PRIMARY KEY, bot_id TEXT NOT NULL UNIQUE REFERENCES bots(id), record_json TEXT NOT NULL);

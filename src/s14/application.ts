@@ -11,18 +11,20 @@ import { S14Memory } from "./memory";
 import type { MemoryCommand, MemoryReceipt } from "./memory-types";
 import { S14Authority, suggestTask } from "./authority";
 import type { AuthorityCommand, AuthorityOptions, AuthorityReceipt } from "./authority-types";
+import { S14Graph } from "./graph";
+import type { GraphCommand, GraphReceipt } from "./graph-types";
 import { S14Computers } from "./computer";
 import type { ComputerCommand, ComputerOptions, ComputerReceipt } from "./computer-types";
 
 /** Stable complete typed owner ingress union for the S14 logic foundation. */
-export type S14Command = BotCommand | AuthorityCommand | MemoryCommand | ParallelCommand | ComputerCommand;
+export type S14Command = BotCommand | AuthorityCommand | MemoryCommand | ParallelCommand | ComputerCommand | GraphCommand;
 /** Committed typed result of the S14 owner command boundary. */
-export type S14Receipt = BotReceipt | AuthorityReceipt | MemoryReceipt | ParallelReceipt | ComputerReceipt;
+export type S14Receipt = BotReceipt | AuthorityReceipt | MemoryReceipt | ParallelReceipt | ComputerReceipt | GraphReceipt;
 
 const id = () => crypto.randomUUID().replaceAll("-", "");
 const tokenPattern = /^[a-f0-9]{64}$/;
 /** Service-owned JSON tables; request/model input never selects a SQL identifier. */
-export type RecordTable = "bots" | "bot_proposals" | "reply_outbox" | "work_items" | "work_grants" | "work_attempts" | "effects" | "memory_sources" | "memory_claims" | "memory_access" | "memory_shares" | "memory_contexts" | "memory_decisions" | "parallel_settings" | "parallel_connections" | "web_reads" | "external_evidence";
+export type RecordTable = "bots" | "bot_proposals" | "reply_outbox" | "work_items" | "work_grants" | "work_attempts" | "effects" | "memory_sources" | "memory_claims" | "memory_access" | "memory_shares" | "memory_contexts" | "memory_decisions" | "parallel_settings" | "parallel_connections" | "web_reads" | "external_evidence" | "work_graphs" | "work_steps" | "work_defaults";
 /** Loads an opaque record from a trusted table name; callers enforce command and scope first. */
 export function record<T>(tx: AppTransaction, table: RecordTable, key: string): T {
   const row = tx.get<{ record_json: string }>(`SELECT record_json FROM ${table} WHERE id=?`, key);
@@ -44,6 +46,7 @@ export class S14Application {
   readonly memory: S14Memory;
   readonly parallel: ParallelWeb;
   readonly computers: S14Computers;
+  readonly graph: S14Graph;
   #actors = new WeakMap<OwnerActor, string>();
   #replyBusy = false;
   constructor(readonly store: S14Store, readonly options: S14Options) {
@@ -59,6 +62,7 @@ export class S14Application {
     this.authority = new S14Authority(this, { ...options.authority, scopes: {
       current: (tx, scope) => this.memory.scope(tx, scope) ?? externalScopes?.current(tx, scope) ?? null,
     } });
+    this.graph = new S14Graph(this);
     this.parallel = new ParallelWeb(this, options.parallel);
     this.store.transaction(tx => { this.memory.reconcile(tx); this.memory.fence(tx); this.parallel.reconcile(tx); });
     this.computers = new S14Computers(this, options.computers);
@@ -148,6 +152,8 @@ export class S14Application {
   execute(actor: OwnerActor, command: ParallelCommand): ParallelReceipt;
   /** Executes exact computer lifecycle and input ownership intents without embedding transient browser input. */
   execute(actor: OwnerActor, command: ComputerCommand): ComputerReceipt;
+  /** Executes lane stops and future-work defaults without granting execution authority. */
+  execute(actor: OwnerActor, command: GraphCommand): GraphReceipt;
   /** Executes the complete typed HTTP command union without client-controlled actor identities. */
   execute(actor: OwnerActor, command: S14Command): S14Receipt;
   execute(actor: OwnerActor, command: S14Command): S14Receipt {
@@ -161,7 +167,9 @@ export class S14Application {
       const previous = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash,result_json FROM command_receipts WHERE owner_id='owner' AND request_id=?", command.requestId);
       if (previous) { if (previous.payload_hash !== digest(encoded)) throw new AppError("request_id_conflict", 409); return JSON.parse(previous.result_json) as S14Receipt; }
       let result: S14Receipt;
-      if (command.kind.startsWith("web.parallel.")) {
+      if (["work.step.stop", "work.defaults.set"].includes(command.kind)) {
+        result = this.graph.apply(tx, command as GraphCommand);
+      } else if (command.kind.startsWith("web.parallel.")) {
         result = this.parallel.apply(tx, command as ParallelCommand);
       } else if (command.kind.startsWith("memory.")) {
         result = this.memory.apply(tx, command as MemoryCommand);

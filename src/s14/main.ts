@@ -13,6 +13,7 @@ import { acquireS14RuntimeLock } from "./runtime-lock";
 import { serveS14Refusal } from "./web-refusal";
 import type { Policy } from "./types";
 import { BotPodmanRuntime } from "./computer-podman";
+import { s14CredentialLifecycle } from "./lifecycle";
 import { runComputerWork } from "./computer-work";
 
 /** Explicit opt-in composition root; it imports no legacy application, workers, configuration or store at runtime. */
@@ -31,7 +32,7 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
       const vault = new ConnectionVault(vaultDirectory, { forbidden: [dirname(path)] });
       const runtime = env.JIT_S14_COMPUTER_ROOT ? new BotPodmanRuntime({ dataRoot: env.JIT_S14_COMPUTER_ROOT,
         protectedPaths: [dirname(path), vaultDirectory, resolve(".local"), resolve("backups")], workspaceImage: env.JIT_BOX_IMAGE_BASE ?? "", browserImage: env.JIT_BOX_IMAGE_BROWSER ?? "" }) : undefined;
-      const app: S14Application = new S14Application(store, { policy, chat, parallel: { vault }, computers: runtime ? { runtime } : {}, authority: { executor: { async run(attempt, signal) {
+      const app: S14Application = new S14Application(store, { policy, chat, parallel: { vault }, computers: runtime ? { runtime } : {}, authority: { scheduler: JSON.parse(env.JIT_S14_SCHEDULER_LIMITS ?? '{"global":2,"route":2,"bot":1,"computer":2}'), executor: { async run(attempt, signal) {
         if (attempt.snapshot.tools.includes("computer")) return runComputerWork(app, join(dirname(path), "native"), attempt, signal);
         return schwayResearch(join(dirname(path), "native"), app).run(attempt, signal);
       } } } });
@@ -46,15 +47,17 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
       app.recoverReplies(); app.authority.recover(); app.parallel.recover();
       app.computers.recover();
       await app.computers.drain();
-      // One root pump keeps conversational/work inference serial on the selected credential route.
-      let pumping = false;
-      const pump = async () => {
-        if (pumping) return; pumping = true;
-        try { for (;;) {
-          await app.drainReplies(); await app.authority.drain();
-          // A message can arrive while an internal work transport is settling.
-          if (!store!.read(tx => tx.get("SELECT id FROM reply_outbox WHERE json_extract(record_json,'$.state')='queued' LIMIT 1"))) break;
-        } } finally { pumping = false; }
+      // Interactive chat is checked before every bounded graph admission; each run has its own host.
+      let pumping: Promise<void> | null = null;
+      const pump = (): Promise<void> => {
+        if (pumping) return pumping;
+        pumping = (async () => {
+          for (;;) {
+            await app.drainReplies(); await app.authority.drain();
+            if (!store!.read(tx => tx.get("SELECT id FROM reply_outbox WHERE json_extract(record_json,'$.state')='queued' LIMIT 1"))) break;
+          }
+        })().finally(() => { pumping = null; });
+        return pumping;
       };
       const handler = createS14Handler(app, origin, renderS14, createS14Product(app));
       const maintainComputers = () => {
@@ -68,10 +71,19 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
       const computerTimer = setInterval(maintainComputers, 1000);
       void pump().catch(() => {});
       process.once("exit", release);
-      const shutdown = () => { clearInterval(computerTimer); server.stop(true); app.computers.recover(); void app.computers.drain().finally(() => process.exit(0)); };
+      const shutdown = () => {
+        clearInterval(computerTimer); server.stop(true);
+        void (async () => {
+          await app.authority.shutdown();
+          await pumping;
+          app.computers.recover(); await app.computers.drain();
+          await s14CredentialLifecycle().close();
+          store!.close(); release(); process.exit(0);
+        })().catch(() => { process.exitCode = 1; });
+      };
       process.once("SIGTERM", shutdown);
       process.once("SIGINT", shutdown);
-      console.log(JSON.stringify({ state: "s14_listening", origin, contracts: ["app.bots/v1", "app.conversations/v2", "app.work-grants/v1", "app.effect-approval/v2", "app.bot-computer/v1", "app.input-lease/v1", "app.memory-scope/v2", "app.context-provenance/v2", "app.parallel-web/v1", "app.external-evidence/v2"], readiness: "configured_unverified" }));
+      console.log(JSON.stringify({ state: "s14_listening", origin, contracts: ["app.bots/v1", "app.conversations/v2", "app.work-grants/v1", "app.effect-approval/v2", "app.bot-computer/v1", "app.input-lease/v1", "app.memory-scope/v2", "app.context-provenance/v2", "app.parallel-web/v1", "app.external-evidence/v2", "app.work-graph/v1"], readiness: "configured_unverified" }));
     } catch (e) { store?.close(); release(); throw e; }
   } catch (error) {
     console.error(JSON.stringify(error instanceof FreshStateRequired ? { error: error.code, nextAction: error.nextAction } : { error: error instanceof AppError ? error.code : "s14_start_failed" }));

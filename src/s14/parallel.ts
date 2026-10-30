@@ -125,7 +125,10 @@ export class ParallelWeb {
       outcome: "running", mode: setting.mode, settingRevision: setting.revision, evidence: [], missing: [], failures: [], usage: null, omittedResults: 0, remoteRequests: 0, reason: null };
     // Reserve before accepting an input; refusals spend a call and cannot be retried outside the finite grant.
     this.app.authority.reserveTool(attemptId, tool);
-    this.app.store.transaction(tx => tx.run("INSERT INTO web_reads VALUES (?,?,?)", row.id, attempt.id, canonical(row)));
+    this.app.store.transaction(tx => {
+      this.app.authority.reserveRead(tx, attempt);
+      tx.run("INSERT INTO web_reads VALUES (?,?,?)", row.id, attempt.id, canonical(row));
+    });
     const abort = new AbortController();
     let timedOut = false;
     const cancel = () => abort.abort();

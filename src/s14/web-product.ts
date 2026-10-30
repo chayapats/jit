@@ -70,7 +70,7 @@ function ownerLimits(fields: Record<string, unknown>) {
 }
 /** One attempt per named Bot; reads and time are the owner's, the rest is inferred so nobody sizes internals. */
 function workLimits(limits: ReturnType<typeof ownerLimits>, bots: number): WorkLimits {
-  return { attempts: bots, steps: bots, calls: limits.reads, outputBytes: workOutputBytes, wallMs: limits.minutes * 60000 };
+  return { attempts: bots > 1 ? bots + 1 : 1, steps: bots > 1 ? bots + 1 : 1, calls: Math.min(256, limits.reads * 2 + bots + 1), concurrency: limits.concurrent, reads: limits.reads, outputBytes: workOutputBytes, wallMs: limits.minutes * 60000 };
 }
 /** First line of the command, capped to the title's byte limit on a code-point boundary. */
 export function inferTitle(text: string): string {
@@ -83,7 +83,6 @@ const start = (identity: { requestId: string; expectedRevision: number; conversa
   const limits = ownerLimits(fields), lead = app.conversation(actor, identity.conversationId).conversation.botId;
   const bots = prefixed(fields, "bot:").map(id => ({ id, revision: Number(single(fields, `bot:${id}`)) })).sort((a, b) => Number(b.id === lead) - Number(a.id === lead));
   if (bots[0]?.id !== lead) throw new AppError("invalid_bots");
-  if (bots.length > limits.concurrent) throw new AppError("s14_too_many_bots");
   const shaped = workLimits(limits, bots.length);
   return { kind: "work.start", requestId: identity.requestId, expectedRevision: identity.expectedRevision, payload: { conversationId: identity.conversationId, task: identity.task, ...content, bots, tools: prefixed(fields, "tool:"), scopes: [], limits: shaped, expiresAt: expiryFor(app, actor, identity.requestId, shaped.wallMs) } };
 };
