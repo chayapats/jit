@@ -609,3 +609,41 @@ Author: Claude Opus 5.5 (`claude-opus-5-5`), requested at effort high. Date: 202
 | Live reads | Three regions replaced by signature, driven by the one-event state stream, with a fresh picture preloaded per event. | A per-render request ID would otherwise replace forms under a press every read. |
 
 **Verification:** rendering and form-contract tests in `tests/s14-computer-ui.test.ts`. A real headless Chromium run over the real handler with a fake runtime and a 1280 by 800 PNG covered real no-script posts of image, text, key and coordinate input, the fitted click at 390 px, state following across two contexts and layouts at 360, 390, 820 and 1280 px in both themes and languages, with no console or CSP errors. No real Linux computer, real phone, Safari, Firefox, screen reader or live model route has been used, and no claim is made that a screen reader can use the pixel desktop.
+
+## 19. Team and report refinements (TEAM14-01, REPORT14-01)
+
+Author: Claude Opus 5.5 (`claude-opus-5-5`), requested at effort high. Date: 2026-10-31. Code: `src/s14/web-team.ts`, `web-report.ts`, `web-product-team.ts`, `web-style-team.ts`, plus small hooks in `web-pages.ts`, `web-product.ts` and `web-memory.ts`. F3, F4, F7 and F8 stay the source. Each change below is **P** and presents only data the seam has. This section supersedes the "one at a time" concurrency row in section 16 and the CSS-width timeline row in section 11.
+
+| Area | Change | Why |
+| --- | --- | --- |
+| Timeline unit | One row per step, not per Bot. A Bot with two steps reads "Jit · Research" and "Jit · Synthesis". | Each step has one recorded interval. A Bot may have two, and merging them would invent a span. |
+| Timeline drawing | One SVG per row with geometry attributes, inside an `aria-hidden` block. | The CSP has no inline style, so server-rendered CSS widths are impossible. SVG attributes pass it and need no script. |
+| Queued and waiting | No outline or hatch bar. The row shows the state word and an empty track. | The seam records no queued or waiting interval, only a run start and settlement. A bar there would be an estimate, which F3 forbids. |
+| Stopping | A hatched bar up to now that still counts in the headline. Stopped is an outlined bar. | A stop request does not end a call, and the lane keeps its capacity until it settles. |
+| Overlap sentence | "Really ran at the same time for 1 min 20 s", computed from recorded intervals, or "No two steps have run at the same time". | S14-AC04 in words, so overlap does not depend on reading the graphic. |
+| Table | "View as a table" is a collapsed section under the graphic. Null times read Not recorded and Not settled. | Same observations in text. An open section defers live refresh, like every other open section. |
+| Lane words | Committed reads ส่งหลักฐานแล้ว / Evidence committed. The line adds that this does not mean the work is covered. | A lane must not read as finished work. |
+| Waiting line | Names the exact lanes that have not committed. | The fix for a dependency wait differs from a queue. |
+| Stop label | หยุดขั้นนี้ / Stop this step, with no Bot name. Offered only when the work has more than one lane. | Authority labels never carry a name a model may have proposed. A lone lane is the whole work, and Stop work already covers it. |
+| Stop landing | A stopped lane lands on `/work/:id`, also from the pane. | The receipt carries no conversation. |
+| Report from what we have | Not offered after a stop or failure. The banners say committed evidence is kept. | The seam has no such command, so a control would do nothing. |
+| Bot state | Team and Home read each Bot's own lanes, so only Bots really running breathe. | Previously every Bot in a running grant read as working. |
+| Work card | One line per step, up to six, with a report link and a Partial pill. | Shows overlap from the conversation. |
+| Usage | Time is elapsed against the grant. Reads, calls and output are reservations. Near the limit is a word at 80%. Actual use stays hatched and Unknown. | Reads and calls are separate limits now, and only time is observed. |
+| Work tabs | Progress, Report, Evidence, Grant, then Computer, the section 3 order. | Report needed a place, and this restores the designed order. |
+| Report selection | `/work/:id?tab=report&report=:id` and the same on the chat pane. There is no `/reports/:id` page. | Section 3 keeps reports under their work, and one path works without script. |
+| Four facts | A grid of Report, Coverage, Missing evidence and Your review, then one sentence saying what ready means. | The contract requires independent facts, and one badge would merge them. |
+| Covered word | ครอบหลักฐานที่ระบุ / Listed evidence covered, neutral not green, with "does not prove the report is true, and the work is not closed". | Even `covered` only means the owner's list was met. No state says complete. |
+| Gaps first | Covered, missing and limitations come before any claim. | F8 wants them above the fold. |
+| Missing list | A stored gap becomes words only when typed data corroborates it: a real target, claim, step or read. Anything else stays visible as Bot text in the untrusted frame. | `missing` mixes service codes with model strings in one list. A model must not be able to forge a system line, and nothing may be dropped. |
+| Title | Stays inside the untrusted frame. The heading is the fixed "Report r2". | A model must not author page chrome. |
+| Citations | A numbered link to the exact Evidence row, then the URL as plain text, and the exact quote in a collapsed frame. | Section 7 keeps remote links inactive. Only the row in Evidence is one click away. |
+| Conflicts | Both claims shown with both sources, each linking to the other. | F8: the UI does not pick one. |
+| Revisions | Listed newest first with time and coverage. An older revision says so and links the latest. A withdrawn one shows only its number and the reason. | S14-AC08, and no payload after withdrawal. |
+| Files | Exact bytes, word plus media type, full SHA-256 and time, with the attachment link. | Literal values in mono. KiB would hide the exact size. |
+| Required evidence | An optional box under More on start forms, one line per target. A URL line asks for that page in full, and other lines are a topic. | Without targets `covered` is unreachable from the product. Only the owner sets them, and they appear in Grant. |
+| Work defaults | `/settings/work`, one form with three numbers, plus read-only installation ceilings. Every start form reads the saved values. | One no-script path. Ceilings explain a queue under the grant limit, and they are not measured capacity. |
+| Stale defaults | Shows the fresh saved values, not the typed ones. An out-of-range form keeps the typed values. | A stale form must not overwrite a change the owner has not seen. |
+| Forget preview | Adds report and file counts, with a link to each revision. | The owner decides on what the command reaches. |
+
+**Verification:** rendering and form-contract tests are in `tests/s14-team-ui.test.ts`, using the real scheduler, report handler and HTTP handler with scripted runs. Headless Chrome on macOS covered real states at 360, 390, 430, 820 and 1280 px in both themes and both languages, with no page overflow, no button, tab, revision row, citation or section toggle under 44 px at phone widths, and no console or CSP errors. One forced-colours render kept every state word; bars there lose their committed and failed shades, so the words carry the difference. The same browser with script disabled stopped a step, saved defaults, started work with evidence targets, downloaded a report file and followed a citation. With script on, a page followed a live graph to its end. Playwright's WebKit build covered the Thai pages at the same widths with no overflow; its only console lines were refusals of the style that the screenshot tool injects, and they appeared only where screenshots were taken. Firefox could not start in this environment. No real phone, Safari, screen reader, live model route or live Parallel service has been used.

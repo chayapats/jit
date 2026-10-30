@@ -7,10 +7,13 @@ import type { BotComputer, ComputerActivity, ComputerView } from "./computer-typ
 import type { Bot, BotProposal, Conversation, Message, Reply, Route } from "./types";
 import { s14AssetUrl } from "./web-assets";
 import type { S14Page } from "./web";
-import { defaultWorkLimits, workLimitBounds, type S14Chat, type S14ComputerSurface, type S14Draft, type S14View, type S14WorkTab } from "./web-product";
+import { workLimitBounds, type S14Chat, type S14ComputerSurface, type S14Draft, type S14View, type S14WorkTab } from "./web-product";
 import type { S14WorkResearch } from "./web-product-memory";
 import { renderMemorySurface } from "./web-memory";
 import { evidenceTab, researchNotice, webSettingsPage } from "./web-research";
+import { limitValues, partialWork, type S14WorkTeam } from "./web-product-team";
+import { reportHintPill, reportTab } from "./web-report";
+import { miniLanes, teamProgress, usageBlock, workSettingsPage } from "./web-team";
 
 export const e = (value: unknown) => String(value).replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
 export const k = (key: string) => key as MessageKey;
@@ -141,12 +144,14 @@ function grantChoices(page: S14Page, lead: Bot, draft: S14Draft | null): string 
   return `${hidden(`bot:${lead.id}`, lead.revision)}${others.map(bot => `<label class="s-check"><input type="checkbox" name="bot:${e(bot.id)}" value="${bot.revision}"${draft?.bots.includes(bot.id) ? " checked" : ""}><span>${e(botName(bot))}</span></label>`).join("")}
     ${tools.map(tool => `<label class="s-check"><input type="checkbox" name="tool:${e(tool)}" value="on"${tool.startsWith("effect_") ? "" : " checked"}><span class="s-mono">${e(tool)}${tool.startsWith("effect_") ? `<small>${tr("s14.grant.effect_tool")}</small>` : ""}</span></label>`).join("")}`;
 }
+/** Owner-written evidence targets: the one way `covered` becomes reachable, since a model cannot set its own. */
+const evidenceField = (value: string) => `<label class="s-field"><span>${tr("s14.composer.evidence")}</span><textarea name="evidence" rows="2" maxlength="8000" placeholder="${tr("s14.composer.evidence_placeholder")}">${e(value)}</textarea><span class="s-note">${tr("s14.composer.evidence_note")}</span></label>`;
 function composer(page: S14Page, conversation: Conversation, bot: Bot, from: "home" | "chat", draft: S14Draft | null): string {
-  const limits = draft ?? defaultWorkLimits, placeholder = bot.id === "jit" ? tr("s14.composer.placeholder") : `${tr("s14.composer.placeholder_to")} ${botName(bot)}…`;
+  const limits = draft ?? limitValues(page.overview.defaults), placeholder = bot.id === "jit" ? tr("s14.composer.placeholder") : `${tr("s14.composer.placeholder_to")} ${botName(bot)}…`;
   return `<form class="s-composer${from === "home" ? " big" : ""}" data-composer method="post" action="/s14/forms/compose" novalidate>${flat(page.csrf, conversation.revision)}${hidden("conversationId", conversation.id)}${hidden("from", from)}
     <label class="sr-only" for="s14-text">${tr("s14.composer.label")}</label><textarea id="s14-text" name="text" rows="${from === "home" ? 3 : 1}" maxlength="16384" placeholder="${e(placeholder)}">${e(draft?.text ?? "")}</textarea>
     <div class="s-bar"><a class="s-chip" href="/team"><span class="sr-only">${tr("s14.composer.to")} </span><span aria-hidden="true">${tr("s14.composer.to")}</span> ${e(botName(bot))}</a><label class="s-chip s-mode"><input type="checkbox" name="work" value="on"${draft?.work ? " checked" : ""}><span>${tr("s14.composer.mode")}</span></label><span class="s-grow"></span><button class="s-send" aria-label="${tr("s14.composer.send")}" title="${tr("s14.composer.send")}">${icon("arrow")}</button></div>
-    <div class="s-budget"><p>${tr("s14.composer.starts_now")}</p>${limitFields(limits)}<details class="s-more"><summary>${tr("s14.composer.more")}</summary><div><label class="s-field"><span>${tr("s14.composer.completion")}</span><input name="completion" maxlength="1000" value="${e(draft?.completion ?? "")}" placeholder="${tr("s14.work.default_completion")}"></label>${grantChoices(page, bot, draft)}</div></details><p class="s-note">${tr(page.policy.tools.length ? "s14.composer.tools_note" : "s14.composer.no_tools_note")} ${tr("s14.composer.serial_note")}</p></div></form>`;
+    <div class="s-budget"><p>${tr("s14.composer.starts_now")}</p>${limitFields(limits)}<details class="s-more"><summary>${tr("s14.composer.more")}</summary><div><label class="s-field"><span>${tr("s14.composer.completion")}</span><input name="completion" maxlength="1000" value="${e(draft?.completion ?? "")}" placeholder="${tr("s14.work.default_completion")}"></label>${evidenceField(draft?.evidence ?? "")}${grantChoices(page, bot, draft)}</div></details><p class="s-note">${tr(page.policy.tools.length ? "s14.composer.tools_note" : "s14.composer.no_tools_note")} ${tr("s14.composer.serial_note")}</p></div></form>`;
 }
 
 function taskSlip(page: S14Page, task: Work, conversation: Conversation, bot: Bot): string {
@@ -154,12 +159,13 @@ function taskSlip(page: S14Page, task: Work, conversation: Conversation, bot: Bo
   if (task.state === "proposed") return `<article class="s-slip" aria-label="${tr("s14.task.title")}"><div class="s-slip-hd"><div><h3>${tr("s14.task.title")} r${task.revision}</h3><p class="s-meta">${tr("s14.task.no_effect")}</p></div>${workPill("proposed")}</div><div class="s-slip-body">${body}</div>
     ${ownerStrip(commandForm(page.csrf, "task.accept", task.revision, { taskId: task.id }, tr("s14.task.accept")), tr("s14.task.accept_note"))}</article>`;
   return `<article class="s-slip" data-state="closed" aria-label="${tr("s14.task.title")}"><div class="s-slip-hd"><div><h3>${tr("s14.task.title")} r${task.revision}</h3></div>${workPill("accepted")}</div><div class="s-slip-body">${banner("", tr("s14.task.not_running_title"), tr("s14.task.not_running"))}${body}</div>
-    ${ownerStrip(`<form class="s-stack" method="post" action="/s14/forms/task-start">${flat(page.csrf, conversation.revision)}${hidden("taskId", task.id)}${hidden("taskRevision", task.revision)}${limitFields(defaultWorkLimits)}<details class="s-more"><summary>${tr("s14.composer.more")}</summary><div>${grantChoices(page, bot, null)}</div></details><div><button class="s-btn primary">${tr("s14.task.start")}</button></div></form>`, tr("s14.task.start_note"))}</article>`;
+    ${ownerStrip(`<form class="s-stack" method="post" action="/s14/forms/task-start">${flat(page.csrf, conversation.revision)}${hidden("taskId", task.id)}${hidden("taskRevision", task.revision)}${limitFields(limitValues(page.overview.defaults))}<details class="s-more"><summary>${tr("s14.composer.more")}</summary><div>${evidenceField("")}${grantChoices(page, bot, null)}</div></details><div><button class="s-btn primary">${tr("s14.task.start")}</button></div></form>`, tr("s14.task.start_note"))}</article>`;
 }
 function receiptLine(work: Work, view?: WorkView): string {
   if (!work.grantId) return "";
   return `<p class="s-receipt"><span>${tr("s14.work.receipt")}</span><span class="s-mono s-meta">${e(short(work.id))}</span><span>${tr("s14.work.grant")} g${view?.grant?.revision ?? 1}</span></p>`;
 }
+const partialPill = (work: Work) => partialWork(work) ? pill(tr("s14.report.coverage.partial"), "warn", "!") : "";
 function stopForm(page: S14Page, work: Work): string {
   return commandForm(page.csrf, "work.stop", work.revision, { workId: work.id }, tr("s14.work.stop"), "s-btn danger");
 }
@@ -167,8 +173,8 @@ const stoppable = (work: Work) => ["queued", "running", "waiting", "blocked"].in
 function workCard(page: S14Page, work: Work, conversation: Conversation, bot: Bot): string {
   if (work.state === "proposed" || work.state === "accepted") return taskSlip(page, work, conversation, bot);
   const open = `/chats/${e(conversation.id)}?work=${e(work.id)}`;
-  return `<article class="s-workcard" aria-label="${e(work.title)}"><div class="s-workcard-hd"><div><h3>${e(work.title)}</h3></div>${workPill(work.state)}</div>${receiptLine(work)}<div class="s-lane-mini">${tile(bot, workDot[work.state] ?? "", "small")}<span class="s-grow">${e(botName(bot))}</span><span>${tr(k(`s14.work_state.${work.state}`))}</span></div>
-    <div class="s-workcard-ft"><a class="s-btn" href="${open}">${tr("s14.work.open_progress")}</a><a class="s-btn" href="${open}&amp;tab=grant">${tr("s14.work.open_grant")}</a></div>${stoppable(work) ? ownerStrip(stopForm(page, work), tr("s14.work.stop_note")) : ""}</article>`;
+  return `<article class="s-workcard" aria-label="${e(work.title)}"><div class="s-workcard-hd"><div><h3>${e(work.title)}</h3></div>${partialPill(work)}${workPill(work.state)}</div>${receiptLine(work)}${miniLanes(page, work) || `<div class="s-lane-mini">${tile(bot, workDot[work.state] ?? "", "small")}<span class="s-grow">${e(botName(bot))}</span><span>${tr(k(`s14.work_state.${work.state}`))}</span></div>`}
+    <div class="s-workcard-ft"><a class="s-btn" href="${open}">${tr("s14.work.open_progress")}</a>${page.overview.reports[work.id] ? `<a class="s-btn" href="${open}&amp;tab=report">${tr("s14.work.open_report")} r${page.overview.reports[work.id]!.revision}</a>` : ""}<a class="s-btn" href="${open}&amp;tab=grant">${tr("s14.work.open_grant")}</a></div>${stoppable(work) ? ownerStrip(stopForm(page, work), tr("s14.work.stop_note")) : ""}</article>`;
 }
 
 function proposalFacts(page: S14Page, proposal: BotProposal): string {
@@ -226,38 +232,35 @@ function thread(page: S14Page, chat: S14Chat, bot: Bot): string {
 const emptyThread = (bot: Bot) => `<p class="s-sub">${bot.id === "jit" ? tr("s14.chat.empty_jit") : tr("s14.chat.empty_bot")}</p>`;
 const liveWork = (work: Work) => ["queued", "running", "stopping"].includes(work.state);
 
-function meter(label: string, used: number, limit: number, text: string): string {
-  return `<div class="s-meter"><span>${e(label)}</span><small>${e(text)}</small><meter min="0" max="${limit}" value="${Math.min(used, limit)}" aria-label="${e(label)}">${e(text)}</meter></div>`;
-}
-function usage(view: WorkView): string {
-  const { grant, reservations } = view; if (!grant || !reservations) return "";
-  return `<section class="s-stack" aria-labelledby="s14-usage"><h3 class="s-section-t" id="s14-usage">${tr("s14.usage.title")}</h3>
-    ${meter(tr("s14.usage.reads"), reservations.calls, grant.limits.calls, `${tr("s14.usage.reserved")} ${reservations.calls} ${tr("s14.usage.of")} ${grant.limits.calls}`)}
-    ${meter(tr("s14.usage.output"), reservations.outputBytes, grant.limits.outputBytes, `${tr("s14.usage.reserved")} ${size(reservations.outputBytes)} ${tr("s14.usage.of")} ${size(grant.limits.outputBytes)}`)}
-    <div class="s-meter"><span>${tr("s14.usage.actual")}</span><small>${tr("s14.unknown")}</small><span class="s-unknown-bar" aria-hidden="true"></span></div><p class="s-note">${tr("s14.usage.note")}</p></section>`;
-}
 function workStateBanner(view: WorkView): string {
   const { work } = view, reason = work.reason ? trMaybe(`s14.reason.${work.reason}`) : null;
   if (work.state === "queued") return banner("", tr("s14.work_state.queued"), tr("s14.work.queued_detail"));
   if (work.state === "running") return banner("", tr("s14.work_state.running"), tr("s14.work.running_detail"));
   if (work.state === "waiting") return banner("warn", tr("s14.work_state.waiting"), tr("s14.work.waiting_detail"));
+  if (partialWork(work)) return banner("warn", `${tr("s14.work_state.ready")} · ${tr("s14.report.coverage.partial")}`, tr("s14.work.ready_partial_detail"));
   if (work.state === "ready") return banner("ok", tr("s14.work_state.ready"), tr("s14.work.ready_detail"));
   if (work.state === "blocked") return banner("warn", tr("s14.work_state.blocked"), `${reason ?? tr("s14.reason.generic")} ${tr("s14.work.blocked_next")}`, work.reason ? `<p class="s-mono s-meta">${e(work.reason)}</p>` : "");
   if (work.state === "stopping") return banner("", tr("s14.work_state.stopping"), tr("s14.work.stopping_detail"));
-  if (work.state === "stopped") return banner("", tr("s14.work_state.stopped"), tr("s14.work.stopped_detail"));
+  if (work.state === "stopped") return banner("", tr("s14.work_state.stopped"), `${tr("s14.work.stopped_detail")}. ${tr("s14.work.stopped_kept")}`);
   return "";
 }
 function attemptLane(page: S14Page, attempt: Attempt): string {
   const bot = page.state.bots.find(b => b.id === attempt.snapshot.bot.id) ?? attempt.snapshot.bot;
   return `<div class="s-lane">${tile(bot, attemptDot[attempt.state] ?? "")}<div><p><b>${e(botName(bot))}</b> · ${tr(k(`s14.attempt_state.${attempt.state}`))}</p>${attempt.reason ? `<p class="s-meta">${e(trMaybe(`s14.reason.${attempt.reason}`) ?? attempt.reason)}</p>` : ""}<p class="s-meta">${when(attempt.createdAt)}</p>${attempt.snapshot.tools.includes("computer") ? `<p><a class="s-link-text" href="${computerPath(bot)}">${tr("s14.work.view_computer")}</a></p>` : ""}</div></div>`;
 }
-function progressTab(page: S14Page, view: WorkView, conversation: Conversation, bot: Bot, research: S14WorkResearch | null, base: string): string {
+/** The one Progress line about reports: it links out when one exists and says plainly when a result is not one. */
+function reportLine(view: WorkView, team: S14WorkTeam, reportHref: string): string {
+  const latest = team.reports.at(-1);
+  if (latest) return `<p class="s-row"><a class="s-link-text" href="${reportHref}">${tr("s14.work.open_report")} r${latest.state === "available" ? latest.report.revision : latest.revision}</a>${latest.state === "available" && latest.report.coverage === "partial" ? pill(tr("s14.report.coverage.partial"), "warn", "!") : ""}</p>`;
+  return view.results.length ? `<p class="s-note">${tr("s14.work.no_report_yet")}</p>` : "";
+}
+function progressTab(page: S14Page, view: WorkView, conversation: Conversation, bot: Bot, research: S14WorkResearch | null, team: S14WorkTeam, base: string): string {
   const { work } = view;
   if (work.state === "proposed" || work.state === "accepted") return taskSlip(page, work, conversation, bot);
   const resultText = view.results.map(result => result.text).join("\n\n");
   const result = resultText ? `<section class="s-stack" aria-labelledby="s14-result"><h3 class="s-section-t" id="s14-result">${tr("s14.work.result")}</h3>${untrusted(`<p>${e(resultText)}</p>`, tr("s14.untrusted.result"))}<p class="s-note">${tr("s14.work.completion_rule")}: ${e(work.completionRule)}</p></section>` : "";
-  const evidenceHref = `${base}${base.includes("?") ? "&amp;" : "?"}tab=evidence`;
-  return `${workStateBanner(view)}${researchNotice(research, evidenceHref)}${view.effects.map(effect => effectSlip(page, effect, [], "h3")).join("")}${view.attempts.length ? `<section class="s-stack" aria-labelledby="s14-lanes"><h3 class="s-section-t" id="s14-lanes">${tr("s14.work.lanes")}</h3>${view.attempts.map(a => attemptLane(page, a)).join("")}</section>` : ""}${result}${usage(view)}${stoppable(work) ? `<div class="s-slip" data-state="closed">${ownerStrip(stopForm(page, work), tr("s14.work.stop_note"))}</div>` : ""}`;
+  const sep = base.includes("?") ? "&amp;" : "?", evidenceHref = `${base}${sep}tab=evidence`, direct = view.attempts.filter(attempt => !attempt.step);
+  return `${workStateBanner(view)}${reportLine(view, team, `${base}${sep}tab=report`)}${researchNotice(research, evidenceHref)}${view.effects.map(effect => effectSlip(page, effect, [], "h3")).join("")}${teamProgress(page, view, team, research)}${direct.length ? `<section class="s-stack" aria-labelledby="s14-attempts"><h3 class="s-section-t" id="s14-attempts">${tr("s14.work.attempts")}</h3>${direct.map(a => attemptLane(page, a)).join("")}</section>` : ""}${result}${usageBlock(page, view, team)}${stoppable(work) ? `<div class="s-slip" data-state="closed">${ownerStrip(stopForm(page, work), tr("s14.work.stop_note"))}</div>` : ""}`;
 }
 function grantTab(page: S14Page, view: WorkView): string {
   const { grant, authority, work } = view;
@@ -269,21 +272,22 @@ function grantTab(page: S14Page, view: WorkView): string {
     <dl class="s-kv"><dt>${tr("s14.grant.revision")}</dt><dd><span class="s-mono">g${grant.revision} · ${e(grant.id)}</span></dd><dt>${tr("s14.grant.started")}</dt><dd>${when(grant.createdAt)}</dd><dt>${tr("s14.grant.expires")}</dt><dd>${when(grant.expiresAt)} · ${remaining(grant.expiresAt, page.now)}</dd>
     <dt>${tr("s14.grant.bots")}</dt><dd>${grant.bots.map(bot => `${e(botName(bot))} <span class="s-mono s-meta">r${bot.revision}</span>`).join(" · ")}</dd><dt>${tr("s14.grant.route")}</dt><dd>${grant.routes.map(route => routeText(route)).join(" · ")}</dd><dt>${tr("s14.grant.tools")}</dt><dd>${list(reads, tr("s14.grant.no_tools"))}</dd>
     <dt>${tr("s14.grant.outbound")}</dt><dd>${tr(reads.length ? "s14.grant.outbound_tools" : "s14.grant.outbound_none")}</dd><dt>${tr("s14.grant.external")}</dt><dd>${list(effects, tr("s14.grant.no_external"))}${effects.length ? `<br><span class="s-note">${tr("s14.grant.effect_tool")}</span>` : ""}</dd><dt>${tr("s14.grant.scopes")}</dt><dd>${list(grant.scopes.map(scope => `${scope.ref.kind}:${scope.ref.id} r${scope.ref.revision}`), tr("s14.grant.no_scopes"))}</dd>
-    <dt>${tr("s14.grant.time")}</dt><dd>${Math.round(grant.limits.wallMs / 60000)} ${tr("s14.time.minutes")}</dd><dt>${tr("s14.grant.reads")}</dt><dd>${grant.limits.calls}</dd><dt>${tr("s14.grant.concurrency")}</dt><dd>${tr("s14.grant.concurrency_detail")}</dd><dt>${tr("s14.grant.output")}</dt><dd>${size(grant.limits.outputBytes)}</dd></dl>
+    <dt>${tr("s14.grant.time")}</dt><dd>${Math.round(grant.limits.wallMs / 60000)} ${tr("s14.time.minutes")}</dd><dt>${tr("s14.grant.reads")}</dt><dd>${grant.limits.reads}</dd><dt>${tr("s14.grant.calls")}</dt><dd>${grant.limits.calls}</dd><dt>${tr("s14.grant.concurrency")}</dt><dd>${grant.limits.concurrency}</dd><dt>${tr("s14.grant.output")}</dt><dd>${size(grant.limits.outputBytes)}</dd><dt>${tr("s14.grant.evidence")}</dt><dd>${payload.requiredEvidence?.length ? payload.requiredEvidence.map(target => e(target.label)).join("<br>") : tr("s14.grant.no_evidence_targets")}</dd></dl>
     <p class="s-note">${tr("s14.grant.enforced_note")}</p>${stoppable(work) ? `<div class="s-slip" data-state="closed">${ownerStrip(stopForm(page, work), tr("s14.work.stop_note"))}</div>` : ""}`;
 }
-function workBody(page: S14Page, view: WorkView, tab: S14WorkTab, conversation: Conversation, bot: Bot, research: S14WorkResearch | null, base: string): string {
+function workBody(page: S14Page, view: WorkView, tab: S14WorkTab, conversation: Conversation, bot: Bot, research: S14WorkResearch | null, team: S14WorkTeam, base: string): string {
   if (tab === "computer" && usesComputer(view)) return computerTab(page, view);
-  return tab === "grant" ? grantTab(page, view) : tab === "evidence" ? evidenceTab(page, view, research) : progressTab(page, view, conversation, bot, research, base);
+  if (tab === "report" && view.work.grantId) return reportTab(page, view, team, research, base);
+  return tab === "grant" ? grantTab(page, view) : tab === "evidence" ? evidenceTab(page, view, research) : progressTab(page, view, conversation, bot, research, team, base);
 }
 function workTabs(view: WorkView, tab: S14WorkTab, base: string): string {
   if (tab === "computer" && !usesComputer(view)) tab = "progress";
   const sep = base.includes("?") ? "&amp;" : "?", link = (name: S14WorkTab) => `<a href="${base}${sep}tab=${name}"${tab === name ? ' aria-current="page"' : ""}>${tr(k(`s14.tab.${name}`))}</a>`;
-  return view.work.grantId ? `<nav class="s-worktabs" aria-label="${tr("s14.tab.label")}">${link("progress")}${link("grant")}${usesComputer(view) ? link("computer") : ""}${link("evidence")}</nav>` : "";
+  return view.work.grantId ? `<nav class="s-worktabs" aria-label="${tr("s14.tab.label")}">${link("progress")}${link("report")}${link("evidence")}${link("grant")}${usesComputer(view) ? link("computer") : ""}</nav>` : "";
 }
-function workPane(page: S14Page, view: WorkView, tab: S14WorkTab, conversation: Conversation, bot: Bot, research: S14WorkResearch | null): string {
+function workPane(page: S14Page, view: WorkView, tab: S14WorkTab, conversation: Conversation, bot: Bot, research: S14WorkResearch | null, team: S14WorkTeam): string {
   const base = `/chats/${e(conversation.id)}?work=${e(view.work.id)}`;
-  return `<section class="s-pane" aria-labelledby="s14-pane-title"><div class="s-pane-hdr"><div><h2 id="s14-pane-title">${e(view.work.title)}</h2>${receiptLine(view.work, view)}</div>${workPill(view.work.state, "s14-pane-status")}<a class="s-btn" href="/chats/${e(conversation.id)}" aria-label="${tr("s14.pane.close")}">${icon("close")}</a></div>${workTabs(view, tab, base)}<div class="s-pane-body" id="s14-pane-live">${workBody(page, view, tab, conversation, bot, research, base)}</div></section>`;
+  return `<section class="s-pane" aria-labelledby="s14-pane-title"><div class="s-pane-hdr"><div><h2 id="s14-pane-title">${e(view.work.title)}</h2>${receiptLine(view.work, view)}</div>${workPill(view.work.state, "s14-pane-status")}<a class="s-btn" href="/chats/${e(conversation.id)}" aria-label="${tr("s14.pane.close")}">${icon("close")}</a></div>${workTabs(view, tab, base)}<div class="s-pane-body" id="s14-pane-live">${workBody(page, view, tab, conversation, bot, research, team, base)}</div></section>`;
 }
 
 const reasonOf = (effect: Effect) => effect.reason ? trMaybe(`s14.reason.${effect.reason}`) ?? "" : "";
@@ -328,7 +332,7 @@ function researchChoice(page: S14Page): string {
   return `<fieldset class="s-field"><legend>${tr("s14.setup.research")}</legend>${tools.map(tool => `<label class="s-check"><input type="checkbox" name="tool:${tool}" value="on" checked><span>${tr(k(`s14.setup.research_${tool}`))}</span></label>`).join("")}<p class="s-note">${tr("s14.setup.research_note")}</p><p class="s-note">${tr("s14.setup.nothing_else")}</p></fieldset>`;
 }
 /* Bot computer (BOX14-01, F11). The lease bar reads the lease, never local state, and every word here comes from typed query data. */
-const computerPath = (bot: Pick<Bot, "id">, suffix = "") => `/team/${e(bot.id)}?tab=computer${suffix}`;
+export const computerPath = (bot: Pick<Bot, "id">, suffix = "") => `/team/${e(bot.id)}?tab=computer${suffix}`;
 const usesComputer = (view: WorkView) => !!view.grant?.tools.includes("computer");
 /** Raw dictionary text with the Bot's name filled in; callers escape it like any other query value. */
 const named = (key: string, bot: Pick<Bot, "id" | "name">) => tr(k(key)).replace("{bot}", () => botName(bot));
@@ -472,16 +476,16 @@ function chatPage(page: S14Page, view: Extract<S14View, { kind: "chat" }>): stri
   const live = chat.replies.some(reply => reply.state === "queued" || reply.state === "running") || work.some(liveWork);
   const body = chat.messages.length || work.length ? thread(page, chat, bot) : emptyThread(bot);
   const content = `<div class="s-col"><div id="s14-live" class="s-thread" data-revision="${chat.conversation.revision}">${bot.id === "jit" ? "" : banner("", tr("s14.chat.direct"), tr("s14.chat.direct_detail"))}${body}</div><span id="latest"></span>${live ? `<p class="s-note"><a class="s-link-text" href="/chats/${e(chat.conversation.id)}#latest">${tr("s14.refresh")}</a></p>` : ""}</div>`;
-  return shell(page, botName(bot), content, { current: `chat:${chat.conversation.id}`, subtitle: tr("s14.chat.subtitle"), inChat: true, live, bot, dock: `<div class="s-dock">${notice(view.notice)}${composer(page, chat.conversation, bot, "chat", view.draft)}</div>`, ...(view.pane ? { pane: workPane(page, view.pane.view, view.pane.tab, chat.conversation, bot, view.pane.research) } : {}) });
+  return shell(page, botName(bot), content, { current: `chat:${chat.conversation.id}`, subtitle: tr("s14.chat.subtitle"), inChat: true, live, bot, dock: `<div class="s-dock">${notice(view.notice)}${composer(page, chat.conversation, bot, "chat", view.draft)}</div>`, ...(view.pane ? { pane: workPane(page, view.pane.view, view.pane.tab, chat.conversation, bot, view.pane.research, view.pane.team) } : {}) });
 }
 function workListPage(page: S14Page): string {
-  const group = (title: string, items: Work[], id: string) => items.length ? `<section aria-labelledby="${id}"><h2 class="s-section-t" id="${id}">${title}</h2>${items.map(item => `<a class="s-work-row" href="/work/${e(item.id)}"><span><span>${e(item.title)}</span><small>${when(item.createdAt)}</small></span>${workPill(item.state)}</a>`).join("")}</section>` : "";
+  const group = (title: string, items: Work[], id: string) => items.length ? `<section aria-labelledby="${id}"><h2 class="s-section-t" id="${id}">${title}</h2>${items.map(item => `<a class="s-work-row" href="/work/${e(item.id)}"><span><span>${e(item.title)}</span><small>${when(item.createdAt)}</small></span><span class="s-row-pills">${reportHintPill(page.overview.reports[item.id])}${workPill(item.state)}</span></a>`).join("")}</section>` : "";
   const by = (...states: Work["state"][]) => page.work.filter(item => states.includes(item.state));
   return shell(page, tr("s14.nav.work"), `<div class="s-col s-col-wide"><section aria-labelledby="s14-work-waiting"><h2 class="s-section-t" id="s14-work-waiting">${tr("s14.attention.title")}</h2>${attentionList(page)}</section>${group(tr("s14.work_list.needs_you"), by("waiting", "blocked"), "s14-group-you")}${group(tr("s14.work_list.progress"), by("queued", "running", "stopping"), "s14-group-progress")}${group(tr("s14.work_list.unstarted"), by("proposed", "accepted"), "s14-group-unstarted")}${group(tr("s14.work_list.finished"), by("ready", "stopped"), "s14-group-finished")}${page.work.length ? "" : `<p class="s-sub">${tr("s14.work_list.empty")}</p>`}</div>`, { current: "work" });
 }
 function workPage(page: S14Page, view: Extract<S14View, { kind: "work" }>): string {
   const work = view.view.work;
-  return shell(page, work.title, `<div class="s-col"><div class="s-between">${receiptLine(work, view.view) || "<span></span>"}${workPill(work.state, "s14-work-status")}</div>${workTabs(view.view, view.tab, `/work/${e(work.id)}`)}<div class="s-stack" id="s14-pane-live">${workBody(page, view.view, view.tab, view.conversation, view.bot, view.research, `/work/${e(work.id)}`)}</div>${liveWork(work) ? `<p class="s-note"><a class="s-link-text" href="/work/${e(work.id)}">${tr("s14.refresh")}</a></p>` : ""}<p><a class="s-link-text" href="/chats/${e(view.conversation.id)}">${tr("s14.work.back_to_chat")}</a></p></div>`, { current: "work", live: liveWork(work) });
+  return shell(page, work.title, `<div class="s-col"><div class="s-between">${receiptLine(work, view.view) || "<span></span>"}${workPill(work.state, "s14-work-status")}</div>${workTabs(view.view, view.tab, `/work/${e(work.id)}`)}<div class="s-stack" id="s14-pane-live">${workBody(page, view.view, view.tab, view.conversation, view.bot, view.research, view.team, `/work/${e(work.id)}`)}</div>${liveWork(work) ? `<p class="s-note"><a class="s-link-text" href="/work/${e(work.id)}">${tr("s14.refresh")}</a></p>` : ""}<p><a class="s-link-text" href="/chats/${e(view.conversation.id)}">${tr("s14.work.back_to_chat")}</a></p></div>`, { current: "work", live: liveWork(work) });
 }
 function teamPage(page: S14Page): string {
   const row = (bot: Bot) => `<a class="s-work-row" href="/team/${e(bot.id)}"><span class="s-row">${tile(bot, ({ working: "working", queued: "hollow", waiting: "waiting", idle: "" })[page.overview.botStates[bot.id] ?? "idle"])}<span><b>${e(botName(bot))}</b><small>${e(botDuty(bot))}</small>${page.overview.computers[bot.id]?.computer ? `<small>${tr("s14.proposal.computer")} · ${computerWord(page.overview.computers[bot.id]!)}</small>` : ""}</span></span>${pill(tr(k(`s14.bot_state.${page.overview.botStates[bot.id] ?? "idle"}`)))}</a>`;
@@ -495,9 +499,9 @@ function botPage(page: S14Page, view: Extract<S14View, { kind: "bot" }>): string
   return shell(page, botName(bot), `<div class="s-col${computer ? " s-col-wide" : ""}">${tabs}${computer ? computerPanel(page, bot, computer) : overview()}</div>`, { current: "team", bot, ...(computer ? { subtitle: tr("s14.computer.title") } : {}) });
 }
 function morePage(page: S14Page): string {
-  const planned = (["report", "routine"] as const).map(item => `<li>${tr(k(`s14.more.${item}`))} · ${pill(tr("s14.more.not_ready"))}</li>`).join("");
+  const planned = (["routine"] as const).map(item => `<li>${tr(k(`s14.more.${item}`))} · ${pill(tr("s14.more.not_ready"))}</li>`).join("");
   return shell(page, tr("s14.nav.more"), `<div class="s-col"><section class="s-card" aria-labelledby="s14-account"><h2 id="s14-account">${tr("s14.more.account")}</h2><dl class="s-kv"><dt>${tr("s14.setup.name")}</dt><dd>${e(page.state.owner?.name ?? "")}</dd><dt>${tr("s14.setup.language")}</dt><dd>${page.state.owner?.language === "en" ? "English" : "ไทย"}</dd><dt>${tr("s14.proposal.route")}</dt><dd>${page.state.routes.map(route => routeText(route)).join(" · ") || tr("s14.proposal.no_route")}<br><span class="s-note">${tr("s14.setup.route_configured_detail")}</span></dd></dl></section>
-    <nav class="s-card" aria-label="${tr("s14.more.places")}"><ul class="s-history"><li><a class="s-link-text" href="/memory">${tr("s14.more.memory")}</a></li>${page.state.bots.map(bot => `<li><a class="s-link-text" href="${computerPath(bot)}">${tr("s14.tab.computer")} · ${e(botName(bot))}</a></li>`).join("")}<li><a class="s-link-text" href="/settings/web">${tr("s14.more.web")}</a></li></ul></nav>
+    <nav class="s-card" aria-label="${tr("s14.more.places")}"><ul class="s-history"><li><a class="s-link-text" href="/memory">${tr("s14.more.memory")}</a></li>${page.state.bots.map(bot => `<li><a class="s-link-text" href="${computerPath(bot)}">${tr("s14.tab.computer")} · ${e(botName(bot))}</a></li>`).join("")}<li><a class="s-link-text" href="/settings/work">${tr("s14.more.work")}</a></li><li><a class="s-link-text" href="/settings/web">${tr("s14.more.web")}</a></li></ul></nav>
     <section class="s-card" aria-labelledby="s14-planned"><h2 id="s14-planned">${tr("s14.more.planned")}</h2><ul class="s-history">${planned}</ul></section><form method="post" action="/s14/logout">${hidden("csrf", page.csrf)}<button class="s-btn">${tr("s14.more.sign_out")}</button></form></div>`, { current: "more" });
 }
 
@@ -517,6 +521,7 @@ export function renderS14(page: S14Page): string {
       case "effect": return shell(page, tr("s14.effect.card"), `<div class="s-col">${effectSlip(page, view.effect, view.history, "h2")}${effectHistory(view.history, view.effect)}<p><a class="s-link-text" href="/work/${e(view.effect.workId)}">${tr("s14.effect.back_to_work")}</a></p></div>`, { current: "work" });
       case "more": return morePage(page);
       case "settings-web": return webSettingsPage(page, view);
+      case "settings-work": return workSettingsPage(page, view);
       default: return renderMemorySurface(page, view);
     }
   });

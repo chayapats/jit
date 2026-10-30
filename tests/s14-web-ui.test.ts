@@ -319,7 +319,7 @@ test("blocked work names the reason and refuses to imply a retry; the grant view
   const blocked = await f.page(`/work/${work.id}`);
   expect(blocked).toContain(dictionaries.en["s14.work_state.blocked"]); expect(blocked).toContain(dictionaries.en["s14.reason.handler_unavailable"]); expect(blocked).toContain(dictionaries.en["s14.work.blocked_next"]); expect(blocked).not.toContain("transport detail");
   const grant = await f.page(`/work/${work.id}?tab=grant`);
-  for (const text of ["Blocked work", "public_read", "g1", "scripted-model", dictionaries.en["s14.grant.no_external"], dictionaries.en["s14.grant.no_scopes"], dictionaries.en["s14.grant.concurrency_detail"], dictionaries.en["s14.grant.enforced_note"]]) expect(grant).toContain(text);
+  for (const text of ["Blocked work", "public_read", "g1", "scripted-model", dictionaries.en["s14.grant.no_external"], dictionaries.en["s14.grant.no_scopes"], dictionaries.en["s14.grant.concurrency"], dictionaries.en["s14.grant.enforced_note"]]) expect(grant).toContain(text);
   expect(accessibilityProblems(grant, "en")).toEqual([]);
   expect(grant).not.toMatch(/verified|authorized by|secure/i);
   const pane = await f.page(`/chats/${f.conversationId}?work=${work.id}&tab=grant`); expect(pane).toContain('data-pane="open"'); expect(pane).toContain("public_read");
