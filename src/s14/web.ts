@@ -68,8 +68,9 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
       }
       const input = /^\/(api\/)?s14\/bots\/([a-zA-Z0-9_-]+)\/computer\/input$/.exec(url.pathname);
       if (request.method === "POST" && input) {
-        const p = await body(request);
         const isForm = !input[1];
+        if (isForm && product) next = product.next(null, { payload: { botId: input[2] } });
+        const p = await body(request);
         app.verifyCsrf(auth.csrf, isForm ? p.csrf : request.headers.get("x-csrf-token"));
         let command: OwnerInputCommand;
         if (isForm) {
@@ -84,7 +85,7 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
         } else command = p as unknown as OwnerInputCommand;
         if (command.payload?.botId !== input[2]) throw new AppError("computer_scope_changed", 403);
         const result = await app.computers.ownerInput(auth.actor, command);
-        return isForm ? respond("", 303, "text/html", { Location: `/api/s14/computer-inputs/${result.requestId}` }) : json(result);
+        return isForm ? respond("", 303, "text/html", { Location: product ? product.inputSurface(input[2]!, result.requestId) : `/api/s14/computer-inputs/${result.requestId}` }) : json(result);
       }
       const form = product && request.method === "POST" ? /^\/s14\/forms\/([a-z-]+)$/.exec(url.pathname)?.[1] : undefined;
       if (form) {
@@ -132,7 +133,7 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
       const receipt = /^\/(?:api\/)?s14\/receipts\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
       if (receipt) return app.store.read(tx => { app.requireOwner(tx, auth.actor); const r = tx.get<{ result_json: string }>("SELECT result_json FROM command_receipts WHERE owner_id='owner' AND request_id=?", receipt[1]!); if (!r) throw new AppError("not_found", 404); return page ? redirect(product!.surface(JSON.parse(r.result_json))) : json(JSON.parse(r.result_json)); });
       if (page) { const state = app.home(auth.actor); return view(state, product!.view(url, auth.actor, state, signedInLocale(state))); }
-      if (url.pathname === "/") { const state = app.home(auth.actor); return respond(render({ state, work: app.authority.list(auth.actor), csrf: auth.csrf, locale: state.owner?.language ?? (request.headers.get("accept-language")?.startsWith("en") ? "en" : "th"), view: { kind: "more" }, overview: { views: [], effects: [], botStates: {} }, policy: app.policy, now: app.now() }), 200, "text/html"); }
+      if (url.pathname === "/") { const state = app.home(auth.actor); return respond(render({ state, work: app.authority.list(auth.actor), csrf: auth.csrf, locale: state.owner?.language ?? (request.headers.get("accept-language")?.startsWith("en") ? "en" : "th"), view: { kind: "more" }, overview: { views: [], effects: [], botStates: {}, computers: {} }, policy: app.policy, now: app.now() }), 200, "text/html"); }
       throw new AppError("not_found", 404);
     } catch (error) {
       const code = error instanceof AppError ? error.code : "invalid_request", status = error instanceof AppError ? error.status : 400;

@@ -556,3 +556,28 @@ Real states required these changes to sections 1–12. Each is **P** and changes
 **Q2 update:** the owner confirmed research defaults of 2 concurrent Bots, 30 minutes and 40 reads per work item on 2026-10-30, shown as editable values.
 
 **Verification:** rendering and form-contract tests in `tests/s14-web-ui.test.ts`. A real headless Chromium run covered the no-script journey (sign-in, setup, chat, proposal, task, start, stop) with real form posts, every approval state, and layouts at 360, 390, 430, 820, 1100, 1280 and 1400 px in both themes. No real phone, Safari, Firefox, screen reader or live model route has been used.
+
+## 17. Bot computer refinements (BOX14-01)
+
+Author: Claude Opus 5.5 (`claude-opus-5-5`), requested at effort high. Date: 2026-10-30. Code: `src/s14/web-pages.ts`, `web-style.ts`, `web-enhance.js`, `web-product.ts`, plus the read-only `S14Computers.activity` query. F9 and F11 stay the source; each change below is **P** and presents only data the seam has.
+
+| Area | Change | Why |
+| --- | --- | --- |
+| Where takeover lives | `/team/:bot?tab=computer` is the one full surface. The work Computer tab lists its Bots with state and lease words and links there. No 720 px pane. | A 1280 px surface does not fit a pane, and one page keeps one no-script path and one set of pinned forms. |
+| Hand back | Labelled คืนเครื่อง / Hand back, without "to {Bot}". The note says nobody drives afterwards and the Bot gets input only if its work asks again. | `takeover.end` clears the lease and never restores an agent lease, so "คืนให้นักค้น" would promise something the service does not do. |
+| Held action | Shown in every state, with a link to its own card and the words that takeover and hand back do not approve it. The hand-back note repeats this with or without a held action. | S14-AC12. No approval control exists on this page. |
+| Sign-in wall | Not rendered. A fact row states no internet, website sign-in or sharing, and what the Bot can do (local reports, scroll). | Phase A has `--network=none` and no site adapter, so that state cannot occur. |
+| Lease bar | The prototype's inline button moved into an owner strip under the lease words. | Keeps the rule that strips are the only host for authority buttons. |
+| Expired takeover | Separate words and one action, ปิดการคุมนี้ / Close this takeover. Take over stays hidden until it is closed. | Input is refused once the lease expires, and `takeover.start` refuses while the expired owner lease remains, so offering it would only produce a refusal. |
+| Screen picture | Below the state; framed by a note that the picture is the Bot's page, not a command, and can be false. No page title or URL in the alternative text. | The seam exposes neither, so the alternative text says the contents are not available as text. Pixels are treated as untrusted. |
+| Owner image | Stays exactly 1280 by 800 without script, in a sideways scroller. With script it fits the page and the click is mapped back. | A browser reports image-button coordinates in rendered pixels, so a scaled image without script would click the wrong place. Checked in Chromium. |
+| Image button focus | `tabindex="-1"`, with a separate typed coordinate form under Click by coordinates. | Enter on a focused image button submits (0,0), a phantom click. The form gives keyboard users exact clicks with the same fields. |
+| Enhanced input | Script does not send input by itself. Every press stays one native form post, including the fitted click. | The enhancement contract says script never posts. One path also means one outcome page and no second retry story. Live typing without reload is deliberately absent. |
+| Input outcome | Forms land on the computer page with Sent or Outcome unknown, not on JSON. Unknown has no resend control. | The bare seam redirects to a JSON receipt, which is a dead end without script. |
+| Reset and delete | Links to a consequence card (`&confirm=`), with both scope IDs, what stays, what is interrupted and what follows. Focus lands on the heading. Stop posts directly because it keeps data. | The contract requires both scopes before submitting, and no-script needs a real page for it. |
+| Activity log | Owner commands, input outcomes and work attempts bound to this computer, with times. The note says what it leaves out. | The seam records no opened pages or screenshots, so the design's example lines cannot be shown. |
+| Fail closed | Missing runtime, unproved isolation and every runbook code get words, the code, the credential-free probe and "no fallback". | Honest repair for an owner who has to look at the host. It is the one place the just-works promise cannot hold, so it says exactly what is needed. |
+| Vocabulary | Stopped is หยุดแล้ว, not "asleep". | Section 6 keeps one word per state. |
+| Live reads | Three regions replaced by signature, driven by the one-event state stream, with a fresh picture preloaded per event. | A per-render request ID would otherwise replace forms under a press every read. |
+
+**Verification:** rendering and form-contract tests in `tests/s14-computer-ui.test.ts`. A real headless Chromium run over the real handler with a fake runtime and a 1280 by 800 PNG covered real no-script posts of image, text, key and coordinate input, the fitted click at 390 px, state following across two contexts and layouts at 360, 390, 820 and 1280 px in both themes and languages, with no console or CSP errors. No real Linux computer, real phone, Safari, Firefox, screen reader or live model route has been used, and no claim is made that a screen reader can use the pixel desktop.

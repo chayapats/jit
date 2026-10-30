@@ -56,6 +56,8 @@ export interface AgentInput { kind: "scroll"; deltaY: number }
 export type OwnerInputCommand = Envelope<"takeover.input", { botId: string; computerId: string; generation: number; leaseRevision: number; input: OwnerInput }>;
 /** Safe retained input outcome for no-script redirects; the original input and its HMAC are never returned. */
 export interface ComputerInputReceipt { requestId: string; computerId: string; state: "succeeded" | "unknown" }
+/** One safe activity line: an owner command, one owner input outcome or a work attempt bound to this computer; it never holds input text, coordinates, images or runtime detail. */
+export interface ComputerActivity { kind: ComputerCommand["kind"] | "takeover.input" | "attempt.bound"; at: number; state: "succeeded" | "unknown" | null }
 /** Opaque service-only runtime handle; implementations reject copied or cross-computer handles. */
 export interface ComputerHandle { readonly computerId: string; readonly generation: number }
 /** Trusted isolated runtime port; final guards run immediately before each dispatch and after every wait. */

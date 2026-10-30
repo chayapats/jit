@@ -6,7 +6,7 @@ import { createBoxBackend } from "../exec/box-backend";
 import type { AppTransaction } from "../store";
 import type { S14Application } from "./application";
 import type { OwnerActor } from "./types";
-import type { AgentInput, BotComputer, ComputerCommand, ComputerHandle, ComputerInputReceipt, ComputerLimits, ComputerOptions, ComputerReceipt, ComputerSession, ComputerView, InputLease, OwnerInputCommand } from "./computer-types";
+import type { AgentInput, BotComputer, ComputerActivity, ComputerCommand, ComputerHandle, ComputerInputReceipt, ComputerLimits, ComputerOptions, ComputerReceipt, ComputerSession, ComputerView, InputLease, OwnerInputCommand } from "./computer-types";
 import { validateComputerInput } from "./computer-podman";
 import { canonical, exact, identity, integer } from "./validation";
 
@@ -66,6 +66,17 @@ export class S14Computers {
       const computer = load(tx, botId);
       return computer ? { computer, lease: leaseOf(tx, computer.id) } : absent();
     });
+  }
+  /** Reads the newest bounded activity lines from existing receipts, audit and attempt bindings; it records and starts nothing. */
+  activity(actor: OwnerActor, botId: string, limit = 20): ComputerActivity[] {
+    const id = this.view(actor, botId).computer?.id;
+    if (!id) return [];
+    return this.app.store.read(tx => tx.all<{ kind: ComputerActivity["kind"]; at: number; state: string | null }>(`
+      SELECT a.kind AS kind, a.committed_at AS at, NULL AS state, a.sequence AS sequence FROM audit a JOIN command_receipts r ON r.request_id=a.request_id WHERE json_extract(r.result_json,'$.computer.id')=?
+      UNION ALL SELECT 'takeover.input', a.committed_at, i.state, a.sequence FROM computer_inputs i JOIN audit a ON a.request_id=i.request_id WHERE i.computer_id=?
+      UNION ALL SELECT 'attempt.bound', json_extract(w.record_json,'$.createdAt'), NULL, 0 FROM computer_attempts c JOIN work_attempts w ON w.id=c.attempt_id WHERE c.computer_id=?
+      ORDER BY at DESC, sequence DESC LIMIT ?`, id, id, id, limit)
+      .map(row => ({ kind: row.kind, at: row.at, state: row.kind === "takeover.input" ? row.state === "succeeded" ? "succeeded" as const : "unknown" as const : null })));
   }
   /** Applies exact authenticated lifecycle/lease commands inside the shared receipt transaction. */
   apply(tx: AppTransaction, command: ComputerCommand): ComputerReceipt {

@@ -140,7 +140,7 @@ export function accessibilityProblems(html: string, locale: "th" | "en"): string
       problems.push(`${where(node)} has no accessible name`);
     }
     if (["input", "select", "textarea"].includes(tag) && !["hidden", "submit", "reset", "button"].includes(attrs.type ?? "") && !hiddenInTree(node)
-      && !controlName(node, all, byId)) problems.push(`${where(node)}[name=${attrs.name}] has no label`);
+      && !(attrs.type === "image" && attrs.alt?.trim()) && !controlName(node, all, byId)) problems.push(`${where(node)}[name=${attrs.name}] has no label`);
   }
   return problems;
 }
