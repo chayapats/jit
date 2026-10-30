@@ -1,5 +1,28 @@
 # S14 foundation HTTP handoff
 
+## BOX14-01 computer/input seam
+
+Contracts: [app.bot-computer/v1](app.bot-computer-v1.md), [app.input-lease/v1](app.input-lease-v1.md); schema 4 combines result-state evidence and computer storage; earlier unreleased schemas 1–3 refuse with fresh-state. Existing setup/chat/work/approval transport remains intact. All additions stay behind `--s14`. Product layout and forms are in design section 17.
+
+Durable `computer.open`, `computer.stop`, `computer.reset`, `computer.delete`, `takeover.start`, `takeover.end` use the existing JSON/form `/commands` endpoints and exact typed payloads in those contracts. Receipts describe committed intent, while queries describe settled runtime state. UI must fetch current computer and lease revisions before each command. Reset/delete scope is both named workspace and protected profile; exact IDs/generation/revision are mandatory. Do not add a second work-start approval.
+
+| Endpoint | Result / use |
+| --- | --- |
+| `GET /api/s14/bots/:botId/computer` | `{computer,lease}`; both null before lazy provisioning; no runtime start on reads |
+| `GET /api/s14/bots/:botId/computer/image` | owner-only PNG, <=2 MiB, private/no-store; no image bytes enter ordinary state/prompts |
+| `GET /api/s14/bots/:botId/computer/events` | one bounded same-origin SSE `event: state` with the query JSON, then close; client may reconnect |
+| `POST /api/s14/bots/:botId/computer/input` | transient `OwnerInputCommand` JSON, normal session/Origin/Host/`X-CSRF-Token`; returns `{requestId,state:'succeeded'|'unknown'}` |
+| `POST /s14/bots/:botId/computer/input` | URL-encoded no-script fields below; 303 to the safe input outcome query, or to `/team/:botId?tab=computer&input=:requestId#screen` when the product handler is wired |
+| `GET /api/s14/computer-inputs/:requestId` | `{requestId,computerId,state}` only; no text/HMAC or re-dispatch |
+
+No-script common fields are exactly `csrf,requestId,expectedRevision,computerId,generation,leaseRevision,kind`. Numbers are unsigned decimal strings; `botId` comes from the route. For `kind=click`, `<input type="image" name="point">` adds `point.x,point.y` (0–1279/0–799). `kind=text` adds only `text`; `kind=key` adds only `key`. Text/key bounds and the supported key list are in app.input-lease/v1. Duplicate/extra fields refuse. The UI agent may add its own authenticated product redirect under `src/s14/` without weakening the handler. Input goes directly to the protected browser, never to `/commands`, messages, durable forms/receipts, runner or prompts. An unknown outcome must never trigger auto-resubmit; use a fresh conscious owner action. Stale revisions require a fresh query, not automatic overwrite.
+
+States for Opus mapping: absent (null), starting/running/stopping/stopped/resetting/deleting/deleted/unavailable; lease actor null/agent/owner, finite expiry, revision/generation. Startup/revoke/reset/idle/restart fence input. Agent calls already dispatched must settle before owner input; takeover end never approves a held effect. Reasons include `computer_runtime_not_configured`, `computer_capacity`, `computer_startup_timeout`, `computer_idle`, `computer_authority_revoked`, `restart_fenced_no_replay`, `stale_revision`, `stale_lease`, `input_lease_fenced`, `computer_scope_changed`, and diagnostic codes in the runbook. Display honest unavailable/unknown states and safe repair guidance.
+
+Runtime configuration adds non-secret `JIT_S14_COMPUTER_ROOT`, pinned `JIT_BOX_IMAGE_BASE`/`JIT_BOX_IMAGE_BROWSER`; rootless local Podman and dedicated bounded filesystems are required. No configuration proves live readiness. The root advertises installation tool `computer`, but owner setup/Bot/work ceilings must still explicitly select it. The backend supports local report work, owner view/takeover and agent scroll only. There is no direct internet, public read adapter, private website login, agent browser text/image/session extraction, generic browser submit, arbitrary JS/CDP or MCP. Do not render those as working actions. See the [opt-in Linux runbook](../runbooks/s14-bot-computer.md); both host evidences and all UI acceptance remain pending.
+
+UI integration: use `app.computers.view/screenshot/ownerInput/inputReceipt` and the routes above; extend `S14Page`/authenticated routing/renderer under `src/s14/` as needed. Keep legacy UI/runtime, current CSP and same-origin authentication intact. Public runtime/lease data types are all in `src/s14/computer-types.ts`; do not infer authority from display text, a model reply, lease metadata or a screenshot.
+
 Logic-only foundation for #246/#247. UI authoring stays with Claude Opus 5.5 at high effort and `docs/design/S14-bot-first-experience.md`. Import `createS14Handler` from `src/s14/web.ts`; inject `S14Renderer(page:S14Page):string` or extend its authenticated page routing under `src/s14/`. `S14Page` includes `state:Home`, `work:Work[]`, `csrf` and locale. `src/s14/main.ts` owns the opt-in composition. Keep `src/web.ts`/legacy runtime intact. The no-style JSON/form page remains the default contract exerciser; the product UI is wired in `src/s14/main.ts`. No framework, CSP exception or inline script is needed.
 
 If `serve` is running, stop it before setup; setup and serve take the same exclusive runtime lock. Run `bun src/main.ts setup --s14 --password-stdin` for local owner provisioning, then `bun src/main.ts serve --s14`. The default is a fresh `.local/s14/application.sqlite`, loopback `http://localhost:3001`; overrides are `JIT_S14_DATABASE`, `JIT_S14_ORIGIN` and exact non-secret route metadata `JIT_S14_ROUTES`. Configure a supported exact model route explicitly; credentials remain in Schway's protected owner store. There is no live readiness/sign-in/host-capacity claim from this environment setting. Without `--s14` the previous runtime remains unchanged. An incompatible selected store refuses with `s14_fresh_state_required` and a fresh separate-path next action before writing or workers.
@@ -35,7 +58,7 @@ Example direct internal start (all IDs/revisions/budgets are owner selections, n
 }
 ```
 
-The example timestamp must be replaced with a future timestamp within wallMs. In this root only tool-free internal analysis is active. Resource/share policies, public research, computer tools, standing routines, production effects and native safe replay are later slices. A task proposal accepted alone never starts; the work-mode composer directly sends `work.start` without another confirmation. Plain `message.post` and @Bot addressing never grant execution.
+The example timestamp must be replaced with a future timestamp within wallMs. This example grants tool-free analysis. Explicit `computer` grants can now perform bounded local report work through BOX14-01; resource/share policies, public research/site adapters, routines, production effects and native safe replay remain later slices. A task proposal accepted alone never starts; the work-mode composer directly sends `work.start` without another confirmation. Plain `message.post` and @Bot addressing never grant execution.
 
 | Query | Result |
 | --- | --- |
@@ -57,9 +80,10 @@ The example timestamp must be replaced with a future timestamp within wallMs. In
 | `GET /` | Setup until an owner profile exists, then Home |
 | `GET /chats/:id` | Conversation. `?work=:id&tab=progress\|grant` opens the work pane; `?start=:messageId` prefills the composer. |
 | `GET /work`, `/work/:id?tab=`, `/team`, `/team/:id`, `/proposals/:id`, `/effects/:id`, `/more` | Work list, work, team, Bot, exact proposal, exact approval card, account |
+| `GET /team/:id?tab=computer` | Bot computer. `&confirm=reset\|delete` opens the consequence card; `&input=:requestId` shows one input outcome. `/work/:id?tab=computer` lists the grant's Bots and links here. |
 | `GET /assets/*` | Public hashed static assets |
 
-Fixed-content decisions (`task.accept`, `work.stop`, `approval.decide`, `bot.proposal.reject`) post the seam's `POST /s14/commands` with the exact envelope in a hidden field; `GET /s14/receipts/:id` then redirects to the surface instead of returning JSON. Owner-typed forms post flat fields to `POST /s14/forms/{setup,compose,task-start,proposal-accept,proposal-revise}`, which build the same typed command and call the same `S14Application.execute`. The translator decides nothing: unknown fields are refused, `work=on` is the only thing that selects `work.start`, and revisions come from the rendered form. Each capability, tool and Bot is its own field (`tool:<id>`, `resource:<id>`, `bot:<id>=<revision>`) so the handler's duplicate-key refusal stands. A retried `work.start` form reuses its committed `expiresAt`, so the same retry key stays the same command.
+Fixed-content decisions (`task.accept`, `work.stop`, `approval.decide`, `bot.proposal.reject`) post the seam's `POST /s14/commands` with the exact envelope in a hidden field; `GET /s14/receipts/:id` then redirects to the surface instead of returning JSON. Computer lifecycle and lease commands use this same path and return to the Bot computer tab. Owner-typed forms post flat fields to `POST /s14/forms/{setup,compose,task-start,proposal-accept,proposal-revise}`, which build the same typed command and call the same `S14Application.execute`. The translator decides nothing: unknown fields are refused, `work=on` is the only thing that selects `work.start`, and revisions come from the rendered form. Each capability, tool and Bot is its own field (`tool:<id>`, `resource:<id>`, `bot:<id>=<revision>`) so the handler's duplicate-key refusal stands. A retried `work.start` form reuses its committed `expiresAt`, so the same retry key stays the same command.
 
 HTML responses use `Referrer-Policy: same-origin`. With `no-referrer` a browser sends `Origin: null` on the page's own form posts, which the exact Origin check refuses.
 

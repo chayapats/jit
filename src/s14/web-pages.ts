@@ -3,10 +3,11 @@ import { colorTokens } from "../web-design";
 import { logoLockup, logoMark } from "../web-logo";
 import type { S14Command } from "./application";
 import type { Attempt, Effect, Work, WorkView } from "./authority-types";
+import type { BotComputer, ComputerActivity, ComputerView } from "./computer-types";
 import type { Bot, BotProposal, Conversation, Message, Reply, Route } from "./types";
 import { s14AssetUrl } from "./web-assets";
 import type { S14Page } from "./web";
-import { defaultWorkLimits, workLimitBounds, type S14Chat, type S14Draft, type S14View, type S14WorkTab } from "./web-product";
+import { defaultWorkLimits, workLimitBounds, type S14Chat, type S14ComputerSurface, type S14Draft, type S14View, type S14WorkTab } from "./web-product";
 
 const e = (value: unknown) => String(value).replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
 const k = (key: string) => key as MessageKey;
@@ -55,7 +56,9 @@ export function renderLogin(locale: Locale, code: string | null, provisioned: bo
 }
 /** Refused post or missing page: the cause in words, then one way forward. No authority control is rendered here. */
 export function renderFailure(locale: Locale, code: string, next: string): string {
-  return withLocale(locale, () => standalone(tr("s14.error.title"), `<div class="s-notice-card"><h1>${e(noticeText(code))}</h1><p>${e(trMaybe(`s14.next.${code}`) ?? tr("s14.next.generic"))}</p><p class="s-mono s-meta">${e(code)}</p><p><a class="s-btn primary" href="${e(next)}">${tr(next === "/s14/login" ? "s14.login.submit" : next === "/" ? "s14.error.home" : "s14.error.open_latest")}</a></p></div>`));
+  // Typed computer input is never echoed into a page, so the composer's "your text is kept" must not appear here.
+  const forward = () => (next.includes("tab=computer") ? trMaybe(`s14.next.computer.${code}`) : null) ?? trMaybe(`s14.next.${code}`) ?? tr("s14.next.generic");
+  return withLocale(locale, () => standalone(tr("s14.error.title"), `<div class="s-notice-card"><h1>${e(noticeText(code))}</h1><p>${e(forward())}</p><p class="s-mono s-meta">${e(code)}</p><p><a class="s-btn primary" href="${e(next)}">${tr(next === "/s14/login" ? "s14.login.submit" : next === "/" ? "s14.error.home" : "s14.error.open_latest")}</a></p></div>`));
 }
 /** S14-AC01 refusal, served with no store, lock or worker open. It cannot change anything, so it has no form. */
 export function renderRefusal(locale: Locale, store: string): string {
@@ -242,7 +245,7 @@ function workStateBanner(view: WorkView): string {
 }
 function attemptLane(page: S14Page, attempt: Attempt): string {
   const bot = page.state.bots.find(b => b.id === attempt.snapshot.bot.id) ?? attempt.snapshot.bot;
-  return `<div class="s-lane">${tile(bot, attemptDot[attempt.state] ?? "")}<div><p><b>${e(botName(bot))}</b> · ${tr(k(`s14.attempt_state.${attempt.state}`))}</p>${attempt.reason ? `<p class="s-meta">${e(trMaybe(`s14.reason.${attempt.reason}`) ?? attempt.reason)}</p>` : ""}<p class="s-meta">${when(attempt.createdAt)}</p></div></div>`;
+  return `<div class="s-lane">${tile(bot, attemptDot[attempt.state] ?? "")}<div><p><b>${e(botName(bot))}</b> · ${tr(k(`s14.attempt_state.${attempt.state}`))}</p>${attempt.reason ? `<p class="s-meta">${e(trMaybe(`s14.reason.${attempt.reason}`) ?? attempt.reason)}</p>` : ""}<p class="s-meta">${when(attempt.createdAt)}</p>${attempt.snapshot.tools.includes("computer") ? `<p><a class="s-link-text" href="${computerPath(bot)}">${tr("s14.work.view_computer")}</a></p>` : ""}</div></div>`;
 }
 function progressTab(page: S14Page, view: WorkView, conversation: Conversation, bot: Bot): string {
   const { work } = view;
@@ -265,11 +268,12 @@ function grantTab(page: S14Page, view: WorkView): string {
     <p class="s-note">${tr("s14.grant.enforced_note")}</p>${stoppable(work) ? `<div class="s-slip" data-state="closed">${ownerStrip(stopForm(page, work), tr("s14.work.stop_note"))}</div>` : ""}`;
 }
 function workBody(page: S14Page, view: WorkView, tab: S14WorkTab, conversation: Conversation, bot: Bot): string {
+  if (tab === "computer" && usesComputer(view)) return computerTab(page, view);
   return tab === "grant" ? grantTab(page, view) : progressTab(page, view, conversation, bot);
 }
 function workTabs(view: WorkView, tab: S14WorkTab, base: string): string {
   const sep = base.includes("?") ? "&amp;" : "?", link = (name: S14WorkTab) => `<a href="${base}${sep}tab=${name}"${tab === name ? ' aria-current="page"' : ""}>${tr(k(`s14.tab.${name}`))}</a>`;
-  return view.work.grantId ? `<nav class="s-worktabs" aria-label="${tr("s14.tab.label")}">${link("progress")}${link("grant")}</nav>` : "";
+  return view.work.grantId ? `<nav class="s-worktabs" aria-label="${tr("s14.tab.label")}">${link("progress")}${link("grant")}${usesComputer(view) ? link("computer") : ""}</nav>` : "";
 }
 function workPane(page: S14Page, view: WorkView, tab: S14WorkTab, conversation: Conversation, bot: Bot): string {
   return `<section class="s-pane" aria-labelledby="s14-pane-title"><div class="s-pane-hdr"><div><h2 id="s14-pane-title">${e(view.work.title)}</h2>${receiptLine(view.work, view)}</div>${workPill(view.work.state, "s14-pane-status")}<a class="s-btn" href="/chats/${e(conversation.id)}" aria-label="${tr("s14.pane.close")}">${icon("close")}</a></div>${workTabs(view, tab, `/chats/${e(conversation.id)}?work=${e(view.work.id)}`)}<div class="s-pane-body" id="s14-pane-live">${workBody(page, view, tab, conversation, bot)}</div></section>`;
@@ -310,6 +314,130 @@ function effectHistory(history: Effect[], current: Effect): string {
   return old.length ? `<section class="s-card" aria-labelledby="s14-effect-history"><h2 id="s14-effect-history">${tr("s14.effect.history")}</h2><ul class="s-history">${old.map(item => `<li><p>r${item.revision} · ${effectPill(item.state)}</p><p class="s-mono s-meta">${e(item.actionHash)}</p></li>`).join("")}</ul></section>` : "";
 }
 
+/* Bot computer (BOX14-01, F11). The lease bar reads the lease, never local state, and every word here comes from typed query data. */
+const computerPath = (bot: Pick<Bot, "id">, suffix = "") => `/team/${e(bot.id)}?tab=computer${suffix}`;
+const usesComputer = (view: WorkView) => !!view.grant?.tools.includes("computer");
+/** Raw dictionary text with the Bot's name filled in; callers escape it like any other query value. */
+const named = (key: string, bot: Pick<Bot, "id" | "name">) => tr(k(key)).replace("{bot}", () => botName(bot));
+const reasonText = (code: string) => trMaybe(`s14.reason.${code}`) ?? tr("s14.reason.computer_generic");
+const computerTone: Record<BotComputer["state"], [string, string]> = { starting: ["", ""], running: ["strong", ""], stopping: ["", ""], stopped: ["", ""], resetting: ["warn", "!"], deleting: ["warn", "!"], deleted: ["", ""], unavailable: ["danger", "!"] };
+const computerWord = (view: ComputerView) => tr(k(`s14.computer_state.${view.computer?.state ?? "absent"}`));
+const computerPill = (view: ComputerView, id = "") => pill(computerWord(view), ...(view.computer ? computerTone[view.computer.state] : ["", ""] as const), id);
+type Driver = "owner" | "expired" | "agent" | "none";
+/** Who can send input right now. An expired lease refuses input before the sweep clears it, so it never reads as driving. */
+function driverOf({ computer, lease }: ComputerView, now: number): Driver {
+  if (computer?.state !== "running" || !lease?.actor) return "none";
+  if (lease.expiresAt <= now) return lease.actor === "owner" ? "expired" : "none";
+  return lease.actor;
+}
+const leaseWord = (view: ComputerView, bot: Pick<Bot, "id" | "name">, now: number) => view.computer?.state === "running" ? named(`s14.lease.${driverOf(view, now)}`, bot) : tr("s14.lease.off");
+/** Host repair for an isolation or runtime reason. It names the safe code and the credential-free probe, never a workaround. */
+const repairHint = (code: string) => `<p class="s-mono s-meta">${e(code)}</p><p class="s-sub">${tr("s14.computer.repair")}</p><pre class="s-exact">bun --no-env-file ops/box/s14-probe.ts --diagnostics</pre>`;
+function computerBanner(bot: Bot, view: ComputerView, surface: S14ComputerSurface): string {
+  const c = view.computer;
+  if (!c) {
+    if (!bot.capabilities.tools.includes("computer")) return banner("", tr("s14.computer.no_ceiling"), tr("s14.computer.no_ceiling_detail"));
+    if (!surface.runtime) return banner("warn", reasonText("computer_runtime_not_configured"), tr("s14.computer.no_fallback"), repairHint("computer_runtime_not_configured"));
+    return banner("", tr("s14.computer.absent"), tr("s14.computer.absent_detail"));
+  }
+  const why = c.reason ? reasonText(c.reason) : "", word = computerWord(view);
+  if (c.state === "starting") return banner("", word, tr("s14.computer.starting_detail").replace("{seconds}", String(Math.ceil(c.limits.startupMs / 1000))));
+  if (c.state === "stopping") return banner("", why || word, tr("s14.computer.stopping_detail"));
+  if (c.state === "stopped") return banner("", why || word, tr("s14.computer.stopped_detail"));
+  if (c.state === "resetting") return banner("warn", word, tr("s14.computer.resetting_detail"));
+  if (c.state === "deleting") return banner("warn", word, tr("s14.computer.deleting_detail"));
+  if (c.state === "deleted") return banner("", word, tr("s14.computer.deleted_detail"));
+  if (c.state === "unavailable") return banner("danger", why || word, tr("s14.computer.no_fallback"), `<p class="s-sub">${tr("s14.computer.slot_held")}</p>${repairHint(c.reason ?? "computer_runtime_unavailable")}`);
+  return "";
+}
+/** Pending external actions stay on their own cards. The link is the only way to them from here, so a press here never decides one. */
+function heldNotice(held: Effect[]): string {
+  if (!held.length) return "";
+  return banner("warn", tr("s14.computer.held"), tr("s14.computer.held_detail"), held.map(effect => `<p><a class="s-link-text" href="/effects/${e(effect.id)}#slip">${tr("s14.computer.held_open")} · ${e(tr(k(`s14.effect_kind.${effect.action.kind}`)))}</a></p>`).join(""));
+}
+/** Always answers who is driving. Its only buttons are the two typed lease commands, pinned to the rendered revisions. */
+function leaseBar(page: S14Page, bot: Bot, view: ComputerView): string {
+  const { computer: c, lease } = view, driver = driverOf(view, page.now), running = c?.state === "running" && !!lease;
+  const detail = !running ? tr("s14.lease.off_detail") : driver === "owner" ? `${named("s14.lease.owner_detail", bot)} · ${tr("s14.lease.ends_in")} ${Math.ceil((lease!.expiresAt - page.now) / 60000)} ${tr("s14.time.minutes")}` : named(`s14.lease.${driver}_detail`, bot);
+  const scope = running ? { botId: c!.botId, computerId: c!.id, generation: c!.generation, leaseRevision: lease!.revision } : null;
+  const ending = driver === "owner" || driver === "expired";
+  const strip = scope ? ownerStrip(ending ? commandForm(page.csrf, "takeover.end", c!.revision, scope, tr(driver === "owner" ? "s14.lease.hand_back" : "s14.lease.close_expired"), "s-btn primary") : commandForm(page.csrf, "takeover.start", c!.revision, scope, tr("s14.lease.take_over")), tr(ending ? "s14.lease.hand_back_note" : "s14.lease.take_over_note")) : "";
+  return `<section class="s-slip s-lease" data-state="closed" data-driver="${driver}" aria-labelledby="s14-lease"><div class="s-slip-hd"><div><h2 id="s14-lease">${e(leaseWord(view, bot, page.now))}</h2><p class="s-meta">${e(detail)}</p></div></div>${strip}</section>`;
+}
+const inputFields = (page: S14Page, c: BotComputer, leaseRevision: number, kind: string) => `${hidden("csrf", page.csrf)}${hidden("requestId", rid())}${hidden("expectedRevision", c.revision)}${hidden("computerId", c.id)}${hidden("generation", c.generation)}${hidden("leaseRevision", leaseRevision)}${hidden("kind", kind)}`;
+const screenKeys = [["Enter", "live.key_enter"], ["Tab", "live.key_tab"], ["Escape", "live.key_escape"], ["Backspace", "live.key_backspace"], ["ArrowUp", "live.key_up"], ["ArrowDown", "live.key_down"], ["ArrowLeft", "live.key_left"], ["ArrowRight", "live.key_right"]] as const;
+/** The pixels are the Bot's page, so they frame as untrusted. Taking over swaps the picture for the coordinate control; it stays 1280 by 800 without script because a scaled image would post scaled coordinates. */
+function screenView(page: S14Page, bot: Bot, view: ComputerView, surface: S14ComputerSurface, driver: Driver): string {
+  const c = view.computer, src = `/api/s14/bots/${e(bot.id)}/computer/image`, alt = e(named("s14.screen.alt", bot)), action = `/s14/bots/${e(bot.id)}/computer/input`;
+  const picture = c?.state !== "running" ? `<div class="s-screen-empty"><p>${tr("s14.screen.off")}</p></div>`
+    : driver === "owner" ? `<form method="post" action="${action}" data-computer-input>${inputFields(page, c, view.lease!.revision, "click")}<input type="image" name="point" src="${src}" alt="${alt}" width="1280" height="800" tabindex="-1" data-screen></form>`
+    : `<img src="${src}" alt="${alt}" width="1280" height="800" data-screen>`;
+  const outcome = surface.input ? (surface.input.state === "succeeded" ? banner("ok", tr("s14.input.succeeded"), tr("s14.input.succeeded_detail")) : banner("danger", tr("s14.input.unknown"), tr("s14.input.unknown_detail"))) : "";
+  return `<section class="s-screen" id="screen" data-driver="${driver}" aria-labelledby="s14-screen"><div class="s-screen-bar">${icon("lock")}<h2 id="s14-screen">${tr("s14.screen.title")}</h2>${c?.state === "running" ? `<a class="s-link-text" href="${computerPath(bot, "#screen")}">${tr("s14.screen.refresh")}</a>` : ""}</div><div class="s-screen-view"${driver === "owner" ? ` tabindex="0" role="group" aria-label="${e(tr("s14.screen.pan"))}"` : ""}>${picture}</div><p class="s-note s-screen-note">${tr(driver === "owner" ? "s14.screen.note_owner" : "s14.screen.note")}</p></section>
+    <div class="s-input-status" role="status">${outcome}</div>`;
+}
+/** Script-free controls for the single owner lease: exact typed text, one fixed key per button, and typed coordinates for keyboard users. */
+function inputControls(page: S14Page, bot: Bot, view: ComputerView): string {
+  const c = view.computer!, revision = view.lease!.revision, action = `/s14/bots/${e(bot.id)}/computer/input`;
+  const text = `<form class="s-stack" method="post" action="${action}" data-computer-input>${inputFields(page, c, revision, "text")}<div class="s-field"><label for="s14-computer-text">${tr("s14.input.text")}</label><input id="s14-computer-text" name="text" required maxlength="2000" autocomplete="off" autocapitalize="off" spellcheck="false"></div><p class="s-note">${tr("s14.input.text_note")}</p><div><button class="s-btn">${tr("s14.input.send")}</button></div></form>`;
+  const keys = `<form method="post" action="${action}" data-computer-input>${inputFields(page, c, revision, "key")}<fieldset class="s-field"><legend>${tr("s14.input.keys")}</legend><div class="s-keys">${screenKeys.map(([value, label]) => `<button class="s-btn" name="key" value="${value}">${tr(label)}</button>`).join("")}</div></fieldset></form>`;
+  const coordinates = `<details class="s-more"><summary>${tr("s14.input.coordinates")}</summary><div><form class="s-stack" method="post" action="${action}" data-computer-input>${inputFields(page, c, revision, "click")}<div class="s-row"><label class="s-limit"><span>X</span><input type="number" name="point.x" required min="0" max="1279" step="1" inputmode="numeric"></label><label class="s-limit"><span>Y</span><input type="number" name="point.y" required min="0" max="799" step="1" inputmode="numeric"></label><button class="s-btn">${tr("s14.input.click")}</button></div><p class="s-note">${tr("s14.input.coordinates_note")}</p></form></div></details>`;
+  return `<section class="s-card s-stack" aria-labelledby="s14-input"><h2 id="s14-input">${tr("s14.input.title")}</h2>${text}${keys}${coordinates}</section>`;
+}
+function computerFacts(page: S14Page, c: BotComputer): string {
+  const l = c.limits, mib = (bytes: number) => `${Math.floor(bytes / 1048576)} MiB`;
+  return `<section class="s-card s-stack" aria-labelledby="s14-facts"><h2 id="s14-facts">${tr("s14.computer.facts")}</h2><dl class="s-kv"><dt>${tr("s14.computer.network")}</dt><dd>${tr("s14.computer.network_none")}</dd><dt>${tr("s14.computer.can_do")}</dt><dd>${tr("s14.computer.can_do_detail")}</dd><dt>${tr("s14.computer.last_work")}</dt><dd><a class="s-link-text" href="/work/${e(c.workId)}">${tr("s14.computer.open_work")}</a></dd><dt>${tr("s14.computer.last_used")}</dt><dd>${when(c.lastUsedAt)}</dd></dl>
+    <details class="s-more"><summary>${tr("s14.computer.limits")}</summary><div><dl class="s-kv"><dt>CPU</dt><dd>${l.cpuMillis} millicores</dd><dt>RAM</dt><dd>${mib(l.memoryBytes)}</dd><dt>${tr("s14.computer.processes")}</dt><dd>${l.pids}</dd><dt>${tr("s14.computer.disk")}</dt><dd>${mib(l.diskBytes)}</dd><dt>${tr("s14.computer.idle")}</dt><dd>${Math.ceil(l.idleMs / 60000)} ${tr("s14.time.minutes")}</dd><dt>${tr("s14.computer.generation")}</dt><dd class="s-mono">g${c.generation} · r${c.revision}</dd></dl><p class="s-note">${tr("s14.computer.limits_note")}</p></div></details></section>`;
+}
+/** Work whose live grant names this computer tool and this exact Bot. A display filter only: `computer.open` rechecks everything. */
+function openable(page: S14Page, bot: Bot): WorkView[] {
+  return page.overview.views.filter(view => view.grant && view.authority && !view.authority.revoked && page.now < view.grant.expiresAt && usesComputer(view) && ["queued", "running", "waiting"].includes(view.work.state) && view.grant.bots.some(item => item.id === bot.id && item.revision === bot.revision));
+}
+/** Opening needs a named work grant, so its title sits in the untrusted frame above a strip that never carries it. */
+function openCards(page: S14Page, bot: Bot, view: ComputerView, surface: S14ComputerSurface): string {
+  const c = view.computer;
+  if (!surface.runtime || !bot.capabilities.tools.includes("computer") || (c && !["stopped", "deleted", "unavailable"].includes(c.state))) return "";
+  return openable(page, bot).slice(0, 3).map(item => `<article class="s-slip" data-state="closed" aria-label="${tr("s14.computer.open_card")}"><div class="s-slip-body s-slip-top">${untrusted(`<p>${e(item.work.title)}</p>`, tr("s14.computer.open_for"))}</div>${ownerStrip(commandForm(page.csrf, "computer.open", c?.revision ?? 0, { botId: bot.id, workId: item.work.id }, tr("s14.computer.open")), tr("s14.computer.open_note"))}</article>`).join("");
+}
+const lifecycle = (c: BotComputer) => ["running", "stopped", "unavailable"].includes(c.state);
+/** Stop keeps data and posts directly. Reset and delete destroy it, so each one is a link to its own exact consequence card. */
+function lifecycleStrip(page: S14Page, bot: Bot, c: BotComputer): string {
+  const stop = ["running", "starting", "unavailable"].includes(c.state) ? commandForm(page.csrf, "computer.stop", c.revision, { botId: c.botId, computerId: c.id, generation: c.generation }, tr("s14.computer.stop")) : "";
+  const destroy = lifecycle(c) ? `<a class="s-btn danger" href="${computerPath(bot, "&amp;confirm=reset#slip")}">${tr("s14.computer.reset")}</a><a class="s-btn danger" href="${computerPath(bot, "&amp;confirm=delete#slip")}">${tr("s14.computer.delete")}</a>` : "";
+  return stop || destroy ? `<div class="s-slip" data-state="closed">${ownerStrip(`${stop}${destroy}`, stop ? tr("s14.computer.stop_note") : tr("s14.computer.destroy_note"))}</div>` : "";
+}
+const activityText = (item: ComputerActivity) => `${tr(k(`s14.activity.${item.kind}`))}${item.state ? ` · ${tr(k(`s14.input.${item.state}`))}` : ""}`;
+function activityLog(items: ComputerActivity[]): string {
+  return `<section aria-labelledby="s14-activity"><h2 class="s-section-t" id="s14-activity">${tr("s14.activity.title")}</h2>${items.length ? `<ol class="s-log">${items.map(item => `<li>${when(item.at)}<span>${activityText(item)}</span></li>`).join("")}</ol>` : `<p class="s-sub">${tr("s14.activity.none")}</p>`}<p class="s-note">${tr("s14.activity.note")}</p></section>`;
+}
+/** Exact consequence card for reset or delete: both scopes by ID, what stays, then the single typed command. Focus lands on the heading, never on the button. */
+function destroyCard(page: S14Page, bot: Bot, c: BotComputer, mode: "reset" | "delete"): string {
+  const scope = (label: string, what: string, id: string) => `<div><p class="s-exact-label">${label}</p><pre class="s-exact">${what}\n${e(id)}</pre></div>`;
+  return `<article class="s-slip" data-state="unknown" aria-label="${tr(k(`s14.destroy.${mode}_card`))}"><div class="s-slip-hd"><div><h2 id="slip" tabindex="-1" data-focus-on-load>${e(named(`s14.destroy.${mode}_title`, bot))}</h2><p class="s-meta">${tr("s14.destroy.irreversible")}</p></div>${computerPill({ computer: c, lease: null })}</div><div class="s-slip-body">${banner("danger", tr("s14.destroy.lost_title"), tr("s14.destroy.lost_detail"))}${scope(tr("s14.destroy.workspace"), tr("s14.destroy.workspace_detail"), c.workspaceId)}${scope(tr("s14.destroy.profile"), tr("s14.destroy.profile_detail"), c.profileId)}
+    <div><p class="s-exact-label">${tr("s14.destroy.kept")}</p><p>${tr("s14.destroy.kept_detail")}</p></div><div><p class="s-exact-label">${tr("s14.destroy.effect")}</p><p>${tr("s14.destroy.effect_detail")}</p></div><div><p class="s-exact-label">${tr("s14.destroy.after")}</p><p>${tr(k(`s14.destroy.${mode}_after`))}</p></div><dl class="s-kv"><dt>${tr("s14.proposal.computer")}</dt><dd class="s-mono">${e(c.id)}</dd><dt>${tr("s14.computer.generation")}</dt><dd class="s-mono">g${c.generation} · r${c.revision}</dd></dl></div>
+    ${ownerStrip(`${commandForm(page.csrf, mode === "reset" ? "computer.reset" : "computer.delete", c.revision, { botId: c.botId, computerId: c.id, generation: c.generation }, tr(k(`s14.destroy.${mode}_confirm`)), "s-btn danger")}<a class="s-btn" href="${computerPath(bot)}">${tr("s14.destroy.cancel")}</a>`, tr("s14.destroy.scope_note"))}</article>`;
+}
+/** Bot computer tab. Form regions refresh by signature; the visible status has its own refresh target. */
+function computerPanel(page: S14Page, bot: Bot, surface: S14ComputerSurface): string {
+  const view = page.overview.computers[bot.id] ?? { computer: null, lease: null }, c = view.computer, driver = driverOf(view, page.now);
+  if (c && surface.confirm && lifecycle(c)) return destroyCard(page, bot, c, surface.confirm);
+  const held = page.overview.effects.filter(effect => effect.botId === bot.id && effect.state === "pending");
+  const minutes = driver === "owner" ? Math.ceil((view.lease!.expiresAt - page.now) / 60000) : 0;
+  const workKey = JSON.stringify(openable(page, bot).slice(0, 3).map(item => [item.work.id, item.work.revision, item.work.state]));
+  const key = `${c?.revision ?? 0}.${c?.generation ?? 0}.${view.lease?.revision ?? 0}`, region = (id: string, html: string) => `<div class="s-stack" id="${id}" data-sig="${e(`${key}.${driver}.${held.length}.${minutes}${id === "s14-computer-more" ? `.${workKey}` : ""}`)}">${html}</div>`;
+  const phase = c ? `${computerWord(view)} · ${leaseWord(view, bot, page.now)}` : computerWord(view);
+  return `<div class="s-stack" data-computer="${e(bot.id)}" data-key="${e(key)}"><div class="s-between"><p class="s-sub">${tr("s14.computer.lead")}</p>${computerPill(view, "s14-computer-status")}</div>
+    ${region("s14-live", `<span hidden data-phase="${e(phase)}"></span>${heldNotice(held)}${computerBanner(bot, view, surface)}${c ? leaseBar(page, bot, view) : ""}`)}
+    ${region("s14-computer-screen", `${c ? screenView(page, bot, view, surface, driver) : ""}${driver === "owner" ? inputControls(page, bot, view) : ""}`)}
+    ${region("s14-computer-more", `${openCards(page, bot, view, surface)}${c ? `${computerFacts(page, c)}${lifecycleStrip(page, bot, c)}${activityLog(surface.activity)}` : ""}`)}</div>`;
+}
+/** Work's view of the computers it may use. Takeover lives on the Bot page, where the 1280 px surface has room and one no-script path. */
+function computerTab(page: S14Page, view: WorkView): string {
+  const rows = (view.grant?.bots ?? []).map(item => { const bot = page.state.bots.find(b => b.id === item.id) ?? item, current = page.overview.computers[bot.id] ?? { computer: null, lease: null };
+    return `<a class="s-work-row" href="${computerPath(bot)}"><span><span>${e(botName(bot))}</span><small>${e(leaseWord(current, bot, page.now))}</small></span>${computerPill(current)}</a>`; }).join("");
+  return `<p class="s-sub">${tr("s14.work.computer_lead")}</p><div>${rows}</div>`;
+}
+
 function setupPage(page: S14Page, view: Extract<S14View, { kind: "setup" }>): string {
   const routes = page.state.routes, single = routes.length === 1 ? routes[0] : undefined, language = view.draft?.language ?? page.locale;
   const row = (tone: "ok" | "warn" | "danger", title: string, detail: string, extra = "") => `<li>${icon(tone === "ok" ? "check" : "alert")}<div><p class="${tone}">${e(title)}</p><p class="s-meta">${e(detail)}</p>${extra}</div></li>`;
@@ -343,16 +471,18 @@ function workPage(page: S14Page, view: Extract<S14View, { kind: "work" }>): stri
   return shell(page, work.title, `<div class="s-col"><div class="s-between">${receiptLine(work, view.view) || "<span></span>"}${workPill(work.state, "s14-work-status")}</div>${workTabs(view.view, view.tab, `/work/${e(work.id)}`)}<div class="s-stack" id="s14-pane-live">${workBody(page, view.view, view.tab, view.conversation, view.bot)}</div>${liveWork(work) ? `<p class="s-note"><a class="s-link-text" href="/work/${e(work.id)}">${tr("s14.refresh")}</a></p>` : ""}<p><a class="s-link-text" href="/chats/${e(view.conversation.id)}">${tr("s14.work.back_to_chat")}</a></p></div>`, { current: "work", live: liveWork(work) });
 }
 function teamPage(page: S14Page): string {
-  const row = (bot: Bot) => `<a class="s-work-row" href="/team/${e(bot.id)}"><span class="s-row">${tile(bot, ({ working: "working", queued: "hollow", waiting: "waiting", idle: "" })[page.overview.botStates[bot.id] ?? "idle"])}<span><b>${e(botName(bot))}</b><small>${e(botDuty(bot))}</small></span></span>${pill(tr(k(`s14.bot_state.${page.overview.botStates[bot.id] ?? "idle"}`)))}</a>`;
+  const row = (bot: Bot) => `<a class="s-work-row" href="/team/${e(bot.id)}"><span class="s-row">${tile(bot, ({ working: "working", queued: "hollow", waiting: "waiting", idle: "" })[page.overview.botStates[bot.id] ?? "idle"])}<span><b>${e(botName(bot))}</b><small>${e(botDuty(bot))}</small>${page.overview.computers[bot.id]?.computer ? `<small>${tr("s14.proposal.computer")} · ${computerWord(page.overview.computers[bot.id]!)}</small>` : ""}</span></span>${pill(tr(k(`s14.bot_state.${page.overview.botStates[bot.id] ?? "idle"}`)))}</a>`;
   return shell(page, tr("s14.nav.team"), `<div class="s-col"><p class="s-sub">${tr("s14.team.lead")}</p>${page.state.bots.map(row).join("")}<p class="s-note">${tr("s14.team.proposal_note")}</p></div>`, { current: "team" });
 }
 function botPage(page: S14Page, view: Extract<S14View, { kind: "bot" }>): string {
-  const { bot, conversation } = view, route = page.state.routes.find(r => r.id === bot.routeId);
+  const { bot, conversation, computer } = view, route = page.state.routes.find(r => r.id === bot.routeId), current = page.overview.computers[bot.id] ?? { computer: null, lease: null };
   const list = (items: string[]) => items.length ? items.map(item => `<span class="s-mono">${e(item)}</span>`).join(" · ") : tr("s14.bot.none");
-  return shell(page, botName(bot), `<div class="s-col"><div class="s-row">${tile(bot, "", "large")}<p class="s-sub">${e(botDuty(bot))}</p></div><dl class="s-kv"><dt>${tr("s14.bot.state")}</dt><dd>${tr(k(`s14.bot_state.${page.overview.botStates[bot.id] ?? "idle"}`))}</dd><dt>${tr("s14.proposal.route")}</dt><dd>${routeText(route)}</dd><dt>${tr("s14.bot.tools")}</dt><dd>${list(bot.capabilities.tools)}</dd><dt>${tr("s14.bot.resources")}</dt><dd>${list(bot.capabilities.resources)}</dd><dt>${tr("s14.proposal.logins")}</dt><dd>${tr("s14.proposal.none_granted")}</dd><dt>${tr("s14.proposal.computer")}</dt><dd>${tr("s14.proposal.no_computer")}</dd><dt>${tr("s14.bot.revision")}</dt><dd class="s-mono">r${bot.revision}</dd></dl><p class="s-note">${tr("s14.bot.ceiling_note")}</p>${conversation ? `<p><a class="s-btn primary" href="/chats/${e(conversation.id)}">${tr("s14.bot.direct")}</a></p>` : ""}</div>`, { current: "team", bot });
+  const tabs = `<nav class="s-worktabs" aria-label="${tr("s14.bot.tab_label")}"><a href="/team/${e(bot.id)}"${computer ? "" : ' aria-current="page"'}>${tr("s14.bot.tab_overview")}</a><a href="${computerPath(bot)}"${computer ? ' aria-current="page"' : ""}>${tr("s14.tab.computer")}</a></nav>`;
+  const overview = () => `<div class="s-row">${tile(bot, "", "large")}<p class="s-sub">${e(botDuty(bot))}</p></div><dl class="s-kv"><dt>${tr("s14.bot.state")}</dt><dd>${tr(k(`s14.bot_state.${page.overview.botStates[bot.id] ?? "idle"}`))}</dd><dt>${tr("s14.proposal.route")}</dt><dd>${routeText(route)}</dd><dt>${tr("s14.bot.tools")}</dt><dd>${list(bot.capabilities.tools)}</dd><dt>${tr("s14.bot.resources")}</dt><dd>${list(bot.capabilities.resources)}</dd><dt>${tr("s14.proposal.logins")}</dt><dd>${tr("s14.proposal.none_granted")}</dd><dt>${tr("s14.proposal.computer")}</dt><dd><a class="s-link-text" href="${computerPath(bot)}">${computerWord(current)}</a></dd><dt>${tr("s14.bot.revision")}</dt><dd class="s-mono">r${bot.revision}</dd></dl><p class="s-note">${tr("s14.bot.ceiling_note")}</p>${conversation ? `<p><a class="s-btn primary" href="/chats/${e(conversation.id)}">${tr("s14.bot.direct")}</a></p>` : ""}`;
+  return shell(page, botName(bot), `<div class="s-col${computer ? " s-col-wide" : ""}">${tabs}${computer ? computerPanel(page, bot, computer) : overview()}</div>`, { current: "team", bot, ...(computer ? { subtitle: tr("s14.computer.title") } : {}) });
 }
 function morePage(page: S14Page): string {
-  const planned = (["report", "memory", "routine", "computer"] as const).map(item => `<li>${tr(k(`s14.more.${item}`))} · ${pill(tr("s14.more.not_ready"))}</li>`).join("");
+  const planned = (["report", "memory", "routine"] as const).map(item => `<li>${tr(k(`s14.more.${item}`))} · ${pill(tr("s14.more.not_ready"))}</li>`).join("");
   return shell(page, tr("s14.nav.more"), `<div class="s-col"><section class="s-card" aria-labelledby="s14-account"><h2 id="s14-account">${tr("s14.more.account")}</h2><dl class="s-kv"><dt>${tr("s14.setup.name")}</dt><dd>${e(page.state.owner?.name ?? "")}</dd><dt>${tr("s14.setup.language")}</dt><dd>${page.state.owner?.language === "en" ? "English" : "ไทย"}</dd><dt>${tr("s14.proposal.route")}</dt><dd>${page.state.routes.map(route => routeText(route)).join(" · ") || tr("s14.proposal.no_route")}<br><span class="s-note">${tr("s14.setup.route_configured_detail")}</span></dd></dl></section>
     <section class="s-card" aria-labelledby="s14-planned"><h2 id="s14-planned">${tr("s14.more.planned")}</h2><ul class="s-history">${planned}</ul></section><form method="post" action="/s14/logout">${hidden("csrf", page.csrf)}<button class="s-btn">${tr("s14.more.sign_out")}</button></form></div>`, { current: "more" });
 }

@@ -7,11 +7,13 @@ import type { Bot, BotCommand, BotProposal, BotReceipt, ChatInput, ChatPort, Con
 import { canonical, canonicalByteLimit, capabilities, digest, exact, identity, integer, text } from "./validation";
 import { S14Authority, suggestTask } from "./authority";
 import type { AuthorityCommand, AuthorityOptions, AuthorityReceipt } from "./authority-types";
+import { S14Computers } from "./computer";
+import type { ComputerCommand, ComputerOptions, ComputerReceipt } from "./computer-types";
 
 /** Stable complete typed owner ingress union for the S14 logic foundation. */
-export type S14Command = BotCommand | AuthorityCommand;
+export type S14Command = BotCommand | AuthorityCommand | ComputerCommand;
 /** Committed typed result of the S14 owner command boundary. */
-export type S14Receipt = BotReceipt | AuthorityReceipt;
+export type S14Receipt = BotReceipt | AuthorityReceipt | ComputerReceipt;
 
 const id = () => crypto.randomUUID().replaceAll("-", "");
 const tokenPattern = /^[a-f0-9]{64}$/;
@@ -28,13 +30,14 @@ export function save(tx: AppTransaction, table: RecordTable, value: { id: string
 /** Reads bounded identity records from a trusted table name without starting workers. */
 export function records<T>(tx: AppTransaction, table: RecordTable): T[] { return tx.all<{ record_json: string }>(`SELECT record_json FROM ${table} ORDER BY rowid DESC LIMIT 100`).map(row => JSON.parse(row.record_json) as T); }
 /** Injectable deterministic inference/clock and rollback fault seams; production never enables fixture inference. */
-export interface S14Options { policy: Policy; chat: ChatPort; authority?: AuthorityOptions; now?: () => number; beforeCommit?: () => void }
+export interface S14Options { policy: Policy; chat: ChatPort; authority?: AuthorityOptions; computers?: ComputerOptions; now?: () => number; beforeCommit?: () => void }
 
 /** Project-free owner command boundary; registered actors are revalidated on every read and commit. */
 export class S14Application {
   readonly policy: Policy;
   readonly now: () => number;
   readonly authority: S14Authority;
+  readonly computers: S14Computers;
   #actors = new WeakMap<OwnerActor, string>();
   #replyBusy = false;
   constructor(readonly store: S14Store, readonly options: S14Options) {
@@ -46,6 +49,7 @@ export class S14Application {
     }
     capabilities({ tools: this.policy.tools, resources: this.policy.resources }, this.policy);
     this.authority = new S14Authority(this, options.authority);
+    this.computers = new S14Computers(this, options.computers);
   }
   /** Trusted local bootstrap creates only the authentication principal, never resets an existing installation. */
   async provisionOwner(password: string): Promise<void> {
@@ -120,6 +124,8 @@ export class S14Application {
   execute(actor: OwnerActor, command: BotCommand): BotReceipt;
   /** Executes obligation, work-start, stop and exact approval decisions under the same owner receipt boundary. */
   execute(actor: OwnerActor, command: AuthorityCommand): AuthorityReceipt;
+  /** Executes exact computer lifecycle and input ownership intents without embedding transient browser input. */
+  execute(actor: OwnerActor, command: ComputerCommand): ComputerReceipt;
   /** Executes the complete typed HTTP command union without client-controlled actor identities. */
   execute(actor: OwnerActor, command: S14Command): S14Receipt;
   execute(actor: OwnerActor, command: S14Command): S14Receipt {
@@ -127,14 +133,19 @@ export class S14Application {
     identity(command.requestId); integer(command.expectedRevision);
     const receipt = this.store.transaction(tx => {
       this.requireOwner(tx, actor);
+      if (tx.get("SELECT request_id FROM computer_inputs WHERE request_id=?", command.requestId)) throw new AppError("request_id_conflict", 409);
       const previous = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash,result_json FROM command_receipts WHERE owner_id='owner' AND request_id=?", command.requestId);
       if (previous) { if (previous.payload_hash !== digest(encoded)) throw new AppError("request_id_conflict", 409); return JSON.parse(previous.result_json) as S14Receipt; }
-      const result = ["task.accept", "work.start", "work.stop", "approval.decide"].includes(command.kind) ? this.authority.apply(tx, command as AuthorityCommand) : this.applyBot(tx, command as BotCommand);
+      const result = ["computer.open", "computer.stop", "computer.reset", "computer.delete", "takeover.start", "takeover.end"].includes(command.kind)
+        ? this.computers.apply(tx, command as ComputerCommand)
+        : ["task.accept", "work.start", "work.stop", "approval.decide"].includes(command.kind)
+          ? this.authority.apply(tx, command as AuthorityCommand) : this.applyBot(tx, command as BotCommand);
       tx.run("INSERT INTO command_receipts VALUES ('owner',?,?,?,?)", command.requestId, digest(encoded), canonical(result), this.now());
       tx.run("INSERT INTO audit(kind,request_id,committed_at) VALUES (?,?,?)", command.kind, command.requestId, this.now());
       this.options.beforeCommit?.(); return structuredClone(result);
     });
     this.authority.cancelFenced();
+    this.computers.sweep();
     return receipt;
   }
   /** Resolves an exact configured route; no provider, account, model or billing fallback exists. */

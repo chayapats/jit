@@ -154,8 +154,32 @@ export class S14Authority {
     if (tx.get<{ generation: number }>("SELECT generation FROM owner")?.generation !== grant.ownerGeneration) throw new AppError("owner_authority_changed", 403);
     return work;
   }
+  /** Rechecks the explicit computer tool and captured/current Bot ceiling under the caller's transaction. */
+  computerAuthority(tx: AppTransaction, workId: string, botId: string): { bot: Bot; grant: WorkGrant } {
+    const work = record<Work>(tx, "work_items", workId);
+    if (!work.grantId) throw new AppError("grant_required", 403);
+    const grant = record<WorkGrant>(tx, "work_grants", work.grantId);
+    this.grantLive(tx, grant);
+    const bot = record<Bot>(tx, "bots", botId), captured = grant.bots.find(b => b.id === botId);
+    if (!captured || !equal(bot, captured) || !bot.enabled || !equal(this.app.route(bot.routeId), grant.routes.find(r => r.id === bot.routeId))) throw new AppError("bot_authority_changed", 403);
+    if (!grant.tools.includes("computer") || !bot.capabilities.tools.includes("computer")) throw new AppError("computer_outside_grant", 403);
+    for (const scope of grant.scopes) if (!equal(this.scope(tx, scope.ref), scope)) throw new AppError("scope_revoked_or_stale", 403);
+    return { bot, grant };
+  }
+  /** Rechecks an attempt's current authority without charging a second call at every transport guard. */
+  assertTool(tx: AppTransaction, attemptId: string, tool: string): Attempt {
+    const attempt = record<Attempt>(tx, "work_attempts", attemptId);
+    this.live(tx, attempt);
+    if (!attempt.snapshot.tools.includes(tool)) throw new AppError("tool_outside_grant", 403);
+    return attempt;
+  }
   private live(tx: AppTransaction, attempt: Attempt): Work {
     if (attempt.state !== "running" && attempt.state !== "waiting") throw new AppError("attempt_fenced", 403);
+    const computer = tx.get<{ generation: number; record_json: string }>("SELECT a.generation,c.record_json FROM computer_attempts a JOIN bot_computers c ON c.id=a.computer_id WHERE a.attempt_id=?", attempt.id);
+    if (computer) {
+      const current = JSON.parse(computer.record_json) as { generation: number; state: string };
+      if (current.generation !== computer.generation || current.state !== "running") throw new AppError("computer_attempt_fenced", 403);
+    }
     const s = attempt.snapshot, work = this.grantLive(tx, s.grant), bot = record<Bot>(tx, "bots", s.bot.id);
     if (!bot.enabled || bot.revision !== s.bot.revision || bot.generation !== s.bot.generation || !equal(bot.capabilities, s.bot.capabilities) || !equal(this.app.route(bot.routeId), s.route)) throw new AppError("bot_authority_changed", 403);
     for (const scope of s.scopes) if (!equal(this.scope(tx, scope.ref), scope) || !this.accessible(scope, bot, work.id)) throw new AppError("scope_revoked_or_stale", 403);

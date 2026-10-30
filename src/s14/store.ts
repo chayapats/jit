@@ -7,7 +7,7 @@ import type { AppTransaction } from "../store";
 /** Fresh S14 SQLite format identity, distinct from every legacy user_version. */
 export const s14ApplicationId = 0x4a495431;
 /** Unreleased S14 schema version; unknown formats refuse before writable SQLite opens. */
-export const s14SchemaVersion = 3;
+export const s14SchemaVersion = 4;
 /** Safe next action for incompatible stores; no original bytes or sidecars are opened by SQLite. */
 export class FreshStateRequired extends AppError {
   readonly nextAction = "choose_a_separate_JIT_S14_DATABASE_keep_legacy_installation";
@@ -73,6 +73,18 @@ export class S14Store {
         CREATE TRIGGER immutable_effect_action BEFORE UPDATE ON effects WHEN json_extract(NEW.record_json,'$.revision') = json_extract(OLD.record_json,'$.revision') AND (json_extract(NEW.record_json,'$.action') IS NOT json_extract(OLD.record_json,'$.action') OR json_extract(NEW.record_json,'$.actionHash') IS NOT json_extract(OLD.record_json,'$.actionHash') OR json_extract(NEW.record_json,'$.expiresAt') IS NOT json_extract(OLD.record_json,'$.expiresAt')) BEGIN SELECT RAISE(ABORT,'immutable_effect_action'); END;
         PRAGMA application_id=${s14ApplicationId}; PRAGMA user_version=${s14SchemaVersion};
       `)).immediate();
+      // Fresh schema 4 combines result-state evidence and computer tables; earlier unreleased stores refuse.
+      this.#db.transaction(() => {
+        this.#db.exec(`
+          CREATE TABLE IF NOT EXISTS bot_computers (id TEXT PRIMARY KEY, bot_id TEXT NOT NULL UNIQUE REFERENCES bots(id), record_json TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS input_leases (computer_id TEXT PRIMARY KEY REFERENCES bot_computers(id), record_json TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS computer_operations (sequence INTEGER PRIMARY KEY, computer_id TEXT NOT NULL REFERENCES bot_computers(id), generation INTEGER NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('start','stop','reset','delete')), state TEXT NOT NULL CHECK(state IN ('queued','running','done')));
+          CREATE TABLE IF NOT EXISTS computer_inputs (request_id TEXT PRIMARY KEY, computer_id TEXT NOT NULL REFERENCES bot_computers(id), process_id TEXT NOT NULL, payload_hash TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('dispatching','succeeded','unknown')));
+          CREATE TABLE IF NOT EXISTS computer_attempts (attempt_id TEXT PRIMARY KEY REFERENCES work_attempts(id), computer_id TEXT NOT NULL REFERENCES bot_computers(id), generation INTEGER NOT NULL);
+          CREATE TRIGGER IF NOT EXISTS immutable_computer_attempt BEFORE UPDATE ON computer_attempts BEGIN SELECT RAISE(ABORT,'immutable_computer_attempt'); END;
+          PRAGMA user_version=${s14SchemaVersion};
+        `);
+      }).immediate();
       chmodSync(path, 0o600);
     } catch (e) { this.#db.close(); throw e; }
   }
