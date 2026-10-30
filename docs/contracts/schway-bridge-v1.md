@@ -11,9 +11,9 @@ fails closed before any native session exists.
 Pinned artifact (verified, deterministic):
 
 - npm `schway@1.0.0-rc.2`, git revision
-  `2068b7139f53bd62f85c3545546724e5367588cd` (Schway main, #416+#418+#420+#424+#426+#430+#437+#438+#440+#441 merged; adds schway.host.core-tools/v1 and composes schway.host.release/v2, plus the additive capabilities schway.host.web-tools/v1 (#433/#434), schway.host.device-sign-in/v1 (#435), schway.host.image-input/v1 (#436) and schway.host.model-catalog/v1 (#432); Grok spending-limit 403 maps to quota-exceeded (#431)).
-- Vendored tarball `vendor/schway-1.0.0-rc.2-2068b71.tgz`,
-  SHA-256 `7f2c75c3c511661ff31505b26ab14d83e7c6eaba4aa084e8c32bdc53dc2a183b`.
+  `697bf406a84c8d1deb8d4a6d71876ea1003be5b3` (Schway main, #416+#418+#420+#424+#426+#430+#437+#438+#440+#441 merged; adds schway.host.core-tools/v1 and composes schway.host.release/v2, plus the additive capabilities schway.host.web-tools/v1 (#433/#434), schway.host.device-sign-in/v1 (#435), schway.host.image-input/v1 (#436) and schway.host.model-catalog/v1 (#432); Grok spending-limit 403 maps to quota-exceeded (#431)).
+- Vendored tarball `vendor/schway-1.0.0-rc.2-697bf40.tgz`,
+  SHA-256 `1c9d83de46edddff58a0163452e7f5ec8357e656c90093990fa28fa606a0f41b`.
 - Behavior set `schway.host.release/v2` (composes `base`, `context-policy`,
   `tool-policy`, `durable-sessions`, `auth-routes`, `run-control`,
   `managed-session-data`, `session-snapshot` and `core-tools`). `release/v2` is
@@ -29,9 +29,9 @@ Pinned artifact (verified, deterministic):
 ```ts
 SCHWAY_RELEASE_CONTRACT: "schway.host.release/v2";
 SCHWAY_SNAPSHOT_CONTRACT: "schway.host.session-snapshot/v1";
-SCHWAY_PINNED_REVISION: "2068b71...";
+SCHWAY_PINNED_REVISION: "697bf40...";
 SCHWAY_PINNED_VERSION: "1.0.0-rc.2";
-SCHWAY_PINNED_TARBALL_SHA256: "7f2c75c3...";
+SCHWAY_PINNED_TARBALL_SHA256: "1c9d83de...";
 SCHWAY_NEXT_ACTION: "pin_supported_schway_host_release";
 SCHWAY_SNAPSHOT_NEXT_ACTION: "await_supported_schway_snapshot_api";
 SCHWAY_SYSTEM_PROMPT: string;
@@ -202,3 +202,5 @@ normalizer round-trip, and a full application scenario where dispatch commits
 production specialist evidence while preview stays fixture, reopens after
 restart, and keeps reads working while provider access is blocked.
 `bun test`, `bun run typecheck`. No live accounts, no network, no Pi.
+
+S14 prerequisite pin: this artifact was packed at `697bf406a84c8d1deb8d4a6d71876ea1003be5b3`, merged by Schway PR #443 at `02bca6e`. It adds `schway.host.credential-lifecycle/v1` and `schway.host.session-inventory/v1`. Legacy route concurrency remains unchanged. S14 activation requires its own public packed-consumer conformance and shared process lifecycle integration.
