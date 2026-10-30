@@ -7,6 +7,10 @@ import { S14Store } from "../src/s14/store";
 import { createS14Handler } from "../src/s14/web";
 import type { Admission, AuthorityOptions, Effect, EffectAction, ScopePolicy, ScopeRef, StartWorkCommand, Work } from "../src/s14/authority-types";
 import type { Bot, Policy } from "../src/s14/types";
+import { canonical, canonicalByteLimit } from "../src/s14/validation";
+import { renderS14 } from "../src/s14/web-pages";
+import { createS14Product } from "../src/s14/web-product";
+import { acquireS14RuntimeLock } from "../src/s14/runtime-lock";
 
 const rid = () => crypto.randomUUID().replaceAll("-", "");
 const roots: string[] = [], stores = new Set<S14Store>();
@@ -58,10 +62,104 @@ test("message/@Bot/model/source intake and task.accept cannot mint grants; expli
   expect(f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) n FROM work_grants")!.n)).toBe(0);
   const command = start(f, { task: { id: task.id, revision: 2 } }), result = f.app.execute(f.auth.actor, command);
   expect(f.app.execute(f.auth.actor, command)).toEqual(result); await f.app.authority.drain(); await f.app.authority.drain();
-  expect(seen).toHaveLength(1); expect(f.app.authority.view(f.auth.actor, task.id).work).toMatchObject({ state: "ready", result: "Evidence to inspect" });
+  expect(seen).toHaveLength(1); expect(f.app.authority.view(f.auth.actor, task.id)).toMatchObject({ work: { state: "ready", result: seen[0] }, results: [{ text: "Evidence to inspect", state: "ready" }] });
   expect(f.app.authority.view(f.auth.actor, task.id).actualUsage).toBeNull();
   expect(() => f.app.execute({ ownerId: "owner" }, start(f))).toThrow("authentication_required");
   expect(() => f.app.execute(f.auth.actor, { ...start(f), payload: { ...start(f).payload, actor: "owner" } } as StartWorkCommand)).toThrow("invalid_shape");
+});
+
+test.each([[150 * 1024, 256 * 1024], [1048576, 1048576]])("%i-byte results under a %i-byte grant survive drain, views, rendering, receipts and reopen", async (bytes, granted) => {
+  const body = "ก".repeat(Math.floor(bytes / 3)) + "x".repeat(bytes % 3);
+  const f = await fixture({ executor: { async run() { return { state: "ready", text: body }; } } });
+  const command = start(f, { limits: { attempts: 1, steps: 1, calls: 1, outputBytes: granted, wallMs: 60000 } }), receipt = f.app.execute(f.auth.actor, command);
+  await f.app.authority.drain();
+  const view = f.app.authority.view(f.auth.actor, receipt.work!.id);
+  expect(view.work).toMatchObject({ state: "ready", result: view.attempts[0]!.id });
+  expect(view.results).toEqual([{ attemptId: view.attempts[0]!.id, workId: view.work.id, text: body, state: "ready", committedAt: epoch }]);
+  const stored = f.store.read(tx => tx.get<{ record_json: string }>("SELECT record_json FROM work_items WHERE id=?", view.work.id)!.record_json);
+  expect(Buffer.byteLength(stored)).toBeLessThan(canonicalByteLimit); expect(stored).not.toContain(body);
+  const web = createS14Handler(f.app, "http://localhost:3001", renderS14, createS14Product(f.app));
+  const request = (path: string) => new Request(`http://localhost:3001${path}`, { headers: { cookie: `jit_s14=${f.token}` } });
+  expect((await (await web(request(`/api/s14/work/${view.work.id}`))).json()).results[0].text).toBe(body);
+  expect(await (await web(request(`/work/${view.work.id}`))).text()).toContain(body);
+  const stopped = stop(f, view.work);
+  expect(Buffer.byteLength(canonical(stopped))).toBeLessThan(canonicalByteLimit);
+  expect(stopped.work!.result).toBe(view.attempts[0]!.id);
+  expect(f.app.execute(f.auth.actor, command)).toEqual(receipt);
+  f.store.close(); stores.delete(f.store);
+  const store = new S14Store(f.path); stores.add(store);
+  const app = new S14Application(store, f.options), actor = app.authenticate(f.token).actor;
+  expect(app.authority.view(actor, view.work.id).results).toEqual(view.results);
+});
+
+test.each(["deny", "succeeded", "failed", "unknown", "expired-pending", "expired-approved", "stop"] as const)("a committed ready result re-evaluates after effect %s without releasing unknown outcomes", async outcome => {
+  const f = await effectFixture({ effects: { send: async (_a, allowed) => { allowed(); return outcome === "unknown" || outcome === "failed" ? outcome : "succeeded"; } } });
+  f.app.authority.commit(f.attempt.id, { state: "ready", text: "Committed evidence" });
+  const waiting = f.app.authority.view(f.auth.actor, f.receipt.work!.id);
+  expect(waiting.work.state).toBe("waiting"); expect(waiting.attempts[0]!.state).toBe("waiting");
+  if (outcome === "deny") decide(f, f.effect, "deny");
+  else if (outcome === "stop") stop(f, waiting.work);
+  else if (outcome.startsWith("expired")) {
+    if (outcome === "expired-approved") decide(f, f.effect);
+    f.clock.now += 30000; await f.app.authority.drain();
+  } else { decide(f, f.effect); await f.app.authority.runEffect(f.effect.id, 1, f.effect.actionHash); }
+  const view = f.app.authority.view(f.auth.actor, waiting.work.id);
+  expect(view.work.state).toBe(outcome === "unknown" ? "waiting" : outcome === "stop" ? "stopped" : "ready");
+  expect(view.attempts[0]!.state).toBe(outcome === "unknown" ? "waiting" : outcome === "stop" ? "settled" : "committed");
+  expect(view.results[0]!.text).toBe("Committed evidence");
+  if (outcome === "unknown") {
+    f.clock.now += 60000; await f.app.authority.drain();
+    expect(f.app.authority.view(f.auth.actor, view.work.id)).toMatchObject({ work: { state: "waiting" }, effects: [{ state: "unknown" }], attempts: [{ state: "waiting" }] });
+    await expect(f.app.authority.runEffect(f.effect.id, 1, f.effect.actionHash)).rejects.toThrow("stale_approval");
+  }
+});
+
+test.each(["deny", "succeeded", "expired"] as const)("a deliberately waiting result stays waiting after effect %s", async outcome => {
+  const f = await effectFixture(); f.app.authority.commit(f.attempt.id, { state: "waiting", text: "Still waiting for other input" });
+  if (outcome === "deny") decide(f, f.effect, "deny");
+  else if (outcome === "expired") { f.clock.now += 30000; await f.app.authority.drain(); }
+  else { decide(f, f.effect); await f.app.authority.runEffect(f.effect.id, 1, f.effect.actionHash); }
+  expect(f.app.authority.view(f.auth.actor, f.receipt.work!.id)).toMatchObject({ work: { state: "waiting" }, attempts: [{ state: "waiting" }], results: [{ state: "waiting" }] });
+});
+
+test("separate sibling results retain their bodies and a ready child cannot release its parent's held effect", async () => {
+  const f = await fixture(), started = f.app.execute(f.auth.actor, start(f, { tools: ["effect_send"], limits: { attempts: 2, steps: 2, calls: 8, outputBytes: 524288, wallMs: 60000 } }));
+  const parent = f.app.authority.admit(started.work!.id, rid(), admission({ tools: ["effect_send"], outputBytes: 262144 }));
+  const effect = f.app.authority.proposeEffect(parent.id, rid(), send, epoch + 30000);
+  const first = "first".repeat(40000), second = "second".repeat(40000);
+  f.app.authority.commit(parent.id, { state: "ready", text: first });
+  const child = f.app.authority.delegate(parent.id, rid(), admission({ outputBytes: 262144 }));
+  f.app.authority.commit(child.id, { state: "ready", text: second });
+  const held = f.app.authority.view(f.auth.actor, started.work!.id);
+  expect(held.work).toMatchObject({ state: "waiting", result: child.id });
+  expect(held.attempts.map(a => a.state)).toEqual(["waiting", "committed"]);
+  expect(held.results.map(r => r.text)).toEqual([first, second]);
+  decide(f, effect, "deny");
+  const ready = f.app.authority.view(f.auth.actor, started.work!.id);
+  expect(ready.work.state).toBe("ready"); expect(ready.attempts.map(a => a.state)).toEqual(["committed", "committed"]);
+});
+
+test("stop during an effect with a committed ready result settles work without resolving its unknown outcome", async () => {
+  let finish!: () => void; const gate = new Promise<void>(resolve => { finish = resolve; });
+  const f = await effectFixture({ effects: { send: async () => { await gate; return "succeeded"; } } });
+  f.app.authority.commit(f.attempt.id, { state: "ready", text: "Retained result" }); decide(f, f.effect);
+  const running = f.app.authority.runEffect(f.effect.id, 1, f.effect.actionHash);
+  expect(stop(f, f.app.authority.view(f.auth.actor, f.receipt.work!.id).work).work!.state).toBe("stopping");
+  finish(); expect((await running).state).toBe("unknown");
+  await f.app.authority.drain();
+  expect(f.app.authority.view(f.auth.actor, f.receipt.work!.id)).toMatchObject({ work: { state: "stopped" }, attempts: [{ state: "settled" }], effects: [{ state: "unknown" }], results: [{ state: "ready", text: "Retained result" }] });
+});
+
+test("a competing composition root refuses the held runtime lock before recovering live attempts", async () => {
+  const f = await fixture(), started = f.app.execute(f.auth.actor, start(f));
+  f.app.authority.admit(started.work!.id, rid(), admission());
+  const release = acquireS14RuntimeLock(f.path);
+  try {
+    const process = Bun.spawn([Bun.which("bun")!, "--no-env-file", "src/main.ts", "serve", "--s14"], { env: { ...globalThis.process.env, JIT_S14_DATABASE: f.path }, stdout: "pipe", stderr: "pipe" });
+    expect(await process.exited).toBe(1);
+    expect(await new Response(process.stderr).text()).toContain("s14_runtime_already_open");
+    expect(f.app.authority.view(f.auth.actor, started.work!.id)).toMatchObject({ work: { state: "running" }, attempts: [{ state: "running" }] });
+  } finally { release(); }
 });
 
 test("work/grant/queue/receipt transaction rolls back as one; two processes and restart deduplicate one start", async () => {

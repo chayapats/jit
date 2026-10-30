@@ -8,6 +8,8 @@ export function exact(value: unknown, keys: readonly string[]): asserts value is
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype ||
     Object.keys(value).sort().join(",") !== [...keys].sort().join(",")) throw new AppError("invalid_shape");
 }
+/** Maximum UTF-8 bytes in a canonical record or command receipt. */
+export const canonicalByteLimit = 131072;
 /** Canonical bounded JSON for retry identities and immutable action hashes, rejecting accessors and cycles. */
 export function canonical(value: unknown): string {
   const seen = new Set<object>();
@@ -25,7 +27,7 @@ export function canonical(value: unknown): string {
     seen.delete(v); return result;
   }
   const encoded = JSON.stringify(visit(value, 0));
-  if (Buffer.byteLength(encoded) > 131072) throw new AppError("data_too_large", 413);
+  if (Buffer.byteLength(encoded) > canonicalByteLimit) throw new AppError("data_too_large", 413);
   return encoded;
 }
 /** SHA-256 digest used for credentials, receipts and exact action binding. */

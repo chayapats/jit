@@ -1,4 +1,3 @@
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { AppError } from "../errors";
 import { readHiddenPassword } from "../terminal-password";
@@ -8,6 +7,7 @@ import { FreshStateRequired, inspectS14Store, s14SchemaVersion, S14Store } from 
 import { createS14Handler } from "./web";
 import { renderS14 } from "./web-pages";
 import { createS14Product } from "./web-product";
+import { acquireS14RuntimeLock } from "./runtime-lock";
 import { serveS14Refusal } from "./web-refusal";
 import type { Policy } from "./types";
 
@@ -18,17 +18,8 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
     inspectS14Store(path); // Refuse legacy before creating even a lock, profile directory or worker.
     if (!["serve", "setup"].includes(command ?? "") || args.some(a => !["serve", "setup", "--s14", "--password-stdin", "--refusal-page"].includes(a))) throw new AppError("use_setup_or_serve_with_s14");
     const policy: Policy = { routes: JSON.parse(env.JIT_S14_ROUTES ?? "[]"), tools: [], resources: [] };
-    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    const lock = `${path}.runtime-lock`;
-    if (existsSync(lock)) {
-      const pid = Number(readFileSync(lock, "utf8")); let live = true;
-      try { process.kill(pid, 0); } catch (e) { if ((e as NodeJS.ErrnoException).code === "ESRCH") live = false; }
-      if (live || !Number.isSafeInteger(pid) || pid <= 0) throw new AppError("s14_runtime_already_open", 409);
-      unlinkSync(lock);
-    }
-    writeFileSync(lock, String(process.pid), { flag: "wx", mode: 0o600 });
+    const release = acquireS14RuntimeLock(path);
     let store: S14Store | undefined;
-    const release = () => { if (existsSync(lock) && readFileSync(lock, "utf8") === String(process.pid)) unlinkSync(lock); };
     try {
       store = new S14Store(path);
       const chat = schwayChat(join(dirname(path), "native"));

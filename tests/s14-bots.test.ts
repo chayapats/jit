@@ -6,9 +6,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { S14Application } from "../src/s14/application";
 import { schwayChat } from "../src/s14/chat";
-import { S14Store } from "../src/s14/store";
+import { s14SchemaVersion, S14Store } from "../src/s14/store";
 import { createS14Handler } from "../src/s14/web";
 import type { BotCommand, ChatInput, ChatOutput, Policy } from "../src/s14/types";
+import { canonical, canonicalByteLimit } from "../src/s14/validation";
 
 const password = "fixture-s14-owner-credential";
 const policy: Policy = { routes: [{ id: "selected", provider: "codex", model: "scripted" }], tools: ["public_read"], resources: ["source1"] };
@@ -26,6 +27,32 @@ async function fixture(script: (input: ChatInput) => Promise<ChatOutput> = async
   return { app, store, root, path, inputs, options, token, auth, setup };
 }
 const post = (conversationId: string, expectedRevision: number, text = "สวัสดี 🧪") => ({ kind: "message.post" as const, requestId: rid(), expectedRevision, payload: { conversationId, text } });
+
+test.each(["ascii", "escaped", "unicode"])("chat context budgets full %s records and receipts at the 128 KiB boundary, retaining the newest message", async encoding => {
+  const body = encoding === "escaped" ? '"'.repeat(16384) : encoding === "unicode" ? "ก".repeat(5461) + "x" : "x".repeat(16384);
+  expect(Buffer.byteLength(body)).toBe(16384);
+  const f = await fixture(async () => ({ text: body })), setup = f.app.execute(f.auth.actor, f.setup), conversationId = setup.conversation!.id;
+  for (let i = 0; i < 9; i++) {
+    const conversation = f.app.conversation(f.auth.actor, conversationId).conversation;
+    const command = post(conversationId, conversation.revision, i === 8 ? "newest" : body), receipt = f.app.execute(f.auth.actor, command);
+    expect(f.app.execute(f.auth.actor, command)).toEqual(receipt);
+    expect(Buffer.byteLength(canonical(receipt))).toBeLessThanOrEqual(canonicalByteLimit);
+    const messages = receipt.reply!.snapshot.messages;
+    expect(messages.at(-1)).toEqual(receipt.message!);
+    expect(Buffer.byteLength(canonical(receipt.reply))).toBeLessThanOrEqual(canonicalByteLimit);
+    if (i >= 5) {
+      const history = f.app.conversation(f.auth.actor, conversationId).messages, expected = history.slice(-messages.length);
+      expect(messages).toEqual(expected);
+      expect(messages.length).toBeLessThan(12);
+      const excluded = history.at(-messages.length - 1)!;
+      expect(() => canonical({ ...receipt, reply: { ...receipt.reply!, snapshot: { ...receipt.reply!.snapshot, messages: [excluded, ...messages] } } })).toThrow("data_too_large");
+    }
+    await f.app.drainReplies();
+  }
+  expect(f.inputs).toHaveLength(9);
+  expect(f.inputs.at(-1)!.messages.at(-1)!.text).toBe("newest");
+  expect(f.app.home(f.auth.actor).replies.every(r => r.state === "succeeded")).toBe(true);
+});
 
 test("fresh setup, one tool-free reply, exact accept/reject and receipt retries survive restart without any Project", async () => {
   const f = await fixture(), setup = f.app.execute(f.auth.actor, f.setup);
@@ -97,6 +124,18 @@ test("legacy database/profile/backup/WAL bytes remain unchanged and CLI refuses 
   const error = await new Response(child.stderr).text(); expect(await child.exited).toBe(1); expect(error).toContain("choose_a_separate_JIT_S14_DATABASE_keep_legacy_installation");
   expect(hash()).toEqual(before); db.close();
   const fresh = new S14Store(join(root, "fresh.sqlite")); expect(fresh).toBeDefined(); fresh.close();
+});
+
+test("schema 3 records original result state and refuses unreleased schema 2 without altering it", () => {
+  const root = mkdtempSync(join(tmpdir(), "jit-s14-schema-")); roots.push(root);
+  const path = join(root, "s14.sqlite"), store = new S14Store(path);
+  expect(s14SchemaVersion).toBe(3);
+  expect(store.read(tx => tx.all<{ name: string }>("PRAGMA table_info(work_results)")).map(c => c.name)).toContain("state");
+  store.close();
+  const db = new Database(path); db.exec("PRAGMA user_version=2"); db.close();
+  const before = readFileSync(path);
+  expect(() => new S14Store(path)).toThrow("s14_fresh_state_required");
+  expect(readFileSync(path)).toEqual(before); expect(readdirSync(root)).toEqual(["s14.sqlite"]);
 });
 
 test("JSON and no-script forms use the same receipts, escaped Thai/English state, Host/Origin and CSRF", async () => {

@@ -100,8 +100,15 @@ test("an unprovisioned installation shows the one local step instead of a sign-i
   const root = mkdtempSync(join(tmpdir(), "jit-s14-web-")); roots.push(root);
   const store = new S14Store(join(root, "s14.sqlite")); stores.push(store);
   const app = new S14Application(store, { policy: { routes: [], tools: [], resources: [] }, chat: { async reply() { return { text: "" }; } } });
-  const html = await (await createS14Handler(app, origin, renderS14, createS14Product(app))(new Request(`${origin}/s14/login`))).text();
-  expect(html).toContain("bun src/main.ts setup --s14"); expect(html).not.toContain('type="password"');
+  const handler = createS14Handler(app, origin, renderS14, createS14Product(app));
+  for (const locale of ["th", "en"] as const) {
+    const html = await (await handler(new Request(`${origin}/s14/login`, { headers: { "accept-language": locale } }))).text();
+    expect(html).toContain("bun src/main.ts setup --s14"); expect(html).not.toContain('type="password"');
+    expect(html).toContain(dictionaries[locale]["s14.login.unprovisioned"]);
+    expect(html).toContain(dictionaries[locale]["s14.login.unprovisioned_note"]);
+    expect(html.indexOf(locale === "en" ? "Stop serve" : "หยุด serve")).toBeLessThan(html.indexOf("bun src/main.ts setup --s14"));
+    expect(html.indexOf("bun src/main.ts serve --s14")).toBeGreaterThan(html.indexOf("bun src/main.ts setup --s14"));
+  }
 });
 
 test("fresh setup infers the only route, asks only what it cannot infer, and is idempotent through the no-script form", async () => {

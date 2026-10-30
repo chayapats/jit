@@ -7,7 +7,7 @@ import type { AppTransaction } from "../store";
 /** Fresh S14 SQLite format identity, distinct from every legacy user_version. */
 export const s14ApplicationId = 0x4a495431;
 /** Unreleased S14 schema version; unknown formats refuse before writable SQLite opens. */
-export const s14SchemaVersion = 2;
+export const s14SchemaVersion = 3;
 /** Safe next action for incompatible stores; no original bytes or sidecars are opened by SQLite. */
 export class FreshStateRequired extends AppError {
   readonly nextAction = "choose_a_separate_JIT_S14_DATABASE_keep_legacy_installation";
@@ -65,7 +65,7 @@ export class S14Store {
         CREATE TABLE work_queue (work_id TEXT PRIMARY KEY REFERENCES work_items(id), state TEXT NOT NULL CHECK(state IN ('queued','claimed','blocked')));
         CREATE TABLE work_attempts (id TEXT PRIMARY KEY, work_id TEXT NOT NULL REFERENCES work_items(id), request_id TEXT NOT NULL, payload_hash TEXT NOT NULL, record_json TEXT NOT NULL, UNIQUE(work_id,request_id));
         CREATE TABLE attempt_usage (attempt_id TEXT PRIMARY KEY REFERENCES work_attempts(id), calls INTEGER NOT NULL);
-        CREATE TABLE work_results (attempt_id TEXT PRIMARY KEY REFERENCES work_attempts(id), work_id TEXT NOT NULL REFERENCES work_items(id), content TEXT NOT NULL, committed_at INTEGER NOT NULL);
+        CREATE TABLE work_results (attempt_id TEXT PRIMARY KEY REFERENCES work_attempts(id), work_id TEXT NOT NULL REFERENCES work_items(id), content TEXT NOT NULL, committed_at INTEGER NOT NULL, state TEXT NOT NULL CHECK(state IN ('ready','waiting')));
         CREATE TABLE effects (id TEXT PRIMARY KEY, work_id TEXT NOT NULL REFERENCES work_items(id), attempt_id TEXT NOT NULL REFERENCES work_attempts(id), request_id TEXT NOT NULL, payload_hash TEXT NOT NULL, record_json TEXT NOT NULL, UNIQUE(attempt_id,request_id));
         CREATE TABLE effect_versions (effect_id TEXT NOT NULL REFERENCES effects(id), revision INTEGER NOT NULL, record_json TEXT NOT NULL, PRIMARY KEY(effect_id,revision));
         CREATE TRIGGER immutable_grant BEFORE UPDATE ON work_grants BEGIN SELECT RAISE(ABORT,'immutable_grant'); END;
