@@ -105,6 +105,7 @@ export class S14Personal {
       identity(p.botId);
       const bot = record<Bot>(tx, "bots", p.botId);
       if (!bot.enabled || !bot.capabilities.resources.includes(p.scopeId) || !this.app.policy.resources.includes(p.scopeId) || typeof p.active !== "boolean") throw new AppError("personal_bot_scope_refused", 403);
+      if (tx.get("SELECT id FROM snapshot_shares WHERE id=? UNION SELECT id FROM memory_shares WHERE id=? UNION SELECT id FROM lifecycle.withdrawals WHERE id=? AND kind IN ('snapshot_share','share')", p.scopeId, p.scopeId, p.scopeId)) throw new AppError("personal_scope_exists", 409);
       this.connection(tx, p.connectionId);
       const existing = tx.get<{ record_json: string }>("SELECT record_json FROM personal_grants WHERE id=?", p.scopeId);
       const previous = existing ? JSON.parse(existing.record_json) as PersonalGrant : null;

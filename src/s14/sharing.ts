@@ -17,8 +17,8 @@ export class S14Sharing {
   freeSlots(actor: OwnerActor): FreeShareSlot[] {
     return this.app.store.read(tx => {
       this.app.requireOwner(tx, actor);
-      const used = new Set(tx.all<{ id: string }>(`SELECT id FROM snapshot_shares UNION SELECT id FROM memory_shares
-        UNION SELECT id FROM lifecycle.withdrawals WHERE kind IN ('snapshot_share','share')`).map(row => row.id));
+      const used = new Set(tx.all<{ id: string }>(`SELECT id FROM snapshot_shares UNION SELECT id FROM memory_shares UNION SELECT id FROM personal_grants
+        UNION SELECT id FROM lifecycle.withdrawals WHERE kind IN ('snapshot_share','share','personal_grant')`).map(row => row.id));
       const bots = tx.all<{ record_json: string }>("SELECT record_json FROM bots ORDER BY rowid").map(row => JSON.parse(row.record_json) as Bot);
       return [...new Set([...this.app.policy.resources, ...managedShareSlots])].filter(scopeId => !used.has(scopeId)).map(scopeId => ({
         scopeId, receiverBotIds: bots.filter(bot => bot.enabled && bot.capabilities.resources.includes(scopeId)).map(bot => bot.id),
@@ -70,7 +70,7 @@ export class S14Sharing {
     if (receiver.revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
     if (!receiver.enabled || !resourceConfigured(this.app.policy, p.scopeId) || !receiver.capabilities.resources.includes(p.scopeId)) throw new AppError("snapshot_scope_denied", 403);
     if (p.workId !== null) { identity(p.workId); record<Work>(tx, "work_items", p.workId); }
-    if (this.load(tx, p.scopeId) || tx.get("SELECT id FROM memory_shares WHERE id=?", p.scopeId) || tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE id=? AND kind IN ('snapshot_share','share')", p.scopeId)) throw new AppError("snapshot_share_exists", 409);
+    if (this.load(tx, p.scopeId) || tx.get("SELECT id FROM memory_shares WHERE id=?", p.scopeId) || this.app.personal.owns(tx, { kind: "resource", id: p.scopeId, revision: 1 }) || tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE id=? AND kind IN ('snapshot_share','share')", p.scopeId)) throw new AppError("snapshot_share_exists", 409);
     const snapshot = this.app.artifacts.snapshot(tx, p.target);
     if (snapshot.ownerBotId === receiver.id) throw new AppError("snapshot_receiver_is_owner", 409);
     const share: SnapshotShare = { id: p.scopeId, revision: 1, target: structuredClone(p.target), ownerBotId: snapshot.ownerBotId,
