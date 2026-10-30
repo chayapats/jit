@@ -18,7 +18,7 @@ export interface S14ShareSnapshot { target: SnapshotTarget; name: string; mediaT
 /** One eligible receiver and the free slot its radio pins, so a retried form stays the same command. */
 export interface S14ShareReceiver { bot: Bot; scopeId: string }
 /** The share sheet for one exact snapshot. A null `snapshot` carries the gateway's refusal in `refusal` and no control. */
-export interface S14ShareSheet { kind: "share-new"; target: SnapshotTarget; snapshot: S14ShareSnapshot | null; refusal: string | null; receivers: S14ShareReceiver[]; others: { bot: Bot; why: "owner" | "no_slot" }[]; tasks: Work[]; work: Work | null; notice: string | null; hours: number; chosen: string }
+export interface S14ShareSheet { kind: "share-new"; target: SnapshotTarget; snapshot: S14ShareSnapshot | null; refusal: string | null; receivers: S14ShareReceiver[]; others: { bot: Bot; why: "owner" | "no_slot" | "stopping" }[]; tasks: Work[]; work: Work | null; notice: string | null; hours: number; chosen: string }
 /** One share with the work that names it. `receipt` is reread for the landing banner, so a link cannot fake it. */
 export interface S14ShareDetail { kind: "share"; view: ShareView; work: Work | null; using: Work[]; receipt: SharingReceipt | null }
 /** Sharing surfaces added to the product view union. */
@@ -53,9 +53,11 @@ function preview(app: S14Application, actor: OwnerActor, target: SnapshotTarget)
 }
 function sheet(app: S14Application, actor: OwnerActor, state: Home, target: SnapshotTarget, workId: string | null, draft: { notice?: string | null; hours?: number; chosen?: string } = {}): S14ShareSheet {
   const read = preview(app, actor, target), slots = app.sharing.freeSlots(actor), receivers: S14ShareReceiver[] = [], others: S14ShareSheet["others"] = [];
-  for (const bot of state.bots.filter(item => item.enabled)) {
+  for (const bot of state.bots) {
     const scopeId = slots.find(slot => slot.receiverBotIds.includes(bot.id))?.scopeId;
-    if (bot.id === read.snapshot?.ownerBotId) others.push({ bot, why: "owner" });
+    // A Bot between ceilings cannot receive yet, and saying so beats it vanishing from the sheet. Retired Bots stay out.
+    if (!bot.enabled) { const { state: phase, target } = app.botLifecycle.view(actor, bot.id).lifecycle; if (phase === "stopping" && target === "active") others.push({ bot, why: "stopping" }); }
+    else if (bot.id === read.snapshot?.ownerBotId) others.push({ bot, why: "owner" });
     else if (scopeId) receivers.push({ bot, scopeId });
     else others.push({ bot, why: "no_slot" });
   }

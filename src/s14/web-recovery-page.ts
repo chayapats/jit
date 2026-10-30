@@ -1,5 +1,5 @@
 import { tr, trMaybe } from "../i18n";
-import { banner, botName, e, effectPill, k, pill, shell } from "./web-pages";
+import { banner, botName, e, effectPill, k, pill, shell, when } from "./web-pages";
 import type { S14Page } from "./web";
 import type { S14RecoveryGroup, S14RecoveryItem, S14RecoverySession, S14RecoveryStep, S14RecoverySurface } from "./web-product-recovery";
 
@@ -60,5 +60,5 @@ export function recoveryPage(page: S14Page, view: S14RecoverySurface): string {
   const empty = !view.items.length && !view.sessions.length, live = view.items.some(item => item.phase === "queued");
   const sessions = view.sessions.length ? `<section class="s-stack" aria-labelledby="s14-recovery-sessions"><h2 class="s-section-t" id="s14-recovery-sessions">${tr("s14.recovery.count.sessions")}</h2>${view.sessions.map(item => sessionCard(page, item)).join("")}</section>` : "";
   const body = empty ? banner("", tr("s14.recovery.empty_title"), tr("s14.recovery.empty_detail")) : `${counts(view)}${group(page, view, "needs")}${sessions}${group(page, view, "waiting")}${group(page, view, "resumed")}${group(page, view, "closed")}`;
-  return shell(page, tr("s14.recovery.title"), `<div class="s-col"><p class="s-sub">${tr("s14.recovery.lead")}</p><div class="s-stack" id="s14-live"><span hidden data-phase="${e(`${tr("s14.recovery.title")} · ${view.items.length}`)}"></span>${body}</div><p class="s-note">${tr("s14.recovery.usage")} · <span class="s-hatch-word">${tr("s14.unknown")}</span></p>${settled(view)}</div>`, { current: "more", subtitle: tr("s14.recovery.subtitle"), live });
+  return shell(page, tr("s14.recovery.title"), `<div class="s-col"><p class="s-sub">${tr("s14.recovery.lead")}</p><p class="s-sub">${tr("s14.recovery.booted")} ${when(view.bootedAt)}</p><div class="s-stack" id="s14-live"><span hidden data-phase="${e(`${tr("s14.recovery.title")} · ${view.items.length}`)}"></span>${body}</div><p class="s-note">${tr("s14.recovery.usage")} · <span class="s-hatch-word">${tr("s14.unknown")}</span></p>${settled(view)}</div>`, { current: "more", subtitle: tr("s14.recovery.subtitle"), live });
 }

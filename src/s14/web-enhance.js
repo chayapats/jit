@@ -1,6 +1,6 @@
 // S14 browser enhancements (ADR 0028). Hand-written ES module, no dependencies, no build step.
 // Every S14 page is complete without this file: forms post, the composer's work mode is a checkbox and limits are visible.
-// It only adds Enter to send, the setup ceremony, focus on an opened approval slip, copying a sign-in code and same-origin
+// It only adds Enter to send, the setup ceremony, focus on an opened approval slip, a device timezone, copying a sign-in code and same-origin
 // reads of the page being viewed while something is in flight. It never posts data itself and stores nothing.
 
 document.documentElement.dataset.enhanced = "true";
@@ -14,6 +14,12 @@ for (const form of document.querySelectorAll("[data-composer]")) {
     form.requestSubmit();
   });
   if (location.hash === "#s14-text" && text) { text.focus(); text.setSelectionRange(text.value.length, text.value.length); }
+}
+
+// A new routine starts from the host's timezone; this device's is the better guess. Both stay visible, editable and reviewed.
+for (const input of document.querySelectorAll("[data-device-timezone]")) {
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  if (zone) input.value = zone;
 }
 
 // A slip opened from Work or a notification takes focus on its heading, never on Approve.

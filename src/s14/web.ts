@@ -130,7 +130,11 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
       const form = product && request.method === "POST" ? /^\/s14\/forms\/([a-z-]+)$/.exec(url.pathname)?.[1] : undefined;
       if (form) {
         const p = await body(request), state = app.home(auth.actor); app.verifyCsrf(auth.csrf, p.csrf); next = product!.next(form, p);
-        try { return redirect(product!.surface(app.execute(auth.actor, product!.command(form, p, auth.actor, state, signedInLocale(state))), p)); }
+        try {
+          const reviewed = product!.review?.(form, p, auth.actor, state, signedInLocale(state));
+          if (reviewed) return view(app.home(auth.actor), reviewed);
+          return redirect(product!.surface(app.execute(auth.actor, product!.command(form, p, auth.actor, state, signedInLocale(state))), p));
+        }
         catch (error) {
           const recovered = error instanceof AppError ? await product!.recover(form, p, error.code, auth.actor, app.home(auth.actor)) : null;
           if (recovered) return view(app.home(auth.actor), recovered, (error as AppError).status);

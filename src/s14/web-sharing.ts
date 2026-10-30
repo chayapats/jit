@@ -7,6 +7,7 @@ import type { S14Page } from "./web";
 import { memoryShareHours } from "./web-product-memory";
 import { shareableBytes, type S14ShareDetail, type S14ShareFile, type S14ShareList, type S14ShareSheet, type S14ShareSnapshot, type S14SharingSurface } from "./web-product-sharing";
 import { reach } from "./web-memory";
+import { slotHref } from "./web-lifecycle";
 
 /* Snapshot sharing (SHARE14-01, F12). A share is one exact copy for one Bot. File names and titles a model may have written stay escaped data outside the strip, and no line here reads as erasure. */
 const stateTone: Record<ShareView["state"], [string, string]> = { active: ["strong", ""], revoked: ["", ""], expired: ["", ""], unavailable: ["warn", "!"] };
@@ -58,14 +59,20 @@ function shareForm(page: S14Page, view: S14ShareSheet): string {
   const { target } = view;
   return `<form class="s-stack s-strip-form" method="post" action="/s14/forms/snapshot-share">${hidden("csrf", page.csrf)}${hidden("requestId", rid())}${hidden("targetKind", target.kind)}${hidden("targetId", target.id)}${hidden("targetRevision", target.revision)}${hidden("targetGeneration", target.generation)}${hidden("workId", view.work?.id ?? "")}<fieldset class="s-field"><legend>${tr("s14.share.field.receiver")}</legend><div class="s-choices">${view.receivers.map(item => receiverRow(page, view, item.bot, item.scopeId)).join("")}</div></fieldset><label class="s-field"><span>${tr("s14.memory.share.hours")}</span><input type="number" name="hours" min="${memoryShareHours.min}" max="${memoryShareHours.max}" value="${view.hours}" required inputmode="numeric"></label><div><button class="s-btn primary">${tr("s14.memory.share.submit")}</button></div></form>`;
 }
+/** The way out of "no receiver": one fixed link per Bot that opens its capability form with a free slot ticked. That page is where anything is decided. */
+function slotActions(view: S14ShareSheet): string {
+  const rows = view.others.filter(item => item.why === "no_slot").map(({ bot }) => `<li class="s-slot-row"><span class="s-row">${tile(bot, "", "small")}<span>${e(botName(bot))}<small class="s-meta">${tr("s14.share.blocked.no_slot")}</small></span></span><a class="s-btn" href="${slotHref(bot, view.target)}">${tr("s14.share.add_slot")}</a></li>`).join("");
+  return rows ? `<ul class="s-slot-list">${rows}</ul>` : "";
+}
 function sheetPage(page: S14Page, view: S14ShareSheet): string {
   const back = `<p><a class="s-link-text" href="/shares">${tr("s14.share.back")}</a></p>`, snapshot = view.snapshot;
   if (!snapshot) return shell(page, tr("s14.share.sheet_title"), `<div class="s-col">${notice(view.refusal)}<p class="s-mono s-meta">${e(view.refusal)}</p>${back}</div>`, { current: "more" });
-  const others = view.others.length ? `<p class="s-note">${tr("s14.share.others")}: ${view.others.map(item => `${e(botName(item.bot))} (${tr(k(`s14.share.blocked.${item.why}`))})`).join(" · ")}</p>` : "";
+  const waiting = view.others.filter(item => item.why !== "no_slot" || view.receivers.length), blocked = waiting.length ? `<p class="s-note">${tr("s14.share.others")}: ${waiting.map(item => `${e(botName(item.bot))} (${tr(k(`s14.share.blocked.${item.why}`))})`).join(" · ")}</p>` : "";
+  const noSlot = view.others.some(item => item.why === "no_slot"), jit = page.state.conversations.find(item => item.botId === "jit");
   const content = `<details class="s-more"><summary>${tr("s14.share.show_content")}</summary><div>${untrusted(`<pre class="s-exact">${e(snapshot.text)}</pre>`, tr("s14.share.content_tag"))}</div></details>`;
   const strip = view.receivers.length ? ownerStrip(shareForm(page, view), tr("s14.memory.share.note")) : "";
-  const none = view.receivers.length ? "" : banner("", tr("s14.share.none_title"), tr("s14.share.none_detail"));
-  return shell(page, tr("s14.share.sheet_title"), `<div class="s-col">${notice(view.notice)}<article class="s-slip" aria-label="${tr("s14.share.sheet_title")}"><div class="s-slip-hd"><div><h2 id="slip" tabindex="-1" data-focus-on-load>${tr("s14.share.sheet_title")}</h2><p class="s-meta">${tr("s14.share.sheet_meta")}</p></div></div><div class="s-slip-body">${exactFacts(page, snapshot)}<p class="s-note">${tr("s14.share.pinned_note")}</p>${content}${workBlock(view)}${reach(["s14.share.does_1", "s14.share.does_2", "s14.share.does_3", "s14.share.does_4"], ["s14.share.not_1", "s14.share.not_2", "s14.share.not_3", "s14.share.not_4", "s14.share.not_5"])}${none}${others}</div>${strip}</article>${back}</div>`, { current: "more", subtitle: tr("s14.share.subtitle") });
+  const none = view.receivers.length ? (noSlot ? `<details class="s-more"><summary>${tr("s14.share.more_receivers")}</summary><div>${slotActions(view)}</div></details>` : "") : noSlot ? `${banner("", tr("s14.share.none_title"), tr("s14.share.none_detail"))}${slotActions(view)}` : banner("", tr("s14.share.none_title"), tr("s14.share.no_other_bot"), jit ? `<p><a class="s-link-text" href="/chats/${e(jit.id)}#s14-text">${tr("s14.share.ask_jit")}</a></p>` : "");
+  return shell(page, tr("s14.share.sheet_title"), `<div class="s-col">${notice(view.notice)}<article class="s-slip" aria-label="${tr("s14.share.sheet_title")}"><div class="s-slip-hd"><div><h2 id="slip" tabindex="-1" data-focus-on-load>${tr("s14.share.sheet_title")}</h2><p class="s-meta">${tr("s14.share.sheet_meta")}</p></div></div><div class="s-slip-body">${exactFacts(page, snapshot)}<p class="s-note">${tr("s14.share.pinned_note")}</p>${content}${workBlock(view)}${reach(["s14.share.does_1", "s14.share.does_2", "s14.share.does_3", "s14.share.does_4"], ["s14.share.not_1", "s14.share.not_2", "s14.share.not_3", "s14.share.not_4", "s14.share.not_5"])}${none}${blocked}</div>${strip}</article>${back}</div>`, { current: "more", subtitle: tr("s14.share.subtitle") });
 }
 
 function revokeSlip(page: S14Page, view: S14ShareDetail): string {
