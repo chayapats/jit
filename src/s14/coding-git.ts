@@ -4,7 +4,7 @@ import { registerSecretFingerprint } from "../security/secret-fingerprints";
 import type { AppTransaction } from "../store";
 import { record, save, type S14Application } from "./application";
 import type { Effect, EffectAction } from "./authority-types";
-import type { CodingRun } from "./coding-types";
+import type { CodingJob, CodingRun } from "./coding-types";
 import type { OwnerActor } from "./types";
 import { canonical, digest, exact, identity, integer, text } from "./validation";
 import { codingCommit, codingGit, codingGitOutput, codingPath } from "./coding-protocol";
@@ -43,6 +43,32 @@ export class S14GitEffects {
     const scope = this.app.coding.scope(tx, { kind: "resource", id: action.repository.id, revision: action.repository.revision });
     if (!scope?.active || scope.snapshot.hash !== digest(canonical(action.repository))) throw new AppError("coding_resource_denied", 403);
     return connection;
+  }
+
+  /** Rechecks a captured preload connection at every read/import barrier; public reads never inherit a credential. */
+  assertPreload(tx: AppTransaction, attemptId: string, job: CodingJob): GitConnection | null {
+    this.app.authority.assertTool(tx, attemptId, "coding");
+    if (!job.connection) return null;
+    const connection = gitConnection(tx, job.connection.id);
+    const latest = tx.get<{ revision: number }>("SELECT max(revision) AS revision FROM lifecycle.git_connection_revisions WHERE connection_id=?", connection.id)?.revision;
+    if (connection.revision !== job.connection.revision || connection.revision !== latest || connection.removed || connection.secret !== "set" ||
+        connection.repositoryId !== job.repository.id || connection.kind !== "github_token") throw new AppError("connection_out_of_scope", 403);
+    return connection;
+  }
+
+  /** Releases a write-only credential only to the trusted preload broker, with an identity-only audit receipt. */
+  preloadSecret(attemptId: string, job: CodingJob): string | undefined {
+    return this.app.store.transaction(tx => {
+      const connection = this.assertPreload(tx, attemptId, job);
+      if (!connection) return undefined;
+      if (!this.options.vault) throw new AppError("connection_vault_not_configured", 503);
+      const key = tx.get<{ vault_id: string }>("SELECT vault_id FROM git_connections WHERE id=?", connection.id)?.vault_id;
+      if (!key) throw new AppError("connection_unavailable", 409);
+      const secret = this.options.vault.read(key);
+      registerSecretFingerprint(secret);
+      tx.run("INSERT INTO git_preload_releases(connection_id,attempt_id,revision,recorded_at) VALUES (?,?,?,?)", connection.id, attemptId, connection.revision, this.app.now());
+      return secret;
+    });
   }
 
   /** Applies write-only connection setup, exact proposal or read-back request under the ordinary owner transaction. */

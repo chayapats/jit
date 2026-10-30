@@ -4,6 +4,15 @@ import { containsCredential } from "../security/credentials";
 import { exact, integer, text } from "./validation";
 import type { CodingCheck } from "./coding-types";
 
+/** Registry scopes are exact DNS names from the existing registry design, never URLs, IPs or repository-provided hosts. */
+export function codingRegistry(value: unknown): asserts value is { hosts: string[] } | null {
+  if (value === null) return;
+  exact(value, ["hosts"]);
+  const registries = ["registry.npmjs.org", "pypi.org", "files.pythonhosted.org", "proxy.golang.org", "crates.io"];
+  if (!Array.isArray(value.hosts) || !value.hosts.length || value.hosts.length > registries.length ||
+      new Set(value.hosts).size !== value.hosts.length || value.hosts.some(host => !registries.includes(host))) throw new AppError("coding_registry_scope_invalid");
+}
+
 /** Full SHA-1 object identity supported by this version; abbreviated or alternate-format repositories refuse. */
 export function codingCommit(value: unknown): asserts value is string {
   if (typeof value !== "string" || !/^[a-f0-9]{40}$/.test(value) || /^0+$/.test(value)) throw new AppError("coding_commit_invalid");

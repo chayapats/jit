@@ -1,9 +1,12 @@
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, lstatSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Model } from "schway/host";
+import { createBoxBackend } from "../../src/exec/box-backend";
+import { AppError } from "../../src/errors";
+import type { ExecutionSpawnRequest, Model } from "schway/host";
 import type { BoxExecRequest, BoxExecResult } from "../../src/exec/box-runtime";
 import type { ComputerHandle } from "../../src/s14/computer-types";
+import type { CodingRepositoryFetch } from "../../src/s14/coding-types";
 import { FakeComputerRuntime } from "./s14-computer";
 
 /** Local generated-repository transport fixture; it proves protocol behavior, never container isolation. */
@@ -11,6 +14,18 @@ export class CodingRuntimeFixture extends FakeComputerRuntime {
   readonly root = realpathSync(mkdtempSync(join(tmpdir(), "s14-coding-box-")));
   readonly workspace = join(this.root, "workspace");
   escape: string | null = null;
+  registryRequests: { hosts: readonly string[]; command: string }[] = [];
+  registryUnavailable = false;
+  beforeRegistry: (() => Promise<void>) | null = null;
+  async registrySpawn(handle: ComputerHandle, request: ExecutionSpawnRequest, hosts: readonly string[], allowed: () => void) {
+    await this.beforeRegistry?.();
+    allowed();
+    if (this.registryUnavailable) throw new AppError("coding_registry_proxy_unavailable", 503);
+    this.registryRequests.push({ hosts: [...hosts], command: request.command });
+    return createBoxBackend({ exec: (_handle, input) => this.exec(handle, input, allowed) }, {
+      projectId: "fixture", name: "fixture", mode: "workspace", profile: false, workspaceRoot: "/workspace", temporaryDirectory: "/tmp",
+    }).spawn(request);
+  }
   beforeSpawn: ((command: string) => Promise<void>) | null = null;
   constructor() {
     super();
@@ -37,6 +52,15 @@ export class CodingRuntimeFixture extends FakeComputerRuntime {
     await this.git("config", "core.hooksPath", join(dir, ".git", "hooks"));
     return this.git("rev-parse", "HEAD");
   }
+  /** Smart-HTTP protocol fixture uses a real full pack, without a network call or host checkout. */
+  repositoryFetch: CodingRepositoryFetch = (async (_url: unknown, _options: unknown) => {
+    const proc = Bun.spawn(["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "pack-objects", "--stdout", "--all"], {
+      cwd: join(this.workspace, "repositories", "repo"), env: { PATH: process.env.PATH!, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" }, stdout: "pipe", stderr: "ignore",
+    });
+    const pack = new Uint8Array(await new Response(proc.stdout).arrayBuffer());
+    if (await proc.exited !== 0) throw new Error("fixture pack failed");
+    return new Response(Buffer.concat([Buffer.from("0008NAK\n"), pack]), { headers: { "content-type": "application/x-git-upload-pack-result" } });
+  });
   override async exec(handle: ComputerHandle, request: BoxExecRequest, allowed: () => void): Promise<BoxExecResult> {
     if (!this.handles.has(handle)) throw new Error("unbound handle");
     const p = JSON.parse(new TextDecoder().decode(request.input));
@@ -58,6 +82,9 @@ export class CodingRuntimeFixture extends FakeComputerRuntime {
     } else if (p.op === "read") {
       const bytes = readFileSync(this.local(p.path));
       result = { data: bytes.subarray(p.offset, p.offset + p.length).toString("base64"), eof: p.offset + p.length >= bytes.length };
+    } else if (p.op === "write") {
+      writeFileSync(this.local(p.path), Buffer.from(p.data, "base64"));
+      result = {};
     } else if (p.op === "spawn") {
       await this.beforeSpawn?.(p.command);
       allowed();

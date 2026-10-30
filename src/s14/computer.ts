@@ -368,7 +368,20 @@ export class S14Computers {
       this.touch(c);
       return result;
     } }, { projectId: c.id, name: `s14-${c.id}`, mode: "workspace", profile: false, workspaceRoot: "/workspace", temporaryDirectory: "/tmp" }, { redact: value => redactRegisteredSecrets(redactCredentials(value)) });
-    return { backend, lease, release: () => this.app.store.transaction(tx => {
+    return { backend, lease, registrySpawn: async (request, hosts, scopeAllowed) => {
+      const allowed = () => {
+        this.guard(c)();
+        this.app.store.read(tx => this.app.authority.assertTool(tx, attemptId, "coding"));
+        scopeAllowed();
+      };
+      allowed();
+      if (!this.options.runtime?.registrySpawn) throw new AppError("coding_registry_proxy_unavailable", 503);
+      this.app.authority.reserveTool(attemptId, "computer");
+      const result = await this.options.runtime.registrySpawn(handle, request, hosts, allowed);
+      allowed();
+      this.touch(c);
+      return result;
+    }, release: () => this.app.store.transaction(tx => {
       const current = leaseOf(tx, c.id);
       if (current.revision === lease.revision && current.attemptId === attemptId) { current.revision++; current.actor = null; current.attemptId = null; current.expiresAt = 0; saveLease(tx, current); }
     }) };

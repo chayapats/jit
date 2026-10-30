@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { S14Application } from "../src/s14/application";
@@ -65,7 +65,7 @@ async function fixture(afterStage?: GitOptions["afterStage"]) {
   const clock = { now: 1800000000000 };
   const policy = { routes: [{ id: "route", provider: "codex" as const, model: "scripted" }], tools: ["computer", "coding", "effect_push"], resources: ["repo", "other"] };
   const options = { policy, now: () => clock.now, chat: { async reply() { return { text: "No authority" }; } }, computers: { runtime },
-    coding: { model: codingScript(() => path) }, git: { vault, remote, ...(afterStage ? { afterStage } : {}) } };
+    coding: { repositoryFetch: runtime.repositoryFetch, model: codingScript(() => path) }, git: { vault, remote, ...(afterStage ? { afterStage } : {}) } };
   const app = new S14Application(store, options);
   await app.provisionOwner("git-fixture-owner-password");
   const token = await app.login("git-fixture-owner-password"), auth = app.authenticate(token);
@@ -136,6 +136,7 @@ test("late workspace changes after verification still refuse the approved push",
 
 test("box hook/config injection never reaches the authenticated mirror or process", async () => {
   const f = await fixture(), { effect } = f.propose();
+  mkdirSync(join(f.runtime.local(f.path), ".git", "hooks"));
   writeFileSync(join(f.runtime.local(f.path), ".git", "hooks", "pre-push"), `#!/bin/sh\ntouch '${f.runtime.root}/push-hook-ran'\n`, { mode: 0o755 });
   const config = join(f.runtime.local(f.path), ".git", "config");
   writeFileSync(config, readFileSync(config, "utf8") + '\n[credential]\n\thelper = !touch /tmp/evil-s14-hook\n');

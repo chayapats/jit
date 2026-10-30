@@ -7,7 +7,7 @@ import type { AppTransaction } from "../store";
 /** Fresh S14 SQLite format identity, distinct from every legacy user_version. */
 export const s14ApplicationId = 0x4a495431;
 /** Unreleased S14 schema version; unknown formats refuse before writable SQLite opens. */
-export const s14SchemaVersion = 14;
+export const s14SchemaVersion = 15;
 /** Safe next action for incompatible stores; no original bytes or sidecars are opened by SQLite. */
 export class FreshStateRequired extends AppError {
   readonly nextAction = "choose_a_separate_JIT_S14_DATABASE_keep_legacy_installation";
@@ -110,6 +110,7 @@ export class S14Store {
         CREATE TABLE audit (sequence INTEGER PRIMARY KEY, kind TEXT NOT NULL, request_id TEXT NOT NULL UNIQUE, committed_at INTEGER NOT NULL);
         CREATE TABLE git_connections (id TEXT PRIMARY KEY, record_json TEXT NOT NULL, vault_id TEXT);
         CREATE TABLE git_connection_releases (sequence INTEGER PRIMARY KEY, connection_id TEXT NOT NULL, effect_id TEXT NOT NULL, revision INTEGER NOT NULL, recorded_at INTEGER NOT NULL);
+        CREATE TABLE git_preload_releases (sequence INTEGER PRIMARY KEY, connection_id TEXT NOT NULL, attempt_id TEXT NOT NULL, revision INTEGER NOT NULL, recorded_at INTEGER NOT NULL);
         CREATE TABLE git_effects (effect_id TEXT PRIMARY KEY REFERENCES effects(id), intent_id TEXT UNIQUE NOT NULL, record_json TEXT NOT NULL);
         CREATE TABLE git_reconciliations (effect_id TEXT PRIMARY KEY REFERENCES effects(id), record_json TEXT NOT NULL);
         CREATE TRIGGER immutable_git_progress BEFORE UPDATE ON git_effects WHEN NEW.intent_id IS NOT OLD.intent_id OR json_extract(NEW.record_json,'$.actionHash') IS NOT json_extract(OLD.record_json,'$.actionHash') OR json_extract(NEW.record_json,'$.intentId') IS NOT json_extract(OLD.record_json,'$.intentId') BEGIN SELECT RAISE(ABORT,'immutable_git_progress'); END;
@@ -160,7 +161,7 @@ export class S14Store {
       }).immediate();
       const installationId = this.#tx.get<{ id: string }>("SELECT id FROM memory_identity")?.id;
       if (!installationId || installationId !== this.#tx.get<{ id: string }>("SELECT id FROM lifecycle.identity")?.id) throw new AppError("s14_lifecycle_ledger_conflict", 409);
-      // Fresh schema 14 combines result, memory, Parallel and computer tables; earlier unreleased stores refuse.
+      // Fresh schema 15 combines result, memory, Parallel and computer tables; earlier unreleased stores refuse.
       this.#db.transaction(() => {
         this.#db.exec(`
           CREATE TABLE IF NOT EXISTS bot_computers (id TEXT PRIMARY KEY, bot_id TEXT NOT NULL UNIQUE REFERENCES bots(id), record_json TEXT NOT NULL);

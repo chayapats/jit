@@ -1,0 +1,22 @@
+---
+status: accepted
+scope: CODE14-01/02 gap closure on PR 276; FR-06/07/08/14/17/35/36/42 and NFR-01/02/07/14
+---
+
+# Explicit registry scope and trusted repository preload
+
+The owner requires dependency installation and authenticated repository clone under the existing S14 authority/computer boundary. This record selects implementation details; S14 decisions and FR/NFR IDs remain unchanged. UI/UX remains the separately assigned Opus slice. Live Linux/GitHub evidence is pending.
+
+Repository grants normalize an omitted registry scope to null. An owner may select an exact subset of the existing registry hosts, captured visibly in the grant/job and hashed by the ordinary resource snapshot. Repository/model/retrieved content cannot select hosts or connection revisions. Revoking the repository withdraws all registry authority; it cannot be widened in place. Public preload is the default, and a start may explicitly select a current resource-scoped write-only GitHub connection.
+
+Ordinary workspace/browser/model/Phase A commands retain network=none. Each registry check gets one ephemeral rootless component with the Bot's bounded workspace only, existing hardening, a DNS-disabled internal bridge and no usable default route. Reuse registry-proxy.ts and ContainerRegistryProxy, adding only configurable internal network/container names for per-computer isolation. Only the mount-free proxy joins the egress bridge, with forwarding disabled. No host-gateway bind is assumed: rootless gateways live in a separate namespace (#163), so the container proxy runs there. The S14 local mount proof remains mandatory; remote Podman is still unavailable for this backend.
+
+Inspect/network/kernel/route verification and proxy readiness precede runner dispatch. Recheck live authority across waits; cancel/fence on withdrawal. Remove all descendants, proxy and bridge before certifying the check. Stop/boot clear named orphan resources; failed cleanup fences the runtime handle. The ephemeral check has the existing per-component ceilings, plus the proxy's 128 MiB/0.5 CPU/64 PID ceiling. Runner scratch grows from 16 to a bounded 128 MiB /run tmpfs so a maximum 16 MiB bundle plus JSON/base64 and decoded scratch fits. No service path, environment, credential, browser profile or control socket is added.
+
+The scope is a disclosure decision: allowlisted registries can carry workspace data out through package names/requests. CONNECT restricts host/443 and does not inspect TLS plaintext. This design does not claim content-level exfiltration prevention or exact-action approval for every package request. Arbitrary destinations and direct networking remain denied; credentials never enter install scripts.
+
+For repository preload the service sends one fixed smart-HTTP v0 request for the pinned commit to the exact GitHub HTTPS origin, with redirects disabled. Optional authentication exists only in its HTTP header. Accept only a bounded NAK + full pack response, identity encoding, valid transport checksum and strict objects. A fresh private bare repository with empty template/environment runs index-pack, cat-file, update-ref, fsck and bundle only. It never checks out source, invokes filters/hooks/helpers/textconv or runs submodule commands. No source Git config/remotes/alternates enter it. The complete pack and generated bundle each fit 16 MiB, under one 60-second deadline; unsupported protocol/history/LFS/submodule needs fail closed instead of widening fetch authority.
+
+Only the data bundle crosses the guarded runner. Clone and exact checkout occur in the box, with origin removed and no credential/config transfer. Existing broker Git is extended for bounded stdin and cancellation, with actual process settlement before deleting ephemeral objects. Schema 15 records identity-only preload credential releases separately from effect releases, and captures registry/connection fields in existing JSON records. Earlier unreleased stores refuse before writable open; no migration or erasure is implied.
+
+Protocol/fake-runtime fixtures establish scope denial, proxy/topology failure, revocation, cleanup fencing, credential absence, malicious hook/filter isolation, actual pack/object/bundle checks and byte/time limits. They establish neither Linux kernel isolation nor live GitHub protocol compatibility. Opt-in evidence steps are in the execution-box runbook; none ran in this change.

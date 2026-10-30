@@ -6,19 +6,23 @@ import { artifactHash } from "./artifacts";
 import type { GitAction } from "./coding-git-types";
 
 /** Runs data-only Git with an empty environment and fixed config, never a workspace command or repository hook. */
-export async function brokerGit(directory: string, args: string[], secret?: string): Promise<{ code: number; stdout: string }> {
+export async function brokerGit(directory: string, args: string[], secret?: string,
+  options: { input?: Uint8Array; signal?: AbortSignal } = {}): Promise<{ code: number; stdout: string }> {
   const askpass = join(directory, "askpass.sh");
   if (secret !== undefined) writeFileSync(askpass, '#!/bin/sh\ncase "$1" in *Username*) printf "%s\\n" x-access-token;; *) printf "%s\\n" "$JIT_GIT_EFFECT_TOKEN";; esac\n', { mode: 0o700 });
   const proc = Bun.spawn(["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "credential.helper=", "-c", "http.followRedirects=false", "-c", "protocol.allow=never", "-c", "transfer.fsckObjects=true", ...args], {
     cwd: directory, env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: directory, LANG: "C.UTF-8", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_SYSTEM: "/dev/null", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0",
-      ...(secret === undefined ? {} : { GIT_ASKPASS: askpass, JIT_GIT_EFFECT_TOKEN: secret }) }, stdout: "pipe", stderr: "ignore", timeout: 60000,
+      ...(secret === undefined ? {} : { GIT_ASKPASS: askpass, JIT_GIT_EFFECT_TOKEN: secret }) }, stdin: options.input ?? "ignore", stdout: "pipe", stderr: "ignore", timeout: 60000,
+    ...(options.signal ? { signal: options.signal } : {}),
   });
   let stdout = "", overflow = false;
-  for await (const chunk of proc.stdout) {
-    if (Buffer.byteLength(stdout) + chunk.length > 65536) { overflow = true; proc.kill(); break; }
-    stdout += new TextDecoder().decode(chunk);
-  }
-  const code = await proc.exited;
+  let code: number;
+  try {
+    for await (const chunk of proc.stdout) {
+      if (Buffer.byteLength(stdout) + chunk.length > 65536) { overflow = true; proc.kill(); break; }
+      stdout += new TextDecoder().decode(chunk);
+    }
+  } finally { code = await proc.exited; }
   if (overflow) throw new AppError("git_broker_output_bound", 409);
   return { code, stdout };
 }

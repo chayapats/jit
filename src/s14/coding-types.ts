@@ -2,7 +2,7 @@ import type { Model } from "schway/host";
 import type { StartPayload, Work, WorkGrant } from "./authority-types";
 import type { Envelope } from "./types";
 
-/** Owner-granted typed repository identity; its preloaded files exist only in the selected Bot computer. */
+/** Owner-granted typed repository identity; its checkout exists only in the selected Bot computer. */
 export interface CodingRepository {
   id: string;
   revision: number;
@@ -10,6 +10,7 @@ export interface CodingRepository {
   url: string;
   baseCommit: string;
   active: boolean;
+  registry: { hosts: string[] } | null;
 }
 /** Exact bounded command and declared network requirement; unsupported egress is refused before execution. */
 export interface CodingCheck {
@@ -24,9 +25,10 @@ export type CodingStartCommand = Envelope<"coding.start", {
   work: StartPayload;
   install: CodingCheck | null;
   tests: CodingCheck[];
+  connection?: { id: string; revision: number } | null;
 }>;
 /** Repository grants select an explicit configured resource slot without granting work or credentials. */
-export type CodingRepositoryCommand = Envelope<"coding.repository.grant", Omit<CodingRepository, "revision" | "active">> |
+export type CodingRepositoryCommand = Envelope<"coding.repository.grant", Omit<CodingRepository, "revision" | "active" | "registry"> & { registry?: CodingRepository["registry"] }> |
   Envelope<"coding.repository.revoke", { repositoryId: string }>;
 /** Authenticated coding commands use the common durable receipt boundary. */
 export type CodingCommand = CodingStartCommand | CodingRepositoryCommand;
@@ -46,6 +48,7 @@ export interface CodingJob {
   path: string;
   install: CodingCheck | null;
   tests: CodingCheck[];
+  connection: { id: string; revision: number } | null;
 }
 /** Actual command observations never derive success or coverage from model output. */
 export interface CodingCheckResult {
@@ -75,5 +78,11 @@ export interface CodingView {
   available: boolean;
   checks: { attemptId: string; ordinal: number; result: CodingCheckResult }[];
 }
+/** Trusted bounded repository HTTP transport; source content cannot replace it. */
+export type CodingRepositoryFetch = (url: string, options: RequestInit) => Promise<Response>;
 /** Deterministic model injection is service-owned and unavailable to HTTP or retrieved repository content. */
-export interface CodingOptions { model?: Model }
+export interface CodingOptions {
+  model?: Model;
+  /** Trusted HTTP fixture seam for the bounded repository broker, never owner/model input. */
+  repositoryFetch?: CodingRepositoryFetch;
+}

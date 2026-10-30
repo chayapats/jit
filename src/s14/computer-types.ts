@@ -1,4 +1,5 @@
-import type { ExecutionBackend } from "schway/host";
+import type { ExecutionSpawnRequest, ExecutionSpawnResult } from "schway/host";
+import type { BoxBackend } from "../exec/box-backend";
 import type { BoxExecRequest, BoxExecResult } from "../exec/box-runtime";
 import type { Envelope } from "./types";
 
@@ -66,10 +67,17 @@ export interface ComputerRuntime {
   stop(computer: BotComputer): Promise<void>;
   destroy(computer: BotComputer, allowed: () => void): Promise<void>;
   exec(handle: ComputerHandle, request: BoxExecRequest, allowed: () => void): Promise<BoxExecResult>;
+  /** Optional proxy-only one-command container; absence refuses registry use without changing the default computer network. */
+  registrySpawn?(handle: ComputerHandle, request: ExecutionSpawnRequest, hosts: readonly string[], allowed: () => void): Promise<ExecutionSpawnResult>;
   input(handle: ComputerHandle, input: OwnerInput | AgentInput, allowed: () => void): Promise<void>;
   screenshot(handle: ComputerHandle, allowed: () => void): Promise<Uint8Array>;
 }
 /** Trusted runtime configuration; neither HTTP nor model content can replace this port or its finite ceilings. */
 export interface ComputerOptions { runtime?: ComputerRuntime; limits?: ComputerLimits }
 /** Attempt-bound supported Schway backend with no host execution fallback. */
-export interface ComputerSession { backend: ExecutionBackend; lease: InputLease; release(): void }
+export interface ComputerSession {
+  backend: BoxBackend;
+  lease: InputLease;
+  registrySpawn(request: ExecutionSpawnRequest, hosts: readonly string[], allowed: () => void): Promise<ExecutionSpawnResult>;
+  release(): void;
+}

@@ -1,18 +1,21 @@
-import type { ExecutionBackend } from "schway/host";
 import { AppError } from "../errors";
 import type { AppTransaction } from "../store";
+import { redactRegisteredSecrets } from "../security/secret-fingerprints";
 import { containsCredential, redactCredentials } from "../security/credentials";
 import { record, type S14Application } from "./application";
 import type { Attempt, ScopePolicy, ScopeRef, WorkOutput } from "./authority-types";
 import { artifactHash } from "./artifacts";
 import { canonical, digest, exact, identity, text } from "./validation";
-import { codingCheck, codingCommit, codingGit, codingGitOutput, codingOrigin, codingPath, codingQuote } from "./coding-protocol";
+import { codingCheck, codingCommit, codingGit, codingGitOutput, codingOrigin, codingPath, codingQuote, codingRegistry } from "./coding-protocol";
+import { repositoryBundle } from "./coding-preload";
+import { gitConnection } from "./coding-connections";
 import { codingModel } from "./coding-model";
+import type { ComputerSession } from "./computer-types";
 import type { Bot, OwnerActor } from "./types";
 import type { CodingCheck, CodingCheckResult, CodingCommand, CodingJob, CodingOptions, CodingReceipt, CodingRepository, CodingRun, CodingView } from "./coding-types";
 
 const parse = <T>(row: { record_json: string } | null): T | null => row ? JSON.parse(row.record_json) as T : null;
-const clip = (value: string) => redactCredentials(value).slice(0, 2000);
+const clip = (value: string) => redactRegisteredSecrets(redactCredentials(value)).slice(0, 2000);
 
 /** Repository grants and real execution evidence stay inside the existing owner/Bot/work/computer barriers. */
 export class S14Coding {
@@ -32,7 +35,8 @@ export class S14Coding {
   apply(tx: AppTransaction, command: CodingCommand): CodingReceipt {
     if (command.kind === "coding.repository.grant") {
       const p = command.payload;
-      exact(p, ["id", "botId", "url", "baseCommit"]);
+      exact(p, ["id", "botId", "url", "baseCommit", ...(Object.hasOwn(p, "registry") ? ["registry"] : [])]);
+      codingRegistry(p.registry ?? null);
       identity(p.id);
       identity(p.botId);
       codingOrigin(p.url);
@@ -41,7 +45,7 @@ export class S14Coding {
       if (command.expectedRevision !== 0 || tx.get("SELECT 1 FROM coding_repositories WHERE id=?", p.id)) throw new AppError("stale_revision", 409);
       if (!bot.enabled || !this.app.policy.resources.includes(p.id) || !bot.capabilities.resources.includes(p.id) ||
           tx.get("SELECT 1 FROM snapshot_shares WHERE id=?", p.id) || tx.get("SELECT 1 FROM memory_shares WHERE id=?", p.id)) throw new AppError("coding_resource_denied", 403);
-      const repository: CodingRepository = { ...structuredClone(p), revision: 1, active: true };
+      const repository: CodingRepository = { ...structuredClone(p), registry: structuredClone(p.registry ?? null), revision: 1, active: true };
       tx.run("INSERT INTO coding_repositories VALUES (?,?)", repository.id, canonical(repository));
       return { kind: command.kind, requestId: command.requestId, repository };
     }
@@ -57,7 +61,7 @@ export class S14Coding {
     }
     if (command.kind !== "coding.start") throw new AppError("unknown_command");
     const p = command.payload;
-    exact(p, ["repository", "work", "install", "tests"]);
+    exact(p, ["repository", "work", "install", "tests", ...(Object.hasOwn(p, "connection") ? ["connection"] : [])]);
     exact(p.repository, ["id", "revision"]);
     const repository = this.repository(tx, p.repository.id);
     if (!repository.active || repository.revision !== p.repository.revision || !this.scope(tx, { kind: "resource", ...p.repository })?.active) throw new AppError("coding_resource_denied", 403);
@@ -68,9 +72,14 @@ export class S14Coding {
     if (p.install !== null) codingCheck(p.install);
     if (!Array.isArray(p.tests) || p.tests.length > 8) throw new AppError("coding_tests_invalid");
     p.tests.forEach(codingCheck);
+    if (p.connection != null) {
+      exact(p.connection, ["id", "revision"]);
+      const connection = gitConnection(tx, p.connection.id);
+      if (connection.repositoryId !== repository.id || connection.revision !== p.connection.revision || connection.removed || connection.secret !== "set") throw new AppError("connection_out_of_scope", 403);
+    }
     const receipt = this.app.authority.apply(tx, { kind: "work.start", requestId: command.requestId, expectedRevision: command.expectedRevision, payload: p.work });
     const job: CodingJob = { workId: receipt.work!.id, repository, branch: `jit/${receipt.work!.id}`,
-      path: `/workspace/coding/${receipt.work!.id}`, install: structuredClone(p.install), tests: structuredClone(p.tests) };
+      path: `/workspace/coding/${receipt.work!.id}`, install: structuredClone(p.install), tests: structuredClone(p.tests), connection: structuredClone(p.connection ?? null) };
     tx.run("INSERT INTO coding_jobs VALUES (?,?)", job.workId, canonical(job));
     return { kind: command.kind, requestId: command.requestId, work: receipt.work!, grant: receipt.grant! };
   }
@@ -140,27 +149,52 @@ export class S14Coding {
     tx.run("DELETE FROM coding_jobs WHERE work_id IN (SELECT work_id FROM work_payload_deletions)");
   }
 
-  private async performCheck(backend: ExecutionBackend, command: CodingCheck, path: string, signal: AbortSignal): Promise<CodingCheckResult> {
-    if (command.network !== "none") return { command, state: "skipped", exitCode: null, timedOut: false, reason: "coding_egress_scope_unavailable", stdout: "", stderr: "" };
+  private async performCheck(attemptId: string, session: ComputerSession, command: CodingCheck, job: CodingJob, signal: AbortSignal): Promise<CodingCheckResult> {
+    if (command.network === "registry" && !job.repository.registry) return { command, state: "skipped", exitCode: null, timedOut: false, reason: "coding_registry_scope_required", stdout: "", stderr: "" };
     try {
-      const result = await backend.spawn({ cwd: path,
-        command: ["env", "-i", "PATH=/usr/local/bin:/usr/bin:/bin", "HOME=/tmp", "LANG=C.UTF-8", ...command.argv].map(codingQuote).join(" "), timeoutMs: command.timeoutMs, signal });
+      const request = { cwd: job.path, command: (command.network === "registry" ? command.argv :
+        ["env", "-i", "PATH=/usr/local/bin:/usr/bin:/bin", "HOME=/tmp", "LANG=C.UTF-8", ...command.argv]).map(codingQuote).join(" "), timeoutMs: command.timeoutMs, signal };
+      const allowed = () => { this.app.store.read(tx => this.app.authority.assertTool(tx, attemptId, "coding")); };
+      const result = command.network === "registry" ? await session.registrySpawn(request, job.repository.registry!.hosts, allowed) : await session.backend.spawn(request);
       return { command, state: result.exitCode === 0 && !result.timedOut ? "passed" : "failed", exitCode: result.exitCode,
         timedOut: result.timedOut, reason: result.timedOut ? "coding_check_timeout" : result.exitCode === 0 ? null : "coding_check_failed", stdout: clip(result.stdout), stderr: clip(result.stderr) };
-    } catch {
-      return { command, state: "unknown", exitCode: null, timedOut: false, reason: "coding_check_interrupted", stdout: "", stderr: "" };
+    } catch (error) {
+      return { command, state: "unknown", exitCode: null, timedOut: false, reason: error instanceof AppError ? error.code : "coding_check_interrupted", stdout: "", stderr: "" };
     }
   }
 
-  private async check(attemptId: string, ordinal: number, backend: ExecutionBackend, command: CodingCheck, path: string, signal: AbortSignal): Promise<CodingCheckResult> {
+  private async check(attemptId: string, ordinal: number, session: ComputerSession, command: CodingCheck, job: CodingJob, signal: AbortSignal): Promise<CodingCheckResult> {
     const pending: CodingCheckResult = { command, state: "unknown", exitCode: null, timedOut: false, reason: "coding_check_dispatch_unconfirmed", stdout: "", stderr: "" };
     this.app.store.transaction(tx => {
       this.app.authority.assertTool(tx, attemptId, "coding");
       tx.run("INSERT INTO coding_checks VALUES (?,?,?)", attemptId, ordinal, canonical(pending));
     });
-    const result = await this.performCheck(backend, command, path, signal);
+    const result = await this.performCheck(attemptId, session, command, job, signal);
     this.app.store.transaction(tx => tx.run("UPDATE coding_checks SET record_json=? WHERE attempt_id=? AND ordinal=?", canonical(result), attemptId, ordinal));
     return result;
+  }
+
+  private async preload(session: ComputerSession, attemptId: string, job: CodingJob, signal: AbortSignal): Promise<void> {
+    const backend = session.backend;
+    const allowed = () => { this.app.store.read(tx => this.app.git.assertPreload(tx, attemptId, job)); };
+    const secret = this.app.git.preloadSecret(attemptId, job);
+    const bundle = await repositoryBundle(job.repository, secret, signal, allowed, this.options.repositoryFetch);
+    allowed();
+    const file = `/workspace/.jit-preload-${job.workId}.bundle`;
+    await backend.writeFileAtomically(file, bundle);
+    try {
+      codingGitOutput(await backend.spawn({ cwd: "/workspace", command: "mkdir -p -- /workspace/coding", signal, timeoutMs: 10000 }));
+      if (await backend.realpath("/workspace/coding") !== "/workspace/coding") throw new AppError("coding_path_refused", 403);
+      allowed();
+      codingGitOutput(await codingGit(backend, "/workspace", ["-c", "protocol.file.allow=always", "clone", "--template=", "--no-local", "--no-hardlinks", "--no-checkout", "--", file, job.path], signal));
+      await codingPath(backend, job.path);
+      codingGitOutput(await codingGit(backend, job.path, ["remote", "remove", "origin"], signal));
+      if (codingGitOutput(await codingGit(backend, job.path, ["rev-parse", "--verify", `${job.repository.baseCommit}^{commit}`], signal)).trim() !== job.repository.baseCommit) throw new AppError("coding_base_changed", 409);
+      allowed();
+      codingGitOutput(await codingGit(backend, job.path, ["checkout", "--no-track", "-b", job.branch, job.repository.baseCommit, "--"], signal));
+    } finally {
+      codingGitOutput(await backend.spawn({ cwd: "/workspace", command: `rm -f -- ${codingQuote(file)}`, timeoutMs: 10000 }));
+    }
   }
 
   /** Executes edits, installs and tests only inside the Bot computer and stages actual immutable diff/check artifacts. */
@@ -181,18 +215,9 @@ export class S14Coding {
       await this.app.computers.prepare(attempt.id);
       session = this.app.computers.open(attempt.id);
       const backend = session.backend;
-      const source = `/workspace/repositories/${job.repository.id}`;
-      await codingPath(backend, source);
-      if (codingGitOutput(await codingGit(backend, source, ["rev-parse", "--verify", `${job.repository.baseCommit}^{commit}`], signal)).trim() !== job.repository.baseCommit) throw new AppError("coding_base_changed", 409);
-      // --no-local avoids source object hardlinks/alternates; all source configuration stays inside the box.
-      const mkdir = await backend.spawn({ cwd: "/workspace", command: "mkdir -p -- /workspace/coding", signal, timeoutMs: 10000 });
-      codingGitOutput(mkdir);
-      if (await backend.realpath("/workspace/coding") !== "/workspace/coding") throw new AppError("coding_path_refused", 403);
-      codingGitOutput(await codingGit(backend, "/workspace", ["-c", "protocol.file.allow=always", "clone", "--no-local", "--no-hardlinks", "--no-checkout", "--", source, job.path], signal));
-      await codingPath(backend, job.path);
-      codingGitOutput(await codingGit(backend, job.path, ["checkout", "--no-track", "-b", job.branch, job.repository.baseCommit, "--"], signal));
+      await this.preload(session, attempt.id, job, signal);
       const checks: CodingCheckResult[] = [];
-      if (job.install) checks.push(await this.check(attempt.id, checks.length, backend, job.install, job.path, signal));
+      if (job.install) checks.push(await this.check(attempt.id, checks.length, session, job.install, job, signal));
       const installOk = !job.install || checks[0]!.state === "passed";
       if (installOk) await codingModel(this.app, directory, attempt, backend, job.path, signal, this.options.model);
       if (signal.aborted) throw new AppError("coding_cancelled");
@@ -201,7 +226,7 @@ export class S14Coding {
       codingGitOutput(await codingGit(backend, job.path, ["-c", "user.name=Jit Bot", "-c", "user.email=bot@invalid", "commit", "--allow-empty", "--no-verify", "-m", `Coding work ${job.workId}`], signal));
       run.headCommit = codingGitOutput(await codingGit(backend, job.path, ["rev-parse", "HEAD"], signal)).trim();
       codingCommit(run.headCommit);
-      for (const command of job.tests) checks.push(installOk ? await this.check(attempt.id, checks.length, backend, command, job.path, signal)
+      for (const command of job.tests) checks.push(installOk ? await this.check(attempt.id, checks.length, session, command, job, signal)
         : { command, state: "skipped", exitCode: null, timedOut: false, reason: "coding_install_incomplete", stdout: "", stderr: "" });
       if (signal.aborted) throw new AppError("coding_cancelled");
       const currentHead = codingGitOutput(await codingGit(backend, job.path, ["rev-parse", "HEAD"], signal)).trim();
