@@ -120,4 +120,6 @@ Project, Project group, Topic promotion and General system project describe the 
 
 ## Development policy
 
+The opt-in S14 foundation (`--s14`, `src/s14/`) has its own versioned store at `.local/s14/application.sqlite` by default; the default runtime still uses the legacy Project model. `app.bots/v1` and `app.conversations/v2` define project-free setup, persistent Bot proposals and bounded tool-free chat. Typed authenticated commands and durable receipts are the authority boundary. See `docs/contracts/app.bots-v1.md`, `docs/contracts/app.conversations-v2.md` and ADR 0049; later S14 lifecycle/recovery/backup slices remain unimplemented.
+
 Use Bun/TypeScript and supported schway/host exports. Keep domain definitions here and engineering choices in docs/adr. The owner disabled implement-parallel for this repository. UI/UX is delegated only to Claude Opus 5.5 at high effort; primary-agent work is architecture, logic and code.
