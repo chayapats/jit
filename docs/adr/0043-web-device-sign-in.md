@@ -23,7 +23,7 @@ billing authority.
   APIs. Production supplies no store/fetch overrides: Schway uses the service
   process identity's native secure store (Secret Service on Linux). The fixture
   profile does not read a real store while rendering readiness.
-- The initial POST returns code/link once in a no-store, no-referrer response.
+- The initial POST returns code/link once in a no-store response with `Referrer-Policy: same-origin`. That policy sends no referrer to the provider's link, and it still lets the page's cancel form post a real `Origin`. Under no-referrer, browsers post `Origin: null` (amended 2026-10-30, #222).
   The host handle remains private to the manager until settlement; no Jit read
   model retains its approval fields. GET, receipt replay, logs, model inputs and
   exports never receive them. Only `{ id, expiresAt, state }` enters existing

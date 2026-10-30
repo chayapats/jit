@@ -250,7 +250,9 @@ test("no-JS Web sign-in, status, replay and cancel use session, Origin, CSRF and
   expect((await f.post("/setup/sign-in", fields, { origin: "https://evil.test" })).status).toBe(403);
   expect((await f.post("/setup/sign-in", { ...fields, surprise: "value" })).status).toBe(400);
   const response = await f.post("/setup/sign-in", fields), page = await response.text();
-  expect(response.status).toBe(200); expect(response.headers.get("referrer-policy")).toBe("no-referrer"); expect(response.headers.get("cache-control")).toContain("no-store");
+  // The page holds the cancel form; under no-referrer a real browser would post it with `Origin: null` and be rejected.
+  expect(response.status).toBe(200); expect(response.headers.get("referrer-policy")).toBe("same-origin"); expect(response.headers.get("cache-control")).toContain("no-store");
+  expect((await f.post("/setup/sign-in", { ...fields, requestId: crypto.randomUUID() }, { origin: "null" })).status).toBe(403);
   expect(page).toContain(code); expect(page).toContain(link); expect(page).toContain("data-status-url");
   const path = /data-status-page="([^"]+)"/.exec(page)![1]!.replaceAll("&amp;", "&");
   expect(await (await f.get(path)).text()).not.toContain(code);

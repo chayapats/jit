@@ -99,8 +99,9 @@ Owner existence fences concurrent/replayed links even if file cleanup fails.
 
 A first GET clears the token-bearing URL into an HttpOnly setup cookie and
 redirects to a clean form. A separate derived CSRF proof and the existing
-Origin/Host rules protect password submission. no-referrer/no-store cover all
-bootstrap responses. The setup token is distinct from owner session authority;
+Origin/Host rules protect password submission. no-store covers all bootstrap
+responses; no-referrer covers the link redirect and error pages, and the clean
+form page uses same-origin (2026-10-30 amendment below). The setup token is distinct from owner session authority;
 only completed owner creation followed by normal login issues a session.
 No password is entered/stored in the terminal. SIGN01 owns the later account
 login. VM/Pi acceptance remains opt-in owner evidence and is not run by this slice.
@@ -136,3 +137,9 @@ link before reading its direct, fully protected target, and requires that
 target to equal the running release. Arbitrary aliases, symlinked targets,
 mutable/foreign ancestors, dependencies and configuration remain refused.
 The original invocation still comes from `/proc/self/cmdline` before imports.
+
+## Amendment 2026-10-30 (EVID01 #222)
+
+A fresh-VM run showed that browsers post a form from a `Referrer-Policy: no-referrer` page with `Origin: null`. The Origin rule rejected every owner-setup submission, so no real browser could create the owner. The clean `/owner/setup` form page now uses `same-origin`, which still sends no referrer to any other origin. The token-bearing link's redirect and the error pages keep `no-referrer`. The Origin rule is unchanged, and `Origin: null` stays rejected.
+
+The same run found that the installer wrote `/etc/subuid` and `/etc/subgid` as 0600 under `install.sh`'s umask 077, which broke rootless Podman for every user on the host. The write helper now sets modes explicitly. A re-run restarts the service identity's Podman pause process when it is stuck in a one-ID namespace.
