@@ -10,6 +10,10 @@ export const opsRoot = (path: string): string => `${path}.ops`;
 export function assertS14OpsUnfenced(path: string): void {
   if (lstatSync(join(opsRoot(path), "fence.json"), { throwIfNoEntry: false })) throw new AppError("s14_ops_reconciliation_required", 503);
 }
+/** Capture permits authenticated reads/progress but excludes every other managed writer and new store instance. */
+export function assertS14BackupUnfenced(path: string): void {
+  if (lstatSync(join(opsRoot(path), "capture.json"), { throwIfNoEntry: false })) throw new AppError("s14_backup_in_progress", 409);
+}
 /** Reads bounded non-secret maintenance metadata without opening an image or starting any worker. */
 export function readS14Ops(path: string): OpsControl {
   const file = join(opsRoot(path), "control.json");

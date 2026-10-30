@@ -1,3 +1,5 @@
+import { reconcileOnlineBackups } from "./backups";
+import { existingResourceCeilings } from "./scope-options";
 import { Database } from "bun:sqlite";
 import { existsSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -10,11 +12,12 @@ import { canonical, digest, exact, identity, integer } from "./validation";
 import type { OwnerActor } from "./types";
 import type { NativeIntent } from "./recovery-types";
 import { opsAtomic, opsDirectory, opsPath, opsRead, opsRename, opsSyncDirectory, opsWrite } from "./ops-files";
-import { credentialFreeImage, imageArtifacts, inspectOpsImage, opsHash, opsLedger, opsSchema, opsLiveHash, opsManagedHash, opsLedgerPosition, verifyOpsLedgerPosition } from "./ops-image";
+import { imageArtifacts, inspectOpsImage, opsHash, opsLedger, opsSchema, opsLiveHash, opsManagedHash, verifyOpsLedgerPosition } from "./ops-image";
 import { nativeSessionDirectory, opsRoot, readS14Ops } from "./ops-state";
 import { managedBackupContract, opsLimits, restoreActivationContract, type ManagedBackupManifest, type OpsCommand, type OpsControl, type OpsNativePort, type OpsReceipt, type OpsStage } from "./ops-types";
 import { validateOpsSnapshot } from "./ops-native";
-import { reconcileOpsImage } from "./ops-reconcile";
+import { assertS14BackupQuiescent, captureS14Backup } from "./ops-capture";
+import { reconcileOpsComputers, reconcileOpsImage } from "./ops-reconcile";
 
 /** Deterministic crash boundaries; production maintenance supplies no injection hook. */
 export type OpsFault = "image_captured" | "native_captured" | "manifest_committed" | "candidate_imported" | "candidate_reconciled" | "activation_intent" | "application_renamed" | "native_pointer_written";
@@ -25,10 +28,11 @@ export class S14Maintenance {
   readonly control: OpsControl;
   store: S14Store;
   app: S14Application;
+  readonly options: S14Options;
   #release: () => void;
   #closed = false;
   #busy = false;
-  constructor(readonly path: string, readonly options: S14Options, readonly native: OpsNativePort, readonly fault?: (point: OpsFault) => void) {
+  constructor(readonly path: string, options: S14Options, readonly native: OpsNativePort, readonly fault?: (point: OpsFault) => void) {
     opsPath(path);
     if (inspectS14Store(path) !== "s14") throw new AppError("s14_ops_existing_store_required", 409);
     opsPath(`${path}.lifecycle.sqlite`);
@@ -39,11 +43,13 @@ export class S14Maintenance {
     this.#release = acquireS14RuntimeLock(path);
     let opened: S14Store | undefined;
     try {
+      reconcileOnlineBackups(path);
       this.control = readS14Ops(path);
       opened = new S14Store(path, {});
       this.store = opened;
       this.store.read(opsLedger);
-      this.app = new S14Application(this.store, options);
+      this.options = { ...options, policy: { ...options.policy, resources: [...new Set([...this.store.read(existingResourceCeilings), ...options.policy.resources])] } };
+      this.app = new S14Application(this.store, this.options);
     } catch (error) { opened?.close(); this.#release(); throw error; }
   }
   /** Releases only the process lock; unfinished operations deliberately retain their durable boot fence. */
@@ -110,20 +116,7 @@ export class S14Maintenance {
     }
     return opsHash(JSON.stringify(entries));
   }
-  private preflight(): void {
-    this.nativeSupported();
-    this.store.read(tx => {
-      opsLedger(tx);
-      if (tx.get<{ journal_mode: string }>("PRAGMA main.journal_mode")?.journal_mode !== "delete" ||
-          tx.get<{ journal_mode: string }>("PRAGMA lifecycle.journal_mode")?.journal_mode !== "delete") throw new AppError("s14_ops_journal_mode_unsupported", 409);
-      if (tx.get("SELECT 1 FROM attempt_transports WHERE active=1") || tx.get("SELECT 1 FROM reply_transports WHERE active=1") ||
-          tx.get("SELECT 1 FROM work_attempts WHERE json_extract(record_json,'$.state') IN ('running','interrupted')") ||
-          tx.get("SELECT 1 FROM reply_outbox WHERE json_extract(record_json,'$.state')='running'") ||
-          tx.get("SELECT 1 FROM effects WHERE json_extract(record_json,'$.state')='executing'") ||
-          tx.get("SELECT 1 FROM bot_computers WHERE json_extract(record_json,'$.state') NOT IN ('stopped','deleted')")) throw new AppError("s14_ops_quiesce_required", 409);
-    });
-  }
-  private component(name: string, bytes: Uint8Array) { return { name, size: bytes.length, sha256: opsHash(bytes) }; }
+  private preflight(): void { assertS14BackupQuiescent(this.store, this.native); }
   private verifyFile(directory: string, component: ManagedBackupManifest["image"]): Buffer {
     exact(component, ["name", "size", "sha256"]);
     if (!/^(application\.sqlite|native-[0-9]{1,4}\.json)$/.test(component.name)) throw new AppError("s14_ops_component_path", 409);
@@ -160,42 +153,8 @@ export class S14Maintenance {
     return value;
   }
   private async capture(id: string): Promise<ManagedBackupManifest> {
-    this.preflight();
     if (this.control.backups.length >= opsLimits.backups) throw new AppError("s14_ops_retention_full", 409);
-    const image = credentialFreeImage(this.store), ledger = this.store.read(opsLedger);
-    const intents = this.intents();
-    if (intents.length > opsLimits.native) throw new AppError("s14_ops_native_bound", 409);
-    this.fault?.("image_captured");
-    const components: { intentId: string; bytes: Uint8Array }[] = [];
-    let size = image.length;
-    for (const intent of intents) {
-      if (["deleted", "not_created"].includes(intent.state)) continue;
-      if (intent.state !== "retired" || !intent.reference) throw new AppError("s14_ops_native_unsettled", 409);
-      const host = await this.native.open(intent);
-      try {
-        const snapshot = await host.snapshotSessions([intent.reference]);
-        validateOpsSnapshot(host, snapshot, intent);
-        if (!snapshot.sessions.every(session => session.retired)) throw new AppError("s14_ops_native_unsettled", 409);
-        const bytes = Buffer.from(JSON.stringify(snapshot));
-        size += bytes.length;
-        if (size > opsLimits.bytes) throw new AppError("s14_ops_backup_too_large", 409);
-        components.push({ intentId: intent.id, bytes });
-      } finally { await host.close(); }
-    }
-    this.fault?.("native_captured");
-    if (ledger !== this.store.read(opsLedger)) throw new AppError("s14_ops_ledger_changed", 409);
-    const manifest: ManagedBackupManifest = { contract: managedBackupContract, format: "jit.s14/v1", schema: s14SchemaVersion, build: "jit/0.1.0", id,
-      installationId: this.store.read(tx => tx.get<{ id: string }>("SELECT id FROM memory_identity")!.id), createdAt: this.app.now(), state: "complete", ledger, ledgerPosition: opsLedgerPosition(this.store),
-      nativeContract: "schway.host.session-snapshot/v1", nativeFormat: SNAPSHOT_NATIVE_FORMAT_VERSION, credentials: "excluded_reconnect_required",
-      image: this.component("application.sqlite", image), native: components.map((entry, index) => ({ intentId: entry.intentId, component: this.component(`native-${index}.json`, entry.bytes) })), artifacts: imageArtifacts(this.store) };
-    const encodedManifest = JSON.stringify(manifest);
-    if (Buffer.byteLength(encodedManifest) > opsLimits.journalBytes) throw new AppError("s14_ops_manifest_bound", 409);
-    const directory = this.archiveDirectory(id);
-    opsDirectory(directory);
-    opsWrite(join(directory, "application.sqlite"), image);
-    for (const [index, entry] of components.entries()) opsWrite(join(directory, `native-${index}.json`), entry.bytes);
-    opsWrite(join(directory, "manifest.json"), encodedManifest);
-    this.fault?.("manifest_committed");
+    const manifest = await captureS14Backup(this.app, this.native, id, this.fault ? { fault: this.fault } : {});
     this.control.backups.push(id);
     this.persist();
     return manifest;
@@ -312,6 +271,7 @@ export class S14Maintenance {
         const generation = this.store.read(live => live.get<{ generation: number }>("SELECT generation FROM owner")!.generation);
         tx.run("UPDATE owner SET generation=?", generation);
       });
+      reconcileOpsComputers(this.store, candidate);
       const candidateApp = new S14Application(candidate, this.options);
       const intents = this.intents(candidate);
       const wanted = intents.filter(intent => !["deleted", "not_created"].includes(intent.state));

@@ -2,6 +2,37 @@ import { S14Application, record, save } from "./application";
 import type { Effect, Work } from "./authority-types";
 import type { Routine } from "./routine-types";
 import { canonical } from "./validation";
+import { AppError } from "../errors";
+import type { S14Store } from "./store";
+import type { BotComputer } from "./computer-types";
+import type { AppTransaction } from "../store";
+
+function resetComputerLeases(tx: AppTransaction): void {
+  tx.run("DELETE FROM input_leases");
+  for (const row of tx.all<{ id: string; record_json: string }>("SELECT id,record_json FROM bot_computers")) {
+    const computer = JSON.parse(row.record_json) as BotComputer;
+    tx.run("INSERT INTO input_leases VALUES (?,?)", row.id, canonical({ computerId: row.id, generation: computer.generation, revision: 0, actor: null, attemptId: null, expiresAt: 0 }));
+  }
+}
+
+/** Keeps later destructive computer generations/volume identities installation-local; old images cannot recreate them. */
+export function reconcileOpsComputers(live: S14Store, candidate: S14Store): void {
+  candidate.transaction(tx => {
+    for (const row of tx.all<{ id: string; record_json: string }>("SELECT id,record_json FROM bot_computers")) {
+      const archived = JSON.parse(row.record_json) as BotComputer;
+      const withdrawals = tx.all<{ mode: string }>("SELECT mode FROM lifecycle.withdrawals WHERE kind='computer' AND id=?", row.id);
+      const generations = withdrawals.map(entry => Number(/^through_generation_([0-9]+)$/.exec(entry.mode)?.[1]));
+      if (generations.some(value => !Number.isSafeInteger(value) || value < 0)) throw new AppError("s14_lifecycle_ledger_conflict", 409);
+      const withdrawn = Math.max(-1, ...generations);
+      if (archived.generation > withdrawn) continue;
+      const current = live.read(l => l.get<{ bot_id: string; record_json: string }>("SELECT bot_id,record_json FROM bot_computers WHERE id=?", row.id));
+      const computer = current ? JSON.parse(current.record_json) as BotComputer : null;
+      if (!computer || current!.bot_id !== archived.botId || computer.generation <= withdrawn || !["stopped", "deleted"].includes(computer.state)) throw new AppError("s14_ops_computer_cleanup_evidence_required", 409);
+      tx.run("UPDATE bot_computers SET record_json=? WHERE id=?", canonical(computer), row.id);
+    }
+    resetComputerLeases(tx); // Fresh empty records satisfy the computer contract; no archived lease is restored.
+  });
+}
 
 /** Applies current lifecycle facts and fences every stale execution or delivery authority before native reconciliation. */
 export function reconcileOpsImage(app: S14Application): void {
@@ -13,7 +44,7 @@ export function reconcileOpsImage(app: S14Application): void {
     app.recovery.reconcileEffects(tx);
     tx.run("UPDATE grant_state SET generation=generation+1,revoked=1 WHERE revoked=0");
     tx.run("UPDATE work_queue SET state='blocked'");
-    tx.run("DELETE FROM input_leases");
+    resetComputerLeases(tx);
     tx.run("DELETE FROM artifact_staging");
     tx.run(`UPDATE capability_proposals SET record_json=json_set(record_json,'$.state','superseded') WHERE json_extract(record_json,'$.state')='proposed'`);
     for (const row of tx.all<{ id: string }>("SELECT id FROM work_items")) {

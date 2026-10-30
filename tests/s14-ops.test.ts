@@ -1,11 +1,14 @@
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { existsSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createHost, hostCapabilities, SNAPSHOT_NATIVE_FORMAT_VERSION, type HostSessionSnapshot } from "schway/host";
 import { domainFixture, retryId, routineCommand, secondBot, workCommand, type DomainFixture } from "./fixtures/s14-domain";
+import { reconcileOnlineBackups } from "../src/s14/backups";
+import { FakeComputerRuntime, barrier } from "./fixtures/s14-computer";
+import { createS14Handler } from "../src/s14/web";
 import { S14Maintenance, type OpsFault } from "../src/s14/ops";
-import { opsHash, opsLedger } from "../src/s14/ops-image";
+import { opsHash, opsLedger, credentialFreeImage, opsMainTables, opsLedgerTables, assertOpsTableClassification } from "../src/s14/ops-image";
 import { opsRoot } from "../src/s14/ops-state";
 import { inspectS14Store, S14Store } from "../src/s14/store";
 import { S14Application } from "../src/s14/application";
@@ -19,7 +22,7 @@ import type { Bot } from "../src/s14/types";
 
 const fixtures: DomainFixture[] = [], maintenance: S14Maintenance[] = [];
 afterEach(() => { for (const m of maintenance.splice(0)) m.close(); for (const f of fixtures.splice(0)) f.dispose(); });
-async function fixture() { const f = await domainFixture(); fixtures.push(f); return f; }
+async function fixture(options: Parameters<typeof domainFixture>[0] = {}) { const f = await domainFixture(options); fixtures.push(f); return f; }
 function fakeNative() {
   const snapshots = new Map<string, HostSessionSnapshot>();
   const stores = new Map<string, Map<string, HostSessionSnapshot>>();
@@ -84,7 +87,7 @@ test("credential-free backup commits a consistent bounded manifest, state and op
   await expect(m.execute(actor, { ...c, payload: { forbidden: true } } as never)).rejects.toThrow("invalid_shape");
   const directory = archive(f, result.backupId!);
   const manifest = JSON.parse(readFileSync(join(directory, "manifest.json"), "utf8")) as ManagedBackupManifest;
-  expect(manifest).toMatchObject({ contract: "app.managed-backup/v1", state: "complete", schema: 12, credentials: "excluded_reconnect_required" });
+  expect(manifest).toMatchObject({ contract: "app.managed-backup/v1", state: "complete", schema: 14, credentials: "excluded_reconnect_required" });
   expect(manifest.native).toHaveLength(1);
   const db = Database.deserialize(readFileSync(join(directory, "application.sqlite")));
   expect(db.query("SELECT password_hash FROM owner").get()).toEqual({ password_hash: "[reconnect]" });
@@ -202,9 +205,9 @@ test.each(["activation_intent", "application_renamed", "native_pointer_written"]
 
 test("supported current-schema upgrade has a recovery point and rollback discards only the candidate", async () => {
   const f = await fixture(), { m, actor } = open(f), before = readFileSync(f.path);
-  await expect(m.execute(actor, command(m, "upgrade.prepare", { targetSchema: 13 }))).rejects.toThrow("s14_ops_version_unsupported");
+  await expect(m.execute(actor, command(m, "upgrade.prepare", { targetSchema: 15 }))).rejects.toThrow("s14_ops_version_unsupported");
   expect(readFileSync(f.path)).toEqual(before);
-  const staged = await m.execute(actor, command(m, "upgrade.prepare", { targetSchema: 12 }));
+  const staged = await m.execute(actor, command(m, "upgrade.prepare", { targetSchema: 14 }));
   expect(staged.state).toBe("validated");
   expect(m.control.backups).toContain(staged.stage!.recoveryBackupId);
   const discard = await m.execute(actor, command(m, "upgrade.rollback", { stageId: staged.stage!.id }));
@@ -278,10 +281,19 @@ test.each(["image_captured", "native_captured", "manifest_committed"] as const)(
   expect(existsSync(join(opsRoot(f.path), "fence.json"))).toBe(false);
 });
 
-test("revoked snapshot shares and deleted Bots stay unavailable after restoring their older image", async () => {
+test.each(["source", "artifact"] as const)("revoked %s snapshot shares and deleted Bots stay unavailable after restoring their older image", async kind => {
   const f = await fixture(), receiver = await secondBot(f);
   const source = f.store.transaction(tx => f.app.memory.source(tx, { id: retryId(), botId: "jit", conversationId: f.conversationId, attribution: "owner", text: "Share only this immutable evidence", derived: [] }));
-  const share = f.app.execute(f.auth.actor, { kind: "snapshot.share", requestId: retryId(), expectedRevision: receiver.revision, payload: { scopeId: "share1", target: { kind: "source", id: source.id, revision: 1, generation: 1 }, receiverBotId: receiver.id, workId: null, expiresAt: f.clock.now + 60000 } }).share;
+  let target: { kind: "source" | "artifact"; id: string; revision: number; generation: number } = { kind: "source", id: source.id, revision: 1, generation: 1 };
+  if (kind === "artifact") {
+    const work = f.app.execute(f.auth.actor, workCommand(f)).work!;
+    const attempt = f.app.authority.admit(work.id, retryId(), { botId: "jit", tools: [], scopes: [], input: "Artifact fixture", calls: 2, outputBytes: 16384 });
+    f.app.authority.commit(attempt.id, { state: "ready", text: "Delivered artifact", report: { title: "Share artifact", claims: [{ id: "inference", text: "Fixture evidence", kind: "inference", citations: [], covers: [], conflicts: [] }], missing: [], limitations: ["Fixture"], artifactIds: [] } });
+    const report = f.app.reports.list(f.auth.actor, work.id)[0]!;
+    if (report.state !== "available") throw Error("missing report");
+    target = { kind: "artifact", id: report.artifacts[0]!.id, revision: 1, generation: 1 };
+  }
+  const share = f.app.execute(f.auth.actor, { kind: "snapshot.share", requestId: retryId(), expectedRevision: receiver.revision, payload: { scopeId: "share1", target, receiverBotId: receiver.id, workId: null, expiresAt: f.clock.now + 60000 } }).share;
   let { m, actor } = open(f), id = await backup(m, actor); m.close();
   f.store = new S14Store(f.path); f.app = new S14Application(f.store, f.options); f.auth = f.app.authenticate(f.token);
   f.app.execute(f.auth.actor, { kind: "snapshot.revoke", requestId: retryId(), expectedRevision: share.revision, payload: { shareId: share.id } });
@@ -314,7 +326,7 @@ test("HTTP exposes authenticated metadata only and never starts maintenance on a
   const handler = createS14Handler(f.app, "http://localhost:3001");
   expect((await handler(new Request("http://localhost:3001/api/s14/ops"))).status).toBe(401);
   const response = await handler(new Request("http://localhost:3001/api/s14/ops", { headers: { cookie: `jit_s14=${f.token}` } }));
-  expect(await response.json()).toEqual({ revision: 0, backups: [], stage: null, maintenance: "offline_required", workers: "running" });
+  expect(await response.json()).toEqual({ revision: 0, backups: [], stage: null, maintenance: "offline_required", workers: "running", backup: { revision: 0, latest: null, retention: { limit: 9, count: 0, automatic: "oldest_online_only", protected: [] } } });
   expect(existsSync(opsRoot(f.path))).toBe(false);
 });
 
@@ -418,4 +430,271 @@ test("the receipt bound reserves a terminal slot so retry exhaustion cannot stra
   await expect(m.execute(actor, command(m, "restore.validate", { stageId: stage.stage!.id }))).rejects.toThrow("s14_ops_receipt_bound");
   expect((await m.execute(actor, command(m, "restore.discard", { stageId: stage.stage!.id }))).state).toBe("discarded");
   expect(existsSync(join(opsRoot(f.path), "fence.json"))).toBe(false);
+});
+
+test("every actual application and independent ledger table has exactly one backup classification", async () => {
+  const f = await fixture();
+  const classified = [...opsMainTables.retained, ...opsMainTables.excluded, ...opsMainTables.redacted];
+  expect(new Set(classified).size).toBe(classified.length);
+  expect(f.store.read(tx => tx.all<{ name: string }>("SELECT name FROM main.sqlite_master WHERE type='table' ORDER BY name").map(row => row.name))).toEqual(classified.sort());
+  expect(f.store.read(tx => tx.all<{ name: string }>("SELECT name FROM lifecycle.sqlite_master WHERE type='table' ORDER BY name").map(row => row.name))).toEqual([...opsLedgerTables].sort());
+  expect(() => f.store.read(assertOpsTableClassification)).not.toThrow();
+});
+
+test.each(["main", "lifecycle"])("an unclassified new %s table fails closed even when empty", async schema => {
+  const f = await fixture();
+  f.store.transaction(tx => tx.run(`CREATE TABLE ${schema}.future_state (id TEXT PRIMARY KEY)`));
+  expect(() => credentialFreeImage(f.store)).toThrow("s14_ops_unclassified_table");
+});
+
+test("online owner backup has readable bounded progress, excludes concurrent writers and never starts queued work", async () => {
+  const n = fakeNative(), entered = barrier();
+  const original = n.port.open;
+  n.port.open = async (...args) => { await entered.wait(); return original(...args); };
+  let runs = 0;
+  const f = await fixture({ backups: n.port, authority: { executor: { async run() { runs++; return { state: "ready", text: "New work" }; } } } });
+  seedNative(f, n);
+  const alreadyOpen = new S14Store(f.path);
+  const work = f.app.execute(f.auth.actor, workCommand(f));
+  const c = { kind: "backup.create" as const, requestId: retryId(), expectedRevision: 0, payload: {} };
+  const result = f.app.backups.execute(f.auth.actor, c);
+  expect(result).toMatchObject({ state: "capturing", workers: "paused", progress: { completed: 0 } });
+  await entered.reached;
+  expect(f.app.backups.execute(f.auth.actor, c).backupId).toBe(result.backupId);
+  expect(f.app.backups.status(f.auth.actor).latest!.progress).toMatchObject({ phase: "native", total: 1, completed: 0 });
+  expect(f.app.home(f.auth.actor).owner!.name).toBe("Owner");
+  expect(() => f.app.backups.execute(f.auth.actor, { ...c, expectedRevision: 1 })).toThrow("request_id_conflict");
+  expect(() => f.app.backups.execute(f.auth.actor, { ...c, requestId: retryId() })).toThrow("s14_backup_in_progress");
+  expect(() => f.app.execute(f.auth.actor, workCommand(f))).toThrow("s14_backup_in_progress");
+  expect(() => new S14Store(f.path)).toThrow("s14_backup_in_progress");
+  expect(() => alreadyOpen.transaction(tx => tx.run("UPDATE installation SET revision=revision+1"))).toThrow("s14_backup_in_progress");
+  alreadyOpen.close();
+  await f.app.authority.drain(); await f.app.drainReplies(); f.app.routines.tick(); await f.app.attention.drain();
+  expect(runs).toBe(0);
+  expect(f.app.authority.view(f.auth.actor, work.work!.id).attempts).toEqual([]);
+  entered.release(); await f.app.backups.settle();
+  const completed = f.app.backups.receipt(f.auth.actor, c.requestId);
+  expect(completed).toMatchObject({ state: "complete", reason: null, workers: "running", progress: { phase: "complete", completed: 1, total: 1 } });
+  expect(f.app.backups.execute(f.auth.actor, c)).toEqual(completed);
+  expect(n.controls.opens).toBe(1);
+  expect(() => f.store.transaction(() => {})).not.toThrow();
+  expect(JSON.stringify(completed)).not.toContain(f.root);
+});
+
+test("production workers stay behind the initial boot barrier and native close, before any routine admission", async () => {
+  let runs = 0;
+  const n = fakeNative(), closing = barrier(), original = n.port.open;
+  const f = await fixture({ requireBootReconciliation: true, backups: n.port, authority: { executor: { async run() { runs++; return { state: "ready", text: "Post-reconciliation evidence" }; } } } });
+  seedNative(f, n);
+  f.app.execute(f.auth.actor, routineCommand(f)); f.clock.now += 60000;
+  const drains = async () => { f.app.routines.tick(); await f.app.authority.drain(); await f.app.drainReplies(); await f.app.attention.drain(); await f.app.computers.drain(); };
+  await drains();
+  expect(f.app.authority.list(f.auth.actor)).toEqual([]);
+  n.port.open = async (...args) => { const host = await original(...args); return { ...host, async close() { await closing.wait(); } }; };
+  const boot = f.app.recovery.boot(n.port); await closing.reached;
+  await drains(); expect(runs).toBe(0); expect(f.app.authority.list(f.auth.actor)).toEqual([]);
+  closing.release(); await boot; await drains();
+  expect(runs).toBeGreaterThan(0);
+});
+
+test("JSON and no-script backup ingress enforce owner, Host/Origin/CSRF and exact payload; restore stays offline", async () => {
+  const n = fakeNative(), f = await fixture({ backups: n.port }), handler = createS14Handler(f.app, "http://localhost:3001");
+  const c = { kind: "backup.create", requestId: retryId(), expectedRevision: 0, payload: {} };
+  const post = (command: object, extra: Record<string, string> = {}, path = "/api/s14/commands") => handler(new Request(`http://localhost:3001${path}`, { method: "POST", headers: {
+    cookie: `jit_s14=${f.token}`, origin: "http://localhost:3001", "content-type": "application/json", "x-csrf-token": f.auth.csrf, ...extra }, body: JSON.stringify(command) }));
+  expect((await post(c, { cookie: "" })).status).toBe(401);
+  expect((await post(c, { origin: "https://other.test" })).status).toBe(403);
+  expect((await post(c, { host: "other.test" })).status).toBe(403);
+  expect((await post(c, { "x-csrf-token": "wrong" })).status).toBe(403);
+  expect((await post({ ...c, payload: { path: f.path } })).status).toBe(400);
+  expect((await post({ ...c, kind: "restore.prepare", payload: { backupId: retryId() } })).status).toBe(409);
+  expect(() => f.app.backups.execute({ ownerId: "owner" }, c as never)).toThrow("authentication_required");
+  const response = await post(c);
+  expect(response.status).toBe(202);
+  expect(response.headers.get("cache-control")).toContain("no-store");
+  await f.app.backups.settle();
+  const retry = await handler(new Request("http://localhost:3001/s14/commands", { method: "POST", headers: { cookie: `jit_s14=${f.token}`, origin: "http://localhost:3001", "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ csrf: f.auth.csrf, command: JSON.stringify(c) }) }));
+  expect(retry.status).toBe(202);
+  expect((await retry.json()).state).toBe("complete");
+  const receipt = await handler(new Request(`http://localhost:3001/api/s14/backup-receipts/${c.requestId}`, { headers: { cookie: `jit_s14=${f.token}` } }));
+  expect((await receipt.json()).state).toBe("complete");
+  expect(f.app.backups.status(f.auth.actor).retention.count).toBe(1);
+});
+
+test("online capture timeout waits for actual native settlement and then leaves no usable partial image", async () => {
+  const n = fakeNative(), entered = barrier(), original = n.port.open;
+  n.port.open = async (...args) => { await entered.wait(); return original(...args); };
+  const f = await fixture({ backups: n.port }); seedNative(f, n);
+  const c = { kind: "backup.create" as const, requestId: retryId(), expectedRevision: 0, payload: {} };
+  f.app.backups.execute(f.auth.actor, c); await entered.reached;
+  f.clock.now += 60001;
+  expect(f.app.backups.busy).toBe(true);
+  expect(() => f.store.transaction(() => {})).toThrow("s14_backup_in_progress");
+  entered.release(); await f.app.backups.settle();
+  expect(f.app.backups.receipt(f.auth.actor, c.requestId)).toMatchObject({ state: "blocked", reason: "s14_backup_deadline_exceeded" });
+  expect(f.app.backups.status(f.auth.actor).retention.count).toBe(0);
+  expect(existsSync(join(opsRoot(f.path), "capture.json"))).toBe(false);
+});
+
+test("online native close failure keeps workers fenced and excludes transport text until exclusive boot", async () => {
+  const n = fakeNative(), original = n.port.open;
+  n.port.open = async (...args) => { const host = await original(...args); return { ...host, async close() { throw Error("private-close-error-text"); } }; };
+  const f = await fixture({ backups: n.port }); seedNative(f, n);
+  const c = { kind: "backup.create" as const, requestId: retryId(), expectedRevision: 0, payload: {} };
+  f.app.backups.execute(f.auth.actor, c); await f.app.backups.settle();
+  expect(f.app.backups.receipt(f.auth.actor, c.requestId)).toMatchObject({ state: "blocked", reason: "s14_ops_native_close_unresolved", workers: "paused" });
+  expect(f.app.backups.busy).toBe(true);
+  expect(() => f.store.transaction(() => {})).toThrow("s14_backup_in_progress");
+  expect(readFileSync(join(opsRoot(f.path), "online-backups.json"), "utf8")).not.toContain("private-close-error-text");
+  f.store.close(); reconcileOnlineBackups(f.path); n.port.open = original;
+  f.store = new S14Store(f.path); f.app = new S14Application(f.store, f.options); f.auth = f.app.authenticate(f.token);
+  await f.app.recovery.boot(n.port);
+  expect(f.app.backups.busy).toBe(false);
+  expect(f.app.backups.receipt(f.auth.actor, c.requestId).workers).toBe("running");
+  f.store.close();
+});
+
+test("online retention rotates its oldest image after commit and preserves offline recovery points", async () => {
+  const n = fakeNative(), f = await fixture({ backups: n.port });
+  const { m, actor } = open(f, n.port), protectedId = await backup(m, actor); m.close();
+  f.store = new S14Store(f.path); f.app = new S14Application(f.store, f.options); f.auth = f.app.authenticate(f.token);
+  const ids: string[] = [];
+  for (let revision = 0; revision < 11; revision++) {
+    const result = f.app.backups.execute(f.auth.actor, { kind: "backup.create", requestId: retryId(), expectedRevision: revision, payload: {} });
+    ids.push(result.backupId); await f.app.backups.settle();
+  }
+  expect(f.app.backups.status(f.auth.actor).retention).toMatchObject({ count: 9, protected: [protectedId] });
+  expect(existsSync(archive(f, protectedId))).toBe(true);
+  expect(existsSync(archive(f, ids[0]!))).toBe(false);
+  expect(existsSync(archive(f, ids[1]!))).toBe(false);
+  expect(existsSync(archive(f, ids.at(-1)!))).toBe(true);
+  expect(readdirSync(join(opsRoot(f.path), "backups"))).toHaveLength(9);
+});
+
+test("boot resolves interrupted online capture before opening the store or starting workers", async () => {
+  const n = fakeNative(), f = await fixture({ backups: n.port });
+  const c = { kind: "backup.create" as const, requestId: retryId(), expectedRevision: 0, payload: {} };
+  const result = f.app.backups.execute(f.auth.actor, c); await f.app.backups.settle();
+  const path = join(opsRoot(f.path), "online-backups.json"), control = JSON.parse(readFileSync(path, "utf8"));
+  control.requests[0].result.state = "capturing";
+  writeFileSync(path, JSON.stringify(control));
+  writeFileSync(join(opsRoot(f.path), "capture.json"), JSON.stringify({ contract: "app.managed-backup/v1", requestId: c.requestId, backupId: result.backupId }));
+  f.store.close();
+  expect(() => new S14Store(f.path)).toThrow("s14_backup_in_progress");
+  reconcileOnlineBackups(f.path);
+  f.store = new S14Store(f.path); f.app = new S14Application(f.store, f.options); f.auth = f.app.authenticate(f.token);
+  expect(f.app.backups.receipt(f.auth.actor, c.requestId).state).toBe("complete");
+  // The registry, not a manifest-shaped orphan, is the commit point.
+  control.requests[0].result.state = "capturing";
+  const registryPath = join(opsRoot(f.path), "control.json"), registry = JSON.parse(readFileSync(registryPath, "utf8"));
+  registry.backups = []; writeFileSync(registryPath, JSON.stringify(registry)); writeFileSync(path, JSON.stringify(control));
+  f.store.close(); reconcileOnlineBackups(f.path);
+  f.store = new S14Store(f.path); f.app = new S14Application(f.store, f.options); f.auth = f.app.authenticate(f.token);
+  expect(f.app.backups.receipt(f.auth.actor, c.requestId)).toMatchObject({ state: "blocked", reason: "s14_backup_interrupted_no_auto_retry" });
+  expect(existsSync(archive(f, result.backupId))).toBe(false);
+});
+
+test.each(["retained", "forgotten", "access_revoked"] as const)("restore keeps retired report evidence and original access/producer lineage; %s remains effective", async mode => {
+  const f = await fixture(), b = await secondBot(f);
+  const conversationId = f.app.home(f.auth.actor).conversations.find(c => c.botId === b.id)!.id;
+  const claim = f.app.execute(f.auth.actor, { kind: "memory.remember", requestId: retryId(), expectedRevision: f.app.conversation(f.auth.actor, conversationId).conversation.revision,
+    payload: { conversationId, text: "Original private retained evidence" } }).claim!;
+  const access = f.app.execute(f.auth.actor, { kind: "memory.publish", requestId: retryId(), expectedRevision: 1, payload: { claim } }).access!;
+  const start = workCommand(f, { conversationId, bots: [{ id: b.id, revision: b.revision }] });
+  start.expectedRevision = f.app.conversation(f.auth.actor, conversationId).conversation.revision;
+  const work = f.app.execute(f.auth.actor, start).work!;
+  const attempt = f.app.authority.admit(work.id, retryId(), { botId: b.id, tools: [], scopes: [], input: "Retained evidence", calls: 2, outputBytes: 16384 });
+  f.app.authority.commit(attempt.id, { state: "ready", text: "Derived retained evidence", report: { title: "Retained report", claims: [{ id: "inference", text: "Owner review", kind: "inference", citations: [], covers: [], conflicts: [] }], missing: [], limitations: ["Fixture"], artifactIds: [] } });
+  const report = f.app.reports.list(f.auth.actor, work.id)[0]!;
+  if (report.state !== "available") throw Error("missing report");
+  f.app.execute(f.auth.actor, { kind: "report.review.accept", requestId: retryId(), expectedRevision: f.app.reports.review(f.auth.actor, work.id).revision,
+    payload: { reportId: report.report.id, reportRevision: report.report.revision } });
+  let { m, actor } = open(f), id = await backup(m, actor); m.close();
+  f.store = new S14Store(f.path); f.app = new S14Application(f.store, f.options); f.auth = f.app.authenticate(f.token);
+  const preview = f.app.botLifecycle.preview(f.auth.actor, b.id, "retire");
+  f.app.execute(f.auth.actor, { kind: "bot.retire", requestId: retryId(), expectedRevision: preview.bot.revision, payload: { botId: b.id, previewHash: preview.hash, retain: { history: true, evidence: true } } });
+  if (mode === "forgotten") f.app.execute(f.auth.actor, { kind: "memory.forget", requestId: retryId(), expectedRevision: claim.revision, payload: { claim } });
+  if (mode === "access_revoked") f.app.execute(f.auth.actor, { kind: "memory.revoke", requestId: retryId(), expectedRevision: access.revision, payload: { claim } });
+  ({ m, actor } = open(f));
+  const staged = await m.execute(actor, command(m, "restore.prepare", { backupId: id }));
+  expect(staged).toMatchObject({ state: "validated", reason: null });
+  await m.execute(actor, command(m, "restore.activate", { stageId: staged.stage!.id, actionHash: staged.stage!.actionHash }));
+  actor = m.app.authenticate(await m.app.login("domain-fixture-owner-password")).actor;
+  expect(m.app.botLifecycle.view(actor, b.id).lifecycle.state).toBe("retired");
+  expect(m.store.read(tx => tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE kind='retained_evidence' AND id=?", attempt.id))).not.toBeNull();
+  expect(m.app.reports.list(actor, work.id)[0]!.state).toBe(mode === "retained" ? "available" : "unavailable");
+  expect(m.app.reports.review(actor, work.id).completion).toBe(mode === "retained" ? "owner_accepted" : "owner_review_required");
+  expect(m.app.authority.view(actor, work.id).authority!.revoked).toBe(true);
+});
+
+test("setup capability files, native credentials, website profiles and sign-in receipts never become backup authority", async () => {
+  const n = fakeNative(), f = await fixture({ backups: n.port });
+  const secret = "sk-proj-BackupExcludedSentinel1234567890";
+  for (const directory of [join(f.root, "native", "home"), join(f.root, "browser-profile")]) {
+    mkdirSync(directory, { recursive: true }); writeFileSync(join(directory, "secret"), secret);
+  }
+  const setupToken = "a".repeat(64);
+  writeFileSync(`${f.path}.owner-setup.json`, JSON.stringify({ hash: opsHash(setupToken), expiresAt: f.clock.now + 60000 }), { mode: 0o600 });
+  f.store.transaction(tx => tx.run("INSERT INTO command_receipts VALUES ('owner',?,?,?,?)", retryId(), opsHash("sign-in"), JSON.stringify({ kind: "setup.sign_in", approval: secret }), f.clock.now));
+  const receipt = f.app.backups.execute(f.auth.actor, { kind: "backup.create", requestId: retryId(), expectedRevision: 0, payload: {} });
+  await f.app.backups.settle();
+  const directory = archive(f, receipt.backupId);
+  expect(readdirSync(directory).sort()).toEqual(["application.sqlite", "manifest.json"]);
+  for (const file of readdirSync(directory)) {
+    const bytes = readFileSync(join(directory, file)).toString();
+    expect(bytes).not.toContain(secret); expect(bytes).not.toContain(setupToken); expect(bytes).not.toContain(opsHash(setupToken));
+  }
+  const { m, actor } = open(f, n.port);
+  const stage = await m.execute(actor, command(m, "restore.prepare", { backupId: receipt.backupId }));
+  expect(stage.state).toBe("validated");
+  await m.execute(actor, command(m, "restore.activate", { stageId: stage.stage!.id, actionHash: stage.stage!.actionHash }));
+  expect(() => m.app.checkOwnerSetup(setupToken)).toThrow("owner_setup_link_invalid");
+  expect(m.store.read(tx => tx.get<{ n: number }>("SELECT count(*) n FROM command_receipts")!.n)).toBe(0);
+});
+
+test("restore consumes current routine high-water marks and attention send claims without dispatching either again", async () => {
+  let sends = 0;
+  const f = await fixture({ attention: { async send() { sends++; return "sent"; } } });
+  const routine = f.app.execute(f.auth.actor, routineCommand(f)).routine;
+  f.store.transaction(tx => f.app.attention.commit(tx, { groupId: retryId(), class: "needs_owner", reason: "owner_decision", workId: null, proposalIds: [] }));
+  let { m, actor } = open(f), id = await backup(m, actor); m.close();
+  f.store = new S14Store(f.path); f.app = new S14Application(f.store, f.options); f.auth = f.app.authenticate(f.token);
+  f.clock.now += 60000; f.app.routines.tick(); await f.app.attention.drain(); expect(sends).toBe(1);
+  ({ m, actor } = open(f));
+  const stage = await m.execute(actor, command(m, "restore.prepare", { backupId: id }));
+  expect(stage.state).toBe("validated");
+  await m.execute(actor, command(m, "restore.activate", { stageId: stage.stage!.id, actionHash: stage.stage!.actionHash }));
+  actor = m.app.authenticate(await m.app.login("domain-fixture-owner-password")).actor;
+  expect(m.app.routines.view(actor, routine.id).routine).toMatchObject({ state: "blocked", occurrencesRemaining: 2 });
+  expect(m.app.attention.view(actor).items[0]).toMatchObject({ state: "unknown", retriesRemaining: 0 });
+  m.app.routines.tick(); await m.app.attention.drain(); expect(sends).toBe(1);
+  expect(m.app.routines.view(actor, routine.id).history).toEqual([]);
+});
+
+test.each(["reset", "delete"] as const)("restore preserves current computer %s identities and old activity without starting old volumes", async mode => {
+  const runtime = new FakeComputerRuntime(), f = await fixture({ computers: { runtime } });
+  const work = f.app.execute(f.auth.actor, workCommand(f, { tools: ["computer"] })).work!;
+  f.app.execute(f.auth.actor, { kind: "computer.open", requestId: retryId(), expectedRevision: 0, payload: { botId: "jit", workId: work.id } });
+  await f.app.computers.drain(); await f.app.computers.screenshot(f.auth.actor, "jit");
+  const lifecycle = (kind: "computer.stop" | "computer.reset" | "computer.delete") => {
+    const computer = f.app.computers.view(f.auth.actor, "jit").computer!;
+    f.app.execute(f.auth.actor, { kind, requestId: retryId(), expectedRevision: computer.revision, payload: { botId: "jit", computerId: computer.id, generation: computer.generation } });
+  };
+  lifecycle("computer.stop"); await f.app.computers.drain();
+  const old = f.app.computers.view(f.auth.actor, "jit").computer!;
+  let { m, actor } = open(f), id = await backup(m, actor); m.close();
+  f.store = new S14Store(f.path); f.app = new S14Application(f.store, f.options); f.auth = f.app.authenticate(f.token);
+  lifecycle(mode === "reset" ? "computer.reset" : "computer.delete"); await f.app.computers.drain();
+  const current = f.app.computers.view(f.auth.actor, "jit").computer!;
+  ({ m, actor } = open(f));
+  const stage = await m.execute(actor, command(m, "restore.prepare", { backupId: id }));
+  expect(stage).toMatchObject({ state: "validated", reason: null });
+  await m.execute(actor, command(m, "restore.activate", { stageId: stage.stage!.id, actionHash: stage.stage!.actionHash }));
+  actor = m.app.authenticate(await m.app.login("domain-fixture-owner-password")).actor;
+  const restored = m.app.computers.view(actor, "jit").computer!;
+  expect(restored.generation).toBeGreaterThan(old.generation);
+  expect(restored).toMatchObject({ state: mode === "delete" ? "deleted" : "stopped", workspaceId: current.workspaceId, profileId: current.profileId });
+  expect(m.app.computers.activity(actor, "jit").some(entry => entry.kind === "screenshot")).toBe(true);
+  expect(runtime.starts).toHaveLength(1);
 });

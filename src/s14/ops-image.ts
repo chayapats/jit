@@ -12,12 +12,26 @@ const included = new Set(`
   parallel_settings web_reads external_evidence bot_lifecycle capability_proposals work_payload_deletions attempt_payload_deletions
   routines routine_occurrences routine_results attention_setting attention_decisions attention_notices
   bots conversations messages bot_proposals proposal_versions reply_outbox audit work_items
-  work_grants grant_state grant_usage reports artifacts snapshot_shares work_defaults work_graphs work_steps
+  work_grants grant_state grant_usage reports report_reviews artifacts snapshot_shares work_defaults work_graphs work_steps
   native_intents work_checkpoints work_queue work_attempts attempt_usage work_results
-  effects effect_versions bot_computers computer_operations computer_attempts
+  effects effect_versions bot_computers computer_operations computer_attempts computer_activity
 `.trim().split(/\s+/));
 const excluded = new Set(`sessions login_throttle parallel_connections parallel_sessions command_receipts artifact_staging reply_transports attempt_transports input_leases computer_inputs
 `.trim().split(/\s+/));
+
+/** Application tables are retained, emptied, or owner-verifier redacted; unknown tables always block capture. */
+export const opsMainTables = Object.freeze({ retained: Object.freeze([...included].sort()), excluded: Object.freeze([...excluded].sort()), redacted: Object.freeze(["owner"]) });
+/** Independent tables are never copied; all are hashed and reconciled from the installation's current ledger. */
+export const opsLedgerTables = Object.freeze(["identity", "withdrawals", "bot_events", "native_intents", "grant_usage", "routine_usage", "effect_outcomes"]);
+/** Requires every actual main/ledger table to have an explicit reviewed backup policy. */
+export function assertOpsTableClassification(tx: AppTransaction): void {
+  for (const { name } of tx.all<{ name: string }>("SELECT name FROM main.sqlite_master WHERE type='table'")) {
+    if (!included.has(name) && !excluded.has(name) && name !== "owner") throw new AppError("s14_ops_unclassified_table", 409);
+  }
+  for (const { name } of tx.all<{ name: string }>("SELECT name FROM lifecycle.sqlite_master WHERE type='table'")) {
+    if (!opsLedgerTables.includes(name)) throw new AppError("s14_ops_unclassified_table", 409);
+  }
+}
 
 /** Hashes exact bounded component bytes, including binary images. */
 export const opsHash = (bytes: Uint8Array | string): string => createHash("sha256").update(bytes).digest("hex");
@@ -29,7 +43,8 @@ export function opsSchema(tx: AppTransaction): string {
 export function opsLedger(tx: AppTransaction): string {
   const application = tx.get<{ id: string }>("SELECT id FROM main.memory_identity")?.id;
   if (!application || application !== tx.get<{ id: string }>("SELECT id FROM lifecycle.identity")?.id) throw new AppError("s14_lifecycle_ledger_unavailable", 503);
-  const tables = ["identity", "withdrawals", "bot_events", "native_intents", "grant_usage", "routine_usage", "effect_outcomes"];
+  assertOpsTableClassification(tx);
+  const tables = opsLedgerTables;
   const entries: unknown[] = [];
   let count = 0;
   for (const table of tables) {
@@ -69,6 +84,7 @@ export function inspectOpsImage(bytes: Uint8Array, schemaHash: string): void {
 }
 /** Produces a freshly compacted allowlisted image with credentials, sessions and transient payloads excluded. */
 export function credentialFreeImage(store: S14Store): Uint8Array {
+  store.read(assertOpsTableClassification);
   const source = store.snapshotBytes();
   if (source.length > opsLimits.bytes) throw new AppError("s14_ops_backup_too_large", 409);
   const db = Database.deserialize(source);

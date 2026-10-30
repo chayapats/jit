@@ -130,6 +130,13 @@ export class S14BotLifecycle {
           proposal.ownerGeneration !== tx.get<{ generation: number }>("SELECT generation FROM owner")?.generation ||
           proposal.hash !== digest(canonical({ bot, action: proposal.action, capabilities: proposal.capabilities }))) throw new AppError("stale_capability_proposal", 409);
       if (proposal.action === "reenable" ? lifecycle.state !== "retired" : lifecycle.state !== "active") throw new AppError("bot_lifecycle_changed", 409);
+      // Changing a ceiling fences execution, not already committed owner evidence.
+      // Capture retention before changing the Bot; withdrawn lineage is never blessed by widening.
+      for (const row of tx.all<{ id: string }>("SELECT id FROM work_attempts WHERE json_extract(record_json,'$.snapshot.bot.id')=? AND EXISTS (SELECT 1 FROM work_results WHERE attempt_id=work_attempts.id)", bot.id)) {
+        if (this.app.memory.sourceCurrent(tx, { id: `result_${row.id}`, revision: 1, generation: 1 })) {
+          tx.run("INSERT OR IGNORE INTO lifecycle.withdrawals VALUES ('retained_evidence',?,'owner_retained')", row.id);
+        }
+      }
       bot.capabilities = capabilities(proposal.capabilities, this.app.policy);
       proposal.state = "accepted";
       tx.run("UPDATE capability_proposals SET record_json=? WHERE id=?", canonical(proposal), proposal.id);
@@ -272,6 +279,7 @@ export class S14BotLifecycle {
 
   /** Drains retry-safe local/computer/native cleanup after fencing, retaining stopping until actual transports settle. */
   async drain(port: NativeRecoveryPort): Promise<void> {
+    if (this.app.recovery.booting || this.app.backups.busy) return;
     if (this.#draining) return this.#draining;
     this.#draining = this.cleanup(port);
     try { await this.#draining; }

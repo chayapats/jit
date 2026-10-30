@@ -43,3 +43,18 @@ export type OpsCommand = Envelope<"backup.create", Record<string, never>>
   | Envelope<"restore.activate", { stageId: string; actionHash: string }>;
 /** Credential-free durable outcome, with explicit worker and reconnection requirements. */
 export interface OpsReceipt { requestId: string; revision: number; state: "complete" | "partial" | "blocked" | "validated" | "discarded"; reason: string | null; backupId?: string; stage?: OpsStage; workers: "fenced" | "stopped"; reconnectionRequired: true }
+
+/** Running-service owner ingress uses the backup revision, not the offline maintenance or Home revision. */
+export type OnlineBackupCommand = Envelope<"backup.create", Record<string, never>>;
+/** Bounded metadata-only progress; a timed-out native call retains the writer fence until it actually settles. */
+export interface OnlineBackupReceipt {
+  kind: "backup.create"; requestId: string; revision: number; backupId: string;
+  state: "capturing" | "complete" | "blocked"; reason: string | null;
+  progress: { phase: "application" | "native" | "waiting_native_settlement" | "complete" | "blocked"; completed: number; total: number };
+  startedAt: number; deadlineAt: number; workers: "paused" | "running"; reconnectionRequired: true;
+}
+/** Finite online retry journal, independent of images and offline activation authority. */
+export interface OnlineBackupControl {
+  contract: typeof managedBackupContract; revision: number; managedIds: string[];
+  requests: { hash: string; replaces: string[]; result: OnlineBackupReceipt }[];
+}
