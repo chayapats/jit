@@ -5,27 +5,36 @@ import { registerSecretFingerprint } from "../security/secret-fingerprints";
 import type { S14Store } from "./store";
 import type { Bot, BotCommand, BotProposal, BotReceipt, ChatInput, ChatPort, Conversation, Home, Message, OwnerActor, Policy, Reply } from "./types";
 import { canonical, capabilities, digest, exact, identity, integer, text } from "./validation";
+import { S14Authority, suggestTask } from "./authority";
+import type { AuthorityCommand, AuthorityOptions, AuthorityReceipt } from "./authority-types";
+
+/** Stable complete typed owner ingress union for the S14 logic foundation. */
+export type S14Command = BotCommand | AuthorityCommand;
+/** Committed typed result of the S14 owner command boundary. */
+export type S14Receipt = BotReceipt | AuthorityReceipt;
 
 const id = () => crypto.randomUUID().replaceAll("-", "");
 const tokenPattern = /^[a-f0-9]{64}$/;
-type Stored = Bot | BotProposal | Message | Reply;
+/** Service-owned JSON tables; request/model input never selects a SQL identifier. */
+export type RecordTable = "bots" | "bot_proposals" | "reply_outbox" | "work_items" | "work_grants" | "work_attempts" | "effects";
 /** Loads an opaque record from a trusted table name; callers enforce command and scope first. */
-export function record<T>(tx: AppTransaction, table: string, key: string): T {
+export function record<T>(tx: AppTransaction, table: RecordTable, key: string): T {
   const row = tx.get<{ record_json: string }>(`SELECT record_json FROM ${table} WHERE id=?`, key);
   if (!row) throw new AppError("not_found", 404);
   return JSON.parse(row.record_json) as T;
 }
 /** Updates a trusted table's immutable-identity record inside its caller's transaction. */
-export function save(tx: AppTransaction, table: string, value: { id: string }): void { tx.run(`UPDATE ${table} SET record_json=? WHERE id=?`, canonical(value), value.id); }
+export function save(tx: AppTransaction, table: RecordTable, value: { id: string }): void { tx.run(`UPDATE ${table} SET record_json=? WHERE id=?`, canonical(value), value.id); }
 /** Reads bounded identity records from a trusted table name without starting workers. */
-export function records<T>(tx: AppTransaction, table: string): T[] { return tx.all<{ record_json: string }>(`SELECT record_json FROM ${table} ORDER BY rowid DESC LIMIT 100`).map(row => JSON.parse(row.record_json) as T); }
+export function records<T>(tx: AppTransaction, table: RecordTable): T[] { return tx.all<{ record_json: string }>(`SELECT record_json FROM ${table} ORDER BY rowid DESC LIMIT 100`).map(row => JSON.parse(row.record_json) as T); }
 /** Injectable deterministic inference/clock and rollback fault seams; production never enables fixture inference. */
-export interface S14Options { policy: Policy; chat: ChatPort; now?: () => number; beforeCommit?: () => void }
+export interface S14Options { policy: Policy; chat: ChatPort; authority?: AuthorityOptions; now?: () => number; beforeCommit?: () => void }
 
 /** Project-free owner command boundary; registered actors are revalidated on every read and commit. */
 export class S14Application {
   readonly policy: Policy;
   readonly now: () => number;
+  readonly authority: S14Authority;
   #actors = new WeakMap<OwnerActor, string>();
   #replyBusy = false;
   constructor(readonly store: S14Store, readonly options: S14Options) {
@@ -36,6 +45,7 @@ export class S14Application {
       if (!["codex", "grok"].includes(r.provider) || !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/.test(r.model)) throw new AppError("invalid_route");
     }
     capabilities({ tools: this.policy.tools, resources: this.policy.resources }, this.policy);
+    this.authority = new S14Authority(this, options.authority);
   }
   /** Trusted local bootstrap creates only the authentication principal, never resets an existing installation. */
   async provisionOwner(password: string): Promise<void> {
@@ -101,19 +111,31 @@ export class S14Application {
         proposals: records<BotProposal>(tx, "bot_proposals").filter(p => p.conversationId === conversationId), replies: records<Reply>(tx, "reply_outbox").filter(r => r.conversationId === conversationId) };
     });
   }
+  /** Returns the current Bot proposal and retained content revisions for exact owner review. */
+  proposal(actor: OwnerActor, proposalId: string): { proposal: BotProposal; history: BotProposal[] } {
+    identity(proposalId);
+    return this.store.read(tx => { this.requireOwner(tx, actor); return { proposal: record<BotProposal>(tx, "bot_proposals", proposalId), history: tx.all<{ record_json: string }>("SELECT record_json FROM proposal_versions WHERE proposal_id=? ORDER BY revision", proposalId).map(r => JSON.parse(r.record_json)) }; });
+  }
   /** Executes a typed owner command exactly once with its audit and queue intent in the same transaction. */
-  execute(actor: OwnerActor, command: BotCommand): BotReceipt {
+  execute(actor: OwnerActor, command: BotCommand): BotReceipt;
+  /** Executes obligation, work-start, stop and exact approval decisions under the same owner receipt boundary. */
+  execute(actor: OwnerActor, command: AuthorityCommand): AuthorityReceipt;
+  /** Executes the complete typed HTTP command union without client-controlled actor identities. */
+  execute(actor: OwnerActor, command: S14Command): S14Receipt;
+  execute(actor: OwnerActor, command: S14Command): S14Receipt {
     const encoded = canonical(command); exact(command, ["kind", "requestId", "expectedRevision", "payload"]);
     identity(command.requestId); integer(command.expectedRevision);
-    return this.store.transaction(tx => {
+    const receipt = this.store.transaction(tx => {
       this.requireOwner(tx, actor);
       const previous = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash,result_json FROM command_receipts WHERE owner_id='owner' AND request_id=?", command.requestId);
-      if (previous) { if (previous.payload_hash !== digest(encoded)) throw new AppError("request_id_conflict", 409); return JSON.parse(previous.result_json) as BotReceipt; }
-      const result = this.applyBot(tx, command);
+      if (previous) { if (previous.payload_hash !== digest(encoded)) throw new AppError("request_id_conflict", 409); return JSON.parse(previous.result_json) as S14Receipt; }
+      const result = ["task.accept", "work.start", "work.stop", "approval.decide"].includes(command.kind) ? this.authority.apply(tx, command as AuthorityCommand) : this.applyBot(tx, command as BotCommand);
       tx.run("INSERT INTO command_receipts VALUES ('owner',?,?,?,?)", command.requestId, digest(encoded), canonical(result), this.now());
       tx.run("INSERT INTO audit(kind,request_id,committed_at) VALUES (?,?,?)", command.kind, command.requestId, this.now());
       this.options.beforeCommit?.(); return structuredClone(result);
     });
+    this.authority.cancelFenced();
+    return receipt;
   }
   /** Resolves an exact configured route; no provider, account, model or billing fallback exists. */
   route(routeId: unknown) { const route = this.policy.routes.find(r => r.id === routeId); if (!route) throw new AppError("route_unconfigured", 403); return structuredClone(route); }
@@ -160,7 +182,7 @@ export class S14Application {
       exact(p, c.kind === "bot.proposal.accept" ? ["proposalId", "capabilities"] : c.kind === "bot.proposal.revise" ? ["proposalId", "name", "responsibility", "routeId"] : ["proposalId"]);
       const proposal = record<BotProposal>(tx, "bot_proposals", (p as { proposalId: string }).proposalId);
       if (proposal.revision !== c.expectedRevision || proposal.state !== "proposed") throw new AppError("stale_revision", 409);
-      if (c.kind === "bot.proposal.revise") { proposal.name = text(c.payload.name, 200); proposal.responsibility = text(c.payload.responsibility, 4000); this.route(c.payload.routeId); proposal.routeId = c.payload.routeId; proposal.revision++; }
+      if (c.kind === "bot.proposal.revise") { proposal.name = text(c.payload.name, 200); proposal.responsibility = text(c.payload.responsibility, 4000); this.route(c.payload.routeId); proposal.routeId = c.payload.routeId; proposal.revision++; proposal.author = "owner"; }
       if (c.kind === "bot.proposal.reject") proposal.state = "rejected";
       if (c.kind === "bot.proposal.accept") {
         if (!proposal.routeId) throw new AppError("route_unconfigured", 403); this.route(proposal.routeId);
@@ -176,13 +198,14 @@ export class S14Application {
     throw new AppError("unknown_command");
   }
   /** Marks orphaned chat inference blocked on exclusive boot; never silently resubmits an uncertain call. */
-  recoverReplies(): void { this.store.transaction(tx => { for (const reply of records<Reply>(tx, "reply_outbox")) if (reply.state === "running") { reply.state = "blocked"; reply.reason = "interrupted_no_auto_replay"; save(tx, "reply_outbox", reply); } }); }
+  recoverReplies(): void { this.store.transaction(tx => { for (const row of tx.all<{ record_json: string }>("SELECT record_json FROM reply_outbox WHERE json_extract(record_json,'$.state')='running'")) { const reply = JSON.parse(row.record_json) as Reply; reply.state = "blocked"; reply.reason = "interrupted_no_auto_replay"; save(tx, "reply_outbox", reply); } }); }
   /** Drains committed chat intents serially with bounded context; this never admits persistent work or tools. */
   async drainReplies(): Promise<void> {
     if (this.#replyBusy) return; this.#replyBusy = true;
     try { for (;;) {
       const reply = this.store.transaction(tx => {
-        const next = records<Reply>(tx, "reply_outbox").reverse().find(r => r.state === "queued"); if (!next) return null;
+        const row = tx.get<{ record_json: string }>("SELECT record_json FROM reply_outbox WHERE json_extract(record_json,'$.state')='queued' ORDER BY rowid LIMIT 1"); if (!row) return null;
+        const next = JSON.parse(row.record_json) as Reply;
         next.state = "running"; save(tx, "reply_outbox", next); return next;
       });
       if (!reply) return;
@@ -198,12 +221,13 @@ export class S14Application {
           const message: Message = { id: id(), conversationId: reply.conversationId, role: "bot", text: content, createdAt: this.now() };
           tx.run("INSERT INTO messages(id,conversation_id,record_json) VALUES (?,?,?)", message.id, message.conversationId, canonical(message));
           tx.run("UPDATE conversations SET revision=revision+1 WHERE id=?", message.conversationId);
+          if (output?.task !== undefined) suggestTask(tx, message.conversationId, message.id, output.task, this.now());
           const item = output?.proposal;
           if (item && typeof item === "object" && !Array.isArray(item)) {
             const data = item as Record<string, unknown>;
             try {
               let routeId: string | null = null; try { routeId = this.route(data.routeId ?? reply.snapshot.route.id).id; } catch { /* Held for owner revision. */ }
-              const proposal: BotProposal = { id: id(), conversationId: reply.conversationId, messageId: message.id, revision: 1, state: "proposed", name: text(data.name, 200), responsibility: text(data.responsibility, 4000), routeId,
+              const proposal: BotProposal = { id: id(), conversationId: reply.conversationId, messageId: message.id, revision: 1, author: "bot", proposerBotId: reply.snapshot.bot.id, state: "proposed", name: text(data.name, 200), responsibility: text(data.responsibility, 4000), routeId,
                 dropped: [...Object.keys(data).filter(k => !["name", "responsibility", "routeId"].includes(k)).map(() => "unsupported_field"), ...(!routeId ? ["route_unconfigured"] : [])].slice(0, 8), botId: null };
               tx.run("INSERT INTO bot_proposals VALUES (?,?,?,?)", proposal.id, proposal.conversationId, proposal.messageId, canonical(proposal));
               tx.run("INSERT INTO proposal_versions VALUES (?,?,?)", proposal.id, 1, canonical(proposal));

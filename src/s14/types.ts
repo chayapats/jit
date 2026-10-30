@@ -9,13 +9,13 @@ export interface Conversation { id: string; revision: number; botId: string }
 /** One immutable conversational message; untrusted text never renders authority controls. */
 export interface Message { id: string; conversationId: string; role: "owner" | "bot"; text: string; createdAt: number }
 /** Revisioned service-validated suggestion anchored to an actual Bot reply, with no granted capabilities. */
-export interface BotProposal { id: string; conversationId: string; messageId: string; revision: number; state: "proposed" | "accepted" | "rejected"; name: string; responsibility: string; routeId: string | null; dropped: string[]; botId: string | null }
+export interface BotProposal { id: string; conversationId: string; messageId: string; revision: number; author: "bot" | "owner"; proposerBotId: string; state: "proposed" | "accepted" | "rejected"; name: string; responsibility: string; routeId: string | null; dropped: string[]; botId: string | null }
 /** Bounded chat outbox entry; interrupted inference is visible and never automatically replayed. */
 export interface Reply { id: string; conversationId: string; messageId: string; state: "queued" | "running" | "succeeded" | "blocked"; reason: string | null; snapshot: ChatInput }
 /** Immutable, credential-free chat input; this port cannot issue commands or access tools. */
 export interface ChatInput { route: Route; language: "th" | "en"; ownerName: string; bot: Bot; messages: Message[] }
 /** Untrusted model response; suggestions are data until exact owner acceptance. */
-export interface ChatOutput { text: string; proposal?: unknown }
+export interface ChatOutput { text: string; proposal?: unknown; task?: unknown }
 /** One bounded inference adapter; production uses only schway/host and deterministic tests inject scripts. */
 export interface ChatPort { reply(input: ChatInput, signal: AbortSignal): Promise<ChatOutput> }
 /** Opaque server-issued owner principal; a structural copy is rejected. */

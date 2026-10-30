@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { AppError } from "../errors";
-import { redactCredentials } from "../security/credentials";
+import { containsCredential, redactCredentials } from "../security/credentials";
 import type { Capabilities, Policy } from "./types";
 
 /** Rejects missing or extra keys rather than silently dropping authority-bearing fields. */
@@ -17,7 +17,9 @@ export function canonical(value: unknown): string {
     if (typeof v === "number" && Number.isFinite(v)) return v;
     if (!v || typeof v !== "object" || seen.has(v)) throw new AppError("invalid_data");
     if (Object.getPrototypeOf(v) !== (Array.isArray(v) ? Array.prototype : Object.prototype)) throw new AppError("invalid_data");
-    if (Reflect.ownKeys(v).length > 257 || Object.values(Object.getOwnPropertyDescriptors(v)).some(d => !("value" in d))) throw new AppError("invalid_data");
+    const keys = Reflect.ownKeys(v), descriptors = Object.getOwnPropertyDescriptors(v);
+    if (keys.length > 257 || keys.some(k => typeof k !== "string") || Object.entries(descriptors).some(([k, d]) => !("value" in d) || (!d.enumerable && !(Array.isArray(v) && k === "length")))) throw new AppError("invalid_data");
+    if (Array.isArray(v) && (keys.length !== v.length + 1 || v.some((_x, i) => !Object.hasOwn(v, i)))) throw new AppError("invalid_data");
     seen.add(v);
     const result = Array.isArray(v) ? Array.from(v, x => visit(x, depth + 1)) : Object.fromEntries(Object.keys(v).sort().map(k => [k, visit((v as Record<string, unknown>)[k], depth + 1)]));
     seen.delete(v); return result;
@@ -29,7 +31,7 @@ export function canonical(value: unknown): string {
 /** SHA-256 digest used for credentials, receipts and exact action binding. */
 export const digest = (value: string): string => createHash("sha256").update(value).digest("hex");
 /** Validates an opaque identity without accepting a path or inferred alias. */
-export function identity(v: unknown): asserts v is string { if (typeof v !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(v)) throw new AppError("invalid_identity"); }
+export function identity(v: unknown): asserts v is string { if (typeof v !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(v) || containsCredential(v)) throw new AppError("invalid_identity"); }
 /** Validates finite revision and counter values. */
 export function integer(v: unknown, min = 0, max = 1_000_000_000): asserts v is number { if (!Number.isSafeInteger(v) || (v as number) < min || (v as number) > max) throw new AppError("invalid_number"); }
 /** Validates plain Unicode and removes credential patterns before persistence or prompts. */

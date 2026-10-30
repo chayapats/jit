@@ -122,3 +122,18 @@ test("pinned Schway public host runs a scripted tool-free reply and credentials 
   const messages = app.conversation(actor, setup.conversation!.id).messages;
   expect(messages[1]!.text).toBe("Hello from Schway"); expect(JSON.stringify(messages)).not.toContain(secret);
 });
+
+test("no-script Bot accept/reject forms use exact proposal revisions and service-recorded author history", async () => {
+  const f = await fixture(), setup = f.app.execute(f.auth.actor, f.setup), web = createS14Handler(f.app, "http://localhost:3001");
+  const form = (command: BotCommand) => web(new Request("http://localhost:3001/s14/commands", { method: "POST", headers: { cookie: `jit_s14=${f.token}`, origin: "http://localhost:3001", "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf: f.auth.csrf, command: JSON.stringify(command) }).toString() }));
+  for (const decision of ["accept", "reject"] as const) {
+    const conversation = f.app.conversation(f.auth.actor, setup.conversation!.id).conversation;
+    f.app.execute(f.auth.actor, post(conversation.id, conversation.revision)); await f.app.drainReplies();
+    let proposal = f.app.home(f.auth.actor).proposals.find(p => p.state === "proposed")!;
+    proposal = f.app.execute(f.auth.actor, { kind: "bot.proposal.revise", requestId: rid(), expectedRevision: 1, payload: { proposalId: proposal.id, name: "Owner-reviewed Bot", responsibility: "Read facts", routeId: "selected" } }).proposal!;
+    const history = await (await web(new Request(`http://localhost:3001/api/s14/bot-proposals/${proposal.id}`, { headers: { cookie: `jit_s14=${f.token}` } }))).json();
+    expect(history.history.map((p: { author: string }) => p.author)).toEqual(["bot", "owner"]);
+    const command: BotCommand = decision === "accept" ? { kind: "bot.proposal.accept", requestId: rid(), expectedRevision: 2, payload: { proposalId: proposal.id, capabilities: { tools: [], resources: [] } } } : { kind: "bot.proposal.reject", requestId: rid(), expectedRevision: 2, payload: { proposalId: proposal.id } };
+    expect((await form(command)).status).toBe(303); expect((await form(command)).status).toBe(303);
+  }
+});

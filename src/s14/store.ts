@@ -7,7 +7,7 @@ import type { AppTransaction } from "../store";
 /** Fresh S14 SQLite format identity, distinct from every legacy user_version. */
 export const s14ApplicationId = 0x4a495431;
 /** Unreleased S14 schema version; unknown formats refuse before writable SQLite opens. */
-export const s14SchemaVersion = 1;
+export const s14SchemaVersion = 2;
 /** Safe next action for incompatible stores; no original bytes or sidecars are opened by SQLite. */
 export class FreshStateRequired extends AppError {
   readonly nextAction = "choose_a_separate_JIT_S14_DATABASE_keep_legacy_installation";
@@ -58,6 +58,19 @@ export class S14Store {
         CREATE TABLE reply_outbox (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id), message_id TEXT NOT NULL UNIQUE REFERENCES messages(id), record_json TEXT NOT NULL);
         CREATE TABLE command_receipts (owner_id TEXT NOT NULL REFERENCES owner(id), request_id TEXT NOT NULL, payload_hash TEXT NOT NULL, result_json TEXT NOT NULL, committed_at INTEGER NOT NULL, PRIMARY KEY(owner_id,request_id));
         CREATE TABLE audit (sequence INTEGER PRIMARY KEY, kind TEXT NOT NULL, request_id TEXT NOT NULL UNIQUE, committed_at INTEGER NOT NULL);
+        CREATE TABLE work_items (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id), record_json TEXT NOT NULL);
+        CREATE TABLE work_grants (id TEXT PRIMARY KEY, work_id TEXT NOT NULL UNIQUE REFERENCES work_items(id), record_json TEXT NOT NULL);
+        CREATE TABLE grant_state (grant_id TEXT PRIMARY KEY REFERENCES work_grants(id), generation INTEGER NOT NULL, revoked INTEGER NOT NULL CHECK(revoked IN (0,1)));
+        CREATE TABLE grant_usage (grant_id TEXT PRIMARY KEY REFERENCES work_grants(id), attempts INTEGER NOT NULL, steps INTEGER NOT NULL, calls INTEGER NOT NULL, output_bytes INTEGER NOT NULL);
+        CREATE TABLE work_queue (work_id TEXT PRIMARY KEY REFERENCES work_items(id), state TEXT NOT NULL CHECK(state IN ('queued','claimed','blocked')));
+        CREATE TABLE work_attempts (id TEXT PRIMARY KEY, work_id TEXT NOT NULL REFERENCES work_items(id), request_id TEXT NOT NULL, payload_hash TEXT NOT NULL, record_json TEXT NOT NULL, UNIQUE(work_id,request_id));
+        CREATE TABLE attempt_usage (attempt_id TEXT PRIMARY KEY REFERENCES work_attempts(id), calls INTEGER NOT NULL);
+        CREATE TABLE work_results (attempt_id TEXT PRIMARY KEY REFERENCES work_attempts(id), work_id TEXT NOT NULL REFERENCES work_items(id), content TEXT NOT NULL, committed_at INTEGER NOT NULL);
+        CREATE TABLE effects (id TEXT PRIMARY KEY, work_id TEXT NOT NULL REFERENCES work_items(id), attempt_id TEXT NOT NULL REFERENCES work_attempts(id), request_id TEXT NOT NULL, payload_hash TEXT NOT NULL, record_json TEXT NOT NULL, UNIQUE(attempt_id,request_id));
+        CREATE TABLE effect_versions (effect_id TEXT NOT NULL REFERENCES effects(id), revision INTEGER NOT NULL, record_json TEXT NOT NULL, PRIMARY KEY(effect_id,revision));
+        CREATE TRIGGER immutable_grant BEFORE UPDATE ON work_grants BEGIN SELECT RAISE(ABORT,'immutable_grant'); END;
+        CREATE TRIGGER immutable_attempt BEFORE UPDATE ON work_attempts WHEN json_extract(NEW.record_json,'$.snapshot') IS NOT json_extract(OLD.record_json,'$.snapshot') BEGIN SELECT RAISE(ABORT,'immutable_attempt'); END;
+        CREATE TRIGGER immutable_effect_action BEFORE UPDATE ON effects WHEN json_extract(NEW.record_json,'$.revision') = json_extract(OLD.record_json,'$.revision') AND (json_extract(NEW.record_json,'$.action') IS NOT json_extract(OLD.record_json,'$.action') OR json_extract(NEW.record_json,'$.actionHash') IS NOT json_extract(OLD.record_json,'$.actionHash') OR json_extract(NEW.record_json,'$.expiresAt') IS NOT json_extract(OLD.record_json,'$.expiresAt')) BEGIN SELECT RAISE(ABORT,'immutable_effect_action'); END;
         PRAGMA application_id=${s14ApplicationId}; PRAGMA user_version=${s14SchemaVersion};
       `)).immediate();
       chmodSync(path, 0o600);
