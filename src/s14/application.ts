@@ -1,3 +1,6 @@
+import { S14Attention } from "./attention";
+import { S14Routines } from "./routines";
+import type { AttentionCommand, AttentionPort, AttentionReceipt, RoutineCommand, RoutineReceipt } from "./routine-types";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { AppError } from "../errors";
 import type { AppTransaction } from "../store";
@@ -23,9 +26,9 @@ import { S14Computers } from "./computer";
 import type { ComputerCommand, ComputerOptions, ComputerReceipt } from "./computer-types";
 
 /** Stable complete typed owner ingress union for the S14 logic foundation. */
-export type S14Command = BotCommand | AuthorityCommand | MemoryCommand | ParallelCommand | ComputerCommand | GraphCommand | SharingCommand | RecoveryCommand;
+export type S14Command = BotCommand | AuthorityCommand | MemoryCommand | ParallelCommand | ComputerCommand | GraphCommand | SharingCommand | RecoveryCommand | RoutineCommand | AttentionCommand;
 /** Committed typed result of the S14 owner command boundary. */
-export type S14Receipt = BotReceipt | AuthorityReceipt | MemoryReceipt | ParallelReceipt | ComputerReceipt | GraphReceipt | SharingReceipt | RecoveryReceipt;
+export type S14Receipt = BotReceipt | AuthorityReceipt | MemoryReceipt | ParallelReceipt | ComputerReceipt | GraphReceipt | SharingReceipt | RecoveryReceipt | RoutineReceipt | AttentionReceipt;
 
 const id = () => crypto.randomUUID().replaceAll("-", "");
 const tokenPattern = /^[a-f0-9]{64}$/;
@@ -42,7 +45,7 @@ export function save(tx: AppTransaction, table: RecordTable, value: { id: string
 /** Reads bounded identity records from a trusted table name without starting workers. */
 export function records<T>(tx: AppTransaction, table: RecordTable): T[] { return tx.all<{ record_json: string }>(`SELECT record_json FROM ${table} ORDER BY rowid DESC LIMIT 100`).map(row => JSON.parse(row.record_json) as T); }
 /** Injectable deterministic inference/clock and rollback fault seams; production never enables fixture inference. */
-export interface S14Options { policy: Policy; chat: ChatPort; authority?: AuthorityOptions; parallel?: ParallelWebOptions; computers?: ComputerOptions; now?: () => number; beforeCommit?: () => void }
+export interface S14Options { policy: Policy; chat: ChatPort; authority?: AuthorityOptions; parallel?: ParallelWebOptions; computers?: ComputerOptions; attention?: AttentionPort; now?: () => number; beforeCommit?: () => void }
 
 /** Project-free owner command boundary; registered actors are revalidated on every read and commit. */
 export class S14Application {
@@ -57,6 +60,8 @@ export class S14Application {
   readonly artifacts: S14Artifacts;
   readonly sharing: S14Sharing;
   readonly recovery: S14Recovery;
+  readonly routines: S14Routines;
+  readonly attention: S14Attention;
   #actors = new WeakMap<OwnerActor, string>();
   #replyBusy = false;
   constructor(readonly store: S14Store, readonly options: S14Options) {
@@ -78,7 +83,9 @@ export class S14Application {
     this.reports = new S14Reports(this);
     this.artifacts = new S14Artifacts(this);
     this.recovery = new S14Recovery(this);
-    this.store.transaction(tx => { this.memory.reconcile(tx); this.sharing.fence(tx); this.parallel.reconcile(tx); this.reports.reconcile(tx); this.recovery.reconcileReservations(tx); this.recovery.reconcileEffects(tx); });
+    this.attention = new S14Attention(this, options.attention);
+    this.routines = new S14Routines(this);
+    this.store.transaction(tx => { this.memory.reconcile(tx); this.sharing.fence(tx); this.parallel.reconcile(tx); this.reports.reconcile(tx); this.recovery.reconcileReservations(tx); this.recovery.reconcileEffects(tx); this.attention.recover(tx); this.routines.reconcile(tx); });
     this.computers = new S14Computers(this, options.computers);
   }
   /** Trusted local bootstrap creates only the authentication principal, never resets an existing installation. */
@@ -172,6 +179,10 @@ export class S14Application {
   execute(actor: OwnerActor, command: SharingCommand): SharingReceipt;
   /** Records an exact owner statement about an unknown effect without retrying it. */
   execute(actor: OwnerActor, command: RecoveryCommand): RecoveryReceipt;
+  /** Executes exact captured routine authority and dispatch control through the owner receipt boundary. */
+  execute(actor: OwnerActor, command: RoutineCommand): RoutineReceipt;
+  /** Executes revisioned future attention filtering without changing history or authority. */
+  execute(actor: OwnerActor, command: AttentionCommand): AttentionReceipt;
   /** Executes the complete typed HTTP command union without client-controlled actor identities. */
   execute(actor: OwnerActor, command: S14Command): S14Receipt;
   execute(actor: OwnerActor, command: S14Command): S14Receipt {
@@ -185,7 +196,11 @@ export class S14Application {
       const previous = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash,result_json FROM command_receipts WHERE owner_id='owner' AND request_id=?", command.requestId);
       if (previous) { if (previous.payload_hash !== digest(encoded)) throw new AppError("request_id_conflict", 409); return JSON.parse(previous.result_json) as S14Receipt; }
       let result: S14Receipt;
-      if (command.kind === "effect.reconcile") {
+      if (command.kind.startsWith("routine.")) {
+        result = this.routines.apply(tx, command as RoutineCommand);
+      } else if (command.kind === "attention.set") {
+        result = this.attention.apply(tx, command as AttentionCommand);
+      } else if (command.kind === "effect.reconcile") {
         result = this.recovery.apply(tx, command as RecoveryCommand);
       } else if (command.kind.startsWith("snapshot.")) {
         result = this.sharing.apply(tx, command as SharingCommand);
@@ -206,6 +221,7 @@ export class S14Application {
         result = this.applyBot(tx, command as BotCommand);
       }
       this.reports.reconcile(tx);
+      this.routines.reconcile(tx);
       tx.run("INSERT INTO command_receipts VALUES ('owner',?,?,?,?)", command.requestId, digest(encoded), canonical(result), this.now());
       tx.run("INSERT INTO audit(kind,request_id,committed_at) VALUES (?,?,?)", command.kind, command.requestId, this.now());
       this.options.beforeCommit?.(); return structuredClone(result);

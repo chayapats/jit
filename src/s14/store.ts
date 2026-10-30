@@ -7,7 +7,7 @@ import type { AppTransaction } from "../store";
 /** Fresh S14 SQLite format identity, distinct from every legacy user_version. */
 export const s14ApplicationId = 0x4a495431;
 /** Unreleased S14 schema version; unknown formats refuse before writable SQLite opens. */
-export const s14SchemaVersion = 10;
+export const s14SchemaVersion = 11;
 /** Safe next action for incompatible stores; no original bytes or sidecars are opened by SQLite. */
 export class FreshStateRequired extends AppError {
   readonly nextAction = "choose_a_separate_JIT_S14_DATABASE_keep_legacy_installation";
@@ -60,6 +60,9 @@ export class S14Store {
         CREATE TABLE lifecycle.grant_usage (grant_id TEXT PRIMARY KEY, attempts INTEGER NOT NULL, steps INTEGER NOT NULL, calls INTEGER NOT NULL, output_bytes INTEGER NOT NULL, reads INTEGER NOT NULL);
         CREATE TRIGGER lifecycle.monotonic_usage BEFORE UPDATE ON grant_usage WHEN NEW.attempts<OLD.attempts OR NEW.steps<OLD.steps OR NEW.calls<OLD.calls OR NEW.output_bytes<OLD.output_bytes OR NEW.reads<OLD.reads BEGIN SELECT RAISE(ABORT,'immutable_reservation'); END;
         CREATE TRIGGER lifecycle.no_usage_delete BEFORE DELETE ON grant_usage BEGIN SELECT RAISE(ABORT,'immutable_reservation'); END;
+        CREATE TABLE lifecycle.routine_usage (routine_id TEXT PRIMARY KEY, consumed INTEGER NOT NULL, last_instant INTEGER NOT NULL);
+        CREATE TRIGGER lifecycle.monotonic_routine_usage BEFORE UPDATE ON routine_usage WHEN NEW.consumed<OLD.consumed OR NEW.last_instant<OLD.last_instant BEGIN SELECT RAISE(ABORT,'immutable_reservation'); END;
+        CREATE TRIGGER lifecycle.no_routine_usage_delete BEFORE DELETE ON routine_usage BEGIN SELECT RAISE(ABORT,'immutable_reservation'); END;
         CREATE TABLE lifecycle.native_intents (id TEXT PRIMARY KEY, record_json TEXT NOT NULL);
         CREATE TRIGGER lifecycle.no_native_intent_update BEFORE UPDATE ON native_intents BEGIN SELECT RAISE(ABORT,'immutable_lifecycle'); END;
         CREATE TRIGGER lifecycle.no_native_intent_delete BEFORE DELETE ON native_intents BEGIN SELECT RAISE(ABORT,'immutable_lifecycle'); END;
@@ -82,6 +85,13 @@ export class S14Store {
         CREATE TABLE parallel_sessions (conversation_id TEXT PRIMARY KEY REFERENCES conversations(id), vendor_id TEXT NOT NULL);
         CREATE TABLE web_reads (id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL REFERENCES work_attempts(id), record_json TEXT NOT NULL);
         CREATE TABLE external_evidence (id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL REFERENCES work_attempts(id), record_json TEXT NOT NULL);
+        CREATE TABLE routines (id TEXT PRIMARY KEY, record_json TEXT NOT NULL);
+        CREATE TABLE routine_occurrences (id TEXT PRIMARY KEY, routine_id TEXT NOT NULL REFERENCES routines(id), work_id TEXT UNIQUE REFERENCES work_items(id), record_json TEXT NOT NULL);
+        CREATE TABLE routine_results (attempt_id TEXT PRIMARY KEY REFERENCES work_attempts(id), occurrence_id TEXT NOT NULL REFERENCES routine_occurrences(id), record_json TEXT NOT NULL);
+        CREATE TABLE attention_setting (id TEXT PRIMARY KEY, record_json TEXT NOT NULL);
+        INSERT INTO attention_setting VALUES ('in_app','{"id":"in_app","revision":0,"level":"needs-me"}');
+        CREATE TABLE attention_decisions (group_id TEXT PRIMARY KEY, decision TEXT NOT NULL);
+        CREATE TABLE attention_notices (id TEXT PRIMARY KEY, group_id TEXT NOT NULL UNIQUE, record_json TEXT NOT NULL);
         CREATE TABLE bots (id TEXT PRIMARY KEY, record_json TEXT NOT NULL);
         CREATE TABLE conversations (id TEXT PRIMARY KEY, bot_id TEXT NOT NULL REFERENCES bots(id), revision INTEGER NOT NULL);
         CREATE TABLE messages (sequence INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, conversation_id TEXT NOT NULL REFERENCES conversations(id), record_json TEXT NOT NULL);

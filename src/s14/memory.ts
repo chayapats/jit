@@ -90,8 +90,9 @@ export class S14Memory {
 
   /** Pins a suggested task to its committed message; withdrawn text cannot become a new obligation or handoff. */
   workSources(tx: AppTransaction, work: Work): MemoryRef[] {
-    if (!work.sourceMessageId) return [];
-    const source = record<MemorySource>(tx, "memory_sources", work.sourceMessageId);
+    const sourceId = work.sourceMessageId ?? work.source?.id;
+    if (!sourceId) return [];
+    const source = record<MemorySource>(tx, "memory_sources", sourceId);
     if (source.conversationId !== work.conversationId || work.source && !same(work.source, source) || !this.sourceCurrent(tx, source)) throw new AppError("memory_source_unavailable", 409);
     return [ref(source)];
   }

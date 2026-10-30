@@ -216,3 +216,19 @@ Recovery checkpoint states are prepared/dispatched/committed/waiting/queued/resu
 Map per-checkpoint reason codes from app.work-checkpoints/v1. Stopped/revoked/expired/changed/exhausted/unknown-effect work stays waiting/blocked with its concrete reason. An unsettled old transport or orphan retains capacity. Unknown actual usage stays null and charged reservations stay retained. Boot discovery fences old results before workers start; a queued/resumed replacement never reuses native history. Existing committed reports/siblings remain inspectable with explicit partial evidence.
 
 Exact UI integration: `sharing-types.ts`, `recovery-types.ts`, `authority-types.ts`; `app.sharing.list(actor)`, `app.recovery.view(actor)`, `app.authority.effect/view`, existing report/artifact queries and `app.execute`. Opus owns F10/F11/F12, recovery/stopping/unknown presentation, forms and both-language/no-script/responsive/accessibility acceptance. All UI acceptance boxes remain unticked in this logic delivery. Do not add inferred retries, provider fallback, new authority, arbitrary paths or active artifact HTML.
+
+## ROUT14-01 logic seam (UI pending)
+
+Contracts: `app.routine-grants/v1`, `app.attention-outbox/v1`; schema 11 (unreleased 1–10 refuse fresh-state). No product UI was authored in this slice. All new commands work through the existing JSON and URL-encoded `/commands` endpoints and receipt queries, with the same session/Origin/Host/CSRF/exact-key rules.
+
+| Command | Exact payload | expectedRevision |
+| --- | --- | --- |
+| `routine.enable` | `RoutinePurpose` in `src/s14/routine-types.ts`: StartPayload minus task/expiresAt, plus timezone, recurrence, misfire:'coalesce', occurrenceBudget, endsAt | conversation.revision |
+| `routine.pause`, `routine.resume`, `routine.revoke` | `{routineId}` | routine.revision |
+| `attention.set` | `{level:'all'|'needs-me'}` | attention setting.revision (initial 0) |
+
+Queries: `GET /api/s14/routines` → `{items:RoutineView[]}`, `GET /api/s14/routines/:id` → RoutineView, `GET /api/s14/attention` → `{setting,items:AttentionNotice[]}`. Service equivalents: `app.routines.list/view`, `app.attention.view`. Reads never tick or send. The opt-in service pump ticks captured work and drains local attention after recovery.
+
+Map Routine states active/paused/revoked/exhausted/blocked and occurrence states running/complete/failed/stopped; outcome report/no_update/failed/needs_owner/null. History exposes quiet runs; quiet has no notice. Scope-changing findings are Work proposals (`reason:'routine_out_of_scope'`), with task.accept separate from work.start. Failed admission/read/transport/sibling and owner decisions stay visible. Resume preserves the capture/budget and discards paused backlog; changed Bot/resource authority needs a newly reviewed routine. The UI must not infer start or modify scope from source/model text.
+
+In-app attention carries local_dedupe_only and distinct state/remote/resolvedAt. Unknown remains unknown without auto-resubmit. Retrying an owner command keeps its requestId; stale revision requires a fresh owner review. Thai/English forms, routine/history/needs-me layout and accessibility remain the later Opus-authored work; keep those acceptance boxes unticked.
