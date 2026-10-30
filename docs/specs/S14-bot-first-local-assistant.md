@@ -64,6 +64,8 @@ The owner confirmed this combined baseline and authorized specification, ADR, de
 | S14-AC13 | The Opus-authored experience covers setup, Bot creation/grants, work in progress, partial reports, artifacts, approvals, takeover, memory/sharing, quota and recovery in Thai/English and accessible responsive dark/light states. Concrete design is the delegate's responsibility. | FR-10, FR-23–FR-25; NFR-11, NFR-13 |
 | S14-AC14 | Supported Linux x64/arm64 installations prove bounded computer startup/idle stop, persistence, restart and selected-route readiness with labelled opt-in evidence. Configuration or scripted success alone never claims live support. | FR-13, FR-36; NFR-04, NFR-06, NFR-10 |
 
+S14-AC02/05/06/11 also require revision-bound capability edits and Bot retirement/deletion with lifecycle preview/fencing ([BOT14-02](../tickets/s14/BOT14-02.md)). NFR-08 remains an MVP gate for the fresh store: versioned state/artifact/opaque-native backup, staged upgrade and quarantined restore reconcile the current independent lifecycle ledger before any worker starts ([OPS14-01](../tickets/s14/OPS14-01.md)); [EVID14-01](../tickets/s14/EVID14-01.md) records actual Linux round-trip evidence. Fresh state waives legacy conversion only.
+
 ## Failure, authority and recovery rules
 
 Grant, owner, Bot, connection, share, source and attempt generations are checked at admission, before each tool/effect and at publication. The effective permission is an intersection of owner policy, originating work grant, receiver Bot capability and current resource grant. Models may narrow but never widen it.

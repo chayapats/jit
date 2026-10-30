@@ -493,21 +493,21 @@ const LANES = {
   scout: [["working", "ค้นเว็บ", "Searching the web", "mini PC 16GB ราคา ไทย", 0], ["working", "อ่านหน้ารีวิว", "Reading a review", "reviews-a.example/alder-16", 2], ["working", "อ่านหน้าราคา", "Reading a price page", "vendor-c.example/pricing → 403", 3], ["working", "อ่านหน้าสเปก", "Reading a spec page", "vendor-b.example/specs", 5], ["working", "อ่านกระทู้ผู้ใช้", "Reading an owner thread", "forum.example/t/482", 5], ["done", "เก็บหลักฐานแล้ว", "Evidence kept", null, 5], ["done", "เก็บหลักฐานแล้ว", "Evidence kept", null, 5], ["done", "เก็บหลักฐานแล้ว", "Evidence kept", null, 5]],
   analyst: [["working", "อ่านสเปกรุ่นที่เข้าเกณฑ์", "Reading specs that fit", "benchlab.example/birch-idle", 0], ["working", "เทียบราคาและ RAM", "Comparing price and RAM", null, 1], ["working", "เทียบกินไฟ", "Comparing idle power", null, 2], ["working", "ร่างตารางเทียบ", "Drafting the table", null, 3], ["done", "ส่งตารางเทียบแล้ว", "Table delivered", null, 4], ["done", "ส่งตารางเทียบแล้ว", "Table delivered", null, 4], ["done", "ส่งตารางเทียบแล้ว", "Table delivered", null, 4], ["done", "ส่งตารางเทียบแล้ว", "Table delivered", null, 4]],
   checker: [["queued", "รอคิว เต็มเพดาน 2 บอทพร้อมกัน", "Queued: limit of 2 Bots reached", null, 0], ["queued", "รอคิว เต็มเพดาน 2 บอทพร้อมกัน", "Queued: limit of 2 Bots reached", null, 0], ["queued", "รอคิว เต็มเพดาน 2 บอทพร้อมกัน", "Queued: limit of 2 Bots reached", null, 0], ["queued", "รอคิว เต็มเพดาน 2 บอทพร้อมกัน", "Queued: limit of 2 Bots reached", null, 0], ["working", "ตรวจแหล่งที่ขัดกัน", "Checking conflicting sources", "benchlab.example/birch-idle", 1], ["working", "ตรวจแหล่งที่ขัดกัน", "Checking conflicting sources", "vendor-b.example/specs", 2], ["done", "ตรวจแล้ว พบข้อขัดกัน 1 จุด", "Found 1 conflict", null, 2], ["done", "ตรวจแล้ว พบข้อขัดกัน 1 จุด", "Found 1 conflict", null, 2]],
-  jit: [["blocked", "รอหลักฐานจาก 3 บอท", "Waiting on 3 Bots", null, 0], ["blocked", "รอหลักฐานจาก 3 บอท", "Waiting on 3 Bots", null, 0], ["blocked", "รอหลักฐานจาก 3 บอท", "Waiting on 3 Bots", null, 0], ["working", "เผยแพร่ฉบับบางส่วน r1", "Published partial r1", null, 0], ["blocked", "รอหลักฐานจาก 2 บอท", "Waiting on 2 Bots", null, 0], ["blocked", "รอหลักฐานจาก 1 บอท", "Waiting on 1 Bot", null, 0], ["working", "รวมหลักฐานเป็นรายงาน", "Writing the report from evidence", null, 0], ["done", "เผยแพร่รายงาน r2", "Published report r2", null, 0]]
+  jit: [["blocked", "รอหลักฐานจาก 3 บอท", "Waiting on 3 Bots", null, 0], ["blocked", "รอหลักฐานจาก 3 บอท", "Waiting on 3 Bots", null, 0], ["blocked", "รอหลักฐานจาก 3 บอท", "Waiting on 3 Bots", null, 0], ["blocked", "เผยแพร่ฉบับบางส่วน r1 แล้ว รอหลักฐานที่เหลือ", "Partial r1 published; waiting for remaining evidence", null, 0], ["blocked", "รอหลักฐานจาก 2 บอท", "Waiting on 2 Bots", null, 0], ["blocked", "รอหลักฐานจาก 1 บอท", "Waiting on 1 Bot", null, 0], ["working", "รวมหลักฐานเป็นรายงาน", "Writing the report from evidence", null, 0], ["done", "เผยแพร่รายงาน r2", "Published report r2", null, 0]]
 };
 const OF = { scout: 6, analyst: 4, checker: 2 };
-function lane(id) {
-  const r = LANES[id][S.beat], l = { id, st: r[0], th: r[1], en: r[2], q: r[3], read: r[4], of: OF[id] };
-  if (S.stopBot[id] === "stopping") Object.assign(l, { st: "stopping", th: "ขอให้หยุดแล้ว รอการอ่านที่ค้างจบจริง", en: "Stop requested, waiting for the open read to settle" });
-  if (S.stopBot[id] === "stopped") Object.assign(l, { st: "stopped", th: "หยุดแล้ว หลักฐานที่ได้ยังเก็บไว้", en: "Stopped. Its evidence is kept" });
-  if (id === "analyst" && S.fault === "sibling" && S.beat >= 3) Object.assign(l, { st: "failed", th: "ล้มเหลวที่ขั้นร่างตาราง", en: "Failed while drafting the table", q: null });
-  if (S.fault === "rate" && id !== "jit" && l.st === "working") Object.assign(l, { st: "waiting", th: "Parallel จำกัดความถี่ ยังไม่ลองใหม่", en: "Parallel rate limit. Not retrying yet", q: null });
-  if (S.fault === "quota" && id === "scout" && l.st === "working") Object.assign(l, { st: "waiting", th: "route ของบอทนี้ครบโควตา", en: "This Bot's route hit its quota", q: null });
-  if (S.stopAll === "stopping" && !["done", "failed"].includes(l.st)) Object.assign(l, { st: "stopping", th: "ขอให้หยุดแล้ว รอการเรียกที่ค้างจบจริง", en: "Stop requested, waiting for open calls to settle" });
-  if (S.stopAll === "stopped" && !["done", "failed"].includes(l.st)) Object.assign(l, { st: "stopped", th: "หยุดแล้ว", en: "Stopped" });
-  if (S.approval === "pending" && id === "scout") Object.assign(l, { st: "waiting", th: "รออนุมัติการส่งคำขอ", en: "Waiting for your approval", q: null });
-  if (S.lease === "owner" && id === "scout") Object.assign(l, { st: "waiting", th: "คุณคุมเบราว์เซอร์อยู่ บอทส่งคำสั่งไม่ได้", en: "You're driving. The Bot can't send input", q: null });
-  if (S.lease === "wall" && id === "scout") Object.assign(l, { st: "waiting", th: "ติดหน้าเข้าสู่ระบบ รอคุณช่วย", en: "Stuck at a sign-in page, needs you", q: null });
+function lane(id, beat = S.beat) {
+  const r = LANES[id][beat], l = { id, st: r[0], th: r[1], en: r[2], q: r[3], read: r[4], of: OF[id] };
+  if (beat >= (S.stopBotAt[id] ?? S.beat) && S.stopBot[id] === "stopping") Object.assign(l, { st: "stopping", th: "ขอให้หยุดแล้ว รอการอ่านที่ค้างจบจริง", en: "Stop requested, waiting for the open read to settle" });
+  if (beat >= (S.stopBotAt[id] ?? S.beat) && S.stopBot[id] === "stopped") Object.assign(l, { st: "stopped", th: "หยุดแล้ว หลักฐานที่ได้ยังเก็บไว้", en: "Stopped. Its evidence is kept" });
+  if (id === "analyst" && S.fault === "sibling" && beat >= 3) Object.assign(l, { st: "failed", th: "ล้มเหลวที่ขั้นร่างตาราง", en: "Failed while drafting the table", q: null });
+  if (S.fault === "rate" && beat >= 2 && id !== "jit" && l.st === "working") Object.assign(l, { st: "waiting", th: "Parallel จำกัดความถี่ ยังไม่ลองใหม่", en: "Parallel rate limit. Not retrying yet", q: null });
+  if (S.fault === "quota" && beat >= 2 && id === "scout" && l.st === "working") Object.assign(l, { st: "waiting", th: "route ของบอทนี้ครบโควตา", en: "This Bot's route hit its quota", q: null });
+  if (beat >= (S.stopAllAt ?? S.beat) && S.stopAll === "stopping" && !["done", "failed"].includes(l.st)) Object.assign(l, { st: "stopping", th: "ขอให้หยุดแล้ว รอการเรียกที่ค้างจบจริง", en: "Stop requested, waiting for open calls to settle" });
+  if (beat >= (S.stopAllAt ?? S.beat) && S.stopAll === "stopped" && !["done", "failed"].includes(l.st)) Object.assign(l, { st: "stopped", th: "หยุดแล้ว", en: "Stopped" });
+  if (S.approval === "pending" && beat >= 3 && id === "scout") Object.assign(l, { st: "waiting", th: "รออนุมัติการส่งคำขอ", en: "Waiting for your approval", q: null });
+  if (S.lease === "owner" && beat >= (S.leaseAt ?? S.beat) && id === "scout") Object.assign(l, { st: "waiting", th: "คุณคุมเบราว์เซอร์อยู่ บอทส่งคำสั่งไม่ได้", en: "You're driving. The Bot can't send input", q: null });
+  if (S.lease === "wall" && beat >= (S.leaseAt ?? S.beat) && id === "scout") Object.assign(l, { st: "waiting", th: "ติดหน้าเข้าสู่ระบบ รอคุณช่วย", en: "Stuck at a sign-in page, needs you", q: null });
   return l;
 }
 function isPartial() { return S.fault === "sibling" || S.partial || S.stopBot.scout === "stopped" || S.stopBot.analyst === "stopped"; }
@@ -520,16 +520,18 @@ function workState() {
 }
 const reportRev = () => (S.beat >= 7 ? "r2" : S.beat >= 3 ? "r1" : null);
 function tlRows() {
-  const now = BT[S.beat], clip = segs => segs.map(([a, b, k]) => [a, Math.min(b, now), k]).filter(([a, b]) => b > a);
-  const rate = S.fault === "rate";
-  const sEnd = S.stopBot.scout === "stopped" ? BT[Math.min(S.beat, 6)] : 4;
-  const aEnd = S.fault === "sibling" ? 2.4 : 3.1;
-  return [
-    ["scout", clip(rate ? [[0, 1.2, "run"], [1.2, 9, "wait"]] : [[0, sEnd, "run"]])],
-    ["analyst", clip(rate ? [[0, 1.2, "run"], [1.2, 9, "wait"]] : [[0, aEnd, "run"], ...(S.fault === "sibling" ? [[2.3, 2.4, "fail"]] : [])])],
-    ["checker", clip([[0, 3.1, "queue"], [3.1, 4.9, "run"]])],
-    ["jit", clip([[0, 4.9, "wait"], [4.9, 5.5, "run"]])]
-  ];
+  // The same fixture snapshots drive lane status, concurrent count and intervals.
+  const kind = { working: "run", queued: "queue", blocked: "wait", waiting: "wait", failed: "fail", stopping: "wait", stopped: "wait" };
+  return Object.keys(LANES).map(id => {
+    const segments = [];
+    for (let beat = 0; beat < S.beat; beat++) {
+      const k = kind[lane(id, beat).st]; if (!k) continue;
+      const last = segments[segments.length - 1];
+      if (last && last[2] === k && last[1] === BT[beat]) last[1] = BT[beat + 1];
+      else segments.push([BT[beat], BT[beat + 1], k]);
+    }
+    return [id, segments];
+  });
 }
 
 /* Conversation, work pane, report, evidence, grant, approval, computer */
@@ -545,7 +547,7 @@ function composer({ big = false, ph } = {}) {
       <span class="grow"></span>
       <button class="send" type="submit" aria-label="${T("ส่ง", "Send")}" ${S.draft.trim() ? "" : "disabled"}>${ico("up")}</button>
     </div>
-    ${S.workMode ? `<div class="budget-line"><span>${T("เริ่มทันทีเมื่อส่ง", "Starts as soon as you send")}</span><span>·</span><span>${T("ไม่เกิน 3 บอท · 2 พร้อมกัน · 30 นาที · 40 การอ่าน", "Up to 3 Bots · 2 at once · 30 min · 40 reads")}</span><button type="button" class="link" data-act="modal" data-arg="budget">${T("ปรับ", "Adjust")}</button></div>` : ""}
+    ${S.workMode ? `<div class="budget-line"><span>${T("เริ่มทันทีเมื่อส่ง", "Starts as soon as you send")}</span><span>·</span><span>${T("ไม่เกิน 4 บอท · 2 พร้อมกัน · 30 นาที · 40 การอ่าน", "Up to 4 Bots · 2 at once · 30 min · 40 reads")}</span><button type="button" class="link" data-act="modal" data-arg="budget">${T("ปรับ", "Adjust")}</button></div>` : ""}
   </form>`;
 }
 const msgOwner = t => `<div class="msg-owner">${esc(t)}</div>`;
@@ -590,14 +592,14 @@ function chatAsk() {
     <section class="workcard"><div class="workcard-hd"><div class="t"><b>${T("อยากให้ค้นจริงและทำรายงานไหม", "Want this researched into a report?")}</b><span class="meta">${T("จิตยังไม่ได้เริ่มงาน", "Jit hasn't started any work")}</span></div></div>${ownerStrip(btn(T("เริ่มเป็นงาน", "Start as work"), "startAsk", "", "sm primary"), T("เริ่มด้วยเพดานเดียวกับปุ่ม “สั่งเป็นงาน” กดแล้วหยุดได้ทุกเมื่อ", "Uses the same limits as Run as work. You can stop it any time."))}</section></div>`;
 }
 function chatDirect() {
-  const accepted = S.taskProposal;
+  const accepted = S.taskProposal, id = S.target;
   return `<div class="thread">
-    ${banner("", "lock", T(`คุยตรงกับ${bn("scout")}`, `Talking directly to ${bn("scout")}`), T("บอทใช้ไฟล์ บัญชี และความจำของตัวเองเท่านั้น แชตนี้ไม่ให้สิทธิ์เพิ่ม", "It uses only its own files, logins and memory. This chat grants nothing extra."))}
-    ${msgOwner(T("@นักค้น อ่าน 3 ลิงก์นี้แล้วสรุปว่ารุ่นไหนรองรับ arm64", "@Scout read these 3 links and tell me which models support arm64"))}
-    ${msgBot("scout", `<p>${T("อ่านครบ 3 หน้า รุ่น Birch รองรับ arm64 ส่วน Alder กับ Cedar เป็น x64 เท่านั้น", "I read all 3. Birch supports arm64, while Alder and Cedar are x64 only.")}<button type="button" class="cite" data-act="cite" data-arg="3">3</button></p><p class="meta">${T("งาน wk-0421 · เริ่มจากคำสั่งของคุณ · 3 การอ่าน · เสร็จแล้ว", "Work wk-0421 · started from your command · 3 reads · done")}</p>`, "done")}
-    ${msgBot("scout", `<p>${T("อยากให้ผมเฝ้าราคา Birch ทุกสัปดาห์ไหมครับ เสนอไว้เฉยๆ ยังไม่ได้เริ่ม", "Want me to watch Birch's price weekly? It's only a suggestion, and I haven't started.")}</p>`)}
+    ${banner("", "lock", T(`คุยตรงกับ${bn(id)}`, `Talking directly to ${bn(id)}`), T("บอทใช้ไฟล์ บัญชี และความจำของตัวเองเท่านั้น แชตนี้ไม่ให้สิทธิ์เพิ่ม", "It uses only its own files, logins and memory. This chat grants nothing extra."))}
+    ${msgOwner(T(`@${bn(id)} อ่าน 3 ลิงก์นี้แล้วสรุปว่ารุ่นไหนรองรับ arm64`, `@${bn(id)} read these 3 links and tell me which models support arm64`))}
+    ${msgBot(id, `<p>${T("อ่านครบ 3 หน้า รุ่น Birch รองรับ arm64 ส่วน Alder กับ Cedar เป็น x64 เท่านั้น", "I read all 3. Birch supports arm64, while Alder and Cedar are x64 only.")}<button type="button" class="cite" data-act="cite" data-arg="3">3</button></p><p class="meta">${T("งาน wk-0421 · เริ่มจากคำสั่งของคุณ · 3 การอ่าน · เสร็จแล้ว", "Work wk-0421 · started from your command · 3 reads · done")}</p>`, "done")}
+    ${msgBot(id, `<p>${T("อยากให้ผมเฝ้าราคา Birch ทุกสัปดาห์ไหมครับ เสนอไว้เฉยๆ ยังไม่ได้เริ่ม", "Want me to watch Birch's price weekly? It's only a suggestion, and I haven't started.")}</p>`)}
     <section class="slip" data-state="${accepted === "open" ? "open" : "closed"}">
-      <div class="slip-hd">${ico("work")}<div class="t"><b>${T("งานที่นักค้นเสนอ: เฝ้าราคา Birch ทุกสัปดาห์", "Scout's suggestion: watch Birch's price weekly")}</b><span class="meta">${T("ข้อเสนอจากบอท ฉบับ r1 · ยังไม่มีผลใดๆ", "Bot proposal, revision r1 · has no effect yet")}</span></div>${pill(accepted === "open" ? "proposed" : accepted === "accepted" ? "accepted" : accepted === "dismissed" ? "stopped" : "working")}</div>
+      <div class="slip-hd">${ico("work")}<div class="t"><b>${T(`งานที่${bn(id)}เสนอ: เฝ้าราคา Birch ทุกสัปดาห์`, `${bn(id)}'s suggestion: watch Birch's price weekly`)}</b><span class="meta">${T("ข้อเสนอจากบอท ฉบับ r1 · ยังไม่มีผลใดๆ", "Bot proposal, revision r1 · has no effect yet")}</span></div>${pill(accepted === "open" ? "proposed" : accepted === "accepted" ? "accepted" : accepted === "dismissed" ? "stopped" : "working")}</div>
       ${accepted === "open" ? ownerStrip(btn(T("รับไว้เป็นงาน", "Accept as a task"), "task", "accept", "sm") + btn(T("ไม่เอา", "Dismiss"), "task", "dismiss", "sm"), T("การรับไว้ยังไม่เริ่มงาน ต้องกดเริ่มแยกต่างหาก", "Accepting doesn't start it. Starting is a separate step."))
         : accepted === "accepted" ? ownerStrip(btn(T("เริ่มงานนี้", "Start this work"), "task", "start", "sm primary") + btn(T("ตั้งเป็นกิจวัตร", "Make it a routine"), "go", "routines", "sm"), T("ยังไม่มีอะไรทำงาน กดเริ่มเพื่อสร้างขอบเขตงาน", "Nothing is running. Starting creates its work grant."))
         : accepted === "started" ? `<div class="owner-strip"><p class="sub">${T("เริ่มแล้วจากคำสั่งของคุณ · ขอบเขต g1", "Started from your command · grant g1")}</p></div>` : `<div class="owner-strip"><p class="sub">${T("ปิดข้อเสนอแล้ว ไม่มีผลใดๆ", "Dismissed. Nothing happened.")}</p></div>`}
@@ -704,12 +706,13 @@ function tabScope() {
   const row = (k, v) => `<dt>${k}</dt><dd>${v}</dd>`;
   return `<div class="stack s16">
     <section><h3 class="sec-t">${T("คำสั่งของคุณ", "Your command")}</h3><div class="slip-exact" style="margin:0">${esc(req())}</div></section>
-    <dl class="kv">${row(T("ขอบเขต", "Grant"), `<span class="mono">g1</span> · ${T("ใช้ได้ถึงจบงานหรือ 15:30", "valid until done or 15:30")}`)}${row(T("บอท", "Bots"), [bn("jit"), bn("scout"), bn("analyst"), bn("checker")].join(" · "))}${row(T("เครื่องมือ", "Tools"), T("ค้นและอ่านเว็บผ่าน Parallel · ไฟล์ในเครื่องของแต่ละบอท · เปิดดูเว็บ", "Web search and read via Parallel · each Bot's own files · view websites"))}${row(T("ส่งออก", "Outbound"), T("เฉพาะคำค้นและ URL สาธารณะ", "Public queries and URLs only"))}${row(T("การกระทำภายนอก", "External actions"), T("ขออนุมัติทุกครั้ง", "Ask every time"))}${row(T("เพดาน", "Limits"), T("3 บอท · 2 พร้อมกัน · 30 นาที · 40 การอ่าน", "3 Bots · 2 at once · 30 min · 40 reads"))}</dl>
+    <dl class="kv">${row(T("ขอบเขต", "Grant"), `<span class="mono">g1</span> · ${T("ใช้ได้ถึงจบงานหรือ 15:30", "valid until done or 15:30")}`)}${row(T("บอท", "Bots"), [bn("jit"), bn("scout"), bn("analyst"), bn("checker")].join(" · "))}${row(T("เครื่องมือ", "Tools"), T("ค้นและอ่านเว็บผ่าน Parallel · ไฟล์ในเครื่องของแต่ละบอท · เปิดดูเว็บ", "Web search and read via Parallel · each Bot's own files · view websites"))}${row(T("ส่งออก", "Outbound"), T("เฉพาะคำค้นและ URL สาธารณะ", "Public queries and URLs only"))}${row(T("การกระทำภายนอก", "External actions"), T("ขออนุมัติทุกครั้ง", "Ask every time"))}${row(T("เพดาน", "Limits"), T("4 บอท · 2 พร้อมกัน · 30 นาที · 40 การอ่าน", "4 Bots · 2 at once · 30 min · 40 reads"))}</dl>
     <p class="sub">${T("บอทส่งงานต่อกันได้ภายในขอบเขตนี้เท่านั้น แต่ละตัวยังเห็นเฉพาะของตัวเอง", "Bots can hand work to each other only within this grant, and each still sees only its own things.")}</p>
     <div class="card flush">${ownerStrip(btn(T("ปรับเพดาน", "Adjust limits"), "modal", "budget", "sm") + btn(T("หยุดและเพิกถอนขอบเขต", "Stop and revoke the grant"), "stopAll", "", "sm danger"), T("ลดได้ทุกเมื่อ เพิ่มได้จากคุณเท่านั้น", "You can reduce any time. Only you can increase."))}</div></div>`;
 }
 function computerView(id = "scout") {
-  const l = S.route === "bot" && S.lease === "agent" ? "idle" : S.lease, driver = l === "owner" ? "owner" : "agent", name = bn(id);
+  const lease = id === "scout" ? S.lease : (S.computerLeases[id] || "agent");
+  const l = S.route === "bot" && lease === "agent" ? "idle" : lease, driver = l === "owner" ? "owner" : "agent", name = bn(id);
   const wall = l === "wall" || l === "owner";
   const url = wall ? "vendor-c.example/login" : "reviews-a.example/alder-16";
   const leaseText = { agent: [T(`${name}คุมอยู่`, `${name} is driving`), T("ดูได้อย่างเดียวจนกว่าคุณจะขอคุมเอง", "View only until you take over")], wall: [T(`${name}ติดหน้าเข้าสู่ระบบ`, `${name} is stuck at sign-in`), T("บอทพิมพ์รหัสผ่านแทนคุณไม่ได้", "A Bot can't enter your password")], owner: [T("คุณคุมอยู่", "You're driving"), T(`${name}ส่งคำสั่งไม่ได้จนกว่าคุณจะคืน`, `${name} can't send input until you hand back`)], idle: [T("ไม่มีใครคุม", "Nobody is driving"), T("เบราว์เซอร์ว่าง", "The browser is idle")] }[l];
@@ -718,20 +721,20 @@ function computerView(id = "scout") {
     : `<div class="fake-t">Alder 16 GB</div><div class="fake-l" style="width:88%"></div><div class="fake-l" style="width:76%"></div><div class="fake-l" style="width:82%"></div><div class="fake-l" style="width:40%"></div><span class="cursor" style="left:46%;top:52%">${name}</span>`;
   return `<div class="stack s16">
     <div class="lease" data-driver="${driver}"><div class="t"><b style="font-weight:600">${leaseText[0]}</b><div class="meta">${leaseText[1]}</div></div>
-      ${l === "owner" ? btn(T(`คืนให้${name}`, `Hand back to ${name}`), "lease", "agent", "sm primary") : btn(ico("hand") + T("คุมเอง", "Take over"), "lease", "owner", `sm ${l === "wall" ? "primary" : ""}`)}</div>
-    ${l === "owner" && S.approval === "held" ? banner("warn", "alert", T("การส่งแบบฟอร์มที่ค้างยังไม่ถูกอนุมัติ", "The held form submit is not approved"), T("คืนเครื่องแล้วบอทยังส่งเองไม่ได้ ต้องอนุมัติในการ์ดแยก", "Handing back doesn't approve it. It needs its own approval.")) : ""}
+      ${l === "owner" ? btn(T(`คืนให้${name}`, `Hand back to ${name}`), "lease", `${id}:agent`, "sm primary") : btn(ico("hand") + T("คุมเอง", "Take over"), "lease", `${id}:owner`, `sm ${l === "wall" ? "primary" : ""}`)}</div>
+    ${id === "scout" && l === "owner" && S.approval === "held" ? banner("warn", "alert", T("การส่งแบบฟอร์มที่ค้างยังไม่ถูกอนุมัติ", "The held form submit is not approved"), T("คืนเครื่องแล้วบอทยังส่งเองไม่ได้ ต้องอนุมัติในการ์ดแยก", "Handing back doesn't approve it. It needs its own approval.")) : ""}
     <div class="screen" data-driver="${driver}"><div class="screen-bar">${ico("lock")}<span class="url">${url}</span><span class="meta">${T("ภาพสด", "Live")} · ${T("จำลอง", "fixture")}</span></div><div class="screen-view" role="img" aria-label="${esc(T(`ภาพหน้าจอเบราว์เซอร์ของ${name}: ${url}`, `${name}'s browser view: ${url}`))}">${view}</div></div>
     <section><h3 class="sec-t">${T("ที่ทำล่าสุด", "Latest actions")}</h3><ol class="steps-log">${[["14:02", T("เปิดหน้า", "Opened"), url], ["14:01", T("ดูหน้าจอ", "Took a screenshot"), ""], ["14:00", T("เปิดหน้า", "Opened"), "reviews-a.example/alder-16"]].map(r => `<li><time>${r[0]}</time><span>${r[1]} ${r[2] ? `<span class="mono" style="font-size:12px">${r[2]}</span>` : ""}</span></li>`).join("")}</ol></section></div>`;
 }
 function pane() {
   if (!S.pane) return "";
   const tab = S.pane, tabs = [["progress", T("ความคืบหน้า", "Progress")], ["report", T("รายงาน", "Report")], ["evidence", T("หลักฐาน", "Evidence")], ["scope", T("ขอบเขต", "Grant")], ["computer", T("คอมพิวเตอร์", "Computer")]];
-  const body = { progress: tabProgress, report: tabReport, evidence: tabEvidence, scope: tabScope, computer: () => computerView("scout") }[tab]();
+  const body = { progress: tabProgress, report: tabReport, evidence: tabEvidence, scope: tabScope, computer: () => computerView(S.computerBot) }[tab]();
   return `<div class="scrim" data-act="closePane"></div><aside class="pane" data-wide="${tab === "computer"}" aria-label="${T("รายละเอียดงาน", "Work details")}">
     <div class="pane-hdr"><div class="t"><b>${T("เทียบ mini PC สำหรับรัน Jit ที่บ้าน", "Compare mini PCs for running Jit at home")}</b><div class="row" style="margin-top:4px">${pill(workState())}<span class="meta mono" style="font-size:12px">wk-0418</span></div></div>${iconBtn("x", T("ปิดแผง", "Close panel"), "closePane")}</div>
     <div class="tabs" role="tablist" aria-label="${T("ส่วนของงาน", "Work sections")}">${tabs.map(([k, l]) => `<button type="button" role="tab" id="tab-${k}" aria-selected="${k === tab}" aria-controls="pane-panel" tabindex="${k === tab ? 0 : -1}" data-act="openPane" data-arg="${k}">${l}</button>`).join("")}</div>
     <div class="pane-body" role="tabpanel" id="pane-panel" aria-labelledby="tab-${tab}" tabindex="0">${body}</div>
-    ${tab === "report" && reportRev() ? `<div class="pane-foot">${btn(ico("down") + T("ดาวน์โหลดรายงาน", "Download report"), "download", `report-${S.reportView || reportRev()}.md`, "sm primary")}${btn(ico("share") + T("แชร์ให้บอท", "Share with a Bot"), "modal", "share", "sm")}</div>` : ""}
+    ${tab === "report" && reportRev() ? `<div class="pane-foot">${btn(ico("down") + T("ดาวน์โหลดรายงาน", "Download report"), "download", `report-${S.reportView || reportRev()}.md`, "sm primary")}${btn(ico("share") + T("แชร์ให้บอท", "Share with a Bot"), "modal", "share:jit:report", "sm")}</div>` : ""}
   </aside>`;
 }
 
@@ -803,6 +806,15 @@ function viewTeam() {
   const card = id => `<button type="button" class="bot-card" data-act="openBot" data-arg="${id}"><div class="between">${head(id, "idle")}${tag(id === "jit" ? T("ผู้ประสานงาน", "Coordinator") : T("ว่าง", "Idle"))}</div><div><b style="font-weight:600">${bn(id)}</b><p class="sub">${T(BOTS[id].role[0], BOTS[id].role[1])}</p></div><p class="meta">${id === "jit" ? T("ไม่มีคอมพิวเตอร์ของตัวเอง", "No computer of its own") : T("คอมพิวเตอร์หลับอยู่ · 2 บัญชีเว็บ", "Computer asleep · 2 web logins")}</p></button>`;
   return hdr(T("ทีม", "Team"), T("บอทแต่ละตัวมีเครื่อง ไฟล์ และบัญชีแยกกัน", "Each Bot has its own computer, files and logins"), btn(ico("plus") + `<span class="lbl">${T("เสนอบอทใหม่", "Propose a Bot")}</span>`, "scene", "botProposal", "sm"), "") + `<div class="scroll"><div class="col wide"><div class="bot-grid">${Object.keys(BOTS).map(card).join("")}</div></div></div>`;
 }
+const FILES = [
+  { id: "notes", name: "notes-mini-pc.md", rev: "r4", size: "4 KB", hash: "90bf…4a" },
+  { id: "prices", name: "price-table.csv", rev: "r2", size: "2 KB", hash: "71ac…0e" }
+];
+function shareDraft(owner = "scout", fileId = "prices") {
+  const file = fileId === "report" ? { id: "report", name: "report.md", rev: S.reportView || reportRev() || "r2", size: "6 KB", hash: "c41e…92" } : FILES.find(f => f.id === fileId) || FILES[1];
+  return { owner, ...file, receiver: owner === "analyst" ? "checker" : "analyst", scope: "work" };
+}
+const shareScope = scope => scope === "work" ? T("งาน wk-0418 เท่านั้น", "Work wk-0418 only") : T("จนกว่าจะเพิกถอน", "Until revoked");
 function viewBot() {
   const id = S.bot, tabs = id === "jit" ? [["overview", T("ภาพรวม", "Overview")], ["memory", T("ความจำ", "Memory")]] : [["overview", T("ภาพรวม", "Overview")], ["computer", T("คอมพิวเตอร์", "Computer")], ["files", T("ไฟล์", "Files")], ["memory", T("ความจำ", "Memory")]];
   const t = tabs.some(x => x[0] === S.botTab) ? S.botTab : "overview";
@@ -810,8 +822,8 @@ function viewBot() {
   let body = "";
   if (t === "overview") body = `<section class="stack s4">${cap(true, T("ค้นและอ่านเว็บ", "Web search and read"), T("ผ่าน Parallel ไม่ใช้ key", "Via Parallel, no key"))}${cap(true, T("เปิดดูเว็บในเบราว์เซอร์ของตัวเอง", "View websites in its own browser"), T("การส่งข้อมูลต้องขออนุมัติ", "Submitting anything needs approval"))}${cap(true, T("อ่านเขียนไฟล์ในเครื่องของตัวเอง", "Read and write files on its own computer"), T("ไม่เห็นไฟล์ของบอทอื่นหรือของเครื่องคุณ", "Can't see other Bots' files or your host"))}${cap(false, T("เขียนโค้ดและเปิด PR", "Code and open PRs"), T("ระยะ B ยังไม่พร้อม", "Phase B, not ready"))}${cap(false, T("อีเมลและปฏิทิน", "Email and calendar"), T("ระยะ C ยังไม่พร้อม", "Phase C, not ready"))}</section>`;
   if (t === "computer") body = `<div class="stack s16"><dl class="kv"><dt>${T("สถานะ", "State")}</dt><dd>${T("หลับอยู่ · ตื่นเองเมื่อมีงาน", "Asleep · wakes when work arrives")}</dd><dt>${T("พื้นที่", "Disk")}</dt><dd>1.4 ${T("จาก", "of")} 8 GB</dd><dt>${T("บัญชีเว็บ", "Web logins")}</dt><dd>vendor-c.example · ${T("เข้าโดยคุณ", "signed in by you")}</dd></dl>${computerView(id)}<div class="card flush">${ownerStrip(btn(T("ออกจากบัญชีเว็บทั้งหมด", "Sign out of all websites"), "toast", T("ต้นแบบ: ของจริงแสดงรายการก่อนยืนยัน", "Prototype: the real app lists them first"), "sm") + btn(T("ล้างเครื่อง…", "Reset computer…"), "toast", T("ต้นแบบ: ของจริงต้องดูรายการที่จะหายก่อนยืนยัน", "Prototype: the real app previews what's lost first"), "sm danger"))}</div></div>`;
-  if (t === "files") body = `<div class="stack s8"><p class="sub">${T("ไฟล์เหล่านี้อยู่ในเครื่องของบอทตัวนี้เท่านั้น", "These files live only on this Bot's computer.")}</p>${[["notes-mini-pc.md", "r4", "4 KB"], ["price-table.csv", "r2", "2 KB"]].map(f => `<div class="dl">${ico("doc")}<div class="t"><span class="mono">${f[0]}</span><div class="meta">${f[1]} · ${f[2]}</div></div>${btn(ico("share") + T("แชร์", "Share"), "modal", "share", "sm")}</div>`).join("")}
-    <section style="margin-top:12px"><h3 class="sec-t">${T("ที่แชร์ออกไป", "Shared out")}</h3>${S.share === "none" ? `<p class="sub">${T("ยังไม่ได้แชร์อะไร", "Nothing shared yet.")}</p>` : `<div class="dl">${ico("share")}<div class="t"><span class="mono">price-table.csv r2</span><div class="meta">${T("ให้นักเทียบ · ใช้ในงาน wk-0418", "To Analyst · for work wk-0418")}</div></div>${S.share === "active" ? btn(T("เพิกถอน", "Revoke"), "share", "revoked", "sm") : tag(T("เพิกถอนแล้ว", "Revoked"))}</div>${S.share === "revoked" ? banner("", "alert", T("เพิกถอนแล้ว", "Revoked"), T("นักเทียบใช้ snapshot นี้ต่อไม่ได้ แต่สิ่งที่อ่านไปแล้วเรียกคืนไม่ได้", "Analyst can't use this snapshot any more, but what it already read can't be recalled.")) : ""}`}</section></div>`;
+  if (t === "files") body = `<div class="stack s8"><p class="sub">${T("ไฟล์เหล่านี้อยู่ในเครื่องของบอทตัวนี้เท่านั้น", "These files live only on this Bot's computer.")}</p>${FILES.map(f => `<div class="dl">${ico("doc")}<div class="t"><span class="mono">${f.name}</span><div class="meta">${f.rev} · ${f.size}</div></div>${btn(ico("share") + T("แชร์", "Share"), "modal", `share:${id}:${f.id}`, "sm")}</div>`).join("")}
+    <section style="margin-top:12px"><h3 class="sec-t">${T("ที่แชร์ออกไป", "Shared out")}</h3>${(S.share === "none" || S.shareRecord.owner !== id) ? `<p class="sub">${T("ยังไม่ได้แชร์อะไร", "Nothing shared yet.")}</p>` : `<div class="dl">${ico("share")}<div class="t"><span class="mono">${esc(S.shareRecord.name)} ${esc(S.shareRecord.rev)}</span><div class="meta">${T(`ให้${bn(S.shareRecord.receiver)}`, `To ${bn(S.shareRecord.receiver)}`)} · ${shareScope(S.shareRecord.scope)}</div></div>${S.share === "active" ? btn(T("เพิกถอน", "Revoke"), "share", "revoked", "sm") : tag(T("เพิกถอนแล้ว", "Revoked"))}</div>${S.share === "revoked" ? banner("", "alert", T("เพิกถอนแล้ว", "Revoked"), T(`${bn(S.shareRecord.receiver)}ใช้ snapshot นี้ต่อไม่ได้ แต่สิ่งที่อ่านไปแล้วเรียกคืนไม่ได้`, `${bn(S.shareRecord.receiver)} can't use this snapshot any more, but what it already read can't be recalled.`)) : ""}`}</section></div>`;
   if (t === "memory") body = memList(id === "jit" ? "shared" : id);
   return hdr(bn(id), T(BOTS[id].role[0], BOTS[id].role[1]), id === "jit" ? "" : btn(T("สั่งโดยตรง", "Tell directly"), "directTo", id, "sm"), "team") + `<div class="scroll"><div class="col"><div class="bot-hero" style="margin-bottom:16px">${head(id, "idle")}<div><h2>${bn(id)}</h2><p class="sub">${T(BOTS[id].role[0], BOTS[id].role[1])}</p></div></div><div class="tabs" role="tablist" aria-label="${bn(id)}" style="padding:0;margin-bottom:16px">${tabs.map(([k, l]) => `<button type="button" role="tab" aria-selected="${k === t}" tabindex="${k === t ? 0 : -1}" data-act="botTab" data-arg="${k}">${l}</button>`).join("")}</div><div role="tabpanel">${body}</div></div></div>`;
 }
@@ -872,7 +884,10 @@ function sheet() {
   if (k === "target") return wrap(T("ส่งถึงใคร", "Send to"), `<div class="stack s8">${Object.keys(BOTS).map(id => `<button type="button" class="opt" data-act="setTarget" data-arg="${id}" aria-pressed="${S.target === id}">${head(id, "idle")}<span><b style="font-weight:500">${bn(id)}</b><br><span class="sub">${T(BOTS[id].role[0], BOTS[id].role[1])}</span></span></button>`).join("")}</div>`);
   if (k === "budget") return wrap(T("เพดานของงานนี้", "Limits for this work"), `<div class="stack"><div class="field"><label for="b1">${T("เวลาสูงสุด (นาที)", "Maximum time (min)")}</label><input id="b1" value="30" inputmode="numeric"></div><div class="field"><label for="b2">${T("จำนวนการอ่านสูงสุด", "Maximum reads")}</label><input id="b2" value="40" inputmode="numeric"></div><p class="sub">${T("การเพิ่มทำให้ได้ขอบเขตฉบับใหม่ ไม่กระทบที่ใช้ไปแล้ว", "Raising these creates a new grant revision. Usage so far is unchanged.")}</p></div>`, btn(T("ยกเลิก", "Cancel"), "closeModal") + btn(T("บันทึกเป็น g2", "Save as g2"), "budgetSave", "", "primary"));
   if (k === "route") return wrap(T("เลือก route สำหรับงานนี้", "Choose a route for this work"), `<div class="stack s8"><p class="sub">${T("การเลือกนี้มีผลเฉพาะงานนี้ และอาจใช้บัญชีหรือค่าใช้จ่ายอื่น", "This applies to this work only and may use another account or cost.")}</p><button type="button" class="opt" disabled><span><b style="font-weight:500">Codex</b><br><span class="sub">${T("ยังไม่เชื่อม", "Not connected")}</span></span></button></div>`, btn(T("ปิด", "Close"), "closeModal"));
-  if (k === "share") return wrap(T("แชร์ snapshot", "Share a snapshot"), `<div class="stack"><div class="kv"><span class="sub">${T("ไฟล์", "File")}</span><span class="mono">price-table.csv r2 · 2 KB · sha256:71ac…0e</span><span class="sub">${T("จาก", "From")}</span><span>${bn("scout")}</span></div><div class="field"><label for="sh1">${T("ให้บอท", "To Bot")}</label><select id="sh1"><option>${bn("analyst")}</option><option>${bn("checker")}</option></select></div><div class="field"><label for="sh2">${T("ใช้ได้กับ", "Usable for")}</label><select id="sh2"><option>${T("งาน wk-0418 เท่านั้น", "Work wk-0418 only")}</option><option>${T("จนกว่าจะเพิกถอน", "Until revoked")}</option></select></div>${banner("", "lock", T("แชร์เฉพาะ snapshot นี้", "Only this snapshot is shared"), T("บอทผู้รับไม่เห็นไฟล์อื่น บัญชีเว็บ หรือความจำของนักค้น และไม่เห็นการแก้ไขหลังจากนี้", "The receiver won't see other files, web logins or Scout's memory, or any later edits."))}</div>`, btn(T("ยกเลิก", "Cancel"), "closeModal") + btn(T("แชร์ snapshot นี้", "Share this snapshot"), "share", "active", "primary"));
+  if (k === "share") {
+    const d = S.shareDraft;
+    return wrap(T("แชร์ snapshot", "Share a snapshot"), `<div class="stack"><div class="kv"><span class="sub">${T("ไฟล์", "File")}</span><span class="mono">${esc(d.name)} ${esc(d.rev)} · ${esc(d.size)} · sha256:${esc(d.hash)}</span><span class="sub">${T("จาก", "From")}</span><span>${bn(d.owner)}</span></div><div class="field"><label for="sh1">${T("ให้บอท", "To Bot")}</label><select id="sh1">${Object.keys(BOTS).filter(id => id !== d.owner).map(id => `<option value="${id}" ${d.receiver === id ? "selected" : ""}>${bn(id)}</option>`).join("")}</select></div><div class="field"><label for="sh2">${T("ใช้ได้กับ", "Usable for")}</label><select id="sh2">${["work", "until-revoked"].map(scope => `<option value="${scope}" ${d.scope === scope ? "selected" : ""}>${shareScope(scope)}</option>`).join("")}</select></div>${banner("", "lock", T("แชร์เฉพาะ snapshot นี้", "Only this snapshot is shared"), T(`บอทผู้รับไม่เห็นไฟล์อื่น บัญชีเว็บ หรือความจำของ${bn(d.owner)} และไม่เห็นการแก้ไขหลังจากนี้`, `The receiver won't see other files, web logins or ${bn(d.owner)}'s memory, or any later edits.`))}</div>`, btn(T("ยกเลิก", "Cancel"), "closeModal") + btn(T("แชร์ snapshot นี้", "Share this snapshot"), "share", "active", "primary"));
+  }
   if (k === "forget") { const mm = Object.values(MEM).flat().find(x => x[0] === a); return wrap(T("ลืมความจำนี้", "Forget this memory"), `<div class="stack"><p>${T(mm[1], mm[2])}</p><h3 class="sec-t" style="margin:0">${T("จะมีผลกับ", "This will affect")}</h3><ul class="stack s4"><li>${T("บริบทของงานใหม่ทุกงาน: จะไม่ถูกใช้", "Context for all new work: no longer used")}</li><li>${T("รายงาน 1 ฉบับที่อ้างถึง: ติดป้ายว่าที่มาถูกลืม", "1 report citing it: marked as origin forgotten")}</li><li>${T("session ของบอท: เลิกใช้ context ที่มีข้อความนี้", "Bot sessions: retire context holding it")}</li></ul><p class="sub">${T("สิ่งที่ส่งออกนอกเครื่องไปแล้วเรียกคืนไม่ได้", "Anything already sent outside this machine can't be recalled.")}</p></div>`, btn(T("ยกเลิก", "Cancel"), "closeModal") + btn(T("ลืม", "Forget"), "forget", a, "danger")); }
   if (k === "promote") { const mm = Object.values(MEM).flat().find(x => x[0] === a); return wrap(T("ย้ายเป็นความจำกลาง", "Move to shared memory"), `<div class="stack"><p>${T(mm[1], mm[2])}</p><p class="meta">${T(mm[4], mm[5])}</p><p class="sub">${T("ทุกบอทจะเห็นข้อนี้ พร้อมที่มาและสถานะเดิม บอทย้ายเองไม่ได้", "Every Bot will see this, with its origin and status. A Bot can't do this itself.")}</p></div>`, btn(T("ยกเลิก", "Cancel"), "closeModal") + btn(T("ย้ายเป็นความจำกลาง", "Move to shared"), "promote", a, "primary")); }
   if (k === "routine") return wrap(T("อนุญาตกิจวัตรใหม่", "Authorize a new routine"), `<div class="stack"><div class="field"><label for="r1">${T("ให้ทำอะไร", "What it does")}</label><textarea id="r1" rows="2">${T("เฝ้าราคา UPS ขนาด 600 VA", "Watch prices for a 600 VA UPS")}</textarea></div><div class="field"><label for="r2">${T("เมื่อไร", "When")}</label><input id="r2" value="${T("ทุกวันจันทร์ 08:00 · Asia/Bangkok", "Mondays 08:00 · Asia/Bangkok")}"></div><div class="field"><label for="r3">${T("บอท", "Bot")}</label><select id="r3"><option>${bn("scout")}</option><option>${bn("analyst")}</option></select></div><div class="field"><label for="r4">${T("เพดานต่อรอบ", "Per-run limit")}</label><input id="r4" value="${T("10 นาที · 12 การอ่าน", "10 min · 12 reads")}"></div><p class="sub">${T("บอททำได้แค่นี้ ถ้าพบเรื่องอื่นจะเสนอให้คุณ", "The Bot can do only this. Anything else becomes a proposal to you.")}</p></div>`, btn(T("ยกเลิก", "Cancel"), "closeModal") + btn(T("อนุญาตกิจวัตรนี้", "Authorize this routine"), "routineCreate", "", "primary"));
@@ -890,8 +905,8 @@ const REQ_TH = "เทียบ mini PC สำหรับรัน Jit ที�
 const REQ_EN = "Compare mini PCs for running Jit at home, under THB 15,000 with at least 16 GB RAM, and write me a report";
 Object.assign(S, { lang: "th", theme: "dark", device: "desktop", scene: "wake" });
 function reset() {
-  Object.assign(S, { route: "home", setup: "wake", firstRun: false, draft: "", workMode: false, target: "jit", conv: "research", request: null, pane: null, modal: null, toast: null,
-    beat: 0, playing: false, stopAll: null, stopBot: {}, fault: null, partial: false, approval: null, approvalRev: "r2", lease: "agent", botProposal: "open", taskProposal: "open", share: "none",
+  Object.assign(S, { route: "home", setup: "wake", firstRun: false, draft: "", workMode: false, target: "jit", computerBot: "scout", computerLeases: {}, conv: "research", request: null, pane: null, modal: null, toast: null,
+    beat: 0, playing: false, stopAll: null, stopAllAt: null, stopBot: {}, stopBotAt: {}, leaseAt: null, fault: null, partial: false, approval: null, approvalRev: "r2", lease: "agent", botProposal: "open", taskProposal: "open", share: "none", shareDraft: shareDraft(), shareRecord: shareDraft(),
     forgot: [], promoted: [], memTab: "shared", routinePaused: false, routineFinding: "open", paid: false, paidAck: false, setTab: "web", bot: "scout", botTab: "overview", evFilter: "all", cite: null, reportView: null, recovery: {} });
 }
 const req = () => S.request ?? T(REQ_TH, REQ_EN);
@@ -965,17 +980,26 @@ function startResearch(text) { const custom = text && text !== REQ_TH && text !=
 const ACT = {
   go(a) { if (!a) return; S.route = a; S.pane = null; focusMain(); }, openChat(a) { S.route = "chat"; S.conv = a; S.target = a === "direct" ? "scout" : "jit"; if (a !== "research") S.pane = null; else if (S.beat === 0 && !S.playing) S.beat = 7; focusMain(); },
   openBot(a) { S.route = "bot"; S.bot = a; S.botTab = "overview"; S.pane = null; focusMain(); }, botTab(a) { S.botTab = a; }, memTab(a) { S.memTab = a; }, setTab(a) { S.setTab = a; },
-  openPane(a) { S.pane = a; }, closePane() { S.pane = null; }, modal(a) { S.modalFrom = document.activeElement?.dataset?.act ? `[data-act="${document.activeElement.dataset.act}"][data-arg="${CSS.escape(document.activeElement.dataset.arg || "")}"]` : null; S.modal = a; requestAnimationFrame(() => { const f = $("#app .sheet input, #app .sheet select, #app .sheet textarea") || $("#app .sheet-f button:last-child") || $("#app .sheet button"); f && f.focus(); }); },
+  openPane(a) { if (a === "computer" && !document.activeElement?.closest(".pane")) S.computerBot = "scout"; S.pane = a; }, closePane() { S.pane = null; }, modal(a) { if (a.split(":")[0] === "share") { const [, owner, fileId] = a.split(":"); S.shareDraft = shareDraft(owner || "scout", fileId || "prices"); } S.modalFrom = document.activeElement?.dataset?.act ? `[data-act="${document.activeElement.dataset.act}"][data-arg="${CSS.escape(document.activeElement.dataset.arg || "")}"]` : null; S.modal = a; requestAnimationFrame(() => { const f = $("#app .sheet input, #app .sheet select, #app .sheet textarea") || $("#app .sheet-f button:last-child") || $("#app .sheet button"); f && f.focus(); }); },
   closeModal() { S.modal = null; requestAnimationFrame(() => { const f = S.modalFrom && $("#app " + S.modalFrom); f && f.focus(); }); }, toast(a) { toast(a); }, noop() {}, attach() { toast(T("ต้นแบบนี้ไม่รับไฟล์จริง", "This prototype takes no real files")); },
   pickTarget() { ACT.modal("target"); }, setTarget(a) { S.target = a; ACT.closeModal(); }, toggleMode() { S.workMode = !S.workMode; }, starter(a) { S.draft = a; S.workMode = true; requestAnimationFrame(() => $("#draft")?.focus()); }, chip(a) { toast(T(`ส่ง “${a}” เหมือนคุณพิมพ์เอง`, `Sends “${a}” as if you typed it`)); },
-  startAsk() { startResearch(null); }, stopAll() { S.stopAll = "stopping"; S.playing = false; say(T("กำลังหยุดงาน", "Stopping work")); later(() => { S.stopAll = "stopped"; say(T("หยุดงานแล้ว", "Work stopped")); }, 2200); },
-  stopBot(a) { S.stopBot = { ...S.stopBot, [a]: "stopping" }; later(() => { S.stopBot = { ...S.stopBot, [a]: "stopped" }; }, 1600); }, viewComputer() { S.pane = "computer"; },
+  startAsk() { startResearch(null); }, stopAll() { S.stopAllAt = S.beat; S.stopAll = "stopping"; S.playing = false; say(T("กำลังหยุดงาน", "Stopping work")); later(() => { S.stopAll = "stopped"; say(T("หยุดงานแล้ว", "Work stopped")); }, 2200); },
+  stopBot(a) { S.stopBotAt[a] = S.beat; S.stopBot = { ...S.stopBot, [a]: "stopping" }; later(() => { S.stopBot = { ...S.stopBot, [a]: "stopped" }; }, 1600); }, viewComputer(a) { S.computerBot = BOTS[a] ? a : "scout"; S.pane = "computer"; },
   cite(a) { S.cite = a; if (S.conv === "direct") { toast(T("ของจริงเปิดหลักฐานของแหล่งนี้", "The real app opens this source's evidence")); return; } S.pane = "evidence"; S.evFilter = "all"; requestAnimationFrame(() => document.getElementById("ev-" + a)?.scrollIntoView({ block: "nearest" })); },
   reportView(a) { S.reportView = a; }, evFilter(a) { S.evFilter = a; }, download(a) { toast(T(`ต้นแบบไม่มีไฟล์จริง ของจริงจะดาวน์โหลด ${a}`, `No real file here. The real app downloads ${a}`)); },
   faultResolve(a) { if (a === "retry") { S.fault = null; S.playing = true; say(T("ลองใหม่แล้ว", "Retrying")); } else { Object.assign(S, { fault: null, stopAll: null, partial: true, beat: 7, playing: false, pane: "report" }); } },
   approvalSet(a) { if (a === "pending-r3") { S.approvalRev = "r3"; a = "pending"; } if (a === "stale") S.approvalRev = "r3"; S.approval = a; if (a === "approved") later(() => { S.approval = "done"; say(T("เว็บตอบรับแล้ว", "The site confirmed it")); }, 1500); },
-  lease(a) { S.lease = a; if (a === "agent" && S.approval === "held") S.approval = "pending"; say(a === "owner" ? T("คุณคุมอยู่ บอทส่งคำสั่งไม่ได้", "You're driving. The Bot can't send input") : T("คืนให้บอทแล้ว", "Handed back to the Bot")); },
-  share(a) { S.share = a; S.modal = null; if (S.route !== "bot") { S.route = "bot"; S.bot = "scout"; S.botTab = "files"; S.pane = null; } }, forget(a) { S.forgot = [...S.forgot, a]; S.modal = null; }, promote(a) { S.promoted = [...S.promoted, a]; S.modal = null; },
+  lease(a) { const [id, lease] = a.split(":"); if (!BOTS[id] || !["owner", "agent"].includes(lease)) return; if (id === "scout") { S.leaseAt = S.beat; S.lease = lease; if (lease === "agent" && S.approval === "held") S.approval = "pending"; } else S.computerLeases[id] = lease; say(lease === "owner" ? T("คุณคุมอยู่ บอทส่งคำสั่งไม่ได้", "You're driving. The Bot can't send input") : T("คืนให้บอทแล้ว", "Handed back to the Bot")); },
+  share(a) {
+    if (a === "active") {
+      const receiver = $("#sh1")?.value || S.shareDraft.receiver, scope = $("#sh2")?.value || S.shareDraft.scope;
+      if (!BOTS[receiver] || receiver === S.shareDraft.owner || !["work", "until-revoked"].includes(scope)) return;
+      S.shareRecord = { ...S.shareDraft, receiver, scope };
+    }
+    S.share = a; S.modal = null;
+    if (S.shareRecord.owner !== "jit") { S.route = "bot"; S.bot = S.shareRecord.owner; S.botTab = "files"; S.pane = null; }
+    else toast(`${S.shareRecord.name} ${S.shareRecord.rev} → ${bn(S.shareRecord.receiver)} · ${shareScope(S.shareRecord.scope)}`);
+  }, forget(a) { S.forgot = [...S.forgot, a]; S.modal = null; }, promote(a) { S.promoted = [...S.promoted, a]; S.modal = null; },
   routinePause() { S.routinePaused = !S.routinePaused; }, routineFinding(a) { S.routineFinding = a; }, routineCreate() { S.modal = null; toast(T("ต้นแบบ: ของจริงบันทึกกิจวัตรพร้อมขอบเขตนี้", "Prototype: the real app saves the routine with this scope")); },
   paid(a) { S.paid = a === "on"; S.modal = null; S.paidAck = false; }, paidAck() { S.paidAck = !S.paidAck; }, budgetSave() { S.modal = null; toast(T("ต้นแบบ: ขอบเขตจะเป็นฉบับ g2", "Prototype: the grant becomes revision g2")); }, recover(a) { S.recovery = { ...S.recovery, [a]: true }; },
   task(a) { S.taskProposal = { accept: "accepted", dismiss: "dismissed", start: "started" }[a]; }, botProposal(a) { S.botProposal = a; }, setup(a) { S.setup = a; S.scene = { wake: "wake", connect: "connect", know: "know", habit: "habit", set: "set" }[a]; syncHash(); }, finishSetup() { setScene("first", true); },
@@ -1008,8 +1032,13 @@ function morphChildren(a, b) {
   }
 }
 function patch(el, html) { const t = document.createElement("div"); t.innerHTML = html; morphChildren(el, t); }
-let lastState = null;
+let lastState = null, hadPane = false, wasOverlay = false, hadModal = false, paneFrom = null, paneFromSelector = null;
+const focusable = root => [...root.querySelectorAll("button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),a[href],[tabindex]")].filter(el => el.tabIndex >= 0 && !el.closest("[inert],[hidden]"));
 function render() {
+  if (S.pane && !hadPane) {
+    paneFrom = document.activeElement;
+    paneFromSelector = paneFrom?.dataset?.act ? `[data-act="${paneFrom.dataset.act}"][data-arg="${CSS.escape(paneFrom.dataset.arg || "")}"]` : null;
+  }
   const root = document.documentElement; root.lang = S.lang; root.dataset.theme = S.theme;
   document.title = T("ต้นแบบ Jit S14 · ข้อมูลจำลอง", "Jit S14 prototype · fixture data");
   const chrome = $("#chrome"), app = $("#app");
@@ -1021,6 +1050,19 @@ function render() {
   const d = $("#draft"); if (d && d.value !== S.draft) d.value = S.draft;
   const covered = S.pane && $("#viewport").clientWidth < 1040;
   $("#app .main")?.toggleAttribute("inert", !!covered || !!S.modal); $("#app .nav")?.toggleAttribute("inert", !!covered || !!S.modal); const p = $("#app .pane"); if (p) p.toggleAttribute("inert", !!S.modal);
+  if (p) { p.setAttribute("role", covered ? "dialog" : "complementary"); p.toggleAttribute("aria-modal", !!covered); if (covered) p.setAttribute("aria-modal", "true"); p.tabIndex = -1; }
+  if (covered && !S.modal && (!wasOverlay || hadModal || document.activeElement?.closest("[inert]"))) requestAnimationFrame(() => {
+    const current = $("#app .pane"); if (current && S.pane && !S.modal && !current.contains(document.activeElement)) (focusable(current)[0] || current).focus();
+  });
+  if (hadPane && !S.pane) {
+    const from = paneFrom, selector = paneFromSelector;
+    requestAnimationFrame(() => {
+      const target = from?.isConnected && !from.closest("[inert]") && (!selector || from.matches(selector)) ? from : selector && $("#app " + selector);
+      (target || $("#main"))?.focus();
+    });
+    paneFrom = null; paneFromSelector = null;
+  }
+  hadPane = !!S.pane; wasOverlay = !!covered; hadModal = !!S.modal;
   if (S.route === "chat" && S.conv === "research") { const st = workState(); if (st !== lastState) { if (lastState) say(T("สถานะงาน: ", "Work state: ") + T(STATE[st][1], STATE[st][2])); lastState = st; } } else lastState = null;
 }
 document.addEventListener("click", e => {
@@ -1029,7 +1071,11 @@ document.addEventListener("click", e => {
   const fn = ACT[el.dataset.act]; if (fn) { fn(el.dataset.arg ?? ""); if (S.scene) render(); }
 });
 document.addEventListener("input", e => { if (e.target.dataset?.bind === "draft") { S.draft = e.target.value; const b = e.target.form?.querySelector(".send"); if (b) b.disabled = !S.draft.trim(); } });
-document.addEventListener("change", e => { if (e.target.dataset?.change === "scene") setScene(e.target.value); });
+document.addEventListener("change", e => {
+  if (e.target.dataset?.change === "scene") setScene(e.target.value);
+  if (e.target.id === "sh1") S.shareDraft.receiver = e.target.value;
+  if (e.target.id === "sh2") S.shareDraft.scope = e.target.value;
+});
 document.addEventListener("submit", e => { e.preventDefault(); send(); });
 function send() {
   const text = S.draft.trim(); if (!text) return;
@@ -1049,8 +1095,9 @@ document.addEventListener("keydown", e => {
     const tabs = [...e.target.parentElement.querySelectorAll('[role="tab"]')], i = tabs.indexOf(e.target), n = tabs[(i + (e.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length];
     n.click(); requestAnimationFrame(() => n.focus()); e.preventDefault();
   }
-  if (e.key === "Tab" && S.modal) {
-    const sh = $("#app .sheet"); if (!sh) return; const f = [...sh.querySelectorAll("button:not(:disabled),input,select,textarea")]; if (!f.length) return;
+  if (e.key === "Tab" && (S.modal || wasOverlay)) {
+    const sh = $(S.modal ? "#app .sheet" : "#app .pane"); if (!sh) return; const f = focusable(sh); if (!f.length) { sh.focus(); e.preventDefault(); return; }
+    if (!sh.contains(document.activeElement)) { (e.shiftKey ? f[f.length - 1] : f[0]).focus(); e.preventDefault(); return; }
     if (e.shiftKey && document.activeElement === f[0]) { f[f.length - 1].focus(); e.preventDefault(); } else if (!e.shiftKey && document.activeElement === f[f.length - 1]) { f[0].focus(); e.preventDefault(); }
   }
 });

@@ -2,7 +2,7 @@
 
 Parent: [#244](https://github.com/chayapats/jit/issues/244). Documentation/design: [#245](https://github.com/chayapats/jit/issues/245). [Spec](../specs/S14-bot-first-local-assistant.md).
 
-Status: 15 scoped runtime/evidence tickets are published as needs-triage after the Opus handoff. None is ready-for-agent. Exact issue bodies are mirrored under s14/ and indexed in s14.json. No implementation dates are implied.
+Status: 17 scoped runtime/evidence tickets are published as needs-triage after the Opus handoff. None is ready-for-agent. Exact issue bodies are mirrored under s14/ and indexed in s14.json. No implementation dates are implied.
 
 ## Phase A — research MVP (required)
 
@@ -18,7 +18,11 @@ Status: 15 scoped runtime/evidence tickets are published as needs-triage after t
 | [REPORT14-01](https://github.com/chayapats/jit/issues/252) | Research work delivers a persisted cited report and authorized downloadable artifact revision; partial evidence stays partial. | TEAM14-01, BOX14-01 | citation binding, hash/type/path/size checks, lifecycle and restart |
 | [REC14-01](https://github.com/chayapats/jit/issues/254) | Restart reconciles native work and resumes only authorized replay-safe steps; uncertain effects remain waiting. | AUTH14-01, TEAM14-01, REPORT14-01; supported Schway #414 behavior | crash-window, lease, budget, revocation and unknown-effect fixtures |
 | [ROUT14-01](https://github.com/chayapats/jit/issues/255) | Owner-authorized routine produces a brief/report on schedule, stays quiet for no_update and asks on out-of-scope findings. | REPORT14-01, REC14-01 | timezone/misfire, quiet/failure, scope and notification dedupe |
-| [EVID14-01](https://github.com/chayapats/jit/issues/256) | Owner runs the research journey on supported Linux x64/arm64 with recorded limits, actual Parallel sources and restart evidence. | All Phase A slices; real route and host configured by owner | ready-for-human opt-in corpus/host evidence, not paid CI |
+| [BOT14-02](https://github.com/chayapats/jit/issues/262) | Owner revises capabilities, retires or deletes an existing Bot with exact preview/revision and immediate generation fencing. | SHARE14-01 lineage/revocation; REC14-01 native retirement | stale/duplicate commands, admission/input/publication races, lifecycle and no-resurrection fixtures |
+| [OPS14-01](https://github.com/chayapats/jit/issues/263) | Owner backs up and restores the fresh S14 store, artifacts and opaque native snapshots through quarantine and current-ledger reconciliation before workers start. | BOT14-02 and its artifact/share/native recovery prerequisites | consistent manifest, corrupt/incompatible/crash cutover, credential exclusion, lifecycle anti-resurrection and opt-in Linux round trip |
+| [EVID14-01](https://github.com/chayapats/jit/issues/256) | Owner runs the research journey on supported Linux x64/arm64 with recorded limits, actual Parallel sources and restart evidence. | All Phase A slices including BOT14-02 and OPS14-01; real route and host configured by owner | ready-for-human opt-in corpus/host evidence, not paid CI |
+
+BOT14-02 owns existing-Bot capability edits, retirement and deletion; BOX14-01 computer reset does not cover them. OPS14-01 owns the usable backup/restore/upgrade path for the new store; fresh state waives legacy conversion, not NFR-08. EVID14-01 is blocked on OPS14-01 and its lifecycle prerequisites.
 
 BOT14-01 and AUTH14-01 are independently useful new-store paths; they must not wait on an unrelated live subscription smoke. Engine prerequisites block activation of the dependent capability, not deterministic fixture work. A placeholder or missing upstream contract is never marked verified.
 

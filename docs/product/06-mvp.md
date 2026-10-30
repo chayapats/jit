@@ -35,4 +35,6 @@ Multi-user tenancy, native host-desktop runner, cloud computer dependency, autom
 7. A small owner-approved live research corpus records actual source coverage/failures before making quality claims about Parallel.
 8. Opus-authored UI/UX is reviewable in Thai/English, dark/light and responsive states. Unverified device/screen-reader/takeover behavior remains explicit.
 
+9. Existing Bot capability edits/retire/delete fence old authority and late results (BOT14-02). A complete new-store state/artifact/native backup restores through current lifecycle-ledger reconciliation before workers resume (OPS14-01); EVID14-01 records actual supported Linux round trips.
+
 No model done text, queued jobs, transcript on disk, configured token or fixture success substitutes for these gates.

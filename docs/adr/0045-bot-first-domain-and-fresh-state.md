@@ -36,6 +36,8 @@ Retaining a hidden system Project would preserve the unwanted ownership/permissi
 
 A fresh format simplifies transition but does not waive future schema-upgrade/recovery requirements. The first store format and every foreign key/backup classification must be specified in its implementation ticket. Old data is left intact rather than silently made available to new Bots.
 
+Delivery ownership: [BOT14-02](../tickets/s14/BOT14-02.md) covers capability edits/retire/delete with generation fencing; [OPS14-01](../tickets/s14/OPS14-01.md) covers consistent new-store backup, staged upgrades and quarantined restore against the current independent lifecycle ledger before workers start. [EVID14-01](../tickets/s14/EVID14-01.md) requires their Linux evidence. Fresh state waives legacy conversion only.
+
 ## Evidence required
 
 Fresh setup without any project row; duplicate command receipts; proposal acceptance without execution; private-source lookup denial; explicit share and revoke; lifecycle propagation; legacy-store refusal without byte changes; restore before worker activation. Requirements: FR-01–FR-07, FR-16–FR-23, FR-35; NFR-05/07/08/12.

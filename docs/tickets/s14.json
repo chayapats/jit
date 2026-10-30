@@ -179,7 +179,8 @@
       "blockedBy": [
         245,
         253,
-        255
+        255,
+        263
       ],
       "upstream": null,
       "missingDecision": null,
@@ -252,6 +253,39 @@
       "humanEvidence": false,
       "readyForAgent": false,
       "file": "s14/LIFE14-02.md"
+    },
+    {
+      "key": "BOT14-02",
+      "number": 262,
+      "url": "https://github.com/chayapats/jit/issues/262",
+      "title": "[Frontier] [BOT14-02] Revise Bot capabilities and retire or delete a Bot safely",
+      "phase": "A",
+      "blockedBy": [
+        245,
+        253,
+        254
+      ],
+      "upstream": null,
+      "missingDecision": null,
+      "humanEvidence": false,
+      "readyForAgent": false,
+      "file": "s14/BOT14-02.md"
+    },
+    {
+      "key": "OPS14-01",
+      "number": 263,
+      "url": "https://github.com/chayapats/jit/issues/263",
+      "title": "[Frontier] [OPS14-01] Back up and restore the new store before worker activation",
+      "phase": "A",
+      "blockedBy": [
+        245,
+        262
+      ],
+      "upstream": null,
+      "missingDecision": null,
+      "humanEvidence": false,
+      "readyForAgent": false,
+      "file": "s14/OPS14-01.md"
     }
   ],
   "nativeRelations": {

@@ -4,7 +4,7 @@ Parent: [S14 spec](../specs/S14-bot-first-local-assistant.md), [design brief](S1
 Author: Claude Opus 5.5 (`claude-opus-5-5`), as the sole UI/UX designer required by S14-D14. Parent verification: orchestrator creation, completed-task metadata and read-only thread configuration confirm `effort: high`. The delegate saw an internal numeric value of 25; no mapping from that value is asserted. Date: 2026-10-30.
 Interactive review artifact: [s14-bot-first-prototype.html](s14-bot-first-prototype.html). It runs on fixture data and connects to nothing.
 
-Parent contract/factual review: [authority and design resolutions](../contracts/s14-authority-and-design-resolutions.md) resolves Q1–Q7 and P-E1–P-E3 without replacing the designer's UI/UX. In particular, model classification cannot mint a grant; existing forms can support script-free takeover; the visual OwnerStrip is not an authorization boundary. Parent rendered three sample states with `html_preview`; the source prototype remains unchanged.
+Parent contract/factual review: [authority and design resolutions](../contracts/s14-authority-and-design-resolutions.md) resolves Q1–Q7 and P-E1–P-E3 without replacing the designer's UI/UX. In particular, model classification cannot mint a grant; existing forms can support script-free takeover; the visual OwnerStrip is not an authorization boundary. Parent rendered three sample states with `html_preview`; the original UI/UX is preserved. After Greptile review, the parent corrected prototype Bot/share bindings, interval derivation and overlay keyboard focus; these are logic/accessibility fixes to this design, not a new design.
 
 ## How to read this document
 
