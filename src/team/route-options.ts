@@ -16,10 +16,10 @@ export const routeProviders: readonly RouteProvider[] = Object.freeze(["codex", 
 export const providerLabel = (provider: string): string => provider === "codex" ? "ChatGPT (Codex)" : provider === "grok" ? "Grok" : provider;
 
 /**
- * Models used when the operator configured none. They restate Schway's documented per-route fallbacks
- * (`ROUTE_FALLBACK_MODELS`), used when the account catalog is unavailable.
+ * Models used when the operator configured none, and the installer's recommended routes. Grok restates Schway's
+ * documented fallback (`ROUTE_FALLBACK_MODELS`). Codex uses the owner's chosen default, gpt-6.1-sol (2026-10-30).
  */
-export const builtInModels: Readonly<Record<RouteProvider, string>> = Object.freeze({ codex: "gpt-6-astra", grok: "grok-4.7" });
+export const builtInModels: Readonly<Record<RouteProvider, string>> = Object.freeze({ codex: "gpt-6.1-sol", grok: "grok-4.7" });
 
 /** Operator-configured model per provider (service config `routes[].model`); null means none was configured. */
 export type RouteModels = Readonly<Record<RouteProvider, string | null>>;

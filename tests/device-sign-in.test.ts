@@ -97,7 +97,7 @@ test("Codex success displays approval once, checks the exact selected route and 
   expect(receipt.approval).toEqual({ userCode: code, verificationUri: link });
   expect(f.protocol.starts).toBe(1);
   expect(f.requests).toHaveLength(0);
-  expect(f.app.setup(f.auth.actor).connection.route).toEqual({ provider: "codex", model: "gpt-6-astra", authRoute: "codex" });
+  expect(f.app.setup(f.auth.actor).connection.route).toEqual({ provider: "codex", model: "gpt-6.1-sol", authRoute: "codex" });
   const replay = await f.app.execute(f.auth.actor, command);
   expect(replay.approval).toBeUndefined(); expect(f.protocol.starts).toBe(1);
   f.protocol.result = "success"; await f.clock.advance(1000);
