@@ -213,3 +213,10 @@ an HTTPS origin's Host. They use the fixture uid as simulated root, never sudo.
 Fresh Ubuntu 24.04 x64 and arm64 Pi 5 acceptance stays unchecked until the owner
 opts in and records sanitized evidence using the ops-service runbook. Never
 substitute a dry run or desktop suite for real install/reboot/account evidence.
+
+## S14 bootstrap seam (UX14-01)
+
+`issueOwnerSetupLink` now accepts the minimal `OwnerSetupStore` implemented by both `TransactionStore` and `S14Store`; its capability security and private one-time delivery contract are unchanged. An S14 installation must invoke it against the selected fresh S14 database and display the returned link once, then password setup and provider device sign-in proceed through Web commands without another owner shell command. No public Web route may mint that capability. The existing production installer/service still selects the legacy runtime: switching it to S14 is a later explicit cutover, not an implicit database conversion in this logic slice. Legacy stores remain byte-preserving refusals before S14 locks or workers, with the refusal page enabled by default for browser serve.
+
+
+UX14-01 now supplies the trusted S14 CLI for CUT14-01 (#267): as the service identity run `<trusted-bun> <trusted-release>/src/main.ts owner-link --s14 --output-fd 3` with the exact service `JIT_S14_DATABASE` and browser `JIT_S14_ORIGIN`. Supply fd 3 as a dedicated inherited private pipe; capture/validate it privately and display once on the operator terminal after health. Stdout is empty; existing owner means no link. The CLI refuses regular files and stdout/stderr aliases, uses writer serialization alongside the service runtime lock, and keeps the same hashed/expiring/single-use capability. Do not call legacy `installerOwnerLink` for an S14 store. Non-TTY installer/journald/log output must never receive a capability. The detailed delivery and failure contract is in [s14-foundation-http.md](s14-foundation-http.md#ux14-01-remaining-gap-integration-2026-10-31); the installer itself is still legacy until #267.

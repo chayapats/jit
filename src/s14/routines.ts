@@ -8,7 +8,7 @@ import type { Attempt, StartWorkCommand, Work, WorkGrant, WorkOutput } from "./a
 import { defaultWorkGraph } from "./graph";
 import type { WorkGraph } from "./graph-types";
 import { evidenceRequirements } from "./reports";
-import type { EnableRoutineCommand, Routine, RoutineCommand, RoutineOccurrence, RoutineReceipt, RoutineView } from "./routine-types";
+import type { EnableRoutineCommand, Routine, RoutineAttentionSummary, RoutineCommand, RoutineOccurrence, RoutineReceipt, RoutineView } from "./routine-types";
 import type { Bot, OwnerActor } from "./types";
 import { canonical, digest, exact, identity, integer, text } from "./validation";
 
@@ -291,15 +291,47 @@ export class S14Routines {
         const results = tx.all<{ record_json: string }>("SELECT record_json FROM routine_results WHERE occurrence_id=?", occurrence.id)
           .map(row => JSON.parse(row.record_json) as { kind: string; reason: string | null; waiting: boolean });
         const readFailure = !!tx.get("SELECT 1 FROM web_reads WHERE json_extract(record_json,'$.workId')=? AND json_extract(record_json,'$.outcome')<>'success'", work.id);
-        const failed = this.app.personal.reads.failed(tx, work.id) || readFailure || ["blocked", "stopped"].includes(work.state) || steps.some(s => s.state !== "committed" && !(s.state === "blocked" && s.reason === "handler_waiting")) || results.some(r => r.kind === "failed") || !results.length;
-        occurrence.outcome = failed ? "failed" : occurrence.proposals.length || work.state === "waiting" || results.some(r => r.waiting) ? "needs_owner" : results.every(r => r.kind === "no_update") ? "no_update" : "report";
+        const needsOwner = occurrence.proposals.length > 0 || work.state === "waiting" || results.some(r => r.waiting);
+        const reportMissing = !needsOwner && results.some(r => r.kind === "report") && !tx.all<{ id: string }>("SELECT id FROM reports WHERE work_id=? AND content_json IS NOT NULL", work.id)
+          .some(row => this.app.reports.read(tx, row.id).state === "available");
+        const failed = this.app.personal.reads.failed(tx, work.id) || readFailure || reportMissing || ["blocked", "stopped"].includes(work.state) || steps.some(s => s.state !== "committed" && !(s.state === "blocked" && s.reason === "handler_waiting")) || results.some(r => r.kind === "failed") || !results.length;
+        occurrence.outcome = failed ? "failed" : needsOwner ? "needs_owner" : results.every(r => r.kind === "no_update") ? "no_update" : "report";
         occurrence.state = work.state === "stopped" ? "stopped" : failed ? "failed" : "complete";
-        occurrence.reason = failed ? results.find(r => r.kind === "failed")?.reason ?? work.reason ?? "routine_failed" : null;
+        occurrence.reason = failed ? results.find(r => r.kind === "failed")?.reason ?? work.reason ?? (reportMissing ? "routine_report_missing" : "routine_failed") : null;
         storeOccurrence(tx, occurrence);
         this.notify(tx, occurrence);
       }
     }
     this.app.attention.resolve(tx);
+  }
+
+  /** Returns at most 128 grouped summaries; open decisions and delivery failures are selected across all history in SQL. */
+  attention(actor: OwnerActor): RoutineAttentionSummary[] {
+    return this.app.store.read(tx => {
+      this.app.requireOwner(tx, actor);
+      return tx.all<{ record_json: string }>("SELECT record_json FROM routines ORDER BY rowid LIMIT 128").map(row => {
+        const routine = JSON.parse(row.record_json) as Routine;
+        const decisions = tx.get<{ count: number; at: number | null }>(`SELECT count(DISTINCT id) AS count,max(at) AS at FROM (
+          SELECT w.id,json_extract(o.record_json,'$.createdAt') AS at FROM routine_occurrences o
+          JOIN json_each(o.record_json,'$.proposals') p JOIN work_items w ON w.id=p.value
+          WHERE o.routine_id=? AND json_extract(w.record_json,'$.state')='proposed'
+          UNION ALL
+          SELECT w.id,json_extract(o.record_json,'$.createdAt') AS at FROM routine_occurrences o
+          JOIN work_items w ON w.id=o.work_id
+          WHERE o.routine_id=? AND json_extract(w.record_json,'$.state')='waiting'
+        )`, routine.id, routine.id)!;
+        const settled = tx.get<{ record_json: string }>("SELECT record_json FROM routine_occurrences WHERE routine_id=? AND json_extract(record_json,'$.state')<>'running' ORDER BY rowid DESC LIMIT 1", routine.id);
+        const report = tx.get<{ record_json: string }>(`SELECT o.record_json FROM routine_occurrences o
+          WHERE o.routine_id=? AND json_extract(o.record_json,'$.outcome')='report'
+          AND EXISTS (SELECT 1 FROM attention_notices n WHERE n.group_id=o.id) ORDER BY o.rowid DESC LIMIT 1`, routine.id);
+        const delivery = tx.get<{ severity: number | null }>(`SELECT max(CASE
+          WHEN json_extract(n.record_json,'$.state')='unknown' OR json_extract(n.record_json,'$.remote')='uncertain' THEN 2
+          WHEN json_extract(n.record_json,'$.state')='failed' THEN 1 ELSE 0 END) AS severity
+          FROM attention_notices n JOIN routine_occurrences o ON o.id=n.group_id WHERE o.routine_id=?`, routine.id)!.severity;
+        return { routine, decisions, settled: settled ? JSON.parse(settled.record_json) : null,
+          report: report ? JSON.parse(report.record_json) : null, delivery: delivery === 2 ? "unknown" : delivery === 1 ? "failed" : null };
+      });
+    });
   }
 
   /** Returns owner-only standing captures and complete quiet/failure history without running a tick. */

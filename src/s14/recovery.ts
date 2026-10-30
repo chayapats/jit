@@ -17,7 +17,9 @@ const safeReason = (error: unknown) => error instanceof AppError ? error.code : 
 /** Exclusive-boot attempt fencing, public native discovery and trusted replay admission without effect retry. */
 export class S14Recovery {
   #booting = false;
-  constructor(readonly app: S14Application) {}
+  /** Process-local application boot time in epoch milliseconds, stable across repeated reconciliation and read-only queries. */
+  readonly bootedAt: number;
+  constructor(readonly app: S14Application) { this.bootedAt = app.now(); }
 
   /** Indicates the startup barrier; worker drains cannot admit work while metadata reconciliation is in progress. */
   get booting(): boolean { return this.#booting; }
@@ -275,7 +277,8 @@ export class S14Recovery {
       if (["cancelled", "stopping"].includes(step.state) || tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE kind='step_stop' AND id=?", step.id)) return "owner_stopped_step";
     }
     try {
-      this.app.authority.recoveryGrant(tx, attempt.snapshot.grant);
+      // Retention is not a new admission: expiry cannot erase a committed result.
+      this.app.authority.recoveryGrant(tx, attempt.snapshot.grant, !!tx.get("SELECT 1 FROM work_results WHERE attempt_id=?", attempt.id));
       if (!this.app.authority.retainedEvidence(tx, attempt.id)) return "configuration_or_route_changed";
       if (!this.app.memory.attemptCurrent(tx, attempt.id)) return "source_or_context_changed";
     } catch (error) { return safeReason(error); }
@@ -370,7 +373,7 @@ export class S14Recovery {
           if (tx.get("SELECT 1 FROM effects WHERE work_id=? AND json_extract(record_json,'$.state')='unknown'", workId)) {
             work.state = "waiting";
             work.reason = "unknown_effect_reconcile_only";
-          } else if (steps.some(step => step.state === "queued")) {
+          } else if (steps.some(step => ["queued", "waiting_evidence"].includes(step.state))) {
             work.state = "queued";
             work.reason = "replay_safe_requeued";
           }
@@ -385,6 +388,6 @@ export class S14Recovery {
 
   /** Returns owner-only checkpoint/native metadata; inspection never starts a model, tool or lifecycle operation. */
   view(actor: OwnerActor): RecoveryView {
-    return this.app.store.read(tx => { this.app.requireOwner(tx, actor); return { checkpoints: this.checkpoints(tx), native: this.intents(tx), actualUsage: null }; });
+    return this.app.store.read(tx => { this.app.requireOwner(tx, actor); return { bootedAt: this.bootedAt, checkpoints: this.checkpoints(tx), native: this.intents(tx), actualUsage: null }; });
   }
 }

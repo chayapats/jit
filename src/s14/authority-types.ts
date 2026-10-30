@@ -15,11 +15,15 @@ export interface WorkLimits { attempts: number; steps: number; calls: number; ou
 /** Immutable owner grant snapshot; revocation and reservations live in separate rows. */
 export interface WorkGrant { id: string; workId: string; revision: number; generation: number; ownerGeneration: number; requestId: string; command: StartWorkCommand; purpose: string; bots: Bot[]; routes: Route[]; tools: string[]; scopes: ScopePolicy[]; limits: WorkLimits; createdAt: number; expiresAt: number }
 /** Retained obligation; result is the latest committed attempt ID, never an inline result body. Acceptance grants no execution. */
-export interface Work { id: string; revision: number; conversationId: string; sourceMessageId: string | null; /** Exact committed task source, pinned at acceptance and checked at every start/use. */ source?: MemoryRef; title: string; purpose: string; completionRule: string; state: "proposed" | "accepted" | "queued" | "running" | "waiting" | "ready" | "blocked" | "stopping" | "stopped"; reason: string | null; grantId: string | null; result: string | null; createdAt: number }
+export interface Work { id: string; revision: number; conversationId: string; sourceMessageId: string | null; /** Exact committed task source, pinned at acceptance and checked at every start/use. */ source?: MemoryRef; title: string; purpose: string; completionRule: string; state: "proposed" | "rejected" | "accepted" | "queued" | "running" | "waiting" | "ready" | "blocked" | "stopping" | "stopped"; reason: string | null; grantId: string | null; result: string | null; createdAt: number; recovery?: { requestId: string; mode: "retry" | "summarize"; sources: MemoryRef[] } }
 /** Explicit start parameters; selected Bot and task revisions are checked in the receipt transaction. */
 export interface StartPayload { conversationId: string; task: { id: string; revision: number } | null; title: string; purpose: string; completionRule: string; bots: { id: string; revision: number }[]; tools: string[]; scopes: ScopeRef[]; limits: WorkLimits; expiresAt: number; requiredEvidence?: EvidenceRequirement[] }
 /** Obligation-only owner acceptance of a typed service proposal. */
 export type AcceptTaskCommand = Envelope<"task.accept", { taskId: string }>;
+/** Rejection retains the suggestion in history and never grants or queues execution. */
+export type RejectTaskCommand = Envelope<"task.reject", { taskId: string }>;
+/** Explicit retry or evidence-only synthesis consumes the original live grant and remaining reservations. */
+export type RecoverWorkCommand = Envelope<"work.retry" | "work.summarize", { workId: string }>;
 /** Atomic creation of work, finite grant and durable queue intent from explicit owner authority. */
 export type StartWorkCommand = Envelope<"work.start", StartPayload>;
 /** Immediate fencing of named work; open transports keep stopping visible until settlement. */
@@ -27,7 +31,7 @@ export type StopWorkCommand = Envelope<"work.stop", { workId: string }>;
 /** Exact single-use owner decision; the displayed hash is checked as well as the current revision. */
 export type ApprovalCommand = Envelope<"approval.decide", { effectId: string; actionHash: string; decision: "approve" | "deny" }>;
 /** app.work-grants/v1 and app.effect-approval/v2 owner command union. */
-export type AuthorityCommand = AcceptTaskCommand | StartWorkCommand | StopWorkCommand | ApprovalCommand;
+export type AuthorityCommand = AcceptTaskCommand | RejectTaskCommand | RecoverWorkCommand | StartWorkCommand | StopWorkCommand | ApprovalCommand;
 /** Atomic authority receipt shared by JSON and form ingress. */
 export interface AuthorityReceipt { kind: AuthorityCommand["kind"]; requestId: string; work?: Work; grant?: WorkGrant; effect?: Effect }
 /** Service-selected admission narrowing; no field can increase the originating grant. */

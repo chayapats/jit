@@ -9,7 +9,8 @@ import type { OwnerActor } from "./types";
 import { canonical, exact, identity, integer } from "./validation";
 import { GoogleFailure, googleObject, googleText } from "./personal-protocol";
 import type { S14Personal } from "./personal";
-import type { PersonalConnection, PersonalEvidence, PersonalRead, PersonalReadInput } from "./personal-types";
+import type { PersonalConnection, PersonalEvidence, PersonalRead, PersonalReadInput, PersonalReportEvidence } from "./personal-types";
+import type { ReportGap } from "./report-types";
 
 const path = (value: string) => encodeURIComponent(value);
 const frame = (value: unknown) => `<untrusted_personal_data>\n${JSON.stringify(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")}\n</untrusted_personal_data>`;
@@ -200,8 +201,27 @@ export class PersonalReads {
     return tx.all<{ record_json: string }>(`SELECT record_json FROM personal_reads${workId ? " WHERE json_extract(record_json,'$.workId')=?" : ""}`, ...(workId ? [workId] : [])).map(row => JSON.parse(row.record_json));
   }
 
+  /** Resolves exact actually-read, still-current private excerpts for report validation and bounded accessible handoffs. */
+  evidence(tx: AppTransaction, attemptId: string): PersonalReportEvidence[] {
+    return tx.all<{ record_json: string }>("SELECT record_json FROM personal_reads WHERE attempt_id=? ORDER BY rowid", attemptId)
+      .flatMap(row => {
+        const read = this.project(tx, JSON.parse(row.record_json) as PersonalRead);
+        if (!["success", "partial"].includes(read.outcome)) return [];
+        return read.evidence.map(item => ({ id: item.source.id, revision: 1 as const, generation: 1 as const, workId: read.workId, attemptId, botId: read.botId,
+          tool: "personal_read" as const, provider: "google" as const, mode: "oauth" as const,
+          requestedUrl: null, url: `personal:${item.source.id}`, finalUrl: null, title: item.title, content: item.text,
+          coverage: "excerpt" as const, retrievedAt: item.retrievedAt, publishedAt: item.sourceTimestamp === null ? null : new Date(item.sourceTimestamp).toISOString(),
+          reportedRetrievedAt: null, freshness: "live_reported" as const, cache: null, truncated: true, untrusted: true as const,
+          connectionId: read.connectionId, connectionRevision: read.connectionRevision, scope: read.scope,
+          kind: item.kind, providerId: item.providerId, sourceTimestamp: item.sourceTimestamp, timezone: item.timezone,
+          window: read.window, calendarTimezone: read.calendarTimezone }));
+      });
+  }
+
   private project(tx: AppTransaction, read: PersonalRead): PersonalRead {
-    const withdrawn = read.evidence.some(e => !this.app.memory.sourceCurrent(tx, e.source)) || !this.broker.scope(tx, read.scope);
+    const policy = this.broker.scope(tx, read.scope) ?? this.broker.retainedScope(tx, read.scope, read.attemptId);
+    const withdrawn = read.evidence.some(e => !this.app.memory.sourceCurrent(tx, e.source)) || !policy ||
+      policy.snapshot.id !== read.connectionId || policy.snapshot.revision !== read.connectionRevision;
     if (withdrawn) return { ...read, outcome: "withdrawn", evidence: [], missing: ["account_or_source_withdrawn"] };
     const stale = read.stale || read.finishedAt !== null && this.app.now() - read.finishedAt > 900000;
     return { ...read, stale };
@@ -218,15 +238,22 @@ export class PersonalReads {
 
   /** Prevents failed, partial, missing required connector input or stale reads from being silently classified as quiet. */
   failed(tx: AppTransaction, workId: string): boolean {
-    const rows = this.rows(tx, workId);
+    return this.gaps(tx, workId).length > 0;
+  }
+
+  /** Adds service-observed personal input gaps to the ordinary immutable report, independent of model prose. */
+  gaps(tx: AppTransaction, workId: string): Extract<ReportGap, { kind: "read" }>[] {
+    const rows = this.rows(tx, workId).map(read => this.project(tx, read));
     const work = record<Work>(tx, "work_items", workId);
     const grant = work.grantId ? record<{ tools: string[]; scopes: ScopePolicyLike[] }>(tx, "work_grants", work.grantId) : null;
-    const required = grant?.tools.includes("personal_read") ? grant.scopes.filter(s => !!tx.get("SELECT 1 FROM personal_grants WHERE id=?", s.ref.id)) : [];
-    return grant?.tools.includes("personal_read") && required.length === 0 ||
-      required.some(scope => !rows.some(read => canonical(read.scope) === canonical(scope.ref))) || rows.some(row => {
-      const read = this.project(tx, row);
-      return read.outcome !== "success" || read.stale || read.missing.length > 0;
-    });
+    const required = grant?.tools.includes("personal_read") ? grant.scopes.filter(s => this.broker.owns(tx, s.ref)) : [];
+    const missing = required.filter(scope => !rows.some(read => canonical(read.scope) === canonical(scope.ref))).map(scope => scope.ref.id);
+    if (grant?.tools.includes("personal_read") && !required.length) missing.push("unconfigured");
+    return [...missing.map(scopeId => ({ kind: "read" as const, readId: `personal_input_${scopeId}`, outcome: "blocked" as const,
+      personal: { scopeId, stale: false, missing: ["required_input_missing"] } })),
+      ...rows.filter(read => read.outcome !== "success" || read.stale || read.missing.length > 0).map(read => ({ kind: "read" as const,
+        readId: read.id, outcome: read.outcome === "failed" ? "service_error" as const : read.outcome === "withdrawn" ? "authority_changed" as const : "partial" as const,
+        personal: { scopeId: read.scope.id, stale: read.stale, missing: read.missing } }))];
   }
 
   /** Builds only the captured account-read tool; returned mail/event/attachment content is explicitly untrusted data. */

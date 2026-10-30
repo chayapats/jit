@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { S14Application, type S14Options } from "../src/s14/application";
 import { S14Store } from "../src/s14/store";
 import type { Attempt, AuthorityOptions, StartPayload, WorkExecutor } from "../src/s14/authority-types";
-import type { StepProposal, WorkGraph } from "../src/s14/graph-types";
+import type { QueueCeiling, SchedulerLimits, StepProposal, WorkGraph } from "../src/s14/graph-types";
 import type { Bot } from "../src/s14/types";
 import { canonical } from "../src/s14/validation";
 import { validateWorkGraph } from "../src/s14/graph";
@@ -97,6 +97,7 @@ test("stopping one lane fences late callbacks, retains its actual slot and allow
   const command = { kind: "work.step.stop" as const, requestId: rid(), expectedRevision: step.revision, payload: { workId: receipt.work!.id, stepId: step.id } };
   const stopped = f.app.execute(f.auth.actor, command); expect(f.app.execute(f.auth.actor, command)).toEqual(stopped);
   expect(cancelled).toBe(true); expect(stopped.step!.state).toBe("stopping");
+  expect(stopped.conversationId).toBe(f.conversationId);
   const queued = f.start({ bots: [{ id: "third", revision: 1 }], tools: [] });
   sibling.resolve(); await siblingDone.promise;
   expect(f.app.graph.view(f.auth.actor, receipt.work!.id).steps[0]!.settledAt).toBeNull();
@@ -214,6 +215,73 @@ test("computer workspace admissions stay exclusive even when the configured Bot 
   expect(second.id).not.toBe(first.id);
 });
 
+test("owner retry after a failed graph retains prior lanes and uses the shared drain and original grant", async () => {
+  let runs = 0;
+  const f = await fixture({ async run() {
+    if (++runs === 1) throw new AppError("quota");
+    return { state: "ready", text: "Recovered evidence" };
+  } });
+  const started = f.start({ bots: [{ id: "jit", revision: 1 }] });
+  const plan = f.app.graph.view(f.auth.actor, started.work!.id).graph;
+  await f.app.authority.drain();
+  const before = f.app.authority.view(f.auth.actor, started.work!.id), graph = f.app.graph.view(f.auth.actor, before.work.id);
+  expect(before.work.state).toBe("blocked");
+  expect(plan.nodes[0]!.outputBytes).toBe(Math.floor(before.grant!.limits.outputBytes / before.grant!.limits.attempts));
+  expect(before.reservations!.outputBytes).toBe(plan.nodes[0]!.outputBytes);
+  const command = { kind: "work.retry" as const, requestId: rid(), expectedRevision: before.work.revision, payload: { workId: before.work.id } };
+  const receipt = f.app.execute(f.auth.actor, command);
+  expect(f.app.execute(f.auth.actor, command)).toEqual(receipt);
+  await f.app.authority.drain();
+  const after = f.app.authority.view(f.auth.actor, before.work.id);
+  expect(runs).toBe(2);
+  expect(after.work.state).toBe("ready");
+  expect(after.grant).toEqual(before.grant);
+  expect(after.reservations!.attempts).toBe(2);
+  expect(after.reservations!.outputBytes).toBe(2 * plan.nodes[0]!.outputBytes);
+  expect(after.results.map(result => result.text)).toEqual(["Recovered evidence"]);
+  expect(f.app.graph.view(f.auth.actor, before.work.id).steps).toEqual(graph.steps);
+  expect(f.store.read(tx => tx.all<{ active: number }>("SELECT active FROM attempt_transports"))).toEqual([{ active: 0 }, { active: 0 }]);
+});
+
+test("text-only dependencies respect the complete serialized handoff ceiling and preserve UTF-8 excerpts", async () => {
+  let synthesis: Attempt | undefined;
+  const f = await fixture({ async run(a) {
+    if (a.step!.handler === "synthesis") { synthesis = a; return { state: "ready", text: "Bounded synthesis" }; }
+    return { state: "ready", text: "ก".repeat(3000) };
+  } });
+  const work = f.start({ bots: [{ id: "jit", revision: 1 }], tools: [], limits: { attempts: 8, steps: 8, calls: 40, reads: 40, concurrency: 2, outputBytes: 100000, wallMs: 1800000 } });
+  const plan = f.app.graph.view(f.auth.actor, work.work!.id).graph, base = plan.nodes[0]!;
+  const nodes: StepProposal[] = Array.from({ length: 7 }, (_, i) => ({ ...base, id: `read_${i}`, calls: 1, outputBytes: 10000 }));
+  nodes.push({ ...base, id: "synthesis", handler: "synthesis", dependsOn: nodes.map(n => n.id), calls: 1, outputBytes: 1000 });
+  f.app.graph.propose(work.work!.id, plan.revision, nodes);
+  await f.app.authority.drain();
+  expect(synthesis).toBeDefined();
+  const inputs = synthesis!.step!.inputs;
+  expect(Buffer.byteLength(JSON.stringify(inputs))).toBeLessThanOrEqual(49152);
+  expect(inputs).toHaveLength(5);
+  expect(inputs.every(input => Buffer.byteLength(input.text) <= 8192 && !input.text.includes("�") && input.evidence.length === 0)).toBe(true);
+  const gaps = synthesis!.step!.gaps;
+  expect(gaps.filter(g => g.reason === "handoff_result_omitted")).toHaveLength(2);
+  expect(gaps.filter(g => g.reason === "handoff_result_excerpt")).toHaveLength(7);
+});
+
+test("a provisionally committed recovery transport blocks another retry until actual settlement", async () => {
+  const f = await fixture();
+  const started = f.start({ bots: [{ id: "jit", revision: 1 }] });
+  const attempt = f.app.authority.admit(started.work!.id, rid(), { botId: "jit", tools: [], scopes: [], input: "Read", calls: 2, outputBytes: 1024 });
+  f.store.transaction(tx => tx.run("INSERT INTO attempt_transports VALUES (?,1)", attempt.id));
+  f.app.authority.commit(attempt.id, { state: "ready", text: "Committed before native close" });
+  const work = f.app.authority.view(f.auth.actor, started.work!.id).work;
+  expect(work.state).toBe("ready");
+  const command = { kind: "work.retry" as const, requestId: rid(), expectedRevision: work.revision, payload: { workId: work.id } };
+  expect(() => f.app.execute(f.auth.actor, command)).toThrow("reconciliation_required");
+  expect(f.app.authority.view(f.auth.actor, work.id).work).toEqual(work);
+  expect(f.store.read(tx => tx.get("SELECT request_id FROM command_receipts WHERE request_id=?", command.requestId))).toBeNull();
+  f.store.transaction(tx => tx.run("UPDATE attempt_transports SET active=0 WHERE attempt_id=?", attempt.id));
+  f.app.execute(f.auth.actor, command);
+  expect(f.app.graph.view(f.auth.actor, work.id).steps.every(step => step.state === "cancelled")).toBe(true);
+});
+
 test("read reservations are finite per grant, survive failure and defaults never modify a prior grant", async () => {
   const f = await fixture();
   const defaults = f.app.graph.defaults(f.auth.actor);
@@ -245,4 +313,91 @@ test("an exact owner-granted private memory share reaches synthesis while execut
   const started = f.start({ scopes: [{ kind: "share", id: shared.share!.id, revision: shared.share!.revision }] });
   await f.app.authority.drain();
   expect(f.app.graph.view(f.auth.actor, started.work!.id).steps.at(-1)!.state).toBe("committed");
+});
+
+
+test("committed ingress wakes one existing drain and starts new work before an unrelated transport settles", async () => {
+  const firstEntered = barrier(), secondEntered = barrier(), release = barrier(), seen: Attempt[] = [];
+  let reentrant: Promise<void> | undefined;
+  const f = await fixture({ async run(attempt) {
+    seen.push(attempt);
+    reentrant = f.app.authority.drain();
+    (attempt.snapshot.bot.id === "jit" ? firstEntered : secondEntered).resolve();
+    await release.promise;
+    return { state: "ready", text: "Committed" };
+  } });
+  const first = f.start({ bots: [{ id: "jit", revision: 1 }], tools: [] }), draining = f.app.authority.drain();
+  try {
+    await firstEntered.promise;
+    expect(reentrant).toBe(draining);
+    const second = f.start({ bots: [{ id: "second", revision: 1 }], tools: [] });
+    // No second explicit drain is required: the writer's post-commit signal wakes the current one.
+    await secondEntered.promise;
+    expect(f.app.authority.drain()).toBe(draining);
+    expect(reentrant).toBe(draining);
+    expect(seen.map(a => a.workId)).toEqual([first.work!.id, second.work!.id]);
+    expect(f.app.graph.view(f.auth.actor, first.work!.id).steps[0]).toMatchObject({ state: "running", settledAt: null });
+    const excess = f.start({ bots: [{ id: "third", revision: 1 }], tools: [] });
+    expect(f.app.graph.view(f.auth.actor, excess.work!.id).steps[0]).toMatchObject({ state: "queued", queueCeiling: "global" });
+  } finally { release.resolve(); await draining; }
+  expect(seen).toHaveLength(3);
+  expect(new Set(seen.map(a => a.id)).size).toBe(3);
+});
+
+test.each<QueueCeiling>(["global", "route", "bot", "computer", "work"])("queued projections name the current %s ceiling", async ceiling => {
+  const scheduler: SchedulerLimits = { global: 4, route: 4, bot: 4, computer: 4 };
+  if (ceiling !== "work") scheduler[ceiling] = 1;
+  const f = await fixture(undefined, { scheduler });
+  f.store.transaction(tx => {
+    const row = tx.get<{ record_json: string }>("SELECT record_json FROM bots WHERE id='second'")!;
+    const bot = JSON.parse(row.record_json) as Bot; bot.capabilities.tools.push("computer");
+    tx.run("UPDATE bots SET record_json=? WHERE id='second'", canonical(bot));
+  });
+  const first = f.start({ bots: [{ id: "jit", revision: 1 }], tools: ["computer"] });
+  const work = ceiling === "work" ? first : f.start({ bots: [{ id: ceiling === "bot" ? "jit" : "second", revision: 1 }], tools: ["computer"] });
+  if (ceiling === "work") {
+    // Use a separate immutable grant with its own finite concurrency of one.
+    const bounded = f.start({ bots: [{ id: "jit", revision: 1 }], tools: [], limits: { ...first.grant!.limits, concurrency: 1 } });
+    const attempt = f.app.authority.admit(bounded.work!.id, rid(), { botId: "jit", tools: [], scopes: [], input: "First", calls: 1, outputBytes: 100 });
+    expect(f.app.graph.view(f.auth.actor, bounded.work!.id).steps[0]!.queueCeiling).toBe("work");
+    f.app.authority.settle(attempt.id);
+    expect(f.app.graph.view(f.auth.actor, bounded.work!.id).steps[0]!.queueCeiling).toBeNull();
+    return;
+  }
+  const attempt = f.app.authority.admit(first.work!.id, rid(), { botId: "jit", tools: ["computer"], scopes: [], input: "Hold capacity", calls: 1, outputBytes: 100 });
+  expect(f.app.graph.view(f.auth.actor, work.work!.id).steps[0]!.queueCeiling).toBe(ceiling);
+  f.app.authority.settle(attempt.id);
+  expect(f.app.graph.view(f.auth.actor, work.work!.id).steps[0]!.queueCeiling).toBeNull();
+});
+
+test("queue and dependency phases retain their observed start times when evidence becomes runnable", async () => {
+  const entered = barrier(), release = barrier(), synthesisEntered = barrier(), synthesisRelease = barrier();
+  const f = await fixture({ async run(a) {
+    if (a.step!.handler === "synthesis") { synthesisEntered.resolve(); await synthesisRelease.promise; }
+    else { entered.resolve(); await release.promise; }
+    return { state: "ready", text: "Committed evidence" };
+  } });
+  const work = f.start(), installedAt = f.clock.now;
+  const initial = f.app.graph.view(f.auth.actor, work.work!.id).steps;
+  expect(initial[0]).toMatchObject({ queuedAt: installedAt, waitingAt: null, startedAt: null });
+  expect(initial[2]).toMatchObject({ queuedAt: null, waitingAt: installedAt, startedAt: null });
+  f.clock.now += 1000;
+  const draining = f.app.authority.drain();
+  try {
+    await entered.promise;
+    expect(f.app.graph.view(f.auth.actor, work.work!.id).steps[0]).toMatchObject({ queuedAt: installedAt, startedAt: installedAt + 1000 });
+    f.clock.now += 2000; release.resolve(); await synthesisEntered.promise;
+    expect(f.app.graph.view(f.auth.actor, work.work!.id).steps[2]).toMatchObject({ queuedAt: installedAt + 3000, waitingAt: installedAt, startedAt: installedAt + 3000 });
+  } finally { release.resolve(); synthesisRelease.resolve(); await draining; }
+});
+
+
+test("committed work at an empty drain's completion boundary is not lost", async () => {
+  const seen: string[] = [];
+  const f = await fixture({ async run(a) { seen.push(a.workId); return { state: "ready", text: "Evidence" }; } });
+  const draining = f.app.authority.drain();
+  const started = f.start({ bots: [{ id: "jit", revision: 1 }], tools: [] });
+  await draining;
+  expect(seen).toEqual([started.work!.id]);
+  expect(f.app.authority.view(f.auth.actor, started.work!.id).work.state).toBe("ready");
 });

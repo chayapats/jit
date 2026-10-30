@@ -72,6 +72,26 @@ test("work scope, expiry and receiver resource ceiling cannot be widened by shar
   expect(() => f.start([f.ref])).toThrow("scope_revoked_or_stale");
 });
 
+test("free slot query excludes both share kinds and their independent revocations after restoring an image without share rows", async () => {
+  const f = await fixture();
+  const claim = f.app.execute(f.actor, { kind: "memory.remember", requestId: rid(), expectedRevision: f.app.conversation(f.actor, f.conversationId).conversation.revision,
+    payload: { conversationId: f.conversationId, text: "Owner memory for an exact copy" } }).claim!;
+  const before = join(f.root, "before-shares.sqlite"); copyFileSync(f.path, before);
+  f.app.execute(f.actor, f.command());
+  f.app.execute(f.actor, { kind: "memory.share", requestId: rid(), expectedRevision: 1,
+    payload: { claim, scopeId: "share2", receiverBotId: "receiver", expiresAt: f.clock.now + 60000 } });
+  expect(f.app.sharing.freeSlots(f.actor).some(slot => ["share1", "share2"].includes(slot.scopeId))).toBe(false);
+  f.app.execute(f.actor, { kind: "snapshot.revoke", requestId: rid(), expectedRevision: 1, payload: { shareId: "share1" } });
+  f.app.execute(f.actor, { kind: "memory.revoke", requestId: rid(), expectedRevision: 1, payload: { claim } });
+  f.store.close(); stores.delete(f.store); copyFileSync(before, f.path);
+  const store = new S14Store(f.path); stores.add(store);
+  const app = new S14Application(store, f.options), actor = app.authenticate(f.token).actor;
+  expect(app.sharing.freeSlots(actor).some(slot => ["share1", "share2"].includes(slot.scopeId))).toBe(false);
+  expect(() => app.execute(actor, f.command())).toThrow("snapshot_share_exists");
+  expect(() => app.execute(actor, { kind: "memory.share", requestId: rid(), expectedRevision: 2,
+    payload: { claim, scopeId: "share2", receiverBotId: "receiver", expiresAt: f.clock.now + 60000 } })).toThrow("memory_share_exists");
+});
+
 test.each(["read", "context", "commit"])("revoke fences %s and late results, preserving honest disclosure metadata", async phase => {
   const f = await fixture(); f.app.execute(f.actor, f.command());
   const work = f.start([f.ref]), attempt = f.admit(work.work!.id, [f.ref]);

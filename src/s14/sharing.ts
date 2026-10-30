@@ -4,13 +4,27 @@ import { record, type S14Application } from "./application";
 import type { Attempt, ScopePolicy, ScopeRef, Work } from "./authority-types";
 import type { Bot, OwnerActor } from "./types";
 import type { MemoryRef } from "./memory-types";
-import type { ShareView, SharingCommand, SharingReceipt, SnapshotShare } from "./sharing-types";
+import type { FreeShareSlot, ShareView, SharingCommand, SharingReceipt, SnapshotShare } from "./sharing-types";
+import { managedShareSlots, resourceConfigured } from "./share-slots";
 import { canonical, digest, exact, identity, integer } from "./validation";
 import { validateArtifact } from "./artifacts";
 
 /** Revision-bound snapshot policy owner; it exposes bounded copies through the common artifact gateway. */
 export class S14Sharing {
   constructor(readonly app: S14Application) {}
+
+  /** Lists unused configured/built-in slots and current eligible receivers without reserving identities or changing authority. */
+  freeSlots(actor: OwnerActor): FreeShareSlot[] {
+    return this.app.store.read(tx => {
+      this.app.requireOwner(tx, actor);
+      const used = new Set(tx.all<{ id: string }>(`SELECT id FROM snapshot_shares UNION SELECT id FROM memory_shares
+        UNION SELECT id FROM lifecycle.withdrawals WHERE kind IN ('snapshot_share','share')`).map(row => row.id));
+      const bots = tx.all<{ record_json: string }>("SELECT record_json FROM bots ORDER BY rowid").map(row => JSON.parse(row.record_json) as Bot);
+      return [...new Set([...this.app.policy.resources, ...managedShareSlots])].filter(scopeId => !used.has(scopeId)).map(scopeId => ({
+        scopeId, receiverBotIds: bots.filter(bot => bot.enabled && bot.capabilities.resources.includes(scopeId)).map(bot => bot.id),
+      }));
+    });
+  }
 
   private load(tx: AppTransaction, key: string): SnapshotShare | null {
     const row = tx.get<{ record_json: string }>("SELECT record_json FROM snapshot_shares WHERE id=?", key);
@@ -54,9 +68,9 @@ export class S14Sharing {
     integer(p.expiresAt, this.app.now() + 1, this.app.now() + 86400000);
     const receiver = record<Bot>(tx, "bots", p.receiverBotId);
     if (receiver.revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
-    if (!receiver.enabled || !this.app.policy.resources.includes(p.scopeId) || !receiver.capabilities.resources.includes(p.scopeId)) throw new AppError("snapshot_scope_denied", 403);
+    if (!receiver.enabled || !resourceConfigured(this.app.policy, p.scopeId) || !receiver.capabilities.resources.includes(p.scopeId)) throw new AppError("snapshot_scope_denied", 403);
     if (p.workId !== null) { identity(p.workId); record<Work>(tx, "work_items", p.workId); }
-    if (this.load(tx, p.scopeId) || tx.get("SELECT id FROM memory_shares WHERE id=?", p.scopeId)) throw new AppError("snapshot_share_exists", 409);
+    if (this.load(tx, p.scopeId) || tx.get("SELECT id FROM memory_shares WHERE id=?", p.scopeId) || tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE id=? AND kind IN ('snapshot_share','share')", p.scopeId)) throw new AppError("snapshot_share_exists", 409);
     const snapshot = this.app.artifacts.snapshot(tx, p.target);
     if (snapshot.ownerBotId === receiver.id) throw new AppError("snapshot_receiver_is_owner", 409);
     const share: SnapshotShare = { id: p.scopeId, revision: 1, target: structuredClone(p.target), ownerBotId: snapshot.ownerBotId,

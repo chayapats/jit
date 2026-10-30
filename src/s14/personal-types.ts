@@ -1,6 +1,7 @@
 import type { Envelope } from "./types";
 import type { ScopeRef } from "./authority-types";
 import type { MemoryRef } from "./memory-types";
+import type { ExternalEvidence } from "./parallel-types";
 
 /** Owner-selected Google API consent; read and write are independently explicit. */
 export type PersonalScope = "gmail.readonly" | "calendar.readonly" | "gmail.send" | "calendar.events";
@@ -74,6 +75,13 @@ export interface PersonalEvidence {
   timezone: string | null;
   retrievedAt: number;
   untrusted: true;
+}
+/** Report/handoff evidence from an exact personal read; bounded excerpts never claim full mailbox/event coverage. */
+export interface PersonalReportEvidence extends Omit<ExternalEvidence, "tool" | "provider" | "mode" | "coverage" | "freshness"> {
+  tool: "personal_read"; provider: "google"; mode: "oauth"; coverage: "excerpt"; freshness: "live_reported";
+  connectionId: string; connectionRevision: number; scope: ScopeRef;
+  kind: PersonalEvidence["kind"]; providerId: string; sourceTimestamp: number | null; timezone: string | null;
+  window: PersonalRead["window"]; calendarTimezone: string | null;
 }
 /** A sourced triage/brief section; missing or stale data is never equivalent to no update. */
 export interface PersonalRead {

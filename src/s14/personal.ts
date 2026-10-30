@@ -258,6 +258,17 @@ export class S14Personal {
 
   /** Supplies exact per-Bot account resource policy to ordinary work/routine admission and live barriers. */
   scope(tx: AppTransaction, ref: ScopeRef): ScopePolicy | null {
+    return this.accountScope(tx, ref);
+  }
+
+  /** Inspects retained account evidence under an exact independent owner-retention fact; never used for execution admission. */
+  retainedScope(tx: AppTransaction, ref: ScopeRef, attemptId: string): ScopePolicy | null {
+    if (!tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE kind='retained_evidence' AND id=? AND mode='owner_retained'", attemptId)) return null;
+    const attempt = record<Attempt>(tx, "work_attempts", attemptId);
+    return this.accountScope(tx, ref, attempt.snapshot.bot);
+  }
+
+  private accountScope(tx: AppTransaction, ref: ScopeRef, retainedBot?: Bot): ScopePolicy | null {
     if (ref.kind !== "resource") return null;
     const row = tx.get<{ record_json: string }>("SELECT record_json FROM personal_grants WHERE id=?", ref.id);
     if (!row) return null;
@@ -265,7 +276,8 @@ export class S14Personal {
     if (!grant.active || grant.revision !== ref.revision || tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE kind='personal_grant' AND id=? AND mode=?", grant.id, `revision_${grant.revision}`)) return null;
     try {
       const connection = this.connection(tx, grant.connectionId);
-      const bot = record<Bot>(tx, "bots", grant.botId);
+      const bot = retainedBot ?? record<Bot>(tx, "bots", grant.botId);
+      if (bot.id !== grant.botId || tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE kind='bot' AND id=? AND mode='deleted'", grant.botId)) return null;
       if (!bot.enabled || bot.generation !== grant.botGeneration || !bot.capabilities.resources.includes(ref.id)) return null;
       return { ref, active: true, ownerBotId: grant.botId, receiverBotId: null, workId: null, tools: [...this.app.policy.tools], snapshot: { id: connection.id, revision: connection.revision, hash: digest(canonical({ grant, connection })) } };
     } catch { return null; }
@@ -331,13 +343,14 @@ export class S14Personal {
       const id = pending.pop()!;
       if (seen.has(id)) continue;
       seen.add(id);
+      const source = tx.get<{ record_json: string }>("SELECT record_json FROM memory_sources WHERE id=?", id);
+      const item = source ? JSON.parse(source.record_json) as { producerAttemptId?: string; derived: { id: string }[] } : null;
       const pin = tx.get<{ scope_json: string; connection_id: string; connection_revision: number }>("SELECT * FROM personal_sources WHERE source_id=?", id);
       if (pin) {
-        const scope = this.scope(tx, JSON.parse(pin.scope_json));
+        const scope = this.scope(tx, JSON.parse(pin.scope_json)) ?? (!botId && item?.producerAttemptId ? this.retainedScope(tx, JSON.parse(pin.scope_json), item.producerAttemptId) : null);
         if (!scope || scope.snapshot.id !== pin.connection_id || scope.snapshot.revision !== pin.connection_revision || botId && scope.ownerBotId !== botId) return false;
       }
-      const source = tx.get<{ record_json: string }>("SELECT record_json FROM memory_sources WHERE id=?", id);
-      if (source) pending.push(...(JSON.parse(source.record_json) as { derived: { id: string }[] }).derived.map(r => r.id));
+      if (item) pending.push(...item.derived.map(r => r.id));
     }
     return true;
   }
