@@ -130,6 +130,13 @@ test("fake-root install creates restricted attachments and units, preserves conf
   expect(f.lines.join("\n")).not.toContain(unlock); expect(f.lines.join("\n")).not.toContain("?token=");
 });
 
+test("install.sh's umask 077 does not narrow host files that other users must read", async () => {
+  const f = fixture(), previous = process.umask(0o077);
+  try { await runInstaller(f.options); } finally { process.umask(previous); }
+  for (const path of ["/etc/subuid", "/etc/subgid", "/etc/systemd/system/jit.service", "/etc/systemd/journald@jit.conf"]) expect(statSync(f.at(path)).mode & 0o777).toBe(0o644);
+  expect(statSync(f.at("/etc/jit/service-config.json")).mode & 0o777).toBe(0o640);
+});
+
 test("missing Podman and unavailable optional images never block core installation", async () => {
   const f = fixture({ family: "fedora", arch: "arm64" });
   const result = await runInstaller({ ...f.options, simulation: { podman: false, images: [{ feature: "sanitizer", ref: `registry.example/sanitizer@sha256:${"a".repeat(64)}` }] } });

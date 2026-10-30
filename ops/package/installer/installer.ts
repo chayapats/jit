@@ -140,7 +140,8 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
   const write = (path: string, text: string, mode = 0o600) => {
     safe(path); safe(dirname(path)); mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     const temp = `${path}.${randomBytes(8).toString("hex")}`;
-    try { writeFileSync(temp, text, { flag: "wx", mode }); renameSync(temp, path); } finally { rmSync(temp, { force: true }); }
+    // install.sh runs under umask 077, which would narrow `mode`; /etc/subuid and /etc/subgid must stay world-readable.
+    try { writeFileSync(temp, text, { flag: "wx", mode }); chmodSync(temp, mode); renameSync(temp, path); } finally { rmSync(temp, { force: true }); }
   };
   const runner = options.run ?? spawnRunner;
   const run: CommandRunner = (argv, settings) => runner(argv, {
@@ -259,6 +260,12 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
     await must(asUser(["systemctl", "--user", "daemon-reload"]));
     await must(asUser(["systemctl", "--user", "enable", "--now", "gnome-keyring-daemon.service"]));
     step("optional-podman-socket", "enable the jit identity's user podman.socket and restart jit.service (docs/runbooks/execution-box.md)");
+    if (available) {
+      // A pause process started while the identity could not read its subordinate ids keeps a one-ID namespace,
+      // and images owned by other ids then fail to unpack. Restart it once the ranges are readable.
+      const map = await call(asUser(["podman", "unshare", "cat", "/proc/self/uid_map"]));
+      if (map.exitCode === 0 && map.stdout.trim().split("\n").filter(Boolean).length === 1) await call(asUser(["podman", "system", "migrate"]));
+    }
     if (!available || (await call(asUser(["systemctl", "--user", "enable", "--now", "podman.socket"]))).exitCode !== 0) {
       const key = available ? "podman.reason_socket" : "podman.reason_podman";
       options.out?.(`Chat-only: ${en[key]} / ${th[key]}${available ? " As jit: systemctl --user enable --now podman.socket; then restart jit.service." : ""}`);
