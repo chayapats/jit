@@ -37,13 +37,13 @@ export interface InputLease {
   expiresAt: number;
 }
 /** Exact computer and lease query; no profile contents, runtime endpoints or host paths are exposed. */
-export interface ComputerView { computer: BotComputer | null; lease: InputLease | null }
+export interface ComputerView { computer: BotComputer | null; lease: InputLease | null; page?: { url: "about:blank"; title: null; untrusted: true } | null }
 /** Existing work authority selects one Bot's computer; no new grant is inferred from opening it. */
 export type OpenComputerCommand = Envelope<"computer.open", { botId: string; workId: string }>;
 /** Exact lifecycle scope protects against stale reset/delete commands and cross-Bot substitution. */
 export type ComputerLifecycleCommand = Envelope<"computer.stop" | "computer.reset" | "computer.delete", { botId: string; computerId: string; generation: number }>;
 /** Takeover binds the current lease revision as well as the computer generation. */
-export type LeaseCommand = Envelope<"takeover.start" | "takeover.end", { botId: string; computerId: string; generation: number; leaseRevision: number }>;
+export type LeaseCommand = Envelope<"takeover.start" | "takeover.end" | "takeover.renew", { botId: string; computerId: string; generation: number; leaseRevision: number }>;
 /** Authenticated durable computer commands share the foundation receipt boundary. */
 export type ComputerCommand = OpenComputerCommand | ComputerLifecycleCommand | LeaseCommand;
 /** Durable computer receipt is the committed intent; queries project eventual runtime settlement. */
@@ -57,7 +57,7 @@ export type OwnerInputCommand = Envelope<"takeover.input", { botId: string; comp
 /** Safe retained input outcome for no-script redirects; the original input and its HMAC are never returned. */
 export interface ComputerInputReceipt { requestId: string; computerId: string; state: "succeeded" | "unknown" }
 /** One safe activity line: an owner command, one owner input outcome or a work attempt bound to this computer; it never holds input text, coordinates, images or runtime detail. */
-export interface ComputerActivity { kind: ComputerCommand["kind"] | "takeover.input" | "attempt.bound"; at: number; state: "succeeded" | "unknown" | null }
+export interface ComputerActivity { kind: ComputerCommand["kind"] | "takeover.input" | "attempt.bound" | "page.opened" | "screenshot" | "agent.scroll" | "system.stop"; at: number; state: "succeeded" | "unknown" | null }
 /** Opaque service-only runtime handle; implementations reject copied or cross-computer handles. */
 export interface ComputerHandle { readonly computerId: string; readonly generation: number }
 /** Trusted isolated runtime port; final guards run immediately before each dispatch and after every wait. */
@@ -67,6 +67,8 @@ export interface ComputerRuntime {
   destroy(computer: BotComputer, allowed: () => void): Promise<void>;
   exec(handle: ComputerHandle, request: BoxExecRequest, allowed: () => void): Promise<BoxExecResult>;
   input(handle: ComputerHandle, input: OwnerInput | AgentInput, allowed: () => void): Promise<void>;
+  /** Optional service-only metadata; the application exposes only verified non-secret offline page identity. */
+  pageInfo?(handle: ComputerHandle, allowed: () => void): Promise<{ url?: string; title?: string }>;
   screenshot(handle: ComputerHandle, allowed: () => void): Promise<Uint8Array>;
 }
 /** Trusted runtime configuration; neither HTTP nor model content can replace this port or its finite ceilings. */

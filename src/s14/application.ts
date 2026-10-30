@@ -1,5 +1,10 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { AppError } from "../errors";
+import { requireOwnerSetup, removeOwnerSetupLink } from "../ops/owner-setup";
+import { applyOwnerCommand } from "./owner-commands";
+import { S14SignIns } from "./sign-in";
+import { ReplyUnavailable, type ReplyUnavailableReason } from "./reply-failure";
+import type { SignInOptions } from "../device-sign-in";
 import type { AppTransaction } from "../store";
 import { registerSecretFingerprint } from "../security/secret-fingerprints";
 import type { S14Store } from "./store";
@@ -39,7 +44,7 @@ export function save(tx: AppTransaction, table: RecordTable, value: { id: string
 /** Reads bounded identity records from a trusted table name without starting workers. */
 export function records<T>(tx: AppTransaction, table: RecordTable): T[] { return tx.all<{ record_json: string }>(`SELECT record_json FROM ${table} ORDER BY rowid DESC LIMIT 100`).map(row => JSON.parse(row.record_json) as T); }
 /** Injectable deterministic inference/clock and rollback fault seams; production never enables fixture inference. */
-export interface S14Options { policy: Policy; chat: ChatPort; authority?: AuthorityOptions; parallel?: ParallelWebOptions; computers?: ComputerOptions; now?: () => number; beforeCommit?: () => void }
+export interface S14Options { policy: Policy; chat: ChatPort; authority?: AuthorityOptions; parallel?: ParallelWebOptions; computers?: ComputerOptions; now?: () => number; beforeCommit?: () => void; signIn?: SignInOptions }
 
 /** Project-free owner command boundary; registered actors are revalidated on every read and commit. */
 export class S14Application {
@@ -52,6 +57,7 @@ export class S14Application {
   readonly graph: S14Graph;
   readonly reports: S14Reports;
   readonly artifacts: S14Artifacts;
+  readonly signIns: S14SignIns;
   #actors = new WeakMap<OwnerActor, string>();
   #replyBusy = false;
   constructor(readonly store: S14Store, readonly options: S14Options) {
@@ -73,16 +79,30 @@ export class S14Application {
     this.artifacts = new S14Artifacts(this);
     this.store.transaction(tx => { this.memory.reconcile(tx); this.memory.fence(tx); this.parallel.reconcile(tx); this.reports.reconcile(tx); });
     this.computers = new S14Computers(this, options.computers);
+    this.signIns = new S14SignIns(this, options.signIn);
   }
   /** Trusted local bootstrap creates only the authentication principal, never resets an existing installation. */
-  async provisionOwner(password: string): Promise<void> {
+  async provisionOwner(password: string, capability?: string): Promise<void> {
     if (typeof password !== "string" || password.length < 12 || password.length > 256) throw new AppError("password_length_12_to_256");
     const hash = await Bun.password.hash(password, { algorithm: "argon2id" });
     this.store.transaction(tx => {
+      if (capability !== undefined) requireOwnerSetup(this.store, tx, capability, this.now());
       if (tx.get("SELECT id FROM owner")) throw new AppError("owner_already_configured", 409);
       tx.run("INSERT INTO owner VALUES ('owner',?,1)", hash);
+      tx.run("DELETE FROM sessions");
+      tx.run("DELETE FROM login_throttle");
     });
     registerSecretFingerprint(password);
+  }
+  /** Validates the unchanged legacy capability without consuming or authenticating it. */
+  checkOwnerSetup(capability: unknown): void {
+    this.store.read(tx => requireOwnerSetup(this.store, tx, capability, this.now()));
+  }
+  /** Creates the first password with a writer-locked capability recheck and durable owner single-use fence. */
+  async completeOwnerSetup(capability: string, password: string): Promise<void> {
+    this.checkOwnerSetup(capability);
+    await this.provisionOwner(password, capability);
+    removeOwnerSetupLink(this.store);
   }
   /** Authenticates under a persisted finite login budget and returns a write-only session credential. */
   async login(password: string): Promise<string> {
@@ -187,9 +207,9 @@ export class S14Application {
         this.memory.reconcile(tx);
         this.memory.fence(tx);
         this.parallel.reconcile(tx);
-      } else if (["computer.open", "computer.stop", "computer.reset", "computer.delete", "takeover.start", "takeover.end"].includes(command.kind)) {
+      } else if (["computer.open", "computer.stop", "computer.reset", "computer.delete", "takeover.start", "takeover.end", "takeover.renew"].includes(command.kind)) {
         result = this.computers.apply(tx, command as ComputerCommand);
-      } else if (["task.accept", "work.start", "work.stop", "approval.decide"].includes(command.kind)) {
+      } else if (["task.accept", "task.reject", "work.start", "work.stop", "work.retry", "work.summarize", "approval.decide"].includes(command.kind)) {
         result = this.authority.apply(tx, command as AuthorityCommand);
       } else {
         result = this.applyBot(tx, command as BotCommand);
@@ -213,6 +233,7 @@ export class S14Application {
   }
   /** Applies Bot commands only inside the shared authenticated receipt transaction. */
   applyBot(tx: AppTransaction, c: BotCommand): BotReceipt {
+    if (c.kind === "owner.preferences.set" || c.kind === "conversation.create") return applyOwnerCommand(this, tx, c);
     const result: BotReceipt = { kind: c.kind, requestId: c.requestId };
     if (c.kind === "setup") {
       const p = c.payload;
@@ -225,7 +246,7 @@ export class S14Application {
       tx.run("INSERT INTO bots VALUES (?,?)", bot.id, canonical(bot));
       const conversation: Conversation = { id: id(), botId: bot.id, revision: 1 };
       tx.run("INSERT INTO conversations VALUES (?,?,?)", conversation.id, bot.id, 1);
-      tx.run("UPDATE installation SET revision=revision+1,profile_json=?", canonical({ name: text(p.ownerName, 200), language: p.language }));
+      tx.run("UPDATE installation SET revision=revision+1,profile_json=?", canonical({ name: text(p.ownerName, 200), language: p.language, theme: "system" }));
       return { ...result, bot, conversation };
     }
     if (c.kind === "message.post") {
@@ -297,8 +318,13 @@ export class S14Application {
       });
       if (!reply) return;
       let output: Awaited<ReturnType<ChatPort["reply"]>> | null = null;
+      let unavailableReason: ReplyUnavailableReason = "unknown";
       const abort = new AbortController(), timer = setTimeout(() => abort.abort(), 60000);
-      try { output = await this.options.chat.reply(structuredClone(reply.snapshot), abort.signal); } catch { /* Safe public reason only; transport errors may contain credentials. */ }
+      try { output = await this.options.chat.reply(structuredClone(reply.snapshot), abort.signal); }
+      catch (error) {
+        if (error instanceof ReplyUnavailable && ["sign-in", "quota", "provider", "timeout", "unknown"].includes(error.category)) unavailableReason = error.category;
+        // Other transport errors may contain credentials: never inspect/copy their text or arbitrary category fields.
+      }
       finally { clearTimeout(timer); }
       this.store.transaction(tx => {
         const current = record<Reply>(tx, "reply_outbox", reply.id); if (current.state !== "running") return;
@@ -307,6 +333,7 @@ export class S14Application {
         }
         let content: string | null = null; try { if (output && !abort.signal.aborted) content = text(output.text); } catch { /* Invalid output remains blocked. */ }
         current.state = content ? "succeeded" : "blocked"; current.reason = content ? null : "reply_unavailable";
+        if (!content) current.unavailableReason = abort.signal.aborted ? "timeout" : unavailableReason;
         if (content) {
           const message: Message = { id: id(), conversationId: reply.conversationId, role: "bot", text: content, createdAt: this.now() };
           tx.run("INSERT INTO messages(id,conversation_id,record_json) VALUES (?,?,?)", message.id, message.conversationId, canonical(message));

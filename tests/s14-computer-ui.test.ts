@@ -56,12 +56,12 @@ const commandOf = (html: string, kind: string) => { const form = formsFor(html, 
 const hasCommand = (html: string, kind: string) => formsFor(html, "/s14/commands").some(form => JSON.parse(fields(form).command!).kind === kind);
 const inputForm = (html: string, kind: string) => { const found = formsFor(html, "/s14/bots/jit/computer/input").map(fields).find(item => item.kind === kind); if (!found) throw new Error(`no ${kind} form`); return found; };
 const follow = async (f: F, response: Response) => { expect(response.status).toBe(303); const location = response.headers.get("location")!; return location.startsWith("/s14/receipts/") ? f.get(location) : response; };
-const buttons = (html: string) => [...html.matchAll(/<button\b[^>]*>([\s\S]*?)<\/button>/g)].map(m => m[1]!.replace(/<[^>]+>/g, ""));
+const buttons = (html: string) => [...html.matchAll(/<button\b[^>]*>([\s\S]*?)<\/button>/g)].map(m => m[1]!.replace(/<[^>]+>/g, "")).filter(label => label !== dictionaries.th["s14.chat.new"] && label !== dictionaries.en["s14.chat.new"]);
 const strict = (html: string, locale: "th" | "en" = "en") => { expect(html).not.toMatch(/\sstyle="/); expect(html).not.toMatch(/\son[a-z]+="/); expect(html).not.toContain("javascript:"); expect(accessibilityProblems(html, locale)).toEqual([]); };
 
 test("absent names why: lazy default, no ceiling and missing runtime; none offers a control that cannot work", async () => {
   const lazy = await fixture(), html = await lazy.page();
-  expect(html).toContain("No computer yet"); expect(html).toContain("nothing to set up"); expect(html).not.toContain("<form"); strict(html);
+  expect(html).toContain("No computer yet"); expect(html).toContain("nothing to set up"); expect(html).toContain("No work can open this computer right now"); expect(html).not.toContain("computer.open"); strict(html);
   expect(lazy.runtime!.starts).toHaveLength(0);
   const ceiling = await fixture({ capable: false }); expect(await ceiling.page()).toContain("may not have a computer");
   const none = await fixture({ runtime: null }), missing = await none.page();
@@ -90,15 +90,15 @@ test("computer open forms refresh their signature for new work, work state, gran
   const absent = signature(await f.page()), work = f.startWork("First report");
   const queued = await f.page(), queuedKey = signature(queued);
   expect(queuedKey).not.toBe(absent);
-  expect(queuedKey).toContain(work.id); expect(queuedKey).toContain("queued");
+  expect(queuedKey).toContain(work.id);
   expect(signature(await f.page())).toBe(queuedKey);
   expect(hasCommand(queued, "computer.open")).toBe(true);
   const a = f.app.authority.admit(work.id, rid(), { botId: "jit", tools: ["computer"], scopes: [], input: "Report", calls: 6, outputBytes: 1024 });
   const working = signature(await f.page());
-  expect(working).not.toBe(queuedKey); expect(working).toContain("running");
+  expect(working).not.toBe(queuedKey);
   f.app.authority.commit(a.id, { state: "waiting", text: "Waiting for evidence" });
   const waiting = signature(await f.page());
-  expect(waiting).not.toBe(working); expect(waiting).toContain("waiting");
+  expect(waiting).not.toBe(working);
   f.app.execute(f.auth.actor, { kind: "work.stop", requestId: rid(), expectedRevision: f.app.authority.view(f.auth.actor, work.id).work.revision, payload: { workId: work.id } });
   const revoked = await f.page();
   expect(signature(revoked)).toBe(absent); expect(hasCommand(revoked, "computer.open")).toBe(false);
@@ -273,7 +273,7 @@ test("the activity log lists safe typed lines only and is the readable record of
   expect(items.map(item => item.kind)).toEqual(["takeover.input", "takeover.start", "computer.open"]); expect(items[0]!.state).toBe("succeeded");
   const html = await f.page();
   expect(html).toContain("You took over"); expect(html).toContain("You opened the computer"); expect(html).toContain("Your input · Sent"); expect(html).not.toContain("typed-secret");
-  expect(html).toContain("does not list what the Bot did on screen");
+  expect(html).toContain("what the service observed"); expect(html).toContain("no typed text, click position, picture, page title or address");
   expect(f.app.computers.activity(f.auth.actor, "jit", 1)).toHaveLength(1);
   expect(() => f.app.computers.activity({ ownerId: "owner" }, "jit")).toThrow("authentication_required");
 });

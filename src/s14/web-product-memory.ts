@@ -18,8 +18,8 @@ export interface S14MemoryDecision { decision: MemoryDecision; sourceGone: boole
 export interface S14MemoryBrowse { kind: "memory"; scope: string; bot: Bot | null; conversation: Conversation | null; query: string; rows: S14MemoryRow[]; gone: S14MemoryGone[]; decisions: S14MemoryDecision[]; sources: S14MemorySource[]; receipt: MemoryReceipt | null; notice: string | null; draft: string; draftForm: string | null }
 /** Claim actions that open a preview page; a preview is a read and the command after it holds the authority. */
 export type S14MemoryAction = "correct" | "forget" | "delete" | "publish" | "revoke" | "share";
-/** What one lifecycle command would touch, resolved into owner-readable text where the owner can read it. */
-export interface S14MemoryImpact { impact: MemoryImpact; texts: Record<string, string>; work: { id: string; title: string }[]; contextsChecked: number }
+/** What one lifecycle command would touch, resolved into owner-readable text where the owner can read it. Names come from the service's bounded query. */
+export interface S14MemoryImpact { impact: MemoryImpact; texts: Record<string, string> }
 /** One exact claim revision with its history, source, conflicts and the optional action preview. */
 export interface S14MemoryClaimView { kind: "memory-claim"; bot: Bot; ref: MemoryRef; lookup: MemoryLookup; history: MemoryAccess[]; shares: MemoryShare[]; source: S14MemorySource | null; gone: S14MemoryGone | null; related: Record<string, MemoryLookup>; privateDependencies: number; action: S14MemoryAction | null; impact: S14MemoryImpact | null; notice: string | null; draft: string }
 /** One retained source, or the explanation that its text is gone. */
@@ -31,7 +31,7 @@ export type S14MemorySurface = S14MemoryBrowse | S14MemoryClaimView | S14MemoryS
 /** Actual research record of one work item plus the memory contexts its attempts received. */
 export interface S14WorkResearch { reads: WebRead[]; evidence: ExternalEvidence[]; contexts: MemoryPacket[] }
 
-const memoryForms = ["memory-remember", "memory-correct", "memory-forget", "memory-delete", "memory-publish", "memory-revoke", "memory-share", "memory-decision"] as const;
+const memoryForms = ["memory-remember", "memory-correct", "memory-forget", "memory-delete", "memory-publish", "memory-revoke", "memory-share", "memory-decision", "memory-unpin"] as const;
 const actions: readonly S14MemoryAction[] = ["correct", "forget", "delete", "publish", "revoke", "share"];
 const shareHours = [1, 24] as const;
 /** Inclusive owner-editable share lifetime; the service refuses anything past 24 hours. */
@@ -46,7 +46,8 @@ function searchTerm(raw: string | null): string {
   for (const char of (raw ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").trim()) { bytes += Buffer.byteLength(char); if (bytes > 200) break; out += char; }
   return out.trim();
 }
-function committed<T>(app: S14Application, actor: OwnerActor, url: URL, prefix: string): T | null {
+/** Rereads one committed receipt for a landing banner; the kind is checked, so a link cannot claim another outcome. */
+export function committed<T>(app: S14Application, actor: OwnerActor, url: URL, prefix: string): T | null {
   const id = url.searchParams.get("receipt");
   if (!id || !identityPattern.test(id)) return null;
   const row = app.store.read(tx => { app.requireOwner(tx, actor); return tx.get<{ result_json: string }>("SELECT result_json FROM command_receipts WHERE owner_id='owner' AND request_id=?", id); });
@@ -79,10 +80,7 @@ function browse(app: S14Application, url: URL, actor: OwnerActor, state: Home): 
 function impactOf(app: S14Application, actor: OwnerActor, ref: MemoryRef, botId: string): S14MemoryImpact {
   const impact = app.memory.preview(actor, ref), read = app.memory.inspect(actor, botId), texts: Record<string, string> = {};
   for (const item of read.claims) if (item.state === "available") texts[item.claim.id] = item.claim.text;
-  // Bounded projection: a context names its work, and the fence withdraws that work's result.
-  const checked = impact.contexts.slice(0, 64), titles = new Map(app.authority.list(actor).map(work => [work.id, work.title]));
-  const ids = new Set(checked.map(id => app.memory.context(actor, id).workId).filter((id): id is string => id !== null));
-  return { impact, texts, work: [...ids].map(id => ({ id, title: titles.get(id) ?? id })), contextsChecked: checked.length };
+  return { impact, texts };
 }
 
 function claimView(app: S14Application, url: URL, actor: OwnerActor, state: Home, botId: string, id: string): S14MemoryClaimView {
@@ -139,6 +137,7 @@ export function memoryCommand(app: S14Application, form: string, fields: Record<
   const claim = (): MemoryRef => ({ id: single(fields, "claimId"), revision: Number(single(fields, "revision")), generation: Number(single(fields, "generation")) });
   if (form === "memory-remember") { allow(fields, [...base, "conversationId", "text"]); return { kind: "memory.remember", requestId, expectedRevision, payload: { conversationId: single(fields, "conversationId"), text: single(fields, "text") } }; }
   if (form === "memory-decision") { allow(fields, [...base, "conversationId", "key", "text"]); return { kind: "memory.decision.set", requestId, expectedRevision, payload: { conversationId: single(fields, "conversationId"), key: single(fields, "key"), text: single(fields, "text") } }; }
+  if (form === "memory-unpin") { allow(fields, [...base, "decisionId", "revision", "generation"]); return { kind: "memory.decision.unpin", requestId, expectedRevision, payload: { decision: { id: single(fields, "decisionId"), revision: Number(single(fields, "revision")), generation: Number(single(fields, "generation")) } } }; }
   if (form === "memory-correct") { allow(fields, [...claimFields, "text"]); return { kind: "memory.correct", requestId, expectedRevision, payload: { claim: claim(), text: single(fields, "text") } }; }
   if (form === "memory-forget" || form === "memory-delete" || form === "memory-publish" || form === "memory-revoke") {
     allow(fields, claimFields);
@@ -178,7 +177,7 @@ export function memoryRecover(app: S14Application, form: string, fields: Record<
   if (form.startsWith("parallel-")) return { kind: "settings-web", read: app.parallel.settings(actor), receipt: null, notice: code };
   if (!memoryForms.some(name => name === form)) return null;
   const draft = code === "credential_content_refused" ? "" : single(fields, "text"), botId = botField(fields);
-  if (form === "memory-remember" || form === "memory-decision") return { ...browse(app, new URL(`http://s14/memory?scope=${botId}`), actor, state), notice: code, draft, draftForm: form };
+  if (form === "memory-remember" || form === "memory-decision" || form === "memory-unpin") return { ...browse(app, new URL(`http://s14/memory?scope=${botId}`), actor, state), notice: code, draft, draftForm: form };
   const claimId = single(fields, "claimId"); if (!identityPattern.test(claimId)) return null;
   const params = new URLSearchParams({ revision: single(fields, "revision"), generation: single(fields, "generation"), action: form.slice("memory-".length) });
   return { ...claimView(app, new URL(`http://s14/memory/${botId}/claims/${claimId}?${params}`), actor, state, botId, claimId), notice: code, draft };

@@ -406,7 +406,7 @@ test("every new surface renders in both languages with no raw keys and valid acc
       strict(html, language);
       const words = text(html);
       expect(words).not.toMatch(/\bs14\.[a-z_]+\.?/); expect(words).not.toMatch(/undefined|\[object|NaN/);
-      if (language === "en") expect(words.replace(/เจ้าของ/g, "")).not.toMatch(/[฀-๿]/);
+      if (language === "en") expect(words.replace(/เจ้าของ|ไทย/g, "")).not.toMatch(/[฀-๿]/);
     }
     await settle(run);
   }

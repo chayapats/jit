@@ -215,6 +215,49 @@ test("computer workspace admissions stay exclusive even when the configured Bot 
   expect(second.id).not.toBe(first.id);
 });
 
+test("owner retry after a failed graph retains prior lanes and uses the shared drain and original grant", async () => {
+  let runs = 0;
+  const f = await fixture({ async run() {
+    if (++runs === 1) throw new AppError("quota");
+    return { state: "ready", text: "Recovered evidence" };
+  } });
+  const started = f.start({ bots: [{ id: "jit", revision: 1 }] });
+  const plan = f.app.graph.view(f.auth.actor, started.work!.id).graph;
+  f.app.graph.propose(started.work!.id, plan.revision, plan.nodes.map(node => ({ ...node, calls: 5, outputBytes: 8192 })));
+  await f.app.authority.drain();
+  const before = f.app.authority.view(f.auth.actor, started.work!.id), graph = f.app.graph.view(f.auth.actor, before.work.id);
+  expect(before.work.state).toBe("blocked");
+  const command = { kind: "work.retry" as const, requestId: rid(), expectedRevision: before.work.revision, payload: { workId: before.work.id } };
+  const receipt = f.app.execute(f.auth.actor, command);
+  expect(f.app.execute(f.auth.actor, command)).toEqual(receipt);
+  await f.app.authority.drain();
+  const after = f.app.authority.view(f.auth.actor, before.work.id);
+  expect(runs).toBe(2);
+  expect(after.work.state).toBe("ready");
+  expect(after.grant).toEqual(before.grant);
+  expect(after.reservations!.attempts).toBe(2);
+  expect(after.results.map(result => result.text)).toEqual(["Recovered evidence"]);
+  expect(f.app.graph.view(f.auth.actor, before.work.id).steps).toEqual(graph.steps);
+  expect(f.store.read(tx => tx.all<{ active: number }>("SELECT active FROM attempt_transports"))).toEqual([{ active: 0 }, { active: 0 }]);
+});
+
+test("a provisionally committed recovery transport blocks another retry until actual settlement", async () => {
+  const f = await fixture();
+  const started = f.start({ bots: [{ id: "jit", revision: 1 }] });
+  const attempt = f.app.authority.admit(started.work!.id, rid(), { botId: "jit", tools: [], scopes: [], input: "Read", calls: 2, outputBytes: 1024 });
+  f.store.transaction(tx => tx.run("INSERT INTO attempt_transports VALUES (?,1)", attempt.id));
+  f.app.authority.commit(attempt.id, { state: "ready", text: "Committed before native close" });
+  const work = f.app.authority.view(f.auth.actor, started.work!.id).work;
+  expect(work.state).toBe("ready");
+  const command = { kind: "work.retry" as const, requestId: rid(), expectedRevision: work.revision, payload: { workId: work.id } };
+  expect(() => f.app.execute(f.auth.actor, command)).toThrow("reconciliation_required");
+  expect(f.app.authority.view(f.auth.actor, work.id).work).toEqual(work);
+  expect(f.store.read(tx => tx.get("SELECT request_id FROM command_receipts WHERE request_id=?", command.requestId))).toBeNull();
+  f.store.transaction(tx => tx.run("UPDATE attempt_transports SET active=0 WHERE attempt_id=?", attempt.id));
+  f.app.execute(f.auth.actor, command);
+  expect(f.app.graph.view(f.auth.actor, work.id).steps.every(step => step.state === "cancelled")).toBe(true);
+});
+
 test("read reservations are finite per grant, survive failure and defaults never modify a prior grant", async () => {
   const f = await fixture();
   const defaults = f.app.graph.defaults(f.auth.actor);

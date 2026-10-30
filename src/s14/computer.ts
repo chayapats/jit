@@ -1,3 +1,5 @@
+import { recordComputerActivity, computerActivity } from "./computer-activity";
+import type { Work } from "./authority-types";
 import { createHmac, randomBytes } from "node:crypto";
 import { AppError } from "../errors";
 import { redactCredentials } from "../security/credentials";
@@ -25,6 +27,7 @@ const saveLease = (tx: AppTransaction, lease: InputLease) => tx.run("UPDATE inpu
 
 /** Durable computer lifecycle and single-input barrier; all runtime dispatches revalidate live owner/Bot/work scope. */
 export class S14Computers {
+  readonly #pages = new Map<string, { generation: number; page: NonNullable<ComputerView["page"]> }>();
   readonly #handles = new Map<string, ComputerHandle>();
   readonly #locks = new Map<string, Promise<void>>();
   readonly #waiting = new Map<string, number>();
@@ -64,19 +67,39 @@ export class S14Computers {
       this.app.requireOwner(tx, actor);
       if (!tx.get("SELECT id FROM bots WHERE id=?", botId)) throw new AppError("not_found", 404);
       const computer = load(tx, botId);
-      return computer ? { computer, lease: leaseOf(tx, computer.id) } : absent();
+      return computer ? { computer, lease: leaseOf(tx, computer.id), page: computer.state === "running" && this.#pages.get(computer.id)?.generation === computer.generation ? this.#pages.get(computer.id)!.page : null } : absent();
     });
   }
   /** Reads the newest bounded activity lines from existing receipts, audit and attempt bindings; it records and starts nothing. */
   activity(actor: OwnerActor, botId: string, limit = 20): ComputerActivity[] {
+    integer(limit, 1, 100);
     const id = this.view(actor, botId).computer?.id;
     if (!id) return [];
-    return this.app.store.read(tx => tx.all<{ kind: ComputerActivity["kind"]; at: number; state: string | null }>(`
+    return this.app.store.read(tx => [...computerActivity(tx, id, limit), ...tx.all<{ kind: ComputerActivity["kind"]; at: number; state: string | null }>(`
       SELECT a.kind AS kind, a.committed_at AS at, NULL AS state, a.sequence AS sequence FROM audit a JOIN command_receipts r ON r.request_id=a.request_id WHERE json_extract(r.result_json,'$.computer.id')=?
       UNION ALL SELECT 'takeover.input', a.committed_at, i.state, a.sequence FROM computer_inputs i JOIN audit a ON a.request_id=i.request_id WHERE i.computer_id=?
       UNION ALL SELECT 'attempt.bound', json_extract(w.record_json,'$.createdAt'), NULL, 0 FROM computer_attempts c JOIN work_attempts w ON w.id=c.attempt_id WHERE c.computer_id=?
       ORDER BY at DESC, sequence DESC LIMIT ?`, id, id, id, limit)
-      .map(row => ({ kind: row.kind, at: row.at, state: row.kind === "takeover.input" ? row.state === "succeeded" ? "succeeded" as const : "unknown" as const : null })));
+      .map(row => ({ kind: row.kind, at: row.at, state: row.kind === "takeover.input" ? row.state === "succeeded" ? "succeeded" as const : "unknown" as const : null }))].sort((a, b) => b.at - a.at).slice(0, limit));
+  }
+  /** Lists only work whose original live grant currently permits this Bot to open a computer; the command rechecks it. */
+  eligibleWork(actor: OwnerActor, botId: string): { id: string; title: string; revision: number; expiresAt: number }[] {
+    identity(botId);
+    return this.app.store.read(tx => {
+      this.app.requireOwner(tx, actor);
+      if (!tx.get("SELECT id FROM bots WHERE id=?", botId)) throw new AppError("not_found", 404);
+      const rows = tx.all<{ record_json: string }>("SELECT record_json FROM work_items WHERE json_extract(record_json,'$.grantId') IS NOT NULL AND json_extract(record_json,'$.state') NOT IN ('blocked','stopping','stopped','ready') ORDER BY rowid DESC LIMIT 256");
+      const eligible = [];
+      for (const row of rows) {
+        const work = JSON.parse(row.record_json) as Work;
+        try {
+          const { grant } = this.app.authority.computerAuthority(tx, work.id, botId);
+          eligible.push({ id: work.id, title: work.title, revision: work.revision, expiresAt: grant.expiresAt });
+        } catch { /* A query is no authority; stale or revoked grants are omitted. */ }
+        if (eligible.length >= 100) break;
+      }
+      return eligible;
+    });
   }
   /** Applies exact authenticated lifecycle/lease commands inside the shared receipt transaction. */
   apply(tx: AppTransaction, command: ComputerCommand): ComputerReceipt {
@@ -114,7 +137,7 @@ export class S14Computers {
       this.enqueue(tx, c, "start");
       return receipt();
     }
-    const takeover = command.kind === "takeover.start" || command.kind === "takeover.end";
+    const takeover = ["takeover.start", "takeover.end", "takeover.renew"].includes(command.kind);
     exact(p, takeover ? ["botId", "computerId", "generation", "leaseRevision"] : ["botId", "computerId", "generation"]);
     const scope = p as { computerId: string; generation: number; leaseRevision?: number };
     identity(scope.computerId);
@@ -128,9 +151,9 @@ export class S14Computers {
       if (scope.leaseRevision !== lease.revision) throw new AppError("stale_lease", 409);
       if (command.kind === "takeover.start" ? lease.actor === "owner" : lease.actor !== "owner") throw new AppError("takeover_state_changed", 409);
       lease.revision++;
-      lease.actor = command.kind === "takeover.start" ? "owner" : null;
+      lease.actor = command.kind === "takeover.end" ? null : "owner";
       lease.attemptId = null;
-      lease.expiresAt = command.kind === "takeover.start" ? this.app.now() + c.limits.idleMs : 0;
+      lease.expiresAt = command.kind === "takeover.end" ? 0 : Math.min(this.app.now() + c.limits.idleMs, this.app.authority.computerAuthority(tx, c.workId, c.botId).grant.expiresAt);
       saveLease(tx, lease);
       c.revision++;
       c.lastUsedAt = this.app.now();
@@ -234,6 +257,7 @@ export class S14Computers {
         } catch (error) {
           reason = error instanceof AppError ? error.code : "computer_runtime_unavailable";
           this.#handles.delete(c.id);
+          this.app.store.transaction(tx => recordComputerActivity(tx, c.id, c.generation, "system.stop", this.app.now()));
           await this.options.runtime?.stop(c).catch(() => {});
         }
         this.app.store.transaction(tx => {
@@ -267,6 +291,7 @@ export class S14Computers {
         this.fence(tx, c);
         save(tx, c);
         this.enqueue(tx, c, "stop");
+        recordComputerActivity(tx, c.id, c.generation, "system.stop", this.app.now());
       }
     });
   }
@@ -285,6 +310,7 @@ export class S14Computers {
         this.fence(tx, c);
         save(tx, c);
         this.enqueue(tx, c, "stop");
+        recordComputerActivity(tx, c.id, c.generation, "system.stop", this.app.now());
       }
     });
   }
@@ -297,6 +323,7 @@ export class S14Computers {
         // A new work grant cannot inherit the previous work's runtime or input lease.
         this.apply(tx, { kind: "computer.stop", requestId: `computer_stop_${attempt.id}`, expectedRevision: c.revision,
           payload: { botId: c.botId, computerId: c.id, generation: c.generation } });
+        recordComputerActivity(tx, c.id, c.generation, "system.stop", this.app.now());
         c = load(tx, c.botId);
       }
       return c?.state === "stopping" ? c : null;
@@ -384,6 +411,7 @@ export class S14Computers {
       await this.options.runtime!.input(this.#handles.get(c.id)!, structuredClone(input), allowed);
       allowed();
       this.touch(c);
+      this.app.store.transaction(tx => recordComputerActivity(tx, c.id, c.generation, "agent.scroll", this.app.now()));
     });
   }
   /** Consumes transient Web-only owner input once; only keyed digests, safe outcomes and IDs enter SQLite. */
@@ -464,6 +492,18 @@ export class S14Computers {
       const bytes = await this.options.runtime.screenshot(handle, allowed);
       allowed();
       if (bytes.length < 8 || bytes.length > 2097152 || Buffer.from(bytes.subarray(0, 8)).toString("hex") !== "89504e470d0a1a0a") throw new AppError("computer_image_invalid", 422);
+      let metadata: { url?: string; title?: string } | undefined;
+      try { metadata = await this.options.runtime.pageInfo?.(handle, allowed); }
+      catch { /* Optional metadata failure cannot replace an otherwise valid screenshot with raw diagnostics. */ }
+      allowed();
+      this.app.store.transaction(tx => {
+        // Arbitrary titles/URLs may contain typed secrets. Only the observed built-in blank page is safe in Phase A.
+        if (metadata?.url === "about:blank" && this.#pages.get(c.id)?.generation !== c.generation) {
+          this.#pages.set(c.id, { generation: c.generation, page: { url: "about:blank", title: null, untrusted: true } });
+          recordComputerActivity(tx, c.id, c.generation, "page.opened", this.app.now());
+        }
+        recordComputerActivity(tx, c.id, c.generation, "screenshot", this.app.now());
+      });
       return bytes;
     });
   }
