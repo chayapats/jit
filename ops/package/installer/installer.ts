@@ -395,7 +395,9 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
     for (const image of configuredImages) {
       if (!available || (await call(asUser(["podman", "--remote", "--url", `unix:///run/user/${uid}/podman/podman.sock`, "pull", image.ref]), 120_000)).exitCode !== 0) options.out?.(`Optional image unavailable: ${image.feature}`);
     }
-    if (!available) options.out?.("Container features unavailable: Podman is absent. Chat-only installation is ready.");
+    if (!available) options.out?.(subordinateUnavailable
+      ? "Container features unavailable: subordinate IDs are outside the parent mapping. Chat-only installation is ready."
+      : "Container features unavailable: Podman is absent. Chat-only installation is ready.");
     else if (!configuredImages.length && !desired.execution) options.out?.("Container features unavailable: no published image pins in this release (WEB02/ATT02 follow-ups).");
     step("optional-box-doctor", "configure an execution image and re-run box-doctor when container features are needed");
     if (!dry) {

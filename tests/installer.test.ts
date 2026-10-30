@@ -219,6 +219,8 @@ test("nested fake-root mapping keeps chat available and preserves files on re-ru
     const result = await runInstaller(f.options);
     expect(result.events.at(-1)).toBe("owner-link");
     expect(JSON.parse(readFileSync(f.at("etc/jit/installer-state.json"), "utf8")).containers).toBe("unavailable");
+    expect(f.lines.join("\n")).toContain("subordinate IDs are outside the parent mapping");
+    expect(f.lines.join("\n")).not.toContain("Podman is absent");
     for (const name of ["subuid", "subgid"]) expect(readFileSync(f.at(`etc/${name}`), "utf8")).toBe("jit:100000:65536\n");
   }
   expect(f.lines.join("\n")).toContain("expand the container's UID and GID mappings");
