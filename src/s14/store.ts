@@ -47,8 +47,10 @@ export class S14Store {
     };
     try {
       if (state === "missing") closeSync(openSync(ledgerPath, "wx", 0o600));
+      // Attaching reads both schemas, so a concurrent writer needs the wait already in place.
+      this.#db.exec("PRAGMA busy_timeout=2000");
       this.#db.query("ATTACH DATABASE ? AS lifecycle").run(ledgerPath);
-      this.#db.exec("PRAGMA busy_timeout=2000; PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON");
+      this.#db.exec("PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON");
       if (state === "missing") this.#db.transaction(() => this.#db.exec(`
         CREATE TABLE owner (id TEXT PRIMARY KEY CHECK(id='owner'), password_hash TEXT NOT NULL, generation INTEGER NOT NULL);
         CREATE TABLE sessions (token_hash TEXT PRIMARY KEY, generation INTEGER NOT NULL, expires_at INTEGER NOT NULL);
