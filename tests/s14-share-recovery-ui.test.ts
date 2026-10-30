@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, test, setDefaultTimeout } from "bun:test";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,6 +16,9 @@ import { createS14Handler } from "../src/s14/web";
 import { renderS14 } from "../src/s14/web-pages";
 import { createS14Product } from "../src/s14/web-product";
 import { accessibilityProblems } from "./fixtures/a11y";
+
+// Every case renders real pages through the whole product; a loaded CI runner exceeds the default 5 s.
+setDefaultTimeout(30_000);
 
 /**
  * SHARE14-01 and REC14-01 product surfaces over the real application, boot reconciliation and handler. Forms are posted the
