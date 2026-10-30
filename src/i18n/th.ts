@@ -4,6 +4,13 @@
  * Values are plain text: no markup and none of < > & " ' (renderers insert them unescaped).
  */
 export const th = {
+  "attachments.image_probe_refused": "ผู้ให้บริการปฏิเสธการทดสอบรูป",
+  "attachments.image_probe_reason_sign_in": "ต้องลงชื่อเข้าใช้ใหม่",
+  "attachments.image_probe_reason_plan_or_credits": "บัญชีนี้ไม่มีเครดิตหรือแผนที่รองรับ",
+  "attachments.image_probe_reason_quota": "ถึงขีดจำกัด quota หรืออัตราการเรียกของผู้ให้บริการแล้ว",
+  "attachments.image_probe_next_sign_in": "เชื่อมจิตใหม่",
+  "attachments.image_probe_next_plan_or_credits": "เติมเครดิตหรืออัปเกรดแผนกับผู้ให้บริการ",
+  "attachments.image_probe_next_quota": "ลองใหม่ภายหลัง",
   "attachments.image_probe_result_pass": "ผ่านการทดสอบ",
   "attachments.image_probe_result_unsupported": "ยังไม่รองรับ",
   "attachments.image_probe_result_inconclusive": "ยังสรุปผลไม่ได้",
