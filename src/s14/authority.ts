@@ -331,6 +331,7 @@ export class S14Authority {
       work.result = attempt.id; save(tx, "work_items", work);
       this.reevaluate(tx, work.id, true);
       this.app.recovery.committed(tx, attempt.id);
+      this.app.coding.committed(tx, attempt.id);
     });
   }
   private reevaluate(tx: AppTransaction, workId: string, resultChanged = false): void {

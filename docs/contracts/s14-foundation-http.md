@@ -262,3 +262,19 @@ Transition states: active/stopping/retired/deleting/deleted; target active/retir
 Retire requires both explicit history/evidence retention flags and preserves volumes; computer-only reset/delete is separate. Delete preview exposes exact owned sources/private claims, forward derivatives, report/artifact IDs, work/conversation/routine revisions, scoped withdrawal facts, dependent shares, workspace/profile/computer revisions and native IDs/states. retainedEffects enumerates exact action IDs/revisions/hashes/outcomes. Deleted effect payloads show payloadState=deleted with the original actionHash/outcome retained and cannot execute. retainedLineage is identity_hashes_and_independent_originals; disclosedKnowledge is cannot_recall. The backend protects these independently of presentation. Local cleanup never promises erasure of provider/recipient knowledge.
 
 UI agent seam: add Opus-authored lifecycle/capability/routine/history/needs-me surfaces and typed server form translators under `src/s14/`; retain existing `createS14Handler`, S14Application.execute and exact preview/query contracts. Use current Bot revision plus proposal hash or lifecycle preview hash in the owner action. Extend the product `surface`/redirect mapping for these new receipts, since this logic slice leaves product navigation unchanged. Keep Thai/English, keyboard, no-script and UI acceptance boxes unticked until that integration is verified. No CSS/layout/interaction design was authored here.
+
+## CODE14-01 logic handoff — app.coding-work/v1
+
+All coding ingress uses POST `/api/s14/commands` or existing no-script POST `/s14/commands` with the existing authenticated envelope/CSRF/Origin/retry rules. No UI design is supplied in this logic slice.
+
+| Command | Exact payload | expectedRevision |
+| --- | --- | --- |
+| `coding.repository.grant` | `{id,botId,url,baseCommit}` | 0 |
+| `coding.repository.revoke` | `{repositoryId}` | repository revision |
+| `coding.start` | `{repository:{id,revision},work:StartPayload,install:CodingCheck|null,tests:CodingCheck[]}` | conversation revision |
+
+`CodingCheck={argv:string[],timeoutMs:number,network:'none'|'registry',coverage:string}`. Select exactly one Bot and repository resource scope; required tools `computer,coding`, optional proposal-only `effect_push`. Repository files must be preloaded inside the selected Bot computer at the service-derived path. No host file chooser/path is implied. Registry/network-required checks are skipped with `coding_egress_scope_unavailable` because the current runtime enforces no network. A broader egress grant/capability is pending, not an available toggle.
+
+GET `/api/s14/coding/repositories` → `{items:CodingRepository[]}`. GET `/api/s14/work/:id/coding` → `CodingView={job,runs,available,checks}`. Exact exported types are in `src/s14/coding-types.ts`. Run states are running/reviewable/partial/interrupted; safe reasons include coding_tests_not_run, coding_check_failed, coding_check_timeout, coding_changed_during_tests, coding_egress_scope_unavailable and coding_interrupted_no_replay. Checks distinguish passed/failed/skipped/unknown and actual exit/timeouts with bounded stdout/stderr excerpts. Declared coverage is not measured coverage. Show tests that were unrun; do not infer success from model text.
+
+`reportId` links to the existing report API/artifact downloads only after immutable publication. Before it exists, diagnostic run metadata is not a delivered artifact. Existing Work stays waiting for review; reviewable evidence alone does not fulfill owner completion or approve any external effect. Existing work.stop fences the run; interrupted coding does not automatically resume. UI acceptance remains unticked for the later Opus high agent.

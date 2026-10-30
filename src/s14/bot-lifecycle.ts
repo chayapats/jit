@@ -240,6 +240,7 @@ export class S14BotLifecycle {
     this.app.sharing.fence(tx);
     this.app.parallel.reconcile(tx);
     this.app.reports.reconcile(tx);
+    this.app.coding.reconcile(tx);
   }
 
   private unsettled(tx: AppTransaction, botId: string): boolean {

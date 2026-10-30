@@ -1,3 +1,5 @@
+import { S14Coding } from "./coding";
+import type { CodingCommand, CodingOptions, CodingReceipt } from "./coding-types";
 import { S14BotLifecycle } from "./bot-lifecycle";
 import type { BotLifecycleCommand, BotLifecycleOptions, BotLifecycleReceipt } from "./bot-lifecycle-types";
 import { S14Attention } from "./attention";
@@ -28,9 +30,9 @@ import { S14Computers } from "./computer";
 import type { ComputerCommand, ComputerOptions, ComputerReceipt } from "./computer-types";
 
 /** Stable complete typed owner ingress union for the S14 logic foundation. */
-export type S14Command = BotCommand | AuthorityCommand | MemoryCommand | ParallelCommand | ComputerCommand | GraphCommand | SharingCommand | RecoveryCommand | RoutineCommand | AttentionCommand | BotLifecycleCommand;
+export type S14Command = BotCommand | AuthorityCommand | MemoryCommand | ParallelCommand | ComputerCommand | GraphCommand | SharingCommand | RecoveryCommand | RoutineCommand | AttentionCommand | BotLifecycleCommand | CodingCommand;
 /** Committed typed result of the S14 owner command boundary. */
-export type S14Receipt = BotReceipt | AuthorityReceipt | MemoryReceipt | ParallelReceipt | ComputerReceipt | GraphReceipt | SharingReceipt | RecoveryReceipt | RoutineReceipt | AttentionReceipt | BotLifecycleReceipt;
+export type S14Receipt = BotReceipt | AuthorityReceipt | MemoryReceipt | ParallelReceipt | ComputerReceipt | GraphReceipt | SharingReceipt | RecoveryReceipt | RoutineReceipt | AttentionReceipt | BotLifecycleReceipt | CodingReceipt;
 
 const id = () => crypto.randomUUID().replaceAll("-", "");
 const tokenPattern = /^[a-f0-9]{64}$/;
@@ -47,10 +49,11 @@ export function save(tx: AppTransaction, table: RecordTable, value: { id: string
 /** Reads bounded identity records from a trusted table name without starting workers. */
 export function records<T>(tx: AppTransaction, table: RecordTable): T[] { return tx.all<{ record_json: string }>(`SELECT record_json FROM ${table} ORDER BY rowid DESC LIMIT 100`).map(row => JSON.parse(row.record_json) as T); }
 /** Injectable deterministic inference/clock and rollback fault seams; production never enables fixture inference. */
-export interface S14Options { policy: Policy; chat: ChatPort; authority?: AuthorityOptions; parallel?: ParallelWebOptions; computers?: ComputerOptions; botLifecycle?: BotLifecycleOptions; attention?: AttentionPort; now?: () => number; beforeCommit?: () => void }
+export interface S14Options { policy: Policy; chat: ChatPort; authority?: AuthorityOptions; parallel?: ParallelWebOptions; computers?: ComputerOptions; botLifecycle?: BotLifecycleOptions; attention?: AttentionPort; coding?: CodingOptions; now?: () => number; beforeCommit?: () => void }
 
 /** Project-free owner command boundary; registered actors are revalidated on every read and commit. */
 export class S14Application {
+  readonly coding: S14Coding;
   readonly policy: Policy;
   readonly now: () => number;
   readonly authority: S14Authority;
@@ -76,11 +79,12 @@ export class S14Application {
       if (!["codex", "grok"].includes(r.provider) || !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/.test(r.model)) throw new AppError("invalid_route");
     }
     capabilities({ tools: this.policy.tools, resources: this.policy.resources }, this.policy);
+    this.coding = new S14Coding(this, options.coding);
     this.memory = new S14Memory(this);
     this.sharing = new S14Sharing(this);
     const externalScopes = options.authority?.scopes;
     this.authority = new S14Authority(this, { ...options.authority, scopes: {
-      current: (tx, scope) => this.sharing.scope(tx, scope) ?? this.memory.scope(tx, scope) ?? externalScopes?.current(tx, scope) ?? null,
+      current: (tx, scope) => this.coding.scope(tx, scope) ?? this.sharing.scope(tx, scope) ?? this.memory.scope(tx, scope) ?? externalScopes?.current(tx, scope) ?? null,
     } });
     this.graph = new S14Graph(this);
     this.parallel = new ParallelWeb(this, options.parallel);
@@ -91,7 +95,7 @@ export class S14Application {
     this.routines = new S14Routines(this);
     this.computers = new S14Computers(this, options.computers);
     this.botLifecycle = new S14BotLifecycle(this, options.botLifecycle);
-    this.store.transaction(tx => { this.botLifecycle.reconcile(tx); this.recovery.reconcileReservations(tx); this.recovery.reconcileEffects(tx); this.attention.recover(tx); this.routines.reconcile(tx); });
+    this.store.transaction(tx => { this.botLifecycle.reconcile(tx); this.coding.recover(tx); this.recovery.reconcileReservations(tx); this.recovery.reconcileEffects(tx); this.attention.recover(tx); this.routines.reconcile(tx); });
   }
   /** Trusted local bootstrap creates only the authentication principal, never resets an existing installation. */
   async provisionOwner(password: string): Promise<void> {
@@ -190,6 +194,8 @@ export class S14Application {
   execute(actor: OwnerActor, command: AttentionCommand): AttentionReceipt;
   /** Executes exact Bot policy proposals and lifecycle previews through the authenticated owner boundary. */
   execute(actor: OwnerActor, command: BotLifecycleCommand): BotLifecycleReceipt;
+  /** Executes repository grants and coding starts through the common owner receipt boundary. */
+  execute(actor: OwnerActor, command: CodingCommand): CodingReceipt;
   /** Executes the complete typed HTTP command union without client-controlled actor identities. */
   execute(actor: OwnerActor, command: S14Command): S14Receipt;
   execute(actor: OwnerActor, command: S14Command): S14Receipt {
@@ -203,7 +209,9 @@ export class S14Application {
       const previous = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash,result_json FROM command_receipts WHERE owner_id='owner' AND request_id=?", command.requestId);
       if (previous) { if (previous.payload_hash !== digest(encoded)) throw new AppError("request_id_conflict", 409); return JSON.parse(previous.result_json) as S14Receipt; }
       let result: S14Receipt;
-      if (["bot.capabilities.propose", "bot.reenable.propose", "bot.capabilities.accept", "bot.retire", "bot.delete"].includes(command.kind)) {
+      if (command.kind.startsWith("coding.")) {
+        result = this.coding.apply(tx, command as CodingCommand);
+      } else if (["bot.capabilities.propose", "bot.reenable.propose", "bot.capabilities.accept", "bot.retire", "bot.delete"].includes(command.kind)) {
         result = this.botLifecycle.apply(tx, command as BotLifecycleCommand);
         this.botLifecycle.reconcile(tx);
         if (result.bot) result.bot = record<Bot>(tx, "bots", result.bot.id);

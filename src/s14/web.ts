@@ -106,6 +106,9 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
         return json(receipt);
       }
       if (request.method !== "GET") throw new AppError("not_found", 404);
+      if (url.pathname === "/api/s14/coding/repositories") return json({ items: app.coding.repositories(auth.actor) });
+      const coding = /^\/api\/s14\/work\/([a-zA-Z0-9_-]+)\/coding$/.exec(url.pathname);
+      if (coding) return json(app.coding.view(auth.actor, coding[1]!));
       const reports = /^\/api\/s14\/work\/([a-zA-Z0-9_-]+)\/reports$/.exec(url.pathname);
       if (reports) return json(app.reports.list(auth.actor, reports[1]!));
       const report = /^\/api\/s14\/reports\/([a-f0-9]{32})$/.exec(url.pathname);
