@@ -242,21 +242,36 @@ export class S14Authority {
     for (const scope of grant.scopes) if (!equal(this.scope(tx, scope.ref), scope)) throw new AppError("scope_revoked_or_stale", 403);
     return { bot, grant };
   }
-  /** Checks retained output authority without treating grant expiry or native completion as renewed execution permission. */
+  /** Checks every retained producer, including transitive uncited inputs/parents; expiry/stop never renew execution or erase committed evidence. */
   retainedEvidence(tx: AppTransaction, attemptId: string): boolean {
-    const attempt = record<Attempt>(tx, "work_attempts", attemptId), s = attempt.snapshot;
-    const state = tx.get<{ generation: number; revoked: number }>("SELECT generation,revoked FROM grant_state WHERE grant_id=?", s.grant.id);
-    if (!state || tx.get<{ generation: number }>("SELECT generation FROM owner")?.generation !== s.grant.ownerGeneration) return false;
-    const bot = record<Bot>(tx, "bots", s.bot.id);
-    if (!equal(bot, s.bot) || !bot.enabled || !equal(this.app.route(bot.routeId), s.route)) return false;
-    for (const scope of s.scopes) if (!equal(this.scope(tx, scope.ref), scope)) return false;
-    const computer = tx.get<{ computer_id: string; generation: number; record_json: string }>("SELECT a.computer_id,a.generation,c.record_json FROM computer_attempts a JOIN bot_computers c ON c.id=a.computer_id WHERE a.attempt_id=?", attemptId);
-    if (computer) {
-      const withdrawals = tx.all<{ mode: string }>("SELECT mode FROM lifecycle.withdrawals WHERE kind='computer' AND id=?", computer.computer_id);
-      if (withdrawals.some(row => {
-        const generation = Number(/^through_generation_([0-9]+)$/.exec(row.mode)?.[1]);
-        return Number.isSafeInteger(generation) && computer.generation <= generation;
-      })) return false;
+    const pending = [attemptId], seen = new Set<string>();
+    try {
+      while (pending.length) {
+        const key = pending.pop()!;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const row = tx.get<{ record_json: string }>("SELECT record_json FROM work_attempts WHERE id=?", key);
+        if (!row) return false;
+        const attempt = JSON.parse(row.record_json) as Attempt, s = attempt.snapshot;
+        const state = tx.get<{ generation: number; revoked: number }>("SELECT generation,revoked FROM grant_state WHERE grant_id=?", s.grant.id);
+        if (!state || tx.get<{ generation: number }>("SELECT generation FROM owner")?.generation !== s.grant.ownerGeneration) return false;
+        const bot = record<Bot>(tx, "bots", s.bot.id);
+        if (!equal(bot, s.bot) || !bot.enabled || !equal(this.app.route(bot.routeId), s.route)) return false;
+        for (const scope of s.scopes) if (!equal(this.scope(tx, scope.ref), scope)) return false;
+        const computer = tx.get<{ computer_id: string; generation: number }>("SELECT computer_id,generation FROM computer_attempts WHERE attempt_id=?", key);
+        if (computer) {
+          const withdrawals = tx.all<{ mode: string }>("SELECT mode FROM lifecycle.withdrawals WHERE kind='computer' AND id=?", computer.computer_id);
+          if (withdrawals.some(row => {
+            const generation = Number(/^through_generation_([0-9]+)$/.exec(row.mode)?.[1]);
+            return Number.isSafeInteger(generation) && computer.generation <= generation;
+          })) return false;
+        }
+        if (attempt.parentId) pending.push(attempt.parentId);
+        pending.push(...(attempt.step?.inputs.map(input => input.attemptId) ?? []));
+      }
+    } catch (error) {
+      if (error instanceof AppError) return false;
+      throw error;
     }
     return true;
   }
@@ -279,6 +294,7 @@ export class S14Authority {
     const s = attempt.snapshot, work = this.grantLive(tx, s.grant), bot = record<Bot>(tx, "bots", s.bot.id);
     if (!bot.enabled || bot.revision !== s.bot.revision || bot.generation !== s.bot.generation || !equal(bot.capabilities, s.bot.capabilities) || !equal(this.app.route(bot.routeId), s.route)) throw new AppError("bot_authority_changed", 403);
     for (const scope of s.scopes) if (!equal(this.scope(tx, scope.ref), scope) || !this.accessible(scope, bot, work.id)) throw new AppError("scope_revoked_or_stale", 403);
+    if (!this.retainedEvidence(tx, attempt.id)) throw new AppError("memory_context_stale", 403);
     return work;
   }
   /** Admits a service-chosen bounded step once; model suggestions can only narrow a live owner grant. */
@@ -599,8 +615,15 @@ export class S14Authority {
                   this.app.memory.appendSource(tx, attempt.id, source);
                   // Bound the handoff independently of retained sibling output and keep every omission explicit.
                   if (Buffer.byteLength(dependency.text) > 8192) {
-                    dependency.text = Buffer.from(dependency.text).subarray(0, 8192).toString("utf8").toWellFormed();
+                    const bytes = Buffer.from(dependency.text);
+                    let end = 8192;
+                    while ((bytes[end]! & 0xc0) === 0x80) end--;
+                    dependency.text = bytes.subarray(0, end).toString("utf8");
                     attempt.step.gaps.push({ stepId: dependency.stepId, reason: "handoff_result_excerpt" });
+                  }
+                  if (Buffer.byteLength(JSON.stringify([...attempt.step.inputs, dependency])) > 49152) {
+                    attempt.step.gaps.push({ stepId: dependency.stepId, reason: "handoff_result_omitted" });
+                    continue;
                   }
                   const evidenceRows = tx.all<{ id: string }>("SELECT id FROM external_evidence WHERE attempt_id=? ORDER BY rowid", dependency.attemptId);
                   for (const row of evidenceRows) {

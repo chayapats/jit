@@ -9,6 +9,8 @@ import { artifactHash } from "../src/s14/artifacts";
 import { createS14Handler } from "../src/s14/web";
 import type { ArtifactRequest, EvidenceRequirement, Report, ReportCommand, ReportProposal, ReportView } from "../src/s14/report-types";
 import type { Attempt, StartPayload } from "../src/s14/authority-types";
+import type { StepProposal } from "../src/s14/graph-types";
+import type { Bot } from "../src/s14/types";
 import { FakeComputerRuntime } from "./fixtures/s14-computer";
 import { canonical } from "../src/s14/validation";
 import anonymous from "./fixtures/parallel/tools-anonymous.json";
@@ -68,6 +70,160 @@ function backend(changes: Partial<ExecutionBackend> = {}): ExecutionBackend {
     list: async () => [{ name: "report.md", type: "file" }], observeFile: async () => ({ targetExists: true, bytes }),
     async *readFile() { yield bytes; }, writeFileAtomically: unused, writePrivateFile: unused, async *glob() {}, search: unused, spawn: unused, ...changes };
 }
+
+const uncitedReport = (): ReportProposal => ({ title: "Uncited handoff report", claims: [{ id: "handoff", text: "Derived from the computer result", kind: "inference", citations: [], covers: [], conflicts: [] }], missing: [], limitations: [], artifactIds: [] });
+async function uncitedChain(f: F, final?: (a: Attempt) => Promise<void>) {
+  f.app.authority.settle(f.attempt.id);
+  f.app.computers.options.runtime = new FakeComputerRuntime();
+  f.store.transaction(tx => {
+    const bot = JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM bots WHERE id='jit'")!.record_json) as Bot;
+    for (const id of ["origin", "bridge"]) tx.run("INSERT INTO bots VALUES (?,?)", id, canonical({ ...bot, id, name: id }));
+  });
+  const work = f.start({ bots: ["jit", "origin", "bridge"].map(id => ({ id, revision: 1 })), tools: ["computer"], requiredEvidence: [] }).work!;
+  const base = { scopes: [], calls: 1, outputBytes: 32768, input: "Bounded handoff" };
+  const nodes: StepProposal[] = [
+    { ...base, id: "origin", botId: "origin", handler: "research", tools: ["computer"], dependsOn: [] },
+    { ...base, id: "bridge", botId: "bridge", handler: "synthesis", tools: [], dependsOn: ["origin"] },
+    { ...base, id: "final", botId: "jit", handler: "synthesis", tools: [], dependsOn: ["bridge"] },
+  ];
+  f.app.graph.propose(work.id, 1, nodes);
+  f.app.authority.options.executor = { async run(a) {
+    if (a.snapshot.bot.id === "origin") {
+      await f.app.computers.prepare(a.id);
+      const computer = f.app.computers.open(a.id); computer.release();
+      return { state: "ready", text: "Uncited computer result" };
+    }
+    expect(a.step!.inputs).toHaveLength(1);
+    expect(a.step!.inputs[0]!.evidence).toEqual([]);
+    if (a.snapshot.bot.id === "bridge") return { state: "ready", text: `Bridge: ${a.step!.inputs[0]!.text}` };
+    const staged = f.store.transaction(tx => f.app.artifacts.stage(tx, a, request, bytes));
+    await final?.(a);
+    return { state: "waiting", text: "Final uncited report", report: { ...uncitedReport(), artifactIds: [staged.id] } };
+  } };
+  return { work, draining: f.app.authority.drain() };
+}
+function withdrawComputer(f: F, kind: "computer.reset" | "computer.delete") {
+  const c = f.app.computers.view(f.auth.actor, "origin").computer!;
+  f.app.execute(f.auth.actor, { kind, requestId: rid(), expectedRevision: c.revision, payload: { botId: "origin", computerId: c.id, generation: c.generation } });
+}
+
+test.each(["computer.reset", "computer.delete"] as const)("%s withdraws transitive uncited handoffs, report revisions, workspace files and restored pre-pin outputs", async kind => {
+  const f = await fixture(), chain = await uncitedChain(f); await chain.draining;
+  const first = available(f.app.reports.list(f.auth.actor, chain.work.id)[0]!);
+  expect(first.artifacts).toHaveLength(3);
+  const next = f.app.authority.admit(chain.work.id, rid(), { botId: "jit", tools: [], scopes: [], input: "Revise retained report", calls: 1, outputBytes: 32768 });
+  f.store.transaction(tx => f.app.memory.appendSource(tx, next.id, first.report.source));
+  f.app.authority.commit(next.id, { state: "ready", text: "Second report", report: uncitedReport() });
+  const history = f.app.reports.list(f.auth.actor, chain.work.id).map(available);
+  expect(history.map(view => view.report.revision)).toEqual([1, 2]);
+  f.app.execute(f.auth.actor, acceptance(f, history[1]!.report));
+  for (const view of history) for (const artifact of view.artifacts) expect(f.app.artifacts.download(f.auth.actor, artifact.id).bytes.length).toBeGreaterThan(0);
+  // Simulate existing schema-10 data from before producer pins; the durable origin records must still fence it.
+  f.store.transaction(tx => tx.run("UPDATE memory_sources SET record_json=json_remove(record_json,'$.producerAttemptId')"));
+  const backup = join(f.root, "before-uncited-withdrawal.sqlite"); copyFileSync(f.path, backup);
+  withdrawComputer(f, kind);
+  expect(f.app.reports.list(f.auth.actor, chain.work.id).every(view => view.state === "unavailable")).toBe(true);
+  expect(f.app.reports.review(f.auth.actor, chain.work.id).acceptance).toBeNull();
+  for (const view of history) for (const artifact of view.artifacts) expect(() => f.app.artifacts.download(f.auth.actor, artifact.id)).toThrow("artifact_unavailable");
+  f.store.close(); stores.delete(f.store); copyFileSync(backup, f.path);
+  const store = new S14Store(f.path); stores.add(store); const app = new S14Application(store, f.options), actor = app.authenticate(f.token).actor;
+  expect(app.reports.list(actor, chain.work.id).every(view => view.state === "unavailable")).toBe(true);
+  for (const view of history) for (const artifact of view.artifacts) expect(() => app.artifacts.download(actor, artifact.id)).toThrow("artifact_unavailable");
+  expect(store.read(tx => tx.get<{ n: number }>("SELECT count(*) n FROM artifacts WHERE content IS NOT NULL")!.n)).toBe(0);
+});
+
+test.each(["computer.reset", "computer.delete"] as const)("%s during uncited synthesis removes private staging and rejects late report/result publication", async kind => {
+  const f = await fixture(), entered = barrier(), release = barrier();
+  const chain = await uncitedChain(f, async () => { entered.resolve(); await release.promise; });
+  await entered.promise;
+  expect(f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) n FROM artifact_staging")!.n)).toBe(1);
+  withdrawComputer(f, kind);
+  expect(f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) n FROM artifact_staging")!.n)).toBe(0);
+  release.resolve(); await chain.draining;
+  expect(f.app.reports.list(f.auth.actor, chain.work.id)).toEqual([]);
+  expect(f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) n FROM artifacts")!.n)).toBe(0);
+  expect(f.app.authority.view(f.auth.actor, chain.work.id).results.some(result => result.text === "Final uncited report")).toBe(false);
+});
+
+test("a Bot revision on an uncited transitive producer withdraws its descendants without affecting unrelated reports", async () => {
+  const f = await fixture(), source = await f.read(), unrelated = publish(f, f.proposal(source));
+  const chain = await uncitedChain(f); await chain.draining;
+  const committed = available(f.app.reports.list(f.auth.actor, chain.work.id)[0]!);
+  f.store.transaction(tx => tx.run("UPDATE bots SET record_json=json_set(record_json,'$.revision',2) WHERE id='origin'"));
+  expect(f.app.reports.view(f.auth.actor, committed.report.id).state).toBe("unavailable");
+  expect(f.app.reports.view(f.auth.actor, unrelated.report.id).state).toBe("available");
+});
+
+test("default graph output leaves conservative room for owner evidence-only synthesis after a failed read attempt", async () => {
+  const f = await fixture(); f.app.authority.settle(f.attempt.id);
+  const work = f.start({ tools: ["web_fetch"] }).work!;
+  let runs = 0;
+  f.app.authority.options.executor = { async run(a) {
+    if (runs++ === 0) {
+      await f.app.parallel.read(a.id, "web_fetch", { url: "https://example.com/article", fullContent: true });
+      throw Error("fixture failure after committed evidence");
+    }
+    expect(a.snapshot.tools).toEqual([]);
+    expect(a.snapshot.input).toContain("Returned full markdown");
+    return { state: "ready", text: "Evidence-only synthesis" };
+  } };
+  await f.app.authority.drain();
+  const before = f.app.authority.view(f.auth.actor, work.id), slice = Math.floor(before.grant!.limits.outputBytes / before.grant!.limits.attempts);
+  expect(before.work.state).toBe("blocked"); expect(before.reservations!.outputBytes).toBe(slice);
+  f.app.execute(f.auth.actor, { kind: "work.summarize", requestId: rid(), expectedRevision: before.work.revision, payload: { workId: work.id } });
+  await f.app.authority.drain();
+  const after = f.app.authority.view(f.auth.actor, work.id);
+  expect(after.results.map(result => result.text)).toEqual(["Evidence-only synthesis"]);
+  expect(after.reservations).toMatchObject({ outputBytes: 2 * slice, attempts: 2, reads: 1 });
+});
+
+test("a delegated uncited source retains its parent's computer fence at publication and download", async () => {
+  const f = await fixture(); f.app.authority.settle(f.attempt.id);
+  f.app.computers.options.runtime = new FakeComputerRuntime();
+  f.store.transaction(tx => {
+    const bot = JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM bots WHERE id='jit'")!.record_json) as Bot;
+    tx.run("INSERT INTO bots VALUES (?,?)", "receiver", canonical({ ...bot, id: "receiver" }));
+  });
+  const work = f.start({ bots: [{ id: "jit", revision: 1 }, { id: "receiver", revision: 1 }], tools: ["computer"] }).work!;
+  const parent = f.app.authority.admit(work.id, rid(), { botId: "jit", tools: ["computer"], scopes: [], input: "Parent computer work", calls: 1, outputBytes: 32768 });
+  await f.app.computers.prepare(parent.id); const computer = f.app.computers.open(parent.id); computer.release();
+  const child = f.app.authority.delegate(parent.id, rid(), { botId: "receiver", tools: [], scopes: [], input: "Uncited parent handoff", calls: 1, outputBytes: 32768 });
+  f.app.authority.commit(child.id, { state: "ready", text: "Delegated report", report: uncitedReport() });
+  const committed = available(f.app.reports.list(f.auth.actor, work.id)[0]!);
+  const c = f.app.computers.view(f.auth.actor, "jit").computer!;
+  f.app.execute(f.auth.actor, { kind: "computer.reset", requestId: rid(), expectedRevision: c.revision, payload: { botId: "jit", computerId: c.id, generation: c.generation } });
+  expect(f.app.reports.view(f.auth.actor, committed.report.id).state).toBe("unavailable");
+  for (const artifact of committed.artifacts) expect(() => f.app.artifacts.download(f.auth.actor, artifact.id)).toThrow("artifact_unavailable");
+});
+
+test("evidence filling one handoff cannot let subsequent text-only dependencies exceed the aggregate ceiling", async () => {
+  const f = await fixture(); f.app.authority.settle(f.attempt.id);
+  const transport = f.app.parallel.options.transport!;
+  f.app.parallel.options.transport = async (url, init) => {
+    const wire = JSON.parse(init.body as string);
+    if (wire.method !== "tools/call") return transport(url, init);
+    const changed = structuredClone(fetchFixture);
+    changed.result.structuredContent.results[0]!.full_content = "E".repeat(14000);
+    return Response.json(changed);
+  };
+  const work = f.start({ tools: ["web_fetch"] }).work!, base = f.app.graph.view(f.auth.actor, work.id).graph.nodes[0]!;
+  const nodes: StepProposal[] = Array.from({ length: 6 }, (_, i) => ({ ...base, id: `read_${i}`, calls: 3 }));
+  nodes.push({ ...base, id: "synthesis", handler: "synthesis", tools: [], dependsOn: nodes.map(n => n.id), calls: 1 });
+  f.app.graph.propose(work.id, 1, nodes);
+  let synthesis: Attempt | undefined;
+  f.app.authority.options.executor = { async run(a) {
+    if (a.step!.handler === "synthesis") { synthesis = a; return { state: "ready", text: "Bounded mixed handoff" }; }
+    if (a.step!.id.endsWith("read_0")) {
+      expect((await f.app.parallel.read(a.id, "web_fetch", { url: "https://example.com/article", fullContent: true })).evidence).toHaveLength(1);
+    }
+    return { state: "ready", text: "T".repeat(8192) };
+  } };
+  await f.app.authority.drain();
+  expect(synthesis).toBeDefined();
+  expect(synthesis!.step!.inputs[0]!.evidence).toHaveLength(1);
+  expect(Buffer.byteLength(JSON.stringify(synthesis!.step!.inputs))).toBeLessThanOrEqual(49152);
+  expect(synthesis!.step!.gaps.filter(gap => gap.reason === "handoff_result_omitted")).toHaveLength(2);
+});
 
 test("done text and a staged workspace file do not create a report; valid commit creates immutable report plus two inspectable files", async () => {
   const f = await fixture(), source = await f.read();
@@ -191,7 +347,7 @@ test("failed report insert rolls back result/source/files together and a restart
   expect(app.artifacts.download(actor, committed.artifacts[0]!.id).bytes.length).toBeGreaterThan(0);
 });
 
-test.each(["memory.forget", "memory.delete", "memory.revoke"] as const)("%s reaches report/artifact descendants and a restored image cannot resurrect them", async kind => {
+test.each(["memory.correct", "memory.forget", "memory.delete", "memory.revoke"] as const)("%s reaches report/artifact descendants and a restored image cannot resurrect them", async kind => {
   const f = await fixture();
   // Re-admit after the owner memory was available; its original access revision is captured.
   f.app.authority.settle(f.attempt.id);
@@ -204,7 +360,9 @@ test.each(["memory.forget", "memory.delete", "memory.revoke"] as const)("%s reac
   f.app.execute(f.auth.actor, acceptance(f, committed.report));
   expect(f.app.reports.review(f.auth.actor, work.work!.id).completion).toBe("owner_accepted");
   const backup = join(f.root, "image.sqlite"); copyFileSync(f.path, backup);
-  f.app.execute(f.auth.actor, { kind, requestId: rid(), expectedRevision: 1, payload: { claim: remembered.claim! } });
+  f.app.execute(f.auth.actor, kind === "memory.correct"
+    ? { kind, requestId: rid(), expectedRevision: 1, payload: { claim: remembered.claim!, text: "Corrected report preference" } }
+    : { kind, requestId: rid(), expectedRevision: 1, payload: { claim: remembered.claim! } });
   expect(f.app.reports.view(f.auth.actor, committed.report.id).state).toBe("unavailable");
   expect(f.app.reports.review(f.auth.actor, work.work!.id)).toMatchObject({ completion: "owner_review_required", acceptance: null, revision: 3 });
   expect(() => f.app.execute(f.auth.actor, acceptance(f, committed.report))).toThrow("report_unavailable");

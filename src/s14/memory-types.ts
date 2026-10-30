@@ -8,6 +8,8 @@ export interface MemorySource extends MemoryRef {
   text: string | null; derived: MemoryRef[]; createdAt: number;
   /** Access revisions used by this source's Bot, including transitive claim dependencies. */
   access?: MemoryPacket["access"];
+  /** Trusted producing attempt; its retained Bot/resource/computer fences apply to every descendant. */
+  producerAttemptId?: string;
 }
 /** Retained assertion with conservative dependencies; a fact records an owner statement rather than objective truth. */
 export interface MemoryClaim extends MemoryRef {

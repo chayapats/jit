@@ -3286,7 +3286,7 @@ export const th = {
   "s14.report.scope.excerpt": "อ้างจากบางส่วน",
   "s14.report.scope.page": "อ้างทั้งหน้า",
   "s14.report.conflicts_with": "ขัดกับข้อความอ้างที่",
-  "s14.report.covers": "ตอบ:",
+  "s14.report.covers": "Bot อ้างว่าตอบ:",
   "s14.report.no_citation": "ข้อความนี้ไม่ได้อ้างแหล่งใด",
   "s14.report.source_gone": "แหล่งนี้ไม่มีให้อ่านแล้ว",
   "s14.report.open_source": "เปิดแหล่งที่",

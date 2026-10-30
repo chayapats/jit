@@ -223,10 +223,11 @@ test("owner retry after a failed graph retains prior lanes and uses the shared d
   } });
   const started = f.start({ bots: [{ id: "jit", revision: 1 }] });
   const plan = f.app.graph.view(f.auth.actor, started.work!.id).graph;
-  f.app.graph.propose(started.work!.id, plan.revision, plan.nodes.map(node => ({ ...node, calls: 5, outputBytes: 8192 })));
   await f.app.authority.drain();
   const before = f.app.authority.view(f.auth.actor, started.work!.id), graph = f.app.graph.view(f.auth.actor, before.work.id);
   expect(before.work.state).toBe("blocked");
+  expect(plan.nodes[0]!.outputBytes).toBe(Math.floor(before.grant!.limits.outputBytes / before.grant!.limits.attempts));
+  expect(before.reservations!.outputBytes).toBe(plan.nodes[0]!.outputBytes);
   const command = { kind: "work.retry" as const, requestId: rid(), expectedRevision: before.work.revision, payload: { workId: before.work.id } };
   const receipt = f.app.execute(f.auth.actor, command);
   expect(f.app.execute(f.auth.actor, command)).toEqual(receipt);
@@ -236,9 +237,32 @@ test("owner retry after a failed graph retains prior lanes and uses the shared d
   expect(after.work.state).toBe("ready");
   expect(after.grant).toEqual(before.grant);
   expect(after.reservations!.attempts).toBe(2);
+  expect(after.reservations!.outputBytes).toBe(2 * plan.nodes[0]!.outputBytes);
   expect(after.results.map(result => result.text)).toEqual(["Recovered evidence"]);
   expect(f.app.graph.view(f.auth.actor, before.work.id).steps).toEqual(graph.steps);
   expect(f.store.read(tx => tx.all<{ active: number }>("SELECT active FROM attempt_transports"))).toEqual([{ active: 0 }, { active: 0 }]);
+});
+
+test("text-only dependencies respect the complete serialized handoff ceiling and preserve UTF-8 excerpts", async () => {
+  let synthesis: Attempt | undefined;
+  const f = await fixture({ async run(a) {
+    if (a.step!.handler === "synthesis") { synthesis = a; return { state: "ready", text: "Bounded synthesis" }; }
+    return { state: "ready", text: "ก".repeat(3000) };
+  } });
+  const work = f.start({ bots: [{ id: "jit", revision: 1 }], tools: [], limits: { attempts: 8, steps: 8, calls: 40, reads: 40, concurrency: 2, outputBytes: 100000, wallMs: 1800000 } });
+  const plan = f.app.graph.view(f.auth.actor, work.work!.id).graph, base = plan.nodes[0]!;
+  const nodes: StepProposal[] = Array.from({ length: 7 }, (_, i) => ({ ...base, id: `read_${i}`, calls: 1, outputBytes: 10000 }));
+  nodes.push({ ...base, id: "synthesis", handler: "synthesis", dependsOn: nodes.map(n => n.id), calls: 1, outputBytes: 1000 });
+  f.app.graph.propose(work.work!.id, plan.revision, nodes);
+  await f.app.authority.drain();
+  expect(synthesis).toBeDefined();
+  const inputs = synthesis!.step!.inputs;
+  expect(Buffer.byteLength(JSON.stringify(inputs))).toBeLessThanOrEqual(49152);
+  expect(inputs).toHaveLength(5);
+  expect(inputs.every(input => Buffer.byteLength(input.text) <= 8192 && !input.text.includes("�") && input.evidence.length === 0)).toBe(true);
+  const gaps = synthesis!.step!.gaps;
+  expect(gaps.filter(g => g.reason === "handoff_result_omitted")).toHaveLength(2);
+  expect(gaps.filter(g => g.reason === "handoff_result_excerpt")).toHaveLength(7);
 });
 
 test("a provisionally committed recovery transport blocks another retry until actual settlement", async () => {

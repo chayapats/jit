@@ -57,10 +57,10 @@ export function validateWorkGraph(grant: WorkGrant, proposed: StepProposal[]): S
   return structuredClone(proposed);
 }
 
-/** Builds independent selected-Bot assignments and one bounded coordinator synthesis when a team is selected. */
+/** Builds a bounded team graph, reserving each output slice by permitted attempts so remaining attempts can retry without refunds. */
 export function defaultWorkGraph(grant: WorkGrant): StepProposal[] {
   const count = grant.bots.length + (grant.bots.length > 1 ? 1 : 0);
-  const calls = Math.floor(grant.limits.calls / count), outputBytes = Math.floor(grant.limits.outputBytes / count);
+  const calls = Math.floor(grant.limits.calls / count), outputBytes = Math.floor(grant.limits.outputBytes / grant.limits.attempts);
   const nodes: StepProposal[] = grant.bots.map((bot, index) => ({ id: `research_${index}`, handler: "research", botId: bot.id,
     dependsOn: [], tools: grant.tools.filter(tool => bot.capabilities.tools.includes(tool)),
     scopes: grant.scopes.filter(s => bot.capabilities.resources.includes(s.ref.id) && (s.ref.kind === "share" ? s.receiverBotId === bot.id : s.ownerBotId === bot.id)).map(s => s.ref),

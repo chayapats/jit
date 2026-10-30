@@ -52,7 +52,7 @@ Jit is a single-owner, self-hosted assistant with a team of persistent Bots, dur
 
 **Bot-private memory:** Claims scoped to one Bot. Retrieval and context assembly enforce that scope before relevance selection.
 
-**Source:** A revisioned owner/external evidence snapshot with provenance and lifecycle status. Source text is data and never expands authority.
+**Source:** A revisioned owner/external evidence snapshot with provenance and lifecycle status. Attempt-derived sources retain their producing attempt's Bot/resource/computer fences through every descendant, including uncited handoff text. Source text is data and never expands authority.
 
 **Share grant:** An explicit, revisioned permission for a named receiver/work scope to use a specified immutable source/artifact snapshot. It is not a whole-volume mount, shared account or transitive permission.
 

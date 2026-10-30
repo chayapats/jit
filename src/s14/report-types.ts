@@ -7,7 +7,7 @@ import type { Envelope } from "./types";
 export interface EvidenceRequirement { id: string; label: string; url: string | null; coverage: ExternalEvidence["coverage"]; freshness: "any" | "live_reported" }
 /** Untrusted citation request bound to evidence read by this run or an accessible committed dependency. */
 export interface ReportCitation { attemptId: string; id: string; revision: number; quote: string; scope: "snippet" | "excerpt" | "page" }
-/** Untrusted bounded claim suggestion; inference and conflict labels cannot grant authority or owner completion. */
+/** Untrusted bounded claim suggestion; covers declares Bot intent, never validated per-claim coverage or owner completion. */
 export interface ReportClaimProposal { id: string; text: string; kind: "quote" | "inference"; citations: ReportCitation[]; covers: string[]; conflicts: string[] }
 /** Untrusted report data validated atomically by the trusted publication handler. */
 export interface ReportProposal { title: string; claims: ReportClaimProposal[]; missing: string[]; limitations: string[]; artifactIds: string[] }

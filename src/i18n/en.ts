@@ -3283,7 +3283,7 @@ export const en: Record<MessageKey, string> = {
   "s14.report.scope.excerpt": "Cited as an excerpt",
   "s14.report.scope.page": "Cited as a whole page",
   "s14.report.conflicts_with": "Conflicts with claim",
-  "s14.report.covers": "Meets:",
+  "s14.report.covers": "Bot claims to address:",
   "s14.report.no_citation": "This claim cites no source",
   "s14.report.source_gone": "This source is no longer available",
   "s14.report.open_source": "Open source",

@@ -50,7 +50,7 @@ export class S14Memory {
     return source;
   }
 
-  /** Checks source ancestry and its original access revisions without a lifetime record-count cutoff. */
+  /** Checks all source ancestry, original access pins and retained producer fences, including uncited handoffs. */
   sourceCurrent(tx: AppTransaction, source: MemoryRef): boolean {
     const pending = [source], seen = new Set<string>();
     while (pending.length) {
@@ -60,6 +60,13 @@ export class S14Memory {
       const row = tx.get<{ record_json: string }>("SELECT record_json FROM memory_sources WHERE id=?", r.id);
       const item = row ? JSON.parse(row.record_json) as MemorySource : null;
       if (!item || !same(item, r) || item.text === null || this.withdrawn(tx, "source", r.id) || item.derived.length > 0 && item.access === undefined || !this.accessCurrent(tx, item.botId, item.access ?? [])) return false;
+      // Resolve pre-pin schema-10 outputs from service-owned records too; never trust report citations as complete ancestry.
+      const producer = item.producerAttemptId ?? (item.id.startsWith("result_") ? item.id.slice(7) : tx.get<{ attempt_id: string }>(`
+        SELECT attempt_id FROM external_evidence WHERE id=?
+        UNION ALL SELECT attempt_id FROM reports WHERE id=?
+        UNION ALL SELECT attempt_id FROM artifact_staging WHERE id=?
+        UNION ALL SELECT attempt_id FROM artifacts WHERE id=? LIMIT 1`, item.id, item.id, item.id, item.id)?.attempt_id);
+      if (producer && !this.app.authority.retainedEvidence(tx, producer)) return false;
       pending.push(...item.derived);
     }
     return true;
@@ -76,10 +83,10 @@ export class S14Memory {
     });
   }
 
-  /** Captures every admitted claim's source/access ancestry for generated text and external evidence. */
-  derive(tx: AppTransaction, packet: MemoryPacket): { derived: MemoryRef[]; access: MemoryPacket["access"] } {
+  /** Captures source/access ancestry and the producing attempt for generated text, delegation, evidence and files. */
+  derive(tx: AppTransaction, packet: MemoryPacket): { derived: MemoryRef[]; access: MemoryPacket["access"]; producerAttemptId?: string } {
     const claims = lineageClosure(packet.claims, c => c.id, c => unique([...c.dependencies, ...c.conflicts]).map(r => record<MemoryClaim>(tx, "memory_claims", r.id)));
-    return { derived: unique([...packet.sources, ...claims.map(c => c.source), ...packet.decisions.map(d => d.source)]),
+    return { ...(packet.attemptId ? { producerAttemptId: packet.attemptId } : {}), derived: unique([...packet.sources, ...claims.map(c => c.source), ...packet.decisions.map(d => d.source)]),
       access: claims.map(claim => {
         const used = this.access(tx, claim, packet.botId, this.packetAttempt(tx, packet));
         if (!used) throw new AppError("memory_context_stale", 409);

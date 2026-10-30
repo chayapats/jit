@@ -32,6 +32,24 @@ const text = (html: string) => unescape(html.replace(/<head>[\s\S]*?<\/head>/, "
 const strict = (html: string, locale: "th" | "en" = "en") => { expect(html).not.toMatch(/\sstyle="/); expect(html).not.toMatch(/\son[a-z]+="/); expect(accessibilityProblems(html, locale)).toEqual([]); };
 const follow = async (f: TeamFixture, response: Response) => { expect(response.status).toBe(303); const location = response.headers.get("location")!; return location.startsWith("/s14/receipts/") ? f.get(location) : response; };
 const ok = () => ({ state: "ready" as const, text: "Committed evidence" });
+
+test.each(["en", "th"] as const)("%s claim coverage declarations stay labelled as Bot claims when source coverage is insufficient", async language => {
+  const f = await fixture({ language });
+  const work = await reported(f, async a => {
+    const source = (await f.app.parallel.read(a.id, "web_fetch", { url: "https://example.com/article", fullContent: false })).evidence[0]!;
+    return report([claim(a, source, { citations: [{ attemptId: a.id, id: source.id, revision: 1, quote: source.content, scope: "excerpt" }], covers: ["full_page"] })]);
+  }, { requiredEvidence: [{ id: "full_page", label: "Required full page", url: null, coverage: "full_content_returned", freshness: "any" }] });
+  const view = f.app.reports.list(f.auth.actor, work.id)[0]!;
+  expect(view.state).toBe("available");
+  if (view.state !== "available") throw Error("report unavailable");
+  expect(view.report).toMatchObject({ state: "ready_for_review", coverage: "partial", covered: [] });
+  expect(view.report.claims[0]).toMatchObject({ support: "supported", covers: ["full_page"] });
+  const html = await f.page(`/work/${work.id}?tab=report`), body = text(html);
+  expect(body).toContain(language === "en" ? "Bot claims to address: Required full page" : "Bot อ้างว่าตอบ: Required full page");
+  expect(body).toContain(dictionaries[language]["s14.report.state.ready_for_review"]);
+  expect(body).not.toContain("Meets:");
+  strict(html, language);
+});
 const barCount = (html: string, kind: string) => [...html.matchAll(new RegExp(`class="s-bar-${kind}"`, "g"))].length;
 
 /** Three Bots under a limit of 2: two truly running, one queued, the synthesis waiting on them. */

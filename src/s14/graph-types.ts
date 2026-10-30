@@ -19,7 +19,7 @@ export interface WorkStep {
   queuedAt: number | null; waitingAt: number | null; queueCeiling: QueueCeiling | null;
   reason: string | null; attemptId: string | null; startedAt: number | null; settledAt: number | null;
 }
-/** Committed dependency input, labelled as untrusted data and carrying its source lineage. */
+/** Untrusted committed input with source lineage; UTF-8 text is at most 8192 bytes and the serialized input list at most 49152. */
 export interface StepInput { stepId: string; attemptId: string; sourceId: string; text: string; evidence: ExternalEvidence[] }
 /** An explicit missing dependency; successful sibling evidence remains independently committed. */
 export interface StepGap { stepId: string; reason: string }
