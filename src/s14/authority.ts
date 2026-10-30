@@ -129,7 +129,8 @@ export class S14Authority {
       const authority = work.grantId ? tx.get<{ generation: number; revoked: number }>("SELECT generation,revoked FROM grant_state WHERE grant_id=?", work.grantId)! : null;
       return { work, grant: work.grantId ? record<WorkGrant>(tx, "work_grants", work.grantId) : null, authority: authority ? { ...authority, revoked: !!authority.revoked } : null,
         reservations: work.grantId ? tx.get<NonNullable<WorkView["reservations"]>>("SELECT attempts,steps,calls,output_bytes AS outputBytes FROM grant_usage WHERE grant_id=?", work.grantId) : null,
-        actualUsage: null, attempts: this.attempts(tx, workId), effects: this.effects(tx, workId).map(e => (["pending", "approved"].includes(e.state) && e.expiresAt <= this.app.now() ? { ...e, state: "expired" as const } : e)) };
+        actualUsage: null, attempts: this.attempts(tx, workId), effects: this.effects(tx, workId).map(e => (["pending", "approved"].includes(e.state) && e.expiresAt <= this.app.now() ? { ...e, state: "expired" as const } : e)),
+        results: tx.all<WorkView["results"][number]>("SELECT attempt_id AS attemptId,work_id AS workId,content AS text,committed_at AS committedAt,state FROM work_results WHERE work_id=? ORDER BY rowid", workId) };
     });
   }
   private scope(tx: AppTransaction, ref: ScopeRef): ScopePolicy {
@@ -248,12 +249,31 @@ export class S14Authority {
       const attempt = record<Attempt>(tx, "work_attempts", attemptId), work = this.live(tx, attempt);
       const content = text(output.text, attempt.snapshot.outputBytes);
       const previous = tx.get("SELECT attempt_id FROM work_results WHERE attempt_id=?", attempt.id); if (previous) throw new AppError("result_already_committed", 409);
-      tx.run("INSERT INTO work_results VALUES (?,?,?,?)", attempt.id, work.id, content, this.app.now());
-      const held = this.effects(tx, work.id).some(e => ["pending", "approved", "executing", "unknown"].includes(e.state));
-      attempt.state = output.state === "waiting" || held ? "waiting" : "committed"; save(tx, "work_attempts", attempt);
-      const others = this.attempts(tx, work.id).filter(a => a.id !== attempt.id && ["running", "waiting", "interrupted"].includes(a.state));
-      work.result = tx.all<{ content: string }>("SELECT content FROM work_results WHERE work_id=? ORDER BY rowid", work.id).map(r => r.content).join("\n\n");
-      work.state = held || output.state === "waiting" ? "waiting" : others.length ? "running" : "ready"; work.revision++; save(tx, "work_items", work);
+      tx.run("INSERT INTO work_results VALUES (?,?,?,?,?)", attempt.id, work.id, content, this.app.now(), output.state);
+      attempt.state = "waiting"; save(tx, "work_attempts", attempt);
+      work.result = attempt.id; save(tx, "work_items", work);
+      this.reevaluate(tx, work.id, true);
+    });
+  }
+  private reevaluate(tx: AppTransaction, workId: string, resultChanged = false): void {
+    const work = record<Work>(tx, "work_items", workId);
+    if (work.state === "stopping") { this.finishStop(tx, work); return; }
+    if (["stopped", "blocked"].includes(work.state)) return;
+    const effects = this.effects(tx, workId), attempts = this.attempts(tx, workId);
+    const held = (attemptId?: string) => effects.some(e => (!attemptId || e.attemptId === attemptId) && ["pending", "approved", "executing", "unknown"].includes(e.state));
+    for (const attempt of attempts) if (attempt.state === "waiting" && !held(attempt.id) && tx.get<{ state: string }>("SELECT state FROM work_results WHERE attempt_id=?", attempt.id)?.state === "ready") {
+      attempt.state = "committed"; save(tx, "work_attempts", attempt);
+    }
+    const state = held() || attempts.some(a => a.state === "waiting") ? "waiting" : attempts.some(a => ["running", "interrupted"].includes(a.state)) ? "running" : attempts.some(a => a.state === "committed") ? "ready" : work.state;
+    if (state !== work.state || resultChanged) { work.state = state; work.revision++; save(tx, "work_items", work); }
+  }
+  private expireEffects(): void {
+    this.app.store.transaction(tx => {
+      const workIds = new Set<string>();
+      for (const row of tx.all<{ record_json: string }>("SELECT record_json FROM effects WHERE json_extract(record_json,'$.state') IN ('pending','approved') AND json_extract(record_json,'$.expiresAt')<=?", this.app.now())) {
+        const effect = JSON.parse(row.record_json) as Effect; effect.state = "expired"; effect.reason = "approval_expired"; this.saveEffect(tx, effect); workIds.add(effect.workId);
+      }
+      for (const workId of workIds) this.reevaluate(tx, workId);
     });
   }
   /** Settles an actual returned transport while preserving stop/revocation fences and already committed evidence. */
@@ -305,12 +325,15 @@ export class S14Authority {
     if (this.app.now() >= effect.expiresAt) throw new AppError("approval_expired", 409);
     this.live(tx, record<Attempt>(tx, "work_attempts", effect.attemptId));
     if (!["approve", "deny"].includes(c.payload.decision)) throw new AppError("invalid_decision");
-    effect.state = c.payload.decision === "approve" ? "approved" : "denied"; this.saveEffect(tx, effect); return effect;
+    effect.state = c.payload.decision === "approve" ? "approved" : "denied"; this.saveEffect(tx, effect);
+    if (effect.state === "denied") this.reevaluate(tx, effect.workId);
+    return effect;
   }
   private saveEffect(tx: AppTransaction, effect: Effect): void { save(tx, "effects", effect); tx.run("INSERT OR REPLACE INTO effect_versions VALUES (?,?,?)", effect.id, effect.revision, canonical(effect)); }
   /** Runs a configured reviewed performer at most once; a crash or uncertain result becomes reconcile-only unknown. */
   async runEffect(effectId: string, expectedRevision: number, actionHash: string): Promise<Effect> {
     if (this.#effects.has(effectId)) throw new AppError("effect_busy", 409);
+    this.expireEffects();
     const effect = this.app.store.transaction(tx => {
       const current = record<Effect>(tx, "effects", effectId);
       if (current.revision !== expectedRevision || current.actionHash !== actionHash || current.actionHash !== digest(canonical(current.action)) || current.state !== "approved") throw new AppError("stale_approval", 409);
@@ -333,7 +356,7 @@ export class S14Authority {
       const current = record<Effect>(tx, "effects", effect.id); if (current.state !== "executing") return current;
       try { this.live(tx, record<Attempt>(tx, "work_attempts", current.attemptId)); if (this.app.now() >= current.expiresAt) outcome = "unknown"; } catch { outcome = "unknown"; }
       current.state = outcome; current.reason = outcome === "unknown" ? "reconcile_only_no_retry" : null; this.saveEffect(tx, current);
-      const work = record<Work>(tx, "work_items", current.workId); if (work.state === "stopping") this.finishStop(tx, work); return current;
+      this.reevaluate(tx, current.workId); return current;
     });
   }
   /** Exclusive-boot fencing; interrupted attempts and executing effects are never automatically replayed. */
@@ -354,6 +377,7 @@ export class S14Authority {
   }
   /** Drains committed internal queue intents serially; no missing handler can fall back to shell or another route. */
   async drain(): Promise<void> {
+    this.expireEffects();
     if (this.#busy || !this.options.executor) return; this.#busy = true;
     try { for (;;) {
       const key = this.app.store.read(tx => tx.get<{ work_id: string }>("SELECT work_id FROM work_queue WHERE state='queued' ORDER BY rowid LIMIT 1")?.work_id); if (!key) return;

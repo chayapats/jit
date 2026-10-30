@@ -1,5 +1,4 @@
 import { afterEach, expect, test } from "bun:test";
-import { Database } from "bun:sqlite";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -380,15 +379,16 @@ test("owner image/state/SSE and no-script coordinate/text/key commands retain sa
   expect(f.runtime!.requests).toHaveLength(0);
 });
 
-test("known foundation schema 2 upgrades additively with original Bot and receipt bytes intact", async () => {
+test("schema 4 reopens with result and computer tables and original receipts intact", async () => {
   const f = await fixture();
   const original = f.store.read(tx => tx.all("SELECT * FROM command_receipts"));
   f.store.close(); stores.delete(f.store);
-  const db = new Database(f.path);
-  db.exec("DROP TABLE computer_attempts; DROP TABLE computer_inputs; DROP TABLE computer_operations; DROP TABLE input_leases; DROP TABLE bot_computers; PRAGMA user_version=2"); db.close();
   const store = new S14Store(f.path); stores.add(store);
   expect(store.read(tx => tx.all("SELECT * FROM command_receipts"))).toEqual(original);
-  expect(store.read(tx => tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version)).toBe(3);
+  expect(store.read(tx => tx.get<{ user_version: number }>("PRAGMA user_version")!.user_version)).toBe(4);
+  for (const table of ["work_results", "bot_computers", "input_leases", "computer_operations", "computer_inputs", "computer_attempts"]) {
+    expect(store.read(tx => tx.get("SELECT name FROM sqlite_master WHERE type='table' AND name=?", table))).not.toBeNull();
+  }
 });
 
 test("pinned schway/host core-tools/v1 executes a scripted report through this Bot's runner and exposes no browser/MCP tools", async () => {
@@ -405,6 +405,12 @@ test("pinned schway/host core-tools/v1 executes a scripted report through this B
     },
   });
   expect(result.state).toBe("ready");
+  f.app.authority.commit(a.id, result);
+  const view = f.app.authority.view(f.auth.actor, work.id);
+  expect(view.work.result).toBe(a.id);
+  expect(view.work.state).toBe("ready");
+  expect(view.results).toEqual([expect.objectContaining({ attemptId: a.id, text: result.text, state: "ready" })]);
+  expect(f.store.read(tx => tx.get<{ record_json: string }>("SELECT record_json FROM work_items WHERE id=?", work.id)!.record_json)).not.toContain(result.text);
   expect(f.runtime!.starts).toHaveLength(1);
   expect(f.runtime!.requests.some(r => (r as { op: string }).op === "spawn")).toBe(true);
   expect(f.app.computers.view(f.auth.actor, "jit").lease?.actor).toBe(null);

@@ -4,7 +4,7 @@ import type { AppTransaction } from "../store";
 import { registerSecretFingerprint } from "../security/secret-fingerprints";
 import type { S14Store } from "./store";
 import type { Bot, BotCommand, BotProposal, BotReceipt, ChatInput, ChatPort, Conversation, Home, Message, OwnerActor, Policy, Reply } from "./types";
-import { canonical, capabilities, digest, exact, identity, integer, text } from "./validation";
+import { canonical, canonicalByteLimit, capabilities, digest, exact, identity, integer, text } from "./validation";
 import { S14Authority, suggestTask } from "./authority";
 import type { AuthorityCommand, AuthorityOptions, AuthorityReceipt } from "./authority-types";
 import { S14Computers } from "./computer";
@@ -181,12 +181,19 @@ export class S14Application {
       const message: Message = { id: id(), conversationId: conversation.id, role: "owner", text: text(p.text), createdAt: this.now() };
       tx.run("INSERT INTO messages(id,conversation_id,record_json) VALUES (?,?,?)", message.id, conversation.id, canonical(message));
       const owner = JSON.parse(tx.get<{ profile_json: string }>("SELECT profile_json FROM installation")!.profile_json) as { name: string; language: "th" | "en" };
-      const messages = tx.all<{ record_json: string }>("SELECT record_json FROM (SELECT sequence,record_json FROM messages WHERE conversation_id=? ORDER BY sequence DESC LIMIT 12) ORDER BY sequence", conversation.id).map(r => JSON.parse(r.record_json) as Message);
-      const snapshot: ChatInput = { route: this.route(bot.routeId), bot, ownerName: owner.name, language: owner.language, messages };
+      const snapshot: ChatInput = { route: this.route(bot.routeId), bot, ownerName: owner.name, language: owner.language, messages: [message] };
       const reply: Reply = { id: id(), conversationId: conversation.id, messageId: message.id, state: "queued", reason: null, snapshot };
-      tx.run("INSERT INTO reply_outbox VALUES (?,?,?,?)", reply.id, conversation.id, message.id, canonical(reply));
       tx.run("UPDATE conversations SET revision=revision+1 WHERE id=?", conversation.id); conversation.revision++;
-      return { ...result, conversation, message, reply };
+      const receipt = { ...result, conversation, message, reply };
+      // Budget the complete receipt: it duplicates the new message and also contains the outbox record.
+      let remaining = canonicalByteLimit - Buffer.byteLength(canonical(receipt));
+      for (const row of tx.all<{ record_json: string }>("SELECT record_json FROM messages WHERE conversation_id=? AND id<>? ORDER BY sequence DESC LIMIT 11", conversation.id, message.id)) {
+        const prior = JSON.parse(row.record_json) as Message, bytes = Buffer.byteLength(canonical(prior)) + 1;
+        if (bytes > remaining) break;
+        snapshot.messages.unshift(prior); remaining -= bytes;
+      }
+      tx.run("INSERT INTO reply_outbox VALUES (?,?,?,?)", reply.id, conversation.id, message.id, canonical(reply));
+      return receipt;
     }
     if (["bot.proposal.accept", "bot.proposal.reject", "bot.proposal.revise"].includes(c.kind)) {
       const p = c.payload;

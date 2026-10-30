@@ -11,7 +11,7 @@ export interface ScopePort { current(tx: AppTransaction, ref: ScopeRef): ScopePo
 export interface WorkLimits { attempts: number; steps: number; calls: number; outputBytes: number; wallMs: number }
 /** Immutable owner grant snapshot; revocation and reservations live in separate rows. */
 export interface WorkGrant { id: string; workId: string; revision: number; generation: number; ownerGeneration: number; requestId: string; command: StartWorkCommand; purpose: string; bots: Bot[]; routes: Route[]; tools: string[]; scopes: ScopePolicy[]; limits: WorkLimits; createdAt: number; expiresAt: number }
-/** Retained obligation whose acceptance does not imply execution or satisfaction of its completion rule. */
+/** Retained obligation; result is the latest committed attempt ID, never an inline result body. Acceptance grants no execution. */
 export interface Work { id: string; revision: number; conversationId: string; sourceMessageId: string | null; title: string; purpose: string; completionRule: string; state: "proposed" | "accepted" | "queued" | "running" | "waiting" | "ready" | "blocked" | "stopping" | "stopped"; reason: string | null; grantId: string | null; result: string | null; createdAt: number }
 /** Explicit start parameters; selected Bot and task revisions are checked in the receipt transaction. */
 export interface StartPayload { conversationId: string; task: { id: string; revision: number } | null; title: string; purpose: string; completionRule: string; bots: { id: string; revision: number }[]; tools: string[]; scopes: ScopeRef[]; limits: WorkLimits; expiresAt: number }
@@ -37,11 +37,13 @@ export interface EffectAction { kind: "send" | "publish" | "push" | "payment" | 
 export interface Effect { id: string; revision: number; workId: string; attemptId: string; botId: string; action: EffectAction; actionHash: string; expiresAt: number; state: "pending" | "approved" | "denied" | "expired" | "executing" | "succeeded" | "failed" | "unknown" | "changed"; reason: string | null; supported: boolean }
 /** Worker result is evidence for owner review, not an automatic claim that the completion rule is fulfilled. */
 export interface WorkOutput { state: "ready" | "waiting"; text: string }
+/** Immutable result evidence stored outside capped records, bounded by the originating attempt's output reservation. */
+export interface WorkResult extends WorkOutput { attemptId: string; workId: string; committedAt: number }
 /** Trusted bounded internal handler; production foundation offers only tool-free analysis over schway/host. */
 export interface WorkExecutor { run(attempt: Attempt, signal: AbortSignal): Promise<WorkOutput> }
 /** Reviewed external adapter contract; production foundation configures none and tests use no-send fixtures. */
 export type EffectPerformer = (action: EffectAction, allowed: () => void) => Promise<"succeeded" | "failed" | "unknown">;
 /** Deterministic trusted scope/worker seams; callers cannot install these through HTTP or model text. */
 export interface AuthorityOptions { scopes?: ScopePort; executor?: WorkExecutor; effects?: Partial<Record<EffectAction["kind"], EffectPerformer>> }
-/** Query projection for grants, tasks, queue state, attempts and exact approval cards. */
-export interface WorkView { work: Work; grant: WorkGrant | null; authority: { generation: number; revoked: boolean } | null; reservations: { attempts: number; steps: number; calls: number; outputBytes: number } | null; actualUsage: null; attempts: Attempt[]; effects: Effect[] }
+/** Query projection for grants, tasks, attempts, exact approval cards and separately stored bounded result bodies. */
+export interface WorkView { work: Work; grant: WorkGrant | null; authority: { generation: number; revoked: boolean } | null; reservations: { attempts: number; steps: number; calls: number; outputBytes: number } | null; actualUsage: null; attempts: Attempt[]; effects: Effect[]; results: WorkResult[] }

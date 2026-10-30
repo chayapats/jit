@@ -7,7 +7,7 @@ import type { AppTransaction } from "../store";
 /** Fresh S14 SQLite format identity, distinct from every legacy user_version. */
 export const s14ApplicationId = 0x4a495431;
 /** Unreleased S14 schema version; unknown formats refuse before writable SQLite opens. */
-export const s14SchemaVersion = 3;
+export const s14SchemaVersion = 4;
 /** Safe next action for incompatible stores; no original bytes or sidecars are opened by SQLite. */
 export class FreshStateRequired extends AppError {
   readonly nextAction = "choose_a_separate_JIT_S14_DATABASE_keep_legacy_installation";
@@ -22,7 +22,7 @@ export function inspectS14Store(path: string): "missing" | "s14" {
   let header: Buffer;
   try { header = Buffer.alloc(100); if (readSync(fd, header, 0, 100, 0) !== 100) throw new FreshStateRequired(); }
   finally { closeSync(fd); }
-  if (header.toString("ascii", 0, 16) !== "SQLite format 3\0" || header.readUInt32BE(68) !== s14ApplicationId || ![2, s14SchemaVersion].includes(header.readUInt32BE(60))) throw new FreshStateRequired();
+  if (header.toString("ascii", 0, 16) !== "SQLite format 3\0" || header.readUInt32BE(68) !== s14ApplicationId || header.readUInt32BE(60) !== s14SchemaVersion) throw new FreshStateRequired();
   return "s14";
 }
 
@@ -65,7 +65,7 @@ export class S14Store {
         CREATE TABLE work_queue (work_id TEXT PRIMARY KEY REFERENCES work_items(id), state TEXT NOT NULL CHECK(state IN ('queued','claimed','blocked')));
         CREATE TABLE work_attempts (id TEXT PRIMARY KEY, work_id TEXT NOT NULL REFERENCES work_items(id), request_id TEXT NOT NULL, payload_hash TEXT NOT NULL, record_json TEXT NOT NULL, UNIQUE(work_id,request_id));
         CREATE TABLE attempt_usage (attempt_id TEXT PRIMARY KEY REFERENCES work_attempts(id), calls INTEGER NOT NULL);
-        CREATE TABLE work_results (attempt_id TEXT PRIMARY KEY REFERENCES work_attempts(id), work_id TEXT NOT NULL REFERENCES work_items(id), content TEXT NOT NULL, committed_at INTEGER NOT NULL);
+        CREATE TABLE work_results (attempt_id TEXT PRIMARY KEY REFERENCES work_attempts(id), work_id TEXT NOT NULL REFERENCES work_items(id), content TEXT NOT NULL, committed_at INTEGER NOT NULL, state TEXT NOT NULL CHECK(state IN ('ready','waiting')));
         CREATE TABLE effects (id TEXT PRIMARY KEY, work_id TEXT NOT NULL REFERENCES work_items(id), attempt_id TEXT NOT NULL REFERENCES work_attempts(id), request_id TEXT NOT NULL, payload_hash TEXT NOT NULL, record_json TEXT NOT NULL, UNIQUE(attempt_id,request_id));
         CREATE TABLE effect_versions (effect_id TEXT NOT NULL REFERENCES effects(id), revision INTEGER NOT NULL, record_json TEXT NOT NULL, PRIMARY KEY(effect_id,revision));
         CREATE TRIGGER immutable_grant BEFORE UPDATE ON work_grants BEGIN SELECT RAISE(ABORT,'immutable_grant'); END;
@@ -73,7 +73,7 @@ export class S14Store {
         CREATE TRIGGER immutable_effect_action BEFORE UPDATE ON effects WHEN json_extract(NEW.record_json,'$.revision') = json_extract(OLD.record_json,'$.revision') AND (json_extract(NEW.record_json,'$.action') IS NOT json_extract(OLD.record_json,'$.action') OR json_extract(NEW.record_json,'$.actionHash') IS NOT json_extract(OLD.record_json,'$.actionHash') OR json_extract(NEW.record_json,'$.expiresAt') IS NOT json_extract(OLD.record_json,'$.expiresAt')) BEGIN SELECT RAISE(ABORT,'immutable_effect_action'); END;
         PRAGMA application_id=${s14ApplicationId}; PRAGMA user_version=${s14SchemaVersion};
       `)).immediate();
-      // The only supported upgrade is additive foundation v2 -> v3; no legacy domain/state is reinterpreted.
+      // Fresh schema 4 combines result-state evidence and computer tables; earlier unreleased stores refuse.
       this.#db.transaction(() => {
         this.#db.exec(`
           CREATE TABLE IF NOT EXISTS bot_computers (id TEXT PRIMARY KEY, bot_id TEXT NOT NULL UNIQUE REFERENCES bots(id), record_json TEXT NOT NULL);

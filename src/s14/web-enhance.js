@@ -30,7 +30,7 @@ ceremony?.addEventListener("submit", event => {
 });
 
 // Live reads: refetch this same page while work or a reply is in flight and replace only its typed regions.
-const regions = ["s14-live", "s14-pane-live", "s14-computer-screen", "s14-computer-more"];
+const regions = [["s14-live"], ["s14-pane-live", "s14-work-status", "s14-pane-status"], ["s14-computer-screen"], ["s14-computer-more"]];
 const status = document.getElementById("s-phase");
 let replies = document.querySelectorAll(".s-bot-text").length;
 const busy = region => region.contains(document.activeElement) && document.activeElement !== document.body || region.querySelector("details[open]");
@@ -38,12 +38,17 @@ async function refresh() {
   const response = await fetch(location.href, { headers: { Accept: "text/html" }, credentials: "same-origin", cache: "no-store" });
   if (!response.ok) return false;
   const next = new DOMParser().parseFromString(await response.text(), "text/html");
-  for (const id of regions) {
-    const current = document.getElementById(id), fresh = next.getElementById(id);
-    if (!current || !fresh || busy(current)) continue;
-    // Computer forms carry a fresh request ID per render, so they compare by signature and survive an unchanged read.
-    if (current.dataset.sig && current.dataset.sig === fresh.dataset.sig) continue;
-    if (current.innerHTML !== fresh.innerHTML) { current.innerHTML = fresh.innerHTML; if (fresh.dataset.sig) current.dataset.sig = fresh.dataset.sig; }
+  let deferred = false;
+  for (const group of regions) {
+    const pairs = group.map(id => [document.getElementById(id), next.getElementById(id)]).filter(([current, fresh]) => current && fresh);
+    if (pairs.some(([current]) => busy(current))) { deferred = true; continue; }
+    for (const [current, fresh] of pairs) {
+      // Preserve computer forms and their request IDs when the authoritative signature is unchanged.
+      if (current.dataset.sig && current.dataset.sig === fresh.dataset.sig) continue;
+      if (current.innerHTML !== fresh.innerHTML) current.innerHTML = fresh.innerHTML;
+      if (fresh.dataset.sig) current.dataset.sig = fresh.dataset.sig;
+      if (current.className !== fresh.className) current.className = fresh.className;
+    }
   }
   const revision = next.querySelector("[data-composer] input[name=expectedRevision]"), mine = document.querySelector("[data-composer] input[name=expectedRevision]");
   if (revision && mine && mine.value !== revision.value) mine.value = revision.value;
@@ -51,7 +56,7 @@ async function refresh() {
   if (status && phase && status.textContent !== phase) status.textContent = phase;
   else if (status && next.querySelectorAll(".s-bot-text").length > replies) status.textContent = status.dataset.reply;
   replies = next.querySelectorAll(".s-bot-text").length;
-  return !!next.querySelector("[data-live]");
+  return deferred || !!next.querySelector("[data-live]");
 }
 if (document.querySelector("[data-live]")) {
   const tick = async () => {
