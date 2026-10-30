@@ -7,7 +7,7 @@ import type { AppTransaction } from "../store";
 /** Fresh S14 SQLite format identity, distinct from every legacy user_version. */
 export const s14ApplicationId = 0x4a495431;
 /** Unreleased S14 schema version; unknown formats refuse before writable SQLite opens. */
-export const s14SchemaVersion = 8;
+export const s14SchemaVersion = 9;
 /** Safe next action for incompatible stores; no original bytes or sidecars are opened by SQLite. */
 export class FreshStateRequired extends AppError {
   readonly nextAction = "choose_a_separate_JIT_S14_DATABASE_keep_legacy_installation";
@@ -86,6 +86,7 @@ export class S14Store {
         CREATE TABLE grant_state (grant_id TEXT PRIMARY KEY REFERENCES work_grants(id), generation INTEGER NOT NULL, revoked INTEGER NOT NULL CHECK(revoked IN (0,1)));
         CREATE TABLE grant_usage (grant_id TEXT PRIMARY KEY REFERENCES work_grants(id), attempts INTEGER NOT NULL, steps INTEGER NOT NULL, calls INTEGER NOT NULL, output_bytes INTEGER NOT NULL, reads INTEGER NOT NULL);
         CREATE TABLE reports (id TEXT PRIMARY KEY, work_id TEXT NOT NULL REFERENCES work_items(id), attempt_id TEXT NOT NULL REFERENCES work_attempts(id), revision INTEGER NOT NULL, metadata_json TEXT NOT NULL, content_json TEXT, UNIQUE(work_id,revision), UNIQUE(attempt_id));
+        CREATE TABLE report_reviews (work_id TEXT PRIMARY KEY REFERENCES work_items(id), record_json TEXT NOT NULL);
         CREATE TABLE artifacts (id TEXT PRIMARY KEY, report_id TEXT NOT NULL REFERENCES reports(id) DEFERRABLE INITIALLY DEFERRED, attempt_id TEXT NOT NULL REFERENCES work_attempts(id), record_json TEXT NOT NULL, content BLOB);
         CREATE TABLE artifact_staging (id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL REFERENCES work_attempts(id), record_json TEXT NOT NULL, content BLOB NOT NULL);
         CREATE TRIGGER immutable_report BEFORE UPDATE ON reports WHEN NEW.id IS NOT OLD.id OR NEW.work_id IS NOT OLD.work_id OR NEW.attempt_id IS NOT OLD.attempt_id OR NEW.revision IS NOT OLD.revision OR NEW.metadata_json IS NOT OLD.metadata_json OR (NEW.content_json IS NOT NULL AND NEW.content_json IS NOT OLD.content_json) BEGIN SELECT RAISE(ABORT,'immutable_report'); END;
@@ -113,7 +114,7 @@ export class S14Store {
       }).immediate();
       const installationId = this.#tx.get<{ id: string }>("SELECT id FROM memory_identity")?.id;
       if (!installationId || installationId !== this.#tx.get<{ id: string }>("SELECT id FROM lifecycle.identity")?.id) throw new AppError("s14_lifecycle_ledger_conflict", 409);
-      // Fresh schema 8 combines result, memory, Parallel and computer tables; earlier unreleased stores refuse.
+      // Fresh schema 9 combines result, memory, Parallel and computer tables; earlier unreleased stores refuse.
       this.#db.transaction(() => {
         this.#db.exec(`
           CREATE TABLE IF NOT EXISTS bot_computers (id TEXT PRIMARY KEY, bot_id TEXT NOT NULL UNIQUE REFERENCES bots(id), record_json TEXT NOT NULL);

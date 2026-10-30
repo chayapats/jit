@@ -87,7 +87,11 @@ export function teamCommand(form: string, fields: Record<string, unknown>): S14C
 /** Landing page after a lane stop or defaults receipt; null leaves other receipts to the core product. */
 export function teamSurface(receipt: S14Receipt): string | null {
   if (receipt.kind === "work.defaults.set") return `/settings/work?receipt=${receipt.requestId}`;
-  if (receipt.kind === "work.step.stop") return `/work/${(receipt as GraphReceipt).step!.workId}`;
+  if (receipt.kind === "work.step.stop") {
+    const stopped = receipt as GraphReceipt;
+    return `/chats/${stopped.conversationId}?work=${stopped.step!.workId}#latest`;
+  }
+  if (receipt.kind === "report.review.accept") return `/chats/${receipt.conversationId}?work=${receipt.review.workId}&tab=report#latest`;
   return null;
 }
 /** Where a refused defaults post leads. A refused lane stop keeps the generic `payload.workId` path. */

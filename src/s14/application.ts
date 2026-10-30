@@ -11,6 +11,7 @@ import { S14Memory } from "./memory";
 import type { MemoryCommand, MemoryReceipt } from "./memory-types";
 import { S14Authority, suggestTask } from "./authority";
 import type { AuthorityCommand, AuthorityOptions, AuthorityReceipt } from "./authority-types";
+import type { ReportCommand, ReportReceipt } from "./report-types";
 import { S14Reports } from "./reports";
 import { S14Artifacts } from "./artifacts";
 import { S14Graph } from "./graph";
@@ -19,9 +20,9 @@ import { S14Computers } from "./computer";
 import type { ComputerCommand, ComputerOptions, ComputerReceipt } from "./computer-types";
 
 /** Stable complete typed owner ingress union for the S14 logic foundation. */
-export type S14Command = BotCommand | AuthorityCommand | MemoryCommand | ParallelCommand | ComputerCommand | GraphCommand;
+export type S14Command = BotCommand | AuthorityCommand | MemoryCommand | ParallelCommand | ComputerCommand | GraphCommand | ReportCommand;
 /** Committed typed result of the S14 owner command boundary. */
-export type S14Receipt = BotReceipt | AuthorityReceipt | MemoryReceipt | ParallelReceipt | ComputerReceipt | GraphReceipt;
+export type S14Receipt = BotReceipt | AuthorityReceipt | MemoryReceipt | ParallelReceipt | ComputerReceipt | GraphReceipt | ReportReceipt;
 
 const id = () => crypto.randomUUID().replaceAll("-", "");
 const tokenPattern = /^[a-f0-9]{64}$/;
@@ -160,6 +161,8 @@ export class S14Application {
   execute(actor: OwnerActor, command: ComputerCommand): ComputerReceipt;
   /** Executes lane stops and future-work defaults without granting execution authority. */
   execute(actor: OwnerActor, command: GraphCommand): GraphReceipt;
+  /** Accepts an exact report revision separately from coverage, execution and immutable report bytes. */
+  execute(actor: OwnerActor, command: ReportCommand): ReportReceipt;
   /** Executes the complete typed HTTP command union without client-controlled actor identities. */
   execute(actor: OwnerActor, command: S14Command): S14Receipt;
   execute(actor: OwnerActor, command: S14Command): S14Receipt {
@@ -175,6 +178,8 @@ export class S14Application {
       let result: S14Receipt;
       if (["work.step.stop", "work.defaults.set"].includes(command.kind)) {
         result = this.graph.apply(tx, command as GraphCommand);
+      } else if (command.kind === "report.review.accept") {
+        result = this.reports.apply(tx, command as ReportCommand);
       } else if (command.kind.startsWith("web.parallel.")) {
         result = this.parallel.apply(tx, command as ParallelCommand);
       } else if (command.kind.startsWith("memory.")) {
@@ -196,6 +201,7 @@ export class S14Application {
     });
     this.authority.cancelFenced();
     this.computers.sweep();
+    this.authority.wake();
     return receipt;
   }
   /** Resolves an exact configured route; no provider, account, model or billing fallback exists. */

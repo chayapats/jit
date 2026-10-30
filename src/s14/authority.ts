@@ -7,7 +7,7 @@ import type { Bot, OwnerActor } from "./types";
 import type { Admission, ApprovalCommand, Attempt, AuthorityCommand, AuthorityOptions, AuthorityReceipt, Effect, EffectAction, ScopePolicy, ScopeRef, Work, WorkGrant, WorkLimits, WorkOutput, WorkView } from "./authority-types";
 import { evidenceRequirements } from "./reports";
 import { assertConcurrentHost } from "./lifecycle";
-import type { SchedulerLimits, WorkGraph, WorkStep } from "./graph-types";
+import type { QueueCeiling, SchedulerLimits, WorkGraph, WorkStep } from "./graph-types";
 import { canonical, digest, exact, identity, integer, text } from "./validation";
 
 const id = () => crypto.randomUUID().replaceAll("-", "");
@@ -44,6 +44,8 @@ export function suggestTask(tx: AppTransaction, conversationId: string, messageI
 /** Finite grant, admission and exact-effect ledger; every barrier re-reads current owner/Bot/resource authority. */
 export class S14Authority {
   #draining: Promise<void> | null = null;
+  #wakeDrain: (() => void) | null = null;
+  #drainRequested = false;
   #closing = false;
   #effects = new Set<string>();
   #running = new Map<string, AbortController>();
@@ -460,32 +462,49 @@ export class S14Authority {
   /** Waits for existing admitted transports; shutdown never disposes their shared lifecycle early. */
   async idle(): Promise<void> { await this.#draining; }
 
+  /** Wakes the existing drain after committed ingress; it never starts another drain or admits uncommitted work. */
+  wake(): void { if (this.#draining) { this.#drainRequested = true; this.#wakeDrain?.(); } }
+
   /** Drains finite DAG lanes under shared capacity, retaining slots until actual transport settlement. */
-  async drain(): Promise<void> {
+  drain(): Promise<void> {
     this.expireEffects();
-    if (!this.options.executor) return;
-    if (this.#closing) return;
-    if (this.#draining) return this.#draining;
-    this.#draining = this.drainGraph();
-    try { await this.#draining; }
-    finally { this.#draining = null; }
+    if (!this.options.executor || this.#closing) return Promise.resolve();
+    if (this.#draining) { this.wake(); return this.#draining; }
+    // Install ownership before calling any executor, including synchronously reentrant fixture/host code.
+    const completion = Promise.withResolvers<void>();
+    this.#draining = completion.promise;
+    void this.drainOwned(completion);
+    return completion.promise;
   }
 
-  private capacity(tx: AppTransaction, grant: WorkGrant, bot: Bot, route: string, computer: boolean): void {
+  private async drainOwned(completion: { resolve: () => void; reject: (error: unknown) => void }): Promise<void> {
+    try {
+      do { this.#drainRequested = false; await this.drainGraph(); } while (this.#drainRequested && !this.#closing);
+      this.#draining = null;
+      completion.resolve();
+    } catch (error) { this.#draining = null; completion.reject(error); }
+  }
+
+  /** Returns the first currently held admission ceiling, including unsettled transports and input leases. */
+  capacityCeiling(tx: AppTransaction, grant: WorkGrant, bot: Bot, route: string, computer: boolean): QueueCeiling | null {
     const active = tx.all<{ record_json: string }>(`SELECT a.record_json FROM work_attempts a
       WHERE json_extract(a.record_json,'$.state') IN ('running','interrupted')
       OR EXISTS (SELECT 1 FROM attempt_transports t WHERE t.attempt_id=a.id AND t.active=1)`).map(r => JSON.parse(r.record_json) as Attempt);
     const limits = this.schedulerLimits;
-    if (active.length >= limits.global || active.filter(a => a.workId === grant.workId).length >= grant.limits.concurrency ||
-        active.filter(a => a.snapshot.route.provider === route).length >= limits.route ||
-        active.filter(a => a.snapshot.bot.id === bot.id).length >= limits.bot ||
-        computer && (active.filter(a => a.snapshot.tools.includes("computer")).length >= limits.computer || active.some(a => a.snapshot.bot.id === bot.id && a.snapshot.tools.includes("computer")))) {
-      throw new AppError("execution_capacity_held", 409);
-    }
+    if (active.length >= limits.global) return "global";
+    if (active.filter(a => a.workId === grant.workId).length >= grant.limits.concurrency) return "work";
+    if (active.filter(a => a.snapshot.route.provider === route).length >= limits.route) return "route";
+    if (active.filter(a => a.snapshot.bot.id === bot.id).length >= limits.bot) return "bot";
+    if (computer && (active.filter(a => a.snapshot.tools.includes("computer")).length >= limits.computer ||
+        active.some(a => a.snapshot.bot.id === bot.id && a.snapshot.tools.includes("computer")))) return "computer";
     if (computer && tx.get(`SELECT 1 FROM input_leases l JOIN bot_computers c ON c.id=l.computer_id
-      WHERE c.bot_id=? AND json_extract(l.record_json,'$.actor') IS NOT NULL AND json_extract(l.record_json,'$.expiresAt')>?`, bot.id, this.app.now())) {
-      throw new AppError("execution_capacity_held", 409);
-    }
+      WHERE c.bot_id=? AND json_extract(l.record_json,'$.actor') IS NOT NULL AND json_extract(l.record_json,'$.expiresAt')>?`, bot.id, this.app.now())) return "computer";
+    return null;
+  }
+
+  private capacity(tx: AppTransaction, grant: WorkGrant, bot: Bot, route: string, computer: boolean): void {
+    const ceiling = this.capacityCeiling(tx, grant, bot, route, computer);
+    if (ceiling) throw new AppError("execution_capacity_held", 409, { ceiling });
   }
 
   /** Reserves one public read against the owner-recorded read ceiling in addition to call reservations. */
@@ -508,6 +527,10 @@ export class S14Authority {
           const node = graph.nodes.find(n => n.id === step.nodeId)!;
           const dependencies = this.app.graph.inputs(tx, step, node);
           if (!dependencies) continue;
+          if (step.state === "waiting_evidence") {
+            step.state = "queued"; step.queuedAt = this.app.now(); step.reason = null; step.revision++;
+            save(tx, "work_steps", step);
+          }
           try {
             return this.app.store.transaction(() => {
               const { id: _id, handler: _handler, dependsOn: _dependsOn, ...input } = node;
@@ -536,15 +559,19 @@ export class S14Authority {
                 } else attempt.step.gaps.push({ stepId: dependency.stepId, reason: "handoff_not_accessible" });
               }
               save(tx, "work_attempts", attempt);
-              step.attemptId = attempt.id; step.state = "running"; step.reason = null;
+              step.attemptId = attempt.id; step.state = "running"; step.reason = null; step.queueCeiling = null;
               step.startedAt = this.app.now(); step.revision++;
               save(tx, "work_steps", step);
               tx.run("INSERT INTO attempt_transports VALUES (?,1)", attempt.id);
               return attempt;
             });
           } catch (error) {
-            if (error instanceof AppError && error.code === "execution_capacity_held") continue;
-            step.state = "failed"; step.reason = error instanceof AppError ? error.code : "admission_refused"; step.revision++;
+            if (error instanceof AppError && error.code === "execution_capacity_held") {
+              const ceiling = error.detail!.ceiling as QueueCeiling;
+              if (step.queueCeiling !== ceiling) { step.queueCeiling = ceiling; step.revision++; save(tx, "work_steps", step); }
+              continue;
+            }
+            step.queueCeiling = null; step.state = "failed"; step.reason = error instanceof AppError ? error.code : "admission_refused"; step.revision++;
             save(tx, "work_steps", step);
           }
         }
@@ -595,18 +622,21 @@ export class S14Authority {
 
   private async drainGraph(): Promise<void> {
     const pending = new Set<Promise<void>>();
-    for (;;) {
+    try { for (;;) {
+      // Arm before scanning: ingress committed during an async chat/host boundary cannot lose its wake-up.
+      const wake = Promise.withResolvers<void>();
+      this.#drainRequested = false;
+      this.#wakeDrain = wake.resolve;
       if (this.app.store.read(tx => tx.get("SELECT 1 FROM reply_outbox WHERE json_extract(record_json,'$.state')='queued' LIMIT 1"))) await this.app.drainReplies();
       this.cancelFenced();
       for (; !this.#closing;) {
         const attempt = this.nextGraphAttempt();
         if (!attempt) break;
-        const run = this.runGraphAttempt(attempt);
+        const run = this.runGraphAttempt(attempt).finally(() => pending.delete(run));
         pending.add(run);
-        void run.finally(() => pending.delete(run));
       }
       if (!pending.size) return;
-      await Promise.race(pending);
-    }
+      await Promise.race([...pending, wake.promise]);
+    } } finally { this.#wakeDrain = null; }
   }
 }

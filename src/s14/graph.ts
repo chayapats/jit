@@ -81,6 +81,7 @@ export class S14Graph {
     for (const node of graph.nodes) {
       const step: WorkStep = { id: stepId(graph.id, node.id), workId: graph.id, revision: 1, nodeId: node.id, botId: node.botId, handler: node.handler,
         state: node.dependsOn.length ? "waiting_evidence" : "queued", reason: node.dependsOn.length ? "dependency_uncommitted" : null,
+        queuedAt: node.dependsOn.length ? null : this.app.now(), waitingAt: node.dependsOn.length ? this.app.now() : null, queueCeiling: null,
         attemptId: null, startedAt: null, settledAt: null };
       tx.run("INSERT INTO work_steps VALUES (?,?,?)", step.id, graph.id, canonical(step));
     }
@@ -129,11 +130,13 @@ export class S14Graph {
     if (step.workId !== command.payload.workId || step.revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
     if (!terminal.has(step.state)) {
       step.state = step.state === "running" || step.state === "stopping" ? "stopping" : "cancelled";
+      step.queueCeiling = null;
       step.reason = "owner_stopped_step";
       step.revision++;
       save(tx, "work_steps", step);
     }
-    return { ...receipt, step };
+    const work = record<Work>(tx, "work_items", step.workId);
+    return { ...receipt, step, conversationId: work.conversationId };
   }
 
   /** Returns finite actual lanes and configured ceilings; unknown usage is never measured zero. */
@@ -142,6 +145,11 @@ export class S14Graph {
     return this.app.store.read(tx => {
       this.app.requireOwner(tx, actor);
       const graph = record<WorkGraph>(tx, "work_graphs", workId), grant = record<WorkGrant>(tx, "work_grants", graph.grantId), steps = this.steps(tx, workId);
+      for (const step of steps) if (step.state === "queued") {
+        const node = graph.nodes.find(n => n.id === step.nodeId)!, bot = grant.bots.find(b => b.id === step.botId)!;
+        const route = grant.routes.find(r => r.id === bot.routeId)!;
+        step.queueCeiling = this.app.authority.capacityCeiling(tx, grant, bot, route.provider, node.tools.includes("computer"));
+      }
       return { graph, steps, active: steps.filter(s => s.state === "running" || s.state === "stopping").length,
         concurrency: grant.limits.concurrency, limits: this.app.authority.schedulerLimits, actualUsage: null };
     });
@@ -184,6 +192,7 @@ export class S14Graph {
     const result = tx.get<{ state: string }>("SELECT state FROM work_results WHERE attempt_id=?", attempt.id);
     step.state = step.state === "stopping" ? "cancelled" : reason ? "failed" : result?.state === "waiting" ? "blocked" : "committed";
     if (!reason && result?.state === "waiting") reason = "handler_waiting";
+    step.queueCeiling = null;
     step.reason = step.reason ?? reason;
     step.settledAt = this.app.now();
     step.revision++;
@@ -194,6 +203,7 @@ export class S14Graph {
   stop(tx: AppTransaction, workId: string): void {
     for (const step of this.steps(tx, workId)) if (!terminal.has(step.state)) {
       step.state = step.state === "running" || step.state === "stopping" ? "stopping" : "cancelled";
+      step.queueCeiling = null;
       step.reason = "work_stopped"; step.revision++;
       save(tx, "work_steps", step);
     }

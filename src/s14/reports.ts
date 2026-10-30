@@ -2,10 +2,10 @@ import { containsCredential } from "../security/credentials";
 import { AppError } from "../errors";
 import type { AppTransaction } from "../store";
 import { record, type S14Application } from "./application";
-import type { Attempt } from "./authority-types";
+import type { Attempt, Work } from "./authority-types";
 import type { MemoryRef } from "./memory-types";
 import type { ExternalEvidence, WebRead } from "./parallel-types";
-import type { Artifact, EvidenceRequirement, Report, ReportCitation, ReportClaim, ReportProposal, ReportView, StagedArtifact } from "./report-types";
+import type { Artifact, EvidenceRequirement, Report, ReportCitation, ReportClaim, ReportCommand, ReportGap, ReportProposal, ReportReceipt, ReportReview, ReportView, StagedArtifact } from "./report-types";
 import type { OwnerActor } from "./types";
 import { artifactHash, validateArtifact } from "./artifacts";
 import { canonical, exact, identity, integer, text } from "./validation";
@@ -39,6 +39,43 @@ export function evidenceRequirements(value: unknown): asserts value is EvidenceR
 export class S14Reports {
   constructor(readonly app: S14Application) {}
 
+  private gap(missing: Map<string, ReportGap>, gap: ReportGap): void { missing.set(canonical(gap), gap); }
+
+  private reviewIn(tx: AppTransaction, workId: string): ReportReview {
+    const row = tx.get<{ record_json: string }>("SELECT record_json FROM report_reviews WHERE work_id=?", workId);
+    return row ? JSON.parse(row.record_json) as ReportReview : { workId, revision: 0, reportId: null, reportRevision: null, completion: "owner_review_required", acceptance: null };
+  }
+
+  private saveReview(tx: AppTransaction, review: ReportReview): void {
+    tx.run("INSERT INTO report_reviews VALUES (?,?) ON CONFLICT(work_id) DO UPDATE SET record_json=excluded.record_json", review.workId, canonical(review));
+  }
+
+  /** Reads the current exact review target and its optimistic revision without starting work. */
+  review(actor: OwnerActor, workId: string): ReportReview {
+    identity(workId);
+    return this.app.store.transaction(tx => {
+      this.app.requireOwner(tx, actor); record(tx, "work_items", workId); this.reconcile(tx);
+      return this.reviewIn(tx, workId);
+    });
+  }
+
+  /** Records explicit owner acceptance separately from immutable report bytes, coverage and execution authority. */
+  apply(tx: AppTransaction, command: ReportCommand): ReportReceipt {
+    exact(command.payload, ["reportId", "reportRevision"]);
+    identity(command.payload.reportId); integer(command.payload.reportRevision, 1);
+    this.reconcile(tx);
+    const view = this.read(tx, command.payload.reportId);
+    const workId = view.state === "available" ? view.report.workId : view.workId, review = this.reviewIn(tx, workId);
+    if (review.revision !== command.expectedRevision || review.reportId !== command.payload.reportId || review.reportRevision !== command.payload.reportRevision) throw new AppError("stale_revision", 409);
+    if (view.state !== "available") throw new AppError("report_unavailable", 409);
+    if (review.acceptance) throw new AppError("report_already_accepted", 409);
+    review.acceptance = { reportId: view.report.id, reportRevision: view.report.revision,
+      ownerGeneration: tx.get<{ generation: number }>("SELECT generation FROM owner")!.generation, requestId: command.requestId, acceptedAt: this.app.now() };
+    review.completion = "owner_accepted"; review.revision++;
+    this.saveReview(tx, review);
+    return { kind: command.kind, requestId: command.requestId, review, conversationId: record<Work>(tx, "work_items", workId).conversationId };
+  }
+
   private citation(tx: AppTransaction, attempt: Attempt, value: ReportCitation): ExternalEvidence {
     exact(value, ["attemptId", "id", "revision", "quote", "scope"]);
     identity(value.attemptId); identity(value.id); integer(value.revision, 1); text(value.quote, 4096);
@@ -49,7 +86,7 @@ export class S14Reports {
     return evidence;
   }
 
-  private normalizeClaims(tx: AppTransaction, attempt: Attempt, proposed: ReportProposal["claims"], targets: EvidenceRequirement[], missing: Set<string>): { claims: ReportClaim[]; covered: Set<string> } {
+  private normalizeClaims(tx: AppTransaction, attempt: Attempt, proposed: ReportProposal["claims"], targets: EvidenceRequirement[], missing: Map<string, ReportGap>): { claims: ReportClaim[]; covered: Set<string> } {
     const claimIds = new Set<string>(), covered = new Set<string>();
     const claims: ReportClaim[] = proposed.map(value => {
       exact(value, ["id", "text", "kind", "citations", "covers", "conflicts"]);
@@ -74,8 +111,8 @@ export class S14Reports {
         if (scopeRank[citation.scope] > coverageRank[source.coverage] || citation.scope === "page" && source.truncated) supported = false;
       }
       if (value.kind === "quote" && !value.citations.some(c => c.quote === content)) supported = false;
-      if (!supported) { flags.add("unsupported"); missing.add(`unsupported_claim:${value.id}`); }
-      if (value.conflicts.length) missing.add(`conflicting_claim:${value.id}`);
+      if (!supported) { flags.add("unsupported"); this.gap(missing, { kind: "unsupported_claim", claimId: value.id }); }
+      if (value.conflicts.length) this.gap(missing, { kind: "conflicting_claim", claimId: value.id });
       for (const key of value.covers) {
         const target = targets.find(t => t.id === key)!;
         const matching = evidence.some(source => coverageRank[source.coverage] >= coverageRank[target.coverage] &&
@@ -86,18 +123,18 @@ export class S14Reports {
       return { ...structuredClone(value), text: content, support: supported ? "supported" : "unsupported", flags: [...flags], evidence };
     });
     for (const claim of claims) for (const conflict of claim.conflicts) if (conflict === claim.id || !claimIds.has(conflict)) throw new AppError("invalid_report_conflict");
-    for (const target of targets) if (!covered.has(target.id)) missing.add(`required_evidence:${target.id}`);
+    for (const target of targets) if (!covered.has(target.id)) this.gap(missing, { kind: "required_evidence", targetId: target.id });
     return { claims, covered };
   }
 
   private files(report: Report): { name: string; mediaType: Artifact["mediaType"]; bytes: Uint8Array }[] {
-    const markdown = [`# ${report.title}`, "", `Coverage: ${report.coverage}; completion: owner_review_required`, "",
+    const markdown = [`# ${report.title}`, "", `Coverage: ${report.coverage}; owner acceptance is a separate live service record`, "",
       ...report.claims.flatMap(claim => [`## ${claim.id} (${claim.kind}; ${claim.support})`, claim.text, `Flags: ${claim.flags.join(", ") || "none"}`,
         ...claim.evidence.map(e => `Source: ${e.id}@${e.revision}; ${e.url}; ${e.coverage}; ${e.freshness}`), ""]),
-      "## Missing evidence", ...report.missing.map(item => `- ${item}`), "", "## Limitations", ...report.limitations.map(item => `- ${item}`)].join("\n");
+      "## Missing evidence", ...report.missing.map(item => `- ${JSON.stringify(item)}`), "", "## Model-reported gaps (untrusted)", ...report.modelMissing.map(item => `- ${JSON.stringify(item)}`), "", "## Limitations", ...report.limitations.map(item => `- ${item}`)].join("\n");
     const manifest = JSON.stringify({ reportId: report.id, revision: report.revision, workId: report.workId, attemptId: report.attemptId, coverage: report.coverage,
       claims: report.claims.map(claim => ({ id: claim.id, support: claim.support, citations: claim.citations, evidence: claim.evidence.map(({ content: _content, ...metadata }) => metadata) })),
-      covered: report.covered, missing: report.missing, limitations: report.limitations }, null, 2);
+      covered: report.covered, missing: report.missing, modelMissing: report.modelMissing, limitations: report.limitations }, null, 2);
     return [
       { name: `report-r${report.revision}.md`, mediaType: "text/markdown" as const, bytes: new TextEncoder().encode(markdown) },
       { name: `evidence-r${report.revision}.json`, mediaType: "application/json" as const, bytes: new TextEncoder().encode(manifest) },
@@ -108,23 +145,23 @@ export class S14Reports {
   publish(tx: AppTransaction, attempt: Attempt, proposal: ReportProposal, resultBytes: number): Report {
     this.app.authority.guard(tx, attempt.id);
     exact(proposal, ["title", "claims", "missing", "limitations", "artifactIds"]);
-    const title = text(proposal.title, 200), missing = new Set<string>();
+    const title = text(proposal.title, 200), missing = new Map<string, ReportGap>();
     strings(proposal.missing); strings(proposal.limitations); strings(proposal.artifactIds, 4);
-    for (const value of proposal.missing) missing.add(text(value, 2000));
-    for (const gap of attempt.step?.gaps ?? []) missing.add(`${gap.stepId}: ${gap.reason}`);
+    const modelMissing = proposal.missing.map(value => text(value, 2000));
+    for (const gap of attempt.step?.gaps ?? []) this.gap(missing, { kind: "handoff", stepId: gap.stepId, reason: gap.reason });
     if (!Array.isArray(proposal.claims) || !proposal.claims.length || proposal.claims.length > 32) throw new AppError("invalid_report_claims");
     const targets = attempt.snapshot.grant.command.payload.requiredEvidence ?? [];
     for (const step of attempt.step ? this.app.graph.steps(tx, attempt.workId) : []) {
-      if (step.id !== attempt.step?.id && step.state !== "committed") missing.add(`step:${step.id}:${step.state}`);
+      if (step.id !== attempt.step?.id && step.state !== "committed") this.gap(missing, { kind: "step", stepId: step.id, state: step.state });
     }
-    if (!targets.length) missing.add("completion_rule_not_machine_verified");
+    if (!targets.length) this.gap(missing, { kind: "completion_rule_not_machine_verified" });
     const { claims, covered } = this.normalizeClaims(tx, attempt, proposal.claims, targets, missing);
     // All failures remain visible to the owner even if a model omits them from its proposed prose.
     const reads = tx.all<{ record_json: string }>("SELECT record_json FROM web_reads WHERE json_extract(record_json,'$.workId')=?", attempt.workId).map(r => JSON.parse(r.record_json) as WebRead);
     for (const read of reads) {
-      if (read.outcome !== "success") missing.add(`read:${read.id}:${read.outcome}`);
-      for (const url of read.missing) missing.add(`missing_url:${url}`);
-      for (const failure of read.failures) missing.add(`failed_url:${failure.url}:${failure.kind}`);
+      if (read.outcome !== "success") this.gap(missing, { kind: "read", readId: read.id, outcome: read.outcome });
+      for (const url of read.missing) this.gap(missing, { kind: "missing_url", url });
+      for (const failure of read.failures) this.gap(missing, { kind: "failed_url", url: failure.url, failureKind: failure.kind });
     }
     const key = id(), packet = this.app.memory.attemptPacket(tx, attempt.id), lineage = this.app.memory.derive(tx, packet);
     const staged = proposal.artifactIds.map(key => {
@@ -145,8 +182,8 @@ export class S14Reports {
     const revision = tx.get<{ n: number }>("SELECT coalesce(max(revision),0)+1 n FROM reports WHERE work_id=?", attempt.workId)!.n;
     const report: Report = { id: key, workId: attempt.workId, revision, attemptId: attempt.id,
       botIds: [...new Set([attempt.snapshot.bot.id, ...claims.flatMap(c => c.evidence.map(e => e.botId))])], createdAt: this.app.now(),
-      state: "ready_for_review", coverage: missing.size ? "partial" : "covered", completion: "owner_review_required", title,
-      claims, covered: [...covered], missing: [...missing], limitations: proposal.limitations.map(item => text(item, 2000)), source: ref(source), artifactIds: [] };
+      state: "ready_for_review", coverage: missing.size || modelMissing.length ? "partial" : "covered", title,
+      claims, covered: [...covered], missing: [...missing.values()], modelMissing, limitations: proposal.limitations.map(item => text(item, 2000)), source: ref(source), artifactIds: [] };
     const generated = this.files(report);
     const total = resultBytes + generated.reduce((sum, file) => sum + file.bytes.length, 0) + staged.reduce((sum, file) => sum + file.bytes.length, 0);
     if (total > attempt.snapshot.outputBytes) throw new AppError("report_output_budget_exhausted", 409);
@@ -161,6 +198,9 @@ export class S14Reports {
     if (Buffer.byteLength(encoded) > Math.min(1048576, attempt.snapshot.outputBytes)) throw new AppError("report_output_budget_exhausted", 409);
     tx.run("INSERT INTO reports VALUES (?,?,?,?,?,?)", key, report.workId, attempt.id, revision, canonical({ id: key, workId: report.workId, revision, source: report.source }), encoded);
     this.app.artifacts.discard(tx, attempt.id);
+    const review = this.reviewIn(tx, report.workId);
+    this.saveReview(tx, { workId: report.workId, revision: review.revision + 1, reportId: report.id, reportRevision: report.revision,
+      completion: "owner_review_required", acceptance: null });
     return report;
   }
 
@@ -173,7 +213,8 @@ export class S14Reports {
     if (!row.content_json || !this.app.memory.sourceCurrent(tx, metadata.source)) return { state: "unavailable", id: reportId, workId: metadata.workId, revision: metadata.revision, reason: "lineage_withdrawn" };
     const report = JSON.parse(row.content_json) as Report;
     const artifacts = tx.all<{ record_json: string }>("SELECT record_json FROM artifacts WHERE report_id=? ORDER BY rowid", reportId).map(r => JSON.parse(r.record_json) as Artifact);
-    return { state: "available", report, artifacts };
+    const review = this.reviewIn(tx, report.workId), acceptance = review.reportId === report.id ? review.acceptance : null;
+    return { state: "available", report, artifacts, completion: acceptance ? "owner_accepted" : "owner_review_required", acceptance };
   }
 
   /** Returns immutable report history without executing work, fetching sources or certifying completion. */
@@ -204,6 +245,15 @@ export class S14Reports {
       if (!current) {
         tx.run("UPDATE reports SET content_json=NULL WHERE id=?", row.id);
         tx.run("UPDATE artifacts SET content=NULL WHERE report_id=?", row.id);
+      }
+    }
+    for (const row of tx.all<{ record_json: string }>("SELECT record_json FROM report_reviews")) {
+      const review = JSON.parse(row.record_json) as ReportReview;
+      if (!review.acceptance) continue;
+      const report = tx.get<{ content_json: string | null }>("SELECT content_json FROM reports WHERE id=?", review.reportId);
+      if (!report?.content_json || review.acceptance.ownerGeneration !== tx.get<{ generation: number }>("SELECT generation FROM owner")!.generation) {
+        review.acceptance = null; review.completion = "owner_review_required"; review.revision++;
+        this.saveReview(tx, review);
       }
     }
     for (const row of tx.all<{ id: string; record_json: string }>("SELECT id,record_json FROM artifact_staging")) {

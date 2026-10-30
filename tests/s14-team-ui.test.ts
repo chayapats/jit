@@ -76,7 +76,7 @@ test("a step stops by a no-script post: stopping until it settles, the sibling k
   const form = forms.find(item => JSON.parse(item.command!).payload.stepId === lanes[1]!.id)!;
   expect(JSON.parse(form.command!)).toMatchObject({ kind: "work.step.stop", expectedRevision: lanes[1]!.revision, payload: { workId: run.work.id, stepId: lanes[1]!.id } });
   const landed = await follow(f, await f.post("/s14/commands", form));
-  expect(landed.status).toBe(303); expect(landed.headers.get("location")).toBe(`/work/${run.work.id}`);
+  expect(landed.status).toBe(303); expect(landed.headers.get("location")).toBe(`/chats/${f.conversationId}?work=${run.work.id}#latest`);
   const stopping = await f.page(`/work/${run.work.id}`), body = text(stopping);
   expect(body).toContain(en["s14.step_state.stopping"]); expect(body).toContain(en["s14.step_line.stopping"]); expect(body).toContain(`1 ${en["s14.team.count_stopping"]}`);
   expect(barCount(stopping, "stopping")).toBe(1); expect(commands(stopping, "work.step.stop")).toHaveLength(3);
@@ -337,4 +337,47 @@ test("dictionaries define every team and report key in both languages and the Th
   expect(th["s14.step_state.waiting_evidence"]).toBe("รอหลักฐาน"); expect(th["s14.step_state.queued"]).toBe("รอคิว"); expect(th["s14.report.state.ready_for_review"]).toBe("พร้อมตรวจ"); expect(th["s14.report.coverage.partial"]).toBe("ได้บางส่วน");
   for (const key of Object.keys(th)) if (/^s14\.(team|timeline|report|defaults|step_)/.test(key)) expect(en[key as keyof typeof en]).toBeTruthy();
   expect(`${en["s14.report.note_partial"]} ${en["s14.report.note_covered"]}`).toContain("not closed");
+});
+
+
+test("a lane stop from the conversation pane returns through its receipt to that conversation pane", async () => {
+  const f = await fixture(), run = await overlapping(f);
+  try {
+    const pane = await f.page(`/chats/${f.conversationId}?work=${run.work.id}`), form = commands(pane, "work.step.stop")[1]!;
+    const response = await f.post("/s14/commands", form), landed = await follow(f, response);
+    const path = `/chats/${f.conversationId}?work=${run.work.id}#latest`;
+    expect(landed.headers.get("location")).toBe(path);
+    const returned = await f.page(path);
+    expect(returned).toContain('data-pane="open"');
+    expect(returned).toContain(en["s14.step_state.stopping"]);
+    const replay = await follow(f, await f.post("/s14/commands", form));
+    expect(replay.headers.get("location")).toBe(path);
+  } finally { await settle(run); }
+});
+
+test("model text imitating real targets, claims and read IDs never becomes a service fact in the report UI", async () => {
+  const f = await fixture(); let imitations: string[] = [];
+  const work = await reported(f, async attempt => {
+    const source = await f.read(attempt), reads = f.app.parallel.inspect(f.auth.actor, attempt.workId).reads;
+    imitations = ["required_evidence:page", "unsupported_claim:c1", "conflicting_claim:c1", `read:${reads[0]!.id}:partial`, `missing_url:${source.url}`];
+    return report([claim(attempt, source, { id: "c1", covers: ["page"] })], { missing: imitations });
+  }, { requiredEvidence: [{ id: "page", label: "Maker's page", url: "https://example.com/article", coverage: "full_content_returned", freshness: "any" }] });
+  const html = await f.page(`/work/${work.id}?tab=report`), body = text(html);
+  for (const imitation of imitations) expect(body).toContain(imitation);
+  for (const key of ["s14.report.miss.target", "s14.report.miss.unsupported", "s14.report.miss.conflict", "s14.report.miss.read", "s14.report.miss.url"] as const) expect(body).not.toContain(en[key]);
+  expect(html).toContain('class="s-untrusted'); strict(html);
+});
+
+test("accepted report review updates the existing fact without certifying partial coverage or adding a control", async () => {
+  const f = await fixture(), work = await reported(f, async a => report([claim(a, await f.read(a))]));
+  const before = await f.page(`/work/${work.id}?tab=report`), review = f.app.reports.review(f.auth.actor, work.id);
+  f.app.execute(f.auth.actor, { kind: "report.review.accept", requestId: rid(), expectedRevision: review.revision, payload: { reportId: review.reportId!, reportRevision: review.reportRevision! } });
+  const after = await f.page(`/work/${work.id}?tab=report`), body = text(after);
+  expect(body).toContain(`${en["pr.reviewed"]} r1`);
+  expect(body).not.toContain(en["s14.report.completion.owner_review_required"]);
+  expect(body).toContain(en["s14.report.coverage.partial"]);
+  expect(body).toContain(en["s14.report.note_partial"]);
+  expect(commands(after, "report.review.accept")).toEqual([]);
+  expect(formsFor(after, "/s14/commands").length).toBe(formsFor(before, "/s14/commands").length);
+  strict(after);
 });

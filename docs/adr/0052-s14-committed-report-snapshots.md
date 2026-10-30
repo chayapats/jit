@@ -12,3 +12,9 @@ Citations resolve actual read evidence through app.parallel.citation. Synthesis 
 Only portable UTF-8 Markdown/text/JSON files are delivered initially. Workspace snapshots use the exact guarded computer backend and stable runner observation, with relative-path, symlink/type/size/hash checks. Downloads use opaque IDs, attachment responses, no-store, nosniff and sandbox/default-none CSP. No active app-origin HTML rendering or arbitrary host-file export is introduced.
 
 Report/file sources inherit original memory source and access pins. Publication and every download revalidate them. The independent ledger retains identity-only revoked access/share revisions, stopped execution grants and reset/deleted computer generation ranges so a stale application image cannot restore their descendants. This is part of the ticket's revocation/restore invariant, not a new execution permission. Full managed recovery/backup remains its tracked slice. See the delivered app.report-artifacts/v1 and app.artifact-gateway/v1 contracts.
+
+## PR #273 logic-gap refinement
+
+Use a separate revisioned per-work review record for explicit owner acceptance of the exact latest available report revision. Immutable report/artifact bytes and evidence coverage do not change. New publication or lineage withdrawal invalidates acceptance; retry receipts remain historical facts. The owner command uses the review revision plus report ID/revision and the existing receipt/audit boundary. Schema 9 adds report_reviews and refuses earlier unreleased stores.
+
+Service-observed missing evidence uses a discriminated ReportGap union; model-proposed missing prose stays in modelMissing, including exact look-alikes of valid service codes or IDs. Product rendering and generated manifests keep these origins separate. The existing review fact/coverage copy is reused; the acceptance control remains an explicit follow-up for the UI agent.

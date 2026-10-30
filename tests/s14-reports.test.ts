@@ -7,7 +7,7 @@ import { S14Application } from "../src/s14/application";
 import { S14Store } from "../src/s14/store";
 import { artifactHash } from "../src/s14/artifacts";
 import { createS14Handler } from "../src/s14/web";
-import type { ArtifactRequest, EvidenceRequirement, ReportProposal, ReportView } from "../src/s14/report-types";
+import type { ArtifactRequest, EvidenceRequirement, Report, ReportCommand, ReportProposal, ReportView } from "../src/s14/report-types";
 import type { Attempt, StartPayload } from "../src/s14/authority-types";
 import { FakeComputerRuntime } from "./fixtures/s14-computer";
 import { canonical } from "../src/s14/validation";
@@ -56,6 +56,10 @@ async function fixture() {
 type F = Awaited<ReturnType<typeof fixture>>;
 function available(view: ReportView) { expect(view.state).toBe("available"); if (view.state !== "available") throw Error("report unavailable"); return view; }
 function publish(f: F, report: ReportProposal) { f.app.authority.commit(f.attempt.id, { state: "ready", text: "Committed review evidence", report }); return available(f.app.reports.list(f.auth.actor, f.started.work!.id)[0]!); }
+function acceptance(f: F, report: Report): ReportCommand {
+  return { kind: "report.review.accept", requestId: rid(), expectedRevision: f.app.reports.review(f.auth.actor, report.workId).revision,
+    payload: { reportId: report.id, reportRevision: report.revision } };
+}
 const bytes = new TextEncoder().encode("# Workspace report\n");
 const request: ArtifactRequest = { path: "report.md", name: "report.md", mediaType: "text/markdown", size: bytes.length, sha256: artifactHash(bytes) };
 function backend(changes: Partial<ExecutionBackend> = {}): ExecutionBackend {
@@ -69,9 +73,11 @@ test("done text and a staged workspace file do not create a report; valid commit
   const f = await fixture(), source = await f.read();
   const stage = await f.app.artifacts.stageWorkspace(f.attempt.id, backend(), request);
   expect(f.app.reports.list(f.auth.actor, f.started.work!.id)).toEqual([]);
+  expect(f.app.reports.review(f.auth.actor, f.started.work!.id)).toMatchObject({ revision: 0, reportId: null, reportRevision: null, acceptance: null });
   expect(() => f.app.artifacts.download(f.auth.actor, stage.id)).toThrow("artifact_unavailable");
   const view = publish(f, f.proposal(source, { artifactIds: [stage.id] }));
-  expect(view.report).toMatchObject({ state: "ready_for_review", coverage: "covered", completion: "owner_review_required", revision: 1 });
+  expect(view.report).toMatchObject({ state: "ready_for_review", coverage: "covered", revision: 1 });
+  expect(view.completion).toBe("owner_review_required");
   expect(view.artifacts).toHaveLength(3);
   expect(view.artifacts.some(file => file.id === stage.id)).toBe(true);
   for (const file of view.artifacts) {
@@ -117,11 +123,11 @@ test.each(["snippet_as_page", "excerpt_as_page", "stale_cache", "no_requirements
     const read = await f.app.parallel.read(attempt.id, "web_fetch", { url: "https://example.com/article", fullContent: true });
     const proposal = f.proposal(read.evidence[0]!); proposal.claims[0]!.citations[0]!.attemptId = attempt.id; proposal.claims[0]!.covers = [];
     f.app.authority.commit(attempt.id, { state: "ready", text: "Review", report: proposal });
-    expect(available(f.app.reports.list(f.auth.actor, started.work!.id)[0]!).report.missing).toContain("completion_rule_not_machine_verified"); return;
+    expect(available(f.app.reports.list(f.auth.actor, started.work!.id)[0]!).report.missing).toContainEqual({ kind: "completion_rule_not_machine_verified" }); return;
   }
   if (kind === "missing_claim_evidence") report.claims[0]!.citations = [];
   const view = publish(f, report);
-  expect(view.report.coverage).toBe("partial"); expect(view.report.missing).toContain("required_evidence:page");
+  expect(view.report.coverage).toBe("partial"); expect(view.report.missing).toContainEqual({ kind: "required_evidence", targetId: "page" });
   expect(view.report.claims[0]!.support).toBe("unsupported");
 });
 
@@ -195,13 +201,18 @@ test.each(["memory.forget", "memory.delete", "memory.revoke"] as const)("%s reac
   const proposal = f.proposal(read.evidence[0]!); proposal.claims[0]!.citations[0]!.attemptId = attempt.id;
   f.app.authority.commit(attempt.id, { state: "ready", text: "Memory-derived report", report: proposal });
   const committed = available(f.app.reports.list(f.auth.actor, work.work!.id)[0]!);
+  f.app.execute(f.auth.actor, acceptance(f, committed.report));
+  expect(f.app.reports.review(f.auth.actor, work.work!.id).completion).toBe("owner_accepted");
   const backup = join(f.root, "image.sqlite"); copyFileSync(f.path, backup);
   f.app.execute(f.auth.actor, { kind, requestId: rid(), expectedRevision: 1, payload: { claim: remembered.claim! } });
   expect(f.app.reports.view(f.auth.actor, committed.report.id).state).toBe("unavailable");
+  expect(f.app.reports.review(f.auth.actor, work.work!.id)).toMatchObject({ completion: "owner_review_required", acceptance: null, revision: 3 });
+  expect(() => f.app.execute(f.auth.actor, acceptance(f, committed.report))).toThrow("report_unavailable");
   expect(() => f.app.artifacts.download(f.auth.actor, committed.artifacts[0]!.id)).toThrow("artifact_unavailable");
   f.store.close(); stores.delete(f.store); copyFileSync(backup, f.path);
   const store = new S14Store(f.path); stores.add(store); const app = new S14Application(store, f.options), actor = app.authenticate(f.token).actor;
   expect(app.reports.view(actor, committed.report.id).state).toBe("unavailable");
+  expect(app.reports.review(actor, work.work!.id)).toMatchObject({ completion: "owner_review_required", acceptance: null });
   expect(() => app.artifacts.download(actor, committed.artifacts[0]!.id)).toThrow("artifact_unavailable");
   expect(store.read(tx => tx.get<{ n: number }>("SELECT count(*) n FROM artifacts WHERE content IS NOT NULL")!.n)).toBe(0);
 });
@@ -259,7 +270,7 @@ test("synthesis cites only actual accessible committed handoff evidence and a fa
   await f.app.authority.drain();
   const view = available(f.app.reports.list(f.auth.actor, work.work!.id)[0]!);
   expect(view.report.coverage).toBe("partial"); expect(view.report.claims[0]!.support).toBe("supported");
-  expect(view.report.missing.some(item => item.includes("handler_unavailable"))).toBe(true);
+  expect(view.report.missing.some(item => item.kind === "handoff" && item.reason === "handler_unavailable")).toBe(true);
   expect(f.app.authority.view(f.auth.actor, work.work!.id).results[0]!.text).toBe("Committed specialist evidence");
 });
 
@@ -317,8 +328,8 @@ test("a wrong returned URL and an omitted missing read stay visible even when th
     return Response.json(changed);
   };
   const source = await f.read(), view = publish(f, f.proposal(source));
-  expect(view.report.coverage).toBe("partial"); expect(view.report.missing).toContain("required_evidence:page");
-  expect(view.report.missing).toContain("missing_url:https://example.com/article");
+  expect(view.report.coverage).toBe("partial"); expect(view.report.missing).toContainEqual({ kind: "required_evidence", targetId: "page" });
+  expect(view.report.missing).toContainEqual({ kind: "missing_url", url: "https://example.com/article" });
   expect(view.report.claims[0]!.evidence[0]!.url).toBe("https://example.com/different");
 });
 
@@ -348,4 +359,80 @@ test("committed computer snapshots survive process restart, while later computer
   store.close(); stores.delete(store); copyFileSync(beforeDelete, f.path);
   store = new S14Store(f.path); stores.add(store); app = new S14Application(store, { ...f.options, computers: { runtime } }); actor = app.authenticate(f.token).actor;
   expect(app.reports.view(actor, committed.report.id).state).toBe("unavailable");
+});
+
+
+test.each(["covered", "partial"] as const)("owner accepts an exact %s report once without changing evidence, files, work or grants", async coverage => {
+  const f = await fixture(), source = await f.read(coverage === "partial" ? "web_search" : "web_fetch");
+  const committed = publish(f, f.proposal(source)), beforeWork = f.app.authority.view(f.auth.actor, f.started.work!.id);
+  const command = acceptance(f, committed.report), receipt = f.app.execute(f.auth.actor, command);
+  expect(receipt).toMatchObject({ kind: "report.review.accept", conversationId: f.conversationId, review: { revision: 2, completion: "owner_accepted",
+    acceptance: { reportId: committed.report.id, reportRevision: 1, requestId: command.requestId, acceptedAt: epoch, ownerGeneration: 1 } } });
+  expect(f.app.execute(f.auth.actor, command)).toEqual(receipt);
+  expect(() => f.app.execute(f.auth.actor, { ...command, requestId: rid() })).toThrow("stale_revision");
+  expect(() => f.app.execute(f.auth.actor, { ...command, payload: { ...command.payload, reportRevision: 2 } })).toThrow("request_id_conflict");
+  expect(() => f.app.execute(f.auth.actor, acceptance(f, committed.report))).toThrow("report_already_accepted");
+  const after = available(f.app.reports.view(f.auth.actor, committed.report.id));
+  expect(after).toMatchObject({ completion: "owner_accepted", acceptance: receipt.review.acceptance });
+  expect(after.report).toEqual(committed.report); expect(after.report.coverage).toBe(coverage);
+  expect(after.artifacts).toEqual(committed.artifacts);
+  expect(f.app.authority.view(f.auth.actor, f.started.work!.id)).toEqual(beforeWork);
+  expect(f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) n FROM audit WHERE kind='report.review.accept'")!.n)).toBe(1);
+  f.store.close(); stores.delete(f.store);
+  const store = new S14Store(f.path); stores.add(store); const app = new S14Application(store, f.options), actor = app.authenticate(f.token).actor;
+  expect(app.reports.review(actor, f.started.work!.id)).toEqual(receipt.review);
+  expect(available(app.reports.view(actor, committed.report.id)).completion).toBe("owner_accepted");
+});
+
+test("a newer report revision invalidates acceptance and stale reviews cannot accept either revision", async () => {
+  const f = await fixture(), source = await f.read();
+  f.app.authority.commit(f.attempt.id, { state: "waiting", text: "First report", report: f.proposal(source) });
+  const first = available(f.app.reports.list(f.auth.actor, f.started.work!.id)[0]!), command = acceptance(f, first.report);
+  const receipt = f.app.execute(f.auth.actor, command);
+  const next = f.admit(), read = await f.app.parallel.read(next.id, "web_fetch", { url: "https://example.com/article", fullContent: true });
+  const proposal = f.proposal(read.evidence[0]!); proposal.claims[0]!.citations[0]!.attemptId = next.id;
+  f.app.authority.commit(next.id, { state: "ready", text: "Newer report", report: proposal });
+  const history = f.app.reports.list(f.auth.actor, first.report.workId).map(available), latest = history[1]!;
+  expect(f.app.reports.review(f.auth.actor, first.report.workId)).toMatchObject({ revision: 3, reportId: latest.report.id, reportRevision: 2, completion: "owner_review_required", acceptance: null });
+  expect(history.every(item => item.completion === "owner_review_required" && item.acceptance === null)).toBe(true);
+  expect(history[0]!.report).toEqual(first.report);
+  expect(() => f.app.execute(f.auth.actor, { ...command, requestId: rid(), expectedRevision: 3 })).toThrow("stale_revision");
+  expect(() => f.app.execute(f.auth.actor, { ...acceptance(f, latest.report), expectedRevision: receipt.review.revision })).toThrow("stale_revision");
+  expect(() => f.app.execute(f.auth.actor, { ...acceptance(f, latest.report), payload: { reportId: latest.report.id, reportRevision: 1 } })).toThrow("stale_revision");
+  // An ingress retry returns its historical receipt without reviving current acceptance.
+  expect(f.app.execute(f.auth.actor, command)).toEqual(receipt);
+  expect(f.app.reports.review(f.auth.actor, first.report.workId).acceptance).toBeNull();
+  expect(f.app.execute(f.auth.actor, acceptance(f, latest.report)).review.completion).toBe("owner_accepted");
+});
+
+test("report review uses authenticated HTTP, CSRF, exact revisions and rollback-safe receipts", async () => {
+  const f = await fixture(), source = await f.read(), committed = publish(f, f.proposal(source)), command = acceptance(f, committed.report);
+  const origin = "http://localhost:3001", handler = createS14Handler(f.app, origin), query = `${origin}/api/s14/work/${f.started.work!.id}/report-review`;
+  expect((await handler(new Request(query))).status).toBe(401);
+  const response = await handler(new Request(query, { headers: { cookie: `jit_s14=${f.token}` } }));
+  expect(response.headers.get("cache-control")).toBe("private, no-store");
+  expect(await response.json()).toMatchObject({ revision: 1, reportId: committed.report.id, reportRevision: 1, completion: "owner_review_required" });
+  const request = (csrf: string) => new Request(`${origin}/api/s14/commands`, { method: "POST", headers: { cookie: `jit_s14=${f.token}`, origin, "content-type": "application/json", "x-csrf-token": csrf }, body: JSON.stringify(command) });
+  expect((await handler(request("wrong"))).status).toBe(403);
+  const fault = new S14Application(f.store, { ...f.options, beforeCommit() { throw Error("fixture_review_rollback"); } });
+  expect(() => fault.execute(fault.authenticate(f.token).actor, command)).toThrow("fixture_review_rollback");
+  expect(f.app.reports.review(f.auth.actor, f.started.work!.id)).toMatchObject({ revision: 1, acceptance: null });
+  const posted = await handler(request(f.auth.csrf)); expect(posted.status).toBe(200);
+  const receipt = await posted.json();
+  expect(receipt.review.completion).toBe("owner_accepted");
+  const form = await handler(new Request(`${origin}/s14/commands`, { method: "POST", headers: { cookie: `jit_s14=${f.token}`, origin, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf: f.auth.csrf, command: JSON.stringify(command) }).toString() }));
+  expect(form.status).toBe(303);
+  const replay = await handler(new Request(`${origin}${form.headers.get("location")}`, { headers: { cookie: `jit_s14=${f.token}` } }));
+  expect(await replay.json()).toEqual(receipt);
+});
+
+test("model gaps impersonating genuine service codes stay untrusted in reports and downloadable manifests", async () => {
+  const f = await fixture(), source = await f.read();
+  const spoofed = ["required_evidence:page", "unsupported_claim:claim", "conflicting_claim:claim", "completion_rule_not_machine_verified", `missing_url:${source.url}`];
+  const committed = publish(f, f.proposal(source, { missing: spoofed }));
+  expect(committed.report.coverage).toBe("partial");
+  expect(committed.report.missing).toEqual([]);
+  expect(committed.report.modelMissing).toEqual(spoofed);
+  const file = committed.artifacts.find(a => a.mediaType === "application/json")!, snapshot = f.app.artifacts.download(f.auth.actor, file.id);
+  expect(JSON.parse(new TextDecoder().decode(snapshot.bytes))).toMatchObject({ missing: [], modelMissing: spoofed });
 });

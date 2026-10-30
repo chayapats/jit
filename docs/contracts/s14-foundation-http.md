@@ -2,7 +2,7 @@
 
 ## BOX14-01 computer/input seam
 
-Contracts: [app.bot-computer/v1](app.bot-computer-v1.md), [app.input-lease/v1](app.input-lease-v1.md); schema 6 combines result-state evidence, computer storage, memory and Parallel; earlier unreleased schemas 1–7 refuse with fresh-state. Existing setup/chat/work/approval transport remains intact. All additions stay behind `--s14`. Computer product layout and forms are in design section 18.
+Contracts: [app.bot-computer/v1](app.bot-computer-v1.md), [app.input-lease/v1](app.input-lease-v1.md); schema 9 combines result-state evidence, computer storage, memory, Parallel, graphs, reports and owner review; earlier unreleased schemas 1–8 refuse with fresh-state. Existing setup/chat/work/approval transport remains intact. All additions stay behind `--s14`. Computer product layout and forms are in design section 18.
 
 Durable `computer.open`, `computer.stop`, `computer.reset`, `computer.delete`, `takeover.start`, `takeover.end` use the existing JSON/form `/commands` endpoints and exact typed payloads in those contracts. Receipts describe committed intent, while queries describe settled runtime state. UI must fetch current computer and lease revisions before each command. Reset/delete scope is both named workspace and protected profile; exact IDs/generation/revision are mandatory. Do not add a second work-start approval.
 
@@ -157,7 +157,7 @@ Map existing Opus web/evidence/rate/quota/settings states from `WebOutcome`: run
 
 `ExternalEvidence` source IDs/revisions are the citation seam; `app.parallel.citation(tx,attemptId,id,revision)` is the trusted later report handler's validation port. Free-form foundation work output is ready for owner review, not a certified complete report/artifact. Packet source references append evidence actually read, and lifecycle changes fence subsequent tools and final output. Native executor is `schwayResearch` in src/s14/research.ts; UI agent owns rendering/routes/assets and can use the existing renderer/service projections. Do not replace the command/authority boundary.
 
-Final store is schema **8**, combining the reviewed foundation result table with computer, memory and Parallel tables; earlier unreleased schemas 1–7 require a fresh separate path, preserving original data. The current independent lifecycle ledger must accompany this installation and remain current across application-image restore. MEM14-01/WEB14-01 UI evidence is recorded in section 17 of the experience document and `tests/s14-web-memory.test.ts`. Protocol fixtures are documentation-derived (2026-10-30), with live exact serialization/conformance and live quality explicitly pending.
+Final store is schema **9**, combining the reviewed foundation result table with computer, memory and Parallel tables; earlier unreleased schemas 1–8 require a fresh separate path, preserving original data. The current independent lifecycle ledger must accompany this installation and remain current across application-image restore. MEM14-01/WEB14-01 UI evidence is recorded in section 17 of the experience document and `tests/s14-web-memory.test.ts`. Protocol fixtures are documentation-derived (2026-10-30), with live exact serialization/conformance and live quality explicitly pending.
 
 ## TEAM14-01 logic seam
 
@@ -168,29 +168,38 @@ Schema **7** refuses earlier unreleased schemas 1–6 with fresh-state. `app.wor
 | `work.step.stop` | `{workId,stepId}` | current lane revision |
 | `work.defaults.set` | `{concurrency,wallMs,reads}` | defaults revision |
 
-Both use the existing authenticated JSON/form command envelope and receipts. Work stop remains `work.stop`; stopping one lane grants no replacement execution. Future default edits do not mutate current grants.
+Both use the existing authenticated JSON/form command envelope and receipts. `work.step.stop` returns `{kind,requestId,step,conversationId}` with the originating conversation resolved by the service; the receipt landing route returns to its work pane. Work stop remains `work.stop`; stopping one lane grants no replacement execution. Future default edits do not mutate current grants.
 
 | Query | Result |
 | --- | --- |
 | `GET /api/s14/work/:id/graph` | `GraphView {graph,steps,active,concurrency,limits,actualUsage:null}` |
 | `GET /api/s14/work-defaults` | `WorkDefaults {id:'work',revision,concurrency,wallMs,reads}` |
 
-Lane states are queued, waiting_evidence, running, stopping, committed, failed, cancelled, blocked. `startedAt`/`settledAt` are actual service observations; null means no observed interval. Render timeline only from these observations. `dependency_uncommitted`, `partial_graph_evidence`, `handoff_not_accessible`, `native_reconciliation_required` and safe handler failures stay explicit. Ready means review evidence; report coverage remains a separate field in REPORT14-01. Core query/command types are `graph-types.ts`. Pages, form controls and state copy are in `src/s14/web-team.ts`.
+Lane states are queued, waiting_evidence, running, stopping, committed, failed, cancelled, blocked. `queuedAt` records when independent work is committed or a dependent lane becomes runnable; `waitingAt` records entry into the dependency wait. Both are retained on later states. `startedAt`/`settledAt` are actual transport observations; null means no observed interval. Queued `queueCeiling:'global'|'work'|'route'|'bot'|'computer'|null` is the current first held ceiling in that order, using the same reservations/leases as admission. Work is the grant concurrency ceiling. Committed owner ingress wakes one existing drain, so free capacity is used before unrelated transports settle. Render timeline only from these observations. `dependency_uncommitted`, `partial_graph_evidence`, `handoff_not_accessible`, `native_reconciliation_required` and safe handler failures stay explicit. Ready means review evidence; report coverage remains a separate field in REPORT14-01. Core query/command types are `graph-types.ts`. Pages, form controls and state copy are in `src/s14/web-team.ts`.
 
 ## REPORT14-01 logic seam
 
-The final combined store is schema **8**; unreleased schemas 1–7 refuse with the same fresh separate-path action. Contracts: `app.report-artifacts/v1`, `app.artifact-gateway/v1`. There is no report-publish owner endpoint: reports/files are outputs of an already-authorized live attempt, validated and committed by its trusted result handler.
+The final combined store is schema **9**; unreleased schemas 1–8 refuse with the same fresh separate-path action. Contracts: `app.report-artifacts/v1`, `app.artifact-gateway/v1`. There is no report-publish owner endpoint: reports/files are outputs of an already-authorized live attempt, validated and committed by its trusted result handler.
 
 `work.start` optionally accepts `requiredEvidence:EvidenceRequirement[]` (`report-types.ts`). Targets are exactly `{id,label,url:string|null,coverage:'snippet'|'excerpt'|'full_content_returned',freshness:'any'|'live_reported'}`. They are captured owner requirements, not model-created authority. An omitted/empty list leaves completion-rule coverage machine-unverified. Existing typed starts remain valid.
 
 | Query | Result |
 | --- | --- |
+| `GET /api/s14/work/:id/report-review` | `ReportReview {workId,revision,reportId,reportRevision,completion,acceptance}`; latest target and exact review revision |
 | `GET /api/s14/work/:id/reports` | `ReportView[]`, immutable revision order; no query/fetch/execution |
-| `GET /api/s14/reports/:id` | `{state:'available',report,artifacts}` or `{state:'unavailable',id,workId,revision,reason:'lineage_withdrawn'}` |
+| `GET /api/s14/reports/:id` | `{state:'available',report,artifacts,completion,acceptance}` or `{state:'unavailable',id,workId,revision,reason:'lineage_withdrawn'}` |
 | `GET /[api/]s14/artifacts/:id/download` | Authenticated private no-store attachment bytes; opaque ID only |
 | Existing `GET /api/s14/memory-impact/:id?...` | Now also `reports:{id,workId,revision}[]` and `artifacts:string[]` for exact descendant preview |
 
-Render `Report.state:'ready_for_review'`, `coverage:'partial'|'covered'` and `completion:'owner_review_required'` separately. An empty report history means no committed report, even if ordinary WorkResult text says done. Coverage, `covered`, `missing` and `limitations` stay prominent. Claim `support:'supported'|'unsupported'`, kind quote/inference and flags snippet/excerpt/cached_reported/freshness_unknown/conflicting/unsupported are trusted projections, not badges inferred from prose. Citation `id/revision/attemptId/quote/scope` binds to the exact evidence in the projection. Failed sibling, partial read, missing target and bounded-handoff omissions remain explicit.
+Render immutable `Report.state:'ready_for_review'` and `Report.coverage:'partial'|'covered'` separately from live `ReportView.completion:'owner_review_required'|'owner_accepted'` and `ReportView.acceptance`. Completion is no longer a property of immutable Report. An empty report history means no committed report, even if ordinary WorkResult text says done. Coverage, `covered`, typed service `missing:ReportGap[]`, untrusted `modelMissing:string[]` and `limitations` stay prominent. Only the typed discriminants select service wording. A model string resembling a real code/target/read/claim ID remains untrusted model text in the existing frame. Markdown/JSON exports also separate the fields. Claim `support:'supported'|'unsupported'`, kind quote/inference and flags snippet/excerpt/cached_reported/freshness_unknown/conflicting/unsupported are trusted projections, not badges inferred from prose. Citation `id/revision/attemptId/quote/scope` binds to the exact evidence in the projection. Failed sibling, partial read, missing target and bounded-handoff omissions remain explicit.
+
+Owner review command (service seam only; follow-up UI control is required):
+
+| Command | Exact payload | expectedRevision |
+| --- | --- | --- |
+| `report.review.accept` | `{reportId,reportRevision}` | `ReportReview.revision` from the work's report-review query |
+
+The common authenticated JSON/form boundary returns `{kind,requestId,conversationId,review}` and a durable audit/receipt. A retry returns the same historical receipt; changed input with that key refuses. Refresh the query after `stale_revision`; only the latest available exact report can be accepted. `report_unavailable` refuses withdrawn lineage and `report_already_accepted` refuses a second fresh acceptance. Acceptance is a separate owner fact and never changes partial coverage, immutable report/file bytes, Work state or execution grants. Any new report revision, forgotten/deleted/corrected/revoked lineage or owner-generation change invalidates acceptance and increments the review revision. Valid acceptance survives restart; current-ledger reconciliation prevents withdrawn acceptance after stale-image restore. UI agent must author the acceptance control; no new visible control is added here. Existing states/copy show the review projection independently of coverage.
 
 File metadata includes opaque ID/name/mediaType/size/sha256/producer/source/time. Use the supplied download route; never construct host or Bot paths. Show unavailable revisions without payload. Treat every report/claim/source string as escaped data; no raw HTML/Markdown execution in the app origin. The Opus UI pass delivers these flows in `src/s14/web-team.ts` and `web-report.ts`; see section 19 of the experience document for what was and was not tested.
 

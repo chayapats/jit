@@ -95,8 +95,9 @@ function laneLine(page: S14Page, step: WorkStep, steps: WorkStep[], depends: str
     return `<p class="s-sub">${tr("s14.team.waiting_on")} ${e(waiting.join(" · ") || tr("s14.team.unknown_step"))}</p>`;
   }
   if (step.state === "running" && step.startedAt !== null) return `<p class="s-sub">${tr("s14.team.running_since")} ${clock(step.startedAt)}</p>`;
-  const line = tr(k(`s14.step_line.${step.state}`)), detail = why ? `${why}. ` : "";
-  return `<p class="s-sub">${e(`${detail}${line}`)}</p>${code ? `<p class="s-mono s-meta">${e(code)}</p>` : ""}`;
+  const ceiling = step.state === "queued" && step.queueCeiling ? tr(k(step.queueCeiling === "work" ? "s14.team.limit" : `s14.defaults.ceiling_${step.queueCeiling}`)) : "";
+  const line = tr(k(`s14.step_line.${step.state}`)), detail = [why, ceiling].filter(Boolean).join(" · ");
+  return `<p class="s-sub">${e(`${detail ? `${detail}. ` : ""}${line}`)}</p>${code ? `<p class="s-mono s-meta">${e(code)}</p>` : ""}`;
 }
 /** One lane per graph step. Stopping one is only offered when a sibling exists; a lone lane is the whole work. */
 function lane(page: S14Page, view: WorkView, team: S14WorkTeam, step: WorkStep, research: S14WorkResearch | null): string {

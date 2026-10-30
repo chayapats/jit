@@ -1,8 +1,8 @@
 import { tr } from "../i18n";
 import type { WorkView } from "./authority-types";
 import type { WorkStep } from "./graph-types";
-import type { ExternalEvidence, WebRead } from "./parallel-types";
-import type { Artifact, EvidenceRequirement, Report, ReportClaim, ReportView } from "./report-types";
+import type { ExternalEvidence } from "./parallel-types";
+import type { Artifact, EvidenceRequirement, Report, ReportClaim, ReportGap, ReportView } from "./report-types";
 import { banner, botName, e, k, pill, untrusted, when } from "./web-pages";
 import type { S14Page } from "./web";
 import type { S14WorkResearch } from "./web-product-memory";
@@ -22,9 +22,9 @@ const targetsOf = (view: WorkView): EvidenceRequirement[] => view.grant?.command
 /** Short report line for a card or list: the revision and its coverage, never a completion word. */
 export const reportHintPill = (hint: S14ReportHint | undefined) => hint ? `${pill(`${tr("s14.tab.report")} r${hint.revision}`)}${hint.coverage === "partial" ? coveragePill("partial") : ""}` : "";
 
-function facts(report: Report, missing: number): string {
+function facts(report: Report, missing: number, completion: "owner_review_required" | "owner_accepted"): string {
   const row = (label: string, value: string) => `<div><dt>${tr(k(label))}</dt><dd>${value}</dd></div>`;
-  return `<dl class="s-facts" aria-label="${tr("s14.report.facts")}">${row("s14.report.fact_state", pill(tr(k(`s14.report.state.${report.state}`)), "ok", "✓"))}${row("s14.report.fact_coverage", coveragePill(report.coverage))}${row("s14.report.fact_missing", missing ? pill(`${missing} ${tr("s14.report.missing_count")}`, "warn", "!") : pill(tr("s14.report.missing_none")))}${row("s14.report.fact_review", pill(tr(k(`s14.report.completion.${report.completion}`)), "warn", "!"))}</dl><p class="s-note">${tr(report.coverage === "partial" ? "s14.report.note_partial" : "s14.report.note_covered")}</p>`;
+  return `<dl class="s-facts" aria-label="${tr("s14.report.facts")}">${row("s14.report.fact_state", pill(tr(k(`s14.report.state.${report.state}`)), "ok", "✓"))}${row("s14.report.fact_coverage", coveragePill(report.coverage))}${row("s14.report.fact_missing", missing ? pill(`${missing} ${tr("s14.report.missing_count")}`, "warn", "!") : pill(tr("s14.report.missing_none")))}${row("s14.report.fact_review", completion === "owner_accepted" ? pill(`${tr("pr.reviewed")} r${report.revision}`) : pill(tr("s14.report.completion.owner_review_required"), "warn", "!"))}</dl><p class="s-note">${tr(report.coverage === "partial" ? "s14.report.note_partial" : "s14.report.note_covered")}</p>`;
 }
 function revisions(reports: ReportView[], selected: ReportView, href: (id: string) => string): string {
   const latest = reports.at(-1), row = (item: ReportView) => {
@@ -35,31 +35,24 @@ function revisions(reports: ReportView[], selected: ReportView, href: (id: strin
   return `<section class="s-stack" aria-labelledby="s14-revisions"><h3 class="s-section-t" id="s14-revisions">${tr("s14.report.revisions")}</h3><ol class="s-revs">${reports.toReversed().map(row).join("")}</ol><p class="s-note">${tr("s14.report.revisions_note")}</p></section>`;
 }
 const claimAnchor = (id: string) => `#claim-${encodeURIComponent(id)}`;
-/** Rebuilds a stored gap into words only when typed data corroborates it; a look-alike stays visible as Bot text. */
-function missingRow(item: string, report: Report, view: WorkView, steps: WorkStep[], reads: WebRead[], evidenceHref: string, nameOf: (step: WorkStep) => string): string | null {
-  const after = (prefix: string) => item.startsWith(prefix) ? item.slice(prefix.length) : null, targets = targetsOf(view);
-  const target = after("required_evidence:"), found = target === null ? undefined : targets.find(t => t.id === target);
-  if (found) return `<li>${tr("s14.report.miss.target")} <b>${e(found.label)}</b></li>`;
-  if (item === "completion_rule_not_machine_verified" && !targets.length) return `<li>${tr("s14.report.miss.rule")}</li>`;
-  for (const [prefix, key] of [["unsupported_claim:", "s14.report.miss.unsupported"], ["conflicting_claim:", "s14.report.miss.conflict"]] as const) {
-    const id = after(prefix); if (id !== null && report.claims.some(claim => claim.id === id)) return `<li><a class="s-link-text" href="${claimAnchor(id)}">${tr(key)}</a></li>`;
+/** Only typed service gaps produce service wording; model gaps always stay in the untrusted frame. */
+function missingRow(item: ReportGap, view: WorkView, steps: WorkStep[], evidenceHref: string, nameOf: (step: WorkStep) => string): string {
+  const stepName = (id: string) => { const step = steps.find(s => s.id === id); return step ? e(nameOf(step)) : e(id); };
+  switch (item.kind) {
+    case "required_evidence": return `<li>${tr("s14.report.miss.target")} <b>${e(targetsOf(view).find(t => t.id === item.targetId)?.label ?? item.targetId)}</b></li>`;
+    case "completion_rule_not_machine_verified": return `<li>${tr("s14.report.miss.rule")}</li>`;
+    case "unsupported_claim": case "conflicting_claim": return `<li><a class="s-link-text" href="${claimAnchor(item.claimId)}">${tr(item.kind === "unsupported_claim" ? "s14.report.miss.unsupported" : "s14.report.miss.conflict")}</a></li>`;
+    case "step": return `<li>${tr("s14.report.miss.step")} ${stepName(item.stepId)} · ${tr(k(`s14.step_state.${item.state}`))}</li>`;
+    case "handoff": return `<li>${tr("s14.report.miss.gap")} ${stepName(item.stepId)} <span class="s-mono">${e(item.reason)}</span></li>`;
+    case "read": return `<li><a class="s-link-text" href="${evidenceHref}">${tr("s14.report.miss.read")}</a> · ${tr(k(`s14.web_outcome.${item.outcome}`))}</li>`;
+    case "missing_url": return `<li>${tr("s14.report.miss.url")} <span class="s-mono">${e(item.url)}</span></li>`;
+    case "failed_url": return `<li>${tr("s14.report.miss.failed")} <span class="s-mono">${e(item.url)}</span> · <span class="s-mono">${e(item.failureKind)}</span></li>`;
   }
-  const lane = /^step:(.+):([a-z_]+)$/.exec(item), step = lane ? steps.find(s => s.id === lane[1]) : undefined;
-  if (lane && step) return `<li>${tr("s14.report.miss.step")} ${e(nameOf(step))} · ${tr(k(`s14.step_state.${lane[2] as WorkStep["state"]}`))}</li>`;
-  const gap = /^(.+): ([a-z_]+)$/.exec(item), gapStep = gap ? steps.find(s => s.id === gap[1]) : undefined;
-  if (gap && gapStep) return `<li>${tr("s14.report.miss.gap")} ${e(nameOf(gapStep))} <span class="s-mono">${e(gap[2]!)}</span></li>`;
-  const read = /^read:([^:]+):([a-z_]+)$/.exec(item), known = read ? reads.find(r => r.id === read[1]) : undefined;
-  if (read && known) return `<li><a class="s-link-text" href="${evidenceHref}">${tr("s14.report.miss.read")}</a> · ${tr(k(`s14.web_outcome.${known.outcome}`))}</li>`;
-  const url = after("missing_url:");
-  if (url !== null && reads.some(r => r.missing.includes(url))) return `<li>${tr("s14.report.miss.url")} <span class="s-mono">${e(url)}</span></li>`;
-  const failed = after("failed_url:"), failure = failed === null ? undefined : reads.flatMap(r => r.failures).find(f => failed === `${f.url}:${f.kind}`);
-  if (failure) return `<li>${tr("s14.report.miss.failed")} <span class="s-mono">${e(failure.url)}</span> · <span class="s-mono">${e(failure.kind)}</span></li>`;
-  return null;
 }
 /** Covered, missing and limitations sit before any claim, so a reader cannot reach the claims without passing them. */
-function coverageBlock(report: Report, view: WorkView, team: S14WorkTeam, research: S14WorkResearch | null, evidenceHref: string, nameOf: (step: WorkStep) => string): string {
-  const typed: string[] = [], other: string[] = [], targets = targetsOf(view), steps = team.graph?.steps ?? [];
-  for (const item of report.missing) { const row = missingRow(item, report, view, steps, research?.reads ?? [], evidenceHref, nameOf); if (row) typed.push(row); else other.push(item); }
+function coverageBlock(report: Report, view: WorkView, team: S14WorkTeam, evidenceHref: string, nameOf: (step: WorkStep) => string): string {
+  const targets = targetsOf(view), steps = team.graph?.steps ?? [], other = report.modelMissing;
+  const typed = report.missing.map(item => missingRow(item, view, steps, evidenceHref, nameOf));
   const covered = report.covered.map(id => { const target = targets.find(t => t.id === id); return `<li>${target ? e(target.label) : `<span class="s-mono">${e(id)}</span>`}</li>`; }).join("");
   const bot = (items: string[]) => untrusted(`<ul class="s-reach-list">${items.map(item => `<li>${e(item)}</li>`).join("")}</ul>`, tr("s14.report.untrusted"));
   const missing = typed.length || other.length ? `<div class="s-stack"><p class="s-exact-label">${tr("s14.report.missing")}</p>${typed.length ? `<ul class="s-reach-list">${typed.join("")}</ul>` : ""}${other.length ? bot(other) : ""}</div>` : `<p class="s-sub">${tr("s14.report.nothing_listed")}</p>`;
@@ -96,6 +89,6 @@ export function reportTab(page: S14Page, view: WorkView, team: S14WorkTeam, rese
   for (const claim of report.claims) for (const citation of claim.citations) if (!numbers.has(citation.id)) numbers.set(citation.id, numbers.size + 1);
   const evidenceBase = `${base}${sep}tab=evidence`, nameOf = (step: WorkStep) => { const bot = page.state.bots.find(item => item.id === step.botId) ?? { id: step.botId, name: step.botId }; return `${botName(bot)} · ${tr(k(`s14.step_handler.${step.handler}`))}`; };
   const authors = report.botIds.map(id => botName(page.state.bots.find(bot => bot.id === id) ?? { id, name: id }));
-  return `${older}<div class="s-stack"><div class="s-between"><h3 class="s-report-t">${tr("s14.tab.report")} r${report.revision}</h3><span class="s-meta">${when(report.createdAt)}</span></div>${untrusted(`<p><b>${e(report.title)}</b></p>`, tr("s14.report.untrusted"))}<p class="s-meta">${tr("s14.report.by")} ${authors.map(e).join(" · ")}</p>${facts(report, report.missing.length)}</div>
-    ${coverageBlock(report, view, team, research, evidenceBase, nameOf)}<section class="s-stack" aria-labelledby="s14-claims"><h3 class="s-section-t" id="s14-claims">${tr("s14.report.claims")} ${report.claims.length}</h3>${report.claims.map((claim, i) => claimCard(claim, i, report, targets, numbers, evidenceBase)).join("")}</section>${filesBlock(artifacts)}${history}`;
+  return `${older}<div class="s-stack"><div class="s-between"><h3 class="s-report-t">${tr("s14.tab.report")} r${report.revision}</h3><span class="s-meta">${when(report.createdAt)}</span></div>${untrusted(`<p><b>${e(report.title)}</b></p>`, tr("s14.report.untrusted"))}<p class="s-meta">${tr("s14.report.by")} ${authors.map(e).join(" · ")}</p>${facts(report, report.missing.length + report.modelMissing.length, selected.completion)}</div>
+    ${coverageBlock(report, view, team, evidenceBase, nameOf)}<section class="s-stack" aria-labelledby="s14-claims"><h3 class="s-section-t" id="s14-claims">${tr("s14.report.claims")} ${report.claims.length}</h3>${report.claims.map((claim, i) => claimCard(claim, i, report, targets, numbers, evidenceBase)).join("")}</section>${filesBlock(artifacts)}${history}`;
 }

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { S14Application, type S14Options } from "../src/s14/application";
 import { S14Store } from "../src/s14/store";
 import type { Attempt, AuthorityOptions, StartPayload, WorkExecutor } from "../src/s14/authority-types";
-import type { StepProposal, WorkGraph } from "../src/s14/graph-types";
+import type { QueueCeiling, SchedulerLimits, StepProposal, WorkGraph } from "../src/s14/graph-types";
 import type { Bot } from "../src/s14/types";
 import { canonical } from "../src/s14/validation";
 import { validateWorkGraph } from "../src/s14/graph";
@@ -97,6 +97,7 @@ test("stopping one lane fences late callbacks, retains its actual slot and allow
   const command = { kind: "work.step.stop" as const, requestId: rid(), expectedRevision: step.revision, payload: { workId: receipt.work!.id, stepId: step.id } };
   const stopped = f.app.execute(f.auth.actor, command); expect(f.app.execute(f.auth.actor, command)).toEqual(stopped);
   expect(cancelled).toBe(true); expect(stopped.step!.state).toBe("stopping");
+  expect(stopped.conversationId).toBe(f.conversationId);
   const queued = f.start({ bots: [{ id: "third", revision: 1 }], tools: [] });
   sibling.resolve(); await siblingDone.promise;
   expect(f.app.graph.view(f.auth.actor, receipt.work!.id).steps[0]!.settledAt).toBeNull();
@@ -245,4 +246,91 @@ test("an exact owner-granted private memory share reaches synthesis while execut
   const started = f.start({ scopes: [{ kind: "share", id: shared.share!.id, revision: shared.share!.revision }] });
   await f.app.authority.drain();
   expect(f.app.graph.view(f.auth.actor, started.work!.id).steps.at(-1)!.state).toBe("committed");
+});
+
+
+test("committed ingress wakes one existing drain and starts new work before an unrelated transport settles", async () => {
+  const firstEntered = barrier(), secondEntered = barrier(), release = barrier(), seen: Attempt[] = [];
+  let reentrant: Promise<void> | undefined;
+  const f = await fixture({ async run(attempt) {
+    seen.push(attempt);
+    reentrant = f.app.authority.drain();
+    (attempt.snapshot.bot.id === "jit" ? firstEntered : secondEntered).resolve();
+    await release.promise;
+    return { state: "ready", text: "Committed" };
+  } });
+  const first = f.start({ bots: [{ id: "jit", revision: 1 }], tools: [] }), draining = f.app.authority.drain();
+  try {
+    await firstEntered.promise;
+    expect(reentrant).toBe(draining);
+    const second = f.start({ bots: [{ id: "second", revision: 1 }], tools: [] });
+    // No second explicit drain is required: the writer's post-commit signal wakes the current one.
+    await secondEntered.promise;
+    expect(f.app.authority.drain()).toBe(draining);
+    expect(reentrant).toBe(draining);
+    expect(seen.map(a => a.workId)).toEqual([first.work!.id, second.work!.id]);
+    expect(f.app.graph.view(f.auth.actor, first.work!.id).steps[0]).toMatchObject({ state: "running", settledAt: null });
+    const excess = f.start({ bots: [{ id: "third", revision: 1 }], tools: [] });
+    expect(f.app.graph.view(f.auth.actor, excess.work!.id).steps[0]).toMatchObject({ state: "queued", queueCeiling: "global" });
+  } finally { release.resolve(); await draining; }
+  expect(seen).toHaveLength(3);
+  expect(new Set(seen.map(a => a.id)).size).toBe(3);
+});
+
+test.each<QueueCeiling>(["global", "route", "bot", "computer", "work"])("queued projections name the current %s ceiling", async ceiling => {
+  const scheduler: SchedulerLimits = { global: 4, route: 4, bot: 4, computer: 4 };
+  if (ceiling !== "work") scheduler[ceiling] = 1;
+  const f = await fixture(undefined, { scheduler });
+  f.store.transaction(tx => {
+    const row = tx.get<{ record_json: string }>("SELECT record_json FROM bots WHERE id='second'")!;
+    const bot = JSON.parse(row.record_json) as Bot; bot.capabilities.tools.push("computer");
+    tx.run("UPDATE bots SET record_json=? WHERE id='second'", canonical(bot));
+  });
+  const first = f.start({ bots: [{ id: "jit", revision: 1 }], tools: ["computer"] });
+  const work = ceiling === "work" ? first : f.start({ bots: [{ id: ceiling === "bot" ? "jit" : "second", revision: 1 }], tools: ["computer"] });
+  if (ceiling === "work") {
+    // Use a separate immutable grant with its own finite concurrency of one.
+    const bounded = f.start({ bots: [{ id: "jit", revision: 1 }], tools: [], limits: { ...first.grant!.limits, concurrency: 1 } });
+    const attempt = f.app.authority.admit(bounded.work!.id, rid(), { botId: "jit", tools: [], scopes: [], input: "First", calls: 1, outputBytes: 100 });
+    expect(f.app.graph.view(f.auth.actor, bounded.work!.id).steps[0]!.queueCeiling).toBe("work");
+    f.app.authority.settle(attempt.id);
+    expect(f.app.graph.view(f.auth.actor, bounded.work!.id).steps[0]!.queueCeiling).toBeNull();
+    return;
+  }
+  const attempt = f.app.authority.admit(first.work!.id, rid(), { botId: "jit", tools: ["computer"], scopes: [], input: "Hold capacity", calls: 1, outputBytes: 100 });
+  expect(f.app.graph.view(f.auth.actor, work.work!.id).steps[0]!.queueCeiling).toBe(ceiling);
+  f.app.authority.settle(attempt.id);
+  expect(f.app.graph.view(f.auth.actor, work.work!.id).steps[0]!.queueCeiling).toBeNull();
+});
+
+test("queue and dependency phases retain their observed start times when evidence becomes runnable", async () => {
+  const entered = barrier(), release = barrier(), synthesisEntered = barrier(), synthesisRelease = barrier();
+  const f = await fixture({ async run(a) {
+    if (a.step!.handler === "synthesis") { synthesisEntered.resolve(); await synthesisRelease.promise; }
+    else { entered.resolve(); await release.promise; }
+    return { state: "ready", text: "Committed evidence" };
+  } });
+  const work = f.start(), installedAt = f.clock.now;
+  const initial = f.app.graph.view(f.auth.actor, work.work!.id).steps;
+  expect(initial[0]).toMatchObject({ queuedAt: installedAt, waitingAt: null, startedAt: null });
+  expect(initial[2]).toMatchObject({ queuedAt: null, waitingAt: installedAt, startedAt: null });
+  f.clock.now += 1000;
+  const draining = f.app.authority.drain();
+  try {
+    await entered.promise;
+    expect(f.app.graph.view(f.auth.actor, work.work!.id).steps[0]).toMatchObject({ queuedAt: installedAt, startedAt: installedAt + 1000 });
+    f.clock.now += 2000; release.resolve(); await synthesisEntered.promise;
+    expect(f.app.graph.view(f.auth.actor, work.work!.id).steps[2]).toMatchObject({ queuedAt: installedAt + 3000, waitingAt: installedAt, startedAt: installedAt + 3000 });
+  } finally { release.resolve(); synthesisRelease.resolve(); await draining; }
+});
+
+
+test("committed work at an empty drain's completion boundary is not lost", async () => {
+  const seen: string[] = [];
+  const f = await fixture({ async run(a) { seen.push(a.workId); return { state: "ready", text: "Evidence" }; } });
+  const draining = f.app.authority.drain();
+  const started = f.start({ bots: [{ id: "jit", revision: 1 }], tools: [] });
+  await draining;
+  expect(seen).toEqual([started.work!.id]);
+  expect(f.app.authority.view(f.auth.actor, started.work!.id).work.state).toBe("ready");
 });

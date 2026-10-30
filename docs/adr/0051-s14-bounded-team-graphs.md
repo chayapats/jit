@@ -12,3 +12,7 @@ Use the two trusted research/synthesis handlers and a finite validated DAG. Defa
 The public Schway shared process lifecycle prerequisite has landed and its exact packed-consumer conformance passes. Use one opaque owner per process in every S14 host's auth.lifecycle. Keep legacy concurrency untouched. A durable active transport reservation outlives cancellation until actual return and cleanup. Interrupted native work remains blocked/reconciliation-required; this slice does not invent automatic replay (#254).
 
 Work lanes expose observed timestamps and safe queue/dependency/stop reasons to the existing Opus design. Owner lane cancellation and future-default settings use exact typed commands/receipts; no UI control supplies authority by appearance. See app.work-graph/v1 and the HTTP handoff for exact signatures and schema.
+
+## PR #273 logic-gap refinement
+
+Committed ingress wakes the process's existing drain rather than waiting for a pending run to settle. Drain ownership is installed before executor entry so concurrent/reentrant calls cannot create another drain; all admission/transport ceilings remain unchanged. Lane records now retain observed queued/dependency-wait start times and expose the current held capacity ceiling. Lane-stop receipts include the service-resolved originating conversation, preserving the work pane after receipt replay.
