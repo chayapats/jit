@@ -18,7 +18,7 @@ export interface S14RecoveryItem { group: S14RecoveryGroup; phase: S14RecoveryPh
 /** A native session Jit could not confirm, with the work it belongs to when the record survives. */
 export interface S14RecoverySession { intent: NativeIntent; work: Work | null }
 /** Read-only `/recovery` surface. No field here can start, clean up or retry anything. */
-export interface S14RecoverySurface { kind: "recovery"; items: S14RecoveryItem[]; sessions: S14RecoverySession[]; settled: Record<"retired" | "deleted" | "not_created" | "in_use", number>; omitted: number; actualUsage: null }
+export interface S14RecoverySurface { kind: "recovery"; bootedAt: number; items: S14RecoveryItem[]; sessions: S14RecoverySession[]; settled: Record<"retired" | "deleted" | "not_created" | "in_use", number>; omitted: number; actualUsage: null }
 /** Count for the attention row. Unknown effects have their own rows, so they are not counted here. */
 export interface S14RecoverySummary { open: number }
 
@@ -74,7 +74,7 @@ export function recoveryView(app: S14Application, url: URL, actor: OwnerActor): 
   if (url.pathname !== "/recovery") return null;
   const read = app.recovery.view(actor), views = allViews(app, actor), byWork = new Map(views.map(view => [view.work.id, view.work])), items = collect(read, views);
   const resumed = items.filter(item => item.group === "resumed"), count = (...states: NativeIntent["state"][]) => read.native.filter(intent => states.includes(intent.state)).length;
-  return { kind: "recovery", items: [...items.filter(item => item.group !== "resumed"), ...resumed.slice(-listedResumed).reverse()], omitted: Math.max(0, resumed.length - listedResumed),
+  return { kind: "recovery", bootedAt: read.bootedAt, items: [...items.filter(item => item.group !== "resumed"), ...resumed.slice(-listedResumed).reverse()], omitted: Math.max(0, resumed.length - listedResumed),
     sessions: unresolved(read).map(intent => ({ intent, work: intent.workId ? byWork.get(intent.workId) ?? null : null })),
     settled: { retired: count("retired"), deleted: count("deleted"), not_created: count("not_created"), in_use: count("creating", "correlated") }, actualUsage: read.actualUsage };
 }

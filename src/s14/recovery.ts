@@ -17,7 +17,9 @@ const safeReason = (error: unknown) => error instanceof AppError ? error.code : 
 /** Exclusive-boot attempt fencing, public native discovery and trusted replay admission without effect retry. */
 export class S14Recovery {
   #booting = false;
-  constructor(readonly app: S14Application) {}
+  /** Process-local application boot time in epoch milliseconds, stable across repeated reconciliation and read-only queries. */
+  readonly bootedAt: number;
+  constructor(readonly app: S14Application) { this.bootedAt = app.now(); }
 
   /** Indicates the startup barrier; worker drains cannot admit work while metadata reconciliation is in progress. */
   get booting(): boolean { return this.#booting; }
@@ -386,6 +388,6 @@ export class S14Recovery {
 
   /** Returns owner-only checkpoint/native metadata; inspection never starts a model, tool or lifecycle operation. */
   view(actor: OwnerActor): RecoveryView {
-    return this.app.store.read(tx => { this.app.requireOwner(tx, actor); return { checkpoints: this.checkpoints(tx), native: this.intents(tx), actualUsage: null }; });
+    return this.app.store.read(tx => { this.app.requireOwner(tx, actor); return { bootedAt: this.bootedAt, checkpoints: this.checkpoints(tx), native: this.intents(tx), actualUsage: null }; });
   }
 }

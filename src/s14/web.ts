@@ -176,6 +176,7 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
       const routine = /^\/api\/s14\/routines\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
       if (routine) return json(app.routines.view(auth.actor, routine[1]!));
       if (url.pathname === "/api/s14/recovery") return json(app.recovery.view(auth.actor));
+      if (url.pathname === "/api/s14/share-slots") return json({ items: app.sharing.freeSlots(auth.actor) });
       if (url.pathname === "/api/s14/shares") return json(app.sharing.list(auth.actor));
       if (url.pathname === "/api/s14/work-defaults") return json(app.graph.defaults(auth.actor));
       const graph = /^\/api\/s14\/work\/([a-zA-Z0-9_-]+)\/graph$/.exec(url.pathname);

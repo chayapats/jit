@@ -1,5 +1,7 @@
 # app.work-checkpoints/v1
 
+`app.recovery.view(actor)` and `GET /api/s14/recovery` add `bootedAt:number`, the current process's application construction time in epoch milliseconds from the application clock. It is stable across reads and repeated `boot` reconciliation calls, changes on application restart, and is independent of checkpoint/session timestamps. The `/recovery` product projection carries the same field for the UI agent. Reading it starts no reconciliation, model, tool or cleanup.
+
 REC14-01 (#254), S14-AC09/11/12; FR-14/15/16/18/35/37; NFR-02/05/08/10. Consumes app.work-graph/v1, app.context-provenance/v2, app.report-artifacts/v1, app.effect-approval/v2 and public `schway/host`. Opt-in schema **13** refuses unreleased 1–12 with fresh-state. UI acceptance remains pending.
 
 Exact types: `src/s14/recovery-types.ts`; service: `S14Application.recovery:S14Recovery`; native adapter: `schwayRecovery(directory):NativeRecoveryPort`. No private engine imports, raw native parsing or resumed native history.

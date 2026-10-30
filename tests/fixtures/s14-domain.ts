@@ -5,11 +5,12 @@ import { S14Application, type S14Options } from "../../src/s14/application";
 import { S14Store } from "../../src/s14/store";
 import type { EnableRoutineCommand } from "../../src/s14/routine-types";
 import type { StartWorkCommand } from "../../src/s14/authority-types";
+import type { Capabilities } from "../../src/s14/types";
 
 /** Generates an opaque per-action deterministic-fixture retry identity. */
 export const retryId = () => crypto.randomUUID().replaceAll("-", "");
 /** Creates a local no-network S14 owner with an explicit fake clock and injectable trusted ports. */
-export async function domainFixture(overrides: Partial<S14Options> = {}) {
+export async function domainFixture(overrides: Partial<S14Options> = {}, initialCapabilities?: Capabilities) {
   const root = mkdtempSync(join(tmpdir(), "jit-s14-domain-"));
   const path = join(root, "application.sqlite"), clock = { now: Date.UTC(2026, 9, 31, 0) };
   const options: S14Options = { now: () => clock.now,
@@ -23,7 +24,7 @@ export async function domainFixture(overrides: Partial<S14Options> = {}) {
   const token = await app.login(password);
   const auth = app.authenticate(token);
   const setup = app.execute(auth.actor, { kind: "setup", requestId: retryId(), expectedRevision: 0,
-    payload: { ownerName: "Owner", language: "en", routeId: "selected", capabilities: { tools: options.policy.tools, resources: options.policy.resources } } });
+    payload: { ownerName: "Owner", language: "en", routeId: "selected", capabilities: initialCapabilities ?? { tools: options.policy.tools, resources: options.policy.resources } } });
   return { root, path, clock, options, token, auth, app, store, bot: setup.bot!, conversationId: setup.conversation!.id,
     reopen() { store.close(); store = new S14Store(path); app = new S14Application(store, options); this.store = store; this.app = app; this.auth = app.authenticate(token); },
     dispose() { store.close(); rmSync(root, { recursive: true, force: true }); } };

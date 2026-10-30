@@ -3,6 +3,9 @@ import { copyFileSync } from "node:fs";
 import { join } from "node:path";
 import { nextScheduledInstant } from "../src/jobs/schedules";
 import type { WorkOutput } from "../src/s14/authority-types";
+import type { NativeRecoveryPort } from "../src/s14/recovery-types";
+import { recoveryView } from "../src/s14/web-product-recovery";
+import { barrier } from "./fixtures/s14-computer";
 import { createS14Handler } from "../src/s14/web";
 import { domainFixture, retryId, routineCommand, workCommand, type DomainFixture } from "./fixtures/s14-domain";
 
@@ -68,6 +71,44 @@ test("restart coalesces missed ticks once, consumes finite occurrences and never
   f.store.close(); copyFileSync(before, f.path); f.reopen(); await run(f);
   expect(f.app.routines.view(f.auth.actor, routine.id).routine.state).toBe("blocked");
   expect(f.app.authority.list(f.auth.actor)).toHaveLength(0);
+});
+
+test("routine after restart waits for the entire boot reconciliation gate, then runs through the background graph once", async () => {
+  const f = await fixture(), enabled = f.app.execute(f.auth.actor, routineCommand(f)).routine;
+  const old = f.app.execute(f.auth.actor, workCommand(f)).work!;
+  const attempt = f.app.authority.admit(old.id, retryId(), { botId: "jit", tools: [], scopes: [], input: "Old native invocation", calls: 2, outputBytes: 4096 });
+  f.app.recovery.intent(attempt.id, attempt.memoryId!, attempt.snapshot.route);
+  f.clock.now += 60000; f.reopen();
+  const bootedAt = f.clock.now, closing = Promise.withResolvers<void>(), release = barrier();
+  const port: NativeRecoveryPort = { async open() { return {
+    async listSessions() { return { sessions: [] }; }, async retireSession() {},
+    async deleteSession() { throw new Error("no native session exists"); },
+    async close() { closing.resolve(); await release.wait(); },
+  }; } };
+  let runs = 0;
+  f.app.authority.options.executor = { async run(current) {
+    expect(f.app.recovery.booting).toBe(false);
+    expect(current.step?.handler).toBe("research");
+    expect(f.app.graph.view(f.auth.actor, current.workId).graph.priority).toBe("background");
+    runs++; return { state: "ready", text: '{"outcome":"no_update"}' };
+  } };
+  const boot = f.app.recovery.boot(port); await closing.promise;
+  f.clock.now += 2000;
+  f.app.routines.tick(); await f.app.authority.drain();
+  expect(f.app.routines.view(f.auth.actor, enabled.id).history).toEqual([]); expect(runs).toBe(0);
+  expect(f.app.recovery.view(f.auth.actor).bootedAt).toBe(bootedAt);
+  expect(recoveryView(f.app, new URL("http://localhost:3001/recovery"), f.auth.actor)?.bootedAt).toBe(bootedAt);
+  release.release(); await boot;
+  await run(f); await run(f);
+  const history = f.app.routines.view(f.auth.actor, enabled.id).history;
+  expect(runs).toBe(1); expect(history).toHaveLength(1);
+  expect(history[0]).toMatchObject({ state: "complete", outcome: "no_update", scheduledInstant: bootedAt });
+  const handler = createS14Handler(f.app, "http://localhost:3001");
+  const response = await handler(new Request("http://localhost:3001/api/s14/recovery", { headers: { cookie: `jit_s14=${f.token}` } }));
+  expect((await response.json() as { bootedAt: number }).bootedAt).toBe(bootedAt);
+  f.clock.now += 5000; await f.app.recovery.boot(port);
+  expect(f.app.recovery.view(f.auth.actor).bootedAt).toBe(bootedAt);
+  f.reopen(); expect(f.app.recovery.view(f.auth.actor).bootedAt).toBe(f.clock.now);
 });
 
 test.each([

@@ -37,10 +37,6 @@ function targetOf(kind: string | null, id: string | null, revision: string | nul
   const rev = position(revision), gen = position(generation);
   return (kind === "artifact" || kind === "source") && id && identityPattern.test(id) && rev && gen ? { kind, id, revision: rev, generation: gen } : null;
 }
-/** Slots are never reused after revoke, and memory shares occupy the same identity space. */
-function usedSlots(app: S14Application, actor: OwnerActor): Set<string> {
-  return app.store.read(tx => { app.requireOwner(tx, actor); return new Set(tx.all<{ id: string }>("SELECT id FROM snapshot_shares UNION SELECT id FROM memory_shares").map(row => row.id)); });
-}
 function reportFiles(app: S14Application, actor: OwnerActor, work: Work[]): S14ShareFile[] {
   const files = new Map<string, S14ShareFile>();
   for (const item of work.filter(entry => entry.grantId)) for (const report of app.reports.list(actor, item.id)) if (report.state === "available") for (const artifact of report.artifacts) files.set(artifact.id, { artifact, title: item.title });
@@ -56,9 +52,9 @@ function preview(app: S14Application, actor: OwnerActor, target: SnapshotTarget)
   }
 }
 function sheet(app: S14Application, actor: OwnerActor, state: Home, target: SnapshotTarget, workId: string | null, draft: { notice?: string | null; hours?: number; chosen?: string } = {}): S14ShareSheet {
-  const read = preview(app, actor, target), used = usedSlots(app, actor), receivers: S14ShareReceiver[] = [], others: S14ShareSheet["others"] = [];
+  const read = preview(app, actor, target), slots = app.sharing.freeSlots(actor), receivers: S14ShareReceiver[] = [], others: S14ShareSheet["others"] = [];
   for (const bot of state.bots.filter(item => item.enabled)) {
-    const scopeId = bot.capabilities.resources.find(id => app.policy.resources.includes(id) && !used.has(id));
+    const scopeId = slots.find(slot => slot.receiverBotIds.includes(bot.id))?.scopeId;
     if (bot.id === read.snapshot?.ownerBotId) others.push({ bot, why: "owner" });
     else if (scopeId) receivers.push({ bot, scopeId });
     else others.push({ bot, why: "no_slot" });

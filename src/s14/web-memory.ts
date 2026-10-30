@@ -5,6 +5,7 @@ import type { Bot } from "./types";
 import { banner, botName, e, flat, hidden, k, notice, ownerStrip, pill, rid, shell, short, untrusted, when } from "./web-pages";
 import type { S14Page } from "./web";
 import { fileShareSource } from "./web-sharing";
+import { resourceConfigured } from "./share-slots";
 import { memoryShareHours, type S14MemoryAction, type S14MemoryBrowse, type S14MemoryClaimView, type S14MemoryGone, type S14MemoryRow, type S14MemorySource, type S14MemorySourceView } from "./web-product-memory";
 
 const claimHref = (botId: string, ref: MemoryRef, action?: S14MemoryAction) => `/memory/${e(botId)}/claims/${e(ref.id)}?revision=${ref.revision}&amp;generation=${ref.generation}${action ? `&amp;action=${action}#slip` : ""}`;
@@ -94,7 +95,7 @@ function impactBlock(view: S14MemoryClaimView): string {
 
 }
 function shareTargets(page: S14Page, view: S14MemoryClaimView): { bot: Bot; scope: string }[] {
-  return page.state.bots.filter(bot => bot.enabled && bot.id !== view.bot.id).flatMap(bot => bot.capabilities.resources.filter(scope => page.policy.resources.includes(scope)).map(scope => ({ bot, scope })));
+  return page.state.bots.filter(bot => bot.enabled && bot.id !== view.bot.id).flatMap(bot => bot.capabilities.resources.filter(scope => resourceConfigured(page.policy, scope)).map(scope => ({ bot, scope })));
 }
 function shareFields(page: S14Page, view: S14MemoryClaimView): string {
   const targets = shareTargets(page, view), options = targets.map(({ bot, scope }, index) => `<label class="s-check"><input type="radio" name="target" value="${e(bot.id)}:${e(scope)}" required${index === 0 ? " checked" : ""}><span>${e(botName(bot))} · <span class="s-mono">${e(scope)}</span></span></label>`).join("");

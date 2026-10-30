@@ -5,16 +5,19 @@ import { HostError, type HostSessionReference } from "schway/host";
 import { record, save } from "../src/s14/application";
 import type { Attempt } from "../src/s14/authority-types";
 import type { BotLifecycleCommand, BotLifecycle } from "../src/s14/bot-lifecycle-types";
+import type { BotLifecycleReceipt } from "../src/s14/bot-lifecycle-types";
 import type { NativeIntent, NativeRecoveryPort } from "../src/s14/recovery-types";
 import type { Bot, Capabilities } from "../src/s14/types";
 import { createS14Handler } from "../src/s14/web";
 import { canonical } from "../src/s14/validation";
+import { sharingView } from "../src/s14/web-product-sharing";
+import type { FreeShareSlot } from "../src/s14/sharing-types";
 import { FakeComputerRuntime, barrier } from "./fixtures/s14-computer";
 import { domainFixture, retryId, routineCommand, secondBot, workCommand, type DomainFixture } from "./fixtures/s14-domain";
 
 const fixtures: DomainFixture[] = [];
 afterEach(() => { for (const f of fixtures.splice(0)) f.dispose(); });
-async function fixture(changes: Parameters<typeof domainFixture>[0] = {}) { const f = await domainFixture(changes); fixtures.push(f); return f; }
+async function fixture(changes: Parameters<typeof domainFixture>[0] = {}, initialCapabilities?: Capabilities) { const f = await domainFixture(changes, initialCapabilities); fixtures.push(f); return f; }
 function bot(f: DomainFixture, botId = "jit") { return f.app.botLifecycle.view(f.auth.actor, botId).bot; }
 function propose(f: DomainFixture, botId: string, capabilities: Capabilities, reenable = false) {
   return f.app.execute(f.auth.actor, { kind: reenable ? "bot.reenable.propose" : "bot.capabilities.propose", requestId: retryId(), expectedRevision: bot(f, botId).revision,
@@ -69,8 +72,7 @@ function claim(f: DomainFixture, conversationId: string, content: string) {
 
 
 test("tool-less Jit has exact owner repair path; widening does not expand existing work/resources/accounts", async () => {
-  const f = await fixture(), n = nativeFixture();
-  f.store.transaction(tx => { const current = record<Bot>(tx, "bots", "jit"); current.capabilities = { tools: [], resources: [] }; save(tx, "bots", current); });
+  const f = await fixture({}, { tools: [], resources: [] }), n = nativeFixture();
   const original = start(f, bot(f)), proposal = propose(f, "jit", { tools: ["web_search", "web_fetch"], resources: [] });
   expect(bot(f).capabilities.tools).toEqual([]);
   expect(() => f.app.execute({ ownerId: "owner" }, accept(f, proposal))).toThrow("authentication_required");
@@ -82,9 +84,74 @@ test("tool-less Jit has exact owner repair path; widening does not expand existi
   expect(() => admission(f, original.work!.id, receipt.bot!, ["web_search"])).toThrow("grant_revoked");
   await f.app.botLifecycle.drain(n.port);
   expect(bot(f)).toMatchObject({ enabled: true, generation: 2 });
-  expect(start(f, bot(f), ["web_search"]).grant!.tools).toEqual(["web_search"]);
+  const repaired = start(f, bot(f), ["web_search", "web_fetch"]);
+  expect(repaired.grant!.tools).toEqual(["web_search", "web_fetch"]);
+  const attempt = admission(f, repaired.work!.id, bot(f), ["web_search", "web_fetch"]);
+  expect(() => f.app.authority.reserveTool(attempt.id, "web_search")).not.toThrow();
+  expect(() => f.app.authority.reserveTool(attempt.id, "web_fetch")).not.toThrow();
   expect(() => propose(f, "jit", { tools: ["not_configured"], resources: [] })).toThrow("capability_unconfigured");
   expect(() => f.app.execute(f.auth.actor, { ...accept(f, proposal), requestId: retryId() })).toThrow("stale_capability_proposal");
+});
+
+test("fresh install without resource configuration grants a share slot only through exact owner revision, then receives a pinned share", async () => {
+  const f = await fixture({ policy: { routes: [{ id: "selected", provider: "codex", model: "fixture" }], tools: [], resources: [] } });
+  const b = await secondBot(f), n = nativeFixture(), actor = f.auth.actor, handler = createS14Handler(f.app, "http://localhost:3001");
+  const changes = () => f.store.read(tx => tx.get<{ value: number }>("SELECT total_changes() AS value")!.value);
+  const before = changes();
+  const request = () => new Request("http://localhost:3001/api/s14/share-slots", { headers: { cookie: `jit_s14=${f.token}` } });
+  expect((await handler(new Request("http://localhost:3001/api/s14/share-slots"))).status).toBe(401);
+  const result = await handler(request());
+  const slots = (await result.json() as { items: FreeShareSlot[] }).items;
+  expect(result.headers.get("cache-control")).toContain("no-store");
+  expect(slots).toHaveLength(64); expect(slots.every(slot => slot.receiverBotIds.length === 0)).toBe(true);
+  expect(changes()).toBe(before);
+  expect(() => f.app.sharing.freeSlots({ ownerId: "owner" })).toThrow("authentication_required");
+  const scopeId = slots[0]!.scopeId, original = start(f, b);
+  expect(() => propose(f, b.id, { tools: [], resources: ["share_slot_65"] })).toThrow("capability_unconfigured");
+  const source = f.store.transaction(tx => f.app.memory.source(tx, { id: retryId(), botId: "jit", conversationId: f.conversationId,
+    attribution: "owner", text: "Only these owner-selected bytes", derived: [] }));
+  const target = { kind: "source" as const, id: source.id, revision: source.revision, generation: source.generation };
+  const share = () => ({ kind: "snapshot.share" as const, requestId: retryId(), expectedRevision: bot(f, b.id).revision,
+    payload: { scopeId, target, receiverBotId: b.id, workId: null, expiresAt: f.clock.now + 60000 } });
+  expect(() => f.app.execute(actor, share())).toThrow("snapshot_scope_denied");
+  const proposalResponse = await handler(new Request("http://localhost:3001/api/s14/commands", { method: "POST",
+    headers: { cookie: `jit_s14=${f.token}`, origin: "http://localhost:3001", "content-type": "application/json", "x-csrf-token": f.auth.csrf },
+    body: JSON.stringify({ kind: "bot.capabilities.propose", requestId: retryId(), expectedRevision: b.revision,
+      payload: { botId: b.id, capabilities: { tools: [], resources: [scopeId] } } }) }));
+  expect(proposalResponse.status).toBe(200);
+  const proposal = (await proposalResponse.json() as BotLifecycleReceipt).proposal!;
+  expect(bot(f, b.id).capabilities.resources).toEqual([]);
+  expect(() => f.app.execute(actor, share())).toThrow("snapshot_scope_denied");
+  expect(() => f.app.execute(actor, { ...accept(f, proposal), payload: { proposalId: proposal.id, proposalHash: "incorrect" } })).toThrow("stale_capability_proposal");
+  const acceptance = accept(f, proposal), form = new URLSearchParams({ csrf: f.auth.csrf, command: JSON.stringify(acceptance) });
+  const accepted = await handler(new Request("http://localhost:3001/s14/commands", { method: "POST",
+    headers: { cookie: `jit_s14=${f.token}`, origin: "http://localhost:3001", "content-type": "application/x-www-form-urlencoded" }, body: form }));
+  expect(accepted.status).toBe(303);
+  expect(() => f.app.execute(actor, share())).toThrow("snapshot_scope_denied");
+  await f.app.botLifecycle.drain(n.port);
+  expect(f.app.sharing.freeSlots(actor).find(slot => slot.scopeId === scopeId)?.receiverBotIds).toEqual([b.id]);
+  const old = f.app.authority.view(actor, original.work!.id);
+  expect(old.grant!.bots[0]!.capabilities.resources).toEqual([]); expect(old.authority!.revoked).toBe(true);
+  const url = new URL(`http://localhost:3001/shares/new?kind=source&id=${source.id}&revision=1&generation=1`);
+  const sheet = sharingView(f.app, url, actor, f.app.home(actor));
+  expect(sheet?.kind).toBe("share-new");
+  if (sheet?.kind !== "share-new") throw new Error("expected share sheet");
+  expect(sheet.receivers).toEqual([{ bot: bot(f, b.id), scopeId }]);
+  const command = share(), receipt = f.app.execute(actor, command);
+  expect(f.app.execute(actor, command)).toEqual(receipt);
+  expect(f.app.sharing.freeSlots(actor).some(slot => slot.scopeId === scopeId)).toBe(false);
+  const scopes = [{ kind: "share" as const, id: scopeId, revision: 1 }];
+  const work = f.app.execute(actor, workCommand(f, { bots: [{ id: b.id, revision: bot(f, b.id).revision }], scopes }));
+  const attempt = f.app.authority.admit(work.work!.id, retryId(), { botId: b.id, tools: [], scopes, input: "Read the exact share", calls: 2, outputBytes: 4096 });
+  expect(f.store.read(tx => f.app.sharing.context(tx, attempt))[0]!.content).toBe("Only these owner-selected bytes");
+  f.app.authority.settle(attempt.id);
+  f.app.execute(actor, { kind: "snapshot.revoke", requestId: retryId(), expectedRevision: 1, payload: { shareId: scopeId } });
+  expect(f.app.sharing.freeSlots(actor).some(slot => slot.scopeId === scopeId)).toBe(false);
+  f.reopen(); await f.app.recovery.boot(n.port);
+  expect(f.app.policy.resources).toEqual([]);
+  expect(bot(f, b.id).capabilities.resources).toEqual([scopeId]);
+  expect(f.app.sharing.list(f.auth.actor)[0]!.state).toBe("revoked");
+  expect(f.app.sharing.freeSlots(f.auth.actor).some(slot => slot.scopeId === scopeId)).toBe(false);
 });
 
 test("stale proposals/previews, source/model authority and changed request IDs refuse; rollback keeps authority live", async () => {
@@ -152,6 +219,37 @@ test("retirement retains explicit owner history/report evidence, but reenable is
   expect(() => f.app.authority.admit(work.work!.id, retryId(), { botId: b.id, tools: [], scopes: [], input: "old", calls: 1, outputBytes: 100 })).toThrow("grant_revoked");
   expect(() => f.app.authority.commit(a.id, { state: "ready", text: "Old resurrection" })).toThrow();
   expect(start(f, bot(f, b.id), ["web_search"]).grant!.bots[0]!.generation).toBe(3);
+});
+
+test("retiring a Bot stops every lane of its running team graph through actual settlement while preserving unrelated committed results", async () => {
+  const f = await fixture(), b = await secondBot(f), n = nativeFixture(), bothRunning = Promise.withResolvers<void>(), settle = barrier();
+  const unrelated = start(f, bot(f));
+  f.app.authority.options.executor = { async run() { return { state: "ready", text: "Independent committed result" }; } };
+  await f.app.authority.drain();
+  const retained = f.app.authority.view(f.auth.actor, unrelated.work!.id).results;
+  expect(retained).toHaveLength(1);
+  const signals: AbortSignal[] = [];
+  f.app.authority.options.executor = { async run(attempt, signal) {
+    expect(attempt.step?.handler).toBe("research");
+    signals.push(signal); if (signals.length === 2) bothRunning.resolve();
+    await settle.wait();
+    return { state: "ready", text: "Late team output must be discarded" };
+  } };
+  const work = f.app.execute(f.auth.actor, workCommand(f, { bots: [{ id: "jit", revision: bot(f).revision }, { id: b.id, revision: b.revision }] })).work!;
+  const draining = f.app.authority.drain(); await bothRunning.promise;
+  expect(f.app.graph.view(f.auth.actor, work.id).steps.filter(step => step.state === "running")).toHaveLength(2);
+  f.app.execute(f.auth.actor, lifecycleCommand(f, b.id, "retire"));
+  expect(signals.every(signal => signal.aborted)).toBe(true);
+  expect(f.app.authority.view(f.auth.actor, work.id).work.state).toBe("stopping");
+  expect(f.app.graph.view(f.auth.actor, work.id).steps.some(step => step.handler === "synthesis" && step.state === "cancelled")).toBe(true);
+  await f.app.botLifecycle.drain(n.port);
+  expect(f.app.botLifecycle.view(f.auth.actor, b.id).lifecycle).toMatchObject({ state: "stopping", reason: "bot_transports_unsettled" });
+  settle.release(); await draining;
+  await f.app.botLifecycle.drain(n.port);
+  expect(f.app.botLifecycle.view(f.auth.actor, b.id).lifecycle.state).toBe("retired");
+  expect(f.app.authority.view(f.auth.actor, work.id)).toMatchObject({ work: { state: "stopped" }, results: [] });
+  expect(f.app.graph.view(f.auth.actor, work.id).steps.every(step => !["running", "stopping", "queued", "waiting_evidence", "committed"].includes(step.state))).toBe(true);
+  expect(f.app.authority.view(f.auth.actor, unrelated.work!.id).results).toEqual(retained);
 });
 
 test.each(["before", "after"] as const)("Bot narrowing fences owner browser input %s final runtime dispatch", async when => {

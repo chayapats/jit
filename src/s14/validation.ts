@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { AppError } from "../errors";
 import { containsCredential, redactCredentials } from "../security/credentials";
 import type { Capabilities, Policy } from "./types";
+import { resourceConfigured } from "./share-slots";
 
 /** Rejects missing or extra keys rather than silently dropping authority-bearing fields. */
 export function exact(value: unknown, keys: readonly string[]): asserts value is Record<string, unknown> {
@@ -46,7 +47,7 @@ export function capabilities(v: unknown, policy: Policy): Capabilities {
   exact(v, ["tools", "resources"]);
   for (const k of ["tools", "resources"] as const) {
     if (!Array.isArray(v[k]) || v[k].length > 64 || new Set(v[k]).size !== v[k].length) throw new AppError("invalid_capabilities");
-    for (const item of v[k]) { identity(item); if (!policy[k].includes(item)) throw new AppError("capability_unconfigured", 403); }
+    for (const item of v[k]) { identity(item); if (!(k === "resources" ? resourceConfigured(policy, item) : policy.tools.includes(item))) throw new AppError("capability_unconfigured", 403); }
   }
   return structuredClone(v) as unknown as Capabilities;
 }
