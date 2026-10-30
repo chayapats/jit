@@ -80,7 +80,8 @@ export class S14Computers {
       const { bot, grant } = this.app.authority.computerAuthority(tx, p.workId, p.botId);
       if (command.expectedRevision !== (c?.revision ?? 0)) throw new AppError("stale_revision", 409);
       if (c && ["starting", "running", "stopping", "resetting", "deleting"].includes(c.state)) throw new AppError("computer_busy", 409);
-      if (tx.get<{ n: number }>("SELECT count(*) AS n FROM bot_computers WHERE json_extract(record_json,'$.state') IN ('starting','running','stopping','resetting','deleting')")!.n >= 2) throw new AppError("computer_capacity", 409);
+      // An unavailable runtime may still contain an unsettled process; only a verified stop releases its slot.
+      if (tx.get<{ n: number }>("SELECT count(*) AS n FROM bot_computers WHERE id<>? AND json_extract(record_json,'$.state') IN ('starting','running','stopping','resetting','deleting','unavailable')", c?.id ?? "")!.n >= 2) throw new AppError("computer_capacity", 409);
       if (!c) {
         const computerId = id();
         c = { id: computerId, botId: bot.id, revision: 0, generation: 0, botGeneration: bot.generation, ownerGeneration: grant.ownerGeneration, workId: p.workId,
@@ -170,7 +171,11 @@ export class S14Computers {
   }
   /** Drains committed lifecycle intents; stale startup completion cannot publish a handle after stop/revoke. */
   async drain(): Promise<void> {
-    if (this.#draining) return this.#draining;
+    if (this.#draining) {
+      await this.#draining;
+      // A committed intent may have arrived after the previous drainer's final empty read.
+      return this.drain();
+    }
     this.#draining = this.drainOperations();
     try { await this.#draining; }
     finally { this.#draining = null; }

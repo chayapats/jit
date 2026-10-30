@@ -131,6 +131,15 @@ test("missing runtime fails closed and no host/backend fallback is available", a
   expect(() => f.app.computers.open(a.id)).toThrow("computer_not_running");
 });
 
+test("lazy preparation drains an intent committed while an earlier empty drainer is settling", async () => {
+  const f = await fixture(), idle = f.app.computers.drain();
+  const a = attempt(f, start(f).work!.id);
+  await f.app.computers.prepare(a.id);
+  await idle;
+  expect(f.app.computers.view(f.auth.actor, "jit").computer?.state).toBe("running");
+  expect(f.runtime!.starts).toHaveLength(1);
+});
+
 test("a takeover fences queued agent input at the final runtime barrier and never approves a held effect", async () => {
   const f = await fixture(), { work } = await running(f), a = attempt(f, work.id);
   const session = f.app.computers.open(a.id), gate = barrier(); f.runtime!.beforeInput = gate;
@@ -304,6 +313,24 @@ test("the per-computer input/image queue stays finite while a physical input is 
   gate.release();
   expect(await pending).toMatchObject({ state: "succeeded" });
   expect(await Promise.all(images)).toHaveLength(15);
+});
+
+test("an unconfirmed runtime stop retains capacity until a later exact stop proves settlement", async () => {
+  const f = await fixture(), a = await running(f);
+  for (const name of ["reader", "third"]) f.store.transaction(tx => tx.run("INSERT INTO bots VALUES (?,?)", name, JSON.stringify({ ...f.bot, id: name })));
+  await running(f, "reader");
+  f.runtime!.stopFailure = true;
+  lifecycle(f, "computer.stop", a.c);
+  await f.app.computers.drain();
+  const unavailable = f.app.computers.view(f.auth.actor, "jit").computer!;
+  expect(unavailable.state).toBe("unavailable");
+  const work = start(f, "third").work!;
+  const command: ComputerCommand = { kind: "computer.open", requestId: rid(), expectedRevision: 0, payload: { botId: "third", workId: work.id } };
+  expect(() => f.app.execute(f.auth.actor, command)).toThrow("computer_capacity");
+  f.runtime!.stopFailure = false;
+  lifecycle(f, "computer.stop", unavailable);
+  await f.app.computers.drain();
+  expect(f.app.execute(f.auth.actor, command).computer?.botId).toBe("third");
 });
 
 test("transport cancellation reaches only this Bot's runner and discards its late output", async () => {
