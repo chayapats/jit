@@ -210,3 +210,7 @@ The form parser uses only the selected provider's value. Nonempty `model` from
 These are plain form controls and require no JavaScript. Saved IDs remain selected
 even outside the current list; listing never writes configuration. JSON command
 shapes and model validation remain unchanged: the catalog is not an allowlist.
+
+## S14 UX14-01 adapter
+
+The opt-in S14 root uses a project-free setup contract rather than this legacy General-space schema. It reuses the same `issueOwnerSetupLink`/`requireOwnerSetup` capability algorithm and `DeviceSignIns`/public `beginDeviceSignIn` manager, without copying credentials or legacy state. The helper accepts `OwnerSetupStore`, including `S14Store`. `/owner/setup` creates the first owner and normal session; native readiness and default routes need no owner model/auth alias entry or required route environment. See the UX14-01 section of `s14-foundation-http.md` for exact commands, no-script endpoints and the UI renderer handoff. The legacy installer/service default is unchanged; the trusted installer must issue a link for the selected S14 store when that runtime is installed. This is not legacy conversion or evidence of a completed UI/host cutover.

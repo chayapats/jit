@@ -11,6 +11,8 @@ import { canonical, canonicalByteLimit } from "../src/s14/validation";
 import { renderS14 } from "../src/s14/web-pages";
 import { createS14Product } from "../src/s14/web-product";
 import { acquireS14RuntimeLock } from "../src/s14/runtime-lock";
+import type { ReportProposal } from "../src/s14/report-types";
+import { artifactHash } from "../src/s14/artifacts";
 
 const rid = () => crypto.randomUUID().replaceAll("-", "");
 const roots: string[] = [], stores = new Set<S14Store>();
@@ -38,6 +40,32 @@ function scope(f: F, kind: "resource" | "share" = "resource", changes: Partial<S
 }
 function stop(f: F, work: Work) { return f.app.execute(f.auth.actor, { kind: "work.stop", requestId: rid(), expectedRevision: work.revision, payload: { workId: work.id } }); }
 const send: EffectAction = { kind: "send", destination: "https://recipient.invalid/exact", content: "Exact visible content" };
+
+test.each(["resource", "share"] as const)("%s revocation reaches uncited source copies, reports, downloads, staging and late publication", async kind => {
+  const f = await fixture(), ref = scope(f, kind);
+  const work = f.app.execute(f.auth.actor, start(f, { scopes: [ref], limits: { ...start(f).payload.limits, outputBytes: 131072 } })).work!;
+  const producer = f.app.authority.admit(work.id, rid(), admission({ scopes: [ref], outputBytes: 32768 }));
+  f.app.authority.commit(producer.id, { state: "waiting", text: "Scoped source text" });
+  const report: ReportProposal = { title: "Scoped report", claims: [{ id: "claim", kind: "inference", text: "Uncited scoped derivative", citations: [], covers: [], conflicts: [] }], missing: [], limitations: [], artifactIds: [] };
+  const derived = () => {
+    const a = f.app.authority.admit(work.id, rid(), admission({ outputBytes: 32768 }));
+    f.store.transaction(tx => f.app.memory.appendSource(tx, a.id, { id: `result_${producer.id}`, revision: 1, generation: 1 }));
+    return a;
+  };
+  const committed = derived();
+  f.app.authority.commit(committed.id, { state: "waiting", text: "Available derivative", report });
+  const view = f.app.reports.list(f.auth.actor, work.id)[0]!;
+  if (view.state !== "available") throw Error("report unavailable before revocation");
+  const late = derived(), bytes = new TextEncoder().encode("Scoped staged bytes");
+  const staged = f.store.transaction(tx => f.app.artifacts.stage(tx, late, { name: "scoped.txt", mediaType: "text/plain", size: bytes.length, sha256: artifactHash(bytes) }, bytes));
+  f.scopes.delete(ref.id);
+  // Currentness must return unavailable rather than throw and roll back an unrelated owner memory command.
+  f.app.execute(f.auth.actor, { kind: "memory.remember", requestId: rid(), expectedRevision: f.app.conversation(f.auth.actor, f.conversationId).conversation.revision, payload: { conversationId: f.conversationId, text: "Independent owner fact" } });
+  expect(f.app.reports.view(f.auth.actor, view.report.id).state).toBe("unavailable");
+  for (const file of view.artifacts) expect(() => f.app.artifacts.download(f.auth.actor, file.id)).toThrow("artifact_unavailable");
+  expect(f.store.read(tx => tx.get("SELECT id FROM artifact_staging WHERE id=?", staged.id))).toBeNull();
+  expect(() => f.app.authority.commit(late.id, { state: "ready", text: "Forbidden late report", report })).toThrow("memory_context_stale");
+});
 function decide(f: F, effect: Effect, decision: "approve" | "deny" = "approve") { return f.app.execute(f.auth.actor, { kind: "approval.decide", requestId: rid(), expectedRevision: effect.revision, payload: { effectId: effect.id, actionHash: effect.actionHash, decision } }); }
 async function effectFixture(options: AuthorityOptions = {}) {
   const f = await fixture({ effects: { send: async (_a, allowed) => { allowed(); return "succeeded"; } }, ...options });

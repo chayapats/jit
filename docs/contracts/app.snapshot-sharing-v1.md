@@ -1,6 +1,6 @@
 # app.snapshot-sharing/v1
 
-SHARE14-01 (#253), S14-AC05; FR-05/16/17/35/38/42; NFR-07/08/14. Consumes app.work-grants/v1, app.artifact-gateway/v1 and app.context-provenance/v2. Introduced in opt-in S14 schema 9; current combined schema **10** refuses unreleased 1–9 with fresh-state. UI acceptance remains pending.
+SHARE14-01 (#253), S14-AC05; FR-05/16/17/35/38/42; NFR-07/08/14. Consumes app.work-grants/v1, app.artifact-gateway/v1 and app.context-provenance/v2. Introduced in opt-in S14 schema 9; current combined schema **13** refuses unreleased 1–12 with fresh-state. UI acceptance remains pending.
 
 Types: `src/s14/sharing-types.ts`; service: `S14Application.sharing:S14Sharing`. Owner commands use the existing authenticated receipt/audit/CSRF boundary:
 
@@ -21,4 +21,4 @@ Revoke records an independent `snapshot_share` tombstone and removes stored copy
 
 `sharing.list(actor):ShareView[]` / `GET /api/s14/shares` returns owner-only `{share,state:'active'|'revoked'|'expired'|'unavailable',disclosedKnowledge:'cannot_recall'}`. Revocation survives stale application-image restore through the current independent lifecycle ledger; forgotten/deleted original source ancestry makes the copy unavailable. No query performs inference.
 
-Evidence: `tests/s14-sharing.test.ts` plus `tests/s14-reports.test.ts` common path/symlink/type/hash/size gateway fixtures. Linux cross-volume/profile isolation remains the BOX14-01 opt-in evidence gate. Opus F10/F11/F12 integration, device and accessibility acceptance remain unticked.
+Evidence: `tests/s14-sharing.test.ts` plus `tests/s14-reports.test.ts` common path/symlink/type/hash/size gateway fixtures. Linux cross-volume/profile isolation remains the BOX14-01 opt-in evidence gate. Opus Web integration is in design section 21; real device and accessibility acceptance remain unticked.

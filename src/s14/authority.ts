@@ -1,3 +1,4 @@
+import { recoverySources, recoveryInput } from "./work-recovery";
 import { AppError } from "../errors";
 import { containsCredential } from "../security/credentials";
 import type { AppTransaction } from "../store";
@@ -7,7 +8,7 @@ import type { Bot, OwnerActor } from "./types";
 import type { Admission, ApprovalCommand, Attempt, AuthorityCommand, AuthorityOptions, AuthorityReceipt, Effect, EffectAction, ScopePolicy, ScopeRef, Work, WorkGrant, WorkLimits, WorkOutput, WorkView } from "./authority-types";
 import { evidenceRequirements } from "./reports";
 import { assertConcurrentHost } from "./lifecycle";
-import type { SchedulerLimits, WorkGraph, WorkStep } from "./graph-types";
+import type { QueueCeiling, SchedulerLimits, WorkGraph, WorkStep } from "./graph-types";
 import { canonical, digest, exact, identity, integer, text } from "./validation";
 
 const id = () => crypto.randomUUID().replaceAll("-", "");
@@ -45,6 +46,8 @@ export function suggestTask(tx: AppTransaction, conversationId: string, messageI
 /** Finite grant, admission and exact-effect ledger; every barrier re-reads current owner/Bot/resource authority. */
 export class S14Authority {
   #draining: Promise<void> | null = null;
+  #wakeDrain: (() => void) | null = null;
+  #drainRequested = false;
   #closing = false;
   #effects = new Set<string>();
   #running = new Map<string, AbortController>();
@@ -58,12 +61,18 @@ export class S14Authority {
   /** Applies typed authority commands inside the application's authenticated receipt transaction. */
   apply(tx: AppTransaction, c: AuthorityCommand): AuthorityReceipt {
     const receipt: AuthorityReceipt = { kind: c.kind, requestId: c.requestId };
-    if (c.kind === "task.accept") {
+    if (c.kind === "task.accept" || c.kind === "task.reject") {
       exact(c.payload, ["taskId"]); identity(c.payload.taskId);
       const work = record<Work>(tx, "work_items", c.payload.taskId);
       if (work.revision !== c.expectedRevision || work.state !== "proposed") throw new AppError("stale_revision", 409);
-      const source = this.app.memory.workSources(tx, work)[0]; if (source) work.source = source;
-      work.state = "accepted"; work.revision++; save(tx, "work_items", work); return { ...receipt, work };
+      if (c.kind === "task.accept") {
+        const source = this.app.memory.workSources(tx, work)[0];
+        if (source) work.source = source;
+      }
+      work.state = c.kind === "task.reject" ? "rejected" : "accepted";
+      work.revision++;
+      save(tx, "work_items", work);
+      return { ...receipt, work };
     }
     if (c.kind === "work.start") {
       const p = c.payload;
@@ -109,6 +118,54 @@ export class S14Authority {
       tx.run("INSERT INTO work_queue VALUES (?,'queued')", work.id);
       tx.run("UPDATE conversations SET revision=revision+1 WHERE id=?", conversation.id);
       return { ...receipt, work, grant };
+    }
+    if (c.kind === "work.retry" || c.kind === "work.summarize") {
+      exact(c.payload, ["workId"]);
+      identity(c.payload.workId);
+      const work = record<Work>(tx, "work_items", c.payload.workId);
+      if (work.revision !== c.expectedRevision) throw new AppError("stale_revision", 409);
+      if (!["blocked", "waiting", "ready"].includes(work.state) || !work.grantId) throw new AppError("work_not_recoverable", 409);
+      const attempts = this.attempts(tx, work.id);
+      if (attempts.some(a => ["running", "interrupted"].includes(a.state)) ||
+          tx.get("SELECT 1 FROM attempt_transports t JOIN work_attempts a ON a.id=t.attempt_id WHERE a.work_id=? AND t.active=1", work.id) ||
+          this.effects(tx, work.id).some(e => ["pending", "approved", "executing", "unknown"].includes(e.state))) throw new AppError("reconciliation_required", 409);
+      const grant = record<WorkGrant>(tx, "work_grants", work.grantId);
+      // The temporary queued state is rolled back with the receipt if any current authority check fails.
+      work.state = "queued";
+      work.reason = null;
+      work.revision++;
+      save(tx, "work_items", work);
+      this.grantLive(tx, grant);
+      for (const bot of grant.bots) {
+        const current = record<Bot>(tx, "bots", bot.id);
+        const route = grant.routes.find(r => r.id === bot.routeId);
+        if (!equal(current, bot) || !bot.enabled || !equal(this.app.route(bot.routeId), route)) throw new AppError("bot_authority_changed", 403);
+      }
+      for (const scope of grant.scopes) {
+        if (!equal(this.scope(tx, scope.ref), scope)) throw new AppError("scope_revoked_or_stale", 403);
+      }
+      const usage = tx.get<{ attempts: number; steps: number; calls: number; output_bytes: number }>("SELECT * FROM grant_usage WHERE grant_id=?", grant.id)!;
+      const outputBytes = Math.max(1, Math.floor(grant.limits.outputBytes / grant.limits.attempts));
+      if (usage.attempts >= grant.limits.attempts || usage.steps >= grant.limits.steps || usage.calls >= grant.limits.calls || usage.output_bytes + outputBytes > grant.limits.outputBytes) throw new AppError("budget_exhausted", 409);
+      work.recovery = {
+        requestId: c.requestId,
+        mode: c.kind === "work.retry" ? "retry" : "summarize",
+        sources: c.kind === "work.summarize" ? recoverySources(this.app, tx, work, grant) : [],
+      };
+      recoveryInput(this.app, tx, work);
+      // Explicit recovery replaces only unstarted lanes, preserving every prior lane and committed result.
+      for (const step of this.app.graph.steps(tx, work.id)) if (["queued", "waiting_evidence"].includes(step.state)) {
+        step.state = "cancelled"; step.reason = "owner_stopped_step"; step.queueCeiling = null; step.revision++;
+        save(tx, "work_steps", step);
+      }
+      for (const attempt of attempts) {
+        if (attempt.state !== "waiting") continue;
+        attempt.state = "settled";
+        save(tx, "work_attempts", attempt);
+      }
+      save(tx, "work_items", work);
+      tx.run("INSERT OR REPLACE INTO work_queue VALUES (?,'queued')", work.id);
+      return { ...receipt, work };
     }
     if (c.kind === "work.stop") {
       exact(c.payload, ["workId"]); identity(c.payload.workId);
@@ -168,12 +225,12 @@ export class S14Authority {
   private effects(tx: AppTransaction, workId: string): Effect[] { return tx.all<{ record_json: string }>("SELECT record_json FROM effects WHERE work_id=? ORDER BY rowid", workId).map(r => JSON.parse(r.record_json)); }
   /** Checks the existing owner grant without creating authority or admitting a run. */
   checkGrant(tx: AppTransaction, grant: WorkGrant): Work { return this.grantLive(tx, grant); }
-  /** Checks original grant authority during fenced boot, ignoring only ordinary blocked/ready work presentation states. */
-  recoveryGrant(tx: AppTransaction, grant: WorkGrant): Work { return this.grantLive(tx, grant, true); }
-  private grantLive(tx: AppTransaction, grant: WorkGrant, recovering = false): Work {
+  /** Checks original authority during fenced boot; committed results retain evidence past execution expiry only. */
+  recoveryGrant(tx: AppTransaction, grant: WorkGrant, committedResult = false): Work { return this.grantLive(tx, grant, true, committedResult); }
+  private grantLive(tx: AppTransaction, grant: WorkGrant, recovering = false, committedResult = false): Work {
     const work = record<Work>(tx, "work_items", grant.workId), state = tx.get<{ generation: number; revoked: number }>("SELECT generation,revoked FROM grant_state WHERE grant_id=?", grant.id);
     if (tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE kind='grant' AND id=?", grant.id) || work.grantId !== grant.id || !state || state.revoked || state.generation !== grant.generation || stopped.includes(work.state) && (!recovering || ["stopping", "stopped"].includes(work.state))) throw new AppError("grant_revoked", 403);
-    if (this.app.now() >= grant.expiresAt) throw new AppError("grant_expired", 403);
+    if (!committedResult && this.app.now() >= grant.expiresAt) throw new AppError("grant_expired", 403);
     if (tx.get<{ generation: number }>("SELECT generation FROM owner")?.generation !== grant.ownerGeneration) throw new AppError("owner_authority_changed", 403);
     if (tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE kind='uncertain_grant' AND id=?", grant.id)) throw new AppError("native_checkpoint_missing", 403);
     this.app.memory.workSources(tx, work);
@@ -192,21 +249,36 @@ export class S14Authority {
     for (const scope of grant.scopes) if (!equal(this.scope(tx, scope.ref), scope)) throw new AppError("scope_revoked_or_stale", 403);
     return { bot, grant };
   }
-  /** Checks retained output authority without treating grant expiry or native completion as renewed execution permission. */
+  /** Checks every retained producer, including transitive uncited inputs/parents; expiry/stop never renew execution or erase committed evidence. */
   retainedEvidence(tx: AppTransaction, attemptId: string): boolean {
-    const attempt = record<Attempt>(tx, "work_attempts", attemptId), s = attempt.snapshot;
-    const state = tx.get<{ generation: number; revoked: number }>("SELECT generation,revoked FROM grant_state WHERE grant_id=?", s.grant.id);
-    if (!state || tx.get<{ generation: number }>("SELECT generation FROM owner")?.generation !== s.grant.ownerGeneration) return false;
-    const bot = record<Bot>(tx, "bots", s.bot.id);
-    if ((!equal(bot, s.bot) || !bot.enabled) && !this.app.botLifecycle.retained(tx, attempt.id) || !equal(this.app.route(bot.routeId), s.route)) return false;
-    for (const scope of s.scopes) if (!equal(this.scope(tx, scope.ref), scope)) return false;
-    const computer = tx.get<{ computer_id: string; generation: number; record_json: string }>("SELECT a.computer_id,a.generation,c.record_json FROM computer_attempts a JOIN bot_computers c ON c.id=a.computer_id WHERE a.attempt_id=?", attemptId);
-    if (computer) {
-      const withdrawals = tx.all<{ mode: string }>("SELECT mode FROM lifecycle.withdrawals WHERE kind='computer' AND id=?", computer.computer_id);
-      if (withdrawals.some(row => {
-        const generation = Number(/^through_generation_([0-9]+)$/.exec(row.mode)?.[1]);
-        return Number.isSafeInteger(generation) && computer.generation <= generation;
-      })) return false;
+    const pending = [attemptId], seen = new Set<string>();
+    try {
+      while (pending.length) {
+        const key = pending.pop()!;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const row = tx.get<{ record_json: string }>("SELECT record_json FROM work_attempts WHERE id=?", key);
+        if (!row) return false;
+        const attempt = JSON.parse(row.record_json) as Attempt, s = attempt.snapshot;
+        const state = tx.get<{ generation: number; revoked: number }>("SELECT generation,revoked FROM grant_state WHERE grant_id=?", s.grant.id);
+        if (!state || tx.get<{ generation: number }>("SELECT generation FROM owner")?.generation !== s.grant.ownerGeneration) return false;
+        const bot = record<Bot>(tx, "bots", s.bot.id);
+        if (((!equal(bot, s.bot) || !bot.enabled) && !tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE kind='retained_evidence' AND id=? AND mode='owner_retained'", attempt.id)) || !equal(this.app.route(bot.routeId), s.route)) return false;
+        for (const scope of s.scopes) if (!equal(this.scope(tx, scope.ref), scope)) return false;
+        const computer = tx.get<{ computer_id: string; generation: number }>("SELECT computer_id,generation FROM computer_attempts WHERE attempt_id=?", key);
+        if (computer) {
+          const withdrawals = tx.all<{ mode: string }>("SELECT mode FROM lifecycle.withdrawals WHERE kind='computer' AND id=?", computer.computer_id);
+          if (withdrawals.some(row => {
+            const generation = Number(/^through_generation_([0-9]+)$/.exec(row.mode)?.[1]);
+            return Number.isSafeInteger(generation) && computer.generation <= generation;
+          })) return false;
+        }
+        if (attempt.parentId) pending.push(attempt.parentId);
+        pending.push(...(attempt.step?.inputs.map(input => input.attemptId) ?? []));
+      }
+    } catch (error) {
+      if (error instanceof AppError) return false;
+      throw error;
     }
     return true;
   }
@@ -229,6 +301,7 @@ export class S14Authority {
     const s = attempt.snapshot, work = this.grantLive(tx, s.grant), bot = record<Bot>(tx, "bots", s.bot.id);
     if (!bot.enabled || bot.revision !== s.bot.revision || bot.generation !== s.bot.generation || !equal(bot.capabilities, s.bot.capabilities) || !equal(this.app.route(bot.routeId), s.route)) throw new AppError("bot_authority_changed", 403);
     for (const scope of s.scopes) if (!equal(this.scope(tx, scope.ref), scope) || !this.accessible(scope, bot, work.id)) throw new AppError("scope_revoked_or_stale", 403);
+    if (!this.retainedEvidence(tx, attempt.id)) throw new AppError("memory_context_stale", 403);
     return work;
   }
   /** Admits a service-chosen bounded step once; model suggestions can only narrow a live owner grant. */
@@ -240,6 +313,7 @@ export class S14Authority {
     exact(input, ["botId", "tools", "scopes", "input", "calls", "outputBytes"]); identity(input.botId); list(input.tools); integer(input.calls, 1, 256); integer(input.outputBytes, 1, 1048576); const purpose = text(input.input);
     const work = record<Work>(tx, "work_items", workId); if (!work.grantId) throw new AppError("grant_required", 403);
     const grant = record<WorkGrant>(tx, "work_grants", work.grantId); this.grantLive(tx, grant);
+    if (work.recovery?.mode === "summarize" && (input.tools.length || input.botId !== grant.bots[0]!.id)) throw new AppError("tool_outside_grant", 403);
     const previous = tx.get<{ payload_hash: string; record_json: string }>("SELECT payload_hash,record_json FROM work_attempts WHERE work_id=? AND request_id=?", workId, requestId);
     if (previous) { if (previous.payload_hash !== payloadHash) throw new AppError("request_id_conflict", 409); return JSON.parse(previous.record_json); }
     const parent = parentId ? record<Attempt>(tx, "work_attempts", parentId) : null;
@@ -262,7 +336,7 @@ export class S14Authority {
     if (usage.attempts + 1 > grant.limits.attempts || usage.steps + 1 > grant.limits.steps || usage.calls + 1 > grant.limits.calls || usage.output_bytes + input.outputBytes > grant.limits.outputBytes || input.calls > grant.limits.calls) throw new AppError("budget_exhausted", 409);
     const attempt: Attempt = { id: id(), workId, requestId, parentId, snapshot: { grant, bot, route, tools: structuredClone(input.tools), scopes: structuredClone(scopes), input: purpose, calls: input.calls, outputBytes: input.outputBytes }, state: "running", reason: null, createdAt: this.app.now() };
     tx.run("INSERT INTO work_attempts VALUES (?,?,?,?,?)", attempt.id, workId, requestId, payloadHash, canonical(attempt));
-    const sources = [...this.app.memory.workSources(tx, work), ...this.app.sharing.sources(tx, attempt, work.conversationId)];
+    const sources = [...this.app.memory.workSources(tx, work), ...this.app.sharing.sources(tx, attempt, work.conversationId), ...(work.recovery?.sources ?? [])];
     if (parent) {
       const parentPacket = this.app.memory.attemptPacket(tx, parent.id);
       const handoff = this.app.memory.source(tx, { id: id(), botId: parent.snapshot.bot.id, conversationId: work.conversationId, attribution: "bot", text: purpose, ...this.app.memory.derive(tx, parentPacket) });
@@ -475,18 +549,31 @@ export class S14Authority {
   /** Waits for existing admitted transports; shutdown never disposes their shared lifecycle early. */
   async idle(): Promise<void> { await this.#draining; }
 
+  /** Wakes the existing drain after committed ingress; it never starts another drain or admits uncommitted work. */
+  wake(): void { if (this.#draining) { this.#drainRequested = true; this.#wakeDrain?.(); } }
+
   /** Drains finite DAG lanes under shared capacity, retaining slots until actual transport settlement. */
-  async drain(): Promise<void> {
+  drain(): Promise<void> {
     this.expireEffects();
-    if (!this.options.executor) return;
-    if (this.#closing || this.app.recovery.booting) return;
-    if (this.#draining) return this.#draining;
-    this.#draining = this.drainGraph();
-    try { await this.#draining; }
-    finally { this.#draining = null; }
+    if (!this.options.executor || this.#closing || this.app.recovery.booting) return Promise.resolve();
+    if (this.#draining) { this.wake(); return this.#draining; }
+    // Install ownership before calling any executor, including synchronously reentrant fixture/host code.
+    const completion = Promise.withResolvers<void>();
+    this.#draining = completion.promise;
+    void this.drainOwned(completion);
+    return completion.promise;
   }
 
-  private capacity(tx: AppTransaction, grant: WorkGrant, bot: Bot, route: string, computer: boolean): void {
+  private async drainOwned(completion: { resolve: () => void; reject: (error: unknown) => void }): Promise<void> {
+    try {
+      do { this.#drainRequested = false; await this.drainGraph(); } while (this.#drainRequested && !this.#closing);
+      this.#draining = null;
+      completion.resolve();
+    } catch (error) { this.#draining = null; completion.reject(error); }
+  }
+
+  /** Returns the first currently held admission ceiling, including unsettled transports and input leases. */
+  capacityCeiling(tx: AppTransaction, grant: WorkGrant, bot: Bot, route: string, computer: boolean): QueueCeiling | null {
     const active = tx.all<{ record_json: string }>(`SELECT a.record_json FROM work_attempts a
       WHERE json_extract(a.record_json,'$.state') IN ('running','interrupted')
       OR EXISTS (SELECT 1 FROM attempt_transports t WHERE t.attempt_id=a.id AND t.active=1)`).map(r => JSON.parse(r.record_json) as Attempt);
@@ -502,14 +589,19 @@ export class S14Authority {
     const botHeld = active.filter(a => a.snapshot.bot.id === bot.id).length + orphaned.filter(i => i.botId === bot.id).length;
     const computerHeld = active.filter(a => a.snapshot.tools.includes("computer")).length + orphaned.filter(i => i.computer).length;
     const botComputerHeld = active.some(a => a.snapshot.bot.id === bot.id && a.snapshot.tools.includes("computer"));
-    if (active.length + orphaned.length >= limits.global || workHeld >= grant.limits.concurrency ||
-        routeHeld >= limits.route || botHeld >= limits.bot || computer && (computerHeld >= limits.computer || botComputerHeld)) {
-      throw new AppError("execution_capacity_held", 409);
-    }
+    if (active.length + orphaned.length >= limits.global) return "global";
+    if (workHeld >= grant.limits.concurrency) return "work";
+    if (routeHeld >= limits.route) return "route";
+    if (botHeld >= limits.bot) return "bot";
+    if (computer && (computerHeld >= limits.computer || botComputerHeld || orphaned.some(i => i.botId === bot.id && i.computer))) return "computer";
     if (computer && tx.get(`SELECT 1 FROM input_leases l JOIN bot_computers c ON c.id=l.computer_id
-      WHERE c.bot_id=? AND json_extract(l.record_json,'$.actor') IS NOT NULL AND json_extract(l.record_json,'$.expiresAt')>?`, bot.id, this.app.now())) {
-      throw new AppError("execution_capacity_held", 409);
-    }
+      WHERE c.bot_id=? AND json_extract(l.record_json,'$.actor') IS NOT NULL AND json_extract(l.record_json,'$.expiresAt')>?`, bot.id, this.app.now())) return "computer";
+    return null;
+  }
+
+  private capacity(tx: AppTransaction, grant: WorkGrant, bot: Bot, route: string, computer: boolean): void {
+    const ceiling = this.capacityCeiling(tx, grant, bot, route, computer);
+    if (ceiling) throw new AppError("execution_capacity_held", 409, { ceiling });
   }
 
   /** Reserves one public read against the owner-recorded read ceiling in addition to call reservations. */
@@ -525,6 +617,7 @@ export class S14Authority {
     return this.app.store.transaction(tx => {
       const rows = tx.all<{ record_json: string }>(`SELECT g.record_json FROM work_graphs g JOIN work_items w ON w.id=g.id
         WHERE json_extract(w.record_json,'$.state') IN ('queued','running','waiting')
+        AND json_type(w.record_json,'$.recovery') IS NULL
         ORDER BY CASE json_extract(g.record_json,'$.priority') WHEN 'interactive' THEN 0 ELSE 1 END,g.rowid`);
       for (const row of rows) {
         const graph = JSON.parse(row.record_json) as WorkGraph;
@@ -533,6 +626,10 @@ export class S14Authority {
           const node = graph.nodes.find(n => n.id === step.nodeId)!;
           const dependencies = this.app.graph.inputs(tx, step, node);
           if (!dependencies) continue;
+          if (step.state === "waiting_evidence") {
+            step.state = "queued"; step.queuedAt = this.app.now(); step.reason = null; step.revision++;
+            save(tx, "work_steps", step);
+          }
           try {
             return this.app.store.transaction(() => {
               const { id: _id, handler: _handler, dependsOn: _dependsOn, ...input } = node;
@@ -544,8 +641,15 @@ export class S14Authority {
                   this.app.memory.appendSource(tx, attempt.id, source);
                   // Bound the handoff independently of retained sibling output and keep every omission explicit.
                   if (Buffer.byteLength(dependency.text) > 8192) {
-                    dependency.text = Buffer.from(dependency.text).subarray(0, 8192).toString("utf8").toWellFormed();
+                    const bytes = Buffer.from(dependency.text);
+                    let end = 8192;
+                    while ((bytes[end]! & 0xc0) === 0x80) end--;
+                    dependency.text = bytes.subarray(0, end).toString("utf8");
                     attempt.step.gaps.push({ stepId: dependency.stepId, reason: "handoff_result_excerpt" });
+                  }
+                  if (Buffer.byteLength(JSON.stringify([...attempt.step.inputs, dependency])) > 49152) {
+                    attempt.step.gaps.push({ stepId: dependency.stepId, reason: "handoff_result_omitted" });
+                    continue;
                   }
                   const evidenceRows = tx.all<{ id: string }>("SELECT id FROM external_evidence WHERE attempt_id=? ORDER BY rowid", dependency.attemptId);
                   for (const row of evidenceRows) {
@@ -561,7 +665,7 @@ export class S14Authority {
                 } else attempt.step.gaps.push({ stepId: dependency.stepId, reason: "handoff_not_accessible" });
               }
               save(tx, "work_attempts", attempt);
-              step.attemptId = attempt.id; step.state = "running"; step.reason = null;
+              step.attemptId = attempt.id; step.state = "running"; step.reason = null; step.queueCeiling = null;
               step.startedAt = this.app.now(); step.revision++;
               save(tx, "work_steps", step);
               this.app.recovery.prepare(tx, attempt);
@@ -569,13 +673,49 @@ export class S14Authority {
               return attempt;
             });
           } catch (error) {
-            if (error instanceof AppError && error.code === "execution_capacity_held") continue;
-            step.state = "failed"; step.reason = error instanceof AppError ? error.code : "admission_refused"; step.revision++;
+            if (error instanceof AppError && error.code === "execution_capacity_held") {
+              const ceiling = error.detail!.ceiling as QueueCeiling;
+              if (step.queueCeiling !== ceiling) { step.queueCeiling = ceiling; step.revision++; save(tx, "work_steps", step); }
+              continue;
+            }
+            step.queueCeiling = null; step.state = "failed"; step.reason = error instanceof AppError ? error.code : "admission_refused"; step.revision++;
             save(tx, "work_steps", step);
           }
         }
         this.finishGraph(tx, graph.id);
         this.app.routines.reconcile(tx);
+      }
+      return null;
+    });
+  }
+
+  private nextRecoveryAttempt(): Attempt | null {
+    return this.app.store.transaction(tx => {
+      const rows = tx.all<{ work_id: string }>(`SELECT q.work_id FROM work_queue q JOIN work_items w ON w.id=q.work_id
+        WHERE q.state='queued' AND json_type(w.record_json,'$.recovery')='object' ORDER BY q.rowid`);
+      for (const { work_id: workId } of rows) {
+        try {
+          return this.app.store.transaction(() => {
+            const work = record<Work>(tx, "work_items", workId), grant = record<WorkGrant>(tx, "work_grants", work.grantId!), bot = grant.bots[0]!;
+            const admission: Admission = {
+              botId: bot.id,
+              tools: work.recovery!.mode === "summarize" ? [] : grant.tools.filter(tool => bot.capabilities.tools.includes(tool)),
+              scopes: grant.scopes.filter(scope => this.accessible(scope, bot, work.id)).map(scope => scope.ref),
+              input: recoveryInput(this.app, tx, work),
+              calls: Math.max(1, Math.floor(grant.limits.calls / grant.limits.attempts)),
+              outputBytes: Math.max(1, Math.floor(grant.limits.outputBytes / grant.limits.attempts)),
+            };
+            const attempt = this.admitIn(tx, work.id, `initial_${work.recovery!.requestId}`, admission, null, digest(canonical({ input: admission, parentId: null })));
+            tx.run("INSERT INTO attempt_transports VALUES (?,1)", attempt.id);
+            return attempt;
+          });
+        } catch (error) {
+          if (error instanceof AppError && error.code === "execution_capacity_held") continue;
+          const work = record<Work>(tx, "work_items", workId);
+          work.state = "blocked"; work.reason = error instanceof AppError ? error.code : "admission_refused"; work.revision++;
+          save(tx, "work_items", work);
+          tx.run("UPDATE work_queue SET state='blocked' WHERE work_id=?", work.id);
+        }
       }
       return null;
     });
@@ -617,7 +757,8 @@ export class S14Authority {
         this.app.recovery.settled(tx, attempt.id, abort.signal.aborted);
         this.app.artifacts.discard(tx, attempt.id);
         this.app.graph.finish(tx, attempt, reason);
-        this.finishGraph(tx, attempt.workId);
+        if (attempt.step) this.finishGraph(tx, attempt.workId);
+        else this.reevaluate(tx, attempt.workId);
         this.app.routines.reconcile(tx);
       });
     }
@@ -625,18 +766,21 @@ export class S14Authority {
 
   private async drainGraph(): Promise<void> {
     const pending = new Set<Promise<void>>();
-    for (;;) {
+    try { for (;;) {
+      // Arm before scanning: ingress committed during an async chat/host boundary cannot lose its wake-up.
+      const wake = Promise.withResolvers<void>();
+      this.#drainRequested = false;
+      this.#wakeDrain = wake.resolve;
       if (this.app.store.read(tx => tx.get("SELECT 1 FROM reply_outbox WHERE json_extract(record_json,'$.state')='queued' LIMIT 1"))) await this.app.drainReplies();
       this.cancelFenced();
       for (; !this.#closing;) {
-        const attempt = this.nextGraphAttempt();
+        const attempt = this.nextRecoveryAttempt() ?? this.nextGraphAttempt();
         if (!attempt) break;
-        const run = this.runGraphAttempt(attempt);
+        const run = this.runGraphAttempt(attempt).finally(() => pending.delete(run));
         pending.add(run);
-        void run.finally(() => pending.delete(run));
       }
       if (!pending.size) return;
-      await Promise.race(pending);
-    }
+      await Promise.race([...pending, wake.promise]);
+    } } finally { this.#wakeDrain = null; }
   }
 }

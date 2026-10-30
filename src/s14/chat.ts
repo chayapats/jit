@@ -1,11 +1,12 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { createHost, hostCapabilities, RELEASE_CONTRACT, type Model } from "schway/host";
+import { classifyAuthError, createHost, hostCapabilities, RELEASE_CONTRACT, type Model } from "schway/host";
 import { nativeIntentPaths } from "./native-recovery";
 import type { S14Recovery } from "./recovery";
 import { s14CredentialLifecycle } from "./lifecycle";
 import { AppError } from "../errors";
 import type { ChatPort } from "./types";
+import { ReplyUnavailable, replyUnavailableReason } from "./reply-failure";
 
 /** Opens one tool-free bounded conversation on the pinned public host; model is a deterministic test seam only. */
 export function schwayChat(directory: string, model?: Model, recovery?: S14Recovery): ChatPort {
@@ -30,14 +31,23 @@ export function schwayChat(directory: string, model?: Model, recovery?: S14Recov
       const session = await host.createSession();
       try {
         if (intent) recovery!.correlate(intent.id, session.reference);
-        const selected = model ?? await host.auth!.createModel();
+        const selection = { route: input.route.provider, model: input.route.model };
+        let selected = model;
+        if (!selected) {
+          const readiness = await host.auth!.checkReadiness();
+          if (readiness.status !== "configured-unverified") throw new ReplyUnavailable(replyUnavailableReason(readiness.status));
+          try { selected = await host.auth!.createModel(); }
+          catch (error) { throw new ReplyUnavailable(replyUnavailableReason(classifyAuthError(error, selection).status)); }
+        }
+        let unavailable = "unknown" as import("./reply-failure").ReplyUnavailableReason;
         const guarded: Model = { provider: selected.provider, id: selected.id, async *stream(conversation, options) {
           allowed();
-          yield* selected.stream(conversation, options);
+          try { yield* selected.stream(conversation, options); }
+          catch (error) { unavailable = replyUnavailableReason(classifyAuthError(error, selection).status); throw error; }
         } };
         allowed();
         const result = await session.submit({ text: "Answer the last owner message using the labelled conversation." }, guarded, signal);
-        if (result.outcome !== "completed") throw new AppError("reply_unavailable");
+        if (result.outcome !== "completed") throw new ReplyUnavailable(unavailable);
         const output = session.readResult(result.result).content.filter(p => p.type === "text").map(p => p.text).join("\n");
         if (Buffer.byteLength(output) > 32768) throw new AppError("reply_too_large");
         try { const parsed: unknown = JSON.parse(output); if (parsed && typeof parsed === "object" && typeof (parsed as { text?: unknown }).text === "string") return parsed as { text: string; proposal?: unknown }; } catch { /* Plain replies remain plain text. */ }
