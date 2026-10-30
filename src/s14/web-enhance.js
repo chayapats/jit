@@ -37,8 +37,12 @@ if (signIn) {
     let state = "pending";
     try {
       const response = await fetch(signIn.dataset.signIn, { credentials: "same-origin", cache: "no-store" });
-      if (!response.ok) return;
-      ({ state } = await response.json());
+      // An expired session needs the page's own redirect; any other failed read only delays the next one.
+      if (response.status === 401 || response.status === 403) {
+        location.replace(signIn.dataset.signInPage);
+        return;
+      }
+      if (response.ok) ({ state } = await response.json());
     } catch { /* A failed read only delays the next one. */ }
     if (state === "pending" || state === "starting") setTimeout(poll, 3000);
     else location.replace(signIn.dataset.signInPage);

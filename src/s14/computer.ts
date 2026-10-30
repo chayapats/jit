@@ -88,7 +88,7 @@ export class S14Computers {
     return this.app.store.read(tx => {
       this.app.requireOwner(tx, actor);
       if (!tx.get("SELECT id FROM bots WHERE id=?", botId)) throw new AppError("not_found", 404);
-      const rows = tx.all<{ record_json: string }>("SELECT record_json FROM work_items WHERE json_extract(record_json,'$.grantId') IS NOT NULL ORDER BY rowid DESC");
+      const rows = tx.all<{ record_json: string }>("SELECT record_json FROM work_items WHERE json_extract(record_json,'$.grantId') IS NOT NULL AND json_extract(record_json,'$.state') NOT IN ('blocked','stopping','stopped','ready') ORDER BY rowid DESC LIMIT 256");
       const eligible = [];
       for (const row of rows) {
         const work = JSON.parse(row.record_json) as Work;
