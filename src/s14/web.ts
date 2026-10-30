@@ -47,8 +47,9 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
     finally { reader.releaseLock(); }
     const raw = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
     const type = request.headers.get("content-type")?.split(";")[0];
+    // HTML form submission sends every textarea line break as CRLF; service text refuses a carriage return.
     if (type === "application/json") { const v: unknown = JSON.parse(raw); if (!v || typeof v !== "object" || Array.isArray(v)) throw new AppError("invalid_body"); return v as Record<string, unknown>; }
-    if (type === "application/x-www-form-urlencoded") { const form = new URLSearchParams(raw); if (new Set(form.keys()).size !== [...form.keys()].length) throw new AppError("invalid_body"); return Object.fromEntries(form); }
+    if (type === "application/x-www-form-urlencoded") { const form = new URLSearchParams(raw); if (new Set(form.keys()).size !== [...form.keys()].length) throw new AppError("invalid_body"); return Object.fromEntries([...form].map(([key, value]) => [key, value.replaceAll("\r\n", "\n")])); }
     throw new AppError("unsupported_content_type", 415);
   };
   const html = (body: string, status = 200, locale?: string) => respond(body, status, "text/html", { ...(locale ? { "Content-Language": locale } : {}), Vary: "Accept-Language, Cookie" });
