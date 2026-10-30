@@ -106,6 +106,9 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
         return json(receipt);
       }
       if (request.method !== "GET") throw new AppError("not_found", 404);
+      if (url.pathname === "/api/s14/git/connections") return json({ items: app.git.connections(auth.actor) });
+      const gitEffect = /^\/api\/s14\/git\/effects\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
+      if (gitEffect) return json(app.git.view(auth.actor, gitEffect[1]!));
       if (url.pathname === "/api/s14/coding/repositories") return json({ items: app.coding.repositories(auth.actor) });
       const coding = /^\/api\/s14\/work\/([a-zA-Z0-9_-]+)\/coding$/.exec(url.pathname);
       if (coding) return json(app.coding.view(auth.actor, coding[1]!));

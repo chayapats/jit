@@ -126,10 +126,10 @@ test("legacy database/profile/backup/WAL bytes remain unchanged and CLI refuses 
   const fresh = new S14Store(join(root, "fresh.sqlite")); expect(fresh).toBeDefined(); fresh.close();
 });
 
-test.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])("schema 13 retains result/computer/memory/web tables and refuses unreleased schema %i without altering it", version => {
+test.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])("schema 14 retains result/computer/memory/web tables and refuses unreleased schema %i without altering it", version => {
   const root = mkdtempSync(join(tmpdir(), "jit-s14-schema-")); roots.push(root);
   const path = join(root, "s14.sqlite"), store = new S14Store(path);
-  expect(s14SchemaVersion).toBe(13);
+  expect(s14SchemaVersion).toBe(14);
   expect(store.read(tx => tx.all<{ name: string }>("PRAGMA table_info(work_results)")).map(c => c.name)).toContain("state");
   expect(store.read(tx => tx.all<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table'")).map(c => c.name)).toEqual(expect.arrayContaining(["work_results", "memory_sources", "memory_contexts", "web_reads", "external_evidence", "bot_computers", "input_leases", "computer_operations", "computer_inputs", "computer_attempts", "snapshot_shares", "native_intents", "work_checkpoints"]));
   store.close();

@@ -278,3 +278,22 @@ All coding ingress uses POST `/api/s14/commands` or existing no-script POST `/s1
 GET `/api/s14/coding/repositories` → `{items:CodingRepository[]}`. GET `/api/s14/work/:id/coding` → `CodingView={job,runs,available,checks}`. Exact exported types are in `src/s14/coding-types.ts`. Run states are running/reviewable/partial/interrupted; safe reasons include coding_tests_not_run, coding_check_failed, coding_check_timeout, coding_changed_during_tests, coding_egress_scope_unavailable and coding_interrupted_no_replay. Checks distinguish passed/failed/skipped/unknown and actual exit/timeouts with bounded stdout/stderr excerpts. Declared coverage is not measured coverage. Show tests that were unrun; do not infer success from model text.
 
 `reportId` links to the existing report API/artifact downloads only after immutable publication. Before it exists, diagnostic run metadata is not a delivered artifact. Existing Work stays waiting for review; reviewable evidence alone does not fulfill owner completion or approve any external effect. Existing work.stop fences the run; interrupted coding does not automatically resume. UI acceptance remains unticked for the later Opus high agent.
+
+## CODE14-02 logic handoff — app.git-effects/v2
+
+POST `/api/s14/commands` and no-script `/s14/commands` use the same existing session/CSRF/Origin/receipt rules. Secrets are write-only and omitted from retry digests/receipts. No UI is authored here.
+
+| Command | Exact payload | expectedRevision |
+| --- | --- | --- |
+| `git.connection.create` | `{repositoryId,label}` | 0 |
+| `git.connection.secret.set` / `git.connection.rotate` | `{connectionId,secret}` | connection revision |
+| `git.connection.remove` / `git.connection.test` | `{connectionId}` | connection revision |
+| `git.propose` | `{attemptId,connection:{id,revision},update:{ref,oldCommit,newCommit},pr:GitPullRequest|null,expiresAt}` | 0 |
+| `approval.decide` | existing `{effectId,actionHash,decision}` | effect revision |
+| `git.reconcile` | `{effectId,actionHash}` | unknown effect revision |
+
+`GitPullRequest={base,baseCommit,title,body,draft}`. `git.propose` requires an actual committed coding report and explicit proposal-only `effect_push` in the original grant/Bot/resource. Show that report/diff/checks before approval, including failed/skipped coverage. Proposal/acceptance is separate from approval. The generic Effect content is canonical `GitAction` from `src/s14/coding-git-types.ts`, including exact repository/connection revision/full old→new commit/ref/PR fields and diffHash/reportId. Submit the displayed actionHash and revision; do not rebuild an action from model prose. Later content needs a new typed proposal/approval.
+
+GET `/api/s14/git/connections` → `{items:GitConnection[]}` (metadata only). GET `/api/s14/git/effects/:id` → `{effect,progress:GitProgress,reconcileRequested}`; existing `/api/s14/effects/:id` retains action history. Progress stages: prepared/verifying/push_dispatching/pushed/pr_dispatching/complete/failed/unknown. Existing approval states remain authoritative. Safe reasons include git_approved_diff_changed, git_remote_ref_changed, git_push_rejected, git_push_unconfirmed, git_pr_rejected_after_push, git_pr_unconfirmed_after_push, git_dispatch_unconfirmed and git_remote_readback_unconfirmed. A failed PR can coexist with an already pushed branch; show both facts. No merge/deploy follows.
+
+Unknown offers explicit read-back through git.reconcile or the existing separately labelled owner-statement effect.reconcile. Read-back never retries push or PR creation. `verification:'remote_readback'` proves matching observed remote state; duplicate/absent/incomplete matches stay unknown. Ordinary owner statements do not become verified. Connection rotation/removal, revoked resource, changed owner/Bot and deleted payload remain concrete blockers. Current schema **14**, app.coding-work/v1 + app.git-effects/v2; earlier unreleased 1–13 refuse. UI acceptance and live GitHub/Linux evidence remain pending.

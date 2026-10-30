@@ -1,6 +1,6 @@
 # app.coding-work/v1
 
-CODE14-01 (#257), Phase B; FR-06/07/08/14/17/35/36/42; NFR-01/02/07/14. Logic only, opt-in `--s14`; UI acceptance remains pending for Claude Opus 5.5 high. Exported contracts: `src/s14/coding-types.ts`, `coding-protocol.ts`, `coding-model.ts`, `coding.ts`. Combined schema **13** refuses unreleased 1–12 without migration or erasure.
+CODE14-01 (#257), Phase B; FR-06/07/08/14/17/35/36/42; NFR-01/02/07/14. Logic only, opt-in `--s14`; UI acceptance remains pending for Claude Opus 5.5 high. Exported contracts: `src/s14/coding-types.ts`, `coding-protocol.ts`, `coding-model.ts`, `coding.ts`. Introduced schema **13**; the current combined schema **14** refuses unreleased 1–13 without migration or erasure.
 
 Owner commands use `S14Application.execute`, the existing authenticated envelope, exact keys, receipts, audit and rollback boundary:
 

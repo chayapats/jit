@@ -1,3 +1,5 @@
+import { S14GitEffects } from "./coding-git";
+import type { GitCommand, GitOptions, GitReceipt } from "./coding-git-types";
 import { S14Coding } from "./coding";
 import type { CodingCommand, CodingOptions, CodingReceipt } from "./coding-types";
 import { S14BotLifecycle } from "./bot-lifecycle";
@@ -30,9 +32,9 @@ import { S14Computers } from "./computer";
 import type { ComputerCommand, ComputerOptions, ComputerReceipt } from "./computer-types";
 
 /** Stable complete typed owner ingress union for the S14 logic foundation. */
-export type S14Command = BotCommand | AuthorityCommand | MemoryCommand | ParallelCommand | ComputerCommand | GraphCommand | SharingCommand | RecoveryCommand | RoutineCommand | AttentionCommand | BotLifecycleCommand | CodingCommand;
+export type S14Command = BotCommand | AuthorityCommand | MemoryCommand | ParallelCommand | ComputerCommand | GraphCommand | SharingCommand | RecoveryCommand | RoutineCommand | AttentionCommand | BotLifecycleCommand | CodingCommand | GitCommand;
 /** Committed typed result of the S14 owner command boundary. */
-export type S14Receipt = BotReceipt | AuthorityReceipt | MemoryReceipt | ParallelReceipt | ComputerReceipt | GraphReceipt | SharingReceipt | RecoveryReceipt | RoutineReceipt | AttentionReceipt | BotLifecycleReceipt | CodingReceipt;
+export type S14Receipt = BotReceipt | AuthorityReceipt | MemoryReceipt | ParallelReceipt | ComputerReceipt | GraphReceipt | SharingReceipt | RecoveryReceipt | RoutineReceipt | AttentionReceipt | BotLifecycleReceipt | CodingReceipt | GitReceipt;
 
 const id = () => crypto.randomUUID().replaceAll("-", "");
 const tokenPattern = /^[a-f0-9]{64}$/;
@@ -49,10 +51,11 @@ export function save(tx: AppTransaction, table: RecordTable, value: { id: string
 /** Reads bounded identity records from a trusted table name without starting workers. */
 export function records<T>(tx: AppTransaction, table: RecordTable): T[] { return tx.all<{ record_json: string }>(`SELECT record_json FROM ${table} ORDER BY rowid DESC LIMIT 100`).map(row => JSON.parse(row.record_json) as T); }
 /** Injectable deterministic inference/clock and rollback fault seams; production never enables fixture inference. */
-export interface S14Options { policy: Policy; chat: ChatPort; authority?: AuthorityOptions; parallel?: ParallelWebOptions; computers?: ComputerOptions; botLifecycle?: BotLifecycleOptions; attention?: AttentionPort; coding?: CodingOptions; now?: () => number; beforeCommit?: () => void }
+export interface S14Options { policy: Policy; chat: ChatPort; authority?: AuthorityOptions; parallel?: ParallelWebOptions; computers?: ComputerOptions; botLifecycle?: BotLifecycleOptions; attention?: AttentionPort; coding?: CodingOptions; git?: GitOptions; now?: () => number; beforeCommit?: () => void }
 
 /** Project-free owner command boundary; registered actors are revalidated on every read and commit. */
 export class S14Application {
+  readonly git: S14GitEffects;
   readonly coding: S14Coding;
   readonly policy: Policy;
   readonly now: () => number;
@@ -80,11 +83,15 @@ export class S14Application {
     }
     capabilities({ tools: this.policy.tools, resources: this.policy.resources }, this.policy);
     this.coding = new S14Coding(this, options.coding);
+    this.git = new S14GitEffects(this, options.git);
     this.memory = new S14Memory(this);
     this.sharing = new S14Sharing(this);
     const externalScopes = options.authority?.scopes;
-    this.authority = new S14Authority(this, { ...options.authority, scopes: {
-      current: (tx, scope) => this.coding.scope(tx, scope) ?? this.sharing.scope(tx, scope) ?? this.memory.scope(tx, scope) ?? externalScopes?.current(tx, scope) ?? null,
+    this.authority = new S14Authority(this, { ...options.authority,
+      effects: { ...options.authority?.effects,
+        ...(options.git?.vault ? { push: (action, allowed) => this.git.perform(action, allowed) } : {}),
+      },
+      scopes: { current: (tx, scope) => this.coding.scope(tx, scope) ?? this.sharing.scope(tx, scope) ?? this.memory.scope(tx, scope) ?? externalScopes?.current(tx, scope) ?? null,
     } });
     this.graph = new S14Graph(this);
     this.parallel = new ParallelWeb(this, options.parallel);
@@ -95,7 +102,15 @@ export class S14Application {
     this.routines = new S14Routines(this);
     this.computers = new S14Computers(this, options.computers);
     this.botLifecycle = new S14BotLifecycle(this, options.botLifecycle);
-    this.store.transaction(tx => { this.botLifecycle.reconcile(tx); this.coding.recover(tx); this.recovery.reconcileReservations(tx); this.recovery.reconcileEffects(tx); this.attention.recover(tx); this.routines.reconcile(tx); });
+    this.store.transaction(tx => {
+      this.botLifecycle.reconcile(tx);
+      this.coding.recover(tx);
+      this.recovery.reconcileReservations(tx);
+      this.recovery.reconcileEffects(tx);
+      this.git.recover(tx);
+      this.attention.recover(tx);
+      this.routines.reconcile(tx);
+    });
   }
   /** Trusted local bootstrap creates only the authentication principal, never resets an existing installation. */
   async provisionOwner(password: string): Promise<void> {
@@ -196,11 +211,13 @@ export class S14Application {
   execute(actor: OwnerActor, command: BotLifecycleCommand): BotLifecycleReceipt;
   /** Executes repository grants and coding starts through the common owner receipt boundary. */
   execute(actor: OwnerActor, command: CodingCommand): CodingReceipt;
+  /** Executes resource-scoped write-only Git connections, exact proposals and reconciliation requests. */
+  execute(actor: OwnerActor, command: GitCommand): GitReceipt;
   /** Executes the complete typed HTTP command union without client-controlled actor identities. */
   execute(actor: OwnerActor, command: S14Command): S14Receipt;
   execute(actor: OwnerActor, command: S14Command): S14Receipt {
     let encoded = canonical(command);
-    if (command.kind === "web.parallel.key.set") encoded = canonical({ ...command, payload: { ...command.payload, secret: "[write-only]" } });
+    if (command.kind === "web.parallel.key.set" || command.kind === "git.connection.secret.set" || command.kind === "git.connection.rotate") encoded = canonical({ ...command, payload: { ...command.payload, secret: "[write-only]" } });
     exact(command, ["kind", "requestId", "expectedRevision", "payload"]);
     identity(command.requestId); integer(command.expectedRevision);
     const receipt = this.store.transaction(tx => {
@@ -209,7 +226,9 @@ export class S14Application {
       const previous = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash,result_json FROM command_receipts WHERE owner_id='owner' AND request_id=?", command.requestId);
       if (previous) { if (previous.payload_hash !== digest(encoded)) throw new AppError("request_id_conflict", 409); return JSON.parse(previous.result_json) as S14Receipt; }
       let result: S14Receipt;
-      if (command.kind.startsWith("coding.")) {
+      if (command.kind.startsWith("git.")) {
+        result = this.git.apply(tx, command as GitCommand);
+      } else if (command.kind.startsWith("coding.")) {
         result = this.coding.apply(tx, command as CodingCommand);
       } else if (["bot.capabilities.propose", "bot.reenable.propose", "bot.capabilities.accept", "bot.retire", "bot.delete"].includes(command.kind)) {
         result = this.botLifecycle.apply(tx, command as BotLifecycleCommand);

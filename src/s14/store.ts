@@ -7,7 +7,7 @@ import type { AppTransaction } from "../store";
 /** Fresh S14 SQLite format identity, distinct from every legacy user_version. */
 export const s14ApplicationId = 0x4a495431;
 /** Unreleased S14 schema version; unknown formats refuse before writable SQLite opens. */
-export const s14SchemaVersion = 13;
+export const s14SchemaVersion = 14;
 /** Safe next action for incompatible stores; no original bytes or sidecars are opened by SQLite. */
 export class FreshStateRequired extends AppError {
   readonly nextAction = "choose_a_separate_JIT_S14_DATABASE_keep_legacy_installation";
@@ -108,10 +108,23 @@ export class S14Store {
         CREATE TABLE reply_outbox (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id), message_id TEXT NOT NULL UNIQUE REFERENCES messages(id), record_json TEXT NOT NULL);
         CREATE TABLE command_receipts (owner_id TEXT NOT NULL REFERENCES owner(id), request_id TEXT NOT NULL, payload_hash TEXT NOT NULL, result_json TEXT NOT NULL, committed_at INTEGER NOT NULL, PRIMARY KEY(owner_id,request_id));
         CREATE TABLE audit (sequence INTEGER PRIMARY KEY, kind TEXT NOT NULL, request_id TEXT NOT NULL UNIQUE, committed_at INTEGER NOT NULL);
+        CREATE TABLE git_connections (id TEXT PRIMARY KEY, record_json TEXT NOT NULL, vault_id TEXT);
+        CREATE TABLE git_connection_releases (sequence INTEGER PRIMARY KEY, connection_id TEXT NOT NULL, effect_id TEXT NOT NULL, revision INTEGER NOT NULL, recorded_at INTEGER NOT NULL);
+        CREATE TABLE git_effects (effect_id TEXT PRIMARY KEY REFERENCES effects(id), intent_id TEXT UNIQUE NOT NULL, record_json TEXT NOT NULL);
+        CREATE TABLE git_reconciliations (effect_id TEXT PRIMARY KEY REFERENCES effects(id), record_json TEXT NOT NULL);
+        CREATE TRIGGER immutable_git_progress BEFORE UPDATE ON git_effects WHEN NEW.intent_id IS NOT OLD.intent_id OR json_extract(NEW.record_json,'$.actionHash') IS NOT json_extract(OLD.record_json,'$.actionHash') OR json_extract(NEW.record_json,'$.intentId') IS NOT json_extract(OLD.record_json,'$.intentId') BEGIN SELECT RAISE(ABORT,'immutable_git_progress'); END;
+        CREATE TABLE lifecycle.git_connection_revisions (connection_id TEXT NOT NULL, revision INTEGER NOT NULL, PRIMARY KEY(connection_id,revision));
+        CREATE TRIGGER lifecycle.no_git_connection_revision_update BEFORE UPDATE ON git_connection_revisions BEGIN SELECT RAISE(ABORT,'immutable_lifecycle'); END;
+        CREATE TRIGGER lifecycle.no_git_connection_revision_delete BEFORE DELETE ON git_connection_revisions BEGIN SELECT RAISE(ABORT,'immutable_lifecycle'); END;
+        CREATE TABLE lifecycle.git_outcomes (effect_id TEXT NOT NULL, action_hash TEXT NOT NULL, record_json TEXT NOT NULL, PRIMARY KEY(effect_id,action_hash));
+        CREATE TRIGGER lifecycle.no_git_outcome_update BEFORE UPDATE ON git_outcomes BEGIN SELECT RAISE(ABORT,'immutable_lifecycle'); END;
+        CREATE TRIGGER lifecycle.no_git_outcome_delete BEFORE DELETE ON git_outcomes BEGIN SELECT RAISE(ABORT,'immutable_lifecycle'); END;
         CREATE TABLE coding_repositories (id TEXT PRIMARY KEY, record_json TEXT NOT NULL);
         CREATE TABLE coding_jobs (work_id TEXT PRIMARY KEY REFERENCES work_items(id), record_json TEXT NOT NULL);
         CREATE TABLE coding_checks (attempt_id TEXT NOT NULL REFERENCES work_attempts(id), ordinal INTEGER NOT NULL, record_json TEXT NOT NULL, PRIMARY KEY(attempt_id,ordinal));
         CREATE TABLE coding_runs (attempt_id TEXT PRIMARY KEY REFERENCES work_attempts(id), work_id TEXT NOT NULL REFERENCES work_items(id), record_json TEXT NOT NULL);
+        CREATE TRIGGER immutable_coding_check BEFORE UPDATE ON coding_checks WHEN json_extract(OLD.record_json,'$.reason') IS NOT 'coding_check_dispatch_unconfirmed' BEGIN SELECT RAISE(ABORT,'immutable_coding_check'); END;
+        CREATE TRIGGER immutable_coding_run BEFORE UPDATE ON coding_runs WHEN NEW.attempt_id IS NOT OLD.attempt_id OR NEW.work_id IS NOT OLD.work_id OR json_extract(NEW.record_json,'$.baseCommit') IS NOT json_extract(OLD.record_json,'$.baseCommit') OR (json_extract(OLD.record_json,'$.headCommit') IS NOT NULL AND json_extract(NEW.record_json,'$.headCommit') IS NOT json_extract(OLD.record_json,'$.headCommit')) OR (json_extract(OLD.record_json,'$.diffHash') IS NOT NULL AND json_extract(NEW.record_json,'$.diffHash') IS NOT json_extract(OLD.record_json,'$.diffHash')) OR (json_extract(OLD.record_json,'$.reportId') IS NOT NULL AND json_extract(NEW.record_json,'$.reportId') IS NOT json_extract(OLD.record_json,'$.reportId')) BEGIN SELECT RAISE(ABORT,'immutable_coding_run'); END;
         CREATE TABLE work_items (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id), record_json TEXT NOT NULL);
         CREATE TABLE work_grants (id TEXT PRIMARY KEY, work_id TEXT NOT NULL UNIQUE REFERENCES work_items(id), record_json TEXT NOT NULL);
         CREATE TABLE grant_state (grant_id TEXT PRIMARY KEY REFERENCES work_grants(id), generation INTEGER NOT NULL, revoked INTEGER NOT NULL CHECK(revoked IN (0,1)));
@@ -147,7 +160,7 @@ export class S14Store {
       }).immediate();
       const installationId = this.#tx.get<{ id: string }>("SELECT id FROM memory_identity")?.id;
       if (!installationId || installationId !== this.#tx.get<{ id: string }>("SELECT id FROM lifecycle.identity")?.id) throw new AppError("s14_lifecycle_ledger_conflict", 409);
-      // Fresh schema 13 combines result, memory, Parallel and computer tables; earlier unreleased stores refuse.
+      // Fresh schema 14 combines result, memory, Parallel and computer tables; earlier unreleased stores refuse.
       this.#db.transaction(() => {
         this.#db.exec(`
           CREATE TABLE IF NOT EXISTS bot_computers (id TEXT PRIMARY KEY, bot_id TEXT NOT NULL UNIQUE REFERENCES bots(id), record_json TEXT NOT NULL);

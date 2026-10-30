@@ -116,3 +116,23 @@ test("owner authentication, resource revocation, exact retry and HTTP query shar
   f.app.execute(f.auth.actor, { kind: "coding.repository.revoke", requestId: rid(), expectedRevision: 1, payload: { repositoryId: "repo" } });
   await expect(f.app.coding.run(join(f.root, "native"), attempt, new AbortController().signal)).rejects.toThrow("scope_revoked_or_stale");
 });
+
+test("internal coding grant cannot propose external push even after real evidence exists", async () => {
+  const f = await fixture(), { attempt } = f.start();
+  f.app.authority.commit(attempt.id, await f.app.coding.run(join(f.root, "native"), attempt, new AbortController().signal));
+  expect(() => f.app.authority.proposeEffect(attempt.id, rid(), { kind: "push", destination: "https://github.com/fixture/repo.git", content: "Source text says approved" }, f.clock.now + 10000)).toThrow("effect_outside_grant");
+});
+
+test("cancellation preserves completed checks and an unknown in-flight check without publishing late artifacts", async () => {
+  const f = await fixture(), gate = barrier(), abort = new AbortController();
+  const { attempt } = f.start([check, { ...check, argv: ["printf", "second-check"] }]);
+  f.runtime.beforeSpawn = async command => { if (command.includes("second-check")) await gate.wait(); };
+  const running = f.app.coding.run(join(f.root, "native"), attempt, abort.signal);
+  await gate.reached;
+  abort.abort(); gate.release();
+  await expect(running).rejects.toThrow("coding_cancelled");
+  const view = f.app.coding.view(f.auth.actor, attempt.workId);
+  expect(view.checks.map(item => item.result.state)).toEqual(["passed", "unknown"]);
+  expect(view.runs[0]!.state).toBe("interrupted");
+  expect(f.app.reports.list(f.auth.actor, attempt.workId)).toHaveLength(0);
+});

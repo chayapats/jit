@@ -52,6 +52,12 @@ export class CodingRuntimeFixture extends FakeComputerRuntime {
         const stat = lstatSync(join(this.local(p.path), name));
         return { name, type: stat.isSymbolicLink() ? "symlink" : stat.isDirectory() ? "directory" : "file" };
       }) };
+    } else if (p.op === "stat") {
+      const stat = lstatSync(this.local(p.path));
+      result = { type: stat.isFile() ? "file" : stat.isDirectory() ? "directory" : "other" };
+    } else if (p.op === "read") {
+      const bytes = readFileSync(this.local(p.path));
+      result = { data: bytes.subarray(p.offset, p.offset + p.length).toString("base64"), eof: p.offset + p.length >= bytes.length };
     } else if (p.op === "spawn") {
       await this.beforeSpawn?.(p.command);
       allowed();

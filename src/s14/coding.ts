@@ -33,7 +33,10 @@ export class S14Coding {
     if (command.kind === "coding.repository.grant") {
       const p = command.payload;
       exact(p, ["id", "botId", "url", "baseCommit"]);
-      identity(p.id); identity(p.botId); codingOrigin(p.url); codingCommit(p.baseCommit);
+      identity(p.id);
+      identity(p.botId);
+      codingOrigin(p.url);
+      codingCommit(p.baseCommit);
       const bot = record<Bot>(tx, "bots", p.botId);
       if (command.expectedRevision !== 0 || tx.get("SELECT 1 FROM coding_repositories WHERE id=?", p.id)) throw new AppError("stale_revision", 409);
       if (!bot.enabled || !this.app.policy.resources.includes(p.id) || !bot.capabilities.resources.includes(p.id) ||
@@ -204,7 +207,7 @@ export class S14Coding {
       const currentHead = codingGitOutput(await codingGit(backend, job.path, ["rev-parse", "HEAD"], signal)).trim();
       const dirty = codingGitOutput(await codingGit(backend, job.path, ["status", "--porcelain=v1", "--untracked-files=all"], signal));
       const diff = codingGitOutput(await codingGit(backend, job.path, ["diff", "--no-ext-diff", "--no-textconv", "--binary", job.repository.baseCommit, run.headCommit, "--"], signal));
-      if (containsCredential(diff)) throw new AppError("coding_diff_credential_refused", 403);
+      if (containsCredential(diff) || diff.includes("[credential-redacted]")) throw new AppError("coding_diff_credential_refused", 403);
       run.diffHash = artifactHash(new TextEncoder().encode(diff || "(empty diff)\n"));
       run.state = !dirty && currentHead === run.headCommit && job.tests.length > 0 && checks.every(check => check.state === "passed") ? "reviewable" : "partial";
       run.reason = dirty || currentHead !== run.headCommit ? "coding_changed_during_tests" : !job.tests.length ? "coding_tests_not_run" : checks.find(check => check.state !== "passed")?.reason ?? null;
