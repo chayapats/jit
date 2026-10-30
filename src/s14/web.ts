@@ -1,4 +1,9 @@
 import { AppError } from "../errors";
+import { scopeOptions } from "./scope-options";
+import { ownerSetupCsrf } from "../ops/owner-setup";
+import { ownerSetupPage } from "../web-owner-setup";
+import { withLocale } from "../i18n";
+import type { S14SignInCommand, S14SignInReceipt } from "./sign-in";
 import { negotiateLocale } from "../i18n";
 import type { S14Application, S14Command } from "./application";
 import type { Home, Policy } from "./types";
@@ -15,8 +20,20 @@ const escape = (v: string) => v.replaceAll("&", "&amp;").replaceAll("<", "&lt;")
 export const s14ContentSecurityPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
 const baseline: S14Renderer = p => `<html lang="${p.locale}"><meta charset="utf-8"><title>S14</title><body><pre>${escape(JSON.stringify({ state: p.state, work: p.work }, null, 2))}</pre><form method="post" action="/s14/commands"><input type="hidden" name="csrf" value="${p.csrf}"><label>Command<textarea name="command" required></textarea></label><button>Submit</button></form></body></html>`;
 
+/** Web command union keeps async device auth separate from synchronous product mutations. */
+export type S14WebCommand = S14Command | S14SignInCommand;
+
+/** Auth rendering seam for the UI agent; approval data exists only in the initial POST response. */
+export interface S14AuthRenderer {
+  /** `notice` is a safe refusal code for a form the same capability can still submit; it never carries what was typed. */
+  ownerSetup?(csrf: string, locale: "th" | "en", notice?: string | null): string;
+  /** Page for a refused setup link or post; without it the handler answers JSON. It offers no form, because the capability is not usable. */
+  ownerSetupRefused?(code: string, locale: "th" | "en"): string;
+  signIn?(receipt: S14SignInReceipt, csrf: string, revision: number, locale: "th" | "en"): string;
+}
+
 /** Shared HTTP/no-script seam with strict Host/Origin/session/CSRF checks and credential-free errors. */
-export function createS14Handler(app: S14Application, origin: string, render: S14Renderer = baseline, product?: S14Product): (request: Request) => Promise<Response> {
+export function createS14Handler(app: S14Application, origin: string, render: S14Renderer = baseline, product?: S14Product, authRender: S14AuthRenderer = {}): (request: Request) => Promise<Response> {
   const configured = new URL(origin), secure = configured.protocol === "https:", cookieName = secure ? "__Host-jit_s14" : "jit_s14";
   const respond = (body: string, status = 200, type = "application/json", extra: Record<string, string> = {}) => new Response(body, { status, headers: {
     "Content-Type": `${type}; charset=utf-8`, "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",
@@ -48,6 +65,29 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
       if (product && request.method === "GET" && url.pathname.startsWith("/assets/")) {
         const asset = product.asset(url.pathname); if (!asset) throw new AppError("not_found", 404);
         return new Response(asset.body, { headers: { "Content-Type": asset.contentType, "Cache-Control": "public, max-age=31536000, immutable", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Content-Security-Policy": s14ContentSecurityPolicy } });
+      }
+      if (url.pathname === "/owner/setup") {
+        const setupName = secure ? "__Host-jit_setup" : "jit_setup";
+        const setupCookie = (value: string, age: number) => `${setupName}=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${age}${secure ? "; Secure" : ""}`;
+        const linked = request.method === "GET" ? url.searchParams.get("token") : null;
+        const cookies = (request.headers.get("cookie") ?? "").split(";").map(s => s.trim()).filter(s => s.startsWith(`${setupName}=`));
+        const capability = linked ?? (cookies.length === 1 ? cookies[0]!.slice(setupName.length + 1) : "");
+        app.checkOwnerSetup(capability);
+        if (linked !== null) return redirect("/owner/setup", { "Set-Cookie": setupCookie(capability, 900), "Referrer-Policy": "no-referrer" });
+        const csrf = ownerSetupCsrf(capability);
+        if (request.method === "GET") return html(authRender.ownerSetup?.(csrf, browserLocale()) ?? withLocale(browserLocale(), () => ownerSetupPage(csrf)));
+        const fields = await body(request);
+        if (Object.keys(fields).sort().join() !== "confirm,csrf,password") throw new AppError("invalid_body");
+        app.verifyCsrf(csrf, fields.csrf);
+        // Fixable input keeps the same capability, so the page comes back with the cause and neither password.
+        const again = (code: string) => html(authRender.ownerSetup!(csrf, browserLocale(), code), 400);
+        if (typeof fields.password !== "string" || fields.password !== fields.confirm) { if (authRender.ownerSetup) return again("owner_setup_password_mismatch"); throw new AppError("owner_setup_password_mismatch"); }
+        try { await app.completeOwnerSetup(capability, fields.password); }
+        catch (error) { if (authRender.ownerSetup && error instanceof AppError && error.code === "password_length_12_to_256") return again(error.code); throw error; }
+        const token = await app.login(fields.password);
+        const response = redirect("/", { "Referrer-Policy": "no-referrer", "Set-Cookie": `${cookieName}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400${secure ? "; Secure" : ""}` });
+        response.headers.append("Set-Cookie", setupCookie("", 0));
+        return response;
       }
       if (url.pathname === "/s14/login") {
         if (product && request.method === "GET") return html(product.login(browserLocale(), null));
@@ -92,7 +132,7 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
         const p = await body(request), state = app.home(auth.actor); app.verifyCsrf(auth.csrf, p.csrf); next = product!.next(form, p);
         try { return redirect(product!.surface(app.execute(auth.actor, product!.command(form, p, auth.actor, state, signedInLocale(state))), p)); }
         catch (error) {
-          const recovered = error instanceof AppError ? product!.recover(form, p, error.code, auth.actor, app.home(auth.actor)) : null;
+          const recovered = error instanceof AppError ? await product!.recover(form, p, error.code, auth.actor, app.home(auth.actor)) : null;
           if (recovered) return view(app.home(auth.actor), recovered, (error as AppError).status);
           throw error;
         }
@@ -101,11 +141,18 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
         const p = await body(request); let command: unknown;
         if (url.pathname === "/s14/commands") { if (Object.keys(p).sort().join() !== "command,csrf") throw new AppError("invalid_body"); app.verifyCsrf(auth.csrf, p.csrf); if (typeof p.command !== "string") throw new AppError("invalid_body"); command = JSON.parse(p.command); if (product) next = product.next(null, command); }
         else { app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token")); command = p; }
+        if ((command as { kind?: string })?.kind?.startsWith("setup.sign_in")) {
+          const receipt = await app.signIns.execute(auth.actor, command as S14SignInCommand);
+          if (url.pathname === "/s14/commands" && authRender.signIn) return html(authRender.signIn(receipt, auth.csrf, app.home(auth.actor).revision, signedInLocale()));
+          return json(receipt);
+        }
         const receipt = app.execute(auth.actor, command as S14Command);
         if (url.pathname === "/s14/commands") return respond("", 303, "text/html", { Location: `/s14/receipts/${receipt.requestId}` });
         return json(receipt);
       }
       if (request.method !== "GET") throw new AppError("not_found", 404);
+      const review = /^\/api\/s14\/work\/([a-zA-Z0-9_-]+)\/report-review$/.exec(url.pathname);
+      if (review) return json(app.reports.review(auth.actor, review[1]!));
       const reports = /^\/api\/s14\/work\/([a-zA-Z0-9_-]+)\/reports$/.exec(url.pathname);
       if (reports) return json(app.reports.list(auth.actor, reports[1]!));
       const report = /^\/api\/s14\/reports\/([a-f0-9]{32})$/.exec(url.pathname);
@@ -126,6 +173,21 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
       const graph = /^\/api\/s14\/work\/([a-zA-Z0-9_-]+)\/graph$/.exec(url.pathname);
       if (graph) return json(app.graph.view(auth.actor, graph[1]!));
       if (url.pathname === "/api/s14/home") return json({ state: app.home(auth.actor), csrf: auth.csrf });
+      if (url.pathname === "/api/s14/providers") return json({ providers: await app.signIns.providers(auth.actor), revision: app.home(auth.actor).revision });
+      const signIn = /^\/(api\/)?s14\/sign-in\/(codex|grok)\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
+      if (signIn) {
+        const provider = signIn[2] as "codex" | "grok", flowId = signIn[3]!;
+        const state = app.signIns.status(auth.actor, provider, flowId);
+        if (!signIn[1] && authRender.signIn) return html(authRender.signIn({ kind: "setup.sign_in", requestId: flowId, provider, signIn: state }, auth.csrf, app.home(auth.actor).revision, signedInLocale()));
+        return json(state);
+      }
+      const decision = /^\/api\/s14\/decisions\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
+      if (decision) return json(app.memory.decision(auth.actor, decision[1]!));
+      if (url.pathname === "/api/s14/scopes") return json({ items: scopeOptions(app, auth.actor, url.searchParams.get("botId") ?? "") });
+      const eligible = /^\/api\/s14\/bots\/([a-zA-Z0-9_-]+)\/computer-work$/.exec(url.pathname);
+      if (eligible) return json({ items: app.computers.eligibleWork(auth.actor, eligible[1]!) });
+      const activity = /^\/api\/s14\/bots\/([a-zA-Z0-9_-]+)\/computer\/activity$/.exec(url.pathname);
+      if (activity) return json({ items: app.computers.activity(auth.actor, activity[1]!) });
       const inputReceipt = /^\/api\/s14\/computer-inputs\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
       if (inputReceipt) return json(app.computers.inputReceipt(auth.actor, inputReceipt[1]!));
       const computer = /^\/api\/s14\/bots\/([a-zA-Z0-9_-]+)\/computer(?:\/(image|events))?$/.exec(url.pathname);
@@ -162,11 +224,15 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
       if (conversation) return json(app.conversation(auth.actor, conversation[1]!));
       const receipt = /^\/(?:api\/)?s14\/receipts\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
       if (receipt) return app.store.read(tx => { app.requireOwner(tx, auth.actor); const r = tx.get<{ result_json: string }>("SELECT result_json FROM command_receipts WHERE owner_id='owner' AND request_id=?", receipt[1]!); if (!r) throw new AppError("not_found", 404); return page ? redirect(product!.surface(JSON.parse(r.result_json))) : json(JSON.parse(r.result_json)); });
-      if (page) { const state = app.home(auth.actor); return view(state, product!.view(url, auth.actor, state, signedInLocale(state))); }
-      if (url.pathname === "/") { const state = app.home(auth.actor); return respond(render({ state, work: app.authority.list(auth.actor), csrf: auth.csrf, locale: state.owner?.language ?? (request.headers.get("accept-language")?.startsWith("en") ? "en" : "th"), view: { kind: "more" }, overview: { views: [], effects: [], botStates: {}, computers: {} }, policy: app.policy, now: app.now() }), 200, "text/html"); }
+      if (page) { const state = app.home(auth.actor); return view(state, await product!.view(url, auth.actor, state, signedInLocale(state))); }
+      if (url.pathname === "/") { const state = app.home(auth.actor); return respond(render({ state, work: app.authority.list(auth.actor), csrf: auth.csrf, locale: state.owner?.language ?? (request.headers.get("accept-language")?.startsWith("en") ? "en" : "th"), view: { kind: "more", saved: false }, overview: { views: [], effects: [], botStates: {}, computers: {}, defaults: app.graph.defaults(auth.actor), lanes: {}, reports: {} }, policy: app.policy, now: app.now() }), 200, "text/html"); }
       throw new AppError("not_found", 404);
     } catch (error) {
       const code = error instanceof AppError ? error.code : "invalid_request", status = error instanceof AppError ? error.status : 400;
+      if (new URL(request.url).pathname === "/owner/setup") {
+        const refused = authRender.ownerSetupRefused?.(code, browserLocale());
+        return refused ? respond(refused, status, "text/html", { "Referrer-Policy": "no-referrer", Vary: "Accept-Language" }) : respond(JSON.stringify({ error: code }), status, "application/json", { "Referrer-Policy": "no-referrer" });
+      }
       if (!page) return json({ error: code }, status);
       if (code === "authentication_required" && request.method === "GET") return redirect("/s14/login");
       if (new URL(request.url).pathname === "/s14/login") return html(product!.login(browserLocale(), code), status);

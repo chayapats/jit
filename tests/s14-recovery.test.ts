@@ -7,7 +7,7 @@ import { record, save, S14Application, type S14Options } from "../src/s14/applic
 import { S14Store } from "../src/s14/store";
 import type { StartPayload } from "../src/s14/authority-types";
 import type { Bot } from "../src/s14/types";
-import type { WorkGraph } from "../src/s14/graph-types";
+import type { StepProposal, WorkGraph } from "../src/s14/graph-types";
 import type { NativeIntent, NativeRecoveryPort, ReconcileEffectCommand } from "../src/s14/recovery-types";
 import { nativeIntentPaths, schwayRecovery } from "../src/s14/native-recovery";
 import { replayPolicy } from "../src/s14/replay-policy";
@@ -18,7 +18,7 @@ const rid = () => crypto.randomUUID().replaceAll("-", "");
 const reference = (): HostSessionReference => ({ id: crypto.randomUUID(), branchId: "main" });
 const barrier = () => Promise.withResolvers<void>();
 afterEach(() => { for (const store of stores) store.close(); stores.clear(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
-async function fixture(tools: string[] = [], changes: Partial<StartPayload> = {}) {
+async function fixture(tools: string[] = [], changes: Partial<StartPayload> = {}, pendingNodes: StepProposal[] = []) {
   const root = mkdtempSync(join(tmpdir(), "jit-s14-recovery-")); roots.push(root);
   const path = join(root, "app.sqlite"), store = new S14Store(path); stores.add(store);
   const clock = { now: 1800000000000 };
@@ -34,7 +34,7 @@ async function fixture(tools: string[] = [], changes: Partial<StartPayload> = {}
   const workId = started.work!.id;
   const graph = store.read(tx => record<WorkGraph>(tx, "work_graphs", workId)), node = graph.nodes[0]!;
   node.calls = 2; node.outputBytes = 4096;
-  app.graph.propose(workId, graph.revision, [node]);
+  app.graph.propose(workId, graph.revision, [node, ...pendingNodes]);
   const { id: _id, handler: _handler, dependsOn: _dependsOn, ...input } = node;
   const attempt = app.authority.admit(workId, rid(), input);
   store.transaction(tx => {
@@ -177,6 +177,60 @@ test("boot metadata barrier blocks all worker admission until inventory settles"
   expect(app.recovery.view(actor).checkpoints[0]!.state).toBe("dispatched");
   release.resolve(); await boot;
   await app.authority.drain(); expect(runs).toBe(1);
+});
+
+test.each(["interrupted", "committed_with_queued_sibling", "committed_with_waiting_dependency"])("restart preserves queued graph work and dependency ordering after %s", async phase => {
+  const base = { botId: "jit", tools: [], scopes: [], calls: 2, outputBytes: 4096, input: "Continue bounded research" };
+  const sibling: StepProposal = { ...base, id: "queued", handler: "research", dependsOn: [] };
+  const synthesis: StepProposal = { ...base, id: "final", handler: "synthesis", dependsOn: phase === "committed_with_waiting_dependency" ? ["research_0"] : ["research_0", "queued"] };
+  const f = await fixture([], {}, phase === "committed_with_waiting_dependency" ? [synthesis] : [sibling, synthesis]);
+  const n = nativeFixture(); f.intent();
+  if (phase !== "interrupted") f.app.authority.commit(f.attempt.id, { state: "ready", text: "Previously committed producer" });
+  const before = f.app.authority.view(f.actor, f.workId).reservations;
+  const { app, actor } = f.reopen(); await app.recovery.boot(n.port);
+  expect(app.authority.view(actor, f.workId).work.state).toBe("queued");
+  expect(app.authority.view(actor, f.workId).reservations).toEqual(before);
+  const runs: string[] = [];
+  app.authority.options.executor = { async run(attempt) {
+    expect(app.recovery.booting).toBe(false);
+    expect(attempt.id).not.toBe(f.attempt.id);
+    const node = app.graph.view(actor, f.workId).steps.find(step => step.id === attempt.step!.id)!.nodeId;
+    runs.push(node);
+    if (node === "final") {
+      expect(attempt.step!.inputs).toHaveLength(synthesis.dependsOn.length);
+      expect(attempt.step!.gaps).toEqual([]);
+      for (const input of attempt.step!.inputs) expect(app.authority.view(actor, f.workId).results.some(result => result.attemptId === input.attemptId)).toBe(true);
+    }
+    return { state: "ready", text: `${node} committed` };
+  } };
+  await app.authority.drain();
+  expect(runs).toEqual(phase === "interrupted" ? ["research_0", "queued", "final"] : phase === "committed_with_queued_sibling" ? ["queued", "final"] : ["final"]);
+  expect(app.graph.view(actor, f.workId).steps.every(step => step.state === "committed")).toBe(true);
+  expect(app.authority.view(actor, f.workId).work.state).toBe("ready");
+  expect(app.authority.view(actor, f.workId).reservations!.attempts).toBe(before!.attempts + runs.length);
+});
+
+test("committed ingress and wake-up drains wait for the entire boot reconciliation including native close", async () => {
+  const f = await fixture(), n = nativeFixture(); f.intent();
+  const closing = barrier(), release = barrier();
+  const port: NativeRecoveryPort = { async open(intent) {
+    const host = await n.port.open(intent);
+    return { ...host, async close() { closing.resolve(); await release.promise; await host.close(); } };
+  } };
+  const { app, actor } = f.reopen(); let workRuns = 0, chatRuns = 0;
+  app.authority.options.executor = { async run() { expect(app.recovery.booting).toBe(false); workRuns++; return { state: "ready", text: "Safe fresh result" }; } };
+  app.options.chat = { async reply() { expect(app.recovery.booting).toBe(false); chatRuns++; return { text: "Fresh chat" }; } };
+  const boot = app.recovery.boot(port); await closing.promise;
+  app.execute(actor, { ...f.attempt.snapshot.grant.command, requestId: rid(), expectedRevision: app.conversation(actor, f.conversationId).conversation.revision });
+  app.execute(actor, { kind: "message.post", requestId: rid(), expectedRevision: app.conversation(actor, f.conversationId).conversation.revision,
+    payload: { conversationId: f.conversationId, text: "New committed owner ingress" } });
+  app.authority.wake();
+  await Promise.all([app.authority.drain(), app.authority.drain(), app.drainReplies()]);
+  expect(workRuns).toBe(0); expect(chatRuns).toBe(0);
+  expect(app.recovery.view(actor).checkpoints[0]!.state).toBe("dispatched");
+  release.resolve(); await boot;
+  await app.authority.drain();
+  expect(workRuns).toBe(2); expect(chatRuns).toBe(1);
 });
 
 test("crash after atomic artifact commit preserves one result/report and never replays it", async () => {

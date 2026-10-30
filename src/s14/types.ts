@@ -1,4 +1,6 @@
 import type { MemoryPacket } from "./memory-types";
+import type { OwnerCommand } from "./owner-commands";
+import type { ReplyUnavailableReason } from "./reply-failure";
 
 /** Non-secret exact owner-configured model selection; readiness is never inferred from configuration. */
 export interface Route { id: string; provider: "codex" | "grok"; model: string }
@@ -13,7 +15,7 @@ export interface Message { id: string; conversationId: string; role: "owner" | "
 /** Revisioned service-validated suggestion anchored to an actual Bot reply, with no granted capabilities. */
 export interface BotProposal { id: string; conversationId: string; messageId: string; revision: number; author: "bot" | "owner"; proposerBotId: string; state: "proposed" | "accepted" | "rejected"; name: string; responsibility: string; routeId: string | null; dropped: string[]; botId: string | null }
 /** Bounded chat outbox entry; interrupted inference is visible and never automatically replayed. */
-export interface Reply { id: string; conversationId: string; messageId: string; state: "queued" | "running" | "succeeded" | "blocked"; reason: string | null; snapshot: ChatInput }
+export interface Reply { id: string; conversationId: string; messageId: string; state: "queued" | "running" | "succeeded" | "blocked"; reason: string | null; /** Safe category only for reply_unavailable; older records without it mean unknown. */ unavailableReason?: ReplyUnavailableReason; snapshot: ChatInput }
 /** Immutable, credential-free chat input; this port cannot issue commands or access tools. */
 export interface ChatInput { route: Route; language: "th" | "en"; ownerName: string; bot: Bot; messages: Message[]; memory?: MemoryPacket }
 /** Untrusted model response; suggestions are data until exact owner acceptance. */
@@ -35,10 +37,10 @@ export type RejectBotCommand = Envelope<"bot.proposal.reject", { proposalId: str
 /** Owner edits append a proposal revision without changing or creating a permanent Bot. */
 export type ReviseBotCommand = Envelope<"bot.proposal.revise", { proposalId: string; name: string; responsibility: string; routeId: string }>;
 /** app.bots/v1 and app.conversations/v2 authenticated command union. */
-export type BotCommand = SetupCommand | MessageCommand | AcceptBotCommand | RejectBotCommand | ReviseBotCommand;
+export type BotCommand = SetupCommand | MessageCommand | AcceptBotCommand | RejectBotCommand | ReviseBotCommand | OwnerCommand;
 /** Atomic command result; duplicate retry keys return the original committed snapshot. */
-export interface BotReceipt { requestId: string; kind: BotCommand["kind"]; bot?: Bot; conversation?: Conversation; message?: Message; reply?: Reply; proposal?: BotProposal }
+export interface BotReceipt { requestId: string; kind: BotCommand["kind"]; bot?: Bot; conversation?: Conversation; message?: Message; reply?: Reply; proposal?: BotProposal; preferences?: { revision: number; language: "th" | "en"; theme: "system" | "light" | "dark" } }
 /** Owner query projection backing setup, chat, proposals and team, with exact mutation revisions. */
-export interface Home { revision: number; owner: { name: string; language: "th" | "en" } | null; routes: Route[]; bots: Bot[]; conversations: Conversation[]; proposals: BotProposal[]; replies: Reply[] }
+export interface Home { revision: number; owner: { name: string; language: "th" | "en"; theme?: "system" | "light" | "dark" } | null; routes: Route[]; bots: Bot[]; conversations: Conversation[]; proposals: BotProposal[]; replies: Reply[] }
 /** Immutable configured policy ceilings; configuration alone proves no live provider or host support. */
 export interface Policy { routes: Route[]; tools: string[]; resources: string[] }

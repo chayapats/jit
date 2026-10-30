@@ -316,7 +316,7 @@ export class S14Recovery {
           if (tx.get("SELECT 1 FROM effects WHERE work_id=? AND json_extract(record_json,'$.state')='unknown'", workId)) {
             work.state = "waiting";
             work.reason = "unknown_effect_reconcile_only";
-          } else if (steps.some(step => step.state === "queued")) {
+          } else if (steps.some(step => ["queued", "waiting_evidence"].includes(step.state))) {
             work.state = "queued";
             work.reason = "replay_safe_requeued";
           }

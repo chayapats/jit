@@ -6,10 +6,12 @@ import type { AppTransaction, TransactionStore } from "../store";
 const lifetimeMs = 15 * 60 * 1000;
 const tokenPattern = /^[a-f0-9]{64}$/;
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
-const setupPath = (store: TransactionStore) => `${store.path}.owner-setup.json`;
+/** Minimal bootstrap store shared by legacy and S14 without opening or converting either format. */
+export type OwnerSetupStore = Pick<TransactionStore, "path" | "transaction">;
+const setupPath = (store: OwnerSetupStore) => `${store.path}.owner-setup.json`;
 
 /** Checks a bootstrap capability without consuming it; only an installation without an owner accepts it. */
-export function requireOwnerSetup(store: TransactionStore, tx: AppTransaction, token: unknown, now: number): void {
+export function requireOwnerSetup(store: OwnerSetupStore, tx: AppTransaction, token: unknown, now: number): void {
   const denied = () => new AppError("owner_setup_link_invalid", 403);
   if (typeof token !== "string" || !tokenPattern.test(token) || tx.get("SELECT id FROM owner WHERE id = 'owner'")) throw denied();
   let fd: number | undefined;
@@ -29,7 +31,7 @@ export function requireOwnerSetup(store: TransactionStore, tx: AppTransaction, t
  * stores only its SHA-256 and 15-minute expiry in a 0600 sibling file (outside backups/exports), and returns
  * the sole printable URL. An existing owner is never reset or given a new capability. Caller must not log it.
  */
-export function issueOwnerSetupLink(store: TransactionStore, origin: string, now = Date.now()): string | null {
+export function issueOwnerSetupLink(store: OwnerSetupStore, origin: string, now = Date.now()): string | null {
   const url = new URL(origin);
   if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.pathname !== "/" || url.search || url.hash) throw new Error("invalid_setup_origin");
   return store.transaction(tx => {
@@ -46,7 +48,7 @@ export function issueOwnerSetupLink(store: TransactionStore, origin: string, now
 }
 
 /** Removes a consumed hash file; owner existence makes the capability unusable even if cleanup fails. */
-export function removeOwnerSetupLink(store: TransactionStore): void {
+export function removeOwnerSetupLink(store: OwnerSetupStore): void {
   try { rmSync(setupPath(store), { force: true }); } catch { /* The committed owner is the single-use fence. */ }
 }
 

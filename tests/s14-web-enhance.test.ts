@@ -175,3 +175,31 @@ test("owner lease expiry fences input and refreshes even without a revision chan
   expect(b.fetches).toBe(1);
   expect(b.current.get("s14-computer-screen")!.innerHTML).toBe("view only");
 });
+
+function signInBrowser(responses: { status: number; ok: boolean; state?: string }[]) {
+  const ticks: (() => Promise<void>)[] = [], replaced: string[] = [];
+  const signIn = { dataset: { signIn: "/api/s14/sign-in/codex/flow", signInPage: "/settings/provider?flow=flow" } };
+  const none = () => null;
+  runInNewContext(source, {
+    document: { documentElement: { dataset: {} }, body: { dataset: {} }, querySelector: (selector: string) => selector === "[data-sign-in]" ? signIn : null, querySelectorAll: () => [], getElementById: none, addEventListener() {} },
+    location: { replace: (url: string) => replaced.push(url) }, addEventListener() {},
+    fetch: async () => { const next = responses.shift()!; return { ...next, json: async () => ({ state: next.state }) }; },
+    setTimeout: (tick: () => Promise<void>) => ticks.push(tick),
+  });
+  return { ticks, replaced };
+}
+
+test("device sign-in keeps following through a transient read failure", async () => {
+  const { ticks, replaced } = signInBrowser([{ status: 503, ok: false }, { status: 200, ok: true, state: "ready" }]);
+  await ticks.shift()!();
+  expect(replaced).toEqual([]);
+  await ticks.shift()!();
+  expect(replaced).toEqual(["/settings/provider?flow=flow"]);
+});
+
+test("device sign-in leaves the waiting page when the session has expired", async () => {
+  const { ticks, replaced } = signInBrowser([{ status: 401, ok: false }]);
+  await ticks.shift()!();
+  expect(replaced).toEqual(["/settings/provider?flow=flow"]);
+  expect(ticks).toHaveLength(0);
+});

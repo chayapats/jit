@@ -120,18 +120,19 @@ test("legacy database/profile/backup/WAL bytes remain unchanged and CLI refuses 
   writeFileSync(join(root, "profile"), "private-profile"); writeFileSync(join(root, "backup"), "legacy-backup");
   const hash = () => Object.fromEntries(readdirSync(root).map(n => [n, createHash("sha256").update(readFileSync(join(root, n))).digest("hex")]));
   const before = hash(); expect(() => new S14Store(path)).toThrow("s14_fresh_state_required");
-  const child = Bun.spawn([process.execPath, "src/main.ts", "serve", "--s14"], { env: { ...process.env, JIT_S14_DATABASE: path }, stdout: "pipe", stderr: "pipe" });
+  const child = Bun.spawn([process.execPath, "src/main.ts", "serve", "--s14", "--no-refusal-page"], { env: { ...process.env, JIT_S14_DATABASE: path }, stdout: "pipe", stderr: "pipe" });
   const error = await new Response(child.stderr).text(); expect(await child.exited).toBe(1); expect(error).toContain("choose_a_separate_JIT_S14_DATABASE_keep_legacy_installation");
   expect(hash()).toEqual(before); db.close();
   const fresh = new S14Store(join(root, "fresh.sqlite")); expect(fresh).toBeDefined(); fresh.close();
 });
 
-test.each([1, 2, 3, 4, 5, 6, 7, 8, 9])("schema 10 retains result/computer/memory/web tables and refuses unreleased schema %i without altering it", version => {
+test.each([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])("schema 11 retains both branches' result/computer/memory/web/graph/report/sharing/recovery tables and refuses unreleased schema %i without altering it", version => {
   const root = mkdtempSync(join(tmpdir(), "jit-s14-schema-")); roots.push(root);
   const path = join(root, "s14.sqlite"), store = new S14Store(path);
-  expect(s14SchemaVersion).toBe(10);
+  expect(s14SchemaVersion).toBe(11);
   expect(store.read(tx => tx.all<{ name: string }>("PRAGMA table_info(work_results)")).map(c => c.name)).toContain("state");
   expect(store.read(tx => tx.all<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table'")).map(c => c.name)).toEqual(expect.arrayContaining(["work_results", "memory_sources", "memory_contexts", "web_reads", "external_evidence", "bot_computers", "input_leases", "computer_operations", "computer_inputs", "computer_attempts", "snapshot_shares", "native_intents", "work_checkpoints"]));
+  expect(store.read(tx => tx.all<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table'")).map(c => c.name)).toEqual(expect.arrayContaining(["reports", "report_reviews", "artifacts", "artifact_staging", "work_defaults", "work_graphs", "work_steps", "attempt_transports", "work_results", "memory_sources", "memory_contexts", "web_reads", "external_evidence", "bot_computers", "input_leases", "computer_operations", "computer_inputs", "computer_attempts", "computer_activity"]));
   store.close();
   const db = new Database(path); db.exec(`PRAGMA user_version=${version}`); db.close();
   const before = readFileSync(path);
