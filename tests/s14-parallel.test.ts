@@ -11,6 +11,8 @@ import { parallelEndpoint, publicWebUrl, type ParallelTimer, type ParallelTransp
 import { schwayResearch } from "../src/s14/research";
 import type { ParallelWebOptions } from "../src/s14/parallel";
 import type { Policy } from "../src/s14/types";
+import type { AuthorityOptions } from "../src/s14/authority-types";
+import { canonical, canonicalByteLimit } from "../src/s14/validation";
 import anonymous from "./fixtures/parallel/tools-anonymous.json";
 import authenticated from "./fixtures/parallel/tools-authenticated.json";
 import search from "./fixtures/parallel/search.json";
@@ -37,18 +39,19 @@ function protocol(change?: (event: Seen) => Response | undefined | Promise<Respo
   };
   return { transport, seen };
 }
-async function fixture(wire = protocol(), extra: Omit<ParallelWebOptions, "transport" | "vault"> = {}) {
+async function fixture(wire = protocol(), extra: Omit<ParallelWebOptions, "transport" | "vault"> = {}, runtime: { effects?: AuthorityOptions["effects"]; outputBytes?: number } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "jit-s14-parallel-"))); roots.push(root);
   const path = join(root, "state", "app.sqlite"), store = new S14Store(path); stores.add(store);
   const vault = new ConnectionVault(join(root, "vault"), { forbidden: [join(root, "state"), join(root, "native")] });
   const clock = { now: epoch };
-  const options = { policy, chat: { async reply() { return { text: "Fixture reply" }; } }, parallel: { transport: wire.transport, vault, ...extra }, now: () => clock.now };
+  const selectedPolicy = { ...policy, tools: [...policy.tools, ...Object.keys(runtime.effects ?? {}).map(kind => `effect_${kind}`)] }, outputBytes = runtime.outputBytes ?? 32768;
+  const options = { policy: selectedPolicy, authority: { ...(runtime.effects ? { effects: runtime.effects } : {}) }, chat: { async reply() { return { text: "Fixture reply" }; } }, parallel: { transport: wire.transport, vault, ...extra }, now: () => clock.now };
   const app = new S14Application(store, options);
   await app.provisionOwner(password); const token = await app.login(password), auth = app.authenticate(token);
-  const setup = app.execute(auth.actor, { kind: "setup", requestId: rid(), expectedRevision: 0, payload: { ownerName: "Owner", language: "en", routeId: "selected", capabilities: { tools: policy.tools, resources: [] } } });
+  const setup = app.execute(auth.actor, { kind: "setup", requestId: rid(), expectedRevision: 0, payload: { ownerName: "Owner", language: "en", routeId: "selected", capabilities: { tools: selectedPolicy.tools, resources: [] } } });
   const start = () => app.execute(auth.actor, { kind: "work.start", requestId: rid(), expectedRevision: app.conversation(auth.actor, setup.conversation!.id).conversation.revision,
-    payload: { conversationId: setup.conversation!.id, task: null, title: "Public research", purpose: "Read public facts", completionRule: "Evidence for review", bots: [{ id: "jit", revision: 1 }], tools: policy.tools, scopes: [], limits: { attempts: 1, steps: 1, calls: 16, outputBytes: 32768, wallMs: 60000 }, expiresAt: clock.now + 60000 } });
-  const started = start(), attempt = app.authority.admit(started.work!.id, rid(), { botId: "jit", tools: policy.tools, scopes: [], input: "Read public facts", calls: 16, outputBytes: 32768 });
+    payload: { conversationId: setup.conversation!.id, task: null, title: "Public research", purpose: "Read public facts", completionRule: "Evidence for review", bots: [{ id: "jit", revision: 1 }], tools: selectedPolicy.tools, scopes: [], limits: { attempts: 1, steps: 1, calls: 16, outputBytes, wallMs: 60000 }, expiresAt: clock.now + 60000 } });
+  const started = start(), attempt = app.authority.admit(started.work!.id, rid(), { botId: "jit", tools: selectedPolicy.tools, scopes: [], input: "Read public facts", calls: 16, outputBytes });
   return { root, path, store, vault, app, options, clock, auth, token, start, attempt, work: started.work!, conversationId: setup.conversation!.id, ...wire };
 }
 type F = Awaited<ReturnType<typeof fixture>>;
@@ -77,6 +80,39 @@ test("anonymous MCP discovery/search/fetch needs no key, offers only two trusted
   expect(f.store.read(tx => f.app.parallel.citation(tx, f.attempt.id, evidence.id, 1))).toEqual(evidence);
   expect(() => f.store.read(tx => f.app.parallel.citation(tx, f.attempt.id, evidence.id, 2))).toThrow("evidence_unavailable");
   expect(() => f.store.read(tx => f.app.parallel.citation(tx, "guessed_attempt", evidence.id, 1))).toThrow("not_found");
+});
+
+test.each(["deny", "succeeded", "unknown", "expired", "waiting"] as const)("1 MiB sourced results retain attempt IDs and citations through effect %s and lifecycle withdrawal", async outcome => {
+  const f = await fixture(protocol(), {}, { outputBytes: 1048576, effects: { send: async (_action, allowed) => { allowed(); return outcome === "unknown" ? "unknown" : "succeeded"; } } });
+  const memory = f.app.execute(f.auth.actor, { kind: "memory.remember", requestId: rid(), expectedRevision: f.app.conversation(f.auth.actor, f.conversationId).conversation.revision,
+    payload: { conversationId: f.conversationId, text: "Private retained research preference" } }).claim!;
+  f.app.authority.settle(f.attempt.id);
+  const work = f.start().work!, attempt = f.app.authority.admit(work.id, rid(), { botId: "jit", tools: [...policy.tools, "effect_send"], scopes: [], input: "Read public facts", calls: 16, outputBytes: 1048576 });
+  const read = await f.app.parallel.read(attempt.id, "web_search", { query: "public docs" }), evidence = read.evidence[0]!;
+  expect(read.outcome).toBe("success");
+  const effect = f.app.authority.proposeEffect(attempt.id, rid(), { kind: "send", destination: "https://recipient.invalid/exact", content: "Exact sourced result" }, epoch + 30000);
+  const prefix = `Evidence ${evidence.id}: `, body = prefix + "x".repeat(1048576 - Buffer.byteLength(prefix));
+  f.app.authority.commit(attempt.id, { state: outcome === "waiting" ? "waiting" : "ready", text: body });
+  expect(f.app.authority.view(f.auth.actor, work.id)).toMatchObject({ work: { state: "waiting", result: attempt.id }, results: [{ attemptId: attempt.id, text: body }] });
+  if (outcome === "expired") { f.clock.now += 30000; await f.app.authority.drain(); }
+  else {
+    const receipt = f.app.execute(f.auth.actor, { kind: "approval.decide", requestId: rid(), expectedRevision: effect.revision,
+      payload: { effectId: effect.id, actionHash: effect.actionHash, decision: outcome === "deny" ? "deny" : "approve" } });
+    expect(Buffer.byteLength(canonical(receipt))).toBeLessThan(canonicalByteLimit);
+    if (outcome !== "deny") await f.app.authority.runEffect(effect.id, effect.revision, effect.actionHash);
+  }
+  const view = f.app.authority.view(f.auth.actor, work.id);
+  expect(view.work).toMatchObject({ result: attempt.id, state: outcome === "unknown" || outcome === "waiting" ? "waiting" : "ready" });
+  expect(view.results).toEqual([{ attemptId: attempt.id, workId: work.id, text: body, state: outcome === "waiting" ? "waiting" : "ready", committedAt: epoch }]);
+  expect(f.store.read(tx => f.app.parallel.citation(tx, attempt.id, evidence.id, 1))).toEqual(evidence);
+  const app = new S14Application(f.store, f.options), actor = app.authenticate(f.token).actor;
+  expect(app.authority.view(actor, work.id).results).toEqual(view.results);
+  expect(f.store.read(tx => app.parallel.citation(tx, attempt.id, evidence.id, 1))).toEqual(evidence);
+  app.execute(actor, { kind: "memory.delete", requestId: rid(), expectedRevision: 1, payload: { claim: memory } });
+  expect(app.authority.view(actor, work.id)).toMatchObject({ work: { result: null, state: "blocked", reason: "memory_context_stale" }, results: [] });
+  expect(app.parallel.inspect(actor, work.id).evidence).toEqual([]);
+  expect(() => f.store.read(tx => app.parallel.citation(tx, attempt.id, evidence.id, 1))).toThrow("not_found");
+  if (outcome === "unknown") expect(app.authority.view(actor, work.id).effects[0]!.state).toBe("unknown");
 });
 
 test("optional authenticated key is explicit, vault-only, billed acknowledgement-bound and never an implicit fallback", async () => {

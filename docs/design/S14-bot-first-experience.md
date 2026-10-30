@@ -279,7 +279,8 @@ The UI uses one word for each state in all surfaces (**P**; states map to ADR 00
 | proposed | ข้อเสนอ | Proposed | strong outline | none |
 | accepted | รับแล้ว ยังไม่เริ่ม | Accepted, not started | neutral | none |
 | queued | รอคิว | Queued | neutral | hollow |
-| blocked | รอหลักฐาน | Waiting for evidence | neutral | hollow |
+| blocked | ติดขัด | Blocked | `--warn`, ! | `--warn` |
+| waiting for evidence | รอหลักฐาน | Waiting for evidence | neutral | hollow |
 | working | กำลังทำ | Working | strong outline | solid, breathing |
 | waiting | รอคุณ | Needs you | `--warn`, ! | `--warn` |
 | ready | พร้อมตรวจ | Ready for review | `--ok`, ✓ | `--ok` |
@@ -525,3 +526,33 @@ Checks run on the prototype without a browser:
 **Designer verification limit:** the designer did not render the prototype in a real browser; `happy-dom` does not evaluate actual layout. Parent subsequently rendered three sample states with `html_preview`: initial Thai/dark at 728 px, concurrent progress at 728 px and English/light report at 390 px, with no console messages. This is sample visual QA, not verification of every scene, container query, overflow, Thai line break or animation. Keyboard/focus was only partly exercised. No screen reader or real device has been used.
 
 **Limits of the prototype:** timeline marks have no hover tooltip; the table carries that detail. Keyboard ↑ ↓ in the ⌘K list, slip focus on arrival, attachments, and Bot retire and edit flows aren't built. Mobile mode simulates width, not touch input or safe areas.
+
+## 16. Product implementation refinements (BOT14-01, AUTH14-01)
+
+Author: Claude Opus 5.5 (`claude-opus-5-5`), requested at effort high; the session also showed an internal numeric value of 25, and no mapping from it is asserted. Date: 2026-10-30. Code: `src/s14/web-pages.ts`, `web-style.ts`, `web-enhance.js`, `web-product.ts`, `web-refusal.ts`.
+
+Real states required these changes to sections 1–12. Each is **P** and changes only the presentation of data the seam already has.
+
+| Area | Change | Why |
+| --- | --- | --- |
+| `blocked` word | Now ติดขัด / Blocked with `--warn`, its reason and "will not restart by itself". รอหลักฐาน stays reserved for a real evidence dependency, which the seam does not emit yet. | The seam's `blocked` means halted with a reason and nothing will resume, so "waiting" would be false. |
+| Pane below 1040 px | Replaces the conversation as a full page. No overlay, scrim or focus containment. | One server-rendered link works without script at every width, and there is no background to make inert. |
+| Work pane tabs | Plain links, Progress and Grant only. Arrow-key tabs are not used. | The other tabs have no data in this slice, and links keep one no-script path. |
+| Setup | Three steps: ตื่น, รู้จักกัน, ตั้งจิต. One form asks only name and language; a single route is inferred and several become a choice. | The seam has no device-code or persona step. |
+| Composer limits | Always-visible editable numbers instead of one line plus "ปรับ". | Without script a summary line could disagree with edited values. |
+| Concurrency limit | The editable value caps how many Bots the grant names, and a note says this build runs one at a time. | `WorkLimits` has no concurrency field, so the value cannot be pinned in the grant. It must not read as an enforced runtime limit. |
+| Reads limit | "40 reads" maps to `limits.calls`; attempts and steps equal the number of named Bots; output is a fixed 256 KiB. | The owner never sizes internals. |
+| To chip | A link to Team naming the current Bot. | The seam has one conversation per Bot and no create command. |
+| Ask-first card | A chip linking to the composer prefilled with the owner's message and work mode on. | It starts nothing. It sits only on the last reply and never beside an open slip (rule 6). |
+| Stale proposal | Earlier revisions appear as a closed list marked ไม่ใช่ฉบับล่าสุด, with no disabled button. | The current card is always the only one with controls. A stale tab is refused by the service and lands on a page linking the latest revision. |
+| Approval without an adapter | `supported: false` hides Approve and keeps Deny, with the reason in words. | Approving could never send. The service check remains the boundary. |
+| Unknown outcome | No "It arrived" or "It did not arrive" buttons. The card says the owner must check the destination and that this build cannot record the finding. | The seam has no reconcile command. A control that records nothing would be false. |
+| Task suggestion | No Dismiss. | The seam has no task rejection command. |
+| Task accepted | The start form sits in the same slip under a "Not started" banner, with its own limits. | Acceptance and start stay visibly separate presses. |
+| Refused posts | A refused composer re-renders with the text kept. Credential-shaped text is not echoed back. Other refusals land on a page with the cause and one way forward. | A stale revision must not cost the owner their typing. |
+| Refusal page | Explains after the CLI refusal when run with `--refusal-page`, shows the file name only, and has no counts. | It runs with no store open, unauthenticated, and has no form. Counts would need opening a legacy store. |
+| Theme and language | Theme follows the system. Language is chosen in setup. | The seam has no preference command. |
+
+**Q2 update:** the owner confirmed research defaults of 2 concurrent Bots, 30 minutes and 40 reads per work item on 2026-10-30, shown as editable values.
+
+**Verification:** rendering and form-contract tests in `tests/s14-web-ui.test.ts`. A real headless Chromium run covered the no-script journey (sign-in, setup, chat, proposal, task, start, stop) with real form posts, every approval state, and layouts at 360, 390, 430, 820, 1100, 1280 and 1400 px in both themes. No real phone, Safari, Firefox, screen reader or live model route has been used.

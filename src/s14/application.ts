@@ -4,7 +4,7 @@ import type { AppTransaction } from "../store";
 import { registerSecretFingerprint } from "../security/secret-fingerprints";
 import type { S14Store } from "./store";
 import type { Bot, BotCommand, BotProposal, BotReceipt, ChatInput, ChatPort, Conversation, Home, Message, OwnerActor, Policy, Reply } from "./types";
-import { canonical, capabilities, digest, exact, identity, integer, text } from "./validation";
+import { canonical, canonicalByteLimit, capabilities, digest, exact, identity, integer, text } from "./validation";
 import { ParallelWeb, type ParallelWebOptions } from "./parallel";
 import type { ParallelCommand, ParallelReceipt } from "./parallel-types";
 import { S14Memory } from "./memory";
@@ -203,16 +203,28 @@ export class S14Application {
       const message: Message = { id: id(), conversationId: conversation.id, role: "owner", text: text(p.text), createdAt: this.now() };
       tx.run("INSERT INTO messages(id,conversation_id,record_json) VALUES (?,?,?)", message.id, conversation.id, canonical(message));
       const owner = JSON.parse(tx.get<{ profile_json: string }>("SELECT profile_json FROM installation")!.profile_json) as { name: string; language: "th" | "en" };
-      const messages = tx.all<{ record_json: string }>("SELECT record_json FROM (SELECT sequence,record_json FROM messages WHERE conversation_id=? ORDER BY sequence DESC LIMIT 12) ORDER BY sequence", conversation.id).map(r => JSON.parse(r.record_json) as Message);
-      for (const item of messages) this.memory.source(tx, { id: item.id, botId: bot.id, conversationId: conversation.id, attribution: item.role === "owner" ? "owner" : "bot", text: item.text, derived: [] });
-      const availableMessages = messages.filter(item => !tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE kind='source' AND id=?", item.id));
+      const source = this.memory.source(tx, { id: message.id, botId: bot.id, conversationId: conversation.id, attribution: "owner", text: message.text, derived: [] });
       const memory = this.memory.assemble(tx, { botId: bot.id, conversationId: conversation.id, purpose: message.text,
-        sources: availableMessages.map(item => ({ id: item.id, revision: 1, generation: 1 })) });
-      const snapshot: ChatInput = { route: this.route(bot.routeId), bot, ownerName: owner.name, language: owner.language, messages: availableMessages, memory };
+        sources: [{ id: source.id, revision: source.revision, generation: source.generation }] });
+      const snapshot: ChatInput = { route: this.route(bot.routeId), bot, ownerName: owner.name, language: owner.language, messages: [message], memory };
       const reply: Reply = { id: id(), conversationId: conversation.id, messageId: message.id, state: "queued", reason: null, snapshot };
-      tx.run("INSERT INTO reply_outbox VALUES (?,?,?,?)", reply.id, conversation.id, message.id, canonical(reply));
       tx.run("UPDATE conversations SET revision=revision+1 WHERE id=?", conversation.id); conversation.revision++;
-      return { ...result, conversation, message, reply };
+      const receipt = { ...result, conversation, message, reply };
+      // Reserve the complete receipt, including pinned memory and the duplicated new message.
+      let remaining = canonicalByteLimit - Buffer.byteLength(canonical(receipt));
+      for (const row of tx.all<{ record_json: string }>("SELECT record_json FROM messages WHERE conversation_id=? AND id<>? AND NOT EXISTS (SELECT 1 FROM lifecycle.withdrawals WHERE kind='source' AND id=messages.id) ORDER BY sequence DESC LIMIT 11", conversation.id, message.id)) {
+        const prior = JSON.parse(row.record_json) as Message;
+        const candidate = { ...memory, sources: [{ id: prior.id, revision: 1, generation: 1 }, ...memory.sources] };
+        candidate.bytes = Buffer.byteLength(canonical(candidate));
+        const bytes = Buffer.byteLength(canonical(prior)) + 1 + Buffer.byteLength(canonical(candidate)) - Buffer.byteLength(canonical(memory));
+        if (bytes > remaining) break;
+        this.memory.source(tx, { id: prior.id, botId: bot.id, conversationId: conversation.id, attribution: prior.role === "owner" ? "owner" : "bot", text: prior.text, derived: [] });
+        memory.sources = candidate.sources; memory.bytes = candidate.bytes;
+        snapshot.messages.unshift(prior); remaining -= bytes;
+      }
+      save(tx, "memory_contexts", memory);
+      tx.run("INSERT INTO reply_outbox VALUES (?,?,?,?)", reply.id, conversation.id, message.id, canonical(reply));
+      return receipt;
     }
     if (["bot.proposal.accept", "bot.proposal.reject", "bot.proposal.revise"].includes(c.kind)) {
       const p = c.payload;

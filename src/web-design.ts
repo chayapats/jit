@@ -33,6 +33,8 @@ export const scaleTokens = Object.freeze({
   motion: Object.freeze({ ui: 160, panel: 240, breath: 4800, ceremony: 1600 }),
   chatWidth: 720,
   press: 0.97,
+  /** S14 shell (docs/design/S14-bot-first-experience.md section 8): sidebar, rail, work pane and the Bot tile corner. */
+  layout: Object.freeze({ nav: 264, rail: 64, pane: 520, tileRadius: "26%" }),
 });
 
 /** Shadows and scrims: the only rgba() literals in the UI (ui.token_lint/v1). */

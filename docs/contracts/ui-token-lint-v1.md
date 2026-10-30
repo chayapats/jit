@@ -4,7 +4,7 @@ Owner: Jit #112 (S10 UX04). Status: implemented. Spec: [S10](../specs/S10-reliab
 
 | Contract | Public entry and behavior |
 | --- | --- |
-| `ui.token_lint/v1` | `src/web-token-lint.ts`: `lintStyleSource(source, file)` parses each `prop: value` declaration across lines up to its terminating `;` or `}` (1-based start lines, skipping `/* … */` comments and `${ … }` interpolations) and returns `TokenLintViolation[]` (`{ file, line, rule, text }`). Every comma-separated item is checked. `tokenLintTargets` is `["src/web-style.ts"]`. `longMotionAllowlist` names the only animations allowed above 300 ms. `tests/web-token-lint.test.ts` runs it in CI and fails on any violation in the real stylesheet. |
+| `ui.token_lint/v1` | `src/web-token-lint.ts`: `lintStyleSource(source, file)` parses each `prop: value` declaration across lines up to its terminating `;` or `}` (1-based start lines, skipping `/* … */` comments and `${ … }` interpolations) and returns `TokenLintViolation[]` (`{ file, line, rule, text }`). Every comma-separated item is checked. `tokenLintTargets` is `["src/web-style.ts", "src/web-attachments-style.ts", "src/s14/web-style.ts"]`. `longMotionAllowlist` names the only animations allowed above 300 ms. `tests/web-token-lint.test.ts` runs it in CI and fails on any violation in the real stylesheet. |
 
 ## Rules
 

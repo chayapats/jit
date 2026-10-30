@@ -7,6 +7,7 @@ import { S14Store } from "../src/s14/store";
 import { createS14Handler } from "../src/s14/web";
 import type { Bot, ChatInput, ChatOutput, Policy } from "../src/s14/types";
 import type { MemoryClaim, MemoryPacket, MemoryRef } from "../src/s14/memory-types";
+import { canonical, canonicalByteLimit } from "../src/s14/validation";
 
 const roots: string[] = [], stores = new Set<S14Store>();
 const rid = () => crypto.randomUUID().replaceAll("-", "");
@@ -40,6 +41,48 @@ function claim(f: F, reference: MemoryRef, botId = "jit") { return f.store.read(
 function publish(f: F, reference: MemoryRef, expectedRevision = 1, kind: "memory.publish" | "memory.revoke" = "memory.publish") {
   return f.app.execute(f.auth.actor, { kind, requestId: rid(), expectedRevision, payload: { claim: reference } });
 }
+
+test.each(["ascii", "escaped", "unicode"])("chat shares the 128 KiB receipt budget with large memory and excludes withdrawn %s sources", async encoding => {
+  const body = encoding === "escaped" ? '"'.repeat(16384) : encoding === "unicode" ? "ก".repeat(5461) + "x" : "x".repeat(16384);
+  expect(Buffer.byteLength(body)).toBe(16384);
+  const f = await fixture(async () => ({ text: body }));
+  const withdrawn = post(f, body); await f.app.drainReplies();
+  const extraction = f.store.transaction(tx => f.app.memory.extract(tx, withdrawn.reply!.snapshot.memory!.id,
+    { id: withdrawn.message!.id, revision: 1, generation: 1 }, [{ kind: "inference", text: "Withdraw this source", quote: body.slice(0, 64), conflicts: [] }]));
+  expect(extraction.claims).toHaveLength(1);
+  f.app.execute(f.auth.actor, { kind: "memory.forget", requestId: rid(), expectedRevision: 1, payload: { claim: extraction.claims[0]! } });
+  const excludedIds = f.app.conversation(f.auth.actor, f.conversationId).messages.map(m => m.id);
+  remember(f, "Retained preference " + "p".repeat(880));
+  for (let i = 0; i < 3; i++) f.app.execute(f.auth.actor, { kind: "memory.decision.set", requestId: rid(), expectedRevision: 0,
+    payload: { conversationId: f.conversationId, key: `decision${i}`, text: `Pinned ${i} ` + "d".repeat(3991) } });
+  for (let i = 0; i < 9; i++) {
+    const command = { kind: "message.post" as const, requestId: rid(), expectedRevision: f.app.conversation(f.auth.actor, f.conversationId).conversation.revision,
+      payload: { conversationId: f.conversationId, text: i === 8 ? "newest" : body } };
+    const receipt = f.app.execute(f.auth.actor, command), snapshot = receipt.reply!.snapshot, memory = snapshot.memory!;
+    expect(f.app.execute(f.auth.actor, command)).toEqual(receipt);
+    expect(Buffer.byteLength(canonical(receipt))).toBeLessThanOrEqual(canonicalByteLimit);
+    expect(Buffer.byteLength(canonical(receipt.reply))).toBeLessThanOrEqual(canonicalByteLimit);
+    expect(Buffer.byteLength(canonical(memory))).toBeGreaterThan(14000);
+    expect(memory.decisions).toHaveLength(3);
+    expect(memory.sources).toEqual(snapshot.messages.map(m => ({ id: m.id, revision: 1, generation: 1 })));
+    for (const message of snapshot.messages) expect(f.store.read(tx => JSON.parse(tx.get<{ record_json: string }>("SELECT record_json FROM memory_sources WHERE id=?", message.id)!.record_json)))
+      .toMatchObject({ id: message.id, text: message.text, attribution: message.role === "owner" ? "owner" : "bot" });
+    expect(snapshot.messages.at(-1)).toEqual(receipt.message!);
+    expect(snapshot.messages.some(m => excludedIds.includes(m.id))).toBe(false);
+    expect(f.app.memory.context(f.auth.actor, memory.id)).toEqual(memory);
+    const eligible = f.app.conversation(f.auth.actor, f.conversationId).messages.filter(m => !excludedIds.includes(m.id));
+    expect(snapshot.messages).toEqual(eligible.slice(-snapshot.messages.length));
+    if (i >= 5) {
+      expect(snapshot.messages.length).toBeLessThan(12);
+      const next = eligible.at(-snapshot.messages.length - 1)!;
+      expect(() => canonical({ ...receipt, reply: { ...receipt.reply!, snapshot: { ...snapshot, messages: [next, ...snapshot.messages] } } })).toThrow("data_too_large");
+    }
+    await f.app.drainReplies();
+  }
+  expect(f.seen).toHaveLength(10);
+  expect(f.seen.at(-1)!.messages.at(-1)!.text).toBe("newest");
+  expect(f.app.home(f.auth.actor).replies.filter(r => r.messageId !== withdrawn.message!.id).every(r => r.state === "succeeded")).toBe(true);
+});
 
 test("scope filtering precedes relevance and guessed IDs; only exact authenticated owner publication shares facts", async () => {
   const f = await fixture(), reference = remember(f);
