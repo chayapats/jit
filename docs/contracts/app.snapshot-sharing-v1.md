@@ -1,0 +1,24 @@
+# app.snapshot-sharing/v1
+
+SHARE14-01 (#253), S14-AC05; FR-05/16/17/35/38/42; NFR-07/08/14. Consumes app.work-grants/v1, app.artifact-gateway/v1 and app.context-provenance/v2. Opt-in S14 schema **9** refuses unreleased schemas 1–8 with fresh-state. UI acceptance remains pending.
+
+Types: `src/s14/sharing-types.ts`; service: `S14Application.sharing:S14Sharing`. Owner commands use the existing authenticated receipt/audit/CSRF boundary:
+
+| Kind | Exact payload | expectedRevision |
+| --- | --- | --- |
+| `snapshot.share` | `{scopeId,target:{kind:'source'|'artifact',id,revision,generation},receiverBotId,workId:string|null,expiresAt}` | current receiver Bot revision |
+| `snapshot.revoke` | `{shareId}` | current share revision |
+
+`scopeId` is a previously configured resource slot, explicitly selected in the receiver Bot's capability ceiling. Production `JIT_S14_RESOURCES` is a JSON list of non-secret opaque slot IDs, default `[]`. This replaces the empty production scope source with persisted snapshot policy, while preserving the existing owner/Bot/work/resource intersection. Creating a share never edits Bot capabilities or starts work. The owner may pin an existing accepted task's work ID before starting it, or explicitly select null for receiver-scoped use in later grants. A share cannot be retargeted or forwarded; a different snapshot uses a new slot/command. Slot identities are not reused after revoke. Expiry is finite, at most 24 hours. Old request IDs return original receipts; changed retries and stale revisions refuse.
+
+`SnapshotShare` records target, original owner Bot, receiver, work, expiry, revision, active, source lineage and name/mediaType/size/sha256; it contains no bytes/path/profile/account. `ScopePolicy` pins the exact immutable target and copied-byte hash. The scope must also appear in the explicit work grant and captured/current receiver ceiling. Guessing an ID, conversation membership, a delegation or a model-proposed scope grants nothing.
+
+`S14Artifacts.snapshot(tx,target)` reads only a live exact source revision or delivered artifact (artifact content revision/generation 1/1). All copies pass common `validateArtifact`: portable UTF-8 text/Markdown/JSON, credential/type/hash/size checks. Sharing is bounded to **32 KiB per snapshot**, **64 KiB aggregate context**. No host path, mutable workspace read, browser profile, login, credential or volume mount is available. Larger delivered artifacts remain downloadable by the owner; sharing them is explicitly unavailable in this bounded slice.
+
+`sharing.sources(tx,attempt,conversationId):MemoryRef[]` creates receiver-bound lineage wrappers before context assembly. `sharing.context(tx,attempt):{share:SnapshotShare,content:string}[]` rechecks live attempt/grant/scope and copy integrity. `schwayResearch` supplies labelled untrusted copies in `shared-snapshots`. Derived sources retain wrapper ancestry, so all reads, context use, report/artifact publication and handoffs recheck original sharing. New shares of received/derived shared data refuse `snapshot_forward_refused`; third-Bot handoffs need the original exact receiver policy and therefore refuse. There is no transitive permission.
+
+Revoke records an independent `snapshot_share` tombstone and removes stored copy bytes. It retires affected memory packets, withdraws derived result/report/download content and requests cancellation only after commit. Native contexts use fresh sessions and retirement; REC14-01 adds restart discovery. Uncertain native retirement never restores app publication authority. Already disclosed knowledge **cannot be recalled**; revocation is not erasure at the model or recipient.
+
+`sharing.list(actor):ShareView[]` / `GET /api/s14/shares` returns owner-only `{share,state:'active'|'revoked'|'expired'|'unavailable',disclosedKnowledge:'cannot_recall'}`. Revocation survives stale application-image restore through the current independent lifecycle ledger; forgotten/deleted original source ancestry makes the copy unavailable. No query performs inference.
+
+Evidence: `tests/s14-sharing.test.ts` plus `tests/s14-reports.test.ts` common path/symlink/type/hash/size gateway fixtures. Linux cross-volume/profile isolation remains the BOX14-01 opt-in evidence gate. Opus F10/F11/F12 integration, device and accessibility acceptance remain unticked.

@@ -12,6 +12,8 @@ import type { MemoryCommand, MemoryReceipt } from "./memory-types";
 import { S14Authority, suggestTask } from "./authority";
 import type { AuthorityCommand, AuthorityOptions, AuthorityReceipt } from "./authority-types";
 import { S14Reports } from "./reports";
+import { S14Sharing } from "./sharing";
+import type { SharingCommand, SharingReceipt } from "./sharing-types";
 import { S14Artifacts } from "./artifacts";
 import { S14Graph } from "./graph";
 import type { GraphCommand, GraphReceipt } from "./graph-types";
@@ -19,9 +21,9 @@ import { S14Computers } from "./computer";
 import type { ComputerCommand, ComputerOptions, ComputerReceipt } from "./computer-types";
 
 /** Stable complete typed owner ingress union for the S14 logic foundation. */
-export type S14Command = BotCommand | AuthorityCommand | MemoryCommand | ParallelCommand | ComputerCommand | GraphCommand;
+export type S14Command = BotCommand | AuthorityCommand | MemoryCommand | ParallelCommand | ComputerCommand | GraphCommand | SharingCommand;
 /** Committed typed result of the S14 owner command boundary. */
-export type S14Receipt = BotReceipt | AuthorityReceipt | MemoryReceipt | ParallelReceipt | ComputerReceipt | GraphReceipt;
+export type S14Receipt = BotReceipt | AuthorityReceipt | MemoryReceipt | ParallelReceipt | ComputerReceipt | GraphReceipt | SharingReceipt;
 
 const id = () => crypto.randomUUID().replaceAll("-", "");
 const tokenPattern = /^[a-f0-9]{64}$/;
@@ -51,6 +53,7 @@ export class S14Application {
   readonly graph: S14Graph;
   readonly reports: S14Reports;
   readonly artifacts: S14Artifacts;
+  readonly sharing: S14Sharing;
   #actors = new WeakMap<OwnerActor, string>();
   #replyBusy = false;
   constructor(readonly store: S14Store, readonly options: S14Options) {
@@ -62,15 +65,16 @@ export class S14Application {
     }
     capabilities({ tools: this.policy.tools, resources: this.policy.resources }, this.policy);
     this.memory = new S14Memory(this);
+    this.sharing = new S14Sharing(this);
     const externalScopes = options.authority?.scopes;
     this.authority = new S14Authority(this, { ...options.authority, scopes: {
-      current: (tx, scope) => this.memory.scope(tx, scope) ?? externalScopes?.current(tx, scope) ?? null,
+      current: (tx, scope) => this.sharing.scope(tx, scope) ?? this.memory.scope(tx, scope) ?? externalScopes?.current(tx, scope) ?? null,
     } });
     this.graph = new S14Graph(this);
     this.parallel = new ParallelWeb(this, options.parallel);
     this.reports = new S14Reports(this);
     this.artifacts = new S14Artifacts(this);
-    this.store.transaction(tx => { this.memory.reconcile(tx); this.memory.fence(tx); this.parallel.reconcile(tx); this.reports.reconcile(tx); });
+    this.store.transaction(tx => { this.memory.reconcile(tx); this.sharing.fence(tx); this.parallel.reconcile(tx); this.reports.reconcile(tx); });
     this.computers = new S14Computers(this, options.computers);
   }
   /** Trusted local bootstrap creates only the authentication principal, never resets an existing installation. */
@@ -160,6 +164,8 @@ export class S14Application {
   execute(actor: OwnerActor, command: ComputerCommand): ComputerReceipt;
   /** Executes lane stops and future-work defaults without granting execution authority. */
   execute(actor: OwnerActor, command: GraphCommand): GraphReceipt;
+  /** Executes owner-only immutable sharing and revocation through the receipt boundary. */
+  execute(actor: OwnerActor, command: SharingCommand): SharingReceipt;
   /** Executes the complete typed HTTP command union without client-controlled actor identities. */
   execute(actor: OwnerActor, command: S14Command): S14Receipt;
   execute(actor: OwnerActor, command: S14Command): S14Receipt {
@@ -173,14 +179,16 @@ export class S14Application {
       const previous = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash,result_json FROM command_receipts WHERE owner_id='owner' AND request_id=?", command.requestId);
       if (previous) { if (previous.payload_hash !== digest(encoded)) throw new AppError("request_id_conflict", 409); return JSON.parse(previous.result_json) as S14Receipt; }
       let result: S14Receipt;
-      if (["work.step.stop", "work.defaults.set"].includes(command.kind)) {
+      if (command.kind.startsWith("snapshot.")) {
+        result = this.sharing.apply(tx, command as SharingCommand);
+      } else if (["work.step.stop", "work.defaults.set"].includes(command.kind)) {
         result = this.graph.apply(tx, command as GraphCommand);
       } else if (command.kind.startsWith("web.parallel.")) {
         result = this.parallel.apply(tx, command as ParallelCommand);
       } else if (command.kind.startsWith("memory.")) {
         result = this.memory.apply(tx, command as MemoryCommand);
         this.memory.reconcile(tx);
-        this.memory.fence(tx);
+        this.sharing.fence(tx);
         this.parallel.reconcile(tx);
       } else if (["computer.open", "computer.stop", "computer.reset", "computer.delete", "takeover.start", "takeover.end"].includes(command.kind)) {
         result = this.computers.apply(tx, command as ComputerCommand);

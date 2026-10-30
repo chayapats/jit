@@ -255,7 +255,7 @@ export class S14Authority {
     if (usage.attempts + 1 > grant.limits.attempts || usage.steps + 1 > grant.limits.steps || usage.calls + 1 > grant.limits.calls || usage.output_bytes + input.outputBytes > grant.limits.outputBytes || input.calls > grant.limits.calls) throw new AppError("budget_exhausted", 409);
     const attempt: Attempt = { id: id(), workId, requestId, parentId, snapshot: { grant, bot, route, tools: structuredClone(input.tools), scopes: structuredClone(scopes), input: purpose, calls: input.calls, outputBytes: input.outputBytes }, state: "running", reason: null, createdAt: this.app.now() };
     tx.run("INSERT INTO work_attempts VALUES (?,?,?,?,?)", attempt.id, workId, requestId, payloadHash, canonical(attempt));
-    const sources = this.app.memory.workSources(tx, work);
+    const sources = [...this.app.memory.workSources(tx, work), ...this.app.sharing.sources(tx, attempt, work.conversationId)];
     if (parent) {
       const parentPacket = this.app.memory.attemptPacket(tx, parent.id);
       const handoff = this.app.memory.source(tx, { id: id(), botId: parent.snapshot.bot.id, conversationId: work.conversationId, attribution: "bot", text: purpose, ...this.app.memory.derive(tx, parentPacket) });

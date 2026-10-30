@@ -60,6 +60,7 @@ export class S14Memory {
       const row = tx.get<{ record_json: string }>("SELECT record_json FROM memory_sources WHERE id=?", r.id);
       const item = row ? JSON.parse(row.record_json) as MemorySource : null;
       if (!item || !same(item, r) || item.text === null || this.withdrawn(tx, "source", r.id) || item.derived.length > 0 && item.access === undefined || !this.accessCurrent(tx, item.botId, item.access ?? [])) return false;
+      if (item.snapshotShare && !this.app.sharing.current(tx, item.snapshotShare)) return false;
       pending.push(...item.derived);
     }
     return true;
@@ -245,6 +246,7 @@ export class S14Memory {
       if (seen.has(next.id)) continue;
       seen.add(next.id);
       const item = record<MemorySource>(tx, "memory_sources", next.id);
+      if (item.snapshotShare && !this.app.sharing.permits(tx, item.snapshotShare, receiver)) return false;
       for (const pin of item.access ?? []) {
         const claim = record<MemoryClaim>(tx, "memory_claims", pin.id);
         if (this.lookup(tx, receiver.snapshot.bot.id, ref(claim), receiver).state !== "available") return false;

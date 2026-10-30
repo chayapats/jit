@@ -6,6 +6,9 @@ import { containsCredential } from "../security/credentials";
 import type { AppTransaction } from "../store";
 import { type S14Application } from "./application";
 import type { Attempt } from "./authority-types";
+import type { SnapshotTarget } from "./sharing-types";
+import type { MemoryRef, MemorySource } from "./memory-types";
+import { record } from "./application";
 import type { Artifact, ArtifactRequest, StagedArtifact } from "./report-types";
 import type { OwnerActor } from "./types";
 import { canonical, exact, identity, integer } from "./validation";
@@ -110,6 +113,38 @@ export class S14Artifacts {
       validateArtifact(row.content, artifact, 1048576);
       return { artifact, bytes: new Uint8Array(row.content) };
     });
+  }
+
+  /** Copies one exact live source or delivered artifact through the common bounded integrity gateway. */
+  snapshot(tx: AppTransaction, target: SnapshotTarget): { ownerBotId: string; source: MemoryRef; name: string; mediaType: Artifact["mediaType"]; size: number; sha256: string; bytes: Uint8Array } {
+    let bytes: Uint8Array, name: string, mediaType: Artifact["mediaType"], source: MemoryRef;
+    if (target.kind === "artifact") {
+      this.app.reports.reconcile(tx);
+      const row = tx.get<{ record_json: string; content: Uint8Array | null }>("SELECT record_json,content FROM artifacts WHERE id=?", target.id);
+      if (!row?.content || target.revision !== 1 || target.generation !== 1) throw new AppError("snapshot_unavailable", 403);
+      const artifact = JSON.parse(row.record_json) as Artifact;
+      if (this.app.reports.read(tx, artifact.reportId).state !== "available") throw new AppError("snapshot_unavailable", 403);
+      validateArtifact(row.content, artifact, 32768);
+      bytes = new Uint8Array(row.content); name = artifact.name; mediaType = artifact.mediaType; source = artifact.source;
+    } else if (target.kind === "source") {
+      const original = record<MemorySource>(tx, "memory_sources", target.id);
+      if (!this.app.memory.sourceCurrent(tx, target)) throw new AppError("snapshot_unavailable", 403);
+      bytes = new TextEncoder().encode(original.text!); name = "source.txt"; mediaType = "text/plain";
+      source = { id: original.id, revision: original.revision, generation: original.generation };
+    } else throw new AppError("snapshot_type_refused", 403);
+    // Owner sharing is nontransitive: a received or derived shared copy cannot be forwarded as a new source.
+    const pending = [source], seen = new Set<string>();
+    while (pending.length) {
+      const next = pending.pop()!;
+      if (seen.has(next.id)) continue;
+      seen.add(next.id);
+      const item = record<MemorySource>(tx, "memory_sources", next.id);
+      if (item.snapshotShare || item.access?.some(pin => pin.shareId !== null)) throw new AppError("snapshot_forward_refused", 403);
+      pending.push(...item.derived);
+    }
+    const metadata = { name, mediaType, size: bytes.length, sha256: artifactHash(bytes) };
+    validateArtifact(bytes, metadata, 32768);
+    return { ...metadata, bytes, source, ownerBotId: record<MemorySource>(tx, "memory_sources", source.id).botId };
   }
 
   /** Purges unreachable private staging after settlement; it never deletes a delivered artifact. */

@@ -120,6 +120,7 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
           "Content-Digest": `sha-256=:${Buffer.from(artifact.sha256, "hex").toString("base64")}:`,
         } });
       }
+      if (url.pathname === "/api/s14/shares") return json(app.sharing.list(auth.actor));
       if (url.pathname === "/api/s14/work-defaults") return json(app.graph.defaults(auth.actor));
       const graph = /^\/api\/s14\/work\/([a-zA-Z0-9_-]+)\/graph$/.exec(url.pathname);
       if (graph) return json(app.graph.view(auth.actor, graph[1]!));
