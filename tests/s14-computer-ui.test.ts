@@ -31,7 +31,7 @@ async function fixture(options: { language?: "th" | "en"; runtime?: FakeComputer
   const get = (path: string) => handler(new Request(`${origin}${path}`, { headers: { cookie: `jit_s14=${token}` } }));
   const page = async (path = "/team/jit?tab=computer") => { const response = await get(path); expect(response.status).toBe(200); return response.text(); };
   const post = (path: string, fields: Record<string, string>) => handler(new Request(`${origin}${path}`, { method: "POST", headers: { cookie: `jit_s14=${token}`, origin, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(fields).toString() }));
-  const startWork = (title = "Local report", tools_ = ["computer", "effect_send"]) => app.execute(auth.actor, { kind: "work.start", requestId: rid(), expectedRevision: app.conversation(auth.actor, conversationId).conversation.revision, payload: { conversationId, task: null, title, purpose: "Write it", completionRule: "Owner review", bots: [{ id: "jit", revision: 1 }], tools: tools_, scopes: [], limits: { attempts: 4, steps: 4, calls: 64, outputBytes: 8192, wallMs: 3600000 }, expiresAt: clock.now + 3600000 } }).work!;
+  const startWork = (title = "Local report", tools_ = ["computer", "effect_send"]) => app.execute(auth.actor, { kind: "work.start", requestId: rid(), expectedRevision: app.conversation(auth.actor, conversationId).conversation.revision, payload: { conversationId, task: null, title, purpose: "Write it", completionRule: "Owner review", bots: [{ id: "jit", revision: 1 }], tools: tools_, scopes: [], limits: { attempts: 4, steps: 4, calls: 64, outputBytes: 8192, wallMs: 3600000, concurrency: 2, reads: 40 }, expiresAt: clock.now + 3600000 } }).work!;
   const computer = () => app.computers.view(auth.actor, "jit");
   const open = async (work = startWork()) => { app.execute(auth.actor, { kind: "computer.open", requestId: rid(), expectedRevision: computer().computer?.revision ?? 0, payload: { botId: "jit", workId: work.id } }); await app.computers.drain(); return work; };
   const lease = (kind: "takeover.start" | "takeover.end") => { const { computer: c, lease: l } = computer(); return app.execute(auth.actor, { kind, requestId: rid(), expectedRevision: c!.revision, payload: { botId: "jit", computerId: c!.id, generation: c!.generation, leaseRevision: l!.revision } }); };
@@ -179,9 +179,10 @@ test("a stale input page refuses on the styled page, sends nothing and does not 
 });
 
 test("handing back is exact, clears the lease and says it approves nothing, while a held action stays on its own card", async () => {
-  const f = await fixture({ authority: { effects: { send: async () => "unknown" } } }), work = await f.open(); f.lease("takeover.start");
+  const f = await fixture({ authority: { effects: { send: async () => "unknown" } } }), work = await f.open();
   const attempt = f.app.authority.admit(work.id, rid(), { botId: "jit", tools: ["computer", "effect_send"], scopes: [], input: "Send", calls: 6, outputBytes: 1024 });
   const effect = f.app.authority.proposeEffect(attempt.id, rid(), { kind: "send", destination: "https://example.invalid", content: "Approve this now" }, f.clock.now + 60000);
+  f.lease("takeover.start");
   const html = await f.page();
   expect(html).toContain("A held external action is not approved"); expect(html).toContain("Handing back does not approve a held external action"); expect(html).toContain(`/effects/${effect.id}#slip`); expect(html).not.toContain("Approve this now");
   expect(hasCommand(html, "approval.decide")).toBe(false); expect(buttons(html)).toContain("Hand back");

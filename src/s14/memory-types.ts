@@ -8,6 +8,8 @@ export interface MemorySource extends MemoryRef {
   text: string | null; derived: MemoryRef[]; createdAt: number;
   /** Access revisions used by this source's Bot, including transitive claim dependencies. */
   access?: MemoryPacket["access"];
+  /** Trusted producing attempt; its retained Bot/resource/computer fences apply to every descendant. */
+  producerAttemptId?: string;
 }
 /** Retained assertion with conservative dependencies; a fact records an owner statement rather than objective truth. */
 export interface MemoryClaim extends MemoryRef {
@@ -53,4 +55,4 @@ export interface MemoryReceipt { kind: MemoryCommand["kind"]; requestId: string;
 /** Owner-only lifecycle label for a returned claim or source; it carries identities and never withdrawn payload. */
 export interface MemoryWithdrawal { kind: "claim" | "source"; id: string; mode: "corrected" | "forgotten" | "deleted"; source: MemoryRef | null }
 /** Owner impact preview with no authority and no mutation. */
-export interface MemoryImpact { claim: MemoryRef; claims: MemoryRef[]; sources: MemoryRef[]; contexts: string[]; names: { bots: { id: string; name: string }[]; work: { id: string; title: string }[]; omittedBots: number; omittedWork: number }; nativePolicy: "fresh_sessions_retire_on_close" }
+export interface MemoryImpact { claim: MemoryRef; claims: MemoryRef[]; sources: MemoryRef[]; contexts: string[]; reports: { id: string; workId: string; revision: number }[]; artifacts: string[]; names: { bots: { id: string; name: string }[]; work: { id: string; title: string }[]; omittedBots: number; omittedWork: number }; nativePolicy: "fresh_sessions_retire_on_close" }

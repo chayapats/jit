@@ -15,6 +15,10 @@ import { renderFailure, renderRefusal, renderS14 } from "../src/s14/web-pages";
 import { createS14Product } from "../src/s14/web-product";
 import { createS14RefusalHandler } from "../src/s14/web-refusal";
 import { ReplyUnavailable } from "../src/s14/reply-failure";
+import { schwayChat } from "../src/s14/chat";
+import { schwayResearch } from "../src/s14/research";
+import type { Attempt } from "../src/s14/authority-types";
+import type { ReportProposal } from "../src/s14/report-types";
 import { accessibilityProblems } from "./fixtures/a11y";
 import anonymous from "./fixtures/parallel/tools-anonymous.json";
 import fetchResult from "./fixtures/parallel/fetch.json";
@@ -74,7 +78,7 @@ async function fresh(options: { fetch?: HostAuthFetch } = {}) {
   const absorb = (response: Response) => { for (const line of response.headers.getSetCookie()) { const [pair] = line.split(";"), at = pair!.indexOf("="); if (line.includes("Max-Age=0")) cookies.delete(pair!.slice(0, at)); else cookies.set(pair!.slice(0, at), pair!.slice(at + 1)); } return response; };
   const get = async (path: string, locale = "th") => absorb(await handler(new Request(origin + path, { headers: { cookie: jar(), "accept-language": locale } })));
   const post = async (path: string, body: Record<string, string>, locale = "th") => absorb(await handler(new Request(origin + path, { method: "POST", headers: { cookie: jar(), origin, "accept-language": locale, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(body).toString() })));
-  return { app, store, clock, state, credentials, handler, get, post, link: () => new URL(issueOwnerSetupLink(store, origin, clock.now)!), cookies };
+  return { root, app, store, clock, state, credentials, handler, get, post, link: () => new URL(issueOwnerSetupLink(store, origin, clock.now)!), cookies };
 }
 const settle = async (f: { credentials: Map<string, string> }) => { for (let i = 0; i < 400 && !f.credentials.size; i++) await Bun.sleep(5); };
 
@@ -91,12 +95,12 @@ async function ready(language: "th" | "en" = "en", options: { tools?: string[]; 
   const page = async (path: string) => { const response = await get(path); expect(response.status).toBe(200); return response.text(); };
   const post = (path: string, body: Record<string, string>) => handler(new Request(origin + path, { method: "POST", headers: { cookie: `jit_s14=${token}`, origin, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(body).toString() }));
   const revision = () => app.conversation(auth.actor, conversationId).conversation.revision;
-  const start = (title = "Compare", granted: string[] = ["web_search"], attempts = options.attempts ?? 4) => app.execute(auth.actor, { kind: "work.start", requestId: rid(), expectedRevision: revision(), payload: { conversationId, task: null, title, purpose: `${title} purpose`, completionRule: "Owner review", bots: [{ id: "jit", revision: 1 }], tools: granted, scopes: [], limits: { attempts, steps: attempts, calls: 20, outputBytes: 32768, wallMs: 3600000 }, expiresAt: clock.now + 3600000 } }).work!;
+  const start = (title = "Compare", granted: string[] = ["web_search"], attempts = options.attempts ?? 4) => app.execute(auth.actor, { kind: "work.start", requestId: rid(), expectedRevision: revision(), payload: { conversationId, task: null, title, purpose: `${title} purpose`, completionRule: "Owner review", bots: [{ id: "jit", revision: 1 }], tools: granted, scopes: [], limits: { attempts, steps: attempts, calls: 20, concurrency: 2, reads: 40, outputBytes: 32768, wallMs: 3600000 }, expiresAt: clock.now + 3600000 } }).work!;
   const stopped = (work: { id: string }, text: string, state: "ready" | "waiting" = "waiting", calls = 2) => { const attempt = app.authority.admit(work.id, rid(), { botId: "jit", tools: ["web_search"], scopes: [], input: "x", calls, outputBytes: 4096 }); return { attempt, commit: () => app.authority.commit(attempt.id, { state, text }) }; };
   return { app, store, clock, auth, handler, get, page, post, conversationId, start, stopped, revision, words: dictionaries[language] };
 }
 
-test("the fresh journey runs with no script and no shell: link, password, provider, device code, name, first reply", async () => {
+async function firstConversation() {
   const f = await fresh(), words = dictionaries.th, link = f.link();
   const opened = await f.get(link.pathname + link.search); expect(opened.status).toBe(303); expect(opened.headers.get("location")).toBe("/owner/setup"); expect(opened.headers.get("location")).not.toContain("token");
   const setupPage = await (await f.get("/owner/setup")).text(); strict(setupPage, "th"); clean(setupPage, "th");
@@ -139,6 +143,118 @@ test("the fresh journey runs with no script and no shell: link, password, provid
   await f.app.drainReplies();
   const chat = await (await f.get(sent.headers.get("location")!.replace("#latest", ""))).text();
   expect(chat).toContain("สวัสดีจิต"); expect(chat).toMatch(/s-bot-text">สวัสดี</); expect(f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) n FROM work_items")!.n)).toBe(0);
+  return { ...f, conversationId: compose.conversationId! };
+}
+
+test("the fresh journey runs with no script and no shell: link, password, provider, device code, name, first reply", async () => {
+  await firstConversation();
+});
+
+test("zero-config first run and fake-store sign-in reach two overlapping Bot hosts, a cited report, review and private downloads", async () => {
+  const f = await firstConversation(), auth = f.app.authenticate(f.cookies.get("jit_s14")!);
+  expect(f.app.policy.routes).toEqual(supportedS14Routes());
+  expect(f.app.authority.schedulerLimits).toEqual({ global: 2, route: 2, bot: 1, computer: 2 });
+  const more = await (await f.get("/more")).text();
+  for (const path of ["/settings/provider", "/settings/web", "/settings/work"]) {
+    expect(more).toContain(`href="${path}"`);
+    expect((await f.get(path)).status).toBe(200);
+  }
+  const settings = await (await f.get("/settings/work")).text();
+  const defaults = await f.post("/s14/forms/work-defaults", { ...fields(formsFor(settings, "/s14/forms/work-defaults")[0]!), concurrent: "2", minutes: "30", reads: "40" });
+  expect(defaults.status).toBe(303);
+  expect(defaults.headers.get("location")).toStartWith("/settings/work?receipt=");
+
+  // Both chat and research use real public Schway hosts; only model output and external services are fixtures.
+  const prompts: string[] = [];
+  f.app.options.chat = schwayChat(join(f.root, "native"), { provider: "scripted", id: "first-team-chat", async *stream(request) {
+    prompts.push(JSON.stringify(request));
+    yield { type: "message_complete", message: { type: "assistant", id: rid(), content: [{ type: "text", text: JSON.stringify({ text: "A second researcher can help", proposal: { name: "Scout", responsibility: "Independent public research", routeId: "codex" } }) }] } };
+  } });
+  const chat = await (await f.get(`/chats/${f.conversationId}`)).text();
+  expect((await f.post("/s14/forms/compose", { ...fields(formsFor(chat, "/s14/forms/compose")[0]!), text: "Suggest a research Bot" })).status).toBe(303);
+  await f.app.drainReplies();
+  const proposal = f.app.conversation(auth.actor, f.conversationId).proposals[0]!;
+  expect(f.app.home(auth.actor).bots).toHaveLength(1);
+  const proposalPage = await (await f.get(`/proposals/${proposal.id}`)).text();
+  const accepted = await f.post("/s14/forms/proposal-accept", { ...fields(formsFor(proposalPage, "/s14/forms/proposal-accept")[0]!), "tool:web_fetch": "on" });
+  expect(accepted.status).toBe(303);
+  const scout = f.app.home(auth.actor).bots.find(bot => bot.id !== "jit")!;
+  expect(scout.routeId).toBe("codex");
+  expect(f.store.read(tx => tx.get("SELECT id FROM work_grants"))).toBeNull();
+
+  f.app.parallel.options.transport = transport;
+  const both = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(), seen: Attempt[] = [];
+  let researchStreams = 0;
+  f.app.authority.options.executor = { async run(attempt, signal) {
+    seen.push(attempt);
+    if (attempt.step!.handler === "research") {
+      const read = await f.app.parallel.read(attempt.id, "web_fetch", { url: "https://example.com/article", fullContent: true }, signal);
+      expect(read.evidence).toHaveLength(1);
+    }
+    return schwayResearch(join(f.root, "native"), f.app, { provider: "scripted", id: "first-team-research", async *stream(request) {
+      prompts.push(JSON.stringify(request));
+      let output: { text: string; report?: ReportProposal } = { text: `Committed evidence from ${attempt.snapshot.bot.id}` };
+      if (attempt.step!.handler === "research") {
+        if (++researchStreams === 2) both.resolve();
+        await release.promise;
+      } else {
+        expect(attempt.step!.inputs).toHaveLength(2);
+        expect(attempt.step!.gaps).toEqual([]);
+        expect(attempt.snapshot.tools).toEqual([]);
+        output = { text: "Report from committed team evidence", report: {
+          title: "Team research", claims: attempt.step!.inputs.flatMap((input, index) => input.evidence.map(source => ({
+            id: `claim_${index}`, text: source.content, kind: "quote" as const,
+            citations: [{ attemptId: input.attemptId, id: source.id, revision: source.revision, quote: source.content, scope: "page" as const }],
+            covers: ["target_1"], conflicts: [],
+          }))), missing: [], limitations: [], artifactIds: [],
+        } };
+      }
+      yield { type: "message_complete", message: { type: "assistant", id: rid(), content: [{ type: "text", text: JSON.stringify(output) }] } };
+    } }).run(attempt, signal);
+  } };
+  const composer = await (await f.get(`/chats/${f.conversationId}`)).text();
+  const started = await f.post("/s14/forms/compose", { ...fields(formsFor(composer, "/s14/forms/compose")[0]!), text: "Compare public evidence", work: "on", [`bot:${scout.id}`]: String(scout.revision), "tool:web_fetch": "on", evidence: "https://example.com/article" });
+  expect(started.status).toBe(303);
+  const work = f.app.authority.list(auth.actor)[0]!, draining = f.app.authority.drain();
+  try {
+    await Promise.race([both.promise, draining.then(() => { throw Error("research hosts settled before overlapping"); })]);
+    const graph = f.app.graph.view(auth.actor, work.id);
+    expect(graph.steps.map(step => step.state)).toEqual(["running", "running", "waiting_evidence"]);
+    expect(graph.active).toBe(2);
+    expect(new Set(seen.map(attempt => attempt.memoryId)).size).toBe(2);
+    expect(seen.every(attempt => attempt.snapshot.route.id === "codex" && attempt.snapshot.route.model === supportedS14Routes().find(route => route.id === "codex")!.model)).toBe(true);
+    expect(f.app.reports.list(auth.actor, work.id)).toEqual([]);
+  } finally { release.resolve(); await draining; }
+  expect(seen).toHaveLength(3);
+  expect(f.app.authority.view(auth.actor, work.id).work.state).toBe("ready");
+  const result = f.app.reports.list(auth.actor, work.id).at(-1)!;
+  expect(result.state).toBe("available");
+  if (result.state !== "available") throw Error("report unavailable");
+  expect(result.report.coverage).toBe("covered");
+  expect(result.report.claims).toHaveLength(2);
+  expect(result.completion).toBe("owner_review_required");
+  const progress = await (await f.get(`/work/${work.id}`)).text();
+  for (const tab of ["progress", "report", "evidence", "grant"]) expect(progress).toContain(`tab=${tab}`);
+  expect(progress).not.toContain("tab=computer");
+  const reportPage = await (await f.get(`/work/${work.id}?tab=report`)).text();
+  const review = await f.post("/s14/commands", commandForm(reportPage, "report.review.accept"));
+  expect(review.status).toBe(303);
+  const landing = await f.get(review.headers.get("location")!);
+  expect(landing.headers.get("location")).toBe(`/chats/${f.conversationId}?work=${work.id}&tab=report#latest`);
+  expect(f.app.reports.review(auth.actor, work.id).completion).toBe("owner_accepted");
+  for (const artifact of result.artifacts) {
+    const response = await f.get(`/api/s14/artifacts/${artifact.id}/download`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(response.headers.get("content-disposition")).toStartWith("attachment;");
+    expect(response.headers.get("content-security-policy")).toContain("sandbox");
+    expect(await response.text()).toContain("Returned full markdown from the requested page.");
+  }
+  expect(result.artifacts).toHaveLength(2);
+  for (const secret of [password, deviceCode, "fixture-provider-token", "fixture-refresh"]) {
+    expect(prompts.join("\n")).not.toContain(secret);
+    expect(JSON.stringify(f.store.read(tx => tx.all("SELECT * FROM command_receipts")))).not.toContain(secret);
+  }
 });
 
 test("every device state explains itself in both languages with one obvious action and no approval data", () => {

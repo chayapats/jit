@@ -11,6 +11,8 @@ import { canonical, canonicalByteLimit } from "../src/s14/validation";
 import { renderS14 } from "../src/s14/web-pages";
 import { createS14Product } from "../src/s14/web-product";
 import { acquireS14RuntimeLock } from "../src/s14/runtime-lock";
+import type { ReportProposal } from "../src/s14/report-types";
+import { artifactHash } from "../src/s14/artifacts";
 
 const rid = () => crypto.randomUUID().replaceAll("-", "");
 const roots: string[] = [], stores = new Set<S14Store>();
@@ -29,7 +31,7 @@ async function fixture(authority: AuthorityOptions = {}) {
 type F = Awaited<ReturnType<typeof fixture>>;
 function start(f: F, changes: Partial<StartWorkCommand["payload"]> = {}): StartWorkCommand {
   return { kind: "work.start", requestId: rid(), expectedRevision: f.app.conversation(f.auth.actor, f.conversationId).conversation.revision,
-    payload: { conversationId: f.conversationId, task: null, title: "Research", purpose: "Compare public facts", completionRule: "Evidence for owner review", bots: [{ id: "jit", revision: 1 }], tools: [], scopes: [], limits: { attempts: 4, steps: 4, calls: 8, outputBytes: 8192, wallMs: 60000 }, expiresAt: f.clock.now + 60000, ...changes } };
+    payload: { conversationId: f.conversationId, task: null, title: "Research", purpose: "Compare public facts", completionRule: "Evidence for owner review", bots: [{ id: "jit", revision: 1 }], tools: [], scopes: [], limits: { attempts: 4, steps: 4, calls: 8, outputBytes: 8192, wallMs: 60000, concurrency: 2, reads: 40 }, expiresAt: f.clock.now + 60000, ...changes } };
 }
 function admission(changes: Partial<Admission> = {}): Admission { return { botId: "jit", tools: [], scopes: [], input: "Compare public facts", calls: 6, outputBytes: 1024, ...changes }; }
 function scope(f: F, kind: "resource" | "share" = "resource", changes: Partial<ScopePolicy> = {}): ScopeRef {
@@ -38,6 +40,32 @@ function scope(f: F, kind: "resource" | "share" = "resource", changes: Partial<S
 }
 function stop(f: F, work: Work) { return f.app.execute(f.auth.actor, { kind: "work.stop", requestId: rid(), expectedRevision: work.revision, payload: { workId: work.id } }); }
 const send: EffectAction = { kind: "send", destination: "https://recipient.invalid/exact", content: "Exact visible content" };
+
+test.each(["resource", "share"] as const)("%s revocation reaches uncited source copies, reports, downloads, staging and late publication", async kind => {
+  const f = await fixture(), ref = scope(f, kind);
+  const work = f.app.execute(f.auth.actor, start(f, { scopes: [ref], limits: { ...start(f).payload.limits, outputBytes: 131072 } })).work!;
+  const producer = f.app.authority.admit(work.id, rid(), admission({ scopes: [ref], outputBytes: 32768 }));
+  f.app.authority.commit(producer.id, { state: "waiting", text: "Scoped source text" });
+  const report: ReportProposal = { title: "Scoped report", claims: [{ id: "claim", kind: "inference", text: "Uncited scoped derivative", citations: [], covers: [], conflicts: [] }], missing: [], limitations: [], artifactIds: [] };
+  const derived = () => {
+    const a = f.app.authority.admit(work.id, rid(), admission({ outputBytes: 32768 }));
+    f.store.transaction(tx => f.app.memory.appendSource(tx, a.id, { id: `result_${producer.id}`, revision: 1, generation: 1 }));
+    return a;
+  };
+  const committed = derived();
+  f.app.authority.commit(committed.id, { state: "waiting", text: "Available derivative", report });
+  const view = f.app.reports.list(f.auth.actor, work.id)[0]!;
+  if (view.state !== "available") throw Error("report unavailable before revocation");
+  const late = derived(), bytes = new TextEncoder().encode("Scoped staged bytes");
+  const staged = f.store.transaction(tx => f.app.artifacts.stage(tx, late, { name: "scoped.txt", mediaType: "text/plain", size: bytes.length, sha256: artifactHash(bytes) }, bytes));
+  f.scopes.delete(ref.id);
+  // Currentness must return unavailable rather than throw and roll back an unrelated owner memory command.
+  f.app.execute(f.auth.actor, { kind: "memory.remember", requestId: rid(), expectedRevision: f.app.conversation(f.auth.actor, f.conversationId).conversation.revision, payload: { conversationId: f.conversationId, text: "Independent owner fact" } });
+  expect(f.app.reports.view(f.auth.actor, view.report.id).state).toBe("unavailable");
+  for (const file of view.artifacts) expect(() => f.app.artifacts.download(f.auth.actor, file.id)).toThrow("artifact_unavailable");
+  expect(f.store.read(tx => tx.get("SELECT id FROM artifact_staging WHERE id=?", staged.id))).toBeNull();
+  expect(() => f.app.authority.commit(late.id, { state: "ready", text: "Forbidden late report", report })).toThrow("memory_context_stale");
+});
 function decide(f: F, effect: Effect, decision: "approve" | "deny" = "approve") { return f.app.execute(f.auth.actor, { kind: "approval.decide", requestId: rid(), expectedRevision: effect.revision, payload: { effectId: effect.id, actionHash: effect.actionHash, decision } }); }
 async function effectFixture(options: AuthorityOptions = {}) {
   const f = await fixture({ effects: { send: async (_a, allowed) => { allowed(); return "succeeded"; } }, ...options });
@@ -71,7 +99,7 @@ test("message/@Bot/model/source intake and task.accept cannot mint grants; expli
 test.each([[150 * 1024, 256 * 1024], [1048576, 1048576]])("%i-byte results under a %i-byte grant survive drain, views, rendering, receipts and reopen", async (bytes, granted) => {
   const body = "ก".repeat(Math.floor(bytes / 3)) + "x".repeat(bytes % 3);
   const f = await fixture({ executor: { async run() { return { state: "ready", text: body }; } } });
-  const command = start(f, { limits: { attempts: 1, steps: 1, calls: 1, outputBytes: granted, wallMs: 60000 } }), receipt = f.app.execute(f.auth.actor, command);
+  const command = start(f, { limits: { attempts: 1, steps: 1, calls: 1, outputBytes: granted, wallMs: 60000, concurrency: 2, reads: 40 } }), receipt = f.app.execute(f.auth.actor, command);
   await f.app.authority.drain();
   const view = f.app.authority.view(f.auth.actor, receipt.work!.id);
   expect(view.work).toMatchObject({ state: "ready", result: view.attempts[0]!.id });
@@ -123,7 +151,7 @@ test.each(["deny", "succeeded", "expired"] as const)("a deliberately waiting res
 });
 
 test("separate sibling results retain their bodies and a ready child cannot release its parent's held effect", async () => {
-  const f = await fixture(), started = f.app.execute(f.auth.actor, start(f, { tools: ["effect_send"], limits: { attempts: 2, steps: 2, calls: 8, outputBytes: 524288, wallMs: 60000 } }));
+  const f = await fixture(), started = f.app.execute(f.auth.actor, start(f, { tools: ["effect_send"], limits: { attempts: 2, steps: 2, calls: 8, outputBytes: 524288, wallMs: 60000, concurrency: 2, reads: 40 } }));
   const parent = f.app.authority.admit(started.work!.id, rid(), admission({ tools: ["effect_send"], outputBytes: 262144 }));
   const effect = f.app.authority.proposeEffect(parent.id, rid(), send, epoch + 30000);
   const first = "first".repeat(40000), second = "second".repeat(40000);
@@ -235,14 +263,14 @@ test("scope IDs cannot grant another Bot's private resource, transitive share or
 });
 
 test("finite call/step/attempt/output/expiry budgets reserve durably and never refund uncertainty", async () => {
-  const f = await fixture(), started = f.app.execute(f.auth.actor, start(f, { tools: ["public_read"], limits: { attempts: 1, steps: 1, calls: 2, outputBytes: 100, wallMs: 60000 } }));
+  const f = await fixture(), started = f.app.execute(f.auth.actor, start(f, { tools: ["public_read"], limits: { attempts: 1, steps: 1, calls: 2, outputBytes: 100, wallMs: 60000, concurrency: 2, reads: 40 } }));
   const attempt = f.app.authority.admit(started.work!.id, rid(), admission({ tools: ["public_read"], calls: 2, outputBytes: 100 }));
   f.app.authority.reserveTool(attempt.id, "public_read"); expect(() => f.app.authority.reserveTool(attempt.id, "public_read")).toThrow("budget_exhausted");
   expect(() => f.app.authority.commit(attempt.id, { state: "ready", text: "x".repeat(101) })).toThrow("invalid_text");
   f.app.authority.settle(attempt.id); const view = f.app.authority.view(f.auth.actor, started.work!.id);
-  expect(view.reservations).toEqual({ attempts: 1, steps: 1, calls: 2, outputBytes: 100 }); expect(view.actualUsage).toBeNull();
+  expect(view.reservations).toEqual({ attempts: 1, steps: 1, calls: 2, outputBytes: 100, reads: 0 }); expect(view.actualUsage).toBeNull();
   for (const key of ["attempts", "steps", "calls", "outputBytes", "wallMs"] as const) expect(() => f.app.execute(f.auth.actor, start(f, { limits: { ...start(f).payload.limits, [key]: Infinity } }))).toThrow();
-  const other = await fixture(), one = other.app.execute(other.auth.actor, start(other, { limits: { attempts: 1, steps: 1, calls: 8, outputBytes: 8192, wallMs: 60000 } }));
+  const other = await fixture(), one = other.app.execute(other.auth.actor, start(other, { limits: { attempts: 1, steps: 1, calls: 8, outputBytes: 8192, wallMs: 60000, concurrency: 2, reads: 40 } }));
   const parent = other.app.authority.admit(one.work!.id, rid(), admission()); other.app.authority.commit(parent.id, { state: "waiting", text: "Wait" });
   expect(() => other.app.authority.delegate(parent.id, rid(), admission())).toThrow("budget_exhausted");
 });

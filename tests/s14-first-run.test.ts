@@ -102,7 +102,7 @@ async function configured() {
 function start(f: Awaited<ReturnType<typeof configured>>, tools: string[] = []) {
   const command: AuthorityCommand = { kind: "work.start", requestId: rid(), expectedRevision: f.app.conversation(f.auth.actor, f.conversationId).conversation.revision,
     payload: { conversationId: f.conversationId, task: null, title: "Named work", purpose: "Compare facts", completionRule: "Evidence for review",
-      bots: [{ id: "jit", revision: 1 }], tools, scopes: [], limits: { attempts: 4, steps: 4, calls: 20, outputBytes: 32768, wallMs: 900000 }, expiresAt: f.clock.now() + 900000 } };
+      bots: [{ id: "jit", revision: 1 }], tools, scopes: [], limits: { attempts: 4, steps: 4, calls: 20, concurrency: 2, reads: 40, outputBytes: 32768, wallMs: 900000 }, expiresAt: f.clock.now() + 900000 } };
   return f.app.execute(f.auth.actor, command).work!;
 }
 function replayAndStale(f: Awaited<ReturnType<typeof configured>>, command: BotCommand | AuthorityCommand | MemoryCommand | ComputerCommand) {
@@ -236,10 +236,12 @@ test("computer eligibility, one-action lease renewal/restart, bounded observed a
   Object.assign(f.runtime, { pageInfo: async () => ({ url: "about:blank", title: "typed-secret" }) });
   await f.app.computers.screenshot(f.auth.actor, "jit");
   expect(f.app.computers.view(f.auth.actor, "jit").page).toEqual({ url: "about:blank", title: null, untrusted: true });
-  const attempt = f.app.authority.admit(work.id, rid(), { botId: "jit", tools: ["computer"], scopes: [], input: "Read", calls: 5, outputBytes: 1024 });
+  const admission = { botId: "jit", tools: ["computer"], scopes: [], input: "Read", calls: 5, outputBytes: 1024 };
+  expect(() => f.app.authority.admit(work.id, rid(), admission)).toThrow("execution_capacity_held");
   view = f.app.computers.view(f.auth.actor, "jit");
   f.app.execute(f.auth.actor, { kind: "takeover.end", requestId: rid(), expectedRevision: view.computer!.revision,
     payload: { botId: "jit", computerId: view.computer!.id, generation: view.computer!.generation, leaseRevision: view.lease!.revision } });
+  const attempt = f.app.authority.admit(work.id, rid(), admission);
   const session = f.app.computers.open(attempt.id);
   await f.app.computers.agentInput(attempt.id, session.lease, { kind: "scroll", deltaY: 80 });
   session.release();

@@ -148,7 +148,7 @@ test("publication revocation fences in-flight chat and work tools/results withou
   expect(f.app.home(f.auth.actor).replies[0]).toMatchObject({ state: "blocked", reason: "memory_context_stale" });
   expect(f.app.conversation(f.auth.actor, "otherchat").messages.some(m => m.text === "late private output")).toBe(false);
   const work = f.app.execute(f.auth.actor, { kind: "work.start", requestId: rid(), expectedRevision: f.app.conversation(f.auth.actor, f.conversationId).conversation.revision,
-    payload: { conversationId: f.conversationId, task: null, title: "Read", purpose: "อาหารไทย", completionRule: "Evidence", bots: [{ id: "jit", revision: 1 }], tools: ["web_search"], scopes: [], limits: { attempts: 1, steps: 1, calls: 3, outputBytes: 2048, wallMs: 60000 }, expiresAt: epoch + 60000 } }).work!;
+    payload: { conversationId: f.conversationId, task: null, title: "Read", purpose: "อาหารไทย", completionRule: "Evidence", bots: [{ id: "jit", revision: 1 }], tools: ["web_search"], scopes: [], limits: { attempts: 1, steps: 1, calls: 3, outputBytes: 2048, wallMs: 60000, concurrency: 2, reads: 40 }, expiresAt: epoch + 60000 } }).work!;
   const attempt = f.app.authority.admit(work.id, rid(), { botId: "jit", tools: ["web_search"], scopes: [], input: "อาหารไทย", calls: 3, outputBytes: 2048 });
   f.app.execute(f.auth.actor, { kind: "memory.correct", requestId: rid(), expectedRevision: 1, payload: { claim: reference, text: "ชอบอาหารไทยไม่เผ็ด" } });
   expect(() => f.app.authority.reserveTool(attempt.id, "web_search")).toThrow("memory_context_stale");
@@ -161,7 +161,7 @@ test("immutable receiver share also requires Bot resource ceiling and originatin
   expect(claim(f, reference, "other").state).toBe("unavailable");
   const scope = { kind: "share" as const, id: shared.id, revision: 1 };
   const work = f.app.execute(f.auth.actor, { kind: "work.start", requestId: rid(), expectedRevision: 1,
-    payload: { conversationId: "otherchat", task: null, title: "Read", purpose: "receiver snapshot", completionRule: "Evidence", bots: [{ id: "other", revision: 1 }], tools: [], scopes: [scope], limits: { attempts: 1, steps: 1, calls: 3, outputBytes: 2048, wallMs: 60000 }, expiresAt: epoch + 60000 } }).work!;
+    payload: { conversationId: "otherchat", task: null, title: "Read", purpose: "receiver snapshot", completionRule: "Evidence", bots: [{ id: "other", revision: 1 }], tools: [], scopes: [scope], limits: { attempts: 1, steps: 1, calls: 3, outputBytes: 2048, wallMs: 60000, concurrency: 2, reads: 40 }, expiresAt: epoch + 60000 } }).work!;
   const attempt = f.app.authority.admit(work.id, rid(), { botId: "other", tools: [], scopes: [scope], input: "receiver snapshot", calls: 3, outputBytes: 2048 });
   expect(f.store.read(tx => f.app.memory.attemptPacket(tx, attempt.id)).claims.map(c => c.id)).toContain(reference.id);
   publish(f, reference, 1, "memory.revoke");
@@ -261,7 +261,7 @@ test("receiver-share evidence and work handoffs retain original access revisions
   const shared = f.app.execute(f.auth.actor, { kind: "memory.share", requestId: rid(), expectedRevision: 1, payload: { claim: original, scopeId: "memshare", receiverBotId: "other", expiresAt: epoch + 60000 } }).share!;
   const scope = { kind: "share" as const, id: shared.id, revision: 1 };
   const work = f.app.execute(f.auth.actor, { kind: "work.start", requestId: rid(), expectedRevision: 1,
-    payload: { conversationId: "otherchat", task: null, title: "Receiver research", purpose: "receiver snapshot", completionRule: "Evidence", bots: [{ id: "other", revision: 1 }, { id: "jit", revision: 1 }], tools: [], scopes: [scope], limits: { attempts: 2, steps: 2, calls: 6, outputBytes: 4096, wallMs: 60000 }, expiresAt: epoch + 60000 } }).work!;
+    payload: { conversationId: "otherchat", task: null, title: "Receiver research", purpose: "receiver snapshot", completionRule: "Evidence", bots: [{ id: "other", revision: 1 }, { id: "jit", revision: 1 }], tools: [], scopes: [scope], limits: { attempts: 3, steps: 3, calls: 6, outputBytes: 4096, wallMs: 60000, concurrency: 2, reads: 40 }, expiresAt: epoch + 60000 } }).work!;
   const parent = f.app.authority.admit(work.id, rid(), { botId: "other", tools: [], scopes: [scope], input: "receiver snapshot", calls: 3, outputBytes: 2048 });
   const evidence = f.store.transaction(tx => f.app.memory.source(tx, { id: rid(), botId: "other", conversationId: "otherchat", attribution: "external", text: "Derived evidence", ...f.app.memory.derive(tx, f.app.memory.attemptPacket(tx, parent.id)) }));
   f.app.authority.commit(parent.id, { state: "waiting", text: "Derived handoff text" });
@@ -287,7 +287,7 @@ test.each(["memory.forget", "memory.delete", "memory.revoke"] as const)("task so
   const accepted = accept().work!;
   expect(accepted.source).toEqual({ id: task.sourceMessageId!, revision: 1, generation: 1 });
   const start = (work: Work) => f.app.execute(f.auth.actor, { kind: "work.start", requestId: rid(), expectedRevision: f.app.conversation(f.auth.actor, "otherchat").conversation.revision,
-    payload: { conversationId: "otherchat", task: { id: work.id, revision: work.revision }, title: work.title, purpose: work.purpose, completionRule: work.completionRule, bots: [{ id: "other", revision: 1 }], tools: ["web_search"], scopes: [], limits: { attempts: 1, steps: 1, calls: 3, outputBytes: 2048, wallMs: 60000 }, expiresAt: epoch + 60000 } });
+    payload: { conversationId: "otherchat", task: { id: work.id, revision: work.revision }, title: work.title, purpose: work.purpose, completionRule: work.completionRule, bots: [{ id: "other", revision: 1 }], tools: ["web_search"], scopes: [], limits: { attempts: 1, steps: 1, calls: 3, outputBytes: 2048, wallMs: 60000, concurrency: 2, reads: 40 }, expiresAt: epoch + 60000 } });
   // A separate accepted clone lets us test both a pre-start and an already-running work item.
   const copy = { ...accepted, id: rid() }, queuedCopy = { ...accepted, id: rid() };
   f.store.transaction(tx => { for (const item of [copy, queuedCopy]) tx.run("INSERT INTO work_items VALUES (?,?,?)", item.id, item.conversationId, canonical(item)); });
@@ -305,7 +305,7 @@ test.each(["memory.forget", "memory.delete", "memory.revoke"] as const)("task so
 test("ordinary record volume prunes disposable packets, preserves live barriers and reopens without blocking chat", async () => {
   const f = await fixture(), original = remember(f), live = post(f, "Live context").reply!.snapshot.memory!;
   const work = f.app.execute(f.auth.actor, { kind: "work.start", requestId: rid(), expectedRevision: f.app.conversation(f.auth.actor, f.conversationId).conversation.revision,
-    payload: { conversationId: f.conversationId, task: null, title: "Retained work", purpose: "Use memory", completionRule: "Evidence", bots: [{ id: "jit", revision: 1 }], tools: [], scopes: [], limits: { attempts: 1, steps: 1, calls: 3, outputBytes: 2048, wallMs: 60000 }, expiresAt: epoch + 60000 } }).work!;
+    payload: { conversationId: f.conversationId, task: null, title: "Retained work", purpose: "Use memory", completionRule: "Evidence", bots: [{ id: "jit", revision: 1 }], tools: [], scopes: [], limits: { attempts: 1, steps: 1, calls: 3, outputBytes: 2048, wallMs: 60000, concurrency: 2, reads: 40 }, expiresAt: epoch + 60000 } }).work!;
   const attempt = f.app.authority.admit(work.id, rid(), { botId: "jit", tools: [], scopes: [], input: "Use memory", calls: 3, outputBytes: 2048 });
   const found = claim(f, original); if (found.state !== "available") throw Error("fixture");
   let tail = found.claim.source;

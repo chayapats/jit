@@ -76,7 +76,7 @@ const sendAction: EffectAction = { kind: "send", destination: "https://recipient
 async function effectFixture(language: "th" | "en" = "en", performer: AuthorityOptions["effects"] = { send: async () => "unknown" }) {
   const f = await fixture({ language, tools: ["effect_send", "effect_push"], authority: { effects: performer } });
   const conversation = f.app.conversation(f.auth.actor, f.conversationId).conversation, now = f.clock.now;
-  const work = f.app.execute(f.auth.actor, { kind: "work.start", requestId: rid(), expectedRevision: conversation.revision, payload: { conversationId: conversation.id, task: null, title: "Send quote", purpose: "Send the quote", completionRule: "Sent", bots: [{ id: "jit", revision: 1 }], tools: ["effect_send", "effect_push"], scopes: [], limits: { attempts: 1, steps: 1, calls: 8, outputBytes: 4096, wallMs: 1800000 }, expiresAt: now + 1800000 } }).work!;
+  const work = f.app.execute(f.auth.actor, { kind: "work.start", requestId: rid(), expectedRevision: conversation.revision, payload: { conversationId: conversation.id, task: null, title: "Send quote", purpose: "Send the quote", completionRule: "Sent", bots: [{ id: "jit", revision: 1 }], tools: ["effect_send", "effect_push"], scopes: [], limits: { attempts: 1, steps: 1, calls: 8, outputBytes: 4096, wallMs: 1800000, concurrency: 2, reads: 40 }, expiresAt: now + 1800000 } }).work!;
   const attempt = f.app.authority.admit(work.id, rid(), { botId: "jit", tools: ["effect_send", "effect_push"], scopes: [], input: "Send", calls: 6, outputBytes: 1024 });
   return { ...f, work, attempt, propose: (action: EffectAction = sendAction, expires = now + 60000) => f.app.authority.proposeEffect(attempt.id, rid(), action, expires) };
 }
@@ -160,7 +160,7 @@ test("work mode submits work.start once with the default limits, and a duplicate
   expect(response.headers.get("location")).toBe(`/chats/${f.conversationId}?work=${work.id}#latest`);
   expect(work).toMatchObject({ title: "เปรียบเทียบตัวเลือก", purpose: "เปรียบเทียบตัวเลือก\nบรรทัดสอง", state: "queued", completionRule: dictionaries.th["s14.work.default_completion"] });
   const view = f.app.authority.view(f.auth.actor, work.id);
-  expect(view.grant!.limits).toEqual({ attempts: 1, steps: 1, calls: 40, outputBytes: 262144, wallMs: 1800000 }); expect(view.grant!.expiresAt).toBe(f.clock.now + 1800000);
+  expect(view.grant!.limits).toEqual({ attempts: 1, steps: 1, calls: 82, outputBytes: 262144, wallMs: 1800000, concurrency: 2, reads: 40 }); expect(view.grant!.expiresAt).toBe(f.clock.now + 1800000);
   expect(view.grant!.bots.map(b => b.id)).toEqual(["jit"]); expect(view.grant!.tools).toEqual([]);
   f.clock.now += 5000; // A retry after time passed keeps the same command, so the same receipt and grant.
   const retry = await f.post("/s14/forms/compose", fields); expect(retry.status).toBe(303); expect(retry.headers.get("location")).toBe(response.headers.get("location"));
@@ -169,19 +169,17 @@ test("work mode submits work.start once with the default limits, and a duplicate
   expect(countGrants(f)).toBe(1);
 });
 
-test("edited limits reach the grant, out-of-range limits refuse with the draft kept, and the Bot limit caps named Bots", async () => {
+test("edited limits reach the grant, out-of-range limits refuse with the draft kept, and concurrency is recorded separately from the selected Bot count", async () => {
   const f = await fixture({ reply: () => ({ text: "x", proposal: { name: "Scout", responsibility: "Read", routeId: "selected" } }) });
   const edited = { ...(await compose(f, "x")).fields }; expect(edited).toBeDefined(); await f.app.drainReplies();
   const proposal = f.app.home(f.auth.actor).proposals[0]!;
   f.app.execute(f.auth.actor, { kind: "bot.proposal.accept", requestId: rid(), expectedRevision: proposal.revision, payload: { proposalId: proposal.id, capabilities: { tools: [], resources: [] } } });
   const html = await f.page(`/chats/${f.conversationId}`), base = { ...formFields(html, "/s14/forms/compose"), text: "ทำงานนี้", work: "on" };
   const scout = f.app.home(f.auth.actor).bots.find(b => b.id !== "jit")!;
-  const tooMany = await f.post("/s14/forms/compose", { ...base, concurrent: "1", [`bot:${scout.id}`]: "1" }); expect(tooMany.status).toBe(400);
-  const refused = await tooMany.text(); expect(refused).toContain(dictionaries.th["s14.error.s14_too_many_bots"]); expect(refused).toContain("ทำงานนี้"); expect(countGrants(f)).toBe(0);
   const range = await f.post("/s14/forms/compose", { ...base, reads: "9999" }); expect(range.status).toBe(400); expect(await range.text()).toContain(dictionaries.th["s14.next.s14_limit_out_of_range"]);
-  const ok = await f.post("/s14/forms/compose", { ...base, minutes: "5", reads: "10", [`bot:${scout.id}`]: "1" }); expect(ok.status).toBe(303);
+  const ok = await f.post("/s14/forms/compose", { ...base, minutes: "5", reads: "10", concurrent: "1", [`bot:${scout.id}`]: "1" }); expect(ok.status).toBe(303);
   const grant = f.app.authority.view(f.auth.actor, f.app.authority.list(f.auth.actor)[0]!.id).grant!;
-  expect(grant.limits).toMatchObject({ attempts: 2, calls: 10, wallMs: 300000 }); expect(grant.bots.map(b => b.id)).toEqual(["jit", scout.id]);
+  expect(grant.limits).toMatchObject({ attempts: 3, calls: 23, wallMs: 300000, concurrency: 1, reads: 10 }); expect(grant.bots.map(b => b.id)).toEqual(["jit", scout.id]);
 });
 
 test("a stale composer keeps the owner's text and starts nothing; credential-shaped text is refused and not echoed", async () => {
@@ -322,7 +320,7 @@ test("blocked work names the reason and refuses to imply a retry; the grant view
   const blocked = await f.page(`/work/${work.id}`);
   expect(blocked).toContain(dictionaries.en["s14.work_state.blocked"]); expect(blocked).toContain(dictionaries.en["s14.reason.handler_unavailable"]); expect(blocked).toContain(dictionaries.en["s14.work.blocked_next"]); expect(blocked).not.toContain("transport detail");
   const grant = await f.page(`/work/${work.id}?tab=grant`);
-  for (const text of ["Blocked work", "public_read", "g1", "scripted-model", dictionaries.en["s14.grant.no_external"], dictionaries.en["s14.grant.no_scopes"], dictionaries.en["s14.grant.concurrency_detail"], dictionaries.en["s14.grant.enforced_note"]]) expect(grant).toContain(text);
+  for (const text of ["Blocked work", "public_read", "g1", "scripted-model", dictionaries.en["s14.grant.no_external"], dictionaries.en["s14.grant.no_scopes"], dictionaries.en["s14.grant.concurrency"], dictionaries.en["s14.grant.enforced_note"]]) expect(grant).toContain(text);
   expect(accessibilityProblems(grant, "en")).toEqual([]);
   expect(grant).not.toMatch(/verified|authorized by|secure/i);
   const pane = await f.page(`/chats/${f.conversationId}?work=${work.id}&tab=grant`); expect(pane).toContain('data-pane="open"'); expect(pane).toContain("public_read");

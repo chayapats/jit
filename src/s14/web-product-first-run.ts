@@ -1,7 +1,8 @@
 import { AppError } from "../errors";
 import type { S14Application, S14Command } from "./application";
 import type { OwnerActor, Route } from "./types";
-import { defaultWorkLimits, type S14Draft } from "./web-product";
+import type { S14Draft } from "./web-product";
+import { limitValues } from "./web-product-team";
 
 /** One provider as the owner sees it: readiness is local protected-store state and never proves a working subscription. */
 export type S14Provider = Awaited<ReturnType<S14Application["signIns"]["providers"]>>[number];
@@ -30,7 +31,7 @@ export async function providerView(app: S14Application, actor: OwnerActor): Prom
 export function redoDraft(app: S14Application, actor: OwnerActor, conversationId: string, workId: string | null): S14Draft | null {
   if (!workId || !/^[a-zA-Z0-9_-]{1,128}$/.test(workId)) return null;
   const work = app.authority.list(actor).find(item => item.id === workId && item.conversationId === conversationId);
-  return work ? { ...defaultWorkLimits, text: work.purpose, work: true, completion: work.completionRule, bots: [] } : null;
+  return work ? { ...limitValues(app.graph.defaults(actor)), evidence: "", text: work.purpose, work: true, completion: work.completionRule, bots: [] } : null;
 }
 const allow = (fields: Record<string, unknown>, keys: string[]) => { for (const key of Object.keys(fields)) if (!["csrf", "requestId", "expectedRevision", ...keys].includes(key)) throw new AppError("invalid_body"); };
 /** Translates the preference and new-chat forms into typed commands; it decides nothing and refuses unknown fields. */

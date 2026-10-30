@@ -50,7 +50,7 @@ export class S14Memory {
     return source;
   }
 
-  /** Checks source ancestry and its original access revisions without a lifetime record-count cutoff. */
+  /** Checks all source ancestry, original access pins and retained producer fences, including uncited handoffs. */
   sourceCurrent(tx: AppTransaction, source: MemoryRef): boolean {
     const pending = [source], seen = new Set<string>();
     while (pending.length) {
@@ -60,6 +60,13 @@ export class S14Memory {
       const row = tx.get<{ record_json: string }>("SELECT record_json FROM memory_sources WHERE id=?", r.id);
       const item = row ? JSON.parse(row.record_json) as MemorySource : null;
       if (!item || !same(item, r) || item.text === null || this.withdrawn(tx, "source", r.id) || item.derived.length > 0 && item.access === undefined || !this.accessCurrent(tx, item.botId, item.access ?? [])) return false;
+      // Resolve pre-pin schema-10 outputs from service-owned records too; never trust report citations as complete ancestry.
+      const producer = item.producerAttemptId ?? (item.id.startsWith("result_") ? item.id.slice(7) : tx.get<{ attempt_id: string }>(`
+        SELECT attempt_id FROM external_evidence WHERE id=?
+        UNION ALL SELECT attempt_id FROM reports WHERE id=?
+        UNION ALL SELECT attempt_id FROM artifact_staging WHERE id=?
+        UNION ALL SELECT attempt_id FROM artifacts WHERE id=? LIMIT 1`, item.id, item.id, item.id, item.id)?.attempt_id);
+      if (producer && !this.app.authority.retainedEvidence(tx, producer)) return false;
       pending.push(...item.derived);
     }
     return true;
@@ -68,17 +75,18 @@ export class S14Memory {
   private accessCurrent(tx: AppTransaction, botId: string, pins: MemoryPacket["access"]): boolean {
     return pins.every(pin => {
       const claim = record<MemoryClaim>(tx, "memory_claims", pin.id), policy = record<MemoryAccess>(tx, "memory_access", pin.id);
-      if (policy.revision !== pin.revision || this.withdrawn(tx, "claim", pin.id)) return false;
+      if (policy.revision !== pin.revision || this.withdrawn(tx, "claim", pin.id) ||
+          tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE kind='access' AND id=? AND mode=?", pin.id, `revision_${pin.revision}`)) return false;
       if (pin.shareId === null) return claim.botId === botId || policy.shared;
       const share = record<MemoryShare>(tx, "memory_shares", pin.shareId);
       return share.active && share.revision === pin.shareRevision && share.receiverBotId === botId && same(share.claim, claim) && share.expiresAt > this.app.now();
     });
   }
 
-  /** Captures every admitted claim's source/access ancestry for generated text and external evidence. */
-  derive(tx: AppTransaction, packet: MemoryPacket): { derived: MemoryRef[]; access: MemoryPacket["access"] } {
+  /** Captures source/access ancestry and the producing attempt for generated text, delegation, evidence and files. */
+  derive(tx: AppTransaction, packet: MemoryPacket): { derived: MemoryRef[]; access: MemoryPacket["access"]; producerAttemptId?: string } {
     const claims = lineageClosure(packet.claims, c => c.id, c => unique([...c.dependencies, ...c.conflicts]).map(r => record<MemoryClaim>(tx, "memory_claims", r.id)));
-    return { derived: unique([...packet.sources, ...claims.map(c => c.source), ...packet.decisions.map(d => d.source)]),
+    return { ...(packet.attemptId ? { producerAttemptId: packet.attemptId } : {}), derived: unique([...packet.sources, ...claims.map(c => c.source), ...packet.decisions.map(d => d.source)]),
       access: claims.map(claim => {
         const used = this.access(tx, claim, packet.botId, this.packetAttempt(tx, packet));
         if (!used) throw new AppError("memory_context_stale", 409);
@@ -235,6 +243,34 @@ export class S14Memory {
     return packet;
   }
 
+  /** Checks receiver access to every source/claim ancestor before a committed result crosses Bot context. */
+  handoff(tx: AppTransaction, source: MemoryRef, receiver: Attempt): boolean {
+    if (!this.sourceCurrent(tx, source)) return false;
+    const pending = [source], seen = new Set<string>();
+    while (pending.length) {
+      const next = pending.pop()!;
+      if (seen.has(next.id)) continue;
+      seen.add(next.id);
+      const item = record<MemorySource>(tx, "memory_sources", next.id);
+      for (const pin of item.access ?? []) {
+        const claim = record<MemoryClaim>(tx, "memory_claims", pin.id);
+        if (this.lookup(tx, receiver.snapshot.bot.id, ref(claim), receiver).state !== "available") return false;
+      }
+      pending.push(...item.derived);
+    }
+    return true;
+  }
+
+  /** Appends exact committed accessible handoff evidence while preserving the bounded packet and original access pins. */
+  appendSource(tx: AppTransaction, attemptId: string, source: MemoryRef): void {
+    const packet = this.attemptPacket(tx, attemptId);
+    if (packet.sources.some(r => same(r, source))) return;
+    if (packet.sources.length >= 64 || !this.sourceCurrent(tx, source)) throw new AppError("memory_source_unavailable", 409);
+    packet.sources.push(ref(source));
+    packet.bytes = Buffer.byteLength(canonical(packet));
+    save(tx, "memory_contexts", packet);
+  }
+
   /** Rechecks live decisions, access revisions, source lineage and owner/Bot generations before use or publication. */
   current(tx: AppTransaction, packet: MemoryPacket): boolean {
     if (packet.state !== "current") return false;
@@ -268,7 +304,7 @@ export class S14Memory {
       const sources = rows<MemorySource>(tx, "memory_sources").filter(s => s.botId === botId).slice(-200);
       const selected = claims.filter(c => !query || c.state === "available" && (lexicalScore(terms, c.claim.text) >= 3 || c.claim.text.toLowerCase().includes(query.toLowerCase()))).slice(-200);
       const returned = new Set([...selected.map(c => c.state === "available" ? c.claim.id : c.reference.id), ...sources.map(s => s.id), ...decisions.map(d => d.source.id)]);
-      const withdrawals = tx.all<Omit<MemoryWithdrawal, "source">>("SELECT kind,id,mode FROM lifecycle.withdrawals").filter(w => returned.has(w.id))
+      const withdrawals = tx.all<Omit<MemoryWithdrawal, "source">>("SELECT kind,id,mode FROM lifecycle.withdrawals WHERE kind IN ('claim','source')").filter(w => returned.has(w.id))
         .map(w => ({ ...w, source: w.kind === "claim" ? record<MemoryClaim>(tx, "memory_claims", w.id).source : null }));
       return { claims: selected, decisions, sources, withdrawals };
     });
@@ -322,7 +358,13 @@ export class S14Memory {
       work: workIds.slice(0, 100).map(id => ({ id, title: record<Work>(tx, "work_items", id).title })),
       omittedBots: Math.max(0, botIds.length - 100), omittedWork: Math.max(0, workIds.length - 100),
     };
-    return { claim: requested, claims: affectedClaims, sources: affectedSources, contexts: packets.map(p => p.id), names, nativePolicy: "fresh_sessions_retire_on_close" };
+    const reportIds = new Set(affectedSources.map(source => source.id));
+    const reports = tx.all<{ id: string; work_id: string; revision: number; metadata_json: string }>("SELECT id,work_id,revision,metadata_json FROM reports")
+      .filter(row => reportIds.has(JSON.parse(row.metadata_json).source.id))
+      .map(row => ({ id: row.id, workId: row.work_id, revision: row.revision }));
+    const artifacts = tx.all<{ id: string; record_json: string }>("SELECT id,record_json FROM artifacts")
+      .filter(row => reportIds.has(JSON.parse(row.record_json).source.id)).map(row => row.id);
+    return { claim: requested, claims: affectedClaims, sources: affectedSources, contexts: packets.map(p => p.id), names, reports, artifacts, nativePolicy: "fresh_sessions_retire_on_close" };
   }
 
   private withdraw(tx: AppTransaction, requested: MemoryRef, mode: "corrected" | "forgotten" | "deleted"): MemoryImpact {
@@ -417,11 +459,13 @@ export class S14Memory {
       return { ...receipt, share };
     }
     if (command.kind !== "memory.publish" && command.kind !== "memory.revoke") throw new AppError("unknown_command");
+    if (command.kind === "memory.revoke") tx.run("INSERT OR IGNORE INTO lifecycle.withdrawals VALUES ('access',?,?)", access.id, `revision_${access.revision}`);
     access.revision++; access.shared = command.kind === "memory.publish"; access.publishedBy = "owner"; access.changedAt = this.app.now();
     save(tx, "memory_access", access);
     tx.run("INSERT INTO memory_access_history VALUES (?,?,?)", access.id, access.revision, canonical(access));
     if (command.kind === "memory.revoke") for (const row of tx.all<{ record_json: string }>("SELECT record_json FROM memory_shares WHERE json_extract(record_json,'$.claim.id')=?", claim.id)) {
       const share = JSON.parse(row.record_json) as MemoryShare;
+      tx.run("INSERT OR IGNORE INTO lifecycle.withdrawals VALUES ('share',?,?)", share.id, `revision_${share.revision}`);
       share.active = false; share.revision++; save(tx, "memory_shares", share);
     }
     return { ...receipt, access };
@@ -429,6 +473,25 @@ export class S14Memory {
 
   /** Replays the independent deletion ledger into a restored image before any worker or owner projection. */
   reconcile(tx: AppTransaction): void {
+    // Independent revision tombstones stop a stale application image from resurrecting revoked access/shares.
+    for (const entry of tx.all<{ kind: string; id: string; mode: string }>("SELECT kind,id,mode FROM lifecycle.withdrawals WHERE kind IN ('access','share')")) {
+      const revision = Number(/^revision_([0-9]+)$/.exec(entry.mode)?.[1]);
+      if (!Number.isSafeInteger(revision) || revision < 1) throw new AppError("s14_lifecycle_ledger_conflict", 409);
+      const table = entry.kind === "access" ? "memory_access" : "memory_shares";
+      const row = tx.get<{ record_json: string }>(`SELECT record_json FROM ${table} WHERE id=?`, entry.id);
+      if (!row) continue;
+      if (entry.kind === "access") {
+        const access = JSON.parse(row.record_json) as MemoryAccess;
+        if (access.revision <= revision) {
+          access.revision = revision + 1; access.shared = false; access.publishedBy = "owner"; access.changedAt = this.app.now();
+          save(tx, "memory_access", access);
+          tx.run("INSERT OR REPLACE INTO memory_access_history VALUES (?,?,?)", access.id, access.revision, canonical(access));
+        }
+      } else {
+        const share = JSON.parse(row.record_json) as MemoryShare;
+        if (share.revision <= revision) { share.revision = revision + 1; share.active = false; save(tx, "memory_shares", share); }
+      }
+    }
     const deleted = tx.all<{ kind: string; id: string }>("SELECT kind,id FROM lifecycle.withdrawals WHERE mode='deleted'");
     const sources = new Set(deleted.filter(e => e.kind === "source").map(e => e.id));
     const claims = new Set(deleted.filter(e => e.kind === "claim").map(e => e.id));
@@ -467,8 +530,8 @@ export class S14Memory {
       save(tx, "memory_contexts", packet);
       if (packet.workId) {
         const work = record<Work>(tx, "work_items", packet.workId);
-        if (work.result !== null) { work.result = null; work.reason = "memory_context_stale"; work.state = "blocked"; work.revision++; save(tx, "work_items", work); }
-        tx.run("DELETE FROM work_results WHERE work_id=?", packet.workId);
+        if (work.result === packet.attemptId) { work.result = null; work.reason = "memory_context_stale"; work.state = "blocked"; work.revision++; save(tx, "work_items", work); }
+        tx.run("DELETE FROM work_results WHERE attempt_id=?", packet.attemptId);
       }
     }
     for (const row of tx.all<{ record_json: string }>("SELECT record_json FROM reply_outbox")) {

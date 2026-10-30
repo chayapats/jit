@@ -151,6 +151,25 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
         return json(receipt);
       }
       if (request.method !== "GET") throw new AppError("not_found", 404);
+      const review = /^\/api\/s14\/work\/([a-zA-Z0-9_-]+)\/report-review$/.exec(url.pathname);
+      if (review) return json(app.reports.review(auth.actor, review[1]!));
+      const reports = /^\/api\/s14\/work\/([a-zA-Z0-9_-]+)\/reports$/.exec(url.pathname);
+      if (reports) return json(app.reports.list(auth.actor, reports[1]!));
+      const report = /^\/api\/s14\/reports\/([a-f0-9]{32})$/.exec(url.pathname);
+      if (report) return json(app.reports.view(auth.actor, report[1]!));
+      const download = /^\/(?:api\/)?s14\/artifacts\/([a-f0-9]{32})\/download$/.exec(url.pathname);
+      if (download) {
+        const { artifact, bytes } = app.artifacts.download(auth.actor, download[1]!);
+        return new Response(new Uint8Array(bytes), { headers: {
+          "Content-Type": artifact.mediaType, "Content-Length": String(artifact.size),
+          "Content-Disposition": `attachment; filename="${artifact.name}"`, "Cache-Control": "private, no-store",
+          "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Content-Security-Policy": "sandbox; default-src 'none'; frame-ancestors 'none'",
+          "Content-Digest": `sha-256=:${Buffer.from(artifact.sha256, "hex").toString("base64")}:`,
+        } });
+      }
+      if (url.pathname === "/api/s14/work-defaults") return json(app.graph.defaults(auth.actor));
+      const graph = /^\/api\/s14\/work\/([a-zA-Z0-9_-]+)\/graph$/.exec(url.pathname);
+      if (graph) return json(app.graph.view(auth.actor, graph[1]!));
       if (url.pathname === "/api/s14/home") return json({ state: app.home(auth.actor), csrf: auth.csrf });
       if (url.pathname === "/api/s14/providers") return json({ providers: await app.signIns.providers(auth.actor), revision: app.home(auth.actor).revision });
       const signIn = /^\/(api\/)?s14\/sign-in\/(codex|grok)\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
@@ -204,7 +223,7 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
       const receipt = /^\/(?:api\/)?s14\/receipts\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
       if (receipt) return app.store.read(tx => { app.requireOwner(tx, auth.actor); const r = tx.get<{ result_json: string }>("SELECT result_json FROM command_receipts WHERE owner_id='owner' AND request_id=?", receipt[1]!); if (!r) throw new AppError("not_found", 404); return page ? redirect(product!.surface(JSON.parse(r.result_json))) : json(JSON.parse(r.result_json)); });
       if (page) { const state = app.home(auth.actor); return view(state, await product!.view(url, auth.actor, state, signedInLocale(state))); }
-      if (url.pathname === "/") { const state = app.home(auth.actor); return respond(render({ state, work: app.authority.list(auth.actor), csrf: auth.csrf, locale: state.owner?.language ?? (request.headers.get("accept-language")?.startsWith("en") ? "en" : "th"), view: { kind: "more", saved: false }, overview: { views: [], effects: [], botStates: {}, computers: {} }, policy: app.policy, now: app.now() }), 200, "text/html"); }
+      if (url.pathname === "/") { const state = app.home(auth.actor); return respond(render({ state, work: app.authority.list(auth.actor), csrf: auth.csrf, locale: state.owner?.language ?? (request.headers.get("accept-language")?.startsWith("en") ? "en" : "th"), view: { kind: "more", saved: false }, overview: { views: [], effects: [], botStates: {}, computers: {}, defaults: app.graph.defaults(auth.actor), lanes: {}, reports: {} }, policy: app.policy, now: app.now() }), 200, "text/html"); }
       throw new AppError("not_found", 404);
     } catch (error) {
       const code = error instanceof AppError ? error.code : "invalid_request", status = error instanceof AppError ? error.status : 400;

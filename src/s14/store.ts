@@ -7,7 +7,7 @@ import type { AppTransaction } from "../store";
 /** Fresh S14 SQLite format identity, distinct from every legacy user_version. */
 export const s14ApplicationId = 0x4a495431;
 /** Unreleased S14 schema version; unknown formats refuse before writable SQLite opens. */
-export const s14SchemaVersion = 7;
+export const s14SchemaVersion = 10;
 /** Safe next action for incompatible stores; no original bytes or sidecars are opened by SQLite. */
 export class FreshStateRequired extends AppError {
   readonly nextAction = "choose_a_separate_JIT_S14_DATABASE_keep_legacy_installation";
@@ -47,8 +47,10 @@ export class S14Store {
     };
     try {
       if (state === "missing") closeSync(openSync(ledgerPath, "wx", 0o600));
+      // Attaching reads both schemas, so a concurrent writer needs the wait already in place.
+      this.#db.exec("PRAGMA busy_timeout=2000");
       this.#db.query("ATTACH DATABASE ? AS lifecycle").run(ledgerPath);
-      this.#db.exec("PRAGMA busy_timeout=2000; PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON");
+      this.#db.exec("PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON");
       if (state === "missing") this.#db.transaction(() => this.#db.exec(`
         CREATE TABLE owner (id TEXT PRIMARY KEY CHECK(id='owner'), password_hash TEXT NOT NULL, generation INTEGER NOT NULL);
         CREATE TABLE sessions (token_hash TEXT PRIMARY KEY, generation INTEGER NOT NULL, expires_at INTEGER NOT NULL);
@@ -84,7 +86,18 @@ export class S14Store {
         CREATE TABLE work_items (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id), record_json TEXT NOT NULL);
         CREATE TABLE work_grants (id TEXT PRIMARY KEY, work_id TEXT NOT NULL UNIQUE REFERENCES work_items(id), record_json TEXT NOT NULL);
         CREATE TABLE grant_state (grant_id TEXT PRIMARY KEY REFERENCES work_grants(id), generation INTEGER NOT NULL, revoked INTEGER NOT NULL CHECK(revoked IN (0,1)));
-        CREATE TABLE grant_usage (grant_id TEXT PRIMARY KEY REFERENCES work_grants(id), attempts INTEGER NOT NULL, steps INTEGER NOT NULL, calls INTEGER NOT NULL, output_bytes INTEGER NOT NULL);
+        CREATE TABLE grant_usage (grant_id TEXT PRIMARY KEY REFERENCES work_grants(id), attempts INTEGER NOT NULL, steps INTEGER NOT NULL, calls INTEGER NOT NULL, output_bytes INTEGER NOT NULL, reads INTEGER NOT NULL);
+        CREATE TABLE reports (id TEXT PRIMARY KEY, work_id TEXT NOT NULL REFERENCES work_items(id), attempt_id TEXT NOT NULL REFERENCES work_attempts(id), revision INTEGER NOT NULL, metadata_json TEXT NOT NULL, content_json TEXT, UNIQUE(work_id,revision), UNIQUE(attempt_id));
+        CREATE TABLE report_reviews (work_id TEXT PRIMARY KEY REFERENCES work_items(id), record_json TEXT NOT NULL);
+        CREATE TABLE artifacts (id TEXT PRIMARY KEY, report_id TEXT NOT NULL REFERENCES reports(id) DEFERRABLE INITIALLY DEFERRED, attempt_id TEXT NOT NULL REFERENCES work_attempts(id), record_json TEXT NOT NULL, content BLOB);
+        CREATE TABLE artifact_staging (id TEXT PRIMARY KEY, attempt_id TEXT NOT NULL REFERENCES work_attempts(id), record_json TEXT NOT NULL, content BLOB NOT NULL);
+        CREATE TRIGGER immutable_report BEFORE UPDATE ON reports WHEN NEW.id IS NOT OLD.id OR NEW.work_id IS NOT OLD.work_id OR NEW.attempt_id IS NOT OLD.attempt_id OR NEW.revision IS NOT OLD.revision OR NEW.metadata_json IS NOT OLD.metadata_json OR (NEW.content_json IS NOT NULL AND NEW.content_json IS NOT OLD.content_json) BEGIN SELECT RAISE(ABORT,'immutable_report'); END;
+        CREATE TRIGGER immutable_artifact BEFORE UPDATE ON artifacts WHEN NEW.id IS NOT OLD.id OR NEW.report_id IS NOT OLD.report_id OR NEW.attempt_id IS NOT OLD.attempt_id OR NEW.record_json IS NOT OLD.record_json OR (NEW.content IS NOT NULL AND NEW.content IS NOT OLD.content) BEGIN SELECT RAISE(ABORT,'immutable_artifact'); END;
+        CREATE TABLE work_defaults (id TEXT PRIMARY KEY CHECK(id='work'), record_json TEXT NOT NULL);
+        INSERT INTO work_defaults VALUES ('work','{"id":"work","revision":1,"concurrency":2,"wallMs":1800000,"reads":40}');
+        CREATE TABLE work_graphs (id TEXT PRIMARY KEY REFERENCES work_items(id), record_json TEXT NOT NULL);
+        CREATE TABLE work_steps (id TEXT PRIMARY KEY, work_id TEXT NOT NULL REFERENCES work_items(id), record_json TEXT NOT NULL);
+        CREATE TABLE attempt_transports (attempt_id TEXT PRIMARY KEY REFERENCES work_attempts(id), active INTEGER NOT NULL CHECK(active IN (0,1)));
         CREATE TABLE work_queue (work_id TEXT PRIMARY KEY REFERENCES work_items(id), state TEXT NOT NULL CHECK(state IN ('queued','claimed','blocked')));
         CREATE TABLE work_attempts (id TEXT PRIMARY KEY, work_id TEXT NOT NULL REFERENCES work_items(id), request_id TEXT NOT NULL, payload_hash TEXT NOT NULL, record_json TEXT NOT NULL, UNIQUE(work_id,request_id));
         CREATE TABLE attempt_usage (attempt_id TEXT PRIMARY KEY REFERENCES work_attempts(id), calls INTEGER NOT NULL);
@@ -103,7 +116,7 @@ export class S14Store {
       }).immediate();
       const installationId = this.#tx.get<{ id: string }>("SELECT id FROM memory_identity")?.id;
       if (!installationId || installationId !== this.#tx.get<{ id: string }>("SELECT id FROM lifecycle.identity")?.id) throw new AppError("s14_lifecycle_ledger_conflict", 409);
-      // Fresh schema 7 combines result, memory, Parallel and computer tables; earlier unreleased stores refuse.
+      // Fresh schema 10 combines results, memory, Parallel, graphs, reports/review and computer activity; earlier unreleased stores refuse.
       this.#db.transaction(() => {
         this.#db.exec(`
           CREATE TABLE IF NOT EXISTS computer_activity (sequence INTEGER PRIMARY KEY, computer_id TEXT NOT NULL REFERENCES bot_computers(id), generation INTEGER NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('page.opened','screenshot','agent.scroll','system.stop')), at INTEGER NOT NULL);
