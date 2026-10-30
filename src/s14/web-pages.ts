@@ -82,7 +82,7 @@ export const ownerStrip = (actions: string, note = "", before = "", after = "") 
 export const untrusted = (body: string, label = tr("s14.untrusted.bot")) => `<div class="s-untrusted"><div class="s-untrusted-tag">${e(label)}</div>${body}</div>`;
 export const pill = (label: string, tone = "", glyph = "", id = "") => `<span${id ? ` id="${id}"` : ""} class="s-pill ${tone}">${glyph ? `<span aria-hidden="true">${glyph}</span>` : ""}${e(label)}</span>`;
 
-const workTone: Record<Work["state"], [string, string]> = { proposed: ["strong", ""], accepted: ["", ""], queued: ["", ""], running: ["strong", ""], waiting: ["warn", "!"], ready: ["ok", "✓"], blocked: ["warn", "!"], stopping: ["", ""], stopped: ["", ""] };
+const workTone: Record<Work["state"], [string, string]> = { proposed: ["strong", ""], rejected: ["", ""], accepted: ["", ""], queued: ["", ""], running: ["strong", ""], waiting: ["warn", "!"], ready: ["ok", "✓"], blocked: ["warn", "!"], stopping: ["", ""], stopped: ["", ""] };
 const workPill = (state: Work["state"], id = "") => pill(tr(k(`s14.work_state.${state}`)), ...workTone[state], id);
 const effectTone: Record<Effect["state"], [string, string]> = { pending: ["warn", "!"], approved: ["strong", ""], denied: ["", ""], expired: ["", ""], executing: ["strong", ""], succeeded: ["ok", "✓"], failed: ["danger", "×"], unknown: ["danger", "?"], changed: ["warn", "!"] };
 const effectPill = (state: Effect["state"]) => pill(tr(k(`s14.effect_state.${state}`)), ...effectTone[state]);

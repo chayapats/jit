@@ -208,7 +208,7 @@ export class S14Memory {
     if (conversation.botId !== bot.id && !input.attempt?.snapshot.grant.bots.some(b => b.id === bot.id)) throw new AppError("memory_scope_denied", 403);
     const attempt = input.attempt ?? null, budget = input.bytes ?? 16384;
     integer(budget, 1024, 65536);
-    const decisions = rows<MemoryDecision>(tx, "memory_decisions").filter(d => d.conversationId === conversation.id);
+    const decisions = rows<MemoryDecision>(tx, "memory_decisions").filter(d => d.pinned !== false).filter(d => d.conversationId === conversation.id);
     const packet: MemoryPacket = { id: id(), botId: bot.id, botRevision: bot.revision, botGeneration: bot.generation,
       ownerGeneration: tx.get<{ generation: number }>("SELECT generation FROM owner")!.generation,
       conversationId: conversation.id, workId: attempt?.workId ?? null, attemptId: attempt?.id ?? null,
@@ -243,7 +243,7 @@ export class S14Memory {
     const bot = record<Bot>(tx, "bots", packet.botId);
     if (!bot.enabled || bot.revision !== packet.botRevision || bot.generation !== packet.botGeneration || tx.get<{ generation: number }>("SELECT generation FROM owner")?.generation !== packet.ownerGeneration) return false;
     if (packet.sources.some(r => !this.sourceCurrent(tx, r))) return false;
-    const live = rows<MemoryDecision>(tx, "memory_decisions").filter(d => d.conversationId === packet.conversationId);
+    const live = rows<MemoryDecision>(tx, "memory_decisions").filter(d => d.pinned !== false).filter(d => d.conversationId === packet.conversationId);
     if (canonical(live.map(ref)) !== canonical(packet.decisions.map(ref))) return false;
     if (packet.decisions.some(d => !this.sourceCurrent(tx, d.source))) return false;
     const attempt = this.packetAttempt(tx, packet);
@@ -264,7 +264,7 @@ export class S14Memory {
       record<Bot>(tx, "bots", botId);
       const terms = lexicalTerms(query);
       const claims = rows<MemoryClaim>(tx, "memory_claims").filter(c => this.access(tx, c, botId, null)).map(c => this.lookup(tx, botId, ref(c)));
-      const decisions = rows<MemoryDecision>(tx, "memory_decisions").filter(d => this.app.readConversation(tx, d.conversationId).botId === botId);
+      const decisions = rows<MemoryDecision>(tx, "memory_decisions").filter(d => d.pinned !== false).filter(d => this.app.readConversation(tx, d.conversationId).botId === botId);
       const sources = rows<MemorySource>(tx, "memory_sources").filter(s => s.botId === botId).slice(-200);
       const selected = claims.filter(c => !query || c.state === "available" && (lexicalScore(terms, c.claim.text) >= 3 || c.claim.text.toLowerCase().includes(query.toLowerCase()))).slice(-200);
       const returned = new Set([...selected.map(c => c.state === "available" ? c.claim.id : c.reference.id), ...sources.map(s => s.id), ...decisions.map(d => d.source.id)]);
@@ -282,6 +282,15 @@ export class S14Memory {
       const history = claim.state === "available" ? tx.all<{ record_json: string }>("SELECT record_json FROM memory_access_history WHERE id=? ORDER BY revision", requested.id).map(r => JSON.parse(r.record_json) as MemoryAccess) : [];
       const shares = claim.state === "available" ? tx.all<{ record_json: string }>("SELECT record_json FROM memory_shares WHERE json_extract(record_json,'$.claim.id')=?", requested.id).map(r => JSON.parse(r.record_json) as MemoryShare) : [];
       return { claim, history, shares };
+    });
+  }
+
+  /** Reads one exact retained decision or unpinned tombstone for revision-aware owner editing. */
+  decision(actor: OwnerActor, decisionId: string): MemoryDecision {
+    identity(decisionId);
+    return this.app.store.read(tx => {
+      this.app.requireOwner(tx, actor);
+      return record<MemoryDecision>(tx, "memory_decisions", decisionId);
     });
   }
 
@@ -305,8 +314,15 @@ export class S14Memory {
     for (const candidate of sources) for (const parent of candidate.derived) edge({ kind: "source", ref: parent }, [{ kind: "source", ref: ref(candidate) }]);
     const closure = lineageClosure<Node>([{ kind: "claim", ref: requested }, { kind: "source", ref: claim.source }], key, node => descendants.get(key(node)) ?? [], claims.length + sources.length);
     const affectedClaims = closure.filter(n => n.kind === "claim").map(n => n.ref), affectedSources = closure.filter(n => n.kind === "source").map(n => n.ref);
-    const contexts = rows<MemoryPacket>(tx, "memory_contexts").filter(p => p.claims.some(c => affectedClaims.some(r => same(r, c))) || [...p.sources, ...p.decisions.map(d => d.source)].some(s => affectedSources.some(r => same(r, s)))).map(p => p.id);
-    return { claim: requested, claims: affectedClaims, sources: affectedSources, contexts, nativePolicy: "fresh_sessions_retire_on_close" };
+    const packets = rows<MemoryPacket>(tx, "memory_contexts").filter(p => p.claims.some(c => affectedClaims.some(r => same(r, c))) || [...p.sources, ...p.decisions.map(d => d.source)].some(s => affectedSources.some(r => same(r, s))));
+    const botIds = [...new Set(packets.map(p => p.botId))];
+    const workIds = [...new Set(packets.flatMap(p => p.workId ? [p.workId] : []))];
+    const names = {
+      bots: botIds.slice(0, 100).map(id => ({ id, name: record<Bot>(tx, "bots", id).name })),
+      work: workIds.slice(0, 100).map(id => ({ id, title: record<Work>(tx, "work_items", id).title })),
+      omittedBots: Math.max(0, botIds.length - 100), omittedWork: Math.max(0, workIds.length - 100),
+    };
+    return { claim: requested, claims: affectedClaims, sources: affectedSources, contexts: packets.map(p => p.id), names, nativePolicy: "fresh_sessions_retire_on_close" };
   }
 
   private withdraw(tx: AppTransaction, requested: MemoryRef, mode: "corrected" | "forgotten" | "deleted"): MemoryImpact {
@@ -356,10 +372,20 @@ export class S14Memory {
       const old = previous ? JSON.parse(previous.record_json) as MemoryDecision : null;
       if (command.expectedRevision !== (old?.revision ?? 0)) throw new AppError("stale_revision", 409);
       const content = text(p.text, 4000), source = this.source(tx, { id: id(), botId: conversation.botId, conversationId: conversation.id, attribution: "owner", text: content, derived: [] });
-      const decision: MemoryDecision = { id: old?.id ?? id(), revision: (old?.revision ?? 0) + 1, generation: (old?.generation ?? 0) + 1, conversationId: conversation.id, key: p.key, text: content, source: ref(source) };
+      const decision: MemoryDecision = { id: old?.id ?? id(), revision: (old?.revision ?? 0) + 1, generation: (old?.generation ?? 0) + 1, conversationId: conversation.id, key: p.key, text: content, source: ref(source), pinned: true };
       if (old) tx.run("INSERT OR IGNORE INTO lifecycle.withdrawals VALUES ('source',?,'corrected')", old.source.id);
       tx.run("INSERT OR REPLACE INTO memory_decisions VALUES (?,?,?)", decision.id, conversation.id, canonical(decision));
       return { ...receipt, decision: ref(decision) };
+    }
+    if (command.kind === "memory.decision.unpin") {
+      exact(command.payload, ["decision"]);
+      reference(command.payload.decision);
+      const decision = record<MemoryDecision>(tx, "memory_decisions", command.payload.decision.id);
+      if (decision.pinned === false || !same(decision, command.payload.decision) || decision.revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
+      // Keep a revisioned tombstone so an old set form cannot recreate the removed decision at revision zero.
+      const tombstone = { ...decision, revision: decision.revision + 1, generation: decision.generation + 1, pinned: false };
+      save(tx, "memory_decisions", tombstone);
+      return { ...receipt, decision: ref(tombstone) };
     }
     const p = command.payload;
     exact(p, command.kind === "memory.correct" ? ["claim", "text"] : command.kind === "memory.share" ? ["claim", "scopeId", "receiverBotId", "expiresAt"] : ["claim"]);

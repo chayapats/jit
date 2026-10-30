@@ -205,6 +205,8 @@ export function createS14Product(app: S14Application): S14Product {
     surface(receipt, fields) {
       const extended = memorySurface(receipt, fields); if (extended) return extended;
       if (receipt.kind === "setup") return "/";
+      if (receipt.kind === "conversation.create") return `/chats/${receipt.conversation!.id}`;
+      if (receipt.kind === "owner.preferences.set") return "/more";
       if (receipt.kind === "message.post") return `/chats/${receipt.conversation!.id}#latest`;
       if (receipt.kind === "bot.proposal.accept") return `/team/${receipt.bot!.id}`;
       if (receipt.kind === "bot.proposal.reject" || receipt.kind === "bot.proposal.revise") return `/proposals/${receipt.proposal!.id}`;

@@ -1,4 +1,5 @@
 import type { MemoryPacket } from "./memory-types";
+import type { OwnerCommand } from "./owner-commands";
 
 /** Non-secret exact owner-configured model selection; readiness is never inferred from configuration. */
 export interface Route { id: string; provider: "codex" | "grok"; model: string }
@@ -35,10 +36,10 @@ export type RejectBotCommand = Envelope<"bot.proposal.reject", { proposalId: str
 /** Owner edits append a proposal revision without changing or creating a permanent Bot. */
 export type ReviseBotCommand = Envelope<"bot.proposal.revise", { proposalId: string; name: string; responsibility: string; routeId: string }>;
 /** app.bots/v1 and app.conversations/v2 authenticated command union. */
-export type BotCommand = SetupCommand | MessageCommand | AcceptBotCommand | RejectBotCommand | ReviseBotCommand;
+export type BotCommand = SetupCommand | MessageCommand | AcceptBotCommand | RejectBotCommand | ReviseBotCommand | OwnerCommand;
 /** Atomic command result; duplicate retry keys return the original committed snapshot. */
-export interface BotReceipt { requestId: string; kind: BotCommand["kind"]; bot?: Bot; conversation?: Conversation; message?: Message; reply?: Reply; proposal?: BotProposal }
+export interface BotReceipt { requestId: string; kind: BotCommand["kind"]; bot?: Bot; conversation?: Conversation; message?: Message; reply?: Reply; proposal?: BotProposal; preferences?: { revision: number; language: "th" | "en"; theme: "system" | "light" | "dark" } }
 /** Owner query projection backing setup, chat, proposals and team, with exact mutation revisions. */
-export interface Home { revision: number; owner: { name: string; language: "th" | "en" } | null; routes: Route[]; bots: Bot[]; conversations: Conversation[]; proposals: BotProposal[]; replies: Reply[] }
+export interface Home { revision: number; owner: { name: string; language: "th" | "en"; theme?: "system" | "light" | "dark" } | null; routes: Route[]; bots: Bot[]; conversations: Conversation[]; proposals: BotProposal[]; replies: Reply[] }
 /** Immutable configured policy ceilings; configuration alone proves no live provider or host support. */
 export interface Policy { routes: Route[]; tools: string[]; resources: string[] }

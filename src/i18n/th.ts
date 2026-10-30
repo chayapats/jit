@@ -2713,6 +2713,7 @@ export const th = {
   "s14.error.invalid_connection_secret": "รูปแบบ key ไม่ถูกต้อง",
   "s14.next.invalid_connection_secret": "ไม่ได้เก็บ วาง key ทั้งก้อนโดยไม่มีช่องว่างอีกครั้ง",
   "s14.work_state.proposed": "ข้อเสนอ",
+  "s14.work_state.rejected": "ปฏิเสธแล้ว",
   "s14.work_state.accepted": "รับแล้ว ยังไม่เริ่ม",
   "s14.work_state.queued": "รอคิว",
   "s14.work_state.running": "กำลังทำ",

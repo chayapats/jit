@@ -11,6 +11,8 @@ import { renderS14 } from "./web-pages";
 import { createS14Product } from "./web-product";
 import { acquireS14RuntimeLock } from "./runtime-lock";
 import { serveS14Refusal } from "./web-refusal";
+import { existingResourceCeilings } from "./scope-options";
+import { supportedS14Routes } from "./sign-in";
 import type { Policy } from "./types";
 import { BotPodmanRuntime } from "./computer-podman";
 import { runComputerWork } from "./computer-work";
@@ -20,12 +22,13 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
   const path = resolve(env.JIT_S14_DATABASE ?? ".local/s14/application.sqlite"), command = args[0];
   try {
     inspectS14Store(path); // Refuse legacy before creating even a lock, profile directory or worker.
-    if (!["serve", "setup"].includes(command ?? "") || args.some(a => !["serve", "setup", "--s14", "--password-stdin", "--refusal-page"].includes(a))) throw new AppError("use_setup_or_serve_with_s14");
-    const policy: Policy = { routes: JSON.parse(env.JIT_S14_ROUTES ?? "[]"), tools: ["web_search", "web_fetch", "computer"], resources: [] };
+    if (!["serve", "setup"].includes(command ?? "") || args.some(a => !["serve", "setup", "--s14", "--password-stdin", "--refusal-page", "--no-refusal-page"].includes(a))) throw new AppError("use_setup_or_serve_with_s14");
+    const policy: Policy = { routes: env.JIT_S14_ROUTES ? JSON.parse(env.JIT_S14_ROUTES) : supportedS14Routes(), tools: ["web_search", "web_fetch", "computer"], resources: [] };
     const release = acquireS14RuntimeLock(path);
     let store: S14Store | undefined;
     try {
       store = new S14Store(path);
+      policy.resources = store.read(existingResourceCeilings);
       const chat = schwayChat(join(dirname(path), "native"));
       const vaultDirectory = resolve(env.JIT_S14_VAULT_DIRECTORY ?? join(dirname(path), "..", "s14-vault"));
       const vault = new ConnectionVault(vaultDirectory, { forbidden: [dirname(path)] });
@@ -68,7 +71,7 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
       const computerTimer = setInterval(maintainComputers, 1000);
       void pump().catch(() => {});
       process.once("exit", release);
-      const shutdown = () => { clearInterval(computerTimer); server.stop(true); app.computers.recover(); void app.computers.drain().finally(() => process.exit(0)); };
+      const shutdown = () => { clearInterval(computerTimer); server.stop(true); app.computers.recover(); void Promise.all([app.computers.drain(), app.signIns.close()]).finally(() => process.exit(0)); };
       process.once("SIGTERM", shutdown);
       process.once("SIGINT", shutdown);
       console.log(JSON.stringify({ state: "s14_listening", origin, contracts: ["app.bots/v1", "app.conversations/v2", "app.work-grants/v1", "app.effect-approval/v2", "app.bot-computer/v1", "app.input-lease/v1", "app.memory-scope/v2", "app.context-provenance/v2", "app.parallel-web/v1", "app.external-evidence/v2"], readiness: "configured_unverified" }));
@@ -76,7 +79,7 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
   } catch (error) {
     console.error(JSON.stringify(error instanceof FreshStateRequired ? { error: error.code, nextAction: error.nextAction } : { error: error instanceof AppError ? error.code : "s14_start_failed" }));
     process.exitCode = 1;
-    // Opt-in explanation page: it runs after the refusal, with no store, lock or worker, so it can only say what happened.
-    if (error instanceof FreshStateRequired && command === "serve" && args.includes("--refusal-page")) serveS14Refusal(path, env.JIT_S14_ORIGIN ?? "http://localhost:3001");
+    // Default browser explanation page: it runs after the refusal, with no store, lock or worker, so it can only say what happened.
+    if (error instanceof FreshStateRequired && command === "serve" && !args.includes("--no-refusal-page")) serveS14Refusal(path, env.JIT_S14_ORIGIN ?? "http://localhost:3001");
   }
 }

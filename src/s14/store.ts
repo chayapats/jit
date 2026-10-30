@@ -7,7 +7,7 @@ import type { AppTransaction } from "../store";
 /** Fresh S14 SQLite format identity, distinct from every legacy user_version. */
 export const s14ApplicationId = 0x4a495431;
 /** Unreleased S14 schema version; unknown formats refuse before writable SQLite opens. */
-export const s14SchemaVersion = 6;
+export const s14SchemaVersion = 7;
 /** Safe next action for incompatible stores; no original bytes or sidecars are opened by SQLite. */
 export class FreshStateRequired extends AppError {
   readonly nextAction = "choose_a_separate_JIT_S14_DATABASE_keep_legacy_installation";
@@ -103,9 +103,11 @@ export class S14Store {
       }).immediate();
       const installationId = this.#tx.get<{ id: string }>("SELECT id FROM memory_identity")?.id;
       if (!installationId || installationId !== this.#tx.get<{ id: string }>("SELECT id FROM lifecycle.identity")?.id) throw new AppError("s14_lifecycle_ledger_conflict", 409);
-      // Fresh schema 6 combines result, memory, Parallel and computer tables; earlier unreleased stores refuse.
+      // Fresh schema 7 combines result, memory, Parallel and computer tables; earlier unreleased stores refuse.
       this.#db.transaction(() => {
         this.#db.exec(`
+          CREATE TABLE IF NOT EXISTS computer_activity (sequence INTEGER PRIMARY KEY, computer_id TEXT NOT NULL REFERENCES bot_computers(id), generation INTEGER NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('page.opened','screenshot','agent.scroll','system.stop')), at INTEGER NOT NULL);
+          CREATE INDEX IF NOT EXISTS computer_activity_by_computer ON computer_activity(computer_id,sequence);
           CREATE TABLE IF NOT EXISTS bot_computers (id TEXT PRIMARY KEY, bot_id TEXT NOT NULL UNIQUE REFERENCES bots(id), record_json TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS input_leases (computer_id TEXT PRIMARY KEY REFERENCES bot_computers(id), record_json TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS computer_operations (sequence INTEGER PRIMARY KEY, computer_id TEXT NOT NULL REFERENCES bot_computers(id), generation INTEGER NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('start','stop','reset','delete')), state TEXT NOT NULL CHECK(state IN ('queued','running','done')));

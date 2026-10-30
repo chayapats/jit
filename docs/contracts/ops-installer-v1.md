@@ -213,3 +213,7 @@ an HTTPS origin's Host. They use the fixture uid as simulated root, never sudo.
 Fresh Ubuntu 24.04 x64 and arm64 Pi 5 acceptance stays unchecked until the owner
 opts in and records sanitized evidence using the ops-service runbook. Never
 substitute a dry run or desktop suite for real install/reboot/account evidence.
+
+## S14 bootstrap seam (UX14-01)
+
+`issueOwnerSetupLink` now accepts the minimal `OwnerSetupStore` implemented by both `TransactionStore` and `S14Store`; its capability security and private one-time delivery contract are unchanged. An S14 installation must invoke it against the selected fresh S14 database and display the returned link once, then password setup and provider device sign-in proceed through Web commands without another owner shell command. No public Web route may mint that capability. The existing production installer/service still selects the legacy runtime: switching it to S14 is a later explicit cutover, not an implicit database conversion in this logic slice. Legacy stores remain byte-preserving refusals before S14 locks or workers, with the refusal page enabled by default for browser serve.

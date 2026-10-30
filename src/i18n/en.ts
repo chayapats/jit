@@ -2710,6 +2710,7 @@ export const en: Record<MessageKey, string> = {
   "s14.error.invalid_connection_secret": "That key format is not valid",
   "s14.next.invalid_connection_secret": "Nothing was saved. Paste the whole key with no spaces",
   "s14.work_state.proposed": "Proposed",
+  "s14.work_state.rejected": "Rejected",
   "s14.work_state.accepted": "Accepted, not started",
   "s14.work_state.queued": "Queued",
   "s14.work_state.running": "Working",
