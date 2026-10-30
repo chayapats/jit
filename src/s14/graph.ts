@@ -127,6 +127,7 @@ export class S14Graph {
     identity(command.payload.workId); identity(command.payload.stepId);
     const step = record<WorkStep>(tx, "work_steps", command.payload.stepId);
     if (step.workId !== command.payload.workId || step.revision !== command.expectedRevision) throw new AppError("stale_revision", 409);
+    tx.run("INSERT OR IGNORE INTO lifecycle.withdrawals VALUES ('step_stop',?,'stopped')", step.id);
     if (!terminal.has(step.state)) {
       step.state = step.state === "running" || step.state === "stopping" ? "stopping" : "cancelled";
       step.reason = "owner_stopped_step";
@@ -156,7 +157,7 @@ export class S14Graph {
   guard(tx: AppTransaction, attempt: Attempt): void {
     if (!attempt.step) return;
     const step = record<WorkStep>(tx, "work_steps", attempt.step.id);
-    if (step.attemptId !== attempt.id || step.state !== "running") throw new AppError("step_fenced", 403);
+    if (tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE kind='step_stop' AND id=?", step.id) || step.attemptId !== attempt.id || step.state !== "running") throw new AppError("step_fenced", 403);
   }
 
   /** Selects dependencies only after actual sibling settlement and committed evidence, retaining explicit gaps. */
@@ -181,6 +182,7 @@ export class S14Graph {
   finish(tx: AppTransaction, attempt: Attempt, reason: string | null): void {
     if (!attempt.step) return;
     const step = record<WorkStep>(tx, "work_steps", attempt.step.id);
+    if (step.attemptId !== attempt.id) return;
     const result = tx.get<{ state: string }>("SELECT state FROM work_results WHERE attempt_id=?", attempt.id);
     step.state = step.state === "stopping" ? "cancelled" : reason ? "failed" : result?.state === "waiting" ? "blocked" : "committed";
     if (!reason && result?.state === "waiting") reason = "handler_waiting";

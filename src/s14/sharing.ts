@@ -45,6 +45,7 @@ export class S14Sharing {
       this.fence(tx);
       return { kind: command.kind, requestId: command.requestId, share };
     }
+    if (command.kind !== "snapshot.share") throw new AppError("unknown_command");
     const p = command.payload;
     exact(p, ["scopeId", "target", "receiverBotId", "workId", "expiresAt"]);
     identity(p.scopeId); identity(p.receiverBotId);

@@ -165,11 +165,14 @@ export class S14Authority {
   private effects(tx: AppTransaction, workId: string): Effect[] { return tx.all<{ record_json: string }>("SELECT record_json FROM effects WHERE work_id=? ORDER BY rowid", workId).map(r => JSON.parse(r.record_json)); }
   /** Checks the existing owner grant without creating authority or admitting a run. */
   checkGrant(tx: AppTransaction, grant: WorkGrant): Work { return this.grantLive(tx, grant); }
-  private grantLive(tx: AppTransaction, grant: WorkGrant): Work {
+  /** Checks original grant authority during fenced boot, ignoring only ordinary blocked/ready work presentation states. */
+  recoveryGrant(tx: AppTransaction, grant: WorkGrant): Work { return this.grantLive(tx, grant, true); }
+  private grantLive(tx: AppTransaction, grant: WorkGrant, recovering = false): Work {
     const work = record<Work>(tx, "work_items", grant.workId), state = tx.get<{ generation: number; revoked: number }>("SELECT generation,revoked FROM grant_state WHERE grant_id=?", grant.id);
-    if (tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE kind='grant' AND id=?", grant.id) || work.grantId !== grant.id || !state || state.revoked || state.generation !== grant.generation || stopped.includes(work.state)) throw new AppError("grant_revoked", 403);
+    if (tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE kind='grant' AND id=?", grant.id) || work.grantId !== grant.id || !state || state.revoked || state.generation !== grant.generation || stopped.includes(work.state) && (!recovering || ["stopping", "stopped"].includes(work.state))) throw new AppError("grant_revoked", 403);
     if (this.app.now() >= grant.expiresAt) throw new AppError("grant_expired", 403);
     if (tx.get<{ generation: number }>("SELECT generation FROM owner")?.generation !== grant.ownerGeneration) throw new AppError("owner_authority_changed", 403);
+    if (tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE kind='uncertain_grant' AND id=?", grant.id)) throw new AppError("native_checkpoint_missing", 403);
     this.app.memory.workSources(tx, work);
     return work;
   }
@@ -264,8 +267,10 @@ export class S14Authority {
     const packet = this.app.memory.assemble(tx, { botId: bot.id, conversationId: work.conversationId, purpose, sources, attempt });
     attempt.memoryId = packet.id;
     save(tx, "work_attempts", attempt);
+    this.app.recovery.prepare(tx, attempt);
     tx.run("INSERT INTO attempt_usage VALUES (?,1)", attempt.id);
     tx.run("UPDATE grant_usage SET attempts=attempts+1,steps=steps+1,calls=calls+1,output_bytes=output_bytes+? WHERE grant_id=?", input.outputBytes, grant.id);
+    this.app.recovery.reserve(tx, grant.id);
     tx.run("UPDATE work_queue SET state='claimed' WHERE work_id=?", workId);
     work.state = "running"; work.revision++; save(tx, "work_items", work); return attempt;
   }
@@ -301,7 +306,9 @@ export class S14Authority {
     const calls = tx.get<{ calls: number }>("SELECT calls FROM attempt_usage WHERE attempt_id=?", attempt.id)!.calls;
     const total = tx.get<{ calls: number }>("SELECT calls FROM grant_usage WHERE grant_id=?", attempt.snapshot.grant.id)!.calls;
     if (calls >= attempt.snapshot.calls || total >= attempt.snapshot.grant.limits.calls) throw new AppError("budget_exhausted", 409);
-    tx.run("UPDATE attempt_usage SET calls=calls+1 WHERE attempt_id=?", attempt.id); tx.run("UPDATE grant_usage SET calls=calls+1 WHERE grant_id=?", attempt.snapshot.grant.id);
+    tx.run("UPDATE attempt_usage SET calls=calls+1 WHERE attempt_id=?", attempt.id);
+    tx.run("UPDATE grant_usage SET calls=calls+1 WHERE grant_id=?", attempt.snapshot.grant.id);
+    this.app.recovery.reserve(tx, attempt.snapshot.grant.id);
   }
   /** Commits result evidence only under the original still-live authority; late/fenced output is discarded. */
   commit(attemptId: string, output: WorkOutput): void {
@@ -318,6 +325,7 @@ export class S14Authority {
       attempt.state = "waiting"; save(tx, "work_attempts", attempt);
       work.result = attempt.id; save(tx, "work_items", work);
       this.reevaluate(tx, work.id, true);
+      this.app.recovery.committed(tx, attempt.id);
     });
   }
   private reevaluate(tx: AppTransaction, workId: string, resultChanged = false): void {
@@ -408,7 +416,9 @@ export class S14Authority {
       const attempt = record<Attempt>(tx, "work_attempts", current.attemptId); this.live(tx, attempt);
       if (this.app.now() >= current.expiresAt) throw new AppError("approval_expired", 409);
       if (!this.options.effects?.[current.action.kind]) throw new AppError("effect_adapter_unavailable", 503);
-      this.chargeCall(tx, attempt); current.state = "executing"; this.saveEffect(tx, current); return current;
+      this.chargeCall(tx, attempt);
+      tx.run("INSERT OR IGNORE INTO lifecycle.withdrawals VALUES ('effect_claim',?,?)", current.id, `revision_${current.revision}`);
+      current.state = "executing"; this.saveEffect(tx, current); return current;
     });
     this.#effects.add(effect.id);
     const selectedAction = structuredClone(effect.action);
@@ -464,7 +474,7 @@ export class S14Authority {
   async drain(): Promise<void> {
     this.expireEffects();
     if (!this.options.executor) return;
-    if (this.#closing) return;
+    if (this.#closing || this.app.recovery.booting) return;
     if (this.#draining) return this.#draining;
     this.#draining = this.drainGraph();
     try { await this.#draining; }
@@ -475,11 +485,20 @@ export class S14Authority {
     const active = tx.all<{ record_json: string }>(`SELECT a.record_json FROM work_attempts a
       WHERE json_extract(a.record_json,'$.state') IN ('running','interrupted')
       OR EXISTS (SELECT 1 FROM attempt_transports t WHERE t.attempt_id=a.id AND t.active=1)`).map(r => JSON.parse(r.record_json) as Attempt);
+    const orphaned = tx.all<{ record_json: string }>(`SELECT i.record_json FROM native_intents i
+      WHERE json_extract(i.record_json,'$.state')='unresolved' AND json_extract(i.record_json,'$.attemptId') IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM work_attempts a WHERE a.id=json_extract(i.record_json,'$.attemptId')
+        AND (json_extract(a.record_json,'$.state') IN ('running','interrupted')
+          OR EXISTS (SELECT 1 FROM attempt_transports t WHERE t.attempt_id=a.id AND t.active=1)))`)
+      .map(row => JSON.parse(row.record_json) as import("./recovery-types").NativeIntent);
     const limits = this.schedulerLimits;
-    if (active.length >= limits.global || active.filter(a => a.workId === grant.workId).length >= grant.limits.concurrency ||
-        active.filter(a => a.snapshot.route.provider === route).length >= limits.route ||
-        active.filter(a => a.snapshot.bot.id === bot.id).length >= limits.bot ||
-        computer && (active.filter(a => a.snapshot.tools.includes("computer")).length >= limits.computer || active.some(a => a.snapshot.bot.id === bot.id && a.snapshot.tools.includes("computer")))) {
+    const workHeld = active.filter(a => a.workId === grant.workId).length + orphaned.filter(i => i.workId === grant.workId).length;
+    const routeHeld = active.filter(a => a.snapshot.route.provider === route).length + orphaned.filter(i => i.route.provider === route).length;
+    const botHeld = active.filter(a => a.snapshot.bot.id === bot.id).length + orphaned.filter(i => i.botId === bot.id).length;
+    const computerHeld = active.filter(a => a.snapshot.tools.includes("computer")).length + orphaned.filter(i => i.computer).length;
+    const botComputerHeld = active.some(a => a.snapshot.bot.id === bot.id && a.snapshot.tools.includes("computer"));
+    if (active.length + orphaned.length >= limits.global || workHeld >= grant.limits.concurrency ||
+        routeHeld >= limits.route || botHeld >= limits.bot || computer && (computerHeld >= limits.computer || botComputerHeld)) {
       throw new AppError("execution_capacity_held", 409);
     }
     if (computer && tx.get(`SELECT 1 FROM input_leases l JOIN bot_computers c ON c.id=l.computer_id
@@ -494,6 +513,7 @@ export class S14Authority {
     const usage = tx.get<{ reads: number }>("SELECT reads FROM grant_usage WHERE grant_id=?", attempt.snapshot.grant.id)!;
     if (usage.reads >= attempt.snapshot.grant.limits.reads) throw new AppError("read_budget_exhausted", 409);
     tx.run("UPDATE grant_usage SET reads=reads+1 WHERE grant_id=?", attempt.snapshot.grant.id);
+    this.app.recovery.reserve(tx, attempt.snapshot.grant.id);
   }
 
   private nextGraphAttempt(): Attempt | null {
@@ -511,7 +531,7 @@ export class S14Authority {
           try {
             return this.app.store.transaction(() => {
               const { id: _id, handler: _handler, dependsOn: _dependsOn, ...input } = node;
-              const attempt = this.admitIn(tx, graph.id, `step_${step.id}`, input, null, digest(canonical({ input, parentId: null })));
+              const attempt = this.admitIn(tx, graph.id, `step_${step.id}_${step.revision}`, input, null, digest(canonical({ input, parentId: null })));
               attempt.step = { id: step.id, handler: node.handler, inputs: [], gaps: dependencies.gaps };
               for (const dependency of dependencies.inputs) {
                 const source = { id: dependency.sourceId, revision: 1, generation: 1 };
@@ -539,6 +559,7 @@ export class S14Authority {
               step.attemptId = attempt.id; step.state = "running"; step.reason = null;
               step.startedAt = this.app.now(); step.revision++;
               save(tx, "work_steps", step);
+              this.app.recovery.prepare(tx, attempt);
               tx.run("INSERT INTO attempt_transports VALUES (?,1)", attempt.id);
               return attempt;
             });
@@ -575,6 +596,7 @@ export class S14Authority {
     this.#running.set(attempt.id, abort);
     let reason: string | null = null;
     try {
+      this.app.store.transaction(tx => this.app.recovery.dispatch(tx, attempt.id));
       const output = await this.options.executor!.run(structuredClone(attempt), abort.signal);
       if (abort.signal.aborted) throw new AppError("work_cancelled_or_deadline");
       this.commit(attempt.id, output);
@@ -586,6 +608,7 @@ export class S14Authority {
       this.#running.delete(attempt.id);
       this.app.store.transaction(tx => {
         tx.run("UPDATE attempt_transports SET active=0 WHERE attempt_id=?", attempt.id);
+        this.app.recovery.settled(tx, attempt.id, abort.signal.aborted);
         this.app.artifacts.discard(tx, attempt.id);
         this.app.graph.finish(tx, attempt, reason);
         this.finishGraph(tx, attempt.workId);

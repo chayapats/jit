@@ -1,6 +1,6 @@
 # app.snapshot-sharing/v1
 
-SHARE14-01 (#253), S14-AC05; FR-05/16/17/35/38/42; NFR-07/08/14. Consumes app.work-grants/v1, app.artifact-gateway/v1 and app.context-provenance/v2. Opt-in S14 schema **9** refuses unreleased schemas 1–8 with fresh-state. UI acceptance remains pending.
+SHARE14-01 (#253), S14-AC05; FR-05/16/17/35/38/42; NFR-07/08/14. Consumes app.work-grants/v1, app.artifact-gateway/v1 and app.context-provenance/v2. Introduced in opt-in S14 schema 9; current combined schema **10** refuses unreleased 1–9 with fresh-state. UI acceptance remains pending.
 
 Types: `src/s14/sharing-types.ts`; service: `S14Application.sharing:S14Sharing`. Owner commands use the existing authenticated receipt/audit/CSRF boundary:
 
@@ -15,7 +15,7 @@ Types: `src/s14/sharing-types.ts`; service: `S14Application.sharing:S14Sharing`.
 
 `S14Artifacts.snapshot(tx,target)` reads only a live exact source revision or delivered artifact (artifact content revision/generation 1/1). All copies pass common `validateArtifact`: portable UTF-8 text/Markdown/JSON, credential/type/hash/size checks. Sharing is bounded to **32 KiB per snapshot**, **64 KiB aggregate context**. No host path, mutable workspace read, browser profile, login, credential or volume mount is available. Larger delivered artifacts remain downloadable by the owner; sharing them is explicitly unavailable in this bounded slice.
 
-`sharing.sources(tx,attempt,conversationId):MemoryRef[]` creates receiver-bound lineage wrappers before context assembly. `sharing.context(tx,attempt):{share:SnapshotShare,content:string}[]` rechecks live attempt/grant/scope and copy integrity. `schwayResearch` supplies labelled untrusted copies in `shared-snapshots`. Derived sources retain wrapper ancestry, so all reads, context use, report/artifact publication and handoffs recheck original sharing. New shares of received/derived shared data refuse `snapshot_forward_refused`; third-Bot handoffs need the original exact receiver policy and therefore refuse. There is no transitive permission.
+`sharing.sources(tx,attempt,conversationId):MemoryRef[]` creates receiver-bound lineage wrappers before context assembly. `sharing.context(tx,attempt):{share:SnapshotShare,content:string}[]` rechecks live attempt/grant/scope and copy integrity. `schwayResearch` supplies labelled untrusted copies in `shared-snapshots`. Shared bytes join the existing outbound privacy corpus before every public query/URL; sharing never authorizes external disclosure. Derived sources retain wrapper ancestry, so all reads, context use, report/artifact publication and handoffs recheck original sharing. New shares of received/derived shared data refuse `snapshot_forward_refused`; third-Bot handoffs need the original exact receiver policy and therefore refuse. There is no transitive permission.
 
 Revoke records an independent `snapshot_share` tombstone and removes stored copy bytes. It retires affected memory packets, withdraws derived result/report/download content and requests cancellation only after commit. Native contexts use fresh sessions and retirement; REC14-01 adds restart discovery. Uncertain native retirement never restores app publication authority. Already disclosed knowledge **cannot be recalled**; revocation is not erasure at the model or recipient.
 

@@ -7,7 +7,7 @@ import type { AppTransaction } from "../store";
 /** Fresh S14 SQLite format identity, distinct from every legacy user_version. */
 export const s14ApplicationId = 0x4a495431;
 /** Unreleased S14 schema version; unknown formats refuse before writable SQLite opens. */
-export const s14SchemaVersion = 9;
+export const s14SchemaVersion = 10;
 /** Safe next action for incompatible stores; no original bytes or sidecars are opened by SQLite. */
 export class FreshStateRequired extends AppError {
   readonly nextAction = "choose_a_separate_JIT_S14_DATABASE_keep_legacy_installation";
@@ -57,6 +57,15 @@ export class S14Store {
         INSERT INTO installation VALUES (1,0,NULL);
         CREATE TABLE memory_identity (id TEXT PRIMARY KEY);
         CREATE TABLE lifecycle.identity (id TEXT PRIMARY KEY);
+        CREATE TABLE lifecycle.grant_usage (grant_id TEXT PRIMARY KEY, attempts INTEGER NOT NULL, steps INTEGER NOT NULL, calls INTEGER NOT NULL, output_bytes INTEGER NOT NULL, reads INTEGER NOT NULL);
+        CREATE TRIGGER lifecycle.monotonic_usage BEFORE UPDATE ON grant_usage WHEN NEW.attempts<OLD.attempts OR NEW.steps<OLD.steps OR NEW.calls<OLD.calls OR NEW.output_bytes<OLD.output_bytes OR NEW.reads<OLD.reads BEGIN SELECT RAISE(ABORT,'immutable_reservation'); END;
+        CREATE TRIGGER lifecycle.no_usage_delete BEFORE DELETE ON grant_usage BEGIN SELECT RAISE(ABORT,'immutable_reservation'); END;
+        CREATE TABLE lifecycle.native_intents (id TEXT PRIMARY KEY, record_json TEXT NOT NULL);
+        CREATE TRIGGER lifecycle.no_native_intent_update BEFORE UPDATE ON native_intents BEGIN SELECT RAISE(ABORT,'immutable_lifecycle'); END;
+        CREATE TRIGGER lifecycle.no_native_intent_delete BEFORE DELETE ON native_intents BEGIN SELECT RAISE(ABORT,'immutable_lifecycle'); END;
+        CREATE TABLE lifecycle.effect_outcomes (effect_id TEXT NOT NULL, action_hash TEXT NOT NULL, revision INTEGER NOT NULL, outcome TEXT NOT NULL, recorded_at INTEGER NOT NULL, PRIMARY KEY(effect_id,action_hash,revision));
+        CREATE TRIGGER lifecycle.no_effect_outcome_update BEFORE UPDATE ON effect_outcomes BEGIN SELECT RAISE(ABORT,'immutable_lifecycle'); END;
+        CREATE TRIGGER lifecycle.no_effect_outcome_delete BEFORE DELETE ON effect_outcomes BEGIN SELECT RAISE(ABORT,'immutable_lifecycle'); END;
         CREATE TABLE lifecycle.withdrawals (kind TEXT NOT NULL, id TEXT NOT NULL, mode TEXT NOT NULL, PRIMARY KEY(kind,id,mode));
         CREATE TRIGGER lifecycle.no_withdrawal_update BEFORE UPDATE ON withdrawals BEGIN SELECT RAISE(ABORT,'immutable_lifecycle'); END;
         CREATE TRIGGER lifecycle.no_withdrawal_delete BEFORE DELETE ON withdrawals BEGIN SELECT RAISE(ABORT,'immutable_lifecycle'); END;
@@ -95,6 +104,8 @@ export class S14Store {
         INSERT INTO work_defaults VALUES ('work','{"id":"work","revision":1,"concurrency":2,"wallMs":1800000,"reads":40}');
         CREATE TABLE work_graphs (id TEXT PRIMARY KEY REFERENCES work_items(id), record_json TEXT NOT NULL);
         CREATE TABLE work_steps (id TEXT PRIMARY KEY, work_id TEXT NOT NULL REFERENCES work_items(id), record_json TEXT NOT NULL);
+        CREATE TABLE native_intents (id TEXT PRIMARY KEY, record_json TEXT NOT NULL);
+        CREATE TABLE work_checkpoints (id TEXT PRIMARY KEY REFERENCES work_attempts(id), work_id TEXT NOT NULL REFERENCES work_items(id), record_json TEXT NOT NULL);
         CREATE TABLE attempt_transports (attempt_id TEXT PRIMARY KEY REFERENCES work_attempts(id), active INTEGER NOT NULL CHECK(active IN (0,1)));
         CREATE TABLE work_queue (work_id TEXT PRIMARY KEY REFERENCES work_items(id), state TEXT NOT NULL CHECK(state IN ('queued','claimed','blocked')));
         CREATE TABLE work_attempts (id TEXT PRIMARY KEY, work_id TEXT NOT NULL REFERENCES work_items(id), request_id TEXT NOT NULL, payload_hash TEXT NOT NULL, record_json TEXT NOT NULL, UNIQUE(work_id,request_id));
@@ -114,7 +125,7 @@ export class S14Store {
       }).immediate();
       const installationId = this.#tx.get<{ id: string }>("SELECT id FROM memory_identity")?.id;
       if (!installationId || installationId !== this.#tx.get<{ id: string }>("SELECT id FROM lifecycle.identity")?.id) throw new AppError("s14_lifecycle_ledger_conflict", 409);
-      // Fresh schema 9 combines result, memory, Parallel and computer tables; earlier unreleased stores refuse.
+      // Fresh schema 10 combines result, memory, Parallel and computer tables; earlier unreleased stores refuse.
       this.#db.transaction(() => {
         this.#db.exec(`
           CREATE TABLE IF NOT EXISTS bot_computers (id TEXT PRIMARY KEY, bot_id TEXT NOT NULL UNIQUE REFERENCES bots(id), record_json TEXT NOT NULL);

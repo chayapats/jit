@@ -25,3 +25,5 @@ Persist the correlation intent before native creation; fence prior attempts on s
 ## Definition of done
 
 The supported artifact/capability and deterministic conformance land; Jit pins them and proves discovery → fence/retire → replay-safe resume without private source access. A merged issue alone does not certify live reboot or external exactly-once behavior.
+
+REC14-01 implementation evidence: the prerequisite is now present in pinned `vendor/schway-1.0.0-rc.2-697bf40.tgz`, public `schway.host.session-inventory/v1` plus release/v2 and credential-lifecycle/v1. Jit persists one correlation workspace intent before createSession and uses public listSessions for pre-app-reference orphans; no private parsing or new caller-UUID API is assumed. See app.work-checkpoints/v1 for exact artifact hash, crash/lease fixtures and the remaining live reboot/remote-effect limits. The original brief above remains proposal history, not current unsupported-capability status.

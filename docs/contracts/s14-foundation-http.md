@@ -198,3 +198,21 @@ Exact integration files: `graph-types.ts`, `report-types.ts`, `graph.ts`, `repor
 Use exact source or delivered artifact metadata, never a path. Artifact content identity is revision/generation 1/1; source uses its MemoryRef. Receiver must have a preconfigured `JIT_S14_RESOURCES` slot in its explicit Bot ceiling; share creates no new capability or execution. Pin the current accepted work ID when appropriate before work.start, then include `{kind:'share',id:scopeId,revision:1}` in that start. Null workId explicitly permits subsequent granted work for this receiver. No retarget or slot reuse; source changes need a new explicit share. Copies are at most 32 KiB each/64 KiB aggregate context. Read-only owner metadata queries cannot start a model.
 
 Map existing Opus sharing/revoke states and immutable file metadata. `snapshot_scope_denied`, `scope_revoked_or_stale`, `snapshot_unavailable`, `snapshot_forward_refused`, `snapshot_context_budget_exhausted` and common artifact-validator errors are safe reason codes. A revoked share fences future calls and late results; displayed disclosure must remain honest. UI layout, copy, forms, Thai/English, no-script, accessibility and responsive acceptance are left to the UI agent; no UI box is completed by this logic slice.
+
+## REC14-01 logic seam (current combined schema 10)
+
+The current combined schema is **10**; all unreleased 1–9 refuse with fresh-state before writable open. Contracts: `app.work-checkpoints/v1`, `app.replay-policy/v1`; sharing remains `app.snapshot-sharing/v1`. No legacy default runtime change.
+
+| Command / query | Exact data / state |
+| --- | --- |
+| `effect.reconcile` through existing JSON/form commands | `{effectId,actionHash,outcome:'occurred'|'did_not_occur',note}`; expectedRevision = current unknown effect revision |
+| `GET /api/s14/recovery` / `app.recovery.view(actor)` | `{checkpoints:WorkCheckpoint[],native:NativeIntent[],actualUsage:null}` |
+| Existing effect/work queries | `Effect.resolution?:{basis:'owner_statement',outcome,note,recordedAt}`, new revision and `reason:'owner_statement_not_verified'`; observed effect.state remains unknown |
+
+The owner resolution command returns `RecoveryReceipt {kind:'effect.reconcile',requestId,effect}`. It works after originating work stop/expiry, checks current owner session and exact action hash/revision, and records only the stated outcome. It never retries or verifies delivery. Duplicate keys retain original receipts; changed keys/revisions/extra fields reject. No verified remote read-back adapter is configured. Keep the statement visibly distinct from adapter-confirmed success/failure; its UI wording/layout is for Opus.
+
+Recovery checkpoint states are prepared/dispatched/committed/waiting/queued/resumed/finished. `queued` is eligible requeue; `resumed` has a real replacementAttemptId. Native states are creating/correlated/retired/deleted/not_created/unresolved; mode retire/delete and discovered metadata/reason remain explicit. Saved execution branches remain separate from inventory main references. Read-only queries never trigger native cleanup, inference or tools; native reconciliation retries on an exclusive service boot.
+
+Map per-checkpoint reason codes from app.work-checkpoints/v1. Stopped/revoked/expired/changed/exhausted/unknown-effect work stays waiting/blocked with its concrete reason. An unsettled old transport or orphan retains capacity. Unknown actual usage stays null and charged reservations stay retained. Boot discovery fences old results before workers start; a queued/resumed replacement never reuses native history. Existing committed reports/siblings remain inspectable with explicit partial evidence.
+
+Exact UI integration: `sharing-types.ts`, `recovery-types.ts`, `authority-types.ts`; `app.sharing.list(actor)`, `app.recovery.view(actor)`, `app.authority.effect/view`, existing report/artifact queries and `app.execute`. Opus owns F10/F11/F12, recovery/stopping/unknown presentation, forms and both-language/no-script/responsive/accessibility acceptance. All UI acceptance boxes remain unticked in this logic delivery. Do not add inferred retries, provider fallback, new authority, arbitrary paths or active artifact HTML.

@@ -422,7 +422,7 @@ export class S14Memory {
       identity(s.scopeId); identity(s.receiverBotId); integer(s.expiresAt, this.app.now() + 1, this.app.now() + 86400000);
       const receiver = record<Bot>(tx, "bots", s.receiverBotId);
       if (!receiver.enabled || !this.app.policy.resources.includes(s.scopeId) || !receiver.capabilities.resources.includes(s.scopeId)) throw new AppError("memory_scope_denied", 403);
-      if (tx.get("SELECT id FROM memory_shares WHERE id=?", s.scopeId)) throw new AppError("memory_share_exists", 409);
+      if (tx.get("SELECT id FROM memory_shares WHERE id=?", s.scopeId) || tx.get("SELECT id FROM snapshot_shares WHERE id=?", s.scopeId)) throw new AppError("memory_share_exists", 409);
       const share: MemoryShare = { id: s.scopeId, revision: 1, claim: ref(claim), receiverBotId: receiver.id, expiresAt: s.expiresAt, active: true };
       tx.run("INSERT INTO memory_shares VALUES (?,?)", share.id, canonical(share));
       return { ...receipt, share };

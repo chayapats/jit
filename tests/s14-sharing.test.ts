@@ -14,15 +14,15 @@ import { createS14Handler } from "../src/s14/web";
 const roots: string[] = [], stores = new Set<S14Store>();
 const rid = () => crypto.randomUUID().replaceAll("-", "");
 afterEach(() => { for (const store of stores) store.close(); stores.clear(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
-async function fixture() {
+async function fixture(tools: string[] = []) {
   const root = mkdtempSync(join(tmpdir(), "jit-s14-sharing-")); roots.push(root);
   const path = join(root, "app.sqlite"), store = new S14Store(path); stores.add(store);
   const clock = { now: 1800000000000 };
-  const options: S14Options = { policy: { routes: [{ id: "selected", provider: "codex", model: "fixture" }], tools: [], resources: ["share1", "share2"] },
+  const options: S14Options = { policy: { routes: [{ id: "selected", provider: "codex", model: "fixture" }], tools, resources: ["share1", "share2"] },
     now: () => clock.now, chat: { async reply() { return { text: "Chat" }; } } };
   const app = new S14Application(store, options); await app.provisionOwner("fixture-sharing-owner-password");
   const token = await app.login("fixture-sharing-owner-password"), actor = app.authenticate(token).actor;
-  const setup = app.execute(actor, { kind: "setup", requestId: rid(), expectedRevision: 0, payload: { ownerName: "Owner", language: "en", routeId: "selected", capabilities: { tools: [], resources: [] } } });
+  const setup = app.execute(actor, { kind: "setup", requestId: rid(), expectedRevision: 0, payload: { ownerName: "Owner", language: "en", routeId: "selected", capabilities: { tools, resources: [] } } });
   const conversationId = setup.conversation!.id;
   store.transaction(tx => {
     const bot = record<Bot>(tx, "bots", "jit"); bot.id = "receiver"; bot.capabilities.resources = ["share1", "share2"];
@@ -36,7 +36,7 @@ async function fixture() {
   const start = (scopes: ScopeRef[] = [], botId = "receiver", changes: Partial<StartPayload> = {}) => app.execute(actor, { kind: "work.start", requestId: rid(), expectedRevision: app.conversation(actor, conversationId).conversation.revision,
     payload: { conversationId, task: null, title: "Read", purpose: "Read snapshot", completionRule: "Review", bots: [{ id: botId, revision: 1 }], tools: [], scopes,
       limits: { attempts: 8, steps: 8, calls: 8, outputBytes: 131072, concurrency: 2, reads: 40, wallMs: 60000 }, expiresAt: clock.now + 60000, ...changes } });
-  const admit = (workId: string, scopes: ScopeRef[] = [], botId = "receiver") => app.authority.admit(workId, rid(), { botId, scopes, tools: [], input: "Read exact snapshot", calls: 2, outputBytes: 16384 });
+  const admit = (workId: string, scopes: ScopeRef[] = [], botId = "receiver") => app.authority.admit(workId, rid(), { botId, scopes, tools, input: "Read exact snapshot", calls: 2, outputBytes: 16384 });
   const ref: ScopeRef = { kind: "share", id: "share1", revision: 1 };
   return { root, path, store, options, app, actor, token, clock, source, target, command, start, admit, ref, conversationId };
 }
@@ -142,4 +142,23 @@ test("source withdrawal and deletion remove copied bytes and fence already-discl
   barrier.resolve(); await expect(late).rejects.toThrow();
   expect(f.app.sharing.list(f.actor)[0]!.state).toBe("unavailable");
   expect(f.store.read(tx => tx.get<{ content: unknown }>("SELECT content FROM snapshot_shares")!.content)).toBeNull();
+});
+
+test("shared bytes join the outbound privacy guard and never become permission to disclose another Bot's content", async () => {
+  const f = await fixture(["web_search"]);
+  const secret = "This confidential receiver snapshot contains private owner-only business planning details";
+  const source = f.store.transaction(tx => f.app.memory.source(tx, { id: rid(), botId: "jit", conversationId: f.conversationId, attribution: "owner", text: secret, derived: [] }));
+  f.app.execute(f.actor, f.command({ target: { kind: "source", id: source.id, revision: 1, generation: 1 } }));
+  const work = f.start([f.ref], "receiver", { tools: ["web_search"] }), attempt = f.admit(work.work!.id, [f.ref]);
+  let outbound = 0; f.app.parallel.options.transport = async () => { outbound++; throw Error("No live transport in fixture"); };
+  const read = await f.app.parallel.read(attempt.id, "web_search", { query: secret });
+  expect(read.outcome).toBe("private_context"); expect(read.dispatched).toBe(false); expect(outbound).toBe(0);
+});
+
+
+test("unknown snapshot command names cannot alias owner share creation", async () => {
+  const f = await fixture();
+  const command = { ...f.command(), kind: "snapshot.untrusted" } as unknown as CreateSnapshotShare;
+  expect(() => f.app.execute(f.actor, command)).toThrow("unknown_command");
+  expect(f.app.sharing.list(f.actor)).toEqual([]);
 });

@@ -1,5 +1,6 @@
 import { dirname, join, resolve } from "node:path";
 import { ConnectionVault } from "../exec/connections";
+import { schwayRecovery } from "./native-recovery";
 import { schwayResearch } from "./research";
 import { AppError } from "../errors";
 import { readHiddenPassword } from "../terminal-password";
@@ -27,7 +28,7 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
     let store: S14Store | undefined;
     try {
       store = new S14Store(path);
-      const chat = schwayChat(join(dirname(path), "native"));
+      const chat: import("./types").ChatPort = { reply: (input, signal) => schwayChat(join(dirname(path), "native"), undefined, app.recovery).reply(input, signal) };
       const vaultDirectory = resolve(env.JIT_S14_VAULT_DIRECTORY ?? join(dirname(path), "..", "s14-vault"));
       const vault = new ConnectionVault(vaultDirectory, { forbidden: [dirname(path)] });
       const runtime = env.JIT_S14_COMPUTER_ROOT ? new BotPodmanRuntime({ dataRoot: env.JIT_S14_COMPUTER_ROOT,
@@ -44,8 +45,7 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
       }
       const origin = env.JIT_S14_ORIGIN ?? "http://localhost:3001", url = new URL(origin);
       if (url.protocol !== "http:" || !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) || url.pathname !== "/" || url.username || url.password || url.search || url.hash) throw new AppError("s14_loopback_origin_required");
-      app.recoverReplies(); app.authority.recover(); app.parallel.recover();
-      app.computers.recover();
+      await app.recovery.boot(schwayRecovery(join(dirname(path), "native")));
       await app.computers.drain();
       // Interactive chat is checked before every bounded graph admission; each run has its own host.
       let pumping: Promise<void> | null = null;
@@ -83,7 +83,7 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
       };
       process.once("SIGTERM", shutdown);
       process.once("SIGINT", shutdown);
-      console.log(JSON.stringify({ state: "s14_listening", origin, contracts: ["app.bots/v1", "app.conversations/v2", "app.work-grants/v1", "app.effect-approval/v2", "app.bot-computer/v1", "app.input-lease/v1", "app.memory-scope/v2", "app.context-provenance/v2", "app.parallel-web/v1", "app.external-evidence/v2", "app.work-graph/v1", "app.report-artifacts/v1", "app.artifact-gateway/v1", "app.snapshot-sharing/v1"], readiness: "configured_unverified" }));
+      console.log(JSON.stringify({ state: "s14_listening", origin, contracts: ["app.bots/v1", "app.conversations/v2", "app.work-grants/v1", "app.effect-approval/v2", "app.bot-computer/v1", "app.input-lease/v1", "app.memory-scope/v2", "app.context-provenance/v2", "app.parallel-web/v1", "app.external-evidence/v2", "app.work-graph/v1", "app.report-artifacts/v1", "app.artifact-gateway/v1", "app.snapshot-sharing/v1", "app.work-checkpoints/v1", "app.replay-policy/v1"], readiness: "configured_unverified" }));
     } catch (e) { store?.close(); release(); throw e; }
   } catch (error) {
     console.error(JSON.stringify(error instanceof FreshStateRequired ? { error: error.code, nextAction: error.nextAction } : { error: error instanceof AppError ? error.code : "s14_start_failed" }));
