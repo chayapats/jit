@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { createHost, hostCapabilities, RELEASE_CONTRACT, type Model } from "schway/host";
 import { AppError } from "../errors";
 import type { ChatPort } from "./types";
+import { ReplyUnavailable, replyUnavailableReason } from "./reply-failure";
 
 /** Opens one tool-free bounded conversation on the pinned public host; model is a deterministic test seam only. */
 export function schwayChat(directory: string, model?: Model): ChatPort {
@@ -22,7 +23,7 @@ export function schwayChat(directory: string, model?: Model): ChatPort {
       const session = await host.createSession();
       try {
         const result = model ? await session.submit({ text: "Answer the last owner message using the labelled conversation." }, model, signal) : await session.submitWithRoute({ text: "Answer the last owner message using the labelled conversation." }, signal);
-        if (result.outcome !== "completed") throw new AppError("reply_unavailable");
+        if (result.outcome !== "completed") throw new ReplyUnavailable("auth" in result ? replyUnavailableReason(result.auth.status) : "unknown");
         const output = session.readResult(result.result).content.filter(p => p.type === "text").map(p => p.text).join("\n");
         if (Buffer.byteLength(output) > 32768) throw new AppError("reply_too_large");
         try { const parsed: unknown = JSON.parse(output); if (parsed && typeof parsed === "object" && typeof (parsed as { text?: unknown }).text === "string") return parsed as { text: string; proposal?: unknown }; } catch { /* Plain replies remain plain text. */ }

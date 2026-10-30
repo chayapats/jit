@@ -31,6 +31,8 @@ async function fixture(options: { language?: "th" | "en" | null; reply?: Reply; 
   const clock = { now: 1800000000000 }, reply: { next: Reply } = { next: options.reply ?? (() => ({ text: "สวัสดี / Hello" })) };
   const policy: Policy = { routes: options.routes ?? [{ id: "selected", provider: "codex", model: "scripted-model" }], tools: options.tools ?? [], resources: [] };
   const app = new S14Application(store, { policy, chat: { async reply() { return reply.next(); } }, now: () => clock.now, authority: options.authority ?? {} } as S14Options);
+  // Provider readiness is local protected-store state; these rendering tests fix it to "signed in" and never read a real store.
+  app.signIns.providers = async () => policy.routes.map(route => ({ ...route, readiness: "configured-unverified" as const }));
   await app.provisionOwner(password);
   const token = await app.login(password), auth = app.authenticate(token), handler = createS14Handler(app, origin, renderS14, createS14Product(app));
   const language = options.language === undefined ? "th" : options.language;
@@ -57,7 +59,7 @@ function formFields(html: string, action: string, index = 0): Record<string, str
 }
 const commandOf = (html: string, index = 0) => JSON.parse(formFields(html, "/s14/commands", index).command!) as { kind: string; requestId: string; expectedRevision: number; payload: Record<string, unknown> };
 /** Every form-submission control, so a test can assert which decisions a page offers at all. */
-const buttons = (html: string) => [...html.matchAll(/<button\b[^>]*>([\s\S]*?)<\/button>/g)].map(m => m[1]!.replace(/<[^>]+>/g, ""));
+const buttons = (html: string) => [...html.matchAll(/<button\b[^>]*>([\s\S]*?)<\/button>/g)].map(m => m[1]!.replace(/<[^>]+>/g, "")).filter(label => label !== dictionaries.th["s14.chat.new"] && label !== dictionaries.en["s14.chat.new"]);
 const countWork = (f: F) => f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) n FROM work_items")!.n);
 const countGrants = (f: F) => f.store.read(tx => tx.get<{ n: number }>("SELECT count(*) n FROM work_grants")!.n);
 const send = (f: F, text: string) => { const conversation = f.app.conversation(f.auth.actor, f.conversationId).conversation; return f.app.execute(f.auth.actor, { kind: "message.post", requestId: rid(), expectedRevision: conversation.revision, payload: { conversationId: conversation.id, text } }); };
@@ -96,24 +98,23 @@ test("sign-in redirects pages, keeps API errors JSON and speaks the browser lang
   expect(expired.status).toBe(401); expect(await expired.text()).toContain('href="/s14/login"');
 });
 
-test("an unprovisioned installation shows the one local step instead of a sign-in form that cannot work", async () => {
+test("an unprovisioned installation points at the trusted one-time link with no source-only password command or dead sign-in form", async () => {
   const root = mkdtempSync(join(tmpdir(), "jit-s14-web-")); roots.push(root);
   const store = new S14Store(join(root, "s14.sqlite")); stores.push(store);
   const app = new S14Application(store, { policy: { routes: [], tools: [], resources: [] }, chat: { async reply() { return { text: "" }; } } });
   const handler = createS14Handler(app, origin, renderS14, createS14Product(app));
   for (const locale of ["th", "en"] as const) {
     const html = await (await handler(new Request(`${origin}/s14/login`, { headers: { "accept-language": locale } }))).text();
-    expect(html).toContain("bun src/main.ts setup --s14"); expect(html).not.toContain('type="password"');
+    expect(html).not.toContain("bun src/main.ts setup --s14"); expect(html).not.toContain('type="password"');
     expect(html).toContain(dictionaries[locale]["s14.login.unprovisioned"]);
     expect(html).toContain(dictionaries[locale]["s14.login.unprovisioned_note"]);
-    expect(html.indexOf(locale === "en" ? "Stop serve" : "หยุด serve")).toBeLessThan(html.indexOf("bun src/main.ts setup --s14"));
-    expect(html.indexOf("bun src/main.ts serve --s14")).toBeGreaterThan(html.indexOf("bun src/main.ts setup --s14"));
+    expect(html).not.toContain(dictionaries[locale]["s14.login.source_note"]);
   }
 });
 
 test("fresh setup infers the only route, asks only what it cannot infer, and is idempotent through the no-script form", async () => {
   const f = await fixture({ language: null }), html = await f.page("/");
-  expect(html).toContain(dictionaries.th["s14.setup.route_configured"]); expect(html).toContain("scripted-model"); strict(html); expect(accessibilityProblems(html, "th")).toEqual([]);
+  expect(html).toContain(`${dictionaries.th["s14.provider.using"]} Codex`); expect(html).toContain(dictionaries.th["s14.setup.route_configured_detail"]); expect(html).not.toContain("scripted-model"); strict(html); expect(accessibilityProblems(html, "th")).toEqual([]);
   const fields = formFields(html, "/s14/forms/setup"); fields.ownerName = "คุณเจ้าของ";
   expect(Object.keys(fields).sort()).toEqual(["csrf", "expectedRevision", "language", "ownerName", "requestId"]);
   expect(html).not.toMatch(/name="(routeId|model|provider|alias)"/);
@@ -126,9 +127,9 @@ test("fresh setup infers the only route, asks only what it cannot infer, and is 
 
 test("setup with no configured route names the blocker and offers no form; several routes become a choice", async () => {
   const none = await fixture({ language: null, routes: [] }), html = await none.page("/");
-  expect(html).toContain(dictionaries.th["s14.setup.route_missing"]); expect(html).toContain("JIT_S14_ROUTES"); expect(html).not.toContain("/s14/forms/setup"); strict(html);
+  expect(html).toContain(dictionaries.th["s14.setup.route_missing"]); expect(html).not.toContain("/s14/forms/setup"); strict(html);
   const many = await fixture({ language: null, routes: [{ id: "a", provider: "codex", model: "model-a" }, { id: "b", provider: "grok", model: "model-b" }] }), choice = await many.page("/");
-  expect(choice).toContain('name="routeId" value="a" checked'); expect(choice).toContain('name="routeId" value="b"'); expect(choice).not.toContain("<input name=\"model");
+  expect(choice).toContain('name="routeId" value="a" checked'); expect(choice).toContain('name="routeId" value="b"'); expect(choice).not.toContain("<input name=\"model"); expect(choice).not.toContain("model-a");
 });
 
 test("a refused setup keeps what was typed and says why", async () => {
@@ -346,7 +347,7 @@ test("every surface renders in Thai and English with no raw keys, no Thai in Eng
       strict(html); expect(accessibilityProblems(html, language)).toEqual([]);
       const text = html.replace(/<head>[\s\S]*?<\/head>/, "").replace(/<[^>]+>/g, " ");
       expect(text).not.toMatch(/\bs14\.[a-z_]+\.?/); expect(text).not.toMatch(/undefined|null|NaN|\[object/);
-      if (language === "en") expect(text.replace(/เจ้าของ/g, "")).not.toMatch(/[฀-๿]/);
+      if (language === "en") expect(text.replace(/เจ้าของ|ไทย/g, "")).not.toMatch(/[฀-๿]/);
     }
   }
 });
