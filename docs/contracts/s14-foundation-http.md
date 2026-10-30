@@ -265,7 +265,7 @@ UI agent seam: add Opus-authored lifecycle/capability/routine/history/needs-me s
 
 ## LIFE14-01 personal connector logic handoff (app.personal-read-connectors/v1)
 
-Types: `src/s14/personal-types.ts`; service: `app.personal`, `app.personal.reads`. Schema 13. No UI layouts/forms/interaction design were authored in this logic slice.
+Types: `src/s14/personal-types.ts`; service: `app.personal`, `app.personal.reads`. Current schema 14 (introduced at 13). No UI layouts/forms/interaction design were authored in this logic slice.
 
 Ordinary `POST /api/s14/commands` JSON and `/s14/commands` no-script JSON envelope retain session/Origin/CSRF/CSP/receipt rules. Exact payloads:
 
@@ -284,3 +284,21 @@ Queries: `GET /api/s14/personal` returns `{client,connections,grants,flows}`; `G
 Connection states: configured → authorizing → connected, or reauth_required; revoked is terminal. Client readiness is configured_unverified. `accountVerification:owner_label|gmail_profile` must remain distinguishable. Revocation states: none/pending/confirmed/unknown. Flow states: pending/received/exchanging/complete/failed. Read outcomes: running/success/partial/failed/withdrawn; `stale`, `missing`, `calendarTimezone`, `window.timezone` and each source's timestamp/retrievedAt/untrusted fields are meaningful. Failed/partial/stale/missing routine inputs create one grouped attention result even if model output says no_update. Safe errors include personal_invalid_consent, personal_invalid_redirect, personal_account_outside_grant, personal_consent_required, personal_oauth_stale, personal_oauth_failed_reauthorize, personal_connection_unavailable and personal_vault_unavailable. Never interpolate provider error bodies into HTML.
 
 Opus must author guided Google Cloud client/API/consent/redirect setup, write-only fields, scope/account verification labels, OAuth resume/error handling, Bot/resource selection and sourced brief/triage states. The HTTPS reverse-proxy/remote-device and same-device-only localhost limits are in `app.personal-read-connectors-v1.md`. Leave UI acceptance boxes unticked until verified.
+
+## LIFE14-02 personal exact effects handoff (app.personal-effects/v1)
+
+Current combined schema **14**; LIFE14-01 was introduced at 13. Types: `src/s14/personal-effect-types.ts`; `app.personal.effects` owns drafts, broker dispatch and provider observations. Existing `app.effect-approval/v2` retains single-use card/expiry/unknown/owner-statement behavior, adding the reviewed `calendar` effect class. All other classes/adapters remain unchanged.
+
+Trusted worker/tool seam: `propose(attemptId,requestId,scope,content,expiresAt)` returns `{draft,history,effect,observation}`; the `personal_draft` tool is offered only when a captured `effect_send`/`effect_calendar` tool exists. It never executes. The full content union (all recipients, subject/body or operation/eventId/etag/timezone/sendUpdates/start/end/recurrence/attendees) is in `app.personal-effects-v1.md`. Drafts retain exact account/connection revision, configured calendar and hash. A create's generated event ID is part of the displayed approved content. `draft.hash === effect.actionHash`.
+
+Owner commands use ordinary JSON/no-script `/commands` and receipts:
+
+- `personal.draft.revise` at draft revision: `{draftId,draftHash,content,expiresAt}` → new pending card/revision; old approval invalidated.
+- Existing `approval.decide` at effect revision: `{effectId,actionHash,decision:'approve'|'deny'}` → approves exactly one displayed card. No automatic consent/start follows from a read connection or task acceptance.
+- Existing `effect.reconcile` at current effect revision: `{effectId,actionHash,outcome:'occurred'|'did_not_occur',note}` → labelled owner statement, original state remains unknown, no retry.
+
+Queries: `GET /api/s14/work/:workId/drafts` → `{items:PersonalEffectView[]}`; `GET /api/s14/personal/drafts/:draftId` → current exact draft/history/card/provider observation. Existing `/api/s14/effects/:effectId` and `/api/s14/work/:workId` still expose the generic ledger. Expired cards project expired; revoked scopes prevent execution even if an older receipt said approved. Root pump consumes approved personal cards only once; unknown is never queued for another write.
+
+Optional owner read-back: POST `/api/s14/personal/drafts/:draftId/readback` with `{expectedRevision:<draft revision>,actionHash}` and session/Origin/CSRF. It only issues bounded GETs under current consent and records a provider observation. It cannot resend or turn an owner statement into verification. Query current effect revision separately after owner reconciliation; draft revision remains the original content revision. Safe failures include personal_draft_changed, personal_consent_required, personal_account_changed, personal_invalid_recipients, personal_timezone_offset_mismatch, stale_approval and existing authority errors. Errors never carry provider bodies.
+
+Opus must author exact To/CC/BCC/From verification and body review, full event change/timezone/recurrence/attendee/notification review, changed-card diff, expiry/revocation, accepted_unverified/unknown, provider-observed versus owner-stated reconciliation and blocked read-back. Preserve all exact fields and hashes; a model summary is insufficient for approval. No always-send control, consent inference or retry button for unknown writes. Renderer/layout/CSS and new product form/receipt redirects are deliberately left to the UI slice, whose acceptance boxes remain unticked.

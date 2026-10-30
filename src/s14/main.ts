@@ -25,7 +25,7 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
   try {
     inspectS14Store(path); // Refuse legacy before creating even a lock, profile directory or worker.
     if (!["serve", "setup"].includes(command ?? "") || args.some(a => !["serve", "setup", "--s14", "--password-stdin", "--refusal-page"].includes(a))) throw new AppError("use_setup_or_serve_with_s14");
-    const policy: Policy = { routes: JSON.parse(env.JIT_S14_ROUTES ?? "[]"), tools: ["web_search", "web_fetch", "computer", "personal_read"], resources: JSON.parse(env.JIT_S14_RESOURCES ?? "[]") };
+    const policy: Policy = { routes: JSON.parse(env.JIT_S14_ROUTES ?? "[]"), tools: ["web_search", "web_fetch", "computer", "personal_read", "effect_send", "effect_calendar"], resources: JSON.parse(env.JIT_S14_RESOURCES ?? "[]") };
     const release = acquireS14RuntimeLock(path);
     let store: S14Store | undefined;
     try {
@@ -35,7 +35,7 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
       const vault = new ConnectionVault(vaultDirectory, { forbidden: [dirname(path), resolve("backups"), env.JIT_S14_COMPUTER_ROOT] });
       const runtime = env.JIT_S14_COMPUTER_ROOT ? new BotPodmanRuntime({ dataRoot: env.JIT_S14_COMPUTER_ROOT,
         protectedPaths: [dirname(path), vaultDirectory, resolve(".local"), resolve("backups")], workspaceImage: env.JIT_BOX_IMAGE_BASE ?? "", browserImage: env.JIT_BOX_IMAGE_BROWSER ?? "" }) : undefined;
-      const app: S14Application = new S14Application(store, { policy, chat, parallel: { vault }, personal: { vault: new PersonalVault(vault) }, computers: runtime ? { runtime } : {}, authority: { scheduler: JSON.parse(env.JIT_S14_SCHEDULER_LIMITS ?? '{"global":2,"route":2,"bot":1,"computer":2}'), executor: { async run(attempt, signal) {
+      const app: S14Application = new S14Application(store, { policy, chat, parallel: { vault }, personal: { vault: new PersonalVault(vault), evidenceGuard: env.JIT_S14_PERSONAL_EVIDENCE_GUARD === "1" }, computers: runtime ? { runtime } : {}, authority: { scheduler: JSON.parse(env.JIT_S14_SCHEDULER_LIMITS ?? '{"global":2,"route":2,"bot":1,"computer":2}'), executor: { async run(attempt, signal) {
         if (attempt.snapshot.tools.includes("computer")) return runComputerWork(app, join(dirname(path), "native"), attempt, signal);
         return schwayResearch(join(dirname(path), "native"), app).run(attempt, signal);
       } } } });
@@ -59,6 +59,7 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
             await app.drainReplies(); await app.authority.drain();
             await app.attention.drain();
             await app.personal.drain();
+            await app.personal.effects.drain();
             await app.botLifecycle.drain(schwayRecovery(join(dirname(path), "native")));
             if (!store!.read(tx => tx.get("SELECT id FROM reply_outbox WHERE json_extract(record_json,'$.state')='queued' LIMIT 1"))) break;
           }
@@ -94,7 +95,7 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
       };
       process.once("SIGTERM", shutdown);
       process.once("SIGINT", shutdown);
-      console.log(JSON.stringify({ state: "s14_listening", origin, contracts: ["app.bots/v1", "app.conversations/v2", "app.work-grants/v1", "app.effect-approval/v2", "app.bot-computer/v1", "app.input-lease/v1", "app.memory-scope/v2", "app.context-provenance/v2", "app.parallel-web/v1", "app.external-evidence/v2", "app.work-graph/v1", "app.report-artifacts/v1", "app.artifact-gateway/v1", "app.snapshot-sharing/v1", "app.work-checkpoints/v1", "app.replay-policy/v1", "app.routine-grants/v1", "app.attention-outbox/v1", "app.bot-lifecycle/v1", "app.personal-read-connectors/v1"], readiness: "configured_unverified" }));
+      console.log(JSON.stringify({ state: "s14_listening", origin, contracts: ["app.bots/v1", "app.conversations/v2", "app.work-grants/v1", "app.effect-approval/v2", "app.bot-computer/v1", "app.input-lease/v1", "app.memory-scope/v2", "app.context-provenance/v2", "app.parallel-web/v1", "app.external-evidence/v2", "app.work-graph/v1", "app.report-artifacts/v1", "app.artifact-gateway/v1", "app.snapshot-sharing/v1", "app.work-checkpoints/v1", "app.replay-policy/v1", "app.routine-grants/v1", "app.attention-outbox/v1", "app.bot-lifecycle/v1", "app.personal-read-connectors/v1", "app.personal-effects/v1"], readiness: "configured_unverified" }));
     } catch (e) { store?.close(); release(); throw e; }
   } catch (error) {
     console.error(JSON.stringify(error instanceof FreshStateRequired ? { error: error.code, nextAction: error.nextAction } : { error: error instanceof AppError ? error.code : "s14_start_failed" }));

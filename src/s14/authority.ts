@@ -15,7 +15,7 @@ const equal = (a: unknown, b: unknown) => canonical(a) === canonical(b);
 const refsEqual = (a: ScopeRef, b: ScopeRef) => a.kind === b.kind && a.id === b.id && a.revision === b.revision;
 const maxLimits: WorkLimits = { attempts: 64, steps: 64, calls: 256, outputBytes: 1048576, wallMs: 86400000, concurrency: 8, reads: 256 };
 const stopped = ["blocked", "stopping", "stopped", "ready"];
-const effectKinds = ["send", "publish", "push", "payment", "delete"];
+const effectKinds = ["send", "publish", "push", "payment", "delete", "calendar"];
 function list(v: unknown): asserts v is string[] {
   if (!Array.isArray(v) || v.length > 64 || new Set(v).size !== v.length) throw new AppError("invalid_list");
   for (const item of v) identity(item);

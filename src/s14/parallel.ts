@@ -105,6 +105,7 @@ export class ParallelWeb {
     const entries = tx.all<{ record_json: string }>("SELECT record_json FROM memory_sources WHERE bot_id=?", attempt.snapshot.bot.id)
       .map(row => JSON.parse(row.record_json) as MemorySource).filter(s => s.attribution !== "external" && s.text !== null).map(s => ({ text: s.text! }));
     entries.push(
+      ...this.app.personal.privateCorpus(tx, attempt.snapshot.bot.id),
       { text: attempt.snapshot.input },
       { text: attempt.snapshot.bot.responsibility },
       { text: JSON.stringify(attempt.snapshot.bot) },

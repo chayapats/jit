@@ -1,3 +1,4 @@
+import type { PersonalEffectCommand, PersonalEffectReceipt } from "./personal-effect-types";
 import { S14Personal, type PersonalOptions } from "./personal";
 import type { PersonalCommand, PersonalReceipt } from "./personal-types";
 import { S14BotLifecycle } from "./bot-lifecycle";
@@ -30,9 +31,9 @@ import { S14Computers } from "./computer";
 import type { ComputerCommand, ComputerOptions, ComputerReceipt } from "./computer-types";
 
 /** Stable complete typed owner ingress union for the S14 logic foundation. */
-export type S14Command = BotCommand | AuthorityCommand | MemoryCommand | ParallelCommand | ComputerCommand | GraphCommand | SharingCommand | RecoveryCommand | RoutineCommand | AttentionCommand | BotLifecycleCommand | PersonalCommand;
+export type S14Command = BotCommand | AuthorityCommand | MemoryCommand | ParallelCommand | ComputerCommand | GraphCommand | SharingCommand | RecoveryCommand | RoutineCommand | AttentionCommand | BotLifecycleCommand | PersonalCommand | PersonalEffectCommand;
 /** Committed typed result of the S14 owner command boundary. */
-export type S14Receipt = BotReceipt | AuthorityReceipt | MemoryReceipt | ParallelReceipt | ComputerReceipt | GraphReceipt | SharingReceipt | RecoveryReceipt | RoutineReceipt | AttentionReceipt | BotLifecycleReceipt | PersonalReceipt;
+export type S14Receipt = BotReceipt | AuthorityReceipt | MemoryReceipt | ParallelReceipt | ComputerReceipt | GraphReceipt | SharingReceipt | RecoveryReceipt | RoutineReceipt | AttentionReceipt | BotLifecycleReceipt | PersonalReceipt | PersonalEffectReceipt;
 
 const id = () => crypto.randomUUID().replaceAll("-", "");
 const tokenPattern = /^[a-f0-9]{64}$/;
@@ -83,7 +84,10 @@ export class S14Application {
     this.sharing = new S14Sharing(this);
     this.personal = new S14Personal(this, options.personal);
     const externalScopes = options.authority?.scopes;
-    this.authority = new S14Authority(this, { ...options.authority, scopes: {
+    this.authority = new S14Authority(this, { ...options.authority, effects: {
+      ...(options.personal?.vault ? { send: (action, allowed) => this.personal.effects.perform(action, allowed), calendar: (action, allowed) => this.personal.effects.perform(action, allowed) } : {}),
+      ...options.authority?.effects,
+    }, scopes: {
       current: (tx, scope) => this.personal.owns(tx, scope) ? this.personal.scope(tx, scope) : this.sharing.scope(tx, scope) ?? this.memory.scope(tx, scope) ?? externalScopes?.current(tx, scope) ?? null,
     } });
     this.graph = new S14Graph(this);
@@ -194,6 +198,8 @@ export class S14Application {
   execute(actor: OwnerActor, command: AttentionCommand): AttentionReceipt;
   /** Executes exact Bot policy proposals and lifecycle previews through the authenticated owner boundary. */
   execute(actor: OwnerActor, command: BotLifecycleCommand): BotLifecycleReceipt;
+  /** Revises exact personal drafts through owner receipts, invalidating every earlier approval. */
+  execute(actor: OwnerActor, command: PersonalEffectCommand): PersonalEffectReceipt;
   /** Executes write-only Google setup and exact per-Bot connection grants under owner receipts. */
   execute(actor: OwnerActor, command: PersonalCommand): PersonalReceipt;
   /** Executes the complete typed HTTP command union without client-controlled actor identities. */
@@ -210,7 +216,9 @@ export class S14Application {
       const previous = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash,result_json FROM command_receipts WHERE owner_id='owner' AND request_id=?", command.requestId);
       if (previous) { if (previous.payload_hash !== digest(encoded)) throw new AppError("request_id_conflict", 409); return JSON.parse(previous.result_json) as S14Receipt; }
       let result: S14Receipt;
-      if (command.kind.startsWith("personal.")) {
+      if (command.kind === "personal.draft.revise") {
+        result = this.personal.effects.apply(tx, command);
+      } else if (command.kind.startsWith("personal.")) {
         result = this.personal.apply(tx, command as PersonalCommand);
         this.memory.reconcile(tx);
         this.personal.reconcile(tx);

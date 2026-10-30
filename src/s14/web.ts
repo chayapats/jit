@@ -86,6 +86,16 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
       if (request.method === "GET" && oauth) return json(app.personal.authorization(auth.actor, oauth[1]!));
       const brief = /^\/api\/s14\/work\/([a-zA-Z0-9_-]+)\/brief$/.exec(url.pathname);
       if (request.method === "GET" && brief) return json(app.personal.reads.brief(auth.actor, brief[1]!));
+      const personalEffect = /^\/api\/s14\/personal\/drafts\/([a-zA-Z0-9_-]+)(\/readback)?$/.exec(url.pathname);
+      if (personalEffect && request.method === "GET" && !personalEffect[2]) return json(app.personal.effects.view(auth.actor, personalEffect[1]!));
+      if (personalEffect && request.method === "POST" && personalEffect[2]) {
+        const p = await body(request);
+        app.verifyCsrf(auth.csrf, request.headers.get("x-csrf-token"));
+        if (Object.keys(p).sort().join() !== "actionHash,expectedRevision" || typeof p.expectedRevision !== "number" || typeof p.actionHash !== "string") throw new AppError("invalid_body");
+        return json(await app.personal.effects.reconcile(auth.actor, personalEffect[1]!, p.expectedRevision, p.actionHash));
+      }
+      const personalDrafts = /^\/api\/s14\/work\/([a-zA-Z0-9_-]+)\/drafts$/.exec(url.pathname);
+      if (request.method === "GET" && personalDrafts) return json({ items: app.personal.effects.list(auth.actor, personalDrafts[1]!) });
       const input = /^\/(api\/)?s14\/bots\/([a-zA-Z0-9_-]+)\/computer\/input$/.exec(url.pathname);
       if (request.method === "POST" && input) {
         const isForm = !input[1];

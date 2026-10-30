@@ -1,3 +1,4 @@
+import { PersonalEffects } from "./personal-effects";
 import { randomBytes } from "node:crypto";
 import { AppError } from "../errors";
 import { containsCredential } from "../security/credentials";
@@ -25,17 +26,19 @@ export function personalSave(tx: AppTransaction, table: Table, value: { id: stri
   tx.run(`UPDATE ${table} SET record_json=? WHERE id=?`, canonical(value), value.id);
 }
 /** Broker dependencies cannot be selected by model text, HTTP payloads or a source. */
-export interface PersonalOptions { vault?: PersonalVault; transport?: GoogleTransport; timer?: PersonalTimer }
+export interface PersonalOptions { vault?: PersonalVault; transport?: GoogleTransport; timer?: PersonalTimer; evidenceGuard?: boolean }
 
 /** Owns installation-local Google consent, refresh, revocation and per-Bot account resource barriers. */
 export class S14Personal {
   readonly google: GooglePersonal;
   readonly reads: PersonalReads;
+  readonly effects: PersonalEffects;
   #refreshing = new Map<string, Promise<PersonalTokens>>();
   #revoking = new Set<string>();
   constructor(readonly app: S14Application, readonly options: PersonalOptions = {}) {
     this.google = new GooglePersonal(options.transport, options.timer);
     this.reads = new PersonalReads(this);
+    this.effects = new PersonalEffects(this);
     // Fingerprints activate before any model context can be assembled after restart.
     this.app.store.read(tx => {
       if (!options.vault) return;
@@ -97,7 +100,9 @@ export class S14Personal {
     if (command.kind === "personal.grant.set") {
       const p = command.payload;
       exact(p, ["scopeId", "connectionId", "botId", "active"]);
-      identity(p.scopeId); identity(p.connectionId); identity(p.botId);
+      identity(p.scopeId);
+      identity(p.connectionId);
+      identity(p.botId);
       const bot = record<Bot>(tx, "bots", p.botId);
       if (!bot.enabled || !bot.capabilities.resources.includes(p.scopeId) || !this.app.policy.resources.includes(p.scopeId) || typeof p.active !== "boolean") throw new AppError("personal_bot_scope_refused", 403);
       this.connection(tx, p.connectionId);
@@ -123,7 +128,15 @@ export class S14Personal {
       return { ...receipt, connection };
     }
     if (command.kind !== "personal.oauth.begin") throw new AppError("unknown_command");
-    if (!["configured", "reauth_required"].includes(connection.state)) throw new AppError("personal_oauth_state", 409);
+    if (!["configured", "reauth_required", "authorizing"].includes(connection.state)) throw new AppError("personal_oauth_state", 409);
+    for (const row of tx.all<{ record_json: string }>("SELECT record_json FROM personal_flows WHERE json_extract(record_json,'$.connectionId')=?", connection.id)) {
+      const old = JSON.parse(row.record_json) as PersonalFlow;
+      if (["pending", "received", "exchanging"].includes(old.state)) {
+        old.state = "failed";
+        personalSave(tx, "personal_flows", old);
+        this.vault().remove(old.id);
+      }
+    }
     tx.run("INSERT OR IGNORE INTO lifecycle.withdrawals VALUES ('personal_consent',?,?)", connection.id, `revision_${connection.revision}`);
     connection.state = "authorizing";
     connection.revision++;
@@ -221,7 +234,7 @@ export class S14Personal {
     } catch {
       this.app.store.transaction(tx => {
         const connection = personalRecord<PersonalConnection>(tx, "personal_connections", flow.connectionId);
-        if (connection.state === "authorizing") { connection.state = "reauth_required"; connection.revision++; personalSave(tx, "personal_connections", connection); }
+        if (connection.state === "authorizing" && connection.revision === flow.connectionRevision) { connection.state = "reauth_required"; connection.revision++; personalSave(tx, "personal_connections", connection); }
         flow.state = "failed";
         personalSave(tx, "personal_flows", flow);
         this.vault().remove(flow.id);
@@ -240,7 +253,7 @@ export class S14Personal {
 
   /** Reserves a personal resource identity even when revoked, preventing fallback to an unrelated scope provider. */
   owns(tx: AppTransaction, ref: ScopeRef): boolean {
-    return !!tx.get("SELECT 1 FROM personal_grants WHERE id=?", ref.id);
+    return !!tx.get("SELECT 1 FROM personal_grants WHERE id=? UNION SELECT 1 FROM lifecycle.withdrawals WHERE kind='personal_grant' AND id=?", ref.id, ref.id);
   }
 
   /** Supplies exact per-Bot account resource policy to ordinary work/routine admission and live barriers. */
@@ -284,7 +297,7 @@ export class S14Personal {
             this.vault().write(connection.id, renewed);
             return renewed;
           } catch (error) {
-            if (error instanceof GoogleFailure && [400, 401].includes(error.providerStatus)) this.invalidate(connection.id);
+            if (error instanceof GoogleFailure && ([400, 401].includes(error.providerStatus) || error.code === "google_consent_mismatch")) this.invalidate(connection.id);
             throw error;
           }
         })();
@@ -337,11 +350,12 @@ export class S14Personal {
         flow.state = "failed";
         personalSave(tx, "personal_flows", flow);
         const connection = personalRecord<PersonalConnection>(tx, "personal_connections", flow.connectionId);
-        if (connection.state === "authorizing") { connection.state = "reauth_required"; connection.revision++; personalSave(tx, "personal_connections", connection); }
+        if (connection.state === "authorizing" && connection.revision === flow.connectionRevision) { connection.state = "reauth_required"; connection.revision++; personalSave(tx, "personal_connections", connection); }
         try { this.vault().remove(flow.id); } catch { /* Missing vault remains unavailable. */ }
       }
     }
     for (const row of tx.all<{ id: string }>("SELECT id FROM lifecycle.withdrawals WHERE kind='personal_connection'")) {
+      if (!tx.get("SELECT 1 FROM personal_connections WHERE id=?", row.id)) continue;
       const connection = personalRecord<PersonalConnection>(tx, "personal_connections", row.id);
       if (connection.state !== "revoked") { connection.state = "revoked"; connection.revision++; personalSave(tx, "personal_connections", connection); }
     }
@@ -349,9 +363,25 @@ export class S14Personal {
     this.reconcile(tx);
   }
 
+  /** Supplies account-private source text to the existing outbound guard even though its attribution is external. */
+  privateCorpus(tx: AppTransaction, botId: string): { text: string }[] {
+    return tx.all<{ record_json: string }>(`SELECT s.record_json FROM memory_sources s
+      JOIN personal_sources p ON p.source_id=s.id WHERE s.bot_id=?`, botId)
+      .map(row => JSON.parse(row.record_json) as { text: string | null })
+      .filter((source): source is { text: string } => source.text !== null);
+  }
+
+  /** Enumerates only identity/hash metadata for exact Bot lifecycle previews, never connection credentials or source bodies. */
+  impact(tx: AppTransaction, botId: string): { reads: string[]; drafts: { id: string; revision: number; hash: string }[] } {
+    const reads = tx.all<{ id: string }>("SELECT id FROM personal_reads WHERE json_extract(record_json,'$.botId')=? ORDER BY id", botId).map(row => row.id);
+    const drafts = tx.all<{ id: string; revision: number; hash: string }>("SELECT id,json_extract(record_json,'$.revision') AS revision,json_extract(record_json,'$.hash') AS hash FROM personal_drafts WHERE json_extract(record_json,'$.botId')=? ORDER BY id", botId);
+    return { reads, drafts };
+  }
+
   /** Withdraws personal payload caches after account/source/Bot fencing without claiming to erase prior disclosure. */
   reconcile(tx: AppTransaction): void {
     this.reads.reconcile(tx);
+    this.effects.scrub(tx);
   }
 
   /** Attempts remote revocation once after the local fence; unknown results stay visible with no automatic retry. */

@@ -1,5 +1,6 @@
 import type { ToolDefinition } from "schway/host";
 import { AppError } from "../errors";
+import { containsCredential } from "../security/credentials";
 import { validTimezone } from "../jobs/schedules";
 import type { AppTransaction } from "../store";
 import type { Attempt, Work } from "./authority-types";
@@ -23,9 +24,12 @@ export class PersonalReads {
   /** Reads only one exact granted account slot, with per-request reservations, source lineage and late-publication fencing. */
   async read(attemptId: string, input: PersonalReadInput, signal?: AbortSignal): Promise<PersonalRead> {
     exact(input, ["scope", "from", "to", "timezone"]);
+    if (containsCredential(canonical(input))) throw new AppError("credential_content_refused", 403);
     exact(input.scope, ["kind", "id", "revision"]);
-    identity(input.scope.id); integer(input.scope.revision, 1);
-    integer(input.from, 0, Number.MAX_SAFE_INTEGER); integer(input.to, input.from + 1, input.from + 7 * 86400000);
+    identity(input.scope.id);
+    integer(input.scope.revision, 1);
+    integer(input.from, 0, Number.MAX_SAFE_INTEGER);
+    integer(input.to, input.from + 1, input.from + 7 * 86400000);
     if (!validTimezone(input.timezone)) throw new AppError("personal_invalid_timezone");
     const initial = this.app.store.read(tx => {
       const policy = this.broker.scope(tx, input.scope);
@@ -95,6 +99,7 @@ export class PersonalReads {
     const query = new URLSearchParams({ maxResults: "5", labelIds: "INBOX", q: `after:${Math.floor(input.from / 1000)} before:${Math.ceil(input.to / 1000)}` });
     const list = await get(`${base}?${query}`);
     if (list.nextPageToken) missing.push("mail_page_limit");
+    if (list.messages === undefined && typeof list.resultSizeEstimate === "number" && list.resultSizeEstimate > 0) throw new GoogleFailure(0, "google_schema_changed");
     if (list.messages !== undefined && !Array.isArray(list.messages)) throw new GoogleFailure(0, "google_schema_changed");
     for (const entry of (list.messages ?? []) as unknown[]) {
       try {
@@ -156,12 +161,24 @@ export class PersonalReads {
         const event = googleObject(value);
         if (typeof event.id !== "string") throw new GoogleFailure(0, "google_schema_changed");
         if (event.status === "cancelled") continue;
-        const start = googleObject(event.start), end = googleObject(event.end);
+        const point = (value: unknown) => {
+          const data = googleObject(value);
+          const result: Record<string, string> = {};
+          for (const key of ["date", "dateTime", "timeZone"]) {
+            if (data[key] === undefined) continue;
+            if (typeof data[key] !== "string") throw new GoogleFailure(0, "google_schema_changed");
+            result[key] = googleText(data[key], 128);
+          }
+          return result;
+        };
+        const start = point(event.start), end = point(event.end);
+        const recurrence = Array.isArray(event.recurrence) ? event.recurrence.slice(0, 8).map(rule => googleText(rule, 512)) : [];
+        if (event.recurrence !== undefined && (!Array.isArray(event.recurrence) || event.recurrence.length > 8)) missing.push("calendar_recurrence_limit");
         const eventTimezone = typeof start.timeZone === "string" && validTimezone(start.timeZone) ? start.timeZone : timezone;
         const timestamp = typeof event.updated === "string" && Number.isFinite(Date.parse(event.updated)) ? Date.parse(event.updated) : null;
         if (timestamp === null) missing.push("event_timestamp_unknown");
         items.push({ kind: "event", providerId: googleText(event.id, 256), title: googleText(event.summary, 512) || "(untitled event)",
-          text: JSON.stringify({ start, end, recurrence: event.recurrence ?? [], description: googleText(event.description, 4096), location: googleText(event.location, 512), calendarTimezone: timezone }),
+          text: JSON.stringify({ start, end, recurrence, description: googleText(event.description, 4096), location: googleText(event.location, 512), calendarTimezone: timezone }),
           sourceTimestamp: timestamp, timezone: eventTimezone });
       } catch { missing.push("calendar_event_incomplete"); }
     }
@@ -205,7 +222,8 @@ export class PersonalReads {
     const work = record<Work>(tx, "work_items", workId);
     const grant = work.grantId ? record<{ tools: string[]; scopes: ScopePolicyLike[] }>(tx, "work_grants", work.grantId) : null;
     const required = grant?.tools.includes("personal_read") ? grant.scopes.filter(s => !!tx.get("SELECT 1 FROM personal_grants WHERE id=?", s.ref.id)) : [];
-    return required.some(scope => !rows.some(read => canonical(read.scope) === canonical(scope.ref))) || rows.some(row => {
+    return grant?.tools.includes("personal_read") && required.length === 0 ||
+      required.some(scope => !rows.some(read => canonical(read.scope) === canonical(scope.ref))) || rows.some(row => {
       const read = this.project(tx, row);
       return read.outcome !== "success" || read.stale || read.missing.length > 0;
     });
