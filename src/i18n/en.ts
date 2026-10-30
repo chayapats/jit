@@ -7,7 +7,7 @@ export const en: Record<MessageKey, string> = {
   "attachments.image_probe_reason_plan_or_credits": "The provider restricted access for this account.",
   "attachments.image_probe_reason_quota": "The provider quota or rate limit was reached.",
   "attachments.image_probe_next_sign_in": "Sign in again",
-  "attachments.image_probe_next_plan_or_credits": "Check the account's access, plan or credits with the provider.",
+  "attachments.image_probe_next_plan_or_credits": "Check the account’s access, plan or credits with the provider.",
   "attachments.image_probe_next_quota": "Try again later.",
   "attachments.image_probe_result_pass": "Passed",
   "attachments.image_probe_result_unsupported": "Unsupported",
