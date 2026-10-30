@@ -222,12 +222,12 @@ export class S14Authority {
   private effects(tx: AppTransaction, workId: string): Effect[] { return tx.all<{ record_json: string }>("SELECT record_json FROM effects WHERE work_id=? ORDER BY rowid", workId).map(r => JSON.parse(r.record_json)); }
   /** Checks the existing owner grant without creating authority or admitting a run. */
   checkGrant(tx: AppTransaction, grant: WorkGrant): Work { return this.grantLive(tx, grant); }
-  /** Checks original grant authority during fenced boot, ignoring only ordinary blocked/ready work presentation states. */
-  recoveryGrant(tx: AppTransaction, grant: WorkGrant): Work { return this.grantLive(tx, grant, true); }
-  private grantLive(tx: AppTransaction, grant: WorkGrant, recovering = false): Work {
+  /** Checks original authority during fenced boot; committed results retain evidence past execution expiry only. */
+  recoveryGrant(tx: AppTransaction, grant: WorkGrant, committedResult = false): Work { return this.grantLive(tx, grant, true, committedResult); }
+  private grantLive(tx: AppTransaction, grant: WorkGrant, recovering = false, committedResult = false): Work {
     const work = record<Work>(tx, "work_items", grant.workId), state = tx.get<{ generation: number; revoked: number }>("SELECT generation,revoked FROM grant_state WHERE grant_id=?", grant.id);
     if (tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE kind='grant' AND id=?", grant.id) || work.grantId !== grant.id || !state || state.revoked || state.generation !== grant.generation || stopped.includes(work.state) && (!recovering || ["stopping", "stopped"].includes(work.state))) throw new AppError("grant_revoked", 403);
-    if (this.app.now() >= grant.expiresAt) throw new AppError("grant_expired", 403);
+    if (!committedResult && this.app.now() >= grant.expiresAt) throw new AppError("grant_expired", 403);
     if (tx.get<{ generation: number }>("SELECT generation FROM owner")?.generation !== grant.ownerGeneration) throw new AppError("owner_authority_changed", 403);
     if (tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE kind='uncertain_grant' AND id=?", grant.id)) throw new AppError("native_checkpoint_missing", 403);
     this.app.memory.workSources(tx, work);

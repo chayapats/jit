@@ -18,7 +18,7 @@ const rid = () => crypto.randomUUID().replaceAll("-", "");
 const reference = (): HostSessionReference => ({ id: crypto.randomUUID(), branchId: "main" });
 const barrier = () => Promise.withResolvers<void>();
 afterEach(() => { for (const store of stores) store.close(); stores.clear(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
-async function fixture(tools: string[] = [], changes: Partial<StartPayload> = {}, pendingNodes: StepProposal[] = []) {
+async function fixture(tools: string[] = [], changes: Partial<StartPayload> = {}, pendingNodes: StepProposal[] = [], remember = false) {
   const root = mkdtempSync(join(tmpdir(), "jit-s14-recovery-")); roots.push(root);
   const path = join(root, "app.sqlite"), store = new S14Store(path); stores.add(store);
   const clock = { now: 1800000000000 };
@@ -28,7 +28,8 @@ async function fixture(tools: string[] = [], changes: Partial<StartPayload> = {}
   const token = await app.login("fixture-recovery-owner-password"), actor = app.authenticate(token).actor;
   const setup = app.execute(actor, { kind: "setup", requestId: rid(), expectedRevision: 0, payload: { ownerName: "Owner", language: "en", routeId: "selected", capabilities: { tools: options.policy.tools, resources: ["share1"] } } });
   const conversationId = setup.conversation!.id;
-  const started = app.execute(actor, { kind: "work.start", requestId: rid(), expectedRevision: 1,
+  const claim = remember ? app.execute(actor, { kind: "memory.remember", requestId: rid(), expectedRevision: app.conversation(actor, conversationId).conversation.revision, payload: { conversationId, text: "Retained owner evidence" } }).claim! : null;
+  const started = app.execute(actor, { kind: "work.start", requestId: rid(), expectedRevision: app.conversation(actor, conversationId).conversation.revision,
     payload: { conversationId, task: null, title: "Read", purpose: "Read evidence", completionRule: "Review", bots: [{ id: "jit", revision: 1 }], tools, scopes: [],
       limits: { attempts: 8, steps: 8, calls: 16, outputBytes: 131072, concurrency: 2, reads: 40, wallMs: 60000 }, expiresAt: clock.now + 60000, ...changes } });
   const workId = started.work!.id;
@@ -52,7 +53,7 @@ async function fixture(tools: string[] = [], changes: Partial<StartPayload> = {}
     const reopened = new S14Application(next, options);
     return { app: reopened, store: next, get actor() { return reopened.authenticate(token).actor; } };
   };
-  return { root, path, store, app, options, token, actor, clock, workId, attempt, intent, reopen, conversationId };
+  return { root, path, store, app, options, token, actor, clock, workId, attempt, intent, reopen, conversationId, claim };
 }
 function nativeFixture() {
   const ledger = new Map<string, NativeIntent["discovered"]>();
@@ -243,6 +244,34 @@ test("crash after atomic artifact commit preserves one result/report and never r
   expect(app.reports.list(actor, f.workId)).toEqual([report]);
   expect(app.authority.view(actor, f.workId).results).toHaveLength(1);
   expect(app.recovery.view(actor).checkpoints[0]!.state).toBe("committed");
+});
+
+test.each(["retained", "memory.forget", "memory.delete", "revoked"] as const)("expired committed result remains %s after reopen without replay", async change => {
+  const f = await fixture([], {}, [], true), n = nativeFixture(); f.intent();
+  f.app.authority.commit(f.attempt.id, { state: "ready", text: "Committed evidence", report: { title: "Report", claims: [{ id: "claim", kind: "inference", text: "Unverified", citations: [], covers: [], conflicts: [] }], missing: [], limitations: ["Unverified"], artifactIds: [] } });
+  const report = f.app.reports.list(f.actor, f.workId)[0]!;
+  if (change === "memory.forget" || change === "memory.delete") f.app.execute(f.actor, { kind: change, requestId: rid(), expectedRevision: 1, payload: { claim: f.claim! } });
+  if (change === "revoked") f.store.transaction(tx => tx.run("UPDATE grant_state SET revoked=1"));
+  f.clock.now += 60001;
+  const { app, actor } = f.reopen(); await app.recovery.boot(n.port);
+  let runs = 0; app.authority.options.executor = { async run() { runs++; return { state: "ready", text: "Duplicate" }; } };
+  await app.authority.drain(); expect(runs).toBe(0);
+  const view = app.authority.view(actor, f.workId), checkpoint = app.recovery.view(actor).checkpoints[0]!;
+  if (change === "retained") {
+    expect(view.work.state).toBe("ready");
+    expect(view.attempts[0]!.state).toBe("committed");
+    expect(app.graph.view(actor, f.workId).steps[0]!.state).toBe("committed");
+    expect(checkpoint).toMatchObject({ state: "committed", reason: null });
+    expect(view.results).toHaveLength(1);
+    expect(app.reports.list(actor, f.workId)).toEqual([report]);
+  } else {
+    expect(checkpoint.state).toBe("waiting");
+    expect(view.work.state).toBe("blocked");
+    if (change !== "revoked") {
+      expect(view.results).toHaveLength(0);
+      expect(app.reports.list(actor, f.workId)[0]!.state).toBe("unavailable");
+    } else expect(checkpoint.reason).toBe("grant_revoked");
+  }
 });
 
 test("stale restore discovers independent catalog orphans and retries partial deletion without resurrecting execution", async () => {

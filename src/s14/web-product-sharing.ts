@@ -64,7 +64,10 @@ function sheet(app: S14Application, actor: OwnerActor, state: Home, target: Snap
     else others.push({ bot, why: "no_slot" });
   }
   const tasks = app.authority.list(actor).filter(work => work.state === "accepted" && !work.grantId);
-  return { kind: "share-new", target, ...read, receivers, others, tasks, work: tasks.find(work => work.id === workId) ?? null, notice: draft.notice ?? null, hours: draft.hours ?? memoryShareHours.min, chosen: draft.chosen ?? "" };
+  const work = tasks.find(work => work.id === workId) ?? null;
+  // A stale task limit refuses the sheet rather than rendering an unrestricted form.
+  if (workId && !work) { read.snapshot = null; read.refusal = "stale_revision"; }
+  return { kind: "share-new", target, ...read, receivers, others, tasks, work, notice: draft.notice ?? null, hours: draft.hours ?? memoryShareHours.min, chosen: draft.chosen ?? "" };
 }
 function detail(app: S14Application, url: URL, actor: OwnerActor, id: string): S14ShareDetail {
   const view = app.sharing.list(actor).find(item => item.share.id === id); if (!view) throw new AppError("not_found", 404);
@@ -110,7 +113,9 @@ export function sharingCommand(app: S14Application, form: string, data: Record<s
   const requestId = single(data, "requestId"), [botId = "", revision = "", scopeId = "", extra] = single(data, "receiver").split(":"), hours = Number(single(data, "hours"));
   const target = targetOf(single(data, "targetKind"), single(data, "targetId"), single(data, "targetRevision"), single(data, "targetGeneration")), expected = position(revision);
   if (extra !== undefined || !botId || !scopeId || !target || !expected || !Number.isSafeInteger(hours) || hours < memoryShareHours.min || hours > memoryShareHours.max) throw new AppError("snapshot_share_invalid");
-  return { kind: "snapshot.share", requestId, expectedRevision: expected, payload: { scopeId, target, receiverBotId: botId, workId: single(data, "workId") || null, expiresAt: shareExpiry(app, actor, requestId, hours) } };
+  const workId = single(data, "workId");
+  if (workId && !app.authority.list(actor).some(work => work.id === workId && work.state === "accepted" && !work.grantId)) throw new AppError("stale_revision", 409);
+  return { kind: "snapshot.share", requestId, expectedRevision: expected, payload: { scopeId, target, receiverBotId: botId, workId: workId || null, expiresAt: shareExpiry(app, actor, requestId, hours) } };
 }
 /** Landing page after a share or revoke receipt; null leaves other receipts to the core product. */
 export function sharingSurface(receipt: S14Receipt): string | null {

@@ -223,7 +223,8 @@ export class S14Recovery {
       if (["cancelled", "stopping"].includes(step.state) || tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE kind='step_stop' AND id=?", step.id)) return "owner_stopped_step";
     }
     try {
-      this.app.authority.recoveryGrant(tx, attempt.snapshot.grant);
+      // Retention is not a new admission: expiry cannot erase a committed result.
+      this.app.authority.recoveryGrant(tx, attempt.snapshot.grant, !!tx.get("SELECT 1 FROM work_results WHERE attempt_id=?", attempt.id));
       if (!this.app.authority.retainedEvidence(tx, attempt.id)) return "configuration_or_route_changed";
       if (!this.app.memory.attemptCurrent(tx, attempt.id)) return "source_or_context_changed";
     } catch (error) { return safeReason(error); }

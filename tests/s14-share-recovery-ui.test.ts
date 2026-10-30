@@ -192,6 +192,29 @@ test("a stale receiver, a bad time and unknown fields are refused without a shar
   expect(shareRows(f)).toEqual([]);
 });
 
+test.each(["th", "en"] as const)("%s stale task limits refuse GET and POST without rendering a wider share form", async language => {
+  const f = await fixture(language), file = f.report();
+  const task = f.store.transaction(tx => {
+    const work = { ...file.work, id: rid(), state: "accepted" as const, grantId: null, revision: 1 };
+    tx.run("INSERT INTO work_items VALUES (?,?,?)", work.id, work.conversationId, canonical(work));
+    return work;
+  });
+  const route = `${f.sheet(file.artifactId)}&work=${task.id}`;
+  const fields = formFields(await f.page(route), "/s14/forms/snapshot-share");
+  expect(fields.workId).toBe(task.id);
+  f.start("jit", [], { task: { id: task.id, revision: task.revision } });
+  const stale = await f.page(route);
+  expect(stale).toContain(f.words["s14.error.stale_revision"]);
+  expect(stale).not.toContain("/s14/forms/snapshot-share");
+  const response = await f.post("/s14/forms/snapshot-share", fields);
+  expect(response.status).toBe(409);
+  const refused = await response.text();
+  expect(refused).toContain(f.words["s14.error.stale_revision"]);
+  expect(refused).not.toContain("/s14/forms/snapshot-share");
+  expect(shareRows(f)).toEqual([]);
+  safe(refused, language);
+});
+
 test("a start form can name a share, leaves it unticked, and the service still decides", async () => {
   const f = await fixture(), file = f.report(); landing(await f.shareFile(file.artifactId));
   const chat = await f.page(`/chats/${f.conversationId}`); expect(chat).toContain(f.words["s14.share.start_legend"]); expect(chat).toContain("report-1.md");
