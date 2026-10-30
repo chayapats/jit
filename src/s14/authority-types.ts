@@ -41,9 +41,9 @@ export interface Attempt { id: string; workId: string; requestId: string; parent
 /** One exact consequential action; no shell/browser/MCP fallback or always-allow mode exists. */
 export interface EffectAction { kind: "send" | "publish" | "push" | "payment" | "delete"; destination: string; content: string }
 /** Durable action ledger revision and outcome; unknown is reconcile-only and never claimable again. */
-export interface Effect { id: string; revision: number; workId: string; attemptId: string; botId: string; action: EffectAction; actionHash: string; expiresAt: number; state: "pending" | "approved" | "denied" | "expired" | "executing" | "succeeded" | "failed" | "unknown" | "changed"; resolution?: { basis: "owner_statement"; outcome: "occurred" | "did_not_occur"; note: string; recordedAt: number }; reason: string | null; supported: boolean }
+export interface Effect { id: string; revision: number; workId: string; attemptId: string; botId: string; action: EffectAction; actionHash: string; expiresAt: number; state: "pending" | "approved" | "denied" | "expired" | "executing" | "succeeded" | "failed" | "unknown" | "changed"; resolution?: { basis: "owner_statement"; outcome: "occurred" | "did_not_occur"; note: string; recordedAt: number }; reason: string | null; supported: boolean; payloadState?: "deleted" }
 /** Worker result is evidence for owner review, not an automatic claim that the completion rule is fulfilled. */
-export interface WorkOutput { state: "ready" | "waiting"; text: string; report?: ReportProposal }
+export interface WorkOutput { state: "ready" | "waiting"; text: string; report?: ReportProposal; proposals?: unknown }
 /** Immutable result evidence stored outside capped records, bounded by the originating attempt's output reservation. */
 export interface WorkResult extends Pick<WorkOutput, "state" | "text"> { attemptId: string; workId: string; committedAt: number }
 /** Trusted bounded internal handler; production foundation offers only tool-free analysis over schway/host. */

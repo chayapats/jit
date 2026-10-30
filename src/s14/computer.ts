@@ -274,6 +274,21 @@ export class S14Computers {
       }
   }
   private finishOperation(op: Operation): void { this.app.store.transaction(tx => tx.run("UPDATE computer_operations SET state='done' WHERE sequence=?", op.sequence)); }
+  /** Fences one Bot's computer/input immediately and queues only its authorized stop or destructive cleanup. */
+  fenceBot(tx: AppTransaction, botId: string, destructive: boolean): void {
+    const c = load(tx, botId);
+    if (!c || c.state === "deleted" || destructive && c.state === "deleting" || !destructive && c.state === "stopping") return;
+    if (!destructive && c.state === "stopped") { this.fence(tx, c); return; }
+    if (destructive) tx.run("INSERT OR IGNORE INTO lifecycle.withdrawals VALUES ('computer',?,?)", c.id, `through_generation_${c.generation}`);
+    c.generation++;
+    c.revision++;
+    c.ownerGeneration = tx.get<{ generation: number }>("SELECT generation FROM owner")!.generation;
+    c.state = destructive ? "deleting" : "stopping";
+    c.reason = "bot_lifecycle_fenced";
+    this.fence(tx, c);
+    save(tx, c);
+    this.enqueue(tx, c, destructive ? "delete" : "stop");
+  }
   /** Fences revoked/expired/idle computers before requesting runtime cancellation; no unrelated computer is stopped. */
   sweep(): void {
     this.app.store.transaction(tx => {

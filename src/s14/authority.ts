@@ -24,7 +24,8 @@ function list(v: unknown): asserts v is string[] {
 function scopeRef(v: unknown): asserts v is ScopeRef {
   exact(v, ["kind", "id", "revision"]); if (v.kind !== "resource" && v.kind !== "share") throw new AppError("invalid_scope"); identity(v.id); integer(v.revision, 1);
 }
-function limits(v: unknown): asserts v is WorkLimits {
+/** Validates explicit finite work limits reused by standing routine captures. */
+export function validateWorkLimits(v: unknown): asserts v is WorkLimits {
   exact(v, Object.keys(maxLimits)); for (const k of Object.keys(maxLimits) as (keyof WorkLimits)[]) integer(v[k], 1, maxLimits[k]);
 }
 function action(v: unknown): asserts v is EffectAction {
@@ -80,7 +81,7 @@ export class S14Authority {
       for (const value of [p.title, p.purpose, p.completionRule]) { text(value); if (containsCredential(value)) throw new AppError("credential_content_refused", 403); }
       identity(p.conversationId); const conversation = this.app.readConversation(tx, p.conversationId);
       if (conversation.revision !== c.expectedRevision) throw new AppError("stale_revision", 409);
-      limits(p.limits); integer(p.expiresAt, 1, Number.MAX_SAFE_INTEGER);
+      validateWorkLimits(p.limits); integer(p.expiresAt, 1, Number.MAX_SAFE_INTEGER);
       if (p.expiresAt <= this.app.now() || p.expiresAt > this.app.now() + p.limits.wallMs) throw new AppError("invalid_expiry");
       list(p.tools); if (p.tools.some(t => !this.app.policy.tools.includes(t))) throw new AppError("tool_not_allowed", 403);
       if (!Array.isArray(p.bots) || !p.bots.length || p.bots.length > 8 || new Set(p.bots.map(b => b.id)).size !== p.bots.length) throw new AppError("invalid_bots");
@@ -177,7 +178,7 @@ export class S14Authority {
       tx.run("UPDATE work_queue SET state='blocked' WHERE work_id=?", work.id);
       for (const attempt of this.attempts(tx, work.id)) if (attempt.state === "waiting") { attempt.state = "settled"; attempt.reason = "stopped"; save(tx, "work_attempts", attempt); }
       for (const effect of this.effects(tx, work.id)) if (["pending", "approved"].includes(effect.state)) { effect.state = "denied"; effect.reason = "work_stopped"; this.saveEffect(tx, effect); }
-      work.state = this.attempts(tx, work.id).some(a => a.state === "running" || a.state === "interrupted") || this.effects(tx, work.id).some(e => e.state === "executing") ? "stopping" : "stopped";
+      work.state = this.attempts(tx, work.id).some(a => a.state === "running" || a.state === "interrupted" || !!tx.get("SELECT 1 FROM attempt_transports WHERE attempt_id=? AND active=1", a.id)) || this.effects(tx, work.id).some(e => e.state === "executing") ? "stopping" : "stopped";
       work.reason = "owner_stopped"; work.revision++; save(tx, "work_items", work); return { ...receipt, work };
     }
     if (c.kind === "approval.decide") return { ...receipt, effect: this.decide(tx, c) };
@@ -206,6 +207,8 @@ export class S14Authority {
         results: tx.all<WorkView["results"][number]>("SELECT attempt_id AS attemptId,work_id AS workId,content AS text,committed_at AS committedAt,state FROM work_results WHERE work_id=? ORDER BY rowid", workId) };
     });
   }
+  /** Resolves only a current trusted resource/share policy inside the caller's authority transaction. */
+  scopePolicy(tx: AppTransaction, ref: ScopeRef): ScopePolicy { return this.scope(tx, ref); }
   private scope(tx: AppTransaction, ref: ScopeRef): ScopePolicy {
     scopeRef(ref); const current = this.options.scopes?.current(tx, structuredClone(ref));
     if (!current || !current.active || !refsEqual(current.ref, ref)) throw new AppError("scope_revoked_or_stale", 403);
@@ -231,6 +234,7 @@ export class S14Authority {
     if (tx.get<{ generation: number }>("SELECT generation FROM owner")?.generation !== grant.ownerGeneration) throw new AppError("owner_authority_changed", 403);
     if (tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE kind='uncertain_grant' AND id=?", grant.id)) throw new AppError("native_checkpoint_missing", 403);
     this.app.memory.workSources(tx, work);
+    this.app.routines.guard(tx, work.id);
     return work;
   }
   /** Rechecks the explicit computer tool and captured/current Bot ceiling under the caller's transaction. */
@@ -259,7 +263,7 @@ export class S14Authority {
         const state = tx.get<{ generation: number; revoked: number }>("SELECT generation,revoked FROM grant_state WHERE grant_id=?", s.grant.id);
         if (!state || tx.get<{ generation: number }>("SELECT generation FROM owner")?.generation !== s.grant.ownerGeneration) return false;
         const bot = record<Bot>(tx, "bots", s.bot.id);
-        if (!equal(bot, s.bot) || !bot.enabled || !equal(this.app.route(bot.routeId), s.route)) return false;
+        if (((!equal(bot, s.bot) || !bot.enabled) && !tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE kind='retained_evidence' AND id=? AND mode='owner_retained'", attempt.id)) || !equal(this.app.route(bot.routeId), s.route)) return false;
         for (const scope of s.scopes) if (!equal(this.scope(tx, scope.ref), scope)) return false;
         const computer = tx.get<{ computer_id: string; generation: number }>("SELECT computer_id,generation FROM computer_attempts WHERE attempt_id=?", key);
         if (computer) {
@@ -386,7 +390,7 @@ export class S14Authority {
   }
   /** Commits result evidence only under the original still-live authority; late/fenced output is discarded. */
   commit(attemptId: string, output: WorkOutput): void {
-    exact(output, ["state", "text", ...(Object.hasOwn(output, "report") ? ["report"] : [])]); if (!["ready", "waiting"].includes(output.state)) throw new AppError("invalid_result");
+    exact(output, ["state", "text", ...(Object.hasOwn(output, "report") ? ["report"] : []), ...(Object.hasOwn(output, "proposals") ? ["proposals"] : [])]); if (!["ready", "waiting"].includes(output.state)) throw new AppError("invalid_result");
     this.app.store.transaction(tx => {
       const attempt = record<Attempt>(tx, "work_attempts", attemptId), work = this.live(tx, attempt);
       const content = text(output.text, attempt.snapshot.outputBytes);
@@ -395,6 +399,7 @@ export class S14Authority {
       const packet = this.app.memory.attemptPacket(tx, attempt.id);
       this.app.memory.source(tx, { id: `result_${attempt.id}`, botId: attempt.snapshot.bot.id, conversationId: work.conversationId,
         attribution: "bot", text: `Committed result ${attempt.id}; sha256 ${digest(content)}`, ...this.app.memory.derive(tx, packet) });
+      this.app.routines.result(tx, attempt, output);
       if (output.report) this.app.reports.publish(tx, attempt, output.report, Buffer.byteLength(content));
       attempt.state = "waiting"; save(tx, "work_attempts", attempt);
       work.result = attempt.id; save(tx, "work_items", work);
@@ -678,6 +683,7 @@ export class S14Authority {
           }
         }
         this.finishGraph(tx, graph.id);
+        this.app.routines.reconcile(tx);
       }
       return null;
     });
@@ -753,6 +759,7 @@ export class S14Authority {
         this.app.graph.finish(tx, attempt, reason);
         if (attempt.step) this.finishGraph(tx, attempt.workId);
         else this.reevaluate(tx, attempt.workId);
+        this.app.routines.reconcile(tx);
       });
     }
   }

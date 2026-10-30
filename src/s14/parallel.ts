@@ -287,7 +287,7 @@ export class ParallelWeb {
     for (const row of tx.all<{ record_json: string }>("SELECT record_json FROM web_reads")) {
       const read = JSON.parse(row.record_json) as WebRead;
       const packet = tx.get<{ record_json: string }>("SELECT record_json FROM memory_contexts WHERE json_extract(record_json,'$.attemptId')=?", read.attemptId);
-      if (packet && (JSON.parse(packet.record_json) as MemoryPacket).state === "retired" || read.evidence.some(e => unavailable.has(e.id))) {
+      if (packet && (JSON.parse(packet.record_json) as MemoryPacket).state === "retired" && !this.app.botLifecycle.retained(tx, read.attemptId) || read.evidence.some(e => unavailable.has(e.id))) {
         tx.run("DELETE FROM external_evidence WHERE attempt_id=?", read.attemptId);
         read.evidence = []; read.subject = "[withdrawn context]"; read.missing = []; read.failures = []; read.outcome = "authority_changed"; read.reason = "memory_context_stale";
         save(tx, "web_reads", read);

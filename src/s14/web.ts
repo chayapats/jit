@@ -47,8 +47,9 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
     finally { reader.releaseLock(); }
     const raw = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
     const type = request.headers.get("content-type")?.split(";")[0];
+    // HTML form submission sends every textarea line break as CRLF; service text refuses a carriage return.
     if (type === "application/json") { const v: unknown = JSON.parse(raw); if (!v || typeof v !== "object" || Array.isArray(v)) throw new AppError("invalid_body"); return v as Record<string, unknown>; }
-    if (type === "application/x-www-form-urlencoded") { const form = new URLSearchParams(raw); if (new Set(form.keys()).size !== [...form.keys()].length) throw new AppError("invalid_body"); return Object.fromEntries(form); }
+    if (type === "application/x-www-form-urlencoded") { const form = new URLSearchParams(raw); if (new Set(form.keys()).size !== [...form.keys()].length) throw new AppError("invalid_body"); return Object.fromEntries([...form].map(([key, value]) => [key, value.replaceAll("\r\n", "\n")])); }
     throw new AppError("unsupported_content_type", 415);
   };
   const html = (body: string, status = 200, locale?: string) => respond(body, status, "text/html", { ...(locale ? { "Content-Language": locale } : {}), Vary: "Accept-Language, Cookie" });
@@ -130,7 +131,11 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
       const form = product && request.method === "POST" ? /^\/s14\/forms\/([a-z-]+)$/.exec(url.pathname)?.[1] : undefined;
       if (form) {
         const p = await body(request), state = app.home(auth.actor); app.verifyCsrf(auth.csrf, p.csrf); next = product!.next(form, p);
-        try { return redirect(product!.surface(app.execute(auth.actor, product!.command(form, p, auth.actor, state, signedInLocale(state))), p)); }
+        try {
+          const reviewed = product!.review?.(form, p, auth.actor, state, signedInLocale(state));
+          if (reviewed) return view(app.home(auth.actor), reviewed);
+          return redirect(product!.surface(app.execute(auth.actor, product!.command(form, p, auth.actor, state, signedInLocale(state))), p));
+        }
         catch (error) {
           const recovered = error instanceof AppError ? await product!.recover(form, p, error.code, auth.actor, app.home(auth.actor)) : null;
           if (recovered) return view(app.home(auth.actor), recovered, (error as AppError).status);
@@ -167,7 +172,16 @@ export function createS14Handler(app: S14Application, origin: string, render: S1
           "Content-Digest": `sha-256=:${Buffer.from(artifact.sha256, "hex").toString("base64")}:`,
         } });
       }
+      const botLifecycle = /^\/api\/s14\/bots\/([a-zA-Z0-9_-]+)\/lifecycle(?:\/(retire|delete)-preview)?$/.exec(url.pathname);
+      if (botLifecycle) return json(botLifecycle[2]
+        ? app.botLifecycle.preview(auth.actor, botLifecycle[1]!, botLifecycle[2] as "retire" | "delete")
+        : app.botLifecycle.view(auth.actor, botLifecycle[1]!));
+      if (url.pathname === "/api/s14/routines") return json({ items: app.routines.list(auth.actor) });
+      if (url.pathname === "/api/s14/attention") return json(app.attention.view(auth.actor));
+      const routine = /^\/api\/s14\/routines\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
+      if (routine) return json(app.routines.view(auth.actor, routine[1]!));
       if (url.pathname === "/api/s14/recovery") return json(app.recovery.view(auth.actor));
+      if (url.pathname === "/api/s14/share-slots") return json({ items: app.sharing.freeSlots(auth.actor) });
       if (url.pathname === "/api/s14/shares") return json(app.sharing.list(auth.actor));
       if (url.pathname === "/api/s14/work-defaults") return json(app.graph.defaults(auth.actor));
       const graph = /^\/api\/s14\/work\/([a-zA-Z0-9_-]+)\/graph$/.exec(url.pathname);

@@ -406,3 +406,11 @@ test("the inferred title stays inside the byte limit on a character boundary", (
   const title = inferTitle(`\n  ${"ก".repeat(200)}\nsecond`); expect(Buffer.byteLength(title)).toBeLessThanOrEqual(200); expect(title.endsWith("…")).toBe(true); expect(title.isWellFormed()).toBe(true);
   expect(inferTitle("short\nsecond")).toBe("short");
 });
+
+test("a multi-line composer message survives the CRLF every browser form sends", async () => {
+  const f = await fixture();
+  const { response } = await compose(f, "first line\r\nsecond line");
+  expect(response.status).toBe(303);
+  const stored = f.store.read(tx => tx.all<{ json: string }>("SELECT record_json AS json FROM messages").map(row => JSON.parse(row.json) as { text: string }));
+  expect(stored.at(-1)!.text).toBe("first line\nsecond line");
+});

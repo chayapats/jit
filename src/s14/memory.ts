@@ -1,4 +1,5 @@
 import { AppError } from "../errors";
+import { resourceConfigured } from "./share-slots";
 import { activeLineage, lineageClosure } from "../memory/lineage-policy";
 import { lexicalScore, lexicalTerms } from "../memory/lexical";
 import type { AppTransaction } from "../store";
@@ -19,6 +20,7 @@ function reference(value: unknown): asserts value is MemoryRef {
   integer(value.revision, 1);
   integer(value.generation, 1);
 }
+type LineageNode = { kind: "claim" | "source"; ref: MemoryRef };
 type MemoryTable = "memory_claims" | "memory_sources" | "memory_contexts" | "memory_decisions";
 function* scan<T>(tx: AppTransaction, table: MemoryTable): Generator<T> {
   let after = 0;
@@ -59,7 +61,7 @@ export class S14Memory {
       seen.add(key);
       const row = tx.get<{ record_json: string }>("SELECT record_json FROM memory_sources WHERE id=?", r.id);
       const item = row ? JSON.parse(row.record_json) as MemorySource : null;
-      if (!item || !same(item, r) || item.text === null || this.withdrawn(tx, "source", r.id) || item.derived.length > 0 && item.access === undefined || !this.accessCurrent(tx, item.botId, item.access ?? [])) return false;
+      if (!item || tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE kind='bot' AND id=? AND mode='deleted'", item.botId) || !same(item, r) || item.text === null || this.withdrawn(tx, "source", r.id) || item.derived.length > 0 && item.access === undefined || !this.accessCurrent(tx, item.botId, item.access ?? [])) return false;
       if (item.snapshotShare && !this.app.sharing.current(tx, item.snapshotShare)) return false;
       // Resolve pre-pin schema-10 outputs from service-owned records too; never trust report citations as complete ancestry.
       const producer = item.producerAttemptId ?? (item.id.startsWith("result_") ? item.id.slice(7) : tx.get<{ attempt_id: string }>(`
@@ -97,8 +99,9 @@ export class S14Memory {
 
   /** Pins a suggested task to its committed message; withdrawn text cannot become a new obligation or handoff. */
   workSources(tx: AppTransaction, work: Work): MemoryRef[] {
-    if (!work.sourceMessageId) return [];
-    const source = record<MemorySource>(tx, "memory_sources", work.sourceMessageId);
+    const sourceId = work.sourceMessageId ?? work.source?.id;
+    if (!sourceId) return [];
+    const source = record<MemorySource>(tx, "memory_sources", sourceId);
     if (source.conversationId !== work.conversationId || work.source && !same(work.source, source) || !this.sourceCurrent(tx, source)) throw new AppError("memory_source_unavailable", 409);
     return [ref(source)];
   }
@@ -340,8 +343,21 @@ export class S14Memory {
   private impact(tx: AppTransaction, requested: MemoryRef): MemoryImpact {
     const claim = record<MemoryClaim>(tx, "memory_claims", requested.id);
     if (!same(claim, requested)) throw new AppError("stale_revision", 409);
+    return { claim: requested, ...this.impactFrom(tx, [{ kind: "claim", ref: requested }, { kind: "source", ref: claim.source }]) };
+  }
+
+  /** Computes forward deletion lineage from Bot-owned roots without traversing into independently owned originals. */
+  botImpact(tx: AppTransaction, botId: string): Omit<MemoryImpact, "claim"> {
+    const roots: LineageNode[] = [
+      ...rows<MemoryClaim>(tx, "memory_claims").filter(c => c.botId === botId).map(c => ({ kind: "claim" as const, ref: ref(c) })),
+      ...rows<MemorySource>(tx, "memory_sources").filter(s => s.botId === botId).map(s => ({ kind: "source" as const, ref: ref(s) })),
+    ];
+    return this.impactFrom(tx, roots);
+  }
+
+  private impactFrom(tx: AppTransaction, roots: LineageNode[]): Omit<MemoryImpact, "claim"> {
     const claims = rows<MemoryClaim>(tx, "memory_claims"), sources = rows<MemorySource>(tx, "memory_sources");
-    type Node = { kind: "claim" | "source"; ref: MemoryRef };
+    type Node = LineageNode;
     const key = (node: Node) => `${node.kind}:${node.ref.id}:${node.ref.revision}:${node.ref.generation}`, descendants = new Map<string, Node[]>();
     const edge = (parent: Node, children: Node[]) => { const list = descendants.get(key(parent)) ?? []; list.push(...children); descendants.set(key(parent), list); };
     for (const candidate of claims) {
@@ -350,7 +366,12 @@ export class S14Memory {
       for (const dependency of unique([...candidate.dependencies, ...candidate.conflicts])) edge({ kind: "claim", ref: dependency }, children);
     }
     for (const candidate of sources) for (const parent of candidate.derived) edge({ kind: "source", ref: parent }, [{ kind: "source", ref: ref(candidate) }]);
-    const closure = lineageClosure<Node>([{ kind: "claim", ref: requested }, { kind: "source", ref: claim.source }], key, node => descendants.get(key(node)) ?? [], claims.length + sources.length);
+    // A root claim deletes its own source only; forward dependencies never delete a foreign ancestor.
+    for (const root of roots) if (root.kind === "claim") {
+      const own = claims.find(c => same(c, root.ref));
+      if (own && sources.some(s => same(s, own.source) && s.botId === own.botId)) roots.push({ kind: "source", ref: own.source });
+    }
+    const closure = lineageClosure<Node>(roots, key, node => descendants.get(key(node)) ?? [], claims.length + sources.length);
     const affectedClaims = closure.filter(n => n.kind === "claim").map(n => n.ref), affectedSources = closure.filter(n => n.kind === "source").map(n => n.ref);
     const packets = rows<MemoryPacket>(tx, "memory_contexts").filter(p => p.claims.some(c => affectedClaims.some(r => same(r, c))) || [...p.sources, ...p.decisions.map(d => d.source)].some(s => affectedSources.some(r => same(r, s))));
     const botIds = [...new Set(packets.map(p => p.botId))];
@@ -366,7 +387,7 @@ export class S14Memory {
       .map(row => ({ id: row.id, workId: row.work_id, revision: row.revision }));
     const artifacts = tx.all<{ id: string; record_json: string }>("SELECT id,record_json FROM artifacts")
       .filter(row => reportIds.has(JSON.parse(row.record_json).source.id)).map(row => row.id);
-    return { claim: requested, claims: affectedClaims, sources: affectedSources, contexts: packets.map(p => p.id), names, reports, artifacts, nativePolicy: "fresh_sessions_retire_on_close" };
+    return { claims: affectedClaims, sources: affectedSources, contexts: packets.map(p => p.id), names, reports, artifacts, nativePolicy: "fresh_sessions_retire_on_close" };
   }
 
   private withdraw(tx: AppTransaction, requested: MemoryRef, mode: "corrected" | "forgotten" | "deleted"): MemoryImpact {
@@ -411,6 +432,7 @@ export class S14Memory {
     if (command.kind === "memory.decision.set") {
       exact(command.payload, ["conversationId", "key", "text"]);
       const p = command.payload, conversation = this.app.readConversation(tx, p.conversationId);
+      if (!record<Bot>(tx, "bots", conversation.botId).enabled) throw new AppError("bot_disabled", 403);
       identity(p.key);
       const previous = tx.get<{ record_json: string }>("SELECT record_json FROM memory_decisions WHERE conversation_id=? AND json_extract(record_json,'$.key')=?", conversation.id, p.key);
       const old = previous ? JSON.parse(previous.record_json) as MemoryDecision : null;
@@ -454,8 +476,8 @@ export class S14Memory {
       const s = command.payload;
       identity(s.scopeId); identity(s.receiverBotId); integer(s.expiresAt, this.app.now() + 1, this.app.now() + 86400000);
       const receiver = record<Bot>(tx, "bots", s.receiverBotId);
-      if (!receiver.enabled || !this.app.policy.resources.includes(s.scopeId) || !receiver.capabilities.resources.includes(s.scopeId)) throw new AppError("memory_scope_denied", 403);
-      if (tx.get("SELECT id FROM memory_shares WHERE id=?", s.scopeId) || tx.get("SELECT id FROM snapshot_shares WHERE id=?", s.scopeId)) throw new AppError("memory_share_exists", 409);
+      if (!receiver.enabled || !resourceConfigured(this.app.policy, s.scopeId) || !receiver.capabilities.resources.includes(s.scopeId)) throw new AppError("memory_scope_denied", 403);
+      if (tx.get("SELECT id FROM memory_shares WHERE id=?", s.scopeId) || tx.get("SELECT id FROM snapshot_shares WHERE id=?", s.scopeId) || tx.get("SELECT 1 FROM lifecycle.withdrawals WHERE id=? AND kind IN ('snapshot_share','share')", s.scopeId)) throw new AppError("memory_share_exists", 409);
       const share: MemoryShare = { id: s.scopeId, revision: 1, claim: ref(claim), receiverBotId: receiver.id, expiresAt: s.expiresAt, active: true };
       tx.run("INSERT INTO memory_shares VALUES (?,?)", share.id, canonical(share));
       return { ...receipt, share };
@@ -530,9 +552,9 @@ export class S14Memory {
     for (const packet of scan<MemoryPacket>(tx, "memory_contexts")) if (!this.current(tx, packet)) {
       packet.state = "retired"; packet.claims = []; packet.decisions = [];
       save(tx, "memory_contexts", packet);
-      if (packet.workId) {
+      if (packet.workId && !this.app.botLifecycle.retained(tx, packet.attemptId)) {
         const work = record<Work>(tx, "work_items", packet.workId);
-        if (work.result === packet.attemptId) { work.result = null; work.reason = "memory_context_stale"; work.state = "blocked"; work.revision++; save(tx, "work_items", work); }
+        if (work.result === packet.attemptId) { work.result = null; work.reason = "memory_context_stale"; if (!["stopped", "stopping"].includes(work.state)) work.state = "blocked"; work.revision++; save(tx, "work_items", work); }
         tx.run("DELETE FROM work_results WHERE attempt_id=?", packet.attemptId);
       }
     }

@@ -1,3 +1,8 @@
+import { S14BotLifecycle } from "./bot-lifecycle";
+import type { BotLifecycleCommand, BotLifecycleOptions, BotLifecycleReceipt } from "./bot-lifecycle-types";
+import { S14Attention } from "./attention";
+import { S14Routines } from "./routines";
+import type { AttentionCommand, AttentionPort, AttentionReceipt, RoutineCommand, RoutineReceipt } from "./routine-types";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { AppError } from "../errors";
 import { requireOwnerSetup, removeOwnerSetupLink } from "../ops/owner-setup";
@@ -29,9 +34,9 @@ import { S14Computers } from "./computer";
 import type { ComputerCommand, ComputerOptions, ComputerReceipt } from "./computer-types";
 
 /** Stable complete typed owner ingress union for the S14 logic foundation. */
-export type S14Command = BotCommand | AuthorityCommand | MemoryCommand | ParallelCommand | ComputerCommand | GraphCommand | ReportCommand | SharingCommand | RecoveryCommand;
+export type S14Command = BotCommand | AuthorityCommand | MemoryCommand | ParallelCommand | ComputerCommand | GraphCommand | ReportCommand | SharingCommand | RecoveryCommand | RoutineCommand | AttentionCommand | BotLifecycleCommand;
 /** Committed typed result of the S14 owner command boundary. */
-export type S14Receipt = BotReceipt | AuthorityReceipt | MemoryReceipt | ParallelReceipt | ComputerReceipt | GraphReceipt | ReportReceipt | SharingReceipt | RecoveryReceipt;
+export type S14Receipt = BotReceipt | AuthorityReceipt | MemoryReceipt | ParallelReceipt | ComputerReceipt | GraphReceipt | ReportReceipt | SharingReceipt | RecoveryReceipt | RoutineReceipt | AttentionReceipt | BotLifecycleReceipt;
 
 const id = () => crypto.randomUUID().replaceAll("-", "");
 const tokenPattern = /^[a-f0-9]{64}$/;
@@ -48,7 +53,7 @@ export function save(tx: AppTransaction, table: RecordTable, value: { id: string
 /** Reads bounded identity records from a trusted table name without starting workers. */
 export function records<T>(tx: AppTransaction, table: RecordTable): T[] { return tx.all<{ record_json: string }>(`SELECT record_json FROM ${table} ORDER BY rowid DESC LIMIT 100`).map(row => JSON.parse(row.record_json) as T); }
 /** Injectable deterministic inference/clock and rollback fault seams; production never enables fixture inference. */
-export interface S14Options { policy: Policy; chat: ChatPort; authority?: AuthorityOptions; parallel?: ParallelWebOptions; computers?: ComputerOptions; now?: () => number; beforeCommit?: () => void; signIn?: SignInOptions }
+export interface S14Options { policy: Policy; chat: ChatPort; authority?: AuthorityOptions; parallel?: ParallelWebOptions; computers?: ComputerOptions; botLifecycle?: BotLifecycleOptions; attention?: AttentionPort; now?: () => number; beforeCommit?: () => void; signIn?: SignInOptions }
 
 /** Project-free owner command boundary; registered actors are revalidated on every read and commit. */
 export class S14Application {
@@ -63,9 +68,13 @@ export class S14Application {
   readonly artifacts: S14Artifacts;
   readonly sharing: S14Sharing;
   readonly recovery: S14Recovery;
+  readonly botLifecycle: S14BotLifecycle;
+  readonly routines: S14Routines;
+  readonly attention: S14Attention;
   readonly signIns: S14SignIns;
   #actors = new WeakMap<OwnerActor, string>();
   #replyBusy = false;
+  #replyRunning = new Map<string, AbortController>();
   constructor(readonly store: S14Store, readonly options: S14Options) {
     this.policy = structuredClone(options.policy); this.now = options.now ?? Date.now;
     if (this.policy.routes.length > 16 || new Set(this.policy.routes.map(r => r.id)).size !== this.policy.routes.length) throw new AppError("invalid_policy");
@@ -85,8 +94,11 @@ export class S14Application {
     this.reports = new S14Reports(this);
     this.artifacts = new S14Artifacts(this);
     this.recovery = new S14Recovery(this);
-    this.store.transaction(tx => { this.memory.reconcile(tx); this.sharing.fence(tx); this.parallel.reconcile(tx); this.reports.reconcile(tx); this.recovery.reconcileReservations(tx); this.recovery.reconcileEffects(tx); });
+    this.attention = new S14Attention(this, options.attention);
+    this.routines = new S14Routines(this);
     this.computers = new S14Computers(this, options.computers);
+    this.botLifecycle = new S14BotLifecycle(this, options.botLifecycle);
+    this.store.transaction(tx => { this.botLifecycle.reconcile(tx); this.recovery.reconcileReservations(tx); this.recovery.reconcileEffects(tx); this.attention.recover(tx); this.routines.reconcile(tx); });
     this.signIns = new S14SignIns(this, options.signIn);
   }
   /** Trusted local bootstrap creates only the authentication principal, never resets an existing installation. */
@@ -193,6 +205,12 @@ export class S14Application {
   execute(actor: OwnerActor, command: SharingCommand): SharingReceipt;
   /** Records an exact owner statement about an unknown effect without retrying it. */
   execute(actor: OwnerActor, command: RecoveryCommand): RecoveryReceipt;
+  /** Executes exact captured routine authority and dispatch control through the owner receipt boundary. */
+  execute(actor: OwnerActor, command: RoutineCommand): RoutineReceipt;
+  /** Executes revisioned future attention filtering without changing history or authority. */
+  execute(actor: OwnerActor, command: AttentionCommand): AttentionReceipt;
+  /** Executes exact Bot policy proposals and lifecycle previews through the authenticated owner boundary. */
+  execute(actor: OwnerActor, command: BotLifecycleCommand): BotLifecycleReceipt;
   /** Accepts an exact report revision separately from coverage, execution and immutable report bytes. */
   execute(actor: OwnerActor, command: ReportCommand): ReportReceipt;
   /** Executes the complete typed HTTP command union without client-controlled actor identities. */
@@ -208,7 +226,15 @@ export class S14Application {
       const previous = tx.get<{ payload_hash: string; result_json: string }>("SELECT payload_hash,result_json FROM command_receipts WHERE owner_id='owner' AND request_id=?", command.requestId);
       if (previous) { if (previous.payload_hash !== digest(encoded)) throw new AppError("request_id_conflict", 409); return JSON.parse(previous.result_json) as S14Receipt; }
       let result: S14Receipt;
-      if (command.kind === "effect.reconcile") {
+      if (["bot.capabilities.propose", "bot.reenable.propose", "bot.capabilities.accept", "bot.retire", "bot.delete"].includes(command.kind)) {
+        result = this.botLifecycle.apply(tx, command as BotLifecycleCommand);
+        this.botLifecycle.reconcile(tx);
+        if (result.bot) result.bot = record<Bot>(tx, "bots", result.bot.id);
+      } else if (command.kind.startsWith("routine.")) {
+        result = this.routines.apply(tx, command as RoutineCommand);
+      } else if (command.kind === "attention.set") {
+        result = this.attention.apply(tx, command as AttentionCommand);
+      } else if (command.kind === "effect.reconcile") {
         result = this.recovery.apply(tx, command as RecoveryCommand);
       } else if (command.kind.startsWith("snapshot.")) {
         result = this.sharing.apply(tx, command as SharingCommand);
@@ -231,11 +257,13 @@ export class S14Application {
         result = this.applyBot(tx, command as BotCommand);
       }
       this.reports.reconcile(tx);
+      this.routines.reconcile(tx);
       tx.run("INSERT INTO command_receipts VALUES ('owner',?,?,?,?)", command.requestId, digest(encoded), canonical(result), this.now());
       tx.run("INSERT INTO audit(kind,request_id,committed_at) VALUES (?,?,?)", command.kind, command.requestId, this.now());
       this.options.beforeCommit?.(); return structuredClone(result);
     });
     this.authority.cancelFenced();
+    this.cancelRepliesFenced();
     this.computers.sweep();
     this.authority.wake();
     return receipt;
@@ -318,6 +346,16 @@ export class S14Application {
     }
     throw new AppError("unknown_command");
   }
+  /** Requests cancellation of fenced chat while its independent transport occupancy remains held until actual return. */
+  cancelRepliesFenced(): void {
+    for (const [replyId, abort] of this.#replyRunning) {
+      const live = this.store.read(tx => {
+        const reply = record<Reply>(tx, "reply_outbox", replyId);
+        return reply.state === "running" && !!reply.snapshot.memory && this.memory.current(tx, reply.snapshot.memory);
+      });
+      if (!live) abort.abort();
+    }
+  }
   /** Marks orphaned chat inference blocked on exclusive boot; never silently resubmits an uncertain call. */
   recoverReplies(): void { this.store.transaction(tx => { for (const row of tx.all<{ record_json: string }>("SELECT record_json FROM reply_outbox WHERE json_extract(record_json,'$.state')='running'")) { const reply = JSON.parse(row.record_json) as Reply; reply.state = "blocked"; reply.reason = "interrupted_no_auto_replay"; save(tx, "reply_outbox", reply); } }); }
   /** Drains committed chat intents serially with bounded context; this never admits persistent work or tools. */
@@ -331,18 +369,24 @@ export class S14Application {
         if (next.snapshot.memory && !this.memory.current(tx, next.snapshot.memory)) {
           next.state = "blocked"; next.reason = "memory_context_stale"; save(tx, "reply_outbox", next); return null;
         }
-        next.state = "running"; save(tx, "reply_outbox", next); return next;
+        next.state = "running"; save(tx, "reply_outbox", next);
+        tx.run("INSERT OR REPLACE INTO reply_transports VALUES (?,?,1)", next.id, next.snapshot.memory?.id ?? null);
+        return next;
       });
       if (!reply) return;
       let output: Awaited<ReturnType<ChatPort["reply"]>> | null = null;
       let unavailableReason: ReplyUnavailableReason = "unknown";
       const abort = new AbortController(), timer = setTimeout(() => abort.abort(), 60000);
-      try { output = await this.options.chat.reply(structuredClone(reply.snapshot), abort.signal); }
-      catch (error) {
+      this.#replyRunning.set(reply.id, abort);
+      try { output = await this.options.chat.reply(structuredClone(reply.snapshot), abort.signal); } catch (error) {
         if (error instanceof ReplyUnavailable && ["sign-in", "quota", "provider", "timeout", "unknown"].includes(error.category)) unavailableReason = error.category;
-        // Other transport errors may contain credentials: never inspect/copy their text or arbitrary category fields.
+        // Arbitrary transport text and category fields may contain credentials.
       }
-      finally { clearTimeout(timer); }
+      finally {
+        clearTimeout(timer);
+        this.#replyRunning.delete(reply.id);
+        this.store.transaction(tx => tx.run("UPDATE reply_transports SET active=0 WHERE reply_id=?", reply.id));
+      }
       this.store.transaction(tx => {
         const current = record<Reply>(tx, "reply_outbox", reply.id); if (current.state !== "running") return;
         if (reply.snapshot.memory && !this.memory.current(tx, reply.snapshot.memory)) {

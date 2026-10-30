@@ -240,7 +240,7 @@ export class S14Reports {
         const report = JSON.parse(row.content_json) as Report;
         const producers = new Set([row.attempt_id, ...report.claims.flatMap(c => c.citations.map(citation => citation.attemptId))]);
         current = this.app.memory.sourceCurrent(tx, metadata.source) && [...producers].every(producer =>
-          this.app.memory.attemptCurrent(tx, producer) && this.app.authority.retainedEvidence(tx, producer));
+          (this.app.memory.attemptCurrent(tx, producer) || this.app.botLifecycle.retained(tx, producer)) && this.app.authority.retainedEvidence(tx, producer));
       } catch { /* Missing original ancestry is unavailable, never reconstructed from a model claim. */ }
       if (!current) {
         tx.run("UPDATE reports SET content_json=NULL WHERE id=?", row.id);

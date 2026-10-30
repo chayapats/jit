@@ -28,4 +28,4 @@ export type RecoveryCommand = ReconcileEffectCommand;
 /** Owner resolution receipt retains the action identity and an explicitly labelled statement. */
 export interface RecoveryReceipt { kind: "effect.reconcile"; requestId: string; effect: import("./authority-types").Effect }
 /** Owner recovery projection exposes reasons and conservative reservations without starting workers. */
-export interface RecoveryView { checkpoints: WorkCheckpoint[]; native: NativeIntent[]; actualUsage: null }
+export interface RecoveryView { bootedAt: number; checkpoints: WorkCheckpoint[]; native: NativeIntent[]; actualUsage: null }
