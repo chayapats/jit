@@ -1,7 +1,7 @@
 // S14 browser enhancements (ADR 0028). Hand-written ES module, no dependencies, no build step.
 // Every S14 page is complete without this file: forms post, the composer's work mode is a checkbox and limits are visible.
-// It only adds Enter to send, the setup ceremony, focus on an opened approval slip and same-origin reads of the page
-// being viewed while something is in flight. It never posts data itself and stores nothing.
+// It only adds Enter to send, the setup ceremony, focus on an opened approval slip, copying a sign-in code and same-origin
+// reads of the page being viewed while something is in flight. It never posts data itself and stores nothing.
 
 document.documentElement.dataset.enhanced = "true";
 
@@ -28,6 +28,32 @@ ceremony?.addEventListener("submit", event => {
   stage.dataset.ceremony = "playing";
   setTimeout(() => ceremony.submit(), 1600);
 });
+
+// Device sign-in: the first page holds the only copy of the code, so it stays on screen and only the safe state is read.
+// A settled flow reloads the page's own read-only address, which never carries the code.
+const signIn = document.querySelector("[data-sign-in]");
+if (signIn) {
+  const poll = async () => {
+    let state = "pending";
+    try {
+      const response = await fetch(signIn.dataset.signIn, { credentials: "same-origin", cache: "no-store" });
+      if (!response.ok) return;
+      ({ state } = await response.json());
+    } catch { /* A failed read only delays the next one. */ }
+    if (state === "pending" || state === "starting") setTimeout(poll, 3000);
+    else location.replace(signIn.dataset.signInPage);
+  };
+  setTimeout(poll, 3000);
+}
+for (const button of document.querySelectorAll("[data-copy]")) {
+  const source = document.querySelector("[data-copy-source]");
+  if (!source || !navigator.clipboard) continue;
+  button.hidden = false;
+  button.addEventListener("click", async () => {
+    await navigator.clipboard.writeText(source.textContent);
+    button.textContent = button.dataset.copied;
+  });
+}
 
 // Live reads: refetch this same page while work or a reply is in flight and replace only its typed regions.
 const regions = [["s14-live"], ["s14-pane-live", "s14-work-status", "s14-pane-status"], ["s14-computer-status"], ["s14-computer-screen"], ["s14-computer-more"]];

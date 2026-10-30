@@ -66,7 +66,7 @@ function formFields(html: string, action: string, index = 0): Record<string, str
   return fields;
 }
 const commandOf = (html: string, index = 0) => JSON.parse(formFields(html, "/s14/commands", index).command!) as { kind: string; expectedRevision: number; payload: Record<string, unknown> };
-const buttons = (html: string) => [...html.matchAll(/<button\b[^>]*>([\s\S]*?)<\/button>/g)].map(m => m[1]!.replace(/<[^>]+>/g, ""));
+const buttons = (html: string) => [...html.matchAll(/<button\b[^>]*>([\s\S]*?)<\/button>/g)].map(m => m[1]!.replace(/<[^>]+>/g, "")).filter(label => label !== dictionaries.th["s14.chat.new"] && label !== dictionaries.en["s14.chat.new"]);
 const strict = (html: string) => {
   expect(html).not.toMatch(/\sstyle="/); expect(html).not.toMatch(/\son[a-z]+="/); expect(html).not.toContain("javascript:");
   expect([...html.matchAll(/<script\b[^>]*>/g)].every(m => /type="module" src="\/assets\//.test(m[0]))).toBe(true);
@@ -348,12 +348,14 @@ test("memory and web surfaces render in both languages with no raw keys, and set
       strict(html); expect(accessibilityProblems(html, language)).toEqual([]);
       const text = html.replace(/<head>[\s\S]*?<\/head>/, "").replace(/<[^>]+>/g, " ");
       expect(text).not.toMatch(/\bs14\.[a-z_]+\.?/); expect(text).not.toMatch(/undefined|null|NaN|\[object/);
-      if (language === "en") expect(text).not.toMatch(/[฀-๿]/);
+      // A language's own name is the one Thai word allowed in English chrome.
+      if (language === "en") expect(text.replace(/ไทย/g, "")).not.toMatch(/[฀-๿]/);
     }
   }
   const root = mkdtempSync(join(tmpdir(), "jit-s14-ui-")); roots.push(root);
   const store = new S14Store(join(root, "s14.sqlite")); stores.push(store);
   const app = new S14Application(store, { policy: { routes: [{ id: "selected", provider: "codex", model: "scripted-model" }], tools: ["web_search", "web_fetch", "computer", "effect_send"], resources: ["private-resource"] }, chat: { async reply() { return { text: "" }; } }, now: () => 1800000000000 });
+  app.signIns.providers = async () => [{ id: "selected", provider: "codex", model: "scripted-model", readiness: "configured-unverified" }];
   await app.provisionOwner(password); const token = await app.login(password), auth = app.authenticate(token), handler = createS14Handler(app, origin, renderS14, createS14Product(app));
   const html = await (await handler(new Request(`${origin}/`, { headers: { cookie: `jit_s14=${token}` } }))).text(), words = dictionaries.th;
   expect(html).toContain(words["s14.setup.research_note"]); expect(html).toContain(words["s14.setup.nothing_else"]); expect(html).not.toContain(words["s14.setup.nothing_granted"]); expect(accessibilityProblems(html, "th")).toEqual([]);

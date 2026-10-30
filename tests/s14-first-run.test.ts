@@ -407,5 +407,5 @@ test("no-script auth renderer gets approval once; refresh and product receipt re
   const receipt = f.app.execute(f.auth.actor, { kind: "conversation.create", requestId: rid(), expectedRevision: 1, payload: { botId: "jit" } });
   expect(product.surface(receipt)).toBe(`/chats/${receipt.conversation!.id}`);
   const preference = f.app.execute(f.auth.actor, { kind: "owner.preferences.set", requestId: rid(), expectedRevision: f.app.home(f.auth.actor).revision, payload: { language: "th", theme: "light" } });
-  expect(product.surface(preference)).toBe("/more");
+  expect(product.surface(preference)).toBe(`/more?receipt=${preference.requestId}`);
 });

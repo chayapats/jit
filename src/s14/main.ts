@@ -7,6 +7,7 @@ import { S14Application } from "./application";
 import { schwayChat } from "./chat";
 import { FreshStateRequired, inspectS14Store, s14SchemaVersion, S14Store } from "./store";
 import { createS14Handler } from "./web";
+import { createS14Auth } from "./web-first-run";
 import { renderS14 } from "./web-pages";
 import { createS14Product } from "./web-product";
 import { acquireS14RuntimeLock } from "./runtime-lock";
@@ -59,7 +60,7 @@ export async function runS14(args = process.argv.slice(2), env = process.env): P
           if (!store!.read(tx => tx.get("SELECT id FROM reply_outbox WHERE json_extract(record_json,'$.state')='queued' LIMIT 1"))) break;
         } } finally { pumping = false; }
       };
-      const handler = createS14Handler(app, origin, renderS14, createS14Product(app));
+      const handler = createS14Handler(app, origin, renderS14, createS14Product(app), createS14Auth(app));
       const maintainComputers = () => {
         app.computers.sweep();
         app.authority.cancelFenced();

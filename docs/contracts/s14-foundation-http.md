@@ -204,4 +204,23 @@ Production restores the union of existing enabled Bots' explicit resource ceilin
 
 Schema **7** adds bounded `computer_activity` and its index; all other new state uses existing revisioned JSON/receipt records. Schemas 1–6 remain unreleased and refuse before writable open, with original database/WAL/SHM/ledger/profile/backup bytes untouched. `serve --s14` now serves the read-only refusal page by default with no store, runtime lock or workers; `--no-refusal-page` retains CLI refuse-and-exit. `--refusal-page` remains a compatibility spelling. No default legacy-runtime cutover or migration is performed.
 
-Evidence: `tests/s14-first-run.test.ts`, existing bootstrap/device/S14 suites, frozen install, typecheck and full suite. No live provider, subscription, paid inference, Linux container or real browser/device acceptance is claimed. UI acceptance: [ ] fresh Web journey, [ ] Thai/English, [ ] dark/light, [ ] no-script, [ ] accessibility/responsive and real host validation.
+Evidence: `tests/s14-first-run.test.ts`, existing bootstrap/device/S14 suites, frozen install, typecheck and full suite. No live provider, subscription, paid inference, Linux container or real browser/device acceptance is claimed.
+
+### UX14-01 Web wiring
+
+`src/s14/main.ts` passes `createS14Auth(app)` from `src/s14/web-first-run.ts` as the fifth handler argument. `S14AuthRenderer` gains two optional presentation members: `ownerSetup` takes a safe refusal code for the fixable `owner_setup_password_mismatch` and `password_length_12_to_256` refusals, and `ownerSetupRefused(code, locale)` replaces the JSON refusal with a page that has no form. Capability, CSRF and Origin checks are unchanged, and the handler without these members behaves as before. `S14Product.view` and `recover` may return a promise because provider readiness reads the protected store. They stay local and make no inference.
+
+| Route / form | Use |
+| --- | --- |
+| `GET /` with no owner profile | Provider step until a provider is signed in, then the name form. `?provider=` selects among signed-in providers; `?change` returns to the list. |
+| `POST /s14/commands` with `setup.sign_in` or `setup.sign_in.cancel` | Renders the sign-in page directly. Approval appears only in that first response. |
+| `GET /s14/sign-in/:provider/:flowId` | Safe state page. Script reads `/api/s14/sign-in/:provider/:flowId` and posts nothing. |
+| `GET /settings/provider` | Readiness and sign-in again. It has no route control. |
+| `GET /chats/:id?redo=:workId` | Prefills the composer from that work's purpose with work mode on. It starts nothing. |
+| `POST /s14/forms/new-chat` | `{csrf,requestId,expectedRevision,botId}` to `conversation.create`, with expected revision `Bot.revision`. |
+| `POST /s14/forms/preferences` | `{csrf,requestId,expectedRevision,language,theme}` to `owner.preferences.set`, landing on `/more?receipt=:id`. |
+| `POST /s14/forms/memory-unpin` | `{csrf,requestId,expectedRevision,botId,decisionId,revision,generation}` to `memory.decision.unpin`. |
+
+`task.reject`, `work.retry`, `work.summarize` and `takeover.renew` are fixed envelopes through `POST /s14/commands`. UI evidence and its limits are in section 19 of the experience document and `tests/s14-first-run-ui.test.ts`.
+
+Known gaps for later slices: nothing issues the one-time link for an opt-in `serve --s14` store, so a fresh journey needs the S14 installer cutover or a trusted caller of `issueOwnerSetupLink`; the memory query omits unpinned decisions, so the page cannot list them; chats have no title; a busy sign-in does not reveal the other flow's ID; `reply_unavailable` does not say why a model failed.

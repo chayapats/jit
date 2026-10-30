@@ -1,15 +1,17 @@
 import { currentLocale, tr, trMaybe, withLocale, type Locale, type MessageKey } from "../i18n";
 import { colorTokens } from "../web-design";
 import { logoLockup, logoMark } from "../web-logo";
-import type { S14Command } from "./application";
+import type { ThemePreference } from "../web-layout";
 import type { Attempt, Effect, Work, WorkView } from "./authority-types";
 import type { BotComputer, ComputerActivity, ComputerView } from "./computer-types";
 import type { Bot, BotProposal, Conversation, Message, Reply, Route } from "./types";
 import { s14AssetUrl } from "./web-assets";
-import type { S14Page } from "./web";
+import type { S14Page, S14WebCommand } from "./web";
 import { defaultWorkLimits, workLimitBounds, type S14Chat, type S14ComputerSurface, type S14Draft, type S14View, type S14WorkTab } from "./web-product";
 import type { S14WorkResearch } from "./web-product-memory";
+import { providerSettingsPage, setupPage } from "./web-first-run";
 import { renderMemorySurface } from "./web-memory";
+import { recoveryNotice, recoveryPanel } from "./web-recovery";
 import { evidenceTab, researchNotice, webSettingsPage } from "./web-research";
 
 export const e = (value: unknown) => String(value).replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
@@ -19,7 +21,7 @@ const paths = {
   work: '<path d="M4 6h1.5M4 12h1.5M4 18h1.5M9 6h11M9 12h11M9 18h11"/>', team: '<circle cx="9" cy="9" r="3"/><path d="M3 20v-1a6 6 0 0 1 12 0v1"/><path d="M16 6.5a3 3 0 0 1 0 5.5M18 20v-1a6 6 0 0 0-2.5-4.9"/>',
   more: '<circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/>', home: '<path d="M4 11l8-7 8 7v9H4Z"/>',
   memory: '<path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3Z"/><path d="M9 9h6M9 13h4"/>', lock: '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>', info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v1"/>',
-  alert: '<path d="M12 4 2.5 20h19Z"/><path d="M12 10v5m0 2.5v.5"/>', check: '<path d="m5 12 4 4L19 6"/>', close: '<path d="M6 6l12 12M18 6 6 18"/>', stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>', alert: '<path d="M12 4 2.5 20h19Z"/><path d="M12 10v5m0 2.5v.5"/>', check: '<path d="m5 12 4 4L19 6"/>', close: '<path d="M6 6l12 12M18 6 6 18"/>', stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
 };
 export const icon = (name: keyof typeof paths) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name]}</svg>`;
 export const rid = () => crypto.randomUUID().replaceAll("-", "");
@@ -29,7 +31,7 @@ export function when(value: number): string {
   const format = new Intl.DateTimeFormat(currentLocale() === "en" ? "en-GB" : "th-TH", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
   return `<time datetime="${date.toISOString()}">${e(format.format(date))} UTC</time>`;
 }
-function remaining(until: number, now: number): string {
+export function remaining(until: number, now: number): string {
   if (until <= now) return tr("s14.time.passed");
   const minutes = Math.ceil((until - now) / 60000);
   return `${tr("s14.time.in")} ${minutes} ${tr("s14.time.minutes")}`;
@@ -37,31 +39,41 @@ function remaining(until: number, now: number): string {
 export const size = (bytes: number) => bytes >= 1024 ? `${Math.floor(bytes / 1024)} KiB` : `${bytes} B`;
 export const short = (id: string) => id.slice(0, 8);
 
+let activeTheme: ThemePreference = "system";
+/** Renders synchronously with the owner's appearance, the same scope rule as `withLocale`. */
+export function withTheme<T>(theme: ThemePreference, render: () => T): T {
+  const previous = activeTheme;
+  activeTheme = theme;
+  try { return render(); } finally { activeTheme = previous; }
+}
 function documentPage(title: string, body: string): string {
-  const meta = (theme: "dark" | "light") => `<meta name="theme-color" content="${colorTokens[theme].bg}" media="(prefers-color-scheme: ${theme})">`;
-  return `<!doctype html><html lang="${currentLocale()}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="dark light">${meta("dark")}${meta("light")}<title>${e(title)} · Jit</title>
+  const meta = (theme: "dark" | "light", media: boolean) => `<meta name="theme-color" content="${colorTokens[theme].bg}"${media ? ` media="(prefers-color-scheme: ${theme})"` : ""}>`;
+  const colors = activeTheme === "system" ? `${meta("dark", true)}${meta("light", true)}` : meta(activeTheme, false);
+  return `<!doctype html><html lang="${currentLocale()}"${activeTheme === "system" ? "" : ` data-theme="${activeTheme}"`}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="${activeTheme === "system" ? "dark light" : activeTheme}">${colors}<title>${e(title)} · Jit</title>
     <link rel="stylesheet" href="${s14AssetUrl("app.css")}"><link rel="stylesheet" href="${s14AssetUrl("s14.css")}"><link rel="icon" type="image/svg+xml" href="${s14AssetUrl("favicon.svg")}">
     <link rel="preload" href="${s14AssetUrl("inter.woff2")}" as="font" type="font/woff2" crossorigin><link rel="preload" href="${s14AssetUrl("noto-sans-thai.woff2")}" as="font" type="font/woff2" crossorigin>
     <script type="module" src="${s14AssetUrl("s14.js")}"></script></head><body><a class="skip" href="#main-content">${tr("common.skip_to_main_content")}</a>${body}</body></html>`;
 }
 
 /** Plain stateless page used before a session exists or when a post is refused. */
-const standalone = (title: string, content: string) => documentPage(title, `<main class="s-page" id="main-content">${content}</main>`);
+export const standalone = (title: string, content: string) => documentPage(title, `<main class="s-page" id="main-content">${content}</main>`);
 export const banner = (tone: "" | "warn" | "danger" | "ok", title: string, detail = "", extra = "") => `<div class="s-banner ${tone}">${icon(tone === "ok" ? "check" : tone ? "alert" : "info")}<div><p><b>${e(title)}</b></p>${detail ? `<p class="s-sub">${e(detail)}</p>` : ""}${extra}</div></div>`;
 export const noticeText = (code: string) => trMaybe(`s14.error.${code}`) ?? tr("s14.error.generic");
 export const notice = (code: string | null) => code ? banner("warn", noticeText(code), trMaybe(`s14.next.${code}`) ?? "") : "";
 
-/** Sign-in page; before an owner exists it shows the one local step that creates the credential instead of a dead form. */
-export function renderLogin(locale: Locale, code: string | null, provisioned: boolean): string {
-  return withLocale(locale, () => standalone(tr("s14.login.title"), `<div class="auth-card"><span class="brand">${logoLockup({ height: 44, label: "Jit" })}</span><h1>${tr("s14.login.title")}</h1>${provisioned ? `<p>${tr("s14.login.prompt")}</p>
+/** The developer path for an installation with no installer link. Collapsed, because it is not the first-run journey. */
+export const sourcePath = () => `<details class="s-more"><summary>${tr("s14.login.source_title")}</summary><div><p class="s-note">${tr("s14.login.source_note")}</p><pre class="s-exact">bun src/main.ts setup --s14</pre></div></details>`;
+/** Sign-in page; before an owner exists it points at the one-time link instead of a dead form. */
+export function renderLogin(locale: Locale, code: string | null, provisioned: boolean, theme: ThemePreference = "system"): string {
+  return withTheme(theme, () => withLocale(locale, () => standalone(tr("s14.login.title"), `<div class="auth-card"><span class="brand">${logoLockup({ height: 44, label: "Jit" })}</span><h1>${tr("s14.login.title")}</h1>${provisioned ? `<p>${tr("s14.login.prompt")}</p>
     ${code ? `<div role="alert">${banner("warn", noticeText(code), trMaybe(`s14.next.${code}`) ?? "")}</div>` : ""}<form method="post" action="/s14/login"><label for="s14-password">${tr("s14.login.password")}</label><input id="s14-password" type="password" name="password" required autocomplete="current-password"><button class="primary">${tr("s14.login.submit")}</button></form>`
-    : `<p>${tr("s14.login.unprovisioned")}</p><pre class="s-exact">bun src/main.ts setup --s14</pre><p class="s-note">${tr("s14.login.unprovisioned_note")}</p>`}</div>`));
+    : `<p>${tr("s14.login.unprovisioned")}</p><p class="s-note">${tr("s14.login.unprovisioned_note")}</p>${sourcePath()}`}</div>`)));
 }
 /** Refused post or missing page: the cause in words, then one way forward. No authority control is rendered here. */
-export function renderFailure(locale: Locale, code: string, next: string): string {
+export function renderFailure(locale: Locale, code: string, next: string, theme: ThemePreference = "system"): string {
   // Typed computer input is never echoed into a page, so the composer's "your text is kept" must not appear here.
   const forward = () => (next.includes("tab=computer") ? trMaybe(`s14.next.computer.${code}`) : null) ?? trMaybe(`s14.next.${code}`) ?? tr("s14.next.generic");
-  return withLocale(locale, () => standalone(tr("s14.error.title"), `<div class="s-notice-card"><h1>${e(noticeText(code))}</h1><p>${e(forward())}</p><p class="s-mono s-meta">${e(code)}</p><p><a class="s-btn primary" href="${e(next)}">${tr(next === "/s14/login" ? "s14.login.submit" : next === "/" ? "s14.error.home" : "s14.error.open_latest")}</a></p></div>`));
+  return withTheme(theme, () => withLocale(locale, () => standalone(tr("s14.error.title"), `<div class="s-notice-card"><h1>${e(noticeText(code))}</h1><p>${e(forward())}</p><p class="s-mono s-meta">${e(code)}</p><p><a class="s-btn primary" href="${e(next)}">${tr(next === "/s14/login" ? "s14.login.submit" : next === "/" ? "s14.error.home" : "s14.error.open_latest")}</a></p></div>`)));
 }
 /** S14-AC01 refusal, served with no store, lock or worker open. It cannot change anything, so it has no form. */
 export function renderRefusal(locale: Locale, store: string): string {
@@ -75,7 +87,7 @@ JIT_S14_DATABASE=.local/s14-fresh/application.sqlite bun src/main.ts serve --s14
 export const hidden = (name: string, value: string | number) => `<input type="hidden" name="${name}" value="${e(value)}">`;
 export const flat = (csrf: string, revision: number) => `${hidden("csrf", csrf)}${hidden("requestId", rid())}${hidden("expectedRevision", revision)}`;
 /** Fixed-content decision: the exact typed envelope is carried by the seam's no-script path. */
-export const commandForm = (csrf: string, kind: S14Command["kind"], expectedRevision: number, payload: object, label: string, cls = "s-btn", extra = "") => `<form method="post" action="/s14/commands"${extra}>${hidden("csrf", csrf)}${hidden("command", JSON.stringify({ kind, requestId: rid(), expectedRevision, payload }))}<button class="${cls}">${e(label)}</button></form>`;
+export const commandForm = (csrf: string, kind: S14WebCommand["kind"], expectedRevision: number, payload: object, label: string, cls = "s-btn", extra = "") => `<form method="post" action="/s14/commands"${extra}>${hidden("csrf", csrf)}${hidden("command", JSON.stringify({ kind, requestId: rid(), expectedRevision, payload }))}<button class="${cls}">${e(label)}</button></form>`;
 /** The only host for authority buttons. Labels come from the dictionary and typed revisions, never from model text. */
 export const ownerStrip = (actions: string, note = "", before = "", after = "") => `<div class="s-strip"><div class="s-strip-label">${icon("lock")}${tr("s14.strip.label")}</div>${before}<div class="s-strip-acts">${actions}</div>${note ? `<p class="s-note">${e(note)}</p>` : ""}${after}</div>`;
 /** Plain text only: no links, no Markdown and no controls can come out of this frame. */
@@ -115,17 +127,28 @@ function attentionList(page: S14Page): string {
   return items.length ? `<ul class="s-attention">${items.join("")}</ul>` : `<p class="s-sub">${tr("s14.attention.none")}</p>`;
 }
 
-interface ShellOptions { current?: "home" | "work" | "team" | "memory" | "more" | `chat:${string}`; subtitle?: string; dock?: string; pane?: string; inChat?: boolean; live?: boolean; bot?: Bot }
+/** Owner-facing label: the Seam has no chat title, so a Bot's later chats carry their order of creation. Newest comes first in Home. */
+export function chatLabel(page: S14Page, conversation: Conversation): string {
+  const same = page.state.conversations.filter(item => item.botId === conversation.botId), order = same.length - same.findIndex(item => item.id === conversation.id);
+  const bot = page.state.bots.find(item => item.id === conversation.botId), name = botName(bot ?? { id: conversation.botId, name: conversation.botId });
+  return same.length > 1 && order > 1 ? `${name} · ${tr("s14.chat.number")} ${order}` : name;
+}
+/** Starts an empty chat. It is not an authority control: conversation membership grants nothing. */
+function newChat(page: S14Page, bot: Bot, cls = "s-btn", extra = ""): string {
+  return bot.enabled ? `<form method="post" action="/s14/forms/new-chat"${extra}>${flat(page.csrf, bot.revision)}${hidden("botId", bot.id)}<button class="${cls}">${icon("plus")}<span class="s-label">${tr("s14.chat.new")}</span></button></form>` : "";
+}
+interface ShellOptions { current?: "home" | "work" | "team" | "memory" | "more" | `chat:${string}`; subtitle?: string; dock?: string; pane?: string; inChat?: boolean; live?: boolean; bot?: Bot; action?: string }
 export function shell(page: S14Page, title: string, content: string, options: ShellOptions = {}): string {
   const here = (name: string) => options.current === name ? ' aria-current="page"' : "", count = attentionCount(page);
   const badge = count ? `<span class="s-count">${pill(`${tr("s14.nav.waiting")} ${count}`, "warn")}</span>` : "";
-  const chats = page.state.conversations.map(conversation => { const bot = page.state.bots.find(b => b.id === conversation.botId); return bot ? `<li><a class="s-link" href="/chats/${e(conversation.id)}#latest"${here(`chat:${conversation.id}`)}>${tile(bot, "", "small")}<span class="s-label">${e(botName(bot))}</span></a></li>` : ""; }).join("");
+  const chats = page.state.conversations.map(conversation => { const bot = page.state.bots.find(b => b.id === conversation.botId); return bot ? `<li><a class="s-link" href="/chats/${e(conversation.id)}#latest"${here(`chat:${conversation.id}`)}>${tile(bot, "", "small")}<span class="s-label">${e(chatLabel(page, conversation))}</span></a></li>` : ""; }).join("");
+  const jit = page.state.bots.find(bot => bot.id === "jit"), start = jit ? newChat(page, jit, "s-link", ' class="s-nav-new"') : "";
   const nav = `<aside class="s-nav" aria-label="${tr("s14.nav.label")}"><a class="s-lockup" href="/" aria-label="${tr("s14.nav.home")}">${logoLockup({ height: 36, label: "Jit" })}<span class="s-rail-mark">${logoMark({ size: 32 })}</span></a>
     <ul><li><a class="s-link" href="/"${here("home")}>${icon("home")}<span class="s-label">${tr("s14.nav.home")}</span></a></li><li><a class="s-link" href="/work"${here("work")}>${icon("work")}<span class="s-label">${tr("s14.nav.work")}</span>${badge}</a></li><li><a class="s-link" href="/team"${here("team")}>${icon("team")}<span class="s-label">${tr("s14.nav.team")}</span></a></li><li><a class="s-link" href="/memory"${here("memory")}>${icon("memory")}<span class="s-label">${tr("s14.nav.memory")}</span></a></li></ul>
-    <p class="s-nav-sec">${tr("s14.nav.chats")}</p><ul>${chats}</ul><div class="s-nav-foot"><a class="s-link" href="/more"${here("more")}>${icon("more")}<span class="s-label">${tr("s14.nav.more")}</span></a></div></aside>`;
+    <p class="s-nav-sec">${tr("s14.nav.chats")}</p><ul>${chats}</ul>${start}<div class="s-nav-foot"><a class="s-link" href="/more"${here("more")}>${icon("more")}<span class="s-label">${tr("s14.nav.more")}</span></a></div></aside>`;
   const tabs = `<nav class="s-tabs" aria-label="${tr("s14.nav.tabs")}"><a href="/"${here("home")}>${icon("chat")}<span>${tr("s14.nav.chat_tab")}</span></a><a href="/work"${here("work")}>${icon("work")}<span>${tr("s14.nav.work")}</span>${count ? `<span class="s-pill warn"><span class="sr-only">${tr("s14.nav.waiting")} </span>${count}</span>` : ""}</a><a href="/team"${here("team")}>${icon("team")}<span>${tr("s14.nav.team")}</span></a><a href="/more"${options.current === "more" || options.current === "memory" ? ' aria-current="page"' : ""}>${icon("more")}<span>${tr("s14.nav.more")}</span></a></nav>`;
   const back = options.inChat ? `<a class="s-btn s-back" href="/" aria-label="${tr("s14.nav.home")}">${icon("back")}</a>` : "";
-  return documentPage(title, `<div class="s-app">${nav}<main class="s-main" id="main-content"${options.pane ? ' data-pane="open"' : ""}${options.inChat ? " data-in-chat" : ""}><div class="s-chatcol"><header class="s-hdr">${back}${options.bot ? tile(options.bot, "") : ""}<div class="s-hdr-t"><h1>${e(title)}</h1>${options.subtitle ? `<small>${e(options.subtitle)}</small>` : ""}</div></header>
+  return documentPage(title, `<div class="s-app">${nav}<main class="s-main" id="main-content"${options.pane ? ' data-pane="open"' : ""}${options.inChat ? " data-in-chat" : ""}><div class="s-chatcol"><header class="s-hdr">${back}${options.bot ? tile(options.bot, "") : ""}<div class="s-hdr-t"><h1>${e(title)}</h1>${options.subtitle ? `<small>${e(options.subtitle)}</small>` : ""}</div>${options.action ?? ""}</header>
     <div class="s-scroll"${options.live ? ' data-live="true"' : ""}>${content}</div>${options.dock ?? ""}</div>${options.pane ?? ""}</main>${tabs}<p class="sr-only" role="status" id="s-phase" data-reply="${tr("s14.live.reply")}"></p></div>`);
 }
 
@@ -151,8 +174,9 @@ function composer(page: S14Page, conversation: Conversation, bot: Bot, from: "ho
 
 function taskSlip(page: S14Page, task: Work, conversation: Conversation, bot: Bot): string {
   const body = untrusted(`<p><b>${e(task.title)}</b></p><p>${e(task.purpose)}</p><p class="s-meta">${tr("s14.task.completion")}: ${e(task.completionRule)}</p>`);
+  if (task.state === "rejected") return `<article class="s-slip" data-state="closed" aria-label="${tr("s14.task.title")}"><div class="s-slip-hd"><div><h3>${tr("s14.task.title")} r${task.revision}</h3></div>${workPill("rejected")}</div><div class="s-slip-body">${banner("", tr("s14.task.rejected_title"), tr("s14.task.rejected_detail"))}${body}</div></article>`;
   if (task.state === "proposed") return `<article class="s-slip" aria-label="${tr("s14.task.title")}"><div class="s-slip-hd"><div><h3>${tr("s14.task.title")} r${task.revision}</h3><p class="s-meta">${tr("s14.task.no_effect")}</p></div>${workPill("proposed")}</div><div class="s-slip-body">${body}</div>
-    ${ownerStrip(commandForm(page.csrf, "task.accept", task.revision, { taskId: task.id }, tr("s14.task.accept")), tr("s14.task.accept_note"))}</article>`;
+    ${ownerStrip(`${commandForm(page.csrf, "task.accept", task.revision, { taskId: task.id }, tr("s14.task.accept"))}${commandForm(page.csrf, "task.reject", task.revision, { taskId: task.id }, tr("s14.task.reject"))}`, tr("s14.task.accept_note"), "", `<p class="s-note">${tr("s14.task.reject_note")}</p>`)}</article>`;
   return `<article class="s-slip" data-state="closed" aria-label="${tr("s14.task.title")}"><div class="s-slip-hd"><div><h3>${tr("s14.task.title")} r${task.revision}</h3></div>${workPill("accepted")}</div><div class="s-slip-body">${banner("", tr("s14.task.not_running_title"), tr("s14.task.not_running"))}${body}</div>
     ${ownerStrip(`<form class="s-stack" method="post" action="/s14/forms/task-start">${flat(page.csrf, conversation.revision)}${hidden("taskId", task.id)}${hidden("taskRevision", task.revision)}${limitFields(defaultWorkLimits)}<details class="s-more"><summary>${tr("s14.composer.more")}</summary><div>${grantChoices(page, bot, null)}</div></details><div><button class="s-btn primary">${tr("s14.task.start")}</button></div></form>`, tr("s14.task.start_note"))}</article>`;
 }
@@ -163,9 +187,11 @@ function receiptLine(work: Work, view?: WorkView): string {
 function stopForm(page: S14Page, work: Work): string {
   return commandForm(page.csrf, "work.stop", work.revision, { workId: work.id }, tr("s14.work.stop"), "s-btn danger");
 }
+/** A suggestion that never started: it renders as its slip, with no work pane parts it cannot have. */
+const isTask = (work: Work) => work.state === "proposed" || work.state === "accepted" || work.state === "rejected";
 const stoppable = (work: Work) => ["queued", "running", "waiting", "blocked"].includes(work.state);
 function workCard(page: S14Page, work: Work, conversation: Conversation, bot: Bot): string {
-  if (work.state === "proposed" || work.state === "accepted") return taskSlip(page, work, conversation, bot);
+  if (isTask(work)) return taskSlip(page, work, conversation, bot);
   const open = `/chats/${e(conversation.id)}?work=${e(work.id)}`;
   return `<article class="s-workcard" aria-label="${e(work.title)}"><div class="s-workcard-hd"><div><h3>${e(work.title)}</h3></div>${workPill(work.state)}</div>${receiptLine(work)}<div class="s-lane-mini">${tile(bot, workDot[work.state] ?? "", "small")}<span class="s-grow">${e(botName(bot))}</span><span>${tr(k(`s14.work_state.${work.state}`))}</span></div>
     <div class="s-workcard-ft"><a class="s-btn" href="${open}">${tr("s14.work.open_progress")}</a><a class="s-btn" href="${open}&amp;tab=grant">${tr("s14.work.open_grant")}</a></div>${stoppable(work) ? ownerStrip(stopForm(page, work), tr("s14.work.stop_note")) : ""}</article>`;
@@ -203,7 +229,7 @@ function proposalHistory(history: BotProposal[], current: BotProposal): string {
   return old.length ? `<section class="s-card" aria-labelledby="s14-history"><h2 id="s14-history">${tr("s14.proposal.history")}</h2><ul class="s-history">${old.map(item => `<li><p>r${item.revision} · ${pill(tr("s14.proposal.stale"))} · ${tr(item.author === "owner" ? "s14.proposal.author_owner" : "s14.proposal.author_bot")}</p><p class="s-sub">${e(item.name)}</p></li>`).join("")}</ul></section>` : "";
 }
 
-const replyLine = (reply: Reply, bot: Bot) => reply.state === "succeeded" ? "" : `<div class="s-bot-msg">${tile(bot, reply.state === "blocked" ? "failed" : reply.state === "running" ? "working" : "hollow")}<div>${reply.state === "blocked" ? banner("warn", tr("s14.reply.blocked"), `${trMaybe(`s14.reason.${reply.reason}`) ?? ""} ${tr("s14.reply.blocked_next")}`.trim()) : `<p class="s-who">${e(botName(bot))} · ${tr(k(`s14.reply.${reply.state}`))}</p>`}</div></div>`;
+const replyLine = (reply: Reply, bot: Bot) => reply.state === "succeeded" ? "" : `<div class="s-bot-msg">${tile(bot, reply.state === "blocked" ? "failed" : reply.state === "running" ? "working" : "hollow")}<div>${reply.state === "blocked" ? banner("warn", tr("s14.reply.blocked"), `${trMaybe(`s14.reason.${reply.reason}`) ?? ""} ${tr("s14.reply.blocked_next")}`.trim(), reply.reason === "reply_unavailable" ? `<p><a class="s-link-text" href="/settings/provider">${tr("s14.reply.check_provider")}</a></p>` : "") : `<p class="s-who">${e(botName(bot))} · ${tr(k(`s14.reply.${reply.state}`))}</p>`}</div></div>`;
 const messageText = (item: Message) => item.text === "[deleted]" ? tr("s14.memory.message_deleted") : `${e(item.text)}${item.contextState === "withdrawn" ? ` <span class="s-note">${tr("s14.memory.withdrawn")}</span>` : ""}`;
 const message = (item: Message, bot: Bot, extra: string) => item.role === "owner" ? `<div class="s-owner-msg">${messageText(item)}</div>` : `<div class="s-bot-msg">${tile(bot)}<div><p class="s-who">${e(botName(bot))}</p><p class="s-bot-text">${messageText(item)}</p>${extra}</div></div>`;
 /** Messages, typed cards and work in commit order. Cards are built from typed records, never parsed from message text. */
@@ -253,11 +279,11 @@ function attemptLane(page: S14Page, attempt: Attempt): string {
 }
 function progressTab(page: S14Page, view: WorkView, conversation: Conversation, bot: Bot, research: S14WorkResearch | null, base: string): string {
   const { work } = view;
-  if (work.state === "proposed" || work.state === "accepted") return taskSlip(page, work, conversation, bot);
+  if (isTask(work)) return taskSlip(page, work, conversation, bot);
   const resultText = view.results.map(result => result.text).join("\n\n");
   const result = resultText ? `<section class="s-stack" aria-labelledby="s14-result"><h3 class="s-section-t" id="s14-result">${tr("s14.work.result")}</h3>${untrusted(`<p>${e(resultText)}</p>`, tr("s14.untrusted.result"))}<p class="s-note">${tr("s14.work.completion_rule")}: ${e(work.completionRule)}</p></section>` : "";
   const evidenceHref = `${base}${base.includes("?") ? "&amp;" : "?"}tab=evidence`;
-  return `${workStateBanner(view)}${researchNotice(research, evidenceHref)}${view.effects.map(effect => effectSlip(page, effect, [], "h3")).join("")}${view.attempts.length ? `<section class="s-stack" aria-labelledby="s14-lanes"><h3 class="s-section-t" id="s14-lanes">${tr("s14.work.lanes")}</h3>${view.attempts.map(a => attemptLane(page, a)).join("")}</section>` : ""}${result}${usage(view)}${stoppable(work) ? `<div class="s-slip" data-state="closed">${ownerStrip(stopForm(page, work), tr("s14.work.stop_note"))}</div>` : ""}`;
+  return `${workStateBanner(view)}${recoveryNotice(view)}${researchNotice(research, evidenceHref)}${view.effects.map(effect => effectSlip(page, effect, [], "h3")).join("")}${recoveryPanel(page, view, research)}${view.attempts.length ? `<section class="s-stack" aria-labelledby="s14-lanes"><h3 class="s-section-t" id="s14-lanes">${tr("s14.work.lanes")}</h3>${view.attempts.map(a => attemptLane(page, a)).join("")}</section>` : ""}${result}${usage(view)}${stoppable(work) ? `<div class="s-slip" data-state="closed">${ownerStrip(stopForm(page, work), tr("s14.work.stop_note"))}</div>` : ""}`;
 }
 function grantTab(page: S14Page, view: WorkView): string {
   const { grant, authority, work } = view;
@@ -321,12 +347,6 @@ function effectHistory(history: Effect[], current: Effect): string {
   return old.length ? `<section class="s-card" aria-labelledby="s14-effect-history"><h2 id="s14-effect-history">${tr("s14.effect.history")}</h2><ul class="s-history">${old.map(item => `<li><p>r${item.revision} · ${effectPill(item.state)}</p><p class="s-mono s-meta">${e(item.actionHash)}</p></li>`).join("")}</ul></section>` : "";
 }
 
-const researchTools = (page: S14Page) => (["web_search", "web_fetch"] as const).filter(tool => page.policy.tools.includes(tool));
-/** Public research works from the first message: both tools are ticked, named in words and the owner can untick them. */
-function researchChoice(page: S14Page): string {
-  const tools = researchTools(page); if (!tools.length) return "";
-  return `<fieldset class="s-field"><legend>${tr("s14.setup.research")}</legend>${tools.map(tool => `<label class="s-check"><input type="checkbox" name="tool:${tool}" value="on" checked><span>${tr(k(`s14.setup.research_${tool}`))}</span></label>`).join("")}<p class="s-note">${tr("s14.setup.research_note")}</p><p class="s-note">${tr("s14.setup.nothing_else")}</p></fieldset>`;
-}
 /* Bot computer (BOX14-01, F11). The lease bar reads the lease, never local state, and every word here comes from typed query data. */
 const computerPath = (bot: Pick<Bot, "id">, suffix = "") => `/team/${e(bot.id)}?tab=computer${suffix}`;
 const usesComputer = (view: WorkView) => !!view.grant?.tools.includes("computer");
@@ -374,19 +394,27 @@ function leaseBar(page: S14Page, bot: Bot, view: ComputerView): string {
   const detail = !running ? tr("s14.lease.off_detail") : driver === "owner" ? `${named("s14.lease.owner_detail", bot)} · ${tr("s14.lease.ends_in")} ${Math.ceil((lease!.expiresAt - page.now) / 60000)} ${tr("s14.time.minutes")}` : named(`s14.lease.${driver}_detail`, bot);
   const scope = running ? { botId: c!.botId, computerId: c!.id, generation: c!.generation, leaseRevision: lease!.revision } : null;
   const ending = driver === "owner" || driver === "expired";
-  const strip = scope ? ownerStrip(ending ? commandForm(page.csrf, "takeover.end", c!.revision, scope, tr(driver === "owner" ? "s14.lease.hand_back" : "s14.lease.close_expired"), "s-btn primary") : commandForm(page.csrf, "takeover.start", c!.revision, scope, tr("s14.lease.take_over")), tr(ending ? "s14.lease.hand_back_note" : "s14.lease.take_over_note")) : "";
+  const renew = () => commandForm(page.csrf, "takeover.renew", c!.revision, scope!, tr(driver === "owner" ? "s14.lease.renew" : "s14.lease.resume"), driver === "owner" ? "s-btn" : "s-btn primary");
+  const end = () => commandForm(page.csrf, "takeover.end", c!.revision, scope!, tr(driver === "owner" ? "s14.lease.hand_back" : "s14.lease.close_expired"), driver === "owner" ? "s-btn primary" : "s-btn");
+  const strip = scope ? ownerStrip(ending ? (driver === "owner" ? `${end()}${renew()}` : `${renew()}${end()}`) : commandForm(page.csrf, "takeover.start", c!.revision, scope, tr("s14.lease.take_over")), tr(ending ? "s14.lease.hand_back_note" : "s14.lease.take_over_note"), "", ending ? `<p class="s-note">${e(tr("s14.lease.renew_note").replace("{minutes}", String(Math.ceil(c!.limits.idleMs / 60000))))}</p>` : "") : "";
   return `<section class="s-slip s-lease" data-state="closed" data-driver="${driver}" aria-labelledby="s14-lease"><div class="s-slip-hd"><div><h2 id="s14-lease">${e(leaseWord(view, bot, page.now))}</h2><p class="s-meta">${e(detail)}</p></div></div>${strip}</section>`;
 }
 const inputFields = (page: S14Page, c: BotComputer, leaseRevision: number, kind: string) => `${hidden("csrf", page.csrf)}${hidden("requestId", rid())}${hidden("expectedRevision", c.revision)}${hidden("computerId", c.id)}${hidden("generation", c.generation)}${hidden("leaseRevision", leaseRevision)}${hidden("kind", kind)}`;
 const screenKeys = [["Enter", "live.key_enter"], ["Tab", "live.key_tab"], ["Escape", "live.key_escape"], ["Backspace", "live.key_backspace"], ["ArrowUp", "live.key_up"], ["ArrowDown", "live.key_down"], ["ArrowLeft", "live.key_left"], ["ArrowRight", "live.key_right"]] as const;
+/** What the computer reports about its page is data from the Bot's side: plain text in the untrusted frame, never a link. */
+function pageIdentity(view: ComputerView): string {
+  if (!view.page) return `<p class="s-note s-page-id">${tr("s14.screen.page_unknown")}</p>`;
+  return `<div class="s-page-id">${untrusted(`<p class="s-mono">${e(view.page.url)}</p>${view.page.title ? `<p>${e(view.page.title)}</p>` : ""}`, tr("s14.screen.page_label"))}</div>`;
+}
 /** The pixels are the Bot's page, so they frame as untrusted. Taking over swaps the picture for the coordinate control; it stays 1280 by 800 without script because a scaled image would post scaled coordinates. */
 function screenView(page: S14Page, bot: Bot, view: ComputerView, surface: S14ComputerSurface, driver: Driver): string {
-  const c = view.computer, src = `/api/s14/bots/${e(bot.id)}/computer/image`, alt = e(named("s14.screen.alt", bot)), action = `/s14/bots/${e(bot.id)}/computer/input`;
+  const c = view.computer, src = `/api/s14/bots/${e(bot.id)}/computer/image`, action = `/s14/bots/${e(bot.id)}/computer/input`;
+  const alt = e(view.page ? named("s14.screen.alt_page", bot).replace("{page}", () => view.page!.url) : named("s14.screen.alt", bot));
   const picture = c?.state !== "running" ? `<div class="s-screen-empty"><p>${tr("s14.screen.off")}</p></div>`
     : driver === "owner" ? `<form method="post" action="${action}" data-computer-input>${inputFields(page, c, view.lease!.revision, "click")}<input type="image" name="point" src="${src}" alt="${alt}" width="1280" height="800" tabindex="-1" data-screen></form>`
     : `<img src="${src}" alt="${alt}" width="1280" height="800" data-screen>`;
   const outcome = surface.input ? (surface.input.state === "succeeded" ? banner("ok", tr("s14.input.succeeded"), tr("s14.input.succeeded_detail")) : banner("danger", tr("s14.input.unknown"), tr("s14.input.unknown_detail"))) : "";
-  return `<section class="s-screen" id="screen" data-driver="${driver}" aria-labelledby="s14-screen"><div class="s-screen-bar">${icon("lock")}<h2 id="s14-screen">${tr("s14.screen.title")}</h2>${c?.state === "running" ? `<a class="s-link-text" href="${computerPath(bot, "#screen")}">${tr("s14.screen.refresh")}</a>` : ""}</div><div class="s-screen-view"${driver === "owner" ? ` tabindex="0" role="group" aria-label="${e(tr("s14.screen.pan"))}"` : ""}>${picture}</div><p class="s-note s-screen-note">${tr(driver === "owner" ? "s14.screen.note_owner" : "s14.screen.note")}</p></section>
+  return `<section class="s-screen" id="screen" data-driver="${driver}" aria-labelledby="s14-screen"><div class="s-screen-bar">${icon("lock")}<h2 id="s14-screen">${tr("s14.screen.title")}</h2>${c?.state === "running" ? `<a class="s-link-text" href="${computerPath(bot, "#screen")}">${tr("s14.screen.refresh")}</a>` : ""}</div><div class="s-screen-view"${driver === "owner" ? ` tabindex="0" role="group" aria-label="${e(tr("s14.screen.pan"))}"` : ""}>${picture}</div>${c?.state === "running" ? pageIdentity(view) : ""}<p class="s-note s-screen-note">${tr(driver === "owner" ? "s14.screen.note_owner" : "s14.screen.note")}</p></section>
     <div class="s-input-status" role="status">${outcome}</div>`;
 }
 /** Script-free controls for the single owner lease: exact typed text, one fixed key per button, and typed coordinates for keyboard users. */
@@ -402,15 +430,14 @@ function computerFacts(page: S14Page, c: BotComputer): string {
   return `<section class="s-card s-stack" aria-labelledby="s14-facts"><h2 id="s14-facts">${tr("s14.computer.facts")}</h2><dl class="s-kv"><dt>${tr("s14.computer.network")}</dt><dd>${tr("s14.computer.network_none")}</dd><dt>${tr("s14.computer.can_do")}</dt><dd>${tr("s14.computer.can_do_detail")}</dd><dt>${tr("s14.computer.last_work")}</dt><dd><a class="s-link-text" href="/work/${e(c.workId)}">${tr("s14.computer.open_work")}</a></dd><dt>${tr("s14.computer.last_used")}</dt><dd>${when(c.lastUsedAt)}</dd></dl>
     <details class="s-more"><summary>${tr("s14.computer.limits")}</summary><div><dl class="s-kv"><dt>CPU</dt><dd>${l.cpuMillis} millicores</dd><dt>RAM</dt><dd>${mib(l.memoryBytes)}</dd><dt>${tr("s14.computer.processes")}</dt><dd>${l.pids}</dd><dt>${tr("s14.computer.disk")}</dt><dd>${mib(l.diskBytes)}</dd><dt>${tr("s14.computer.idle")}</dt><dd>${Math.ceil(l.idleMs / 60000)} ${tr("s14.time.minutes")}</dd><dt>${tr("s14.computer.generation")}</dt><dd class="s-mono">g${c.generation} · r${c.revision}</dd></dl><p class="s-note">${tr("s14.computer.limits_note")}</p></div></details></section>`;
 }
-/** Work whose live grant names this computer tool and this exact Bot. A display filter only: `computer.open` rechecks everything. */
-function openable(page: S14Page, bot: Bot): WorkView[] {
-  return page.overview.views.filter(view => view.grant && view.authority && !view.authority.revoked && page.now < view.grant.expiresAt && usesComputer(view) && ["queued", "running", "waiting"].includes(view.work.state) && view.grant.bots.some(item => item.id === bot.id && item.revision === bot.revision));
-}
-/** Opening needs a named work grant, so its title sits in the untrusted frame above a strip that never carries it. */
+/** Opening needs a named work grant, so its title sits in the untrusted frame above a strip that never carries it. The list is advisory: `computer.open` rechecks everything. */
 function openCards(page: S14Page, bot: Bot, view: ComputerView, surface: S14ComputerSurface): string {
   const c = view.computer;
   if (!surface.runtime || !bot.capabilities.tools.includes("computer") || (c && !["stopped", "deleted", "unavailable"].includes(c.state))) return "";
-  return openable(page, bot).slice(0, 3).map(item => `<article class="s-slip" data-state="closed" aria-label="${tr("s14.computer.open_card")}"><div class="s-slip-body s-slip-top">${untrusted(`<p>${e(item.work.title)}</p>`, tr("s14.computer.open_for"))}</div>${ownerStrip(commandForm(page.csrf, "computer.open", c?.revision ?? 0, { botId: bot.id, workId: item.work.id }, tr("s14.computer.open")), tr("s14.computer.open_note"))}</article>`).join("");
+  if (!surface.eligible.length) return banner("", tr("s14.computer.no_eligible"), tr("s14.computer.no_eligible_detail"));
+  const card = (item: S14ComputerSurface["eligible"][number]) => `<article class="s-slip" data-state="closed" aria-label="${tr("s14.computer.open_card")}"><div class="s-slip-body s-slip-top">${untrusted(`<p>${e(item.title)}</p>`, tr("s14.computer.open_for"))}<p class="s-meta">${tr("s14.grant.expires")} ${when(item.expiresAt)}</p></div>${ownerStrip(commandForm(page.csrf, "computer.open", c?.revision ?? 0, { botId: bot.id, workId: item.id }, tr("s14.computer.open")), tr("s14.computer.open_note"))}</article>`;
+  const more = surface.eligible.length > 3 ? `<p class="s-note">${tr("s14.computer.more_eligible")} ${surface.eligible.length - 3}</p>` : "";
+  return `${surface.eligible.slice(0, 3).map(card).join("")}${more}`;
 }
 const lifecycle = (c: BotComputer) => ["running", "stopped", "unavailable"].includes(c.state);
 /** Stop keeps data and posts directly. Reset and delete destroy it, so each one is a link to its own exact consequence card. */
@@ -436,7 +463,7 @@ function computerPanel(page: S14Page, bot: Bot, surface: S14ComputerSurface): st
   if (c && surface.confirm && lifecycle(c)) return destroyCard(page, bot, c, surface.confirm);
   const held = page.overview.effects.filter(effect => effect.botId === bot.id && effect.state === "pending");
   const minutes = driver === "owner" ? Math.ceil((view.lease!.expiresAt - page.now) / 60000) : 0;
-  const workKey = JSON.stringify(openable(page, bot).slice(0, 3).map(item => [item.work.id, item.work.revision, item.work.state]));
+  const workKey = JSON.stringify(surface.eligible.slice(0, 3).map(item => [item.id, item.revision]));
   const key = `${c?.revision ?? 0}.${c?.generation ?? 0}.${view.lease?.revision ?? 0}`, region = (id: string, html: string) => `<div class="s-stack" id="${id}" data-sig="${e(`${key}.${driver}.${held.length}.${minutes}${id === "s14-computer-more" ? `.${workKey}` : ""}`)}">${html}</div>`;
   const phase = c ? `${computerWord(view)} · ${leaseWord(view, bot, page.now)}` : computerWord(view);
   return `<div class="s-stack" data-computer="${e(bot.id)}" data-key="${e(key)}"><div class="s-between"><p class="s-sub">${tr("s14.computer.lead")}</p>${computerPill(view, "s14-computer-status")}</div>
@@ -451,33 +478,26 @@ function computerTab(page: S14Page, view: WorkView): string {
   return `<p class="s-sub">${tr("s14.work.computer_lead")}</p><div>${rows}</div>`;
 }
 
-function setupPage(page: S14Page, view: Extract<S14View, { kind: "setup" }>): string {
-  const routes = page.state.routes, single = routes.length === 1 ? routes[0] : undefined, language = view.draft?.language ?? page.locale;
-  const row = (tone: "ok" | "warn" | "danger", title: string, detail: string, extra = "") => `<li>${icon(tone === "ok" ? "check" : "alert")}<div><p class="${tone}">${e(title)}</p><p class="s-meta">${e(detail)}</p>${extra}</div></li>`;
-  const route = routes.length ? row("warn", tr("s14.setup.route_configured"), tr("s14.setup.route_configured_detail"), single ? `<p>${routeText(single)}</p>` : "") : row("danger", tr("s14.setup.route_missing"), tr("s14.setup.route_missing_detail"), `<pre class="s-exact">JIT_S14_ROUTES='[{"id":"selected","provider":"codex","model":"&lt;exact-model&gt;"}]'</pre>`);
-  const form = routes.length ? `<form class="s-stack" data-ceremony-form method="post" action="/s14/forms/setup">${flat(page.csrf, page.state.revision)}<div class="s-field"><label for="s14-name">${tr("s14.setup.name")}</label><input id="s14-name" name="ownerName" required maxlength="60" autocomplete="name" value="${e(view.draft?.ownerName ?? "")}"></div>
-    <fieldset class="s-field"><legend>${tr("s14.setup.language")}</legend><label class="s-check"><input type="radio" name="language" value="th"${language === "th" ? " checked" : ""}><span lang="th">ไทย</span></label><label class="s-check"><input type="radio" name="language" value="en"${language === "en" ? " checked" : ""}><span lang="en">English</span></label></fieldset>${routeChoice(routes, null)}${researchChoice(page)}<div><button class="s-btn primary">${tr("s14.setup.submit")}</button></div></form>` : "";
-  return standalone(tr("s14.setup.title"), `<ol class="s-steps"><li data-step="done">${tr("s14.setup.step_wake")}</li><li data-step="current">${tr("s14.setup.step_know")}</li><li>${tr("s14.setup.step_set")}</li></ol><div class="s-setup-card"><div class="s-ceremony ceremony" data-ceremony="idle">${logoMark({ size: 96 })}</div><h1>${tr("s14.setup.title")}</h1><p class="s-sub">${tr("s14.setup.lead")}</p>${notice(view.notice)}
-    <ul class="s-ready">${row("ok", tr("s14.setup.store_ok"), tr("s14.setup.store_ok_detail"))}${route}${row("warn", tr("s14.setup.capacity"), tr("s14.setup.capacity_detail"))}${researchTools(page).length ? "" : row("ok", tr("s14.setup.nothing_granted"), tr("s14.setup.nothing_granted_detail"))}</ul>${form}</div>`);
-}
 function homePage(page: S14Page, view: Extract<S14View, { kind: "home" }>): string {
   const first = !page.state.replies.length && !page.work.length, name = page.state.owner?.name ?? "";
   const starters = first ? `<ul class="s-starters" aria-label="${tr("s14.home.examples")}"><li><a href="/?example=1#s14-text">${tr("s14.home.example_1")}</a></li><li><a href="/?example=2#s14-text">${tr("s14.home.example_2")}</a></li></ul><p class="s-note">${tr("s14.home.example_note")}</p>` : "";
   const team = page.state.bots.map(bot => `<a class="s-bot-mini" href="/team/${e(bot.id)}">${tile(bot, ({ working: "working", queued: "hollow", waiting: "waiting", idle: "" })[page.overview.botStates[bot.id] ?? "idle"], "small")}<span><b>${e(botName(bot))}</b><small>${tr(k(`s14.bot_state.${page.overview.botStates[bot.id] ?? "idle"}`))}</small></span></a>`).join("");
+  const jit = page.state.bots.find(bot => bot.id === "jit");
+  const chats = `<section class="s-home-chats" aria-labelledby="s14-home-chats"><h2 class="s-section-t" id="s14-home-chats">${tr("s14.nav.chats")}</h2><ul>${page.state.conversations.map(item => `<li><a href="/chats/${e(item.id)}#latest">${e(chatLabel(page, item))}</a></li>`).join("")}</ul>${jit ? newChat(page, jit) : ""}</section>`;
   return shell(page, tr("s14.nav.home"), `<div class="s-home"><section class="s-hello"><span>${logoMark({ size: 48 })}</span><h2>${tr("s14.home.greeting")} ${e(name)}</h2><p class="s-sub">${tr("s14.home.prompt")}</p></section>${notice(view.notice)}${composer(page, view.conversation, view.bot, "home", view.draft)}${starters}
-    <section aria-labelledby="s14-waiting"><h2 class="s-section-t" id="s14-waiting">${tr("s14.attention.title")}</h2>${attentionList(page)}</section><section aria-labelledby="s14-team-now"><h2 class="s-section-t" id="s14-team-now">${tr("s14.home.team_now")}</h2><div class="s-team-now">${team}</div></section></div>`, { current: "home" });
+    <section aria-labelledby="s14-waiting"><h2 class="s-section-t" id="s14-waiting">${tr("s14.attention.title")}</h2>${attentionList(page)}</section><section aria-labelledby="s14-team-now"><h2 class="s-section-t" id="s14-team-now">${tr("s14.home.team_now")}</h2><div class="s-team-now">${team}</div></section>${chats}</div>`, { current: "home" });
 }
 function chatPage(page: S14Page, view: Extract<S14View, { kind: "chat" }>): string {
   const { chat, bot } = view, work = page.work.filter(item => item.conversationId === chat.conversation.id);
   const live = chat.replies.some(reply => reply.state === "queued" || reply.state === "running") || work.some(liveWork);
   const body = chat.messages.length || work.length ? thread(page, chat, bot) : emptyThread(bot);
   const content = `<div class="s-col"><div id="s14-live" class="s-thread" data-revision="${chat.conversation.revision}">${bot.id === "jit" ? "" : banner("", tr("s14.chat.direct"), tr("s14.chat.direct_detail"))}${body}</div><span id="latest"></span>${live ? `<p class="s-note"><a class="s-link-text" href="/chats/${e(chat.conversation.id)}#latest">${tr("s14.refresh")}</a></p>` : ""}</div>`;
-  return shell(page, botName(bot), content, { current: `chat:${chat.conversation.id}`, subtitle: tr("s14.chat.subtitle"), inChat: true, live, bot, dock: `<div class="s-dock">${notice(view.notice)}${composer(page, chat.conversation, bot, "chat", view.draft)}</div>`, ...(view.pane ? { pane: workPane(page, view.pane.view, view.pane.tab, chat.conversation, bot, view.pane.research) } : {}) });
+  return shell(page, chatLabel(page, chat.conversation), content, { current: `chat:${chat.conversation.id}`, subtitle: tr("s14.chat.subtitle"), inChat: true, live, bot, action: newChat(page, bot, "s-btn", ' class="s-hdr-act"'), dock: `<div class="s-dock">${notice(view.notice)}${composer(page, chat.conversation, bot, "chat", view.draft)}</div>`, ...(view.pane ? { pane: workPane(page, view.pane.view, view.pane.tab, chat.conversation, bot, view.pane.research) } : {}) });
 }
 function workListPage(page: S14Page): string {
   const group = (title: string, items: Work[], id: string) => items.length ? `<section aria-labelledby="${id}"><h2 class="s-section-t" id="${id}">${title}</h2>${items.map(item => `<a class="s-work-row" href="/work/${e(item.id)}"><span><span>${e(item.title)}</span><small>${when(item.createdAt)}</small></span>${workPill(item.state)}</a>`).join("")}</section>` : "";
   const by = (...states: Work["state"][]) => page.work.filter(item => states.includes(item.state));
-  return shell(page, tr("s14.nav.work"), `<div class="s-col s-col-wide"><section aria-labelledby="s14-work-waiting"><h2 class="s-section-t" id="s14-work-waiting">${tr("s14.attention.title")}</h2>${attentionList(page)}</section>${group(tr("s14.work_list.needs_you"), by("waiting", "blocked"), "s14-group-you")}${group(tr("s14.work_list.progress"), by("queued", "running", "stopping"), "s14-group-progress")}${group(tr("s14.work_list.unstarted"), by("proposed", "accepted"), "s14-group-unstarted")}${group(tr("s14.work_list.finished"), by("ready", "stopped"), "s14-group-finished")}${page.work.length ? "" : `<p class="s-sub">${tr("s14.work_list.empty")}</p>`}</div>`, { current: "work" });
+  return shell(page, tr("s14.nav.work"), `<div class="s-col s-col-wide"><section aria-labelledby="s14-work-waiting"><h2 class="s-section-t" id="s14-work-waiting">${tr("s14.attention.title")}</h2>${attentionList(page)}</section>${group(tr("s14.work_list.needs_you"), by("waiting", "blocked"), "s14-group-you")}${group(tr("s14.work_list.progress"), by("queued", "running", "stopping"), "s14-group-progress")}${group(tr("s14.work_list.unstarted"), by("proposed", "accepted"), "s14-group-unstarted")}${group(tr("s14.work_list.finished"), by("ready", "stopped"), "s14-group-finished")}${group(tr("s14.work_list.rejected"), by("rejected"), "s14-group-rejected")}${page.work.length ? "" : `<p class="s-sub">${tr("s14.work_list.empty")}</p>`}</div>`, { current: "work" });
 }
 function workPage(page: S14Page, view: Extract<S14View, { kind: "work" }>): string {
   const work = view.view.work;
@@ -491,19 +511,23 @@ function botPage(page: S14Page, view: Extract<S14View, { kind: "bot" }>): string
   const { bot, conversation, computer } = view, route = page.state.routes.find(r => r.id === bot.routeId), current = page.overview.computers[bot.id] ?? { computer: null, lease: null };
   const list = (items: string[]) => items.length ? items.map(item => `<span class="s-mono">${e(item)}</span>`).join(" · ") : tr("s14.bot.none");
   const tabs = `<nav class="s-worktabs" aria-label="${tr("s14.bot.tab_label")}"><a href="/team/${e(bot.id)}"${computer ? "" : ' aria-current="page"'}>${tr("s14.bot.tab_overview")}</a><a href="${computerPath(bot)}"${computer ? ' aria-current="page"' : ""}>${tr("s14.tab.computer")}</a></nav>`;
-  const overview = () => `<div class="s-row">${tile(bot, "", "large")}<p class="s-sub">${e(botDuty(bot))}</p></div><dl class="s-kv"><dt>${tr("s14.bot.state")}</dt><dd>${tr(k(`s14.bot_state.${page.overview.botStates[bot.id] ?? "idle"}`))}</dd><dt>${tr("s14.proposal.route")}</dt><dd>${routeText(route)}</dd><dt>${tr("s14.bot.tools")}</dt><dd>${list(bot.capabilities.tools)}</dd><dt>${tr("s14.bot.resources")}</dt><dd>${list(bot.capabilities.resources)}</dd><dt>${tr("s14.proposal.logins")}</dt><dd>${tr("s14.proposal.none_granted")}</dd><dt>${tr("s14.proposal.computer")}</dt><dd><a class="s-link-text" href="${computerPath(bot)}">${computerWord(current)}</a></dd><dt>${tr("s14.bot.revision")}</dt><dd class="s-mono">r${bot.revision}</dd></dl><p class="s-note">${tr("s14.bot.ceiling_note")}</p><p class="s-row">${conversation ? `<a class="s-btn primary" href="/chats/${e(conversation.id)}">${tr("s14.bot.direct")}</a>` : ""}<a class="s-btn" href="/memory?scope=${e(bot.id)}">${tr("s14.bot.memory")}</a></p>`;
+  const overview = () => `<div class="s-row">${tile(bot, "", "large")}<p class="s-sub">${e(botDuty(bot))}</p></div><dl class="s-kv"><dt>${tr("s14.bot.state")}</dt><dd>${tr(k(`s14.bot_state.${page.overview.botStates[bot.id] ?? "idle"}`))}</dd><dt>${tr("s14.proposal.route")}</dt><dd>${routeText(route)}</dd><dt>${tr("s14.bot.tools")}</dt><dd>${list(bot.capabilities.tools)}</dd><dt>${tr("s14.bot.resources")}</dt><dd>${list(bot.capabilities.resources)}</dd><dt>${tr("s14.proposal.logins")}</dt><dd>${tr("s14.proposal.none_granted")}</dd><dt>${tr("s14.proposal.computer")}</dt><dd><a class="s-link-text" href="${computerPath(bot)}">${computerWord(current)}</a></dd><dt>${tr("s14.bot.revision")}</dt><dd class="s-mono">r${bot.revision}</dd></dl><p class="s-note">${tr("s14.bot.ceiling_note")}</p><p class="s-row">${conversation ? `<a class="s-btn primary" href="/chats/${e(conversation.id)}">${tr("s14.bot.direct")}</a>` : ""}${newChat(page, bot)}<a class="s-btn" href="/memory?scope=${e(bot.id)}">${tr("s14.bot.memory")}</a></p>`;
   return shell(page, botName(bot), `<div class="s-col${computer ? " s-col-wide" : ""}">${tabs}${computer ? computerPanel(page, bot, computer) : overview()}</div>`, { current: "team", bot, ...(computer ? { subtitle: tr("s14.computer.title") } : {}) });
 }
-function morePage(page: S14Page): string {
+function preferences(page: S14Page): string {
+  const owner = page.state.owner, theme = owner?.theme ?? "system", radio = (name: string, value: string, label: string, checked: boolean, lang = "") => `<label class="s-check"><input type="radio" name="${name}" value="${value}"${checked ? " checked" : ""}><span${lang ? ` lang="${lang}"` : ""}>${e(label)}</span></label>`;
+  return `<section class="s-card s-stack" aria-labelledby="s14-prefs"><h2 id="s14-prefs">${tr("s14.more.preferences")}</h2><form class="s-stack" method="post" action="/s14/forms/preferences">${flat(page.csrf, page.state.revision)}<div class="s-prefs-grid"><fieldset class="s-field s-prefs"><legend>${tr("s14.setup.language")}</legend>${radio("language", "th", "ไทย", owner?.language === "th", "th")}${radio("language", "en", "English", owner?.language === "en", "en")}</fieldset><fieldset class="s-field s-prefs"><legend>${tr("s14.more.theme")}</legend>${(["system", "light", "dark"] as const).map(value => radio("theme", value, tr(`s14.more.theme_${value}`), theme === value)).join("")}</fieldset></div><div><button class="s-btn">${tr("s14.more.save")}</button></div></form></section>`;
+}
+function morePage(page: S14Page, saved: boolean): string {
   const planned = (["report", "routine"] as const).map(item => `<li>${tr(k(`s14.more.${item}`))} · ${pill(tr("s14.more.not_ready"))}</li>`).join("");
-  return shell(page, tr("s14.nav.more"), `<div class="s-col"><section class="s-card" aria-labelledby="s14-account"><h2 id="s14-account">${tr("s14.more.account")}</h2><dl class="s-kv"><dt>${tr("s14.setup.name")}</dt><dd>${e(page.state.owner?.name ?? "")}</dd><dt>${tr("s14.setup.language")}</dt><dd>${page.state.owner?.language === "en" ? "English" : "ไทย"}</dd><dt>${tr("s14.proposal.route")}</dt><dd>${page.state.routes.map(route => routeText(route)).join(" · ") || tr("s14.proposal.no_route")}<br><span class="s-note">${tr("s14.setup.route_configured_detail")}</span></dd></dl></section>
-    <nav class="s-card" aria-label="${tr("s14.more.places")}"><ul class="s-history"><li><a class="s-link-text" href="/memory">${tr("s14.more.memory")}</a></li>${page.state.bots.map(bot => `<li><a class="s-link-text" href="${computerPath(bot)}">${tr("s14.tab.computer")} · ${e(botName(bot))}</a></li>`).join("")}<li><a class="s-link-text" href="/settings/web">${tr("s14.more.web")}</a></li></ul></nav>
+  return shell(page, tr("s14.nav.more"), `<div class="s-col">${saved ? banner("ok", tr("s14.more.saved"), tr("s14.more.saved_detail")) : ""}<section class="s-card" aria-labelledby="s14-account"><h2 id="s14-account">${tr("s14.more.account")}</h2><dl class="s-kv"><dt>${tr("s14.setup.name")}</dt><dd>${e(page.state.owner?.name ?? "")}</dd><dt>${tr("s14.proposal.route")}</dt><dd>${page.state.routes.map(route => routeText(route)).join(" · ") || tr("s14.proposal.no_route")}<br><span class="s-note">${tr("s14.setup.route_configured_detail")}</span></dd></dl></section>${preferences(page)}
+    <nav class="s-card" aria-label="${tr("s14.more.places")}"><ul class="s-history"><li><a class="s-link-text" href="/memory">${tr("s14.more.memory")}</a></li><li><a class="s-link-text" href="/settings/provider">${tr("s14.more.provider")}</a></li>${page.state.bots.map(bot => `<li><a class="s-link-text" href="${computerPath(bot)}">${tr("s14.tab.computer")} · ${e(botName(bot))}</a></li>`).join("")}<li><a class="s-link-text" href="/settings/web">${tr("s14.more.web")}</a></li></ul></nav>
     <section class="s-card" aria-labelledby="s14-planned"><h2 id="s14-planned">${tr("s14.more.planned")}</h2><ul class="s-history">${planned}</ul></section><form method="post" action="/s14/logout">${hidden("csrf", page.csrf)}<button class="s-btn">${tr("s14.more.sign_out")}</button></form></div>`, { current: "more" });
 }
 
 /** Renders one signed-in surface in the owner's language. Every value from a query is escaped here. */
 export function renderS14(page: S14Page): string {
-  return withLocale(page.locale, () => {
+  return withTheme(page.state.owner?.theme ?? "system", () => withLocale(page.locale, () => {
     const view = page.view;
     switch (view.kind) {
       case "setup": return setupPage(page, view);
@@ -515,9 +539,10 @@ export function renderS14(page: S14Page): string {
       case "bot": return botPage(page, view);
       case "proposal": return shell(page, `${tr("s14.proposal.title")} r${view.proposal.revision}`, `<div class="s-col">${proposalCard(page, view.proposal, view.history, "h2")}${proposalHistory(view.history, view.proposal)}<p><a class="s-link-text" href="/chats/${e(page.state.conversations.find(c => c.id === view.proposal.conversationId)?.id ?? "")}">${tr("s14.work.back_to_chat")}</a></p></div>`, { current: "team" });
       case "effect": return shell(page, tr("s14.effect.card"), `<div class="s-col">${effectSlip(page, view.effect, view.history, "h2")}${effectHistory(view.history, view.effect)}<p><a class="s-link-text" href="/work/${e(view.effect.workId)}">${tr("s14.effect.back_to_work")}</a></p></div>`, { current: "work" });
-      case "more": return morePage(page);
+      case "more": return morePage(page, view.saved);
       case "settings-web": return webSettingsPage(page, view);
+      case "settings-provider": return providerSettingsPage(page, view);
       default: return renderMemorySurface(page, view);
     }
-  });
+  }));
 }
