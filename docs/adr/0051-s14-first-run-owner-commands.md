@@ -28,3 +28,12 @@ Schema 7 adds only computer_activity and its index. Previous unreleased S14 sche
 ## Evidence and limits
 
 Deterministic fake secure-store/device protocols, scripted inference, fake clocks and isolated runtime fixtures cover fresh setup through first reply, receipts/stale/replay, authority/source/budget fences, lease renewal/activity and byte-preserving refusal. Full suite/typecheck/diff checks accompany the PR. Actual provider sign-in/inference, Linux container/browser behavior, completed Opus UI and real-device/no-script accessibility acceptance are not inferred from these fixtures. The PR remains draft for the UI handoff.
+
+
+## 2026-10-31 remaining-gap implementation
+
+Foreground `serve --s14` uses the unchanged capability helper only when stdin/stdout are TTYs and writes directly once to that terminal, outside logging. Service/installer issuance is the trusted local `owner-link --s14 --output-fd 3` command: a dedicated inherited private pipe, no plaintext file or stdout/stderr/log delivery, no runtime host/worker/lock, and the selected store's writer transaction. This permits issuance alongside the running service without relaxing its runtime singleton. CUT14-01 owns installer invocation and terminal delivery; the current default remains legacy.
+
+Owner-only memory inspection returns unpinned tombstones for exact-revision repinning while packets still exclude them. S14 busy device receipts may include only a safe currentFlowId for the existing authenticated cancel command. Chat failures retain a finite public category from Schway safe auth status or the application deadline; raw errors and unclassified failures stay unknown. Existing Opus patterns/copy render these seams; no new screen is introduced.
+
+F4 evidence-only synthesis on stopped work is not delivered: stop revokes the original grant and increments its generation. The existing summarize admission therefore has no still-valid inference authority, and neither unrevoking it nor ignoring the stopped fence is acceptable. A future explicit owner-authorized report grant over exact current evidence must be separate from resuming that work. Committed evidence remains available; stopped work, late publication and old attempts remain fenced.

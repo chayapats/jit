@@ -3,6 +3,7 @@ import { AppError } from "../errors";
 import { requireOwnerSetup, removeOwnerSetupLink } from "../ops/owner-setup";
 import { applyOwnerCommand } from "./owner-commands";
 import { S14SignIns } from "./sign-in";
+import { ReplyUnavailable, type ReplyUnavailableReason } from "./reply-failure";
 import type { SignInOptions } from "../device-sign-in";
 import type { AppTransaction } from "../store";
 import { registerSecretFingerprint } from "../security/secret-fingerprints";
@@ -296,8 +297,13 @@ export class S14Application {
       });
       if (!reply) return;
       let output: Awaited<ReturnType<ChatPort["reply"]>> | null = null;
+      let unavailableReason: ReplyUnavailableReason = "unknown";
       const abort = new AbortController(), timer = setTimeout(() => abort.abort(), 60000);
-      try { output = await this.options.chat.reply(structuredClone(reply.snapshot), abort.signal); } catch { /* Safe public reason only; transport errors may contain credentials. */ }
+      try { output = await this.options.chat.reply(structuredClone(reply.snapshot), abort.signal); }
+      catch (error) {
+        if (error instanceof ReplyUnavailable && ["sign-in", "quota", "provider", "timeout", "unknown"].includes(error.category)) unavailableReason = error.category;
+        // Other transport errors may contain credentials: never inspect/copy their text or arbitrary category fields.
+      }
       finally { clearTimeout(timer); }
       this.store.transaction(tx => {
         const current = record<Reply>(tx, "reply_outbox", reply.id); if (current.state !== "running") return;
@@ -306,6 +312,7 @@ export class S14Application {
         }
         let content: string | null = null; try { if (output && !abort.signal.aborted) content = text(output.text); } catch { /* Invalid output remains blocked. */ }
         current.state = content ? "succeeded" : "blocked"; current.reason = content ? null : "reply_unavailable";
+        if (!content) current.unavailableReason = abort.signal.aborted ? "timeout" : unavailableReason;
         if (content) {
           const message: Message = { id: id(), conversationId: reply.conversationId, role: "bot", text: content, createdAt: this.now() };
           tx.run("INSERT INTO messages(id,conversation_id,record_json) VALUES (?,?,?)", message.id, message.conversationId, canonical(message));

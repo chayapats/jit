@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -17,6 +17,7 @@ import type { Attempt, AuthorityCommand, Work } from "../src/s14/authority-types
 import type { MemoryCommand } from "../src/s14/memory-types";
 import { FakeComputerRuntime } from "./fixtures/s14-computer";
 import type { ComputerCommand } from "../src/s14/computer-types";
+import { ReplyUnavailable, replyUnavailableReason } from "../src/s14/reply-failure";
 
 const origin = "http://localhost:3001";
 const password = "fixture-owner-password-265";
@@ -206,7 +207,9 @@ test("task rejection, conversation creation, preferences and decision unpin repl
   expect(f.store.read(tx => tx.get("SELECT work_id FROM work_queue"))).toBeNull();
   const set = f.app.execute(f.auth.actor, { kind: "memory.decision.set", requestId: rid(), expectedRevision: 0, payload: { conversationId: f.conversationId, key: "decision", text: "Choose A" } });
   replayAndStale(f, { kind: "memory.decision.unpin", requestId: rid(), expectedRevision: 1, payload: { decision: set.decision! } });
-  expect(f.app.memory.inspect(f.auth.actor, "jit").decisions).toHaveLength(0);
+  expect(f.app.memory.inspect(f.auth.actor, "jit").decisions).toMatchObject([{ id: set.decision!.id, pinned: false, revision: 2, text: "Choose A" }]);
+  const packet = f.store.transaction(tx => f.app.memory.assemble(tx, { botId: "jit", conversationId: f.conversationId, purpose: "Choose A", sources: [] }));
+  expect(packet.decisions).toHaveLength(0);
   expect(() => f.app.execute(f.auth.actor, { kind: "memory.decision.set", requestId: rid(), expectedRevision: 0, payload: { conversationId: f.conversationId, key: "decision", text: "stale" } })).toThrow("stale_revision");
 });
 
@@ -408,4 +411,83 @@ test("no-script auth renderer gets approval once; refresh and product receipt re
   expect(product.surface(receipt)).toBe(`/chats/${receipt.conversation!.id}`);
   const preference = f.app.execute(f.auth.actor, { kind: "owner.preferences.set", requestId: rid(), expectedRevision: f.app.home(f.auth.actor).revision, payload: { language: "th", theme: "light" } });
   expect(product.surface(preference)).toBe(`/more?receipt=${preference.requestId}`);
+});
+
+test("busy sign-in exposes only the occupied flow ID to a live owner, cancels that flow and never replays approval", async () => {
+  const f = await configured();
+  const command = (): S14SignInCommand => ({ kind: "setup.sign_in", requestId: rid(), expectedRevision: f.app.home(f.auth.actor).revision, payload: { provider: "codex", flowId: null } });
+  const firstCommand = command(), first = await f.app.signIns.execute(f.auth.actor, firstCommand);
+  expect(first.approval?.userCode).toBe(code);
+  const busyCommand = command(), busy = await f.app.signIns.execute(f.auth.actor, busyCommand);
+  expect(busy.signIn).toMatchObject({ id: busyCommand.requestId, state: "busy", currentFlowId: firstCommand.requestId });
+  expect(busy.approval).toBeUndefined(); expect(f.starts()).toBe(1);
+  expect((await f.app.signIns.execute(f.auth.actor, busyCommand)).signIn).toEqual(busy.signIn);
+  const unauthenticated = await f.request(`/api/s14/sign-in/codex/${busyCommand.requestId}`);
+  expect(unauthenticated.status).toBe(401);
+  expect(await unauthenticated.text()).not.toContain(firstCommand.requestId);
+  expect(() => f.app.signIns.status({ ownerId: "owner" }, "codex", busyCommand.requestId)).toThrow("authentication_required");
+  const cancelled = await f.app.signIns.execute(f.auth.actor, { kind: "setup.sign_in.cancel", requestId: rid(), expectedRevision: f.app.home(f.auth.actor).revision, payload: { provider: "codex", flowId: busy.signIn.currentFlowId! } });
+  expect(cancelled.signIn).toMatchObject({ id: firstCommand.requestId, state: "cancelled" });
+  await flush();
+  expect(f.credentials.size).toBe(0);
+  const safe = JSON.stringify({ status: f.app.signIns.status(f.auth.actor, "codex", busyCommand.requestId), receipts: f.store.read(tx => tx.all("SELECT * FROM command_receipts")) });
+  for (const secret of [code, providerSecret, "https://auth.example.test/device", "device-private"]) expect(safe).not.toContain(secret);
+});
+
+test.each(["sign-in", "quota", "provider", "timeout", "unknown"] as const)("reply_unavailable retains only trusted public category %s", async category => {
+  const f = await configured();
+  f.app.options.chat.reply = async () => { throw new ReplyUnavailable(category); };
+  f.app.execute(f.auth.actor, { kind: "message.post", requestId: rid(), expectedRevision: 1, payload: { conversationId: f.conversationId, text: "Hello" } });
+  await f.app.drainReplies();
+  expect(f.app.conversation(f.auth.actor, f.conversationId).replies).toMatchObject([{ state: "blocked", reason: "reply_unavailable", unavailableReason: category }]);
+});
+
+test("untrusted error text/category stays unknown; Schway safe statuses retain only known categories", async () => {
+  const f = await configured();
+  f.app.options.chat.reply = async () => { throw Object.assign(new Error(`HTTP 429 quota password=${providerSecret}`), { category: "quota" }); };
+  f.app.execute(f.auth.actor, { kind: "message.post", requestId: rid(), expectedRevision: 1, payload: { conversationId: f.conversationId, text: "Hello" } });
+  await f.app.drainReplies();
+  const result = f.app.conversation(f.auth.actor, f.conversationId);
+  expect(result.replies).toMatchObject([{ reason: "reply_unavailable", unavailableReason: "unknown" }]);
+  expect(JSON.stringify(result)).not.toContain(providerSecret);
+  expect(replyUnavailableReason("needs-login")).toBe("sign-in");
+  expect(replyUnavailableReason("rejected")).toBe("sign-in");
+  expect(replyUnavailableReason("quota-exceeded")).toBe("quota");
+  expect(replyUnavailableReason("model-unavailable")).toBe("provider");
+  expect(replyUnavailableReason("integration-unavailable")).toBe("provider");
+  for (const status of ["configured-unverified", "store-unavailable"] as const) expect(replyUnavailableReason(status)).toBe("unknown");
+});
+
+test("stopped work retains evidence but retry and summarize cannot revive its revoked generation or publish late results", async () => {
+  const f = await configured(), work = start(f, ["web_search"]);
+  const first = f.app.authority.admit(work.id, rid(), { botId: "jit", tools: ["web_search"], scopes: [], input: "Research", calls: 5, outputBytes: 8192 });
+  const source = f.store.transaction(tx => {
+    const value = f.app.memory.source(tx, { id: rid(), botId: "jit", conversationId: f.conversationId, attribution: "external", text: "Committed evidence before stop", derived: [] });
+    tx.run("INSERT INTO external_evidence VALUES (?,?,?)", value.id, first.id, JSON.stringify({ ...value, workId: work.id, attemptId: first.id }));
+    return value;
+  });
+  const stopped = f.app.execute(f.auth.actor, { kind: "work.stop", requestId: rid(), expectedRevision: f.app.authority.view(f.auth.actor, work.id).work.revision, payload: { workId: work.id } });
+  expect(stopped.work!.state).toBe("stopping");
+  expect(() => f.app.authority.commit(first.id, { state: "ready", text: "Late reply" })).toThrow("grant_revoked");
+  f.app.authority.settle(first.id, "stopped");
+  const view = f.app.authority.view(f.auth.actor, work.id);
+  expect(view.work.state).toBe("stopped"); expect(view.authority).toEqual({ generation: 2, revoked: true }); expect(view.results).toEqual([]);
+  for (const kind of ["work.retry", "work.summarize"] as const) expect(() => f.app.execute(f.auth.actor, { kind, requestId: rid(), expectedRevision: view.work.revision, payload: { workId: work.id } })).toThrow("work_not_recoverable");
+  await f.app.authority.drain();
+  expect(f.attempts).toHaveLength(0);
+  expect(f.app.authority.view(f.auth.actor, work.id)).toEqual(view);
+  expect(f.store.read(tx => tx.get<{ record_json: string }>("SELECT record_json FROM memory_sources WHERE id=?", source.id))!.record_json).toContain("Committed evidence before stop");
+});
+
+test("the service's own chat deadline is a timeout even if the transport reports an unrelated error", async () => {
+  const f = await configured(), original = globalThis.setTimeout;
+  f.app.options.chat.reply = async (_input, signal) => new Promise((_resolve, reject) => {
+    signal.addEventListener("abort", () => reject(new Error(providerSecret)), { once: true });
+  });
+  f.app.execute(f.auth.actor, { kind: "message.post", requestId: rid(), expectedRevision: 1, payload: { conversationId: f.conversationId, text: "Hello" } });
+  const timer = spyOn(globalThis, "setTimeout").mockImplementation(((callback: () => void, ms: number) => original(callback, ms === 60000 ? 0 : ms)) as typeof setTimeout);
+  try { await f.app.drainReplies(); } finally { timer.mockRestore(); }
+  const result = f.app.conversation(f.auth.actor, f.conversationId);
+  expect(result.replies).toMatchObject([{ reason: "reply_unavailable", unavailableReason: "timeout" }]);
+  expect(JSON.stringify(result)).not.toContain(providerSecret);
 });

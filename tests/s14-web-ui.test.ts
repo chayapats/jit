@@ -98,19 +98,17 @@ test("sign-in redirects pages, keeps API errors JSON and speaks the browser lang
   expect(expired.status).toBe(401); expect(await expired.text()).toContain('href="/s14/login"');
 });
 
-test("an unprovisioned installation points at the one-time link, with the source path collapsed, instead of a sign-in form that cannot work", async () => {
+test("an unprovisioned installation points at the trusted one-time link with no source-only password command or dead sign-in form", async () => {
   const root = mkdtempSync(join(tmpdir(), "jit-s14-web-")); roots.push(root);
   const store = new S14Store(join(root, "s14.sqlite")); stores.push(store);
   const app = new S14Application(store, { policy: { routes: [], tools: [], resources: [] }, chat: { async reply() { return { text: "" }; } } });
   const handler = createS14Handler(app, origin, renderS14, createS14Product(app));
   for (const locale of ["th", "en"] as const) {
     const html = await (await handler(new Request(`${origin}/s14/login`, { headers: { "accept-language": locale } }))).text();
-    expect(html).toContain("bun src/main.ts setup --s14"); expect(html).not.toContain('type="password"');
+    expect(html).not.toContain("bun src/main.ts setup --s14"); expect(html).not.toContain('type="password"');
     expect(html).toContain(dictionaries[locale]["s14.login.unprovisioned"]);
     expect(html).toContain(dictionaries[locale]["s14.login.unprovisioned_note"]);
-    expect(html.indexOf(dictionaries[locale]["s14.login.unprovisioned"])).toBeLessThan(html.indexOf("<details"));
-    expect(html.indexOf("<details")).toBeLessThan(html.indexOf("bun src/main.ts setup --s14"));
-    expect(html.slice(html.indexOf("<details"))).toContain(dictionaries[locale]["s14.login.source_note"]);
+    expect(html).not.toContain(dictionaries[locale]["s14.login.source_note"]);
   }
 });
 

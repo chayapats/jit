@@ -3,7 +3,7 @@ import { logoLockup, logoMark } from "../web-logo";
 import type { S14Application } from "./application";
 import type { S14SignInReceipt } from "./sign-in";
 import type { S14AuthRenderer, S14Page } from "./web";
-import { banner, commandForm, e, flat, hidden, k, notice, pill, remaining, shell, sourcePath, standalone, when, withTheme } from "./web-pages";
+import { banner, commandForm, e, flat, hidden, k, notice, pill, remaining, shell, standalone, when, withTheme } from "./web-pages";
 import { ownerTheme, type S14View } from "./web-product";
 import { signedIn, type S14Provider, type S14ProviderSettings } from "./web-product-first-run";
 
@@ -30,7 +30,7 @@ export function renderOwnerSetup(csrf: string, locale: Locale, code: string | nu
 export function renderOwnerSetupRefused(code: string, locale: Locale, ownerExists: boolean, theme: Parameters<typeof withTheme>[0] = "system"): string {
   const link = code === "owner_setup_link_invalid";
   return withTheme(theme, () => withLocale(locale, () => standalone(tr(link ? "s14.first.refused_title" : "s14.first.refused_post_title"), `<div class="s-notice-card"><span class="brand">${logoLockup({ height: 44, label: "Jit" })}</span><h1>${tr(link ? "s14.first.refused_title" : "s14.first.refused_post_title")}</h1><p>${tr(link ? "s14.first.refused_detail" : "s14.first.refused_post_detail")}</p><p class="s-mono s-meta">${e(code)}</p>
-    ${ownerExists ? `<p>${tr("s14.first.refused_owner")}</p><p><a class="s-btn primary" href="/s14/login">${tr("s14.login.submit")}</a></p>` : `<p>${tr("s14.login.unprovisioned_note")}</p>${sourcePath()}`}</div>`)));
+    ${ownerExists ? `<p>${tr("s14.first.refused_owner")}</p><p><a class="s-btn primary" href="/s14/login">${tr("s14.login.submit")}</a></p>` : `<p>${tr("s14.login.unprovisioned_note")}</p>`}</div>`)));
 }
 
 /** Words for a provider's local readiness. Signed in stays "not tested", because it proves credentials rather than a working subscription. */
@@ -94,14 +94,14 @@ export function renderSignIn(receipt: S14SignInReceipt, csrf: string, revision: 
   const { signIn, provider } = receipt, state = signIn.state, back = context.setup ? "/" : "/settings/provider";
   return withTheme(context.theme, () => withLocale(locale, () => {
     const title = filled("s14.signin.title", provider), self = `/s14/sign-in/${e(provider)}/${e(signIn.id)}`;
-    const cancel = commandForm(csrf, "setup.sign_in.cancel", revision, { provider, flowId: signIn.id }, tr("s14.signin.cancel"));
+    const cancel = commandForm(csrf, "setup.sign_in.cancel", revision, { provider, flowId: signIn.currentFlowId ?? signIn.id }, tr("s14.signin.cancel"));
     const again = (label: string, cls: string) => commandForm(csrf, "setup.sign_in", revision, { provider, flowId: null }, tr(k(label)), cls);
     const other = `<a class="s-btn" href="${context.setup ? "/?change" : "/settings/provider"}">${tr("s14.signin.other")}</a>`;
     let body: string;
     if (state === "pending" && receipt.approval) body = `${approvalBlock(receipt, context.now)}${waitLine(provider)}<div class="s-signin-acts"><a class="s-btn s-nojs" href="${self}">${tr("s14.signin.approved")}</a>${cancel}</div><p class="s-note s-nojs">${tr("s14.signin.approved_note")}</p>`;
     else if (state === "pending" || state === "starting") body = `${banner("", tr(k(`s14.signin.${state}_title`)), tr(k(`s14.signin.${state}_detail`)))}<div class="s-signin-acts"><a class="s-btn primary s-nojs" href="${self}">${tr("s14.signin.check")}</a>${cancel}</div>`;
     else if (state === "ready") body = `${banner("ok", filled("s14.signin.ready_title", provider), tr("s14.signin.ready_detail"))}<div class="s-signin-acts"><a class="s-btn primary" href="${context.setup ? `/?provider=${e(provider)}` : back}">${tr("s14.signin.continue")}</a></div>`;
-    else if (state === "busy") body = `${banner("warn", filled("s14.signin.busy_title", provider), tr("s14.signin.busy_detail"))}<div class="s-signin-acts"><a class="s-btn primary" href="${back}">${tr("s14.signin.continue")}</a></div>`;
+    else if (state === "busy") body = `${banner("warn", filled("s14.signin.busy_title", provider), tr("s14.signin.busy_detail"))}<div class="s-signin-acts"><a class="s-btn primary" href="${back}">${tr("s14.signin.continue")}</a>${signIn.currentFlowId ? cancel : ""}</div>`;
     else body = `${banner(state === "expired" || state === "cancelled" ? "" : "warn", filled(`s14.signin.${state}_title`, provider), tr(k(`s14.signin.${state}_detail`)))}<div class="s-signin-acts">${again(retryAction[state]!, "s-btn primary")}${other}</div>`;
     const live = state === "pending" || state === "starting" ? ` data-sign-in="${e(`/api/s14/sign-in/${provider}/${signIn.id}`)}" data-sign-in-page="${self}"` : "";
     return standalone(title, `${context.setup ? steps("connect") : ""}<div class="s-setup-card"${live}><h1>${e(title)}</h1>${body}</div>`);

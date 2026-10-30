@@ -264,7 +264,7 @@ export class S14Memory {
       record<Bot>(tx, "bots", botId);
       const terms = lexicalTerms(query);
       const claims = rows<MemoryClaim>(tx, "memory_claims").filter(c => this.access(tx, c, botId, null)).map(c => this.lookup(tx, botId, ref(c)));
-      const decisions = rows<MemoryDecision>(tx, "memory_decisions").filter(d => d.pinned !== false).filter(d => this.app.readConversation(tx, d.conversationId).botId === botId);
+      const decisions = rows<MemoryDecision>(tx, "memory_decisions").filter(d => this.app.readConversation(tx, d.conversationId).botId === botId);
       const sources = rows<MemorySource>(tx, "memory_sources").filter(s => s.botId === botId).slice(-200);
       const selected = claims.filter(c => !query || c.state === "available" && (lexicalScore(terms, c.claim.text) >= 3 || c.claim.text.toLowerCase().includes(query.toLowerCase()))).slice(-200);
       const returned = new Set([...selected.map(c => c.state === "available" ? c.claim.id : c.reference.id), ...sources.map(s => s.id), ...decisions.map(d => d.source.id)]);

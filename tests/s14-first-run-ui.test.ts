@@ -14,6 +14,7 @@ import { createS14Auth, renderOwnerSetupRefused, renderSignIn } from "../src/s14
 import { renderFailure, renderRefusal, renderS14 } from "../src/s14/web-pages";
 import { createS14Product } from "../src/s14/web-product";
 import { createS14RefusalHandler } from "../src/s14/web-refusal";
+import { ReplyUnavailable } from "../src/s14/reply-failure";
 import { accessibilityProblems } from "./fixtures/a11y";
 import anonymous from "./fixtures/parallel/tools-anonymous.json";
 import fetchResult from "./fixtures/parallel/fetch.json";
@@ -195,7 +196,7 @@ test("a reply that fails names one next step, and the home page keeps its way to
   const fieldsOf = fields(formsFor(await f.page(`/chats/${f.conversationId}`), "/s14/forms/compose")[0]!);
   await f.post("/s14/forms/compose", { ...fieldsOf, text: "hello" }); await f.app.drainReplies();
   const html = await f.page(`/chats/${f.conversationId}`);
-  expect(html).toContain(f.words["s14.reply.blocked"]); expect(html).toContain(`href="/settings/provider">${f.words["s14.reply.check_provider"]}`); expect(html).not.toContain("provider said no");
+  expect(html).toContain(f.words["s14.reply.blocked"]); expect(html).not.toContain(`href="/settings/provider">${f.words["s14.reply.check_provider"]}`); expect(html).not.toContain("provider said no");
   expect(await f.page("/")).toContain('class="s-home-chats"');
 });
 
@@ -261,8 +262,15 @@ test("unpin is an exact form, states what it keeps, and a stale tab is refused w
   const response = await f.post("/s14/forms/memory-unpin", form); expect(response.status).toBe(303);
   const landing = await f.page(response.headers.get("location")!); expect(landing).toContain(words["s14.memory.done.decision_unpin"]); expect(landing).not.toContain("/s14/forms/memory-unpin"); clean(landing, "en");
   expect(f.app.memory.decision(f.auth.actor, decision.decision!.id)).toMatchObject({ pinned: false, revision: 2 });
+  expect(landing).toContain('s-mem-hd"><span class="s-pill ">Unpinned</span>');
+  expect(landing).not.toContain('s-mem-hd"><span class="s-pill strong">Pinned</span>');
+  const repin = formsFor(landing, "/s14/forms/memory-decision").map(fields).find(item => item.key === "k1")!;
+  expect(repin.expectedRevision).toBe("2");
   const stale = await f.post("/s14/forms/memory-unpin", { ...form, requestId: rid() }); expect(stale.status).toBe(409); expect(await stale.text()).toContain(words["s14.error.stale_revision"]);
   expect((await f.post("/s14/forms/memory-unpin", { ...form, requestId: rid(), extra: "x" })).status).toBe(400);
+  const pinned = await f.post("/s14/forms/memory-decision", { ...repin, text: "Pinned again" });
+  expect(pinned.status).toBe(303);
+  expect(f.app.memory.inspect(f.auth.actor, "jit").decisions).toMatchObject([{ pinned: true, revision: 3, text: "Pinned again" }]);
 });
 
 test("retry and summarize say what exists, what they will not do, and post one exact command each", async () => {
@@ -353,4 +361,22 @@ test("impact previews list bounded names from the service, escaped, with the omi
   const html = await f.page(`/memory/jit/claims/${claim.id}?revision=${claim.revision}&generation=${claim.generation}&action=forget`); strict(html);
   expect(html).not.toContain("<img src=x"); expect(html).toContain(words["s14.memory.impact.bots"]); expect(html).toContain(`${words["s14.memory.impact.more"]} 2`); expect(html).toContain(`${words["s14.memory.impact.more"]} 3`); expect(html).toContain('href="/work/w1"');
   expect(visible(html)).toContain("4"); expect(html).toContain(">70<");
+});
+
+test.each(["th", "en"] as const)("busy page uses the existing cancel form for the current flow, without approval (%s)", locale => {
+  const html = renderSignIn({ kind: "setup.sign_in", requestId: "busy-request", provider: "codex", signIn: { id: "busy-request", state: "busy", expiresAt: null, currentFlowId: "current-flow" } }, "csrf", 7, locale, { now: 1, setup: true, theme: "system" });
+  strict(html, locale); clean(html, locale);
+  expect(JSON.parse(commandForm(html, "setup.sign_in.cancel").command!)).toMatchObject({ expectedRevision: 7, payload: { provider: "codex", flowId: "current-flow" } });
+  expect(html).not.toContain('class="s-code"'); expect(html).not.toContain("verificationUri");
+});
+
+test.each(["sign-in", "quota", "provider", "timeout"] as const)("blocked replies render existing copy for known %s category and only sign-in offers that action", async category => {
+  const f = await ready("en", { reply: { async reply() { throw new ReplyUnavailable(category); } } });
+  const compose = fields(formsFor(await f.page(`/chats/${f.conversationId}`), "/s14/forms/compose")[0]!);
+  await f.post("/s14/forms/compose", { ...compose, text: "hello" }); await f.app.drainReplies();
+  const html = await f.page(`/chats/${f.conversationId}`);
+  const word = { "sign-in": "s14.provider.state.needs-login", quota: "s14.provider.state.quota-exceeded", provider: "s14.web_outcome.service_error_title", timeout: "s14.reason.deadline_exceeded" } as const;
+  expect(html).toContain(f.words[word[category]]);
+  expect(html.includes(`href="/settings/provider">${f.words["s14.reply.check_provider"]}`)).toBe(category === "sign-in");
+  strict(html); clean(html, "en");
 });

@@ -9,7 +9,7 @@ import { canonical, digest, exact, identity, integer } from "./validation";
 /** Web-only device commands reserve one durable receipt before touching provider protocols. */
 export type S14SignInCommand = Envelope<"setup.sign_in" | "setup.sign_in.cancel", { provider: "codex" | "grok"; flowId: string | null }>;
 /** Web result carries approval only once; its durable projection excludes approval data and native handles. */
-export interface S14SignInReceipt extends SignInReceipt { kind: S14SignInCommand["kind"]; requestId: string; provider: "codex" | "grok" }
+export interface S14SignInReceipt extends SignInReceipt { kind: S14SignInCommand["kind"]; requestId: string; provider: "codex" | "grok"; signIn: SignInView & { /** Owner-only cancellation target; never approval data. */ currentFlowId?: string } }
 
 /** Derives exact recommended routes from the supported public host without probing or changing billing. */
 export function supportedS14Routes(): Route[] {
@@ -32,7 +32,7 @@ export class S14SignIns {
     return this.app.policy.routes.map(route => ({ ...route, readiness: readiness[route.provider] }));
   }
   /** Reads receipt-owned safe status; a restart cancels pending flows without reconstructing approval data. */
-  status(actor: OwnerActor, provider: "codex" | "grok", flowId: string): SignInView {
+  status(actor: OwnerActor, provider: "codex" | "grok", flowId: string): S14SignInReceipt["signIn"] {
     identity(flowId);
     return this.app.store.read(tx => {
       this.app.requireOwner(tx, actor);
@@ -71,7 +71,7 @@ export class S14SignIns {
       return null;
     });
     if (previous) return { ...previous, signIn: this.status(actor, c.payload.provider, previous.signIn.id) };
-    const changed = (signIn: SignInView) => this.app.store.transaction(tx => {
+    const changed = (signIn: S14SignInReceipt["signIn"]) => this.app.store.transaction(tx => {
       const row = tx.get<{ result_json: string }>("SELECT result_json FROM command_receipts WHERE request_id=?", c.requestId)!;
       const receipt = JSON.parse(row.result_json) as S14SignInReceipt;
       if (!["starting", "pending"].includes(receipt.signIn.state) && ["starting", "pending"].includes(signIn.state)) return;
@@ -81,6 +81,11 @@ export class S14SignIns {
     const result = c.kind === "setup.sign_in.cancel"
       ? { signIn: this.flows.cancel(c.payload.provider, c.payload.flowId!) }
       : await this.flows.start(c.payload.provider, c.requestId, () => this.app.store.read(tx => this.app.requireOwner(tx, actor)), changed, () => {});
+    if (result.signIn.state === "busy") {
+      this.app.store.read(tx => this.app.requireOwner(tx, actor));
+      const current = this.flows.current(c.payload.provider);
+      if (current) (result.signIn as S14SignInReceipt["signIn"]).currentFlowId = current.id;
+    }
     changed(result.signIn);
     return { kind: c.kind, requestId: c.requestId, provider: c.payload.provider, ...result };
   }

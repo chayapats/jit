@@ -61,13 +61,11 @@ export const banner = (tone: "" | "warn" | "danger" | "ok", title: string, detai
 export const noticeText = (code: string) => trMaybe(`s14.error.${code}`) ?? tr("s14.error.generic");
 export const notice = (code: string | null) => code ? banner("warn", noticeText(code), trMaybe(`s14.next.${code}`) ?? "") : "";
 
-/** The developer path for an installation with no installer link. Collapsed, because it is not the first-run journey. */
-export const sourcePath = () => `<details class="s-more"><summary>${tr("s14.login.source_title")}</summary><div><p class="s-note">${tr("s14.login.source_note")}</p><pre class="s-exact">bun src/main.ts setup --s14</pre></div></details>`;
 /** Sign-in page; before an owner exists it points at the one-time link instead of a dead form. */
 export function renderLogin(locale: Locale, code: string | null, provisioned: boolean, theme: ThemePreference = "system"): string {
   return withTheme(theme, () => withLocale(locale, () => standalone(tr("s14.login.title"), `<div class="auth-card"><span class="brand">${logoLockup({ height: 44, label: "Jit" })}</span><h1>${tr("s14.login.title")}</h1>${provisioned ? `<p>${tr("s14.login.prompt")}</p>
     ${code ? `<div role="alert">${banner("warn", noticeText(code), trMaybe(`s14.next.${code}`) ?? "")}</div>` : ""}<form method="post" action="/s14/login"><label for="s14-password">${tr("s14.login.password")}</label><input id="s14-password" type="password" name="password" required autocomplete="current-password"><button class="primary">${tr("s14.login.submit")}</button></form>`
-    : `<p>${tr("s14.login.unprovisioned")}</p><p class="s-note">${tr("s14.login.unprovisioned_note")}</p>${sourcePath()}`}</div>`)));
+    : `<p>${tr("s14.login.unprovisioned")}</p><p class="s-note">${tr("s14.login.unprovisioned_note")}</p>`}</div>`)));
 }
 /** Refused post or missing page: the cause in words, then one way forward. No authority control is rendered here. */
 export function renderFailure(locale: Locale, code: string, next: string, theme: ThemePreference = "system"): string {
@@ -79,8 +77,7 @@ export function renderFailure(locale: Locale, code: string, next: string, theme:
 export function renderRefusal(locale: Locale, store: string): string {
   return withLocale(locale, () => standalone(tr("s14.legacy.title"), `<div class="s-notice-card"><span class="brand">${logoLockup({ height: 44, label: "Jit" })}</span><h1>${tr("s14.legacy.title")}</h1><p>${tr("s14.legacy.lead")}</p>
     ${banner("ok", tr("s14.legacy.untouched"), tr("s14.legacy.untouched_detail"))}<dl class="s-kv"><dt>${tr("s14.legacy.selected")}</dt><dd class="s-mono">${e(store)}</dd><dt>${tr("s14.legacy.reason")}</dt><dd>${tr("s14.legacy.reason_detail")}</dd></dl>
-    <section class="s-stack" aria-labelledby="s14-fresh"><h2 id="s14-fresh">${tr("s14.legacy.fresh_title")}</h2><p class="s-sub">${tr("s14.legacy.fresh_detail")}</p><pre class="s-exact">JIT_S14_DATABASE=.local/s14-fresh/application.sqlite bun src/main.ts setup --s14
-JIT_S14_DATABASE=.local/s14-fresh/application.sqlite bun src/main.ts serve --s14</pre></section>
+    <section class="s-stack" aria-labelledby="s14-fresh"><h2 id="s14-fresh">${tr("s14.legacy.fresh_title")}</h2><p class="s-sub">${tr("s14.legacy.fresh_detail")}</p><pre class="s-exact">JIT_S14_DATABASE=.local/s14-fresh/application.sqlite bun src/main.ts serve --s14</pre></section>
     <section class="s-stack" aria-labelledby="s14-back"><h2 id="s14-back">${tr("s14.legacy.back_title")}</h2><p class="s-sub">${tr("s14.legacy.back_detail")}</p><pre class="s-exact">bun src/main.ts serve</pre></section></div>`));
 }
 
@@ -229,7 +226,11 @@ function proposalHistory(history: BotProposal[], current: BotProposal): string {
   return old.length ? `<section class="s-card" aria-labelledby="s14-history"><h2 id="s14-history">${tr("s14.proposal.history")}</h2><ul class="s-history">${old.map(item => `<li><p>r${item.revision} · ${pill(tr("s14.proposal.stale"))} · ${tr(item.author === "owner" ? "s14.proposal.author_owner" : "s14.proposal.author_bot")}</p><p class="s-sub">${e(item.name)}</p></li>`).join("")}</ul></section>` : "";
 }
 
-const replyLine = (reply: Reply, bot: Bot) => reply.state === "succeeded" ? "" : `<div class="s-bot-msg">${tile(bot, reply.state === "blocked" ? "failed" : reply.state === "running" ? "working" : "hollow")}<div>${reply.state === "blocked" ? banner("warn", tr("s14.reply.blocked"), `${trMaybe(`s14.reason.${reply.reason}`) ?? ""} ${tr("s14.reply.blocked_next")}`.trim(), reply.reason === "reply_unavailable" ? `<p><a class="s-link-text" href="/settings/provider">${tr("s14.reply.check_provider")}</a></p>` : "") : `<p class="s-who">${e(botName(bot))} · ${tr(k(`s14.reply.${reply.state}`))}</p>`}</div></div>`;
+const unavailableDetail = (reply: Reply) => {
+  const key = { "sign-in": "s14.provider.state.needs-login", quota: "s14.provider.state.quota-exceeded", provider: "s14.web_outcome.service_error_title", timeout: "s14.reason.deadline_exceeded", unknown: "s14.reason.reply_unavailable" } as const;
+  return reply.reason === "reply_unavailable" ? tr(key[reply.unavailableReason ?? "unknown"]) : "";
+};
+const replyLine = (reply: Reply, bot: Bot) => reply.state === "succeeded" ? "" : `<div class="s-bot-msg">${tile(bot, reply.state === "blocked" ? "failed" : reply.state === "running" ? "working" : "hollow")}<div>${reply.state === "blocked" ? banner("warn", tr("s14.reply.blocked"), `${unavailableDetail(reply) || trMaybe(`s14.reason.${reply.reason}`) || ""} ${tr("s14.reply.blocked_next")}`.trim(), reply.reason === "reply_unavailable" && reply.unavailableReason === "sign-in" ? `<p><a class="s-link-text" href="/settings/provider">${tr("s14.reply.check_provider")}</a></p>` : "") : `<p class="s-who">${e(botName(bot))} · ${tr(k(`s14.reply.${reply.state}`))}</p>`}</div></div>`;
 const messageText = (item: Message) => item.text === "[deleted]" ? tr("s14.memory.message_deleted") : `${e(item.text)}${item.contextState === "withdrawn" ? ` <span class="s-note">${tr("s14.memory.withdrawn")}</span>` : ""}`;
 const message = (item: Message, bot: Bot, extra: string) => item.role === "owner" ? `<div class="s-owner-msg">${messageText(item)}</div>` : `<div class="s-bot-msg">${tile(bot)}<div><p class="s-who">${e(botName(bot))}</p><p class="s-bot-text">${messageText(item)}</p>${extra}</div></div>`;
 /** Messages, typed cards and work in commit order. Cards are built from typed records, never parsed from message text. */
