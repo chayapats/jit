@@ -13,7 +13,8 @@ export function acquireS14RuntimeLock(storePath: string): () => void {
   catch (e) { if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e; }
   const db = new Database(path, { create: false, strict: true });
   try {
-    db.exec("PRAGMA busy_timeout=0; PRAGMA locking_mode=EXCLUSIVE; BEGIN EXCLUSIVE");
+    // Let concurrent pager lock upgrades settle; a live owner still refuses within one second.
+    db.exec("PRAGMA busy_timeout=1000; BEGIN EXCLUSIVE");
   } catch (e) {
     db.close();
     if ((e as { code?: string }).code === "SQLITE_BUSY") throw new AppError("s14_runtime_already_open", 409);
