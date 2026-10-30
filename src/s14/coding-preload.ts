@@ -9,6 +9,25 @@ import type { CodingRepository, CodingRepositoryFetch } from "./coding-types";
 const schedule = (expire: () => void, timeoutMs: number) => { const timer = setTimeout(expire, timeoutMs); return () => clearTimeout(timer); };
 const packet = (line: string) => `${(Buffer.byteLength(line) + 4).toString(16).padStart(4, "0")}${line}`;
 
+async function inspectObjects(mirror: CodingGitMirror, secret: string | undefined, signal: AbortSignal, allowed: () => void): Promise<void> {
+  // Inspect decoded bytes too: a remote must not reflect the authenticated value inside compressed objects.
+  const forbidden = secret === undefined ? [] : [secret, Buffer.from(secret).toString("base64"), Buffer.from(`x-access-token:${secret}`).toString("base64")].map(value => Buffer.from(value));
+  const overlap = Math.max(0, ...forbidden.map(value => value.length - 1));
+  let decoded = 0, tail = Buffer.alloc(0);
+  const inspected = await brokerGit(mirror.directory, ["-C", mirror.path, "cat-file", "--batch-all-objects", "--batch"], undefined, {
+    signal, inspect(chunk) {
+      allowed();
+      decoded += chunk.length;
+      if (decoded > 32 * 1024 * 1024) throw new AppError("coding_preload_size_limit", 413);
+      const bytes = Buffer.concat([tail, chunk]);
+      if (forbidden.some(value => bytes.includes(value))) throw new AppError("coding_preload_credential_refused", 403);
+      tail = overlap ? bytes.subarray(-overlap) : Buffer.alloc(0);
+    },
+  });
+  allowed();
+  if (inspected.code !== 0) throw new AppError("coding_preload_objects_refused", 409);
+}
+
 /** Fetches one pinned GitHub commit as bounded data; no checkout, hooks, filters, submodules or remote config run on the host. */
 export async function repositoryBundle(repository: CodingRepository, secret: string | undefined, signal: AbortSignal,
   allowed: () => void, transport: CodingRepositoryFetch = fetch, limits = { packBytes: 16 * 1024 * 1024, timeoutMs: 60000, schedule }): Promise<Uint8Array> {
@@ -61,7 +80,8 @@ export async function repositoryBundle(repository: CodingRepository, secret: str
     const bytes = Buffer.concat(chunks);
     const pack = bytes.subarray(8);
     if (pack.length < 32 || !createHash("sha1").update(pack.subarray(0, -20)).digest().equals(pack.subarray(-20))) throw new AppError("coding_preload_protocol_refused", 409);
-    if (bytes.subarray(0, 12).toString("binary") !== "0008NAK\nPACK" || (secret !== undefined && bytes.includes(Buffer.from(secret)))) throw new AppError("coding_preload_protocol_refused", 409);
+    if (bytes.subarray(0, 12).toString("binary") !== "0008NAK\nPACK") throw new AppError("coding_preload_protocol_refused", 409);
+    if (secret !== undefined && bytes.includes(Buffer.from(secret))) throw new AppError("coding_preload_credential_refused", 403);
     const git = async (args: string[], input?: Uint8Array) => {
       allowed();
       const result = await brokerGit(mirror.directory, args, undefined, { signal: controller.signal, ...(input ? { input } : {}) });
@@ -74,6 +94,7 @@ export async function repositoryBundle(repository: CodingRepository, secret: str
     if (await git(["-C", mirror.path, "cat-file", "-t", repository.baseCommit]) !== "commit") throw new AppError("coding_preload_commit_mismatch", 409);
     await git(["-C", mirror.path, "update-ref", "refs/heads/preload", repository.baseCommit]);
     await git(["-C", mirror.path, "fsck", "--strict", "--no-reflogs"]);
+    await inspectObjects(mirror, secret, controller.signal, allowed);
     const file = join(mirror.directory, "preload.bundle");
     await git(["-C", mirror.path, "bundle", "create", file, "refs/heads/preload"]);
     if (statSync(file).size > maximumPack) throw new AppError("coding_preload_size_limit", 413);

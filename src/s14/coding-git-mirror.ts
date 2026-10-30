@@ -7,7 +7,7 @@ import type { GitAction } from "./coding-git-types";
 
 /** Runs data-only Git with an empty environment and fixed config, never a workspace command or repository hook. */
 export async function brokerGit(directory: string, args: string[], secret?: string,
-  options: { input?: Uint8Array; signal?: AbortSignal } = {}): Promise<{ code: number; stdout: string }> {
+  options: { input?: Uint8Array; signal?: AbortSignal; inspect?: (chunk: Uint8Array) => void } = {}): Promise<{ code: number; stdout: string }> {
   const askpass = join(directory, "askpass.sh");
   if (secret !== undefined) writeFileSync(askpass, '#!/bin/sh\ncase "$1" in *Username*) printf "%s\\n" x-access-token;; *) printf "%s\\n" "$JIT_GIT_EFFECT_TOKEN";; esac\n', { mode: 0o700 });
   const proc = Bun.spawn(["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "credential.helper=", "-c", "http.followRedirects=false", "-c", "protocol.allow=never", "-c", "transfer.fsckObjects=true", ...args], {
@@ -22,6 +22,7 @@ export async function brokerGit(directory: string, args: string[], secret?: stri
   let code: number;
   try {
     for await (const chunk of proc.stdout) {
+      if (options.inspect) { options.inspect(chunk); continue; }
       if (Buffer.byteLength(stdout) + chunk.length > 65536) { overflow = true; kill(); break; }
       stdout += new TextDecoder().decode(chunk);
     }

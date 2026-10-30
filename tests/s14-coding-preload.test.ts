@@ -115,3 +115,24 @@ test("broker cancellation terminates the whole trusted Git process group, includ
     expect(state === "" || state.startsWith("Z")).toBe(true);
   } finally { controller.abort(); watcher.close(); await running.catch(() => {}); }
 });
+
+test.each([false, true])("reflected credential in a compressed Git object refuses before bundle creation (encoded=%s)", async encoded => {
+  const runtime = new CodingRuntimeFixture(); roots.push(runtime.root);
+  await runtime.seed();
+  const secret = "github_pat_reflected_sentinel_123456789012345678901234567890";
+  writeFileSync(join(runtime.workspace, "repositories", "repo", "reflected.txt"), encoded ? Buffer.from(`x-access-token:${secret}`).toString("base64") : secret);
+  await runtime.git("add", ".");
+  await runtime.git("-c", "core.hooksPath=/dev/null", "commit", "-qm", "reflected credential fixture");
+  const commit = await runtime.git("rev-parse", "HEAD");
+  await expect(repositoryBundle(repo(commit), secret, new AbortController().signal, () => {}, runtime.repositoryFetch)).rejects.toThrow("coding_preload_credential_refused");
+});
+
+test("small compressed packs cannot bypass the decoded object-stream size ceiling", async () => {
+  const runtime = new CodingRuntimeFixture(); roots.push(runtime.root);
+  await runtime.seed();
+  writeFileSync(join(runtime.workspace, "repositories", "repo", "large.bin"), Buffer.alloc(33 * 1024 * 1024));
+  await runtime.git("add", ".");
+  await runtime.git("-c", "core.hooksPath=/dev/null", "commit", "-qm", "compressed size fixture");
+  const commit = await runtime.git("rev-parse", "HEAD");
+  await expect(repositoryBundle(repo(commit), undefined, new AbortController().signal, () => {}, runtime.repositoryFetch)).rejects.toThrow("coding_preload_size_limit");
+});
