@@ -16,6 +16,24 @@ import pins from "./pinned-images.json";
 
 const MiB = 1024 ** 2, GiB = 1024 ** 3;
 
+/**
+ * Restarts the service identity's Podman pause process when it is stuck in a one-ID namespace. That happens when it
+ * started while the identity could not read its subordinate ids, and images owned by other ids then fail to unpack.
+ * A failed repair is reported with its next step; container features stay optional and never block installation.
+ */
+export async function repairPodmanNamespace(
+  call: (argv: string[]) => Promise<{ exitCode: number; stdout: string; timedOut?: boolean }>,
+  asUser: (args: string[]) => string[], out?: (line: string) => void,
+): Promise<"healthy" | "repaired" | "failed" | "unknown"> {
+  const map = await call(asUser(["podman", "unshare", "cat", "/proc/self/uid_map"]));
+  if (map.exitCode !== 0 || map.timedOut) return "unknown";
+  if (map.stdout.trim().split("\n").filter(Boolean).length !== 1) return "healthy";
+  const migrated = await call(asUser(["podman", "system", "migrate"]));
+  if (migrated.exitCode === 0 && !migrated.timedOut) return "repaired";
+  out?.("Podman namespace repair failed; container features stay unavailable. As jit: podman system migrate; then restart jit.service.");
+  return "failed";
+}
+
 function homeDirectories(home: string): string[] {
   return ["state", "state.connections", "backups", "work", "ledger", "state/attachments", ".config", ".config/systemd", ".config/systemd/user", ".local", ".local/share", ".local/share/keyrings", ".schway"].map(path => join(home, path));
 }
@@ -260,12 +278,7 @@ export async function runInstaller(options: InstallerOptions): Promise<{ events:
     await must(asUser(["systemctl", "--user", "daemon-reload"]));
     await must(asUser(["systemctl", "--user", "enable", "--now", "gnome-keyring-daemon.service"]));
     step("optional-podman-socket", "enable the jit identity's user podman.socket and restart jit.service (docs/runbooks/execution-box.md)");
-    if (available) {
-      // A pause process started while the identity could not read its subordinate ids keeps a one-ID namespace,
-      // and images owned by other ids then fail to unpack. Restart it once the ranges are readable.
-      const map = await call(asUser(["podman", "unshare", "cat", "/proc/self/uid_map"]));
-      if (map.exitCode === 0 && map.stdout.trim().split("\n").filter(Boolean).length === 1) await call(asUser(["podman", "system", "migrate"]));
-    }
+    if (available) await repairPodmanNamespace(call, asUser, options.out);
     if (!available || (await call(asUser(["systemctl", "--user", "enable", "--now", "podman.socket"]))).exitCode !== 0) {
       const key = available ? "podman.reason_socket" : "podman.reason_podman";
       options.out?.(`Chat-only: ${en[key]} / ${th[key]}${available ? " As jit: systemctl --user enable --now podman.socket; then restart jit.service." : ""}`);
